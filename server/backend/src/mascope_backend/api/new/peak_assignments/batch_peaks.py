@@ -86,6 +86,25 @@ ROLE_ARTIFACT = "artifact"
 SOURCE_ROLES = (ROLE_REAGENT, ROLE_ARTIFACT)
 
 
+# --- the partition ----------------------------------------------------------------
+
+#: The instrument type whose batch peaks are in each intensity unit. A batch's
+#: anchors are partitioned by ionization mode and by instrument type, and the
+#: unit an anchor is stamped with when it is minted is what records the second:
+#: an Orbitrap member's intensity is a height and a TOF member's an area, so
+#: the two never share an anchor or a trace.
+INSTRUMENT_TYPE_BY_INTENSITY_VARIABLE: dict[str, str] = {
+    "sum_peak_heights": "orbi",
+    "sum_peak_areas": "tof",
+}
+
+
+def instrument_type_of(intensity_variable: Optional[str]) -> Optional[str]:
+    """The instrument type (``orbi`` or ``tof``) of the partition an anchor in
+    ``intensity_variable`` belongs to; None for a unit no instrument names."""
+    return INSTRUMENT_TYPE_BY_INTENSITY_VARIABLE.get(intensity_variable)
+
+
 # --- the member row's codes -----------------------------------------------------
 
 #: A member stores its tier as a ``smallint``: the tier's rank, so the code

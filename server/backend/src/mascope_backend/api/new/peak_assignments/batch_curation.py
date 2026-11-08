@@ -341,6 +341,11 @@ async def _check_monoisotopic(session, anchor: Any, entry: dict) -> None:
                     BatchPeak.ionization_mode_id.is_not_distinct_from(
                         anchor.ionization_mode_id
                     ),
+                    # The parent is in the anchor's own partition: an anchor
+                    # of the batch's other instrument type is another trace.
+                    BatchPeak.intensity_variable.is_not_distinct_from(
+                        anchor.intensity_variable
+                    ),
                     BatchPeak.mz.between(mono - window, mono + window),
                 )
             )

@@ -2998,8 +2998,10 @@ class BatchPeak(Base):
     per-sample ``PeakAssignment`` rows (never a fresh assignment of a synthetic
     consensus spectrum, which cannot be scored honestly).
 
-    Batch peaks are partitioned per ionization mode (the m/z axis and intensity
-    units differ between modes/instruments). Design:
+    Batch peaks are partitioned per ionization mode and per instrument type (the
+    m/z axis differs between modes, and the intensity unit between instrument
+    types: heights on an Orbitrap, areas on a TOF). The instrument type is the one
+    ``intensity_variable`` names, stamped when the anchor is minted. Design:
     ``docs/dev/peak_assignment_batch_primary.md`` (section 12 for the anchor model).
 
     consensus_tier values mirror ``PeakAssignment.tier``:

@@ -15,6 +15,7 @@ from sqlalchemy import select
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    instrument_type_of,
     manual_pin_of,
     mz_from_delta,
     tier_name,
@@ -75,6 +76,9 @@ def _batch_peak_meta(bp) -> dict:
         "n_present": bp.n_present,
         "is_ambiguous": bool(bp.is_ambiguous),
         "intensity_variable": bp.intensity_variable,
+        # The partition the batch peak is in, beside its mode: the instrument
+        # type its unit belongs to. A batch of both types has two.
+        "instrument_type": instrument_type_of(bp.intensity_variable),
         "max_intensity": bp.max_intensity,
         "isotopologue_of": bp.isotopologue_of,
         # Pinned by hand for the whole batch (batch_curation.py).

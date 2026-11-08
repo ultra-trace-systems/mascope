@@ -660,7 +660,10 @@ the `sample_batch_peak_created` event was never built (the coarse `peak_assignme
 is used); the occurrence no longer carries formula and tier strings (§4.2). Its items still
 open - seeding anchors from a target list, splitting blends, refusing or segregating
 mixed-instrument batches at fold, and the fold-in and series benchmarks - are MAS-319,
-MAS-320, MAS-321 and MAS-322 in the assignment quality plan's milestone 4 (filed 2026-10-22).*
+MAS-320, MAS-321 and MAS-322 in the assignment quality plan's milestone 4 (filed 2026-10-22).
+MAS-321 segregates rather than refuses: a batch's anchors are partitioned by mode and by
+instrument type, the type read off the intensity unit an anchor is minted in (heights on an
+Orbitrap, areas on a TOF), and the ledger shows one partition at a time (§12.3).*
 
 ### 12.1 The core idea
 
@@ -734,11 +737,22 @@ Immediately after, fold that sample into the batch peaks:
 ```
 for each peak p in the arriving sample:
     p_mz' = p_mz * (1 - mu_sample / 1e6)          # per-sample offset onto the batch axis
-    a = nearest BatchPeak of this batch+mode with |a.mz - p_mz'| within a.mz_tol   # binary search
+    a = nearest BatchPeak of this batch+mode+instrument type with |a.mz - p_mz'| within a.mz_tol   # binary search
     if a exists:  insert BatchPeakOccurrence(a, sample, p, join PeakAssignment)
     else:         create BatchPeak(anchor = p_mz'),  insert its first occurrence
 recompute consensus for the TOUCHED batch peaks only
 ```
+
+The anchors searched are the batch's in the sample's ionization mode **and instrument
+type**. An Orbitrap member's intensity is a height and a TOF member's an area, so the two
+cannot share a trace; a batch of both folds each type into anchors of its own, the m/z
+they share included (MAS-321). The type is read off the unit the anchor was minted in
+(`intensity_variable`), so the partition needs no column of its own, and a single-instrument
+batch, whose anchors are all in one unit, folds exactly as before. Segregating rather than
+refusing keeps every sample's peaks in the batch view; it is the alignment path's rule (one
+instrument type per alignment) kept by partition. The ledger and the series name the
+partition (`instrument_type`), the ledger lists one partition at a time, and the chart draws
+only that partition's selection.
 
 Cost is **O(P·log A)** per sample (P peaks, A anchors) — bounded per arrival, not the
 O(N²) full re-bin the Zarr path would incur. No global re-cluster, no cache wipe. A backfill

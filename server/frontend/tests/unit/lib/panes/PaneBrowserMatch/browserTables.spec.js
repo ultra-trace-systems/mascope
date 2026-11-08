@@ -48,7 +48,11 @@ function makeApp() {
         tierCounts: {},
         pending: false,
         error: null,
-        load: vi.fn()
+        load: vi.fn(),
+        instrumentTypes: [],
+        instrumentType: null,
+        inPartition: () => true,
+        showInstrument: vi.fn()
       },
       batchPeakVerification: { list: [], forAnchor: () => null, isStale: () => false },
       batchPeakRun: {

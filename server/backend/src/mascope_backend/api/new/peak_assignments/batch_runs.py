@@ -46,6 +46,7 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     NotFoundException,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    instrument_type_of,
     manual_pin_of,
     tier_name,
 )
@@ -187,6 +188,9 @@ def snapshot_anchor_meta(row: Any, sample_batch_id: str) -> dict:
         "n_present": row.n_present,
         "is_ambiguous": bool(row.is_ambiguous),
         "intensity_variable": row.intensity_variable,
+        # The partition the batch peak is in, beside its mode: the instrument
+        # type its unit belongs to. A batch of both types has two.
+        "instrument_type": instrument_type_of(row.intensity_variable),
         "max_intensity": row.max_intensity,
         "isotopologue_of": row.isotopologue_of,
         "curated": bool(row.curated),

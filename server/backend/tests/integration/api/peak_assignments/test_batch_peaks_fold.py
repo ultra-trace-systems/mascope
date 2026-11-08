@@ -1216,3 +1216,49 @@ async def test_two_versions_of_one_setup_fold_into_one_partition(
     assert len(peaks) == 4
     assert {p.ionization_mode_id for p in peaks} == {first}
     assert next(p for p in peaks if p.consensus_formula == "C6H12O6").n_present == 2
+
+
+async def test_a_second_instrument_type_folds_into_a_partition_of_its_own(
+    async_session_factory, seeded, monkeypatch
+):
+    """An Orbitrap member's intensity is a height and a TOF member's an area,
+    so the two cannot share an anchor. A batch of both folds each instrument
+    type into anchors of its own, the m/z they share included, and the ledger
+    names each row's partition."""
+    batch, samples = seeded
+    # Sample B is the batch's TOF file; the classifier reads the file name.
+    monkeypatch.setattr(
+        batch_peaks_controller,
+        "get_instrument_type",
+        lambda filename: "tof" if "-test-B-" in filename else "orbi",
+    )
+    await fold_sample_into_batch_peaks(samples["A"])
+    await fold_sample_into_batch_peaks(samples["B"])
+    first = {p.batch_peak_id for p in await _batch_peaks(async_session_factory, batch)}
+    # A re-fold of the TOF sample finds its own partition's anchors again.
+    await fold_sample_into_batch_peaks(samples["B"])
+    peaks = await _batch_peaks(async_session_factory, batch)
+    assert {p.batch_peak_id for p in peaks} == first
+
+    by_unit = defaultdict(set)
+    for p in peaks:
+        by_unit[p.intensity_variable].add(round(p.mz, 2))
+    assert dict(by_unit) == {
+        "sum_peak_heights": {181.07, 200.05, 250.1},
+        "sum_peak_areas": {181.07, 300.2},
+    }
+    shared = [p for p in peaks if round(p.mz, 2) == 181.07]
+    assert len(shared) == 2
+    assert [p.n_present for p in shared] == [1, 1]
+    assert {p.consensus_formula for p in shared} == {"C6H12O6"}
+
+    ledger = await get_batch_peak_ledger(sample_batch_id=batch, min_n_present=1)
+    assert sorted(
+        (row["instrument_type"], round(row["mz"], 2)) for row in ledger["data"]
+    ) == [
+        ("orbi", 181.07),
+        ("orbi", 200.05),
+        ("orbi", 250.1),
+        ("tof", 181.07),
+        ("tof", 300.2),
+    ]

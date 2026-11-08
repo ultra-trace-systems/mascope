@@ -9,6 +9,7 @@ import Message from 'primevue/message'
 import Popover from 'primevue/popover'
 import ProgressSpinner from 'primevue/progressspinner'
 import Select from 'primevue/select'
+import SelectButton from 'primevue/selectbutton'
 import ToggleSwitch from 'primevue/toggleswitch'
 import { FilterMatchMode, FilterOperator, FilterService } from '@primevue/core/api'
 
@@ -43,6 +44,7 @@ import { prettyTrim } from '@/lib/utils'
 import { useApp } from '@/stores'
 
 import { useBatchPeakJump } from './stores/batchPeakJump.js'
+import { INSTRUMENT_TYPE_LABELS } from '@/lib/batchChart'
 import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger'
 
 import { useBatchPeakCompute } from './stores/batchPeakCompute.js'
@@ -135,7 +137,7 @@ const filters = ref({
 const breadcrumb = computed(() => {
   const batch = app.data.batch.focused
   if (!batch) return null
-  const folded = ledger.value.list.length - parents.value.length
+  const folded = shown.value.length - parents.value.length
   return {
     items: [
       {
@@ -174,6 +176,23 @@ const breadcrumb = computed(() => {
 // one deleted since - has to fail into a top-level row rather than into a row
 // that is never rendered at all.
 const byId = computed(() => new Map(ledger.value.list.map((bp) => [bp.batch_peak_id, bp])))
+
+// --- The instrument partition -------------------------------------------------
+
+// A batch of both instrument types has a ledger of each, since an Orbitrap's
+// heights and a TOF's areas cannot share a trace. The table, the tier strip
+// and the chart show one at a time; the picker offers the other only when the
+// batch has one. The store holds the choice, so the chart reads the same one.
+const shown = computed(() => ledger.value.list.filter((bp) => ledger.value.inPartition(bp)))
+const instrumentOptions = computed(() =>
+  ledger.value.instrumentTypes.map((type) => ({ label: INSTRUMENT_TYPE_LABELS[type], value: type }))
+)
+const instrumentShown = computed({
+  get: () => ledger.value.instrumentType,
+  set: (type) => {
+    if (type) ledger.value.showInstrument(type)
+  }
+})
 
 /**
  * The row this one folds under, or null when it stands on its own.
@@ -243,7 +262,7 @@ const engineTierTooltip = (row) => {
 // the tiers, as the sample ledger's reagent and artifact rows do.
 const decorated = computed(() => {
   const index = byId.value
-  return ledger.value.list.map((batchPeak) => {
+  return shown.value.map((batchPeak) => {
     // What a list calls the consensus formula, where a member matched it from
     // one; `listingName` is what the column sorts on.
     const listing = ledgerListing(batchPeak.reference_listing)
@@ -675,7 +694,7 @@ const INTENSITY_UNITS = {
 }
 
 const intensityTooltip = computed(() => {
-  const variable = ledger.value.list.find((bp) => bp.intensity_variable)?.intensity_variable
+  const variable = shown.value.find((bp) => bp.intensity_variable)?.intensity_variable
   const unit = INTENSITY_UNITS[variable]
   return (
     'Highest intensity this species reaches in any sample of the batch' + (unit ? ` (${unit})` : '')
@@ -778,6 +797,24 @@ watch(
         Showing the ledger as {{ viewedRunLabel }} left it, read-only. Verdicts and curation act on
         the current run; pick it in the run selector to judge.
       </Message>
+
+      <!-- Only on a batch of both instrument types: which one's batch peaks
+           the table lists and the chart draws. -->
+      <div v-if="instrumentOptions.length > 1" class="instrument-partition">
+        <SelectButton
+          v-model="instrumentShown"
+          :options="instrumentOptions"
+          optionLabel="label"
+          optionValue="value"
+          :allowEmpty="false"
+          aria-label="Instrument type"
+          v-tooltip.top="
+            'This batch holds files of two instrument types. An Orbitrap\'s intensities are ' +
+            'heights and a TOF\'s areas, so each has batch peaks of its own, and the chart ' +
+            'draws one at a time.'
+          "
+        />
+      </div>
 
       <div
         v-if="ledger.list.length"
@@ -1414,6 +1451,11 @@ watch(
 /* Matches the sample ledger's strip (PaneBrowserAssignment.vue): the two sit in
    the same tab position, and a reader switching between a sample and its batch
    should recognize the same control. */
+.instrument-partition {
+  display: flex;
+  align-items: center;
+}
+
 .tier-strip {
   display: flex;
   flex-flow: row wrap;

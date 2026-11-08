@@ -1166,6 +1166,21 @@ and a tie stays with the formula. The untargeted search leaves these peaks alone
 run does. A batch ledger folded before the ledger learned this reads its reagent peaks
 as unassigned until its samples are folded again (*Rebuild batch ledger*).
 
+A batch that holds files of both instrument types keeps a ledger of each. An
+Orbitrap's intensities are peak heights and a TOF's are peak areas, so the two
+cannot share a trace: each instrument type's samples fold into batch peaks of their
+own, even at an m/z the other type also saw. The ledger then shows a picker above the
+tier chips, **Orbitrap** or **TOF**, and lists, counts and selects one type's batch
+peaks at a time; the batch chart draws only that type's selection. Switching type
+clears the other type's rows from the selection. The chart icon on a sample ledger row
+of the other type switches the ledger to that type and says so. A batch of one
+instrument type shows no picker. A batch folded before the ledger kept the two apart
+holds mixed batch peaks until *Rebuild batch ledger* folds its samples again, which
+separates them. This is the rule batch alignment keeps too: it
+refuses a batch of two instrument types, since one alignment has one intensity unit.
+The ledger route and the SDK's `batch_peaks.list` name each batch peak's type in
+`instrument_type` (`orbi` or `tof`).
+
 The *Verdict* column, last in the ledger, records and shows a
 [batch-level verdict](#batch-level-verdicts) on the species: one judgment that covers
 every sample in the batch without a verdict of its own.

@@ -78,7 +78,8 @@ function makeApp({
   workspace = WORKSPACE,
   samples = [{}],
   peaks = [],
-  verdicts = {}
+  verdicts = {},
+  ledger = {}
 } = {}) {
   return reactive({
     auth: { user: { role_id: 200, is_superuser: false } },
@@ -91,7 +92,13 @@ function makeApp({
         pending: false,
         error: null,
         selected: [],
-        load: vi.fn()
+        load: vi.fn(),
+        // One instrument type: no partition to choose, every row shown.
+        instrumentTypes: [],
+        instrumentType: null,
+        inPartition: () => true,
+        showInstrument: vi.fn(),
+        ...ledger
       },
       // Batch-level verdicts by anchor id; stale when the record's formula is
       // not the row's, as the real store decides.
@@ -193,7 +200,13 @@ const GLOBAL_STUBS = {
   Popover: PopoverStub,
   ToggleSwitch: ToggleSwitchStub,
   InputText: true,
-  Select: true
+  Select: true,
+  SelectButton: {
+    name: 'SelectButton',
+    props: ['modelValue', 'options'],
+    emits: ['update:modelValue'],
+    template: '<div class="select-button" />'
+  }
 }
 
 // Imported statically (vi.mock is hoisted above it, so the mocks still apply):
@@ -1636,5 +1649,56 @@ describe('PaneBrowserBatchPeaks engine tier', () => {
     await toggle('batch-engine-tier-view').trigger('click')
 
     expect(ids()).toHaveLength(4)
+  })
+})
+
+describe('PaneBrowserBatchPeaks on a batch of two instrument types', () => {
+  const ORBI = peak('bp-orbi', 'assigned', 0.9, {
+    instrument_type: 'orbi',
+    intensity_variable: 'sum_peak_heights'
+  })
+  const TOF = peak('bp-tof', 'candidate', 0.5, {
+    instrument_type: 'tof',
+    intensity_variable: 'sum_peak_areas'
+  })
+  // The store's partition, as the real one keeps it: a choice, and the rows in it.
+  const partitioned = () => ({
+    instrumentTypes: ['orbi', 'tof'],
+    instrumentType: 'orbi',
+    inPartition: (bp) => bp.instrument_type === app.data.batchPeak.instrumentType,
+    showInstrument: vi.fn((type) => {
+      app.data.batchPeak.instrumentType = type
+    })
+  })
+  const picker = () => wrapper.findComponent({ name: 'SelectButton' })
+  const rowIds = () => wrapper.vm.rows.map((row) => row.batch_peak_id)
+
+  it('offers no picker on a batch of one instrument type', async () => {
+    wrapper = await mountPane({ peaks: [ORBI] })
+    expect(picker().exists()).toBe(false)
+    expect(rowIds()).toEqual(['bp-orbi'])
+  })
+
+  it("lists, counts and names the unit of one instrument type's batch peaks at a time", async () => {
+    wrapper = await mountPane({ peaks: [ORBI, TOF], ledger: partitioned() })
+
+    expect(picker().props('options')).toEqual([
+      { label: 'Orbitrap', value: 'orbi' },
+      { label: 'TOF', value: 'tof' }
+    ])
+    expect(picker().props('modelValue')).toBe('orbi')
+    expect(rowIds()).toEqual(['bp-orbi'])
+    expect(wrapper.vm.tierChips.find((chip) => chip.key === 'assigned').count).toBe(1)
+    expect(wrapper.vm.tierChips.find((chip) => chip.key === 'candidate').count).toBe(0)
+    expect(wrapper.vm.breadcrumb.items[1].label).toBe('1 batch peaks')
+    // The other type's row is not an isotopologue folded out of sight.
+    expect(wrapper.vm.breadcrumb.items[1].tooltip).toBeUndefined()
+    expect(wrapper.vm.intensityTooltip).toMatch(/summed peak height/)
+
+    picker().vm.$emit('update:modelValue', 'tof')
+    await wrapper.vm.$nextTick()
+    expect(app.data.batchPeak.showInstrument).toHaveBeenCalledWith('tof')
+    expect(rowIds()).toEqual(['bp-tof'])
+    expect(wrapper.vm.intensityTooltip).toMatch(/summed peak area/)
   })
 })
