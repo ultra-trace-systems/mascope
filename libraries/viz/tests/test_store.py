@@ -531,6 +531,44 @@ def test_a_batch_whose_ledger_run_changed_is_refetched_alone(short, tmp_path):
     assert report.store.meta["batches"][batch_id]["reading"] == "mascope 0.5.0"
 
 
+def test_a_batch_curated_after_a_sync_is_refetched_alone(short, tmp_path):
+    # The curation rewrites the live ledger under the same current run and
+    # moves no batch stamp: only the ledger's own does
+    client, first = short
+    batch_id = client.batch_ids[1]
+    client.curate(batch_id, "C9H8O4", "C9H7O4-")
+
+    report = sync(client, SCOPE, root=tmp_path)
+    again = sync(client, SCOPE, root=tmp_path)
+
+    assert report.fetched == {batch_id: "ledger edited"}
+    assert {b for _, b in client.series_calls()} == {batch_id}
+    peaks = report.store.table("peak_series", batches=[batch_id])
+    curated = peaks[peaks["series_key"].astype(str).str.startswith("formula:C9H8O4|")]
+    assert set(curated["batch_peak_id"].astype(str)) == {f"{batch_id}-unassigned"}
+    species = report.store.table("species", batches=[batch_id])
+    assert "C9H8O4" in set(species["formula"])
+    stamp = report.store.meta["batches"][batch_id]["run"]
+    assert stamp["run_id"] == first.store.meta["batches"][batch_id]["run"]["run_id"]
+    assert stamp["ledger_utc_modified"] == client.edited[batch_id].isoformat()
+    assert again.fetched == {}
+
+
+def test_a_server_that_stamps_no_ledger_edit_leaves_the_batches_alone(
+    short_campaign, clock, pauses, tmp_path
+):
+    client = FakeClient(short_campaign)
+    client.edited.clear()
+
+    first = sync(client, SCOPE, root=tmp_path)
+    again = sync(client, SCOPE, root=tmp_path)
+
+    assert set(first.fetched.values()) == {"new"}
+    stamps = first.store.meta["batches"].values()
+    assert all(stamp["run"]["ledger_utc_modified"] is None for stamp in stamps)
+    assert again.fetched == {}
+
+
 def _batch_run(batch_id: str, name: str, status: str) -> dict[str, Any]:
     """A runs listing's row of a search run on *batch_id*, not current."""
     return {
