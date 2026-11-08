@@ -262,6 +262,67 @@ beforeEach(() => {
 })
 afterEach(() => vi.clearAllMocks())
 
+// The batch's co-variation reading, served on the detail read where the row
+// reads its peak as the batch did: shown on its own line, and never weighed.
+describe('PanePeakAssign co-variation', () => {
+  const ROW = {
+    peak_assignment_id: 'pa-cov',
+    sample_peak_id: 'p-cov',
+    sample_peak_mz: 200.12345,
+    sample_peak_intensity: 12345,
+    assigned_formula: 'C3H4O4',
+    tier: 'assigned',
+    role: 'M0',
+    fit_score: 0.9
+  }
+  const record = (verdict, r, extra = {}) => ({
+    formula: 'C3H4O4',
+    verdict,
+    r,
+    n_spectra: 412,
+    reason: null,
+    partner_channel: '[M+NO3]-',
+    partners: [{ channel: '[M+NO3]-', verdict, r, n_spectra: 412, reason: null }],
+    normalised: true,
+    ...extra
+  })
+  const line = (wrapper) => wrapper.find('[data-testid="co-variation"]')
+
+  it('says the channels co-vary across the batch, with r', async () => {
+    focusedAssignment = ROW
+    detailRecord = { provenance: {}, batch_co_variation: record('co_varying', 0.82) }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(line(wrapper).text()).toBe('Co-varies with [M+NO3]- across the batch, r 0.82')
+    expect(line(wrapper).classes()).toContain('co_varying')
+    expect(line(wrapper).attributes('data-tooltip')).toBe(
+      'Co-varies with its [M+NO3]- channel across the batch: r 0.82 over 412 spectra. ' +
+        "Log intensities, divided by each spectrum's reagent signal, with the batch's common " +
+        'mode taken out. Shown for reading only: no tier moves on it.'
+    )
+  })
+
+  it('says a pair that cannot be read so, with no r', async () => {
+    focusedAssignment = ROW
+    detailRecord = {
+      provenance: {},
+      batch_co_variation: record('untestable', null, { reason: 'flat' })
+    }
+    const wrapper = await mountPane()
+
+    expect(line(wrapper).text()).toBe('Co-variation with [M+NO3]- cannot be read')
+    expect(line(wrapper).classes()).toContain('untestable')
+  })
+
+  it('shows nothing where the batch read no co-variation for the row', async () => {
+    focusedAssignment = ROW
+    detailRecord = { provenance: {}, batch_co_variation: null }
+    const wrapper = await mountPane()
+
+    expect(line(wrapper).exists()).toBe(false)
+  })
+})
+
 describe('PanePeakAssign unassigned card', () => {
   it('names the peak on the fallback card, which has no assignment row at all', async () => {
     const wrapper = await mountPane()

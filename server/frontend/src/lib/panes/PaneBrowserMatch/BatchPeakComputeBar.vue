@@ -91,7 +91,12 @@ async function launchSearch() {
         size="small"
         severity="secondary"
         :loading="compute.searching"
-        :disabled="compute.blockedReason !== null || compute.computing || compute.detecting"
+        :disabled="
+          compute.blockedReason !== null ||
+          compute.computing ||
+          compute.detecting ||
+          compute.reading
+        "
         @click="searchVisible = true"
         :pt="
           app.ui.help.left(`
@@ -111,7 +116,7 @@ async function launchSearch() {
     </span>
     <!-- The batch's homologous series, walked from what the batch already
          assigns: no parameters of its own, so it launches straight away.
-         Held while the other two rewrite the ledger. -->
+         Held while the others rewrite or read the ledger. -->
     <span v-tooltip.left="compute.detectTooltip">
       <Button
         label="Detect series"
@@ -119,7 +124,12 @@ async function launchSearch() {
         size="small"
         severity="secondary"
         :loading="compute.detecting"
-        :disabled="compute.blockedReason !== null || compute.computing || compute.searching"
+        :disabled="
+          compute.blockedReason !== null ||
+          compute.computing ||
+          compute.searching ||
+          compute.reading
+        "
         @click="compute.detectSeries()"
         :pt="
           app.ui.help.left(`
@@ -134,6 +144,40 @@ async function launchSearch() {
             whose proposals beat those decoys are kept. A kept proposal is
             measured in every sample its batch peak is in, and the row says
             which series it belongs to. It writes no per-sample runs.
+            </p>
+          `)
+        "
+      />
+    </span>
+    <!-- The co-variation of the batch's channels: read off the ledger as it
+         stands, with no parameters, and display-only. Held while the others
+         rewrite the ledger. -->
+    <span v-tooltip.left="compute.readTooltip">
+      <Button
+        label="Read co-variation"
+        icon="pi ph ph-wave-sine"
+        size="small"
+        severity="secondary"
+        :loading="compute.reading"
+        :disabled="
+          compute.blockedReason !== null ||
+          compute.computing ||
+          compute.searching ||
+          compute.detecting
+        "
+        @click="compute.readCoVariation()"
+        :pt="
+          app.ui.help.left(`
+            <h1>Read Co-variation</h1>
+            <p>
+            For every compound the batch sees through two ionization channels
+            or more, reads how the channels' intensities follow each other
+            across the batch: in log intensity, divided by each spectrum's
+            reagent signal, with what all the batch's peaks share taken out.
+            Two channels whose correlation is 0.6 or more co-vary. A pair held
+            in fewer than ten spectra, or with a channel that hardly moves,
+            cannot be read. The reading shows in the Co-variation column and
+            in the peak inspector. It moves no tier.
             </p>
           `)
         "

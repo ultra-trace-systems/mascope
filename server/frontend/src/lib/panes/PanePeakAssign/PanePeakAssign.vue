@@ -21,6 +21,7 @@ import {
   listingTooltip
 } from '@/lib/referenceListings'
 import { holdsTierDown, reasonIcon, reasonTooltip, tierReasonsOf } from '@/lib/tierReasons'
+import { coVariationLabel, coVariationSummary, coVariationTooltip } from '@/lib/batchCoVariation'
 import { ROLE_BUCKETS, bucketRank } from '@/lib/tiers'
 import { EVIDENCE_LEVELS, VERDICT_META } from '@/lib/verification'
 import { useBatchPeakCuration } from './stores/batchPeakCuration.js'
@@ -499,6 +500,17 @@ const corroborationTooltip = computed(() => {
     'independent evidence for the formula.' +
     click
   )
+})
+
+// --- The batch's co-variation reading ------------------------------------------
+// What a "Read co-variation" run of the batch says of the batch peak this row's
+// peak is in: how its trace follows the same compound through the mode's other
+// channels. The detail read serves it only where the row reads the peak as the
+// batch did, so it is about this reading; display-only, as the line says.
+const batchCoVariation = computed(() => focusedDetail.value?.batch_co_variation ?? null)
+const batchCoVariationR = computed(() => {
+  const record = batchCoVariation.value
+  return record && record.r != null ? coVariationLabel(record) : ''
 })
 
 // --- The other channels' peaks ------------------------------------------------
@@ -1447,6 +1459,24 @@ const demotedCount = computed(() => {
         <span class="pi ph ph-link-simple" />
         {{ corroborationLabel }}
       </div>
+      <!-- The batch's reading of how this compound's channels follow each
+           other across the batch: shown, never weighed. -->
+      <div
+        v-if="batchCoVariation"
+        class="co-variation"
+        :class="batchCoVariation.verdict"
+        data-testid="co-variation"
+        v-tooltip.top="coVariationTooltip(batchCoVariation)"
+      >
+        <span class="pi ph ph-wave-sine" />
+        <!-- One text run, so the r wraps with the sentence it ends. -->
+        <span
+          >{{ coVariationSummary(batchCoVariation)
+          }}<span v-if="batchCoVariationR" class="co-variation-r"
+            >, {{ batchCoVariationR }}</span
+          ></span
+        >
+      </div>
       <Popover ref="channelsMenu" aria-label="The other channels' peaks">
         <div class="other-readings">
           <div class="alts-label">The same neutral, through the other channels</div>
@@ -2348,6 +2378,29 @@ const demotedCount = computed(() => {
    here" idiom the placeholder values use, and cost contrast the pill needs. */
 .corroboration.inherited {
   border-style: dashed;
+}
+/* The batch's co-variation reading: a plain line, not a badge, as it is shown
+   and never weighed. A pair that does not co-vary, or cannot be read, is
+   muted rather than coloured: it demotes nothing. */
+.co-variation {
+  align-self: start;
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  font-size: 0.74rem;
+  cursor: default;
+}
+.co-variation .pi {
+  flex: none;
+  font-size: 0.8rem;
+}
+.co-variation.not_co_varying,
+.co-variation.untestable {
+  opacity: 0.7;
+}
+.co-variation-r {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  white-space: nowrap;
 }
 /* Where the ledger holds the other channels' rows the badge opens them. */
 .corroboration.opens {

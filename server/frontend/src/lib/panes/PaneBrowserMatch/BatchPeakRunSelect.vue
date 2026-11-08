@@ -25,7 +25,8 @@ const ACTION_LABELS = {
   rebuild: 'Rebuild',
   search_untargeted: 'Untargeted search',
   import: 'Import',
-  detect_series: 'Series detection'
+  detect_series: 'Series detection',
+  read_co_variation: 'Co-variation reading'
 }
 const IN_FLIGHT_STATUSES = ['running']
 

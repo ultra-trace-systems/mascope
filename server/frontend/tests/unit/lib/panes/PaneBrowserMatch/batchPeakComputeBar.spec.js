@@ -355,7 +355,8 @@ describe('BatchPeakComputeBar untargeted search', () => {
     expect(buttons.map((b) => b.text())).toEqual([
       'Rebuild batch ledger',
       'Search untargeted',
-      'Detect series'
+      'Detect series',
+      'Read co-variation'
     ])
     expect(buttons[1].attributes('disabled')).toBeUndefined()
   })
@@ -495,5 +496,102 @@ describe('BatchPeakComputeBar series detection', () => {
     await compute.detectSeries()
     compute.reset()
     expect(compute.detecting).toBe(false)
+  })
+})
+
+describe('BatchPeakComputeBar co-variation reading', () => {
+  const readButton = () =>
+    wrapper.findAll('.compute-button').find((b) => b.text() === 'Read co-variation')
+  const button = (label) => wrapper.findAll('.compute-button').find((b) => b.text() === label)
+  const notifyRead = (payload) =>
+    (notificationHandlers['read_batch_co_variation'] ?? []).forEach((cb) => cb(payload))
+
+  it('offers the reading under the same gate, and says it moves no tier', () => {
+    mountBar()
+    expect(readButton().attributes('disabled')).toBeUndefined()
+    expect(compute.readTooltip).toMatch(/^Read how the channels of every compound/)
+    expect(compute.readTooltip).toMatch(/Moves no tier\.$/)
+  })
+
+  it('disables it with the compute when no batch is focused, and says why', () => {
+    mountBar({ batch: null })
+    expect(readButton().attributes('disabled')).toBeDefined()
+    expect(compute.readTooltip).toBe(compute.blockedReason)
+  })
+
+  it('holds it while the ledger is rewritten, and the rewrites while it reads', async () => {
+    mountBar()
+    for (const busy of ['computing', 'searching', 'detecting']) {
+      compute[busy] = true
+      await wrapper.vm.$nextTick()
+      expect(readButton().attributes('disabled')).toBeDefined()
+      compute[busy] = false
+    }
+    compute.reading = true
+    await wrapper.vm.$nextTick()
+    expect(button('Search untargeted').attributes('disabled')).toBeDefined()
+    expect(button('Detect series').attributes('disabled')).toBeDefined()
+  })
+
+  it('launches straight from the button and waits for its own task', async () => {
+    mountBar()
+    post.mockResolvedValueOnce(ack('proc-r'))
+    await readButton().trigger('click')
+    await Promise.resolve()
+    expect(post).toHaveBeenCalledWith(
+      '/batch-peaks/batch/b-1/read-co-variation',
+      {},
+      expect.objectContaining({ type: 'read_batch_co_variation', errors: 'inline' })
+    )
+    expect(compute.reading).toBe(true)
+    expect(readButton().attributes('data-loading')).toBe('true')
+    notifyRead({ status: 'pending', process_id: 'proc-r' })
+    notifyRead({ status: 'success', process_id: 'someone-else' })
+    expect(compute.reading).toBe(true)
+    notifyRead({ status: 'partial', process_id: 'proc-r' })
+    expect(compute.reading).toBe(false)
+  })
+
+  it('does not launch twice, nor while blocked', async () => {
+    mountBar()
+    post.mockReturnValueOnce(new Promise(() => {}))
+    compute.readCoVariation()
+    await compute.readCoVariation()
+    expect(post).toHaveBeenCalledTimes(1)
+    mountBar({ samples: [] })
+    post.mockClear()
+    await compute.readCoVariation()
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('gives up after the timeout', async () => {
+    mountBar()
+    await compute.readCoVariation()
+    expect(compute.reading).toBe(true)
+    vi.advanceTimersByTime(5 * 60 * 1000)
+    expect(compute.reading).toBe(false)
+  })
+
+  it('resets the button and records a refusal', async () => {
+    mountBar()
+    post.mockRejectedValueOnce(apiError(409, 'A batch run is still rewriting this ledger'))
+    await compute.readCoVariation()
+    expect(compute.reading).toBe(false)
+    expect(compute.launchRefused).toBe(true)
+    expect(compute.launchError).toBe('A batch run is still rewriting this ledger')
+  })
+
+  it('falls back to its own message when the server gives none', async () => {
+    mountBar()
+    post.mockRejectedValueOnce({ response: { status: 500, data: {} } })
+    await compute.readCoVariation()
+    expect(compute.launchError).toBe('Could not start the co-variation reading.')
+  })
+
+  it('ends with the rest when the batch changes', async () => {
+    mountBar()
+    await compute.readCoVariation()
+    compute.reset()
+    expect(compute.reading).toBe(false)
   })
 })
