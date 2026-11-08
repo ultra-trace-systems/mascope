@@ -40,6 +40,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     AnchorSet,
     Consensus,
     candidate_index,
+    co_variation_record_of,
     compute_consensus,
     fold_in_sample,
     manual_pin_of,
@@ -579,6 +580,7 @@ async def _recompute_consensus_chunk(
                 batch_peak_id=bp.batch_peak_id,
                 manual=manual_pin_of(bp),
                 series=series_record_of(bp),
+                co_variation=co_variation_record_of(bp),
             ),
             now,
         )

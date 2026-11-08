@@ -147,12 +147,20 @@ class BatchPeaksResource(BaseResource):
                  ``name``, ``source``, ``tags``, ``total``; null otherwise),
                  ``engine_tier`` and ``engine_claim`` (what an importing
                  engine said of the consensus identity; null on every batch
-                 peak no import gave a verdict for), and ``series`` (the
+                 peak no import gave a verdict for), ``series`` (the
                  homologous series a *Detect series* run found for the
                  consensus formula: ``unit``, ``step``, ``depth``,
                  ``root_formula`` and ``root_batch_peak_id`` of the assigned
                  batch peak it starts at, ``units``, ``has_anchor``; null
-                 where none, and absent from a server that predates it).
+                 where none, and absent from a server that predates it), and
+                 ``co_variation`` (how the batch peak's trace follows the same
+                 neutral's other channels, as a *Read co-variation* run read
+                 it: the strongest partner's ``verdict`` - ``co_varying``,
+                 ``not_co_varying`` or ``untestable`` - with ``r``,
+                 ``n_spectra``, ``reason`` and ``partner_batch_peak_id``, and
+                 every partner under ``partners``; display-only, no tier reads
+                 it; null where none was read for the consensus, and absent
+                 from a server that predates it).
                  ``consensus_tier`` is always this server's: the engine's tier
                  stands beside it.
                  None when the batch has no ledger yet.

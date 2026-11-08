@@ -563,6 +563,80 @@ def standing_series_record(anchor: Any) -> Optional[dict]:
     return record
 
 
+#: The anchor's provenance key the batch's co-variation reading
+#: (``batch_coherence.py``) writes its record under: how the trace of the
+#: anchor's reading follows the traces of the same neutral through the
+#: mode's other channels, the partner that reads strongest first.
+CO_VARIATION_KEY = "co_variation"
+
+
+def co_variation_record_of(anchor: Any) -> Optional[dict]:
+    """The co-variation record an anchor carries under
+    ``provenance.co_variation``, or None.
+
+    A record names a formula; anything else under that key is not one.
+    """
+    provenance = _member(anchor, "provenance")
+    if not isinstance(provenance, dict):
+        return None
+    record = provenance.get(CO_VARIATION_KEY)
+    if isinstance(record, dict) and record.get("formula"):
+        return record
+    return None
+
+
+def _reads(record: dict, formula: Any, mechanism_id: Any) -> bool:
+    """Whether a record was read for this formula through this mechanism."""
+    return (
+        bool(formula)
+        and record.get("formula") == formula
+        and record.get("ionization_mechanism_id") == mechanism_id
+    )
+
+
+def standing_co_variation_record(anchor: Any) -> Optional[dict]:
+    """The co-variation record an anchor carries, where it was read for the
+    anchor's consensus formula and mechanism; None otherwise.
+
+    The consensus keeps a record only while it names that reading
+    (:func:`compute_consensus`); what a reader serves - the ledger, a run's
+    snapshot, a sample's row - is this, so a record never stands beside a
+    reading it was not read for.
+    """
+    record = co_variation_record_of(anchor)
+    if record is None or not _reads(
+        record,
+        _member(anchor, "consensus_formula"),
+        _member(anchor, "ionization_mechanism_id"),
+    ):
+        return None
+    return record
+
+
+def row_co_variation(row: dict, anchor: Any) -> Optional[dict]:
+    """The co-variation record of the anchor a sample's row sits in, where the
+    row reads what the record was read for; None otherwise.
+
+    The record is the batch's reading of the anchor's formula through its
+    mechanism (:func:`standing_co_variation_record`). A monoisotopic row that
+    reads its peak so is that reading in one sample, and the inspector shows
+    the batch's record beside it; a row that reads the peak another way, or
+    an isotope line, is not what was read.
+
+    :param row: The sample's row, with ``role``, ``assigned_formula`` and
+        ``ionization_mechanism_id``.
+    :param anchor: The anchor its peak sits in, or None.
+    """
+    if anchor is None or row.get("role") != ROLE_M0:
+        return None
+    record = standing_co_variation_record(anchor)
+    if record is None or not _reads(
+        record, row.get("assigned_formula"), row.get("ionization_mechanism_id")
+    ):
+        return None
+    return record
+
+
 def member_state(member: Any) -> dict:
     """What a member reads - the fields a curation may overwrite and a release
     puts back. ``tier`` and ``role`` stay as the codes the row stores."""
@@ -648,21 +722,27 @@ def compute_consensus(
     batch_peak_id: Optional[str] = None,
     manual: Optional[dict] = None,
     series: Optional[dict] = None,
+    co_variation: Optional[dict] = None,
 ) -> Consensus:
-    """:func:`vote_consensus`, with the anchor's series record carried along.
+    """:func:`vote_consensus`, with the anchor's series and co-variation
+    records carried along.
 
-    The record says a homologous series proposed a formula for this anchor. It
-    is about that formula and not about the peak, so it stays in the
+    The series record says a homologous series proposed a formula for this
+    anchor. It is about that formula and not about the peak, so it stays in the
     consensus's provenance for as long as the consensus names the formula, and
     comes off when a new sample's vote, a curation or a re-fold moves the
     anchor to another reading: a series never vouches for a formula it did not
-    propose.
+    propose. The co-variation record is about the anchor's reading - its
+    formula through its mechanism, read against the neutral's other channels -
+    and stays for as long as the consensus names both.
 
     :param members: The batch peak's occurrences.
     :param batch_peak_id: This batch peak's own id.
     :param manual: A manual curation pinned on the anchor.
     :param series: The series record the anchor carries
         (:func:`series_record_of`), or None.
+    :param co_variation: The co-variation record the anchor carries
+        (:func:`co_variation_record_of`), or None.
     """
     consensus = vote_consensus(members, batch_peak_id=batch_peak_id, manual=manual)
     if (
@@ -671,6 +751,10 @@ def compute_consensus(
         and series.get("formula") == consensus.consensus_formula
     ):
         consensus.provenance[SERIES_KEY] = series
+    if isinstance(co_variation, dict) and _reads(
+        co_variation, consensus.consensus_formula, consensus.ionization_mechanism_id
+    ):
+        consensus.provenance[CO_VARIATION_KEY] = co_variation
     return consensus
 
 

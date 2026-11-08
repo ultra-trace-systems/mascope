@@ -238,6 +238,14 @@ class PeakAssignmentDetailRecord(PeakAssignmentRecord):
     #: How many records name ``assigned_formula``, the ones past the cap of
     #: ``known_compounds`` included; 0 where none does.
     known_compounds_total: int | None = None
+    #: What the batch's co-variation reading (``batch_coherence``) says of the
+    #: batch peak this row's peak sits in, read when the row is read: how its
+    #: trace follows the same neutral's other channels across the batch - the
+    #: strongest partner's ``verdict``, ``r``, ``n_spectra`` and ``reason``,
+    #: and every partner under ``partners``. None where the batch peak carries
+    #: no reading, or one read for another formula or mechanism than the row's,
+    #: and on an isotope line. Display-only: no tier reads it.
+    batch_co_variation: dict | None = None
 
 
 class PeakAssignmentsResponse(BaseModel):
@@ -1206,7 +1214,8 @@ class BatchPeakRunRecord(BaseModel):
 
     batch_peak_run_id: str
     sample_batch_id: str
-    #: fold | rebuild | search_untargeted | import | detect_series
+    #: fold | rebuild | search_untargeted | import | detect_series |
+    #: read_co_variation
     action: str
     engine: str
     engine_version: str

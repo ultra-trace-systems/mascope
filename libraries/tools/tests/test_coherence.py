@@ -266,6 +266,12 @@ class TestTheResiduals:
         assert residuals.persistent == 7
         assert residuals.common_mode_traces[:12].tolist() == [7] * 12
 
+    def test_a_trace_with_no_value_is_never_persistent(self):
+        traces, _, _ = common_batch(n_background=5)
+        traces["empty"] = {}
+        residuals = batch_residuals(traces, persistent_share=0.0)
+        assert residuals.persistent == 5
+
     def test_a_spectrum_with_too_few_traces_has_no_common_mode(self):
         traces, _, _ = common_batch(n_background=5)
         traces["bg0"].pop(SAMPLES[3])

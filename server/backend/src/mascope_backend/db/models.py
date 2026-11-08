@@ -3521,8 +3521,8 @@ class BatchPeakRun(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "action IN "
-            "('fold', 'rebuild', 'search_untargeted', 'import', 'detect_series')",
+            "action IN ('fold', 'rebuild', 'search_untargeted', 'import', "
+            "'detect_series', 'read_co_variation')",
             name="action_valid",
         ),
         CheckConstraint(
@@ -3570,6 +3570,9 @@ class BatchPeakRunAnchor(Base):
     # The homologous series the anchor was in as the run left it
     # (``batch_peaks.series_record_of``), NULL for none.
     series: Mapped[Optional[dict]] = mapped_column(JSON)
+    # The batch's co-variation reading of the anchor's channels as the run
+    # left it (``batch_peaks.standing_co_variation_record``), NULL for none.
+    co_variation: Mapped[Optional[dict]] = mapped_column(JSON)
     candidates: Mapped[Optional[list]] = mapped_column(JSON)
     members: Mapped[Optional[dict]] = mapped_column(JSON)
 
