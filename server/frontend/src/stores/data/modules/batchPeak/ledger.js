@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import { INSTRUMENT_TYPE_LABELS, MAX_SELECTED_BATCH_PEAKS } from '@/lib/batchChart'
 
@@ -81,21 +81,30 @@ export const useBatchPeakLedger = defineStore('app.data.batchPeak', () => {
   const instrumentChoice = ref(null)
   /**
    * The partition shown, or null when the batch has only one: the user's
-   * choice, else the selection's, else the first the batch holds. A batch of
-   * two holds both types, so any choice made is one it has. The selection's
-   * comes before the first so that a batch going from one type to two - a
-   * sample of the other type folding in - keeps showing what was selected
-   * rather than hiding it from the chart.
+   * choice, else the first the batch holds. A batch of two holds both types,
+   * so any choice made is one it has.
    */
   const instrumentType = computed(() => {
     const types = instrumentTypes.value
     if (types.length < 2) return null
-    if (instrumentChoice.value) return instrumentChoice.value
-    const selectedType = data.selected.value.find((bp) =>
-      types.includes(bp?.instrument_type)
-    )?.instrument_type
-    return selectedType ?? types[0]
+    return instrumentChoice.value ?? types[0]
   })
+  // A batch going from one type to two - a sample of the other type folding
+  // in - keeps showing what was selected rather than hiding it from the chart.
+  // The selection's type is taken once, as the second type arrives, and held
+  // as the choice: read on every change instead, unticking the last row of it
+  // would switch the whole ledger to the other type.
+  watch(
+    instrumentTypes,
+    (types, previous) => {
+      if (types.length < 2 || (previous?.length ?? 0) >= 2 || instrumentChoice.value) return
+      const selectedType = data.selected.value.find((bp) =>
+        types.includes(bp?.instrument_type)
+      )?.instrument_type
+      if (selectedType) instrumentChoice.value = selectedType
+    },
+    { flush: 'sync' }
+  )
   /** Whether a batch peak is in the partition shown. */
   const inPartition = (bp) =>
     instrumentType.value == null || bp?.instrument_type === instrumentType.value

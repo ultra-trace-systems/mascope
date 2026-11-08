@@ -97,5 +97,53 @@ describe('batchPeak ledger store: the instrument partition', () => {
     expect(store.selectedIds).toEqual(['bp-t'])
     expect(store.instrumentType).toBe('tof')
     expect(store.selected.every(store.inPartition)).toBe(true)
+
+    // The type was taken from the selection once: unticking its last row, or
+    // clearing the selection, keeps the ledger on it.
+    store.unselect({ batch_peak_id: 'bp-t' })
+    expect(store.selectedIds).toEqual([])
+    expect(store.instrumentType).toBe('tof')
+    store.select({ batch_peak_id: 'bp-t2' })
+    store.unfocus()
+    expect(store.instrumentType).toBe('tof')
+  })
+
+  it('shows Orbitrap first when a batch gains a second type with nothing selected', async () => {
+    get.mockResolvedValue([row('bp-t', 'tof')])
+    const store = useBatchPeakLedger()
+    await store.load('test')
+    // A row ticked and unticked while the batch held one type leaves no trace.
+    store.select({ batch_peak_id: 'bp-t' })
+    get.mockResolvedValue([row('bp-t', 'tof'), row('bp-t2', 'tof')])
+    await store.load('test')
+    store.unselect({ batch_peak_id: 'bp-t' })
+    get.mockResolvedValue([row('bp-t', 'tof'), row('bp-t2', 'tof'), row('bp-o', 'orbi')])
+    await store.load('test')
+    expect(store.instrumentType).toBe('orbi')
+    // A row ticked later does not move the ledger off the type shown.
+    store.select({ batch_peak_id: 'bp-t' })
+    expect(store.instrumentType).toBe('orbi')
+    // Nor does a reload of a batch that already held both.
+    get.mockResolvedValue([
+      row('bp-t', 'tof'),
+      row('bp-t2', 'tof'),
+      row('bp-o', 'orbi'),
+      row('bp-o2', 'orbi')
+    ])
+    await store.load('test')
+    expect(store.instrumentType).toBe('orbi')
+  })
+
+  it("keeps the user's choice over the selection when the second type returns", async () => {
+    get.mockResolvedValue([row('bp-t', 'tof'), row('bp-o', 'orbi')])
+    const store = useBatchPeakLedger()
+    await store.load('test')
+    store.showInstrument('orbi')
+    get.mockResolvedValue([row('bp-t', 'tof')])
+    await store.load('test')
+    store.select({ batch_peak_id: 'bp-t' })
+    get.mockResolvedValue([row('bp-t', 'tof'), row('bp-o', 'orbi')])
+    await store.load('test')
+    expect(store.instrumentType).toBe('orbi')
   })
 })
