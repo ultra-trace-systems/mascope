@@ -81,6 +81,9 @@ def _stream(
     """
     Run the builder, showing its log as it goes, and keep its outcome.
 
+    The log is shown on stderr, as this process's own is, so the command's
+    stdout holds only its summary.
+
     :param command: The builder's command line.
     :param env: Its environment; this process's when None.
     :return: Its exit status, and its outcome (None if it printed none).
@@ -100,8 +103,8 @@ def _stream(
             if found is not None:
                 outcome = found
             else:
-                sys.stdout.write(line)
-                sys.stdout.flush()
+                sys.stderr.write(line)
+                sys.stderr.flush()
     return process.returncode, outcome
 
 

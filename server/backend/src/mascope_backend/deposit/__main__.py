@@ -13,8 +13,8 @@ archive out of and then removes. A build that does not finish removes it
 itself, also when it is interrupted (SIGINT), so two runs share no path and
 neither leaves a directory behind.
 
-The outcome is the last line printed on stdout, which a release before
-this one shared with the logger: one JSON object, ``{"package": {...}}`` with what ``build_package`` reports, or
+The outcome is the last line printed on stdout: one JSON object,
+``{"package": {...}}`` with what ``build_package`` reports, or
 ``{"error": "..."}`` with the exit status 1.
 """
 

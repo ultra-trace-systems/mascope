@@ -1332,10 +1332,9 @@ async def run() -> None:
     report = await run_audit(config)
     if config.as_json:
         # After the report: the log is written from a queue, and the
-        # document is to be the last line. On a line of its own, since the
-        # log's last record leaves its colour reset at the start of the next.
+        # document is to be the last line.
         await runtime.logger.complete()
-        sys.stdout.write("\n" + json.dumps(report, default=str) + "\n")
+        sys.stdout.write(json.dumps(report, default=str) + "\n")
         sys.stdout.flush()
 
 
