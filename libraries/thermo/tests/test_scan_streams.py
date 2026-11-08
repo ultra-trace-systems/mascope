@@ -1276,7 +1276,7 @@ def test_no_top_peaks_are_read_when_none_are_asked_for():
 
 def test_the_module_prints_the_report_as_its_last_line():
     """``mascope file scans`` runs this in the backend container and reads the
-    last line of stdout, where the runtime's own log lines also go."""
+    last line of stdout, where an older release's runtime also logs."""
     result = subprocess.run(
         [
             sys.executable,

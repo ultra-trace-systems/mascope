@@ -509,8 +509,8 @@ _INTERRUPTED_BUILD = textwrap.dedent(
     async def build(dataset_id, output):
         with open(os.path.join(output, "p.zip.part"), "w") as part:
             part.write("half an archive")
-        sys.stderr.write("writing\\n")
-        sys.stderr.flush()
+        sys.stdout.write("writing\\n")
+        sys.stdout.flush()
         await asyncio.sleep(60)
 
     deposit_main._build = build
@@ -521,20 +521,23 @@ _INTERRUPTED_BUILD = textwrap.dedent(
 
 def test_an_interrupted_run_removes_its_directory(tmp_path):
     """What the operator command sends a container build it was interrupted
-    in: ``docker exec`` passes no signal on, so ``pkill -INT`` does."""
+    in: ``docker exec`` passes no signal on, so ``pkill -INT`` does.
+
+    The build says it is writing on stdout, which the logger, writing to
+    stderr, leaves to it."""
     with subprocess.Popen(
         [sys.executable, "-c", _INTERRUPTED_BUILD, str(tmp_path)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
         text=True,
     ) as builder:
-        for line in builder.stderr:
+        for line in builder.stdout:
             if line.strip() == "writing":
                 break
         run = tmp_path / "temp" / "packages" / "export-1a"
         assert (run / "p.zip.part").is_file()
         builder.send_signal(signal.SIGINT)
-        builder.stderr.read()
+        builder.stdout.read()
         assert builder.wait(timeout=30) != 0
     assert not run.exists()
 

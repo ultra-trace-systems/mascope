@@ -63,8 +63,8 @@ _COLOUR = re.compile(r"\x1b\[[0-9;]*m")
 class _ApplyElsewhere:
     """The apply, run in a process of its own, and what it says.
 
-    The backend logs to stdout as well, and colours it, so a line is read
-    without its colour codes.
+    The backend logs to stderr, merged into the same pipe, and colours it,
+    so a line is read without its colour codes.
     """
 
     def __init__(self, filestore: str):

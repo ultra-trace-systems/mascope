@@ -535,9 +535,10 @@ def _top_peaks(backend: ReaderBackend, scan_numbers: list[int], top: int) -> lis
 def main(argv: list[str] | None = None) -> int:
     """``python -m mascope_thermo.streams PATH``: print the report as JSON.
 
-    The runtime logs to stdout too, and a caller reads the report from
-    stdout, so logging is shut down before the file is opened. Anything
-    logged earlier is flushed first, and the report is the last line.
+    A caller reads the report from stdout. The runtime logs to stderr, but
+    logged to stdout in releases before it, so logging is still shut down
+    before the file is opened. Anything logged earlier is flushed first,
+    and the report is the last line.
     ``mascope file scans`` runs this inside the backend container when the
     operator CLI has no reader of its own.
     """
