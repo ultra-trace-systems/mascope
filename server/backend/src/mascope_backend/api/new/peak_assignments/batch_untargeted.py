@@ -61,6 +61,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     complete_run,
     fail_run,
     start_run,
+    touch_ledger,
 )
 from mascope_backend.api.new.peak_assignments.config import (
     MAX_UNTARGETED_PEAKS_CEILING,
@@ -735,6 +736,7 @@ async def _apply_search_rows(
             member.owner_batch_peak_id = reading.owner_batch_peak_id
             member.p_correct = None  # the untargeted stage is uncalibrated
             written += 1
+        await touch_ledger(session, sample_batch_id)
         await session.commit()
     return written
 
@@ -872,6 +874,7 @@ async def _propagate_to_sample(
             member.owner_batch_peak_id = annotation.owner_batch_peak_id
             member.p_correct = None
             assigned += 1
+        await touch_ledger(session, sample_batch_id)
         await session.commit()
     return assigned
 

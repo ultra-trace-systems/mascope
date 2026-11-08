@@ -71,6 +71,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     _acquire_batch_fold_lock,
     recompute_batch_consensus,
 )
+from mascope_backend.api.new.peak_assignments.batch_runs import touch_ledger
 from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     Annotation,
     _propagate_to_sample,
@@ -423,6 +424,7 @@ async def _pin(
             .scalars()
             .all()
         )
+        await touch_ledger(session, sample_batch_id)
         await session.commit()
     return pin, list(samples)
 
@@ -442,6 +444,7 @@ async def _archive_displaced(
         provenance = dict(anchor.provenance)
         provenance["manual"] = {**pin, "displaced_members": displaced}
         anchor.provenance = provenance
+        await touch_ledger(session, sample_batch_id)
         await session.commit()
 
 
@@ -618,6 +621,7 @@ async def release_batch_peak_curation(sample_batch_id: str, batch_peak_id: str) 
         anchor.provenance = provenance
         anchor.batch_peak_utc_modified = dt.now(timezone.utc)
         formula = pin.get("formula")
+        await touch_ledger(session, sample_batch_id)
         await session.commit()
     await recompute_batch_consensus(sample_batch_id, {batch_peak_id})
     return {

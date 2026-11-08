@@ -483,7 +483,10 @@ class BatchPeaksResource(BaseResource):
         :return: A DataFrame with one row per run: ``batch_peak_run_id``,
                  ``action``, ``engine``, ``engine_version``, ``status``,
                  ``current``, ``config``, ``summary``, ``error`` and the
-                 timestamps. None when the batch has no ledger yet.
+                 timestamps, among them ``ledger_utc_modified``: when the
+                 live ledger was last written while that run was current (a
+                 fold, a curation, a search's rows), null on a server that
+                 predates it. None when the batch has no ledger yet.
         :rtype: pd.DataFrame | None
         """
         data = self._get(f"batch-peaks/batch/{sample_batch_id}/runs")

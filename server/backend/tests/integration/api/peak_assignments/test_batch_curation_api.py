@@ -7,6 +7,10 @@ the dissenting sample (the seeded scorer stubbed to reach its peak), the anchor
 claims it, and a release puts everything back. An identity that is an isotope
 line of an ion whose monoisotopic line is another batch peak is refused, with
 that batch peak named. See ``batch_curation.py``.
+
+Each write to the live ledger, the curation's steps among them, moves the
+current run's ``ledger_utc_modified``: the stamp a client's copy of the ledger
+is compared by, since none of these writes makes a run.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -15,9 +19,10 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from mascope_backend.api.new.peak_assignments import (
+    batch_curation,
     batch_peaks_routes,
     batch_untargeted,
 )
@@ -26,24 +31,46 @@ from mascope_backend.api.new.peak_assignments.batch_curation import (
     NOT_CURATED_CODE,
     UNKNOWN_CANDIDATE_CODE,
     IsotopeLineException,
+    _archive_displaced,
+    _pin,
     curation_outcome,
+    release_batch_peak_curation,
     run_batch_peak_curation,
+)
+from mascope_backend.api.new.peak_assignments.batch_import import (
+    write_engine_verdicts,
 )
 from mascope_backend.api.new.peak_assignments.batch_peak_verification import (
     CLAIM_CHANGED_CODE,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     manual_pin_of,
+    member_state,
     resolve_candidate,
     tier_name,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    clear_engine_verdicts,
     fold_sample_into_batch_peaks,
+    recompute_batch_consensus,
+)
+from mascope_backend.api.new.peak_assignments.batch_runs import (
+    ACTION_SEARCH,
+    complete_run,
+    start_run,
+)
+from mascope_backend.api.new.peak_assignments.batch_series import _write_records
+from mascope_backend.api.new.peak_assignments.batch_untargeted import (
+    Annotation,
+    Reading,
+    _apply_search_rows,
+    _propagate_to_sample,
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
+    BatchPeakRun,
     IonizationMechanism,
     IonizationMode,
     PeakAssignment,
@@ -764,3 +791,163 @@ async def test_a_batch_peak_of_another_instrument_type_is_not_the_lines_parent(
     )
     assert refused.status_code == 422, refused.text
     assert f"('{m0.batch_peak_id}')" in refused.text
+
+
+# --- the ledger stamp: every write to the live ledger moves it -------------------
+
+#: Older than any write a test makes, so a stamp past it is one the write moved.
+_LONG_AGO = datetime(2000, 1, 1, tzinfo=timezone.utc)
+
+
+async def _set_stamp(session_factory, batch_id, when=_LONG_AGO):
+    async with session_factory() as session:
+        await session.execute(
+            update(BatchPeakRun)
+            .where(BatchPeakRun.sample_batch_id == batch_id)
+            .values(ledger_utc_modified=when)
+        )
+        await session.commit()
+
+
+async def _stamps(session_factory, batch_id):
+    """Each run's stamp, by whether it is the current run."""
+    async with session_factory() as session:
+        runs = (
+            await session.execute(
+                select(BatchPeakRun.is_current, BatchPeakRun.ledger_utc_modified).where(
+                    BatchPeakRun.sample_batch_id == batch_id
+                )
+            )
+        ).all()
+    return {bool(current): stamp for current, stamp in runs}
+
+
+async def _moved(session_factory, batch_id):
+    stamp = (await _stamps(session_factory, batch_id))[True]
+    return stamp is not None and stamp > _LONG_AGO
+
+
+async def test_the_runs_listing_serves_the_stamp_the_first_fold_set(
+    async_session_factory, guest_client, anchor
+):
+    response = await guest_client.get(
+        f"/api/batch-peaks/batch/{anchor['batch_id']}/runs"
+    )
+    assert response.status_code == 200, response.text
+    [run] = response.json()["data"]
+    stamp = (await _stamps(async_session_factory, anchor["batch_id"]))[True]
+    assert stamp is not None
+    assert datetime.fromisoformat(run["ledger_utc_modified"]) == stamp
+
+
+async def test_a_sample_folded_again_moves_the_stamp(async_session_factory, anchor):
+    await _set_stamp(async_session_factory, anchor["batch_id"])
+    assert await fold_sample_into_batch_peaks(anchor["s1"]) == anchor["batch_id"]
+    assert await _moved(async_session_factory, anchor["batch_id"])
+
+
+async def test_a_deferred_consensus_recompute_moves_the_stamp(
+    async_session_factory, anchor
+):
+    await _set_stamp(async_session_factory, anchor["batch_id"])
+    await recompute_batch_consensus(anchor["batch_id"], {anchor["batch_peak_id"]})
+    assert await _moved(async_session_factory, anchor["batch_id"])
+
+
+@pytest.mark.parametrize("writer", ["clear", "import"])
+async def test_an_engines_verdicts_cleared_or_written_move_the_stamp(
+    async_session_factory, anchor, writer
+):
+    await _set_stamp(async_session_factory, anchor["batch_id"])
+    if writer == "clear":
+        await clear_engine_verdicts(anchor["batch_id"])
+    else:
+        await write_engine_verdicts(anchor["batch_id"], {})
+    assert await _moved(async_session_factory, anchor["batch_id"])
+
+
+async def test_each_step_of_a_curation_moves_the_stamp(
+    async_session_factory, anchor, stubbed_scorer, monkeypatch
+):
+    """The pin, the archive of what the members read, and the release, each in
+    a transaction of its own; the release's recompute is left out, so the
+    release's own write is the one seen."""
+    batch_id, batch_peak_id = anchor["batch_id"], anchor["batch_peak_id"]
+    await _set_stamp(async_session_factory, batch_id)
+    await _pin(batch_id, batch_peak_id, anchor["other"], "C6H12O6", None)
+    assert await _moved(async_session_factory, batch_id)
+
+    members = await _members(async_session_factory, batch_peak_id)
+    await _set_stamp(async_session_factory, batch_id)
+    await _archive_displaced(
+        batch_id, batch_peak_id, [member_state(members[anchor["s1"]])]
+    )
+    assert await _moved(async_session_factory, batch_id)
+
+    async def no_recompute(sample_batch_id, batch_peak_ids):
+        return 0
+
+    monkeypatch.setattr(batch_curation, "recompute_batch_consensus", no_recompute)
+    await _set_stamp(async_session_factory, batch_id)
+    await release_batch_peak_curation(batch_id, batch_peak_id)
+    assert await _moved(async_session_factory, batch_id)
+
+
+async def test_a_series_detections_records_move_the_stamp(
+    async_session_factory, anchor
+):
+    await _set_stamp(async_session_factory, anchor["batch_id"])
+    touched = await _write_records(
+        anchor["batch_id"], {anchor["batch_peak_id"]: {"homologues": 2}}
+    )
+    assert touched == {anchor["batch_peak_id"]}
+    assert await _moved(async_session_factory, anchor["batch_id"])
+
+
+async def test_a_measured_identity_written_onto_a_sample_moves_the_stamp(
+    async_session_factory, anchor, stubbed_scorer
+):
+    """What the curation and the search both write onto another sample's
+    members."""
+    await _set_stamp(async_session_factory, anchor["batch_id"])
+    assigned = await _propagate_to_sample(
+        anchor["batch_id"],
+        anchor["s1"],
+        {anchor["batch_peak_id"]: Annotation("C7H14O7", "C7H15O7+", MECH, "M0", None)},
+        PeakAssignmentConfig(),
+        only_unassigned=False,
+    )
+    assert assigned == 1
+    assert await _moved(async_session_factory, anchor["batch_id"])
+
+
+async def test_a_searchs_rows_move_the_stamp_and_the_completed_run_holds_it(
+    async_session_factory, anchor
+):
+    """The search writes while its run is open, onto the ledger the current
+    run names; the run that completes takes the stamp of its own."""
+    batch_id = anchor["batch_id"]
+    run_id = await start_run(batch_id, ACTION_SEARCH)
+    await _set_stamp(async_session_factory, batch_id)
+    row = {
+        "sample_peak_id": "p1",
+        "assigned_formula": "C7H14O7",
+        "ion_formula": "C7H15O7+",
+        "ionization_mechanism_id": MECH,
+        "tier": "candidate",
+        "fit_score": 0.7,
+        "role": "M0",
+    }
+    written = await _apply_search_rows(
+        batch_id,
+        anchor["s1"],
+        [Reading(anchor["batch_peak_id"], anchor["s1"], row, None)],
+    )
+    assert written == 1
+    assert await _moved(async_session_factory, batch_id)
+
+    await complete_run(batch_id, run_id)
+    async with async_session_factory() as session:
+        run = await session.get(BatchPeakRun, run_id)
+    assert run.is_current == 1
+    assert run.ledger_utc_modified == run.batch_peak_run_utc_completed

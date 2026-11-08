@@ -1307,7 +1307,11 @@ run left them, read-only - verdicts and curation act on the current run, so the 
 column waits until you pick it again. A run that fails is kept and marked, and never
 becomes current. The same history is one call away in the SDK
 (`mascope.batch_peaks.runs(batch_id)`, and `list(batch_id, run_id=...)` for the species
-table as an earlier run left it).
+table as an earlier run left it). A sample folded in again or a batch peak curated by hand
+changes the live ledger without making a run of its own. The current run's
+`ledger_utc_modified` says when its ledger was last written, so a client that keeps a copy
+of the ledger, such as `mascope_viz`'s campaign store, can tell it is out of date without
+reading the series again.
 
 ### Importing an engine's batch result
 

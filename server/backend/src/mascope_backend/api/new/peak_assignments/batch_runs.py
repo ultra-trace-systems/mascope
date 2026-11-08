@@ -27,6 +27,11 @@ Three rules:
 - **Retention is bounded.** Completing a run makes it current and prunes the
   batch's older runs beyond :data:`BATCH_RUN_KEEP`, snapshots and all.
 
+Edits that make no run would leave a client reading the run listing nothing to
+see them by, so every write to the live ledger moves the current run's
+``ledger_utc_modified`` in its own transaction (:func:`touch_ledger`): the
+stamp a client compares, as it compares a batch's modified time.
+
 A run that fails is kept, marked, and never becomes current; the live ledger is
 whatever the failed operation left, which the record says.
 """
@@ -38,7 +43,7 @@ from datetime import timezone
 from typing import Any, Iterable, Optional
 
 from fastapi import status
-from sqlalchemy import delete, insert, select
+from sqlalchemy import delete, insert, select, update
 
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import (
@@ -309,6 +314,24 @@ async def ensure_current_run(session, sample_batch_id: str) -> BatchPeakRun:
     return run
 
 
+async def touch_ledger(session, sample_batch_id: str) -> None:
+    """Stamp the batch's current run with the time its live ledger was last
+    written. Called by every write to the live ledger - a fold, a consensus
+    recompute, a curation, a search's, an import's or a series detection's
+    rows - in the write's own
+    transaction, under the batch's fold lock, so the stamp commits with the
+    write and never without it. A ledger with no current run yet has nothing
+    to stamp: its first fold mints the run before it writes."""
+    await session.execute(
+        update(BatchPeakRun)
+        .where(
+            BatchPeakRun.sample_batch_id == sample_batch_id,
+            BatchPeakRun.is_current == 1,
+        )
+        .values(ledger_utc_modified=dt.now(timezone.utc))
+    )
+
+
 async def running_run(session, sample_batch_id: str) -> Optional[BatchPeakRun]:
     return (
         (
@@ -468,6 +491,8 @@ async def complete_run(
                 run.is_current = 1
                 run.summary = summary
                 run.batch_peak_run_utc_completed = now
+                # The live ledger is what this run wrote
+                run.ledger_utc_modified = now
             elif run.is_current:
                 run.is_current = 0
         for stale_id in runs_to_prune(runs, BATCH_RUN_KEEP):
@@ -593,4 +618,5 @@ __all__ = [
     "snapshot_rows",
     "snapshot_series",
     "start_run",
+    "touch_ledger",
 ]

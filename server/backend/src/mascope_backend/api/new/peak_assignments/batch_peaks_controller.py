@@ -58,6 +58,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     ensure_current_run,
     fail_run,
     start_run,
+    touch_ledger,
 )
 from mascope_backend.api.new.peak_assignments.listing import reference_listing
 from mascope_backend.db import (
@@ -453,6 +454,7 @@ async def fold_sample_into_batch_peaks(
         await session.flush()  # make occurrences visible to the consensus recompute
         if defer_consensus_to is None:
             await _recompute_consensus(session, touched, now)
+        await touch_ledger(session, sample_batch_id)
         await session.commit()
         if defer_consensus_to is not None:
             # After the commit, not before it: a fold that raised rolls its
@@ -681,6 +683,7 @@ async def recompute_batch_consensus(
         async with async_session() as session:
             await _acquire_batch_fold_lock(session, sample_batch_id)
             await _recompute_consensus(session, chunk, now)
+            await touch_ledger(session, sample_batch_id)
             await session.commit()
     return len(anchor_ids)
 
@@ -1019,6 +1022,7 @@ async def clear_engine_verdicts(sample_batch_id: str) -> None:
     async with async_session() as session:
         await _acquire_batch_fold_lock(session, sample_batch_id)
         await session.execute(clear_engine_verdicts_statement(sample_batch_id))
+        await touch_ledger(session, sample_batch_id)
         await session.commit()
 
 

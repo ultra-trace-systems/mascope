@@ -55,7 +55,11 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     clear_engine_verdicts_statement,
     recompute_batch_consensus,
 )
-from mascope_backend.api.new.peak_assignments.batch_runs import complete_run, fail_run
+from mascope_backend.api.new.peak_assignments.batch_runs import (
+    complete_run,
+    fail_run,
+    touch_ledger,
+)
 from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     Annotation,
     _propagate_to_sample,
@@ -256,6 +260,7 @@ async def write_engine_verdicts(
                 anchor.engine_tier = tier
                 anchor.engine_claim = claim
                 shown += 1
+        await touch_ledger(session, sample_batch_id)
         await session.commit()
     return shown, withheld
 

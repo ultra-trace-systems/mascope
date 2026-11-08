@@ -65,6 +65,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     complete_run,
     fail_run,
     start_run,
+    touch_ledger,
 )
 from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     Annotation,
@@ -474,6 +475,7 @@ async def _write_records(
                 provenance[SERIES_KEY] = record
             anchor.provenance = provenance
             touched.add(anchor.batch_peak_id)
+        await touch_ledger(session, sample_batch_id)
         await session.commit()
     return touched
 
