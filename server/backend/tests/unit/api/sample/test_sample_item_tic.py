@@ -15,6 +15,7 @@ What must survive that is the refusal of a polarity the file does not carry.
 The wider read raises for it too, and the item is still not created.
 """
 
+import warnings
 from unittest.mock import patch
 
 import numpy as np
@@ -121,3 +122,27 @@ async def test_an_error_that_is_not_an_empty_selection_is_not_read_around(error)
     item the TIC of scans its sample does not read."""
     with pytest.raises(type(error)):
         await _tic({"Ms": error, None: [1.0]})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scans",
+    [[1.0, float("nan")], [float("inf"), 2.0], [float("-inf")]],
+    ids=["nan", "inf", "-inf"],
+)
+async def test_a_tic_that_is_no_finite_number_is_none(scans):
+    """A NaN stored as an item's TIC is one the sample listing cannot send:
+    such an item stores no TIC."""
+    tic, _ = await _tic({"Ms": scans, None: [100.0]})
+
+    assert tic is None
+
+
+@pytest.mark.asyncio
+async def test_a_read_with_no_scans_is_none_and_warns_of_nothing():
+    """Not the mean of an empty selection, which numpy warns about."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        tic, _ = await _tic({"Ms": [], None: [100.0]})
+
+    assert tic is None

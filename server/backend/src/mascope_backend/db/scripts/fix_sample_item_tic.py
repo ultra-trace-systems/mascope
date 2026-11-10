@@ -33,7 +33,6 @@ Date: 2026-11-03
 """
 
 import asyncio
-import math
 import os
 
 from sqlalchemy import text
@@ -96,10 +95,10 @@ async def _recompute(target: dict) -> float | None:
             f"  Cannot read {target['filename']} (polarity {target['polarity']}): {exc}"
         )
         return None
-    if not math.isfinite(tic):
+    if tic is None:
         runtime.logger.info(
             f"  {target['filename']} (polarity {target['polarity']}): "
-            f"the TIC reads as {tic}"
+            "the TIC reads as no finite number"
         )
         return None
     return tic

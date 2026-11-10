@@ -524,6 +524,48 @@ async def test_a_rebuild_queues_rematch_removes_matches_and_reads_the_tic_again(
 
 
 @pytest.mark.asyncio
+async def test_a_polarity_whose_tic_reads_as_none_keeps_the_stored_one(
+    matched, filestore, monkeypatch, async_session_factory
+):
+    """A read with no finite TIC writes nothing over the stored value: the
+    file's other polarity is still read again."""
+
+    async def sample_item_tic(filename, polarity):
+        return None if polarity == "-" else _READ_TIC[polarity]
+
+    monkeypatch.setattr(sample_items_controller, "_sample_item_tic", sample_item_tic)
+
+    updated = await script._refresh_tic(matched.file, matched.filename)
+
+    item_ids = [item_id for item_id, *_ in matched.items]
+    async with async_session_factory() as session:
+        tics = dict(
+            (
+                await session.execute(
+                    select(SampleItem.sample_item_id, SampleItem.tic).where(
+                        SampleItem.sample_item_id.in_(item_ids)
+                    )
+                )
+            ).all()
+        )
+    expected = {
+        item_id: (_READ_TIC["+"] if tic is not None and polarity == "+" else tic)
+        for item_id, _batch, polarity, tic in matched.items
+    }
+    assert tics == expected
+    assert updated == sum(
+        1
+        for _, _, polarity, tic in matched.items
+        if tic is not None and polarity == "+"
+    )
+    # The fixture stores a TIC on an item of each polarity, or this pins nothing
+    assert {polarity for _, _, polarity, tic in matched.items if tic is not None} == {
+        "+",
+        "-",
+    }
+
+
+@pytest.mark.asyncio
 async def test_a_file_with_an_ms2_store_has_it_written_again(matched, filestore):
     filestore.props["ms2_store"] = {"layout": "mascope.ms2_store", "version": 3}
 

@@ -89,7 +89,7 @@ async def test_each_file_and_polarity_is_read_once_and_written_to_its_items(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "unreadable", [FileNotFoundError("gone"), ValueError("no scans"), float("nan")]
+    "unreadable", [FileNotFoundError("gone"), ValueError("no scans"), None]
 )
 async def test_a_file_that_cannot_be_read_is_skipped_and_the_rest_written(
     stand_ins, unreadable

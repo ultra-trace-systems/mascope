@@ -1,4 +1,5 @@
 import asyncio
+import math
 from datetime import datetime, timezone
 from typing import cast
 
@@ -82,7 +83,7 @@ from mascope_thermo.scan_events import MisreadScanEventsError
 from mascope_thermo.thermo import NoScansFoundError
 
 
-async def _sample_item_tic(filename: str, polarity: str | None) -> float:
+async def _sample_item_tic(filename: str, polarity: str | None) -> float | None:
     """The mean TIC per scan of the scans a new sample item's signal is made of.
 
     A mean, not a sum: the item's spectrum is averaged over the same scans,
@@ -102,9 +103,13 @@ async def _sample_item_tic(filename: str, polarity: str | None) -> float:
     that error gets the wider read: a polarity the file does not carry at all
     then raises it again, as it did before, and the caller reports it.
 
+    A mean that is not a finite number - a read that hands back no scan, or
+    a NaN in the file's signal - is no TIC, and the item stores none: a NaN
+    stored in ``sample_item.tic`` is one the sample listing cannot send.
+
     :param filename: The sample file's stored name.
     :param polarity: The item's polarity.
-    :return: The mean TIC per scan.
+    :return: The mean TIC per scan, or None when it is not a finite number.
     """
     try:
         _, tic_values = await asyncio.to_thread(
@@ -117,7 +122,10 @@ async def _sample_item_tic(filename: str, polarity: str | None) -> float:
             polarity=polarity,
             scan_type=None,
         )
-    return float(np.mean(tic_values))
+    if not np.size(tic_values):
+        return None
+    tic = float(np.mean(tic_values))
+    return tic if math.isfinite(tic) else None
 
 
 @api_controller()
