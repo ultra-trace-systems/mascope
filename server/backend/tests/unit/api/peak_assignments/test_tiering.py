@@ -34,6 +34,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     LINE_ABSENT,
     LINE_FOUND,
     LINE_UNTESTABLE,
+    NEIGHBOUR_HEIGHT_FLOOR,
     PEAK_SEPARATION,
     PREDICTED_ENVELOPE,
     REASON_ABSENT_LINE,
@@ -3109,9 +3110,11 @@ class TestAPeakThatIsNotSeparated:
     def beside(self, widths: float, intensity: float = 800.0, peak: str = "p-nb"):
         return (peak, self.M + widths * self.WIDTH, intensity)
 
-    def lines(self, *others: tuple, resolution=tof_widths) -> SpectrumLines:
+    def lines(
+        self, *others: tuple, resolution=tof_widths, height: float = 1000.0
+    ) -> SpectrumLines:
         return widths_spectrum(
-            ("p-own", self.M, 1000.0), *others, resolution=resolution
+            ("p-own", self.M, height), *others, resolution=resolution
         )
 
     def reason(self, rows: list[dict], row_id: str = "pa-1") -> dict:
@@ -3160,28 +3163,32 @@ class TestAPeakThatIsNotSeparated:
         assert tier_of(equal, "pa-1") == "assigned"
         assert envelope_of_separation(equal)["separated"] is True
 
-        shoulder = [self.own()]
-        run(shoulder, lines=self.lines(self.beside(1.2, 20.0)))
+        shoulder = [self.own(intensity=20.0)]
+        run(shoulder, lines=self.lines(self.beside(1.2, 1000.0), height=20.0))
         assert tier_of(shoulder, "pa-1") == "candidate"
 
     def test_a_small_line_on_the_flank_is_found_as_far_as_the_criterion_reaches(
         self,
     ):
-        # At a thousandth of its height a line merges with the peak out to 1.99
-        # widths.
-        near = [self.own()]
-        run(near, lines=self.lines(self.beside(1.95, 1.0)))
+        # At a thousandth of the tall line's height the row's line merges with
+        # it out to 1.99 widths.
+        near = [self.own(intensity=1.0)]
+        run(near, lines=self.lines(self.beside(1.95, 1000.0), height=1.0))
         assert tier_of(near, "pa-1") == "candidate"
-        clear = [self.own()]
-        run(clear, lines=self.lines(self.beside(2.0, 1.0)))
+        clear = [self.own(intensity=1.0)]
+        run(clear, lines=self.lines(self.beside(2.0, 1000.0), height=1.0))
         assert tier_of(clear, "pa-1") == "assigned"
 
     def test_the_record_names_the_nearest_and_counts_the_rest(self):
+        # The shoulder nearest of all is under 0.3 of the peak's height, so it
+        # is neither named nor counted.
         rows = [self.own()]
         run(
             rows,
             lines=self.lines(
-                self.beside(0.7, 900.0), self.beside(-0.4, 300.0, peak="p-near")
+                self.beside(0.7, 900.0),
+                self.beside(-0.4, 600.0, peak="p-near"),
+                self.beside(0.2, 250.0, peak="p-shoulder"),
             ),
         )
         record = envelope_of_separation(rows)
@@ -3217,40 +3224,44 @@ class TestAPeakThatIsNotSeparated:
         assert REASON_UNRESOLVED_PEAK in rules_on(rows, "pa-1")
 
     def test_a_line_of_its_own_envelope_is_no_neighbour(self):
-        # At a resolving power of 200 a line is 0.91 Da wide, so the ion's 13C
-        # line one mass unit up sits 1.1 widths from it at 6.6% of its height,
-        # inside the 1.49 widths such a pair needs. A peak as far below is a
-        # neighbour; the one on the 13C line is the ion's own.
+        # C6H12O6 through bromide: at a resolving power of 100 a line is 2.6
+        # Da wide, so the ion's 81Br line 2 Da up sits 0.77 widths from it at
+        # 97% of its height, inside the 0.88 widths such a pair needs. A peak
+        # as far below is a neighbour; the one on the 81Br line is the ion's
+        # own.
         def low(mz: float) -> float:
-            return 200.0
+            return 100.0
 
-        c13_mz, c13_share = line_at("C6H13O6+", "13C")
-        own_line = [self.own()]
+        ion = "C6H12O6Br-"
+        m0_mz, _ = line_at(ion, "M0")
+        br81_mz, br81_share = line_at(ion, "81Br")
         # 2 ppm off the predicted line, inside the run's 5 ppm match window.
-        on_the_line = c13_mz * (1 + 2e-6)
-        run(
-            own_line,
-            lines=self.lines(
-                ("p-13c", on_the_line, 1000.0 * c13_share), resolution=low
-            ),
-        )
+        br81 = ("p-81br", br81_mz * (1 + 2e-6), 1000.0 * br81_share)
+
+        def bromide() -> dict:
+            return self.own(mz=m0_mz, ion=ion)
+
+        def spectrum_of(*others: tuple) -> SpectrumLines:
+            return widths_spectrum(
+                ("p-own", m0_mz, 1000.0), br81, *others, resolution=low
+            )
+
+        own_line = [bromide()]
+        run(own_line, lines=spectrum_of())
         assert tier_of(own_line, "pa-1") == "assigned"
         assert envelope_of_separation(own_line)["separated"] is True
 
-        below = [self.own()]
-        run(
-            below,
-            lines=self.lines(
-                ("p-below", 2 * self.M - c13_mz, 1000.0 * c13_share), resolution=low
-            ),
-        )
+        below = [bromide()]
+        run(below, lines=spectrum_of(("p-below", 2 * m0_mz - br81_mz, br81[2])))
         assert tier_of(below, "pa-1") == "candidate"
+        assert REASON_UNRESOLVED_PEAK in rules_on(below, "pa-1")
+        assert envelope_of_separation(below)["neighbour"]["peak_id"] == "p-below"
 
     def test_a_peak_inside_its_own_match_window_is_a_neighbour(self):
         # 4 ppm from the row's peak, a fiftieth of a width: no line of its own
         # envelope, which starts a mass unit up.
         rows = [self.own()]
-        run(rows, lines=self.lines(("p-twin", self.M * (1 + 4e-6), 500.0)))
+        run(rows, lines=self.lines(("p-twin", self.M * (1 + 4e-6), 800.0)))
         assert tier_of(rows, "pa-1") == "candidate"
 
     def test_a_row_whose_own_peak_has_no_height_is_not_asked(self):
@@ -3275,6 +3286,70 @@ class TestAPeakThatIsNotSeparated:
         tof = [self.own()]
         run(tof, lines=self.lines(other))
         assert tier_of(tof, "pa-1") == "candidate"
+
+    def pair(self, ratio: float) -> list[dict]:
+        """The row's peak and a committed shorter one 0.6 widths up."""
+        shorter = row(
+            "pa-2",
+            "C9H10O3",
+            mz=self.M + 0.6 * self.WIDTH,
+            peak="p-nb",
+            intensity=1000.0 * ratio,
+            ion=None,
+            channels=SEEN_TWICE,
+        )
+        return [self.own(), shorter]
+
+    def test_in_a_lopsided_pair_the_shorter_is_capped_and_the_taller_is_not(self):
+        # Two committed rows 0.6 widths apart at 1:5, inside the 1.31 widths
+        # such a pair needs. The shorter is asked against the taller; the
+        # taller has no neighbour of 0.3 of its height.
+        rows = self.pair(1 / 5)
+        summary = run(rows, lines=self.lines(self.beside(0.6, 1000.0 / 5)))
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert REASON_UNRESOLVED_PEAK not in rules_on(rows, "pa-1")
+        assert envelope_of_separation(rows)["separated"] is True
+        assert tier_of(rows, "pa-2") == "candidate"
+        reason = self.reason(rows, "pa-2")
+        assert reason["neighbour_peak_id"] == "p-own"
+        assert reason["height_ratio"] == pytest.approx(5.0)
+        assert summary["unresolved_peak"]["unseparated"] == 1
+
+    def test_in_a_pair_at_1_3_both_are_capped(self):
+        # A third of the taller one's height is over the floor, so the taller
+        # is asked too, inside the 1.21 widths a pair at 1:3 needs.
+        rows = self.pair(1 / 3)
+        summary = run(rows, lines=self.lines(self.beside(0.6, 1000.0 / 3)))
+        assert tier_of(rows, "pa-1") == "candidate"
+        taller = self.reason(rows)
+        assert taller["neighbour_peak_id"] == "p-nb"
+        assert taller["height_ratio"] == 0.3333
+        assert taller["critical_widths"] == pytest.approx(1.208, abs=1e-3)
+        assert tier_of(rows, "pa-2") == "candidate"
+        assert self.reason(rows, "pa-2")["height_ratio"] == pytest.approx(3.0)
+        assert summary["unresolved_peak"]["unseparated"] == 2
+
+    def test_the_taller_is_capped_beside_a_neighbour_at_0_6_of_its_height(self):
+        rows = [self.own()]
+        run(rows, lines=self.lines(self.beside(0.6, 600.0)))
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert self.reason(rows)["height_ratio"] == pytest.approx(0.6)
+
+    def test_a_shorter_neighbour_counts_from_0_3_of_the_peak_s_height(self):
+        assert NEIGHBOUR_HEIGHT_FLOOR == 0.3
+        at_floor = [self.own()]
+        run(at_floor, lines=self.lines(self.beside(0.6, 300.0)))
+        assert tier_of(at_floor, "pa-1") == "candidate"
+        assert self.reason(at_floor)["height_ratio"] == pytest.approx(0.3)
+
+        under = [self.own()]
+        run(under, lines=self.lines(self.beside(0.6, 299.0)))
+        assert tier_of(under, "pa-1") == "assigned"
+        assert envelope_of_separation(under) == {
+            "fwhm_ppm": 200.0,
+            "separated": True,
+            "unseparated": 0,
+        }
 
     def test_a_spectrum_without_widths_asks_nothing(self):
         rows = [self.own()]
@@ -3370,6 +3445,22 @@ class TestASecondChannelOnASeparatedPeak:
         assert REASON_UNRESOLVED_PEAK not in rules_on(rows, "pa-1")
         assert rows[0]["provenance"]["cross_channel"][SEPARATED_THROUGH] == ["[M+NH4]+"]
         assert rows[1]["provenance"]["cross_channel"][SEPARATED_THROUGH] == []
+        assert summary["unresolved_peak"]["lifted_by_partner"] == 1
+
+    def test_a_partner_that_is_the_taller_of_a_lopsided_pair_lifts_it(self):
+        # The partner's peak has a shoulder 0.5 widths off at a quarter of its
+        # height, which the same test does not count against it.
+        width = self.PARTNER_MZ / 5000.0
+        shoulder = ("p-partner-shoulder", self.PARTNER_MZ - 0.5 * width, 100.0)
+        rows = self.rows()
+        summary = run(
+            rows,
+            lines=self.lines(partner_overlapped=False, extra=[shoulder]),
+            notation_by_id=self.NOTATION,
+        )
+        assert envelope_of_separation(rows, "pa-2")["separated"] is True
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert rows[0]["provenance"]["cross_channel"][SEPARATED_THROUGH] == ["[M+NH4]+"]
         assert summary["unresolved_peak"]["lifted_by_partner"] == 1
 
     def test_a_separated_row_with_a_separated_partner_lifts_nothing(self):
