@@ -678,6 +678,38 @@ def test_view_coverage_shows_the_id_of_a_mode_the_server_did_not_name(server):
     assert '-         "im-1"' in text("view", "coverage", *DATASET)
 
 
+def test_view_coverage_tells_two_modes_of_one_name_apart(server):
+    # The same chemistry on a second instrument: another mode, one name
+    first = server.batch_ids[0]
+    server.by_batch[first] = server.by_batch[first].assign(ionization_mode_id="im-2")
+    server.system_modes = {"im-2": "Campaign mode"}
+    payload("store", "sync", *DATASET)
+
+    found = payload("view", "coverage", *DATASET)
+
+    assert [(g["mode"], g["mode_name"]) for g in found["groups"]] == [
+        ("im-1", "Campaign mode"),
+        ("im-2", "Campaign mode"),
+        (None, None),
+    ]
+    shown = text("view", "coverage", *DATASET)
+    assert '-         "Campaign mode" ("im-1")' in shown
+    assert '-         "Campaign mode" ("im-2")' in shown
+
+
+def test_view_coverage_names_a_mode_alone_when_no_other_shares_its_name(server):
+    first = server.batch_ids[0]
+    server.by_batch[first] = server.by_batch[first].assign(ionization_mode_id="im-2")
+    server.system_modes = {"im-2": "Other mode"}
+    payload("store", "sync", *DATASET)
+
+    shown = text("view", "coverage", *DATASET)
+
+    assert '-         "Campaign mode"  ' in shown
+    assert '-         "Other mode"  ' in shown
+    assert '("im-' not in shown
+
+
 #: Each view with the options it needs, and its frame from the library.
 CALLS = {
     "series": (["-k", "tic"], lambda s: views.series(s, ["tic"])),

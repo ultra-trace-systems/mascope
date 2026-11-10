@@ -1051,9 +1051,10 @@ class Coverage:
 
     :ivar bins: One row per bin and (polarity, mode): ``t`` (the bin's
         start), ``polarity``, ``mode`` (the ionization mode's ID),
-        ``mode_name`` (its name, as the store's newest batch of it records
-        it; None when the server did not name it), ``n_files`` (files that started in it), ``n_unfiled`` (those of
-        them no batch of the scope holds) and ``n_samples``. A file counts
+        ``mode_name`` (its name, as the batch of it the store fetched last
+        records it; None when the server did not name it), ``n_files``
+        (files that started in it), ``n_unfiled`` (those of them no batch
+        of the scope holds) and ``n_samples``. A file counts
         under each (polarity, mode) its samples in the store have, so a
         polarity-switching file counts under ``+`` and ``-``. A file no
         sample of the store comes from has mode None, and the polarities
@@ -1151,7 +1152,7 @@ def coverage(
     )
     labels = sorted(set(pairs), key=lambda g: tuple((v is None, v or "") for v in g))
     group_of = {g: i for i, g in enumerate(labels)}
-    name_of = _mode_names(every_sample)
+    name_of = _mode_names(store, every_sample)
     group = np.array([group_of[g] for g in pairs], dtype="int64")
     edges = _edges(
         pd.Timestamp(every.min(), tz="UTC"),
@@ -1192,14 +1193,25 @@ def _label(value: Any) -> str | None:
     return None if value is None or pd.isna(value) else str(value)
 
 
-def _mode_names(samples: pd.DataFrame) -> dict[str, str]:
-    """The modes' names by ID, as *samples* record them: the store reads its
-    batches oldest first, so a mode renamed between two batches' fetches
-    takes the newest batch's name."""
-    named = samples[["ionization_mode_id", "ionization_mode_name"]].astype(object)
+def _mode_names(store: CampaignStore, samples: pd.DataFrame) -> dict[str, str]:
+    """The modes' names by ID, as *samples* record them: a mode renamed
+    between two batches' fetches takes the name of the batch fetched last,
+    whichever was acquired first."""
+    stamps = store.meta.get("batches", {})
+    named = samples[
+        ["sample_batch_id", "ionization_mode_id", "ionization_mode_name"]
+    ].astype(object)
     named = named[
         named["ionization_mode_id"].notna() & named["ionization_mode_name"].notna()
     ]
+    fetched = pd.to_datetime(
+        named["sample_batch_id"].map(
+            lambda b: (stamps.get(str(b)) or {}).get("synced_utc")
+        ),
+        utc=True,
+        format="ISO8601",
+    )
+    named = named.iloc[np.argsort(fetched.to_numpy(), kind="stable")]
     return dict(
         zip(
             named["ionization_mode_id"].map(str), named["ionization_mode_name"].map(str)

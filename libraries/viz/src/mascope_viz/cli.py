@@ -1185,15 +1185,27 @@ def _view_lines(name: str, payload: dict[str, Any], status: StoreStatus) -> list
             f"  {payload['n_files']:,} file(s), {payload['n_unfiled']:,} in no "
             f"batch; {payload['n_samples']:,} sample(s)"
         )
+        # A name is not unique: two modes of one name are told apart by ID
+        modes_named: dict[str | None, set[str | None]] = {}
+        for group in payload["groups"]:
+            modes_named.setdefault(group["mode_name"], set()).add(group["mode"])
+
+        def mode_label(group: dict[str, Any]) -> str:
+            if group["mode"] is None:
+                return "(none)"
+            if group["mode_name"] is None:
+                # The ID of a mode the server did not name
+                return quoted(group["mode"])
+            if len(modes_named[group["mode_name"]]) > 1:
+                return f"{quoted(group['mode_name'])} ({quoted(group['mode'])})"
+            return quoted(group["mode_name"])
+
         lines += _table(
             ["POLARITY", "MODE", "FILES", "UNFILED", "SAMPLES"],
             [
                 [
                     str(group["polarity"] or "(none)"),
-                    "(none)"
-                    if group["mode"] is None
-                    # The ID of a mode the server did not name
-                    else quoted(group["mode_name"] or group["mode"]),
+                    mode_label(group),
                     _number(group["n_files"]),
                     _number(group["n_unfiled"]),
                     _number(group["n_samples"]),
