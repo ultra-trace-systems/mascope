@@ -716,16 +716,28 @@ What caps a row at candidate:
   then neither one's centroid nor its height is a single ion's own: the mass and the
   intensity the fit scored are a blend. The width is the one the file's resolving power
   gives at the peak's m/z, the width detection fitted the file's lines with, and a file
-  the run read no resolving power for is not asked. Every other peak of the spectrum with
-  a height counts as a neighbour, a source ion or a peak nothing explains included, except
-  a line of the row's own isotope pattern. The reason names the nearest such neighbour,
-  how many widths away it is and how tall against this peak, and the inspector links it:
-  click **neighbour at m/z** beside the reason to focus that peak. One thing lifts the
-  cap: another ionization channel of the run committing the same neutral on a peak the
-  instrument did separate, whose mass and height were measured. A partner the instrument
-  did not separate either does not lift it, and neither does a list naming the compound
-  or a homologous series of the batch, since the doubt is about the measurement and not
-  about the formula. A hand assignment is not asked. On an Orbitrap, whose lines are a few ppm wide, the rule seldom fires.
+  the run read no resolving power for is not asked. Every other peak of the spectrum
+  counts as a neighbour, a source ion or a peak nothing explains included, except a line
+  of the row's own isotope pattern and a peak under 0.3 of this one's height. So the
+  shorter peak of a pair is always asked, and the taller only beside a neighbour at least
+  0.3 of its height. Two lines 0.85 widths apart blend into one maximum. Beside a line 0.95
+  as tall, that maximum sits a quarter of a width off the taller line and 19% over its
+  height; beside one half as tall, 0.07 widths and 8%; beside one at 0.3, 0.04 widths and
+  4%. On the TOF spectra the rule was read on, a shoulder under 0.3 of the height moves the
+  taller peak's maximum a median 1.5 ppm, about that peak's own mass error. One from 0.3 to
+  half moves it a median 7 ppm, and for one pair in ten by the whole match window. A small
+  mass error does not clear such a peak, since the formula may have followed the blend.
+  Under 0.3, a shoulder on a TOF can also be the peak's own tail, which the picker's fit
+  split off, and on an Orbitrap its ringing. The reason names the nearest neighbour that
+  counts, how many widths away it is and how tall against this peak, and the inspector
+  links it: click **neighbour at m/z** beside the reason to focus that peak. One thing
+  lifts the cap: another ionization channel of the run committing the same neutral on a
+  peak the instrument did separate, whose mass and height were measured, by the same test:
+  a partner that is the taller peak of a lopsided pair lifts it. A partner the instrument
+  did not separate either does not lift it, and neither does a list naming the compound or
+  a homologous series of the batch, since the doubt is about the measurement and not about
+  the formula. A hand assignment is not asked. On an Orbitrap, whose lines are a few ppm
+  wide, the rule seldom fires.
 - **a neighbour's isotope line** — a committed neighbouring compound's isotope pattern
   predicts a line on this peak, and the peak is no more than twice as tall as that line,
   so the line could account for all of it. The neighbour must itself be a reading the

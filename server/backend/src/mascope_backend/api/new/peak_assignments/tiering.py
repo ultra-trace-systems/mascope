@@ -154,7 +154,11 @@ carry neither the mass nor the intensity the fit scored. Each committed
 monoisotopic row's peak is read against every other peak of the spectrum at the
 width the file's resolving power gives at its m/z, its own envelope's lines
 aside (:func:`peak_separation`), and a peak not separated from one caps the row
-at candidate, naming the nearest such neighbour. One escape: another channel
+at candidate, naming the nearest such neighbour. A neighbour under 0.3 of the
+peak's height does not count (:data:`NEIGHBOUR_HEIGHT_FLOOR`): the shorter line
+of a pair is always asked, the taller only beside one at least 0.3 of its own.
+A smaller shoulder moves the taller line's maximum by about the line's own mass
+error, and can be its own tail or ringing split off. One escape: another channel
 committing the neutral on a peak the same test calls separated. A list is none,
 for the absent-line rule's reason: the statement is about the measurement; nor
 is a series of the batch, which vouches for the formula, not the peak. A
@@ -342,8 +346,24 @@ REASON_UNRESOLVED_PEAK = "unresolved_peak"
 
 #: The provenance block a monoisotopic row carries where the run read its
 #: peak's width: whether the instrument separated the peak from every peak
-#: beside it, and the nearest one it did not.
+#: beside it that counts (:data:`NEIGHBOUR_HEIGHT_FLOOR`), and the nearest one
+#: it did not.
 PEAK_SEPARATION = "peak_separation"
+
+#: How tall against a peak a shorter neighbour must be to count against it, so
+#: the shorter line of an unseparated pair is always asked and the taller only
+#: beside one at least 0.3 of its height. Below 0.3 the blend moves the taller
+#: line by about its own mass error: read as two Gaussians at their distance,
+#: the TOF pairs of the gate's sets put the blend's maximum a median 1.5 ppm
+#: off the taller line, where their rows' mass errors are about 1 ppm. From 0.3
+#: to half it moves it a median 7 ppm, and for one pair in ten by the whole
+#: 15 ppm match window. A flat mass error does not clear such a row: the rows
+#: beside a neighbour of half their height or more, 23 ppm off by the same
+#: reading, show the lowest errors of all, so the stored error cannot tell the
+#: picker's own centroid from a formula that followed the blend. A smaller
+#: shoulder can also be the line's own tail split off by a TOF picker's fit,
+#: or an Orbitrap's ringing.
+NEIGHBOUR_HEIGHT_FLOOR = 0.3
 
 #: What the tiering pass adds to a row's cross-channel record: the run's other
 #: channels that commit the row's neutral on a peak the instrument separated.
@@ -1463,11 +1483,14 @@ def peak_separation(
 
     The width is the one the file's own resolving power gives at the peak's
     m/z (``SpectrumLines.fwhm_ppm``), what detection fitted the file's lines
-    to, and every other peak of the spectrum with a height is asked against
-    it (:func:`separated`): a source's ion and a peak nothing explains merge
-    with it as surely as a committed one. A peak within the run's match
-    window of one of the row's own predicted lines is not asked, since the
-    envelope is one ion's and the fit scored its lines together.
+    to, and every other peak of the spectrum at least
+    :data:`NEIGHBOUR_HEIGHT_FLOOR` of its height is asked against it
+    (:func:`separated`): a source's ion and a peak nothing explains merge
+    with it as surely as a committed one. A taller neighbour always counts, a
+    shorter one from 0.3 of the peak's height: a smaller shoulder moves the
+    peak's maximum by about its own mass error. A peak within the run's
+    match window of one of the row's own predicted lines is not asked, since
+    the envelope is one ion's and the fit scored its lines together.
 
     :param peak_id: The peak.
     :param spectrum: The sample's peaks, with their widths.
@@ -1475,11 +1498,11 @@ def peak_separation(
     :param envelope_mzs: The row's own predicted lines, its own line left out.
     :param line_window_ppm: The run's match window about each of those.
     :return: The record (:data:`PEAK_SEPARATION`): the width read, whether
-        the peak is separated, how many peaks it is not separated from, and
-        the nearest of them, in widths, with its height against the peak's
-        and the distance the two would need; None where the spectrum does
-        not hold the peak, the peak has no height, or the file gives no
-        width at its m/z.
+        the peak is separated from every neighbour that counts, how many of
+        those it is not separated from, and the nearest of them, in widths,
+        with its height against the peak's and the distance the two would
+        need; None where the spectrum does not hold the peak, the peak has no
+        height, or the file gives no width at its m/z.
     """
     read = spectrum.peak(peak_id)
     if read is None:
@@ -1491,7 +1514,9 @@ def peak_separation(
     width = mz * fwhm_ppm * 1e-6
     merged: list[tuple[float, str, float, float]] = []
     for other_id, other_mz, other_height in spectrum.around(mz, reach_fwhm * width):
-        if other_id == str(peak_id) or other_height <= 0:
+        ratio = other_height / height
+        # Under the floor, a peak with no height among them, no neighbour.
+        if other_id == str(peak_id) or ratio < NEIGHBOUR_HEIGHT_FLOOR:
             continue
         if any(
             abs(other_mz - line) <= line * line_window_ppm * 1e-6
@@ -1499,7 +1524,6 @@ def peak_separation(
         ):
             continue
         widths = abs(other_mz - mz) / width
-        ratio = other_height / height
         if not separated(widths, ratio):
             merged.append((widths, other_id, other_mz, ratio))
     record: dict = {
@@ -1544,7 +1568,10 @@ def unresolved_peak_reason(
     a second channel of the run committing the neutral on a peak the
     instrument did separate, read by the same test, whose mass and height
     were measured. A partner the instrument did not separate either is no
-    escape: it corroborates a mass it did not measure.
+    escape: it corroborates a mass it did not measure. A shorter neighbour
+    counts only from 0.3 of the peak's height (:data:`NEIGHBOUR_HEIGHT_FLOOR`),
+    so the taller line of a lopsided pair keeps its tier, and as a partner
+    lifts one.
 
     Names the nearest such neighbour, its distance and height against the
     peak's and the distance the pair would need, and carries them beside the

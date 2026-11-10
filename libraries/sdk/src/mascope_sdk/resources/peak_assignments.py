@@ -610,8 +610,8 @@ class PeakAssignmentsResource(BaseResource):
         lies beyond the peak list). Where the run read the file's line widths
         such a row also carries ``provenance.peak_separation``: the width at
         its peak's m/z (``fwhm_ppm``), whether the instrument ``separated`` the
-        peak from every other peak with a height, how many it did not
-        (``unseparated``), and the nearest of those as ``neighbour``
+        peak from every other peak at least 0.3 of its height, how many it did
+        not (``unseparated``), and the nearest of those as ``neighbour``
         (``peak_id``, ``mz``, ``widths``, ``height_ratio``,
         ``critical_widths``). Its ``cross_channel`` block then lists, under
         ``separated_through``, the run's other channels that commit the

@@ -6,11 +6,15 @@
   can still report both lines, but neither one's mass nor its height is a single
   ion's own. Every committed formula is asked, one from a list included; every
   other peak of the spectrum counts as a neighbour except a line of the row's
-  own isotope pattern. The one escape is another ionization channel committing
-  the same neutral on a peak the instrument did separate. The new reason *peak
-  not separated* names the nearest such neighbour, its distance in widths and
-  its height against the peak's, and the peak inspector links it beside the
-  reason. A hand assignment is not asked, nor a file whose resolving power the
-  run did not read. On an Orbitrap it seldom fires. Tiering rule set 13; runs
-  made before it are unchanged until run again
+  own isotope pattern and a peak under 0.3 of the row's peak's height. So the
+  shorter peak of a pair is always held, and the taller only beside a neighbour
+  at least 0.3 of its height: a smaller shoulder moves the taller peak's maximum
+  by about that peak's own mass error, and it can be that peak's own tail or
+  ringing. The one escape is another ionization channel
+  committing the same neutral on a peak the instrument did separate. The new
+  reason *peak not separated* names the nearest such neighbour, its distance in
+  widths and its height against the peak's, and the peak inspector links it
+  beside the reason. A hand assignment is not asked, nor a file whose resolving
+  power the run did not read. On an Orbitrap it seldom fires. Tiering rule set
+  13; runs made before it are unchanged until run again
   (`docs/user/how-it-works/peak-assignment.md`, *Why a row holds its tier*).
