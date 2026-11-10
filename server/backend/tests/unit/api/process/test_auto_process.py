@@ -3489,3 +3489,82 @@ async def test_a_parked_file_is_read_with_nothing_beside_it(status, unbound):
     assert result["status"] == "parked"
     # Its MS1 polarity only, and no binding beside it.
     status.detect.assert_awaited_once_with(sample_file, census, ["-"])
+
+
+@pytest.mark.asyncio
+async def test_a_file_bound_by_hand_whose_calibration_finds_no_calibrant(status):
+    """Choose chemistry's run is not matched on an axis nobody calibrated.
+
+    The bind route started each pipeline with no process id, so the nested
+    calibration had no parent to raise its warning to: the decorator reported
+    it and returned nothing, and that nothing read as a verified fit. The
+    calibration here is the real background-task decorator around a fit that
+    finds no calibrant at every tolerance.
+    """
+    import asyncio
+
+    from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
+        OrbiCalibrationParams,
+    )
+    from mascope_backend.api.controllers.sample.files.process import service
+    from mascope_backend.api.lib.api_features import api_controller_background_task
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    # The real retry loop, taken before the base patches replace it.
+    calibrate_with_retry = service.calibrate_with_retry
+    mocks, sample_file = _start_single()
+    ion_mode = _make_ionization_mode()
+    session = mocks["async_session"].return_value.__aenter__.return_value
+    # The file, then the files with samples a person made: none.
+    session.scalars = AsyncMock(side_effect=[[sample_file], []])
+
+    @api_controller_background_task()
+    async def no_calibrant(**_):
+        raise ApiException(
+            "m/z fitting warning: No calibration peaks found",
+            {"data": {"warning": "No calibration peaks found.", "error": None}},
+            200,
+        )
+
+    fits = AsyncMock(side_effect=no_calibrant)
+    outcomes = []
+
+    async def calibrate(**kwargs):
+        outcome = await calibrate_with_retry(**kwargs)
+        outcomes.append(outcome)
+        return outcome
+
+    mocks["calibrate"].side_effect = calibrate
+
+    with (
+        patch(f"{_SVC}.fetch_ionization_modes", AsyncMock(return_value=[ion_mode])),
+        patch(f"{_SVC}.choose_ionization_modes", return_value=[ion_mode]),
+        patch(f"{_SVC}.claim_for_processing", AsyncMock(return_value=["sf-001"])),
+        patch(f"{_SVC}._reset_calibration", AsyncMock()),
+        patch(f"{_SVC}._delete_partial_acquisition_items", AsyncMock()),
+        patch(f"{_SVC}.calibration_params_factory", lambda _: OrbiCalibrationParams()),
+        patch(f"{_SVC}.calibration_mz_calibrate_sample", fits),
+        patch(f"{_SVC}._record_calibration_failure", AsyncMock()),
+        patch(f"{_SVC}.emit_user_notification", AsyncMock()),
+        patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_FEATURES}.handle_reloads", new_callable=AsyncMock),
+    ):
+        await service.bind_sample_files(
+            sample_file_ids=["sf-001"], ionization_mode_ids=["im-001"], user_id=42
+        )
+        runs = list(service._background_tasks)
+        assert len(runs) == 1
+        await asyncio.gather(*runs)
+
+    # The warning reached the retry loop, which tried every tolerance.
+    assert fits.await_count == service.CALIBRATION_ITERATIONS
+    assert [outcome.verified for outcome in outcomes] == [False]
+    mocks["match"].assert_not_called()
+    mocks["assign"].assert_not_called()
+    recorded = _recorded(status)
+    assert recorded[-1] == (
+        "calibration_failed",
+        "The m/z calibration failed: No calibration peaks found. "
+        "Matching and peak assignment were skipped. "
+        "Bound to 'Bromide RI' (-) as chosen by hand.",
+    )
