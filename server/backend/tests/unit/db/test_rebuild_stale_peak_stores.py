@@ -100,6 +100,32 @@ def test_a_survey_goes_on_where_an_earlier_one_stopped(monkeypatch):
     assert end == 5
 
 
+def test_a_survey_that_goes_on_keeps_the_run_s_progress_and_traceback_budget(
+    monkeypatch,
+):
+    """The progress line counts from the run's first file, and the run, not
+    each call, logs at most ``_TRACEBACK_LIMIT`` tracebacks."""
+    monkeypatch.setattr(script, "_CHECK_BATCH", 2)
+    monkeypatch.setattr(script, "_PROGRESS_EVERY", 1)
+    monkeypatch.setattr(script, "_TRACEBACK_LIMIT", 1)
+    candidates = _candidates(*[(f"f{i}", "A") for i in range(4)])
+
+    def check(filename):
+        raise OSError("cannot open")
+
+    with captured_logs("INFO") as records:
+        _, counts, start = asyncio.run(
+            script.survey(candidates, lambda _: True, check, limit=0)
+        )
+        asyncio.run(
+            script.survey(candidates, lambda _: True, check, start=start, counts=counts)
+        )
+
+    progress = [r["message"] for r in records if "checked" in r["message"]]
+    assert progress[-1] == "  ... 4 of 4 checked"
+    assert sum(r["exception"] is not None for r in records) == 1
+
+
 # --- the run ------------------------------------------------------------------
 
 
