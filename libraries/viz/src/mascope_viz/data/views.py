@@ -1196,7 +1196,7 @@ def _label(value: Any) -> str | None:
 def _mode_names(store: CampaignStore, samples: pd.DataFrame) -> dict[str, str]:
     """The modes' names by ID, as *samples* record them: a mode renamed
     between two batches' fetches takes the name of the batch fetched last,
-    whichever was acquired first."""
+    whatever its acquisition time."""
     stamps = store.meta.get("batches", {})
     named = samples[
         ["sample_batch_id", "ionization_mode_id", "ionization_mode_name"]

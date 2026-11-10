@@ -46,12 +46,15 @@ def month(synced) -> tuple[Campaign, CampaignStore]:
     return campaign, report.store
 
 
-def _sync(campaign: Campaign | FakeClient, root, scope: Scope = SCOPE) -> CampaignStore:
+def _sync(
+    campaign: Campaign | FakeClient,
+    root,
+    scope: Scope = SCOPE,
+    now: str = "2026-08-01T00:00:00Z",
+) -> CampaignStore:
     client = campaign if isinstance(campaign, FakeClient) else FakeClient(campaign)
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(
-            store_module, "_now", lambda: pd.Timestamp("2026-08-01T00:00:00Z")
-        )
+        patch.setattr(store_module, "_now", lambda: pd.Timestamp(now))
         patch.setattr(store_module.time, "sleep", lambda seconds: None)
         return sync(client, scope, root=root).store
 
@@ -862,13 +865,15 @@ def test_coverage_leaves_a_mode_the_server_did_not_name_unnamed(
     assert bins["mode_name"].isna().all()
 
 
-def test_a_renamed_mode_takes_the_name_of_its_newest_batch(short_campaign, tmp_path):
+def test_a_renamed_mode_takes_the_name_of_its_newest_batch_fetched_last(
+    short_campaign, tmp_path
+):
     client = FakeClient(short_campaign)
     _sync(client, tmp_path)
     client.mode_name = "Renamed mode"
-    # Only the newest batch is fetched again, and lists the new name
+    # Only the newest batch is fetched again, a day on, and lists the new name
     client.modified[client.batch_ids[-1]] += pd.Timedelta(hours=1)
-    store = _sync(client, tmp_path)
+    store = _sync(client, tmp_path, now="2026-08-02T00:00:00Z")
 
     bins = views.coverage(store).bins
 
@@ -886,12 +891,8 @@ def test_a_renamed_mode_takes_the_name_of_the_batch_fetched_last(
     # Only the oldest batch is fetched again, as when its ledger is curated:
     # the newest batch acquired still holds the old name
     client.modified[client.batch_ids[0]] += pd.Timedelta(hours=1)
-    with pytest.MonkeyPatch.context() as patch:
-        # _sync's clock, a day on: the refetch is the later fetch
-        later = pd.Timestamp("2026-08-02T00:00:00Z")
-        patch.setattr(store_module, "_now", lambda: later)
-        patch.setattr(store_module.time, "sleep", lambda seconds: None)
-        store = sync(client, SCOPE, root=tmp_path).store
+    # A day on: the refetch is the later fetch
+    store = _sync(client, tmp_path, now="2026-08-02T00:00:00Z")
 
     bins = views.coverage(store).bins
 
