@@ -25,6 +25,12 @@ import { test, expect } from './fixtures/index.js'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(HERE, '../../../..')
 
+/** Every sample file the demo user can see, the demo's past acquisitions included. */
+const FILES_QUERY = '/sample/files?datetime_min=2000-01-01T00:00:00Z&limit=1000'
+
+/** The processing statuses a file ends on (ProcessingStatus in the backend). */
+const PROCESSING_ENDED = new Set(['needs_chemistry', 'calibration_failed', 'done', 'failed'])
+
 /**
  * Make sure the Raw files tab is active. It is the default tab, so usually
  * no click is needed - and clicking blindly is flaky when a notification
@@ -45,16 +51,106 @@ function findSourceRaw() {
 
   const cacheRoot = path.join(REPO_ROOT, '.runtime', 'demo')
   if (!existsSync(cacheRoot)) return null
-  for (const version of readdirSync(cacheRoot)) {
+  // Newest bundle first; then the last file in name order. Sorted, so every
+  // machine re-ingests the same file: readdirSync lists entries in the
+  // filesystem's order. On the demo bundle the last name is a late
+  // acquisition, which the Raw files tab lists on its first page, the only
+  // one its filename search reads.
+  const byName = (a, b) => a.localeCompare(b, 'en', { numeric: true })
+  for (const version of readdirSync(cacheRoot).sort(byName).reverse()) {
     const rawDir = path.join(cacheRoot, version, 'raw')
     if (!existsSync(rawDir)) continue
-    const raw = readdirSync(rawDir).find((f) => f.toLowerCase().endsWith('.raw'))
+    const raw = readdirSync(rawDir)
+      .filter((f) => f.toLowerCase().endsWith('.raw'))
+      .sort(byName)
+      .at(-1)
     if (raw) return path.join(rawDir, raw)
   }
   return null
 }
 
+/** Every sample batch, across all workspaces and their datasets. */
+async function listBatches(api) {
+  const workspaces = (await api.get('/workspaces')).data
+  const datasets = (
+    await Promise.all(
+      workspaces.map((w) => api.get(`/workspaces/${w.workspace_id}/datasets`).then((r) => r.data))
+    )
+  ).flat()
+  return (
+    await Promise.all(
+      datasets.map((d) => api.get(`/sample/batches?dataset_id=${d.dataset_id}`).then((r) => r.data))
+    )
+  ).flat()
+}
+
+/**
+ * Remove what the upload added: its samples, a batch it alone made, and the
+ * file. The SDK and AI contract tests run on the same stack after this
+ * suite, and read the demo batches: a re-ingested uronium file left in the
+ * uronium daily batch moves the time span AI golden M5 expects (#2959).
+ */
+async function removeUpload(api, { token, batchIdsBefore }) {
+  let file = (await api.get(FILES_QUERY)).data?.find((f) => f.filename.includes(token))
+  if (!file) return // never registered: nothing reached the database
+
+  // Deleting samples under a running pipeline races its later stages, so
+  // wait for processing to end first.
+  await expect
+    .poll(
+      async () => {
+        file = (await api.get(FILES_QUERY)).data?.find((f) => f.filename.includes(token))
+        return PROCESSING_ENDED.has(file?.processing_status)
+      },
+      { timeout: 5 * 60_000, intervals: [5_000], message: 'processing of the upload to end' }
+    )
+    .toBe(true)
+
+  const holders = []
+  for (const batch of await listBatches(api)) {
+    const items = (
+      await api.get(
+        `/sample/items?sample_batch_id=${batch.sample_batch_id}&sample_file_id=${file.sample_file_id}`
+      )
+    ).data
+    if (items.length) holders.push({ batch, items })
+  }
+  const itemIds = holders.flatMap(({ items }) => items.map((i) => i.sample_item_id))
+  if (itemIds.length) await api.post('/sample/items/delete', { sample_item_ids: itemIds })
+  for (const { batch } of holders) {
+    if (!batchIdsBefore.has(batch.sample_batch_id)) {
+      await api.delete(`/sample/batches/${batch.sample_batch_id}`)
+    }
+  }
+  await api.post('/sample/files/delete', { sample_file_ids: [file.sample_file_id] })
+
+  // A cleanup that stops working fails here, not in the contract tests
+  // later: the batches are the ones from before the upload, no more and no
+  // fewer. The suite runs on one worker, so no other test adds or removes
+  // one meanwhile; a batch is deleted in the background.
+  await expect
+    .poll(async () => (await listBatches(api)).map((b) => b.sample_batch_id).sort(), {
+      timeout: 60_000,
+      intervals: [2_000],
+      message: 'the batches from before the upload'
+    })
+    .toEqual([...batchIdsBefore].sort())
+  const files = (await api.get(FILES_QUERY)).data ?? []
+  expect(files.some((f) => f.filename.includes(token))).toBe(false)
+}
+
 test.describe('sample file upload', () => {
+  // What the running test uploaded, for afterEach to remove. Set before the
+  // upload starts, so a test that fails after it still cleans up.
+  let upload = null
+
+  test.afterEach(async ({ api }) => {
+    if (!upload) return
+    const made = upload
+    upload = null
+    await removeUpload(api, made)
+  })
+
   test('uploads a raw file and the pipeline processes it into a browsable sample', async ({
     page,
     api
@@ -64,8 +160,9 @@ test.describe('sample file upload', () => {
       !source,
       'no demo raw file available; set MASCOPE_E2E_RAW_FILE or fetch the demo bundle (mascope demo fetch)'
     )
-    // Real conversion + peak detection + matching takes a few minutes.
-    test.setTimeout(10 * 60_000)
+    // Real conversion + peak detection + matching takes a few minutes, and
+    // the cleanup waits for it to end. afterEach shares this timeout.
+    test.setTimeout(15 * 60_000)
 
     // Stage a uniquely named copy: keep the instrument prefix (first token)
     // and the ionization token so upload validation passes, append an e2e
@@ -75,6 +172,10 @@ test.describe('sample file upload', () => {
     const uploadName = `${path.basename(source, '.raw')}_${token}.raw`
     const staged = path.join(mkdtempSync(path.join(tmpdir(), 'mascope-e2e-')), uploadName)
     copyFileSync(source, staged)
+    upload = {
+      token,
+      batchIdsBefore: new Set((await listBatches(api)).map((b) => b.sample_batch_id))
+    }
 
     // --- Upload through the Uppy dashboard on the Raw files tab ---
     // The Uppy modal overlays the page as soon as a click lands, so a normal
@@ -99,9 +200,7 @@ test.describe('sample file upload', () => {
     await expect
       .poll(
         async () => {
-          const res = await api.get(
-            '/sample/files?datetime_min=2000-01-01T00:00:00Z&limit=1000'
-          )
+          const res = await api.get(FILES_QUERY)
           sampleFile = (res.data ?? []).find((f) => f.filename.includes(token))
           return Boolean(sampleFile)
         },
@@ -125,8 +224,6 @@ test.describe('sample file upload', () => {
       timeout: 60_000
     })
 
-    // No cleanup: the delete route only removes files without sample items,
-    // and this file has been processed into one. Each run uploads under a
-    // fresh unique name, so leftovers never collide; CI stacks are ephemeral.
+    // afterEach removes the upload again.
   })
 })
