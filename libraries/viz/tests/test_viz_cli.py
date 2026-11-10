@@ -710,6 +710,23 @@ def test_view_coverage_names_a_mode_alone_when_no_other_shares_its_name(server):
     assert '("im-' not in shown
 
 
+def test_view_coverage_names_a_mode_alone_under_two_polarities(server):
+    # One mode in both polarities is two groups of one name, and one mode
+    first = server.batch_ids[0]
+    server.by_batch[first] = server.by_batch[first].assign(polarity="+")
+    payload("store", "sync", *DATASET)
+
+    found = payload("view", "coverage", *DATASET)
+
+    groups = [(g["polarity"], g["mode"], g["mode_name"]) for g in found["groups"]]
+    assert ("+", "im-1", "Campaign mode") in groups
+    assert ("-", "im-1", "Campaign mode") in groups
+    shown = text("view", "coverage", *DATASET)
+    assert '+         "Campaign mode"  ' in shown
+    assert '-         "Campaign mode"  ' in shown
+    assert '("im-' not in shown
+
+
 #: Each view with the options it needs, and its frame from the library.
 CALLS = {
     "series": (["-k", "tic"], lambda s: views.series(s, ["tic"])),
