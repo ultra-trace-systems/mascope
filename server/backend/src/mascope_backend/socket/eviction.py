@@ -56,13 +56,27 @@ sign-in screen, and would show data with a socket that hears nothing. On the
 event the SPA opens a new connection and reads the profile again, which shows
 the sign-in screen, or signs the socket in again when the browser holds a
 session once more.
+
+An eviction or a sign-out that finds Redis out of reach is not lost: the change
+it follows already stands, but the sockets keep their rooms, and once Redis is
+back the record-sync events reach them again. So the worker that tried it keeps
+it, asks Redis every ``sign_out_retry_interval``, and tries it once more when
+Redis answers (:func:`_retry_later`). A retry reads everything again: an
+eviction reads the account from the database, so an account enabled again
+meanwhile keeps its sockets, and a sign-out finds the session's sockets by its
+``iat`` once more. A retry that meets Redis out of reach again is kept again;
+one that meets any other fault is not, as trying it again would only meet the
+fault again. What a worker keeps is in its memory: a worker that stops before
+Redis is back drops it, and says so in monitoring.
 """
 
+import asyncio
 import os
 import time
-from typing import Optional
+from functools import partial
+from typing import Awaitable, Callable, Optional
 
-from mascope_backend.redis_failures import log_socket_failure
+from mascope_backend.redis_failures import log_socket_failure, redis_out_of_reach
 from mascope_backend.runtime import runtime
 from mascope_backend.socket import sio
 from mascope_backend.socket.signed_in import SIGNED_IN_ROOM, admit_signed_in
@@ -74,13 +88,23 @@ from mascope_backend.socket.storage import (
     get_user_socket_sids,
     has_session,
     peek_session_user,
+    redis_storage_client,
     room_tracker,
     socket_is_held,
 )
+from mascope_backend.socket.storage.config import storage_config
 
 
 #: The event a socket hears when its session has been signed out.
 SIGNED_OUT_EVENT = "signed_out"
+
+#: Evictions and sign-outs that found Redis out of reach, by what they sign
+#: out, each with the call that tries it again. Kept by this worker until Redis
+#: answers.
+_retries: dict[tuple, Callable[[], Awaitable[object]]] = {}
+
+#: The task that tries them again, while any is kept.
+_retry_task: asyncio.Task | None = None
 
 
 def socket_hold_reason(
@@ -122,8 +146,8 @@ async def evict_ended_sessions(user_id: int, user=None) -> int:
     sign-out-everywhere, an account deletion - after the change is committed.
     An account the database no longer has may read nothing, so every one of
     its sockets is evicted.
-    Never raises: the change it follows already stands, and a failure here
-    leaves the sockets no worse off than before eviction existed.
+    Never raises: the change it follows already stands. When Redis is out of
+    reach it is tried again once Redis answers (see the module's docstring).
 
     :param user_id: The account.
     :param user: The account as just committed, if the caller has it; read
@@ -205,6 +229,9 @@ async def evict_ended_sessions(user_id: int, user=None) -> int:
             f"Failed to evict the sockets of user {user_id} [Worker {worker_pid}]",
             e,
         )
+        if redis_out_of_reach(e):
+            # Tried again with the account as the database then has it.
+            _retry_later(("evict", user_id), partial(evict_ended_sessions, user_id))
         return 0
 
 
@@ -230,28 +257,41 @@ async def sign_out_socket(sid: str, user_id: int) -> bool:
     :param user_id: The account signing out.
     :return: Whether the socket was signed out.
     """
-    worker_pid = os.getpid()
     try:
-        try:
-            session = await get_session_user(sid)
-        except SocketSessionError:
-            # Never authenticated, or already gone: nothing is signed in.
-            return False
-        if session.get("user_id") != user_id:
-            runtime.logger.warning(
-                f"Sign-out of user {user_id} named socket {sid} of another "
-                f"account; left it as it is [Worker {worker_pid}]"
-            )
-            return False
-
-        await _sign_out(sid, user_id)
-        return True
+        return await _sign_out_named(sid, user_id)
     except Exception as e:
         log_socket_failure(
-            f"Failed to sign socket {sid} of user {user_id} out [Worker {worker_pid}]",
+            f"Failed to sign socket {sid} of user {user_id} out [Worker {os.getpid()}]",
             e,
         )
         return False
+
+
+async def _sign_out_named(sid: str, user_id: int) -> bool:
+    """
+    :func:`sign_out_socket`, raising what it fails with.
+
+    :param sid: The socket the signing-out request names.
+    :param user_id: The account signing out.
+    :return: Whether the socket was signed out.
+    """
+    try:
+        session = await get_session_user(sid)
+    except SocketSessionError as e:
+        if redis_out_of_reach(e):
+            # Not read, so not known to be signed out.
+            raise
+        # Never authenticated, or already gone: nothing is signed in.
+        return False
+    if session.get("user_id") != user_id:
+        runtime.logger.warning(
+            f"Sign-out of user {user_id} named socket {sid} of another "
+            f"account; left it as it is [Worker {os.getpid()}]"
+        )
+        return False
+
+    await _sign_out(sid, user_id)
+    return True
 
 
 async def sign_out_session(
@@ -267,7 +307,11 @@ async def sign_out_session(
     of the account authenticated with another token, in another browser, keeps
     its session and rooms.
 
-    Never raises: the session the cookie carried has ended either way.
+    Never raises: the session the cookie carried has ended either way. When
+    Redis was out of reach for any of it, the sign-out is tried again once
+    Redis answers (see the module's docstring); the named socket only if it was
+    the one not reached, as a tab signed out already may have signed in again
+    by then.
 
     :param user_id: The account signing out.
     :param issued_at: The ``iat`` of the ending session's token; ``None`` for a
@@ -277,8 +321,21 @@ async def sign_out_session(
     :return: How many sockets were signed out.
     """
     signed_out = 0
-    if sid and await sign_out_socket(sid, user_id):
-        signed_out += 1
+    retry_sid: Optional[str] = None
+    out_of_reach = False
+    if sid:
+        try:
+            if await _sign_out_named(sid, user_id):
+                signed_out += 1
+        except Exception as e:
+            log_socket_failure(
+                f"Failed to sign socket {sid} of user {user_id} out "
+                f"[Worker {os.getpid()}]",
+                e,
+            )
+            if redis_out_of_reach(e):
+                retry_sid = sid
+                out_of_reach = True
     try:
         others = await get_user_socket_sids(user_id)
     except Exception as e:
@@ -287,7 +344,8 @@ async def sign_out_session(
             f"[Worker {os.getpid()}]",
             e,
         )
-        return signed_out
+        others = set()
+        out_of_reach = out_of_reach or redis_out_of_reach(e)
     for other in others:
         try:
             # Looked at without a refresh, so a socket its dead worker left
@@ -307,6 +365,12 @@ async def sign_out_session(
                 f"[Worker {os.getpid()}]",
                 e,
             )
+            out_of_reach = out_of_reach or redis_out_of_reach(e)
+    if out_of_reach:
+        _retry_later(
+            ("sign-out", user_id, issued_at, retry_sid),
+            partial(sign_out_session, user_id, issued_at, retry_sid),
+        )
     return signed_out
 
 
@@ -342,6 +406,82 @@ async def sign_out_expired_socket(sid: str, user_id: int) -> bool:
             e,
         )
         return False
+
+
+def _retry_later(key: tuple, retry: Callable[[], Awaitable[object]]) -> None:
+    """
+    Keep an eviction or a sign-out that found Redis out of reach, to be tried
+    again once Redis answers.
+
+    :param key: What it signs out; one kept already under the same key is
+        replaced, so a retry kept again, or a second logout of one session,
+        is tried once.
+    :param retry: The call that tries it again. It never raises, and keeps
+        itself again if Redis is still out of reach.
+    """
+    global _retry_task
+    if key not in _retries and len(_retries) >= storage_config.sign_out_retry_limit:
+        runtime.logger.error(
+            f"Dropped a sign-out that found Redis out of reach ({key[0]}, user "
+            f"{key[1]}): {len(_retries)} are kept already [Worker {os.getpid()}]"
+        )
+        return
+    _retries[key] = retry
+    if not _retrying():
+        _retry_task = asyncio.create_task(_retry_kept())
+
+
+def _retrying() -> bool:
+    return (
+        _retry_task is not None
+        and not _retry_task.done()
+        and _retry_task.get_loop() is asyncio.get_running_loop()
+    )
+
+
+async def _retry_kept() -> None:
+    """Try the kept sign-outs again whenever Redis answers, until none is kept."""
+    while _retries:
+        await asyncio.sleep(storage_config.sign_out_retry_interval)
+        try:
+            await redis_storage_client.client.ping()
+        except Exception as e:
+            # Each storage call logs the outage already; the heartbeat reports
+            # one that lasts.
+            runtime.logger.debug(f"Sign-out retry: Redis does not answer yet: {e}")
+            continue
+        runtime.logger.info(
+            f"Trying again {len(_retries)} sign-out(s) that found Redis out of "
+            f"reach [Worker {os.getpid()}]"
+        )
+        for key in list(_retries):
+            if (retry := _retries.pop(key, None)) is not None:
+                await retry()
+
+
+async def stop_sign_out_retries() -> None:
+    """
+    Stop trying the kept sign-outs again (called on shutdown).
+
+    What is still kept is dropped, and said in monitoring, as it is the one
+    record left of sockets that keep their rooms.
+    """
+    global _retry_task
+    task, _retry_task = _retry_task, None
+    if task is not None and task.get_loop() is asyncio.get_running_loop():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            # Expected: the task was cancelled just above.
+            pass
+    if _retries:
+        runtime.logger.warning(
+            f"Dropped {len(_retries)} sign-out(s) that found Redis out of reach "
+            f"at shutdown: their sockets keep their rooms until they reconnect "
+            f"or their token expires [Worker {os.getpid()}]"
+        )
+        _retries.clear()
 
 
 async def _sign_out(sid: str, user_id: int) -> None:

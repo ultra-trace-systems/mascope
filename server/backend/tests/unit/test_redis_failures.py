@@ -29,6 +29,7 @@ the real monitoring sink with the SDK's two capture calls recorded.
 from types import SimpleNamespace
 
 import pytest
+import pytest_asyncio
 import sentry_sdk
 from redis.exceptions import AuthenticationError as RedisAuthenticationError
 from redis.exceptions import ConnectionError as RedisConnectionError
@@ -107,6 +108,14 @@ def _own(records: list[dict], function: str) -> list[dict]:
         for record in records
         if record["level"].no >= threshold and record["function"] == function
     ]
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def no_kept_sign_outs():
+    """Drop the sign-outs a socket case kept for a retry, and their task."""
+    yield
+    eviction._retries.clear()
+    await eviction.stop_sign_out_retries()
 
 
 async def _noop(*args, **kwargs):

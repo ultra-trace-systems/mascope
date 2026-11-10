@@ -18,6 +18,7 @@ trace.
 
 import pytest
 import pytest_asyncio
+from redis.exceptions import ConnectionError as RedisConnectionError
 
 from mascope_backend.db.admin.user.require_password_change import (
     clear_password_change_requirement,
@@ -34,11 +35,32 @@ class InMemoryRedis:
     under test are the counting and the clears, not the TTL. The socket session
     store is here because every password write and disable evicts the account's
     sockets, which reads the session index (``socket.eviction``).
+
+    Set ``out_of_reach`` and every command fails as it does while Redis
+    restarts.
     """
 
     def __init__(self):
         self.values: dict[str, int | str] = {}
         self.sets: dict[str, set[str]] = {}
+        self.out_of_reach = False
+
+    def __getattribute__(self, name: str):
+        attr = object.__getattribute__(self, name)
+        if (
+            name.startswith("_")
+            or not callable(attr)
+            or not object.__getattribute__(self, "out_of_reach")
+        ):
+            return attr
+
+        async def refused(*args, **kwargs):
+            raise RedisConnectionError("Connection refused.")
+
+        return refused
+
+    async def ping(self) -> bool:
+        return True
 
     async def incr(self, key: str) -> int:
         self.values[key] = self.values.get(key, 0) + 1

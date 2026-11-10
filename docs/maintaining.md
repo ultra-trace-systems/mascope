@@ -1793,10 +1793,16 @@ stack comes up is logged in the backend's log files as a warning ending in
 storage rides it out by retrying once, refusing the call, or letting a key
 lapse, and so do socket sign-in, which refuses the socket, and the socket
 events, which are dropped. Signing sockets out, at a logout or when an account
-is disabled, deleted or has its sessions ended, is not retried: a socket it
-could not reach keeps its rooms until it reconnects or its token expires, and
-only the warning in the log files records it
-([#2960](https://github.com/ultra-trace-systems/mascope/issues/2960)).
+is disabled, deleted or has its sessions ended, is tried again: the worker that
+could not reach Redis keeps the sign-out, asks Redis every 10 seconds, and signs
+the sockets out within 10 seconds of it answering. Until then the sockets keep
+their rooms; nothing reaches them while Redis is down, but the events that flow
+again in those seconds do. A worker keeps at most 1,000 such sign-outs; one more is dropped
+with an `ERROR` in GlitchTip, "Dropped a sign-out that found Redis out of
+reach". What a worker keeps is lost when it stops before Redis is back, which
+it reports as a warning in GlitchTip, "Dropped N sign-out(s) that found Redis
+out of reach at shutdown": those sockets keep their rooms until they reconnect
+or their token expires.
 python-socketio's own "Cannot receive from redis... retrying" and "Cannot
 publish to redis... retrying" lines are logged at `INFO`; its other errors, such
 as "giving up" on a publish, still reach GlitchTip. A Redis that stays down is
