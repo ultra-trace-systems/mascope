@@ -176,6 +176,17 @@ What every view does the same way:
   engine run, and where the run changes.
   A chart prints them; a run change is flagged, never joined silently. A
   `spectrum` against another period flags a change between the two.
+- **Long series come from the rollups.** `series` at `cadence="1h"`, in
+  UTC or a zone a whole number of hours from it, or at `1D` in UTC, bins
+  from the store's hourly and daily rollups rather than every sample's
+  values, and gives the same frame. It bins the rows instead, as fast as
+  before, where the rollups would give another answer: with a
+  normalisation, a `stat` other than median or mean, a `band` other than
+  (10, 90) or None, a window whose first or last bin reaches outside it,
+  a formula two batch peaks of one batch carry (`n_shared_keys`), two
+  engine readings of a formula in one bin, or rollup days the last sync
+  left pending. The TIC is binned from the samples. `attrs["source"]`
+  says which drew the frame: `rollups` or `rows`.
 
 ## The command line
 
