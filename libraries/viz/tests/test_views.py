@@ -9,6 +9,7 @@ tables, not against what the views computed last time.
 """
 
 import dataclasses
+import json
 
 import numpy as np
 import pandas as pd
@@ -565,6 +566,239 @@ def test_two_batch_peaks_of_one_formula_are_summed_per_sample(short_campaign, tm
     twin = points.loc[points["batch_peak_id"] == f"{batch}-twin", "sample_item_id"]
     assert len(twin) == 50
     np.testing.assert_allclose(got.loc[want.index], want)
+
+
+# --- series from the rollups ------------------------------------------------------
+
+
+def _from_rows(store: CampaignStore, keys, **kwargs) -> pd.DataFrame:
+    """:func:`views.series` binned from the store's rows, whatever it asks."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(views, "_rollable", lambda *args, **kw: False)
+        return views.series(store, keys, **kwargs)
+
+
+def _read_tables(store: CampaignStore, call) -> tuple[pd.DataFrame, list]:
+    """What *call* returns, and the ``(table, batches)`` it read the store
+    with."""
+    read = []
+    table = CampaignStore.table
+
+    def recording(self, name, **kwargs):
+        read.append((name, kwargs.get("batches")))
+        return table(self, name, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(CampaignStore, "table", recording)
+        return call(), read
+
+
+def _as_from_rows(store: CampaignStore, keys, source: str, **kwargs) -> pd.DataFrame:
+    """:func:`views.series` of *keys*, checked to come from *source* and to
+    be the frame the rows give, attrs included."""
+    got = views.series(store, keys, **kwargs)
+    want = _from_rows(store, keys, **kwargs)
+
+    assert got.attrs["source"] == source
+    assert want.attrs["source"] == "rows"
+    pd.testing.assert_frame_equal(got, want, rtol=1e-12)
+    assert {k: v for k, v in got.attrs.items() if k != "source"} == {
+        k: v for k, v in want.attrs.items() if k != "source"
+    }
+    return got
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"cadence": "1h", "tz": "UTC"},
+        # Helsinki is whole hours from UTC, through its clock changes too
+        {"cadence": "1h"},
+        {"cadence": "1D", "tz": "UTC"},
+        {"cadence": "24h", "tz": "UTC"},
+        {"cadence": "1h", "tz": "UTC", "stat": "mean", "band": None},
+        # Across a batch: the batch reads the keys only in its samples inside
+        {"cadence": "1h", "start": "2026-06-03T10:00Z", "end": "2026-06-09T00:00Z"},
+        {"cadence": "1D", "tz": "UTC", "start": "2026-06-03", "end": "2026-06-09"},
+    ],
+)
+def test_series_from_the_rollups_is_the_series_from_the_rows(month, kwargs):
+    _, store = month
+    keys = [*sorted(store.table("species")["series_key"].astype(str)), views.TIC]
+
+    frame = _as_from_rows(store, keys, "rollups", **kwargs)
+
+    assert frame["n"].sum() > 0
+    assert (frame["n_samples"] > 0).any()
+
+
+def test_series_from_the_rollups_reads_no_series_rows(month):
+    """The rollups stand in for the rows: only a batch the window cuts has
+    its rows read, for which keys it reads inside the window."""
+    campaign, store = month
+    keys = sorted(campaign.truth.cycles)
+    series_tables = {"ion_series", "peak_series"}
+
+    frame, read = _read_tables(store, lambda: views.series(store, keys, cadence="1h"))
+
+    assert frame.attrs["source"] == "rollups"
+    assert ("rollups", None) in read
+    assert not [name for name, _ in read if name in series_tables]
+
+    frame, read = _read_tables(
+        store,
+        lambda: views.series(
+            store, keys, cadence="1h", start="2026-06-03T10:00Z", end="2026-06-09"
+        ),
+    )
+
+    assert frame.attrs["source"] == "rollups"
+    # The end is midnight in Helsinki, inside the UTC day's batch
+    cut = {tuple(batches) for name, batches in read if name in series_tables}
+    assert cut == {("batch-03",), ("batch-08",)}
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        # A rollup day is a UTC day
+        {"cadence": "1D"},
+        # India is five and a half hours from UTC
+        {"cadence": "1h", "tz": "Asia/Kolkata"},
+        {"cadence": "6h", "tz": "UTC"},
+        {"cadence": "10min", "tz": "UTC"},
+        {"cadence": "auto", "tz": "UTC"},
+        {"cadence": "raw", "tz": "UTC"},
+        {"cadence": "1h", "tz": "UTC", "normalise": "tic"},
+        {"cadence": "1h", "tz": "UTC", "stat": "max"},
+        {"cadence": "1h", "tz": "UTC", "band": (25, 75)},
+        # No sample in the window
+        {"cadence": "1h", "tz": "UTC", "start": "2026-08-01", "end": "2026-08-02"},
+    ],
+)
+def test_series_bins_the_rows_where_the_rollups_would_differ(month, kwargs):
+    """Decided before anything is read of the batches."""
+    campaign, store = month
+    keys = [*sorted(campaign.truth.cycles), views.TIC]
+
+    frame, read = _read_tables(store, lambda: views.series(store, keys, **kwargs))
+
+    assert frame.attrs["source"] == "rows"
+    assert not [name for name, batches in read if name == "rollups" or batches]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"start": "2026-06-03T10:30Z"},
+        {"end": "2026-06-09T00:30Z"},
+        {"start": "2026-06-03T10:00Z", "end": "2026-06-03T10:00:31Z"},
+    ],
+)
+def test_series_bins_the_rows_where_a_bin_reaches_outside_the_window(month, kwargs):
+    campaign, store = month
+    keys = [*sorted(campaign.truth.cycles), views.TIC]
+
+    frame, read = _read_tables(
+        store, lambda: views.series(store, keys, cadence="1h", tz="UTC", **kwargs)
+    )
+
+    assert frame.attrs["source"] == "rows"
+    assert "rollups" not in {name for name, _ in read}
+
+
+def test_series_bins_the_rows_while_a_rollup_day_is_pending(short_campaign, tmp_path):
+    """A sync stopped before it rolled a day up leaves the day's rollups
+    stale."""
+    store = _sync(short_campaign, tmp_path)
+    keys = sorted(store.table("species")["series_key"].astype(str))
+    _as_from_rows(store, keys, "rollups", cadence="1h")
+
+    meta = store.meta
+    meta["pending_rollups"] = ["2026-06-02"]
+    store.meta_path.write_text(json.dumps(meta))
+
+    _as_from_rows(store, keys, "rows", cadence="1h")
+
+
+def test_series_bins_the_rows_of_a_formula_two_batch_peaks_carry(
+    short_campaign, tmp_path
+):
+    """A sample's value is the sum of the two peaks' values; the rollups
+    count each. An ion's series is still the rollups'."""
+    client = FakeClient(short_campaign, twin=True)
+    store = _sync(client, tmp_path)
+    parent = client.anchors[client.batch_ids[0]].iloc[0]
+    formula = store_module.formula_key(parent["consensus_formula"], client.mechanism)
+    ion = sorted(k for k in short_campaign.truth.cycles if k.startswith("ion:"))[0]
+
+    _as_from_rows(store, [formula], "rows", cadence="1h")
+    _as_from_rows(store, [ion], "rollups", cadence="1h")
+
+
+def test_series_bins_the_rows_where_a_formula_has_two_readings_in_a_bin(
+    short_campaign, tmp_path
+):
+    """The second run's first sample moved into the first run's last hour:
+    that hour, and that day, hold the formulas of both readings."""
+    tables = dict(short_campaign.tables)
+    samples = tables["samples"].copy()
+    first = samples.index[samples["sample_batch_id"] == "batch-02"][0]
+    samples.loc[first, "datetime_utc"] = pd.Timestamp("2026-06-01T23:00:00Z")
+    samples.loc[first, "t_mid_utc"] = pd.Timestamp("2026-06-01T23:00:30Z")
+    tables["samples"] = samples
+    store = _sync(dataclasses.replace(short_campaign, tables=tables), tmp_path)
+    renamed = _renamed(short_campaign)
+    formulas = sorted(
+        k
+        for k in store.table("species")["series_key"].astype(str)
+        if k.startswith("formula:") and k not in renamed
+    )
+    ions = sorted(k for k in short_campaign.truth.cycles if k.startswith("ion:"))
+    rollups = store.table("rollups", keys=formulas[:1])
+    assert (rollups.groupby(["bin", "t"], observed=True).size() == 2).any()
+
+    for cadence, t, n in (
+        ("1h", "2026-06-01T23:00Z", 61),
+        ("1D", "2026-06-01T00:00Z", 1441),
+    ):
+        frame = _as_from_rows(store, formulas[:1], "rows", cadence=cadence, tz="UTC")
+        assert frame.set_index("t").loc[pd.Timestamp(t), "n"] == n
+        _as_from_rows(store, ions, "rollups", cadence=cadence, tz="UTC")
+
+
+def test_a_batch_the_window_cuts_reads_a_key_only_inside_it(short_campaign, tmp_path):
+    """The second batch reads an ion before noon and not after: from noon
+    on, its samples are no samples of the ion, though its ``species`` lists
+    the ion."""
+    ion = sorted(k for k in short_campaign.truth.cycles if k.startswith("ion:"))[0]
+    tables = dict(short_campaign.tables)
+    samples = tables["samples"]
+    noon = pd.Timestamp("2026-06-02T12:00:00Z")
+    after = set(
+        samples.loc[
+            (samples["sample_batch_id"] == "batch-02") & (samples["t_mid_utc"] >= noon),
+            "sample_item_id",
+        ].astype(str)
+    )
+    rows = tables["ion_series"]
+    tables["ion_series"] = rows[
+        ~(
+            (rows["series_key"].astype(str) == ion)
+            & rows["sample_item_id"].astype(str).isin(after)
+        )
+    ]
+    store = _sync(dataclasses.replace(short_campaign, tables=tables), tmp_path)
+
+    frame = _as_from_rows(
+        store, [ion, views.TIC], "rollups", cadence="1h", tz="UTC", start=noon
+    )
+
+    of_ion = frame[frame["key"] == ion].set_index("t")["n_samples"]
+    assert (of_ion[: pd.Timestamp("2026-06-02T23:00Z")] == 0).all()
+    assert (of_ion["2026-06-04"] == 60).all()
+    tic = frame[frame["key"] == views.TIC].set_index("t")
+    assert tic.loc[noon, "n_samples"] == 60
 
 
 # --- diurnal ----------------------------------------------------------------------

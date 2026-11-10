@@ -53,7 +53,7 @@ What the views share:
 import math
 import zoneinfo
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
@@ -61,7 +61,7 @@ import pandas as pd
 from pandas.tseries.frequencies import to_offset
 
 from .scope import INSTRUMENT_TZ, _zone_of
-from .store import CampaignStore
+from .store import BINS, CampaignStore
 
 
 #: The key of the samples' TIC.
@@ -571,6 +571,8 @@ class _Values:
     :ivar key: the key's,
     :ivar value: and the value, normalised.
     :ivar attrs: What every frame of these values says.
+    :ivar batch_ids: The batches, by code.
+    :ivar window: The window, in UTC; None for an open bound.
     """
 
     zone: str
@@ -583,6 +585,8 @@ class _Values:
     key: np.ndarray
     value: np.ndarray
     attrs: dict[str, Any]
+    batch_ids: tuple[str, ...] = ()
+    window: Window = (None, None)
 
     def reads(self, k: int) -> np.ndarray:
         """Which samples are of a batch that reads key *k*."""
@@ -612,6 +616,32 @@ def _read(
     window: Window | None = None,
 ) -> _Values:
     """The values a view draws, and the attrs its frames carry."""
+    values = _sampled(
+        store,
+        keys,
+        normalise=normalise,
+        tz=tz,
+        start=start,
+        end=end,
+        view=view,
+        window=window,
+    )
+    return _with_rows(store, values, values.attrs["normalise"])
+
+
+def _sampled(
+    store: CampaignStore,
+    keys: Any,
+    *,
+    normalise: str,
+    tz: str | None,
+    start: Any,
+    end: Any,
+    view: str,
+    window: Window | None = None,
+) -> _Values:
+    """A view's window and its samples, with no values read yet: no batch
+    reads a key."""
     normalise = _check_normalise(normalise)
     zone = display_zone(store, tz)
     lo, hi = window if window is not None else (_bound(start, zone), _bound(end, zone))
@@ -629,39 +659,47 @@ def _read(
         .sort_values(["t_mid_utc", "sample_item_id"], kind="stable")
         .reset_index(drop=True)
     )
-    index = pd.Index(samples["sample_item_id"].astype(str))
     batches = pd.Categorical(samples["sample_batch_id"].astype(str))
-    batch = np.asarray(batches.codes, dtype="int64")
-
-    pos, key, value = _key_rows(store, keys, samples, index)
-    present = np.zeros((max(len(batches.categories), 1), len(keys)), dtype=bool)
-    present[batch[pos], key] = True
-    pos, key, value = _per_sample(pos, key, value, len(keys))
-    divisor, name = _normaliser(store, normalise, samples, index)
-    if divisor is not None:
-        value = value / divisor[pos]
+    empty = np.array([], "int64")
 
     return _Values(
         zone=zone,
         keys=keys,
         samples=samples,
         t=_ns(samples["t_mid_utc"]),
-        batch=batch,
-        present=present,
-        pos=pos,
-        key=key,
-        value=value,
+        batch=np.asarray(batches.codes, dtype="int64"),
+        present=np.zeros((max(len(batches.categories), 1), len(keys)), dtype=bool),
+        pos=empty,
+        key=empty,
+        value=np.array([], "float64"),
         attrs=_attrs(
             store,
             view,
             zone,
             keys=keys,
             normalise=normalise,
-            normalise_name=name,
+            normalise_name=_normaliser_name(store, normalise),
             start=lo,
             end=hi,
         ),
+        batch_ids=tuple(batches.categories),
+        window=(lo, hi),
     )
+
+
+def _with_rows(store: CampaignStore, values: _Values, normalise: str) -> _Values:
+    """*values* with the store's rows of its keys in its samples: which
+    batches read each key, and one value per (sample, key), normalised."""
+    samples = values.samples
+    index = pd.Index(samples["sample_item_id"].astype(str))
+    pos, key, value = _key_rows(store, values.keys, samples, index)
+    present = np.zeros_like(values.present)
+    present[values.batch[pos], key] = True
+    pos, key, value = _per_sample(pos, key, value, len(values.keys))
+    divisor, _ = _normaliser(store, normalise, samples, index)
+    if divisor is not None:
+        value = value / divisor[pos]
+    return replace(values, present=present, pos=pos, key=key, value=value)
 
 
 def _stamp(frame: pd.DataFrame, attrs: dict[str, Any]) -> pd.DataFrame:
@@ -784,62 +822,270 @@ def series(
         and where the auto cadence would leave a bin without samples a NaN
         row breaks the line as a bin would. ``attrs`` adds ``cadence``
         (``1min``, ``1h``, ``raw``, ...), ``auto`` (whether the auto rule
-        chose it), ``stat`` and ``band``.
+        chose it), ``stat``, ``band`` and ``source``: ``rollups`` when the
+        store's hourly or daily rollups gave the bins, ``rows`` when its
+        rows did.
+
+    The rollups give the bins only where they give the frame the rows
+    give, values and counts alike: at a cadence named (not ``auto``) whose
+    bins are UTC hours (``1h`` in a zone a whole number of hours from UTC)
+    or UTC days (``1D`` in UTC), with the window's first and last bins
+    inside the window, no normalisation, ``stat`` median or mean, ``band``
+    (10, 90) or None, every rollup day computed (``status().pending_rollups``
+    empty), no batch of the window with two batch peaks of one formula
+    (``n_shared_keys``) when a key is a formula's, and no bin where a
+    formula has two readings. The TIC is binned from the samples.
     """
     if stat not in STATS:
         raise ValueError(f"stat={stat!r} is none of {', '.join(STATS)}")
     band = _check_band(band)
     offset = None if cadence in ("auto", "raw") else _offset(cadence)
-    values = _read(
+    values = _sampled(
         store, keys, normalise=normalise, tz=tz, start=start, end=end, view="series"
     )
     attrs = dict(values.attrs, stat=stat, band=band, auto=cadence == "auto")
+    if offset is not None and _rollable(store, values, offset, stat, band):
+        frame = _rolled_series(store, values, offset, stat, attrs)
+        if frame is not None:
+            return frame
+    values = _with_rows(store, values, values.attrs["normalise"])
+    attrs["source"] = "rows"
     reads_any = values.reads_any
     if not reads_any.any():
         name = "raw" if cadence == "raw" else _cadence_name(offset or to_offset("1min"))
         return _stamp(_empty(_SERIES_COLUMNS, values.zone), dict(attrs, cadence=name))
     if cadence == "raw":
         return _stamp(_raw(values), dict(attrs, cadence="raw", band=None))
+    offset, edges, first, n_bins, sample_bin = _series_bins(
+        values, offset, cadence == "auto"
+    )
+    attrs["cadence"] = _cadence_name(offset)
+    grouped = _grouped(values.key * n_bins + sample_bin[values.pos], values.value)
+    stats = _stats(grouped, stat, band)
+    return _series_frame(
+        values, edges[first : first + n_bins], sample_bin, stats, attrs
+    )
+
+
+def _series_bins(
+    values: _Values, offset: pd.DateOffset | None, auto: bool
+) -> tuple[pd.DateOffset, np.ndarray, int, int, np.ndarray]:
+    """The bins of :func:`series`: the offset (the auto cadence's when
+    *offset* is None), the edges, the first bin holding a sample of a batch
+    that reads a key, how many bins from it to the last such, and each
+    sample's bin counted from the first."""
     if offset is None:
         offset = to_offset(_series_cadence(values))
-    attrs["cadence"] = _cadence_name(offset)
-
     t = values.t
+    reads_any = values.reads_any
     edges = _edges(
         pd.Timestamp(t[reads_any].min(), tz="UTC"),
         pd.Timestamp(t[reads_any].max(), tz="UTC"),
         offset,
         values.zone,
         # A bin the clock shortens could fall between samples
-        clock=cadence != "auto",
+        clock=not auto,
     )
     sample_bin = np.searchsorted(edges, t, side="right") - 1
-    first = sample_bin[reads_any].min()
-    n_bins = sample_bin[reads_any].max() - first + 1
-    n_keys = len(values.keys)
-    size = n_keys * n_bins
-    sample_bin = sample_bin - first
+    first = int(sample_bin[reads_any].min())
+    n_bins = int(sample_bin[reads_any].max()) - first + 1
+    return offset, edges, first, n_bins, sample_bin - first
 
+
+def _stats(grouped: Any, stat: str, band: tuple[float, float] | None) -> pd.DataFrame:
+    """A bin's ``value``, ``lo``, ``hi`` and ``n`` per group of *grouped*,
+    indexed by the group's code."""
+    return pd.DataFrame(
+        {
+            "value": grouped.agg(stat),
+            "lo": grouped.quantile(band[0] / 100) if band else np.nan,
+            "hi": grouped.quantile(band[1] / 100) if band else np.nan,
+            "n": grouped.count(),
+        }
+    )
+
+
+def _series_frame(
+    values: _Values,
+    starts: np.ndarray,
+    sample_bin: np.ndarray,
+    stats: pd.DataFrame,
+    attrs: dict[str, Any],
+) -> pd.DataFrame:
+    """:func:`series`' frame of bins starting at *starts*, *stats* indexed
+    by ``key * len(starts) + bin``."""
+    n_bins, n_keys = len(starts), len(values.keys)
+    size = n_keys * n_bins
     n_samples = np.concatenate(
         [
             np.bincount(sample_bin[values.reads(k)], minlength=n_bins)[:n_bins]
             for k in range(n_keys)
         ]
     )
-    grouped = _grouped(values.key * n_bins + sample_bin[values.pos], values.value)
-    at = grouped.size().index.to_numpy("int64")
+    at = stats.index.to_numpy("int64")
     frame = pd.DataFrame(
         {
-            "t": _times(np.tile(edges[first : first + n_bins], n_keys), values.zone),
+            "t": _times(np.tile(starts, n_keys), values.zone),
             "key": _key_column(values.keys, np.repeat(np.arange(n_keys), n_bins)),
-            "value": _fill(size, at, grouped.agg(stat)),
-            "lo": _fill(size, at, grouped.quantile(band[0] / 100)) if band else np.nan,
-            "hi": _fill(size, at, grouped.quantile(band[1] / 100)) if band else np.nan,
-            "n": _fill(size, at, grouped.count(), 0),
+            "value": _fill(size, at, stats["value"]),
+            "lo": _fill(size, at, stats["lo"]),
+            "hi": _fill(size, at, stats["hi"]),
+            "n": _fill(size, at, stats["n"], 0),
             "n_samples": n_samples.astype("int64"),
         }
     )
     return _stamp(frame, attrs)
+
+
+# --- series from the rollups ---------------------------------------------------
+
+
+#: The band the rollups hold, their ``p10`` and ``p90``.
+_ROLLUP_BAND = (10, 90)
+
+
+def _rollable(
+    store: CampaignStore,
+    values: _Values,
+    offset: pd.DateOffset,
+    stat: str,
+    band: tuple[float, float] | None,
+) -> bool:
+    """Whether the store's rollups may give :func:`series` of *values* at
+    *offset*, as far as is known before reading which batches read the
+    keys: bins of UTC hours or days over the window's samples, no
+    normalisation, a statistic and a band the rollups hold, every rollup
+    day computed, and no batch of the window with two batch peaks of one
+    formula when a key is a formula's (a sample's value is their sum, the
+    rollups count each)."""
+    if values.attrs["normalise"] != "none" or stat not in ("median", "mean"):
+        return False
+    if band not in (None, _ROLLUP_BAND) or not len(values.t):
+        return False
+    edges = _edges(
+        pd.Timestamp(values.t.min(), tz="UTC"),
+        pd.Timestamp(values.t.max(), tz="UTC"),
+        offset,
+        values.zone,
+    )
+    if _rollup_bin(edges, (None, None)) is None:
+        return False
+    meta = store.meta
+    if meta.get("pending_rollups"):
+        return False
+    if any(k.startswith("formula:") for k in values.keys):
+        stamps = meta.get("batches", {})
+        if any((stamps.get(b) or {}).get("shared_keys", 0) for b in values.batch_ids):
+            return False
+    return True
+
+
+def _rolled_present(store: CampaignStore, values: _Values) -> np.ndarray:
+    """Which batches of *values* read each key, as :func:`_with_rows` finds
+    it, without the rows: a batch holds a key's ``species`` row when it holds
+    a series row of it. A batch with samples outside the window reads a key
+    only if a sample inside does, which its own rows say."""
+    keys = values.keys
+    wanted = [k for k in keys if k != TIC]
+    present = np.zeros_like(values.present)
+    if TIC in keys:
+        present[:, keys.index(TIC)] = True
+    if not wanted:
+        return present
+    key_index = pd.Index(keys)
+    total = store.table("samples")["sample_batch_id"].astype(str).value_counts()
+    inside = pd.Series(values.batch).value_counts()
+    ids = values.samples["sample_item_id"].astype(str)
+    for code, batch_id in enumerate(values.batch_ids):
+        if inside.get(code, 0) == total.get(batch_id, 0):
+            held = store.table("species", batches=[batch_id], keys=wanted)
+            present[code, _positions(key_index, held["series_key"])] = True
+            continue
+        index = pd.Index(ids[values.batch == code])
+        for table, prefix in (("ion_series", "ion:"), ("peak_series", "formula:")):
+            of_table = [k for k in wanted if k.startswith(prefix)]
+            if not of_table:
+                continue
+            rows = store.table(table, batches=[batch_id], keys=of_table)
+            rows = rows[_positions(index, rows["sample_item_id"]) >= 0]
+            present[code, _positions(key_index, rows["series_key"])] = True
+    return present
+
+
+def _rollup_bin(edges: np.ndarray, window: Window) -> str | None:
+    """The rollups' bin (``hour``, ``day``) that the bins between *edges*
+    are, all inside *window*; None when they are no rollup's."""
+    lo, hi = window
+    if (lo is not None and edges[0] < lo.value) or (
+        hi is not None and edges[-1] > hi.value
+    ):
+        return None
+    steps = np.diff(edges)
+    for freq, name in BINS.items():
+        step = pd.Timedelta(freq).value
+        if (steps == step).all() and (edges % step == 0).all():
+            return name
+    return None
+
+
+def _rolled_series(
+    store: CampaignStore,
+    values: _Values,
+    offset: pd.DateOffset,
+    stat: str,
+    attrs: dict[str, Any],
+) -> pd.DataFrame | None:
+    """:func:`series` of *values* from the store's rollups, and the TIC from
+    the samples; None when the rollups would not give the frame the rows
+    give: bins that are no UTC hours or days of the rollups, or a formula
+    with two readings in a bin, which the rollups keep apart."""
+    values = replace(values, present=_rolled_present(store, values))
+    if not values.reads_any.any():
+        return None
+    offset, edges, first, n_bins, sample_bin = _series_bins(values, offset, False)
+    bounds = edges[first : first + n_bins + 1]
+    name = _rollup_bin(bounds, values.window)
+    if name is None:
+        return None
+
+    keys = values.keys
+    parts = []
+    wanted = [k for k in keys if k != TIC]
+    if wanted:
+        rows = store.table("rollups", keys=wanted)
+        t = _ns(rows["t"])
+        rows = rows[
+            (rows["bin"].astype(str) == name).to_numpy()
+            & (t >= bounds[0])
+            & (t < bounds[-1])
+        ]
+        code = _positions(pd.Index(keys), rows["series_key"]) * n_bins + (
+            np.searchsorted(bounds, _ns(rows["t"]), side="right") - 1
+        )
+        if pd.Index(code).has_duplicates:
+            return None
+        parts.append(
+            pd.DataFrame(
+                {
+                    "value": rows[stat].to_numpy(),
+                    "lo": rows["p10"].to_numpy(),
+                    "hi": rows["p90"].to_numpy(),
+                    "n": rows["n"].to_numpy("int64"),
+                },
+                index=code,
+            )
+        )
+    if TIC in keys:
+        grouped = _grouped(
+            keys.index(TIC) * n_bins + sample_bin,
+            values.samples["tic"].to_numpy("float64"),
+        )
+        parts.append(_stats(grouped, stat, attrs["band"]))
+    stats = pd.concat(parts)
+    if attrs["band"] is None:
+        stats["lo"] = stats["hi"] = np.nan
+    attrs = dict(attrs, cadence=_cadence_name(offset), source="rollups")
+    return _series_frame(values, bounds[:-1], sample_bin, stats, attrs)
 
 
 def _raw(values: _Values) -> pd.DataFrame:
