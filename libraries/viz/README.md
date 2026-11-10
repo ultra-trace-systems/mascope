@@ -91,10 +91,15 @@ the run ends. `status().complete` is False after a sync that was stopped.
 A sync that fetches a batch lists the ionization modes once, to record each
 sample's mode name beside its ID. A server that refuses the token on that
 listing (one older than the token access to the modes) leaves the names
-empty, and `coverage` then shows the IDs. A mode renamed on the server is
-not a reason to fetch a batch again: a batch keeps the name it was fetched
-with, and `coverage` takes the name its newest batch holds. A store written
-before the names were kept is fetched afresh by its next sync.
+empty, and `coverage` then shows the IDs. They stay empty after the server
+is upgraded, since that gives no batch a reason to be fetched again: a
+batch's next fetch names its samples, and deleting the store names them
+all at the next sync. A mode renamed on the server is not a reason to
+fetch a batch again either: a batch keeps the name it was fetched with,
+and `coverage` takes the name of the batch fetched last, whichever was
+acquired first. `mascope-viz view coverage` prints a mode's ID beside its
+name when two modes share the name. A store written before the names were
+kept is fetched afresh by its next sync.
 
 An isotopologue batch peak repeats its parent's formula, so only the parent
 carries the formula's series. A formula is read by the ledger run of each

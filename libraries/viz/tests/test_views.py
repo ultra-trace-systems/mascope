@@ -877,6 +877,29 @@ def test_a_renamed_mode_takes_the_name_of_its_newest_batch(short_campaign, tmp_p
     assert set(bins.loc[bins["mode"] == "im-1", "mode_name"]) == {"Renamed mode"}
 
 
+def test_a_renamed_mode_takes_the_name_of_the_batch_fetched_last(
+    short_campaign, tmp_path
+):
+    client = FakeClient(short_campaign)
+    _sync(client, tmp_path)
+    client.mode_name = "Renamed mode"
+    # Only the oldest batch is fetched again, as when its ledger is curated:
+    # the newest batch acquired still holds the old name
+    client.modified[client.batch_ids[0]] += pd.Timedelta(hours=1)
+    with pytest.MonkeyPatch.context() as patch:
+        # _sync's clock, a day on: the refetch is the later fetch
+        later = pd.Timestamp("2026-08-02T00:00:00Z")
+        patch.setattr(store_module, "_now", lambda: later)
+        patch.setattr(store_module.time, "sleep", lambda seconds: None)
+        store = sync(client, SCOPE, root=tmp_path).store
+
+    bins = views.coverage(store).bins
+
+    newest = store.table("samples", batches=[store.batch_ids()[-1]])
+    assert set(newest["ionization_mode_name"]) == {"Campaign mode"}
+    assert set(bins.loc[bins["mode"] == "im-1", "mode_name"]) == {"Renamed mode"}
+
+
 def test_an_empty_coverage_has_the_mode_name_column(month):
     _, store = month
 
