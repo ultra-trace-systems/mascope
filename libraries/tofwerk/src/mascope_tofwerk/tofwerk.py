@@ -365,8 +365,11 @@ def get_tic_per_scan(
         # sum of every recorded buf, not their average (the two agree to the
         # last digit on real files), so this converts each scan's TIC to
         # ions/s - the unit of get_signal's spectra - and leaves it a value
-        # per scan: the file's total is what grows with its length.
-        scan_tic = scan_tic / scan_tic.sum() * total_tic
+        # per scan: the file's total is what grows with its length. A file
+        # that recorded no signal at all has nothing to rescale, and 0/0
+        # would make every scan's TIC NaN where it is 0.
+        if scan_tic.sum():
+            scan_tic = scan_tic / scan_tic.sum() * total_tic
 
         if timestamps is not None:
             # Filter TIC values by timestamps

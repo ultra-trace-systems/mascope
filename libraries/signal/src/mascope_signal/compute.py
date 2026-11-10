@@ -1469,10 +1469,13 @@ def get_tic_per_scan(
             # Correct TIC values by total TIC value if available. The props'
             # "tic" is the file's total, the sum of its scans' TIC (the
             # converters that wrote it summed them), so each scan keeps a
-            # value per scan in the total's unit.
+            # value per scan in the total's unit. A file that recorded no
+            # signal at all has nothing to rescale: 0/0 would make every
+            # scan's TIC NaN where it is 0.
             try:
                 total_tic = m_io.read_props(base_filename)["tic"]
-                tic_per_scan = tic_per_scan / tic_per_scan.sum() * total_tic
+                if tic_per_scan.sum():
+                    tic_per_scan = tic_per_scan / tic_per_scan.sum() * total_tic
             except KeyError:
                 # Expected for files whose props carry no "tic" entry
                 runtime.logger.info(
