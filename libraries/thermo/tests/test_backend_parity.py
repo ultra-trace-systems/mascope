@@ -30,6 +30,7 @@ from thermo_test_support import TEST_FILES_DIR
 
 import mascope_thermo.thermo as m_thermo
 from mascope_thermo.backend import MS_SCAN_DETECTOR_STATS, open_backend
+from mascope_thermo.calibration import CONVERSION_B, CONVERSION_C
 from mascope_thermo.lib import thermo_available
 from mascope_thermo.scan_filter import parse_scan_filter
 from mascope_tools.alignment.utils import flag_satellite_peaks
@@ -788,10 +789,15 @@ def _nearest_value(
 #: How far consecutive scans' calibrations may move one frequency's m/z, in
 #: ppm at m/z 50, before an averaging window counts as holding two of them.
 #: Where the lock mass engages part-way through the window, the step is
-#: 1.5-5 ppm; between two scans on one calibration it is a few hundredths.
+#: mostly 1.5-5 ppm, but 17 of the 753 customer files whose average it
+#: breaks step by 1.0-1.5 ppm, which is why the threshold is 1.0 and not
+#: 1.5; between two scans on one calibration it is a few hundredths.
 _CALIBRATION_STEP_PPM = 1.0
 _CALIBRATION_STEP_MZ = 50.0
-_CALIBRATION_LABELS = ("Conversion Parameter B:", "Conversion Parameter C:")
+_CALIBRATION_LABELS = (CONVERSION_B, CONVERSION_C)
+
+#: The match share (1) a window with a calibration step still has to reach.
+_STEP_MATCH_SHARE = 0.5
 
 #: Peak detection's weak-peak threshold on the instrument's S:N
 #: (``mascope_signal``), which the averaged S:N feeds.
@@ -973,13 +979,16 @@ def _averaged_centroid_failures(readings: dict) -> list[str]:
     # not split off (GitHub #2946). So the share follows a file's noise, strong
     # peaks and resolution: 0.919-0.996 on the demo raws (median 0.980; the
     # lowest is the one raw acquired at 60,000, the rest are at 120,000) and
-    # from 0.904 on the customer files (median 0.977), so 0.90. Not judged
-    # across a calibration step: there one low-m/z ion is two Thermo
-    # centroids, the locked and the unlocked scans', and one OpenTFRaw
-    # centroid between them, on purpose (_labels_on_one_calibration). Pushing
-    # to ~100 % would need re-centroiding the averaged profile (matching
-    # Thermo's AverageScans), not a threshold.
-    if not step and matched.mean() < 0.90:
+    # from 0.904 on the customer files (median 0.977), so 0.90. Across a
+    # calibration step it is held only to _STEP_MATCH_SHARE: there one low-m/z
+    # ion is two Thermo centroids, the locked and the unlocked scans', and one
+    # OpenTFRaw centroid between them, on purpose (_labels_on_one_calibration).
+    # Measured 0.884-1.000 on the 905 customer files with a step; shifting
+    # OpenTFRaw's m/z by 2 or 5 ppm takes it to 0.113 at most, where the
+    # median (3) has next to nothing left to judge. Pushing to ~100 % would
+    # need re-centroiding the averaged profile (matching Thermo's
+    # AverageScans), not a threshold.
+    if matched.mean() < (_STEP_MATCH_SHARE if step else 0.90):
         failures.append(
             f"only {int(matched.sum())}/{om.size} averaged centroids matched "
             "Thermo within 1 ppm"
@@ -1004,9 +1013,12 @@ def _averaged_centroid_failures(readings: dict) -> list[str]:
     # 60,000). Beside one dominant ion of a high-resolution acquisition,
     # thousands of weak centroids crowd under the floor and scatter 0.12-0.14
     # ppm at the median; above it the highest median is 0.096 ppm on the
-    # customer files.
+    # customer files. With no matched peak above the floor there is nothing
+    # to judge, and that is itself a failure.
     kept_o = ~_below_local_floor(om, oi)
     md = dev_ppm[matched & kept_o]
+    if not md.size:
+        failures.append("no matched peak above the local floor")
     if md.size and float(np.median(md)) > 0.1:
         failures.append(
             f"median matched-peak m/z deviation {np.median(md):.3f} ppm (> 0.1)"
@@ -1070,12 +1082,13 @@ def test_centroids_average_matches_thermo(monkeypatch, path):
 
     1. A calibration step in the window, 753 files: the lock mass engages
        after the second or third scan, and consecutive scans' calibrations
-       move m/z 50 by 1.5-5 ppm. Thermo's average smears the dominant
-       low-m/z ion across the two calibrations. Where the step is over 1 ppm
+       move m/z 50 by 1.5-5 ppm, and by 1.0-1.5 ppm on 17 of the 753 files.
+       Thermo's average smears the dominant low-m/z ion across the two
+       calibrations. Where the step is over 1 ppm
        (:func:`_calibration_step_ppm`, 905 files, all of one group), the
-       summed intensity is held to the per-scan centroids', and the match
-       (1) and found (2) assertions are not judged. Under 1 ppm no file of
-       10,211 fails them.
+       summed intensity is held to the per-scan centroids', the match (1)
+       is held only to half, and the found (2) assertion is not judged.
+       Under 1 ppm no file of 10,211 fails them.
     2. Weak centroids beside one dominant ion, 247 files: one group's
        12-scan high-resolution acquisitions, thousands of centroids under
        the local floor that peak detection drops. The S:N count and the
