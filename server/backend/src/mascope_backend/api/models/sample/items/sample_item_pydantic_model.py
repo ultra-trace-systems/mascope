@@ -107,7 +107,13 @@ class SampleItemBase(BaseModel):
     filter_id: Optional[str] = Field(
         None, description="Optional filter_id of the sample item"
     )
-    tic: float = Field(..., description="TIC of the sample item")
+    tic: float | None = Field(
+        ...,
+        description=(
+            "TIC of the sample item; null when its file gave no finite one "
+            "(a read with no scan, or no signal)"
+        ),
+    )
     polarity: str = Field(..., description="Polarity of the sample item")
     ionization_mode_id: str = Field(
         ..., description="ID of the ionization mode used for the sample item"

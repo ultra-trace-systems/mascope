@@ -2689,7 +2689,8 @@ A TOF file that recorded no signal has a TIC of 0. A TIC that reads as no
 finite number, a NaN or an infinity, is stored as none: the sample has no
 TIC, and the sample listing sends it as null. The database upgrade clears
 such a TIC stored before, which the sample listing used to send as null with
-a warning on every listing of its batch.
+a warning on every listing of its batch. Such a sample opens, lists and
+edits as any other.
 
 Every TIC changes by this: the TIC trace of the batch charts, the batch
 export's TIC column and `samples.list()` in the SDK. A notebook that divides
