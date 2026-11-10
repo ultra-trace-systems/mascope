@@ -28,11 +28,11 @@ the one that just changed its own password, carries on.
 
 Signing out ends one web session and moves no cutoff, so eviction, which works
 by account and keeps every socket that may still read, cannot reach it.
-:func:`sign_out_socket` does it for the one socket the logout request names:
-the tab is no longer signed in, so it leaves every room, its own ``user-{id}``
-included, and its session goes. The session cookie is the browser's, though,
-so the browser's other tabs are signed out with it, and their sockets were
-authenticated with the same token: :func:`sign_out_session` signs out every
+:func:`sign_out_session` does it, first for the one socket the logout request
+names: the tab is no longer signed in, so it leaves every room, its own
+``user-{id}`` included, and its session goes. The session cookie is the
+browser's, though, so the browser's other tabs are signed out with it, and
+their sockets were authenticated with the same token: it then signs out every
 socket of the account whose session recorded that token's ``iat``. The issue
 time is the session's only mark, to the second, so a sign-in of the same
 account in another browser within the same second goes too; that errs towards
@@ -235,7 +235,7 @@ async def evict_ended_sessions(user_id: int, user=None) -> int:
         return 0
 
 
-async def sign_out_socket(sid: str, user_id: int) -> bool:
+async def _sign_out_named(sid: str, user_id: int) -> bool:
     """
     End the socket session of a tab that has just signed out.
 
@@ -249,29 +249,11 @@ async def sign_out_socket(sid: str, user_id: int) -> bool:
     disconnect: signing out of one tab leaves the others as they are.
 
     The connection itself stays open: the tab carries on as one that has not
-    signed in, as the SPA's socket is before its login form.
-    Never raises: the session the cookie carried has ended either way.
+    signed in, as the SPA's socket is before its login form. Raises what it
+    fails with; :func:`sign_out_session` logs it and keeps a retry.
 
     :param sid: The socket the signing-out request names, on the default
         namespace.
-    :param user_id: The account signing out.
-    :return: Whether the socket was signed out.
-    """
-    try:
-        return await _sign_out_named(sid, user_id)
-    except Exception as e:
-        log_socket_failure(
-            f"Failed to sign socket {sid} of user {user_id} out [Worker {os.getpid()}]",
-            e,
-        )
-        return False
-
-
-async def _sign_out_named(sid: str, user_id: int) -> bool:
-    """
-    :func:`sign_out_socket`, raising what it fails with.
-
-    :param sid: The socket the signing-out request names.
     :param user_id: The account signing out.
     :return: Whether the socket was signed out.
     """
@@ -300,12 +282,12 @@ async def sign_out_session(
     """
     Sign out every socket a web session that has just ended authenticated.
 
-    The logout request's own socket, named by ``sid``, goes as
-    :func:`sign_out_socket` signs it out. Then every other socket of the
-    account whose session recorded ``issued_at`` goes the same way: the
-    browser's other tabs, whose cookie the logout has just cleared. A socket
-    of the account authenticated with another token, in another browser, keeps
-    its session and rooms.
+    The logout request's own socket, named by ``sid``, goes first: it leaves
+    every room, its own ``user-{id}`` included, and its session goes. Then
+    every other socket of the account whose session recorded ``issued_at``
+    goes the same way: the browser's other tabs, whose cookie the logout has
+    just cleared. A socket of the account authenticated with another token, in
+    another browser, keeps its session and rooms.
 
     Never raises: the session the cookie carried has ended either way. When
     Redis was out of reach for any of it, the sign-out is tried again once

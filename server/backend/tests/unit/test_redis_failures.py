@@ -220,13 +220,17 @@ async def _evict(monkeypatch, error: Exception) -> None:
     assert await eviction.evict_ended_sessions(1) == 0
 
 
-async def _sign_out_socket(monkeypatch, error: Exception) -> None:
+async def _sign_out_named(monkeypatch, error: Exception) -> None:
     async def _session(sid, namespace="/"):
         return {"user_id": 1}
 
+    async def _no_sids(user_id):
+        return set()
+
     monkeypatch.setattr(eviction, "get_session_user", _session)
     monkeypatch.setattr(eviction, "_sign_out", _raising(error))
-    assert await eviction.sign_out_socket("sid-1", 1) is False
+    monkeypatch.setattr(eviction, "get_user_socket_sids", _no_sids)
+    assert await eviction.sign_out_session(1, 1000, "sid-1") == 0
 
 
 async def _sign_out_session_list(monkeypatch, error: Exception) -> None:
@@ -254,7 +258,7 @@ _SOCKET_SITES = [
     pytest.param("_hold_quietly", _hold_quietly, id="hold"),
     pytest.param("wrapper", _subscribe, id="socket_auth"),
     pytest.param("evict_ended_sessions", _evict, id="evict"),
-    pytest.param("sign_out_socket", _sign_out_socket, id="sign-out-socket"),
+    pytest.param("sign_out_session", _sign_out_named, id="sign-out-named"),
     pytest.param("sign_out_session", _sign_out_session_list, id="sign-out-list"),
     pytest.param("sign_out_session", _sign_out_session_each, id="sign-out-each"),
     pytest.param("sign_out_expired_socket", _sign_out_expired, id="sign-out-expiry"),
