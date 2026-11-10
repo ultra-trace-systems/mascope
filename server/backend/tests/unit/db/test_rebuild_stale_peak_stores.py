@@ -10,6 +10,7 @@ scripted acquisition, are in
 import asyncio
 
 import pytest
+from test_utils import captured_logs
 
 from mascope_backend.db.scripts import rebuild_stale_peak_stores as script
 
@@ -47,7 +48,7 @@ def test_the_survey_finds_the_stale_files_and_counts_every_other():
             raise OSError("cannot open")
         return found[filename]
 
-    stale, counts = asyncio.run(
+    stale, counts, end = asyncio.run(
         script.survey(candidates, lambda filename: filename != "zarr", check)
     )
 
@@ -55,6 +56,7 @@ def test_the_survey_finds_the_stale_files_and_counts_every_other():
     assert "zarr" not in checked
     assert counts["A"] == {script.STALE: 1, script.CURRENT: 1, script.NO_PEAKS: 1}
     assert counts["B"] == {"not_raw": 1, "unreadable": 1, script.NO_STORE: 1}
+    assert end == len(candidates)
 
 
 def test_a_capped_survey_stops_once_it_has_found_enough(monkeypatch):
@@ -67,10 +69,35 @@ def test_a_capped_survey_stops_once_it_has_found_enough(monkeypatch):
         checked.append(filename)
         return script.Checked(script.STALE, 2, 1)
 
-    stale, _ = asyncio.run(script.survey(candidates, lambda _: True, check, limit=3))
+    stale, _, end = asyncio.run(
+        script.survey(candidates, lambda _: True, check, limit=3)
+    )
 
-    assert [row["filename"] for row in stale] == ["f0", "f1", "f2"]
+    assert [row["filename"] for row in stale] == ["f0", "f1", "f2", "f3"]
     assert len(checked) == 4
+    assert end == 4
+
+
+def test_a_survey_goes_on_where_an_earlier_one_stopped(monkeypatch):
+    monkeypatch.setattr(script, "_CHECK_BATCH", 2)
+    candidates = _candidates(*[(f"f{i}", "A") for i in range(5)])
+    checked = []
+
+    def check(filename):
+        checked.append(filename)
+        return script.Checked(script.STALE, 2, 1)
+
+    _, counts, _ = asyncio.run(
+        script.survey(candidates, lambda _: True, check, limit=1)
+    )
+    stale, counts, end = asyncio.run(
+        script.survey(candidates, lambda _: True, check, start=2, counts=counts)
+    )
+
+    assert [row["filename"] for row in stale] == ["f2", "f3", "f4"]
+    assert checked == [f"f{i}" for i in range(5)]
+    assert counts["A"][script.STALE] == 5
+    assert end == 5
 
 
 # --- the run ------------------------------------------------------------------
@@ -189,6 +216,183 @@ def test_a_rebuild_that_does_not_take_is_named():
     assert outcome.failed == ["second"]
     assert outcome.counts["still_stale"] == 1
     assert outcome.counts["rebuilt"] == 1
+
+
+def test_a_capped_rebuild_stops_once_it_has_rebuilt_enough():
+    recorder = _Recorder()
+
+    outcome = asyncio.run(script.rebuild_all(STALE, recorder.steps(), limit=1))
+
+    assert ("rebuild", "second") not in recorder.calls
+    assert outcome.counts["rebuilt"] == 1
+    assert outcome.left_over
+
+
+# --- a capped run -------------------------------------------------------------
+
+
+def _capped_run(monkeypatch, files, limit, fail=(), stale_after=(), batch=2):
+    """A run over ``files``, newest first, every one stale, ``fail`` failing
+    and ``stale_after`` still stale once rebuilt."""
+    monkeypatch.setattr(script, "_CHECK_BATCH", batch)
+    candidates = _candidates(*[(name, "A") for name in files])
+    recorder = _Recorder(fail=fail, stale_after=stale_after)
+    checked = []
+
+    def check(filename):
+        checked.append(filename)
+        return script.Checked(script.STALE, 8, 7)
+
+    outcome, counts = asyncio.run(
+        script.find_and_rebuild(
+            candidates, lambda _: True, check, recorder.steps(), limit
+        )
+    )
+    rebuilt = [name for step, name in recorder.calls if step == "rebuild"]
+    return outcome, counts, rebuilt, checked
+
+
+def test_a_capped_run_does_not_count_the_files_it_cannot_rebuild(monkeypatch):
+    """Files that keep failing at the top of the list would otherwise fill
+    every capped run, and none would reach the older ones."""
+    files = [f"f{i}" for i in range(8)]
+
+    outcome, counts, rebuilt, checked = _capped_run(
+        monkeypatch, files, limit=2, fail={"f0", "f1"}, stale_after={"f2"}
+    )
+
+    assert rebuilt == ["f0", "f1", "f2", "f3", "f4"]
+    assert outcome.failed == ["f0", "f1", "f2"]
+    assert outcome.counts["rebuilt"] == 2
+    assert outcome.left_over
+    assert checked == files[:6]
+    assert counts["A"][script.STALE] == 6
+
+
+def test_a_capped_run_surveys_on_for_as_many_as_it_still_needs(monkeypatch):
+    """Not for the whole cap again: every file checked is a read."""
+    files = [f"f{i}" for i in range(8)]
+
+    outcome, _, rebuilt, checked = _capped_run(
+        monkeypatch, files, limit=3, fail={"f0", "f1"}, batch=1
+    )
+
+    assert rebuilt == files[:5]
+    assert checked == files[:5]
+    assert outcome.left_over
+
+
+def test_a_capped_run_that_reaches_the_oldest_file_leaves_nothing_over(
+    monkeypatch,
+):
+    """Only failures are left: another run would fail on them again, so
+    it does not advise one."""
+    files = [f"f{i}" for i in range(5)]
+
+    outcome, _, rebuilt, checked = _capped_run(
+        monkeypatch, files, limit=3, fail={"f0", "f1", "f2"}
+    )
+
+    assert rebuilt == files
+    assert outcome.counts["rebuilt"] == 2
+    assert not outcome.left_over
+    assert checked == files
+
+
+def test_a_capped_run_that_rebuilds_the_last_file_leaves_nothing_over(
+    monkeypatch,
+):
+    files = [f"f{i}" for i in range(4)]
+
+    outcome, _, rebuilt, _ = _capped_run(monkeypatch, files, limit=4)
+
+    assert rebuilt == files
+    assert not outcome.left_over
+
+
+def test_a_capped_run_with_files_left_to_check_leaves_them_over(monkeypatch):
+    files = [f"f{i}" for i in range(4)]
+
+    outcome, _, rebuilt, checked = _capped_run(monkeypatch, files, limit=2)
+
+    assert rebuilt == ["f0", "f1"]
+    assert checked == ["f0", "f1"]
+    assert outcome.left_over
+
+
+def test_an_uncapped_run_rebuilds_every_stale_file(monkeypatch):
+    files = [f"f{i}" for i in range(5)]
+
+    outcome, _, rebuilt, _ = _capped_run(monkeypatch, files, limit=None)
+
+    assert rebuilt == files
+    assert outcome.found == 5
+    assert not outcome.left_over
+
+
+def _run(monkeypatch, files, limit, fail=(), current=()):
+    """:func:`script.run` over ``files``, every one stale, with stand-ins
+    for the database and the filestore; the messages it logs."""
+    monkeypatch.setattr(script, "_CHECK_BATCH", 2)
+    monkeypatch.setenv("REBUILD_LIMIT", str(limit))
+    monkeypatch.delenv("DRY_RUN", raising=False)
+    recorder = _Recorder(fail=fail)
+
+    async def nothing(*_):
+        return None
+
+    async def candidates():
+        return _candidates(*[(name, "A") for name in files])
+
+    monkeypatch.setattr(script, "configure_database_engine", nothing)
+    monkeypatch.setattr(script, "_candidates", candidates)
+    monkeypatch.setattr(script, "_is_raw", lambda _: True)
+    monkeypatch.setattr(script, "_samples_of", recorder.samples_of)
+    monkeypatch.setattr(script, "_queue_rematch", recorder.queue_rematch)
+    monkeypatch.setattr(script, "_remove_matches", recorder.remove_matches)
+    monkeypatch.setattr(script, "_refresh_tic", recorder.refresh_tic)
+    monkeypatch.setattr(script, "_refresh_ms2", recorder.refresh_ms2)
+    rebuilt = set(current)
+
+    async def rebuild(filename):
+        await recorder.rebuild(filename)
+        rebuilt.add(filename)
+
+    monkeypatch.setattr(script, "_rebuild", rebuild)
+    monkeypatch.setattr(
+        script,
+        "check",
+        lambda filename: script.Checked(
+            script.CURRENT if filename in rebuilt else script.STALE, 8, 7
+        ),
+    )
+    with captured_logs("INFO") as records:
+        asyncio.run(script.run())
+    return [record["message"] for record in records]
+
+
+def test_a_capped_run_with_stores_left_says_to_run_again(monkeypatch):
+    messages = _run(monkeypatch, [f"f{i}" for i in range(4)], limit=1, fail={"f0"})
+
+    assert any("Stale stores found: 2; rebuilt 1" in m for m in messages)
+    assert any("run this again until it reports nothing" in m for m in messages)
+    assert any(m.endswith("The next run tries them again.") for m in messages)
+
+
+def test_a_run_with_nothing_stale_says_so(monkeypatch):
+    messages = _run(monkeypatch, ["f0", "f1"], limit=1, current={"f0", "f1"})
+
+    assert "No peak store to rebuild." in messages
+    assert not any("Stale stores found" in m for m in messages)
+
+
+def test_a_capped_run_left_with_failures_alone_says_so(monkeypatch):
+    """No advice to run again: the next run would fail on the same files."""
+    messages = _run(monkeypatch, ["f0", "f1", "f2"], limit=2, fail={"f0", "f1"})
+
+    assert any("Stale stores found: 3; rebuilt 1" in m for m in messages)
+    assert not any("run this again" in m for m in messages)
+    assert any("every other stale store was rebuilt" in m for m in messages)
 
 
 # --- which files are read -----------------------------------------------------
