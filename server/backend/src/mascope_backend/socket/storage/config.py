@@ -51,6 +51,13 @@ class SocketStorageConfig(BaseModel):
     # Redis restart is answering again by the next beat or the one after.
     redis_outage_beats: int = 6
 
+    # An eviction or a logout's sign-out that found Redis out of reach is kept
+    # by the worker that tried it (see socket/eviction.py), which asks Redis
+    # again every interval and tries it once more when it answers. At most this
+    # many are kept; one more is dropped with a monitored error.
+    sign_out_retry_interval: int = 10  # How often a kept sign-out asks again
+    sign_out_retry_limit: int = 1000  # How many a worker keeps
+
     # Redis key prefixes
     session_key_prefix: str = "mascope:session:"  # Session storage keys
     room_members_key_prefix: str = "mascope:rooms:members:"  # Users in room

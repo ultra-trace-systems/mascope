@@ -26,7 +26,9 @@ import pytest
 import pytest_asyncio
 from fastapi_users.password import PasswordHelper
 from httpx import ASGITransport, AsyncClient
+from redis.exceptions import ConnectionError as RedisConnectionError
 from sqlalchemy import delete
+from test_utils import captured_logs
 
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.app.fast import fast
@@ -36,6 +38,7 @@ from mascope_backend.db.scripts import (
     clear_password_change_requirement as clear_script,
 )
 from mascope_backend.db.scripts import require_password_change as sweep_script
+from mascope_backend.socket import eviction
 from mascope_backend.socket.auth.exceptions import SocketUnauthenticatedError
 from mascope_backend.socket.auth.service import authenticate_socket_connection
 from mascope_backend.socket.events.handlers.default.connection import (
@@ -53,6 +56,7 @@ from mascope_backend.socket.eviction import (
     SIGNED_OUT_EVENT,
     evict_ended_sessions,
     sign_out_expired_socket,
+    stop_sign_out_retries,
 )
 from mascope_backend.socket.signed_in import SIGNED_IN_ROOM
 from mascope_backend.socket.storage import (
@@ -177,6 +181,8 @@ async def stop_renewals():
     for sid in list(session_store._renewal_tasks):
         await stop_session_renewal(sid)
     await stop_worker_heartbeat()
+    eviction._retries.clear()
+    await stop_sign_out_retries()
 
 
 async def _open_socket(sid: str, user: User, issued: datetime) -> None:
@@ -844,6 +850,291 @@ async def test_signing_out_survives_a_failing_socket_store(person, sio):
         room_tracker, "release_socket", AsyncMock(side_effect=RuntimeError("down"))
     ):
         await _logout(person, "sid-a")
+
+
+# --- An eviction or a sign-out that finds Redis out of reach ---
+
+
+@pytest.fixture
+def quick_retries(monkeypatch):
+    """Kept sign-outs ask Redis again every hundredth of a second."""
+    monkeypatch.setattr(storage_config, "sign_out_retry_interval", 0.01)
+
+
+async def _until(condition, seconds: float = 2.0) -> None:
+    """Wait for ``condition()`` to hold, failing after ``seconds``."""
+    deadline = time.monotonic() + seconds
+    while not await condition():
+        assert time.monotonic() < deadline, "timed out"
+        await asyncio.sleep(0.01)
+
+
+async def _set_active(async_session_factory, user: User, active: bool) -> None:
+    async with async_session_factory() as session:
+        stored = await session.get(User, user.id)
+        stored.is_active = active
+        await session.commit()
+
+
+async def _rooms_left(sid: str) -> bool:
+    return RESOURCE_ROOM not in await room_tracker.socket_rooms(sid)
+
+
+@pytest.mark.asyncio
+async def test_an_eviction_redis_missed_is_tried_again_once_it_answers(
+    person, sio, live_rate_limiter, async_session_factory, quick_retries
+):
+    """
+    It used to be logged and dropped: the disabled account's tab kept its
+    rooms, and the record-sync events once Redis was back.
+    """
+    await _open_socket("sid-a", person, datetime.now(timezone.utc) - LONG_AGO)
+    await _set_active(async_session_factory, person, False)
+
+    live_rate_limiter.out_of_reach = True
+    assert await evict_ended_sessions(person.id) == 0
+    # Not while Redis still does not answer: only asked whether it does.
+    with captured_logs(level="DEBUG") as records:
+        await asyncio.sleep(0.05)
+    assert not [r for r in records if r["function"] == "evict_ended_sessions"]
+    assert any("does not answer yet" in r["message"] for r in records)
+    sio.leave_room.assert_not_awaited()
+
+    live_rate_limiter.out_of_reach = False
+    await _until(lambda: _rooms_left("sid-a"))
+    await _assert_evicted(sio, "sid-a", person)
+    assert eviction._retries == {}
+
+
+@pytest.mark.asyncio
+async def test_disabling_the_account_while_redis_is_out_of_reach_evicts_after(
+    owner_client, person, sio, live_rate_limiter, quick_retries
+):
+    """The route's own eviction is the one kept."""
+    await _open_socket("sid-a", person, datetime.now(timezone.utc) - LONG_AGO)
+
+    sids = AsyncMock(
+        side_effect=[RedisConnectionError("Connection refused."), {"sid-a"}]
+    )
+    with patch("mascope_backend.socket.eviction.get_user_socket_sids", sids):
+        resp = await owner_client.patch(
+            f"/api/users/owner/{person.id}", json={"is_active": False}
+        )
+        assert resp.status_code == 200, resp.text
+        await _until(lambda: _rooms_left("sid-a"))
+
+    # The route's attempt met Redis out of reach; the retry evicted.
+    assert sids.await_count == 2
+    await _assert_evicted(sio, "sid-a", person)
+
+
+@pytest.mark.asyncio
+async def test_a_retry_redis_misses_again_is_kept_again(
+    person, sio, async_session_factory, quick_retries
+):
+    await _open_socket("sid-a", person, datetime.now(timezone.utc) - LONG_AGO)
+    await _set_active(async_session_factory, person, False)
+
+    refused = RedisConnectionError("Connection refused.")
+    sids = AsyncMock(side_effect=[refused, refused, {"sid-a"}])
+    with patch("mascope_backend.socket.eviction.get_user_socket_sids", sids):
+        await evict_ended_sessions(person.id)
+        await _until(lambda: _rooms_left("sid-a"))
+
+    assert sids.await_count == 3
+    await _assert_evicted(sio, "sid-a", person)
+
+
+@pytest.mark.asyncio
+async def test_a_retry_reads_the_account_again(
+    person, sio, live_rate_limiter, async_session_factory, quick_retries
+):
+    """An account enabled again before Redis came back keeps its sockets."""
+    await _open_socket("sid-a", person, datetime.now(timezone.utc) - LONG_AGO)
+    await _set_active(async_session_factory, person, False)
+    stale = await _fresh(async_session_factory, person)
+
+    live_rate_limiter.out_of_reach = True
+    await evict_ended_sessions(person.id, stale)
+    await _set_active(async_session_factory, person, True)
+    live_rate_limiter.out_of_reach = False
+
+    await _until(lambda: _no_retries())
+    sio.leave_room.assert_not_awaited()
+    assert RESOURCE_ROOM in await room_tracker.socket_rooms("sid-a")
+
+
+async def _fresh(async_session_factory, user: User) -> User:
+    async with async_session_factory() as session:
+        return await session.get(User, user.id)
+
+
+async def _no_retries() -> bool:
+    return not eviction._retries and not eviction._retrying()
+
+
+@pytest.mark.asyncio
+async def test_a_logout_redis_missed_signs_the_tabs_out_once_it_answers(
+    person, sio, live_rate_limiter, quick_retries
+):
+    await _open_socket("sid-a", person, THIS_BROWSER)
+    await _open_socket("sid-b", person, THIS_BROWSER)
+
+    live_rate_limiter.out_of_reach = True
+    await _logout(person, "sid-a")
+    await asyncio.sleep(0.05)
+    sio.leave_room.assert_not_awaited()
+
+    live_rate_limiter.out_of_reach = False
+    await _until(lambda: _no_retries())
+    await _assert_signed_out(sio, "sid-a", person)
+    await _assert_signed_out(sio, "sid-b", person)
+
+
+@pytest.mark.asyncio
+async def test_a_logout_whose_socket_index_redis_missed_is_tried_again(
+    person, sio, quick_retries
+):
+    await _open_socket("sid-a", person, THIS_BROWSER)
+    sids = AsyncMock(
+        side_effect=[RedisConnectionError("Connection refused."), {"sid-a"}]
+    )
+
+    with patch("mascope_backend.socket.eviction.get_user_socket_sids", sids):
+        await _logout(person, None)
+        await _until(lambda: _no_retries())
+
+    assert sids.await_count == 2
+    await _assert_signed_out(sio, "sid-a", person)
+
+
+@pytest.mark.asyncio
+async def test_a_logout_retry_leaves_the_named_tab_it_reached(
+    person, sio, quick_retries
+):
+    """
+    The named tab went at the logout, and may have signed in again before the
+    retry: only the tab Redis missed goes then.
+    """
+    await _open_socket("sid-a", person, THIS_BROWSER)
+    await _open_socket("sid-b", person, THIS_BROWSER)
+    peek = session_store.peek_session_user
+    missed = []
+
+    async def miss_b_once(sid, *args, **kwargs):
+        if sid == "sid-b" and not missed:
+            missed.append(sid)
+            raise RedisConnectionError("Connection refused.")
+        return await peek(sid, *args, **kwargs)
+
+    with patch("mascope_backend.socket.eviction.peek_session_user", miss_b_once):
+        await _logout(person, "sid-a")
+        await _assert_signed_out(sio, "sid-a", person)
+        # Signed in again, in this browser, before the retry.
+        await _open_socket("sid-a", person, THIS_BROWSER - timedelta(seconds=5))
+        await _until(lambda: _no_retries())
+
+    await _assert_signed_out(sio, "sid-b", person)
+    assert (await get_session_user("sid-a"))["user_id"] == person.id
+
+
+@pytest.mark.asyncio
+async def test_a_logout_retry_signs_out_the_named_tab_redis_missed(
+    person, sio, quick_retries
+):
+    """Named by its sid alone: a socket of another token goes too, as at once."""
+    await _open_socket("sid-a", person, OTHER_BROWSER)
+    read = session_store.get_session_user
+    missed = []
+
+    async def miss_once(sid, *args, **kwargs):
+        if not missed:
+            missed.append(sid)
+            raise SocketSessionError("Session error") from RedisConnectionError(
+                "Connection refused."
+            )
+        return await read(sid, *args, **kwargs)
+
+    with patch("mascope_backend.socket.eviction.get_session_user", miss_once):
+        await _logout(person, "sid-a", issued=THIS_BROWSER)
+        await _until(lambda: _no_retries())
+
+    await _assert_signed_out(sio, "sid-a", person)
+
+
+@pytest.mark.parametrize(
+    "target, sid",
+    [
+        pytest.param("get_user_socket_sids", None, id="index"),
+        pytest.param("peek_session_user", None, id="each-socket"),
+        pytest.param("get_session_user", "sid-a", id="named-socket"),
+        pytest.param("_sign_out", "sid-a", id="named-sign-out"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_any_other_failure_is_not_tried_again(person, sio, target, sid):
+    """Trying again would only meet the fault again."""
+    await _open_socket("sid-a", person, THIS_BROWSER)
+
+    with patch(
+        f"mascope_backend.socket.eviction.{target}",
+        AsyncMock(side_effect=RuntimeError("a bug")),
+    ):
+        await evict_ended_sessions(person.id)
+        await _logout(person, sid)
+
+    assert eviction._retries == {}
+    assert not eviction._retrying()
+
+
+@pytest.mark.asyncio
+async def test_one_session_s_sign_out_is_kept_once(person, sio, live_rate_limiter):
+    live_rate_limiter.out_of_reach = True
+    await evict_ended_sessions(person.id)
+    await evict_ended_sessions(person.id)
+    task = eviction._retry_task
+    await eviction.sign_out_session(person.id, 1000)
+    await eviction.sign_out_session(person.id, 1000)
+
+    assert len(eviction._retries) == 2
+    # One task tries them all.
+    assert eviction._retry_task is task
+
+
+@pytest.mark.asyncio
+async def test_a_worker_keeps_only_so_many(
+    person, other_person, sio, live_rate_limiter, monkeypatch
+):
+    monkeypatch.setattr(storage_config, "sign_out_retry_limit", 1)
+    live_rate_limiter.out_of_reach = True
+
+    with captured_logs(level="DEBUG") as records:
+        await evict_ended_sessions(person.id)
+        # One kept already is kept again, at the limit too.
+        await evict_ended_sessions(person.id)
+        await evict_ended_sessions(other_person.id)
+
+    assert list(eviction._retries) == [("evict", person.id)]
+    (dropped,) = [r for r in records if r["message"].startswith("Dropped a sign-out")]
+    assert dropped["level"].name == "ERROR"
+    assert f"user {other_person.id}" in dropped["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_worker_stopping_says_what_it_drops(person, sio, live_rate_limiter):
+    live_rate_limiter.out_of_reach = True
+    await evict_ended_sessions(person.id)
+    task = eviction._retry_task
+
+    with captured_logs(level="DEBUG") as records:
+        await stop_sign_out_retries()
+
+    assert task.cancelled()
+
+    (dropped,) = [r for r in records if r["message"].startswith("Dropped 1 sign-out")]
+    assert dropped["level"].name == "WARNING"
+    assert eviction._retries == {}
+    assert not eviction._retrying()
 
 
 # --- The signed-in room the room-less broadcasts go to ---

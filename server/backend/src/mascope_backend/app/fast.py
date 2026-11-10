@@ -35,6 +35,7 @@ from mascope_backend.origins import (
     own_request_origins,
 )
 from mascope_backend.runtime import runtime
+from mascope_backend.socket.eviction import stop_sign_out_retries
 from mascope_backend.socket.storage import redis_storage_client, stop_worker_heartbeat
 from mascope_backend.weakened_controls import ORIGIN_GUARD_OFF, announce, switched_off
 
@@ -106,6 +107,8 @@ async def lifespan(app: FastAPI):
     # A socket of this worker whose disconnect does not run reads as gone at
     # once, not when the heartbeat would have lapsed.
     await stop_worker_heartbeat()
+    # Last before the client closes: a sign-out still kept is dropped, and said.
+    await stop_sign_out_retries()
 
     runtime.logger.info(
         f"Fast App shutdown: closing Redis storage client [Worker {worker_pid}]"
