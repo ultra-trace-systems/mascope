@@ -24,6 +24,7 @@ import os
 import re
 
 import numpy as np
+import pandas as pd
 import pytest
 from thermo_test_support import TEST_FILES_DIR
 
@@ -31,6 +32,7 @@ import mascope_thermo.thermo as m_thermo
 from mascope_thermo.backend import MS_SCAN_DETECTOR_STATS, open_backend
 from mascope_thermo.lib import thermo_available
 from mascope_thermo.scan_filter import parse_scan_filter
+from mascope_tools.alignment.utils import flag_satellite_peaks
 
 
 # Every test here compares OpenTFRaw against the Thermo backend, which needs the
@@ -783,6 +785,270 @@ def _nearest_value(
     return values[np.where(nearer_below, below, above)]
 
 
+#: How far consecutive scans' calibrations may move one frequency's m/z, in
+#: ppm at m/z 50, before an averaging window counts as holding two of them.
+#: Where the lock mass engages part-way through the window, the step is
+#: 1.5-5 ppm; between two scans on one calibration it is a few hundredths.
+_CALIBRATION_STEP_PPM = 1.0
+_CALIBRATION_STEP_MZ = 50.0
+_CALIBRATION_LABELS = ("Conversion Parameter B:", "Conversion Parameter C:")
+
+#: Peak detection's weak-peak threshold on the instrument's S:N
+#: (``mascope_signal``), which the averaged S:N feeds.
+_WEAK_SN = 3.0
+
+#: The local floor of ``mascope_signal.peak.below_local_floor``, restated
+#: (:func:`_below_local_floor`): its ``LOCAL_FLOOR_WINDOW_PPM``,
+#: ``LOCAL_FLOOR_MIN_NEIGHBOURS`` and ``LOCAL_FLOOR_FACTOR``.
+_LOCAL_FLOOR_WINDOW_PPM = 3000.0
+_LOCAL_FLOOR_MIN_NEIGHBOURS = 300
+_LOCAL_FLOOR_FACTOR = 5.0
+
+
+def _calibration_step_ppm(path, scans) -> float:
+    """The largest move of one frequency's m/z between consecutive ``scans``.
+
+    Each Orbitrap scan's trailer stores the calibration it converts
+    frequency to m/z with, m/z = B/f^2 + C/f^4 (the values
+    ``OpenTFRawBackend._profile_conversion_params`` reads). The frequency
+    that is m/z 50 under one scan's B/C is put through the next scan's, and
+    the difference is in ppm of m/z 50. NaN where fewer than two scans store
+    B/C.
+    """
+    calibrations = []
+    with open_backend(path) as backend:
+        for scan in scans:
+            numbers = backend.trailer_numbers(scan, _CALIBRATION_LABELS)
+            b, c = (numbers.get(label) for label in _CALIBRATION_LABELS)
+            if b and c is not None:
+                calibrations.append((b, c))
+    if len(calibrations) < 2:
+        return float("nan")
+    mz = _CALIBRATION_STEP_MZ
+    steps = []
+    for (b0, c0), (b1, c1) in zip(calibrations, calibrations[1:]):
+        # 1/f^2 of m/z 50 under (b0, c0): the root of c0 u^2 + b0 u - mz.
+        u = 2.0 * mz / (b0 + np.sqrt(b0 * b0 + 4.0 * c0 * mz))
+        steps.append(abs(b1 * u + c1 * u * u - mz) / mz * 1e6)
+    return float(max(steps))
+
+
+def _below_local_floor(mz: np.ndarray, heights: np.ndarray) -> np.ndarray:
+    """Which peaks of one peak list peak detection sets under the local floor.
+
+    The rule of ``mascope_signal.peak.below_local_floor`` for a list of one
+    spectrum, restated with its constants (``LOCAL_FLOOR_WINDOW_PPM``,
+    ``LOCAL_FLOOR_MIN_NEIGHBOURS``, ``LOCAL_FLOOR_FACTOR``): ``mascope_signal``
+    depends on ``mascope_thermo``, so this library's tests do not import it.
+    Where the peaks within the window of a peak's m/z number the neighbours
+    or more besides it, a peak under the factor times their median height is
+    one of a floor's maxima.
+    """
+    mz = np.asarray(mz, dtype=np.float64)
+    heights = np.asarray(heights, dtype=np.float64)
+    below = np.zeros(mz.size, dtype=bool)
+    order = np.argsort(mz, kind="stable")
+    sorted_mz, sorted_heights = mz[order], heights[order]
+    half_width = _LOCAL_FLOOR_WINDOW_PPM * 1e-6
+    lower = np.searchsorted(sorted_mz, sorted_mz * (1 - half_width))
+    upper = np.searchsorted(sorted_mz, sorted_mz * (1 + half_width))
+    for i in np.flatnonzero(upper - lower - 1 >= _LOCAL_FLOOR_MIN_NEIGHBOURS):
+        floor = np.median(sorted_heights[lower[i] : upper[i]])
+        below[order[i]] = sorted_heights[i] < _LOCAL_FLOOR_FACTOR * floor
+    return below
+
+
+def _side_lobes_or_satellites(monkeypatch, path, mz, intensity, resolution, window):
+    """Which averaged peaks peak detection flags as a side lobe or a satellite.
+
+    A side lobe is a peak over half of whose per-scan centroids carry the
+    Exception flag, as :func:`test_centroid_flag_shares_match_thermo` reads
+    the shares; a satellite is what ``flag_satellite_peaks`` marks.
+    """
+    shares = _run_under(
+        monkeypatch,
+        "opentfraw",
+        m_thermo.get_centroid_flag_shares,
+        path,
+        mz,
+        resolution,
+        **window,
+    )
+    satellites = flag_satellite_peaks(pd.DataFrame({"mz": mz, "intensity": intensity}))
+    return (shares > 0.5) | satellites["is_satellite_peak"].to_numpy(dtype=bool)
+
+
+def _averaged_centroid_readings(monkeypatch, path) -> dict | None:
+    """What :func:`test_centroids_average_matches_thermo` judges, read once.
+
+    Both backends' averaged centroids over the bounded window, the Thermo
+    library's per-scan centroid sums over the same scans, the window's
+    largest calibration step and OpenTFRaw's flagged peaks. None where the
+    Thermo library averages no centroid.
+    """
+    t_min, t_max = _bounded_window(monkeypatch, path)
+    window = dict(t_min=t_min, t_max=t_max)
+    thermo = _run_under(monkeypatch, "thermo", m_thermo.get_centroids, path, **window)
+    ours = _run_under(monkeypatch, "opentfraw", m_thermo.get_centroids, path, **window)
+    if thermo[0].size == 0:
+        return None
+    monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "thermo")
+    with open_backend(path) as backend:
+        scans = backend.scan_indices(**window)
+    per_scan = _run_under(
+        monkeypatch,
+        "thermo",
+        m_thermo.get_centroids_per_scan,
+        path,
+        scan_type="Ms",
+        **window,
+    )
+    om, oi, orr, _ = ours
+    return {
+        "thermo": thermo,
+        "opentfraw": ours,
+        "per_scan_sums": np.array([np.sum(s["intensities"]) for s in per_scan]),
+        "step_ppm": _calibration_step_ppm(path, scans),
+        "flagged": _side_lobes_or_satellites(monkeypatch, path, om, oi, orr, window),
+    }
+
+
+def _resolution_bounded(thermo_sn: np.ndarray, flagged: np.ndarray) -> np.ndarray:
+    """Which matched peaks the resolution bound applies to: those at Thermo
+    S:N 3 or over that peak detection does not flag as a side lobe or a
+    satellite."""
+    return (thermo_sn >= _WEAK_SN) & ~flagged
+
+
+def _averaged_centroid_failures(readings: dict) -> list[str]:
+    """The assertions of :func:`test_centroids_average_matches_thermo` that
+    ``readings`` fails, one message each.
+
+    Every assertion is judged, so a sweep over many files can count each
+    one's failures from the same code the test runs.
+    """
+    tm, ti, tr, tsn = readings["thermo"]
+    om, oi, orr, osn = readings["opentfraw"]
+    failures = []
+    # Two calibrations in the window: the lock mass engaged part-way through.
+    step = readings["step_ppm"] > _CALIBRATION_STEP_PPM
+
+    # Peak counts in the same ballpark (re-centroiding splits/merges differently;
+    # measured 1.00-1.06 on the 165 demo raws, so this is comfortably loose).
+    if not 0.85 * tm.size <= om.size <= 1.20 * tm.size:
+        failures.append(f"centroid count {om.size} vs Thermo {tm.size}")
+
+    # Summed intensity within a few percent: OpenTFRaw's averaged heights are
+    # 0.975-0.98 of the per-scan centroids' on the demo raws and the customer
+    # files alike. Across a calibration step Thermo's average is the one off:
+    # it smears the dominant low-m/z ion between the two calibrations, to 0.80
+    # of its mean per-scan height at the median and 0.58 at p5, where
+    # OpenTFRaw's, averaged in frequency, stays at 0.97. So there the sum is
+    # held to the per-scan centroids' instead, which agree with OpenTFRaw's
+    # centroid for centroid (test_per_scan_reads_match_thermo): their mean sum
+    # times the scans averaged, as get_centroids scales an average.
+    sums = readings["per_scan_sums"]
+    reference = sums.mean() * sums.size if step else ti.sum()
+    if not np.isclose(oi.sum(), reference, rtol=0.1, atol=0):
+        failures.append(
+            f"summed intensity {oi.sum():.4g} vs "
+            f"{'the per-scan sums' if step else 'Thermo'} {reference:.4g}"
+        )
+
+    # Each OpenTFRaw peak's nearest Thermo peak (robust to which single peak
+    # happens to be tallest, unlike a base-peak check).
+    dev_ppm = _nearest_ppm(tm, om)
+    nearest_res = _nearest_value(tm, tr, om)
+    nearest_sn = _nearest_value(tm, tsn, om)
+    matched = dev_ppm <= 1.0
+    # (1) High match fraction within 1 ppm. What does not pair is mostly what
+    # peak detection sets aside: of the unpaired on the 165 demo raws and on
+    # 11,116 short customer Orbitrap files, 69-74 % are weak (under S:N 3 or
+    # the local floor) and 16-18 % satellites, by the pipeline's own flags. Of
+    # the 10-13 % it keeps, two in five are Thermo's peak within half a FWHM
+    # but over 1 ppm off: a weak peak's centroid scatters with its width, so
+    # twice as far at half the resolution. Many of the rest are shoulders
+    # within 2 FWHM of a peak ten times their height (56 % on the demo raws,
+    # 1 % of the peaks that pair), which Thermo's re-centroided profile does
+    # not split off (GitHub #2946). So the share follows a file's noise, strong
+    # peaks and resolution: 0.919-0.996 on the demo raws (median 0.980; the
+    # lowest is the one raw acquired at 60,000, the rest are at 120,000) and
+    # from 0.904 on the customer files (median 0.977), so 0.90. Not judged
+    # across a calibration step: there one low-m/z ion is two Thermo
+    # centroids, the locked and the unlocked scans', and one OpenTFRaw
+    # centroid between them, on purpose (_labels_on_one_calibration). Pushing
+    # to ~100 % would need re-centroiding the averaged profile (matching
+    # Thermo's AverageScans), not a threshold.
+    if not step and matched.mean() < 0.90:
+        failures.append(
+            f"only {int(matched.sum())}/{om.size} averaged centroids matched "
+            "Thermo within 1 ppm"
+        )
+    # (2) And Thermo's peaks are OpenTFRaw's: a peak the averaging lost is a
+    # Thermo centroid with no OpenTFRaw centroid near it, which (1) cannot see,
+    # as it only asks where OpenTFRaw's peaks are. Measured 0.966-1.000 on the
+    # demo raws and from 0.973 on the customer files without a calibration
+    # step, so 0.95. Not judged across a step, for the reason (1) is not:
+    # past a step of about 3.5 ppm Thermo's average splits the dominant ion.
+    found = _nearest_ppm(om, tm) <= 1.0
+    if not step and found.mean() < 0.95:
+        failures.append(
+            f"only {int(found.sum())}/{tm.size} of Thermo's averaged centroids "
+            "have an OpenTFRaw centroid within 1 ppm"
+        )
+    # (3) The matched peaks must agree to *sub-0.1 ppm* -- this is the HRMS mass
+    # accuracy guarantee, and the centroid m/z is what feeds peak detection,
+    # so it is judged over the peaks that detection keeps: those above the
+    # local floor (_below_local_floor). Measured on the demo raws: median
+    # 0.04-0.09 ppm, p90 0.11-0.25 ppm (the highest of both is the raw at
+    # 60,000). Beside one dominant ion of a high-resolution acquisition,
+    # thousands of weak centroids crowd under the floor and scatter 0.12-0.14
+    # ppm at the median; above it the highest median is 0.096 ppm on the
+    # customer files.
+    kept_o = ~_below_local_floor(om, oi)
+    md = dev_ppm[matched & kept_o]
+    if md.size and float(np.median(md)) > 0.1:
+        failures.append(
+            f"median matched-peak m/z deviation {np.median(md):.3f} ppm (> 0.1)"
+        )
+    if md.size and float(np.percentile(md, 90)) > 0.4:
+        failures.append(
+            f"p90 matched-peak m/z deviation {np.percentile(md, 90):.3f} ppm (> 0.4)"
+        )
+    # (4) No matched peak's resolution far above Thermo's. One label with an
+    # outlier resolution, a side lobe's, made an averaged peak's millions
+    # (GitHub #2780) and its width next to nothing. Capped at twice what the
+    # scan gives, the largest ratio on the 165 demo raws is 2.8, against
+    # 1,261 before. Judged on the peaks whose width peak detection uses: at
+    # Thermo S:N 3 or over and neither a side lobe nor a satellite. Beside
+    # those, Thermo's re-centroid of a weak or flagged peak can come out at
+    # 0.14-0.43 of the scan's typical resolution, while OpenTFRaw's stays
+    # within the #2780 cap.
+    bounded = matched & _resolution_bounded(nearest_sn, readings["flagged"])
+    ratio = orr[bounded] / nearest_res[bounded]
+    ratio = ratio[np.isfinite(ratio) & (ratio > 0)]
+    if ratio.size and float(ratio.max()) > 4.0:
+        failures.append(
+            f"an averaged centroid's resolution is {ratio.max():.1f} times Thermo's"
+        )
+
+    # Averaged S:N must track Thermo well enough that peak detection's weak-peak
+    # filter (S:N >= 3) keeps/drops the same peaks. Thermo reads S:N off the
+    # noise-reduced averaged profile (~sqrt(N) lower noise); the backend scales
+    # the pooled per-scan S:N by n/sqrt(N) to match. Without it the count above
+    # the threshold runs ~sqrt(N) low and near-threshold peaks vanish. Counted
+    # over the peaks above the local floor on each side, as peak detection
+    # keeps them: beside one dominant ion Thermo's averaged noise runs up to
+    # 1.5 times the per-scan noise over sqrt(N), and the weak centroids under
+    # the floor there cross the threshold under OpenTFRaw only. Asserted where
+    # there are enough peaks to be statistically meaningful.
+    t_pass = int(((tsn >= _WEAK_SN) & ~_below_local_floor(tm, ti)).sum())
+    o_pass = int(((osn >= _WEAK_SN) & kept_o).sum())
+    if t_pass >= 20 and not 0.7 * t_pass <= o_pass <= 1.4 * t_pass:
+        failures.append(f"{o_pass} averaged centroids above S:N 3 vs Thermo {t_pass}")
+    return failures
+
+
 @pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
 def test_centroids_average_matches_thermo(monkeypatch, path):
     """Approximate parity for averaged centroids.
@@ -796,101 +1062,44 @@ def test_centroids_average_matches_thermo(monkeypatch, path):
     count of peaks above the threshold must track Thermo, which the
     n/sqrt(N) averaged-S:N scaling restores. Guards against gross regressions.
     Bounded to a small scan window for speed.
+
+    Measured on 11,116 short customer Orbitrap files (2-25 MS1 scans, four
+    instrument groups) as well as the 165 demo raws, three kinds of file
+    fail the plain comparison while OpenTFRaw reads them right (GitHub
+    #2945), and the assertions below are judged so they hold there:
+
+    1. A calibration step in the window, 753 files: the lock mass engages
+       after the second or third scan, and consecutive scans' calibrations
+       move m/z 50 by 1.5-5 ppm. Thermo's average smears the dominant
+       low-m/z ion across the two calibrations. Where the step is over 1 ppm
+       (:func:`_calibration_step_ppm`, 905 files, all of one group), the
+       summed intensity is held to the per-scan centroids', and the match
+       (1) and found (2) assertions are not judged. Under 1 ppm no file of
+       10,211 fails them.
+    2. Weak centroids beside one dominant ion, 247 files: one group's
+       12-scan high-resolution acquisitions, thousands of centroids under
+       the local floor that peak detection drops. The S:N count and the
+       m/z deviation (3) are taken over the peaks above the floor.
+    3. Thermo's broad re-centroids, 47 files: Thermo's averaged resolution
+       0.14-0.43 of the scan's typical one, mostly on weak or flagged
+       peaks. The resolution bound (4) is judged on the peaks whose width
+       peak detection uses.
+
+    Every bound kept its number. The plain comparison failed 1,044 of the
+    customer files; these rules leave one: a shoulder pair 3 mDa apart that
+    Thermo's re-centroid merges into one centroid of a quarter of the scan's
+    resolution, the kind GitHub #2946 describes, at Thermo S:N 5 and
+    unflagged, so it is left to fail (ratio 4.3). Without the step rule the
+    753 files of 1 fail again, without the floor the 247 of 2, and without
+    the restriction of (4) the 47 of 3.
     """
-    path = str(path)
-    t_min, t_max = _bounded_window(monkeypatch, path)
-
-    tm, ti, tr, tsn = _run_under(
-        monkeypatch, "thermo", m_thermo.get_centroids, path, t_min=t_min, t_max=t_max
-    )
-    om, oi, orr, osn = _run_under(
-        monkeypatch, "opentfraw", m_thermo.get_centroids, path, t_min=t_min, t_max=t_max
-    )
-    if tm.size == 0:
+    readings = _averaged_centroid_readings(monkeypatch, str(path))
+    if readings is None:
         pytest.skip("no centroids")
-
+    om, oi, orr, osn = readings["opentfraw"]
     assert om.size == orr.size == osn.size == oi.size
-    # Peak counts in the same ballpark (re-centroiding splits/merges differently;
-    # measured 1.00-1.06 on the 165 demo raws, so this is comfortably loose).
-    assert 0.85 * tm.size <= om.size <= 1.20 * tm.size, (
-        f"centroid count {om.size} vs Thermo {tm.size}"
-    )
-    # Summed intensity within a few percent.
-    np.testing.assert_allclose(oi.sum(), ti.sum(), rtol=0.1)
-
-    # Each OpenTFRaw peak's nearest Thermo peak (robust to which single peak
-    # happens to be tallest, unlike a base-peak check).
-    dev_ppm = _nearest_ppm(tm, om)
-    nearest_res = _nearest_value(tm, tr, om)
-    # (1) High match fraction within 1 ppm. What does not pair is mostly what
-    # peak detection sets aside: of the unpaired on the 165 demo raws and on
-    # 11,116 short customer Orbitrap files, 69-74 % are weak (under S:N 3 or
-    # the local floor) and 16-18 % satellites, by the pipeline's own flags. Of
-    # the 10-13 % it keeps, two in five are Thermo's peak within half a FWHM
-    # but over 1 ppm off: a weak peak's centroid scatters with its width, so
-    # twice as far at half the resolution. Many of the rest are shoulders
-    # within 2 FWHM of a peak ten times their height (56 % on the demo raws,
-    # 1 % of the peaks that pair), which Thermo's re-centroided profile does
-    # not split off (GitHub #2946). So the share follows a file's noise, strong
-    # peaks and resolution: 0.919-0.996 on the demo raws (median 0.980; the
-    # lowest is the one raw acquired at 60,000, the rest are at 120,000) and
-    # from 0.904 on the customer files (median 0.977), so 0.90. Where the lock
-    # mass engages part-way through the averaged scans it runs lower: one
-    # low-m/z ion is two Thermo centroids there, the locked and the unlocked
-    # scans', and one OpenTFRaw centroid between them, on purpose
-    # (_labels_on_one_calibration); this test does not cover that (GitHub
-    # #2945). Pushing to ~100 % would need re-centroiding the averaged profile
-    # (matching Thermo's AverageScans), not a threshold.
-    matched = dev_ppm <= 1.0
-    assert matched.mean() >= 0.90, (
-        f"only {int(matched.sum())}/{om.size} averaged centroids matched Thermo "
-        "within 1 ppm"
-    )
-    # (2) And Thermo's peaks are OpenTFRaw's: a peak the averaging lost is a
-    # Thermo centroid with no OpenTFRaw centroid near it, which (1) cannot see,
-    # as it only asks where OpenTFRaw's peaks are. Measured 0.966-1.000 on the
-    # demo raws and from 0.973 on the customer files without a lock-mass step,
-    # so 0.95.
-    found = _nearest_ppm(om, tm) <= 1.0
-    assert found.mean() >= 0.95, (
-        f"only {int(found.sum())}/{tm.size} of Thermo's averaged centroids have "
-        "an OpenTFRaw centroid within 1 ppm"
-    )
-    # (3) The matched peaks must agree to *sub-0.1 ppm* -- this is the HRMS mass
-    # accuracy guarantee, and the centroid m/z is what feeds peak detection.
-    # Measured on the demo raws: median 0.04-0.09 ppm, p90 0.11-0.25 ppm (the
-    # highest of both is the raw at 60,000).
-    md = dev_ppm[matched]
-    assert float(np.median(md)) <= 0.1, (
-        f"median matched-peak m/z deviation {np.median(md):.3f} ppm (> 0.1)"
-    )
-    assert float(np.percentile(md, 90)) <= 0.4, (
-        f"p90 matched-peak m/z deviation {np.percentile(md, 90):.3f} ppm (> 0.4)"
-    )
-    # (4) No matched peak's resolution far above Thermo's. One label with an
-    # outlier resolution, a side lobe's, made an averaged peak's millions
-    # (GitHub #2780) and its width next to nothing. Capped at twice what the
-    # scan gives, the largest ratio on the 165 demo raws is 2.8, against
-    # 1,261 before.
-    ratio = orr[matched] / nearest_res[matched]
-    ratio = ratio[np.isfinite(ratio) & (ratio > 0)]
-    assert ratio.size == 0 or float(ratio.max()) <= 4.0, (
-        f"an averaged centroid's resolution is {ratio.max():.1f} times Thermo's"
-    )
-
-    # Averaged S:N must track Thermo well enough that peak detection's weak-peak
-    # filter (S:N >= 3) keeps/drops the same peaks. Thermo reads S:N off the
-    # noise-reduced averaged profile (~sqrt(N) lower noise); the backend scales
-    # the pooled per-scan S:N by n/sqrt(N) to match. Without it the count above
-    # the threshold runs ~sqrt(N) low and near-threshold peaks vanish. Assert the
-    # above-threshold count tracks Thermo where there are enough peaks to be
-    # statistically meaningful.
-    t_pass = int((tsn >= 3.0).sum())
-    o_pass = int((osn >= 3.0).sum())
-    if t_pass >= 20:
-        assert 0.7 * t_pass <= o_pass <= 1.4 * t_pass, (
-            f"{o_pass} averaged centroids above S:N 3 vs Thermo {t_pass}"
-        )
+    failures = _averaged_centroid_failures(readings)
+    assert not failures, "; ".join(failures)
 
 
 @pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
