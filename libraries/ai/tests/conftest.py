@@ -52,6 +52,15 @@ from mascope_ai import Session, Toolkit
 
 RECORDED = json.loads((Path(__file__).parent / "recorded_api.json").read_text())
 
+#: The scans each recorded sample averages. A peak list and a match tree read
+#: off an Orbitrap store that keeps scan counts carry, per peak, how many of
+#: them hold it (``n_scans``) and how many those are (``n_scans_total``). The
+#: recording's demo stack predates the counts, so the fake adds them as such
+#: a store serves them (:attr:`FakeAPI.scan_counts`): from each peak's
+#: sparsity, on a tree line only where the line has a peak, and on a read
+#: over a time range, a stage's, as null for both.
+SCANS = 4
+
 DATASETS = {"d1": "Campaign (2026)", "d2": "Calibration runs"}
 BATCHES = {
     "b1": ("d1", "Blank (A)"),
@@ -134,6 +143,9 @@ class FakeAPI:
         *params* given warns that *count* peaks were left out, or with
         *count* None answers as a server up to 1.10.1 does when it left out
         every peak, set through :meth:`leave_out`.
+    :ivar scan_counts: Whether a peak list and a match tree carry the scan
+        counts (:data:`SCANS`), as a store detected since they were kept
+        does; False answers as one detected before them.
     :ivar no_series: Sample ID -> the IDs of its peaks with no time series,
         set through :meth:`drop_series`: a time-ranged peak read leaves them
         out and warns how many, and a time-series request computes one. A
@@ -162,6 +174,7 @@ class FakeAPI:
         self.failures: list[tuple[str, re.Pattern, dict[str, Any], int]] = []
         self.refusals: list[list[Any]] = []
         self.peak_copies = 1
+        self.scan_counts = True
         self.left_out: list[tuple[dict[str, Any], int | None]] = []
         self.no_series: dict[str, set[str]] = {}
         self.datasets = {d: [name, "ws1"] for d, name in DATASETS.items()}
@@ -336,7 +349,7 @@ class FakeAPI:
                 return 403, {"error": "Forbidden"}
             return 200, _envelope(self._sample(parts[1]))
         if re.fullmatch(r"samples/\w+/peaks", path):
-            peaks = self._peaks(parts[1])
+            peaks = self._peaks(parts[1], ranged="t_min" in params)
             self._narrow(peaks, parts[1], params)
             for left_params, count in self.left_out:
                 if not left_params.items() <= params.items():
@@ -509,7 +522,7 @@ class FakeAPI:
             record["match"] = {**record["match"], "match_sample_id": None}
         return record
 
-    def _peaks(self, sample_id: str) -> dict[str, Any]:
+    def _peaks(self, sample_id: str, ranged: bool = False) -> dict[str, Any]:
         recorded = RECORDED["peaks"]["data"]
         data: dict[str, Any] = {}
         for key, value in recorded.items():
@@ -523,6 +536,11 @@ class FakeAPI:
                 else:
                     copies += copy.deepcopy(value)
             data[key] = copies
+        if self.scan_counts and ranged:
+            data["n_scans"] = data["n_scans_total"] = None
+        elif self.scan_counts:
+            data["n_scans"] = [round((1 - s) * SCANS) for s in data["sparsity"]]
+            data["n_scans_total"] = [SCANS] * len(data["peak_id"])
         return {**RECORDED["peaks"], "results": len(data["peak_id"]), "data": data}
 
     def _narrow(self, peaks: dict[str, Any], sample_id: str, params) -> None:
@@ -577,6 +595,11 @@ class FakeAPI:
             for compound in RECORDED["match_compounds"]["data"]
         }
         data = [copy.deepcopy(recorded[f]) for f in wanted if f in recorded]
+        for compound in data if self.scan_counts else []:
+            for ion in compound["children"]:
+                for line in ion["children"]:
+                    count = SCANS if line["sample_peak_id"] else None
+                    line["n_scans"] = line["n_scans_total"] = count
         return 200, {**RECORDED["match_compounds"], "data": data}
 
     def _timeseries(self, sample_id: str, body: dict[str, Any]) -> dict[str, Any]:

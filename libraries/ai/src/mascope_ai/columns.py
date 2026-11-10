@@ -71,6 +71,14 @@ COMMON: dict[str, str] = {
         "the share of the sample's scans the peak is absent from; also 0 while "
         "its time series is not yet computed"
     ),
+    "n_scans": (
+        "Orbitrap: how many of the scans averaged into the peak hold it; a dim "
+        "line misses some. NaN: TOF or no count kept"
+    ),
+    "n_scans_total": (
+        "Orbitrap: how many scans the peak is averaged over, its polarity's or "
+        "stream's; NaN: TOF or no count kept"
+    ),
     "segment": (
         "the scan stream of a stitched sample the peak came from; None when "
         "not stitched"
@@ -197,6 +205,14 @@ _TREE: dict[str, str] = {
     ),
     "signal_to_noise": "that peak's height over its noise estimate",
     "is_satellite": "whether that peak is a side-lobe artifact of a stronger peak",
+    "n_scans": (
+        "Orbitrap: how many of the scans averaged into that peak hold it; NaN "
+        "when the line has no peak or no count"
+    ),
+    "n_scans_total": (
+        "Orbitrap: how many scans that peak is averaged over; NaN when the line "
+        "has no peak or no count"
+    ),
     "instrument": "the instrument whose match parameters scored the ion",
     "cas_number": "the compound's CAS number, if recorded; the match is on the formula",
     "inchi": "the compound's InChI, if recorded; a formula match confirms no structure",
@@ -250,6 +266,11 @@ BY_OP: dict[str, dict[str, str]] = {
             "the sample's whole-window value, not the stage's: the share of "
             "scans the peak is absent from"
         ),
+        "n_scans": (
+            "not served on a stage for now: its signal_to_noise is the whole "
+            "sample's, which its own scan counts cannot pair with"
+        ),
+        "n_scans_total": "not served on a stage for now, as n_scans is not",
     },
     "match_compounds": _TREE,
 }

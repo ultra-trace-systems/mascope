@@ -13,4 +13,8 @@
   release, until its peaks are detected again: *Detect peaks*, or
   `rebuild_stale_peak_stores` with `FILL_SCAN_COUNTS=1`, which counts such
   files in its dry run and sets their batches to rematch
-  (`docs/maintaining.md`, *Peak stores a file has outgrown*).
+  (`docs/maintaining.md`, *Peak stores a file has outgrown*). The AI
+  toolkit tells a model what both mean in a peak list and the match tree
+  (`docs/user/concepts/tables.md`). A read over a time range, a stage's,
+  leaves both empty for now: its signal-to-noise is the whole sample's,
+  which the counts of the range's own scans cannot be read against.
