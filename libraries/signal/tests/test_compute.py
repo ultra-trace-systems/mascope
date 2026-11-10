@@ -387,6 +387,31 @@ class TestScanTypeOfARawFile:
         assert asked["tic"] == ("data.h5", None)
 
 
+@pytest.mark.parametrize("total_tic", [0.0, 7.0])
+def test_a_zarr_file_that_recorded_no_signal_has_a_tic_of_zero(
+    tmp_path, monkeypatch, total_tic
+):
+    """Not 0/0: rescaled to the props' total, a signal of zeros read NaN on
+    every scan, which its sample item stored as its TIC."""
+    store = zarr.open_group(str(tmp_path / "signal.zarr"), mode="w")
+    store.create_array("signal", shape=(5, 3), dtype="float64", fill_value=0.0)
+    store["signal"][:] = np.zeros((5, 3))
+
+    monkeypatch.setattr(m_compute.m_name, "get_sample_file_type", lambda _: "tof_zarr")
+    monkeypatch.setattr(
+        m_compute.m_name, "filename_to_zarr_path", lambda *_: "signal.zarr"
+    )
+    monkeypatch.setattr(m_compute.m_io, "open_zarr_store", lambda _: store)
+    monkeypatch.setattr(m_compute.m_io, "read_props", lambda _: {"tic": total_tic})
+    monkeypatch.setattr(
+        m_compute.m_io, "load_coord", lambda *_: np.array([1.0, 2.0, 3.0])
+    )
+
+    _, tic = m_compute.get_tic_per_scan("sample")
+
+    np.testing.assert_array_equal(tic, np.zeros(3))
+
+
 class TestTheStoredTicOfAnAcquisitionWithNoMs1Scans:
     """A store with no MS1 scan under it is read back on the axis it holds.
 

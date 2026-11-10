@@ -86,3 +86,11 @@ def test_the_mean_tic_does_not_grow_with_the_number_of_scans(tmp_path):
     assert long.sum() == pytest.approx(2 * short.sum())
     assert long.mean() == pytest.approx(short.mean())
     assert short.mean() == pytest.approx(20.0 * _COEFFICIENT)
+
+
+def test_a_file_that_recorded_no_signal_has_a_tic_of_zero(tmp_path):
+    """Not 0/0: rescaled to a SumSpectrum of zero, every scan read NaN, which
+    its sample item stored as its TIC."""
+    _, tic = get_tic_per_scan(_write_tof_file(tmp_path / "data.h5", [0.0] * 4))
+
+    np.testing.assert_array_equal(tic, np.zeros(4))
