@@ -52,7 +52,10 @@ from mascope_backend.api.new.auth.access_token.service import (
     get_access_token,
     may_hold_converter_token,
 )
-from mascope_backend.api.new.ionization.modes.versions import move_to_current_versions
+from mascope_backend.api.new.ionization.modes.versions import (
+    bring_batch_collections_current,
+    move_to_current_versions,
+)
 from mascope_backend.api.new.match.params import default_match_params
 from mascope_backend.db import (
     MatchCollection,
@@ -1380,8 +1383,11 @@ async def rematch_batch(
         await send_progress_user_notification(progress_notification)
 
         # Its samples are matched under the current versions of their
-        # ionization modes, which an edit that flagged the batch has replaced.
+        # ionization modes, which an edit that flagged the batch has replaced,
+        # and against the collections those versions name: the batch holds
+        # its own copy of the earlier ones, which matching reads.
         await move_to_current_versions(sample_batch_ids=[sample_batch_id])
+        await bring_batch_collections_current(sample_batch_id)
 
         # Step 3: Remove existing matches (partially or fully)
         remove_result = await match_remove_batch(

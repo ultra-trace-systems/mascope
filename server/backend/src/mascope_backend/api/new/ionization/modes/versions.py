@@ -25,6 +25,13 @@ Two kinds of reference meet a new version differently:
   a new file - by declaration, token, binding or detection - see the active
   rows only.
 
+A batch's target collections are a third kind. An acquisition batch takes
+its modes' calibrant and diagnostic collections when it is made, and matching
+reads the batch's own rows, not the mode's. So the re-process that moves a
+batch's items onto the current version also swaps the collections an earlier
+version gave the batch for the current version's
+(:func:`align_batch_collections`), and leaves the ones a person attached.
+
 The batch ledger is partitioned per setup, not per version: an anchor made
 under one version stays the anchor of the same species under the next, so
 the partition key is the setup's first version (:func:`root_ids`).
@@ -32,10 +39,17 @@ the partition key is the setup's first version (:func:`root_ids`).
 
 from collections.abc import Iterable
 
-from sqlalchemy import exists, or_, select, update
+from sqlalchemy import delete, exists, or_, select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mascope_backend.db import IonizationMode, MethodBinding, SampleItem, async_session
+from mascope_backend.db import (
+    IonizationMode,
+    MethodBinding,
+    SampleItem,
+    TargetCollectionInSampleBatch,
+    async_session,
+)
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
 
@@ -48,6 +62,9 @@ VERSIONED_FIELDS = (
     "diagnostic_collection_id",
     "label_purity",
 )
+
+#: The fields that name a collection a batch of the mode is made with.
+COLLECTION_FIELDS = ("calibration_collection_id", "diagnostic_collection_id")
 
 #: Columns a new version does not copy from the row it supersedes.
 _OWN_COLUMNS = frozenset(
@@ -375,6 +392,151 @@ async def move_to_current_versions(
             "ionization mode before re-processing them"
         )
     return moved
+
+
+async def align_batch_collections(
+    session: AsyncSession,
+    sample_batch_id: str,
+    mode_ids: Iterable[str | None] = (),
+) -> bool:
+    """Swap the collections an earlier version gave a batch for the current one's.
+
+    An acquisition batch is made with its mode's calibrant and diagnostic
+    collections, and keeps them: matching reads the batch's rows, so an edit
+    that gave the mode another collection reached no batch made before it.
+    A collection of the batch is the mode's when it is a calibrant or a
+    diagnostic collection of an earlier version of one of the batch's modes
+    and of no current version of them. Each such collection is replaced by
+    the current version's collection of the same kind; one a current version
+    has none of is only taken off. One the current version names as the
+    other kind stays, and the new one of its kind joins it. Every other
+    collection, one a person attached, stays.
+
+    Nothing is added where no earlier version's collection is attached: a
+    collection a person took off the batch looks the same as one the mode
+    never gave it.
+
+    :param sample_batch_id: The batch.
+    :param mode_ids: Modes to count as the batch's besides its items' modes:
+        the one a re-processed sample is about to be filed under.
+    :return: Whether the batch's collections changed. The caller commits.
+    """
+    held = set(
+        (
+            await session.execute(
+                select(SampleItem.ionization_mode_id)
+                .where(SampleItem.sample_batch_id == sample_batch_id)
+                .distinct()
+            )
+        )
+        .scalars()
+        .all()
+    )
+    held.update(mode_id for mode_id in mode_ids if mode_id is not None)
+    heads = {
+        head.ionization_mode_id: head
+        for head in (await current_versions(session, held)).values()
+        if head is not None
+    }
+    if not heads:
+        return False
+
+    links = await _links(session)
+    earlier_ids = {head_id: _chain_back(links, head_id)[1:] for head_id in heads}
+    wanted = {mode_id for ids in earlier_ids.values() for mode_id in ids}
+    if not wanted:
+        return False
+    earlier = {
+        row.ionization_mode_id: row
+        for row in (
+            await session.execute(
+                select(IonizationMode).where(
+                    IonizationMode.ionization_mode_id.in_(wanted)
+                )
+            )
+        )
+        .scalars()
+        .all()
+    }
+    current = {
+        getattr(head, field) for head in heads.values() for field in COLLECTION_FIELDS
+    } - {None}
+    attached = set(
+        (
+            await session.execute(
+                select(TargetCollectionInSampleBatch.target_collection_id).where(
+                    TargetCollectionInSampleBatch.sample_batch_id == sample_batch_id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    removed: set[str] = set()
+    added: set[str] = set()
+    for head_id, head in heads.items():
+        for field in COLLECTION_FIELDS:
+            given = {
+                getattr(earlier[mode_id], field)
+                for mode_id in earlier_ids[head_id]
+                if mode_id in earlier
+            } & attached
+            if not given:
+                continue
+            # One the current version names, as either kind, stays.
+            removed |= given - current
+            if getattr(head, field) is not None:
+                added.add(getattr(head, field))
+    added -= attached
+    if not removed and not added:
+        return False
+
+    if removed:
+        await session.execute(
+            delete(TargetCollectionInSampleBatch).where(
+                TargetCollectionInSampleBatch.sample_batch_id == sample_batch_id,
+                TargetCollectionInSampleBatch.target_collection_id.in_(removed),
+            )
+        )
+    if added:
+        # Two files of one day are filed by different workers at once, and
+        # each may align the batch: the second one's row is already there.
+        await session.execute(
+            insert(TargetCollectionInSampleBatch)
+            .values(
+                [
+                    {
+                        "sample_batch_id": sample_batch_id,
+                        "target_collection_id": collection_id,
+                    }
+                    for collection_id in sorted(added)
+                ]
+            )
+            .on_conflict_do_nothing()
+        )
+    return True
+
+
+async def bring_batch_collections_current(
+    sample_batch_id: str, mode_ids: Iterable[str | None] = ()
+) -> bool:
+    """:func:`align_batch_collections` in a transaction of its own.
+
+    Committed before the caller matches, so what it matches against is the
+    collections just set.
+    """
+    async with async_session() as session:
+        changed = await align_batch_collections(
+            session, sample_batch_id, mode_ids=mode_ids
+        )
+        await session.commit()
+    if changed:
+        runtime.logger.info(
+            f"Gave sample batch '{sample_batch_id}' the collections of the "
+            "current version of its ionization modes"
+        )
+    return changed
 
 
 def setup_stamp(ionization_mode_id: str | None, version: int | None) -> dict | None:

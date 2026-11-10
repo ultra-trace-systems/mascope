@@ -166,7 +166,9 @@ uncalibrated.
     **admin**, because it affects every sample already processed under it —
     changing the calibrant collection flags the affected batches for
     re-calibration, and changing the mechanisms or diagnostic collection flags
-    them for re-matching.
+    them for re-matching. The re-match swaps the collections the mode gave
+    each batch for its new ones, and keeps any collection added under
+    **Edit batch targets**.
 
 ## Get the raw files in
 
