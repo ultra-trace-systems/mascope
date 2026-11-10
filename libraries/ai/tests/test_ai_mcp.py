@@ -564,7 +564,10 @@ class TestFrames:
         assert len(out["head"]) == 3
         assert list(out["head"][0]) == list(frame.columns[:8])
 
-    def test_a_handle_says_what_its_columns_mean(self, server, kit):
+    def test_a_handle_says_what_its_columns_mean(self, server, kit, api):
+        # Read off stores without scan counts, the recorded peak list leaves
+        # room for every meaning
+        api.scan_counts = False
         out = ok(server, "load_peaks", batches=["Spring 2026"])
         frame = kit.session.frame(out["frame"])
         assert out["meanings"] == frame.column_meanings()
@@ -573,6 +576,23 @@ class TestFrames:
         spectrum = ok(server, "load_spectrum", sample="s21", mz_range=[100, 101])
         assert "Orbitrap" in spectrum["meanings"]["intensity"]
         assert spectrum["meanings"]["mz"] != out["meanings"]["mz"]
+
+    def test_a_peak_list_with_scan_counts_keeps_the_numbers_meanings(self, server, kit):
+        # The scan counts are two columns more than the recorded peak list's
+        # handle has room to explain with the rest: the numbers' meanings,
+        # the counts' among them, and the identity columns' left to Python
+        out = ok(server, "load_peaks", batches=["Spring 2026"])
+        frame = kit.session.frame(out["frame"])
+        assert {"n_scans", "n_scans_total"} <= set(frame.columns)
+        for column in MEANINGS_FIRST:
+            assert column not in frame.columns or column in out["meanings"]
+        assert "the scans averaged" in out["meanings"]["n_scans"]
+        assert out["meanings_omitted"] == len(frame.column_meanings()) - len(
+            out["meanings"]
+        )
+        # Numbers too, kept before the identity columns a tighter budget drops
+        kept = list(out["meanings"])
+        assert kept.index("n_scans_total") < kept.index("sample_batch_name")
 
     @staticmethod
     def _as_the_server_orders_it(kit, batches: int) -> Frame:

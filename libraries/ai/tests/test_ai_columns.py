@@ -122,6 +122,14 @@ class TestMeaning:
         stage = meaning("load_peaks_by_stage", "peak_id")
         assert "per stage" in stage and "matched several" in stage
 
+    def test_a_stage_says_it_has_no_scan_counts(self):
+        # A stage's signal_to_noise is the sample's whole-window value, so
+        # the server sends no counts over a time range
+        for column in ("n_scans", "n_scans_total"):
+            assert "not served on a stage" in meaning("load_peaks_by_stage", column)
+            assert meaning("load_peaks", column) == COMMON[column]
+            assert "that peak" in meaning("match_compounds", column)
+
     def test_a_derived_column_with_no_recorded_source_has_no_meaning(self):
         assert meaning("derive", "height") is None
         assert meanings("derive", ["height", "time"]) == {}
@@ -293,6 +301,20 @@ class TestEveryLoadedColumnHasAMeaning:
         assert tree.n_rows > 0
         assert self._unexplained(tree) == set()
         assert "theoretical" in tree.column_meanings()["mz"]
+
+    def test_the_scan_counts_are_served_and_explained(self, kit):
+        # As a store that keeps them serves them: on a peak list and a tree
+        # line with a peak; over a stage's time range not at all
+        counts = {"n_scans", "n_scans_total"}
+        for frame in (
+            kit.load_peaks(samples="s21"),
+            kit.match_compounds("s21", ["CH2O2"]).tree,
+        ):
+            assert counts <= set(frame.columns)
+            assert counts <= set(frame.column_meanings())
+        stage = kit.load_peaks_by_stage("s21", [(0, 5)])
+        assert stage.n_rows > 0
+        assert not counts & set(stage.columns)
 
     def test_no_tree_column_calls_its_row_matched(self, kit):
         # A tree row is a line Mascope looked for, matched or not; a text

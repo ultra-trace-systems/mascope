@@ -91,7 +91,9 @@ summed follows this rule.
 A **stage** is a peak list averaged over one time range of the sample
 only; its `height` and `area` are means over that range's scans. Its other
 columns, `signal_to_noise` and `sparsity` among them, are the sample's
-whole-window values.
+whole-window values. A stage has no `n_scans` and `n_scans_total` for now:
+the whole window's `signal_to_noise` cannot be read against the counts of
+the stage's own scans.
 
 | To know | Load | Read |
 | --- | --- | --- |
@@ -140,6 +142,8 @@ acquisition, the clock `t0` and `t1` themselves are on (the toolkit's
 | `area` | See above. |
 | `signal_to_noise` | The peak's height over its noise estimate ([Peak detection](../how-it-works/peak-detection.md#quality-control-filtering)). `NaN` where the file stores no estimate: an absent value, never a peak measured to be clean. |
 | `sparsity` | The share of the sample's scans the peak is absent from, known once the peak's time series has been computed. A peak whose series has not been computed yet, typically one no target matched, also reads 0, so a 0 is "seen in every scan" only for a peak with a series. |
+| `n_scans` | On an Orbitrap, how many of the scans averaged into the peak hold it ([scan presence](../how-it-works/peak-detection.md#scan-presence-orbitrap)), known for every peak. A scan keeps a peak only where it clears that scan's noise, so a dim isotope line is missing from part of the scans and its `height` is diluted by the share it missed: `height * n_scans_total / n_scans` is its mean over the scans that hold it, high for a line near the noise, whose kept scans are the ones its noise lifted. `NaN` for a TOF file and for one whose peaks were detected before the count was kept. |
+| `n_scans_total` | On an Orbitrap, how many scans the peak is averaged over: the sample's scans of its polarity, or of its stream in a sample detected stream by stream. `NaN` where `n_scans` is. |
 | `segment` | For a sample stitched from several scan streams, the stream the peak came from; intensities are not rescaled between streams. `None` for a sample that is not stitched. |
 | `is_satellite` | Whether the peak is a side-lobe artifact of a stronger peak nearby rather than a compound ([satellite peaks](../how-it-works/peak-detection.md#satellite-peak-identification)). A peak list is read without its satellites, so the column is `False` throughout; a sum of zero means "none shown", not "none detected". |
 
@@ -189,6 +193,9 @@ before reading it.
 
 A stage's `height` and `area` are the peak list's, averaged over the
 stage's scans only; its other columns are the sample's whole-window values.
+It has no `n_scans` and `n_scans_total` for now, since a count of the
+stage's own scans would be read against the whole window's
+`signal_to_noise`.
 
 ### Match tree
 
@@ -212,6 +219,7 @@ SDK's roll-ups.
 | `match_mz_error`, `match_abundance_error` | How far the peak's m/z is from the line's theoretical m/z, **in ppm**, and how far its relative intensity is from the line's theoretical abundance. A line with no peak holds 0 and 1: read with the empty `sample_peak_id`, not as a perfect match. |
 | `resolution` | Which set of target lines the line comes from: `HIGH`, an Orbitrap's resolved lines; `LOW`, a TOF's merged ones. Not a resolving power. |
 | `signal_to_noise`, `sample_peak_tof`, `is_satellite` | The found peak's own: its signal-to-noise ratio, its time-of-flight coordinate (TOF files only; -1 when no peak), and whether it is a satellite. |
+| `n_scans`, `n_scans_total` | The nearest peak's own, as in the peak list: on an Orbitrap, how many of the scans averaged into it hold it, and how many those are. `NaN` when the line has no peak, and where the file keeps no count. |
 | `instrument` | The instrument whose match parameters scored the ion. |
 | `cas_number`, `inchi`, `inchikey`, `smiles` | The compound's identifiers, where its record has them. The match is on the formula and confirms no structure. |
 | `target_compound_name`, `target_compound_formula` | The name is always empty in the tree: it scores formulas, not named compounds. The formula is the candidate's and is on every row, matched or not. `match_category_compound` says whether a candidate matched. |

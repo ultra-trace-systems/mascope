@@ -108,6 +108,8 @@ MEANINGS_FIRST = (
     "match_mz_error",
     "intensity_ion",
     "intensity_compound",
+    "n_scans",
+    "n_scans_total",
 )
 
 #: What the server tells a client about itself when it connects; Claude
