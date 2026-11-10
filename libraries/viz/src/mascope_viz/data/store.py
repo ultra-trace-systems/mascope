@@ -10,7 +10,9 @@ cache, never a source of truth: delete it at any time and sync again.
 The tables, all times in UTC:
 
 - ``samples``: one row per sample in the scope, with ``t_mid_utc`` (its
-  file's start plus the middle of its window, ``(t0 + t1) / 2``).
+  file's start plus the middle of its window, ``(t0 + t1) / 2``), and its
+  ionization mode's ID and name (``ionization_mode_name``: as the server's
+  modes listing named it when the batch was fetched).
 - ``files``: one row per file acquired in the range, ``in_batch`` saying
   whether a batch of the scope holds a sample of it.
 - ``ion_series``: one row per (sample, target ion) with a match record, keyed
@@ -56,7 +58,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from mascope_sdk.exceptions import NotFoundError
+from mascope_sdk.exceptions import AuthenticationError, NotFoundError
 
 from ..errors import NotAuthenticated, VizError, sdk_errors
 from .scope import ResolvedScope, Scope, resolve
@@ -67,7 +69,8 @@ if TYPE_CHECKING:
 
 
 #: The layout of a store's directory; a store of another is rebuilt.
-FORMAT = 1
+#: 2: ``samples`` names each sample's ionization mode.
+FORMAT = 2
 
 #: The tables, in the order the note lists them.
 TABLES = ("samples", "files", "ion_series", "peak_series", "species", "rollups")
@@ -107,6 +110,7 @@ SCHEMAS = {
             ("instrument_type", pa.string()),
             ("filename", pa.string()),
             ("ionization_mode_id", pa.string()),
+            ("ionization_mode_name", pa.string()),
         ]
     ),
     "files": pa.schema(
@@ -844,8 +848,12 @@ _STATUS_RUN_COLUMNS = [
 # --- one batch -------------------------------------------------------------------
 
 
-def _sample_table(samples: pd.DataFrame) -> pd.DataFrame:
-    """The ``samples`` table of a batch's listed samples."""
+def _sample_table(samples: pd.DataFrame, modes: dict[str, str]) -> pd.DataFrame:
+    """The ``samples`` table of a batch's listed samples.
+
+    :param modes: The ionization modes' names by ID; a mode not in it has
+        no name.
+    """
     frame = samples.copy()
     for column in SCHEMAS["samples"].names:
         if column not in frame:
@@ -857,6 +865,9 @@ def _sample_table(samples: pd.DataFrame) -> pd.DataFrame:
     # A sample with no window is placed at its file's start
     frame["t_mid_utc"] = (start + middle).fillna(start)
     frame["datetime_utc"] = start
+    frame["ionization_mode_name"] = frame["ionization_mode_id"].map(
+        lambda mode: None if mode is None or pd.isna(mode) else modes.get(str(mode))
+    )
     for column in ("t0", "t1", "tic"):
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
     return _frame(frame, "samples")
@@ -1201,11 +1212,12 @@ def _fetch_batch(
     run: dict[str, Any] | None,
     newest: dict[str, Any] | None,
     mechanisms: dict[str, str],
+    modes: dict[str, str],
 ) -> tuple[dict[str, pd.DataFrame], dict[str, Any]]:
     """One batch's tables, and what its stamp records of them."""
     batch_id, name = batch.sample_batch_id, batch.sample_batch_name
     listed = resolved.samples[resolved.samples["sample_batch_id"] == batch_id]
-    samples = _sample_table(listed)
+    samples = _sample_table(listed, modes)
     sample_ids = set(samples["sample_item_id"])
 
     provenance = None
@@ -1254,6 +1266,31 @@ def _fetch_batch(
     return tables, stamp
 
 
+def _mode_names(client: "MascopeClient") -> dict[str, str]:
+    """The ionization modes' names by ID, the seeded ones a sample may be
+    of included.
+
+    Empty when the server refuses the token on the listing, as one older
+    than the token access to the modes does: the samples then keep their
+    modes' IDs alone. A refused token stops the sync at the batch's own
+    calls, which the same token makes.
+    """
+    with sdk_errors("list the ionization modes"):
+        try:
+            listed = client.ionization.modes(include_system=True)
+        except AuthenticationError:
+            return {}
+    if listed is None or listed.empty:
+        return {}
+    return {
+        str(mode): str(name)
+        for mode, name in zip(
+            listed["ionization_mode_id"], listed["ionization_mode_name"]
+        )
+        if mode is not None and isinstance(name, str)
+    }
+
+
 def sync(
     client: "MascopeClient",
     scope: Scope,
@@ -1275,7 +1312,10 @@ def sync(
     batch's ion series (one call per collection, or one for the scope's
     collection), and when it has a ledger its batch-peak series and batch
     peaks (one call each); the runs listing that names the current and the
-    newest run is read for every batch, and is no series call.
+    newest run is read for every batch, and is no series call. A sync that
+    fetches a batch lists the ionization modes once, to name each sample's
+    mode; a mode renamed since a batch was fetched keeps its old name there
+    until something else has the batch fetched again.
 
     A batch whose fetch fails is recorded, with its error, and skipped:
     the store keeps what an earlier fetch gave for it, the status says so,
@@ -1358,6 +1398,7 @@ def sync(
     save()
 
     mechanisms: dict[str, str] | None = None
+    modes: dict[str, str] | None = None
     fetched: dict[str, str] = {}
     unchanged: list[str] = []
     failed: dict[str, str] = {}
@@ -1393,8 +1434,10 @@ def sync(
                         )
                     )
                 )
+            if modes is None:
+                modes = _mode_names(client)
             tables, fresh = _fetch_batch(
-                client, resolved, batch, run, newest, mechanisms or {}
+                client, resolved, batch, run, newest, mechanisms or {}, modes
             )
         except NotAuthenticated:
             save()

@@ -16,6 +16,7 @@ import pytest
 from fixtures.campaign import HALIDE_NEGATIVE, Campaign, generate
 from fixtures.server import SCOPE, FakeClient
 
+from mascope_sdk.exceptions import AuthenticationError
 from mascope_viz.data import Scope, views
 from mascope_viz.data import store as store_module
 from mascope_viz.data.store import CampaignStore, sync
@@ -732,9 +733,9 @@ def test_coverage_counts_files_and_samples_per_hour_by_polarity_and_mode(month):
     assert found.n_unfiled == gap.files
     assert found.n_samples == len(campaign.tables["samples"])
     polarity = "-" if campaign.params.charge < 0 else "+"
-    assert set(zip(bins["polarity"], bins["mode"])) == {
-        (polarity, "im-1"),
-        (polarity, None),
+    assert set(zip(bins["polarity"], bins["mode"], bins["mode_name"])) == {
+        (polarity, "im-1", "Campaign mode"),
+        (polarity, None, None),
     }
     filed = bins[bins["mode"] == "im-1"].set_index("t")
     unfiled = bins[bins["mode"].isna()].set_index("t")
@@ -846,6 +847,51 @@ def test_a_file_the_listing_gives_no_polarity_takes_its_samples(
     assert set(zip(bins["polarity"], bins["mode"])) == {("-", "im-1"), (None, None)}
     unfiled = bins[bins["polarity"].isna()]
     assert unfiled["n_files"].sum() == short_campaign.truth.gap.files
+
+
+def test_coverage_leaves_a_mode_the_server_did_not_name_unnamed(
+    short_campaign, tmp_path
+):
+    client = FakeClient(short_campaign)
+    client.fail[("ionization.modes", None)] = AuthenticationError("no")
+    store = _sync(client, tmp_path)
+
+    bins = views.coverage(store).bins
+
+    assert set(bins["mode"].dropna()) == {"im-1"}
+    assert bins["mode_name"].isna().all()
+
+
+def test_a_renamed_mode_takes_the_name_of_its_newest_batch(short_campaign, tmp_path):
+    client = FakeClient(short_campaign)
+    _sync(client, tmp_path)
+    client.mode_name = "Renamed mode"
+    # Only the newest batch is fetched again, and lists the new name
+    client.modified[client.batch_ids[-1]] += pd.Timedelta(hours=1)
+    store = _sync(client, tmp_path)
+
+    bins = views.coverage(store).bins
+
+    names = store.table("samples")["ionization_mode_name"]
+    assert set(names) == {"Campaign mode", "Renamed mode"}
+    assert set(bins.loc[bins["mode"] == "im-1", "mode_name"]) == {"Renamed mode"}
+
+
+def test_an_empty_coverage_has_the_mode_name_column(month):
+    _, store = month
+
+    bins = views.coverage(store, start="2030-01-01", end="2030-01-02").bins
+
+    assert bins.empty
+    assert list(bins.columns) == [
+        "t",
+        "polarity",
+        "mode",
+        "mode_name",
+        "n_files",
+        "n_unfiled",
+        "n_samples",
+    ]
 
 
 def _by_group(bins: pd.DataFrame) -> dict[tuple, dict[str, int]]:

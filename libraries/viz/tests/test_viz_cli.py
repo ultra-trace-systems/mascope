@@ -16,7 +16,11 @@ from fixtures.campaign import HALIDE_NEGATIVE, Campaign, generate
 from fixtures.server import SCOPE, FakeClient
 from typer.testing import CliRunner
 
-from mascope_sdk.exceptions import ConfigurationError, MascopeAPIError
+from mascope_sdk.exceptions import (
+    AuthenticationError,
+    ConfigurationError,
+    MascopeAPIError,
+)
 from mascope_viz import cli
 from mascope_viz.data import resolve, views
 from mascope_viz.data import store as store_module
@@ -648,16 +652,30 @@ def test_view_coverage_summarises_files_samples_and_gaps(synced, short_campaign)
     assert found["gaps"][0]["n_unfiled"] == gap.files
     # The unfiled files have no mode, and the campaign's polarity
     assert found["groups"] == [
-        {"polarity": "-", "mode": "im-1", "n_files": len(files) - gap.files,
-         "n_unfiled": 0, "n_samples": result.n_samples},
-        {"polarity": "-", "mode": None, "n_files": gap.files,
+        {"polarity": "-", "mode": "im-1", "mode_name": "Campaign mode",
+         "n_files": len(files) - gap.files, "n_unfiled": 0,
+         "n_samples": result.n_samples},
+        {"polarity": "-", "mode": None, "mode_name": None, "n_files": gap.files,
          "n_unfiled": gap.files, "n_samples": 0},
     ]  # fmt: skip
 
     shown = text("view", "coverage", *DATASET)
-    assert '-         "im-1"' in shown
+    assert '-         "Campaign mode"' in shown
     assert "-         (none)" in shown
     assert "gaps (1, 1 d in all), longest first:" in shown
+
+
+def test_view_coverage_shows_the_id_of_a_mode_the_server_did_not_name(server):
+    server.fail[("ionization.modes", None)] = AuthenticationError("no")
+    payload("store", "sync", *DATASET)
+
+    found = payload("view", "coverage", *DATASET)
+
+    assert [(g["mode"], g["mode_name"]) for g in found["groups"]] == [
+        ("im-1", None),
+        (None, None),
+    ]
+    assert '-         "im-1"' in text("view", "coverage", *DATASET)
 
 
 #: Each view with the options it needs, and its frame from the library.

@@ -65,6 +65,10 @@ class FakeClient:
     :ivar edited: Each batch's live-ledger stamp, as its current run's
         ``ledger_utc_modified`` gives it; a batch left out gets none, as
         from a server too old to stamp its ledger. :meth:`curate` moves it.
+    :ivar mode_name: The name the modes listing gives the campaign's mode.
+    :ivar system_modes: Seeded modes the listing names, by ID, only when
+        asked for them (``include_system``), as the server leaves out those
+        it has not adopted.
     """
 
     url = "http://mascope.test:8090"
@@ -82,6 +86,8 @@ class FakeClient:
         self.newer: dict[str, list[dict[str, Any]]] = {}
         self.imports: dict[str, int] = {}
         self.cleared = 0
+        self.mode_name = "Campaign mode"
+        self.system_modes: dict[str, str] = {}
         params = campaign.params
         self.dataset_rows = [
             {
@@ -376,13 +382,17 @@ class FakeClient:
         def modes(include_system=False):
             self._call("ionization.modes")
             # The campaign's one mode, which every sample is of
+            listed = {"im-1": self.mode_name}
+            if include_system:
+                listed.update(self.system_modes)
             return pd.DataFrame(
                 [
                     {
-                        "ionization_mode_id": "im-1",
-                        "ionization_mode_name": "Campaign mode",
+                        "ionization_mode_id": mode,
+                        "ionization_mode_name": name,
                         "instrument": self.dataset_rows[0]["instrument"],
                     }
+                    for mode, name in listed.items()
                 ]
             )
 

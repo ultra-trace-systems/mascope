@@ -243,7 +243,7 @@ def test_a_sample_without_a_window_is_timed_at_its_file_start():
         ]
     )
 
-    table = store_module._sample_table(listed)
+    table = store_module._sample_table(listed, {})
 
     assert table["t_mid_utc"].iloc[0] == pd.Timestamp("2026-06-01T00:00:00Z")
 
@@ -824,6 +824,98 @@ def test_a_store_of_another_format_is_rebuilt(short, tmp_path):
     assert set(report.fetched.values()) == {"new"}
     assert not stray.exists()
     assert report.store.meta["format"] == store_module.FORMAT
+
+
+def test_a_store_of_the_format_before_mode_names_is_rebuilt(short, tmp_path):
+    """A store of format 1 holds no mode names: it is fetched afresh, so no
+    batch of it is left without them."""
+    client, first = short
+    meta = first.store.meta
+    meta["format"] = 1
+    first.store.meta_path.write_text(json.dumps(meta))
+
+    report = sync(client, SCOPE, root=tmp_path)
+
+    assert set(report.fetched.values()) == {"new"}
+
+
+# --- mode names -------------------------------------------------------------------
+
+
+def test_each_sample_carries_its_modes_name(short):
+    client, report = short
+
+    samples = report.store.table("samples")
+
+    assert set(samples["ionization_mode_id"]) == {"im-1"}
+    assert set(samples["ionization_mode_name"]) == {"Campaign mode"}
+
+
+def test_a_seeded_mode_the_server_has_not_adopted_is_named(
+    short_campaign, clock, pauses, tmp_path
+):
+    """The modes listing leaves out the seeded modes the server has not
+    adopted unless asked: a sample of one is still named."""
+    client = FakeClient(short_campaign)
+    batch_id = client.batch_ids[0]
+    client.by_batch[batch_id] = client.by_batch[batch_id].assign(
+        ionization_mode_id="im-seeded"
+    )
+    client.system_modes = {"im-seeded": "Seeded mode"}
+
+    report = sync(client, SCOPE, root=tmp_path)
+
+    samples = report.store.table("samples")
+    named = dict(zip(samples["ionization_mode_id"], samples["ionization_mode_name"]))
+    assert named == {"im-seeded": "Seeded mode", "im-1": "Campaign mode"}
+
+
+def test_a_sync_lists_the_modes_once_and_only_when_it_fetches(short, tmp_path):
+    client, _ = short
+    for batch_id in client.batch_ids[:2]:
+        client.modified[batch_id] += pd.Timedelta(hours=1)
+
+    sync(client, SCOPE, root=tmp_path)
+    listed = [call for call in client.calls if call[0] == "ionization.modes"]
+    client.calls.clear()
+    sync(client, SCOPE, root=tmp_path)
+
+    assert len(listed) == 1
+    assert ("ionization.modes", None) not in client.calls
+
+
+def test_a_server_that_refuses_the_modes_listing_leaves_the_modes_unnamed(
+    short_campaign, clock, pauses, tmp_path
+):
+    """A server older than the token access to the modes answers 401 on
+    their listing alone: the sync runs to its end with the modes' IDs."""
+    client = FakeClient(short_campaign)
+    client.fail[("ionization.modes", None)] = AuthenticationError("no")
+
+    report = sync(client, SCOPE, root=tmp_path)
+
+    assert report.failed == {}
+    assert report.store.status().complete
+    samples = report.store.table("samples")
+    assert set(samples["ionization_mode_id"]) == {"im-1"}
+    assert samples["ionization_mode_name"].isna().all()
+
+
+def test_a_failed_modes_listing_fails_the_batch_and_the_next_sync_names_it(
+    short_campaign, clock, pauses, tmp_path
+):
+    client = FakeClient(short_campaign)
+    client.fail[("ionization.modes", None)] = MascopeAPIError("Bad Gateway")
+
+    first = sync(client, SCOPE, root=tmp_path)
+    del client.fail[("ionization.modes", None)]
+    again = sync(client, SCOPE, root=tmp_path)
+
+    assert set(first.failed) == set(client.batch_ids)
+    assert set(again.fetched.values()) == {"failed before"}
+    assert set(again.store.table("samples")["ionization_mode_name"]) == {
+        "Campaign mode"
+    }
 
 
 def test_a_day_a_refetched_batch_no_longer_covers_loses_its_rollups(
