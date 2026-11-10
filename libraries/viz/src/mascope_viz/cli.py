@@ -1050,14 +1050,15 @@ def _summary(
             ["duration", "start"], ascending=[False, True], kind="stable"
         )
         # A file of no sample in the store has no mode, and may have no
-        # polarity: None, which is no polarity's name
+        # polarity: None, which is no polarity's name. A mode's name is one
+        # per mode, so it splits no group
         groups = (
-            frame.groupby(["polarity", "mode"], sort=True, dropna=False)[
+            frame.groupby(["polarity", "mode", "mode_name"], sort=True, dropna=False)[
                 ["n_files", "n_unfiled", "n_samples"]
             ]
             .sum()
             .reset_index()
-            .astype({"polarity": object, "mode": object})
+            .astype({"polarity": object, "mode": object, "mode_name": object})
         )
         groups = groups.where(groups.notna(), None)
         extra = {
@@ -1189,7 +1190,10 @@ def _view_lines(name: str, payload: dict[str, Any], status: StoreStatus) -> list
             [
                 [
                     str(group["polarity"] or "(none)"),
-                    "(none)" if group["mode"] is None else quoted(group["mode"]),
+                    "(none)"
+                    if group["mode"] is None
+                    # The ID of a mode the server did not name
+                    else quoted(group["mode_name"] or group["mode"]),
                     _number(group["n_files"]),
                     _number(group["n_unfiled"]),
                     _number(group["n_samples"]),

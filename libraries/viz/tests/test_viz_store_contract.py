@@ -93,6 +93,19 @@ def test_samples_are_timed_inside_their_file(synced):
     assert (samples.loc[held, "t_mid_utc"] <= start[held] + length[held]).all()
 
 
+def test_each_sample_carries_its_modes_name(client, synced):  # noqa: F811
+    samples = synced.store.table("samples")
+    modes = client.ionization.modes(include_system=True)
+    named = dict(zip(modes["ionization_mode_id"], modes["ionization_mode_name"]))
+
+    of_mode = samples["ionization_mode_id"].notna()
+    assert of_mode.any()
+    assert (
+        samples.loc[of_mode, "ionization_mode_name"]
+        == samples.loc[of_mode, "ionization_mode_id"].map(named)
+    ).all()
+
+
 def test_the_runs_are_the_ledgers_current_ones(client, synced):  # noqa: F811
     batches = synced.store.status().batches.set_index("sample_batch_id")
     for batch_id, row in batches.iterrows():

@@ -1051,7 +1051,8 @@ class Coverage:
 
     :ivar bins: One row per bin and (polarity, mode): ``t`` (the bin's
         start), ``polarity``, ``mode`` (the ionization mode's ID),
-        ``n_files`` (files that started in it), ``n_unfiled`` (those of
+        ``mode_name`` (its name, as the store's newest batch of it records
+        it; None when the server did not name it), ``n_files`` (files that started in it), ``n_unfiled`` (those of
         them no batch of the scope holds) and ``n_samples``. A file counts
         under each (polarity, mode) its samples in the store have, so a
         polarity-switching file counts under ``+`` and ``-``. A file no
@@ -1139,6 +1140,7 @@ def coverage(
     every = np.concatenate([file_ns[of_file], sample_ns])
     if not len(every):
         columns = {"t": "time", "polarity": "object", "mode": "object"}
+        columns.update(mode_name="object")
         columns.update(n_files="int64", n_unfiled="int64", n_samples="int64")
         return Coverage(_stamp(_empty(columns, zone), attrs), gaps, **summary)
 
@@ -1149,6 +1151,7 @@ def coverage(
     )
     labels = sorted(set(pairs), key=lambda g: tuple((v is None, v or "") for v in g))
     group_of = {g: i for i, g in enumerate(labels)}
+    name_of = _mode_names(every_sample)
     group = np.array([group_of[g] for g in pairs], dtype="int64")
     edges = _edges(
         pd.Timestamp(every.min(), tz="UTC"),
@@ -1176,6 +1179,9 @@ def coverage(
                 np.repeat([g[0] for g in labels], n_bins), dtype=object
             ),
             "mode": pd.Series(np.repeat([g[1] for g in labels], n_bins), dtype=object),
+            "mode_name": pd.Series(
+                np.repeat([name_of.get(g[1]) for g in labels], n_bins), dtype=object
+            ),
             **{name: count.astype("int64") for name, count in counts.items()},
         }
     )
@@ -1184,6 +1190,21 @@ def coverage(
 
 def _label(value: Any) -> str | None:
     return None if value is None or pd.isna(value) else str(value)
+
+
+def _mode_names(samples: pd.DataFrame) -> dict[str, str]:
+    """The modes' names by ID, as *samples* record them: the store reads its
+    batches oldest first, so a mode renamed between two batches' fetches
+    takes the newest batch's name."""
+    named = samples[["ionization_mode_id", "ionization_mode_name"]].astype(object)
+    named = named[
+        named["ionization_mode_id"].notna() & named["ionization_mode_name"].notna()
+    ]
+    return dict(
+        zip(
+            named["ionization_mode_id"].map(str), named["ionization_mode_name"].map(str)
+        )
+    )
 
 
 def _file_groups(

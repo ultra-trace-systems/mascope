@@ -65,7 +65,7 @@ The tables are those of section 2.2 of the note, in UTC:
 
 | Table | One row per |
 |---|---|
-| `samples` | sample, with `t_mid_utc`, the middle of its acquisition window |
+| `samples` | sample, with `t_mid_utc`, the middle of its acquisition window, and its ionization mode's ID and name |
 | `files` | file acquired in the range; `in_batch` says whether a batch holds it |
 | `ion_series` | (sample, target ion) with a match record, keyed `ion:<target_ion_id>`; a record without a match is NaN |
 | `peak_series` | (sample, batch peak) with a consensus formula, keyed `formula:<formula>\|<mechanism>`, with the ledger run that read it |
@@ -87,6 +87,14 @@ A batch whose runs listing fails keeps its tables, and `status()` calls it
 `unchecked` until a sync lists it again. A batch read while a batch run
 was rewriting its ledger is marked `run_in_flight`, and read again once
 the run ends. `status().complete` is False after a sync that was stopped.
+
+A sync that fetches a batch lists the ionization modes once, to record each
+sample's mode name beside its ID. A server that refuses the token on that
+listing (one older than the token access to the modes) leaves the names
+empty, and `coverage` then shows the IDs. A mode renamed on the server is
+not a reason to fetch a batch again: a batch keeps the name it was fetched
+with, and `coverage` takes the name its newest batch holds. A store written
+before the names were kept is fetched afresh by its next sync.
 
 An isotopologue batch peak repeats its parent's formula, so only the parent
 carries the formula's series. A formula is read by the ledger run of each
@@ -125,7 +133,7 @@ views.top(store, 10, "ratio", period="week")  # the biggest changers
 | `series` | bin and key: `t`, `key`, `value`, `lo`, `hi`, `n` (values) and `n_samples` |
 | `diurnal` | hour of day and key, and group with `by=` (month, season, weekday): the median and quartiles |
 | `periods` | day, week or month and key: `n`, mean, min, p5, p25, median, p75, p95, max |
-| `coverage` | hour, polarity and mode: files, unfiled files and samples (a polarity-switching file counts under both polarities); also the gaps and the totals |
+| `coverage` | hour, polarity and mode: files, unfiled files and samples (a polarity-switching file counts under both polarities), with the mode's ID and name; also the gaps and the totals |
 | `composition` | period and formula, or class or carbon number with `by=`: median, mean, share, and the species' element counts, O/C, H/C and OSc |
 | `spectrum` | formula, by m/z: the mean over a period, and against another period the difference and ratio |
 | `top` | ranked key: by median, by the ratio of the last period to the first (up or down), or new in the last period |
