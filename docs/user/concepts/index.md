@@ -147,11 +147,15 @@ labelled reagent - makes its next version, shown beside its name in the
 ionization settings. Samples already processed keep the version they were
 processed under, so their results still say what produced them; the
 re-calibration or re-match their batch is flagged for moves them onto the new
-version, as does a peak assignment run or reprocessing their file. A sample
-you give a mode by hand takes its current version: an earlier version keeps
-only the samples already on it. Renaming a mode, or changing its token or the
-instrument it belongs to, changes no result and makes no version. Each peak
-assignment run records the version it searched under.
+version, as does a peak assignment run or reprocessing their file. The
+re-match, and a file reprocessed into its daily batch, also swap the
+collections the earlier version gave the batch for the new version's, so the
+batch is matched against them; a collection you attached to the batch
+yourself stays. A sample you give a mode by hand takes its current
+version: an earlier version keeps only the samples already on it.
+Renaming a mode, or changing its token or the instrument it belongs to,
+changes no result and makes no version. Each peak assignment run records the
+version it searched under.
 
 ## Matching and match scores
 

@@ -33,6 +33,9 @@ from mascope_backend.api.controllers.match.match_controller import (
 from mascope_backend.api.controllers.sample.batches.sample_batches_controller import (
     get_or_create_acquisition_batch,
 )
+from mascope_backend.api.controllers.sample.batches.status.service import (
+    update_sample_batch_status,
+)
 from mascope_backend.api.controllers.sample.files.process.bindings import (
     Declined,
     MethodRouting,
@@ -106,7 +109,10 @@ from mascope_backend.api.new.ionization.modes.util import (
     resolve_ionization_modes_by_declaration,
     resolve_ionization_modes_by_tokens,
 )
-from mascope_backend.api.new.ionization.modes.versions import current_versions
+from mascope_backend.api.new.ionization.modes.versions import (
+    bring_batch_collections_current,
+    current_versions,
+)
 from mascope_backend.api.new.ms2.inventory import write_ms2_inventory
 from mascope_backend.api.new.peak_assignments.service import (
     auto_assign_sample_peaks,
@@ -3314,6 +3320,20 @@ async def create_acquisition_batches_and_items(
             runtime.logger.debug(
                 f"Using existing ACQUISITION batch: {batch_name} ({ion_mode_name})"
             )
+            # The batch was made with the collections of the version of the
+            # mode it was made under, and an edit since may have replaced
+            # them. Its other samples were matched against the old ones, so
+            # the batch waits for a rematch; a pending recalibration stays.
+            if await bring_batch_collections_current(
+                acquisition_sample_batch["sample_batch_id"],
+                [ionization_mode.ionization_mode_id],
+            ):
+                await update_sample_batch_status(
+                    sample_batch_ids=[acquisition_sample_batch["sample_batch_id"]],
+                    status="rematch",
+                    independent_transaction=True,
+                    never_lower=True,
+                )
 
         acquisition_sample_batches.append(acquisition_sample_batch)
 
