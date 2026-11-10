@@ -90,16 +90,31 @@ async function listBatches(api) {
  * suite, and read the demo batches: a re-ingested uronium file left in the
  * uronium daily batch moves the time span AI golden M5 expects (#2959).
  */
-async function removeUpload(api, { token, batchIdsBefore }) {
-  let file = (await api.get(FILES_QUERY)).data?.find((f) => f.filename.includes(token))
-  if (!file) return // never registered: nothing reached the database
+async function removeUpload(api, { token, batchIdsBefore, submitted }) {
+  const findFile = async () =>
+    (await api.get(FILES_QUERY)).data?.find((f) => f.filename.includes(token))
+  let file = await findFile()
+  if (!file) {
+    // Not submitted: nothing left the browser, so nothing reached the
+    // database. Submitted: the converter may still register the file after
+    // the test body gave up on it, and its sample would stay behind, so
+    // wait for it as long as the body would have.
+    if (!submitted) return
+    await expect
+      .poll(async () => Boolean((file = await findFile())), {
+        timeout: 5 * 60_000,
+        intervals: [5_000],
+        message: 'the submitted upload to be registered, to remove it'
+      })
+      .toBe(true)
+  }
 
   // Deleting samples under a running pipeline races its later stages, so
   // wait for processing to end first.
   await expect
     .poll(
       async () => {
-        file = (await api.get(FILES_QUERY)).data?.find((f) => f.filename.includes(token))
+        file = await findFile()
         return PROCESSING_ENDED.has(file?.processing_status)
       },
       { timeout: 5 * 60_000, intervals: [5_000], message: 'processing of the upload to end' }
@@ -161,8 +176,9 @@ test.describe('sample file upload', () => {
       'no demo raw file available; set MASCOPE_E2E_RAW_FILE or fetch the demo bundle (mascope demo fetch)'
     )
     // Real conversion + peak detection + matching takes a few minutes, and
-    // the cleanup waits for it to end. afterEach shares this timeout.
-    test.setTimeout(15 * 60_000)
+    // the cleanup waits for it to end, after waiting for a file the body
+    // gave up on to be registered. afterEach shares this timeout.
+    test.setTimeout(20 * 60_000)
 
     // Stage a uniquely named copy: keep the instrument prefix (first token)
     // and the ionization token so upload validation passes, append an e2e
@@ -174,7 +190,8 @@ test.describe('sample file upload', () => {
     copyFileSync(source, staged)
     upload = {
       token,
-      batchIdsBefore: new Set((await listBatches(api)).map((b) => b.sample_batch_id))
+      batchIdsBefore: new Set((await listBatches(api)).map((b) => b.sample_batch_id)),
+      submitted: false
     }
 
     // --- Upload through the Uppy dashboard on the Raw files tab ---
@@ -188,6 +205,9 @@ test.describe('sample file upload', () => {
     await page.locator('.uppy-Dashboard-input').first().setInputFiles(staged)
     const uploadButton = page.locator('.uppy-StatusBar-actionBtn--upload')
     await uploadButton.waitFor({ state: 'visible' })
+    // From here on the file may reach the converter whatever the test does
+    // next, so afterEach waits for it before deciding nothing is left.
+    upload.submitted = true
     await uploadButton.dispatchEvent('click')
 
     // --- The converter ingests the upload and registers the canonical
