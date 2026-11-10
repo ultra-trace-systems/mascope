@@ -52,7 +52,11 @@ A file whose store is rebuilt reads it back, so the next run leaves it alone:
 run it again until it reports nothing to rebuild. ``REBUILD_LIMIT`` caps how
 many files one run rebuilds. A file whose rebuild fails, or whose rebuilt
 store still disagrees with its file, is counted and named, and read again by
-the next run.
+the next run. It does not count against the cap: a capped run goes on to
+older stale files until it has rebuilt as many as the cap, so files that keep
+failing at the top of the list do not hold every later run back. A capped run
+says to run again only when it stopped before the oldest file; one that
+reached it says so, and names what it could not rebuild.
 
 ``DRY_RUN=1`` reads the same files and writes nothing: each file whose store
 is stale, the scans it holds against those its file reads, and how many
@@ -239,19 +243,28 @@ async def survey(
     is_raw: Callable[[str], bool],
     check_one: Callable[[str], Checked],
     limit: int | None = None,
-) -> tuple[list[dict], dict[str, Counter]]:
+    start: int = 0,
+    counts: dict[str, Counter] | None = None,
+) -> tuple[list[dict], dict[str, Counter], int]:
     """The files whose store is stale, and every file counted per instrument.
 
     Stops as soon as ``limit`` stale files are found, between batches, so
-    repeated capped runs do not each read every file on the server.
+    repeated capped runs do not each read every file on the server. The
+    batch it stops in is checked to its end, so it can return more than
+    ``limit``.
 
     :param candidates: Rows from :func:`_candidates`, newest first.
     :param is_raw: :func:`_is_raw`, or a stand-in.
     :param check_one: :func:`check`, or a stand-in.
     :param limit: Stop once this many are found; None checks them all.
+    :param start: The first candidate to check: where an earlier call
+        stopped.
+    :param counts: An earlier call's counts, to go on counting into.
     :return: The stale files, newest first, each with ``stored`` and
-        ``reads``; and per instrument, how many files were found of each
-        kind: ``not_raw``, ``unreadable`` and those :func:`check` returns.
+        ``reads``; per instrument, how many files were found of each kind:
+        ``not_raw``, ``unreadable`` and those :func:`check` returns; and the
+        candidate the next call starts at, ``len(candidates)`` once every
+        one is checked.
     """
     gate = asyncio.Semaphore(_CHECK_CONCURRENCY)
     traced = 0
@@ -280,9 +293,10 @@ async def survey(
             return candidate, found.state, found
 
     stale: list[dict] = []
-    counts: dict[str, Counter] = defaultdict(Counter)
-    for start in range(0, len(candidates), _CHECK_BATCH):
-        batch = candidates[start : start + _CHECK_BATCH]
+    if counts is None:
+        counts = defaultdict(Counter)
+    for begin in range(start, len(candidates), _CHECK_BATCH):
+        batch = candidates[begin : begin + _CHECK_BATCH]
         for candidate, kind, found in await asyncio.gather(*map(one, batch)):
             counts[candidate.get("instrument") or "(none)"][kind] += 1
             if kind == STALE:
@@ -290,8 +304,8 @@ async def survey(
                     {**candidate, "stored": found.stored, "reads": found.reads}
                 )
         if limit is not None and len(stale) >= limit:
-            return stale[:limit], counts
-    return stale, counts
+            return stale, counts, min(begin + _CHECK_BATCH, len(candidates))
+    return stale, counts, len(candidates)
 
 
 @dataclass
@@ -330,9 +344,20 @@ class Outcome:
     samples: set = field(default_factory=set)
     #: Files whose rebuild failed or did not take, by name.
     failed: list = field(default_factory=list)
+    #: Stale files found, and how many of them were taken.
+    found: int = 0
+    taken: int = 0
+    #: Whether a capped run stopped with stale files, or files to check,
+    #: left for a later run.
+    left_over: bool = False
 
 
-async def rebuild_all(stale: list[dict], steps: Steps) -> Outcome:
+async def rebuild_all(
+    stale: list[dict],
+    steps: Steps,
+    limit: int | None = None,
+    outcome: Outcome | None = None,
+) -> Outcome:
     """Rebuild each stale file, one at a time.
 
     One at a time: a detection averages the file's scans and fits its peaks
@@ -341,12 +366,22 @@ async def rebuild_all(stale: list[dict], steps: Steps) -> Outcome:
 
     :param stale: Files from :func:`survey`.
     :param steps: What a rebuild does; a dry run's has only ``samples_of``.
+    :param limit: Stop once this many files are rebuilt, in ``outcome``
+        too; a file that fails does not count.
+    :param outcome: An earlier call's, to go on adding to.
     :return: What was done.
     """
-    outcome = Outcome()
+    if outcome is None:
+        outcome = Outcome()
     counts = outcome.counts
     dry_run = steps.rebuild is None
-    for position, candidate in enumerate(stale, start=1):
+    outcome.found += len(stale)
+    for candidate in stale:
+        if limit is not None and counts["rebuilt"] >= limit:
+            outcome.left_over = True
+            break
+        outcome.taken += 1
+        position = outcome.taken
         filename = candidate["filename"]
         samples, batches = await steps.samples_of(candidate["sample_file_id"])
         line = (
@@ -389,7 +424,7 @@ async def rebuild_all(stale: list[dict], steps: Steps) -> Outcome:
                         "disagrees with the file it was detected on."
                     )
                     continue
-        runtime.logger.info(f"[{position}/{len(stale)}]{line}")
+        runtime.logger.info(f"[{position}/{outcome.found}]{line}")
         counts["rebuilt"] += 1
         outcome.instruments[candidate.get("instrument") or "(none)"] += 1
         outcome.batches.update(batches)
@@ -398,6 +433,42 @@ async def rebuild_all(stale: list[dict], steps: Steps) -> Outcome:
 
 
 # --- the steps, against the database and the filestore -------------------------
+
+
+async def find_and_rebuild(
+    candidates: list[dict],
+    is_raw: Callable[[str], bool],
+    check_one: Callable[[str], Checked],
+    steps: Steps,
+    limit: int | None = None,
+) -> tuple[Outcome, dict[str, Counter]]:
+    """Survey the files and rebuild the stale ones, up to ``limit`` rebuilt.
+
+    A capped run surveys until it has found as many stale files as it still
+    has to rebuild, rebuilds them, and surveys on for as many as failed: a
+    file that cannot be rebuilt stays stale and stays at the top of the
+    list, and counting it against the cap would have every later run stop
+    on it before reaching anything older.
+
+    :return: What was done, with ``left_over`` set when a capped run left
+        stale files, or files to check, for a later run; and the counts of
+        every file checked, per instrument.
+    """
+    outcome = Outcome()
+    counts: dict[str, Counter] = defaultdict(Counter)
+    start = 0
+    while True:
+        want = None if limit is None else limit - outcome.counts["rebuilt"]
+        stale, counts, start = await survey(
+            candidates, is_raw, check_one, want, start=start, counts=counts
+        )
+        await rebuild_all(stale, steps, limit=limit, outcome=outcome)
+        if start >= len(candidates):
+            return outcome, counts
+        if outcome.counts["rebuilt"] >= limit:
+            # Files are left to check, if no stale file is left to rebuild.
+            outcome.left_over = True
+            return outcome, counts
 
 
 async def _candidates() -> list[dict]:
@@ -572,21 +643,6 @@ async def run() -> None:
         return
     runtime.logger.info(f"Orbitrap files: {len(candidates)}")
 
-    stale, counts = await survey(candidates, _is_raw, check, limit)
-    total: Counter = Counter()
-    runtime.logger.info("Per instrument:")
-    for instrument in sorted(counts):
-        total.update(counts[instrument])
-        runtime.logger.info(f"  {instrument}: {_counts_line(counts[instrument])}")
-    checked = sum(total.values())
-    runtime.logger.info(
-        f"  Checked {checked} of {len(candidates)}: {_counts_line(total)}"
-        + (" (DRY_RUN=1: nothing is written)" if dry_run else "")
-    )
-    if not stale:
-        runtime.logger.info("No peak store to rebuild.")
-        return
-
     if dry_run:
         steps = Steps(samples_of=_samples_of)
     else:
@@ -599,8 +655,22 @@ async def run() -> None:
             rebuild=_rebuild,
             check_one=check,
         )
-    outcome = await rebuild_all(stale, steps)
+    outcome, counts = await find_and_rebuild(candidates, _is_raw, check, steps, limit)
     done = outcome.counts
+
+    total: Counter = Counter()
+    runtime.logger.info("Per instrument:")
+    for instrument in sorted(counts):
+        total.update(counts[instrument])
+        runtime.logger.info(f"  {instrument}: {_counts_line(counts[instrument])}")
+    checked = sum(total.values())
+    runtime.logger.info(
+        f"  Checked {checked} of {len(candidates)}: {_counts_line(total)}"
+        + (" (DRY_RUN=1: nothing is written)" if dry_run else "")
+    )
+    if not outcome.found:
+        runtime.logger.info("No peak store to rebuild.")
+        return
 
     runtime.logger.info("=" * 80)
     runtime.logger.info(
@@ -608,7 +678,7 @@ async def run() -> None:
     )
     verb = "would rebuild" if dry_run else "rebuilt"
     runtime.logger.info(
-        f"Stale stores: {len(stale)}; {verb} {done['rebuilt']}"
+        f"Stale stores found: {outcome.found}; {verb} {done['rebuilt']}"
         + (
             ""
             if dry_run
@@ -633,9 +703,15 @@ async def run() -> None:
         runtime.logger.warning(
             f"{len(outcome.failed)} peak store(s) could not be rebuilt to "
             "match their file; see the lines above. The next run tries them "
-            "again."
+            "again"
+            + (
+                "."
+                if outcome.left_over
+                else ", and fails on them again until the cause named there "
+                "is fixed: every other stale store was rebuilt."
+            )
         )
-    if limit is not None and len(stale) >= limit:
+    if outcome.left_over:
         runtime.logger.info(
             f"REBUILD_LIMIT={limit} may have left stores for later runs: run "
             "this again until it reports nothing to rebuild."
