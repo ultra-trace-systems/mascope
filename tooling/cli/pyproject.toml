@@ -23,7 +23,7 @@ dependencies = [
     # bundled base.mascope.toml sets (the peak-assignment ingest ledger among
     # them).
     "mascope_runtime[logs]>=2026.9.30",
-    "typer>=0.27.1,<0.28",
+    "typer>=0.27.1,<0.29",
     "rich>=15.0.0,<16",
 ]
 

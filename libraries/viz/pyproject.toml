@@ -29,7 +29,7 @@ dependencies = [
     # The mascope-viz command line: Typer, as the operator CLI, and the
     # .env file the SDK reads its credentials from, for MASCOPE_WORKSPACE.
     "python-dotenv>=1.0.0",
-    "typer>=0.27.1,<0.28",
+    "typer>=0.27.1,<0.29",
 ]
 
 [project.scripts]
