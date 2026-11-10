@@ -2468,9 +2468,14 @@ mascope prod db script run rebuild_stale_peak_stores
   to older stale files until it has rebuilt `<n>`, so files that keep
   failing at the top of the list never hold back the rest. A capped run says
   to run it again only when it stopped before the oldest file. When only
-  failures are left, it says so instead: another run fails on them again,
-  until the cause each one's line names, such as a missing instrument
-  configuration, is fixed.
+  failures are left, it says so instead: another run fails on them again. A
+  rebuild that failed names its cause, such as a missing instrument
+  configuration. A store still stale after its rebuild needs looking into:
+  detecting it again does not change it.
+- **The cap counts rebuilt files, not the files a run touches.** A file that
+  fails has its batches set to **rematch** and its samples' matches removed
+  before its rebuild fails. A run whose files keep failing resets every one
+  it reaches, capped or not.
 - The `pg_dump` taken before it covers the batch statuses, the matches and
   the TICs. The stores are in the filestore.
 - *Detect peaks* on one file does the same for that file alone, and

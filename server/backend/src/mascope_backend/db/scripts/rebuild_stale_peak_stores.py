@@ -54,9 +54,12 @@ many files one run rebuilds. A file whose rebuild fails, or whose rebuilt
 store still disagrees with its file, is counted and named, and read again by
 the next run. It does not count against the cap: a capped run goes on to
 older stale files until it has rebuilt as many as the cap, so files that keep
-failing at the top of the list do not hold every later run back. A capped run
-says to run again only when it stopped before the oldest file; one that
-reached it says so, and names what it could not rebuild.
+failing at the top of the list do not hold every later run back. The cap
+counts rebuilt files only: a file that fails has had its batches set to
+``rematch`` and its samples' matches removed before its rebuild failed, so a
+run whose files keep failing resets every one of them it reaches, capped or
+not. A capped run says to run again only when it stopped before the oldest
+file; one that reached it says so, and names what it could not rebuild.
 
 ``DRY_RUN=1`` reads the same files and writes nothing: each file whose store
 is stale, the scans it holds against those its file reads, and how many
@@ -267,8 +270,14 @@ async def survey(
         one is checked.
     """
     gate = asyncio.Semaphore(_CHECK_CONCURRENCY)
-    traced = 0
-    done = 0
+    if counts is None:
+        counts = defaultdict(Counter)
+    # Go on from an earlier call: its progress, and its unreadable files
+    # against the traceback budget, which is the run's, not the call's.
+    traced = min(
+        _TRACEBACK_LIMIT, sum(found["unreadable"] for found in counts.values())
+    )
+    done = start
 
     async def one(candidate: dict) -> tuple[dict, str, Checked | None]:
         nonlocal traced, done
@@ -293,8 +302,6 @@ async def survey(
             return candidate, found.state, found
 
     stale: list[dict] = []
-    if counts is None:
-        counts = defaultdict(Counter)
     for begin in range(start, len(candidates), _CHECK_BATCH):
         batch = candidates[begin : begin + _CHECK_BATCH]
         for candidate, kind, found in await asyncio.gather(*map(one, batch)):
@@ -449,6 +456,11 @@ async def find_and_rebuild(
     file that cannot be rebuilt stays stale and stays at the top of the
     list, and counting it against the cap would have every later run stop
     on it before reaching anything older.
+
+    So the cap counts rebuilt files only, not the files a run touches: a
+    file that fails has had its batches set to ``rematch`` and its samples'
+    matches removed first, and a run whose files keep failing resets every
+    one it reaches.
 
     :return: What was done, with ``left_over`` set when a capped run left
         stale files, or files to check, for a later run; and the counts of
@@ -707,8 +719,10 @@ async def run() -> None:
             + (
                 "."
                 if outcome.left_over
-                else ", and fails on them again until the cause named there "
-                "is fixed: every other stale store was rebuilt."
+                else ", and fails on them again: every other stale store was "
+                "rebuilt. A rebuild that failed names its cause above; a store "
+                "still stale after its rebuild needs looking into, as "
+                "detecting it again does not change it."
             )
         )
     if outcome.left_over:
