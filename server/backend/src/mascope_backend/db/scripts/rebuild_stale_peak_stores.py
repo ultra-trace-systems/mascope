@@ -562,7 +562,7 @@ async def _refresh_tic(sample_file_id: str, filename: str) -> int:
     updated = 0
     for polarity in polarities:
         tic = await _sample_item_tic(filename=filename, polarity=polarity)
-        if not np.isfinite(tic):
+        if tic is None:
             continue
         async with async_session() as session:
             result = await session.execute(

@@ -2685,6 +2685,12 @@ file it cannot read is skipped and counted in a warning at the end; its
 samples keep the old sum. Each file is written as it is read, so a run that
 stops keeps what it wrote, and running it again writes the same values.
 
+A TOF file that recorded no signal has a TIC of 0. A TIC that reads as no
+finite number, a NaN or an infinity, is stored as none: the sample has no
+TIC, and the sample listing sends it as null. The database upgrade clears
+such a TIC stored before, which the sample listing used to send as null with
+a warning on every listing of its batch.
+
 Every TIC changes by this: the TIC trace of the batch charts, the batch
 export's TIC column and `samples.list()` in the SDK. A notebook that divides
 a peak by the TIC gets a different number afterwards, now on the spectrum's
