@@ -2122,10 +2122,15 @@ async def bind_sample_files(
         )
 
     for sample_file, mode_ids in started:
+        # A process id of its own, as the single-file process route gives one:
+        # without it the run's nested steps have no parent to raise a warning
+        # to, so a calibration that finds no calibrant would be reported and
+        # swallowed rather than reach the retry loop (calibrate_with_retry).
         await spawn_auto_process_sample_file(
             sample_file_id=sample_file.sample_file_id,
             independent_transaction=True,
             user_id=user_id,
+            process_id=gen_id(8),
             instrument=sample_file.instrument,
             ionization_mode_ids=mode_ids,
             reset_calibration=sample_file.sample_file_id not in with_user_samples,
@@ -3481,6 +3486,11 @@ async def _report_calibration_below_bar(
     )
 
 
+#: Why a sample is not calibrated when its calibration ended without saying
+#: whether it applied a verified fit.
+_CALIBRATION_GAVE_NO_VERDICT = "The m/z calibration ended without a verified fit."
+
+
 async def calibrate_with_retry(
     sample: dict,
     sample_file_id: str | None = None,
@@ -3529,7 +3539,20 @@ async def calibrate_with_retry(
                 parent_id=process_id,
             )
             data = (result or {}).get("data") or {}
-            if data.get("verified", True):
+            if "verified" not in data:
+                # No verdict: the fit's warning was reported and swallowed by
+                # a step that had no parent to raise it to, or the result came
+                # back empty. Nothing says a fit was applied, so the sample is
+                # not matched on an axis nobody checked.
+                runtime.logger.warning(
+                    "m/z calibration of sample item "
+                    f"{sample['sample_item_name']} returned no verdict"
+                )
+                return CalibrationOutcome(
+                    verified=False,
+                    reason=_CALIBRATION_GAVE_NO_VERDICT,
+                )
+            if data["verified"]:
                 return CalibrationOutcome(verified=True)
             # Applied, but below the quality bar: the record says so and the
             # verified gate keeps the sample out of matching. A wider

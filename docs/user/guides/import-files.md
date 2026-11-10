@@ -250,6 +250,15 @@ whatever tokens are configured by then, and its status goes on saying so:
 or to put the file under the mode its name would bind it to, choose its
 chemistry again.
 
+A chosen mode calibrates the file as a token's mode would: when no calibrant
+of the mode is found in the file, even at the widest tolerance, the file ends
+as **Calibration failed** and its samples are not matched. The detail says so:
+"The m/z calibration failed: No calibration peaks found. Matching and peak
+assignment were skipped. Bound to 'Nitrate' (-) as chosen by hand." A
+calibrant found only far from where it should be makes a fit below the
+quality bar, and the detail says that instead. Either way, check that the
+chemistry you chose is the one the file was acquired under.
+
 The same action gives a chemistry to a file that failed before its samples
 were made, and corrects a wrong choice: a file that has samples already is
 rebuilt under the modes you pick. It is not offered while a file is being

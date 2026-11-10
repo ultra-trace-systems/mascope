@@ -290,3 +290,24 @@ async def test_a_give_up_says_why_in_the_calibrations_own_words():
     assert calibrate.result.reason == (
         "The m/z calibration failed: Not enough calibration peaks."
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "returned",
+    [None, {"data": {}}, {"data": {"quality_issues": []}}],
+    ids=["nothing", "no data", "no verdict"],
+)
+async def test_a_result_without_a_verdict_is_not_verified(returned):
+    """A step with no parent reports a fit's warning and returns nothing, and
+    that once read as a verified fit: the sample was matched on an axis no
+    calibration had checked."""
+    calibrate, records = await _run(lambda **_: returned)
+
+    assert calibrate.result.verified is False
+    assert calibrate.result.reason == (
+        "The m/z calibration ended without a verified fit."
+    )
+    assert calibrate.await_count == 1
+    # Not a data condition but a caller that lost the warning: monitored.
+    assert [r["level"].name for r in _monitored(records)] == ["WARNING"]
