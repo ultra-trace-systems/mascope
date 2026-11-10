@@ -16,8 +16,8 @@ protonated water, so they say a discharge was there, not which reagent it ran.
 A profile with no reagent - electrospray, protonation, an ambient-ion mode - has
 no fingerprint and is never called. Its spectrum's correct answer is no call.
 
-**Four guards** stand between a fingerprint and a call, each for a way the
-naive probe of section 2.3 went wrong:
+**Five guards** stand between a fingerprint and a call, each for a way the
+naive probe of section 2.3, or a production read since, went wrong:
 
 - *Coverage.* A fingerprint whose anchors all fall outside the scan ranges is
   unobservable, not absent: a method that starts its range above the reagent
@@ -38,6 +38,13 @@ naive probe of section 2.3 went wrong:
   abundance, and anything between is a mixture.
 - *Margin.* The winner must lead every other observable fingerprint by a set
   factor. A spectrum two fingerprints explain alike is ambiguous.
+- *Nitrate signal.* On a TOF, a nitrate call needs its anchors' summed
+  intensity at a floor. A thin ambient-ion spectrum can be nitrate-dominated:
+  the air's nitrate then passes the shares and ranks above, which carry no
+  unit. Its signal does not pass: the first production read put the air's
+  NO3- at most near 3.5 and every nitrate source's at 2,000 or more, in a
+  TOF's intensity units. Nothing else is held to a floor: an Orbitrap's air
+  was never called, and no other reagent was measured.
 
 The answer is one of four decisions - a profile, ``ambiguous``, ``unobservable``
 or ``none`` - with the evidence behind it: per fingerprint the score, the
@@ -66,8 +73,9 @@ from mascope_tools.composition.reagents import (
 
 #: The version of the rules below. Stored with every answer, so an answer read
 #: back says which rules made it, and a change to a threshold or a window is a
-#: new version. Version 2 widened the TOF anchor window from 200 to 300 ppm.
-DETECTOR_VERSION = 2
+#: new version. Version 2 widened the TOF anchor window from 200 to 300 ppm;
+#: version 3 holds a TOF's nitrate call to a signal floor.
+DETECTOR_VERSION = 3
 
 #: A profile's fingerprint dominates its spectrum and names it.
 DECISION_PROFILE = "profile"
@@ -125,6 +133,12 @@ class DetectionRules:
         per instrument class.
     :param default_anchor_ppm: The anchor window of an unknown class.
     :param default_claim_ppm: The claim window of an unknown class.
+    :param nitrate_floor: The summed intensity a nitrate profile's anchors
+        must reach for it to be called, per instrument class; a class not
+        named has none. A TOF's is 100: at site A of the first production
+        read, the air's NO3- reached 3.5 on the ambient-ion spectra rules
+        v2 called nitrate, and every nitrate source's 2,000 or more (log10
+        0.54 against 3.32), so 100 sits about 1.5 decades from each.
     """
 
     min_peaks: int = 30
@@ -141,6 +155,7 @@ class DetectionRules:
     )
     default_anchor_ppm: float = 300.0
     default_claim_ppm: float = 20.0
+    nitrate_floor: dict[str, float] = field(default_factory=lambda: {"tof": 100.0})
 
     def windows(self, instrument_type: str | None) -> tuple[float, float]:
         """``(anchor_ppm, claim_ppm)`` for an instrument class."""
@@ -149,6 +164,16 @@ class DetectionRules:
             self.anchor_ppm.get(key, self.default_anchor_ppm),
             self.claim_ppm.get(key, self.default_claim_ppm),
         )
+
+    def floor(self, profile_name: str, instrument_type: str | None) -> float:
+        """The signal a profile's anchors must reach on an instrument class.
+
+        :return: The floor, 0 for a profile or a class that has none.
+        """
+        if not is_nitrate(profile_name):
+            return 0.0
+        key = (instrument_type or "").strip().lower()
+        return self.nitrate_floor.get(key, 0.0)
 
     def to_json(self) -> dict:
         """The rules, as stored beside an answer: every field, the windows too.
@@ -174,6 +199,20 @@ def fingerprint(profile_name: str) -> tuple[ReagentCluster, ...]:
         for cluster in reagent_library(profile_name)
         if cluster.family in REAGENT_LINE_FAMILIES
     )
+
+
+def is_nitrate(profile_name: str) -> bool:
+    """Whether a profile's reagent is nitrate, in either isotopic form.
+
+    :param profile_name: The profile's name.
+    """
+    profile = REAGENT_PROFILES.get(profile_name)
+    if profile is None:
+        return False
+    plain = profile.reagent_formula
+    if profile.label_isotope:
+        plain = plain.replace(profile.label_isotope, profile.label_isotope.lstrip("^"))
+    return plain == "NO3"
 
 
 def candidate_profiles(
@@ -623,6 +662,20 @@ def detect_chemistry(
         f"{leader.profile} claims {_percent(leader.score)} of the spectrum's "
         f"peak intensity; {brightest.label} ranks {brightest.rank}"
     )
+
+    # --- Nitrate signal --- #
+    floor = rules.floor(leader.profile, instrument_type)
+    signal = sum(anchor.intensity for anchor in leader.anchors_found)
+    if signal < floor:
+        return answer(
+            DECISION_NONE,
+            dominance,
+            f"its anchors sum to an intensity of {signal:.3g}, under the "
+            f"{floor:g} a nitrate source puts in them: the air's own nitrate",
+            outside,
+            score=leader.score,
+            evidence=evidence,
+        )
 
     # --- Margin --- #
     if len(field_) > 1:

@@ -107,7 +107,7 @@ request for this work updates the table below and ticks its item on #2098.
 | 8 | Chemistry profiles as the unit: complete the seeded profiles, ship the standard methods and their catalogue, list the profiles, a profile-first surface, batches named after the profile | open; follows the stream first cut, or runs beside it when there are hands for both (decided 2026-10-05). The seeded profiles carry their calibrant and diagnostic collections (MAS-312) |
 | 3 | The part contract: stream and window honoured by every consumer | **in progress**: the composite cut, for files whose method measures more than one thing in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05; a stitch, not a split, since 2026-10-06). The census keys streams on the method's experiments (#2273), the reader selects one stream's scans (#2278), and peak detection and the peak store follow a stream behind `composite_scan_streams` (#2279), and the store is stitched - the map, the per-peak mask, the overlap readings and the stitched sum signal (#2297); the stream table is in the schema with its composite column (#2282) and written for every file, each polarity's item pointing at its composite or its one stream (#2283), and the readers of the peak list take the composite's rows, each averaged over its own stream's scans (#2307); a re-processing detects a file's peaks again under the setting as it is then, so files converted before it was switched can be stitched (#2328); the item TIC and the per-scan export read the scans the store holds, an item made by hand reads the row the pipeline's item reads, and a spectrum that meets a stale store asks for its rebuild (#2329); the spectrum and the peak listing name each segment, and the sample's views draw the scan ranges apart (#2330); each segment is calibrated by a factor of its own, fitted on the calibrants it holds or taken from a neighbour (#2332), and the calibration dialog and the sample's badge say which (#2333); a stitched file's processing detail says what its ranges read where they overlap and which have no fit of their own (#2334); each segment is fitted an instrument function of its own, which its peaks are read under and the detail states (4.3); **phase 8 run** on the two sites that acquire composites (2026-10-15 and 16): one site's 7,312 pooled files from before its switch re-processed and stitched in ten hours, 2.5 s a file inside batches of 25 paced against the live ingest, leaving 45 files parked without a chemistry and one single-stream file; the other site's 889 files, stitched on arrival under 1.11.0, re-processed in 81 minutes at 3.0 s a file for their calibration per range; the ingest, the pipeline and error tracking undisturbed throughout - the operator's steps are in [maintaining.md](../maintaining.md#the-composite-cut) |
 | 4 | Per-stream state: calibration and instrument function per segment, MS2 | open; its per-segment calibration is built with the composite cut (#2332) and shown with it (#2333), and so is its instrument function per segment; follows 3 on the same track; no rebuild script (4.5, 9.1) |
-| 5 | Chemistry detection: audit first, then provisional binding | **audit built** (MAS-92, #2649): the detector reads each bound or parked file's MS1 polarities off the reagent libraries and stores its call beside the rung that bound them (`sample_file.binding_evidence`); on the labelled corpus 92 calls, none wrong, 53% no call, in-sample (5.4). **Production read** (MAS-501, 2026-11-03): 3 wrong of 12,880 calls, but 2.0% at one TOF site, nitrate called on ambient-ion spectra, so the rung waits for a rules version that holds them off (#2846). Rules version 2 (MAS-640) widens the TOF anchor window to 300 ppm, for a TOF whose axis sat past 200 ppm |
+| 5 | Chemistry detection: audit first, then provisional binding | **audit built** (MAS-92, #2649): the detector reads each bound or parked file's MS1 polarities off the reagent libraries and stores its call beside the rung that bound them (`sample_file.binding_evidence`); on the labelled corpus 92 calls, none wrong, 53% no call, in-sample (5.4). **Production read** (MAS-501, 2026-11-03): 3 wrong of 12,880 calls, but 2.0% at one TOF site, nitrate called on ambient-ion spectra, so the rung waits for a rules version that holds them off (#2846). Rules version 2 (MAS-640) widens the TOF anchor window to 300 ppm, for a TOF whose axis sat past 200 ppm; version 3 (MAS-639) holds a TOF's nitrate call to a signal floor, which keeps the air's nitrate off |
 | 6 | Recipes: time and trace windows, preview and apply | open |
 | 7 | Declarations from the instrument side, MS2-only parts, manual acquisitions | open; its first declaration channel is built: a record of the whole file that the control program writes and the File Agent sends, which binds the file at rung 0 ([acquisition_sidecar.md](acquisition_sidecar.md)); MS2 parts: first cut built (4.2) - a file with no MS1 scans is stored and, where nothing binds it, filed as an MS2 part; centroid-only scans built (#1241): scans that stored their centroids alone are summed as their centroids, and their peaks are the instrument's |
 
@@ -2321,8 +2321,9 @@ adduct panel stay one table.
   have to sit within 20 ppm, plus half the anchors' spread, of the
   anchors' own offset (`calibrate_on_anchors`; #2968).
 
-**The decision**, in order (rules version 2; version 1 differed only in
-the anchor window of a TOF and of an unknown class, 200 ppm):
+**The decision**, in order (rules version 3; version 2 had no step 5,
+and version 1 also kept the anchor window of a TOF and of an unknown class
+to 200 ppm):
 
 1. **Coverage, the no-call rule.** A fingerprint none of whose anchors is
    inside the scan ranges is *unobservable*, not absent. Only observable
@@ -2343,9 +2344,13 @@ the anchor window of a TOF and of an unknown class, 200 ppm):
    intensity the fingerprint claims. The leader's must reach 20%, it must
    have found an anchor, and its brightest ion must rank in the top 5 of
    the spectrum's peaks. Otherwise `none`.
-5. **Margin.** The leader's score must be twice every other's. Otherwise
+5. **Nitrate signal, TOF only.** A nitrate leader, 14N or 15N, needs its
+   anchors' summed area at 100 or more on a TOF. Otherwise `none`: the
+   air's own nitrate (MAS-639, below). No floor on an Orbitrap, an unknown
+   class or any other reagent.
+6. **Margin.** The leader's score must be twice every other's. Otherwise
    `ambiguous`.
-6. Otherwise the profile.
+7. Otherwise the profile.
 
 **What is stored, and where.** `sample_file.binding_evidence`, one entry per
 polarity:
@@ -2532,6 +2537,38 @@ stored, beside the detector's evidence, at sites A, B and E.
   0.23 once shifted by 200 to 300 ppm: an anchor found 200 to 300 ppm off
   a peak no reagent made. That is the confusion the ambient guard (#2846)
   is for, and on a TOF read this far out it has more room.
+
+**The ambient guard** (MAS-639, 2026-11-10): a third read-only job
+re-read every negative TOF spectrum of the audit at sites A, B and E with
+the site's own reader, and ran rules versions 1 and 2 on it. Site A
+delivered, 1,590 polarities on three TOFs. Site B's spectra all failed to
+read, and site E's job did not start.
+
+- **Version 2 would have made it worse.** On the TOF of the three wrong
+  calls, 232 polarities are bound to an ambient-ion mode. Version 1 calls
+  nitrate on 47 of them, version 2 on 195: their axes sit 176 to 265 ppm
+  out, and the wider window finds the air's nitrate.
+- **Only the signal separates them.** Ambient spectra called nitrate
+  against the 832 nitrate sources of the site, and the 3 of the corpus:
+
+  | Feature | Ambient, called | Nitrate sources |
+  |---|---|---|
+  | NO3- area, log10 | -0.14 to 0.54 | 3.32 to 4.11 |
+  | Whole spectrum's area, log10 | 0.46 to 0.91 | 3.83 to 4.42 |
+  | Five brightest peaks' share | 0.27 to 0.72 | 0.51 to 0.98 |
+  | Nitrate score | 0.20 to 0.65 | 0.44 to 0.95 |
+  | HNO3.NO3- over NO3- | 0 to 0.14 | median 0.80; 0 in 50 of them |
+
+  The shares and the score each lose a corpus source rich in sample ions.
+  The dimer ratio, the peak count and the air's other ions (sulfate,
+  hydrates) overlap.
+- **Version 3 adds the floor**, the owner's call between it, the same floor
+  on the whole spectrum, a spread guard, a higher nitrate bar and a routing
+  rule: a nitrate call on a TOF needs its anchors' summed area at 100,
+  about 1.5 decades from each side. It keeps every source measured and
+  drops every ambient call. It is not unit-free: it holds while TOF areas
+  are read in the same units on every reader. Sites B and E are not
+  measured; a rerun there is a check, not a gate.
 
 **Authority.**
 
@@ -3766,9 +3803,10 @@ Polarity always comes from the file, never from the filename.
   - a release in audit mode, and a production shadow read per site over
     the stored evidence (MAS-501): read on 2026-11-03, it fails at site A
     (2.0%) and holds at site D, the other sites too thin (5.4);
-  - a rules version that holds nitrate off ambient-ion spectra (#2846);
-    version 2 (MAS-640) only widened the anchor window of a TOF and of an
-    unknown class;
+  - version 3 holds nitrate off ambient-ion spectra on a TOF with a
+    signal floor (#2846, MAS-639); version 2 (MAS-640) widened the anchor
+    window of a TOF and of an unknown class. Neither is read on production
+    yet;
   - the rung: a provisional binding where no higher rung binds and the score
     reaches 0.4, with its review item (5.5) (MAS-502, blocked by MAS-501).
 - **Gates:**

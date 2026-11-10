@@ -24,6 +24,7 @@ from mascope_tools.composition.chemistry_detection import (
     candidate_profiles,
     detect_chemistry,
     fingerprint,
+    is_nitrate,
     label_partner,
 )
 from mascope_tools.composition.profiles import REAGENT_PROFILES
@@ -136,6 +137,24 @@ def ambient_negative(**kwargs):
     )
 
 
+def thin_ambient_negative(label: str = "", scale: float = 1.0, **kwargs):
+    """An ambient-ion TOF spectrum that the air's nitrate dominates.
+
+    What the production read found rules v2 calling nitrate: a few hundred
+    peaks, the air's NO3- the brightest at an area of 3, far under a source's.
+
+    :param label: ``"^"`` for a 15N nitrate of the same signal.
+    :param scale: Multiplies every peak.
+    """
+    n = f"{label}N"
+    return spectrum(
+        ((f"{n}O3", -1), 3.0 * scale),
+        ((f"H{n}2O6", -1), 0.3 * scale),
+        *_analytes(60, 140.0, 0.05 * scale),
+        **kwargs,
+    )
+
+
 def detect(peaks, polarity="-", instrument_type="orbi", **kwargs):
     mz, intensity = peaks
     return detect_chemistry(
@@ -213,7 +232,7 @@ class TestACall:
         version's default rules are pinned here, so a threshold or a window
         moved without a new version fails."""
         assert (DETECTOR_VERSION, DetectionRules().to_json()) == (
-            2,
+            3,
             {
                 "min_peaks": 30,
                 "min_score": 0.2,
@@ -225,6 +244,7 @@ class TestACall:
                 "claim_ppm": {"orbi": 5.0, "tof": 20.0},
                 "default_anchor_ppm": 300.0,
                 "default_claim_ppm": 20.0,
+                "nitrate_floor": {"tof": 100.0},
             },
         )
 
@@ -243,6 +263,7 @@ class TestACall:
             claim_ppm={"orbi": 4.0, "tof": 15.0},
             default_anchor_ppm=150.0,
             default_claim_ppm=15.0,
+            nitrate_floor={"tof": 50.0, "orbi": 10.0},
         )
         stored = json.loads(json.dumps(detect(nitrate_cims(), rules=rules).to_json()))
         assert DetectionRules(**stored["rules"]) == rules
@@ -466,6 +487,73 @@ class TestTheMargin:
         assert detect(peaks, rules=DetectionRules(margin=ratio * 1.01)).decision == (
             DECISION_AMBIGUOUS
         )
+
+
+class TestTheNitrateSignal:
+    """The air's nitrate on a TOF: dominant in a thin spectrum, but weak."""
+
+    @pytest.mark.parametrize("instrument_type", ["tof", " TOF"])
+    def test_a_thin_ambient_tof_spectrum_is_no_call(self, instrument_type):
+        found = detect(thin_ambient_negative(), instrument_type=instrument_type)
+        assert found.decision == DECISION_NONE
+        nitrate = evidence_of(found, "NO3")
+        assert nitrate.score > 0.5
+        assert nitrate.brightest.rank == 1
+        assert any("the air's own nitrate" in reason for reason in found.reasons)
+
+    def test_the_floor_is_the_tofs_alone(self):
+        """An Orbitrap's heights, or an unknown class, carry no floor."""
+        for instrument_type in ("orbi", None):
+            found = detect(thin_ambient_negative(), instrument_type=instrument_type)
+            assert found.profile == "NO3", instrument_type
+
+    def test_a_nitrate_source_on_a_tof_is_still_called(self):
+        """The weakest source of the production read: NO3- at about 2,000."""
+        peaks = spectrum(
+            (("NO3", -1), 2.0e3),
+            (("HN2O6", -1), 1.6e3),
+            *_analytes(60, 140.0, 5.0),
+        )
+        assert detect(peaks, instrument_type="tof").profile == "NO3"
+        assert detect(nitrate_cims(), instrument_type="tof").profile == "NO3"
+
+    def test_the_floor_decides(self):
+        """Both anchors' signal, 3.3, against the floor on either side."""
+        peaks = thin_ambient_negative()
+        tof = {"tof": 3.3 * 0.99}
+        assert detect(
+            peaks, instrument_type="tof", rules=DetectionRules(nitrate_floor=tof)
+        ).called
+        tof = {"tof": 3.3 * 1.01}
+        assert not detect(
+            peaks, instrument_type="tof", rules=DetectionRules(nitrate_floor=tof)
+        ).called
+
+    def test_the_15n_form_is_held_to_it_too(self):
+        found = detect(thin_ambient_negative("^"), instrument_type="tof")
+        assert evidence_of(found, "NO3_15N").score > 0.5
+        assert found.decision == DECISION_NONE
+        assert (
+            detect(
+                thin_ambient_negative("^", scale=100.0), instrument_type="tof"
+            ).profile
+            == "NO3_15N"
+        )
+
+    def test_another_reagent_is_not(self):
+        """Bromide at the same weak signal is still called on a TOF."""
+        peaks = spectrum(
+            (("Br", -1), 3.0),
+            (ion_mz("Br", -1) + BR81, 2.9),
+            *_analytes(60, 140.0, 0.05),
+        )
+        assert detect(peaks, instrument_type="tof").profile == "BR"
+
+    def test_which_profiles_are_nitrate(self):
+        assert is_nitrate("NO3")
+        assert is_nitrate("NO3_15N")
+        assert not any(is_nitrate(name) for name in ("BR", "UR", "IODIDE", "none"))
+        assert not is_nitrate("no such profile")
 
 
 class TestTheWindows:

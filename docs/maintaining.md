@@ -2339,7 +2339,11 @@ differently. `"off"` stores nothing. The audit reads the polarity's peak list
 once more per file, a fraction of a second. Its calls are how the detector is
 measured against the bindings before it may ever bind a file itself
 ([the design note](dev/ingest_routing_and_splitting.md), section 5.4). It
-takes effect on restart, for files bound from then on.
+takes effect on restart, for files bound from then on. Each stored call names
+the rules version that made it. Version 3 calls nitrate on a TOF only where
+its reagent ions reach an area of 100, which holds the air's own nitrate in an
+ambient-ion spectrum off; a call stored under an earlier version is not
+re-read.
 
 ### Axis fingerprint
 
