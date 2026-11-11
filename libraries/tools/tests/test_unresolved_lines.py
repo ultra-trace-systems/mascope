@@ -284,10 +284,11 @@ def test_a_line_under_the_floor_within_one_fwhm_of_a_kept_line_is_added_to_it(
 
 
 def test_a_line_under_the_floor_more_than_one_fwhm_away_is_still_dropped():
-    # At 30000 a FWHM at m/z 87 is 2.9 mDa: the 15N line, 6.3 mDa from the
-    # 13C line, is a peak of its own, and under the floor it is not predicted;
-    # so is the 2H line, 2.9 mDa over it. The 17O line, 0.9 mDa over it, is
-    # in the 13C peak.
+    # At 30000 a FWHM at m/z 87 is 2.902 mDa: the 15N line, 6.3 mDa from the
+    # 13C line, is a peak of its own, and under the floor it is not predicted.
+    # The 17O line, 0.9 mDa over it, is in the 13C peak. The 2H line sits
+    # 2.914 mDa over that merged 13C+17O line, only 0.4% more than the FWHM,
+    # so it is dropped too: a merged centre 0.012 mDa higher would fold it in.
     predicted, reached = _m1_share("C4H8NO", 0.01, 30000.0)
 
     assert predicted == pytest.approx(reached["13C"] + reached["17O"], rel=1e-6)

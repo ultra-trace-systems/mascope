@@ -1378,9 +1378,9 @@ def predict_resolved_isotopes(
 
     :func:`predict_isotopes` with the lines one peak cannot separate merged
     (:func:`merge_unresolved_lines`). The members are predicted
-    :data:`UNRESOLVED_MEMBER_DEPTH` deeper than ``threshold``, because the lines
-    a merged peak adds are each far under the floor - the 15N, 2H and 17O lines
-    of a TOF's 13C peak, a small ion's 17O line under a tenth of it - and the
+    to :data:`UNRESOLVED_MEMBER_DEPTH` (a thousandth) of ``threshold``, because
+    the lines a merged peak adds are each far under the floor - the 15N, 2H and
+    17O lines of a TOF's 13C peak, fainter still for a small ion - and the
     floor is then applied to the merged lines,
     so the envelope holds the lines it held before, each with its whole share.
     A merged line under the floor less than one FWHM from a kept line is added
