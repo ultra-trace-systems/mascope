@@ -12,6 +12,7 @@ import pytest
 
 from mascope_tools.composition.calibration import (
     DEFAULT_CORROBORATION_CAP,
+    EVIDENCE_LEVEL_WEIGHTS,
     INSTRUMENT_CALIBRATIONS,
     MIN_CALIBRATION_CLASS_LABELS,
     MIN_CALIBRATION_LABELS,
@@ -29,6 +30,7 @@ from mascope_tools.composition.calibration import (
     discrimination_auc,
     fit_calibration,
     holdout_split,
+    label_weights,
     recalibrate,
 )
 from mascope_tools.composition.mechanism_notation import (
@@ -489,3 +491,126 @@ def test_holdout_split_is_deterministic_and_partitions():
     assert len(test) == 50 and len(train) == 50
     assert sorted(np.concatenate([test, train]).tolist()) == list(range(100))
     assert np.array_equal(test, holdout_split(100, holdout=0.5, seed=0)[0])
+
+
+# --- evidence-level weighting (MAS-329) ---------------------------------------------
+#
+# Guardrail 1 of the verification loop: a reference standard or an MS/MS spectrum is truth
+# from outside the fit, a visual look reads the score's own picture. The refit weighs each
+# label by the evidence its verdict states, and records the weights on the curve.
+
+
+def test_label_weights_reads_the_evidence_level_of_each_label():
+    weights = label_weights(["reference_standard", "msms", "visual", None, "unknown"])
+    assert list(weights) == [1.0, 1.0, 0.25, 0.25, 0.25]
+    # stronger evidence weighs more, all the way down the ladder
+    ladder = ["reference_standard", "orthogonal", "pattern", "visual"]
+    assert list(label_weights(ladder)) == sorted(label_weights(ladder), reverse=True)
+    assert EVIDENCE_LEVEL_WEIGHTS["visual"] < EVIDENCE_LEVEL_WEIGHTS["msms"]
+
+
+def test_calibration_error_weighs_each_label():
+    """Unit weights are the unweighted error; a zero weight takes a label out of it."""
+    probs = np.array([0.1, 0.1, 0.9, 0.9])
+    correct = np.array([0, 0, 1, 0])
+    assert calibration_error(probs, correct, weights=np.ones(4)) == pytest.approx(
+        calibration_error(probs, correct)
+    )
+    # the one miscalibrated label weighed out: the rest is perfectly calibrated
+    sure = [0.0, 0.0, 1.0, 1.0]
+    assert calibration_error(sure, correct) == pytest.approx(0.25)
+    assert calibration_error(sure, correct, weights=[1, 1, 1, 0]) == pytest.approx(0.0)
+
+
+def test_platt_fit_weight_two_is_a_label_counted_twice():
+    scores, labels = _separated_labels(n=120, seed=5)
+    weights = np.ones(len(scores))
+    weights[:30] = 2.0
+    doubled_s = np.concatenate([scores, scores[:30]])
+    doubled_y = np.concatenate([labels, labels[:30]])
+    a_w, b_w, _ = _platt_fit(scores, labels, weights)
+    a_d, b_d, _ = _platt_fit(doubled_s, doubled_y)
+    assert a_w == pytest.approx(a_d, abs=1e-3)
+    assert b_w == pytest.approx(b_d, abs=1e-3)
+
+
+def _echo_pool(seed=11):
+    """Strong labels drawn from a known curve, plus visual labels that echo a wrong one.
+
+    The visual verdicts are what the confirmation-bias loop produces: the user confirms
+    whatever scores high, so their labels follow a much steeper curve than the truth.
+    """
+    truth = Calibration(a=4.0, b=-2.0)
+    echo = Calibration(a=20.0, b=-10.0)
+    s_true, y_true = _curve_labels(truth, n=300, seed=seed)
+    s_echo, y_echo = _curve_labels(echo, n=900, seed=seed + 1)
+    scores = np.concatenate([s_true, s_echo])
+    labels = np.concatenate([y_true, y_echo])
+    levels = ["reference_standard"] * len(s_true) + ["visual"] * len(s_echo)
+    return truth, scores, labels, levels
+
+
+def test_fit_calibration_weights_pull_the_curve_toward_the_strong_labels():
+    truth, scores, labels, levels = _echo_pool()
+    flat = fit_calibration(scores, labels)
+    weighted = fit_calibration(scores, labels, weights=label_weights(levels))
+    # the weighted curve's slope sits nearer the truth than the unweighted one's
+    assert abs(weighted.a - truth.a) < abs(flat.a - truth.a)
+
+
+def test_fit_calibration_certifies_itself_by_the_weighted_held_out_error():
+    """The ECE a curve carries is the weighted one, on the held-out labels, and a
+    label dropped for a non-finite score takes its weight with it."""
+    scores, labels = _separated_labels(n=400, seed=21)
+    # Weights alternating by place, so a weight that slid one place would land
+    # on every other label wrong.
+    weights = np.tile([1.0, 0.1], 200)
+    scores = np.concatenate([[np.nan], scores])
+    labels = np.concatenate([[1], labels])
+    weights = np.concatenate([[1.0], weights])
+    cal = fit_calibration(scores, labels, weights=weights)
+    finite = np.isfinite(scores)
+    s, y, w = scores[finite], labels[finite], weights[finite]
+    test, _ = holdout_split(len(s))
+    weighted = calibration_error(
+        apply_calibration(s[test], cal), y[test], weights=w[test]
+    )
+    unweighted = calibration_error(apply_calibration(s[test], cal), y[test])
+    assert cal.ece == round(weighted, 4)
+    assert round(weighted, 4) != round(unweighted, 4)
+
+
+def test_recalibrate_weighs_the_labels_and_records_the_weights():
+    truth, scores, labels, levels = _echo_pool()
+    current = Calibration(a=1.0, b=0.0, instrument="orbi")
+    out = recalibrate(
+        scores, labels, levels, instrument="orbi", source="s", current=current
+    )
+    assert out["label_weights"] == dict(EVIDENCE_LEVEL_WEIGHTS)
+    assert out["calibration"].label_weights == dict(EVIDENCE_LEVEL_WEIGHTS)
+    # the fit is the weighted one
+    weighted = fit_calibration(scores, labels, weights=label_weights(levels))
+    assert out["calibration"].a == pytest.approx(weighted.a)
+    assert out["after_ece"] == weighted.ece
+    # and the incumbent is scored under the same weights, on the same held-out points
+    test, _ = holdout_split(len(scores))
+    expected = calibration_error(
+        apply_calibration(scores[test], current),
+        labels[test],
+        weights=label_weights(levels)[test],
+    )
+    assert out["before_ece"] == round(expected, 4)
+
+
+def test_recalibrate_without_levels_or_weights_is_unweighted():
+    _, scores, labels, levels = _echo_pool()
+    flat = fit_calibration(scores, labels)
+    for out in (
+        recalibrate(scores, labels, instrument="orbi", source="s"),
+        recalibrate(
+            scores, labels, levels, instrument="orbi", source="s", evidence_weights=None
+        ),
+    ):
+        assert out["label_weights"] is None
+        assert out["calibration"].label_weights is None
+        assert out["calibration"].a == pytest.approx(flat.a)
