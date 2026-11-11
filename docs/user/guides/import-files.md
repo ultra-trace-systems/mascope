@@ -167,8 +167,8 @@ uncalibrated.
     changing the calibrant collection flags the affected batches for
     re-calibration, and changing the mechanisms or diagnostic collection flags
     them for re-matching. The re-match swaps the collections the mode gave
-    each batch for its new ones, and keeps any collection added under
-    **Edit batch targets**.
+    each daily batch for its new ones, and keeps any collection added under
+    **Edit batch targets**. An analysis batch keeps its collections.
 
 ## Get the raw files in
 
