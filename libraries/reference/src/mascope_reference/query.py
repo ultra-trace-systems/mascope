@@ -208,6 +208,36 @@ async def by_mass_window(
     return [_row_to_record(row) for row in (await session.execute(stmt)).all()]
 
 
+async def listed_inchikeys(
+    session: AsyncSession,
+    inchikeys: Iterable[str],
+    *,
+    licenses: set[str] | None = None,
+) -> set[str]:
+    """The InChIKeys an active compound list carries, of the ones asked about.
+
+    What a target compound's declared structure is read against: a key no list
+    carries names a compound the lists do not know. One indexed ``IN`` query on
+    the key; a spectral library's load is not a compound list and is left out.
+
+    :param session: Active async session.
+    :param inchikeys: The keys to look up; blanks and repeats are dropped.
+    :param licenses: Keep only records under these licences; None keeps all.
+    :return: The keys among them some active compound source's row carries.
+    """
+    keys = {key for key in inchikeys if isinstance(key, str) and key}
+    if not keys:
+        return set()
+    stmt = (
+        active_join(reference_compound.c.inchikey)
+        .where(reference_compound.c.inchikey.in_(keys))
+        .where(_IS_COMPOUND_SOURCE)
+    )
+    if licenses is not None:
+        stmt = stmt.where(reference_compound.c.license.in_(licenses))
+    return {row.inchikey for row in (await session.execute(stmt.distinct())).all()}
+
+
 def xref_cas_number(xrefs: dict | None) -> str | None:
     """The CAS number a reference row's cross-references record, or None.
 

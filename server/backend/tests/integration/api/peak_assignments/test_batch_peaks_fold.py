@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from mascope_backend.api.new.peak_assignments import batch_peaks_controller
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
@@ -32,12 +32,18 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_records import (
     get_batch_peak_ledger,
     get_batch_peak_series,
 )
+from mascope_backend.api.new.peak_assignments.batch_runs import (
+    ACTION_SEARCH,
+    complete_run,
+    start_run,
+)
 from mascope_backend.api.new.peak_assignments.sample_status import (
     get_batch_sample_assignment_status,
 )
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
+    BatchPeakRun,
     Dataset,
     IonizationMode,
     PeakAssignment,
@@ -45,6 +51,7 @@ from mascope_backend.db import (
     SampleBatch,
     SampleFile,
     SampleItem,
+    TargetCompound,
     Workspace,
 )
 from mascope_backend.db.id import gen_id
@@ -1006,6 +1013,111 @@ async def test_a_list_match_names_its_list_on_the_registry_and_the_ledger(
         r for r in everything["data"] if r["batch_peak_id"] != shared.batch_peak_id
     ]
     assert unlisted and all(r["reference_listing"] is None for r in unlisted)
+
+
+async def test_a_target_match_names_its_compound_on_the_registry_and_the_ledger(
+    async_session_factory, seeded
+):
+    """Identification claims, section 4.2: the batch ledger shows what the
+    target compound the consensus was matched to declares, off the registry
+    entry a member that matched it brought - on the live ledger, the series and
+    an earlier run's snapshot alike. Sample A's glucose row names no target; B's
+    was matched to one, so the entry A made gains B's compound."""
+    batch, samples = seeded
+    await fold_sample_into_batch_peaks(samples["A"])
+    compound_id = gen_id(16)
+    async with async_session_factory() as s:
+        s.add(
+            TargetCompound(
+                target_compound_id=compound_id,
+                target_compound_name="glucose",
+                target_compound_formula="C6H12O6",
+                inchikey="WQZGKKKJIJFFOK-GASJEMHNSA-N",
+            )
+        )
+        await s.flush()
+        row = (
+            await s.execute(
+                select(PeakAssignment).where(
+                    PeakAssignment.sample_item_id == samples["B"],
+                    PeakAssignment.sample_peak_id == "B1",
+                )
+            )
+        ).scalar_one()
+        row.target_compound_id = compound_id
+        await s.commit()
+    try:
+        await fold_sample_into_batch_peaks(samples["B"])
+        shared = next(
+            p
+            for p in await _batch_peaks(async_session_factory, batch)
+            if p.n_present == 2
+        )
+        assert [entry.get("target_compound_id") for entry in shared.candidates] == [
+            compound_id
+        ]
+        target = {
+            "label": "target",
+            "name": "glucose",
+            "inchikey": "WQZGKKKJIJFFOK-GASJEMHNSA-N",
+            "listed": False,
+        }
+        (record,) = (await get_batch_peak_ledger(sample_batch_id=batch))["data"]
+        assert record["reference_listing"] == {
+            "name": None,
+            "source": None,
+            "inchikey": None,
+            "tags": [],
+            "total": 0,
+            "target": target,
+        }
+        series = await get_batch_peak_series(sample_batch_id=batch)
+        (charted,) = [
+            r for r in series["data"] if r["batch_peak_id"] == shared.batch_peak_id
+        ]
+        assert charted["reference_listing"]["target"] == target
+        # An anchor no member matched to a target shows none.
+        everything = await get_batch_peak_ledger(sample_batch_id=batch, min_n_present=1)
+        others = [
+            r for r in everything["data"] if r["batch_peak_id"] != shared.batch_peak_id
+        ]
+        assert others and all(r["reference_listing"] is None for r in others)
+
+        # An earlier run's snapshot reads the same off its own registry copy.
+        async with async_session_factory() as s:
+            fold_run = (
+                await s.execute(
+                    select(BatchPeakRun.batch_peak_run_id).where(
+                        BatchPeakRun.sample_batch_id == batch,
+                        BatchPeakRun.is_current == 1,
+                    )
+                )
+            ).scalar_one()
+        run_id = await start_run(batch, ACTION_SEARCH)
+        await complete_run(batch, run_id)
+        before = await get_batch_peak_ledger(
+            sample_batch_id=batch, batch_peak_run_id=fold_run
+        )
+        (earlier,) = before["data"]
+        assert earlier["reference_listing"]["target"] == target
+        earlier_series = await get_batch_peak_series(
+            sample_batch_id=batch, batch_peak_run_id=fold_run
+        )
+        (earlier_charted,) = earlier_series["data"]
+        assert earlier_charted["reference_listing"]["target"] == target
+    finally:
+        async with async_session_factory() as s:
+            await s.execute(
+                update(PeakAssignment)
+                .where(PeakAssignment.target_compound_id == compound_id)
+                .values(target_compound_id=None)
+            )
+            await s.execute(
+                delete(TargetCompound).where(
+                    TargetCompound.target_compound_id == compound_id
+                )
+            )
+            await s.commit()
 
 
 async def test_a_reagent_anchor_reads_as_its_ion_with_its_lines_folded_under_it(

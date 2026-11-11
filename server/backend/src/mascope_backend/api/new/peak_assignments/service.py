@@ -185,6 +185,9 @@ from mascope_backend.api.new.peak_assignments.reagent_pass import (
 )
 from mascope_backend.api.new.peak_assignments.schemas import DEFAULT_PAGE_LIMIT
 from mascope_backend.api.new.peak_assignments.seeded_scoring import score_seeds
+from mascope_backend.api.new.peak_assignments.target_listing import (
+    with_target_listings,
+)
 from mascope_backend.api.new.peak_assignments.tiering import (
     apply_tiering,
     find_envelope_claims,
@@ -533,7 +536,10 @@ def _provenance_scalars(
     inspector to answer: the first name the run matched from a list, that
     list, the lists' tags and how many names there are
     (:func:`~mascope_backend.api.new.peak_assignments.listing.reference_listing`),
-    None on a row no list names.
+    None on a row no list names. The read puts the row's target compound beside
+    it, under ``target``
+    (:func:`~mascope_backend.api.new.peak_assignments.target_listing.with_target_listings`):
+    the provenance does not hold it, the row's ``target_compound_id`` does.
 
     ``run_calibration`` is the run's ``confidence_calibration``: the curve a
     calibrated row's ``p_correct`` was read off, recorded once per run rather
@@ -769,6 +775,10 @@ async def get_peak_assignments(
         )
         record["batch_peak_id"] = anchor_by_peak.get(str(record.get("sample_peak_id")))
         data.append(record)
+    # What each row's target compound declares, beside what a list calls its
+    # formula: the compound's name and InChIKey, read now, as the names are.
+    async with async_session() as session:
+        await with_target_listings(session, data)
     return {
         "status": "success",
         "message": (
@@ -882,6 +892,8 @@ async def get_peak_assignment_detail(
         record.get("provenance"), run_calibration
     )
     record.update(_provenance_scalars(record["provenance"], run_calibration))
+    async with async_session() as session:
+        await with_target_listings(session, [record])
     return {
         "status": "success",
         "message": (
