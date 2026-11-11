@@ -70,6 +70,10 @@ from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     _propagate_to_sample,
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+from mascope_backend.api.new.peak_assignments.engine import (
+    evidence_for,
+    tier_for_evidence,
+)
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
@@ -83,6 +87,7 @@ from mascope_backend.db import (
     SampleItem,
 )
 from mascope_backend.db.id import gen_id
+from mascope_tools.composition.heuristic_filter import formula_plausibility
 
 
 pytestmark = pytest.mark.asyncio
@@ -547,6 +552,361 @@ async def test_a_sample_that_cannot_be_measured_keeps_its_identity_and_the_pin_s
     )
 
 
+# --- measured before it is pinned (step 3.4c) ------------------------------------
+
+
+def _measure_url(anchor):
+    return f"/api/batch-peaks/batch/{anchor['batch_id']}/measure-candidate"
+
+
+async def test_an_alternative_is_measured_on_the_sample_and_nothing_is_written(
+    async_session_factory, guest_client, anchor, stubbed_scorer, assignment_enabled
+):
+    response = await guest_client.get(
+        _measure_url(anchor),
+        params={
+            "batch_peak_id": anchor["batch_peak_id"],
+            "candidate": anchor["other"],
+            "sample_item_id": anchor["s1"],
+        },
+    )
+    assert response.status_code == 200, response.text
+    [entry] = response.json()["data"]
+    evidence = evidence_for(0.81, "C7H14O7")
+    assert entry["assigned_formula"] == "C7H14O7"
+    assert entry["sample_peak_id"] == "p1"
+    assert entry["fit_score"] == pytest.approx(0.81)
+    assert entry["evidence"] == pytest.approx(evidence)
+    assert entry["plausibility"] == pytest.approx(
+        formula_plausibility("C7H14O7"), abs=1e-4
+    )
+    assert entry["tier"] == tier_for_evidence(
+        evidence,
+        candidate_threshold=PeakAssignmentConfig().candidate_threshold,
+        assigned_threshold=PeakAssignmentConfig().assigned_threshold,
+    )
+    assert entry["mz_error_ppm"] == pytest.approx(0.9)
+    assert entry["takes_member"] is True
+    assert entry["blocked_reason"] is None
+    # Beside it, what S1 reads now.
+    assert entry["current"]["assigned_formula"] == "C6H12O6"
+    assert entry["current"]["fit_score"] == pytest.approx(0.95)
+    assert entry["current"]["tier"] == "assigned"
+    assert entry["current"]["evidence"] == pytest.approx(evidence_for(0.95, "C6H12O6"))
+    # Measured on S1 alone, and nothing moved.
+    assert stubbed_scorer == [(anchor["s1"], {("C7H14O7", MECH)})]
+    bp = await _anchor_row(async_session_factory, anchor["batch_peak_id"])
+    assert manual_pin_of(bp) is None
+    assert bp.consensus_formula == "C6H12O6"
+    members = await _members(async_session_factory, anchor["batch_peak_id"])
+    s1 = members[anchor["s1"]]
+    assert resolve_candidate(bp.candidates, s1.candidate)["formula"] == "C6H12O6"
+    assert s1.fit_score == pytest.approx(0.95)
+
+
+async def test_the_pin_writes_what_was_measured_and_records_it(
+    async_session_factory, guest_client, anchor, stubbed_scorer, assignment_enabled
+):
+    measured = (
+        await guest_client.get(
+            _measure_url(anchor),
+            params={
+                "batch_peak_id": anchor["batch_peak_id"],
+                "candidate": anchor["other"],
+                "sample_item_id": anchor["s1"],
+            },
+        )
+    ).json()["data"][0]
+    await run_batch_peak_curation(
+        anchor["batch_id"],
+        anchor["batch_peak_id"],
+        anchor["other"],
+        "C6H12O6",
+        PeakAssignmentConfig(),
+        measured_sample_item_id=anchor["s1"],
+    )
+    bp = await _anchor_row(async_session_factory, anchor["batch_peak_id"])
+    members = await _members(async_session_factory, anchor["batch_peak_id"])
+    s1 = members[anchor["s1"]]
+    # The member reads exactly what the preview said it would.
+    assert s1.fit_score == pytest.approx(measured["fit_score"])
+    assert tier_name(s1.tier) == measured["tier"]
+    # And the pin keeps the measurement it was made on.
+    record = manual_pin_of(bp)["measured"]
+    assert record["sample_item_id"] == anchor["s1"]
+    assert record["candidate"] == anchor["other"]
+    assert record["fit_score"] == pytest.approx(measured["fit_score"])
+    assert record["evidence"] == pytest.approx(measured["evidence"])
+    assert record["tier"] == measured["tier"]
+    assert record["plausibility"] == pytest.approx(measured["plausibility"])
+    assert record["current"]["assigned_formula"] == "C6H12O6"
+
+
+async def test_the_pin_records_the_measurement_under_its_own_configuration(
+    async_session_factory, anchor, stubbed_scorer
+):
+    """A pin measured under a configuration with other bands records the tier
+    those bands give, the one it writes on the member."""
+    strict = PeakAssignmentConfig(candidate_threshold=0.95, assigned_threshold=0.99)
+    await run_batch_peak_curation(
+        anchor["batch_id"],
+        anchor["batch_peak_id"],
+        anchor["other"],
+        "C6H12O6",
+        strict,
+        measured_sample_item_id=anchor["s1"],
+    )
+    bp = await _anchor_row(async_session_factory, anchor["batch_peak_id"])
+    members = await _members(async_session_factory, anchor["batch_peak_id"])
+    assert tier_name(members[anchor["s1"]].tier) == "below_assignability"
+    assert manual_pin_of(bp)["measured"]["tier"] == "below_assignability"
+
+
+async def test_the_measurement_and_the_pin_score_under_the_pins_configuration(
+    anchor, stubbed_scorer, monkeypatch
+):
+    """The configuration centres the seeded scoring (the reagent lines its
+    profile claims), so the preview and the propagation hand it on alike."""
+    scorer = batch_untargeted.score_seeds
+    configs = []
+
+    async def recording(sample, seeds, params, *, config=None):
+        configs.append(config)
+        return await scorer(sample, seeds, params)
+
+    monkeypatch.setattr(batch_untargeted, "score_seeds", recording)
+    strict = PeakAssignmentConfig(candidate_threshold=0.95, assigned_threshold=0.99)
+    await run_batch_peak_curation(
+        anchor["batch_id"],
+        anchor["batch_peak_id"],
+        anchor["other"],
+        "C6H12O6",
+        strict,
+        measured_sample_item_id=anchor["s1"],
+    )
+    # One for the measurement on S1, one for the propagation to it.
+    assert len(configs) == 2
+    assert all(config is strict for config in configs)
+
+
+async def test_a_pin_without_a_measured_sample_records_none(
+    async_session_factory, anchor, stubbed_scorer
+):
+    await run_batch_peak_curation(
+        anchor["batch_id"],
+        anchor["batch_peak_id"],
+        anchor["other"],
+        "C6H12O6",
+        PeakAssignmentConfig(),
+    )
+    bp = await _anchor_row(async_session_factory, anchor["batch_peak_id"])
+    assert "measured" not in manual_pin_of(bp)
+
+
+async def test_a_measurement_that_fails_does_not_cost_the_pin(
+    async_session_factory, anchor, stubbed_scorer, monkeypatch
+):
+    async def broken(*args, **kwargs):
+        raise RuntimeError("the preview broke")
+
+    monkeypatch.setattr(batch_curation, "score_in_sample", broken)
+    counts = await run_batch_peak_curation(
+        anchor["batch_id"],
+        anchor["batch_peak_id"],
+        anchor["other"],
+        "C6H12O6",
+        PeakAssignmentConfig(),
+        measured_sample_item_id=anchor["s1"],
+    )
+    assert counts["members_repointed"] == 1
+    bp = await _anchor_row(async_session_factory, anchor["batch_peak_id"])
+    pin = manual_pin_of(bp)
+    assert pin["candidate"] == anchor["other"]
+    assert "measured" not in pin
+
+
+async def test_an_alternative_the_envelope_does_not_reach_says_the_sample_keeps_its_own(
+    guest_client, anchor, assignment_enabled, monkeypatch
+):
+    async def unreached(sample, seeds, params, *, config=None):
+        (formula, mech) = next(iter(seeds))
+        # The ion is built, its envelope pairs to some other peak.
+        return (
+            {(formula, mech): "ion-x"},
+            {"ion-x": 0.7},
+            {("ion-x", "p9"): {"mz_error_ppm": 3.0}},
+            pd.DataFrame(),
+        )
+
+    async def match_params(sample_item_id):
+        return SimpleNamespace(isotope_abundance_threshold=0.01)
+
+    monkeypatch.setattr(batch_untargeted, "score_seeds", unreached)
+    monkeypatch.setattr(batch_untargeted, "default_match_params", match_params)
+    response = await guest_client.get(
+        _measure_url(anchor),
+        params={
+            "batch_peak_id": anchor["batch_peak_id"],
+            "candidate": anchor["other"],
+            "sample_item_id": anchor["s1"],
+        },
+    )
+    assert response.status_code == 200, response.text
+    [entry] = response.json()["data"]
+    assert entry["takes_member"] is False
+    assert entry["fit_score"] is None
+    assert entry["tier"] is None
+    assert entry["mz_error_ppm"] is None
+    assert "does not reach this sample's peak" in entry["blocked_reason"]
+    assert entry["current"]["assigned_formula"] == "C6H12O6"
+
+
+async def test_an_identity_the_sample_already_reads_is_not_measured_again(
+    guest_client, anchor, stubbed_scorer, assignment_enabled
+):
+    response = await guest_client.get(
+        _measure_url(anchor),
+        params={
+            "batch_peak_id": anchor["batch_peak_id"],
+            "candidate": anchor["other"],
+            "sample_item_id": anchor["s2"],
+        },
+    )
+    assert response.status_code == 200, response.text
+    [entry] = response.json()["data"]
+    assert entry["takes_member"] is False
+    assert entry["blocked_reason"] == "this sample already reads this identity"
+    assert entry["fit_score"] == pytest.approx(0.60)
+    assert entry["tier"] == "candidate"
+    assert stubbed_scorer == []
+
+
+async def test_an_identity_with_no_adduct_is_not_measured(
+    async_session_factory, guest_client, anchor, stubbed_scorer, assignment_enabled
+):
+    async with async_session_factory() as session:
+        bp = await session.get(BatchPeak, anchor["batch_peak_id"])
+        registry = [dict(entry) for entry in bp.candidates]
+        registry[anchor["other"]]["ionization_mechanism_id"] = None
+        bp.candidates = registry
+        await session.commit()
+    response = await guest_client.get(
+        _measure_url(anchor),
+        params={
+            "batch_peak_id": anchor["batch_peak_id"],
+            "candidate": anchor["other"],
+            "sample_item_id": anchor["s1"],
+        },
+    )
+    assert response.status_code == 200, response.text
+    [entry] = response.json()["data"]
+    assert entry["takes_member"] is False
+    assert "names no adduct" in entry["blocked_reason"]
+    assert stubbed_scorer == []
+
+
+async def test_the_measurement_refuses_what_the_pin_would(
+    guest_client, anchor, stubbed_scorer, assignment_enabled, monkeypatch
+):
+    url = _measure_url(anchor)
+    unknown = await guest_client.get(
+        url,
+        params={
+            "batch_peak_id": anchor["batch_peak_id"],
+            "candidate": 5,
+            "sample_item_id": anchor["s1"],
+        },
+    )
+    assert unknown.status_code == 422, unknown.text
+    assert UNKNOWN_CANDIDATE_CODE in unknown.text
+
+    elsewhere = await guest_client.get(
+        url,
+        params={
+            "batch_peak_id": anchor["batch_peak_id"],
+            "candidate": anchor["other"],
+            "sample_item_id": "not-a-member",
+        },
+    )
+    assert elsewhere.status_code in (403, 404), elsewhere.text
+
+    monkeypatch.delenv("MASCOPE_PEAK_ASSIGNMENT")
+    dark = await guest_client.get(
+        url,
+        params={
+            "batch_peak_id": anchor["batch_peak_id"],
+            "candidate": anchor["other"],
+            "sample_item_id": anchor["s1"],
+        },
+    )
+    assert dark.status_code == 403, dark.text
+    assert "Peak assignment is disabled" in dark.text
+    assert stubbed_scorer == []
+
+
+async def test_a_sample_of_the_batch_without_a_member_is_a_404(
+    async_session_factory, guest_client, anchor, stubbed_scorer, assignment_enabled
+):
+    now = datetime.now(timezone.utc)
+    async with async_session_factory() as session:
+        s3 = await _seed_sample(session, anchor["batch_id"], "S3", [], now)
+        await session.commit()
+    response = await guest_client.get(
+        _measure_url(anchor),
+        params={
+            "batch_peak_id": anchor["batch_peak_id"],
+            "candidate": anchor["other"],
+            "sample_item_id": s3,
+        },
+    )
+    assert response.status_code == 404, response.text
+    assert "holds no member" in response.text
+
+
+async def test_the_curate_route_hands_the_measured_sample_to_the_task(
+    editor_client, anchor, assignment_enabled, monkeypatch
+):
+    launched = []
+
+    async def fake_task(**kwargs):
+        launched.append(kwargs)
+
+    monkeypatch.setattr(batch_peaks_routes, "curate_batch_peak", fake_task)
+    accepted = await editor_client.post(
+        f"/api/batch-peaks/batch/{anchor['batch_id']}/curate",
+        json={
+            "batch_peak_id": anchor["batch_peak_id"],
+            "candidate": anchor["other"],
+            "expected_formula": "C6H12O6",
+            "sample_item_id": anchor["s1"],
+        },
+    )
+    assert accepted.status_code == 202, accepted.text
+    assert launched[0]["measured_sample_item_id"] == anchor["s1"]
+
+
+async def test_the_curate_task_passes_the_measured_sample_on(anchor, monkeypatch):
+    seen = {}
+
+    async def fake_run(*args, **kwargs):
+        seen.update(kwargs)
+        return {
+            "formula": "C7H14O7",
+            "samples_measured": 0,
+            "members_repointed": 0,
+            "samples_failed": 0,
+        }
+
+    monkeypatch.setattr(batch_curation, "run_batch_peak_curation", fake_run)
+    await batch_curation.curate_batch_peak(
+        anchor["batch_id"],
+        anchor["batch_peak_id"],
+        anchor["other"],
+        measured_sample_item_id=anchor["s1"],
+    )
+    assert seen["measured_sample_item_id"] == anchor["s1"]
+
+
 # --- an isotope line's identity ------------------------------------------------
 #
 # One run reads glucose's M0 at 181.0707 and its 13C line at 182.0741, so the
@@ -717,6 +1077,29 @@ async def test_the_task_refuses_an_isotope_line_and_writes_no_pin(
     assert stubbed_scorer == []
     after = await _anchor_row(async_session_factory, line.batch_peak_id)
     assert manual_pin_of(after) is None
+
+
+async def test_the_measurement_says_an_isotope_lines_identity_is_refused(
+    async_session_factory, guest_client, line_batch, stubbed_scorer, assignment_enabled
+):
+    line = line_batch["line"]
+    [sample_item_id] = list(
+        (await _members(async_session_factory, line.batch_peak_id)).keys()
+    )
+    response = await guest_client.get(
+        f"/api/batch-peaks/batch/{line_batch['batch_id']}/measure-candidate",
+        params={
+            "batch_peak_id": line.batch_peak_id,
+            "candidate": line_batch["line_entry"],
+            "sample_item_id": sample_item_id,
+        },
+    )
+    assert response.status_code == 200, response.text
+    [entry] = response.json()["data"]
+    assert entry["takes_member"] is False
+    m0 = line_batch["m0"]
+    assert f"('{m0.batch_peak_id}')" in entry["blocked_reason"]
+    assert stubbed_scorer == []
 
 
 async def test_a_batch_peak_of_another_mode_is_not_the_lines_parent(

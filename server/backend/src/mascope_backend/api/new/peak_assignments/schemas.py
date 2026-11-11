@@ -1177,6 +1177,70 @@ class CurateBatchPeakBody(BaseModel):
             "and this request landing."
         ),
     )
+    sample_item_id: str | None = Field(
+        None,
+        description=(
+            "The sample the identity was measured on before the pin "
+            "(`measure-candidate`). Measured there again and recorded on the pin "
+            "as `provenance.manual.measured`; none recorded when left out."
+        ),
+    )
+
+
+class BatchPeakCandidateReading(BaseModel):
+    """What a sample's member of a batch peak reads now."""
+
+    assigned_formula: str | None = None
+    ion_formula: str | None = None
+    ionization_mechanism_id: str | None = None
+    fit_score: float | None = None
+    #: `fit x plausibility`, the currency the tier is banded on.
+    evidence: float | None = None
+    tier: AssignmentTier | None = None
+
+
+class BatchPeakCandidateMeasurementRecord(BaseModel):
+    """One of a batch peak's identities measured on one sample's member before
+    it is pinned: what the pin would write there, beside what it reads now.
+
+    Session data, never written onto the ledger; a pin made from this sample
+    records the same measurement under `provenance.manual.measured`.
+    """
+
+    batch_peak_id: str
+    sample_item_id: str
+    sample_peak_id: str
+    #: The registry index measured, as `curate` names it.
+    candidate: int
+    assigned_formula: str | None = None
+    ion_formula: str | None = None
+    ionization_mechanism_id: str | None = None
+    #: Seven Golden Rules plausibility, a pure function of the formula.
+    plausibility: float | None = None
+    #: The ion's fit, the evidence and the tier a pin writes on the member;
+    #: absent when the envelope does not reach the member's peak.
+    fit_score: float | None = None
+    evidence: float | None = None
+    tier: AssignmentTier | None = None
+    mz_error_ppm: float | None = None
+    abundance_error: float | None = None
+    #: Every isotopologue the ion predicts, each with the peak of this sample
+    #: it paired to (absent when the spectrum holds none there).
+    lines: list[MeasuredIsotopologueRecord] = []
+    lines_found: int = 0
+    #: Whether a pin re-points this member; False keeps what it reads.
+    takes_member: bool = False
+    blocked_reason: str | None = None
+    current: BatchPeakCandidateReading
+
+
+class BatchPeakCandidateMeasurementResponse(BaseModel):
+    """A batch peak identity measured on one sample (one entry)."""
+
+    status: str = "success"
+    message: str
+    results: int
+    data: list[BatchPeakCandidateMeasurementRecord]
 
 
 class ReleaseBatchPeakCurationBody(BaseModel):

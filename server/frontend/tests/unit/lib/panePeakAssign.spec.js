@@ -21,6 +21,7 @@ const verify = vi.fn(() => Promise.resolve(null))
 const curate = vi.fn(() => Promise.resolve(null))
 const loadAltScores = vi.fn(() => Promise.resolve([]))
 const loadEvidence = vi.fn(() => Promise.resolve(null))
+const loadCandidateMeasure = vi.fn(() => Promise.resolve(null))
 const loadDetail = vi.fn(() => Promise.resolve())
 const peakFocus = vi.fn()
 
@@ -51,6 +52,10 @@ let evidenceKey
 let measuringNow
 // The deployment's ionization mechanisms, which name an alternative's channel.
 let mechanisms
+// A derived row's alternatives measured on this sample, keyed as the store keys
+// them (`<row id>#<candidate>`), and the keys still in flight.
+let candidateMeasures
+let candidateMeasuring
 
 const helpStub = {
   set: vi.fn(),
@@ -65,6 +70,7 @@ function makeApp() {
   return {
     data: {
       sample: { focusedId: 'si-1' },
+      batch: { focusedId: 'sb-1' },
       // `focused` is a getter over a ref so the pane's computeds actually
       // re-evaluate when a test moves the focus after mounting; a plain value
       // would be snapshotted at setup and no watcher would ever fire.
@@ -105,6 +111,13 @@ function makeApp() {
           evidenceOf: (id) => (id != null && id === evidenceKey ? evidenceRecord : null),
           evidencePending: () => measuringNow,
           loadEvidence,
+          candidateMeasureKey: (row, candidate) =>
+            row?.peak_assignment_id != null && candidate != null
+              ? `${row.peak_assignment_id}#${candidate}`
+              : null,
+          candidateMeasureOf: (key) => (key != null ? (candidateMeasures.get(key) ?? null) : null),
+          candidateMeasurePending: (key) => key != null && candidateMeasuring.has(key),
+          loadCandidateMeasure,
           curate
         },
         verification: { forAssignment: () => verdictRecord, verify },
@@ -277,6 +290,9 @@ beforeEach(() => {
   evidenceKey = null
   measuringNow = false
   mechanisms = []
+  candidateMeasures = new Map()
+  candidateMeasuring = new Set()
+  loadCandidateMeasure.mockClear()
 })
 afterEach(() => vi.clearAllMocks())
 
@@ -2439,8 +2455,111 @@ describe('PanePeakAssign batch curation on a derived row', () => {
     expect(batchCurate).toHaveBeenCalledWith({
       batch_peak_id: 'bp-1',
       candidate: 1,
-      expected_formula: 'C6H12O6'
+      expected_formula: 'C6H12O6',
+      // The sample it was measured on, so the pin records that measurement.
+      sample_item_id: 'si-1'
     })
+  })
+
+  // Step 3.4c: the identity is measured on this sample before it is pinned.
+  const MEASURED = {
+    batch_peak_id: 'bp-1',
+    sample_item_id: 'si-1',
+    sample_peak_id: 'p-1',
+    candidate: 1,
+    assigned_formula: 'C7H14O7',
+    plausibility: 0.7,
+    fit_score: 0.81,
+    evidence: 0.567,
+    tier: 'candidate',
+    mz_error_ppm: 0.9,
+    lines: [
+      { isotope_label: 'M0', sample_peak_id: 'p-1' },
+      { isotope_label: 'M+1', sample_peak_id: 'p-2' },
+      { isotope_label: 'M+2', sample_peak_id: null }
+    ],
+    lines_found: 2,
+    takes_member: true,
+    blocked_reason: null,
+    current: { assigned_formula: 'C6H12O6', fit_score: 0.95, evidence: 0.9, tier: 'assigned' }
+  }
+
+  it('asks for each alternative to be measured on this sample', async () => {
+    focusedAssignment.sample_item_id = 'si-1'
+    await mountPane()
+    await flushPromises()
+
+    expect(loadCandidateMeasure).toHaveBeenCalledTimes(1)
+    expect(loadCandidateMeasure).toHaveBeenCalledWith('sb-1', focusedAssignment, 1)
+  })
+
+  it('measures nothing on a run-backed row', async () => {
+    runRecord = { engine: 'mascope' }
+    await mountPane()
+    await flushPromises()
+
+    expect(loadCandidateMeasure).not.toHaveBeenCalled()
+  })
+
+  it('shows the fit, tier and lines the pin would write, beside the current reading', async () => {
+    candidateMeasures.set('pa-1#1', MEASURED)
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    const alt = wrapper.find('.alt')
+    expect(alt.find('.s').text()).toMatch(/fit 81%\s*·\s*0\.90 ppm\s*·\s*candidate$/)
+    const tooltip = alt.attributes('data-tooltip')
+    expect(tooltip).toContain('fit: 81%')
+    expect(tooltip).toContain('plausibility: 70%')
+    expect(tooltip).toContain('evidence: 57%')
+    expect(tooltip).toContain('tier if pinned: Candidate')
+    expect(tooltip).toContain('lines in this spectrum: 2 of 3 lines (M0, M+1)')
+    expect(tooltip).toContain('this sample now: C6H12O6, fit 95%, evidence 90%, assigned')
+    expect(wrapper.text()).toContain(
+      'beside what it reads now: C6H12O6, fit 95%, evidence 90%, assigned'
+    )
+  })
+
+  it('says so when the pin would not reach this sample', async () => {
+    candidateMeasures.set('pa-1#1', {
+      ...MEASURED,
+      fit_score: null,
+      evidence: null,
+      tier: null,
+      mz_error_ppm: null,
+      takes_member: false,
+      blocked_reason: "the ion's envelope does not reach this sample's peak"
+    })
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    const alt = wrapper.find('.alt')
+    expect(alt.find('.alt-unreached').text()).toBe('not reached here')
+    const tooltip = alt.attributes('data-tooltip')
+    expect(tooltip).toContain('fit: — none on this peak')
+    expect(tooltip).toContain("if pinned: the ion's envelope does not reach this sample's peak")
+    expect(tooltip).not.toContain('tier if pinned')
+  })
+
+  it('reads measuring while the measurement is in flight', async () => {
+    candidateMeasuring.add('pa-1#1')
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(wrapper.find('.alt .scoring').text()).toContain('measuring')
+    expect(wrapper.find('.alt').attributes('data-tooltip')).toContain('— measuring')
+  })
+
+  it('shows on the pin what was measured before it', async () => {
+    detailRecord.provenance.manual = {
+      action: 'promote_identity',
+      candidate: 1,
+      formula: 'C7H14O7',
+      previous: { consensus_formula: 'C6H12O6' },
+      measured: MEASURED
+    }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.pin-measured').text()).toBe(
+      'Measured before the pin: fit 81%, candidate, 2 of 3 lines.'
+    )
   })
 
   it('shows the batch curation note and releases it from there', async () => {

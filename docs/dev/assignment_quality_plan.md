@@ -81,7 +81,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 3.3f - a list is read through the channels the run opened | #2220 | 2026-09-26 | built: Stage A reads the lists through the channels the run opened; pass 11 measures it |
 | 3.4 - an opportunistic channel needs a second channel | #3019 |  | built: a search row through a secondary channel reaches assigned only on a list naming its neutral or the neutral through a mode channel; its isotopologue is recorded and no longer lifts the cap; a list's reading through an opened channel keeps 3.3f's rule; tiering rule set 11; MAS-56 |
 | 3.4b - one peak is not enough | #2212 | 2026-09-25 | measured (pass 9): G12 at 0 on every set |
-| 3.4c - measure an alternative before committing | - |  | planned, from the plan owner's reading of 2026-09-25: a close alternative shows its evidence first |
+| 3.4c - measure an alternative before committing | - |  | built: a derived row's alternative (a batch peak's identity) is measured on the sample's member before *use this* pins it, through the propagation's own scoring (`batch_untargeted.measured_reading`), so it shows the fit, m/z error, lines found, plausibility, evidence and the tier the pin writes there, beside what the member reads now; nothing is written; the pin records the measurement under `provenance.manual.measured`; the run-backed shortlist kept its on-demand scoring (`alternatives_scoring`); no tier moves; MAS-58 |
 | 3.4d - the columns of a tiering still in progress | #2223 | 2026-09-26 | built: the listed-as column, the probability hidden while provisional, the reagent anchor by majority |
 | 3.4e - an expected line that is absent | - |  | built: a committed monoisotopic row whose predicted envelope holds a line the fit's detectability gate asks for (the file's curve threshold, else an expected S/N of 3) and the spectrum lacks is capped at candidate with the reason `absent_line`, every source asked (a hand assignment when it is made, at the gate its run recorded), no second channel lifting it; a window only artifact rows hold, or a line beyond the peak list, is untestable; on a TOF a bromine or chlorine reading must show its own M+2 line; each row records its asked lines (`predicted_envelope`), which the inspector lists and the chart draws as empty circles; tiering rule set 11; the next pass measures G13 |
 | 3.4f - a peak that is not separated | - |  | built: a committed monoisotopic row whose peak another peak of the spectrum sits closer to than the bimodality criterion for their height ratio (0.85 widths at equal heights, 1.65 at 1:50, the width from the file's resolving power at the peak's m/z) is capped at candidate with the reason `unresolved_peak`, naming the nearest such neighbour; the row's own envelope lines are no neighbours, nor is a peak under 0.3 of the row's peak's height, so the taller of a pair is asked only beside a neighbour at least 0.3 of its height (decided 2026-11-10); the one escape is another channel committing the neutral on a separated peak (`cross_channel.separated_through`), no list or series; each row records `peak_separation`; the inspector links the neighbour; tiering rule set 13; read on E, F and J before it was fixed (below); the next pass measures G14 |
@@ -451,6 +451,25 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
   measured alternative reads the same numbers the assignment writes when it
   is taken.
 - **Size.** M.
+- **As built (MAS-58).** The alternative that showed *not measured* is a
+  derived row's: one of the batch peak's identities, which *use this* pins
+  batch-wide and the propagation then measures in every sample. So the read
+  route is the batch peak's (`GET /batch-peaks/batch/{id}/measure-candidate`,
+  `batch_curation.measure_batch_peak_candidate`) and measures one identity on
+  one sample's member with the propagation's own scoring
+  (`batch_untargeted.score_in_sample` and `measured_reading`, which the
+  propagation now calls too): the fit, the evidence and the tier banded under
+  the default configuration's thresholds, as the pin writes them, with no
+  tiering rule, since the pin applies none either. Beside them the m/z
+  error, the envelope's lines with the peaks they paired to, and what the
+  member reads now. An identity the pin would refuse (an isotope line) or
+  one the member already carries is answered with the reason, unmeasured.
+  The inspector measures each such alternative on focus, one request at a
+  time, and *use this* sends the sample, which the task measures again and
+  records on the pin (`provenance.manual.measured`); the pin's note shows
+  it. A run-backed row's formula-only shortlist keeps its own on-demand
+  scoring (`alternatives_scoring`); a runner-up the run competed carries
+  its numbers already.
 
 ### 3.4e An expected line that is absent
 

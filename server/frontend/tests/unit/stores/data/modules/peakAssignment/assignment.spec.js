@@ -18,8 +18,9 @@ vi.mock('@/stores/data/modules/sample', () => ({ useSample: () => ({ focusedId: 
 
 vi.mock('@/stores/auth', () => ({ useAuth: () => ({ user: {}, onLogin: vi.fn() }) }))
 
-const { familyM0, linesByOwner, tierHistogram } =
+const { candidateMeasureKey, familyM0, fetchCandidateMeasure, linesByOwner, tierHistogram } =
   await import('@/stores/data/modules/peakAssignment/assignment')
+const { api } = await import('@/api')
 
 const M0 = {
   peak_assignment_id: 'pa-m0',
@@ -179,5 +180,50 @@ describe('tierHistogram', () => {
       artifact: 0
     })
     expect(tierHistogram(null).reagent).toBe(0)
+  })
+})
+
+// Step 3.4c: a derived row's alternative is measured on this sample before a pin.
+describe('fetchCandidateMeasure', () => {
+  it('asks the batch peak route for one identity on one sample', async () => {
+    const entry = { candidate: 2, fit_score: 0.8 }
+    api.http.get.mockResolvedValueOnce({ data: { data: [entry] } })
+
+    const result = await fetchCandidateMeasure({
+      sample_batch_id: 'sb-1',
+      sample_item_id: 'si-1',
+      batch_peak_id: 'bp-1',
+      candidate: 2
+    })
+
+    expect(result).toBe(entry)
+    expect(api.http.get).toHaveBeenCalledWith('/batch-peaks/batch/sb-1/measure-candidate', {
+      params: { batch_peak_id: 'bp-1', candidate: 2, sample_item_id: 'si-1' },
+      type: 'measure_batch_peak_candidate'
+    })
+  })
+
+  it('answers null for an empty reply', async () => {
+    api.http.get.mockResolvedValueOnce({ data: { data: [] } })
+    expect(
+      await fetchCandidateMeasure({
+        sample_batch_id: 'sb-1',
+        sample_item_id: 'si-1',
+        batch_peak_id: 'bp-1',
+        candidate: 0
+      })
+    ).toBeNull()
+  })
+})
+
+describe('candidateMeasureKey', () => {
+  it('keys a row and a registry index, index 0 included', () => {
+    expect(candidateMeasureKey({ peak_assignment_id: 'fold-bp' }, 0)).toBe('fold-bp#0')
+    expect(candidateMeasureKey({ peak_assignment_id: 'fold-bp' }, 3)).toBe('fold-bp#3')
+  })
+
+  it('has no key without a row or a candidate', () => {
+    expect(candidateMeasureKey(null, 1)).toBeNull()
+    expect(candidateMeasureKey({ peak_assignment_id: 'fold-bp' }, null)).toBeNull()
   })
 })

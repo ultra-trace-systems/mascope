@@ -19,6 +19,7 @@ from mascope_backend.api.new.peak_assignments.batch_coherence import (
 )
 from mascope_backend.api.new.peak_assignments.batch_curation import (
     curate_batch_peak,
+    measure_batch_peak_candidate,
     release_batch_peak_curation,
     validate_curation,
 )
@@ -69,6 +70,7 @@ from mascope_backend.api.new.peak_assignments.sample_status import (
 from mascope_backend.api.new.peak_assignments.schemas import (
     AssignmentTier,
     AssignSamplePeaksBody,
+    BatchPeakCandidateMeasurementResponse,
     BatchPeakRunsResponse,
     BatchPeakVerificationsResponse,
     BatchSampleAssignmentStatusResponse,
@@ -711,8 +713,13 @@ async def curate_batch_peak_route(
     Runs as a background task on the ``curate_batch_peak`` channel and emits
     ``peak_assignment_reload`` on completion.
 
+    ``sample_item_id`` names the sample the identity was measured on before
+    the pin (``measure-candidate``); the task measures it there again and
+    records the result on the pin, ``provenance.manual.measured``.
+
     :param sample_batch_id: The unique identifier of the sample batch.
-    :param body: The batch peak, the identity to pin and the formula seen.
+    :param body: The batch peak, the identity to pin, the formula seen and the
+        sample it was measured on.
     :param user: The current authenticated user. Requires workspace editor role.
     :return: Acknowledgement message with the background process id.
     """
@@ -732,6 +739,7 @@ async def curate_batch_peak_route(
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
+        measured_sample_item_id=body.sample_item_id,
     )
     return {
         "message": (
@@ -740,6 +748,46 @@ async def curate_batch_peak_route(
         ),
         "process_id": process_id,
     }
+
+
+@batch_peaks_router.get(
+    "/batch/{sample_batch_id}/measure-candidate",
+    response_model=BatchPeakCandidateMeasurementResponse,
+    dependencies=[Depends(require_peak_assignment_enabled)],
+)
+@api_route()
+async def measure_batch_peak_candidate_route(
+    sample_batch_id: str,
+    batch_peak_id: str,
+    sample_item_id: str,
+    candidate: int = Query(ge=0),
+    user: User = Depends(current_active_user),
+) -> BatchPeakCandidateMeasurementResponse:
+    """Measure one of a batch peak's identities on one sample before it is
+    pinned: the fit, the envelope's lines and which the spectrum holds, the
+    plausibility, the evidence and the tier a pin would write on the sample's
+    member, beside what the member reads now. Nothing is written.
+
+    The measurement is the one ``curate`` makes in every sample, so the numbers
+    are the ones the pin then writes on this member. An unknown index is a 422;
+    a sample holding no member of the batch peak a 404.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param batch_peak_id: The batch peak (anchor).
+    :param sample_item_id: The sample whose member to measure.
+    :param candidate: Index into the batch peak's identity registry.
+    :param user: The current authenticated user. Requires workspace guest role.
+    :return: One entry, measured or blocked with a reason.
+    """
+    await check_batch_access(sample_batch_id, user, "guest")
+    await check_sample_access(sample_item_id, user, "guest")
+    result = await measure_batch_peak_candidate(
+        sample_batch_id=sample_batch_id,
+        batch_peak_id=batch_peak_id,
+        candidate=candidate,
+        sample_item_id=sample_item_id,
+    )
+    return BatchPeakCandidateMeasurementResponse.model_validate(result)
 
 
 @batch_peaks_router.post(

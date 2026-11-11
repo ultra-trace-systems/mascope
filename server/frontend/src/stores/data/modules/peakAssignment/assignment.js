@@ -161,6 +161,36 @@ export function tierHistogram(records) {
 // the join key back to the peak list). Exposes byPeakId (consumed by the peak
 // ledger and the annotated spectrum) and a tier histogram. See
 // docs/dev/peak_assignment_frontend.md.
+/**
+ * One of a batch peak's identities measured on a sample's member before "use
+ * this" pins it (design note step 3.4c): the fit, the lines, the plausibility
+ * and the tier the pin would write there, beside what the member reads now.
+ * Nothing is written on the server.
+ *
+ * @param {{sample_batch_id: string, sample_item_id: string, batch_peak_id: string, candidate: number}} request
+ * @returns {Promise<object|null>} The one measurement entry.
+ */
+export async function fetchCandidateMeasure(request) {
+  const response = await api.http.get(
+    `/batch-peaks/batch/${request.sample_batch_id}/measure-candidate`,
+    {
+      params: {
+        batch_peak_id: request.batch_peak_id,
+        candidate: request.candidate,
+        sample_item_id: request.sample_item_id
+      },
+      type: 'measure_batch_peak_candidate'
+    }
+  )
+  return response?.data?.data?.[0] ?? null
+}
+
+/** The cache key of a derived row's alternative `candidate`; null for none. */
+export const candidateMeasureKey = (row, candidate) =>
+  row?.peak_assignment_id != null && candidate != null
+    ? `${row.peak_assignment_id}#${candidate}`
+    : null
+
 export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
   const name = 'peak_assignment'
   const key = 'sample_peak_id'
@@ -241,6 +271,20 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
     return response?.data?.data?.[0] ?? null
   })
 
+  // One of a batch peak's identities measured on this sample's member before
+  // "use this" pins it batch-wide (step 3.4c), keyed by `candidateMeasureKey`
+  // so one derived row's alternatives are cached one by one. Session data, as
+  // above.
+  const candidateMeasure = createComputedLoader(fetchCandidateMeasure)
+  const loadCandidateMeasure = (sampleBatchId, row, candidate) =>
+    candidateMeasure.load({
+      peak_assignment_id: candidateMeasureKey(row, candidate),
+      sample_batch_id: sampleBatchId,
+      sample_item_id: row.sample_item_id,
+      batch_peak_id: row.batch_peak_id,
+      candidate
+    })
+
   // A reload (sample/run switch, re-run) replaces the rows and their
   // assignment ids, so any cached detail is stale with them - and so are the
   // scores, which are keyed on the same ids and measured against the
@@ -249,6 +293,9 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
     detail.clear()
     altScores.clear()
     evidence.clear()
+    // A pin re-points members and rewrites the registry, so what an identity
+    // measured before it is stale with the rows.
+    candidateMeasure.clear()
   })
 
   // Run metadata for the current view. The shared `read` handler unwraps the
@@ -350,6 +397,10 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
     loadAltScores: altScores.load,
     evidenceOf: evidence.resultOf,
     evidencePending: evidence.pendingFor,
-    loadEvidence: evidence.load
+    loadEvidence: evidence.load,
+    candidateMeasureKey,
+    candidateMeasureOf: candidateMeasure.resultOf,
+    candidateMeasurePending: candidateMeasure.pendingFor,
+    loadCandidateMeasure
   }
 })
