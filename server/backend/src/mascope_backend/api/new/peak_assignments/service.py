@@ -1488,7 +1488,9 @@ async def _live_label_rows(session) -> list:
     run's row: ``(verdict, evidence, evidence_level, filename, run config, mode
     id, mode version)`` per label. Read by :func:`recalibrate_instrument`, which
     fits on it, and by :func:`get_verification_queue`, which counts the labels
-    near a row's evidence, so the queue ranks by the labels the fit will see.
+    near a row's evidence, so the queue ranks by the labels the fit reads (it
+    counts them per instrument class and reagent profile; the fit splits them
+    by instrument class only).
     """
     return (
         await session.execute(
@@ -1681,8 +1683,9 @@ async def get_verification_queue(
     differently, marked stale. No entry carries ``p_correct`` (guardrail 5).
 
     The run is the one the ledger read serves (:func:`_ledger_run`). A decoy
-    run's rows take no verdict and a batch-derived ledger is no run, so both
-    answer an empty queue.
+    run's rows take no verdict, a verdict on an imported run's row never
+    reaches the refit (:func:`_live_label_rows`), and a batch-derived ledger is
+    no run, so all three answer an empty queue.
 
     :param sample_item_id: The sample.
     :param peak_assignment_run_id: The run; defaults to the latest completed one.
@@ -1712,16 +1715,22 @@ async def get_verification_queue(
         )
     async with async_session() as session:
         run = await _ledger_run(session, sample, peak_assignment_run_id)
-        if run is None or run.decoy is not None:
+        if run is None:
             return envelope(
                 [],
-                run.peak_assignment_run_id if run is not None else None,
-                (
-                    "A decoy run's rows take no verdict"
-                    if run is not None
-                    else f"No completed peak assignment runs exist for sample "
-                    f"'{sample.sample_item_name}'"
-                ),
+                None,
+                f"No completed peak assignment runs exist for sample "
+                f"'{sample.sample_item_name}'",
+            )
+        if run.decoy is not None:
+            return envelope(
+                [], run.peak_assignment_run_id, "A decoy run's rows take no verdict"
+            )
+        if run.engine != IN_APP_ENGINE:
+            return envelope(
+                [],
+                run.peak_assignment_run_id,
+                "An imported run's verdicts do not reach the confidence curve",
             )
         run_id = run.peak_assignment_run_id
         rows = (
@@ -1757,8 +1766,9 @@ async def get_verification_queue(
         run_created = run.peak_assignment_run_utc_created
         profile = _run_profile(run.config)
 
-    # The labels the calibration of this sample's curve would be fit on: its
-    # instrument class, and the run's reagent profile.
+    # The labels near a row are counted per instrument class and reagent
+    # profile, the run's. The curve itself is fit per instrument class over
+    # every profile (recalibrate_instrument); a per-profile fit is MAS-63's.
     inst = _instrument_class(sample.filename)
     label_evidence = [
         evidence

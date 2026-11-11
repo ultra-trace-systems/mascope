@@ -12,14 +12,19 @@ list, for one run:
 - **stale** rows first: a live verdict this run read differently. The verdict
   was recorded before the run, and the run either commits another formula or
   mechanism on the judged peak (``reassigned``) or the same one at another
-  evidence (``rescored``). The verdict is kept as it is - it is pinned to the
-  score the user judged, and stays a label at that score - and the row is
-  offered for a verdict on what the run reads now;
+  evidence (``rescored``). The verdict is not invalidated - it is pinned to
+  the score the user judged, and stays a label at that score until the row is
+  judged again - and the row is offered for a verdict on what the run reads
+  now. A new verdict on a rescored row is on the same identity, so it
+  supersedes the old one; on a reassigned row it judges another identity, and
+  the old verdict stays;
 - **band-edge** rows: no live verdict, evidence within :data:`EDGE_WINDOW` of
   a band edge, ranked by how close they sit to it and by how few labels the
   instrument and profile hold near that evidence already;
 - **spot checks**: a seeded random draw from the rows outside the window,
-  every :data:`SPOT_CHECK_EVERY`-th place.
+  every :data:`SPOT_CHECK_EVERY`-th place. Each row's place in the draw is a
+  hash of the run and the row, so a verdict on one spot check leaves the
+  others where they were.
 
 The queue never carries ``p_correct`` (guardrail 5): a verdict is a judgment
 of the data, and the calibrated number beside it would be its anchor. Nor the
@@ -33,8 +38,8 @@ rows, the live verdicts and the label pool and calls :func:`rank_queue`.
 from __future__ import annotations
 
 import bisect
+import hashlib
 import math
-import random
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any, Iterable, Mapping, Sequence
@@ -252,6 +257,12 @@ def stale_mark(
     }
 
 
+def spot_check_key(seed: str, peak_assignment_id: str) -> str:
+    """A row's place in the spot checks' draw: stable for the row within one
+    seed, whatever else the draw holds."""
+    return hashlib.sha256(f"{seed}:{peak_assignment_id}".encode()).hexdigest()
+
+
 def _interleave(edge: list, spots: list, every: int) -> list:
     """The band-edge rows with a spot check at every ``every``-th place, and
     whatever is left of either after the other runs out."""
@@ -296,7 +307,9 @@ def rank_queue(
         ``verified_utc``.
     :param run_created: When the run was made.
     :param seed: Seeds the spot checks' draw, so one run's queue reads the same
-        on every load (the run id).
+        on every load (the run id). The draw takes the rows outside the window
+        with the lowest :func:`spot_check_key`: a verdict removes only its own
+        row, and a change in the number drawn moves only the end of it.
     :return: Stale rows first, then the band-edge rows with the spot checks
         interleaved.
     """
@@ -346,12 +359,12 @@ def rank_queue(
 
     stale.sort(key=lambda item: item[:2])
     edge.sort(key=lambda item: item[:3])
-    outside.sort(key=lambda item: item.sample_peak_id)
+    outside.sort(key=lambda item: spot_check_key(seed, item.peak_assignment_id))
     n_spots = min(
         len(outside),
         max(min_spot_checks, math.ceil(len(edge) / max(1, spot_check_every - 1))),
     )
-    spots = random.Random(seed).sample(outside, n_spots)
+    spots = outside[:n_spots]
     return [item[-1] for item in stale] + _interleave(
         [item[-1] for item in edge], spots, spot_check_every
     )
