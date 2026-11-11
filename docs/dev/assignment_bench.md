@@ -4,7 +4,7 @@
 
 - **Status:** design
 - **As of:** 2026-11-11
-- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, milestone 6: MAS-64, MAS-835 to MAS-841)
+- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, milestone 6: MAS-64, MAS-835 to MAS-841, MAS-849)
 - **What:** One command that runs a branch's in-app assignment engine beside peaky at a pinned release on fixed sample sets, prints the plan's metrics as a card, and posts it where the agent that asked can read it.
 
 ## 1. Why
@@ -88,19 +88,35 @@ one set that can also run in CI), and this note. The host's folder layout,
 its env file and the private manifest are described in the testbed notes
 outside the repository, as the gate's are.
 
+Which box is open inside MAS-835 since the corpus review of 2026-11-11.
+The agent box holds everything the bench needs and more: the canonical
+fleet corpus store (the LAN host is its nightly mirror), the demo bundles,
+the de-identified testbed copy with the gate sets, and the agents
+themselves. A bench there is a command in the worker's own session, with
+no trigger, no second `gh` login and no route between the boxes; the LAN
+host runs the same command for the plan owner off the mirror. The review
+recommends the agent box; the note's sections read for either until the
+call is written.
+
 ## 4. The sets
 
-A decision for the plan owner (MAS-836) with three options: copy the gate
-sets A to L from the testbed, draw sets from the corpus mirror and the
-demo dataset, or both. The leaning is both, starting from the corpus: its
-files are already on the host and already de-identified, its seed of
-modes, mechanisms and collections loads through the API, and `corpus
-checkout` names a file by hash. One set per chemistry and instrument class
-the plan judges (uronium Orbitrap sparse and dense, labelled nitrate,
-bromide Orbitrap, bromide and nitrate TOF, the charge-transfer source),
-plus the demo dataset. The gate sets stay the plan owner's gate on the
-testbed until one parallel pass shows the bench's sets read the same way;
-then the card is the plan's measurement.
+Decided 2026-11-11 (MAS-836): the bench starts with the demo dataset
+alone, the published bundle at the CLI's default version, named in the
+manifest by bundle version and sample name, nothing copied; its manifest
+is public, in the repository, and it is the set that also runs in CI. The
+other sets are a separate task (6.8, MAS-849): the plan owner names the
+files, one set per chemistry and instrument class the plan judges
+(uronium Orbitrap sparse and dense, labelled nitrate, bromide Orbitrap,
+bromide and nitrate TOF, the charge-transfer source) drawn from the fleet
+corpus, and the gate sets A to L where the corpus lacks them, which the
+de-identified testbed copy on the agent box already holds. A set's files
+live in the fleet corpus store, canonical on the agent box and mirrored
+nightly to the LAN host, so they are on both boxes with no copy step of
+the bench's own; a file not yet in the store enters through the corpus
+inbox and the owner's promote, and the private manifest names it by
+object hash. The gate sets stay the plan owner's gate on the testbed until
+one parallel pass shows the bench's sets read the same way; then the card
+is the plan's measurement.
 
 The manifest (step 6.2) names, per set: its letter, its files, its
 ionization mode and profile, the target collections and reference lists to
@@ -171,10 +187,11 @@ if the host becomes an agent box.
 | 6.5 | MAS-840 | `bench run <ref>`: build, run, compare, card, diff |
 | 6.6 | MAS-841 | the watcher, the PR comment, the nightly baseline |
 | 6.7 | MAS-839 | the agents' skills ask for and read the card (the ops repository) |
+| 6.8 | MAS-849 | more sets after the demo set: from the fleet corpus and the gate sets (the owner's picks) |
 
-6.4 starts now against the testbed's existing runs; 6.2 waits for the sets
-decision, 6.3 for 6.2, 6.5 for all three, 6.6 for the trigger decision
-and 6.5. The plan's steps that need a bench reading (4.3, 4.7, 4.8, 4.10,
+6.4 started on 2026-11-11 against the testbed's existing runs; 6.2 starts
+on the demo manifest, 6.3 waits for 6.2, 6.5 for all three, 6.6 for the
+trigger decision and 6.5, 6.8 for 6.2 and the owner's picks. The plan's steps that need a bench reading (4.3, 4.7, 4.8, 4.10,
 4.13, 4.14, 4.15, 4.18, 4.2d, 4.20) are blocked on 6.5 or 6.6 and start
 when it exists.
 
@@ -206,12 +223,13 @@ to run the commands against any instance and how to ask for a card.
 
 ## 11. Open
 
-- MAS-835 and MAS-836, above.
+- MAS-835, above, now also the box: the LAN host as first written, or the
+  agent box the review recommends. MAS-836 is taken.
 - Whether the pinned peaky publishes every tier (section 5); an ask of
   peaky's owner through 5.1 if not.
-- Whether the certified cylinder sets are in the corpus mirror (decision
-  24's ground truth); if not, they are the first files copied under
-  option (a) of MAS-836.
+- Whether the certified cylinder sets are in the corpus store (decision
+  24's ground truth); if not, they are the first sets taken from the
+  testbed copy under 6.8.
 
 ## Related documents
 
