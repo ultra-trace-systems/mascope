@@ -28,6 +28,12 @@ vi.mock('@/stores/data/modules/sample', () => ({
 
 vi.mock('@/stores/auth', () => ({ useAuth: () => ({ user: {}, onLogin: vi.fn() }) }))
 
+// The verification queue, which a verdict reloads: its own spec covers the read.
+const queueLoad = vi.fn()
+vi.mock('@/stores/data/modules/peakAssignment/queue', () => ({
+  usePeakAssignmentQueue: () => ({ load: queueLoad })
+}))
+
 // Stands in for the ledger store, holding whatever `ledger` currently maps. The
 // family resolution itself is the REAL one (imported past the mock): stubbing
 // m0Of as well would let this store and the rule it reads verdicts through
@@ -97,6 +103,17 @@ describe('peakAssignment verification store', () => {
 
     expect(saved).toEqual(VERDICT)
     expect(store.forAssignment(VERDICT)).toEqual(VERDICT)
+  })
+
+  // The judged row leaves the verification queue: the queue is read again.
+  it('reloads the verification queue once the verdict is saved', async () => {
+    post.mockResolvedValue({ data: [VERDICT] })
+    get.mockResolvedValue([VERDICT])
+
+    const store = usePeakAssignmentVerification()
+    await store.verify({ peak_assignment_id: 'a1', verdict: 'confirmed' })
+
+    expect(queueLoad).toHaveBeenCalledTimes(1)
   })
 
   // The badge is what the user reads the verdict off. If the refetch failed, the

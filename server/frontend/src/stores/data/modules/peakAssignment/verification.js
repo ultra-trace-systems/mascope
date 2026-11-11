@@ -7,6 +7,7 @@ import { peakAssignmentEnabled } from '@/lib/features'
 
 import { useSample } from '../sample'
 import { usePeakAssignment } from './assignment'
+import { usePeakAssignmentQueue } from './queue'
 
 // Assignment VERIFICATIONS (labelling) for the focused sample.
 //
@@ -109,6 +110,10 @@ export const usePeakAssignmentVerification = defineStore(
       // list and its own error surface by then.
       const outcome = await data.load('verification')
       if (outcome.error) throw outcome.error
+      // The verdict takes its row out of the verification queue. Not awaited
+      // into the outcome: the verdict is saved and shown either way, and a
+      // queue that failed to reload says so in its own pane.
+      usePeakAssignmentQueue().load('verification')
       return response?.data?.[0] ?? null
     }
 
