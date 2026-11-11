@@ -1150,20 +1150,25 @@ Click it and the table shows only those rows, in this order:
 
 1. **Judge again**: a verdict recorded before this run, on a peak the run reads
    differently. Either it now assigns another formula or mechanism there, or the same
-   one with other evidence. The verdict is kept as it was: it stays a label at the
-   score it was given. The row asks for a verdict on what the run reads now.
+   one with other evidence. The row asks for a verdict on what the run reads now. On
+   a row with other evidence, the old verdict counts at the score it was given until
+   the row is judged again; the new verdict then replaces it. On a row with another
+   formula or mechanism, the old verdict judged something else, and it stays.
 2. **Near a tier edge**: rows with no verdict whose evidence is within 0.1 of a band
    edge. The closest come first, and so do the rows where the instrument holds few
    verdicts at similar evidence (within 0.05). Those verdicts are counted for the
-   sample's instrument class and the run's reagent profile, the labels its curve is
-   fit from.
+   sample's instrument class and the run's reagent profile. The curve itself is fit
+   per instrument class, from the verdicts of every profile.
 3. **Spot check**: every fifth place is a row drawn at random from the rest. A
    ranking only finds what it looks for; a random draw guards its blind spots. The draw
-   is fixed per run, so the queue reads the same on every visit.
+   is fixed per run, so the queue reads the same on every visit, and a verdict on one
+   spot check leaves the others in place.
 
 A column shown only in the queue says which of the three a row is; hover it for the
 detail. A verdict takes its row out of the queue. While the queue is shown, a column
 sort is cleared, the tier chips still narrow it, and the verdict filter does not apply.
+A decoy run and an imported run have no queue: a decoy's rows take no verdict, and a
+verdict on an imported run's row does not reach the confidence curve.
 
 The queue never shows a probability, and in it the tier chip's hover leaves out the
 evidence as well: a number beside the row would become the anchor of the judgment, and
