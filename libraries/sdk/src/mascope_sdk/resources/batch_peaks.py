@@ -144,7 +144,10 @@ class BatchPeaksResource(BaseResource):
                  (pinned by hand for the whole batch),
                  ``reference_listing`` (what a reference list calls the
                  consensus formula where a member matched it from one:
-                 ``name``, ``source``, ``tags``, ``total``; null otherwise),
+                 ``name``, ``source``, ``tags``, ``total``, and under
+                 ``target`` the target compound a member was matched to, as
+                 :meth:`~mascope_sdk.resources.peak_assignments.PeakAssignmentsResource.get`
+                 gives it; null where neither names it),
                  ``engine_tier`` and ``engine_claim`` (what an importing
                  engine said of the consensus identity; null on every batch
                  peak no import gave a verdict for), ``series`` (the

@@ -448,9 +448,18 @@ class PeakAssignmentsResource(BaseResource):
                    the first compound's ``name``, the list it comes from
                    (``source``) and its ``inchikey``, the ``tags`` the lists
                    carry (``background``) and the ``total`` of names
-                   matched; null on a row no list
-                   names. The full list is ``provenance.reference_identities``
-                   in :meth:`detail`.
+                   matched. A row matched to a target compound carries what
+                   the compound declares under ``target``, a candidate as a
+                   list's name is: ``label`` (``"target"``), ``name``,
+                   ``inchikey`` and ``listed`` (whether an active list the
+                   server matches against carries the key; None where the
+                   compound declares none). A compound that declares
+                   neither a name nor a key adds no ``target``. A
+                   target row no list names has
+                   null list fields and a ``total`` of 0. Null on a row
+                   neither names. The full list is
+                   ``provenance.reference_identities`` in :meth:`detail`,
+                   whose ``reference_listing`` carries the same ``target``.
                  - ``target_compound_id``, ``target_ion_id`` (set for
                    database-sourced assignments)
                  - ``owner_peak_assignment_id`` (for isotope children, the
