@@ -1,7 +1,7 @@
 # The boundary between Mascope and peaky
 
 - **Status:** building
-- **As of:** 2026-11-05
+- **As of:** 2026-11-11
 - **Tracked in:** [Assignment truth corpus and bench](https://linear.app/ultra-trace/project/assignment-truth-corpus-and-bench-90d43812ff0f)
   and [Peaky, thinner: the research and reporting platform](https://linear.app/ultra-trace/project/peaky-thinner-the-research-and-reporting-platform-81db9b25bea2)
   (Linear, team Peaky, PKY-1 onward, filed from 2026-10-30); the Mascope-side
@@ -90,6 +90,12 @@ makes the export possible). And the gates G1 to G14, which count agreement and
 plausibility, gain precision and recall against truth. The vetting pass is the
 work of peaky's owner, because it is chemistry; the schema is agreed
 between the two owners before the scorer is written, and is not decided here.
+
+The engine-comparison bench of the plan's milestone 6
+([`assignment_bench.md`](assignment_bench.md)) is the other half of the
+same tooling: both engines run on demand on fixed sets on the LAN host,
+the plan's metrics as a card, posted on the PR that asked. The scorer's
+truth card joins that card when the baseline exists.
 
 ## 5. Keeping peaky useful
 

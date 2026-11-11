@@ -3,8 +3,8 @@
 # Closing the assignment quality gap: the work, step by step
 
 - **Status:** building
-- **As of:** 2026-11-05
-- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73, MAS-408 to MAS-410, MAS-443, MAS-568 to MAS-570, MAS-609, MAS-708 and MAS-709)
+- **As of:** 2026-11-11
+- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73, MAS-408 to MAS-410, MAS-443, MAS-568 to MAS-570, MAS-609, MAS-708, MAS-709, MAS-777 and MAS-823 to MAS-841)
 - **What:** The step-by-step plan closing the assignment quality gap: stages, gates, decisions and risks.
 
 ## Status
@@ -22,8 +22,10 @@ set 6) and, for the chamber dataset's sets G to J, the chemist's reading
 of 2026-09-24 (decision 21). Stage 4 starts with 4.1: it was pulled ahead
 of the stage 3 gate on 2026-10-30 (decision 33) and, until the truth
 corpus has a baseline, is judged as every stage so far, against the gate
-sets and the reference pinned at a release (decision 34, 2026-11-05). Of
-milestone 5, the
+sets and the reference pinned at a release (decision 34, 2026-11-05).
+Milestone 6 (2026-11-11) builds the bench that runs both engines on
+demand on the LAN host for the agents
+([`assignment_bench.md`](assignment_bench.md)). Of milestone 5, the
 reference's 0.10 review, step 5.5 is built (#2377), 5.2 is built and
 waits for its first reading, 5.3 is measured and the rest are planned; a readiness check against the reference's main on
 2026-10-22 (the last section of the review) found nothing new to bin and
@@ -206,7 +208,11 @@ justify.
   log in [`assignment_quality_plan_log.md`](assignment_quality_plan_log.md),
   which also holds the metrics and their stage targets in the table at its
   top. A step that moves a metric the wrong way is discussed before merge,
-  not merged on green CI alone.
+  not merged on green CI alone. Milestone 6 turns this pass into a
+  command: the bench ([`assignment_bench.md`](assignment_bench.md))
+  runs both engines on fixed sets on the LAN host at an agent's request
+  and posts the card; once its sets read like the gate sets, the card is
+  the measurement and this pass confirms it.
 - **The gate set.** Decision 6 widens it from the two uronium batches to
   every chemistry and instrument class the product is judged on, each as a
   representative sample set (five time-spaced samples plus the max-TIC one
@@ -1199,7 +1205,13 @@ who edits chemistry and stays last.
     sets, flat in every file, is its first target.
 - **Verify.** On the two 400-600-sample testbed batches; compare with
   peaky's pass-7 skips.
-- **Size.** M. Depends on 2.3 and 2.4.
+- **Size.** M. Depends on 2.3 and 2.4. Its nine riders are steps of their
+  own since decision MAS-777 (2026-11-10), 4.2b to 4.2j: persistence as
+  admission, the predicted satellites in the fold, the consensus
+  measurement, the flat series, the merged isotopologue rows, the batch
+  isotope checks as facts, known species pooled, the merge window from
+  the batch's scatter, the water ladder (Linear MAS-823 to MAS-831, each
+  with its brief), chained where two edit one function.
 - **As built (the co-variation reading; MAS-62).** The pure half is
   `mascope_tools.composition.coherence`: `batch_residuals` puts a
   partition's traces in log10, divides each spectrum by its summed reagent
@@ -1312,6 +1324,21 @@ who edits chemistry and stays last.
   number moves; searching them is a follow-up. The corroboration weights are
   keyed as before (pinned in `test_calibration_layer.py`).
 - **Size.** M.
+
+## Milestone 6 - the bench
+
+Mascope's assignment is developed in parallel with peaky until it
+reaches a stable state (agreed 2026-11-11), so the comparison that was a
+gate run a few times becomes a daily instrument, and the agents that
+build the steps must be able to ask for it. Milestone 6 builds that
+instrument: one command on the LAN host that runs a ref's in-app engine
+beside peaky at a pinned release on fixed sets, computes this plan's
+metrics as code, scrubs the card of anything that names a site, and
+posts it on the PR that asked. Its design is
+[`assignment_bench.md`](assignment_bench.md); its steps 6.0 to 6.7 are
+Linear MAS-64 (the gate card as code, formerly step 4.4) and MAS-835 to
+MAS-841. Two decisions open it: how an agent reaches the bench without a
+login to the host (MAS-835) and which sets it holds (MAS-836).
 
 ## The reference's 0.10 line, reviewed (2026-10-13)
 
