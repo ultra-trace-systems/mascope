@@ -24,7 +24,10 @@ from mascope_backend.runtime import runtime
 from mascope_tools.composition.config import ELECTRON_MASS
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS, label_purity
 from mascope_tools.composition.finder import replace_atom_with_isotope
-from mascope_tools.composition.heuristic_filter import extract_isotope_labels
+from mascope_tools.composition.heuristic_filter import (
+    extract_isotope_labels,
+    group_unresolved_lines,
+)
 from mascope_tools.composition.mechanism_notation import (
     AdductRow,
     MechanismNotationError,
@@ -761,12 +764,19 @@ def group_target_isotopes(
     Group target isotope m/z, relative abundance (probs), and isotope formulae
     to produce lower resolution isotopes.
 
-    The width of the group/bin is defined as dmz = FWHM / 2 = m/z / resolution / 2.
+    The isotopes one peak of this resolving power cannot separate are one
+    line, grouped as the untargeted envelope match groups them
+    (:func:`~mascope_tools.composition.heuristic_filter.group_unresolved_lines`):
+    from the most abundant isotope not yet taken, every isotope not yet taken
+    within half the FWHM (m/z / resolution / 2) either side of it. Starting
+    from the most abundant keeps a TOF's M+1 cluster whole: a bin started at
+    the lightest isotope, the 15N one, leaves the 13C, 17O and 2H isotopes of
+    a light ion behind, as a line of their own (mascope#2587).
 
     The isotope formulae are concatenated with "/" separator for all isotopes
-    that fall within the same bin, the most abundant first up to what the
-    column holds (:func:`fit_isotope_names`). The line's m/z and abundance
-    count every isotope in the bin, named or not.
+    that fall within the same line, in m/z order, the most abundant first up
+    to what the column holds (:func:`fit_isotope_names`). The line's m/z and
+    abundance count every isotope in it, named or not.
 
     :param masses: High resolution target isotope m/z
     :type masses: list
@@ -777,62 +787,49 @@ def group_target_isotopes(
     :param resolution: Resolution value
     :type resolution: float
     :return: Tuple with lists of grouped "mz", "relative_abundance",
-            "target_isotope_formula" values
+            "target_isotope_formula" values, in m/z order
     :rtype: tuple[list, list, list]
     """
     # Convert to numpy arrays to simplify computations
-    mz = np.array(masses)
-    intensity = np.array(probs)
+    mz = np.array(masses, dtype=float)
+    intensity = np.array(probs, dtype=float)
     formula = np.array(formulae)
 
-    # Sort by m/z to ensure proper binning
-    sorted_indices = np.argsort(mz)
+    # Sort by m/z, so each line lists its names in m/z order
+    sorted_indices = np.argsort(mz, kind="stable")
     mz = mz[sorted_indices]
     intensity = intensity[sorted_indices]
     formula = formula[sorted_indices]
 
-    mz_grouped = []
-    intensity_grouped = []
-    formula_grouped = []
-    i = 0
-    while i < mz.size:
-        # Calculate bin width for the current m/z
-        dmz = mz[i] / resolution / 2
-
-        # Determine bin size
-        bin_mask = (mz >= mz[i]) & (mz < mz[i] + dmz)
-
-        # A non-positive bin width (m/z <= 0, e.g. a degenerate atomless ion)
-        # leaves the mask empty, which would never advance the loop; fall back
-        # to a single-point bin so every isotope is emitted and i always moves.
-        if not bin_mask.any():
-            bin_mask = np.zeros(mz.size, dtype=bool)
-            bin_mask[i] = True
-
-        # Extract values within the current bin
-        mz_bin = mz[bin_mask]
-        intensity_bin = intensity[bin_mask]
-        formula_bin = formula[bin_mask]
+    lines = []
+    for members in group_unresolved_lines(mz, intensity, lambda _: resolution):
+        mz_bin = mz[members]
+        intensity_bin = intensity[members]
 
         # Final isotope intensity
         intensity_total = np.sum(intensity_bin)
 
-        # Calculate center of mass for mz in the bin
+        # Calculate center of mass for mz in the line
         if intensity_total > 0:
             mz_bin_center = np.sum(mz_bin * intensity_bin) / intensity_total
         else:
             mz_bin_center = np.mean(mz_bin)
 
-        # Store grouped values
-        mz_grouped.append(mz_bin_center)
-        intensity_grouped.append(intensity_total)
-        formula_grouped.append(
-            fit_isotope_names(
-                formula_bin.tolist(), TARGET_ISOTOPE_FORMULA_LENGTH, intensity_bin
+        lines.append(
+            (
+                mz_bin_center,
+                intensity_total,
+                fit_isotope_names(
+                    formula[members].tolist(),
+                    TARGET_ISOTOPE_FORMULA_LENGTH,
+                    intensity_bin,
+                ),
             )
         )
 
-        # Move to the next bin, skipping all processed values
-        i += np.sum(bin_mask)
-
-    return mz_grouped, intensity_grouped, formula_grouped
+    lines.sort(key=lambda line: line[0])
+    return (
+        [line[0] for line in lines],
+        [line[1] for line in lines],
+        [line[2] for line in lines],
+    )

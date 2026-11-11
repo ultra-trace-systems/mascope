@@ -24,8 +24,11 @@ Target isotope masses and intensities are computed and grouped dynamically depen
 For high resolution (Orbitrap) instruments, the algorithm loads the complete fine-structure target array, utilizing a default abundance threshold of 0.00001 to retain trace isotopes.
 
 For low resolution (Time-of-Flight) instruments, lower resolving powers cause closely spacing fine-structure lines to merge into a single combined peak profile.
-To mirror this hardware limitation, theoretical isotopes are passed through a binning routine with a resolution constant of 10,000.
-For each local window, the total intensity is calculated as the sum of the binned sub-isotopes, and the mass coordinate is mapped to the weighted center-of-mass of the cluster.
+To mirror this hardware limitation, theoretical isotopes are grouped at a resolving power of 10,000, the same way the untargeted envelope match groups them.
+Starting from the most abundant isotope not yet grouped, every isotope within half the peak width (FWHM, m/z / 10,000) either side of it joins one line.
+Starting from the most abundant isotope keeps a cluster whole: the 15N line of a nitrogen-containing ion sits about 6 mDa under its 13C line, so a window started there could leave the 17O and 2H lines just above the 13C line behind as a line of their own.
+For each line, the total intensity is calculated as the sum of the grouped isotopes, and the mass coordinate is mapped to their weighted center-of-mass.
+A target ion created before this grouping keeps the lines it was given then, from a window started at the lightest isotope; an ion created since, such as one of a compound added or whose formula changed, gets the grouping above.
 
 ### Instrument-Specific Intensity Quantification
 The matching process employs different intensity metrics depending on the instrument type to account for their distinct detector characteristics.

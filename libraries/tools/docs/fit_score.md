@@ -170,9 +170,9 @@ and its m/z their abundance-weighted centre. The envelope's floor then applies t
 lines, and a line under it that sits less than one FWHM from a kept line is added to that
 line rather than dropped: one peak of that width does not separate the two (#2591; the
 15N line of C4H8NO+ at a resolving power of 8000 is 6.3 mDa from its 13C line, where
-half a FWHM is 5.4 mDa). The targeted path does not do this yet: its
-TOF library bins with the same half-FWHM width, but only the lines over its 1% floor, so
-its line at the 13C position is still the 13C line alone (#2587). A file with no
+half a FWHM is 5.4 mDa). The targeted path's TOF library groups its lines the same way
+(`heuristic_filter.group_unresolved_lines`, at a resolving power of 10,000), though it
+folds nothing under a floor: it keeps every line down to 0.001 % (#2587). A file with no
 resolution read is scored one line per isotopologue.
 
 **Guard.** If the anchor is absent ($o_0 \le 0$) the score is $0$ — with nothing to
