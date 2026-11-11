@@ -331,9 +331,12 @@ context schema but only the always-active contaminant *lists* (§4.4) act.
 ### 4.7 Deliberately out of scope here
 
 Retention-time consistency and MS2 spectral matching are the other two L3/L4
-evidence streams; they have their own designs
-([public_database_integration.md](public_database_integration.md) §3.6) and are
-untouched by profiles. The certified-neutral discovery pass (two channels
+evidence streams, with designs of their own, and are untouched by profiles.
+Retention time's is
+[assignment_confidence.md §4, "P4 design: a retention-time term"](assignment_confidence.md#p4-design-a-retention-time-term):
+it keys on a separation method, an axis beside the two profile axes, and is
+absent for a run without one, which is every direct-inlet CIMS run. MS2's is
+[public_database_integration.md](public_database_integration.md) §3.6. The certified-neutral discovery pass (two channels
 certify a core mass before an expanded box opens) is noted as the natural
 Stage B v2 extension but not designed here.
 

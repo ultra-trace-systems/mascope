@@ -1,7 +1,7 @@
 # Peak Assignment & Identification Confidence — Study, Design and Plan
 
 - **Status:** building
-- **As of:** 2026-10-22
+- **As of:** 2026-11-11
 - **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear; MAS-73 carries the identification level; MAS-324 to MAS-327 the open P2 to P4 steps)
 - **What:** The layered science of going from a peak to a confident identification: plausibility, arbitration, calibration, tiers.
 
@@ -147,8 +147,9 @@ strong orthogonal axis: predicted-vs-observed RT consistency markedly improves a
 **Ionization mode and reagent chemistry** make some adducts/compounds (im)plausible.
 *Today.* Resolution-aware mass is in the fit score. RT and ionization-behaviour priors are
 **not** used as confidence evidence.
-*Gap.* A retention-time consistency term (where RT data exists) and ionization/reagent
-priors as candidate-level evidence.
+*Gap.* A retention-time consistency term (where RT data exists; designed, not built, in
+§4 [P4 design: a retention-time term](#p4-design-a-retention-time-term)) and
+ionization/reagent priors as candidate-level evidence.
 
 ### L4 — Probabilistic integration & calibration
 *Basis.* Combine the independent evidence streams into a single posterior over candidates.
@@ -475,6 +476,115 @@ no backend or DB, only `mascope_tools` + tests.
 - **Then:** intensity-consistency across adducts and in-source-fragment grouping (the deeper
   CAMERA/IPA model).
 
+### P4 design: a retention-time term
+
+*Design only (step 4.17, MAS-327); nothing below is built.* Retention time is the strongest
+orthogonal axis L3 names (Broeckling 2016), and it is meaningless for the data this plan is
+measured on. A CIMS acquisition is direct-inlet: a sample is a time window of a continuous
+acquisition, and the time a scan was taken says when the air was sampled, not how a compound
+behaves on a column. So the term is gated before anything else: it exists only for a run whose
+acquisition declares a chromatographic separation, and for every other run it is absent, not
+neutral. Every gate set, the demo dataset and the fleet corpus are direct-inlet, so none of
+them can move by it.
+
+**1. Where the time comes from.** Two readings, both of which exist only for a declared
+separation:
+
+- *The declaration.* A run is chromatographic when its files resolve to a **separation
+  method** (point 2): the file's method key (`method_keys.method_key`, the acquisition method's
+  file name) through its method binding, or a `separation` block in the acquisition record
+  ([Acquisition records](../user/instruments/acquisition-records.md); a later schema version,
+  optional, naming the method and the injection time). Mascope does not detect chromatography
+  from the data. A direct-inlet file can show a peak that rises and falls (a plume, a chamber
+  injection), and reading that as elution would hand the term to exactly the runs it must not
+  touch.
+- *The observed time.* The reader already gives every scan its time from the acquisition
+  start (`retention_time`, minutes; Thermo's `RetentionTimeFromScanNumber`). Today a peak is
+  found in the spectrum averaged over the sample's window and carries no time. For a
+  chromatographic run the term reads the peak's **elution apex**: the extracted ion
+  chromatogram at the peak's m/z, within its fitted width, over the MS1 scans of its stream in
+  the sample window. The apex is the intensity-weighted centre of the profile's top half, minus
+  the method's declared delay, so time zero is the injection. A profile with fewer than five
+  scans above its half height, or an apex at the window's edge, is *untestable* and the term is
+  absent for that peak. That also covers a chromatographic file split into time windows: a
+  window that cuts an elution in half gives no time rather than a wrong one.
+
+**2. What a retention-time library is keyed by, and who writes it.** A retention time is a
+property of one laboratory's column and gradient, not of a compound, and does not transfer
+between systems without a mapping (Stanstrup et al. 2015; Boswell et al. 2011). So the key is
+the separation, never the instrument or the reagent chemistry:
+
+- A **separation method** row: the column (stationary phase, dimensions, particle size), the
+  mobile phases, the gradient program (time against composition), flow, temperature, the dead
+  time and the injection delay. Its identity is a digest of those parameters. It is versioned
+  append-only as the profiles are ([`chemistry_profiles.md`](chemistry_profiles.md) §3.1), and
+  stamped into the run's config snapshot (§3.2 there), so a re-run is reproducible. It is an
+  axis of its own beside the two profile axes: one reagent chemistry runs behind many columns,
+  and one column behind many sources.
+- A **library entry**: (separation method, compound) to a retention time, its spread from
+  replicate injections, the number of injections, the date measured and the author. The
+  compound is a structure (InChIKey, with its formula), because isomers share a formula and
+  differ in retention: the entry can name the structure behind a formula, which the
+  identification claim ([`identification_claims.md`](identification_claims.md) §5.4) needs for
+  levels 1 and 3.
+- **Authored by the lab that runs the method**, from authentic standards injected on it, and
+  imported as a table through the CLI or the API by an editor of the workspace. Mascope ships no
+  retention library: a public table measured on another system would be a confident number for
+  the wrong column. Predicted retention (a model trained on a large standard set, Domingo-Almenara
+  et al. 2019) and mapping another system's table onto this one (PredRet, Stanstrup et al. 2015)
+  are later sources, each with its own weight and spread, never mixed into measured entries.
+- Column ageing and a new column lot shift every time. A later increment aligns each batch on
+  internal standards it carries, as mass calibration aligns the axis; until then the spread a
+  library entry records has to cover the drift the lab sees.
+
+**3. How it enters evidence.** As a per-candidate log-odds term in arbitration (L4/L5), beside
+plausibility and the adduct corroboration of P3, and never in the fit score (design rule 1):
+
+$$\mathrm{logit}(p') = \mathrm{logit}(p) + w_{RT}(z), \qquad z = \frac{|t_{obs} - t_{lib}|}{s}, \qquad s = \max(s_{entry},\ s_{floor})$$
+
+- $t_{lib}$ is the entry of the candidate formula's library compound closest to $t_{obs}$;
+  $s_{entry}$ is the entry's recorded spread and $s_{floor}$ the larger of two scan intervals
+  and the method's declared tolerance, so a library of single injections cannot claim a window
+  narrower than the data can resolve.
+- **Graded:** $w_{RT} = w_{in}$ for $z \le 1$, falling linearly to $w_{out}$ at $z \ge 3$.
+- **Floored:** $w_{out}$ is negative and bounded (as `apply_corroboration` caps at 3.0), so a
+  miss counts against a candidate but never vetoes it: grade, not gate, as for the chemistry
+  context ([`chemistry_profiles.md`](chemistry_profiles.md) §4.2). A wrong library entry, or a
+  co-eluting isomer the library lacks, then costs a rank, not the row.
+- **Absent** - no term and no provenance key, which is not the same as 0 - when the run has no
+  separation method, when no library entry shares the candidate's formula, or when the peak is
+  untestable (point 1). Where it applies, the run records
+  `provenance.retention = {separation_method, compound, t_obs, t_lib, z, boost}`, so the
+  inspector can show why a candidate moved.
+- $w_{in}$ and $w_{out}$ are measured (point 4), ride on the calibration store keyed by the
+  separation method as the corroboration weights ride on it per instrument (D6), and are never
+  constants in the engine. The term names a structure: a candidate lifted by it carries the
+  library compound as its structure candidate, which is what lets a verdict claim level 3 from
+  retention, and level 1 with MS/MS against the same standard.
+
+**4. The measurement that would validate it.** A chromatographic dataset with standards, which
+Mascope does not have: LC-HRMS acquisitions on one declared method, a mix of about 30 or more
+authentic standards spanning the gradient and including same-formula isomer pairs, injected
+neat and spiked into a matrix, with replicate injections on at least two days. The standards
+are split: day 1's neat injections build the library, day 2's spiked ones are scored. It reads:
+
+- the observed spread across days, which sets $s_{floor}$ and the shape of the window;
+- the likelihood ratio, P(within the window | the true compound) against P(within the window |
+  an anchor swap: another entry's library time), the null P3 found honest where a random offset
+  was not; that ratio gives $w_{in}$, and the swap's rate beyond $z = 3$ gives $w_{out}$;
+- the ranking: whether the term moves the true formula above mass-degenerate rivals
+  (`score_eval`'s AUC), and the true structure above its isomer, without raising the decoy arms'
+  false-assignment rate;
+- the null on direct-inlet data: the gate sets' runs with the term built are identical to
+  runs without it.
+
+**Issues filed from this: none yet.** Every step needs the dataset first, and neither a step
+nor its gate can be measured without one. When the plan owner has such a dataset in view, the
+build is four steps, each blocked by the one before: (a) the separation method and library
+tables with the import; (b) the elution apex reading in the peak store; (c) the term in
+arbitration with its provenance and the inspector's line; (d) the measurement above, which sets
+the weights. Until then retention time stays in the quality plan's *Not in this plan* list.
+
 ## 5. References
 
 - Kind, T.; Fiehn, O. *Mass accuracy is insufficient even at less than 1 ppm.* BMC
@@ -499,6 +609,16 @@ no backend or DB, only `mascope_tools` + tests.
 - Broeckling, C. D. et al. *Enabling efficient and confident annotation of LC-MS
   metabolomics data through MS1 spectrum and time prediction.* Anal. Chem. 2016,
   88(18):9226–9234. [link](https://pubs.acs.org/doi/10.1021/acs.analchem.6b02479)
+- Stanstrup, J.; Neumann, S.; Vrhovšek, U. *PredRet: prediction of retention time by direct
+  mapping between multiple chromatographic systems.* Anal. Chem. 2015, 87(18):9421–9428.
+  [link](https://doi.org/10.1021/acs.analchem.5b02287)
+- Boswell, P. G. et al. *Easy and accurate high-performance liquid chromatography retention
+  prediction with different gradients, flow rates, and instruments by back-calculation of
+  gradient and flow rate profiles.* J. Chromatogr. A 2011, 1218(38):6742–6749.
+  [link](https://doi.org/10.1016/j.chroma.2011.07.070)
+- Domingo-Almenara, X. et al. *The METLIN small molecule dataset for machine learning-based
+  retention time prediction.* Nature Communications 2019, 10:5811.
+  [link](https://doi.org/10.1038/s41467-019-13680-7)
 - Scheubert, K. et al. *Significance estimation for large-scale metabolomics annotations by
   spectral matching.* Nature Communications 2017, 8:1494.
   [link](https://www.nature.com/articles/s41467-017-01318-5)
