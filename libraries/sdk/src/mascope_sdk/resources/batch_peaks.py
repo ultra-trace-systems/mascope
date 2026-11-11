@@ -201,9 +201,13 @@ class BatchPeaksResource(BaseResource):
                  ``batch_peak_id``, ``batch_mz``, ``consensus_formula``,
                  ``consensus_ion_formula``, ``consensus_role``,
                  ``consensus_ionization_mechanism_id``,
-                 ``consensus_tier``, ``support_fraction``, ``n_present``,
-                 ``is_ambiguous``, ``max_intensity``, ``isotopologue_of``,
-                 ``curated``. Member columns: ``sample_item_id``,
+                 ``consensus_tier``, ``engine_tier``, ``engine_claim``,
+                 ``support_fraction``, ``n_present``, ``is_ambiguous``,
+                 ``max_intensity``, ``isotopologue_of``, ``curated``.
+                 ``engine_tier`` and ``engine_claim`` are an importing
+                 engine's own verdict on the batch peak, as :meth:`list`
+                 serves them, and empty where no import gave one. Member
+                 columns: ``sample_item_id``,
                  ``sample_item_name``, ``sample_peak_id``, ``mz``,
                  ``intensity``, ``assigned_formula``, ``ion_formula``,
                  ``ionization_mechanism_id``, ``source``, ``tier``, ``role``,

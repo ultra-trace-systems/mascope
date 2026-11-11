@@ -247,6 +247,9 @@ class _Member:
 class _Anchor:
     mz = 371.1012
     candidates = [_entry("C10H30O5Si5", "C10H31O5Si5+", "m-h", LISTED)]
+    consensus_formula = "C10H30O5Si5"
+    ionization_mechanism_id = "m-h"
+    engine_tier = None
 
 
 def test_a_derived_row_carries_its_entrys_listing():

@@ -1001,7 +1001,9 @@ class MascopeClient:
         reading - which is one line from CSV or any other format, and the
         species table (one row per batch peak) rides on
         ``df.attrs["batch_peaks"]``. With ``members=False`` the result is the
-        species table alone.
+        species table alone. Where an import gave a batch peak its engine's
+        own verdict, both shapes carry it as ``engine_tier`` and
+        ``engine_claim`` beside ``consensus_tier``.
 
         :param dataset: Dataset name or literal substring (or ID); pass a
                         compiled ``re.Pattern`` to match by regex.

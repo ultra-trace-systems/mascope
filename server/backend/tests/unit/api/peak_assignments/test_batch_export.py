@@ -19,6 +19,8 @@ def _anchor(**over):
         consensus_ion_formula="C6H13O6+",
         ionization_mechanism_id="mH",
         consensus_tier="assigned",
+        engine_tier=None,
+        engine_claim=None,
         consensus_role=None,
         support_fraction=1.0,
         n_present=2,
@@ -70,6 +72,24 @@ def test_a_row_carries_the_consensus_beside_the_members_own_reading():
     assert row["role"] == "M0"
     assert row["mz"] == pytest.approx(181.0707 * (1 + 0.5e-6))
     assert row["fit_score"] == pytest.approx(0.95)
+
+
+def test_a_row_carries_the_anchors_engine_verdict_beside_the_consensus():
+    anchor = _anchor(engine_tier="candidate", engine_claim="level 3")
+    row = member_export_row(_member(), anchor, "Sample 1")
+    assert (row["consensus_tier"], row["engine_tier"], row["engine_claim"]) == (
+        "assigned",
+        "candidate",
+        "level 3",
+    )
+    # An anchor column: every member of the anchor carries it, whatever it reads.
+    other = member_export_row(_member(role=2, candidate=None), anchor, "Sample 2")
+    assert (other["engine_tier"], other["engine_claim"]) == ("candidate", "level 3")
+
+
+def test_an_anchor_no_import_judged_carries_no_engine_verdict():
+    row = member_export_row(_member(), _anchor(), "Sample 1")
+    assert (row["engine_tier"], row["engine_claim"]) == (None, None)
 
 
 def test_an_unassigned_member_reads_as_unassigned():

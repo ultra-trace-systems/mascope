@@ -11,7 +11,9 @@ ledger has to be re-derived outside the app.
 A row carries the anchor's consensus (``batch_*`` and ``consensus_*``) beside the
 member's own reading (``assigned_formula``, ``fit_score``, ``tier``, ...), so a
 dissenting sample reads as one: the batch says one thing, the member another,
-side by side.
+side by side. Where an import gave the anchor its engine's own verdict, the
+anchor's ``engine_tier`` and ``engine_claim`` stand beside ``consensus_tier`` on
+every member row, as the species read serves them; empty otherwise.
 """
 
 from __future__ import annotations
@@ -62,6 +64,8 @@ COLUMNS = (
     "consensus_role",
     "consensus_ionization_mechanism_id",
     "consensus_tier",
+    "engine_tier",
+    "engine_claim",
     "support_fraction",
     "n_present",
     "is_ambiguous",
@@ -104,6 +108,8 @@ def member_export_row(
         "consensus_role": anchor.consensus_role,
         "consensus_ionization_mechanism_id": anchor.ionization_mechanism_id,
         "consensus_tier": anchor.consensus_tier,
+        "engine_tier": anchor.engine_tier,
+        "engine_claim": anchor.engine_claim,
         "support_fraction": anchor.support_fraction,
         "n_present": anchor.n_present,
         "is_ambiguous": bool(anchor.is_ambiguous),

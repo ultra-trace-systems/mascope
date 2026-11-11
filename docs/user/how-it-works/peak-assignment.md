@@ -1582,6 +1582,16 @@ SDK filter the same way (`engine_tier` and `tier_disagrees` on
 `GET /api/batch-peaks/batch/{id}`, and on `mascope.batch_peaks.list`). A batch peak
 with no engine tier is left out of either answer, because absence is not agreement.
 
+The member rows carry the verdict too. Every row of the ledger export, of
+`GET /api/batch-peaks/batch/{id}/members`, `mascope.batch_peaks.members` and
+`mascope.load_batch_ledger` has its batch peak's `engine_tier` and `engine_claim`
+beside `consensus_tier`, empty where no import gave one. A sample that has no run of its
+own and is shown from the batch ledger shows the engine tier on one row per batch peak:
+the monoisotopic peak of the sample that reads the batch peak's consensus formula
+through its adduct. That is the reading the engine judged. Its isotope lines, a reagent
+peak, and a sample whose own formula for the peak differs from the consensus show none,
+and the sample ledger's **Engine tier** view and filters read the same rows.
+
 A row names its adduct by this server's mechanism id. The mechanism table
 (`mascope.ionization.list()`) is a catalogue of the adducts a deployment can name,
 not a list of channels an engine should search: Mascope's own engine opens channels

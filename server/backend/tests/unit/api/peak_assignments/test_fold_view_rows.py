@@ -75,7 +75,10 @@ def _anchor(**overrides):
         provenance={"n_assigned": 3, "agreement": 0.67, "p_correct": 0.95},
         consensus_formula="C6H12O6",
         consensus_ion_formula="C6H13O6+",
+        ionization_mechanism_id="m-h",
         consensus_tier="assigned",
+        engine_tier=None,
+        engine_claim=None,
         consensus_role=None,
         support_fraction=0.67,
         n_present=3,
@@ -129,7 +132,6 @@ def test_what_only_a_run_computes_is_absent_rather_than_invented():
         "abundance_error",
         "isotope_label",
         "isotope_formula",
-        "engine_tier",
         "target_compound_id",
         "target_ion_id",
         "evidence",
@@ -138,6 +140,53 @@ def test_what_only_a_run_computes_is_absent_rather_than_invented():
         "sample_peak_tof",
     ):
         assert row[key] is None, key
+
+
+# --- the engine tier ---------------------------------------------------------
+
+
+def test_an_m0_member_reading_the_consensus_shows_the_anchors_engine_tier():
+    row = member_row(_member(), _anchor(engine_tier="candidate"))
+    assert (row["tier"], row["engine_tier"]) == ("assigned", "candidate")
+
+
+def test_no_engine_tier_where_no_import_gave_the_anchor_a_verdict():
+    assert member_row(_member(), _anchor())["engine_tier"] is None
+
+
+@pytest.mark.parametrize(
+    "member",
+    [
+        # An isotope line of the species, not the reading the engine judged.
+        pytest.param(dict(role=2, owner_batch_peak_id="bp-0"), id="iso_child"),
+        pytest.param(dict(role=3), id="reagent"),
+        # A sample that dissents from the batch: its formula is not the
+        # consensus the verdict is about.
+        pytest.param(dict(candidate=1), id="dissenting formula"),
+        # No identity at all.
+        pytest.param(dict(candidate=None, role=0, tier=0), id="unassigned"),
+    ],
+)
+def test_no_engine_tier_on_a_member_that_is_not_the_judged_reading(member):
+    row = member_row(_member(**member), _anchor(engine_tier="candidate"))
+    assert row["engine_tier"] is None
+
+
+def test_no_engine_tier_where_the_member_reads_the_formula_by_another_mechanism():
+    registry = [{**_REGISTRY[0], "ionization_mechanism_id": "m-na"}, _REGISTRY[1]]
+    anchor = _anchor(engine_tier="candidate", candidates=registry)
+    assert member_row(_member(), anchor)["engine_tier"] is None
+
+
+def test_no_engine_tier_where_the_anchor_names_no_consensus_formula():
+    anchor = _anchor(engine_tier="candidate", consensus_formula=None)
+    assert member_row(_member(), anchor)["engine_tier"] is None
+    # A member with no identity does not "read" an anchor with none either,
+    # though the two missing formulas and mechanisms are equal.
+    bare = _anchor(
+        engine_tier="candidate", consensus_formula=None, ionization_mechanism_id=None
+    )
+    assert member_row(_member(candidate=None), bare)["engine_tier"] is None
 
 
 def test_an_isotopologue_member_names_its_owner_by_the_owners_derived_id():

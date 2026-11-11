@@ -1210,6 +1210,11 @@ document cites it.
    the same two columns on `batch_peak_run_anchor`, so the run selector shows
    them as the import left them) and served by the ledger read, which filters on
    them with `engine_tier` and `tier_disagrees` as the per-sample read does.
+   The flat member rows (the members route, `load_batch_ledger`, the ledger
+   CSV) carry both as anchor columns, and a sample shown from the batch ledger
+   shows `engine_tier` on the M0 member that reads the consensus identity and
+   on no other row, filtered by the same rule (`fold_view.member_engine_tier`,
+   MAS-727).
    The rules that keep the pair honest, all in `batch_import.py` and
    `batch_peaks_controller._apply_consensus`:
 

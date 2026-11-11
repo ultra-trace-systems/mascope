@@ -130,6 +130,7 @@ def _anchor(**over):
         consensus_ion_formula="C6H13O6+",
         ionization_mechanism_id="mH",
         consensus_tier="assigned",
+        engine_tier=None,
         consensus_role=None,
         best_fit_score=0.95,
         support_fraction=0.67,
