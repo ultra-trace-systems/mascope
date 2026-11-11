@@ -135,13 +135,13 @@ vi.mock('@/lib/panes/PanePeakAssign/stores/batchPeakCuration.js', () => ({
 const claimStub = vi.hoisted(() => ({ claimed_inchikey: null, claimed_name: null, ready: true }))
 vi.mock('@/lib/base', async () => ({
   BaseClaimStructure: {
-    props: ['modelValue', 'candidates', 'evidence'],
+    props: ['modelValue', 'candidates', 'evidence', 'initial'],
     emits: ['update:modelValue'],
     mounted() {
       this.$emit('update:modelValue', { ...claimStub })
     },
     template:
-      '<div class="claim-structure" :data-candidates="JSON.stringify(candidates)" :data-evidence="evidence" />'
+      '<div class="claim-structure" :data-candidates="JSON.stringify(candidates)" :data-evidence="evidence" :data-initial="initial?.claimed_inchikey ?? \'\'" />'
   },
   BaseTierTag: { props: ['tier'], template: '<span class="tier-tag" />' },
   BaseVerdictBadge: { props: ['record', 'compact'], template: '<span class="verdict-badge" />' },
@@ -265,7 +265,12 @@ beforeEach(() => {
   runRecord = null
   detailRecord = null
   otherDetails = new Map()
-  Object.assign(claimStub, { claimed_inchikey: null, claimed_name: null, ready: true })
+  Object.assign(claimStub, {
+    claimed_inchikey: null,
+    claimed_name: null,
+    ready: true,
+    problem: null
+  })
   altScoreRecords = null
   scoringNow = false
   evidenceRecord = null
@@ -658,6 +663,17 @@ describe('PanePeakAssign verdict dialog', () => {
         .map((i) => i.attributes('value'))
     ).toEqual(['msms'])
     expect(noteField(wrapper).element.value).toBe('matches the standard')
+  })
+
+  it('starts a changed confirmation from the structure it names', async () => {
+    const GLUCOSE = 'WQZGKKKJIJFFOK-GASJEMHNSA-N'
+    verdictRecord = { ...VERDICT, claimed_inchikey: GLUCOSE, claimed_name: 'D-glucose' }
+    const wrapper = await mountPane()
+
+    await wrapper.find('.verify-current button').trigger('click')
+    await verdictButton(wrapper, 'Confirm').trigger('click')
+
+    expect(dialog(wrapper).find('.claim-structure').attributes('data-initial')).toBe(GLUCOSE)
   })
 
   it('offers a way back to the verdict as it was while changing it', async () => {

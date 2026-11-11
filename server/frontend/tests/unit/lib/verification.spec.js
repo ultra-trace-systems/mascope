@@ -61,6 +61,18 @@ describe('claimCandidates', () => {
     expect(candidates).toEqual([{ inchikey: FRUCTOSE, name: null, label: 'reference list' }])
   })
 
+  it('leaves out a key that is not an InChIKey, which the server would refuse', () => {
+    const candidates = claimCandidates({
+      target: { name: 'bare block', inchikey: 'WQZGKKKJIJFFOK' },
+      identities: [
+        { name: 'placeholder', source: 'custom', inchikey: 'N/A' },
+        { name: 'lowercase', source: 'custom', inchikey: GLUCOSE.toLowerCase() },
+        { name: 'D-fructose', source: 'sugars', inchikey: FRUCTOSE }
+      ]
+    })
+    expect(candidates).toEqual([{ inchikey: FRUCTOSE, name: 'D-fructose', label: 'sugars' }])
+  })
+
   it('has none for a row no list names', () => {
     expect(claimCandidates()).toEqual([])
     expect(claimCandidates({ identities: null })).toEqual([])
