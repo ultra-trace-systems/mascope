@@ -96,7 +96,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 4.1 - series detection on the batch ledger | - |  | built: *Detect series* walks CH2, O, H2O, CO, CO2, C2H2O and, from a peak carrying their element, C2H6OSi and CF2 up to three steps from the batch's assigned peaks onto its unassigned and candidate ones within the search's window, commits a unit at 12 proposals and ten times its six decoys' mean (re-derived on the testbed: 3x commits every TOF family), measures each proposal through the propagation chain, records the series with `has_anchor` on the batch peak, and a run counts it as a second observation; tiering rule set 12; MAS-61 |
 | 4.2 - time-series coherence | - |  | built, the co-variation reading (decision 35): *Read co-variation* reads every neutral the batch sees through two channels, per mode and instrument type, as Pearson r of the log traces, reagent-normalised, the common mode (each spectrum's median of the persistent traces) removed; co-varying at r >= 0.6, untestable under 10 shared spectra or a residual spread under 0.02 in log10 (both measured against decoy pairs on the testbed's 20 batch ledgers); recorded on the batch peak, shown in the ledger and the inspector, no tier moves. The nine riders are steps of their own (MAS-777); MAS-62 |
 | 4.3 - calibration from verdicts, per profile | - |  | planned |
-| 4.4 - gate automation | - |  | planned |
+| 4.4 - gate automation | - |  | moved to milestone 6 as step 6.4, the gate card as code (MAS-64); see `assignment_bench.md` |
 | 4.5 - profiles as versioned rows, routing by detection | - |  | planned |
 | 4.6 - a structured adduct row beside the notation string | - |  | built: the row's columns on `ionization_mechanism`, filled by a migration that refuses an unreadable row; `[2M+H]+`, `[M+2H]2+` and `[M+H-H2O]+` read, written and given target ions; the finder and the engine leave them out; corroboration keys unchanged; moves no metric; MAS-318 |
 | 4.9 - refuse or segregate mixed-instrument batches at the fold | - |  | built: segregated; the fold searches a batch's anchors per mode and per instrument type, read off the anchor's intensity unit; the ledger and the series name the partition (`instrument_type`), the Batch peaks ledger shows one at a time and the chart draws only its selection; a single-instrument batch folds as before; moves no metric; MAS-321 |
@@ -251,7 +251,7 @@ justify.
   the instrument is a TOF (its Orbitrap defaults of 1 ppm trust and 3 ppm
   search are meaningless at 10 ppm accuracy), and the in-app engine's TOF
   window default from step 1.1. The demo dataset carries set D's chemistry
-  in public form, which is what step 4.4 can run in CI. A stage gate is
+  in public form, which is what step 6.4's card can run in CI. A stage gate is
   judged on the whole set; a chemistry that regresses blocks the stage even
   when the pooled number improves.
 - **The reference moves; the gate reads it at releases.** peaky's main takes
@@ -1454,10 +1454,11 @@ who edits chemistry and stays last.
 
 ### 4.4 Gate automation
 
-- **What.** `compare_runs.py --gate thresholds.json` fails when a metric
-  regresses past its target; a scheduled run on the testbed re-runs the
-  engine on the fixed sample set after each epic merge and posts the table.
-- **Size.** S.
+- **What.** Moved to milestone 6 as step 6.4, the gate card as code
+  (MAS-64): the metrics, the thresholds, the baseline diff and the scrub
+  in `compare_runs.py`, run by the bench on the agent box rather than by
+  a scheduled run on the testbed. See
+  [`assignment_bench.md`](assignment_bench.md), section 6.
 
 ### 4.5 Profiles as versioned rows, routing by detection
 
