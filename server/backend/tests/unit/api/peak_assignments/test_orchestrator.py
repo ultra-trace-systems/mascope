@@ -1243,6 +1243,34 @@ class TestStageHandoff:
         )
 
     @pytest.mark.asyncio
+    async def test_the_partner_gate_is_told_what_the_lists_name(self):
+        """The same neutrals reach the judging passes, where the partner gate
+        records a list that names a reading it swaps in, as the policy does."""
+        from mascope_backend.api.new.peak_assignments import service
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p3", 300.1234, 500.0)])
+        recorder = _Recorder()
+        patches = _patches(recorder, peaks, _stage_a_rows())
+        unmatched = _mirror_rows()[:1]
+        unmatched[0]["target_compound_formula"] = "O3C9H14"
+        patches["reference"] = patch(
+            f"{_MOD}._fetch_reference_known_isotopes",
+            new_callable=AsyncMock,
+            return_value=pd.DataFrame(unmatched),
+        )
+        patches["judge"] = patch(f"{_MOD}.judge_commits", wraps=service.judge_commits)
+        mocks = _start(patches)
+
+        await _run(PeakAssignmentConfig(run_untargeted=True))
+
+        assert mocks["judge"].call_args.kwargs["listed_formulas"] == frozenset(
+            {"C6H12O6", "C9H14O3"}
+        )
+
+    @pytest.mark.asyncio
     async def test_untargeted_stage_is_skipped_when_disabled(self):
         """Stage A only means the composition search is never invoked."""
         from mascope_backend.api.new.peak_assignments.config import (

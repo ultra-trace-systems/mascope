@@ -2679,6 +2679,7 @@ def apply_partner_gates(
     minor_channels: frozenset[str],
     partner_gated_channels: frozenset[str],
     tier_bands: dict[str, float] | None,
+    listed_formulas: frozenset[str] = frozenset(),
 ) -> dict:
     """Let an opportunistic reading stand only where the sample shows its neutral.
 
@@ -2786,6 +2787,12 @@ def apply_partner_gates(
         a subset of ``minor_channels``: a gated reading is never a partner,
         which is what lets the contest be read once, after the walk.
     :param tier_bands: The run's evidence bands, for a swapped reading's tier.
+    :param listed_formulas: The neutrals the sample's lists name, as
+        :func:`formula_identity` keys (:func:`listed_formula_identities`). A
+        row swapped onto another opportunistic reading of one of them records
+        the list as its corroboration, as the minor-channel policy does: a
+        list cannot go away, so a later round that loses the partner does not
+        cap it again.
     :return: A JSON-serializable summary of the ledger the gate left: rows
         standing on a partner, of them the caps lifted and the swaps undone,
         rows swapped to another reading, rows left to the cap, of them the
@@ -3006,11 +3013,13 @@ def apply_partner_gates(
         provenance.pop("unsaturation", None)
         if chosen["ionization_mechanism_id"] in minor_ids:
             # Another opportunistic reading, taken because the sample shows
-            # its neutral: that is the policy's own corroboration. Only a
-            # search row is swapped, so the verdict records its line as the
-            # policy's does for one.
+            # its neutral: that is the policy's own corroboration, and a list
+            # that names the neutral comes first, as it does in the policy.
+            # Only a search row is swapped, so the verdict records its line as
+            # the policy's does for one.
+            listed = formula_identity(chosen["assigned_formula"]) in listed_formulas
             provenance["minor_channel"] = {
-                "corroborated_by": "second_channel",
+                "corroborated_by": "list" if listed else "second_channel",
                 "capped": False,
                 "isotopologue": bool(children.get(str(row.get("peak_assignment_id")))),
             }

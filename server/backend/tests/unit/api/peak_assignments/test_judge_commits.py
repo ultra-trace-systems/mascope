@@ -790,6 +790,33 @@ class TestThePartnerGateReadsTheJudgedLedger:
         assert formate["provenance"]["mass_gate"]["ceiling"] == "candidate"
         assert formate["provenance"]["mass_gate"]["capped"] == "candidate"
 
+    def test_the_gate_is_told_what_the_lists_name(self, monkeypatch):
+        # A reading the gate swaps in records a list that names it, as the
+        # minor-channel policy does (engine.apply_partner_gates).
+        gate = service.apply_partner_gates
+        seen = []
+
+        def recording(rows, **kwargs):
+            seen.append(kwargs["listed_formulas"])
+            return gate(rows, **kwargs)
+
+        monkeypatch.setattr(service, "apply_partner_gates", recording)
+        listed = frozenset({"C11H20O7"})
+        judge_commits(
+            anchors() + [self._formate()],
+            stage_a_accuracy=SampleMassAccuracy(),
+            fallback_sigma_ppm=0.3,
+            notation_by_id=self.IDS,
+            mz_tolerance_ppm=5.0,
+            abundance_floor=0.01,
+            max_alternatives=5,
+            tier_bands=self.BANDS,
+            minor_channels=frozenset({"[M+HCOO]-"}),
+            partner_gated_channels=frozenset({"[M+HCOO]-"}),
+            listed_formulas=listed,
+        )
+        assert seen and all(formulas == listed for formulas in seen)
+
     def test_a_swapped_reading_stays_under_the_mass_gates_ceiling(self):
         # No partner, so the formate reading swaps to its acid: the acid is
         # the same ion on the same line, and the line is off calibration.
