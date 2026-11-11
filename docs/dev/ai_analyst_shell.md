@@ -5,8 +5,8 @@
 - **Tracked in:** [AI analyst shell](https://linear.app/ultra-trace/project/ai-analyst-shell-2b0a6a7e8af8)
   (Linear, P-MAS-21, filed 2026-11-04: milestones 0 to 5 follow section 4;
   the five decisions of section 5 are MAS-659 to MAS-662 and MAS-665,
-  all taken but MAS-661, which waits for the pre-registered thresholds, and
-  MAS-662, whose batch-report brief is still to file;
+  all taken but MAS-661, which waits for the pre-registered thresholds;
+  MAS-662 stays open until its batch-report brief is filed;
   milestone 0's test issues are MAS-666 to MAS-668, with MAS-669 asking
   for the owner's bench modules; the rest follow the decisions; since
   2026-11-06 also the open items of the AI layer project, P-MAS-12, which
@@ -638,13 +638,14 @@ its description.
 
 1. **ACP-first.** Build every shell to the Agent Client Protocol and every
    integration to MCP; never to `goosed` or to another runtime's private
-   API. *Leaning: yes.* The fallback if Goose's consolidation stalls or no
-   SDK is published: the MVP (milestone 3) needs neither, and milestone 4
-   waits or uses a runtime that does speak ACP.
+   API. *Taken, 2026-11-05 (MAS-659).* The fallback if Goose's consolidation
+   stalls or no SDK is published: the MVP (milestone 3) needs neither, and
+   milestone 4 waits or uses a runtime that does speak ACP.
 2. **Goose as the default runtime.** Ship the bundle for Goose Desktop and
    name Goose in the docs, or ship a runtime-agnostic bundle and name none.
-   *Leaning: Goose by default, the bundle usable from any ACP or MCP host.*
-   The reasons are its licence, its local providers and its ACP direction;
+   *Taken, 2026-11-05 (MAS-660): Goose by default, the bundle usable from
+   any ACP or MCP host.* The reasons are its licence, its local providers
+   and its ACP direction;
    the cost is tracking a project in mid-migration.
 3. **Admission thresholds.** The correct rate a model must clear per task
    class, and the wrong rate it may not exceed. *Leaning: 100 % correct on
@@ -671,7 +672,7 @@ its description.
    deliverables. *Leaning: yes*, with the rule of 2.5 (what describes a
    tool ships in the package that provides the tool, so with Mascope; what
    composes tools or guides the science ships with Peaky) and the two
-   Linear edits 2.5 names. *Taken by both owners, November 2026 (MAS-665,
+   Linear edits 2.5 names, now three. *Taken by both owners, November 2026 (MAS-665,
    Done 2026-11-11), with the caveat of 3.2, lever 5.*
 
 Open questions the phases answer rather than decide now: which GPU host
