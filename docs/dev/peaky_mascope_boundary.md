@@ -93,7 +93,7 @@ between the two owners before the scorer is written, and is not decided here.
 
 The engine-comparison bench of the plan's milestone 6
 ([`assignment_bench.md`](assignment_bench.md)) is the other half of the
-same tooling: both engines run on demand on fixed sets on the LAN host,
+same tooling: both engines run on demand on fixed sets on the agent box,
 the plan's metrics as a card, posted on the PR that asked. The scorer's
 truth card joins that card when the baseline exists.
 
