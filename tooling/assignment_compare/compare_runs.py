@@ -42,14 +42,25 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import socket
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.parse import urlparse
 
 import numpy as np
 import pandas as pd
 
 from mascope_sdk import MascopeClient
+from mascope_sdk.exceptions import MascopeError
+
+
+# The card's metrics live beside this script, which is run by its path rather
+# than installed, so its own folder is where they are found.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import metrics  # noqa: E402
 
 
 ROLE_MAIN = "M0"
@@ -162,7 +173,10 @@ def unsearched_peaks(ledger: pd.DataFrame, config: dict) -> set[str]:
     never looked at - and only the run's config separates them. The searched set
     is reconstructed rather than recorded: the stage takes the most intense of
     the peaks left after the pre-passes and the database stage, up to its cap, so
-    ranking that remainder by intensity reproduces exactly which peaks it saw.
+    ranking that remainder by intensity reproduces which peaks it saw. Where the
+    run records that the stage was offered every eligible peak (its search
+    scope is not ``limited``), none is past a cap, and a peak the stage
+    committed a row on is one it saw.
 
     Peaks a pre-pass or the database stage explained are not counted: something
     looked at them and answered. Peaks below the run's intensity threshold are,
@@ -195,7 +209,18 @@ def unsearched_peaks(ledger: pd.DataFrame, config: dict) -> set[str]:
         limit = config.get("max_untargeted_peaks") or LEGACY_MAX_UNTARGETED_PEAKS
     searched = eligible.nlargest(int(limit), "sample_peak_intensity")
     past_cap = set(eligible.loc[~eligible.index.isin(searched.index), "sample_peak_id"])
-    return {str(peak) for peak in below | past_cap}
+    if scope.get("limited") is False:
+        # The run records that the stage was offered every eligible peak. A
+        # later pass can still move a peak out of the database stage's rows or
+        # into them, so the ledger's remainder is not the set it was offered,
+        # and ranking it would put the dimmest few past a cap there was none of.
+        past_cap = set()
+    # A peak the stage committed a row on is one it saw, whatever the ranking.
+    committed = {
+        str(peak)
+        for peak in ledger.loc[source.fillna("") == "untargeted", "sample_peak_id"]
+    }
+    return {str(peak) for peak in below | past_cap} - committed
 
 
 def role_transitions(before: pd.DataFrame, after: pd.DataFrame) -> dict:
@@ -306,9 +331,36 @@ def prepare(ledger: pd.DataFrame, prefix: str, notation_by_id: dict) -> pd.DataF
             f"{prefix}_odd_electron": ledger["assigned_formula"].map(
                 odd_electron_neutral
             ),
+            # What the card's own-ledger metrics read (G7, G12): the row and
+            # its owner, its mass z, the channels committing its neutral and
+            # what a list calls it.
+            f"{prefix}_assignment_id": ledger.get("peak_assignment_id"),
+            f"{prefix}_owner_id": owner,
+            f"{prefix}_mass_z": ledger.get("mass_z"),
+            f"{prefix}_channels": ledger.get("corroboration_channels"),
+            f"{prefix}_listing": ledger.get("reference_listing"),
         }
     )
     return out
+
+
+#: The columns of a ledger :func:`prepare` cannot do without.
+LEDGER_COLUMNS = (
+    "sample_peak_id",
+    "sample_peak_mz",
+    "sample_peak_intensity",
+    "role",
+    "tier",
+    "assigned_formula",
+    "ion_formula",
+    "ionization_mechanism_id",
+)
+
+
+def absent_side(prefix: str) -> pd.DataFrame:
+    """A side with no rows, joined in for a sample the engine has no run of, so
+    that sample's peaks all read ``missing`` on that side."""
+    return prepare(pd.DataFrame(columns=list(LEDGER_COLUMNS)), prefix, {})
 
 
 def verdict(row) -> str:
@@ -956,6 +1008,929 @@ def decoy_markdown(result: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+# --- The gate card (assignment quality plan, step 6.4) ----------------------------
+
+#: The card's JSON format; a baseline of another one is refused, not misread.
+CARD_FORMAT = 1
+#: The thresholds file's format.
+THRESHOLDS_FORMAT = 1
+#: What a set may be called on a card: an upper-case letter, then at most one
+#: digit or lower-case letter, then at most a sign (C2, F1, Hr, I+). The card
+#: names sets by their letter and nothing else, so a manifest that names one
+#: otherwise is refused before anything is read.
+SET_NAME = re.compile(r"^[A-Z][0-9a-z]?[+-]?$")
+INSTRUMENTS = ("orbitrap", "tof")
+#: The card's column over every set at once. Lower case, so no set is called so.
+POOLED = "pooled"
+#: How many detail reads run at once. Each committed row's provenance is one
+#: read, and a dense set holds thousands of them.
+DETAIL_WORKERS = 8
+#: Shipped beside this script: the log's stage targets.
+DEFAULT_THRESHOLDS = Path(__file__).resolve().parent / "thresholds.json"
+
+
+class CardRefused(Exception):
+    """The card's text holds a token the deny list names; nothing is written."""
+
+    def __init__(self, token: str, where: str):
+        super().__init__(f"{where} holds {token!r}, which the deny list names")
+        self.token, self.where = token, where
+
+
+def load_sets(path: str | Path) -> dict:
+    """The sets a card reads, from a manifest.
+
+    ``{"sets": {"A": {"workspace": ..., "samples": [...]}, "E": {"workspace":
+    ..., "batch": ..., "dataset": ..., "instrument": "tof", "sulfur_free":
+    true}}, "deny": [...]}``: per set its workspace, its samples or a batch (and
+    dataset) whose samples it reads, its instrument class (``orbitrap``, the
+    default, or ``tof``) and whether its chemistry holds no sulfur (G9); and
+    any further names the card must not hold.
+
+    :raises SystemExit: On a set named other than by a letter, or one the
+        manifest does not say how to read.
+    """
+    manifest = json.loads(Path(path).read_text(encoding="utf-8"))
+    sets = manifest.get("sets")
+    if not isinstance(sets, dict) or not sets:
+        sys.exit(f"{path}: no sets")
+    for name, spec in sets.items():
+        if not SET_NAME.match(name):
+            sys.exit(
+                f"{path}: a set is named by a letter, then at most one digit or "
+                f"lower-case letter, then at most a sign (A, C2, Hr, I+); "
+                f"{name!r} is not one"
+            )
+        if not isinstance(spec, dict) or not spec.get("workspace"):
+            sys.exit(f"{path}: set {name} names no workspace")
+        if not spec.get("samples") and not spec.get("batch"):
+            sys.exit(f"{path}: set {name} names no samples and no batch")
+        spec.setdefault("instrument", "orbitrap")
+        if spec["instrument"] not in INSTRUMENTS:
+            sys.exit(f"{path}: set {name} has instrument {spec['instrument']!r}")
+        spec.setdefault("sulfur_free", False)
+    return manifest
+
+
+#: Every word the card prints of its own. A word of a name that is one of these
+#: tells a reader nothing when the card prints it, so the scrub does not refuse
+#: the card for it alone; the name itself, whole, still refuses it. The JSON's
+#: keys and the thresholds file it carries are the card's own too
+#: (:func:`card_vocabulary`).
+CARD_WORDS = frozenset(
+    word.lower()
+    for text in [label for _, label, _ in metrics.METRICS]
+    + list(metrics.DECOY_LABELS.values())
+    + [
+        "gate card against sets set pooled metric value target a reading of",
+        "stage pass fail missed met not read gated with reference run engine",
+        "since the baseline moved was now tiering rule decoy samples orbitrap",
+        "tof instrument mixed readings miss ok no sample on only",
+    ]
+    for word in re.split(r"[^A-Za-z0-9]+", text)
+    if word
+)
+
+
+def _keys(value) -> set[str]:
+    """Every key of a card's JSON, at any depth."""
+    if isinstance(value, dict):
+        return set(map(str, value)).union(*map(_keys, value.values()))
+    if isinstance(value, list):
+        return set().union(*map(_keys, value))
+    return set()
+
+
+def card_vocabulary(card: dict) -> set[str]:
+    """The words a card's JSON prints of its own beyond :data:`CARD_WORDS`: its
+    keys at any depth, and the thresholds file it carries, prose included."""
+    texts = sorted(_keys(card))
+    if card.get("thresholds"):
+        texts.append(json.dumps(card["thresholds"]))
+    return {
+        word.lower()
+        for text in texts
+        for word in re.split(r"[^A-Za-z0-9]+", text)
+        if word
+    }
+
+
+def _words(name: str, vocabulary: frozenset[str] = CARD_WORDS) -> list[str]:
+    """The words of a name a card could carry alone: three characters or more,
+    not a number, and not a word the card prints of its own."""
+    return [
+        word
+        for word in re.split(r"[^A-Za-z0-9]+", name)
+        if len(word) >= 3 and not word.isdigit() and word.lower() not in vocabulary
+    ]
+
+
+def deny_tokens(
+    names, ids, set_names=(), *, strict=(), hosts=(), own_words=()
+) -> list[str]:
+    """What the card's text must not hold.
+
+    :param names: Workspace, batch and dataset names: each whole, unless it is
+        a number or made of the card's own words alone, and each word of it
+        (:func:`_words`). A set's letter is the card's to print, so neither a
+        name nor a word of one equal to it is a token.
+    :param ids: Sample ids, whole.
+    :param set_names: The sets' letters, which the card is meant to hold.
+    :param strict: Names someone listed as ones the card must not hold, such as
+        an instrument's: each whole whatever it is made of, and each word of it.
+        A set named so is refused before the card is read
+        (:func:`refuse_denied_sets`), never let through.
+    :param hosts: The hosts (:func:`host_names`): each whole unless it is made
+        of the card's own words alone, a number never being one, so an
+        address is denied; and each word of it.
+    :param own_words: Further words this card prints of its own: the engines'
+        names, the JSON's keys, the thresholds file (:func:`card_vocabulary`).
+    :return: The tokens, longest first, so a refusal names the most of a name.
+    """
+    vocabulary = CARD_WORDS | {word.lower() for word in own_words}
+    tokens = set()
+    for name in names:
+        name = str(name or "").strip()
+        parts = [part for part in re.split(r"[^A-Za-z0-9]+", name) if part]
+        # A number, or a name made of the card's own words alone, names
+        # nothing the card could leak.
+        if len(name) >= 3 and any(
+            not part.isdigit() and part.lower() not in vocabulary for part in parts
+        ):
+            tokens.add(name)
+        tokens.update(_words(name, vocabulary))
+    letters = {name.lower() for name in set_names}
+    tokens = {token for token in tokens if token.lower() not in letters}
+    for name in hosts:
+        name = str(name or "").strip()
+        parts = [part for part in re.split(r"[^A-Za-z0-9]+", name) if part]
+        if any(part.isdigit() or part.lower() not in vocabulary for part in parts):
+            tokens.add(name)
+        tokens.update(_words(name, vocabulary))
+    for name in strict:
+        name = str(name or "").strip()
+        if name:
+            tokens.add(name)
+        tokens.update(_words(name, vocabulary))
+    tokens.update(str(one).strip() for one in ids if str(one or "").strip())
+    return sorted(tokens, key=lambda token: (-len(token), token))
+
+
+def load_deny(path: str | Path) -> list[str]:
+    """The names a ``--deny`` file lists: one per line, ``#`` starting a comment.
+
+    :raises SystemExit: On a file that cannot be read.
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError as error:
+        sys.exit(f"--deny {path}: {error.strerror or error}")
+    return [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+
+def refuse_denied_sets(set_names, denied) -> None:
+    """Refuse a set the deny list names, before anything is read: the card
+    prints every set's name, and a name the list denies is never let through.
+
+    :raises SystemExit: Naming the set.
+    """
+    named = {str(one).strip().lower() for one in denied}
+    for name in set_names:
+        if name.lower() in named:
+            sys.exit(
+                f"set {name}: the deny list names it, and the card prints it on "
+                "every row; give the set another letter"
+            )
+
+
+def host_names(url: str | None) -> list[str]:
+    """The hosts a card could name: the deployment's, and this machine's."""
+    names = [socket.gethostname(), socket.getfqdn()]
+    if url:
+        host = urlparse(url if "//" in url else f"//{url}").hostname
+        if host:
+            names.append(host)
+    return [name for name in names if name]
+
+
+def scrub(texts: dict[str, str], tokens: list[str]) -> None:
+    """Refuse a card whose text holds a denied token, before any of it is written.
+
+    A token matches whole, in any case, where no letter or digit adjoins it.
+
+    :param texts: Every file of the card, by name.
+    :param tokens: The deny list (:func:`deny_tokens`).
+    :raises CardRefused: Naming the first token found and the file holding it.
+    """
+    for where, text in texts.items():
+        for token in tokens:
+            pattern = r"(?<![A-Za-z0-9])" + re.escape(token) + r"(?![A-Za-z0-9])"
+            if re.search(pattern, text, flags=re.IGNORECASE):
+                raise CardRefused(token, where)
+
+
+def load_thresholds(path: str | Path) -> dict:
+    """The stage targets a gate marks the card against (``thresholds.json``).
+
+    :raises SystemExit: On a file of another format, or one naming a stage it
+        does not list.
+    """
+    thresholds = json.loads(Path(path).read_text(encoding="utf-8"))
+    if thresholds.get("format") != THRESHOLDS_FORMAT:
+        sys.exit(f"{path}: not a thresholds file of format {THRESHOLDS_FORMAT}")
+    if thresholds.get("stage") not in thresholds.get("stages", []):
+        sys.exit(f"{path}: stage {thresholds.get('stage')!r} is not one it lists")
+    return thresholds
+
+
+def target_for(
+    thresholds: dict, key: str, set_name: str | None, instrument: str | None
+) -> dict | None:
+    """The target a set's reading is marked against at the file's stage, or None.
+
+    A stage the metric's entry does not name holds the stage before it, as the
+    log's "hold" does; one it names as null has no target. A set may carry an
+    entry of its own per stage, which replaces the metric's for that stage.
+    There is none for a set the file lists as not gated, nor where the entry
+    names the sets it holds for (``only_sets``) or the instrument classes and
+    the set is not among them. With no set, the metric's own target.
+
+    :return: ``{"max" or "min": number, "reading": bool, "stage": name}``.
+    """
+    entry = (thresholds.get("targets") or {}).get(key)
+    if not entry:
+        return None
+    if set_name is not None:
+        if set_name in thresholds.get("not_gated_sets", []):
+            return None
+        only = entry.get("only_sets")
+        if only and set_name not in only:
+            return None
+        instruments = entry.get("instruments")
+        if instruments and instrument not in instruments:
+            return None
+    stages = thresholds["stages"]
+    own = (entry.get("sets") or {}).get(set_name) or {}
+    found, stage_of = None, None
+    for stage in stages[: stages.index(thresholds["stage"]) + 1]:
+        for source in (own, entry):
+            if stage in source:
+                found, stage_of = source[stage], stage
+                break
+    if not found:
+        return None
+    return {**found, "reading": bool(found.get("reading")), "stage": stage_of}
+
+
+def meets(value, target: dict) -> bool:
+    """Whether a value meets its target."""
+    if "max" in target and value > target["max"]:
+        return False
+    return not ("min" in target and value < target["min"])
+
+
+def judge(card: dict, thresholds: dict) -> dict:
+    """Mark every set's readings against the stage the thresholds name.
+
+    The pooled column is not marked: every target is stated per set, and a
+    set with no reference run is not marked on the readings that read one. A
+    target the file marks as a reading is marked and left out of the verdict
+    (decision 27 makes G1 and G2 readings from stage 3 on). A gated reading
+    with no value is not read, and is named rather than passed or failed; so
+    is one the detail read feeds that meets its target on a set where some of
+    those reads failed (:data:`metrics.DETAIL_METRICS`), since the rows left
+    out could hold a miss. A set on which no sample was read at all fails the
+    gate, unless nothing gates it: its readings are not read, and a set the
+    bench could not read is not one that passed.
+
+    :return: ``{"stage", "verdict", "met", "missed": [...], "not_read": [...],
+        "unread_sets": [...], "marks": {set: {metric: "ok" | "miss" | "not
+        read"}}, "met_by_set": {set: n}}``.
+    """
+    met, missed, not_read, marks, met_by_set = 0, [], [], {}, {}
+    unread_sets = []
+    for name, column in card["columns"].items():
+        if name == POOLED:
+            continue
+        readings = column["readings"]
+        unreferenced = (readings.get("reference_samples") or {}).get("value") == 0
+        unread = (readings.get("samples") or {}).get("value") == 0
+        failed = (readings.get("detail_failed") or {}).get("value")
+        for key, one in readings.items():
+            target = target_for(thresholds, key, name, column.get("instrument"))
+            if target is None or (unreferenced and key in metrics.REFERENCE_METRICS):
+                continue
+            if unread:
+                marks.setdefault(name, {})[key] = "not read"
+                if not target["reading"] and name not in unread_sets:
+                    unread_sets.append(name)
+                continue
+            value = one.get("value")
+            if value is None:
+                mark = "not read"
+            else:
+                mark = "ok" if meets(value, target) else "miss"
+                if mark == "ok" and failed and key in metrics.DETAIL_METRICS:
+                    mark = "not read"
+            marks.setdefault(name, {})[key] = mark
+            if target["reading"]:
+                continue
+            if mark == "ok":
+                met += 1
+                met_by_set[name] = met_by_set.get(name, 0) + 1
+            elif mark == "miss":
+                missed.append(
+                    {"set": name, "metric": key, "value": value, "target": target}
+                )
+            else:
+                not_read.append({"set": name, "metric": key})
+    return {
+        "stage": thresholds["stage"],
+        "verdict": "fail" if missed or unread_sets else "pass",
+        "met": met,
+        "missed": missed,
+        "not_read": not_read,
+        "unread_sets": unread_sets,
+        "marks": marks,
+        "met_by_set": met_by_set,
+    }
+
+
+def for_set(gate: dict, name: str) -> dict:
+    """The gate's verdict on one set alone."""
+    missed = [one for one in gate["missed"] if one["set"] == name]
+    unread = [one for one in gate["unread_sets"] if one == name]
+    marks = gate["marks"].get(name)
+    return {
+        **gate,
+        "verdict": "fail" if missed or unread else "pass",
+        "met": gate["met_by_set"].get(name, 0),
+        "missed": missed,
+        "not_read": [one for one in gate["not_read"] if one["set"] == name],
+        "unread_sets": unread,
+        "marks": {name: marks} if marks else {},
+        "met_by_set": {name: gate["met_by_set"][name]}
+        if name in gate["met_by_set"]
+        else {},
+    }
+
+
+def describe_target(target: dict | None) -> str:
+    """A target as the card prints it."""
+    if not target:
+        return "-"
+    bound = f"<= {target['max']:g}" if "max" in target else f">= {target['min']:g}"
+    return f"{bound}, a reading" if target.get("reading") else bound
+
+
+def unit_of(key: str) -> str:
+    """A reading's unit: ``%``, ``count`` or ``ppm``."""
+    if key.startswith("decoy "):
+        return "count" if key.endswith(" on_control_reagent") else "%"
+    return {key: unit for key, _, unit in metrics.METRICS}.get(key, "count")
+
+
+def label_of(key: str) -> str:
+    """A reading's label, as the card's row names it."""
+    labels = {key: label for key, label, _ in metrics.METRICS}
+    if key in labels:
+        return labels[key]
+    if key.startswith("decoy "):
+        _, arm, name = key.split(" ", 2)
+        return f"decoy {arm}: {metrics.DECOY_LABELS.get(name, name)}"
+    return key
+
+
+def format_value(value, unit: str) -> str:
+    """A value as the card prints it: a count whole, a share as the log rounds
+    it, a mass error to three decimals."""
+    if value is None:
+        return "-"
+    if unit == "ppm":
+        return f"{float(value):.3f}"
+    if unit == "count":
+        return f"{int(value)}"
+    return f"{float(value):g}"
+
+
+def format_reading(one: dict | None, unit: str) -> str:
+    """A reading with the count it is over: ``6.2 of 999``."""
+    if one is None:
+        return "-"
+    text = format_value(one.get("value"), unit)
+    return f"{text} of {one['n']}" if one.get("n") is not None else text
+
+
+def gate_line(gate: dict) -> str:
+    """The pass-or-fail line: the verdict, the sets on which no sample was read,
+    every reading that missed, and the gated readings that could not be read."""
+    gated = gate["met"] + len(gate["missed"])
+    line = f"GATE {gate['stage']}: {gate['verdict'].upper()} -"
+    if gate["unread_sets"]:
+        line += f" no sample read on {', '.join(gate['unread_sets'])};"
+    if gate["missed"]:
+        line += (
+            f" {len(gate['missed'])} of {gated} gated readings missed: "
+            + "; ".join(
+                f"{one['set']} {one['metric']} "
+                f"{format_value(one['value'], unit_of(one['metric']))} "
+                f"({describe_target(one['target'])})"
+                for one in gate["missed"]
+            )
+        )
+    else:
+        line += f" {gated} gated readings met"
+    if gate["not_read"]:
+        line += (
+            f"; {len(gate['not_read'])} not read ("
+            + ", ".join(f"{one['set']} {one['metric']}" for one in gate["not_read"])
+            + ")"
+        )
+    return line
+
+
+def load_baseline(path: str | Path) -> dict:
+    """A previous card, read before anything else is.
+
+    :raises SystemExit: On a file that is not a card of this format.
+    """
+    try:
+        baseline = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        sys.exit(f"--baseline {path}: {error}")
+    if not isinstance(baseline, dict) or baseline.get("format") != CARD_FORMAT:
+        sys.exit(f"--baseline {path}: not a card of format {CARD_FORMAT}")
+    return baseline
+
+
+def diff_cards(baseline: dict, card: dict) -> dict:
+    """Every reading that moved since a previous card, in the columns both hold.
+
+    A reading moved where its value or its count differs, or where one of the
+    two cards' column does not hold it. A column only one card holds is named
+    once, not reading by reading: a set's own card, given as the baseline of a
+    whole one, holds none of the other sets and no pooled column.
+
+    :return: ``{"compared": n, "by_column": {column: n}, "moved": [{"set",
+        "metric", "was", "now"}], "only_baseline": [...], "only_card":
+        [...]}``.
+    :raises SystemExit: On a baseline that is not a card of this format.
+    """
+    if baseline.get("format") != CARD_FORMAT:
+        sys.exit(f"the baseline is not a card of format {CARD_FORMAT}")
+    moved, by_column = [], {}
+    old_columns, new_columns = baseline.get("columns", {}), card["columns"]
+    for name in new_columns:
+        if name not in old_columns:
+            continue
+        old = old_columns[name].get("readings", {})
+        new = new_columns[name].get("readings", {})
+        keys = list(new) + [k for k in old if k not in new]
+        by_column[name] = len(keys)
+        for key in keys:
+            was, now = old.get(key), new.get(key)
+            if was != now:
+                moved.append({"set": name, "metric": key, "was": was, "now": now})
+    return {
+        "compared": sum(by_column.values()),
+        "by_column": by_column,
+        "moved": moved,
+        "only_baseline": [name for name in old_columns if name not in new_columns],
+        "only_card": [name for name in new_columns if name not in old_columns],
+    }
+
+
+def baseline_line(diff: dict) -> str:
+    """What moved since the baseline, in one line."""
+    line = f"{len(diff['moved'])} of {diff['compared']} readings moved"
+    if diff["only_card"]:
+        line += f"; not on the baseline: {', '.join(diff['only_card'])}"
+    if diff["only_baseline"]:
+        line += f"; on the baseline only: {', '.join(diff['only_baseline'])}"
+    return line
+
+
+def _context(name: str, column: dict) -> str:
+    parts = [column.get("instrument") or "-"]
+    if (column["readings"].get("samples") or {}).get("value") == 0:
+        parts.append("no sample read")
+    for side, values in (column.get("engine_versions") or {}).items():
+        if values:
+            parts.append(f"engine {side} {', '.join(values)}")
+    if column.get("tiering_rules"):
+        rules = ", ".join(str(one) for one in column["tiering_rules"])
+        parts.append(f"tiering rule set {rules}")
+    for arm, count in sorted((column.get("decoys_not_read") or {}).items()):
+        parts.append(f"decoy {arm} not read on {count}")
+    return f"- {name}: " + "; ".join(parts)
+
+
+def card_markdown(card: dict, names: list[str] | None = None) -> str:
+    """The card as markdown: the log's table, a metric per row and a set per
+    column (one set's card adds its counts, targets and marks), the gate line,
+    and the readings that moved since the baseline."""
+    names = names or list(card["columns"])
+    one_set = len(names) == 1 and names[0] != POOLED
+    engines = card["engines"]
+    gate = card.get("gate")
+    if gate and one_set:
+        gate = for_set(gate, names[0])
+    thresholds = card.get("thresholds")
+    sets = [name for name in names if name != POOLED]
+    title = (
+        f"# Card {names[0]}: {engines['a']} against {engines['b']}"
+        if one_set
+        else f"# Gate card: {engines['a']} against {engines['b']}, {len(sets)} sets"
+    )
+    lines = [title, ""]
+    lines += [_context(name, card["columns"][name]) for name in names]
+    lines.append("")
+    if gate:
+        lines += [gate_line(gate), ""]
+    keys: list[str] = []
+    for name in names:
+        keys += [k for k in card["columns"][name]["readings"] if k not in keys]
+    target_head = f" target ({gate['stage']}) |" if gate else ""
+    if one_set:
+        lines += [
+            "| metric | value |" + (target_head + " |" if gate else ""),
+            "|---|---|" + ("---|---|" if gate else ""),
+        ]
+    else:
+        lines += [
+            "| metric | " + " | ".join(names) + " |" + target_head,
+            "|---|" + "---|" * len(names) + ("---|" if gate else ""),
+        ]
+    for key in keys:
+        unit = unit_of(key)
+        if one_set:
+            column = card["columns"][names[0]]
+            row = f"| {label_of(key)} | {format_reading(column['readings'].get(key), unit)} |"
+            if gate:
+                target = target_for(thresholds, key, names[0], column.get("instrument"))
+                mark = gate["marks"].get(names[0], {}).get(key, "")
+                row += f" {describe_target(target)} | {mark} |"
+        else:
+            cells = []
+            for name in names:
+                one = card["columns"][name]["readings"].get(key)
+                cell = format_value(one.get("value"), unit) if one else "-"
+                if gate and gate["marks"].get(name, {}).get(key) == "miss":
+                    cell += " MISS"
+                cells.append(cell)
+            row = f"| {label_of(key)} | " + " | ".join(cells) + " |"
+            if gate:
+                # The column states the metric's own target; the marks say which
+                # sets it holds for, and where a set is held to one of its own.
+                row += f" {describe_target(target_for(thresholds, key, None, None))} |"
+        lines.append(row)
+    baseline = card.get("baseline")
+    if baseline is not None:
+        moved = [one for one in baseline["moved"] if one["set"] in names]
+        lines += ["", "## Since the baseline", "", baseline_line(baseline) + "."]
+        if moved:
+            lines += ["", "| set | metric | was | now |", "|---|---|---|---|"]
+            for one in moved:
+                unit = unit_of(one["metric"])
+                lines.append(
+                    f"| {one['set']} | {label_of(one['metric'])} | "
+                    f"{format_reading(one['was'], unit)} | "
+                    f"{format_reading(one['now'], unit)} |"
+                )
+    return "\n".join(lines) + "\n"
+
+
+def card_files(card: dict) -> dict[str, str]:
+    """Every file of the card, by name: the whole card and one per set, each as
+    markdown and JSON. A set's JSON is a card of its own, so it can be the
+    baseline of another."""
+    files = {
+        "card.md": card_markdown(card),
+        "card.json": json.dumps(card, indent=2, default=_json_default) + "\n",
+    }
+    for name in card["columns"]:
+        if name == POOLED:
+            continue
+        diff = card.get("baseline")
+        own = {
+            **card,
+            "columns": {name: card["columns"][name]},
+            "gate": for_set(card["gate"], name) if card.get("gate") else None,
+            "baseline": (
+                {
+                    "compared": diff["by_column"].get(name, 0),
+                    "by_column": {
+                        k: v for k, v in diff["by_column"].items() if k == name
+                    },
+                    "moved": [m for m in diff["moved"] if m["set"] == name],
+                    "only_baseline": [],
+                    "only_card": [k for k in diff["only_card"] if k == name],
+                }
+                if diff is not None
+                else None
+            ),
+        }
+        files[f"card_{name}.md"] = card_markdown(own, [name])
+        files[f"card_{name}.json"] = (
+            json.dumps(own, indent=2, default=_json_default) + "\n"
+        )
+    return files
+
+
+def read_provenance(client: MascopeClient, sample_id: str, ids: list[str]) -> dict:
+    """Each committed row's provenance, read through the detail route.
+
+    The ledger serves a slim row; the tier reasons, the mass gate's record, the
+    predicted envelope and the peak's separation are in the provenance, which
+    only the detail read serves. A read that fails, on an answer or on no
+    answer at all once the client's retries are spent, leaves its row unread
+    and is counted (``detail_failed``): the reason coverage, G13 and G14 leave
+    it out, and where they then meet their target the gate marks them not
+    read; G7 counts it as uncorroborated where its mass sits beyond three
+    widths. So a failed read never passes the gate. A read that answers with
+    no provenance is a row with no record: no tier reason, no corroboration.
+
+    :return: Assignment id -> its provenance, or None where the read failed.
+    """
+
+    def one(row_id: str):
+        try:
+            detail = client.peak_assignments.detail(sample_id, row_id)
+        except MascopeError as error:
+            print(
+                f"{sample_id}: detail of {row_id} not read ({error})", file=sys.stderr
+            )
+            return row_id, None
+        return row_id, (detail or {}).get("provenance") or {}
+
+    with ThreadPoolExecutor(max_workers=DETAIL_WORKERS) as pool:
+        return dict(pool.map(one, ids))
+
+
+def committed_ids(ledger: pd.DataFrame) -> list[str]:
+    """The rows whose provenance the card reads: every committed one, a
+    monoisotopic or isotopologue row with a formula."""
+    committed = ledger[
+        ledger["role"].isin([ROLE_MAIN, "iso_child"])
+        & ledger["assigned_formula"].notna()
+    ]
+    return committed["peak_assignment_id"].astype(str).tolist()
+
+
+def card_samples(client: MascopeClient, spec: dict) -> list[str]:
+    """A set's samples: the ones the manifest names, else its batch's."""
+    if spec.get("samples"):
+        return [str(one) for one in spec["samples"]]
+    listing = client.samples.list(batch=spec["batch"], dataset=spec.get("dataset"))
+    if listing is None or listing.empty:
+        return []
+    return listing["sample_item_id"].astype(str).tolist()
+
+
+def collect_set(client: MascopeClient, name: str, spec: dict, args) -> dict:
+    """Everything one set's card column is computed from.
+
+    Every sample with a completed run of engine A is read; one with a
+    reference run too is joined to it, one without is joined to an absent side
+    and read by the intrinsic metrics alone. A sample with no completed run of
+    engine A, or an empty ledger, is skipped and counted.
+
+    :return: ``{"samples", "skipped", "frame", "source_ions",
+        "engine_versions", "tiering_rules", "decoy"}``.
+    """
+    mechanisms = client.ionization.list()
+    notation_by_id = (
+        dict(
+            zip(
+                mechanisms["ionization_mechanism_id"],
+                mechanisms["ionization_mechanism"],
+            )
+        )
+        if mechanisms is not None
+        else {}
+    )
+    samples = card_samples(client, spec)
+    frames, source_ions, skipped = [], {}, 0
+    versions = {"a": set(), "b": set()}
+    rules = set()
+    for sample_id in samples:
+        runs = client.peak_assignments.list_runs(sample_id)
+        run_a = latest_completed_run(runs, args.engine_a)
+        if run_a is None:
+            print(f"set {name}: {sample_id} skipped (no completed {args.engine_a} run)")
+            skipped += 1
+            continue
+        ledger_a = client.peak_assignments.get(sample_id, run_id=run_a)
+        if ledger_a is None:
+            print(f"set {name}: {sample_id} skipped (empty ledger)")
+            skipped += 1
+            continue
+        run_b = latest_completed_run(runs, args.engine_b, before=args.engine_b_before)
+        ledger_b = (
+            client.peak_assignments.get(sample_id, run_id=run_b) if run_b else None
+        )
+        joined = join_ledgers(
+            prepare(ledger_a, "a", notation_by_id),
+            prepare(ledger_b, "b", notation_by_id)
+            if ledger_b is not None
+            else absent_side("b"),
+        )
+        provenance = read_provenance(client, sample_id, committed_ids(ledger_a))
+        read = pd.DataFrame(
+            [
+                {
+                    "a_assignment_id": row_id,
+                    **metrics.provenance_columns(record),
+                    "a_detail_failed": record is None,
+                }
+                for row_id, record in provenance.items()
+            ],
+            columns=[
+                "a_assignment_id",
+                "a_reasons",
+                "a_mass_gate_corroborated",
+                "a_absent_lines",
+                "a_unseparated",
+                "a_detail_failed",
+            ],
+        )
+        joined["a_assignment_id"] = joined["a_assignment_id"].astype(object)
+        joined = joined.merge(
+            read.astype({"a_assignment_id": object}),
+            on="a_assignment_id",
+            how="left",
+        )
+        config = run_config(runs, run_a)
+        joined["a_unsearched"] = joined["sample_peak_id"].isin(
+            unsearched_peaks(ledger_a, config)
+        )
+        joined["reference"] = ledger_b is not None
+        joined["sulfur_free"] = bool(spec.get("sulfur_free"))
+        joined.insert(0, "sample_item_id", sample_id)
+        frames.append(joined)
+        source_ions[sample_id] = metrics.profile_source_ions(config)
+        for side, run_id in (("a", run_a), ("b", run_b)):
+            row = runs[runs["peak_assignment_run_id"] == run_id] if run_id else None
+            if row is not None and not row.empty:
+                versions[side].add(str(row.iloc[0]["engine_version"]))
+        tiering = (config.get("tiering") or {}).get("version")
+        if tiering is not None:
+            rules.add(int(tiering))
+        print(
+            f"set {name}: {sample_id} {len(joined)} peaks, "
+            f"{'with' if ledger_b is not None else 'without'} a reference run, "
+            f"{sum(one is not None for one in provenance.values())} of "
+            f"{len(provenance)} rows' provenance read"
+        )
+    decoy = decoy_report(client, samples) if args.decoy else None
+    return {
+        "samples": samples,
+        "skipped": skipped,
+        "frame": pd.concat(frames, ignore_index=True) if frames else None,
+        "source_ions": source_ions,
+        "engine_versions": {side: sorted(v) for side, v in versions.items()},
+        "tiering_rules": sorted(rules),
+        "decoy": decoy,
+    }
+
+
+def pooled_arms(decoys: list[dict]) -> dict:
+    """The decoy arms' totals over several sets, each arm's rates re-read."""
+    pooled: dict = {}
+    for decoy in decoys:
+        for arm, total in decoy.get("pooled", {}).items():
+            into = pooled.setdefault(arm, {"samples": 0, "control": {}, "decoy": {}})
+            into["samples"] += total["samples"]
+            into["control"] = _added(into["control"], total["control"])
+            into["decoy"] = _added(into["decoy"], total["decoy"])
+    for total in pooled.values():
+        total.update(decoy_rates(total["control"], total["decoy"]))
+    return dict(sorted(pooled.items()))
+
+
+def _not_read_arms(decoy: dict | None) -> dict[str, int]:
+    """How many samples of a set each decoy arm could not be read on."""
+    counts: dict[str, int] = {}
+    for arms in (decoy or {}).get("skipped", {}).values():
+        for arm in arms:
+            counts[arm] = counts.get(arm, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def build_card(collected: dict[str, dict], manifest: dict, args) -> dict:
+    """The card: one column per set and one pooled over them all.
+
+    A set on which no sample was read keeps its column, every reading of it
+    not read but the samples it skipped, so the card and the gate name it.
+    """
+    columns = {}
+    for name, one in collected.items():
+        frame = one["frame"]
+        columns[name] = {
+            "instrument": manifest["sets"][name]["instrument"],
+            "engine_versions": one["engine_versions"],
+            "tiering_rules": one["tiering_rules"],
+            "decoys_not_read": _not_read_arms(one["decoy"]),
+            "readings": (
+                metrics.card_readings(
+                    frame,
+                    skipped=one["skipped"],
+                    source_ions=one["source_ions"],
+                    decoy_arms=(one["decoy"] or {}).get("pooled"),
+                )
+                if frame is not None
+                else metrics.unread_readings(one["skipped"])
+            ),
+        }
+    read = [one for one in collected.values() if one["frame"] is not None]
+    pooled_frame = pd.concat([one["frame"] for one in read], ignore_index=True)
+    instruments = sorted({columns[name]["instrument"] for name in columns})
+    columns[POOLED] = {
+        "instrument": instruments[0] if len(instruments) == 1 else "mixed",
+        "engine_versions": {
+            side: sorted({v for one in read for v in one["engine_versions"][side]})
+            for side in ("a", "b")
+        },
+        "tiering_rules": sorted({v for one in read for v in one["tiering_rules"]}),
+        "decoys_not_read": {},
+        "readings": metrics.card_readings(
+            pooled_frame,
+            skipped=sum(one["skipped"] for one in collected.values()),
+            source_ions={k: v for one in read for k, v in one["source_ions"].items()},
+            decoy_arms=pooled_arms([one["decoy"] for one in read if one["decoy"]])
+            if args.decoy
+            else None,
+        ),
+    }
+    return {
+        "format": CARD_FORMAT,
+        "engines": {"a": args.engine_a, "b": args.engine_b},
+        "columns": columns,
+        "gate": None,
+        "thresholds": None,
+        "baseline": None,
+    }
+
+
+def run_card(args) -> int:
+    """``--card``: read every set of the manifest, mark, diff, scrub, write.
+
+    :return: 0 when the card is written and the gate, if asked, passes; 1 when
+        it fails; 2 when the scrub refuses the card, which is then not written.
+    """
+    manifest = load_sets(args.sets)
+    thresholds = load_thresholds(args.gate) if args.gate else None
+    baseline = load_baseline(args.baseline) if args.baseline else None
+    denied = list(manifest.get("deny") or [])
+    if args.deny:
+        denied += load_deny(args.deny)
+    hosts = host_names(os.environ.get("MASCOPE_URL"))
+    refuse_denied_sets(manifest["sets"], denied + hosts)
+    collected, names, ids = {}, [], []
+    for name, spec in manifest["sets"].items():
+        client = MascopeClient(workspace=spec["workspace"])
+        collected[name] = one = collect_set(client, name, spec, args)
+        names += [spec["workspace"], spec.get("batch"), spec.get("dataset")]
+        ids += one["samples"]
+    if not any(one["frame"] is not None for one in collected.values()):
+        sys.exit(f"nothing to card: no sample carries a completed {args.engine_a} run")
+    card = build_card(collected, manifest, args)
+    if thresholds is not None:
+        card["thresholds"] = thresholds
+        card["gate"] = judge(card, thresholds)
+    if baseline is not None:
+        card["baseline"] = diff_cards(baseline, card)
+    tokens = deny_tokens(
+        [n for n in names if n],
+        ids,
+        list(manifest["sets"]),
+        strict=denied,
+        hosts=hosts,
+        own_words=re.split(r"[^A-Za-z0-9]+", f"{args.engine_a} {args.engine_b}")
+        + sorted(card_vocabulary(card)),
+    )
+    files = card_files(card)
+    try:
+        scrub(files, tokens)
+    except CardRefused as refused:
+        print(f"card refused, nothing written: {refused}", file=sys.stderr)
+        return 2
+    out = Path(args.card)
+    out.mkdir(parents=True, exist_ok=True)
+    for file_name, text in files.items():
+        (out / file_name).write_text(text, encoding="utf-8")
+    print(files["card.md"])
+    if card["gate"]:
+        print(gate_line(card["gate"]))
+    if card["baseline"] is not None:
+        print(f"BASELINE: {baseline_line(card['baseline'])}")
+    return 1 if card["gate"] and card["gate"]["verdict"] == "fail" else 0
+
+
 def resolve_samples(client: MascopeClient, args) -> list[str]:
     if args.sample:
         return list(args.sample)
@@ -969,9 +1944,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument(
-        "--workspace", required=True, help="workspace name the samples live in"
-    )
+    parser.add_argument("--workspace", help="workspace name the samples live in")
     parser.add_argument(
         "--sample", nargs="*", help="sample item ids (default: every sample of --batch)"
     )
@@ -1002,9 +1975,47 @@ def main(argv=None) -> int:
         "--decoy",
         action="store_true",
         help="report each sample's decoy runs against the run each is a decoy "
-        "of, instead of comparing two engines",
+        "of, instead of comparing two engines; with --card, the arms join the card",
+    )
+    parser.add_argument(
+        "--card",
+        metavar="DIR",
+        help="write the gate card for every set of --sets into DIR: one card per "
+        "set and one pooled, as markdown and JSON",
+    )
+    parser.add_argument(
+        "--sets",
+        metavar="MANIFEST",
+        help="the sets a card reads, by letter (README, 'The gate card')",
+    )
+    parser.add_argument(
+        "--gate",
+        nargs="?",
+        const=str(DEFAULT_THRESHOLDS),
+        metavar="THRESHOLDS",
+        help="mark the card against the stage targets of THRESHOLDS (the shipped "
+        "thresholds.json without one) and print the pass-or-fail line",
+    )
+    parser.add_argument(
+        "--baseline",
+        metavar="CARD_JSON",
+        help="diff the card against a previous card.json, reading by reading",
+    )
+    parser.add_argument(
+        "--deny",
+        metavar="FILE",
+        help="further names the card must not hold, one per line, beside the "
+        "manifest's names and the hosts",
     )
     args = parser.parse_args(argv)
+    if args.card:
+        if not args.sets:
+            parser.error("--card reads the sets of a --sets manifest")
+        return run_card(args)
+    if args.gate or args.baseline or args.sets or args.deny:
+        parser.error("--sets, --gate, --baseline and --deny belong to --card")
+    if not args.workspace:
+        parser.error("give a --workspace")
     if not args.sample and not args.batch:
         parser.error("give --sample ids or a --batch name")
 
