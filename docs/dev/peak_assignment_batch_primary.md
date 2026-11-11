@@ -634,12 +634,12 @@ aggregates" (§12.1). The per-sample
 - `peak_assignment_copy.md` (retired 2026-09-03, removed from docs/dev 2026-10-22; in git
   history) — the seeded re-score chain §5.3 and §5.4 reuse, now `seeded_scoring.py`.
 - `peak_assignment_continuity.md` (removed from docs/dev 2026-10-22; in git history) —
-  the anchor-scoped verdicts §6.3 records as shipped. Its unbuilt half, ratio stability as
-  display-only evidence on the anchor, is the subject of the assignment quality plan's step
-  4.2 (MAS-62), which takes a different stance on the signal and on whether it touches
-  tiers; the two must be reconciled before that step starts. Filed 2026-10-22: the
-  ratio-stability pass as MAS-323 (the MAS-62 reconciliation inside it, the owner's call),
-  the column, badge and overlay as MAS-346, the ceiling-scale measurement as MAS-347.
+  the anchor-scoped verdicts §6.3 records as shipped. Its other half, ratio stability as
+  display-only evidence on the anchor, was reconciled with the assignment quality plan's
+  step 4.2 (MAS-62) by decision 35 (MAS-709): co-variation is the primary reading, and the
+  ratio series is its diagnostic. It is built as that plan's step 4.11 (MAS-323), whose
+  as-built section records what of the note's sections 1, 2 and 9 shipped and how; the
+  column, badge and overlay are MAS-346, the ceiling-scale measurement MAS-347.
 - [`sdk_peak_assignment.md`](sdk_peak_assignment.md) — the import contract that stays.
 - [`maintaining.md`](../maintaining.md) — the operator view of the cost and the two ingest
   settings.
