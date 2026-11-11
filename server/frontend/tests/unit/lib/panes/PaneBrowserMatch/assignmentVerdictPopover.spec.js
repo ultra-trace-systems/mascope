@@ -139,6 +139,27 @@ describe('AssignmentVerdictPopover', () => {
     expect(verify).toHaveBeenCalledWith(expect.objectContaining({ peak_assignment_id: 'pa-1' }))
   })
 
+  it("offers the structure the row's target declares, first", async () => {
+    const FRUCTOSE = 'BJHIKXHVCXFQLS-UYFOZJQFSA-N'
+    const row = {
+      ...M0,
+      reference_listing: {
+        name: 'fructose',
+        source: 'sugars',
+        inchikey: FRUCTOSE,
+        tags: [],
+        total: 1,
+        target: { label: 'target', name: 'glucose', inchikey: GLUCOSE, listed: true }
+      }
+    }
+    const wrapper = mountPopover({ row, record: null, overlay: null })
+    await wrapper.find('.evidence').setValue('reference_standard')
+    expect(JSON.parse(wrapper.find('.claim-structure').attributes('data-candidates'))).toEqual([
+      { inchikey: GLUCOSE, name: 'glucose', label: 'target' },
+      { inchikey: FRUCTOSE, name: 'fructose', label: 'sugars' }
+    ])
+  })
+
   it('will not confirm without an evidence level', async () => {
     const wrapper = mountPopover({ row: M0, record: null, overlay: null })
     const confirm = wrapper.find('button:nth-of-type(1)')

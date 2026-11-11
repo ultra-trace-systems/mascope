@@ -7,7 +7,7 @@ import Select from 'primevue/select'
 import { BaseClaimStructure, BaseVerdictBadge } from '@/lib/base'
 import { num } from '@/lib/formatters'
 import { canEditWorkspace } from '@/lib/permissions'
-import { ledgerListing } from '@/lib/referenceListings'
+import { ledgerListing, targetOf } from '@/lib/referenceListings'
 import { EVIDENCE_LEVELS, claimCandidates } from '@/lib/verification'
 import { useApp } from '@/stores'
 
@@ -56,7 +56,10 @@ const evidenceLevel = ref(props.record?.evidence_level ?? null)
 const note = ref(props.record?.note ?? '')
 // The structures the row's candidates name; the claim the form picks of them.
 const candidates = computed(() =>
-  claimCandidates({ identities: ledgerListing(target.value?.reference_listing)?.identities })
+  claimCandidates({
+    target: targetOf(target.value?.reference_listing),
+    identities: ledgerListing(target.value?.reference_listing)?.identities
+  })
 )
 const claim = ref(null)
 const canConfirm = computed(() => Boolean(evidenceLevel.value) && claim.value?.ready !== false)

@@ -1,12 +1,17 @@
 import { describe, it, expect } from 'vitest'
 
 import {
+  candidatesTooltip,
   ledgerListing,
   listingName,
   listingOf,
   listingSource,
   listingTags,
-  listingTooltip
+  listingTooltip,
+  targetMore,
+  targetName,
+  targetOf,
+  targetTooltip
 } from '@/lib/referenceListings'
 
 const DMF = { name: 'N,N-Dimethylformamide', source: 'contaminants-list' }
@@ -203,5 +208,104 @@ describe('ledgerListing', () => {
 
   it.each([null, undefined, 'D5', 3])('reads %s as no listing', (flat) => {
     expect(ledgerListing(flat)).toBeNull()
+  })
+})
+
+// What the target compound a row was matched to declares, beside what a list
+// calls the formula (identification claims, section 4.2).
+describe('targetOf', () => {
+  const GLUCOSE = 'WQZGKKKJIJFFOK-GASJEMHNSA-N'
+  const TARGET = { label: 'target', name: 'glucose', inchikey: GLUCOSE, listed: true }
+  const LISTED = { name: 'D-glucose', source: 'sugars', inchikey: GLUCOSE, tags: [], total: 3 }
+
+  it('reads the target a row was matched to, and nothing where it names none', () => {
+    expect(targetOf({ ...LISTED, target: TARGET })).toMatchObject({
+      name: 'glucose',
+      inchikey: GLUCOSE,
+      listed: true,
+      identity: null,
+      unlisted: false
+    })
+    expect(targetOf(LISTED)).toBeNull()
+    expect(targetOf(null)).toBeNull()
+  })
+
+  it("is one candidate with the listing's identity of the same structure", () => {
+    const flat = { ...LISTED, target: TARGET }
+    const listing = ledgerListing(flat)
+    const target = targetOf(flat, listing)
+
+    expect(target.identity).toBe(listing.identities[0])
+    expect(targetMore(target, listing)).toBe(2)
+    expect(targetTooltip(target)).toContain(
+      'The sugars list names the same structure: one candidate, shown once.'
+    )
+  })
+
+  it("is a candidate of its own beside another structure's listing", () => {
+    const flat = { ...LISTED, inchikey: 'OTHERKEYOTHERK-UHFFFAOYSA-N', target: TARGET }
+    const listing = ledgerListing(flat)
+    const target = targetOf(flat, listing)
+
+    expect(target.identity).toBeNull()
+    expect(targetMore(target, listing)).toBe(0)
+    expect(targetTooltip(target)).toContain('A reference list carries its InChIKey.')
+  })
+
+  it('reads a key its own listing names as listed, whatever the lookup said', () => {
+    // A list the run matched from may have gone since; the row still names it.
+    const flat = { ...LISTED, target: { ...TARGET, listed: false } }
+    const target = targetOf(flat, ledgerListing(flat))
+
+    expect(target.unlisted).toBe(false)
+    expect(targetTooltip(target)).not.toContain('No reference list carries')
+  })
+
+  it('reads a key no list carries as unlisted', () => {
+    const target = targetOf({ total: 0, target: { ...TARGET, listed: false } })
+
+    expect(target.unlisted).toBe(true)
+    expect(targetTooltip(target)).toContain(
+      'No reference list carries its InChIKey: a compound the lists do not know.'
+    )
+  })
+
+  it('shows a target with no structure by its name and no key', () => {
+    const target = targetOf({
+      total: 0,
+      target: { label: 'target', name: 'glucose', inchikey: null, listed: null }
+    })
+
+    expect(targetName(target)).toBe('glucose')
+    expect(target.unlisted).toBe(false)
+    const lines = targetTooltip(target).split('\n')
+    expect(lines[1]).toBe('glucose. The target declares no structure.')
+    expect(lines.join('\n')).not.toContain('InChIKey')
+  })
+
+  it('says which candidate is which on hover', () => {
+    const target = targetOf({ total: 0, target: { ...TARGET, name: null } })
+
+    expect(targetName(target)).toBe('Unnamed compound')
+    expect(targetTooltip(target).split('\n')[0]).toBe(
+      'The target compound this row was matched to: what the target stands for, not what the peak is.'
+    )
+    expect(targetTooltip(target)).toContain(`Unnamed compound (InChIKey ${GLUCOSE})`)
+  })
+
+  it("reads a listing that only the target makes as no list's", () => {
+    expect(
+      ledgerListing({ name: null, source: null, tags: [], total: 0, target: TARGET })
+    ).toBeNull()
+  })
+
+  it('puts both candidates in one tooltip, the target first', () => {
+    const flat = { ...LISTED, target: TARGET }
+    const listing = ledgerListing(flat)
+    const [first, second] = candidatesTooltip(targetOf(flat, listing), listing).split('\n\n')
+
+    expect(first).toBe(targetTooltip(targetOf(flat, listing)))
+    expect(second).toBe(listingTooltip(listing))
+    expect(candidatesTooltip(null, listing)).toBe(listingTooltip(listing))
   })
 })

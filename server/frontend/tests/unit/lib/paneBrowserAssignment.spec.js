@@ -1319,6 +1319,132 @@ describe('PaneBrowserAssignment reference-list column', () => {
   })
 })
 
+// What a row's target compound declares, beside what a list calls its formula
+// (identification claims, section 4.2).
+describe("PaneBrowserAssignment the target's candidate", () => {
+  const GLUCOSE = 'WQZGKKKJIJFFOK-GASJEMHNSA-N'
+  const TARGET = { label: 'target', name: 'glucose', inchikey: GLUCOSE, listed: false }
+  const ONLY_TARGET = { name: null, source: null, inchikey: null, tags: [], total: 0 }
+
+  beforeEach(() => {
+    runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
+  })
+  afterEach(() => vi.clearAllMocks())
+
+  const recordTooltip = (el, binding) => el.setAttribute('data-tooltip', binding.value ?? '')
+  const RECORD_TOOLTIP = { mounted: recordTooltip, updated: recordTooltip }
+
+  async function rendered(full, ...families) {
+    const tableRows = ref([])
+    seed(...families)
+    if (full) localStorage.setItem('mascope.browser.match.ledgerListing', '{"full":true}')
+    const wrapper = mount(PaneBrowserAssignment, {
+      global: {
+        directives: { tooltip: RECORD_TOOLTIP, help: {} },
+        stubs: {
+          ...GLOBAL_STUBS,
+          DataTable: {
+            ...GLOBAL_STUBS.DataTable,
+            watch: {
+              value: { handler: (value) => (tableRows.value = value), immediate: true }
+            }
+          },
+          Column: {
+            props: ['field'],
+            setup: () => ({ rows: tableRows }),
+            template:
+              '<div class="stub-col" :data-field="field"><slot name="header" />' +
+              '<template v-for="(row, i) in rows" :key="i">' +
+              '<div class="stub-cell"><slot name="body" :data="row" /></div></template></div>'
+          }
+        }
+      }
+    })
+    await wrapper.vm.$nextTick()
+    return wrapper
+  }
+
+  const targeted = (listing) => {
+    const fam = family({ id: 'glc', mz: 181.07, intensity: 900, formula: 'C6H12O6' })
+    fam.parent.reference_listing = listing
+    return fam
+  }
+  const firstCell = (wrapper) =>
+    wrapper
+      .findAll('.stub-col')
+      .find((col) => col.attributes('data-field') === 'listing')
+      .find('.stub-cell [data-testid="listed-as"]')
+
+  afterEach(() => localStorage.clear())
+
+  it('reads a target match as target and its name, unlisted where no list has it', async () => {
+    const cell = firstCell(await rendered(true, targeted({ ...ONLY_TARGET, target: TARGET })))
+
+    expect(cell.find('[data-testid="target-as"]').text()).toBe('target')
+    expect(cell.find('.listing-name').text()).toBe('glucose')
+    expect(cell.find('[data-testid="target-unlisted"]').exists()).toBe(true)
+    expect(cell.attributes('data-tooltip')).toContain('what the target stands for')
+  })
+
+  it('shows a target a list names by the same structure once, with both labels', async () => {
+    const flat = {
+      name: 'D-glucose',
+      source: 'sugars',
+      inchikey: GLUCOSE,
+      tags: ['background'],
+      total: 2,
+      target: { ...TARGET, listed: true }
+    }
+    const cell = firstCell(await rendered(true, targeted(flat)))
+
+    expect(cell.findAll('.listing-name').map((name) => name.text())).toEqual(['glucose +1'])
+    expect(cell.find('.listing-source').text()).toBe('sugars')
+    expect(cell.find('[data-testid="list-tag-background"]').exists()).toBe(true)
+    expect(cell.find('[data-testid="target-unlisted"]').exists()).toBe(false)
+    const tip = cell.attributes('data-tooltip')
+    expect(tip).toContain('The sugars list names the same structure')
+    expect(tip).toContain('The run matched this formula from a reference list.')
+  })
+
+  it("keeps another structure's listing beside the target", async () => {
+    const flat = {
+      name: 'fructose',
+      source: 'sugars',
+      inchikey: 'BJHIKXHVCXFQLS-UYFOZJQFSA-N',
+      tags: [],
+      total: 1,
+      target: { ...TARGET, listed: true }
+    }
+    const cell = firstCell(await rendered(true, targeted(flat)))
+
+    expect(cell.findAll('.listing-name').map((name) => name.text())).toEqual([
+      'glucose',
+      'fructose'
+    ])
+  })
+
+  it('folds the target to its mark', async () => {
+    const cell = firstCell(await rendered(false, targeted({ ...ONLY_TARGET, target: TARGET })))
+
+    expect(cell.find('.listing-name').exists()).toBe(false)
+    expect(cell.find('[data-testid="target-as"]').attributes('aria-label')).toBe('target: glucose')
+    expect(cell.find('.ph-flask').exists()).toBe(false)
+  })
+
+  it("sorts a target row on the target's name", async () => {
+    const pinene = family({ id: 'p', mz: 137.13, intensity: 10, formula: 'C10H16' })
+    pinene.parent.reference_listing = { name: 'alpha-pinene', source: 'monoterpenes' }
+    const aa = targeted({ ...ONLY_TARGET, target: { ...TARGET, name: 'aa-glucose' } })
+    seed(aa, pinene, FAMILY_B)
+    const wrapper = await mountPane()
+
+    wrapper.vm.sortField = 'listing'
+    wrapper.vm.sortOrder = 1
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.rows.map((row) => row.peak_assignment_id)).toEqual(['glc', 'p', 'b'])
+  })
+})
+
 // A run keeps the peak ids it read, and a sample whose peaks were found again
 // since has none of them (#2025): the rows still render, off what the run
 // stored, but a click on one had nothing to focus and did nothing at all.

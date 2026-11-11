@@ -17,6 +17,13 @@
  * (`xrefs.tags`): `background` for a list of what is commonly laboratory-air or
  * instrument background, the cyclic siloxanes first. A tag is the list's
  * reading, shown beside the name; the tier does not weigh it.
+ *
+ * A row matched to a target compound also carries what the target declares
+ * (`reference_listing.target`: its name, its InChIKey, and whether a list the
+ * deployment matches against carries the key). That is a candidate too: what
+ * the target stands for, not what the peak is. It is read beside the listing,
+ * and where a list's identity has the same InChIKey the two are one candidate,
+ * shown once with both labels (`targetOf`).
  */
 
 /**
@@ -57,6 +64,8 @@ export function listingOf(entry, matched = entry?.reference_identities) {
  */
 export function ledgerListing(flat) {
   if (!flat || typeof flat !== 'object') return null
+  // A row only its target names carries the listing for the target alone.
+  if (flat.total === 0) return null
   const tags = Array.isArray(flat.tags) ? flat.tags : []
   return {
     matched: true,
@@ -148,4 +157,96 @@ export function listingTooltip(listing) {
     ...readings,
     'A formula match names candidate compounds; it is not an identification.'
   ].join('\n')
+}
+
+const text = (value) => (typeof value === 'string' && value ? value : null)
+
+/**
+ * What the target compound a row was matched to declares, beside its listing.
+ *
+ * @param {object|null} flat - the row's `reference_listing`, where the read put
+ *   the target under `target`
+ * @param {object|null} [listing] - the row's listing, from `listingOf` or
+ *   `ledgerListing`: an identity of the same InChIKey is the same candidate
+ * @returns {{name: ?string, inchikey: ?string, listed: ?boolean,
+ *   identity: ?object, unlisted: boolean}|null} - `identity` is the listing's
+ *   identity of the target's key, where it has one; `unlisted` is a key no list
+ *   carries. Null on a row matched to no target.
+ */
+export function targetOf(flat, listing = null) {
+  const target = flat && typeof flat === 'object' ? flat.target : null
+  if (!target || typeof target !== 'object') return null
+  const inchikey = text(target.inchikey)
+  const identity =
+    (inchikey && (listing?.identities ?? []).find((each) => each?.inchikey === inchikey)) || null
+  const listed = typeof target.listed === 'boolean' ? target.listed : null
+  return {
+    name: text(target.name),
+    inchikey,
+    listed,
+    identity,
+    unlisted: !identity && listed === false
+  }
+}
+
+/**
+ * The target's name, as its candidate reads.
+ *
+ * @param {object|null} target - from `targetOf`
+ * @returns {string}
+ */
+export function targetName(target) {
+  if (!target) return ''
+  return target.name ?? 'Unnamed compound'
+}
+
+/**
+ * The names the listing carries besides the target's, where the two are one
+ * candidate: how many more records name the formula.
+ *
+ * @param {object|null} target - from `targetOf`
+ * @param {object|null} listing - the row's listing
+ * @returns {number}
+ */
+export function targetMore(target, listing) {
+  if (!target?.identity || !listing) return 0
+  return Math.max((listing.total ?? listing.identities.length) - 1, 0)
+}
+
+/**
+ * Which the target's candidate is, and what the lists say of it.
+ *
+ * @param {object|null} target - from `targetOf`
+ * @returns {string}
+ */
+export function targetTooltip(target) {
+  if (!target) return ''
+  const lines = [
+    'The target compound this row was matched to: what the target stands for, not what the peak is.',
+    target.inchikey
+      ? `${targetName(target)} (InChIKey ${target.inchikey})`
+      : `${targetName(target)}. The target declares no structure.`
+  ]
+  if (target.identity) {
+    const by = target.identity.source ? `The ${target.identity.source} list` : 'A reference list'
+    lines.push(`${by} names the same structure: one candidate, shown once.`)
+  } else if (target.unlisted) {
+    lines.push('No reference list carries its InChIKey: a compound the lists do not know.')
+  } else if (target.listed) {
+    lines.push('A reference list carries its InChIKey.')
+  }
+  lines.push('A formula match names candidate compounds; it is not an identification.')
+  return lines.join('\n')
+}
+
+/**
+ * The tooltip of a cell that shows both candidates: the target's, then the
+ * listing's.
+ *
+ * @param {object|null} target - from `targetOf`
+ * @param {object|null} listing - the row's listing
+ * @returns {string}
+ */
+export function candidatesTooltip(target, listing) {
+  return [targetTooltip(target), listingTooltip(listing)].filter(Boolean).join('\n\n')
 }

@@ -18,7 +18,12 @@ import {
   listingOf,
   listingSource,
   listingTags,
-  listingTooltip
+  listingTooltip,
+  candidatesTooltip,
+  targetMore,
+  targetName,
+  targetOf,
+  targetTooltip
 } from '@/lib/referenceListings'
 import { holdsTierDown, reasonIcon, reasonTooltip, tierReasonsOf } from '@/lib/tierReasons'
 import { coVariationLabel, coVariationSummary, coVariationTooltip } from '@/lib/batchCoVariation'
@@ -165,7 +170,9 @@ const pendingVerdict = ref(null) // which button is mid-submit
 const denied = ref(false) // 403: not an editor on this sample
 // The structure a confirmation names, from the compounds the lists name for the
 // formula (BaseClaimStructure); one on structure evidence must name one.
-const claimOptions = computed(() => claimCandidates({ identities: listedAs.value?.identities }))
+const claimOptions = computed(() =>
+  claimCandidates({ target: targetAs.value, identities: listedAs.value?.identities })
+)
 const claim = ref(null)
 const canConfirm = computed(() => Boolean(evidenceLevel.value) && claim.value?.ready !== false)
 
@@ -1057,6 +1064,9 @@ const ionizationTooltip = computed(() => {
 const listedAs = computed(() =>
   listingOf(focusedDetail.value, provenance.value?.reference_identities)
 )
+// What the target compound the row was matched to declares: a candidate beside
+// the list's, one with it where a list's identity has the same InChIKey.
+const targetAs = computed(() => targetOf(focusedDetail.value?.reference_listing, listedAs.value))
 
 // Three kinds of close alternative are not simply runners-up, and each says
 // which it is: a reading of the same ion, the reading a neighbour's isotope line
@@ -1426,9 +1436,48 @@ const demotedCount = computed(() => {
       </div>
       <!-- A list's name for the formula is the first thing a reader checks the
            assignment against, so it is named outright, above the evidence. -->
-      <div v-if="listedAs" class="identity" data-testid="identity">
+      <div v-if="listedAs || targetAs" class="identity" data-testid="identity">
+        <!-- What the target stands for, labelled as the target's: where a list
+             names the same structure it is one candidate with both labels. -->
         <div
-          v-if="listedAs"
+          v-if="targetAs"
+          class="ev listed"
+          data-testid="target-as"
+          v-tooltip.top="
+            targetAs.identity ? candidatesTooltip(targetAs, listedAs) : targetTooltip(targetAs)
+          "
+        >
+          <span class="k"
+            >target<template v-if="targetAs.identity">
+              &middot; reference list<span v-if="!listedAs.matched" class="potential">
+                &middot; potential</span
+              ></template
+            ></span
+          >
+          <span class="v"
+            ><span class="pi ph ph-target" /> {{ targetName(targetAs)
+            }}<template v-if="targetMore(targetAs, listedAs)">
+              +{{ targetMore(targetAs, listedAs) }}</template
+            ></span
+          >
+          <span v-if="targetAs.identity?.source" class="list-source">{{
+            targetAs.identity.source
+          }}</span>
+          <span v-if="targetAs.unlisted" class="list-tags">
+            <span class="list-tag" data-testid="target-unlisted">unlisted</span>
+          </span>
+          <span v-if="targetAs.identity && listingTags(listedAs).length" class="list-tags">
+            <span
+              v-for="tag in listingTags(listedAs)"
+              :key="tag"
+              class="list-tag"
+              :data-testid="`list-tag-${tag}`"
+              >{{ tag }}</span
+            >
+          </span>
+        </div>
+        <div
+          v-if="listedAs && !targetAs?.identity"
           class="ev listed"
           data-testid="listed-as"
           v-tooltip.top="listingTooltip(listedAs)"
