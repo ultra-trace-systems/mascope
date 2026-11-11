@@ -56,7 +56,8 @@ const runs = computed(() => app.data.peakAssignment.run)
 const assignments = computed(() => app.data.peakAssignment.peak)
 
 // Whether this run carries a tier of its producing engine's own. Only an
-// imported run does - an in-app row's engine tier IS its `tier` - so the column
+// imported run does, and a sample read from the batch ledger on the M0 row an
+// import's verdict is about - an in-app row's engine tier IS its `tier` - so the column
 // is absent from every in-app ledger rather than sitting there empty. Read off
 // the loaded rows rather than the run's engine, because "peaky published this"
 // and "peaky stated a tier on these rows" are different claims: an engine may

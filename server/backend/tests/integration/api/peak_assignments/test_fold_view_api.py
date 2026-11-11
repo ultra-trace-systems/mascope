@@ -352,6 +352,26 @@ async def _give_every_anchor_a_verdict(session_factory, batch_id, engine_tier):
         await session.commit()
 
 
+async def _read_every_consensus_through(session_factory, batch_id, mechanism_id):
+    """Give the registry entry of each anchor's consensus formula another
+    mechanism than the anchor's: its members read the consensus formula, but
+    not through the consensus mechanism the verdict is about."""
+    async with session_factory() as session:
+        anchors = (
+            await session.execute(
+                select(BatchPeak).where(BatchPeak.sample_batch_id == batch_id)
+            )
+        ).scalars()
+        for anchor in anchors:
+            anchor.candidates = [
+                {**entry, "ionization_mechanism_id": mechanism_id}
+                if entry.get("formula") == anchor.consensus_formula
+                else entry
+                for entry in anchor.candidates or []
+            ]
+        await session.commit()
+
+
 async def test_the_derived_ledger_shows_an_imports_verdict_on_the_judged_reading(
     guest_client, async_session_factory, folded
 ):
@@ -400,6 +420,21 @@ async def test_the_derived_ledger_shows_an_imports_verdict_on_the_judged_reading
     agrees = await _ledger(guest_client, s1, tier_disagrees=False)
     assert [r["sample_peak_id"] for r in agrees["data"]] == ["p1"]
     assert agrees["total"] == 1
+    assert (await _ledger(guest_client, s1, tier_disagrees=True))["total"] == 0
+
+    # The member reads the consensus formula through another mechanism: the
+    # verdict is not about its reading, and neither filter reaches it.
+    await _give_every_anchor_a_verdict(
+        async_session_factory, folded["batch_id"], "candidate"
+    )
+    await _read_every_consensus_through(
+        async_session_factory, folded["batch_id"], "another-mech"
+    )
+    rows = {r["sample_peak_id"]: r for r in (await _ledger(guest_client, s1))["data"]}
+    assert rows["p1"]["assigned_formula"] == "C6H12O6"
+    assert rows["p1"]["ionization_mechanism_id"] == "another-mech"
+    assert rows["p1"]["engine_tier"] is None
+    assert (await _ledger(guest_client, s1, engine_tier="candidate"))["total"] == 0
     assert (await _ledger(guest_client, s1, tier_disagrees=True))["total"] == 0
 
 
