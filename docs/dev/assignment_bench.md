@@ -2,7 +2,7 @@
 
 # The assignment bench: both engines on demand, on the agent box
 
-- **Status:** design
+- **Status:** building
 - **As of:** 2026-11-11
 - **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, milestone 6: MAS-64, MAS-835 to MAS-841, MAS-849)
 - **What:** One command on the agent box that runs a branch's in-app assignment engine beside peaky at a pinned release on fixed sample sets, prints the plan's metrics as a card, and posts it on the PR; a worker runs it in its own session.
@@ -125,6 +125,17 @@ instance from it and verifies every sample resolved a mode and has peaks,
 because a fresh instance has no ionization modes and silently assigns
 nothing.
 
+As built (6.2, `tooling/assignment_bench/`): the demo manifest holds the
+demo bundle's MS1 acquisitions as two sets, one per chemistry, `Db`
+(bromide, 80 files) and `Du` (uronium, 81 files); its four MS2
+acquisitions are left out. A set is named by the gate card's rule (an
+upper-case letter, then at most a digit or a lower-case letter, then at
+most a sign), so the bench's state can feed the card. `init` uploads each
+file with its SHA-256 and finds its sample file again by that hash, keeps
+its state in the runtime home (`$MASCOPE_PATH/.runtime/bench`, a copy of
+the manifest beside `state.json`) and stops the backend when it is done;
+the instance's database and filestore stay.
+
 ## 5. The reference at a pin
 
 Decision 29: the reference is read at a tagged release, never at a main
@@ -181,7 +192,7 @@ worker on the LAN host, are recorded in the decision.
 |---|---|---|
 | 6.0 | MAS-835 | Decision: the box and the ask (taken: the agent box, no trigger) |
 | 6.1 | MAS-836 | Decision: the sets (taken: the demo dataset first) |
-| 6.2 | MAS-837 | `bench init`: the instance from a manifest |
+| 6.2 | MAS-837 | `bench init`: the instance from a manifest (built: `tooling/assignment_bench/`) |
 | 6.3 | MAS-838 | `bench reference --pin`: peaky at a tag, published per set |
 | 6.4 | MAS-64 | the gate card as code: metrics, thresholds, baseline, scrub (was 4.4) |
 | 6.5 | MAS-840 | `bench run <ref>`: build, run, compare, card, diff |
