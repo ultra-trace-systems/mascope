@@ -74,6 +74,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     SampleMassAccuracy,
     apply_partner_gates,
     evidence_for,
+    listed_formula_identities,
     pattern_scoring_for,
     tier_for_evidence,
     untargeted_matches_to_peak_assignments,
@@ -92,6 +93,7 @@ from mascope_backend.api.new.peak_assignments.profiles import (
 from mascope_backend.api.new.peak_assignments.seeded_scoring import score_seeds
 from mascope_backend.api.new.peak_assignments.service import (
     SEARCH_PEAK_COLUMNS,
+    _fetch_known_isotopes,
     _resolution_of,
     _searched_mechanisms,
     _seeded_fits,
@@ -505,7 +507,7 @@ async def _search_sample_peaks(
             f"searches {search_scope['searched_peaks']} of "
             f"{search_scope['eligible_peaks']} representative peaks"
         )
-    _, mechanisms = await fetch_sample_mechanisms(sample)
+    mechanism_ids, mechanisms = await fetch_sample_mechanisms(sample)
     # The mode's own mechanisms decide whether there is anything to search at
     # all. An opportunistic channel is an addition to a sample's chemistry, not
     # a substitute for it: a mode that declares nothing is a mode nobody has
@@ -544,8 +546,11 @@ async def _search_sample_peaks(
     )
     # The per-sample run's own rule, so a secondary channel the mode declares
     # is searched once here too.
+    searched_mechanisms = _searched_mechanisms(
+        mechanisms, secondary_mechanisms, resolved_profile
+    )
     notations, mechanism_id_by_notation = _untargeted_ionization_notations(
-        _searched_mechanisms(mechanisms, secondary_mechanisms, resolved_profile)
+        searched_mechanisms
     )
     runtime.logger.info(
         f"Untargeted batch search of sample '{sample.sample_item_name}' "
@@ -605,6 +610,23 @@ async def _search_sample_peaks(
         reagent_offset=reagent_offset,
         envelope_tolerance=envelope_tolerance,
     )
+    # The neutrals the lists a run of the sample reads name, which corroborate
+    # a reading through a secondary channel there. No Stage A ran on this
+    # path, so the known set is read for its formulas alone, never matched
+    # against the frame: through the mode's mechanisms for the target
+    # library, through every searched one for the reference lists, as a run
+    # reads them. Only a secondary channel's readings consult it.
+    listed_formulas: frozenset[str] = frozenset()
+    if resolved_profile.minor_channels:
+        listed_formulas = listed_formula_identities(
+            await _fetch_known_isotopes(
+                sample,
+                match_params.isotope_abundance_threshold,
+                mechanism_ids,
+                searched_mechanisms,
+                known_window=resolved_profile.context.known_window,
+            )
+        )
     rows = untargeted_matches_to_peak_assignments(
         matches_df,
         peaks_df=frame,
@@ -617,6 +639,7 @@ async def _search_sample_peaks(
         max_alternatives=config.max_alternatives,
         minor_channels=resolved_profile.minor_channels,
         fit_by_seed=fit_by_seed,
+        listed_formulas=listed_formulas,
     )
     return gate_search_rows(
         rows,

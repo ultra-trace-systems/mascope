@@ -2539,6 +2539,45 @@ def _combine_known_isotopes(
     return combined
 
 
+async def _fetch_known_isotopes(
+    sample: Sample,
+    isotope_abundance_threshold: float,
+    mechanism_ids: list[str],
+    mechanisms: list[SimpleNamespace],
+    *,
+    known_window: KnownWindow | None,
+) -> pd.DataFrame:
+    """The known set a run of the sample reads: the target library and the
+    reference lists, as one frame (:func:`_combine_known_isotopes`).
+
+    Stage A matches it against the sample's peaks. A batch search, which runs
+    no Stage A, reads it for the neutrals it names alone
+    (:func:`engine.listed_formula_identities`), so that a list corroborates a
+    secondary-channel reading there as it does in a run of the sample.
+
+    :param sample: Sample model object.
+    :param isotope_abundance_threshold: Minimum relative abundance for an
+        isotope to participate.
+    :param mechanism_ids: The mode's mechanism ids, which the target library
+        is read through (:func:`_fetch_known_target_isotopes`).
+    :param mechanisms: The mechanisms the reference lists are read through
+        (:func:`_fetch_reference_known_isotopes`).
+    :param known_window: The resolved chemistry context's ceiling on every
+        reference source's window, or None where the context sets none.
+    :return: The combined frame, empty where neither names anything.
+    """
+    target_isotopes_df = await _fetch_known_target_isotopes(
+        sample, isotope_abundance_threshold, mechanism_ids
+    )
+    reference_isotopes_df = await _fetch_reference_known_isotopes(
+        sample,
+        isotope_abundance_threshold,
+        mechanisms,
+        known_window=known_window,
+    )
+    return _combine_known_isotopes(target_isotopes_df, reference_isotopes_df)
+
+
 def _untargeted_ionization_notations(
     mechanisms: list[SimpleNamespace],
 ) -> tuple[list[str], dict[str, str]]:
@@ -3696,17 +3735,12 @@ async def _stage_a_assignments(
     confidence_calibration: dict | None = None
     mass_accuracy = inherited_accuracy or SampleMassAccuracy(reagent=reagent_offset)
     gated_df = match_isotope_df = pd.DataFrame()
-    target_isotopes_df = await _fetch_known_target_isotopes(
-        sample, match_params.isotope_abundance_threshold, mechanism_ids
-    )
-    reference_isotopes_df = await _fetch_reference_known_isotopes(
+    known_isotopes_df = await _fetch_known_isotopes(
         sample,
         match_params.isotope_abundance_threshold,
+        mechanism_ids,
         mechanisms,
         known_window=known_window,
-    )
-    known_isotopes_df = _combine_known_isotopes(
-        target_isotopes_df, reference_isotopes_df
     )
     listed_formulas = listed_formula_identities(known_isotopes_df)
     if not known_isotopes_df.empty:
