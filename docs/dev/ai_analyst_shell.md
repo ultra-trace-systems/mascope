@@ -1,10 +1,12 @@
 # Mascope through natural language: the AI analyst shell
 
 - **Status:** design
-- **As of:** 2026-11-04
+- **As of:** 2026-11-11
 - **Tracked in:** [AI analyst shell](https://linear.app/ultra-trace/project/ai-analyst-shell-2b0a6a7e8af8)
   (Linear, P-MAS-21, filed 2026-11-04: milestones 0 to 5 follow section 4;
-  the five decisions of section 5 are MAS-659 to MAS-662 and MAS-665;
+  the five decisions of section 5 are MAS-659 to MAS-662 and MAS-665,
+  all taken but MAS-661, which waits for the pre-registered thresholds, and
+  MAS-662, whose batch-report brief is still to file;
   milestone 0's test issues are MAS-666 to MAS-668, with MAS-669 asking
   for the owner's bench modules; the rest follow the decisions; since
   2026-11-06 also the open items of the AI layer project, P-MAS-12, which
@@ -39,9 +41,11 @@ reliable, (4) the phases, (5) the decisions, (6) the risks. It is a plan, not
 a user guide; what a user meets is written in `docs/user` as each phase
 lands.
 
-> **Status (2026-11-04): proposal, nothing built.** Written for sign-off.
-> The only model-in-the-loop measurement is one run of Sonnet 5.5 over the
-> MCP server (section 1.1); no cheaper model has been tried.
+> **Status (2026-11-11): architecture agreed by both owners.** The split of
+> section 2.5 and the decisions of section 5 stand, with one caveat the
+> owners recorded: a researcher's open-ended analysis will keep needing a
+> frontier model (section 3.2, lever 5). Milestone 0's first matrix row is
+> in section 3.4; milestone 1 is under way.
 
 ---
 
@@ -213,9 +217,10 @@ owns the server side of this.
 
 ### 2.5 Peaky is the shell
 
-> **Proposed 2026-11-04, pending the peaky owner's agreement** (decision
-> 5.5, MAS-665). The split below is this note's position; the two Linear edits it
-> names are made at the owners' meeting, not before.
+> **Agreed by both owners in November 2026** (decision 5.5, MAS-665, Done
+> 2026-11-11). The three Linear edits below are made: MAS-662 is taken as a
+> joint decision, PKY-14 names Peaky as the one interface, and the Peaky team
+> is on P-MAS-21 with milestone 3 renamed for the Peaky bundle.
 
 Peaky's owner keeps peaky, and the two owners' idea is that the AI frontend
 is *called* Peaky while every computation and every reusable piece moves to
@@ -343,7 +348,13 @@ simpler decisions.
    routing for v1 because the harness was not ours. With a shell it is: a
    cheap model for metadata, narration and parameter filling; a stronger
    one for open-ended analysis and interpretation; the table filled by the
-   matrix.
+   matrix. The owners noted, on agreeing the architecture in November
+   2026, that the open-ended class is the researcher's and will keep
+   needing a frontier model: no toolkit can cover every question a
+   researcher brings, so a small model is not suitable for that use. The
+   cheaper models are earned for the bounded classes, and the architecture
+   is the same for any model; what changes is which model a preset names
+   per class.
 6. **Numbers from code, prose from the model.** A report template is
    rendered deterministically (the `mascope_viz` artifacts `chart` and
    `table`, MAS-237 and MAS-553) from Frames; the model writes only the
@@ -651,14 +662,17 @@ its description.
    pytest, runs from any host and from the golden fixture, and carries the
    manifest; a composition in Peaky is the product its owner shapes, and
    peaky's golden runs guard it; a Goose recipe alone would tie the
-   deterministic core to one runtime's instruction text.
+   deterministic core to one runtime's instruction text. *Taken by both
+   owners, November 2026 (MAS-662); the batch-report brief that names the
+   step module, the composition file and the wrapper is still to file.*
 5. **Peaky is the shell** (joint, 2.5). The AI frontend is called Peaky
    and lives in the peaky repository and package; every computation and
    reusable piece is Mascope's; milestones 3 and 4 are Peaky-team
    deliverables. *Leaning: yes*, with the rule of 2.5 (what describes a
    tool ships in the package that provides the tool, so with Mascope; what
    composes tools or guides the science ships with Peaky) and the two
-   Linear edits 2.5 names.
+   Linear edits 2.5 names. *Taken by both owners, November 2026 (MAS-665,
+   Done 2026-11-11), with the caveat of 3.2, lever 5.*
 
 Open questions the phases answer rather than decide now: which GPU host
 runs the self-hosted re-run of milestone 3; whether Goose's ACP custom
