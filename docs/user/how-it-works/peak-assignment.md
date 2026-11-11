@@ -992,10 +992,23 @@ measurements the reasons read.
   a list that allows radicals. A formula match names candidate compounds, not an
   identification. Hovering lists the compounds by name, up to 25, and says how many more
   the lists hold. The same names appear beside the other readings of the ion and beside
-  the close alternatives. The ledger shows the run's own match in its **listed as**
+  the close alternatives.
+- ***target***, beside it, is the compound of your target library the row was matched
+  to: its name, and the InChIKey it declares where it declares one. It is what the target
+  stands for, a candidate as a list's name is, not what the peak is. Where a list's
+  compound has the same InChIKey the two are one candidate, shown once as ***target ·
+  reference list*** with the list's name for it. A key that no loaded list carries is
+  marked *unlisted*: a compound the lists do not know. A target with no structure shows
+  its name alone, and hovering says it declares none. A target that declares neither a
+  name nor a structure says nothing beyond the formula, so the row shows no target
+  candidate. Hovering says which candidate is
+  which. The tier does not weigh either, and the row's level does not move with it.
+  The ledger shows the run's own match in its **listed as**
   column, beside the formula, folded to a flask with the list's tags beside it; hovering
   the flask gives the first name, its list, the tags and how many more names the run
-  matched, so a row's list reading is there without opening the inspector. **Listed
+  matched, so a row's list reading is there without opening the inspector. A row matched
+  to a target shows the target's mark there, or *target* and its name written out, and
+  *unlisted* where no list carries its key. **Listed
   as, in full**, in the view menu, writes the name and the list out in the column, in
   this ledger and in the *Batch peaks* ledger both, and keeps the setting across a
   reload. A lead is not shown there - it is looked up when a row is inspected.
@@ -1119,6 +1132,7 @@ name beside a peak is a candidate, not an identification. A confirmation can say
 compound it is: an **identification claim**. Once you pick an evidence level, the form
 shows a **Structure** choice:
 
+- the structure the row's target compound declares, first, labelled *target*;
 - the compounds the row's reference lists name for its formula, each with its list;
 - **Unlisted**, last: an InChIKey of your own, with a name. Use it for a compound no
   loaded list names.
@@ -1519,7 +1533,10 @@ formula, where a sample's run matched it from a list: the ledger keeps the listi
 identity a member brought matched from a list, through whichever channel, and shows the
 consensus formula's. It is folded to a flask and the list's tags, the name on hover,
 as in a sample's ledger, and **Listed as, in full** in the view menu writes it out. A batch ledger folded before this column existed shows it once its
-samples are folded again (*Rebuild batch ledger*). The column a ledger is sorted by is kept per ledger - it
+samples are folded again (*Rebuild batch ledger*). The column also names the target
+compound a member was matched to, off the consensus as a sample's ledger does: *target*
+and its name, shown once with the list's where both name the same structure. A batch
+ledger folded before the target was recorded shows it once its samples are folded again. The column a ledger is sorted by is kept per ledger - it
 survives the switch between the *Batch peaks* ledger and a sample's ledger, and a reload.
 
 Because a batch peak is one identity for a species across the batch, the focused peak

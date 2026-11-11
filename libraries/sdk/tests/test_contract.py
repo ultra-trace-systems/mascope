@@ -371,6 +371,27 @@ class TestPeakAssignmentContract:
         assert "alternatives" in record
         assert "provenance" in record
 
+    def test_a_target_match_carries_the_targets_candidate(self, mascope):
+        """The target compound a row was matched to rides on its listing, in
+        the ledger frame and the detail alike: what the target stands for,
+        labelled as the target's (identification claims, section 4.2)."""
+        sample_id = _sample_with_completed_run(mascope)
+        df = mascope.peak_assignments.get(sample_id)
+        targeted = df[df["target_compound_id"].notna()]
+        if targeted.empty:
+            pytest.skip("the stack's latest run matched no peak to a target compound")
+        row = targeted.iloc[0]
+        listing = row["reference_listing"]
+        if not isinstance(listing, dict) or "target" not in listing:
+            pytest.skip("the server predates the target's candidate on the listing")
+
+        target = listing["target"]
+        assert target["label"] == "target"
+        assert set(target) == {"label", "name", "inchikey", "listed"}
+        assert target["listed"] in (True, False, None)
+        record = mascope.peak_assignments.detail(sample_id, row["peak_assignment_id"])
+        assert record["reference_listing"]["target"] == target
+
 
 @requires_stack
 class TestSpectraContract:

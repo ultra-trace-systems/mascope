@@ -391,6 +391,19 @@ labelled `target`; `referenceListings.js` and the inspector render it beside
 the reference listing, merged with a reference identity of the same InChIKey.
 Verify: a target match reads *target · name*, a reference-only match reads as
 today, a target whose InChIKey a list carries shows once. Size: S.
+*Built (MAS-358):* the flat `reference_listing` carries the candidate under
+`target` (`label`, `name`, `inchikey`, `listed`) on the detail read, the
+sample ledger and the batch ledger; a target row no list names gets a listing
+with null list fields and a `total` of 0. A compound that declares neither a
+name nor an InChIKey is no candidate, so its rows read as before. `listed` asks the active compound
+lists under the deployment's licence gate (`mascope_reference.listed_inchikeys`,
+one indexed query per page), so *unlisted* means no admitted list carries the
+key, not only the identities the run kept; a key the row's own listing names is
+never unlisted. The batch registry entry records the `target_compound_id` a
+member brought, as it records a listing, so a batch folded before reads it
+after its samples are folded again. The compound's name and key are read at
+the read, not recorded by the run, so a structure given later shows. The
+verdict forms offer the target's structure first.
 
 **C. Claims on the verification tables** (MAS-359; Assignment quality plan,
 beside MAS-73). Context: sections 5.1, 5.2
