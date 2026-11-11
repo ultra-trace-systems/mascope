@@ -60,6 +60,7 @@ from mascope_backend.api.new.peak_assignments.schemas import (
     RecalibrateResponse,
     ScopeVerificationQueryParams,
     ScopeVerificationsResponse,
+    VerificationQueueResponse,
     VerifyAssignmentBody,
 )
 from mascope_backend.api.new.peak_assignments.service import (
@@ -71,6 +72,7 @@ from mascope_backend.api.new.peak_assignments.service import (
     get_peak_assignment_detail,
     get_peak_assignment_runs,
     get_peak_assignments,
+    get_verification_queue,
     get_verifications,
     ineligible_reason,
     plan_sample_decoy,
@@ -416,6 +418,41 @@ async def get_verifications_route(
     await check_sample_access(sample_item_id, user, "guest")
     result = await get_verifications(sample_item_id=sample_item_id)
     return AssignmentVerificationsResponse.model_validate(result)
+
+
+@peak_assignments_router.get(
+    "/sample/{sample_item_id}/verification-queue",
+    response_model=VerificationQueueResponse,
+)
+# The app's own read: no token client asks for the queue.
+@api_route()
+async def get_verification_queue_route(
+    sample_item_id: str,
+    peak_assignment_run_id: str | None = Query(None),
+    user: User = Depends(current_active_user),
+) -> VerificationQueueResponse:
+    """
+    The assignments of a run worth a verdict next, in the order to ask.
+
+    Rows whose evidence sits near a tier band edge, ranked by how close and by
+    how few labels the instrument and profile hold near it, with random spot
+    checks between them; first, the rows a verdict made before this run judged
+    and the run since read differently, marked stale. No entry carries
+    ``p_correct``.
+
+    Returns 404 for a run id this sample does not have, and 409 (with the code
+    `run_still_assembling`) for one whose import has not finished.
+
+    :param sample_item_id: The unique identifier of the sample.
+    :param peak_assignment_run_id: The run; defaults to the latest completed one.
+    :param user: The current authenticated user. Requires workspace guest role.
+    :return: The queue's entries in order, with counts by reason.
+    """
+    await check_sample_access(sample_item_id, user, "guest")
+    result = await get_verification_queue(
+        sample_item_id=sample_item_id, peak_assignment_run_id=peak_assignment_run_id
+    )
+    return VerificationQueueResponse.model_validate(result)
 
 
 @peak_assignments_router.get(

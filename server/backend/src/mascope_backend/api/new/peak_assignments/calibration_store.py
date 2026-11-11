@@ -77,6 +77,7 @@ def _to_calibration(row: AssignmentCalibration) -> Calibration:
         corroboration_weights=dict(row.corroboration_weights)
         if row.corroboration_weights
         else None,
+        label_weights=dict(row.label_weights) if row.label_weights else None,
     )
 
 
@@ -182,6 +183,11 @@ async def save_calibration(
                     else None
                 ),
                 ionization_setups=ionization_setups or None,
+                label_weights=(
+                    dict(calibration.label_weights)
+                    if calibration.label_weights
+                    else None
+                ),
                 is_active=True,
                 fit_utc=datetime.now(timezone.utc),
                 created_utc=datetime.now(timezone.utc),

@@ -976,6 +976,61 @@ class AssignmentVerificationsResponse(BaseModel):
     data: list[AssignmentVerificationRecord]
 
 
+class VerificationQueueStale(BaseModel):
+    """The live verdict a stale queue entry's run read differently."""
+
+    #: ``reassigned``: the run commits another formula or mechanism on the
+    #: judged peak. ``rescored``: the same one, at another evidence.
+    kind: Literal["reassigned", "rescored"]
+    verdict: str
+    assigned_formula: str | None = None
+    ionization_mechanism_id: str | None = None
+    assignment_verification_id: str
+    verified_utc: datetime | None = None
+
+
+class VerificationQueueEntry(BaseModel):
+    """One assignment worth a verdict, and why (``verification_queue``).
+
+    Carries no ``p_correct`` and no evidence on purpose: the queue asks for a
+    judgment of the data, and a number beside it would anchor it.
+    """
+
+    peak_assignment_id: str
+    sample_peak_id: str
+    #: ``stale``: a live verdict made before this run judged what the run since
+    #: read differently. ``band_edge``: near a tier band edge, where few labels
+    #: are held. ``spot_check``: a random draw from the rest.
+    reason: Literal["stale", "band_edge", "spot_check"]
+    #: The tier whose band edge the row sits nearest to, None without bands.
+    near_band: str | None = None
+    #: Labels the instrument class and reagent profile hold near the row's
+    #: evidence: what the ranking weighed.
+    labels_near: int
+    stale: VerificationQueueStale | None = None
+
+
+class VerificationQueueCounts(BaseModel):
+    """How many entries of the queue each reason put there."""
+
+    stale: int = 0
+    band_edge: int = 0
+    spot_check: int = 0
+
+
+class VerificationQueueResponse(BaseModel):
+    """A run's verification queue, in the order to ask (guardrail 3)."""
+
+    status: str = "success"
+    message: str
+    results: int
+    total: int
+    #: The run ranked; None where the sample has none.
+    peak_assignment_run_id: str | None = None
+    counts: VerificationQueueCounts
+    data: list[VerificationQueueEntry]
+
+
 #: ``datetime`` under another name, for a model with a field of that name.
 Timestamp = datetime
 
@@ -1404,6 +1459,9 @@ class RecalibrateResponse(BaseModel):
     n_neg: int = 0
     n_strong_positives: int | None = None
     provisional: bool | None = None
+    #: The ``{evidence level: weight}`` map the labels were weighed by in the
+    #: fit and in both held-out ECEs; None when nothing was fit.
+    label_weights: dict[str, float] | None = None
 
 
 # ---------------------------------------------------------------------------
