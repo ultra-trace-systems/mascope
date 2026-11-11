@@ -216,7 +216,8 @@ from mascope_backend.socket.notifications import (
     send_progress_user_notification,
 )
 from mascope_file.name import get_instrument_type
-from mascope_match import compute_match_isotopes, shift_mz, shifted_mz_axis
+from mascope_match import compute_match_isotopes, shift_mz, shifted_mz_axis, unshift_mz
+from mascope_match.compute.axis import current_mz_shift
 from mascope_reference import iter_known_compositions, known_state_fingerprint
 from mascope_reference.scope import SAMPLE_POLARITIES
 from mascope_tools.composition.arbitration import CANDIDATE_DENSITY
@@ -1765,6 +1766,27 @@ async def fetch_mechanisms_by_notation(
     ]
 
 
+def _source_axis(peaks_df: pd.DataFrame) -> pd.DataFrame:
+    """The peaks where the source made them: on the axis as stored.
+
+    The two passes that look for the source's own ions read them here: the
+    secondary channels' carriers (:func:`_resolve_secondary_channels`) and the
+    reagent pre-pass's lines (:func:`_reagent_assignments`). A decoy moves the
+    axis off every formula of the sample, not off the source that made the
+    spectrum (``decoy.py``). Read on the moved axis, a dalton shift puts every
+    carrier and reagent line out of those passes' reach, and the arm would
+    search fewer channels than its control and offer the stages the source's
+    brightest ions as analytes. Outside a decoy's shift the frame is the one
+    given.
+
+    :param peaks_df: The sample's peaks, as the run reads them.
+    :return: The same peaks, in the same order, at their stored m/z.
+    """
+    if current_mz_shift() is None:
+        return peaks_df
+    return peaks_df.assign(mz=unshift_mz(peaks_df["mz"].to_numpy()))
+
+
 async def _resolve_secondary_channels(
     sample, resolved_profile: ResolvedProfile, peaks_df: pd.DataFrame
 ) -> tuple[ResolvedProfile, list[SimpleNamespace]]:
@@ -1778,7 +1800,8 @@ async def _resolve_secondary_channels(
     :param sample: The sample view row.
     :param resolved_profile: The sample's resolved chemistry.
     :param peaks_df: The sample's peaks, whose spectrum is asked for each
-        channel's carrier.
+        channel's carrier, on the axis as stored (:func:`_source_axis`): a
+        decoy opens the channels its control opened.
     :return: The resolution carrying the channel evidence, and the deployment's
         mechanism rows for the profile's secondary channels.
     """
@@ -1789,10 +1812,11 @@ async def _resolve_secondary_channels(
         ],
         sample.polarity,
     )
+    source = _source_axis(peaks_df)
     resolved_profile = with_secondary_channels(
         resolved_profile,
-        peaks_df["mz"].to_numpy(),
-        peaks_df["intensity"].to_numpy(),
+        source["mz"].to_numpy(),
+        source["intensity"].to_numpy(),
         [m.ionization_mechanism for m in secondary_mechanisms],
     )
     return resolved_profile, secondary_mechanisms
@@ -3403,12 +3427,18 @@ def _reagent_assignments(
         target library fits no offset (:func:`reagent_line_offset`); None for a
         profile with no reagent library. The offset is read off the library's
         lines alone, as it was measured: a ladder's rungs do not move it.
+
+    The claim reads the peaks on the axis as stored (:func:`_source_axis`), so
+    a decoy claims the lines its control claimed, at the offset its control
+    measured them at; each row then names the m/z the run reads its peak at,
+    as every other row of the run does.
     """
+    source = _source_axis(peaks_df)
     hits, calibration = _claim_reagent_lines(
-        peaks_df, resolved_profile, resolution=resolution
+        source, resolved_profile, resolution=resolution
     )
     rungs, ladder_summary = claim_ladder_peaks(
-        peaks_df,
+        source,
         ion_ladders_for(resolved_profile.profile.name),
         calibration=calibration,
         claimed=hits,
@@ -3440,10 +3470,20 @@ def _reagent_assignments(
         )
     rows = build_reagent_assignments(
         hits + rungs,
-        peaks_df,
+        source,
         sample_item_id=sample_item_id,
         peak_assignment_run_id=peak_assignment_run_id,
     )
+    if source is not peaks_df:
+        read_mz = dict(
+            zip(
+                peaks_df["sample_peak_id"].astype(str),
+                peaks_df["mz"].astype(float),
+                strict=True,
+            )
+        )
+        for row in rows:
+            row["sample_peak_mz"] = read_mz[row["sample_peak_id"]]
     return rows, {row["sample_peak_id"] for row in rows}, offset
 
 

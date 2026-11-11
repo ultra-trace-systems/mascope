@@ -106,11 +106,13 @@ not read, and the rest of the set still is.
 
 A row counts where it is a monoisotopic row at the `assigned` tier. The m/z
 350 split is the reference engine's: below it a 0.35 Da shift lands in the
-mass-defect gap no CHNOS formula sits in. A dalton shift also moves the
-source's own lines out of the reagent pre-pass's reach, so its brightest ions
-are offered to the stages like any peak: an arm's rows on peaks the control
-claimed as reagent are counted apart (`on_control_reagent`), and the intensity
-share is read knowing them, since one such row can outweigh every analyte. There is no target yet (decision 31):
+mass-defect gap no CHNOS formula sits in. A shifted arm claims the source's
+own lines where its control did. One recorded before that (its `decoy_arm`
+has no `source_ions`) looked for them on the moved axis, and on a dalton
+shift claimed none, so its brightest ions were offered to the stages like any
+peak: an arm's rows on peaks the control claimed as reagent are counted apart
+(`on_control_reagent`), and the intensity share is read knowing them, since
+one such row can outweigh every analyte. There is no target yet (decision 31):
 the stage gates report the arms, and a target is set once two gates have read
 them.
 

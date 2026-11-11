@@ -24,13 +24,18 @@ fit, the untargeted search, the seeded re-score and the mass gate are scored at
 the centre and width the control recorded, and every fit score at the envelope
 tolerance it recorded, never fitted again on the decoy's own rows. Those rows are wrong formulas on a moved axis, and fitted on them a
 run would measure the shift back out of the spectrum it was put into, or fail
-to calibrate and judge with its mass gate off. The reagent pre-pass still
-anchors its claim on the source's own lines, as the reference's pre-calibration
-is not inherited either: a ppm shift moves them inside the pass's anchor
-window and it claims them where they moved, while a dalton shift moves them
-out of its reach, and the source's ions are then offered to the stages as
-any peak is. What the stages make of them is part of that arm's reading, and
-the comparison counts it apart (``tooling/assignment_compare``).
+to calibrate and judge with its mass gate off.
+
+A shift moves the axis off every formula of the sample, not off the source
+that made the spectrum. The two passes that look for the source's own ions,
+the secondary channels' carriers and the reagent pre-pass's lines, read the
+peaks on the axis as stored (``service._source_axis``), so a shifted arm
+opens the channels its control opened and claims the lines its control
+claimed, at the offset its control measured them at; the reference's arms
+open the side channels their control recorded too. (The adduct arm moves no
+axis, and opens no secondary channel at all.) Read on the moved axis, a dalton shift
+would put both out of the passes' 20 ppm reach: the arm would search fewer
+channels than its control and offer the stages the source's brightest ions.
 
 Everything here is pure. The service reads the control and the mechanism rows
 and runs the arm (``service.decoy_plan``).
@@ -146,6 +151,10 @@ class DecoyPlan:
             # reader comparing the arm with its control compares one
             # calibration with itself.
             "calibration": "control",
+            # Where the channels' carriers and the reagent lines were looked
+            # for: on the axis as stored, so the arm opens and claims what its
+            # control did. A decoy recorded without it looked on the moved one.
+            "source_ions": "stored_axis",
             "window_ppm": self.window_ppm,
             "swapped_channels": dict(self.swapped) if self.decoy.swap_adducts else None,
         }
