@@ -420,8 +420,10 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
   `hold_opened_channel_readings`) is left as it was, an isotopologue or a
   second channel lifting it: the list is why it was read, so it is no
   corroboration of it, and what the search's reading lacks, a name for the
-  neutral, it has. A batch search reads no list, so only a second channel
-  among its own rows lifts its cap.
+  neutral, it has. A batch search reads the same lists' neutrals, the
+  target library through the mode's mechanisms and the reference lists
+  through every searched one, without matching them, so a list lifts its
+  cap as it does a run's (#3018).
 
 ### 3.4c Measure an alternative before committing
 
