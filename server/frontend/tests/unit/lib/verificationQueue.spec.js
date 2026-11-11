@@ -59,13 +59,14 @@ describe('queueTooltip', () => {
     expect(queueTooltip({ reason: 'spot_check' })).toMatch(/random spot check/)
   })
 
-  it('says what a later run changed, and that the verdict is kept', () => {
+  it('says what a later run changed, and what becomes of the verdict', () => {
     const rescored = queueTooltip({
       reason: 'stale',
       stale: { kind: 'rescored', verdict: 'rejected' }
     })
     expect(rescored).toContain('The rejected verdict was given before this run')
-    expect(rescored).toContain('The verdict is kept')
+    expect(rescored).toContain('until you judge the row again')
+    expect(rescored).toContain('a new verdict replaces it')
 
     const reassigned = queueTooltip({
       reason: 'stale',
@@ -73,6 +74,7 @@ describe('queueTooltip', () => {
     })
     expect(reassigned).toContain('A confirmed verdict on C6H12O6')
     expect(reassigned).toContain('another formula')
+    expect(reassigned).toContain('That verdict stays')
   })
 
   it('names no probability and no evidence value', () => {
