@@ -2874,7 +2874,9 @@ fix; and the per-range publish above.
 
 peaky's residual explainer, ladder gap-fill, labelled-reagent rescue and
 certified-neutral passes (77 peaks on the testbed; revisit with the data
-after stage 4); retention-time and MS2 evidence (their own designs); the
+after stage 4); retention-time and MS2 evidence (their own designs; retention time's is
+[assignment_confidence.md](assignment_confidence.md#p4-design-a-retention-time-term),
+waiting for a chromatographic dataset with standards); the
 reagent axis' eventual move into `IonizationSetup` (its target model is
 phase 8 of section 10 in
 [ingest_routing_and_splitting.md](ingest_routing_and_splitting.md); the
