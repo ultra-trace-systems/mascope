@@ -160,7 +160,16 @@ class BatchPeaksResource(BaseResource):
                  ``n_spectra``, ``reason`` and ``partner_batch_peak_id``, and
                  every partner under ``partners``; display-only, no tier reads
                  it; null where none was read for the consensus, and absent
-                 from a server that predates it).
+                 from a server that predates it), ``continuity_grade`` (the
+                 ratio stability of the batch peak's isotope lines and other
+                 channels across a time-ordered batch, its most alarming
+                 pair's: ``red``, ``drift``, ``stable``, ``inconclusive`` or
+                 ``insufficient``; null where it is in no pair or the batch is
+                 not time-ordered), ``continuity`` (the pairs, each with its
+                 ratio, spread and drift, and what was graded) and
+                 ``continuity_stale`` (true where a sample or a curation moved
+                 the batch peak since it was graded); display-only, and absent
+                 from a server that predates them.
                  ``consensus_tier`` is always this server's: the engine's tier
                  stands beside it.
                  None when the batch has no ledger yet.

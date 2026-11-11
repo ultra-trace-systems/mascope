@@ -48,6 +48,26 @@ def _session_returning(sample_ids):
     return ctx
 
 
+def _graded(pairs):
+    """A continuity pass's summary, as ``grade_batch`` writes one, that graded
+    ``pairs`` pairs, every one stable."""
+    from mascope_backend.api.new.peak_assignments.batch_peaks import (
+        CONTINUITY_GRADES,
+        GRADE_STABLE,
+    )
+
+    grades = {grade: 0 for grade in CONTINUITY_GRADES}
+    grades[GRADE_STABLE] = pairs
+    return {
+        "time_ordered": True,
+        "reason": None,
+        "pairs": pairs,
+        "pairs_graded": pairs,
+        "pairs_skipped": 0,
+        "grades": grades,
+    }
+
+
 def _start(sample_ids, fold=None):
     """Patch the backfill's world; return the started mocks.
 
@@ -68,10 +88,16 @@ def _start(sample_ids, fold=None):
             f"{_MOD}.send_progress_user_notification", new_callable=AsyncMock
         ),
         "recompute": patch(f"{_MOD}.recompute_batch_consensus", new_callable=AsyncMock),
+        # The ratio-stability pass the rebuild runs once its samples are in.
+        "continuity": patch(
+            "mascope_backend.api.new.peak_assignments.continuity.run_batch_continuity",
+            new_callable=AsyncMock,
+        ),
     }
     mocks = {key: p.start() for key, p in patches.items()}
     mocks["async_session"].return_value = _session_returning(sample_ids)
     mocks["fold_no_run"].return_value = None
+    mocks["continuity"].return_value = _graded(2)
     if isinstance(fold, list):
         mocks["fold"].side_effect = fold
     else:
@@ -130,6 +156,9 @@ async def test_reports_before_and_after_every_sample():
         (1, 3, 1.0),
         (2, 3, None),
         (2, 3, 1.0),
+        # The ratio-stability pass, once every sample is in: the bar stays full.
+        (2, 3, 1.0),
+        (2, 3, 1.0),
     ]
 
 
@@ -181,6 +210,9 @@ async def test_a_sample_whose_fold_raised_still_advances_the_bar():
         (1, 3, 1.0),
         (2, 3, None),
         (2, 3, 1.0),
+        # The ratio-stability pass, once every sample is in: the bar stays full.
+        (2, 3, 1.0),
+        (2, 3, 1.0),
     ]
 
 
@@ -198,7 +230,7 @@ async def test_a_sample_with_nothing_to_fold_still_advances_the_bar():
     folded, failed = await backfill_sample_batch_peaks("sb-1", process_id="proc-1")
 
     assert (folded, failed) == (1, 0)
-    assert len(_ticks(mocks["progress"])) == 4
+    assert len(_ticks(mocks["progress"])) == 4 + 2
 
 
 @pytest.mark.asyncio
@@ -218,7 +250,8 @@ async def test_a_large_batch_is_sampled_rather_than_reported_per_sample():
 
     ticks = _ticks(mocks["progress"])
     reporting = sorted({item_index for item_index, _, _ in ticks})
-    assert len(ticks) == 2 * len(reporting)
+    # Two per reporting sample, and the ratio-stability pass's two at the end.
+    assert len(ticks) == 2 * len(reporting) + 2
     assert len(reporting) <= 2 * _BACKFILL_PROGRESS_STEPS
     assert reporting[0] == 0
     assert reporting[-1] == total - 1
@@ -397,5 +430,69 @@ async def test_the_emitted_stream_fills_one_bar_from_empty_to_full():
             await send_progress_user_notification(notification, increment)
             emitted.append(emit.call_args.args[0].progress)
 
-    assert emitted == pytest.approx([0.0, 25.0, 25.0, 50.0, 50.0, 75.0, 75.0, 100.0])
+    assert emitted == pytest.approx(
+        [0.0, 25.0, 25.0, 50.0, 50.0, 75.0, 75.0, 100.0, 100.0, 100.0]
+    )
     assert emitted == sorted(emitted)
+
+
+@pytest.mark.asyncio
+async def test_the_ratio_stability_pass_runs_once_after_the_consensus_and_says_so():
+    """The pass grades the whole batch, so it runs once, after the deferred
+    consensus has written the anchors it reads, and names itself on the
+    rebuild's channel before and after."""
+    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+        backfill_sample_batch_peaks,
+    )
+
+    order = []
+    mocks = _start(["si-0", "si-1"])
+    mocks["recompute"].side_effect = lambda *args, **kwargs: order.append("recompute")
+
+    async def grade(sample_batch_id, **kwargs):
+        order.append(("grade", sample_batch_id, kwargs))
+        return _graded(3)
+
+    mocks["continuity"].side_effect = grade
+
+    await backfill_sample_batch_peaks("sb-1", user_id=7, process_id="proc-1")
+
+    assert order == ["recompute", ("grade", "sb-1", {})]
+    *_, (before, _), (after, _) = _packets(mocks["progress"])
+    assert before.type == after.type == "compute_batch_peaks"
+    assert before.process_id == after.process_id == "proc-1"
+    assert "grading the ratio stability" in before.message
+    assert after.message.startswith("Rebuilding the batch ledger. Graded")
+    assert "ratio stability of 3 pairs" in after.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "summary, says",
+    [
+        # A manual pass still holds the batch's continuity lock.
+        ({"skipped": "in_progress"}, "another pass is grading this batch"),
+        # Every grade withdrawn, on a batch that may hold hundreds of pairs.
+        (
+            {**_graded(0), "pairs": 40, "time_ordered": False, "reason": "gap"},
+            "not time-ordered",
+        ),
+    ],
+    ids=["skipped", "withdrawn"],
+)
+async def test_a_pass_that_graded_nothing_says_why(summary, says):
+    """A rebuild whose pass graded no pair says why, not "0 pairs", which
+    would read as a batch with nothing to pair."""
+    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+        backfill_sample_batch_peaks,
+    )
+
+    mocks = _start(["si-0", "si-1"])
+    mocks["continuity"].return_value = summary
+
+    await backfill_sample_batch_peaks("sb-1", user_id=7, process_id="proc-1")
+
+    *_, (after, increment) = _packets(mocks["progress"])
+    assert increment == 1.0
+    assert says in after.message
+    assert "0 pairs" not in after.message

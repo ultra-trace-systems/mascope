@@ -58,6 +58,7 @@ from mascope_backend.api.models.sample.items.config import sample_item_config
 from mascope_backend.api.models.target.collections.config import (
     target_collection_config,
 )
+from mascope_backend.api.new.peak_assignments.batch_peaks import CONTINUITY_GRADES
 from mascope_backend.binding_rungs import BINDING_RUNGS
 from mascope_backend.runtime import runtime
 
@@ -3085,6 +3086,18 @@ class BatchPeak(Base):
     # Read by no roll-up and no fold: ``consensus_tier`` stays the tier.
     engine_tier: Mapped[Optional[str]] = mapped_column(String(24))
     engine_claim: Mapped[Optional[str]] = mapped_column(String(1024))
+    # The ratio-stability grade of the anchor's pairs - its isotope lines and
+    # the neutral's other channels - as the batch's continuity pass left it
+    # (``continuity.py``): one of ``batch_peaks.CONTINUITY_GRADES``, NULL for
+    # an anchor in no pair or a batch that is not time-ordered. The detail
+    # holds the pairs, each with its ratio's spread and drift and the
+    # co-variation reading of step 4.2 where one was read, and what the pass
+    # graded (formula, mechanism, prevalence), against which a reader marks a
+    # grade the ledger has moved past (``batch_peaks.continuity_stale``).
+    # Written by the pass alone, which leaves ``batch_peak_utc_modified`` as it
+    # was: that stamp is the fold's. Display-only: no tier reads either.
+    continuity_grade: Mapped[Optional[str]] = mapped_column(String(16))
+    continuity: Mapped[Optional[dict]] = mapped_column(JSON)
     batch_peak_utc_created: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True)
     )
@@ -3116,6 +3129,14 @@ class BatchPeak(Base):
         CheckConstraint(
             "best_fit_score IS NULL OR best_fit_score BETWEEN 0 AND 1",
             name="best_fit_score_range",
+        ),
+        # Read by counting and filtering, so a misspelt grade would be written
+        # and then vanish from every count. Adding a grade means a migration.
+        CheckConstraint(
+            "continuity_grade IS NULL OR continuity_grade IN ("
+            + ", ".join(f"'{grade}'" for grade in CONTINUITY_GRADES)
+            + ")",
+            name="continuity_grade_valid",
         ),
     )
 
@@ -3573,6 +3594,10 @@ class BatchPeakRunAnchor(Base):
     # The batch's co-variation reading of the anchor's channels as the run
     # left it (``batch_peaks.standing_co_variation_record``), NULL for none.
     co_variation: Mapped[Optional[dict]] = mapped_column(JSON)
+    # The anchor's ratio-stability grade and its detail as the run left them
+    # (``BatchPeak.continuity_grade``, ``BatchPeak.continuity``), NULL for none.
+    continuity_grade: Mapped[Optional[str]] = mapped_column(String(16))
+    continuity: Mapped[Optional[dict]] = mapped_column(JSON)
     candidates: Mapped[Optional[list]] = mapped_column(JSON)
     members: Mapped[Optional[dict]] = mapped_column(JSON)
 

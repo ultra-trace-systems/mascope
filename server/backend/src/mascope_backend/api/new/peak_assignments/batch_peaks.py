@@ -32,6 +32,10 @@ This module holds the PURE logic (no DB, no I/O) behind the batch overview:
   series detection found for the anchor's formula travels with the consensus
   for as long as the consensus names that formula (:func:`series_record_of`).
 
+- **Continuity's gates**: the provisional constants of the ratio-stability
+  pass (``continuity.py``), beside the consensus constants, and the test a
+  reader marks a grade stale by (:func:`continuity_stale`).
+
 The DB controller (fold-in on arrival, backfill, consensus persistence) calls into
 these functions. Design: ``docs/dev/peak_assignment_batch_primary.md`` (section 12: the
 anchors and the fold).
@@ -86,6 +90,89 @@ ROLE_ARTIFACT = "artifact"
 #: one carries no formula, and an anchor whose members are such rows is read by
 #: the role (:func:`compute_consensus`) rather than as a peak nothing explained.
 SOURCE_ROLES = (ROLE_REAGENT, ROLE_ARTIFACT)
+
+
+# --- continuity: the ratio-stability pass (step 4.11) ---------------------------
+#
+# The gates and thresholds of ``continuity.py``, the pass that reads the
+# within-sample ratio of two related batch peaks across the batch. EVERY ONE IS
+# PROVISIONAL: a first-principles starting point, not a measured one, until step
+# 4.13 has run the pass on real time-ordered batches (the continuity design,
+# section 1.4, in git history before 2026-10-22). The grade is display-only: no
+# tier, reason or level reads it.
+
+#: The two kinds of pair a ratio is read for: an M0 and one of its isotope
+#: lines (the ratio is fixed by isotopic abundance), and two channels of one
+#: neutral (the ratio is fixed by the source's chemistry).
+PAIR_ISOTOPOLOGUE = "isotopologue"
+PAIR_ADDUCT = "adduct"
+
+#: Provisional. The fewest samples both members of a pair must count in for
+#: any grade: under six a median absolute deviation is not a spread estimate.
+MIN_PAIRED_SAMPLES = 6
+#: Provisional. The fewest distinct acquisition times those samples must span:
+#: the segments of one file share its timestamp, and six of them are one time
+#: point, not six. Also what keeps a wash, which the metric knows nothing of,
+#: from passing for a series.
+MIN_DISTINCT_TIMES = 5
+#: Provisional. The fewest samples the drift test runs on: a slope over seven
+#: points is not a trend. A pair graded on fewer is never ``stable``.
+MIN_DRIFT_SAMPLES = 8
+#: Provisional. The drift's monotonicity leg: Spearman's |rho| between the log
+#: ratio and the acquisition order.
+RHO_DRIFT = 0.6
+#: Provisional. The drift's effect-size leg: the end-to-end change of the log
+#: ratio over the pair's time span, |Theil-Sen slope x span|. A 1.5x change in a
+#: fixed isotope ratio is chemically loud; an adduct ratio legitimately moves
+#: more (ln 2).
+DRIFT_LOG_RED: dict[str, float] = {
+    PAIR_ISOTOPOLOGUE: math.log(1.5),
+    PAIR_ADDUCT: math.log(2.0),
+}
+#: Provisional. The spread, 1.4826 x MAD of the log ratio, at or under which a
+#: pair whose drift was tested reads as ``stable``: isotope physics pins the
+#: ratio tighter than source chemistry pins an adduct partition.
+SPREAD_STABLE: dict[str, float] = {PAIR_ISOTOPOLOGUE: 0.15, PAIR_ADDUCT: 0.25}
+#: Provisional. The spread at or above which the ratio jumps rather than
+#: scatters: roughly a factor-of-1.65 typical swing.
+SPREAD_RED = 0.50
+#: Provisional. The pairs an anchor's detail lists, alarm first and then the
+#: best supported. A display cap only: the anchor's grade reads every pair.
+MAX_PAIRS_PER_ANCHOR = 4
+#: Provisional. The pairs one pass grades. The rest are left ungraded and their
+#: anchors marked ``partial``, so a truncated batch reads as truncated.
+MAX_PAIRS_PER_BATCH = 20_000
+#: Provisional. The time-ordering gate of an ANALYSIS batch: its largest gap
+#: between distinct acquisition times may be at most this many times the median
+#: gap. An ACQUISITION batch, made per day of continuous acquisition, is
+#: time-ordered by construction.
+MAX_GAP_FACTOR = 10
+
+#: Whether a fold runs the pass after it commits. Off: the pass ships with its
+#: manual endpoint and the rebuild's trigger, and step 4.13 measures its cost at
+#: ceiling scale before the folds trigger it.
+CONTINUITY_ON_FOLD = False
+
+#: A pair's grade, and an anchor's, which is its most alarming pair's. ``red``:
+#: the ratio drifts while nothing says the two traces co-vary, or it jumps.
+#: ``drift``: it drifts and the batch's co-variation reading (step 4.2) says the
+#: two traces co-vary - the source's chemistry moved and the assignment stands.
+#: ``stable``: it holds. ``inconclusive``: tested, and none of these.
+#: ``insufficient``: too few samples or times for any reading.
+GRADE_RED = "red"
+GRADE_DRIFT = "drift"
+GRADE_STABLE = "stable"
+GRADE_INCONCLUSIVE = "inconclusive"
+GRADE_INSUFFICIENT = "insufficient"
+#: Every grade, the most alarming first: an anchor takes the first its pairs
+#: hold.
+CONTINUITY_GRADES = (
+    GRADE_RED,
+    GRADE_DRIFT,
+    GRADE_STABLE,
+    GRADE_INCONCLUSIVE,
+    GRADE_INSUFFICIENT,
+)
 
 
 # --- the partition ----------------------------------------------------------------
@@ -635,6 +722,33 @@ def row_co_variation(row: dict, anchor: Any) -> Optional[dict]:
     ):
         return None
     return record
+
+
+def continuity_stale(anchor: Any) -> bool:
+    """Whether an anchor's continuity grade is behind its ledger: the ratio
+    pass (``continuity.py``) graded it at another prevalence, or for another
+    formula or mechanism than its consensus names now.
+
+    The pass runs after the folds and over the whole batch, so a sample folded
+    since it ran, a curation or a re-fold that moved the consensus leaves the
+    grade describing a ledger that is no longer there. It is served marked
+    rather than dropped, as an anchor verdict about a claim the consensus has
+    moved off is. A count against the paired samples would fire on every
+    anchor: they are a subset of the present ones by construction.
+
+    :param anchor: A ``BatchPeak`` row or a snapshot of one, with its
+        ``continuity`` detail.
+    :return: False where the anchor carries no detail.
+    """
+    detail = _member(anchor, "continuity")
+    if not isinstance(detail, dict):
+        return False
+    return (
+        detail.get("n_present_at_compute") != _member(anchor, "n_present")
+        or detail.get("formula") != _member(anchor, "consensus_formula")
+        or detail.get("ionization_mechanism_id")
+        != _member(anchor, "ionization_mechanism_id")
+    )
 
 
 def member_state(member: Any) -> dict:
