@@ -285,7 +285,7 @@ def test_group_target_isotopes_reads_the_floor_off_the_most_abundant_line():
     assert probs == pytest.approx([0.6, 0.0099])
 
 
-def test_a_tof_line_folds_the_15n_line_of_a_light_nitrogen_ion(monkeypatch):
+def test_a_tof_line_folds_the_15n_line_of_a_light_nitrogen_ion():
     """Under about m/z 126 the 15N line of the M+1 cluster sits more than
     half a FWHM from the 13C line, so it is a group of its own: 6.4 mDa under
     it for C3H8NO+, where half a FWHM is 3.8 mDa. It never matches a peak
@@ -312,8 +312,9 @@ def test_a_tof_line_folds_the_15n_line_of_a_light_nitrogen_ion(monkeypatch):
         "[15N]C3H8O+" in i.target_isotope_formula.split("/") for i in low if i is not m1
     )
 
-    # The library keeps lines to 0.001 % of the parent, 1e-3 of the 1 % floor.
-    monkeypatch.setattr(heuristic_filter, "UNRESOLVED_MEMBER_DEPTH", 1e-3)
+    # The library keeps lines to 0.001 % of the parent, the depth the envelope
+    # match predicts members to at its 1 % floor (mascope#3024), so the two
+    # read the same M+1 line, its 2H and 17O lines included.
     mzs, intensities, labels = heuristic_filter.predict_resolved_isotopes(
         "C3H8NO", 1, 0.01, lambda mz: 1e4
     )

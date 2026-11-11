@@ -13,8 +13,14 @@ ISOTOPE_MATCHING_INTENSITY_TOLERANCE = 0.4
 # peak of the file's width merges (`heuristic_filter.predict_resolved_isotopes`).
 # The 15N, 2H and 17O lines a TOF's 13C peak holds sit well under a 1% floor one
 # by one - 0.37%, 0.17% and 0.11% for C10H15NO3 - and their sum is what the
-# peak adds to its 13C share; a member under a tenth of the floor is left out.
-UNRESOLVED_MEMBER_DEPTH = 0.1
+# peak adds to its 13C share. A small ion's are fainter still: the 2H and 17O
+# lines of C4H8NO+ are 0.093% and 0.038%, so at a tenth of the floor both were
+# left out and its M+1 peak read 2.6% low (mascope#3024). A thousandth of the
+# floor, 0.001% at 1%, is the depth the targeted matcher's TOF library predicts
+# to (`ISOTOPE_ABUNDANCE_THRESHOLD` in the backend's target computation): every
+# M+1 line of an organic ion is over it, and a C20 dibromide's merged lines,
+# each the sum of tens of members, come out within 2% of their whole share.
+UNRESOLVED_MEMBER_DEPTH = 1e-3
 
 
 # Wiley spectral database:
