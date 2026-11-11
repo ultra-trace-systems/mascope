@@ -546,6 +546,35 @@ describe('PanePeakAssign verdict dialog', () => {
     })
   })
 
+  it("offers the target's declared structure first", async () => {
+    const GLUCOSE = 'WQZGKKKJIJFFOK-GASJEMHNSA-N'
+    const FRUCTOSE = 'BJHIKXHVCXFQLS-UYFOZJQFSA-N'
+    detailRecord = {
+      provenance: {
+        reference_identities: [{ name: 'fructose', source: 'sugars', inchikey: FRUCTOSE }]
+      },
+      known_compounds: [],
+      reference_listing: {
+        name: 'fructose',
+        source: 'sugars',
+        inchikey: FRUCTOSE,
+        tags: [],
+        total: 1,
+        target: { label: 'target', name: 'glucose', inchikey: GLUCOSE, listed: true }
+      }
+    }
+    const wrapper = await mountPane()
+    await verdictButton(wrapper, 'Confirm').trigger('click')
+    await level(wrapper, 'reference_standard').trigger('change')
+
+    expect(
+      JSON.parse(dialog(wrapper).find('.claim-structure').attributes('data-candidates'))
+    ).toEqual([
+      { inchikey: GLUCOSE, name: 'glucose', label: 'target' },
+      { inchikey: FRUCTOSE, name: 'fructose', label: 'sugars' }
+    ])
+  })
+
   it('will not confirm while the structure the evidence needs is missing', async () => {
     claimStub.ready = false
     const wrapper = await mountPane()
@@ -3241,6 +3270,124 @@ describe('PanePeakAssign ionization and reference lists', () => {
     expect(field(wrapper, 'listed-as').exists()).toBe(false)
     // Nor an empty block, which would still take its gap in the card.
     expect(field(wrapper, 'identity').exists()).toBe(false)
+  })
+
+  // What the target the row was matched to declares, beside what a list calls
+  // the formula (identification claims, section 4.2).
+  describe("the target's candidate", () => {
+    const GLUCOSE = 'WQZGKKKJIJFFOK-GASJEMHNSA-N'
+    const TARGET = { label: 'target', name: 'glucose', inchikey: GLUCOSE, listed: false }
+    const ONLY_TARGET = { name: null, source: null, inchikey: null, tags: [], total: 0 }
+
+    it('reads a target match as target and its name', async () => {
+      detailRecord = {
+        provenance: {},
+        known_compounds: [],
+        reference_listing: { ...ONLY_TARGET, target: TARGET }
+      }
+      const wrapper = await mountPane({ recordTooltips: true })
+      const target = field(wrapper, 'target-as')
+
+      expect(target.find('.k').text()).toBe('target')
+      expect(target.find('.v').text()).toBe('glucose')
+      expect(target.attributes('data-tooltip')).toContain('what the target stands for')
+      // No list names it: no list line, and the key reads unlisted.
+      expect(field(wrapper, 'listed-as').exists()).toBe(false)
+      expect(field(wrapper, 'target-unlisted').text()).toBe('unlisted')
+    })
+
+    it('reads a reference-only match as before', async () => {
+      detailRecord = { provenance: { reference_identities: [LISTED] }, known_compounds: [] }
+      const wrapper = await mountPane()
+
+      expect(field(wrapper, 'target-as').exists()).toBe(false)
+      expect(field(wrapper, 'listed-as').find('.k').text()).toBe('reference list')
+    })
+
+    it('shows a target a list names by the same structure once, with both labels', async () => {
+      const glucose = {
+        name: 'D-glucose',
+        source: 'sugars',
+        inchikey: GLUCOSE,
+        xrefs: { tags: ['background'] }
+      }
+      detailRecord = {
+        provenance: { reference_identities: [glucose, ACROLEIN] },
+        known_compounds: [],
+        reference_listing: {
+          name: 'D-glucose',
+          source: 'sugars',
+          inchikey: GLUCOSE,
+          tags: [],
+          total: 2,
+          target: { ...TARGET, listed: true }
+        }
+      }
+      const wrapper = await mountPane({ recordTooltips: true })
+      const target = field(wrapper, 'target-as')
+
+      expect(field(wrapper, 'identity').findAll('.ev').length).toBe(1)
+      expect(field(wrapper, 'listed-as').exists()).toBe(false)
+      expect(target.find('.k').text()).toMatch(/^target\s*·\s*reference list$/)
+      expect(target.find('.v').text()).toBe('glucose +1')
+      expect(target.find('.list-source').text()).toBe('sugars')
+      expect(target.find('[data-testid="list-tag-background"]').exists()).toBe(true)
+      expect(field(wrapper, 'target-unlisted').exists()).toBe(false)
+      const tip = target.attributes('data-tooltip')
+      expect(tip).toContain('The sugars list names the same structure')
+      expect(tip).toContain('The run matched this formula from a reference list.')
+    })
+
+    it('says potential where the list holds the structure and the run did not match it', async () => {
+      focusedAssignment = { ...DMF, source: 'untargeted' }
+      detailRecord = {
+        provenance: {},
+        known_compounds: [{ name: 'D-glucose', source: 'sugars', inchikey: GLUCOSE }],
+        reference_listing: { ...ONLY_TARGET, target: { ...TARGET, listed: true } }
+      }
+      const wrapper = await mountPane()
+
+      expect(field(wrapper, 'target-as').find('.k').text()).toMatch(
+        /^target\s*·\s*reference list\s*·\s*potential$/
+      )
+    })
+
+    it("shows another structure's listing on a line of its own", async () => {
+      detailRecord = {
+        provenance: { reference_identities: [LISTED] },
+        known_compounds: [],
+        reference_listing: {
+          name: LISTED.name,
+          source: LISTED.source,
+          inchikey: null,
+          tags: [],
+          total: 1,
+          target: { ...TARGET, listed: true }
+        }
+      }
+      const wrapper = await mountPane()
+
+      expect(field(wrapper, 'identity').findAll('.ev').length).toBe(2)
+      expect(field(wrapper, 'target-as').find('.k').text()).toBe('target')
+      expect(field(wrapper, 'listed-as').find('.v').text()).toBe('N,N-Dimethylformamide')
+    })
+
+    it('shows a target with no structure by its name, and no key', async () => {
+      detailRecord = {
+        provenance: {},
+        known_compounds: [],
+        reference_listing: {
+          ...ONLY_TARGET,
+          target: { label: 'target', name: 'glucose', inchikey: null, listed: null }
+        }
+      }
+      const wrapper = await mountPane({ recordTooltips: true })
+      const target = field(wrapper, 'target-as')
+
+      expect(target.find('.v').text()).toBe('glucose')
+      expect(field(wrapper, 'target-unlisted').exists()).toBe(false)
+      expect(target.attributes('data-tooltip')).toContain('The target declares no structure.')
+    })
   })
 
   it('names what a list calls another reading of the ion', async () => {

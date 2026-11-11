@@ -164,6 +164,25 @@ describe('BatchPeakVerdictPopover', () => {
     })
   })
 
+  it("offers the structure the consensus's target declares, first", async () => {
+    const row = {
+      ...ROW,
+      reference_listing: {
+        name: null,
+        source: null,
+        inchikey: null,
+        tags: [],
+        total: 0,
+        target: { label: 'target', name: 'glucose', inchikey: GLUCOSE, listed: false }
+      }
+    }
+    const wrapper = mountPopover({ row })
+    await wrapper.find('select.evidence').setValue('msms')
+    expect(JSON.parse(wrapper.find('.claim-structure').attributes('data-candidates'))).toEqual([
+      { inchikey: GLUCOSE, name: 'glucose', label: 'target' }
+    ])
+  })
+
   it('will not confirm while the structure the evidence needs is missing', async () => {
     claimStub.ready = false
     const wrapper = mountPopover()

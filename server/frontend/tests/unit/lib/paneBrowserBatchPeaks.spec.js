@@ -813,6 +813,63 @@ describe('PaneBrowserBatchPeaks reference-list column', () => {
     expect(rows.get('bp-2').listingName).toBeNull()
     expect(columnFor('listingName').props('sortable')).toBe(true)
   })
+
+  // What the target the consensus was matched to declares (identification
+  // claims, section 4.2), off the anchor's consensus as the sample ledger reads
+  // a row's.
+  const GLUCOSE = 'WQZGKKKJIJFFOK-GASJEMHNSA-N'
+  const TARGETED = {
+    name: null,
+    source: null,
+    inchikey: null,
+    tags: [],
+    total: 0,
+    target: { label: 'target', name: 'glucose', inchikey: GLUCOSE, listed: false }
+  }
+
+  it("reads the consensus's target as target and its name, and sorts on it", async () => {
+    wrapper = await renderedCells(
+      [
+        peak('bp-1', 'assigned', 0.9, { reference_listing: TARGETED }),
+        peak('bp-2', 'assigned', 0.8, { mz: 200.1 })
+      ],
+      { full: true }
+    )
+    const [listed, unlisted] = listingColumn().findAll('.stub-cell')
+
+    expect(listed.find('[data-testid="target-as"]').text()).toBe('target')
+    expect(listed.find('.listing-name').text()).toBe('glucose')
+    expect(listed.find('[data-testid="target-unlisted"]').exists()).toBe(true)
+    expect(unlisted.text()).toBe('')
+    const rows = new Map(wrapper.vm.rows.map((row) => [row.batch_peak_id, row]))
+    expect(rows.get('bp-1').listingName).toBe('glucose')
+  })
+
+  it('shows a target a list names by the same structure once, with both labels', async () => {
+    const flat = {
+      ...LISTING,
+      inchikey: GLUCOSE,
+      target: { ...TARGETED.target, listed: true }
+    }
+    wrapper = await renderedCells([peak('bp-1', 'assigned', 0.9, { reference_listing: flat })], {
+      full: true
+    })
+    const listed = listingColumn().find('.stub-cell')
+
+    expect(listed.findAll('.listing-name').map((name) => name.text())).toEqual(['glucose +1'])
+    expect(listed.find('.listing-source').text()).toBe('cyclic-siloxanes')
+    expect(listed.find('[data-testid="target-unlisted"]').exists()).toBe(false)
+  })
+
+  it('folds the target to its mark', async () => {
+    wrapper = await renderedCells([peak('bp-1', 'assigned', 0.9, { reference_listing: TARGETED })])
+    const listed = listingColumn().find('.stub-cell')
+
+    expect(listed.find('[data-testid="target-as"]').attributes('aria-label')).toBe(
+      'target: glucose'
+    )
+    expect(listed.find('.ph-flask').exists()).toBe(false)
+  })
 })
 
 describe('PaneBrowserBatchPeaks series mark', () => {

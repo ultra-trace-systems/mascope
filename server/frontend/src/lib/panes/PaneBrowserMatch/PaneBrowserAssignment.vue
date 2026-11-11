@@ -29,7 +29,10 @@ import {
   listingName,
   listingSource,
   listingTags,
-  listingTooltip
+  candidatesTooltip,
+  targetMore,
+  targetName,
+  targetOf
 } from '@/lib/referenceListings'
 import {
   ENGINE_UNSTATED,
@@ -454,7 +457,8 @@ const listingColumn = useLedgerListing()
 // formulaOf), and sorts on what it shows; the listing sorts on its name.
 const SORT_VALUES = {
   assigned_formula: (row) => formulaOf(row),
-  listing: (row) => (row.listing ? listingName(row.listing) : null)
+  listing: (row) =>
+    row.target ? targetName(row.target) : row.listing ? listingName(row.listing) : null
 }
 
 function compareBy(field, order) {
@@ -537,32 +541,36 @@ const rows = computed(() => {
         verdictFilter.value === 'all' ||
         (effectiveVerdictFor(row)?.verdict ?? 'unverified') === verdictFilter.value
     )
-    .map((row) => ({
-      ...row,
-      tierRank: rankOf(row),
-      // Null where the producing engine stated no tier, and null rather than a
-      // rank so `compareBy` sorts those rows last in both directions - "this
-      // engine said nothing" is not a position on the scale. Guarded because
-      // tierRank(null) would answer with the 'unassigned' rank and put every
-      // in-app row at one end of a column it has no opinion in.
-      engineTierRank: row.engine_tier != null ? tierRank(row.engine_tier) : null,
-      listing: ledgerListing(row.reference_listing),
-      // The ledger-measured channel count first: it reaches every committed
-      // row, where the curated per-compound count reaches only what Stage A
-      // claimed - a handful of rows on most samples and none at all on many.
-      // Where both exist the first is a superset of the second, so preferring
-      // it never shrinks the marker.
-      corrobAdducts:
-        row.corroboration_channels ??
-        row.provenance?.cross_channel?.channels?.length ??
-        row.corroboration_adducts ??
-        row.provenance?.corroboration?.n_adducts ??
-        0,
-      corrobInherited: false,
-      mech: mechById.value.get(row.ionization_mechanism_id) ?? null,
-      isChild: false,
-      isChannel: false
-    }))
+    .map((row) => {
+      const listing = ledgerListing(row.reference_listing)
+      return {
+        ...row,
+        tierRank: rankOf(row),
+        // Null where the producing engine stated no tier, and null rather than a
+        // rank so `compareBy` sorts those rows last in both directions - "this
+        // engine said nothing" is not a position on the scale. Guarded because
+        // tierRank(null) would answer with the 'unassigned' rank and put every
+        // in-app row at one end of a column it has no opinion in.
+        engineTierRank: row.engine_tier != null ? tierRank(row.engine_tier) : null,
+        listing,
+        target: targetOf(row.reference_listing, listing),
+        // The ledger-measured channel count first: it reaches every committed
+        // row, where the curated per-compound count reaches only what Stage A
+        // claimed - a handful of rows on most samples and none at all on many.
+        // Where both exist the first is a superset of the second, so preferring
+        // it never shrinks the marker.
+        corrobAdducts:
+          row.corroboration_channels ??
+          row.provenance?.cross_channel?.channels?.length ??
+          row.corroboration_adducts ??
+          row.provenance?.corroboration?.n_adducts ??
+          0,
+        corrobInherited: false,
+        mech: mechById.value.get(row.ionization_mechanism_id) ?? null,
+        isChild: false,
+        isChannel: false
+      }
+    })
 
   // One row per neutral: the strongest reading heads its group and carries the
   // others, which leave the top level.
@@ -1180,23 +1188,52 @@ const breadcrumb = computed(() => {
           </template>
           <template #body="{ data }">
             <span
-              v-if="data.listing"
+              v-if="data.listing || data.target"
               class="listing"
               data-testid="listed-as"
-              v-tooltip.top="listingTooltip(data.listing)"
+              v-tooltip.top="candidatesTooltip(data.target, data.listing)"
             >
-              <template v-if="listingColumn.full">
-                <span class="listing-name">{{ listingName(data.listing) }}</span>
-                <span v-if="listingSource(data.listing)" class="listing-source">{{
-                  listingSource(data.listing)
-                }}</span>
+              <!-- What the target stands for, labelled as the target's, and
+                   the list's name beside it; one with both labels where a
+                   list names the same structure. -->
+              <template v-if="data.target">
+                <template v-if="listingColumn.full">
+                  <span class="listing-label" data-testid="target-as">target</span>
+                  <span class="listing-name"
+                    >{{ targetName(data.target)
+                    }}<template v-if="targetMore(data.target, data.listing)">
+                      +{{ targetMore(data.target, data.listing) }}</template
+                    ></span
+                  >
+                  <span v-if="data.target.identity?.source" class="listing-source">{{
+                    data.target.identity.source
+                  }}</span>
+                </template>
+                <span
+                  v-else
+                  class="pi ph ph-target listing-mark"
+                  role="img"
+                  data-testid="target-as"
+                  :aria-label="`target: ${targetName(data.target)}`"
+                />
+                <span v-if="data.target.unlisted" class="listing-tag" data-testid="target-unlisted"
+                  >unlisted</span
+                >
               </template>
-              <span
-                v-else
-                class="pi ph ph-flask listing-mark"
-                role="img"
-                :aria-label="listingName(data.listing)"
-              />
+              <template v-if="data.listing && !data.target?.identity">
+                <template v-if="listingColumn.full">
+                  <span class="listing-name">{{ listingName(data.listing) }}</span>
+                  <span v-if="listingSource(data.listing)" class="listing-source">{{
+                    listingSource(data.listing)
+                  }}</span>
+                </template>
+                <span
+                  v-else
+                  class="pi ph ph-flask listing-mark"
+                  role="img"
+                  :aria-label="listingName(data.listing)"
+                />
+              </template>
               <span
                 v-for="tag in listingTags(data.listing)"
                 :key="tag"
@@ -1383,6 +1420,12 @@ const breadcrumb = computed(() => {
 }
 .listing-source {
   font-size: 0.72rem;
+  opacity: 0.6;
+}
+/* Which candidate the name is: the target's declaration, in the voice of the
+   inspector's key. */
+.listing-label {
+  font-size: 0.7rem;
   opacity: 0.6;
 }
 .listing-tag {

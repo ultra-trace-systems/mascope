@@ -26,7 +26,10 @@ import {
   listingName,
   listingSource,
   listingTags,
-  listingTooltip
+  candidatesTooltip,
+  targetMore,
+  targetName,
+  targetOf
 } from '@/lib/referenceListings'
 import { seriesTooltip } from '@/lib/batchSeries'
 import { coVariationLabel, coVariationRank, coVariationTooltip } from '@/lib/batchCoVariation'
@@ -276,8 +279,10 @@ const decorated = computed(() => {
   const index = byId.value
   return shown.value.map((batchPeak) => {
     // What a list calls the consensus formula, where a member matched it from
-    // one; `listingName` is what the column sorts on.
+    // one, and what the target a member was matched to declares; `listingName`
+    // is what the column sorts on, the target's name first.
     const listing = ledgerListing(batchPeak.reference_listing)
+    const target = targetOf(batchPeak.reference_listing, listing)
     return {
       ...batchPeak,
       tierRank: bucketRank(batchPeak.consensus_tier, batchPeak.consensus_role),
@@ -297,7 +302,8 @@ const decorated = computed(() => {
       verdictRank: verdictRank(batchPeak),
       parentId: rootParentId(batchPeak, index),
       listing,
-      listingName: listing ? listingName(listing) : null
+      target,
+      listingName: target ? targetName(target) : listing ? listingName(listing) : null
     }
   })
 })
@@ -1175,23 +1181,52 @@ watch(
           </template>
           <template #body="{ data }">
             <span
-              v-if="data.listing && !data.parentId"
+              v-if="(data.listing || data.target) && !data.parentId"
               class="listing"
               data-testid="listed-as"
-              v-tooltip.top="listingTooltip(data.listing)"
+              v-tooltip.top="candidatesTooltip(data.target, data.listing)"
             >
-              <template v-if="listingColumn.full">
-                <span class="listing-name">{{ listingName(data.listing) }}</span>
-                <span v-if="listingSource(data.listing)" class="listing-source">{{
-                  listingSource(data.listing)
-                }}</span>
+              <!-- What the target stands for, labelled as the target's, and
+                   the list's name beside it; one with both labels where a
+                   list names the same structure. -->
+              <template v-if="data.target">
+                <template v-if="listingColumn.full">
+                  <span class="listing-label" data-testid="target-as">target</span>
+                  <span class="listing-name"
+                    >{{ targetName(data.target)
+                    }}<template v-if="targetMore(data.target, data.listing)">
+                      +{{ targetMore(data.target, data.listing) }}</template
+                    ></span
+                  >
+                  <span v-if="data.target.identity?.source" class="listing-source">{{
+                    data.target.identity.source
+                  }}</span>
+                </template>
+                <span
+                  v-else
+                  class="pi ph ph-target listing-mark"
+                  role="img"
+                  data-testid="target-as"
+                  :aria-label="`target: ${targetName(data.target)}`"
+                />
+                <span v-if="data.target.unlisted" class="listing-tag" data-testid="target-unlisted"
+                  >unlisted</span
+                >
               </template>
-              <span
-                v-else
-                class="pi ph ph-flask listing-mark"
-                role="img"
-                :aria-label="listingName(data.listing)"
-              />
+              <template v-if="data.listing && !data.target?.identity">
+                <template v-if="listingColumn.full">
+                  <span class="listing-name">{{ listingName(data.listing) }}</span>
+                  <span v-if="listingSource(data.listing)" class="listing-source">{{
+                    listingSource(data.listing)
+                  }}</span>
+                </template>
+                <span
+                  v-else
+                  class="pi ph ph-flask listing-mark"
+                  role="img"
+                  :aria-label="listingName(data.listing)"
+                />
+              </template>
               <span
                 v-for="tag in listingTags(data.listing)"
                 :key="tag"
@@ -1380,6 +1415,12 @@ watch(
 }
 .listing-source {
   font-size: 0.72rem;
+  opacity: 0.6;
+}
+/* Which candidate the name is: the target's declaration, in the voice of the
+   inspector's key. */
+.listing-label {
+  font-size: 0.7rem;
   opacity: 0.6;
 }
 .listing-tag {

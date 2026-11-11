@@ -14,9 +14,7 @@ describe('deviceMetaLabel', () => {
     // A machine paired by an agent that predates these fields reports
     // neither, and must still read as a complete line rather than one with
     // gaps in it.
-    expect(deviceMetaLabel(device(), 'File Agent', 'never seen')).toBe(
-      'File Agent · never seen'
-    )
+    expect(deviceMetaLabel(device(), 'File Agent', 'never seen')).toBe('File Agent · never seen')
   })
 
   it('labels the instrument and the release', () => {
