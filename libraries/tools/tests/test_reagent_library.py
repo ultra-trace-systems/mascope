@@ -25,9 +25,11 @@ from mascope_tools.composition.reagents import (
     FAMILY_CALIBRANT,
     FAMILY_REAGENT,
     FRAGMENT_LADDERS,
+    ION_LADDERS,
     KIND_OXIDE,
     REAGENT_CLUSTERS,
     SOURCE_ION_REFERENCES,
+    WATER_RUNG_REFERENCES,
     ReagentCluster,
     fragment_ladders,
     ion_mz,
@@ -277,17 +279,28 @@ class TestWhatTheLibraryRefusesToClaim:
     def test_every_work_cited_resolves_and_is_cited(self):
         """Each work has a DOI or, where it has none, somewhere to read it or a
         book's ISBN; and a work no ion cites is not in the table."""
-        cited = {
-            key
-            for library in REAGENT_CLUSTERS.values()
-            for cluster in library
-            for key in cluster.references
-        } | {
-            key
-            for ladders in FRAGMENT_LADDERS.values()
-            for ladder in ladders
-            for key in ladder.references
-        }
+        cited = (
+            {
+                key
+                for library in REAGENT_CLUSTERS.values()
+                for cluster in library
+                for key in cluster.references
+            }
+            | {
+                key
+                for ladders in FRAGMENT_LADDERS.values()
+                for ladder in ladders
+                for key in ladder.references
+            }
+            | {
+                key
+                for ladders in ION_LADDERS.values()
+                for ladder in ladders
+                for rung in ladder.rungs
+                for key in rung.cluster.references
+            }
+            | set(WATER_RUNG_REFERENCES)
+        )
         assert cited == set(SOURCE_ION_REFERENCES)
         for key, work in SOURCE_ION_REFERENCES.items():
             assert work.doi or work.url or "ISBN" in work.citation, key
