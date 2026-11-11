@@ -54,8 +54,16 @@ import numpy as np
 
 from mascope_tools.composition.config import ELECTRON_MASS
 from mascope_tools.composition.heuristic_filter import (
+    element_counts,
     monoisotopic_index,
+    neutral_is_closed_shell,
     predict_resolved_isotopes,
+    senior_plausibility,
+)
+from mascope_tools.composition.mechanism_notation import (
+    MechanismNotationError,
+    mechanism_key,
+    parse_mechanism,
 )
 from mascope_tools.composition.utils import (
     composition_mass,
@@ -813,9 +821,10 @@ KIND_FRAGMENT = "fragment"
 # --- the families -------------------------------------------------------------
 #
 # Where an ion the pass claims comes from, which is what a reader checking a
-# claim against the literature needs first. Three families are claimed before
+# claim against the literature needs first. Four families are claimed before
 # the stages, each with the references that name its ions
-# (:data:`SOURCE_ION_REFERENCES`); the fourth is claimed after them
+# (:data:`SOURCE_ION_REFERENCES`), the solvent's on its ladder
+# (:class:`IonLadder`); the fifth is claimed after them
 # (:class:`FragmentLadder`). A contaminant is not a family here: the ones a
 # chemist recognises at sight, the cyclic siloxanes first, are analytes on an
 # indoor-air deployment, so they are named from their reference list, which
@@ -835,11 +844,16 @@ FAMILY_CALIBRANT = "calibrant"
 #: A fragment of an analyte's ion, claimed only where the analyte is committed
 #: (:class:`FragmentLadder`).
 FAMILY_FRAGMENT = "fragment"
+#: The clusters a positive source builds of the solvent vapour it carries:
+#: water, methanol, ethanol and acetone held together by a proton or around a
+#: cation that lost a hydride, claimed on their ladder (:class:`IonLadder`).
+FAMILY_SOLVENT = "solvent"
 
 #: Every family, in the order a reader meets them.
 FAMILIES = (
     FAMILY_REAGENT,
     FAMILY_AIR,
+    FAMILY_SOLVENT,
     FAMILY_CALIBRANT,
     FAMILY_FRAGMENT,
 )
@@ -1135,6 +1149,32 @@ SOURCE_ION_REFERENCES: dict[str, SourceReference] = {
         "GC-coupled atmospheric pressure corona discharge ionization. Mass "
         "Spectrom. 15, A0190.",
         doi="10.5702/massspectrometry.A0190",
+    ),
+    "gri73": SourceReference(
+        "Grimsrud, E. P.; Kebarle, P. (1973). Gas phase ion equilibria studies "
+        "of the hydrogen ion by methanol, dimethyl ether, and water. Effect of "
+        "hydrogen bonding. J. Am. Chem. Soc. 95, 7939-7943.",
+        doi="10.1021/ja00805a002",
+    ),
+    "lar82": SourceReference(
+        "Larson, J. W.; McMahon, T. B. (1982). Formation, thermochemistry, and "
+        "relative stabilities of proton-bound dimers of oxygen n-donor bases "
+        "from ion cyclotron resonance solvent-exchange equilibrium "
+        "measurements. J. Am. Chem. Soc. 104, 6255-6261.",
+        doi="10.1021/ja00387a016",
+    ),
+    "mot84": SourceReference(
+        "Meot-Ner (Mautner), M. (1984). The ionic hydrogen bond and ion "
+        "solvation. 1. NH+...O, NH+...N, and OH+...O bonds. Correlations with "
+        "proton affinity. Deviations due to structural effects. J. Am. Chem. "
+        "Soc. 106, 1257-1264.",
+        doi="10.1021/ja00317a015",
+    ),
+    "sun88": SourceReference(
+        "Sunner, J.; Nicol, G.; Kebarle, P. (1988). Factors determining "
+        "relative sensitivity of analytes in positive mode atmospheric "
+        "pressure ionization mass spectrometry. Anal. Chem. 60, 1300-1307.",
+        doi="10.1021/ac00164a012",
     ),
 }
 
@@ -1752,6 +1792,9 @@ class ReagentHit:
         monoisotopic hit.
     :param predicted_relative: The isotopologue's predicted height relative to the
         monoisotopic peak, recorded so a claim can be read back.
+    :param ladder: On a rung a ladder claimed (:func:`match_ion_ladders`), what
+        licensed it: the ion it grew from, the rung below and the step between
+        them, and the covalent readings it displaced. None on every other hit.
     """
 
     cluster: ReagentCluster
@@ -1762,6 +1805,7 @@ class ReagentHit:
     isotope_label: str | None = None
     parent_index: int | None = None
     predicted_relative: float | None = None
+    ladder: Mapping | None = None
 
     @property
     def is_isotopologue(self) -> bool:
@@ -2064,6 +2108,818 @@ def match_reagent_clusters(
             )
         )
     return hits, calibration
+
+
+# --- ion ladders --------------------------------------------------------------
+#
+# The library above claims an ion because a work names it. A ladder claims a
+# rung on its shape: the ion it grows from is in the spectrum, every rung
+# below it is too, each step between two rungs is one neutral's exact mass,
+# and the heights fall as the ladder climbs. Two ladders are claimed this way.
+#
+# The source's solvent ladders. A positive source that carries solvent vapour
+# builds clusters of it: two ethanols sharing a proton, acetone around a
+# hydronium, an ethanol that lost a hydride holding a second one. The
+# proton-bound dimer of ethanol, (C2H6O)2H+, is an ion whose implied neutral
+# C4H12O2 is no molecule (its double-bond equivalent is -1), so no stage can
+# read it and the peak sits in the residual; the acetone dimer, (C3H6O)2H+, is
+# also protonated C6H12O2, an ordinary acid or ester, and a stage reads it as
+# one. A source's solvent is not the sample.
+#
+# The reagent's water ladder. The nitrate core and its first acid rung carry
+# their hydrates in the library; the acid dimer core (HNO3)2.NO3- is rung zero
+# of a water ladder of its own, claimed here on any instrument class. How far
+# a reagent's water ladder reaches is the batch's question (the plan's step
+# 4.2): one spectrum claims the first rungs only.
+#
+# Neither is a list of ions a work names one by one, as the library's are,
+# but the solvent rungs are held to it all the same: each rung below carries
+# the works that name it, and a rung no work found names is not built. The
+# reagent's hydrates past the core are named by no work found, and their rows
+# say what shows them instead: the ladder in the spectrum the row is in.
+
+
+#: The solvents a positive source's vapour may carry, by formula: water, which
+#: hydrates every ion, and the three organics a laboratory's air and a source's
+#: inlet hold most. A profile lists the ones its source carries
+#: (``ReagentProfile.source_solvents``).
+SOLVENT_NAMES: dict[str, str] = {
+    "H2O": "water",
+    "CH4O": "methanol",
+    "C2H6O": "ethanol",
+    "C3H6O": "acetone",
+}
+
+#: Water, the one solvent that is never a ladder of its own here: its
+#: protonated ladder is the air's (:data:`_AIR_CATIONS`), and a hydronium at
+#: m/z 19 is below every window these sources acquire, so a rung holding water
+#: steps by it off a rung that is anchored by something else.
+WATER = "H2O"
+
+#: The works the water rule rests on: a humid source hydrates every ion it
+#: makes, the proton's own ladder first [good70], and the analytes' ions with
+#: it [sun88], so one water is the commonest step in a spectrum and a rung
+#: that holds one never displaces a molecule (:func:`match_ion_ladders`).
+WATER_RUNG_REFERENCES: tuple[str, ...] = ("good70", "sun88")
+
+#: The channel a hydride-bound ladder needs. Its core, a solvent less a
+#: hydride, is the source's hydride abstraction; on a source that does not
+#: abstract one the same ion is another molecule protonated (acetone less a
+#: hydride is protonated acrolein), so the ladder is not looked for there.
+HYDRIDE_CHANNEL = "[M-H]+"
+
+#: Intensity the ion a ladder grows from must reach, relative to the base peak:
+#: an anchor's floor (:data:`DEFAULT_ANCHOR_MIN_RELATIVE_INTENSITY`). A
+#: solvent that clusters is one of the loud things the source makes; a trace
+#: of protonated acetone is a sample's acetone, not a source's vapour.
+DEFAULT_LADDER_CORE_MIN_RELATIVE_INTENSITY = DEFAULT_ANCHOR_MIN_RELATIVE_INTENSITY
+
+#: How much taller than the rung below it a rung may stand and still be its
+#: ladder's: the allowance an isotope line gets over its prediction
+#: (:data:`DEFAULT_ISOTOPOLOGUE_MAX_EXCESS`). The heights fall along a ladder,
+#: but a proton-bound dimer is the more stable ion where the vapour is dense
+#: and can stand over its monomer, so the fall is not asked of one step to the
+#: count; a rung several times taller than the one below carries something else.
+DEFAULT_LADDER_MAX_RISE = DEFAULT_ISOTOPOLOGUE_MAX_EXCESS
+
+#: The bar a rung's ladder clears to take a peak a stage could read as a
+#: molecule. A rung whose ion also reads as a closed-shell molecule through one
+#: of the run's channels displaces that reading, so its evidence is weighed
+#: against the molecule's: the ladder's is the core it grew from, the
+#: molecule's the tallest peak it shows of its own through another of the
+#: run's channels, the second observation a reading is corroborated by
+#: elsewhere in the engine. The core must stand this many times taller, an
+#: order of magnitude; a molecule the spectrum shows nowhere else has nothing
+#: to weigh but the shared peak, and the ladder takes it. The reference
+#: engine's source-solvent family asks a share of the spectrum's signal of the
+#: same rung instead (its #55), which holds a faint dimer of a loud solvent
+#: back as firmly as an analyte: on the chamber dataset's positive batch it
+#: would leave two of the three acetone dimers the brief names.
+DEFAULT_LADDER_DISPLACEMENT_MARGIN = 10.0
+
+#: How many waters the reagent's water ladder climbs in one spectrum. Its rungs
+#: are named by no work found and claimed on their ladder alone, so a spectrum
+#: claims the first few; the batch measures how far a ladder reaches (4.2).
+DEFAULT_REAGENT_WATER_RUNGS = 3
+
+
+@dataclass(frozen=True)
+class LadderCore:
+    """The ion a ladder grows from.
+
+    It is evidence, not a claim: the ladder looks for it whether or not
+    another pass claimed its peak, and leaves the peak as it found it. A
+    solvent's own protonated ion is that solvent read by the stages, and the
+    nitrate dimer core is a library ion.
+
+    :param cluster: The ion.
+    :param needs_channel: A channel the run must search for the core to be
+        looked for at all (:data:`HYDRIDE_CHANNEL`); None for none.
+    """
+
+    cluster: ReagentCluster
+    needs_channel: str | None = None
+
+
+@dataclass(frozen=True)
+class LadderRung:
+    """One rung of a ladder, and the rungs it may step from.
+
+    :param cluster: The rung's ion, which a claim names as a library ion is.
+    :param steps: ``(label, neutral)`` per rung or core one step below it:
+        that ion's label and the neutral the step adds. A rung is claimed on
+        one step whose lower ion the spectrum shows.
+    :param water: Whether the rung holds a water its core does not. A water
+        rung never displaces a molecule (:func:`match_ion_ladders`).
+    """
+
+    cluster: ReagentCluster
+    steps: tuple[tuple[str, str], ...]
+    water: bool = False
+
+
+@dataclass(frozen=True)
+class IonLadder:
+    """A ladder: the ions it grows from and the rungs it climbs.
+
+    :param name: What the ladder is, as a claim names it (``"acetone"``).
+    :param cores: The ions its rungs grow from.
+    :param rungs: Its rungs, in no order the claim depends on.
+    """
+
+    name: str
+    cores: tuple[LadderCore, ...]
+    rungs: tuple[LadderRung, ...]
+
+
+def _units(solvent: str, count: int) -> str:
+    """A run of one solvent as a label writes it: ``C3H6O``, ``(C3H6O)2``."""
+    return solvent if count == 1 else f"({solvent}){count}"
+
+
+#: The rungs of each solvent's ladder a work names, by label: the NIST
+#: WebBook's ion clustering data, and the measurements it compiles, name the
+#: proton-bound clusters of methanol to well past four, acetone's to its
+#: tetramer and ethanol's dimer; each solvent's protonated ion with one water
+#: [mot84]; methanol's dimer with one; and ethanol's and acetone's ions less a
+#: hydride holding a second molecule. What no work found names is not on the
+#: ladder: ethanol's trimer, the dimers of ethanol and acetone with a water,
+#: methanol less a hydride, and every mixed-solvent cluster.
+_SOLVENT_NAMED: dict[str, tuple[str, ...]] = {
+    "[(CH4O)2+H]+": ("nist", "gri73", "lar82"),
+    "[(CH4O)3+H]+": ("nist", "gri73"),
+    "[(CH4O)4+H]+": ("nist", "gri73"),
+    "[CH4O+H3O]+": ("nist", "mot84"),
+    "[(CH4O)2+H3O]+": ("nist",),
+    "[(C2H6O)2+H]+": ("nist", "lar82"),
+    "[C2H6O+H3O]+": ("nist", "mot84"),
+    "[(C2H6O)2-H]+": ("nist", "lar82"),
+    "[(C3H6O)2+H]+": ("nist", "lar82"),
+    "[(C3H6O)3+H]+": ("nist",),
+    "[(C3H6O)4+H]+": ("nist",),
+    "[C3H6O+H3O]+": ("nist", "mot84"),
+    "[(C3H6O)2-H]+": ("nist",),
+}
+
+#: How far each solvent's three ladders climb, in copies of the solvent: the
+#: proton-bound ladder (S)nH+, the hydrated one (S)n.H3O+ and the hydride-bound
+#: one [S-H]+.(S)n-1. Read off :data:`_SOLVENT_NAMED`, which is what decides it.
+_SOLVENT_REACH: dict[str, tuple[int, int, int]] = {
+    "CH4O": (4, 2, 0),
+    "C2H6O": (2, 1, 2),
+    "C3H6O": (4, 1, 2),
+}
+
+
+def _solvent_rung(
+    label: str, formula: str, steps: tuple[tuple[str, str], ...], *, water: bool
+) -> LadderRung:
+    """A solvent rung, with the works that name it (a ``KeyError`` for none)."""
+    return LadderRung(
+        ReagentCluster(
+            formula,
+            1,
+            label,
+            KIND_ADDUCT if water else KIND_CLUSTER,
+            family=FAMILY_SOLVENT,
+            references=_SOLVENT_NAMED[label],
+        ),
+        steps,
+        water=water,
+    )
+
+
+def solvent_ladder(solvent: str, *, hydrated: bool) -> IonLadder:
+    """One solvent's ladders: proton-bound, hydrated and hydride-bound.
+
+    The proton-bound ladder grows from the protonated solvent, ``[S+H]+``, a
+    solvent at a time; the hydrated rungs step off it by one water, or off
+    the hydrated rung below by a solvent; the hydride-bound ladder grows from
+    the solvent less a hydride, ``[S-H]+``, which only a source that abstracts
+    a hydride makes (:data:`HYDRIDE_CHANNEL`).
+
+    :param solvent: The solvent's formula, one of :data:`SOLVENT_NAMES` but
+        water.
+    :param hydrated: Whether the source carries water, so the ladder holds
+        its hydrated rungs.
+    :return: The ladder.
+    """
+    proton_depth, water_depth, hydride_depth = _SOLVENT_REACH[solvent]
+    protonated = f"[{solvent}+H]+"
+    less_hydride = f"[{solvent}-H]+"
+    cores = [
+        LadderCore(
+            ReagentCluster(
+                _ion_formula((solvent, 1), ("H", 1)),
+                1,
+                protonated,
+                family=FAMILY_SOLVENT,
+            )
+        )
+    ]
+    rungs: list[LadderRung] = []
+
+    def proton_label(count: int) -> str:
+        return protonated if count == 1 else f"[{_units(solvent, count)}+H]+"
+
+    def hydrate_label(count: int) -> str:
+        return f"[{_units(solvent, count)}+H3O]+"
+
+    def hydride_label(count: int) -> str:
+        return less_hydride if count == 1 else f"[{_units(solvent, count)}-H]+"
+
+    for count in range(2, proton_depth + 1):
+        rungs.append(
+            _solvent_rung(
+                proton_label(count),
+                _ion_formula((solvent, count), ("H", 1)),
+                ((proton_label(count - 1), solvent),),
+                water=False,
+            )
+        )
+    if hydrated:
+        for count in range(1, water_depth + 1):
+            steps = [(proton_label(count), WATER)]
+            if count > 1:
+                steps.append((hydrate_label(count - 1), solvent))
+            rungs.append(
+                _solvent_rung(
+                    hydrate_label(count),
+                    _ion_formula((solvent, count), (WATER, 1), ("H", 1)),
+                    tuple(steps),
+                    water=True,
+                )
+            )
+    if hydride_depth:
+        cores.append(
+            LadderCore(
+                ReagentCluster(
+                    _ion_formula((solvent, 1), ("H", -1)),
+                    1,
+                    less_hydride,
+                    family=FAMILY_SOLVENT,
+                ),
+                needs_channel=HYDRIDE_CHANNEL,
+            )
+        )
+        for count in range(2, hydride_depth + 1):
+            rungs.append(
+                _solvent_rung(
+                    hydride_label(count),
+                    _ion_formula((solvent, count), ("H", -1)),
+                    ((hydride_label(count - 1), solvent),),
+                    water=False,
+                )
+            )
+    return IonLadder(SOLVENT_NAMES[solvent], tuple(cores), tuple(rungs))
+
+
+def solvent_ladders(solvents: Iterable[str]) -> tuple[IonLadder, ...]:
+    """The ladders of a source's solvent list.
+
+    :param solvents: The solvents its vapour carries
+        (``ReagentProfile.source_solvents``). Water among them puts the
+        hydrated rungs on every other solvent's ladder; on its own it is no
+        ladder (:data:`WATER`).
+    :return: One ladder per solvent but water, in the list's order.
+    """
+    solvents = tuple(solvents)
+    hydrated = WATER in solvents
+    return tuple(
+        solvent_ladder(solvent, hydrated=hydrated)
+        for solvent in solvents
+        if solvent != WATER
+    )
+
+
+def reagent_water_ladder(
+    reagent: str, *, rungs: int = DEFAULT_REAGENT_WATER_RUNGS
+) -> IonLadder:
+    """The nitrate reagent's water ladder on its acid dimer core.
+
+    Rung zero is ``(HNO3)2.NO3-``, the reagent's second acid rung and a
+    library ion; each rung above it is one more water. The acid is the
+    reagent's own, so a labelled reagent's ladder is labelled throughout.
+
+    :param reagent: The reagent ion's composition (``"NO3"``, ``"^NO3"``).
+    :param rungs: How many waters to climb.
+    :return: The ladder.
+    """
+    acid = f"H{reagent}"
+    core_label = f"[{reagent}+2x{acid}]-"
+    core = ReagentCluster(
+        _ion_formula((reagent, 1), (acid, 2)), -1, core_label, KIND_CLUSTER
+    )
+    ladder: list[LadderRung] = []
+    below = core_label
+    for count in range(1, rungs + 1):
+        waters = f"{count}xH2O" if count > 1 else "H2O"
+        label = f"[{reagent}+2x{acid}+{waters}]-"
+        ladder.append(
+            LadderRung(
+                ReagentCluster(
+                    _ion_formula((reagent, 1), (acid, 2), (WATER, count)),
+                    -1,
+                    label,
+                    KIND_ADDUCT,
+                    observed=_seen(
+                        f"claimed on its ladder: {core_label} and every hydrate "
+                        "below it in the same spectrum, each one water apart"
+                    ),
+                ),
+                ((below, WATER),),
+                water=True,
+            )
+        )
+        below = label
+    return IonLadder(f"{core_label} hydrates", (LadderCore(core),), tuple(ladder))
+
+
+def _profile_solvents(name: str) -> tuple[str, ...]:
+    """A profile's solvent list, read from the profile itself."""
+    # Imported here: the profiles are this library's readers' data, and
+    # nothing else in this module needs them.
+    from mascope_tools.composition.profiles import REAGENT_PROFILES
+
+    return REAGENT_PROFILES[name].source_solvents
+
+
+#: The ladders per profile, keyed the way :data:`REAGENT_CLUSTERS` is: the
+#: solvent ladders of every positive source whose profile lists solvents, and
+#: the nitrate reagent's water ladder on its dimer core, labelled with the
+#: label.
+ION_LADDERS: dict[str, tuple[IonLadder, ...]] = {
+    "EASYIC_POS": solvent_ladders(_profile_solvents("EASYIC_POS")),
+    "UR": solvent_ladders(_profile_solvents("UR")),
+    "NO3": (reagent_water_ladder("NO3"),),
+    "NO3_15N": (reagent_water_ladder("^NO3"),),
+}
+
+
+def ion_ladders(profile_name: str) -> tuple[IonLadder, ...]:
+    """The ladders a profile's source climbs.
+
+    :param profile_name: The profile's name.
+    :return: Its ladders, empty when it names none.
+    """
+    return ION_LADDERS.get(profile_name, ())
+
+
+def covalent_readings(
+    formula: str,
+    charge: int,
+    channels: Iterable[str],
+    *,
+    min_carbon: int = 1,
+) -> tuple[tuple[str, str], ...]:
+    """The molecules an ion also reads as, through the run's channels.
+
+    A reading is a neutral a stage could commit on the ion's peak: its
+    composition through one of the channels, a closed-shell molecule whose
+    atoms can be bonded at all (``heuristic_filter.senior_plausibility``) and
+    whose carbon reaches the grid's floor. A radical, an over-saturated formula
+    such as ethanol dimer's C4H12O2, and a carbon-free formula no grid searches
+    are no molecule a stage would name.
+
+    :param formula: The ion's composition, charge excluded.
+    :param charge: Its charge.
+    :param channels: The run's channels, in either notation.
+    :param min_carbon: The grid's carbon floor (``ReagentProfile.min_carbon``).
+    :return: ``(channel, neutral)`` per reading, the channel in the standard
+        notation, each channel once.
+    """
+    ion = dict(parse_composition(formula))
+    readings: dict[str, tuple[str, str]] = {}
+    for notation, parts in _simple_channels(channels):
+        if parts.charge != charge:
+            continue
+        counts = _through(ion, parts, to_ion=False)
+        if counts is None or counts.get("C", 0) < max(min_carbon, 1):
+            continue
+        hill = to_hill_notation(counts)
+        if not neutral_is_closed_shell(hill):
+            continue
+        if senior_plausibility(element_counts(hill)) <= 0.0:
+            continue
+        readings.setdefault(mechanism_key(notation), (parts.standard, hill))
+    return tuple(readings.values())
+
+
+def _simple_channels(channels: Iterable[str]):
+    """The channels a stage searches, parsed: one molecule, one charge, no
+    loss. An unreadable notation is none of them."""
+    for notation in channels:
+        try:
+            parts = parse_mechanism(notation)
+        except MechanismNotationError:
+            continue
+        if parts.simple:
+            yield notation, parts
+
+
+def _through(counts: Mapping[str, int], parts, *, to_ion: bool) -> dict | None:
+    """A composition through a channel: the ion a neutral makes, or the
+    neutral an ion reads as. None where an element would go below zero.
+
+    Plain counts rather than a composition's arithmetic, which cannot copy a
+    labelled reagent's custom element.
+    """
+    sign = 1 if parts.addition == to_ion else -1
+    out = dict(counts)
+    for term in parts.formulas:
+        for element, n in parse_composition(term).items():
+            out[element] = out.get(element, 0) + sign * n
+    out = {element: n for element, n in out.items() if n}
+    if not out or any(n < 0 for n in out.values()):
+        return None
+    return out
+
+
+def _shown_elsewhere(
+    neutral: str,
+    channel: str,
+    channels: Iterable[str],
+    mz_array: np.ndarray,
+    intensity_array: np.ndarray,
+    *,
+    scale: float,
+    tolerance: float,
+    excluded: set[int],
+    floor: float,
+) -> tuple[str, float, float] | None:
+    """The tallest peak a molecule shows of its own through another channel.
+
+    :param neutral: The molecule, a reading of a rung's ion.
+    :param channel: The channel it was read through, which is not asked.
+    :param excluded: Peaks that are no molecule's: the ones the library and
+        the ladders claimed.
+    :return: ``(channel, m/z, height)``, or None where it shows none.
+    """
+    counts = dict(parse_composition(neutral))
+    best: tuple[str, float, float] | None = None
+    for notation, parts in _simple_channels(channels):
+        if mechanism_key(notation) == mechanism_key(channel):
+            continue
+        ion = _through(counts, parts, to_ion=True)
+        if ion is None:
+            continue
+        target = ion_mz(to_hill_notation(ion), parts.charge)
+        index = _brightest_in_window(
+            mz_array, intensity_array, target * scale, tolerance, excluded, floor
+        )
+        if index is None:
+            continue
+        height = float(intensity_array[index])
+        if best is None or height > best[2]:
+            best = (parts.standard, float(mz_array[index]), height)
+    return best
+
+
+#: Why a rung whose peak the spectrum shows was left for the stages.
+HELD_NO_RUNG_BELOW = "no_rung_below"
+HELD_SPACING = "spacing"
+HELD_RISES = "rises"
+HELD_WATER_DISPLACES = "water_displaces"
+HELD_MOLECULE_SHOWN = "molecule_shown"
+HELD_REASONS = (
+    HELD_NO_RUNG_BELOW,
+    HELD_SPACING,
+    HELD_RISES,
+    HELD_WATER_DISPLACES,
+    HELD_MOLECULE_SHOWN,
+)
+
+
+@dataclass(frozen=True)
+class _Seen:
+    """An ion of a ladder the spectrum shows: a core, or a rung claimed."""
+
+    label: str
+    index: int
+    mz: float
+    exact: float
+    intensity: float
+    root: str
+
+
+def match_ion_ladders(
+    ladders: Sequence[IonLadder],
+    mz: Sequence[float] | np.ndarray,
+    intensity: Sequence[float] | np.ndarray,
+    *,
+    calibration: ReagentCalibration,
+    taken: Iterable[int],
+    channels: Iterable[str],
+    claim_ppm: float,
+    min_carbon: int = 1,
+    purity: float | None = None,
+    resolution: Callable[[float], float] | None = None,
+    core_min_relative_intensity: float = DEFAULT_LADDER_CORE_MIN_RELATIVE_INTENSITY,
+    min_relative_intensity: float = DEFAULT_REAGENT_MIN_RELATIVE_INTENSITY,
+    max_rise: float = DEFAULT_LADDER_MAX_RISE,
+    displacement_margin: float = DEFAULT_LADDER_DISPLACEMENT_MARGIN,
+    isotopologue_min_relative: float = DEFAULT_ISOTOPOLOGUE_MIN_RELATIVE,
+    isotopologue_max_excess: float = DEFAULT_ISOTOPOLOGUE_MAX_EXCESS,
+) -> tuple[list[ReagentHit], dict]:
+    """Which peaks of this spectrum are rungs of the source's ladders.
+
+    Run after :func:`match_reagent_clusters`, on the masses its anchors
+    corrected and on the peaks it left. A rung is claimed where every one of
+    these holds:
+
+    - **The ladder grows from an ion the spectrum shows.** Its core - the
+      protonated solvent, the solvent less a hydride where the run abstracts
+      one, the nitrate dimer core - is a peak at its corrected mass and at
+      least an anchor's share of the base peak. The core is not claimed.
+    - **The ladder is contiguous from it.** The ion one step below the rung,
+      the core or a rung this pass claimed, is a peak of the spectrum, so a
+      ladder only ever climbs from a core it can see.
+    - **Every rung's mass fits at the run's precision**, against the corrected
+      mass, and so does the step: the two peaks are one neutral's exact mass
+      apart within the same tolerance.
+    - **The heights fall along the ladder**: the rung is no more than
+      ``max_rise`` times the rung below it.
+    - **It displaces a molecule only where its ladder outweighs it.** Where
+      the rung's ion also reads as a molecule through one of the run's
+      channels (:func:`covalent_readings`), the rung takes the peak only if it
+      holds no water and its core stands ``displacement_margin`` times taller
+      than any peak the molecule shows of its own through another of the
+      run's channels (a peak no claim took). A molecule the spectrum shows
+      nowhere else has only the shared peak, which is the ladder's to explain.
+      A water rung never displaces a molecule [good70,
+      sun88]: water hydrates every ion a humid source makes, so a step of one
+      water is the commonest spacing in a spectrum and no evidence that the
+      lower peak is a solvent's, and a water rung is anchored by nothing else.
+      A water rung no molecule reads, ethanol on a hydronium among them, is
+      claimed on its ladder.
+
+    Rungs are walked in mass order, over every ladder at once, so a rung below
+    is decided before the rungs above it. Two ladders' rungs of one
+    composition are one ion: the first reading whose ladder holds takes the
+    peak, and another that holds is recorded beside it. A claimed rung's
+    isotope lines are claimed with it, as a library ion's are.
+
+    :param ladders: The profile's ladders (:func:`ion_ladders`).
+    :param mz: The spectrum's m/z values.
+    :param intensity: Their intensities.
+    :param calibration: What :func:`match_reagent_clusters`' anchors said.
+    :param taken: The peaks that claim took, which no rung takes.
+    :param channels: The run's channels, in either notation: whether it
+        abstracts a hydride, and what a stage could read a rung as.
+    :param claim_ppm: The instrument's precision, the isotope lines' window.
+    :param min_carbon: The grid's carbon floor, for :func:`covalent_readings`.
+    :param purity: A labelled reagent's isotopic purity, for its envelope.
+    :param displacement_margin: How many times taller than the molecule's own
+        peak through another channel a ladder's core must stand for its rung
+        to displace the molecule (:data:`DEFAULT_LADDER_DISPLACEMENT_MARGIN`).
+    :param resolution: The file's resolving power, as for
+        :func:`match_reagent_clusters`.
+    :return: The hits, each rung before its isotope lines, and a summary for
+        the run's log: the ladders, which cores the spectrum showed, what was
+        claimed and what was held by why.
+    """
+    mz_array = np.asarray(mz, dtype=float)
+    intensity_array = np.asarray(intensity, dtype=float)
+    summary: dict = {
+        "ladders": [ladder.name for ladder in ladders],
+        "cores": {},
+        "claimed": 0,
+        "claimed_isotopologues": 0,
+        "held": {reason: 0 for reason in HELD_REASONS},
+        "claims": [],
+    }
+    if mz_array.size == 0 or not ladders:
+        return [], summary
+    base_peak = float(intensity_array.max())
+    total = float(intensity_array.sum())
+    if base_peak <= 0.0:
+        return [], summary
+    scale = 1.0 + calibration.offset_ppm * 1e-6
+    tolerance = calibration.tolerance_ppm
+    channels = tuple(channels)
+    searched = {mechanism_key(notation) for notation in channels}
+    taken_set = {int(index) for index in taken}
+
+    # Every ion a ladder may step from, by composition: two labels of one
+    # composition are one ion, so a rung one ladder claimed is a rung below
+    # for another.
+    seen: dict[str, _Seen] = {}
+    formula_of: dict[str, str] = {}
+    for ladder in ladders:
+        for core in ladder.cores:
+            formula_of[core.cluster.label] = core.cluster.formula
+            summary["cores"].setdefault(core.cluster.label, False)
+            if core.needs_channel and mechanism_key(core.needs_channel) not in searched:
+                continue
+            index = _brightest_in_window(
+                mz_array,
+                intensity_array,
+                core.cluster.mz * scale,
+                tolerance,
+                set(),
+                base_peak * core_min_relative_intensity,
+            )
+            if index is None:
+                continue
+            summary["cores"][core.cluster.label] = True
+            seen[core.cluster.formula] = _Seen(
+                core.cluster.label,
+                index,
+                float(mz_array[index]),
+                core.cluster.mz,
+                float(intensity_array[index]),
+                core.cluster.label,
+            )
+        for rung in ladder.rungs:
+            formula_of[rung.cluster.label] = rung.cluster.formula
+
+    readings = sorted(
+        ((ladder, rung) for ladder in ladders for rung in ladder.rungs),
+        key=lambda pair: pair[1].cluster.mz,
+    )
+    claims: dict[str, dict] = {}
+    # Why each ion the spectrum shows was left, by composition: the first
+    # reading's reason, unless another reading of the ion took it.
+    held: dict[str, str] = {}
+    floor = base_peak * min_relative_intensity
+    for ladder, rung in readings:
+        cluster = rung.cluster
+        claim = claims.get(cluster.formula)
+        if claim is not None:
+            index = claim["index"]
+        else:
+            index = _brightest_in_window(
+                mz_array,
+                intensity_array,
+                cluster.mz * scale,
+                tolerance,
+                taken_set,
+                floor,
+            )
+        if index is None:
+            continue
+        observed = float(mz_array[index])
+        height = float(intensity_array[index])
+        below_found = False
+        spaced = False
+        step_record: dict | None = None
+        for label, neutral in rung.steps:
+            below = seen.get(formula_of.get(label, ""))
+            if below is None:
+                continue
+            below_found = True
+            exact_step = cluster.mz - below.exact
+            spacing_error = (
+                ((observed - below.mz) - exact_step * scale) / cluster.mz * 1e6
+            )
+            if abs(spacing_error) > tolerance:
+                continue
+            spaced = True
+            if below.intensity <= 0.0 or height > max_rise * below.intensity:
+                continue
+            if step_record is None or below.intensity > step_record["height"]:
+                step_record = {
+                    "height": below.intensity,
+                    "root": below.root,
+                    "record": {
+                        "ion": below.label,
+                        "mz": round(below.mz, 5),
+                        "step": neutral,
+                        "spacing_error_ppm": round(spacing_error, 3),
+                        "ratio": round(height / below.intensity, 4),
+                    },
+                }
+        if step_record is None:
+            reason = (
+                HELD_RISES
+                if spaced
+                else HELD_SPACING
+                if below_found
+                else HELD_NO_RUNG_BELOW
+            )
+            held.setdefault(cluster.formula, reason)
+            continue
+        displaced = covalent_readings(
+            cluster.formula, cluster.charge, channels, min_carbon=min_carbon
+        )
+        if displaced and rung.water:
+            held.setdefault(cluster.formula, HELD_WATER_DISPLACES)
+            continue
+        root = seen[formula_of[step_record["root"]]]
+        weighed: list[dict] = []
+        outweighed = False
+        for notation, neutral in displaced:
+            shown = _shown_elsewhere(
+                neutral,
+                notation,
+                channels,
+                mz_array,
+                intensity_array,
+                scale=scale,
+                tolerance=tolerance,
+                excluded=taken_set,
+                floor=floor,
+            )
+            record = {"ionization": notation, "formula": neutral, "shown": None}
+            if shown is not None:
+                record["shown"] = {
+                    "ionization": shown[0],
+                    "mz": round(shown[1], 5),
+                    "core_ratio": round(root.intensity / shown[2], 3),
+                }
+                outweighed |= root.intensity < displacement_margin * shown[2]
+            weighed.append(record)
+        if outweighed:
+            held.setdefault(cluster.formula, HELD_MOLECULE_SHOWN)
+            continue
+        if claim is not None:
+            # The same ion read on another ladder that holds as well.
+            claim["record"]["also_reads_as"].append(cluster.label)
+            continue
+        claims[cluster.formula] = {
+            "index": index,
+            "cluster": cluster,
+            "record": {
+                "ladder": ladder.name,
+                "grew_from": {
+                    "ion": root.label,
+                    "mz": round(root.mz, 5),
+                    "relative_intensity": float(f"{root.intensity / base_peak:.3e}"),
+                },
+                "below": step_record["record"],
+                "displaced": weighed,
+                "share": float(f"{height / total:.3e}") if total > 0 else None,
+                "also_reads_as": [],
+            },
+        }
+        taken_set.add(index)
+        seen[cluster.formula] = _Seen(
+            cluster.label, index, observed, cluster.mz, height, root.label
+        )
+
+    for formula, reason in held.items():
+        if formula not in claims:
+            summary["held"][reason] += 1
+
+    hits: list[ReagentHit] = []
+    for claim in claims.values():
+        cluster = claim["cluster"]
+        index = claim["index"]
+        observed = float(mz_array[index])
+        hit = ReagentHit(
+            cluster=cluster,
+            index=index,
+            mz=observed,
+            intensity=float(intensity_array[index]),
+            mz_error_ppm=(observed - cluster.mz) / cluster.mz * 1e6,
+            ladder=claim["record"],
+        )
+        lines = _isotopologue_hits(
+            cluster,
+            hit,
+            mz_array,
+            intensity_array,
+            taken_set,
+            ppm=claim_ppm,
+            purity=purity,
+            min_relative=isotopologue_min_relative,
+            max_excess=isotopologue_max_excess,
+            resolution=resolution,
+        )
+        hits.append(hit)
+        hits.extend(lines)
+        summary["claimed"] += 1
+        summary["claimed_isotopologues"] += len(lines)
+        summary["claims"].append(
+            {
+                "ion": cluster.label,
+                "mz": round(observed, 5),
+                "displaced": [
+                    reading["formula"] for reading in claim["record"]["displaced"]
+                ],
+            }
+        )
+    return hits, summary
 
 
 # --- fragment ladders ---------------------------------------------------------

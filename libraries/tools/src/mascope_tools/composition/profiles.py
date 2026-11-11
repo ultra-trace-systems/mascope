@@ -149,6 +149,10 @@ class ReagentProfile:
     :param mz_precision_ppm: A fixed untargeted m/z window in ppm, overriding
         the instrument-class default of
         :data:`INSTRUMENT_MZ_PRECISION_PPM`. Set only by the identity profile.
+    :param source_solvents: The solvents the source's vapour carries, by
+        formula (``reagents.SOLVENT_NAMES``): the reagent pass claims their
+        clusters as the source's on their ladder (``reagents.solvent_ladders``).
+        Empty for a source that builds none.
     :param aliases: Alternative names a run config may use.
     """
 
@@ -164,7 +168,16 @@ class ReagentProfile:
     label_purity: float | None = None
     min_carbon: int = 1
     mz_precision_ppm: float | None = None
+    source_solvents: tuple[str, ...] = ()
     aliases: tuple[str, ...] = ()
+
+
+#: The solvents a positive chemical-ionization source's vapour carries: the
+#: water every humid source holds, and the methanol, ethanol and acetone of a
+#: laboratory's air and an inlet's cleaning. Their clusters with a proton, with
+#: a hydronium and around a solvent less a hydride are the source's ions, not
+#: the sample's (step 3.3d of the assignment plan).
+POSITIVE_SOURCE_SOLVENTS: tuple[str, ...] = ("H2O", "CH4O", "C2H6O", "C3H6O")
 
 
 #: The ceiling every shipped context sets on a reference source's window. It
@@ -478,6 +491,7 @@ UR = ReagentProfile(
     # unexplained mass rather than one the source produces.
     secondary_adducts=("[M+NH4]+",),
     default_context=URONIUM.name,
+    source_solvents=POSITIVE_SOURCE_SOLVENTS,
     aliases=("ur", "uronium", "urea", "urea-cims"),
 )
 
@@ -621,6 +635,9 @@ EASYIC_POS = ReagentProfile(
     # ``reagents.SECONDARY_CHANNELS`` for what switches each on.
     secondary_adducts=("[M-H]+", "[M+H]+", "[M-CH3]+"),
     default_context=AMBIENT_AIR.name,
+    # On the chamber dataset's positive batch the acetone dimer at m/z 117.091
+    # sits in three of six samples and read as an analyte.
+    source_solvents=POSITIVE_SOURCE_SOLVENTS,
     aliases=(
         "easyic",
         "easy-ic",
