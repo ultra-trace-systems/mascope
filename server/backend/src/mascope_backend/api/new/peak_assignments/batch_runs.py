@@ -51,6 +51,7 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     NotFoundException,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    continuity_stale,
     instrument_type_of,
     manual_pin_of,
     standing_co_variation_record,
@@ -184,6 +185,8 @@ def anchor_snapshot_row(run_id: str, anchor: Any, members: Iterable[Any]) -> dic
         "engine_claim": anchor.engine_claim,
         "series": standing_series_record(anchor),
         "co_variation": standing_co_variation_record(anchor),
+        "continuity_grade": anchor.continuity_grade,
+        "continuity": anchor.continuity,
         "candidates": list(anchor.candidates or []),
         "members": member_arrays(members),
     }
@@ -216,6 +219,11 @@ def snapshot_anchor_meta(row: Any, sample_batch_id: str) -> dict:
         "engine_claim": row.engine_claim,
         "series": row.series,
         "co_variation": row.co_variation,
+        "continuity_grade": row.continuity_grade,
+        "continuity": row.continuity,
+        # Against the snapshot's own consensus: a grade the run's ledger had
+        # already moved past when it was captured.
+        "continuity_stale": continuity_stale(row),
         "reference_listing": consensus_listing(
             row.candidates,
             row.consensus_formula,
@@ -329,9 +337,9 @@ async def touch_ledger(session, sample_batch_id: str) -> None:
     """Stamp the batch's current run with the time its live ledger was last
     written. Called by every write to the live ledger - a fold, a consensus
     recompute, a curation, a search's, an import's or a series detection's
-    rows, a co-variation reading's records - in the write's own
-    transaction, under the batch's fold lock, so the stamp commits with the
-    write and never without it. A ledger with no current run yet has nothing
+    rows, a co-variation reading's records, a continuity pass's grades - in
+    the write's own transaction, under the batch's fold lock, so the stamp
+    commits with the write and never without it. A ledger with no current run yet has nothing
     to stamp: its first fold mints the run before it writes."""
     await session.execute(
         update(BatchPeakRun)

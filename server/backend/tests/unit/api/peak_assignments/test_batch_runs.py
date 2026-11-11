@@ -60,6 +60,8 @@ def _anchor(**over):
         provenance={},
         engine_tier=None,
         engine_claim=None,
+        continuity_grade=None,
+        continuity=None,
     )
     base.update(over)
     return SimpleNamespace(**base)

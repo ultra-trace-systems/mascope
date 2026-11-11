@@ -29,6 +29,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_records import (
     get_batch_peak_ledger,
     get_batch_peak_series,
 )
+from mascope_backend.api.new.peak_assignments.continuity import run_batch_continuity
 from mascope_backend.db import (
     BatchPeak,
     Dataset,
@@ -474,3 +475,29 @@ async def test_the_link_survives_the_loss_of_the_ledger_rows(
     assert after[182].isotopologue_of == after[181].batch_peak_id
     assert after[300].isotopologue_of is None  # still no majority
     assert after[182].consensus_ion_formula == "C6H13O6+"
+
+
+# --- the ratio-stability pass ------------------------------------------------
+
+
+async def test_the_continuity_pass_pairs_only_a_line_the_family_link_names(
+    async_session_factory, seeded
+):
+    """The pass pairs an isotope line with its M0 by the link this suite
+    pins, and by nothing else: the anchor the samples split on and the line
+    whose owner never won have no link, so they are in no pair."""
+    batch, samples = seeded
+    await _fold_all(samples)
+    summary = await run_batch_continuity(batch)
+    peaks = await _by_mz(async_session_factory, batch)
+
+    assert summary["pairs"] == 1
+    assert summary["pairs_by_kind"] == {"isotopologue": 1}
+    assert {mz for mz, peak in peaks.items() if peak.continuity} == {181, 182}
+    # Three files with no instrument function, acquired at one time: no time
+    # axis to read a ratio along, so the pair is withdrawn with the reason.
+    assert summary["time_ordered"] is False
+    assert peaks[182].continuity_grade is None
+    assert peaks[182].continuity["eligible"] is False
+    assert peaks[182].continuity["reason"] == "few_times"
+    assert peaks[182].continuity["n_pairs"] == 1

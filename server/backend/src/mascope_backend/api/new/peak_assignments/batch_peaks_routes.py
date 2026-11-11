@@ -59,6 +59,9 @@ from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     search_batch_untargeted,
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+from mascope_backend.api.new.peak_assignments.continuity import (
+    recompute_batch_continuity,
+)
 from mascope_backend.api.new.peak_assignments.routes import (
     reject_oversized_import,
     require_peak_assignment_enabled,
@@ -553,6 +556,61 @@ async def read_co_variation_batch_peaks_route(
     return {
         "message": (
             "Reading the co-variation of the batch peaks' channels in "
+            f"'{sample_batch.sample_batch_name}', please wait."
+        ),
+        "process_id": process_id,
+    }
+
+
+@batch_peaks_router.post(
+    "/batch/{sample_batch_id}/recompute-continuity",
+    # A write into the batch ledger's anchors, gated like the co-variation
+    # reading above and, like it, not opened to API tokens.
+    dependencies=[Depends(require_peak_assignment_enabled)],
+)
+@api_route(status_code=202)
+async def recompute_continuity_batch_peaks_route(
+    sample_batch_id: str,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(current_active_user),
+    membership=Depends(require_batch_role("editor")),
+) -> dict:
+    """Grade the ratio stability of the batch's related batch peaks.
+
+    For every M0 and its isotope line, and every two channels of one neutral,
+    per ionization mode and instrument type, both at an assigned or candidate
+    tier, the within-sample ratio of the two members' intensities is read
+    across a time-ordered batch: its median, its spread (1.4826 x MAD of the
+    log ratio) and its drift (Spearman's rho against the acquisition order
+    and the Theil-Sen change over the pair's span). Each pair is graded
+    ``stable``, ``drift`` (it drifts while the co-variation reading says the
+    two traces co-vary), ``red`` (it drifts otherwise, or jumps),
+    ``inconclusive`` or ``insufficient``, and each batch peak records its
+    most alarming pair's grade as ``continuity_grade`` with the pairs under
+    ``continuity``. A batch that is not time-ordered is graded nothing, and
+    its batch peaks say why. Display-only: no tier moves. Runs as a
+    background task, not as a batch run, and emits ``peak_assignment_reload``
+    on completion. A rebuild of the ledger grades it at its end as well.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param user: The current authenticated user. Requires workspace editor role.
+    :return: Acknowledgement message with the background process id.
+    """
+    sample_batch = await fetch_sample_batch(sample_batch_id)
+    # A run rewriting the ledger would be graded half-way; a rebuild grades
+    # it itself when it is done.
+    await check_no_run_in_flight(sample_batch_id=sample_batch_id)
+    process_id = gen_id(8)
+    background_tasks.add_task(
+        recompute_batch_continuity,
+        sample_batch_id=sample_batch_id,
+        independent_transaction=True,
+        user_id=user.id,
+        process_id=process_id,
+    )
+    return {
+        "message": (
+            "Grading the ratio stability of the batch peaks of "
             f"'{sample_batch.sample_batch_name}', please wait."
         ),
         "process_id": process_id,

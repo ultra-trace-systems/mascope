@@ -15,6 +15,7 @@ from sqlalchemy import select
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    continuity_stale,
     instrument_type_of,
     manual_pin_of,
     mz_from_delta,
@@ -65,6 +66,10 @@ def _batch_peak_meta(bp) -> dict:
     ``co_variation`` is how the anchor's trace follows the same neutral's
     other channels, as the batch's co-variation reading left it
     (``batch_coherence``), None where it read none for the consensus.
+    ``continuity_grade`` and ``continuity`` are the ratio-stability grade of
+    the anchor's pairs and its detail, as the batch's continuity pass left
+    them (``continuity``), and ``continuity_stale`` says the ledger has moved
+    past them since (``batch_peaks.continuity_stale``).
     """
     return {
         "batch_peak_id": bp.batch_peak_id,
@@ -94,6 +99,9 @@ def _batch_peak_meta(bp) -> dict:
         "engine_claim": bp.engine_claim,
         "series": standing_series_record(bp),
         "co_variation": standing_co_variation_record(bp),
+        "continuity_grade": bp.continuity_grade,
+        "continuity": bp.continuity,
+        "continuity_stale": continuity_stale(bp),
         "reference_listing": consensus_listing(
             bp.candidates,
             bp.consensus_formula,

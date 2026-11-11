@@ -1528,6 +1528,63 @@ as the *Batch peaks* selection allows, and a peak the ledger does not hold canno
 And a peak focused from the batch side - the chart, the arrow beside a batch peak's intensity
 - scrolls its row into view in the sample ledger.
 
+### Ratio stability
+
+Every effect that scales a whole spectrum - the source's strength, its drift, the
+number of scans, a dilution - scales both peaks of a related pair alike, so their
+ratio within one sample cancels it. An isotope line's ratio to its main peak is fixed
+by isotopic abundance, and a compound's ratio between two channels by the source's
+chemistry. A species that is what the ledger says therefore holds a flat ratio across
+the batch, even while its own trace swings by orders of magnitude. The ratio-stability
+pass reads that ratio for every pair of related batch peaks:
+
+- **An isotope line and its main peak.** Every isotopologue the ledger folds under a
+  main peak pairs with it; a line folded under another line pairs with the main peak
+  it is drawn under. A line the samples split on folds under nothing and pairs with
+  nothing.
+- **Two channels of one compound**: the pairs *Read co-variation* reads, one batch peak
+  per channel, neither of them ambiguous.
+
+Both peaks must be *assigned* or *candidate*. A sample counts for a pair where both
+peaks are in it with an intensity above zero, both read the batch peak's formula, and
+it is no blank: labelled *BLANK*, or from a file with no instrument function. A sample
+missing either peak is a gap, never a point against the formula. Over those samples,
+in acquisition order, the pass reads the natural log of the ratio:
+
+- **Its spread**: 1.4826 times the median absolute deviation, which one spiked sample
+  cannot move [Hampel 1974][ham74], [Rousseeuw and Croux 1993][rc93].
+- **Its drift**, which needs a trend and a size together. The trend is Spearman's rho
+  against the acquisition order, 0.6 or more either way [Spearman 1904][spe04]. The size
+  is the Theil-Sen slope against time [Theil 1950][the50], [Sen 1968][sen68] times the
+  pair's span, at least ln 1.5 for an isotope ratio and ln 2 for a channel ratio,
+  rising or falling.
+
+Each pair is graded in this order:
+
+| Grade | When |
+| --- | --- |
+| insufficient | fewer than 6 samples, or fewer than 5 distinct acquisition times: the segments of one file share its time |
+| drift | it drifts, and *Read co-variation* read the two channels as co-varying: the source's chemistry moved and the assignment stands |
+| red | it drifts with nothing saying the two traces co-vary, which an isotope ratio never has, or its spread is 0.5 or more: a ratio that jumps |
+| stable | a spread of at most 0.15 for an isotope ratio or 0.25 for a channel ratio, over 8 samples or more, the deviation above zero |
+| inconclusive | anything else |
+
+A batch peak takes its most alarming pair's grade, in that order of alarm: red, drift,
+stable, inconclusive, insufficient. Only a time-ordered batch is graded: an
+acquisition batch, or an analysis batch whose largest gap between acquisition times is
+at most ten times the median gap. A batch that is not keeps no grades, and its batch
+peaks say why. One pass grades up to 20,000 pairs, the best supported first, and marks
+a batch peak whose other pairs it left as partial.
+
+The grade is shown, never weighed. It says two peaks behave as one species, never
+which species, and no tier reads it. Every threshold is provisional until it has been
+measured on real time-ordered batches. *Rebuild batch ledger* grades the batch when it
+has folded the last sample, and `POST /api/batch-peaks/batch/{id}/recompute-continuity`
+grades it on request. The ledger's records carry the grade as `continuity_grade`, the
+pairs under `continuity` (each with its ratio, spread, drift and the co-variation
+reading it was graded with), and `continuity_stale` where a sample folded since, a
+curation or a re-fold has moved the batch peak. The ledger shows no column for it yet.
+
 ### Batch runs
 
 --8<-- "_help/batch-runs.md"
@@ -1605,6 +1662,19 @@ engine found, and leave the rest of the table alone.
   Thornton, J. A. *An iodide-adduct high-resolution time-of-flight chemical-ionization mass
   spectrometer: application to atmospheric inorganic and organic compounds.* Environ. Sci.
   Technol. 2014, 48(11):6309–6317. [link](https://doi.org/10.1021/es500362a)
+- <a id="ham74"></a>Hampel, F. R. *The influence curve and its role in robust
+  estimation.* J. Am. Stat. Assoc. 1974, 69(346):383–393.
+  [link](https://doi.org/10.1080/01621459.1974.10482962)
+- <a id="rc93"></a>Rousseeuw, P. J.; Croux, C. *Alternatives to the median absolute
+  deviation.* J. Am. Stat. Assoc. 1993, 88(424):1273–1283.
+  [link](https://doi.org/10.1080/01621459.1993.10476408)
+- <a id="spe04"></a>Spearman, C. *The proof and measurement of association between two
+  things.* Am. J. Psychol. 1904, 15(1):72–101. [link](https://doi.org/10.2307/1412159)
+- <a id="the50"></a>Theil, H. *A rank-invariant method of linear and polynomial
+  regression analysis.* Proc. K. Ned. Akad. Wet. 1950, 53:386–392, 521–525, 1397–1412.
+- <a id="sen68"></a>Sen, P. K. *Estimates of the regression coefficient based on
+  Kendall's tau.* J. Am. Stat. Assoc. 1968, 63(324):1379–1389.
+  [link](https://doi.org/10.1080/01621459.1968.10480934)
 - <a id="kf06"></a>Kind, T.; Fiehn, O. *Metabolomic database annotations via query of
   elemental compositions: mass accuracy is insufficient even at less than 1 ppm.* BMC
   Bioinformatics 2006, 7:234.
@@ -1910,3 +1980,8 @@ engine found, and leave the rest of the table alone.
 [pea95]: #pea95
 [tuk77]: #tuk77
 [lee14]: #lee14
+[ham74]: #ham74
+[rc93]: #rc93
+[spe04]: #spe04
+[the50]: #the50
+[sen68]: #sen68

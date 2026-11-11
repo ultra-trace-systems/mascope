@@ -32,6 +32,7 @@ from sqlalchemy.exc import IntegrityError
 from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.new.instrument_configs.lib import read_instrument_functions
 from mascope_backend.api.new.ionization.modes.versions import root_ids
+from mascope_backend.api.new.peak_assignments import batch_peaks
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     ROLE_ISO_CHILD,
     ROLE_REAGENT,
@@ -457,6 +458,7 @@ async def fold_sample_into_batch_peaks(
             await _recompute_consensus(session, touched, now)
         await touch_ledger(session, sample_batch_id)
         await session.commit()
+        committed_at = datetime.now(timezone.utc)
         if defer_consensus_to is not None:
             # After the commit, not before it: a fold that raised rolls its
             # occurrences back, and handing its anchors to the deferred pass
@@ -469,7 +471,34 @@ async def fold_sample_into_batch_peaks(
             # for good, which is the state the deferral must never leave.
             defer_consensus_to |= touched
 
+    # After the session is closed: the pass opens one of its own, and a fold
+    # deferring its consensus is a backfill's, which grades once at its end.
+    if defer_consensus_to is None and batch_peaks.CONTINUITY_ON_FOLD:
+        await _grade_continuity_after_fold(sample_batch_id, committed_at)
     return sample_batch_id
+
+
+async def _grade_continuity_after_fold(
+    sample_batch_id: str, committed_at: datetime
+) -> None:
+    """The fold's trigger of the batch's continuity pass (``continuity.py``):
+    after the fold committed, outside its lock, and never failing it - a fold
+    that folded is done whatever the grading does.
+
+    The pass skips where another is grading the batch, and where a grade was
+    read after this fold committed; a grade one fold behind is served marked
+    (``batch_peaks.continuity_stale``) until the next pass.
+    """
+    from mascope_backend.api.new.peak_assignments.continuity import (
+        run_batch_continuity,
+    )
+
+    try:
+        await run_batch_continuity(sample_batch_id, triggered_at=committed_at)
+    except Exception as exc:  # noqa: BLE001 - grading is best-effort
+        runtime.logger.warning(
+            f"Continuity pass after a fold failed for batch '{sample_batch_id}': {exc}"
+        )
 
 
 #: Anchors per statement in a consensus recompute, and per transaction in a
@@ -740,6 +769,82 @@ def _backfill_progress_notification(
     )
 
 
+def _continuity_progress_notification(
+    sample_batch_id: str,
+    total_samples: int,
+    user_id: int | None,
+    process_id: str,
+    parent_id: str | None,
+    message: str,
+) -> UserNotification:
+    """A pending packet naming the continuity pass a rebuild runs once its
+    samples are folded, on the rebuild's own channel and with its bar full:
+    every sample has been dealt with, and what is left is one pass over the
+    whole batch, which the decorator's terminal packet ends."""
+    return UserNotification(
+        process_id=process_id,
+        parent_id=parent_id,
+        type="compute_batch_peaks",
+        status="pending",
+        message=message,
+        data={
+            "sample_batch_id": sample_batch_id,
+            "_room_ids": [sample_batch_id],
+            "_user_id": user_id,
+            "_total_samples": total_samples,
+            "_item_index": max(total_samples - 1, 0),
+        },
+    )
+
+
+async def _grade_continuity_after_backfill(
+    sample_batch_id: str,
+    total_samples: int,
+    user_id: int | None,
+    process_id: str | None,
+    parent_id: str | None,
+) -> None:
+    """The rebuild's trigger of the batch's continuity pass: once, after the
+    last sample is folded and the deferred consensus written, announced on the
+    rebuild's channel before and after so the wait does not read as a hang.
+    Never failing the rebuild: its samples are folded whatever the grading
+    does."""
+    from mascope_backend.api.new.peak_assignments.continuity import (
+        continuity_outcome,
+        run_batch_continuity,
+    )
+
+    def packet(message: str) -> UserNotification | None:
+        # As the folds' own packets: no process, no bar to drive; no samples,
+        # no bar at all.
+        if process_id is None or not total_samples:
+            return None
+        return _continuity_progress_notification(
+            sample_batch_id, total_samples, user_id, process_id, parent_id, message
+        )
+
+    before = packet(
+        "Rebuilding the batch ledger, grading the ratio stability of its batch peaks."
+    )
+    if before is not None:
+        await send_progress_user_notification(before, 1.0)
+    try:
+        summary = await run_batch_continuity(sample_batch_id)
+        # Worded as the route's outcome is: a pass that skipped, or a batch
+        # that is not time-ordered, grades no pair, and "0 pairs" would read
+        # as a batch with nothing to pair.
+        outcome = continuity_outcome(summary, sample_batch_id)
+    except Exception:  # noqa: BLE001 - grading is best-effort
+        runtime.logger.exception(
+            f"Continuity pass after the rebuild of batch '{sample_batch_id}' failed; "
+            "the ledger is rebuilt and its grades are as an earlier pass left them."
+        )
+        return
+    after = packet(f"Rebuilding the batch ledger. {outcome['message']}")
+    if after is not None:
+        await send_progress_user_notification(after, 1.0)
+
+
 async def backfill_sample_batch_peaks(
     sample_batch_id: str,
     user_id: int | None = None,
@@ -926,6 +1031,12 @@ async def backfill_sample_batch_peaks(
                 "re-running the backfill repairs them."
             )
 
+    # Reached only once the batch is walked and its consensus written: the
+    # pass grades the whole batch, so it runs once here rather than after
+    # each of the deferred folds above.
+    await _grade_continuity_after_backfill(
+        sample_batch_id, total_samples, user_id, process_id, parent_id
+    )
     return folded, failed
 
 
