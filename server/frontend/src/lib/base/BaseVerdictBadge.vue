@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import Tag from 'primevue/tag'
 
 import { useApp } from '@/stores'
-import { VERDICT_META, evidenceLabel } from '@/lib/verification'
+import { VERDICT_META, evidenceLabel, levelLabel } from '@/lib/verification'
 
 /**
  * A verification verdict, as a tag or - compact - as a bare icon.
@@ -13,6 +13,11 @@ import { VERDICT_META, evidenceLabel } from '@/lib/verification'
  * off another row, and the tooltip names the batch-level verdict and says that
  * verifying this row records an exception. `conflict` is a batch-level verdict
  * that disagrees with the owned one shown; the tooltip gets a line for it.
+ *
+ * A confirmation that names a structure (an identification claim) shows the
+ * level it states in place of the evidence it follows from, and the
+ * structure's name; the tooltip has the evidence and the InChIKey. A verdict
+ * that states no level shows none: the row's level is the engine's.
  */
 const props = defineProps({
   record: {
@@ -38,10 +43,25 @@ const meta = computed(() => (props.record ? VERDICT_META[props.record.verdict] :
 const label = computed(() => {
   if (!meta.value) return ''
   const ev = evidenceLabel(props.record.evidence_level)
-  const own =
-    props.record.verdict === 'confirmed' && ev ? `${meta.value.label} · ${ev}` : meta.value.label
-  return props.inherited ? `${own} · batch` : own
+  // A level stands for the evidence it follows from, which the tooltip names.
+  const level = levelLabel(props.record.level)
+  const parts = [meta.value.label]
+  if (level) parts.push(level)
+  else if (props.record.verdict === 'confirmed' && ev) parts.push(ev)
+  const structure = shortStructure(props.record)
+  if (structure) parts.push(structure)
+  if (props.inherited) parts.push('batch')
+  return parts.join(' · ')
 })
+// The structure a claim names, short enough for a pill: a long name cut, and a
+// bare InChIKey by its first block, the skeleton's. The tooltip has both whole.
+const NAME_CHARS = 24
+const shortStructure = (record) => {
+  const name = record?.claimed_name
+  if (name) return name.length > NAME_CHARS ? `${name.slice(0, NAME_CHARS - 1)}…` : name
+  const key = record?.claimed_inchikey
+  return key ? `${key.split('-')[0]}…` : null
+}
 const whoAndWhen = (record) => {
   const who =
     record.verified_by && app.auth?.user?.id === record.verified_by
@@ -61,6 +81,14 @@ const tooltip = computed(() => {
       : `Verified by ${whoAndWhen(record)}`
   ]
   if (record.evidence_level) parts.push(`Evidence: ${evidenceLabel(record.evidence_level)}`)
+  if (record.claimed_inchikey) {
+    parts.push(
+      `Structure: ${record.claimed_name ? `${record.claimed_name} (${record.claimed_inchikey})` : record.claimed_inchikey}`
+    )
+  }
+  if (Number.isInteger(record.level)) {
+    parts.push(`${levelLabel(record.level)}, stated when the verdict was recorded`)
+  }
   if (record.note) parts.push(`Note: ${record.note}`)
   if (props.inherited) {
     parts.push(

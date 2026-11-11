@@ -7,7 +7,7 @@ import Popover from 'primevue/popover'
 import RadioButton from 'primevue/radiobutton'
 
 import { useApp } from '@/stores'
-import { BaseProvisionalMark, BaseTierTag, BaseVerdictBadge } from '@/lib/base'
+import { BaseClaimStructure, BaseProvisionalMark, BaseTierTag, BaseVerdictBadge } from '@/lib/base'
 import { num } from '@/lib/formatters'
 import { formatIsotopeFormula, formatIsotopeLabel, neutralKey } from '@/lib/chem'
 import { isIsotopeLine } from '@/lib/isotopeLines'
@@ -23,7 +23,7 @@ import {
 import { holdsTierDown, reasonIcon, reasonTooltip, tierReasonsOf } from '@/lib/tierReasons'
 import { coVariationLabel, coVariationSummary, coVariationTooltip } from '@/lib/batchCoVariation'
 import { ROLE_BUCKETS, bucketRank } from '@/lib/tiers'
-import { EVIDENCE_LEVELS, VERDICT_META } from '@/lib/verification'
+import { EVIDENCE_LEVELS, VERDICT_META, claimCandidates } from '@/lib/verification'
 import { useBatchPeakCuration } from './stores/batchPeakCuration.js'
 
 const app = useApp()
@@ -157,6 +157,11 @@ const note = ref('')
 const submitting = ref(false)
 const pendingVerdict = ref(null) // which button is mid-submit
 const denied = ref(false) // 403: not an editor on this sample
+// The structure a confirmation names, from the compounds the lists name for the
+// formula (BaseClaimStructure); one on structure evidence must name one.
+const claimOptions = computed(() => claimCandidates({ identities: listedAs.value?.identities }))
+const claim = ref(null)
+const canConfirm = computed(() => Boolean(evidenceLevel.value) && claim.value?.ready !== false)
 
 // Show the verdict buttons when there is no verdict yet, or the user chose to
 // change it.
@@ -224,8 +229,9 @@ function openVerdict(verdict, event) {
 // Resolves whether the verdict was recorded.
 async function submitVerdict(verdict) {
   const confirm = verdict === 'confirmed'
-  // Confirm requires an evidence level (also enforced server-side).
-  if (confirm && !evidenceLevel.value) return false
+  // Confirm requires an evidence level, and a structure on structure evidence
+  // (both also enforced server-side).
+  if (confirm && !canConfirm.value) return false
   submitting.value = true
   pendingVerdict.value = verdict
   try {
@@ -233,7 +239,13 @@ async function submitVerdict(verdict) {
       peak_assignment_id: verifyTarget.value.peak_assignment_id,
       verdict,
       evidence_level: confirm ? evidenceLevel.value : null,
-      note: note.value?.trim() || null
+      note: note.value?.trim() || null,
+      ...(confirm && claim.value?.claimed_inchikey
+        ? {
+            claimed_inchikey: claim.value.claimed_inchikey,
+            claimed_name: claim.value.claimed_name
+          }
+        : {})
     })
     editing.value = false
     note.value = ''
@@ -1876,6 +1888,13 @@ const demotedCount = computed(() => {
                 <label :for="`${dialogId}-${level.value}`">{{ level.label }}</label>
               </div>
             </div>
+            <BaseClaimStructure
+              v-if="confirming && evidenceLevel"
+              :key="verifyTarget?.peak_assignment_id"
+              v-model="claim"
+              :candidates="claimOptions"
+              :evidence="evidenceLevel"
+            />
             <InputText
               v-model="note"
               placeholder="Note (optional)"
@@ -1899,7 +1918,7 @@ const demotedCount = computed(() => {
                 size="small"
                 :severity="dialogMeta.severity"
                 data-testid="verdict-submit"
-                :disabled="submitting || (confirming && !evidenceLevel)"
+                :disabled="submitting || (confirming && !canConfirm)"
                 :loading="submitting"
                 @click="submitDialog"
               />

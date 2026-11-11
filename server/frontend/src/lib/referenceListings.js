@@ -48,9 +48,9 @@ export function listingOf(entry, matched = entry?.reference_identities) {
  *
  * A ledger row serves no provenance, so it carries what the inspector reads
  * off `provenance.reference_identities` flattened into one field
- * (`reference_listing`: the first name and its list, the lists' tags and how
- * many names the run matched); the batch ledger carries the same off its
- * consensus. Always a match the run made, never a lead.
+ * (`reference_listing`: the first name, its list and its InChIKey, the lists'
+ * tags and how many names the run matched); the batch ledger carries the same
+ * off its consensus. Always a match the run made, never a lead.
  *
  * @param {object|null} flat - a row's `reference_listing`
  * @returns {{matched: boolean, identities: Array<object>, total: number}|null}
@@ -60,7 +60,9 @@ export function ledgerListing(flat) {
   const tags = Array.isArray(flat.tags) ? flat.tags : []
   return {
     matched: true,
-    identities: [{ name: flat.name, source: flat.source, xrefs: { tags } }],
+    identities: [
+      { name: flat.name, source: flat.source, inchikey: flat.inchikey, xrefs: { tags } }
+    ],
     total: Number.isInteger(flat.total) && flat.total > 0 ? flat.total : 1
   }
 }

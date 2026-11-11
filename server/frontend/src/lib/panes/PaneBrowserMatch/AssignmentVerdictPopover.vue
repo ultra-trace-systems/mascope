@@ -4,10 +4,11 @@ import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
 
-import { BaseVerdictBadge } from '@/lib/base'
+import { BaseClaimStructure, BaseVerdictBadge } from '@/lib/base'
 import { num } from '@/lib/formatters'
 import { canEditWorkspace } from '@/lib/permissions'
-import { EVIDENCE_LEVELS } from '@/lib/verification'
+import { ledgerListing } from '@/lib/referenceListings'
+import { EVIDENCE_LEVELS, claimCandidates } from '@/lib/verification'
 import { useApp } from '@/stores'
 
 /**
@@ -21,6 +22,10 @@ import { useApp } from '@/stores'
  * for the inspector - and it wins over a batch-level verdict reaching the
  * sample. There is no retract here: a per-sample verdict is superseded by the
  * next one recorded, as in the inspector.
+ *
+ * A confirmation may name the structure it identifies, from the compound the
+ * row's reference listing names or an InChIKey of the user's own; one on a
+ * reference standard, MS/MS or orthogonal evidence must (BaseClaimStructure).
  */
 const props = defineProps({
   /** The ledger row: peak_assignment_id, sample_peak_mz, assigned_formula, role ... */
@@ -49,6 +54,12 @@ const throughM0 = computed(
 
 const evidenceLevel = ref(props.record?.evidence_level ?? null)
 const note = ref(props.record?.note ?? '')
+// The structures the row's candidates name; the claim the form picks of them.
+const candidates = computed(() =>
+  claimCandidates({ identities: ledgerListing(target.value?.reference_listing)?.identities })
+)
+const claim = ref(null)
+const canConfirm = computed(() => Boolean(evidenceLevel.value) && claim.value?.ready !== false)
 const submitting = ref(false)
 const pendingVerdict = ref(null) // which button is mid-submit
 const denied = ref(false) // 403: not an editor on this sample
@@ -64,8 +75,10 @@ watch(
 )
 
 async function submit(verdict) {
-  // Confirm requires an evidence level (also enforced server-side).
-  if (verdict === 'confirmed' && !evidenceLevel.value) return
+  // Confirm requires an evidence level, and a structure on structure evidence
+  // (both also enforced server-side).
+  const confirm = verdict === 'confirmed'
+  if (confirm && !canConfirm.value) return
   submitting.value = true
   pendingVerdict.value = verdict
   try {
@@ -73,7 +86,13 @@ async function submit(verdict) {
       peak_assignment_id: target.value.peak_assignment_id,
       verdict,
       evidence_level: evidenceLevel.value || null,
-      note: note.value?.trim() || null
+      note: note.value?.trim() || null,
+      ...(confirm && claim.value?.claimed_inchikey
+        ? {
+            claimed_inchikey: claim.value.claimed_inchikey,
+            claimed_name: claim.value.claimed_name
+          }
+        : {})
     })
     emit('done')
   } catch (error) {
@@ -118,9 +137,15 @@ async function submit(verdict) {
           icon="pi ph ph-check-circle"
           size="small"
           severity="success"
-          :disabled="submitting || !evidenceLevel"
+          :disabled="submitting || !canConfirm"
           :loading="submitting && pendingVerdict === 'confirmed'"
-          v-tooltip.top="!evidenceLevel ? 'Pick an evidence level to confirm' : ''"
+          v-tooltip.top="
+            !evidenceLevel
+              ? 'Pick an evidence level to confirm'
+              : !canConfirm
+                ? 'Name the structure this evidence identifies'
+                : ''
+          "
           @click="submit('confirmed')"
         />
         <Button
@@ -151,6 +176,13 @@ async function submit(verdict) {
         size="small"
         showClear
         fluid
+      />
+      <BaseClaimStructure
+        v-if="evidenceLevel"
+        :key="row.peak_assignment_id"
+        v-model="claim"
+        :candidates="candidates"
+        :evidence="evidenceLevel"
       />
       <InputText v-model="note" placeholder="Note (optional)" size="small" fluid />
     </template>

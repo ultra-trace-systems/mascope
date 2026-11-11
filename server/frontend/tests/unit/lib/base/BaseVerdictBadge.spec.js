@@ -66,6 +66,48 @@ describe('BaseVerdictBadge', () => {
     expect(tag.text()).toBe('Confirmed · MS/MS · batch')
   })
 
+  it('shows the level and the structure a claim names', () => {
+    const claim = {
+      ...RECORD,
+      evidence_level: 'reference_standard',
+      claimed_inchikey: 'WQZGKKKJIJFFOK-GASJEMHNSA-N',
+      claimed_name: 'D-glucose',
+      level: 1
+    }
+    const tag = mountBadge({ record: claim }).find('.tag')
+    expect(tag.text()).toBe('Confirmed · Level 1 · D-glucose')
+    const tip = tag.attributes('data-tooltip')
+    expect(tip).toContain('Evidence: Reference standard')
+    expect(tip).toContain('Structure: D-glucose (WQZGKKKJIJFFOK-GASJEMHNSA-N)')
+    expect(tip).toContain('Level 1, stated when the verdict was recorded')
+  })
+
+  it('names an unnamed structure by the first block of its InChIKey, borrowed or not', () => {
+    const claim = { ...RECORD, claimed_inchikey: 'WQZGKKKJIJFFOK-GASJEMHNSA-N', level: 2 }
+    const tag = mountBadge({ record: claim, inherited: true }).find('.tag')
+    expect(tag.text()).toBe('Confirmed · Level 2 · WQZGKKKJIJFFOK… · batch')
+  })
+
+  it('cuts a long structure name to fit the pill', () => {
+    const claim = {
+      ...RECORD,
+      claimed_inchikey: 'WQZGKKKJIJFFOK-GASJEMHNSA-N',
+      claimed_name: '2,3,4,5,6-pentahydroxyhexanal monohydrate',
+      level: 2
+    }
+    const tag = mountBadge({ record: claim }).find('.tag')
+    expect(tag.text()).toBe('Confirmed · Level 2 · 2,3,4,5,6-pentahydroxyh…')
+    expect(tag.attributes('data-tooltip')).toContain('pentahydroxyhexanal monohydrate')
+  })
+
+  it('shows no level on a verdict that states none', () => {
+    const tag = mountBadge({ record: { ...RECORD, evidence_level: 'visual', level: null } }).find(
+      '.tag'
+    )
+    expect(tag.text()).toBe('Confirmed · Visual')
+    expect(tag.attributes('data-tooltip')).not.toContain('Level')
+  })
+
   it('renders nothing without a record', () => {
     const wrapper = mountBadge({ record: null, compact: true })
     expect(wrapper.find('.verdict-icon').exists()).toBe(false)

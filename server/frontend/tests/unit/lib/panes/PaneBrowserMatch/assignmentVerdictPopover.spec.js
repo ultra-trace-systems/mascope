@@ -4,7 +4,19 @@ import { mount } from '@vue/test-utils'
 const verify = vi.fn(() => Promise.resolve({}))
 let app
 vi.mock('@/stores', () => ({ useApp: () => app }))
+// The structure picker is stubbed below: it shows what the form hands it and
+// answers with the claim a test sets here (BaseClaimStructure.spec.js covers it).
+const claimStub = vi.hoisted(() => ({ claimed_inchikey: null, claimed_name: null, ready: true }))
 vi.mock('@/lib/base', () => ({
+  BaseClaimStructure: {
+    props: ['modelValue', 'candidates', 'evidence'],
+    emits: ['update:modelValue'],
+    mounted() {
+      this.$emit('update:modelValue', { ...claimStub })
+    },
+    template:
+      '<div class="claim-structure" :data-candidates="JSON.stringify(candidates)" :data-evidence="evidence" />'
+  },
   BaseVerdictBadge: {
     props: { record: Object, inherited: Boolean },
     template: '<span class="verdict-badge" :data-inherited="String(!!inherited)" />'
@@ -82,7 +94,14 @@ function mountPopover(props) {
 beforeEach(() => {
   vi.clearAllMocks()
   app = makeApp()
+  Object.assign(claimStub, { claimed_inchikey: null, claimed_name: null, ready: true })
 })
+
+const GLUCOSE = 'WQZGKKKJIJFFOK-GASJEMHNSA-N'
+const LISTED = {
+  ...M0,
+  reference_listing: { name: 'D-glucose', source: 'sugars', inchikey: GLUCOSE, tags: [], total: 1 }
+}
 
 describe('AssignmentVerdictPopover', () => {
   it('records a verdict on the row and closes', async () => {
@@ -119,6 +138,45 @@ describe('AssignmentVerdictPopover', () => {
     expect(verify).toHaveBeenCalledWith(
       expect.objectContaining({ verdict: 'confirmed', evidence_level: 'msms' })
     )
+  })
+
+  it('offers the structure the row is listed as, and records the claim with the confirmation', async () => {
+    const wrapper = mountPopover({ row: LISTED, record: null, overlay: null })
+    expect(wrapper.find('.claim-structure').exists()).toBe(false)
+    Object.assign(claimStub, { claimed_inchikey: GLUCOSE, claimed_name: 'D-glucose' })
+    await wrapper.find('.evidence').setValue('reference_standard')
+
+    const picker = wrapper.find('.claim-structure')
+    expect(JSON.parse(picker.attributes('data-candidates'))).toEqual([
+      { inchikey: GLUCOSE, name: 'D-glucose', label: 'sugars' }
+    ])
+    expect(picker.attributes('data-evidence')).toBe('reference_standard')
+    await wrapper.find('button:nth-of-type(1)').trigger('click')
+    expect(verify).toHaveBeenCalledWith({
+      peak_assignment_id: 'pa-1',
+      verdict: 'confirmed',
+      evidence_level: 'reference_standard',
+      note: null,
+      claimed_inchikey: GLUCOSE,
+      claimed_name: 'D-glucose'
+    })
+  })
+
+  it('will not confirm while the structure the evidence needs is missing', async () => {
+    claimStub.ready = false
+    const wrapper = mountPopover({ row: LISTED, record: null, overlay: null })
+    await wrapper.find('.evidence').setValue('msms')
+    expect(wrapper.find('button:nth-of-type(1)').attributes('disabled')).toBeDefined()
+    await wrapper.find('button:nth-of-type(1)').trigger('click')
+    expect(verify).not.toHaveBeenCalled()
+  })
+
+  it('sends no structure with a rejection', async () => {
+    Object.assign(claimStub, { claimed_inchikey: GLUCOSE, claimed_name: 'D-glucose' })
+    const wrapper = mountPopover({ row: LISTED, record: null, overlay: null })
+    await wrapper.find('.evidence').setValue('msms')
+    await wrapper.find('button:nth-of-type(2)').trigger('click') // Reject
+    expect(verify.mock.calls[0][0]).not.toHaveProperty('claimed_inchikey')
   })
 
   it('shows the batch-level verdict reaching the row as inherited, with the form still open', () => {

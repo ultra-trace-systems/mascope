@@ -1006,6 +1006,44 @@ ledger, so an unverified row shows a faint seal that opens a verdict form in pla
 verdict is about the compound, so it is recorded on the family's M0 whichever member the
 row is.
 
+### Naming the structure
+
+A formula is not a compound. Many compounds share one formula, and a reference list's
+name beside a peak is a candidate, not an identification. A confirmation can say which
+compound it is: an **identification claim**. Once you pick an evidence level, the form
+shows a **Structure** choice:
+
+- the compounds the row's reference lists name for its formula, each with its list;
+- **Unlisted**, last: an InChIKey of your own, with a name. Use it for a compound no
+  loaded list names.
+
+Evidence from a reference standard, MS/MS or an orthogonal technique is a statement
+about a structure, so confirming on it needs one. The form picks the first candidate for
+you, and *Confirm* waits until a structure is chosen. On the isotope/adduct pattern or a
+visual check naming one is optional, and none is picked.
+
+The confirmation states an identification level, after [Schymanski et al. 2014][sch14]:
+
+| Evidence | Structure | Level |
+|---|---|---|
+| Reference standard | required | 1: confirmed structure |
+| MS/MS | required | 2: probable structure |
+| Orthogonal | required | 3: tentative candidate |
+| Isotope/adduct pattern | optional | 4: unequivocal formula |
+| Visual | optional | none of its own |
+
+The level is fixed when you confirm, so your statement reads the same later. A structure
+named on a pattern or a visual check is kept, but it raises nothing: that evidence is
+about the formula. A rejection or an unsure verdict states no level, and neither does a
+visual confirmation; the row then reads the level the engine gives it. The verdict badge
+shows the level and the structure's name; hover it for the evidence and the InChIKey.
+
+A claim is part of its verdict. A later verdict on the same peak replaces it, and a
+retracted batch-level verdict takes its claim off every sample it covered. Verdicts
+recorded before claims existed keep their evidence level, name no structure and read as
+level 4. Naming a structure changes nothing in the labelled record that confidence
+calibration is fit on: a confirmation counts once, with or without one.
+
 ### Batch-level verdicts
 
 --8<-- "_help/batch-peak-verdicts.md"
@@ -1035,8 +1073,9 @@ It has one row per judged peak, as each sample's assignment ledger shows it: the
 own current verdict, or the batch-level verdict it borrows, marked so. The sample's own
 verdict wins before any filter applies, so asking for the confirmed verdicts never lists a
 borrowed confirmation on a peak the sample itself rejected. Each row names the sample's
-file and acquisition time, the peak's m/z, the evidence level and, on the sample's own
-verdict, the score it was given when it was judged.
+file and acquisition time, the peak's m/z, the evidence level, the structure a
+confirmation names and the level it states and, on the sample's own verdict, the score it
+was given when it was judged.
 
 ## Assignment runs
 

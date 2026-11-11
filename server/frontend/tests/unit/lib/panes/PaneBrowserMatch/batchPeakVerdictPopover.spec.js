@@ -4,7 +4,19 @@ import { reactive } from 'vue'
 
 let app
 vi.mock('@/stores', () => ({ useApp: () => app }))
+// The structure picker is stubbed below: it shows what the form hands it and
+// answers with the claim a test sets here (BaseClaimStructure.spec.js covers it).
+const claimStub = vi.hoisted(() => ({ claimed_inchikey: null, claimed_name: null, ready: true }))
 vi.mock('@/lib/base', () => ({
+  BaseClaimStructure: {
+    props: ['modelValue', 'candidates', 'evidence'],
+    emits: ['update:modelValue'],
+    mounted() {
+      this.$emit('update:modelValue', { ...claimStub })
+    },
+    template:
+      '<div class="claim-structure" :data-candidates="JSON.stringify(candidates)" :data-evidence="evidence" />'
+  },
   BaseVerdictBadge: {
     props: ['record', 'compact'],
     template: '<span class="verdict-badge">{{ record?.verdict }}</span>'
@@ -84,7 +96,10 @@ beforeEach(() => {
   ledgerLoad.mockReset()
   verify.mockResolvedValue(RECORD)
   retract.mockResolvedValue({})
+  Object.assign(claimStub, { claimed_inchikey: null, claimed_name: null, ready: true })
 })
+
+const GLUCOSE = 'WQZGKKKJIJFFOK-GASJEMHNSA-N'
 
 describe('BatchPeakVerdictPopover', () => {
   it('names the claim and states the scope in words', () => {
@@ -112,6 +127,37 @@ describe('BatchPeakVerdictPopover', () => {
       expected_formula: 'C6H12O6'
     })
     expect(wrapper.emitted('done')).toHaveLength(1)
+  })
+
+  it('offers the structure the consensus is listed as, and records the claim', async () => {
+    const row = {
+      ...ROW,
+      reference_listing: { name: 'D-glucose', source: 'sugars', inchikey: GLUCOSE, total: 1 }
+    }
+    Object.assign(claimStub, { claimed_inchikey: GLUCOSE, claimed_name: 'D-glucose' })
+    const wrapper = mountPopover({ row })
+    await wrapper.find('select.evidence').setValue('msms')
+    expect(JSON.parse(wrapper.find('.claim-structure').attributes('data-candidates'))).toEqual([
+      { inchikey: GLUCOSE, name: 'D-glucose', label: 'sugars' }
+    ])
+    await button(wrapper, 'Confirm').trigger('click')
+    await flushPromises()
+    expect(verify).toHaveBeenCalledWith({
+      batch_peak_id: 'bp-1',
+      verdict: 'confirmed',
+      evidence_level: 'msms',
+      note: null,
+      expected_formula: 'C6H12O6',
+      claimed_inchikey: GLUCOSE,
+      claimed_name: 'D-glucose'
+    })
+  })
+
+  it('will not confirm while the structure the evidence needs is missing', async () => {
+    claimStub.ready = false
+    const wrapper = mountPopover()
+    await wrapper.find('select.evidence').setValue('orthogonal')
+    expect(button(wrapper, 'Confirm').attributes('disabled')).toBeDefined()
   })
 
   it('rejects without evidence, still naming the formula', async () => {
