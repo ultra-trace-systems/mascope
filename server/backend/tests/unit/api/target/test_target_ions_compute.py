@@ -178,6 +178,10 @@ def test_group_target_isotopes_terminates_on_nonpositive_mz():
         [-0.000549, 0.0, 18.0106], [0.5, 0.2, 0.3], ["a", "b", "c"], 1e4
     )
     assert len(masses) == len(probs) == len(formulae) == 3
+    # Each isotope is a line of its own, none lost or emptied.
+    assert masses == [-0.000549, 0.0, 18.0106]
+    assert probs == [0.5, 0.2, 0.3]
+    assert formulae == ["a", "b", "c"]
 
 
 def test_group_target_isotopes_joins_the_formulae_of_a_line():
@@ -186,6 +190,67 @@ def test_group_target_isotopes_joins_the_formulae_of_a_line():
         [100.0, 100.001, 200.0], [0.5, 0.2, 0.3], ["a", "b", "c"], 1e4
     )
     assert formulae == ["a/b", "c"]
+
+
+def test_group_target_isotopes_starts_a_line_at_its_most_abundant_isotope():
+    """A dim isotope under the bright one does not start the line and leave
+    the dim one over it behind: from the bright isotope, half a FWHM (5 mDa
+    at m/z 100) either side is one line."""
+    masses, probs, formulae = group_target_isotopes(
+        [100.0, 100.0045, 100.008], [0.05, 0.9, 0.05], ["a", "b", "c"], 1e4
+    )
+
+    assert formulae == ["a/b/c"]
+    assert probs == [pytest.approx(1.0)]
+    assert masses == [pytest.approx(0.05 * 100.0 + 0.9 * 100.0045 + 0.05 * 100.008)]
+
+
+def test_group_target_isotopes_returns_its_lines_in_mz_order():
+    """The lines come in m/z order, each naming its isotopes in m/z order,
+    whichever is the most abundant."""
+    masses, probs, formulae = group_target_isotopes(
+        [201.0, 200.0, 200.001, 199.0], [0.1, 0.2, 1.0, 0.3], ["d", "b", "c", "a"], 1e4
+    )
+
+    assert formulae == ["a", "b/c", "d"]
+    assert masses == sorted(masses)
+    assert probs == [pytest.approx(0.3), pytest.approx(1.2), pytest.approx(0.1)]
+
+
+def test_a_tof_line_holds_the_whole_m1_cluster_of_a_light_nitrogen_ion():
+    """The TOF line at the 13C position of C4H10NO5- holds the 15N, 17O and
+    2H isotopes as well (mascope#2587). Binned from the lightest, the 15N
+    isotope 6 mDa under the 13C one, the 2H isotope 3 mDa over the 13C one
+    fell out of the 7.6 mDa bin and became a line of its own."""
+    compound = TargetCompound(
+        target_compound_id="unit-m1", target_compound_formula="C4H11NO5"
+    )
+    mechanism = IonizationMechanism(
+        ionization_mechanism_id="unit-mech-h",
+        ionization_mechanism_polarity="-",
+        ionization_mechanism="[M-H]-",
+    )
+    _, target_isotopes = generate_target_ions_from_composition(compound, [mechanism])
+    high = {
+        i.target_isotope_formula: i for i in target_isotopes if i.resolution == "HIGH"
+    }
+    low = [i for i in target_isotopes if i.resolution == "LOW"]
+    members = [
+        "[15N]C4H10O5-",
+        "[13C]C3H10NO5-",
+        "[17O]C4H10NO4-",
+        "[2H]C4H9NO5-",
+    ]
+
+    (m1,) = [i for i in low if "[13C]C3H10NO5-" in i.target_isotope_formula.split("/")]
+
+    assert m1.target_isotope_formula.split("/") == members
+    assert m1.relative_abundance == pytest.approx(
+        sum(high[name].relative_abundance for name in members)
+    )
+    # No other line holds a name of the cluster.
+    others = [i.target_isotope_formula.split("/") for i in low if i is not m1]
+    assert not any(name in names for names in others for name in members)
 
 
 def test_group_target_isotopes_keeps_the_most_abundant_names_that_fit():

@@ -380,3 +380,13 @@ def test_a_resolution_that_raises_folds_nothing():
     )
 
     np.testing.assert_allclose(intensities, [1.0, 0.005])
+
+
+def test_a_line_at_or_under_zero_mz_is_a_group_of_its_own():
+    # Its width is not positive and takes no line, not even its own; the
+    # targeted library's degenerate atomless ion reaches the grouping so.
+    groups = heuristic_filter.group_unresolved_lines(
+        [-0.000549, 0.0, 18.0106, 18.0107], [0.5, 0.2, 0.3, 0.1], _resolving(1e4)
+    )
+
+    assert [group.tolist() for group in groups] == [[0], [2, 3], [1]]

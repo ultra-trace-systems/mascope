@@ -1243,6 +1243,59 @@ def _target_peak(
     return float(intensities[position]), snr
 
 
+def group_unresolved_lines(
+    predicted_mz,
+    predicted_intensity,
+    resolution: Callable[[float], float],
+) -> list[np.ndarray]:
+    """Group the predicted lines one peak of this width cannot separate.
+
+    From the brightest line not yet taken, every line not yet taken within
+    half the FWHM either side of it is one group, the FWHM read off the
+    resolving power at that line. Starting from the brightest line rather than
+    the lightest keeps a cluster whole: the 15N line sits 6 mDa under the 13C
+    line, and a bin started there can take the 13C line and leave the 17O and
+    2H lines, under 3 mDa from it, behind. A line whose resolving power or
+    width cannot be read (not finite, not positive, an m/z at or under zero)
+    is a group of its own.
+
+    :param predicted_mz: The lines' m/z values.
+    :param predicted_intensity: Their abundances, same order.
+    :param resolution: The resolving power as a function of m/z.
+    :return: One array of indices into the lines per group, the groups in the
+        order their brightest lines were taken, each group's indices ascending.
+    """
+    predicted_mz = np.asarray(predicted_mz, dtype=float)
+    predicted_intensity = np.asarray(predicted_intensity, dtype=float)
+    # Brightest first: a peak sits on its dominant line, and which line
+    # happens to be the lightest of a cluster (the 15N line, below 13C) must
+    # not decide what the peak holds.
+    order = np.lexsort((np.arange(predicted_mz.size), -predicted_intensity))
+    taken = np.zeros(predicted_mz.size, dtype=bool)
+    groups: list[np.ndarray] = []
+    for brightest in order:
+        if taken[brightest]:
+            continue
+        centre_mz = float(predicted_mz[brightest])
+        try:
+            resolving_power = float(resolution(centre_mz))
+        except (TypeError, ValueError, ArithmeticError):
+            resolving_power = float("nan")
+        members = np.array([brightest])
+        if np.isfinite(resolving_power) and resolving_power > 0:
+            half_fwhm = centre_mz / resolving_power / 2
+            within = np.flatnonzero(
+                ~taken & (np.abs(predicted_mz - centre_mz) < half_fwhm)
+            )
+            # A width at or under zero (an m/z at or under zero) takes no
+            # line, not even its own.
+            if within.size:
+                members = within
+        taken[members] = True
+        groups.append(members)
+    return groups
+
+
 def merge_unresolved_lines(
     predicted_mz,
     predicted_intensity,
@@ -1265,11 +1318,9 @@ def merge_unresolved_lines(
     line. Starting from the brightest line rather than the lightest keeps a
     cluster whole: the 15N line sits 6 mDa under the 13C line, and a bin
     started there can take the 13C line and leave the 17O and 2H lines, under
-    3 mDa from it, behind. The half-FWHM width is the one the targeted
-    matcher's TOF library bins with (``group_target_isotopes`` in the backend's
-    target computation), but that library groups only the lines over its 1%
-    floor, so its line at the 13C position is still the 13C line alone
-    (mascope#2587).
+    3 mDa from it, behind. The targeted matcher's TOF library groups its
+    lines the same way (:func:`group_unresolved_lines`, called by
+    ``group_target_isotopes`` in the backend's target computation).
 
     The merged line keeps one label, because a row's label is parsed into its
     ion formula: ``M0`` where the ion's own line is a member, so the line
@@ -1290,32 +1341,10 @@ def merge_unresolved_lines(
     if resolution is None or predicted_mz.size < 2:
         return predicted_mz, predicted_intensity, labels
 
-    # Brightest first: a peak sits on its dominant line, and which line
-    # happens to be the lightest of a cluster (the 15N line, below 13C) must
-    # not decide what the peak holds.
-    order = np.lexsort((np.arange(predicted_mz.size), -predicted_intensity))
-    taken = np.zeros(predicted_mz.size, dtype=bool)
-    groups: list[np.ndarray] = []
-    for brightest in order:
-        if taken[brightest]:
-            continue
-        centre_mz = float(predicted_mz[brightest])
-        try:
-            resolving_power = float(resolution(centre_mz))
-        except (TypeError, ValueError, ArithmeticError):
-            resolving_power = float("nan")
-        if np.isfinite(resolving_power) and resolving_power > 0:
-            half_fwhm = centre_mz / resolving_power / 2
-            members = np.flatnonzero(
-                ~taken & (np.abs(predicted_mz - centre_mz) < half_fwhm)
-            )
-        else:
-            members = np.array([brightest])
-        taken[members] = True
-        groups.append(members)
-
     merged = []
-    for members in groups:
+    for members in group_unresolved_lines(
+        predicted_mz, predicted_intensity, resolution
+    ):
         weights = predicted_intensity[members]
         total = float(weights.sum())
         centre = (
