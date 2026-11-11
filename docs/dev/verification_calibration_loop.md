@@ -303,14 +303,18 @@ flowchart TD
 - *Labels near* counts the live labels of the calibration's pool (`_live_label_rows`, shared with
   `recalibrate_instrument`) on the sample's instrument class and the run's reagent profile
   (`config.resolved_profile.profile`) within 0.05 of the row's evidence. Ten of them, the fit's
-  per-class floor, halve a row's rank.
-- The spot checks are `random.Random(run id)`: a run's queue reads the same on every load. At
-  least three are drawn wherever the pool has them, and a quarter as many as the band-edge rows.
+  per-class floor, halve a row's rank. The fit itself pools every profile of the class; a
+  per-profile fit is MAS-63's.
+- The spot checks are the pool's rows with the lowest `sha256(run id : row id)`: a run's queue
+  reads the same on every load, a verdict on one spot check removes only that row, and a change in
+  how many are drawn moves only the end of the draw. At least three are drawn wherever the pool
+  has them, and a quarter as many as the band-edge rows.
 - An entry carries its `reason`, the band it sits nearest (`near_band`), `labels_near`, and for a
   stale row the verdict it marks (`kind`, `verdict`, the judged formula and mechanism, the record's
   id and time). Never `p_correct` nor the evidence (guardrail 5); in the ledger's queue the tier
   chip's hover leaves the evidence out too.
-- A decoy run and a batch-derived ledger answer an empty queue.
+- A decoy run, an imported run (another `engine`: `_live_label_rows` never feeds its verdicts to
+  the refit) and a batch-derived ledger answer an empty queue.
 
 The sample ledger's tier strip ends in a **to verify** chip with the count; on, the table holds
 the queue's rows in its order, with a column that says why each is asked. A verdict reloads the
@@ -324,12 +328,12 @@ and AUC gates stay unweighted. The map rides the curve as `Calibration.label_wei
 `assignment_calibration.label_weights` (migration `20cef38763a7`; NULL on every earlier curve, fit
 unweighted) and reported by the recalibrate route.
 
-**The section 7 decisions, as built.** *Shared vs per-user:* per instrument class (and, for the
-queue's label counts, per profile), as the fit is; `verified_by` keeps the attribution. *Visual
+**The section 7 decisions, as built.** *Shared vs per-user:* per instrument class, as the fit is (the
+queue counts labels per class and profile, but the fit pools the profiles); `verified_by` keeps the attribution. *Visual
 labels:* down-weighted, not excluded; the provisional gate still refuses to graduate a curve on
 them. *A re-run that changes the assignment:* the snapshot label is kept and still fits at the
-score it was judged at; the row is marked stale in the queue for a new verdict, which supersedes
-the old one only when it is on the same identity.
+score it was judged at until the row is judged again; the row is marked stale in the queue for a
+new verdict, which supersedes the old one only when it is on the same identity (a rescored row).
 
 ## 5. The central risk: the confirmation-bias loop
 
