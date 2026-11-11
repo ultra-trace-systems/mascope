@@ -113,6 +113,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 5.11 - a batch's peak lists in one read, and the SDK snapshot of it | #2764 |  | built: one Parquet read per batch, `load_peaks` takes it and keeps the per-sample reads for older servers, `save_path`; MAS-568 |
 | 5.12 - the per-sample scoring derivation as one library function, and a bulk candidate scorer | #2767 | | built: `pattern_scoring_for_sample` and `score_candidates` in `mascope_tools`, the engine and the finder call them; no score moves beyond rounding; MAS-569 |
 | 5.13 - the current verdicts of a batch or dataset in one read, through the API, the SDK and the export | - |  | built: one row per judged peak, a batch-level verdict marked `borrowed` where it reaches a sample, a sheet of the batch export; MAS-570 |
+| 6.2 - the bench instance, built from a sets manifest | - |  | built: `tooling/assignment_bench/bench.py init <manifest>` binds env `bench` to a free instance slot, starts a ref's backend there, seeds each set's mode and collections through the API and the shipped reference lists, uploads the sets' files by hash and checks every sample resolved its set's mode and has peaks; each sample's id is recorded under its set in the bench's `state.json`, a second `init` changes nothing; `manifests/demo.json` holds the demo bundle's sets Db (bromide, 80 files) and Du (uronium, 81 files), built on the agent box; MAS-837 |
 
 ## Purpose
 
