@@ -43,6 +43,7 @@ import {
   tierRank
 } from '@/lib/tiers'
 import { prettyTrim } from '@/lib/utils'
+import { queueReason, queueRows, queueTooltip } from '@/lib/verificationQueue'
 import { scrollVirtualRowIntoView } from '@/lib/virtualScroll'
 import { useApp } from '@/stores'
 
@@ -57,6 +58,7 @@ const launcher = useAssignmentLauncher()
 
 const runs = computed(() => app.data.peakAssignment.run)
 const assignments = computed(() => app.data.peakAssignment.peak)
+const queue = computed(() => app.data.peakAssignment.queue)
 
 // Whether this run carries a tier of its producing engine's own. Only an
 // imported run does, and a sample read from the batch ledger on the M0 row an
@@ -173,6 +175,23 @@ const VERDICT_FILTERS = [
   { value: 'unverified', label: 'Unverified' }
 ]
 const verdictFilter = ref('all')
+
+// --- The verification queue ---------------------------------------------------
+
+// The assignments worth a verdict next, as the server ranks them
+// (lib/verificationQueue.js): the rows near a tier edge where the instrument
+// holds few labels, random spot checks between them, and first the verdicts a
+// later run read differently. The chip at the end of the tier strip counts them
+// and narrows the table to them, in the queue's order: entering clears a column
+// sort, so the order shown is the one to ask in. The verdict filter does not
+// apply while it is on - a stale row carries the verdict it is queued to have
+// judged again.
+//
+// Guardrail 5 of the loop: the judgment is of the data, not of a number. The
+// ledger shows no probability anywhere, and in the queue the tier chip's hover
+// drops the evidence as well, the calibrated number's input.
+const queueMode = ref(false)
+const queueCount = computed(() => queue.value?.count ?? 0)
 
 // --- View options menu ------------------------------------------------------
 
@@ -482,6 +501,12 @@ function compareBy(field, order) {
 // tier. Also the tie-breaker under every other column, and what an unsorted
 // table (third click on a sorted header) falls back to.
 const byConfidence = (a, b) => a.tierRank - b.tierRank || (b.fit_score ?? -1) - (a.fit_score ?? -1)
+// The verification queue's resting order: the server's.
+const byQueue = (a, b) => a.queueRank - b.queueRank
+// Entering the queue shows it in its own order, not under last sort's column.
+watch(queueMode, (on) => {
+  if (on) sortField.value = null
+})
 
 // The isotope lines of a row, as rows under it: an analyte's isotopologues, a
 // source ion's heavier lines (isIsotopeLine), ordered by m/z among themselves.
@@ -529,16 +554,18 @@ function isotopologuesOf(parent, underChannel = false) {
 
 // Table rows. Parents (M0 + unassigned/reagent) are filtered by the active
 // chips, grouped by neutral when that is on, then ordered by the sorted column
-// with confidence breaking ties. When unfolded, each parent's isotope lines are
+// with confidence breaking ties - or, in the verification queue, the queue's
+// rows in the queue's order. When unfolded, each parent's isotope lines are
 // inserted right after it, and an open group's other channels after those, each
 // with its own lines - a family is one block wherever its parent lands, which
 // is the only arrangement in which the indented child rows can be read at all.
 const rows = computed(() => {
-  const parents = assignments.value.list
-    .filter((row) => !isIsotopeLine(row))
+  const ledger = assignments.value.list.filter((row) => !isIsotopeLine(row))
+  const parents = (queueMode.value ? queueRows(ledger, queue.value?.list) : ledger)
     .filter((row) => activeTiers.size === 0 || activeTiers.has(bucketOf(row)))
     .filter(
       (row) =>
+        queueMode.value ||
         verdictFilter.value === 'all' ||
         (effectiveVerdictFor(row)?.verdict ?? 'unverified') === verdictFilter.value
     )
@@ -597,7 +624,8 @@ const rows = computed(() => {
   }
 
   const byColumn = sortField.value ? compareBy(sortField.value, sortOrder.value) : null
-  heads.sort(byColumn ? (a, b) => byColumn(a, b) || byConfidence(a, b) : byConfidence)
+  const resting = queueMode.value ? byQueue : byConfidence
+  heads.sort(byColumn ? (a, b) => byColumn(a, b) || resting(a, b) : resting)
 
   const result = []
   for (const head of heads) {
@@ -811,6 +839,11 @@ const breadcrumb = computed(() => {
         tier chips to filter by confidence, the view-options button for
         isotopologue rows and the verdict filter, and <b>Assign peaks</b> in the
         bar above to launch a new run.
+        </p>
+        <p>
+        The <b>to verify</b> chip shows the assignments worth a verdict next:
+        those near a tier edge, random spot checks, and verdicts a later run
+        read differently.
         </p>`,
         { doc: app.ui.help.docUrl('how-it-works/peak-assignment/') }
       )
@@ -907,6 +940,29 @@ const breadcrumb = computed(() => {
           @click="toggleTier(t.key)"
         >
           <b>{{ t.count }}</b> {{ t.label }}
+        </button>
+
+        <!-- The verification queue: a filter of its own, so a chip like the
+             tiers, and set off from them at the strip's end. -->
+        <button
+          type="button"
+          class="tier-stat queue-chip"
+          :class="{ active: queueMode }"
+          :aria-pressed="queueMode"
+          data-testid="queue-chip"
+          v-tooltip.top="
+            queueMode
+              ? 'Showing the assignments worth verifying, in the order to ask - click to show every row'
+              : 'Show the assignments worth verifying: near a tier edge, random spot checks, and verdicts a later run read differently'
+          "
+          v-help.top="{
+            title: 'Worth verifying',
+            helpKey: 'assignment-verification',
+            doc: app.ui.help.docUrl('how-it-works/peak-assignment/#the-verification-queue')
+          }"
+          @click="queueMode = !queueMode"
+        >
+          <span class="pi ph ph-seal-question" /> <b>{{ queueCount }}</b> to verify
         </button>
 
         <!-- At the end of the filter row, because that is what it holds: the
@@ -1293,7 +1349,7 @@ const breadcrumb = computed(() => {
           <template #body="{ data }">
             <BaseTierTag
               :tier="data.tier"
-              :evidence="data.evidence"
+              :evidence="queueMode ? null : data.evidence"
               :role="data.role"
               :source="data.source"
             />
@@ -1319,6 +1375,24 @@ const breadcrumb = computed(() => {
               :tooltip="engineTierTooltip(data)"
             />
             <span v-else class="no-engine-tier">&mdash;</span>
+          </template>
+        </Column>
+        <!-- Why the queue asks for the row: near a tier edge, a spot check, or
+             a verdict a later run read differently. Only in the queue. -->
+        <Column v-if="queueMode" field="queueRank" style="min-width: 3rem">
+          <template #header>
+            <span class="pi ph ph-seal-question" v-tooltip.top="'Why the row is worth verifying'" />
+          </template>
+          <template #body="{ data }">
+            <span
+              v-if="queueReason(data.queueEntry)"
+              class="queue-reason"
+              :class="data.queueEntry.reason"
+              :data-testid="`queue-reason-${data.queueEntry.reason}`"
+              :aria-label="queueReason(data.queueEntry).label"
+              v-tooltip.top="queueTooltip(data.queueEntry)"
+              ><span :class="queueReason(data.queueEntry).icon"
+            /></span>
           </template>
         </Column>
         <Column style="min-width: 3rem">
@@ -1579,8 +1653,19 @@ const breadcrumb = computed(() => {
 /* The cog sits at the far end of the tier-chip row, which wraps; pushing it
    with auto margin keeps it in the corner however many chips precede it. */
 .view-menu-button {
-  margin-left: auto;
   align-self: center;
+}
+/* At the strip's end, beside the view menu: the cog no longer pushes itself
+   there, the chip takes both. */
+.queue-chip {
+  margin-left: auto;
+}
+.queue-reason {
+  opacity: 0.75;
+}
+.queue-reason.stale {
+  color: var(--state-warning);
+  opacity: 1;
 }
 
 /* The view-options panel: one labelled setting per row. */

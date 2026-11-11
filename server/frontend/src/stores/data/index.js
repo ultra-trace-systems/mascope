@@ -18,6 +18,7 @@ import { usePeak } from './modules/peak'
 import {
   usePeakAssignment,
   usePeakAssignmentAnchorContext,
+  usePeakAssignmentQueue,
   usePeakAssignmentRun,
   usePeakAssignmentVerification
 } from './modules/peakAssignment'
@@ -49,7 +50,8 @@ export const useData = () => ({
     run: usePeakAssignmentRun(),
     peak: usePeakAssignment(),
     verification: usePeakAssignmentVerification(),
-    anchorContext: usePeakAssignmentAnchorContext()
+    anchorContext: usePeakAssignmentAnchorContext(),
+    queue: usePeakAssignmentQueue()
   },
   target: {
     collection: useTargetCollection(),

@@ -67,6 +67,8 @@ let verdictPeakId
 let runRecord
 // What the store's histogram answers for the strip above the table.
 let tierCountsRecord
+// The run's verification queue, in the server's order.
+let queueList
 
 // Minimal help-mode facade: the pane registers help cards through these calls;
 // the tests only need them to resolve.
@@ -132,7 +134,8 @@ function makeApp() {
           run: runRecord
         },
         verification: { forAssignment },
-        anchorContext: { overlayFor }
+        anchorContext: { overlayFor },
+        queue: { list: queueList, count: queueList.length }
       }
     },
     ui: { tab: { active: 'sample' }, help: helpStub, notification: { push: vi.fn() } }
@@ -150,7 +153,11 @@ vi.mock('@/lib/base', async () => ({
     template: '<span class="copyable" :data-tooltip="tooltip">{{ field }}<slot /></span>'
   },
   BaseLoadError: true,
-  BaseTierTag: true,
+  // Says which evidence it was handed, so the queue's tests can read it off.
+  BaseTierTag: {
+    props: ['tier', 'evidence', 'role', 'source', 'tooltip'],
+    template: '<span class="tier-tag-stub" :data-evidence="String(evidence)" />'
+  },
   BaseVerdictBadge: true,
   // Real: the tier column's header renders it, and the provisional-tiers tests
   // below read the mark it draws.
@@ -408,6 +415,7 @@ beforeEach(() => {
   overlayRecord = null
   runRecord = null
   tierCountsRecord = {}
+  queueList = []
   seed()
 })
 
@@ -2178,7 +2186,9 @@ describe('PaneBrowserAssignment engine-tier view', () => {
     }
   })
 
-  const chips = (wrapper) => wrapper.findAll('.tier-stat').map((chip) => chip.text())
+  // The tier chips: the verification queue's chip shares their look, not their job.
+  const chips = (wrapper) =>
+    wrapper.findAll('.tier-stat:not(.queue-chip)').map((chip) => chip.text())
   const flip = (wrapper) => wrapper.find('.view-menu-popover #engine-tier-view').trigger('click')
 
   it('is not offered on a run with no engine tiers', async () => {
@@ -2457,7 +2467,7 @@ describe('PaneBrowserAssignment reagent and artifact peaks', () => {
     }
   })
 
-  const chips = (wrapper) => wrapper.findAll('.tier-stat')
+  const chips = (wrapper) => wrapper.findAll('.tier-stat:not(.queue-chip)')
 
   it('counts each role with a chip of its own, after the tiers', async () => {
     const wrapper = await mountPane()
@@ -2616,5 +2626,121 @@ describe('PaneBrowserAssignment reagent families', () => {
     wrapper.vm.sortOrder = 1
     await wrapper.vm.$nextTick()
     expect(ids(wrapper)).toEqual(['br2', 'm', 'u'])
+  })
+})
+
+// The verification queue (MAS-329): the chip at the end of the tier strip
+// counts the run's queue and narrows the table to it, in the server's order.
+describe('PaneBrowserAssignment verification queue', () => {
+  const FAMILY_C = family({ id: 'c', mz: 300.2, intensity: 50, formula: 'C5H5', fit: 0.5 })
+  beforeEach(() => {
+    runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
+    seed(FAMILY_A, FAMILY_B, FAMILY_C)
+    for (const row of assignmentList) row.evidence = 0.46
+    // Against the confidence order (c is assigned, a a candidate): the queue's own.
+    queueList = [
+      { peak_assignment_id: 'a', reason: 'stale', labels_near: 0, stale: { kind: 'rescored' } },
+      { peak_assignment_id: 'c', reason: 'band_edge', near_band: 'assigned', labels_near: 4 }
+    ]
+  })
+  afterEach(() => vi.clearAllMocks())
+
+  const chip = (wrapper) => wrapper.find('[data-testid="queue-chip"]')
+
+  it('counts the queue on a chip of its own at the end of the tier strip', async () => {
+    const wrapper = await mountPane()
+
+    expect(chip(wrapper).text()).toBe('2 to verify')
+    expect(chip(wrapper).attributes('aria-pressed')).toBe('false')
+    // Off: every row, in confidence order.
+    expect(ids(wrapper)).toEqual(['b', 'c', 'a'])
+  })
+
+  it("narrows the table to the queue's rows, in the queue's order", async () => {
+    const wrapper = await mountPane()
+    await chip(wrapper).trigger('click')
+
+    expect(ids(wrapper)).toEqual(['a', 'c'])
+    expect(wrapper.vm.rows.map((row) => row.queueEntry.reason)).toEqual(['stale', 'band_edge'])
+    expect(chip(wrapper).attributes('aria-pressed')).toBe('true')
+
+    await chip(wrapper).trigger('click')
+    expect(ids(wrapper)).toEqual(['b', 'c', 'a'])
+  })
+
+  it('clears a column sort on entering, and keeps the tier chips', async () => {
+    const wrapper = await mountPane()
+    wrapper.vm.sortField = 'sample_peak_mz'
+    wrapper.vm.sortOrder = 1
+    await chip(wrapper).trigger('click')
+
+    expect(wrapper.vm.sortField).toBeNull()
+    expect(ids(wrapper)).toEqual(['a', 'c'])
+
+    wrapper.vm.toggleTier('candidate')
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['a'])
+  })
+
+  it('lets a stale row through whatever the verdict filter says', async () => {
+    verdictRecord = { verdict: 'confirmed', evidence_level: 'visual' }
+    verdictPeakId = 'p-a'
+    const wrapper = await mountPane()
+    wrapper.vm.verdictFilter = 'unverified'
+    await chip(wrapper).trigger('click')
+
+    expect(ids(wrapper)).toEqual(['a', 'c'])
+  })
+
+  // Renders every column's cells, as the provisional-tiering tests do.
+  async function renderedTable() {
+    const tableRows = ref([])
+    const wrapper = mount(PaneBrowserAssignment, {
+      global: {
+        directives: { tooltip: {}, help: {} },
+        stubs: {
+          ...GLOBAL_STUBS,
+          DataTable: {
+            ...GLOBAL_STUBS.DataTable,
+            watch: {
+              value: { handler: (value) => (tableRows.value = value), immediate: true }
+            }
+          },
+          Column: {
+            props: ['field', 'header'],
+            setup: () => ({ rows: tableRows }),
+            template:
+              '<div class="stub-col" :data-field="field">' +
+              '<template v-for="(row, i) in rows" :key="i">' +
+              '<slot name="body" :data="row" /></template></div>'
+          }
+        }
+      }
+    })
+    await wrapper.vm.$nextTick()
+    return wrapper
+  }
+
+  it('says why each row is asked, in a column shown only in the queue', async () => {
+    const wrapper = await renderedTable()
+    const queueColumn = () =>
+      wrapper.findAll('.stub-col').find((col) => col.attributes('data-field') === 'queueRank')
+    expect(queueColumn()).toBeUndefined()
+
+    await chip(wrapper).trigger('click')
+    expect(queueColumn().find('[data-testid="queue-reason-stale"]').exists()).toBe(true)
+    expect(queueColumn().find('[data-testid="queue-reason-band_edge"]').exists()).toBe(true)
+  })
+
+  // Guardrail 5: the judgment is of the data. The tier chip's hover gives the
+  // evidence in the ledger, and not in the queue.
+  it('hides the evidence behind the tier chip while the queue is shown', async () => {
+    const wrapper = await renderedTable()
+    const evidence = () =>
+      wrapper.findAll('.tier-tag-stub').map((tag) => tag.attributes('data-evidence'))
+    expect(evidence()).toEqual(['0.46', '0.46', '0.46'])
+
+    await chip(wrapper).trigger('click')
+    expect(evidence()).toEqual(['null', 'null'])
   })
 })
