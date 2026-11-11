@@ -504,10 +504,15 @@ separation:
   chromatographic run the term reads the peak's **elution apex**: the extracted ion
   chromatogram at the peak's m/z, within its fitted width, over the MS1 scans of its stream in
   the sample window. The apex is the intensity-weighted centre of the profile's top half, minus
-  the method's declared delay, so time zero is the injection. A profile with fewer than five
-  scans above its half height, or an apex at the window's edge, is *untestable* and the term is
-  absent for that peak. That also covers a chromatographic file split into time windows: a
-  window that cuts an elution in half gives no time rather than a wrong one.
+  the method's declared delay, so time zero is the injection. The profile is *testable* only
+  when it has one maximum above its half height, at least five scans above that half height,
+  and falls below the half height on both sides inside the window. Otherwise it is
+  *untestable* and the term is absent for that peak. The single-maximum condition covers two
+  elutions at one m/z, such as isomers, whose averaged spectrum shows one peak: their centre
+  would fall between them, at neither one's time. The both-sides condition covers a
+  chromatographic file split into time windows: a window that cuts an elution, before or after
+  its maximum, gives no time rather than a wrong one. Giving each elution its own time is a
+  later increment.
 
 **2. What a retention-time library is keyed by, and who writes it.** A retention time is a
 property of one laboratory's column and gradient, not of a compound, and does not transfer
