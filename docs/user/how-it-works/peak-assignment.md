@@ -670,6 +670,15 @@ In practice:
   person chose, which the curve never scored. Today one **provisional** Orbitrap curve
   ships (fit on a preliminary reference set); it will be replaced by a curated fit, and
   TOF is uncalibrated until a TOF reference set exists.
+- **Labels weigh what their evidence is worth.** A refit from verdicts weighs each one
+  by the evidence its verdict states. A reference standard or an MS/MS spectrum is truth
+  from outside the fit and weighs 1. An orthogonal technique weighs 0.6, the
+  isotope/adduct pattern 0.4, and a visual check, or a verdict that states no evidence,
+  0.25. The weaker the evidence, the more a label can only echo the score it was made
+  beside. Weak labels are down-weighted rather than left out: on a young instrument they
+  are most of the record. The curve records the weights it was fit under, and its
+  calibration error is measured under the same weights. The curve stays provisional
+  until enough confirmations come from a reference standard or MS/MS.
 - **The adduct lift is measured, not assumed.** A real compound rarely appears as a single
   ion — it also shows up through other adducts (e.g. `[M+H]⁺` alongside `[M+NH₄]⁺`, or
   `[M−H]⁻` alongside `[M+Br]⁻`), and each adduct's corroborating worth is *measured*: a
@@ -1126,6 +1135,39 @@ asks for the evidence level. In the ledger the cell is a button, as in the *Batc
 ledger, so an unverified row shows a faint seal that opens a verdict form in place. A
 verdict is about the compound, so it is recorded on the family's M0 whichever member the
 row is.
+
+### The verification queue
+
+Verdicts are the labels the confidence curve is refit from, and a verdict anybody could
+predict teaches the curve little. A row whose evidence sits far above the *assigned*
+band, or far below the *candidate* band, is one of those. The curve is least certain
+near the band edges, so that is where a verdict is worth most. Choosing what to label
+next by where the model is least sure is *uncertainty sampling* ([Lewis and Gale
+1994][lg94]; [Settles 2009][set09]).
+
+The **to verify** chip at the end of the ledger's tier strip counts the run's queue.
+Click it and the table shows only those rows, in this order:
+
+1. **Judge again**: a verdict recorded before this run, on a peak the run reads
+   differently. Either it now assigns another formula or mechanism there, or the same
+   one with other evidence. The verdict is kept as it was: it stays a label at the
+   score it was given. The row asks for a verdict on what the run reads now.
+2. **Near a tier edge**: rows with no verdict whose evidence is within 0.1 of a band
+   edge. The closest come first, and so do the rows where the instrument holds few
+   verdicts at similar evidence (within 0.05). Those verdicts are counted for the
+   sample's instrument class and the run's reagent profile, the labels its curve is
+   fit from.
+3. **Spot check**: every fifth place is a row drawn at random from the rest. A
+   ranking only finds what it looks for; a random draw guards its blind spots. The draw
+   is fixed per run, so the queue reads the same on every visit.
+
+A column shown only in the queue says which of the three a row is; hover it for the
+detail. A verdict takes its row out of the queue. While the queue is shown, a column
+sort is cleared, the tier chips still narrow it, and the verdict filter does not apply.
+
+The queue never shows a probability, and in it the tier chip's hover leaves out the
+evidence as well: a number beside the row would become the anchor of the judgment, and
+the labels would echo the model instead of correcting it.
 
 ### Naming the structure
 
@@ -1910,6 +1952,12 @@ engine found, and leave the rest of the table alone.
 - <a id="platt"></a>Platt, J. *Probabilistic outputs for support vector machines and
   comparisons to regularized likelihood methods.* Advances in Large Margin Classifiers,
   1999. [link](https://en.wikipedia.org/wiki/Platt_scaling)
+- <a id="lg94"></a>Lewis, D. D.; Gale, W. A. *A sequential algorithm for training text
+  classifiers.* Proceedings of the 17th Annual International ACM SIGIR Conference, 1994,
+  3–12. [link](https://doi.org/10.1007/978-1-4471-2099-5_1)
+- <a id="set09"></a>Settles, B. *Active learning literature survey.* Computer Sciences
+  Technical Report 1648, University of Wisconsin–Madison, 2009.
+  [link](https://burrsettles.com/pub/settles.activelearning.pdf)
 - <a id="sch14"></a>Schymanski, E. L. et al. *Identifying small molecules via high
   resolution mass spectrometry: communicating confidence.* Environ. Sci. Technol. 2014,
   48(4):2097–2098. [link](https://pubs.acs.org/doi/10.1021/es5002105)
@@ -2119,6 +2167,8 @@ engine found, and leave the rest of the table alone.
 [hug01]: #hug01
 [sch17]: #sch17
 [sch14]: #sch14
+[lg94]: #lg94
+[set09]: #set09
 [sum07]: #sum07
 [hy15]: #hy15
 [wa21]: #wa21

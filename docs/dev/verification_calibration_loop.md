@@ -17,7 +17,9 @@ instrument's confidence calibration. This closes the loop opened by the P2 calib
 V2 (close the loop) is **built** — `mascope_tools.recalibrate` +
 `calibration_store.save_calibration` + `recalibrate_instrument` + `POST /calibration/{instrument}/recalibrate`
 (superuser), verified on synthetic labels and live on the demo; it just waits on real V1-UI labels
-to switch on real labels. V3 (quality) is still design (§6).
+to switch on real labels. V3 (quality) is partly **built** (MAS-329, §4.7): the active-learning
+queue with its stale mark, and evidence-level weighting in the refit; the corroboration refit and
+the identification level on the assignment are still to come (§6).
 
 ## 1. Why
 
@@ -135,7 +137,8 @@ and the active-learning queue (§5) are V3.
 Per instrument class, aggregate `confirmed` (positive) + `rejected` (negative) verifications, top up
 negatives with near-mass decoys if needed, and when ≥ `MIN_CALIBRATION_LABELS` of each class exist,
 run `fit_calibration` and write a new active `assignment_calibration` row (flipping the previous one
-inactive). Show before/after held-out ECE so the user sees the improvement. The same accumulated
+inactive). Show before/after held-out ECE so the user sees the improvement. Each label is weighed by
+the evidence level its verdict states (§4.7). The same accumulated
 labels can refit the **per-adduct corroboration weights** (the offset-decoy benchmark generalises to
 "confirmed multi-adduct compounds vs rejected ones").
 
@@ -272,6 +275,62 @@ which carries its InChIKey since this change. The target's declaration is not on
 joins the candidates when MAS-358 puts it there. The badge shows the level in place of the evidence
 it follows from, and the structure's name, cut to fit; its tooltip has the evidence and the InChIKey.
 
+### 4.7 Built: the verification queue, the label weights and the stale mark (MAS-329)
+
+The three V3 pieces that answer guardrails 1, 3 and 5, and the three section 7 questions the
+brief decided.
+
+**The queue** (`peak_assignments/verification_queue.py`, pure; `service.get_verification_queue`;
+`GET /peak-assignments/sample/{id}/verification-queue`, guest-readable, session only). It ranks the
+rows of the run the ledger shows (`_ledger_run`, shared with the ledger read) that take a verdict:
+an analyte's formula with a finite evidence, no isotope line, source ion, artifact or unassigned
+peak.
+
+```mermaid
+flowchart TD
+  R[A row of the run] --> V{"Live verdict on its peak?"}
+  V -- "same identity, made on this run or since, or same evidence" --> J[Judged: not queued]
+  V -- "made before the run, another formula or mechanism" --> S1["Stale: reassigned"]
+  V -- "made before the run, same identity, other evidence" --> S2["Stale: rescored"]
+  V -- none --> E{"Evidence within 0.1 of a band edge?"}
+  E -- yes --> B["Band edge: ranked by closeness / (1 + labels near / 10)"]
+  E -- no --> P[Spot-check pool]
+  S1 & S2 --> Q[Queue: stale first]
+  B --> Q
+  P -- "seeded draw, every fifth place" --> Q
+```
+
+- *Labels near* counts the live labels of the calibration's pool (`_live_label_rows`, shared with
+  `recalibrate_instrument`) on the sample's instrument class and the run's reagent profile
+  (`config.resolved_profile.profile`) within 0.05 of the row's evidence. Ten of them, the fit's
+  per-class floor, halve a row's rank.
+- The spot checks are `random.Random(run id)`: a run's queue reads the same on every load. At
+  least three are drawn wherever the pool has them, and a quarter as many as the band-edge rows.
+- An entry carries its `reason`, the band it sits nearest (`near_band`), `labels_near`, and for a
+  stale row the verdict it marks (`kind`, `verdict`, the judged formula and mechanism, the record's
+  id and time). Never `p_correct` nor the evidence (guardrail 5); in the ledger's queue the tier
+  chip's hover leaves the evidence out too.
+- A decoy run and a batch-derived ledger answer an empty queue.
+
+The sample ledger's tier strip ends in a **to verify** chip with the count; on, the table holds
+the queue's rows in its order, with a column that says why each is asked. A verdict reloads the
+queue (`usePeakAssignmentQueue`).
+
+**The weights** (`mascope_tools.composition.calibration.EVIDENCE_LEVEL_WEIGHTS`): reference
+standard and MS/MS 1, orthogonal 0.6, pattern 0.4, visual and a label stating no level 0.25.
+`recalibrate` weighs the Platt fit and both held-out ECEs (the incumbent's and the refit's, on the
+same points), so the ECE before and after are compared under the weights the fit used; the count
+and AUC gates stay unweighted. The map rides the curve as `Calibration.label_weights`, stored in
+`assignment_calibration.label_weights` (migration `20cef38763a7`; NULL on every earlier curve, fit
+unweighted) and reported by the recalibrate route.
+
+**The section 7 decisions, as built.** *Shared vs per-user:* per instrument class (and, for the
+queue's label counts, per profile), as the fit is; `verified_by` keeps the attribution. *Visual
+labels:* down-weighted, not excluded; the provisional gate still refuses to graduate a curve on
+them. *A re-run that changes the assignment:* the snapshot label is kept and still fits at the
+score it was judged at; the row is marked stale in the queue for a new verdict, which supersedes
+the old one only when it is on the same identity.
+
 ## 5. The central risk: the confirmation-bias loop
 
 **This is the design's whole point of failure.** If users confirm/reject based on the `p_correct`
@@ -312,8 +371,9 @@ prophecy. Everything else here is secondary to getting this right.
   guardrail: the curve stays provisional unless ≥ `MIN_CALIBRATION_LABELS` positives carry strong
   (reference-standard/MS-MS) evidence — visual-only confirmations can't graduate it. Verified on
   synthetic labels + live on the demo. *Real value waits on V1-UI labels accumulating.*
-- **V3 — quality & scale.** Active-learning queue (guardrail 3), evidence-level weighting in the fit,
-  refit of the corroboration weights, Schymanski-level surfacing on the assignment, and (optionally)
+- **V3 — quality & scale.** Active-learning queue (guardrail 3) and evidence-level weighting in the
+  fit: **built** (MAS-329, §4.7), with the stale mark. Still to come: refit of the corroboration
+  weights (MAS-63), Schymanski-level surfacing on the assignment (MAS-73), and (optionally)
   cross-linking confirmations to `reference_compound` standards.
 
 ## 7. Open questions
@@ -321,14 +381,14 @@ prophecy. Everything else here is secondary to getting this right.
 - Verdict granularity. *Answered:* one verdict per isotopologue family, within the sample - the
   ion, not the compound, and not across adducts (§4.5). Aggregating to the compound for
   corroboration stays open.
-- Shared vs per-user calibration: whose labels fit the curve for a shared instrument? (Propose:
-  workspace/instrument-scoped, with per-user attribution retained.)
-- How to weight `visual` labels in the fit without letting them dominate (down-weight vs exclude).
-- Re-verification when a re-run changes an assignment: keep the old snapshot label, or invalidate?
-  (Partly settled: a user *retracting* their own verdict supersedes it, and only the current one is
-  fit on. Whether a re-run that changes the assignment should also invalidate the label it was
-  snapshotted against is still open - that one is about the score drifting, not about the judgment
-  being withdrawn.)
+- Shared vs per-user calibration. *Answered (MAS-329):* per instrument class, as the fit is, with
+  per-user attribution retained on the verdict; not per user (§4.7).
+- How to weight `visual` labels. *Answered (MAS-329):* down-weighted, not excluded
+  (`EVIDENCE_LEVEL_WEIGHTS`, §4.7).
+- Re-verification when a re-run changes an assignment. *Answered (MAS-329):* keep the snapshot
+  label, pinned to the score the user judged, and mark it stale in the verification queue for
+  re-verification; do not invalidate it (§4.7). A user *retracting* their own verdict still
+  supersedes it, and only the current one is fit on.
 
 ## References
 

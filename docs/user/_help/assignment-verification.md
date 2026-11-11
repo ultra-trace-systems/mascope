@@ -11,3 +11,9 @@ calibration is fit on. Verdicts attach to the peak, formula and ionization
 mechanism rather than to one run, so they carry over when the sample is
 re-assigned. One verdict covers a whole compound: judging it from any of its
 isotopologue peaks records a single verdict, shown on all of them.
+
+The **to verify** chip at the end of the ledger's tier strip counts the
+assignments worth a verdict next and shows only them, in the order to ask:
+first any verdict a later run read differently, then the rows near a tier
+edge where the instrument has few verdicts so far, with random spot checks
+between them. The queue shows no probability: judge the data, not a number.
