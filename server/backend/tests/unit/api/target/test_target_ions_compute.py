@@ -16,6 +16,7 @@ from mascope_backend.db import (
     TargetIon,
     TargetIsotope,
 )
+from mascope_tools.composition import heuristic_filter
 from mascope_tools.composition.config import ELECTRON_MASS
 from mascope_tools.composition.mechanism_notation import parse_mechanism
 from mascope_tools.composition.utils import calculate_mass
@@ -251,6 +252,74 @@ def test_a_tof_line_holds_the_whole_m1_cluster_of_a_light_nitrogen_ion():
     # No other line holds a name of the cluster.
     others = [i.target_isotope_formula.split("/") for i in low if i is not m1]
     assert not any(name in names for names in others for name in members)
+
+
+def test_group_target_isotopes_folds_a_dim_line_it_cannot_separate():
+    """A line under 1 % of the most abundant, between half and one FWHM (10
+    mDa at m/z 100) from a line over it, is added to that line, as the
+    envelope match folds it. A dim line a FWHM or more away, and a line over
+    the floor however near, stay lines of their own."""
+    masses, probs, formulae = group_target_isotopes(
+        [100.0, 99.993, 101.0, 101.0102, 102.0, 102.007],
+        [1.0, 0.005, 0.1, 0.005, 0.05, 0.02],
+        ["a", "b", "c", "d", "e", "f"],
+        1e4,
+    )
+
+    # The names stay in m/z order, the dim line's first.
+    assert formulae == ["b/a", "c", "d", "e", "f"]
+    assert probs == pytest.approx([1.005, 0.1, 0.005, 0.05, 0.02])
+    assert masses[0] == pytest.approx((100.0 + 0.005 * 99.993) / 1.005)
+    assert masses[1:] == pytest.approx([101.0, 101.0102, 102.0, 102.007])
+
+
+def test_group_target_isotopes_reads_the_floor_off_the_most_abundant_line():
+    """The floor is 1 % of the most abundant line as grouped, not of any
+    single isotope: a line at 0.9 % of one isotope but over 1 % of nothing
+    brighter is kept."""
+    _, probs, formulae = group_target_isotopes(
+        [100.0, 100.007], [0.6, 0.0099], ["a", "b"], 1e4
+    )
+
+    assert formulae == ["a", "b"]
+    assert probs == pytest.approx([0.6, 0.0099])
+
+
+def test_a_tof_line_folds_the_15n_line_of_a_light_nitrogen_ion(monkeypatch):
+    """Under about m/z 126 the 15N line of the M+1 cluster sits more than
+    half a FWHM from the 13C line, so it is a group of its own: 6.4 mDa under
+    it for C3H8NO+, where half a FWHM is 3.8 mDa. It never matches a peak
+    there, and the 13C line alone read the whole peak, about 7 % low. Folded
+    in, the TOF line reads what the envelope match predicts at the same depth
+    (predict_resolved_isotopes, mascope#2591)."""
+    compound = TargetCompound(
+        target_compound_id="unit-m1-light", target_compound_formula="C3H7NO"
+    )
+    mechanism = IonizationMechanism(
+        ionization_mechanism_id="unit-mech-h-plus",
+        ionization_mechanism_polarity="+",
+        ionization_mechanism="[M+H]+",
+    )
+    _, target_isotopes = generate_target_ions_from_composition(compound, [mechanism])
+    low = sorted(
+        (i for i in target_isotopes if i.resolution == "LOW"), key=lambda i: i.mz
+    )
+    m0 = max(i.relative_abundance for i in low)
+
+    (m1,) = [i for i in low if "[13C]C2H8NO+" in i.target_isotope_formula.split("/")]
+    assert "[15N]C3H8O+" in m1.target_isotope_formula.split("/")
+    assert not any(
+        "[15N]C3H8O+" in i.target_isotope_formula.split("/") for i in low if i is not m1
+    )
+
+    # The library keeps lines to 0.001 % of the parent, 1e-3 of the 1 % floor.
+    monkeypatch.setattr(heuristic_filter, "UNRESOLVED_MEMBER_DEPTH", 1e-3)
+    mzs, intensities, labels = heuristic_filter.predict_resolved_isotopes(
+        "C3H8NO", 1, 0.01, lambda mz: 1e4
+    )
+    envelope = dict(zip(labels, zip(mzs, intensities / intensities.max())))
+    assert m1.relative_abundance / m0 == pytest.approx(envelope["13C"][1], rel=1e-3)
+    assert m1.mz == pytest.approx(envelope["13C"][0], abs=1e-4)
 
 
 def test_group_target_isotopes_keeps_the_most_abundant_names_that_fit():

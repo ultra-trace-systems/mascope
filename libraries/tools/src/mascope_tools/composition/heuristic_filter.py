@@ -1409,6 +1409,49 @@ def predict_resolved_isotopes(
     )
 
 
+def fold_targets(
+    mzs,
+    keep,
+    resolution: Callable[[float], float],
+) -> np.ndarray:
+    """The kept line each line under the floor folds into, or -1.
+
+    A line not kept goes to the nearest kept line less than one FWHM away, the
+    FWHM read off the resolving power at that kept line; a line with none so
+    near, and every kept line, gets -1. Distances are read against the kept
+    lines as given, so the order the lines are folded in decides nothing. The
+    envelope's floor (:func:`_fold_under_floor`) and the targeted matcher's
+    TOF library (``group_target_isotopes`` in the backend's target
+    computation) fold by it.
+
+    :param mzs: The merged lines' m/z values.
+    :param keep: Which of them are over the floor, same order.
+    :param resolution: The resolving power as a function of m/z.
+    :return: One index into the lines per line, -1 where nothing is folded.
+    """
+    mzs = np.asarray(mzs, dtype=float)
+    keep = np.asarray(keep, dtype=bool)
+    targets = np.full(mzs.size, -1, dtype=int)
+    kept = np.flatnonzero(keep)
+    dropped = np.flatnonzero(~keep)
+    if not kept.size or not dropped.size:
+        return targets
+    fwhm = np.full(kept.size, np.nan)
+    for position, index in enumerate(kept):
+        try:
+            resolving_power = float(resolution(float(mzs[index])))
+        except (TypeError, ValueError, ArithmeticError):
+            continue
+        if np.isfinite(resolving_power) and resolving_power > 0:
+            fwhm[position] = float(mzs[index]) / resolving_power
+    for index in dropped:
+        distance = np.abs(mzs[kept] - mzs[index])
+        within = np.flatnonzero(distance < fwhm)
+        if within.size:
+            targets[index] = int(kept[within[np.argmin(distance[within])]])
+    return targets
+
+
 def _fold_under_floor(
     mzs: np.ndarray,
     intensities: np.ndarray,
@@ -1431,28 +1474,14 @@ def _fold_under_floor(
     :return: The m/z values and abundances, same length and order; only the
         kept lines' entries change.
     """
-    kept = np.flatnonzero(keep)
-    dropped = np.flatnonzero(~keep)
-    if not kept.size or not dropped.size:
-        return mzs, intensities
-    fwhm = np.full(kept.size, np.nan)
-    for position, index in enumerate(kept):
-        try:
-            resolving_power = float(resolution(float(mzs[index])))
-        except (TypeError, ValueError, ArithmeticError):
-            continue
-        if np.isfinite(resolving_power) and resolving_power > 0:
-            fwhm[position] = float(mzs[index]) / resolving_power
+    targets = fold_targets(mzs, keep, resolution)
     weighted = mzs * intensities
     totals = intensities.copy()
-    for index in dropped:
-        distance = np.abs(mzs[kept] - mzs[index])
-        within = np.flatnonzero(distance < fwhm)
-        if not within.size:
-            continue
-        nearest = int(kept[within[np.argmin(distance[within])]])
+    for index in np.flatnonzero(targets >= 0):
+        nearest = int(targets[index])
         weighted[nearest] += mzs[index] * intensities[index]
         totals[nearest] += intensities[index]
+    kept = np.flatnonzero(keep)
     folded_mzs = mzs.copy()
     folded = kept[totals[kept] > intensities[kept]]
     folded_mzs[folded] = weighted[folded] / totals[folded]

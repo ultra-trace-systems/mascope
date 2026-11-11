@@ -22,10 +22,14 @@ from mascope_backend.db import (
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
 from mascope_tools.composition.config import ELECTRON_MASS
+from mascope_tools.composition.config import (
+    ISOTOPE_ABUNDANCE_THRESHOLD as ENVELOPE_FLOOR,
+)
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS, label_purity
 from mascope_tools.composition.finder import replace_atom_with_isotope
 from mascope_tools.composition.heuristic_filter import (
     extract_isotope_labels,
+    fold_targets,
     group_unresolved_lines,
 )
 from mascope_tools.composition.mechanism_notation import (
@@ -801,28 +805,49 @@ def group_target_isotopes(
     intensity = intensity[sorted_indices]
     formula = formula[sorted_indices]
 
+    def line_of(members: np.ndarray) -> tuple[float, float]:
+        weights = intensity[members]
+        total = float(np.sum(weights))
+        # Center of mass for mz in the line
+        centre = (
+            float(np.sum(mz[members] * weights) / total)
+            if total > 0
+            else float(np.mean(mz[members]))
+        )
+        return centre, total
+
+    groups = group_unresolved_lines(mz, intensity, lambda _: resolution)
+    grouped = [line_of(members) for members in groups]
+    centres = np.array([centre for centre, _ in grouped], dtype=float)
+    totals = np.array([total for _, total in grouped], dtype=float)
+
+    # A line under the envelope match's floor that one peak cannot separate
+    # from a line over it, less than one FWHM away, is added to that line, as
+    # the envelope match folds it (predict_resolved_isotopes). The 15N line of
+    # a light ion sits there: 6.4 mDa under the 13C line of C3H8NO+, where a
+    # FWHM is 7.5 mDa. Lines under the floor with no such neighbour stay lines
+    # of their own.
+    keep = totals >= ENVELOPE_FLOOR * totals.max(initial=0.0)
+    targets = fold_targets(centres, keep, lambda _: resolution)
+    folded = [list(group) for group in groups]
+    for index in np.flatnonzero(targets >= 0):
+        folded[targets[index]].extend(groups[index])
+
     lines = []
-    for members in group_unresolved_lines(mz, intensity, lambda _: resolution):
-        mz_bin = mz[members]
-        intensity_bin = intensity[members]
-
-        # Final isotope intensity
-        intensity_total = np.sum(intensity_bin)
-
-        # Calculate center of mass for mz in the line
-        if intensity_total > 0:
-            mz_bin_center = np.sum(mz_bin * intensity_bin) / intensity_total
-        else:
-            mz_bin_center = np.mean(mz_bin)
-
+    for index, members in enumerate(folded):
+        if targets[index] >= 0:
+            continue
+        # Ascending, so the names stay in m/z order
+        members = np.sort(np.array(members, dtype=int))
+        centre, total = line_of(members)
         lines.append(
             (
-                mz_bin_center,
-                intensity_total,
+                centre,
+                total,
                 fit_isotope_names(
                     formula[members].tolist(),
                     TARGET_ISOTOPE_FORMULA_LENGTH,
-                    intensity_bin,
+                    intensity[members],
                 ),
             )
         )

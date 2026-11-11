@@ -171,8 +171,10 @@ lines, and a line under it that sits less than one FWHM from a kept line is adde
 line rather than dropped: one peak of that width does not separate the two (#2591; the
 15N line of C4H8NO+ at a resolving power of 8000 is 6.3 mDa from its 13C line, where
 half a FWHM is 5.4 mDa). The targeted path's TOF library groups its lines the same way
-(`heuristic_filter.group_unresolved_lines`, at a resolving power of 10,000), though it
-folds nothing under a floor: it keeps every line down to 0.001 % (#2587). A file with no
+(`heuristic_filter.group_unresolved_lines`, at a resolving power of 10,000) and folds a
+line under 1 % of its most abundant one into a line over it less than one FWHM away
+(`heuristic_filter.fold_targets`). It drops nothing: a line under 1 % with no such
+neighbour stays a line of its own, down to 0.001 % (#2587). A file with no
 resolution read is scored one line per isotopologue.
 
 **Guard.** If the anchor is absent ($o_0 \le 0$) the score is $0$ — with nothing to
