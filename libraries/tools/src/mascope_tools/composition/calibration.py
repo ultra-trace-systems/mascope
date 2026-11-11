@@ -65,6 +65,9 @@ class Calibration:
     provisional: bool = True  # True until fit on a curated, sufficient dataset
     # {adduct notation -> log-odds boost}; e.g. {"[M+Br]-": 2.28, "[M+NH4]+": 0.83}
     corroboration_weights: Mapping[str, float] | None = field(default=None)
+    # {evidence level -> weight} the labels were fit under (EVIDENCE_LEVEL_WEIGHTS), or
+    # None for a curve fit on unweighted labels (the decoy goldens, a refit given no levels)
+    label_weights: Mapping[str, float] | None = field(default=None)
 
     def params(self) -> tuple[float, float]:
         return (self.a, self.b)
@@ -138,11 +141,20 @@ def apply_calibration(score, calibration: "Calibration | tuple[float, float]"):
 
 
 def calibration_error(
-    probs: Sequence[float], is_correct: Sequence[bool], *, bins: int = 10
+    probs: Sequence[float],
+    is_correct: Sequence[bool],
+    *,
+    bins: int = 10,
+    weights: Sequence[float] | None = None,
 ) -> float:
     """Expected calibration error: the average gap between predicted probability and
     observed correctness, over equal-width probability bins (weighted by bin count).
     0 = perfectly calibrated.
+
+    ``weights`` give each label a weight (:func:`label_weights`): a bin's share, its
+    observed rate and its mean probability are then weighted means, so a label the fit
+    trusts less also counts less in the error that certifies the fit. ``None`` weighs
+    every label 1, the unweighted error.
 
     ``probs`` must be PROBABILITIES, not raw scores: the bins tile [0, 1] exactly, so a
     value outside that range falls in no bin. Silently dropping such points would make
@@ -155,7 +167,8 @@ def calibration_error(
     """
     p = np.asarray(probs, float)
     y = np.asarray(is_correct, float)
-    if len(p) == 0:
+    w = np.ones(len(p)) if weights is None else np.asarray(weights, float)
+    if len(p) == 0 or w.sum() <= 0:
         return float("nan")
     if not np.all(np.isfinite(p)) or p.min() < 0.0 or p.max() > 1.0:
         raise ValueError(
@@ -168,13 +181,20 @@ def calibration_error(
     for k in range(bins):
         hi = p <= edges[k + 1] if k == bins - 1 else p < edges[k + 1]
         m = (p >= edges[k]) & hi
-        if m.any():
-            ece += m.mean() * abs(y[m].mean() - p[m].mean())
+        mass = w[m].sum()
+        if mass > 0:
+            gap = np.average(y[m], weights=w[m]) - np.average(p[m], weights=w[m])
+            ece += mass / w.sum() * abs(gap)
     return float(ece)
 
 
-def _platt_fit(scores: np.ndarray, labels: np.ndarray) -> tuple[float, float, bool]:
+def _platt_fit(
+    scores: np.ndarray, labels: np.ndarray, weights: np.ndarray | None = None
+) -> tuple[float, float, bool]:
     """Fit ``P = sigmoid(a*score + b)`` by minimising log-loss (Platt scaling).
+
+    ``weights`` make it the weighted mean log-loss: a label of weight 0.25 pulls the
+    curve a quarter as hard as one of weight 1. ``None`` weighs every label 1.
 
     Returns ``(a, b, converged)``. Convergence is reported rather than assumed: when the
     optimize fails, ``res.x`` is simply wherever the simplex happened to stop, which is a
@@ -185,13 +205,13 @@ def _platt_fit(scores: np.ndarray, labels: np.ndarray) -> tuple[float, float, bo
 
     s = np.asarray(scores, float)
     y = np.asarray(labels, float)
+    w = np.ones(len(s)) if weights is None else np.asarray(weights, float)
 
     def nll(p: np.ndarray) -> float:
         z = p[0] * s + p[1]
         # numerically stable log-loss
-        return float(
-            np.where(y == 1, np.logaddexp(0.0, -z), np.logaddexp(0.0, z)).mean()
-        )
+        loss = np.where(y == 1, np.logaddexp(0.0, -z), np.logaddexp(0.0, z))
+        return float(np.average(loss, weights=w))
 
     res = minimize(nll, np.array([3.0, -1.5]), method="Nelder-Mead")
     return float(res.x[0]), float(res.x[1]), bool(res.success)
@@ -320,12 +340,18 @@ def fit_calibration(
     provisional: bool = True,
     holdout: float = 0.5,
     seed: int = 0,
+    weights: Sequence[float] | None = None,
 ) -> Calibration:
     """Fit a :class:`Calibration` from labelled ``(score, is_correct)`` pairs.
 
     Platt-fits ``(a, b)`` on a random train split and reports the **held-out** ECE as the
     curve's quality, so a calibration carries an honest, out-of-sample calibration error.
     ``instrument`` / ``source`` / ``provisional`` are recorded as provenance.
+
+    ``weights``, one per label (:func:`label_weights`), weigh the fit and the held-out ECE
+    alike. The gates are not weighted: the label counts count labels, and the held-out AUC
+    asks whether the labels carry any signal about the score at all, which a weight does
+    not change.
 
     Refusal is by exception, never by returning a degraded object: a curve that is not
     monotone increasing, or that carries no information, is not a *worse* calibration --
@@ -342,8 +368,9 @@ def fit_calibration(
 
     s = np.asarray(scores, float)
     y = np.asarray(is_correct, int)
+    w = np.ones(len(s)) if weights is None else np.asarray(weights, float)
     mask = np.isfinite(s)
-    s, y = s[mask], y[mask]
+    s, y, w = s[mask], y[mask], w[mask]
     n_pos, n_neg = int(y.sum()), int((y == 0).sum())
     if (
         len(s) < MIN_CALIBRATION_LABELS
@@ -359,7 +386,7 @@ def fit_calibration(
     # Guard: if the split leaves a single class in train, fit on all data instead.
     if y[train].sum() == 0 or (y[train] == 0).sum() == 0:
         train = np.arange(len(s))
-    a, b, converged = _platt_fit(s[train], y[train])
+    a, b, converged = _platt_fit(s[train], y[train], w[train])
     if not converged or not (np.isfinite(a) and np.isfinite(b)):
         raise DegenerateCalibration(
             f"Platt fit did not converge (a={a}, b={b})", reason="fit_not_converged"
@@ -381,7 +408,9 @@ def fit_calibration(
             f"{MIN_CALIBRATION_AUC}); the fitted curve carries no information",
             reason="no_discrimination",
         )
-    ece = calibration_error(apply_calibration(s[test], (a, b)), y[test])
+    ece = calibration_error(
+        apply_calibration(s[test], (a, b)), y[test], weights=w[test]
+    )
     return Calibration(
         a=a,
         b=b,
@@ -399,6 +428,52 @@ def fit_calibration(
 # guardrail: a visual eyeball shouldn't graduate a curve from "provisional" to "real").
 STRONG_EVIDENCE = ("reference_standard", "msms")
 
+# The key of EVIDENCE_LEVEL_WEIGHTS for a label that states no evidence level: a rejection
+# may be recorded without one, and a confirmation recorded before levels were required.
+UNSTATED_EVIDENCE = "unstated"
+
+# How hard each label pulls the refit, by the evidence the verdict states (the confirmation-bias
+# guardrail 1 of docs/dev/verification_calibration_loop.md, decided in MAS-329: down-weight a
+# visual look rather than exclude it). A reference standard or an MS/MS spectrum is truth from
+# outside the fit and weighs 1. An orthogonal technique is independent of the score but not an
+# identification. A pattern judgment reads the same isotope envelope and adducts the score is
+# built from, and a visual look reads the score's own picture: the more a label can only echo
+# the model, the less it weighs. A label stating no level weighs as the weakest stated one.
+# Down-weighted, not excluded: on a young instrument the weak labels are most of the pool, and
+# without them there is no curve at all. Recorded on every curve fit under them
+# (Calibration.label_weights), so a later change of these numbers stays traceable per curve.
+EVIDENCE_LEVEL_WEIGHTS: Mapping[str, float] = {
+    "reference_standard": 1.0,
+    "msms": 1.0,
+    "orthogonal": 0.6,
+    "pattern": 0.4,
+    "visual": 0.25,
+    UNSTATED_EVIDENCE: 0.25,
+}
+
+
+def label_weights(
+    evidence_levels: Sequence[str | None],
+    weights: Mapping[str, float] = EVIDENCE_LEVEL_WEIGHTS,
+) -> np.ndarray:
+    """One fit weight per label, read off the evidence level its verdict states.
+
+    A missing level, and a level the map does not name, take the ``UNSTATED_EVIDENCE``
+    weight: a label is never dropped by its weight, only weighed.
+
+    :param evidence_levels: Each label's evidence level, None where it states none.
+    :param weights: Evidence level -> weight; ``UNSTATED_EVIDENCE`` must be a key.
+    :return: The weights, in label order.
+    """
+    unstated = weights[UNSTATED_EVIDENCE]
+    return np.array(
+        [
+            weights.get(level, unstated) if level else unstated
+            for level in evidence_levels
+        ],
+        float,
+    )
+
 
 def recalibrate(
     scores: Sequence[float],
@@ -412,6 +487,7 @@ def recalibrate(
     provisional_min_strong: int = MIN_CALIBRATION_LABELS,
     holdout: float = 0.5,
     seed: int = 0,
+    evidence_weights: Mapping[str, float] | None = EVIDENCE_LEVEL_WEIGHTS,
 ) -> dict:
     """Fit a fresh calibration from labelled ``(score, is_correct)`` pairs and report the change.
 
@@ -424,6 +500,12 @@ def recalibrate(
     ``provisional_min_strong`` positives carry *strong* evidence (``strong_evidence`` — reference
     standard / MS-MS by default), so a pile of visual-only confirmations can't graduate it to "real".
 
+    The labels are weighed by the evidence their verdicts state (``evidence_weights``,
+    :data:`EVIDENCE_LEVEL_WEIGHTS` by default): the fit and both held-out ECEs, so the incumbent
+    and the refit are judged by the same weights they are compared under. The map is recorded on
+    the curve (``label_weights``). Without ``evidence_levels``, or with ``evidence_weights=None``,
+    every label weighs 1 and the curve records no map.
+
     ``activate`` is the second half of that honesty and the division of labour with the caller:
     this function decides whether the curve is *usable* (by raising) and whether it *beats the
     incumbent* (by comparing the two held-out ECEs); the caller decides whether to persist it.
@@ -431,7 +513,8 @@ def recalibrate(
     legitimately wants to see the params and the two errors before dropping it on the floor.
 
     :returns: ``{calibration, before_ece, after_ece, n_pos, n_neg, n_strong_positives, provisional,
-        activate, refusal}`` where ``before_ece`` is ``current`` scored on the same held-out points
+        label_weights, activate, refusal}`` where ``label_weights`` is the map the labels were
+        weighed under (None when unweighted), and ``before_ece`` is ``current`` scored on the same held-out points
         as ``after_ece`` (None if no current curve), and ``refusal`` names the failed gate when
         ``activate`` is False.
     :raises CalibrationRefused: the labels cannot be fit (:class:`InsufficientCalibrationData`) or
@@ -440,6 +523,12 @@ def recalibrate(
     """
     s = np.asarray(scores, float)
     y = np.asarray(labels, int)
+    weighted = evidence_levels is not None and evidence_weights is not None
+    w = (
+        label_weights(evidence_levels, evidence_weights)
+        if weighted
+        else np.ones(len(s))
+    )
     before_ece = None
     if current is not None:
         # Score the incumbent on exactly the points the new curve is held out on. The
@@ -448,11 +537,11 @@ def recalibrate(
         # half against an all-label baseline would not be a comparison at all -- see
         # holdout_split.
         finite = np.isfinite(s)
-        s_f, y_f = s[finite], y[finite]
+        s_f, y_f, w_f = s[finite], y[finite], w[finite]
         if len(s_f):
             test, _ = holdout_split(len(s_f), holdout=holdout, seed=seed)
             before_ece = calibration_error(
-                apply_calibration(s_f[test], current), y_f[test]
+                apply_calibration(s_f[test], current), y_f[test], weights=w_f[test]
             )
     cal = fit_calibration(
         s,
@@ -462,6 +551,7 @@ def recalibrate(
         provisional=True,
         holdout=holdout,
         seed=seed,
+        weights=w,
     )
     n_strong = 0
     if evidence_levels is not None:
@@ -476,6 +566,7 @@ def recalibrate(
         corroboration_weights=(
             current.corroboration_weights if current is not None else None
         ),
+        label_weights=dict(evidence_weights) if weighted else None,
     )
     before_ece = round(float(before_ece), 4) if before_ece is not None else None
     refusal = None
@@ -493,6 +584,7 @@ def recalibrate(
         "n_neg": cal.n_neg,
         "n_strong_positives": n_strong,
         "provisional": provisional,
+        "label_weights": cal.label_weights,
         "activate": refusal is None,
         "refusal": refusal,
     }
