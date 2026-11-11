@@ -1,11 +1,11 @@
 `ULTRA TRACE MASCOPE - DESIGN DOC - ASSIGNMENT BENCH`
 
-# The assignment bench: both engines on demand, on the LAN host
+# The assignment bench: both engines on demand, on the agent box
 
 - **Status:** design
 - **As of:** 2026-11-11
 - **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, milestone 6: MAS-64, MAS-835 to MAS-841, MAS-849)
-- **What:** One command that runs a branch's in-app assignment engine beside peaky at a pinned release on fixed sample sets, prints the plan's metrics as a card, and posts it where the agent that asked can read it.
+- **What:** One command on the agent box that runs a branch's in-app assignment engine beside peaky at a pinned release on fixed sample sets, prints the plan's metrics as a card, and posts it on the PR; a worker runs it in its own session.
 
 ## 1. Why
 
@@ -27,26 +27,25 @@ not a gate run a few times. And the agents build the steps, so the
 instrument must answer them, on their own, without a login to the machine
 it runs on.
 
-The bench runs on the LAN host, never on a workstation: a reference run
+The bench runs on the agent box, never on a workstation: a reference run
 over a gate set is minutes of several cores and gigabytes of memory
 ([`peaky_mascope_boundary.md`](peaky_mascope_boundary.md) measured it), and
-the host already holds the fleet regression corpus mirror, four instance
-slots and the replay tool that builds any ref into one of them.
+the box already holds the agents, the fleet regression corpus store, the
+demo bundles and the replay tool that builds any ref into an instance
+slot of its own.
 
 ## 2. What the bench is
 
 ```mermaid
 flowchart LR
-    A["PR labelled bench"] --> W["watcher on the host"]
-    W --> R["bench run <ref>"]
+    A["worker, in its session: bench run <branch> --post <pr>"] --> R["bench run"]
     R --> B["build the ref, start it on the bench slot"]
     B --> E["in-app engine on every set, decoy arms"]
     P["peaky at the pin, published once per set"] --> C
     E --> C["compare_runs --card --gate --baseline"]
     C --> S["scrub: set letters only"]
     S --> K["card + diff vs develop"]
-    K --> W
-    W --> M["PR comment, label swapped to benched"]
+    K --> M["one PR comment, edited in place on a re-run"]
 ```
 
 - **The sets** are fixed sample sets the bench instance holds, named by a
@@ -59,8 +58,8 @@ flowchart LR
   reason coverage and the decoy arms, computed as code from the two runs,
   with a pass-or-fail line against the stage targets and a diff against
   develop's last card; section 6.
-- **The trigger** is a PR label an agent can set and a PR comment it can
-  read; section 7.
+- **The ask** is a command in the worker's own session, and the answer
+  one comment on its PR; section 7.
 
 The bench judges a change the way the plan judges a step. It does not
 decide what is true: the reference is read, not targeted (decision 18),
@@ -70,8 +69,12 @@ section 4) joins the bench's card when the corpus baseline exists
 
 ## 3. Where it runs
 
-The LAN host, beside the fleet corpus mirror. The corpus tool's `replay`
-already registers a free instance slot in the shared runtime home,
+The agent box, where the agents run and where the fleet corpus store is
+canonical (decision MAS-835, 2026-11-11; the LAN host keeps a nightly
+mirror of the store and the demo bundles, and runs the same command off
+them for the plan owner when wanted, but it is not a bench the agents
+reach). The corpus tool's `replay` already registers a free instance slot
+in the agents' runtime home,
 builds a ref into a worktree, loads the corpus into the instance and
 purges everything afterwards. The bench keeps what the replay throws
 away: one persistent instance, env `bench`, whose database and filestore
@@ -81,22 +84,18 @@ the ref's alembic (a ref older than the database's head is refused),
 starts the ref's backend on the bench slot, runs, compares, and stops the
 backend and removes the worktree. The instance stays. One run at a time.
 
-Everything that could name a site stays on the host: the manifest that
+Everything that could name a site stays on the box: the manifest that
 names the sets' files, the state file with the sample ids, the cards. The
 repository carries the tool, a public manifest for the demo dataset (the
-one set that can also run in CI), and this note. The host's folder layout,
+one set that can also run in CI), and this note. The box's folder layout,
 its env file and the private manifest are described in the testbed notes
 outside the repository, as the gate's are.
 
-Which box is open inside MAS-835 since the corpus review of 2026-11-11.
-The agent box holds everything the bench needs and more: the canonical
-fleet corpus store (the LAN host is its nightly mirror), the demo bundles,
-the de-identified testbed copy with the gate sets, and the agents
-themselves. A bench there is a command in the worker's own session, with
-no trigger, no second `gh` login and no route between the boxes; the LAN
-host runs the same command for the plan owner off the mirror. The review
-recommends the agent box; the note's sections read for either until the
-call is written.
+The bench shares the box with up to four workers and their test suites,
+so one run at a time, behind a lock, with a time budget per set. The
+alternative, the LAN host with a trigger an agent could reach without a
+login there, was weighed in MAS-835 and set aside: a watcher, a second
+`gh` login and a label protocol for what is otherwise one command.
 
 ## 4. The sets
 
@@ -160,38 +159,40 @@ instrument names, host names) is checked over the card's text, and a
 match refuses the card and names the token. Nothing leaves the cards
 folder unscrubbed.
 
-## 7. The trigger
+## 7. The ask and the answer
 
-A decision for the plan owner (MAS-835). The leaning: a watcher on the
-host, a user systemd timer every few minutes, lists the repository's open
-PRs labelled `bench`, runs `bench run` on each head once, posts the
-scrubbed card's headline, gate line and diff as one PR comment (edited in
-place on a re-run), and swaps the label to `benched`. An agent asks with
-`gh pr edit --add-label bench` and reads the comment; both are things the
-agents do today. No credential leaves either machine; the host needs `gh`
-and a login that may comment. A nightly run on develop's head refreshes
-the baseline. The alternatives, a forced-command SSH key from the agent
-box or an agent worker on the host itself, are in the decision; the first
-re-opens a route the corpus decision closed, the second is the later step
-if the host becomes an agent box.
+Decided 2026-11-11 (MAS-835): there is no trigger. An implementer whose
+brief asks for a card runs `bench run <branch> --post <pr>` from its
+worktree once CI is green; the reviewer re-runs it on the PR's head. The
+command posts the scrubbed card's headline, gate line and diff against
+develop's baseline as one PR comment, edited in place on a re-run so a PR
+carries one bench comment, under the worker's own identity, the one that
+writes every other comment the agents make; no token is added anywhere. A
+nightly user timer on the box runs develop's head for the baseline card.
+The agents' skills learn the step in the ops repository (6.7), and the
+brief shape gains a `**Bench.**` line naming the sets and the metrics
+that must hold. The options set aside, a PR label polled by a watcher on
+the LAN host, a forced-command SSH key from the agent box, an agent
+worker on the LAN host, are recorded in the decision.
 
 ## 8. The steps
 
 | step | Linear | what |
 |---|---|---|
-| 6.0 | MAS-835 | Decision: the trigger and the posting identity |
-| 6.1 | MAS-836 | Decision: the sets |
+| 6.0 | MAS-835 | Decision: the box and the ask (taken: the agent box, no trigger) |
+| 6.1 | MAS-836 | Decision: the sets (taken: the demo dataset first) |
 | 6.2 | MAS-837 | `bench init`: the instance from a manifest |
 | 6.3 | MAS-838 | `bench reference --pin`: peaky at a tag, published per set |
 | 6.4 | MAS-64 | the gate card as code: metrics, thresholds, baseline, scrub (was 4.4) |
 | 6.5 | MAS-840 | `bench run <ref>`: build, run, compare, card, diff |
-| 6.6 | MAS-841 | the watcher, the PR comment, the nightly baseline |
-| 6.7 | MAS-839 | the agents' skills ask for and read the card (the ops repository) |
+| 6.6 | MAS-841 | `--post`: the PR comment, and the nightly baseline |
+| 6.7 | MAS-839 | the agents' skills run the bench and read the card (the ops repository, OPS-91) |
 | 6.8 | MAS-849 | more sets after the demo set: from the fleet corpus and the gate sets (the owner's picks) |
 
 6.4 started on 2026-11-11 against the testbed's existing runs; 6.2 starts
-on the demo manifest, 6.3 waits for 6.2, 6.5 for all three, 6.6 for the
-trigger decision and 6.5, 6.8 for 6.2 and the owner's picks. The plan's steps that need a bench reading (4.3, 4.7, 4.8, 4.10,
+on the demo manifest, 6.3 waits for 6.2, 6.5 for all three, 6.6 for 6.5,
+6.7 for 6.6, 6.8 for 6.2 and the owner's picks. The plan's steps that
+need a bench reading (4.3, 4.7, 4.8, 4.10,
 4.13, 4.14, 4.15, 4.18, 4.2d, 4.20) are blocked on 6.5 or 6.6 and start
 when it exists.
 
@@ -213,18 +214,19 @@ when it exists.
 
 ## 10. Operations
 
-On the host: a bench folder with the private manifest, `state.json`, the
-reference's tool environment, the cards and the lock; an env file holding
-the bench instance's URL and SDK token and the posting identity's token;
-user systemd units for the watcher and the nightly baseline. The exact
-paths, the account and the install steps are in the testbed notes, not
-here. The repository's README under `tooling/assignment_bench/` says how
+On the agent box, in the agents' home: a bench folder with the private
+manifest, `state.json`, the reference's tool environment, the cards and
+the lock; an env file holding the bench instance's URL and SDK token,
+beside the testbed copy's; a user systemd unit for the nightly baseline;
+the guard's allow rows for the bench commands. The exact paths and the
+install steps are in the testbed notes and the ops repository's handbook,
+not here. The repository's README under `tooling/assignment_bench/` says how
 to run the commands against any instance and how to ask for a card.
 
 ## 11. Open
 
-- MAS-835, above, now also the box: the LAN host as first written, or the
-  agent box the review recommends. MAS-836 is taken.
+- Whether the worker's identity can read peaky's repository for the
+  install at a tag (6.3); a *Needs input* if not.
 - Whether the pinned peaky publishes every tier (section 5); an ask of
   peaky's owner through 5.1 if not.
 - Whether the certified cylinder sets are in the corpus store (decision

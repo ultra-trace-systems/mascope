@@ -24,7 +24,7 @@ of the stage 3 gate on 2026-10-30 (decision 33) and, until the truth
 corpus has a baseline, is judged as every stage so far, against the gate
 sets and the reference pinned at a release (decision 34, 2026-11-05).
 Milestone 6 (2026-11-11) builds the bench that runs both engines on
-demand on the LAN host for the agents
+demand on the agent box, where the agents run it themselves
 ([`assignment_bench.md`](assignment_bench.md)). Of milestone 5, the
 reference's 0.10 review, step 5.5 is built (#2377), 5.2 is built and
 waits for its first reading, 5.3 is measured and the rest are planned; a readiness check against the reference's main on
@@ -211,8 +211,8 @@ justify.
   top. A step that moves a metric the wrong way is discussed before merge,
   not merged on green CI alone. Milestone 6 turns this pass into a
   command: the bench ([`assignment_bench.md`](assignment_bench.md))
-  runs both engines on fixed sets on the LAN host at an agent's request
-  and posts the card; once its sets read like the gate sets, the card is
+  runs both engines on fixed sets on the agent box when a worker asks
+  and posts the card on its PR; once its sets read like the gate sets, the card is
   the measurement and this pass confirms it.
 - **The gate set.** Decision 6 widens it from the two uronium batches to
   every chemistry and instrument class the product is judged on, each as a
@@ -1497,14 +1497,18 @@ Mascope's assignment is developed in parallel with peaky until it
 reaches a stable state (agreed 2026-11-11), so the comparison that was a
 gate run a few times becomes a daily instrument, and the agents that
 build the steps must be able to ask for it. Milestone 6 builds that
-instrument: one command on the LAN host that runs a ref's in-app engine
+instrument: one command on the agent box that runs a ref's in-app engine
 beside peaky at a pinned release on fixed sets, computes this plan's
 metrics as code, scrubs the card of anything that names a site, and
 posts it on the PR that asked. Its design is
-[`assignment_bench.md`](assignment_bench.md); its steps 6.0 to 6.7 are
-Linear MAS-64 (the gate card as code, formerly step 4.4) and MAS-835 to
-MAS-841. Two decisions open it: how an agent reaches the bench without a
-login to the host (MAS-835) and which sets it holds (MAS-836).
+[`assignment_bench.md`](assignment_bench.md); its steps 6.0 to 6.8 are
+Linear MAS-64 (the gate card as code, formerly step 4.4), MAS-835 to
+MAS-841 and MAS-849. Its two decisions were taken on 2026-11-11: the
+bench runs on the agent box, where a worker runs it in its own session
+and no trigger is needed (MAS-835), and its sets start with the demo
+dataset, more sets being the plan owner's picks (MAS-836); a set's files
+live in the fleet corpus store, canonical on the agent box and mirrored
+to the LAN host.
 
 ## The reference's 0.10 line, reviewed (2026-10-13)
 
