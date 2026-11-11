@@ -111,11 +111,13 @@ its own on it. A verdict a later one replaced is not listed.
 | `assigned_formula`, `ionization_mechanism_id` | The claim judged |
 | `verdict`, `evidence_level`, `note`, `verified_by`, `verified_utc` | The verdict, the evidence it rests on, the note, the user's id and when it was recorded |
 | `superseded_utc` | Empty: only current verdicts are listed |
-| `context` | On a batch-level verdict, the batch peak's consensus as the user saw it, as JSON |
+| `context` | On a batch-level verdict, the batch peak's consensus as the user saw it; on a verdict recorded since verdicts state a level, the version of the evidence-to-level mapping (`level_mapping_version`). As JSON |
 | `fit_score`, `evidence`, `p_correct` | The assignment's score when the sample's own verdict was recorded; empty on a borrowed one |
 | `borrowed` | Whether the verdict is a batch-level one reaching the sample |
 | `assignment_verification_id`, `peak_assignment_id`, `peak_assignment_run_id` | The records behind the sample's own verdict |
 | `batch_peak_verification_id`, `batch_peak_id`, `stale` | The records behind a borrowed verdict; `stale` when the batch peak's consensus has since left the formula judged |
+| `claimed_inchikey`, `claimed_name` | The structure a confirmation names, its [identification claim](../how-it-works/peak-assignment.md#naming-the-structure); empty where it names none |
+| `level` | The identification level the verdict states, fixed when it was recorded: 1 to 3 on a reference standard, MS/MS or orthogonal evidence, 4 on the isotope/adduct pattern; empty where it states none |
 
 Times are in UTC and written without a zone, which is all Excel stores.
 

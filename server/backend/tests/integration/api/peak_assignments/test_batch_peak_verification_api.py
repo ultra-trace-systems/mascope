@@ -431,3 +431,97 @@ async def test_an_anchor_of_another_batch_is_not_found(
         verdict="unsure",
     )
     assert response.status_code == 404, response.text
+
+
+# --- Identification claims -------------------------------------------------
+#
+# A claim on an anchor is a batch-level confirmation that names a structure
+# (docs/dev/identification_claims.md section 5): it reaches the members as the
+# verdict does, and a retract takes it back with the verdict.
+
+GLUCOSE_INCHIKEY = "WQZGKKKJIJFFOK-GASJEMHNSA-N"
+
+
+async def _batch_verifications(client, batch_id):
+    """The verdicts over every sample of the batch, borrowed ones included."""
+    response = await client.get(f"/api/peak-assignments/batch/{batch_id}/verifications")
+    assert response.status_code == 200, response.text
+    return response.json()["data"]
+
+
+async def test_a_reference_standard_confirmation_of_an_anchor_names_a_structure(
+    editor_client, anchors, assignment_enabled
+):
+    response = await _verify(
+        editor_client,
+        anchors["batch_id"],
+        batch_peak_id=anchors["assigned"],
+        verdict="confirmed",
+        evidence_level="reference_standard",
+        expected_formula="C6H12O6",
+    )
+    assert response.status_code == 422, response.text
+    assert "requires claimed_inchikey" in response.text
+
+
+async def test_a_level_one_claim_on_an_anchor_reaches_its_members(
+    editor_client, guest_client, anchors, assignment_enabled
+):
+    response = await _verify(
+        editor_client,
+        anchors["batch_id"],
+        batch_peak_id=anchors["assigned"],
+        verdict="confirmed",
+        evidence_level="reference_standard",
+        expected_formula="C6H12O6",
+        claimed_inchikey=GLUCOSE_INCHIKEY,
+        claimed_name="D-glucose",
+    )
+    assert response.status_code == 201, response.text
+    (record,) = await _verdicts(guest_client, anchors["batch_id"])
+    assert record["claimed_inchikey"] == GLUCOSE_INCHIKEY
+    assert record["claimed_name"] == "D-glucose"
+    assert record["level"] == 1
+    # The mapping's version beside what the human saw.
+    assert record["context"]["level_mapping_version"] == 1
+    assert record["context"]["consensus_formula"] == "C6H12O6"
+
+    for sample in ("s1", "s2"):
+        (reaching,) = await _context(guest_client, anchors[sample])
+        assert (reaching["claimed_inchikey"], reaching["level"]) == (
+            GLUCOSE_INCHIKEY,
+            1,
+        )
+    borrowed = await _batch_verifications(guest_client, anchors["batch_id"])
+    assert sorted(row["sample_item_id"] for row in borrowed) == sorted(
+        [anchors["s1"], anchors["s2"]]
+    )
+    for row in borrowed:
+        assert row["borrowed"] is True
+        assert row["claimed_inchikey"] == GLUCOSE_INCHIKEY
+        assert row["claimed_name"] == "D-glucose"
+        assert row["level"] == 1
+
+
+async def test_a_retract_takes_the_claim_back_from_the_members(
+    editor_client, guest_client, anchors, assignment_enabled
+):
+    """Nothing live is left to state a level: each member reads the engine's."""
+    await _verify(
+        editor_client,
+        anchors["batch_id"],
+        batch_peak_id=anchors["assigned"],
+        verdict="confirmed",
+        evidence_level="msms",
+        expected_formula="C6H12O6",
+        claimed_inchikey=GLUCOSE_INCHIKEY,
+    )
+    response = await _retract(
+        editor_client, anchors["batch_id"], batch_peak_id=anchors["assigned"]
+    )
+    assert response.status_code == 200, response.text
+    assert await _context(guest_client, anchors["s1"]) == []
+    assert await _batch_verifications(guest_client, anchors["batch_id"]) == []
+    (history,) = await _verdicts(guest_client, anchors["batch_id"])
+    assert history["superseded_utc"] is not None
+    assert (history["claimed_inchikey"], history["level"]) == (GLUCOSE_INCHIKEY, 2)

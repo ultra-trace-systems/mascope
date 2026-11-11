@@ -40,6 +40,10 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     CodedHTTPException,
     NotFoundException,
 )
+from mascope_backend.api.new.peak_assignments.claims import (
+    claim_level,
+    mapping_context,
+)
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
@@ -176,6 +180,8 @@ async def verify_batch_peak(
     evidence_level: Optional[str] = None,
     note: Optional[str] = None,
     user_id: Optional[int] = None,
+    claimed_inchikey: Optional[str] = None,
+    claimed_name: Optional[str] = None,
 ) -> dict:
     """Record a verdict on a batch peak's species claim.
 
@@ -195,8 +201,13 @@ async def verify_batch_peak(
         'confirmed'.
     :param note: Optional free-text note.
     :param user_id: The judging user (attribution).
-    :return: Status envelope with the created record, current claim attached.
+    :param claimed_inchikey: The structure a confirmation names, if any: an
+        identification claim (``claims``). The schema applies its rules.
+    :param claimed_name: The name given with it.
+    :return: Status envelope with the created record, current claim attached,
+        with the level the verdict states fixed on it.
     """
+    level = claim_level(verdict, evidence_level, claimed_inchikey)
     async with async_session() as session:
         anchor = await session.get(BatchPeak, batch_peak_id)
         if anchor is None or anchor.sample_batch_id != sample_batch_id:
@@ -213,7 +224,7 @@ async def verify_batch_peak(
                 batch_peak_id, expected_formula, anchor.consensus_formula
             )
         claim = claim_of(anchor)
-        context = context_snapshot(anchor)
+        context = mapping_context(context_snapshot(anchor))
         await _lock_anchor(session, batch_peak_id)
         now = dt.now(timezone.utc)
         await session.execute(
@@ -236,6 +247,9 @@ async def verify_batch_peak(
             ionization_mechanism_id=claim.ionization_mechanism_id,
             verdict=verdict,
             evidence_level=evidence_level,
+            claimed_inchikey=claimed_inchikey,
+            claimed_name=claimed_name,
+            level=level,
             note=note,
             context=context,
             verified_by=user_id,

@@ -472,8 +472,13 @@ class BatchPeaksResource(BaseResource):
         :return: A DataFrame with one row per verdict: the batch peak, the
                  formula judged, ``verdict``, ``evidence_level``, ``note``,
                  ``verified_by``, ``verified_utc``, ``superseded_utc`` (null on
-                 the live one), and ``stale`` (a live verdict about a formula
-                 the consensus has since left). None when nothing was judged.
+                 the live one), ``stale`` (a live verdict about a formula
+                 the consensus has since left), ``claimed_inchikey`` and
+                 ``claimed_name`` (the structure a confirmation names, null
+                 where it names none) and ``level`` (the identification level
+                 the verdict states, fixed when it was recorded, with the
+                 mapping's ``level_mapping_version`` in ``context``; null
+                 where it states none). None when nothing was judged.
         :rtype: pd.DataFrame | None
         """
         data = self._get(f"batch-peaks/batch/{sample_batch_id}/verdicts")

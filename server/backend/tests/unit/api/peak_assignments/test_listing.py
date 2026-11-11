@@ -42,15 +42,26 @@ def test_the_first_identity_names_the_listing():
     assert reference_listing([PINENE, CAMPHENE]) == {
         "name": "alpha-pinene",
         "source": "monoterpenes",
+        "inchikey": None,
         "tags": [],
         "total": 2,
     }
+
+
+def test_the_first_identitys_inchikey_rides_along():
+    """So a ledger's verdict form can offer the compound as the structure a
+    confirmation names (identification claims, MAS-359)."""
+    keyed = {**PINENE, "inchikey": "GRWFGVWFFZKLTI-UHFFFAOYSA-N"}
+    assert reference_listing([keyed, CAMPHENE])["inchikey"] == (
+        "GRWFGVWFFZKLTI-UHFFFAOYSA-N"
+    )
 
 
 def test_a_tagged_list_carries_its_tag():
     assert reference_listing([D5]) == {
         "name": "decamethylcyclopentasiloxane",
         "source": "cyclic-siloxanes",
+        "inchikey": None,
         "tags": ["background"],
         "total": 1,
     }
@@ -85,6 +96,7 @@ def test_the_ledger_row_carries_the_listing_of_the_identities_it_matched():
     assert scalars["reference_listing"] == {
         "name": "decamethylcyclopentasiloxane",
         "source": "cyclic-siloxanes",
+        "inchikey": None,
         "tags": ["background"],
         "total": 2,
     }

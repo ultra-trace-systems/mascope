@@ -10,7 +10,8 @@ because a ledger row serves no provenance (``service._provenance_scalars``).
 
 The field says what the inspector's *listed as* field says: the first name, the
 list it comes from, the tags of the lists naming the formula, and how many
-names the run matched. The batch ledger carries the same on the registry entry
+names the run matched. The first name's InChIKey rides along, so a ledger's
+verdict form can offer that compound as the structure a confirmation names. The batch ledger carries the same on the registry entry
 of each identity a member brought matched from a list, and shows the one its
 consensus names (:func:`consensus_listing`).
 
@@ -28,10 +29,11 @@ def reference_listing(identities: Any) -> Optional[dict]:
     :param identities: A row's ``provenance.reference_identities``: a list of
         identity dicts, or anything else (absent, malformed) for a row no list
         names.
-    :return: ``{"name", "source", "tags", "total"}`` - the first identity's
-        name and list, the tags every identity's list carries, each once, in
-        the order first met, and how many identities the run matched - or None
-        where the row matched none.
+    :return: ``{"name", "source", "inchikey", "tags", "total"}`` - the first
+        identity's name, list and InChIKey (None where the list gives none),
+        the tags every identity's list carries, each once, in the order first
+        met, and how many identities the run matched - or None where the row
+        matched none.
     """
     if not isinstance(identities, list):
         return None
@@ -49,6 +51,7 @@ def reference_listing(identities: Any) -> Optional[dict]:
     return {
         "name": _text(first.get("name")),
         "source": _text(first.get("source")),
+        "inchikey": _text(first.get("inchikey")),
         "tags": tags,
         "total": len(records),
     }

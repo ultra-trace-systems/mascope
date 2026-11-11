@@ -1,7 +1,7 @@
 # Identification claims: identifiers, candidates and levels
 
-- **Status:** design
-- **As of:** 2026-10-26
+- **Status:** building
+- **As of:** 2026-11-11
 - **Tracked in:** [FAIR data roadmap](https://linear.app/ultra-trace/project/fair-data-roadmap-0484070a43ea)
   (Linear: MAS-357 the structure lookup, MAS-363 the exports, MAS-361 the
   decision on the classic sheet; MAS-31 is the level's FAIR export),
@@ -406,6 +406,17 @@ badge shows structure and level; the SDK readers (`batch_peaks.py`,
 confirmation without a structure is refused; a level-1 claim reads back with
 its InChIKey from both tables; legacy rows read as level 4; the calibration
 pool's count is unchanged. Size: M.
+*Built (MAS-359):* as above, with the mapping's version in `context` as
+`level_mapping_version` 1. Two rules beyond the brief's: a name goes with an
+InChIKey, and a structure on a pattern or a visual confirmation is kept and
+raises nothing. The rule that structure evidence names a structure is the
+request layer's alone, since a CHECK would refuse the verdicts recorded before
+the columns; the migration writes level 4 on those that confirmed. The ledgers'
+flat `reference_listing` carries its first name's InChIKey, so the ledger
+popovers offer that compound; the inspector offers every identity the detail
+read carries. The target's declaration reaches no read yet and joins the
+candidates with MAS-358. `verification_calibration_loop.md` section 4.6 has the
+whole.
 
 **D. Level and claim in the exports** (MAS-363; FAIR data roadmap, extends
 MAS-31; blocked by MAS-359, MAS-73 and MAS-361).

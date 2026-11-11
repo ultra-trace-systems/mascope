@@ -1,7 +1,7 @@
 # Interactive verification → the calibration golden set
 
 - **Status:** building
-- **As of:** 2026-10-22
+- **As of:** 2026-11-11
 - **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear; MAS-63 covers V2 activation and the corroboration refit; the V3 active-learning queue is MAS-329, with the three section 7 decisions recorded inside it)
 - **Supersedes:** `verification_capture_frontend.md` (retired 2026-10-22; section 4.5)
 - **What:** Human verdicts on assignments feeding the confidence calibration.
@@ -104,7 +104,9 @@ assigned_formula, ionization_mechanism_id  — the judged formula + adduct (also
 verdict                   — confirmed | rejected | unsure           (check constraint)
 evidence_level            — reference_standard | msms | orthogonal | pattern | visual (check, nullable)
 fit_score, evidence, p_correct  — snapshot at verification time
-note (text), context (JSON, reserved)
+note (text), context (JSON: the level mapping's version, since MAS-359)
+claimed_inchikey (str27, index), claimed_name (text), level (smallint 1-5)
+                          — the identification claim, §4.6 (migration `f7b795c6335b`)
 verified_by (fk user SET NULL, index), verified_utc
 ```
 
@@ -117,8 +119,9 @@ consumer filters on the marker instead of re-deriving the answer and no reader c
 retracted verdict.
 
 **API** (`/api/peak-assignments`): `POST /sample/{id}/verify` (editor; body
-`{peak_assignment_id, verdict, evidence_level?, note?}`; `confirmed` requires an `evidence_level` —
-enforced in the schema) and `GET /sample/{id}/verifications` (newest first).
+`{peak_assignment_id, verdict, evidence_level?, note?, claimed_inchikey?, claimed_name?}`;
+`confirmed` requires an `evidence_level` — enforced in the schema — and §4.6 has the claim's rules)
+and `GET /sample/{id}/verifications` (newest first).
 
 ### 4.3 UI — minimal capture (V1)
 
@@ -217,6 +220,57 @@ Consequences worth knowing:
 - **The ledger filter was already family-scoped** and stays that way: it runs over parents only
   (isotopologues are re-attached under whichever parent survived), so a family has always been one unit
   there. What changed is that the badge column now agrees with it.
+
+### 4.6 Identification claims: a structure and a level (MAS-359)
+
+A verdict judges a formula and a mechanism. A **claim** is a confirmed verdict that also names a
+structure ([`identification_claims.md`](identification_claims.md) sections 5.1, 5.2 and 5.4,
+decision 1 answered by building it here rather than in a table of its own). Both verification
+tables, `assignment_verification` and `batch_peak_verification`, carry the same three nullable
+columns (migration `f7b795c6335b`): `claimed_inchikey` (`String(27)`, indexed), `claimed_name` and
+`level` (1 to 5). A claim rides the verdict, so it is keyed, superseded, overlaid on an anchor's
+members and listed exactly as a verdict is; a retract or a later verdict takes it back.
+
+The level is **stored when the verdict is recorded**, with the mapping's version in `context`
+(`level_mapping_version`, `claims.LEVEL_MAPPING_VERSION`): a person's statement must read the same
+later, while the engine's level (MAS-73) is recomputed per run. The two meet only when a row is
+read, and the live claim wins.
+
+| `evidence_level` | structure | `level` |
+|---|---|---|
+| `reference_standard` | required | 1 |
+| `msms` | required | 2 |
+| `orthogonal` | required | 3 |
+| `pattern` | optional | 4 |
+| `visual` | optional | none: the engine's |
+
+A rejection or an unsure verdict states no level. A structure named on a pattern or a visual
+confirmation is kept and raises nothing.
+
+**Rules.** Four CHECKs on each table: `level` is 1 to 5; a level 1 to 3 names a structure; only a
+confirmation names one; the InChIKey has a target compound's shape (MAS-28). The request bodies
+(`VerifyAssignmentBody`, `VerifyBatchPeakBody`, through `claims.claim_problem`) apply the same and
+two more, each a 422 naming its rule: a name goes with an InChIKey, and a confirmation on
+`reference_standard`, `msms` or `orthogonal` evidence names a structure. That last one is the request
+layer's alone: every verdict recorded before the columns carries those evidence levels without one,
+and a CHECK would refuse the supersede stamp that later replaces it. Those earlier verdicts keep
+their evidence level; the migration writes `level = 4` on every confirmed one (the formula
+confirmed, no structure), and none on a rejection or an unsure one.
+
+**The label pool is untouched.** `recalibrate_instrument` selects on the verdict and the score
+snapshot and reads no claim column: a confirmation is one positive whether it names a structure or
+not.
+
+**Capture.** The three forms (the inspector's verdict dialog, the sample ledger's and the batch
+ledger's Verdict popovers) show a *Structure* choice once an evidence level is picked
+(`BaseClaimStructure.vue`): the row's candidates (`claimCandidates` in `src/lib/verification.js`,
+the target's declaration first, then the reference identities, each InChIKey once), and an
+*Unlisted* InChIKey and name last. On structure evidence the first candidate is picked for the user
+and Confirm waits for a structure; on a pattern or a visual look none is picked. The inspector reads
+the identities of the detail read; the ledgers read the one their flat `reference_listing` names,
+which carries its InChIKey since this change. The target's declaration is not on any read yet: it
+joins the candidates when MAS-358 puts it there. The badge shows the level in place of the evidence
+it follows from, and the structure's name, cut to fit; its tooltip has the evidence and the InChIKey.
 
 ## 5. The central risk: the confirmation-bias loop
 

@@ -1928,6 +1928,7 @@ async def test_an_existing_verdict_stays_with_the_formula_it_judged(
             "peak_assignment_id": curated_run["m0_id"],
             "verdict": "confirmed",
             "evidence_level": "msms",
+            "claimed_inchikey": "WQZGKKKJIJFFOK-GASJEMHNSA-N",
         },
     )
     assert verdict.status_code == 201

@@ -2042,6 +2042,37 @@ class TestPeakAssignmentWriteContract:
             "verified_utc",
         } <= set(verdicts.columns)
 
+    def test_verify_records_a_claim_listed_back(self, scratch, launched_run):
+        """A confirmation that names a structure: the server fixes its level."""
+        peak_assignments = scratch.client.peak_assignments
+        _skip_unless_param(peak_assignments.verify, "claimed_inchikey")
+        sample_id = launched_run.sample_id
+        assigned = launched_run.ledger[launched_run.ledger["assigned_formula"].notna()]
+        if assigned.empty:
+            pytest.skip("the run assigned no formula to verify")
+        row = assigned.iloc[0]
+
+        claim = peak_assignments.verify(
+            sample_id,
+            row["peak_assignment_id"],
+            "confirmed",
+            evidence_level="reference_standard",
+            claimed_inchikey="WQZGKKKJIJFFOK-GASJEMHNSA-N",
+            claimed_name="contract test",
+        )
+
+        assert claim["level"] == 1
+        # Leave the peak unconfirmed, as the test above does: the batch's
+        # verdict filters are read on the same scratch copy.
+        peak_assignments.verify(sample_id, row["peak_assignment_id"], "unsure")
+        verdicts = peak_assignments.list_verifications(sample_id)
+        listed = verdicts.set_index("assignment_verification_id").loc[
+            claim["assignment_verification_id"]
+        ]
+        assert listed["claimed_inchikey"] == "WQZGKKKJIJFFOK-GASJEMHNSA-N"
+        assert listed["claimed_name"] == "contract test"
+        assert listed["level"] == 1
+
 
 @requires_stack
 class TestScopeVerificationsContract:
