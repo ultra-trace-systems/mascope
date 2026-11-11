@@ -170,6 +170,12 @@ describe('ledgerListing', () => {
     total: 2
   }
 
+  it('carries the InChIKey of the first name, for the verdict forms to offer', () => {
+    const listing = ledgerListing({ ...FLAT, inchikey: 'XMSXQFUHVRWGNA-UHFFFAOYSA-N' })
+
+    expect(listing.identities[0].inchikey).toBe('XMSXQFUHVRWGNA-UHFFFAOYSA-N')
+  })
+
   it('reads a flattened listing as the match it is', () => {
     const listing = ledgerListing(FLAT)
 

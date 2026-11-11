@@ -130,7 +130,19 @@ vi.mock('@/lib/panes/PanePeakAssign/stores/batchPeakCuration.js', () => ({
 
 // Stubbed rather than auto-stubbed: the badge renders nothing of its own for a
 // null record, which would make "no badge" pass even with the block still there.
+// The structure picker is stubbed below: it shows what the form hands it and
+// answers with the claim a test sets here (BaseClaimStructure.spec.js covers it).
+const claimStub = vi.hoisted(() => ({ claimed_inchikey: null, claimed_name: null, ready: true }))
 vi.mock('@/lib/base', async () => ({
+  BaseClaimStructure: {
+    props: ['modelValue', 'candidates', 'evidence'],
+    emits: ['update:modelValue'],
+    mounted() {
+      this.$emit('update:modelValue', { ...claimStub })
+    },
+    template:
+      '<div class="claim-structure" :data-candidates="JSON.stringify(candidates)" :data-evidence="evidence" />'
+  },
   BaseTierTag: { props: ['tier'], template: '<span class="tier-tag" />' },
   BaseVerdictBadge: { props: ['record', 'compact'], template: '<span class="verdict-badge" />' },
   // Real: the tier row's provisional mark is read off what it draws.
@@ -253,6 +265,7 @@ beforeEach(() => {
   runRecord = null
   detailRecord = null
   otherDetails = new Map()
+  Object.assign(claimStub, { claimed_inchikey: null, claimed_name: null, ready: true })
   altScoreRecords = null
   scoringNow = false
   evidenceRecord = null
@@ -492,6 +505,52 @@ describe('PanePeakAssign verdict dialog', () => {
     await verdictButton(wrapper, 'Reject').trigger('click')
 
     expect(noteField(wrapper).attributes('autofocus')).toBeDefined()
+  })
+
+  it('offers the structures the lists name, and records the claim with the confirmation', async () => {
+    const GLUCOSE = 'WQZGKKKJIJFFOK-GASJEMHNSA-N'
+    detailRecord = {
+      provenance: {
+        reference_identities: [
+          { name: 'D-glucose', source: 'sugars', inchikey: GLUCOSE },
+          { name: 'unkeyed', source: 'sugars', inchikey: null }
+        ]
+      },
+      known_compounds: []
+    }
+    Object.assign(claimStub, { claimed_inchikey: GLUCOSE, claimed_name: 'D-glucose' })
+    const wrapper = await mountPane()
+    await verdictButton(wrapper, 'Confirm').trigger('click')
+    expect(dialog(wrapper).find('.claim-structure').exists()).toBe(false)
+
+    await level(wrapper, 'reference_standard').trigger('change')
+    const picker = dialog(wrapper).find('.claim-structure')
+    expect(JSON.parse(picker.attributes('data-candidates'))).toEqual([
+      { inchikey: GLUCOSE, name: 'D-glucose', label: 'sugars' }
+    ])
+    await submit(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(verify.mock.calls[0][0]).toEqual({
+      peak_assignment_id: 'pa-1',
+      verdict: 'confirmed',
+      evidence_level: 'reference_standard',
+      note: null,
+      claimed_inchikey: GLUCOSE,
+      claimed_name: 'D-glucose'
+    })
+  })
+
+  it('will not confirm while the structure the evidence needs is missing', async () => {
+    claimStub.ready = false
+    const wrapper = await mountPane()
+    await verdictButton(wrapper, 'Confirm').trigger('click')
+    await level(wrapper, 'msms').trigger('change')
+
+    expect(submit(wrapper).attributes('disabled')).toBeDefined()
+    await submit(wrapper).trigger('click')
+    await flushPromises()
+    expect(verify).not.toHaveBeenCalled()
   })
 
   it('will not confirm until a level is picked, then records it with the note', async () => {
