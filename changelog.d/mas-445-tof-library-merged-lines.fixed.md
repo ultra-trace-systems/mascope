@@ -4,5 +4,7 @@
   take the 13C line and leave the 2H line a few mDa over it as a line of its
   own, though one TOF peak holds them all. It now groups them as the
   untargeted envelope match does: from the most abundant isotope, half the
-  peak width either side. Ions created earlier keep their lines until they
-  are created again.
+  peak width either side. A line under 1 % that one TOF peak cannot separate
+  from a brighter line is added to it, so a light ion's 15N line joins its
+  M+1 line too. Ions created earlier keep their lines until they are created
+  again.
