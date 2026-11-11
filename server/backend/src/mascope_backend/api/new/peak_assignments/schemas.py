@@ -407,7 +407,9 @@ class PeakAssignmentQueryParams(BaseModel):
         None,
         description=(
             "Filter by the tier the producing engine itself concluded. Only "
-            "imported runs carry one; an in-app run's engine tier is its `tier`."
+            "imported runs carry one, and a sample read from the batch ledger "
+            "on the M0 row an import's verdict is about; an in-app run's "
+            "engine tier is its `tier`."
         ),
     )
     tier_disagrees: bool | None = Field(

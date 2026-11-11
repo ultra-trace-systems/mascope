@@ -363,9 +363,11 @@ class PeakAssignmentsResource(BaseResource):
                      ``assigned``, so older scripts keep working.
         :type tier: str, optional
         :param engine_tier: Filter by the tier the producing engine itself
-                            concluded. Only an imported run carries one - an
-                            in-app row's engine tier IS its ``tier`` - so this
-                            matches nothing on an in-app run.
+                            concluded. Only an imported run carries one, and
+                            a sample read from the batch ledger on the M0 row
+                            an import's verdict is about - an in-app row's
+                            engine tier IS its ``tier`` - so this matches
+                            nothing on an in-app run.
         :type engine_tier: str, optional
         :param tier_disagrees: With ``True``, keep only the rows where the
                                engine's own tier differs from this server's;
