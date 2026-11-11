@@ -2,6 +2,8 @@
 // badge, and the ledger filter. Pure metadata -- no store state. Mirrors the
 // backend Verdict / EvidenceLevel literals (peak_assignments/schemas.py).
 
+import { isValidInchikey } from '@/lib/chem'
+
 // Schymanski-aligned evidence levels, strongest -> weakest. Required when a
 // verdict is `confirmed` (enforced server-side too).
 export const EVIDENCE_LEVELS = [
@@ -49,7 +51,9 @@ export const levelLabel = (level) => (Number.isInteger(level) ? `Level ${level}`
 /**
  * The structures a confirmation may name: the row's candidates, the target's
  * declaration first, then the reference identities, each InChIKey once. An
- * identity without an InChIKey names no structure and is left out.
+ * identity without an InChIKey names no structure and is left out, and so is
+ * one whose key is not an InChIKey's shape: a list's key is only fitted to
+ * length at ingest, and the server refuses a claim on such a key.
  *
  * @param {object} [candidates]
  * @param {?{name: ?string, inchikey: ?string}} [candidates.target] - what the
@@ -62,7 +66,8 @@ export function claimCandidates({ target = null, identities = [] } = {}) {
   const found = []
   const add = (record, label) => {
     const inchikey = typeof record?.inchikey === 'string' ? record.inchikey.trim() : ''
-    if (!inchikey || found.some((candidate) => candidate.inchikey === inchikey)) return
+    if (!inchikey || !isValidInchikey(inchikey)) return
+    if (found.some((candidate) => candidate.inchikey === inchikey)) return
     const name = typeof record?.name === 'string' && record.name ? record.name : null
     found.push({ inchikey, name, label })
   }

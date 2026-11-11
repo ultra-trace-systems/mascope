@@ -1894,6 +1894,7 @@ const demotedCount = computed(() => {
               v-model="claim"
               :candidates="claimOptions"
               :evidence="evidenceLevel"
+              :initial="verification"
             />
             <InputText
               v-model="note"

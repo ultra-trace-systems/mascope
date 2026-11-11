@@ -143,7 +143,7 @@ async function submit(verdict) {
             !evidenceLevel
               ? 'Pick an evidence level to confirm'
               : !canConfirm
-                ? 'Name the structure this evidence identifies'
+                ? claim?.problem || ''
                 : ''
           "
           @click="submit('confirmed')"
@@ -183,6 +183,7 @@ async function submit(verdict) {
         v-model="claim"
         :candidates="candidates"
         :evidence="evidenceLevel"
+        :initial="record"
       />
       <InputText v-model="note" placeholder="Note (optional)" size="small" fluid />
     </template>

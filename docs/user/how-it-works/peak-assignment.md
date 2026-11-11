@@ -1113,10 +1113,15 @@ shows a **Structure** choice:
 - **Unlisted**, last: an InChIKey of your own, with a name. Use it for a compound no
   loaded list names.
 
+A list's key that is not an InChIKey's shape, such as `N/A` or a bare first block, is not
+offered: the server would refuse it. Changing a verdict starts from the structure it
+names, so a new note or evidence level keeps the claim unless you pick another.
+
 Evidence from a reference standard, MS/MS or an orthogonal technique is a statement
 about a structure, so confirming on it needs one. The form picks the first candidate for
 you, and *Confirm* waits until a structure is chosen. On the isotope/adduct pattern or a
-visual check naming one is optional, and none is picked.
+visual check naming one is optional, and none is picked; an empty *Unlisted* key there
+names none.
 
 The confirmation states an identification level, after [Schymanski et al. 2014][sch14]:
 

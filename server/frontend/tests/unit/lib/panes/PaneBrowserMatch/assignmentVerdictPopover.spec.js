@@ -9,13 +9,13 @@ vi.mock('@/stores', () => ({ useApp: () => app }))
 const claimStub = vi.hoisted(() => ({ claimed_inchikey: null, claimed_name: null, ready: true }))
 vi.mock('@/lib/base', () => ({
   BaseClaimStructure: {
-    props: ['modelValue', 'candidates', 'evidence'],
+    props: ['modelValue', 'candidates', 'evidence', 'initial'],
     emits: ['update:modelValue'],
     mounted() {
       this.$emit('update:modelValue', { ...claimStub })
     },
     template:
-      '<div class="claim-structure" :data-candidates="JSON.stringify(candidates)" :data-evidence="evidence" />'
+      '<div class="claim-structure" :data-candidates="JSON.stringify(candidates)" :data-evidence="evidence" :data-initial="initial?.claimed_inchikey ?? \'\'" />'
   },
   BaseVerdictBadge: {
     props: { record: Object, inherited: Boolean },
@@ -84,17 +84,28 @@ const STUBS = {
   }
 }
 
+// Records the tooltip's text, so a test can read what a disabled button says.
+const TOOLTIP = {
+  mounted: (el, binding) => (el.dataset.tooltip = binding.value || ''),
+  updated: (el, binding) => (el.dataset.tooltip = binding.value || '')
+}
+
 function mountPopover(props) {
   return mount(AssignmentVerdictPopover, {
     props,
-    global: { stubs: STUBS, directives: { tooltip: {} } }
+    global: { stubs: STUBS, directives: { tooltip: TOOLTIP } }
   })
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
   app = makeApp()
-  Object.assign(claimStub, { claimed_inchikey: null, claimed_name: null, ready: true })
+  Object.assign(claimStub, {
+    claimed_inchikey: null,
+    claimed_name: null,
+    ready: true,
+    problem: null
+  })
 })
 
 const GLUCOSE = 'WQZGKKKJIJFFOK-GASJEMHNSA-N'
@@ -169,6 +180,24 @@ describe('AssignmentVerdictPopover', () => {
     expect(wrapper.find('button:nth-of-type(1)').attributes('disabled')).toBeDefined()
     await wrapper.find('button:nth-of-type(1)').trigger('click')
     expect(verify).not.toHaveBeenCalled()
+  })
+
+  it('starts a changed confirmation from the structure it names', async () => {
+    const record = {
+      verdict: 'confirmed',
+      evidence_level: 'msms',
+      claimed_inchikey: GLUCOSE,
+      claimed_name: 'D-glucose'
+    }
+    const wrapper = mountPopover({ row: LISTED, record, overlay: null })
+    expect(wrapper.find('.claim-structure').attributes('data-initial')).toBe(GLUCOSE)
+  })
+
+  it('says why Confirm waits, in the words the structure picker gives', async () => {
+    Object.assign(claimStub, { ready: false, problem: 'Not an InChIKey' })
+    const wrapper = mountPopover({ row: LISTED, record: null, overlay: null })
+    await wrapper.find('.evidence').setValue('pattern')
+    expect(wrapper.find('button:nth-of-type(1)').attributes('data-tooltip')).toBe('Not an InChIKey')
   })
 
   it('sends no structure with a rejection', async () => {

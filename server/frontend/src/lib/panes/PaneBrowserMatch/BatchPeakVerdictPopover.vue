@@ -25,6 +25,8 @@ import { useApp } from '@/stores'
  * A confirmation may name the structure it identifies, from the compound the
  * consensus's reference listing names or an InChIKey of the user's own; one on
  * a reference standard, MS/MS or orthogonal evidence must (BaseClaimStructure).
+ * Changing the verdict starts from the structure it names, unless it is stale:
+ * a structure is one of a formula, and the consensus has moved off it.
  */
 const props = defineProps({
   /** The ledger row: batch_peak_id, consensus_formula, mz, n_present, ... */
@@ -170,7 +172,7 @@ async function retract() {
             !evidenceLevel
               ? 'Pick an evidence level to confirm'
               : !canConfirm
-                ? 'Name the structure this evidence identifies'
+                ? claim?.problem || ''
                 : ''
           "
           @click="submit('confirmed')"
@@ -210,6 +212,7 @@ async function retract() {
         v-model="claim"
         :candidates="candidates"
         :evidence="evidenceLevel"
+        :initial="stale ? null : record"
       />
       <InputText v-model="note" placeholder="Note (optional)" size="small" fluid />
       <div v-if="record" class="retract">
