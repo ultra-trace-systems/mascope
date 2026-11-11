@@ -1323,6 +1323,9 @@ A batch peak that one sample's search reads as an isotope line of another batch 
 composition reads as that line, as it would within one sample. That holds even where the
 line is brightest in a sample of its own, whose search read it as a compound: the line
 reading wins, and that sample is searched again without the peak.
+A reading through a secondary channel is held as a run of the sample holds it (*What lets
+a secondary channel's reading reach assigned*, above): the search matches no list, but a
+loaded reference list or your target library that names the molecule still lifts the cap.
 It writes no per-sample runs: the results appear in the batch ledger and in each
 sample's view, marked as untargeted. An assignment run on a sample still takes
 precedence for that sample.

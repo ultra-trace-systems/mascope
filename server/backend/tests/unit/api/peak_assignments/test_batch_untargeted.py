@@ -33,6 +33,10 @@ from mascope_backend.api.new.peak_assignments.profiles import (
     resolve_profile,
     with_secondary_channels,
 )
+from mascope_backend.api.new.peak_assignments.tiers import (
+    TIER_ASSIGNED,
+    TIER_CANDIDATE,
+)
 from mascope_tools.composition.mass_accuracy import PRED_SIGMA_PPM
 from mascope_tools.composition.profiles import INSTRUMENT_FALLBACK_SIGMA_PPM
 
@@ -693,3 +697,141 @@ async def test_a_batch_search_reads_the_peak_lists_scan_counts(counted):
         )
 
     assert ({"n_scans", "n_scans_total"} <= seen["columns"]) is counted
+
+
+async def _search_ammonium_reading(*, opened, known):
+    """A batch search of one uronium sample whose finder reads one peak as
+    C9H14O3 through ammonium, the channel's carrier shown or not (``opened``),
+    over a known set of ``known``.
+
+    :return: The search's rows and the fake known-set read.
+    """
+    sample = SimpleNamespace(
+        sample_item_id="si-1",
+        sample_item_name="Sample One",
+        filename="orbi-sample.raw",
+        polarity="+",
+    )
+    # 138.0986 is the carrier that opens the ammonium channel on a uronium
+    # source (`with_secondary_channels`); 188.1281 is C9H14O3 + NH4+.
+    specs = [("p0", 100.0, 1.0e6), ("p2", 188.1281, 1.0e5)]
+    if opened:
+        specs.append(("p1", 138.0986, 1.0e4))
+    peaks = pd.DataFrame(
+        [
+            {"sample_peak_id": pid, "mz": mz, "intensity": intensity}
+            for pid, mz, intensity in specs
+        ]
+    )
+    mode = [
+        SimpleNamespace(
+            ionization_mechanism=notation,
+            ionization_mechanism_id=mechanism_id,
+            ionization_mechanism_polarity="+",
+        )
+        for notation, mechanism_id in (
+            ("[M+H]+", "im-h"),
+            ("[M+CH4N2O+H]+", "im-urea"),
+        )
+    ]
+    ammonium = SimpleNamespace(
+        ionization_mechanism="[M+NH4]+",
+        ionization_mechanism_id="im-nh4",
+        ionization_mechanism_polarity="+",
+    )
+    reading = _match(188.1281, "C9H14O3", "C9H18NO3+", "[M+NH4]+")
+    known_isotopes = AsyncMock(return_value=known)
+
+    def finder(*args, **kwargs):
+        return pd.DataFrame([reading]), None
+
+    with (
+        patch.object(batch_untargeted, "fetch_sample", AsyncMock(return_value=sample)),
+        patch.object(batch_untargeted, "load_sample_peaks", return_value=peaks),
+        patch.object(
+            batch_untargeted,
+            "fetch_sample_mechanisms",
+            AsyncMock(return_value=(["im-h", "im-urea"], mode)),
+        ),
+        patch.object(
+            batch_untargeted,
+            "fetch_mechanisms_by_notation",
+            AsyncMock(return_value=[ammonium]),
+        ),
+        patch.object(
+            batch_untargeted,
+            "default_match_params",
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    mz_tolerance=15.0, isotope_abundance_threshold=1e-4
+                )
+            ),
+        ),
+        patch.object(batch_untargeted, "_resolution_of", AsyncMock(return_value=None)),
+        patch.object(
+            batch_untargeted,
+            "recorded_envelope_tolerance",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            batch_untargeted, "sample_reagent_offset", AsyncMock(return_value=None)
+        ),
+        patch.object(batch_untargeted, "_seeded_fits", AsyncMock(return_value={})),
+        patch.object(batch_untargeted, "_fetch_known_isotopes", known_isotopes),
+        patch.object(batch_untargeted, "assign_compositions", finder),
+    ):
+        rows, _ = await batch_untargeted._search_sample_peaks(
+            "si-1", {"p2"}, PeakAssignmentConfig()
+        )
+    return rows, known_isotopes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("listed", [True, False], ids=["listed", "unlisted"])
+async def test_a_list_naming_the_neutral_lifts_a_batch_searchs_cap(listed):
+    # Step 3.4 as a run of the sample reads it: a reading through a secondary
+    # channel reaches assigned when a list the sample is read against names
+    # its neutral, though no Stage A ran here to read the list.
+    known = pd.DataFrame(
+        {"target_compound_formula": ["O3C9H14" if listed else "C9H16O3"]}
+    )
+    rows, known_isotopes = await _search_ammonium_reading(opened=True, known=known)
+
+    (row,) = [row for row in rows if row["sample_peak_id"] == "p2"]
+    assert row["ionization_mechanism_id"] == "im-nh4"
+    assert row["provenance"]["minor_channel"]["corroborated_by"] == (
+        "list" if listed else None
+    )
+    assert row["provenance"]["minor_channel"]["capped"] is not listed
+    assert row["tier"] == (TIER_ASSIGNED if listed else TIER_CANDIDATE)
+    # Read as a run reads it: the target library through the mode's own
+    # mechanisms, the reference lists through every searched one, under the
+    # context's ceiling.
+    (call,) = known_isotopes.await_args_list
+    sample, threshold, mechanism_ids, mechanisms = call.args
+    assert sample.sample_item_id == "si-1"
+    assert threshold == 1e-4
+    assert mechanism_ids == ["im-h", "im-urea"]
+    assert [m.ionization_mechanism_id for m in mechanisms] == [
+        "im-h",
+        "im-urea",
+        "im-nh4",
+    ]
+    assert call.kwargs == {
+        "known_window": resolve_profile(
+            PeakAssignmentConfig(),
+            ["[M+H]+", "[M+CH4N2O+H]+"],
+            instrument_type="orbi",
+            polarity="+",
+        ).context.known_window
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_batch_search_with_no_secondary_channel_reads_no_list():
+    # Only a secondary channel's readings consult the lists, so a sample whose
+    # spectrum opens none pays for no read of them.
+    _, known_isotopes = await _search_ammonium_reading(
+        opened=False, known=pd.DataFrame()
+    )
+    known_isotopes.assert_not_awaited()
