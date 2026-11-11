@@ -37,6 +37,10 @@ class MzShift:
         """The m/z values on the moved axis."""
         return np.asarray(mz, dtype=float) * (1.0 + self.ppm * 1e-6) + self.da
 
+    def restore(self, mz):
+        """The m/z values as stored, from values on the moved axis."""
+        return (np.asarray(mz, dtype=float) - self.da) / (1.0 + self.ppm * 1e-6)
+
 
 _MZ_SHIFT: ContextVar[MzShift | None] = ContextVar("mz_shift", default=None)
 
@@ -75,3 +79,18 @@ def shift_mz(mz):
     """
     shift = _MZ_SHIFT.get()
     return mz if shift is None else shift.apply(mz)
+
+
+def unshift_mz(mz):
+    """Peak m/z values as stored, from the values the current block reads.
+
+    The inverse of :func:`shift_mz`, for a read that asks where the source's
+    own ions sit rather than where a formula does: a decoy moves the axis off
+    every formula of the sample, not off the source that made the spectrum.
+
+    :param mz: The m/z values as the block reads them.
+    :return: The values moved back, as a float array; the values themselves,
+        untouched, outside a block.
+    """
+    shift = _MZ_SHIFT.get()
+    return mz if shift is None else shift.restore(mz)

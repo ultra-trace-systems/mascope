@@ -91,6 +91,7 @@ from mascope_tools.composition.mass_accuracy import (
 
 
 SHIFT = PeakAssignmentDecoy(mz_shift_ppm=9.0)
+DALTON = PeakAssignmentDecoy(mz_shift_da=0.35)
 SWAP = PeakAssignmentDecoy(swap_adducts=True)
 
 
@@ -378,6 +379,7 @@ class TestPlanningADecoy:
             "arm": "mz_shift_ppm=+9",
             "control_run_id": "run-c",
             "calibration": "control",
+            "source_ions": "stored_axis",
             "window_ppm": 5.0,
             "swapped_channels": None,
         }
@@ -807,13 +809,138 @@ class TestADecoyRun:
         mocks["fold"].assert_awaited_once_with("si-1")
 
 
+def _reads_the_block_s_axis(peaks: pd.DataFrame):
+    """``load_sample_peaks``'s read of a stored frame: on the block's axis."""
+
+    def read(sample):
+        return peaks.assign(mz=shift_mz(peaks["mz"].to_numpy()))
+
+    return read
+
+
+class TestTheSourcesIonsAreWhereTheControlReadThem:
+    """A shift moves the axis off the sample's formulas, not off the source:
+    a shifted arm opens the channels its control opened and claims the
+    reagent lines its control claimed (#2980). Moved 0.35 Da, the carriers
+    and the lines sit out of both passes' 20 ppm reach on the moved axis."""
+
+    UREA = SimpleNamespace(
+        ionization_mechanism_id="im-ur",
+        ionization_mechanism="[M+CH4N2O+H]+",
+        ionization_mechanism_polarity="+",
+    )
+    AMMONIUM = SimpleNamespace(
+        ionization_mechanism_id="im-nh4",
+        ionization_mechanism="[M+NH4]+",
+        ionization_mechanism_polarity="+",
+    )
+
+    def _start(self, decoy):
+        from mascope_tools.composition.reagents import ion_mz
+
+        # The uronium source's reagent ion and its dimer, which the pre-pass
+        # claims, and the urea-ammonium cluster that carries the ammonium
+        # channel, which it does not.
+        self.stored = {
+            "reagent": ion_mz("CH5N2O", 1),
+            "dimer": ion_mz("C2H9N4O2", 1),
+            "carrier": ion_mz("CH8N3O", 1),
+            "analyte": 181.0707,
+        }
+        peaks = _peaks_df(
+            [
+                ("reagent", self.stored["reagent"], 1.0e6),
+                ("dimer", self.stored["dimer"], 4.0e5),
+                ("carrier", self.stored["carrier"], 2.0e5),
+                ("analyte", self.stored["analyte"], 1.0e4),
+            ]
+        )
+        self.recorder = _Recorder()
+        patches = _patches(self.recorder, peaks, [])
+        patches["load_peaks"] = patch(
+            f"{_MOD}.load_sample_peaks", side_effect=_reads_the_block_s_axis(peaks)
+        )
+        patches["mechanisms"] = patch(
+            f"{_MOD}.fetch_sample_mechanisms",
+            new_callable=AsyncMock,
+            return_value=(["im-ur"], [self.UREA]),
+        )
+        patches["secondary"] = patch(
+            f"{_MOD}.fetch_mechanisms_by_notation",
+            new_callable=AsyncMock,
+            return_value=[self.AMMONIUM],
+        )
+        mocks = _start(patches)
+        patch(
+            f"{_MOD}.plan_sample_decoy",
+            new_callable=AsyncMock,
+            return_value=None if decoy is None else _plan(decoy),
+        ).start()
+        patch(
+            "mascope_backend.api.new.peak_assignments.batch_peaks_controller."
+            "fold_sample_into_batch_peaks",
+            new_callable=AsyncMock,
+        ).start()
+        return mocks
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "decoy", [None, SHIFT, DALTON], ids=["control", "ppm", "dalton"]
+    )
+    async def test_the_arm_opens_the_channel_its_control_opened(self, decoy):
+        mocks = self._start(decoy)
+
+        await _run(PeakAssignmentConfig(run_untargeted=False, decoy=decoy))
+
+        snapshot = self.recorder.recorded_configs()[0][RESOLVED_PROFILE_KEY]
+        assert snapshot["profile"] == "UR"
+        assert snapshot["secondary_channels"] == ["[M+NH4]+"]
+        (evidence,) = snapshot["channel_evidence"]
+        assert evidence["status"] == "found"
+        # Found where the control found it, not where the arm moved it.
+        assert evidence["mz_error_ppm"] == pytest.approx(0.0, abs=0.01)
+        assert [
+            mechanism.ionization_mechanism_id
+            for mechanism in mocks["reference"].await_args.args[2]
+        ] == ["im-ur", "im-nh4"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "decoy", [None, SHIFT, DALTON], ids=["control", "ppm", "dalton"]
+    )
+    async def test_the_arm_claims_the_lines_its_control_claimed(self, decoy):
+        self._start(decoy)
+
+        await _run(PeakAssignmentConfig(run_untargeted=False, decoy=decoy))
+
+        reagent = {
+            row["sample_peak_id"]: row
+            for row in self.recorder.rows
+            if row["role"] == "reagent"
+        }
+        assert sorted(reagent) == ["dimer", "reagent"]
+        with shifted_mz_axis(
+            ppm=None if decoy is None else decoy.mz_shift_ppm,
+            da=None if decoy is None else decoy.mz_shift_da,
+        ):
+            read = {key: float(shift_mz(mz)) for key, mz in self.stored.items()}
+        for peak_id, row in reagent.items():
+            # Claimed at the offset the control measured, and named at the
+            # m/z the run reads the peak at, as every other row of it is.
+            assert row["mz_error_ppm"] == pytest.approx(0.0, abs=0.01)
+            assert row["sample_peak_mz"] == pytest.approx(read[peak_id], abs=1e-9)
+
+
 class TestTheSourcesLaddersAreTheSamples:
     """The adduct arm swaps what a stage reads a molecule through, never the
     source's lines: the reagent pre-pass's ladder claim reads the mode's own
-    channels, so a decoy is offered the peaks its control is (step 3.3d)."""
+    channels, so a decoy is offered the peaks its control is (step 3.3d). A
+    shifted arm climbs them on the axis as stored, where its control did."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("decoy", [None, SWAP], ids=["control", "decoy"])
+    @pytest.mark.parametrize(
+        "decoy", [None, SWAP, DALTON], ids=["control", "decoy", "dalton"]
+    )
     async def test_a_hydride_bound_rung_is_claimed_by_the_decoy_as_by_its_control(
         self, decoy
     ):
@@ -828,6 +955,9 @@ class TestTheSourcesLaddersAreTheSamples:
         )
         recorder = _Recorder()
         patches = _patches(recorder, peaks, [])
+        patches["load_peaks"] = patch(
+            f"{_MOD}.load_sample_peaks", side_effect=_reads_the_block_s_axis(peaks)
+        )
         patches["mechanisms"] = patch(
             f"{_MOD}.fetch_sample_mechanisms",
             new_callable=AsyncMock,
@@ -848,8 +978,10 @@ class TestTheSourcesLaddersAreTheSamples:
         patch(
             f"{_MOD}.plan_sample_decoy",
             new_callable=AsyncMock,
-            return_value=_plan(
-                SWAP, mechanisms=(sodium,), swapped={"[M]+.": "[M+Na]+"}
+            return_value=(
+                _plan(DALTON)
+                if decoy is DALTON
+                else _plan(SWAP, mechanisms=(sodium,), swapped={"[M]+.": "[M+Na]+"})
             ),
         ).start()
         patch(

@@ -16,7 +16,12 @@ import pytest
 import xarray as xr
 
 import mascope_match.compute.isotopes as isotopes
-from mascope_match import compute_match_isotopes, shifted_mz_axis
+from mascope_match import (
+    compute_match_isotopes,
+    shift_mz,
+    shifted_mz_axis,
+    unshift_mz,
+)
 
 
 STORED = [100.0, 100.6, 200.0]
@@ -105,3 +110,23 @@ def test_a_peak_qualifies_by_where_it_reads_and_loads_by_where_it_is(store):
     assert store["mzs"] == [100.6]
     assert match["sample_peak_mz"] == pytest.approx(100.95)
     assert match["sample_peak_id"] == "p1006"
+
+
+@pytest.mark.parametrize(
+    "ppm, da", [(9.0, None), (-9.0, None), (None, 0.35), (5.0, -0.35)]
+)
+def test_a_block_s_axis_is_read_back_to_where_the_peaks_are_stored(ppm, da):
+    # Where the source's own ions are looked for: the axis a decoy moved off
+    # the sample's formulas, not off the source that made the spectrum.
+    with shifted_mz_axis(ppm=ppm, da=da):
+        moved = shift_mz(np.asarray(STORED))
+        restored = unshift_mz(moved)
+
+    assert np.all(np.abs(moved - STORED) > 1e-4)
+    assert restored == pytest.approx(STORED, abs=1e-9)
+
+
+def test_outside_a_block_the_axis_is_read_back_as_given():
+    stored = np.asarray(STORED)
+
+    assert unshift_mz(stored) is stored

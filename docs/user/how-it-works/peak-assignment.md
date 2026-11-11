@@ -1234,10 +1234,14 @@ recorded, rather than measuring its own: fitted on rows that are wrong on
 purpose, the run would measure the shift back out of the spectrum, or fail to
 calibrate and judge with its mass gate off. A line's height is read at the
 control's envelope tolerance for the same reason: the few envelopes a decoy
-confirms are wrong formulas, and too few to measure one of its own. The source's own lines are still
-claimed as reagent where a ppm shift moves them, since the claim finds them by
-their own pattern; a dalton shift moves them out of its reach, and the stages
-are then offered them as any peak, which the comparison counts apart.
+confirms are wrong formulas, and too few to measure one of its own.
+
+A shift moves the sample's formulas, not the source that made the spectrum.
+So a shifted run looks for the source's own ions where they are stored: it
+opens the secondary channels its control opened, and claims the reagent lines
+its control claimed. Looked for on the moved axis, a dalton shift would put
+both out of reach. The run would search fewer channels than its control, and
+offer the source's brightest ions to the stages as analytes.
 
 A decoy is launched through the API, as an assign request whose config carries
 a `decoy` block and every other setting as the control's: no setting may

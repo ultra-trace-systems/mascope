@@ -777,10 +777,12 @@ def ion_split(decoy: pd.DataFrame, control_ledger: pd.DataFrame) -> dict:
 def on_control_reagent(decoy: pd.DataFrame, control_ledger: pd.DataFrame) -> dict:
     """The arm's assigned rows on peaks its control claimed as the source's own.
 
-    A dalton shift moves the source's lines out of the reagent pre-pass's reach,
-    so the brightest ions of the spectrum are offered to the stages as any peak
-    is. A row there is a false assignment like any other, and the brightest one
-    there is: counted apart, so the intensity share is read knowing it.
+    A decoy recorded before its arm claimed the source's lines where its
+    control did (no ``source_ions`` in its ``decoy_arm``) looked for them on
+    the moved axis, and on a dalton shift claimed none, so the brightest ions
+    of the spectrum were offered to the stages as any peak is. A row there is
+    a false assignment like any other, and the brightest one there is: counted
+    apart, so the intensity share is read knowing it.
     """
     role = control_ledger["role"].fillna("unassigned")
     reagent = set(control_ledger.loc[role == "reagent", "sample_peak_id"].astype(str))
