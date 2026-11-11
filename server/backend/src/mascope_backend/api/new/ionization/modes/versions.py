@@ -30,7 +30,8 @@ its modes' calibrant and diagnostic collections when it is made, and matching
 reads the batch's own rows, not the mode's. So the re-process that moves a
 batch's items onto the current version also swaps the collections an earlier
 version gave the batch for the current version's
-(:func:`align_batch_collections`), and leaves the ones a person attached.
+(:func:`align_batch_collections`), and leaves the ones a person attached. An
+analysis batch, which a person put together, keeps its collections.
 
 The batch ledger is partitioned per setup, not per version: an anchor made
 under one version stays the anchor of the same species under the next, so
@@ -46,6 +47,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mascope_backend.db import (
     IonizationMode,
     MethodBinding,
+    SampleBatch,
     SampleItem,
     TargetCollectionInSampleBatch,
     async_session,
@@ -416,11 +418,23 @@ async def align_batch_collections(
     collection a person took off the batch looks the same as one the mode
     never gave it.
 
+    Only an acquisition batch is aligned. An analysis batch is one a person
+    put together, collections included, and an edit of a mode leaves its
+    collections as they are.
+
     :param sample_batch_id: The batch.
     :param mode_ids: Modes to count as the batch's besides its items' modes:
         the one a re-processed sample is about to be filed under.
     :return: Whether the batch's collections changed. The caller commits.
     """
+    batch_type = await session.scalar(
+        select(SampleBatch.sample_batch_type).where(
+            SampleBatch.sample_batch_id == sample_batch_id
+        )
+    )
+    if batch_type != "ACQUISITION":
+        return False
+
     held = set(
         (
             await session.execute(

@@ -6,7 +6,7 @@ mode another collection makes its next version; the rematch it flags, and a
 file re-processed into the day's batch, swap the collections an earlier
 version gave the batch for the current version's
 (``align_batch_collections`` in ``api/new/ionization/modes/versions.py``).
-A collection a person attached stays.
+A collection a person attached stays, and so do an analysis batch's.
 """
 
 from datetime import datetime, timezone
@@ -445,6 +445,40 @@ async def test_a_batch_of_a_mode_never_edited_is_left_alone(
     assert await _collections(
         async_session_factory, world, batch["batch_id"]
     ) == _with_person(batch, {"cal_a", "diag_a"})
+
+
+@pytest.mark.asyncio
+async def test_an_analysis_batch_keeps_its_collections_through_a_rematch(
+    admin_client, async_session_factory, world, batch, monkeypatch
+):
+    """A person put an analysis batch together, its collections included: the
+    rematch an edit of its mode flags matches it against them as they are."""
+    async with async_session_factory() as session:
+        (
+            await session.get(SampleBatch, batch["batch_id"])
+        ).sample_batch_type = "ANALYSIS"
+        await session.commit()
+    await _edit(admin_client, world, batch, diagnostic_collection_id=world["diag_b"])
+
+    isotope_keys = {world[f"iso_{key}"]: key for key in _COLLECTIONS}
+    matched: set[str] = set()
+
+    async def compute(sample, target_isotopes_df, *args, **kwargs):
+        matched.update(isotope_keys[i] for i in target_isotopes_df["target_isotope_id"])
+        return {"match_isotopes": pd.DataFrame()}
+
+    monkeypatch.setattr(
+        match_controller, "compute_and_create_sample_match_isotope_data", compute
+    )
+    monkeypatch.setattr(
+        match_controller, "send_progress_user_notification", AsyncMock()
+    )
+    await match_controller.rematch_batch(batch["batch_id"], process_id=gen_id(8))
+
+    assert await _collections(
+        async_session_factory, world, batch["batch_id"]
+    ) == _with_person(batch, {"cal_a", "diag_a"})
+    assert matched == _with_person(batch, {"cal_a", "diag_a"})
 
 
 # --- re-processing into the day's batch ----------------------------------------

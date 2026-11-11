@@ -5,4 +5,5 @@
   one. The re-match, and a file reprocessed into the day's batch, now swap
   the collections the earlier version gave the batch for the new version's,
   and flag the batch for a re-match where reprocessing changed them. A
-  collection attached to the batch by hand stays.
+  collection attached to the batch by hand stays, and an analysis batch
+  keeps its collections.
