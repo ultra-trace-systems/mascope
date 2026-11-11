@@ -3577,6 +3577,34 @@ class BatchPeakRunAnchor(Base):
     members: Mapped[Optional[dict]] = mapped_column(JSON)
 
 
+def _claim_checks() -> tuple:
+    """The CHECKs an identification claim keeps, on both verification tables.
+
+    A claim is a confirmed verdict that names a structure
+    (``docs/dev/identification_claims.md`` sections 5.1 and 5.2): a level 1 to
+    3 is a statement about a structure, so it names one; only a confirmation
+    names one; and the name is an InChIKey's shape, as a target compound's is.
+    The rule that a reference-standard, MS/MS or orthogonal confirmation names
+    a structure is the request layer's alone: verdicts recorded before the
+    claim columns existed carry those evidence levels with none.
+    """
+    return (
+        CheckConstraint("level IS NULL OR level BETWEEN 1 AND 5", name="level_valid"),
+        CheckConstraint(
+            "level IS NULL OR level > 3 OR claimed_inchikey IS NOT NULL",
+            name="structure_level_names_structure",
+        ),
+        CheckConstraint(
+            "claimed_inchikey IS NULL OR verdict = 'confirmed'",
+            name="claim_is_confirmed",
+        ),
+        CheckConstraint(
+            "claimed_inchikey IS NULL OR claimed_inchikey ~ '^[A-Z]{14}-[A-Z]{10}-[A-Z]$'",
+            name="claimed_inchikey_shape",
+        ),
+    )
+
+
 class BatchPeakVerification(Base):
     """A user's verdict on a batch peak's species claim - one per anchor, batch-wide.
 
@@ -3621,6 +3649,14 @@ class BatchPeakVerification(Base):
     evidence_level: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
     note: Mapped[Optional[str]] = mapped_column(Text)
     context: Mapped[Optional[dict]] = mapped_column(JSON)
+    # The identification claim (``docs/dev/identification_claims.md`` section
+    # 5): the structure a confirmation names, and the level it states, fixed
+    # when it is made with the mapping's version in ``context``. Null on a
+    # verdict that names no structure; ``level`` null where the verdict states
+    # no level of its own and a reader takes the engine's.
+    claimed_inchikey: Mapped[Optional[str]] = mapped_column(String(27), index=True)
+    claimed_name: Mapped[Optional[str]] = mapped_column(Text)
+    level: Mapped[Optional[int]] = mapped_column(SmallInteger)
     verified_by: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True
     )
@@ -3640,6 +3676,7 @@ class BatchPeakVerification(Base):
             "('reference_standard', 'msms', 'orthogonal', 'pattern', 'visual')",
             name="evidence_level_valid",
         ),
+        *_claim_checks(),
         # One live verdict per claim at an anchor; NULLS NOT DISTINCT so a null
         # mechanism is one claim, not infinitely many - as on the per-sample table.
         Index(
@@ -3715,6 +3752,14 @@ class AssignmentVerification(Base):
     p_correct: Mapped[Optional[float]] = mapped_column(Float)
     note: Mapped[Optional[str]] = mapped_column(Text)
     context: Mapped[Optional[dict]] = mapped_column(JSON)
+    # The identification claim (``docs/dev/identification_claims.md`` section
+    # 5): the structure a confirmation names, and the level it states, fixed
+    # when it is made with the mapping's version in ``context``. Null on a
+    # verdict that names no structure; ``level`` null where the verdict states
+    # no level of its own and a reader takes the engine's.
+    claimed_inchikey: Mapped[Optional[str]] = mapped_column(String(27), index=True)
+    claimed_name: Mapped[Optional[str]] = mapped_column(Text)
+    level: Mapped[Optional[int]] = mapped_column(SmallInteger)
     verified_by: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True
     )
@@ -3736,6 +3781,7 @@ class AssignmentVerification(Base):
             "('reference_standard', 'msms', 'orthogonal', 'pattern', 'visual')",
             name="evidence_level_valid",
         ),
+        *_claim_checks(),
         Index(
             "ix_assignment_verification_identity",
             "sample_item_id",

@@ -83,6 +83,10 @@ from mascope_backend.api.new.peak_assignments.calibration_store import (
     load_calibration,
     save_calibration,
 )
+from mascope_backend.api.new.peak_assignments.claims import (
+    claim_level,
+    mapping_context,
+)
 from mascope_backend.api.new.peak_assignments.config import (
     IN_APP_ENGINE,
     INGEST_LEDGER_BATCH,
@@ -979,6 +983,8 @@ async def create_verification(
     evidence_level: str | None = None,
     note: str | None = None,
     user_id: int | None = None,
+    claimed_inchikey: str | None = None,
+    claimed_name: str | None = None,
 ) -> dict:
     """Record a user's verdict on an assignment, snapshotting its score.
 
@@ -1000,8 +1006,13 @@ async def create_verification(
         requires it for 'confirmed'.
     :param note: Optional free-text note.
     :param user_id: The verifying user (attribution).
-    :return: Status envelope with the created verification record.
+    :param claimed_inchikey: The structure a confirmation names, if any: an
+        identification claim (``claims``). The schema applies its rules.
+    :param claimed_name: The name given with it.
+    :return: Status envelope with the created verification record, with the
+        level the verdict states fixed on it.
     """
+    level = claim_level(verdict, evidence_level, claimed_inchikey)
     sample = await fetch_sample(sample_item_id)
     async with async_session() as session:
         if is_fold_id(peak_assignment_id):
@@ -1084,6 +1095,10 @@ async def create_verification(
             evidence=provenance.get("evidence"),
             p_correct=provenance.get("p_correct"),
             note=note,
+            context=mapping_context(),
+            claimed_inchikey=claimed_inchikey,
+            claimed_name=claimed_name,
+            level=level,
             verified_by=user_id,
             verified_utc=now,
         )
@@ -1310,6 +1325,9 @@ async def get_scope_verifications(
                 "ionization_mechanism_id": record.ionization_mechanism_id,
                 "verdict": record.verdict,
                 "evidence_level": record.evidence_level,
+                "claimed_inchikey": record.claimed_inchikey,
+                "claimed_name": record.claimed_name,
+                "level": record.level,
                 "note": record.note,
                 "context": record.context,
                 "verified_by": record.verified_by,

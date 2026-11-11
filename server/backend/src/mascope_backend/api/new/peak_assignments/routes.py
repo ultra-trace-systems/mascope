@@ -491,10 +491,18 @@ async def verify_assignment_route(
     level as an append-only label -- the honest source for refitting the confidence
     calibration later (verification-calibration loop, V1).
 
+    A confirmation may name a structure (``claimed_inchikey``, ``claimed_name``),
+    which makes it an identification claim, and a reference-standard, MS/MS or
+    orthogonal one must (422 otherwise). The record carries the level the verdict
+    states, fixed from its evidence: 1 to 3 with a structure, 4 on a pattern,
+    none on a visual confirmation or a rejection, where a reader takes the
+    engine's.
+
     Returns 403 when peak assignment is not enabled for this environment.
 
     :param sample_item_id: The unique identifier of the sample.
-    :param body: The assignment id, verdict, evidence level, and optional note.
+    :param body: The assignment id, verdict, evidence level, optional note, and
+        the structure a confirmation names, if any.
     :param user: The current authenticated user. Requires workspace editor role.
     :param membership: Workspace membership with editor role on the sample.
     :return: The created verification record.
@@ -506,6 +514,8 @@ async def verify_assignment_route(
         evidence_level=body.evidence_level,
         note=body.note,
         user_id=user.id,
+        claimed_inchikey=body.claimed_inchikey,
+        claimed_name=body.claimed_name,
     )
     return AssignmentVerificationsResponse.model_validate(result)
 

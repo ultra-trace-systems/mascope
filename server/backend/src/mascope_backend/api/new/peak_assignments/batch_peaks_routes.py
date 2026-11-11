@@ -624,8 +624,16 @@ async def verify_batch_peak_route(
     a mismatch), and an unassigned anchor has no claim to judge (422). The
     verdict this replaces is stamped superseded in the same transaction.
 
+    A confirmation may name a structure (``claimed_inchikey``, ``claimed_name``),
+    which makes it an identification claim, and a reference-standard, MS/MS or
+    orthogonal one must (422 otherwise). The record carries the level the verdict
+    states, fixed from its evidence: 1 to 3 with a structure, 4 on a pattern,
+    none on a visual confirmation or a rejection, where a reader takes the
+    engine's.
+
     :param sample_batch_id: The unique identifier of the sample batch.
-    :param body: The verdict, its evidence and the formula judged.
+    :param body: The verdict, its evidence, the formula judged and the structure
+        a confirmation names, if any.
     :param user: The current authenticated user. Requires workspace editor role.
     :return: The created verdict.
     """
@@ -637,6 +645,8 @@ async def verify_batch_peak_route(
         evidence_level=body.evidence_level,
         note=body.note,
         user_id=user.id,
+        claimed_inchikey=body.claimed_inchikey,
+        claimed_name=body.claimed_name,
     )
     return BatchPeakVerificationsResponse.model_validate(result)
 

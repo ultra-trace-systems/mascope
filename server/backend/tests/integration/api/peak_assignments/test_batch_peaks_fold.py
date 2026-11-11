@@ -981,6 +981,7 @@ async def test_a_list_match_names_its_list_on_the_registry_and_the_ledger(
     listing = {
         "name": "D-glucose",
         "source": "sugars",
+        "inchikey": None,
         "tags": ["background"],
         "total": 1,
     }

@@ -44,6 +44,7 @@ from mascope_backend.db.id import gen_id
 pytestmark = pytest.mark.asyncio
 
 GLUCOSE = "C6H12O6"
+GLUCOSE_INCHIKEY = "WQZGKKKJIJFFOK-GASJEMHNSA-N"
 DISSENT = "C7H16O5"
 
 
@@ -175,7 +176,7 @@ async def scope(async_session_factory, pa_test_data, editor_client, assignment_e
             )
         ).scalar_one()
 
-    async def verify(name, verdict, evidence_level=None):
+    async def verify(name, verdict, evidence_level=None, claimed_inchikey=None):
         sample_item_id, assignment_ids = samples[name]
         response = await editor_client.post(
             f"/api/peak-assignments/sample/{sample_item_id}/verify",
@@ -183,11 +184,12 @@ async def scope(async_session_factory, pa_test_data, editor_client, assignment_e
                 "peak_assignment_id": assignment_ids["p1"],
                 "verdict": verdict,
                 "evidence_level": evidence_level,
+                "claimed_inchikey": claimed_inchikey,
             },
         )
         assert response.status_code == 201, response.text
 
-    await verify("S1", "confirmed", "msms")
+    await verify("S1", "confirmed", "msms", GLUCOSE_INCHIKEY)
     await verify("S1", "rejected")
     await verify("S2", "rejected")
     await verify("S5", "confirmed", "visual")

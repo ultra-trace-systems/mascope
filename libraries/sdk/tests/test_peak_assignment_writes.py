@@ -37,6 +37,7 @@ from mascope_sdk.resources.peak_assignments import PeakAssignmentsResource
 
 
 SAMPLE_ID = "sample-1"
+GLUCOSE_INCHIKEY = "WQZGKKKJIJFFOK-GASJEMHNSA-N"
 BASE = "http://server/api/peak-assignments/sample/"
 
 
@@ -616,6 +617,8 @@ class TestVerify:
             "confirmed",
             evidence_level="reference_standard",
             note="standard run on the day",
+            claimed_inchikey=GLUCOSE_INCHIKEY,
+            claimed_name="D-glucose",
         )
 
         (sent,) = server.sent("/verify")
@@ -626,6 +629,8 @@ class TestVerify:
             "verdict": "confirmed",
             "evidence_level": "reference_standard",
             "note": "standard run on the day",
+            "claimed_inchikey": GLUCOSE_INCHIKEY,
+            "claimed_name": "D-glucose",
         }
         assert record["assignment_verification_id"] == "v-1"
         assert record["verdict"] == "confirmed"
@@ -645,6 +650,24 @@ class TestVerify:
         assert server.requests == []
 
     @pytest.mark.parametrize(
+        "evidence_level", ["reference_standard", "msms", "orthogonal"]
+    )
+    def test_a_structure_confirmation_naming_no_structure_is_not_sent(
+        self, resource, server, evidence_level
+    ):
+        with pytest.raises(ValueError, match="claimed_inchikey"):
+            resource.verify(
+                SAMPLE_ID, "pa-1", "confirmed", evidence_level=evidence_level
+            )
+
+        assert server.requests == []
+
+    def test_a_pattern_confirmation_is_sent_naming_no_structure(self, resource, server):
+        resource.verify(SAMPLE_ID, "pa-1", "confirmed", evidence_level="pattern")
+
+        assert "claimed_inchikey" not in server.sent("/verify")[0]["json"]
+
+    @pytest.mark.parametrize(
         "lose, raised",
         [
             ("timeout", MascopeTimeoutError),
@@ -661,7 +684,11 @@ class TestVerify:
 
         with pytest.raises(raised) as caught:
             resource.verify(
-                SAMPLE_ID, "pa-1", "confirmed", evidence_level="reference_standard"
+                SAMPLE_ID,
+                "pa-1",
+                "confirmed",
+                evidence_level="reference_standard",
+                claimed_inchikey=GLUCOSE_INCHIKEY,
             )
 
         assert len(server.verifications) == 1
