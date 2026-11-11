@@ -2121,6 +2121,7 @@ def judge_commits(
     envelope_tolerance: EnvelopeTolerance | None = None,
     artifact_peak_ids: frozenset[str] = frozenset(),
     instrument_type: str | None = None,
+    listed_formulas: frozenset[str] = frozenset(),
 ) -> JudgedCommits:
     """Run the mass gate, the partner gate, the cross-channel pass and the
     tiering pass, and read the lines they find in doubt as their neighbours'.
@@ -2167,6 +2168,10 @@ def judge_commits(
         the tiering pass reads as neither a line nor an absence.
     :param instrument_type: The sample's instrument class, which on a TOF
         holds a bromine or chlorine reading to its own M+2 line.
+    :param listed_formulas: The neutrals the sample's lists name
+        (``engine.listed_formula_identities``), which the partner gate records
+        as a swapped-in reading's corroboration, as the minor-channel policy
+        does.
     :return: The judged rows and each pass's summary.
     """
     claims: dict[str, EnvelopeClaim] = {}
@@ -2190,6 +2195,7 @@ def judge_commits(
             minor_channels=minor_channels,
             partner_gated_channels=partner_gated_channels,
             tier_bands=tier_bands,
+            listed_formulas=listed_formulas,
         )
         cross_channel = apply_cross_channel(
             judged, notation_by_id=notation_by_id, minor_channels=minor_channels
@@ -4360,6 +4366,7 @@ async def _assign_sample(
             envelope_tolerance=scoring.envelope_tolerance,
             artifact_peak_ids=frozenset(artifact_peak_ids),
             instrument_type=instrument_type,
+            listed_formulas=listed_formulas,
         )
         mass_calibration = judged.mass_calibration
         cross_channel = judged.cross_channel

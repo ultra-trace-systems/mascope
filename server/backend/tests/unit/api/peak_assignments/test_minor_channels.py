@@ -877,6 +877,69 @@ class TestThePartnerGate:
         # ...and the row now says the mass gate holds it there.
         assert row["provenance"]["mass_gate"]["capped"] == TIER_CANDIDATE
 
+    @pytest.mark.parametrize(
+        ("listed", "corroboration", "tier"),
+        [
+            (frozenset({"C7H8"}), "list", TIER_ASSIGNED),
+            (frozenset(), None, TIER_CANDIDATE),
+        ],
+        ids=["listed", "unlisted"],
+    )
+    def test_a_swapped_in_reading_a_list_names_keeps_the_list(
+        self, listed, corroboration, tier
+    ):
+        # Round one finds no partner for protonated C7H6 and swaps the benzyl
+        # cation onto toluene less a hydride, another opportunistic reading,
+        # whose partner is a row an earlier walk turned to toluene. That row's
+        # set-aside reading is borne out, so it turns back, and in round two
+        # the swapped-in reading has no partner any more. Where a list names
+        # toluene, the swap recorded the list, which cannot go away; where
+        # none does, the second channel it read is gone and the cap is back.
+        # The list's key is a composition, as the policy's is, so it names
+        # the reading however the ledger spells it.
+        benzyl = ledger_row(
+            "benzyl", "C7H6", "im-h", alternatives=(("H8C7", "im-hydride"),)
+        )
+        partner = ledger_row("tol", "C7H8", "im-ct", intensity=3.0e6)
+        partner["provenance"]["partner_gate"] = {
+            "channel": "[M+H]+",
+            "partner": False,
+            "displaced": "C7H7",
+            "through": "[M]+.",
+        }
+        partner["alternatives"] = [
+            {
+                "assigned_formula": "C7H7",
+                "ionization_mechanism_id": "im-h",
+                "same_ion": True,
+                "plausibility": 1.0,
+                "partner_gate": "unmet",
+            }
+        ]
+        seen = ledger_row("c7h7", "C7H7", "im-ct", intensity=2.0e5)
+        opened = frozenset({"[M+H]+", "[M-H]+"})
+        summary = apply_partner_gates(
+            [benzyl, partner, seen],
+            notation_by_id={mid: n for n, mid in CT_IDS.items()},
+            minor_channels=opened,
+            partner_gated_channels=opened,
+            tier_bands=BANDS,
+            listed_formulas=listed,
+        )
+        assert summary["rounds"] >= 2 and summary["settled"] is True
+        assert partner["ionization_mechanism_id"] == "im-h"
+        assert (benzyl["assigned_formula"], benzyl["ionization_mechanism_id"]) == (
+            "H8C7",
+            "im-hydride",
+        )
+        verdict = benzyl["provenance"]["minor_channel"]
+        assert verdict["corroborated_by"] == corroboration
+        assert verdict["capped"] is (corroboration is None)
+        assert benzyl["tier"] == tier
+        assert ("recapped" in benzyl["provenance"]["partner_gate"]) is (
+            corroboration is None
+        )
+
     def test_a_lifted_cap_stays_under_the_mass_gates_ceiling(self):
         partner = self._row("p", "C10H18O5", "im-deprot")
         formate = self._formate("f", "C10H18O5")
