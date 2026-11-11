@@ -13,7 +13,10 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import candidate_index
 from mascope_backend.api.new.peak_assignments.fold_view import member_row
 from mascope_backend.api.new.peak_assignments.listing import (
     consensus_listing,
+    consensus_target_id,
     reference_listing,
+    target_candidate,
+    with_target,
 )
 from mascope_backend.api.new.peak_assignments.service import _provenance_scalars
 
@@ -260,3 +263,117 @@ def test_a_derived_row_whose_entry_names_no_list_carries_none():
     anchor = _Anchor()
     anchor.candidates = [_entry("C10H16", "C10H17+", "m-h")]
     assert member_row(_Member(), anchor)["reference_listing"] is None
+
+
+# --- the target's declaration beside the listing (identification claims 4.2) -------
+
+GLUCOSE = "WQZGKKKJIJFFOK-GASJEMHNSA-N"
+
+
+def test_a_target_whose_key_a_list_carries_is_listed():
+    assert target_candidate("glucose", GLUCOSE, {GLUCOSE}) == {
+        "label": "target",
+        "name": "glucose",
+        "inchikey": GLUCOSE,
+        "listed": True,
+    }
+
+
+def test_a_target_whose_key_no_list_carries_is_unlisted():
+    assert target_candidate("glucose", GLUCOSE, set())["listed"] is False
+
+
+@pytest.mark.parametrize("inchikey", [None, ""], ids=repr)
+def test_a_target_with_no_structure_is_neither(inchikey):
+    """Nothing to look up, so nothing is said of the lists."""
+    candidate = target_candidate("glucose", inchikey, {GLUCOSE})
+    assert (candidate["name"], candidate["inchikey"], candidate["listed"]) == (
+        "glucose",
+        None,
+        None,
+    )
+
+
+@pytest.mark.parametrize("name", [None, ""], ids=repr)
+@pytest.mark.parametrize("inchikey", [None, ""], ids=repr)
+def test_a_target_that_declares_neither_name_nor_key_is_no_candidate(name, inchikey):
+    assert target_candidate(name, inchikey, {GLUCOSE}) is None
+
+
+def test_a_target_with_a_key_and_no_name_is_a_candidate():
+    assert target_candidate("", GLUCOSE, {GLUCOSE})["inchikey"] == GLUCOSE
+
+
+def test_a_target_nobody_asked_the_lists_about_says_nothing_of_them():
+    assert target_candidate(None, GLUCOSE)["listed"] is None
+
+
+def test_the_target_rides_beside_a_listing():
+    target = target_candidate("glucose", GLUCOSE, {GLUCOSE})
+    assert with_target(LISTED, target) == {**LISTED, "target": target}
+    assert "target" not in LISTED
+
+
+def test_a_target_no_list_names_still_has_a_listing():
+    target = target_candidate("glucose", None)
+    assert with_target(None, target) == {
+        "name": None,
+        "source": None,
+        "inchikey": None,
+        "tags": [],
+        "total": 0,
+        "target": target,
+    }
+
+
+@pytest.mark.parametrize("listing", [None, LISTED], ids=["none", "listed"])
+def test_a_row_with_no_target_reads_as_it_did(listing):
+    assert with_target(listing, None) is listing
+
+
+def test_a_new_entry_records_the_target_its_member_was_matched_to():
+    registry = []
+    index = candidate_index(
+        registry, "C6H12O6", "C6H13O6+", "m-h", "database", target_compound_id="tc-1"
+    )
+    assert registry[index]["target_compound_id"] == "tc-1"
+
+
+def test_an_entry_gains_the_target_a_later_member_brings_and_keeps_it():
+    stored = [_entry("C6H12O6", "C6H13O6+", "m-h", LISTED)]
+    registry = list(stored)
+    candidate_index(registry, "C6H12O6", "C6H13O6+", "m-h", target_compound_id="tc-1")
+    assert registry[0] == {**stored[0], "target_compound_id": "tc-1"}
+    assert "target_compound_id" not in stored[0]
+    candidate_index(registry, "C6H12O6", "C6H13O6+", "m-h", target_compound_id="tc-2")
+    assert registry[0]["target_compound_id"] == "tc-1"
+
+
+def _targeted(formula, ion, mechanism, target=None):
+    entry = _entry(formula, ion, mechanism)
+    if target is not None:
+        entry["target_compound_id"] = target
+    return entry
+
+
+def test_the_consensus_names_its_own_entrys_target():
+    registry = [
+        _targeted("C6H12O6", "C6H13O6+", "m-h", "tc-other"),
+        _targeted("C6H12O6", "C6H12O6NO3-", "m-no3", "tc-1"),
+    ]
+    assert consensus_target_id(registry, "C6H12O6", "C6H12O6NO3-", "m-no3") == "tc-1"
+
+
+def test_a_target_names_the_formula_whichever_channel_matched_it():
+    registry = [
+        _targeted("C6H12O6", "C6H12O6NO3-", "m-no3"),
+        _targeted("C6H12O6", "C6H13O6+", "m-h", "tc-1"),
+    ]
+    assert consensus_target_id(registry, "C6H12O6", "C6H12O6NO3-", "m-no3") == "tc-1"
+
+
+def test_another_formulas_target_is_not_the_consensus_one():
+    registry = [_targeted("C6H12O6", "C6H13O6+", "m-h", "tc-1")]
+    assert consensus_target_id(registry, "C7H14O6", "C7H15O6+", "m-h") is None
+    assert consensus_target_id(registry, None) is None
+    assert consensus_target_id(None, "C6H12O6") is None

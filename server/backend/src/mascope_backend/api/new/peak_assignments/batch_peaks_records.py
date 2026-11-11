@@ -30,7 +30,13 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     snapshot_rows,
     snapshot_series,
 )
-from mascope_backend.api.new.peak_assignments.listing import consensus_listing
+from mascope_backend.api.new.peak_assignments.listing import (
+    consensus_listing,
+    consensus_target_id,
+)
+from mascope_backend.api.new.peak_assignments.target_listing import (
+    with_target_listings,
+)
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
@@ -111,6 +117,33 @@ def _batch_peak_meta(bp) -> dict:
     }
 
 
+async def _with_consensus_targets(session, data: list[dict], rows) -> list[dict]:
+    """Put the target compound each anchor's consensus names on its listing.
+
+    The registry entry the consensus names records the target compound a
+    member brought it from (:func:`~mascope_backend.api.new.peak_assignments.
+    listing.consensus_target_id`); what that compound declares is read now,
+    as the sample ledger reads it.
+
+    :param session: An open async session.
+    :param data: The served records, one per row, modified in place.
+    :param rows: The live anchors or the snapshot rows they were built from.
+    :return: ``data``.
+    """
+    target_of = {
+        row.batch_peak_id: consensus_target_id(
+            row.candidates,
+            row.consensus_formula,
+            row.consensus_ion_formula,
+            row.ionization_mechanism_id,
+        )
+        for row in rows
+    }
+    return await with_target_listings(
+        session, data, lambda record: target_of.get(record["batch_peak_id"])
+    )
+
+
 @api_controller()
 async def get_batch_peak_series(
     sample_batch_id: str | None = None,
@@ -176,6 +209,7 @@ async def get_batch_peak_series(
                             "peak_series": series,
                         }
                     )
+                await _with_consensus_targets(session, data, rows)
                 return {
                     "status": "success",
                     "message": (
@@ -241,6 +275,7 @@ async def get_batch_peak_series(
             }
             for bp in bp_rows
         ]
+        await _with_consensus_targets(session, data, bp_rows)
 
     return {
         "status": "success",
@@ -288,6 +323,7 @@ async def get_batch_peak_ledger(
                 tier_disagrees=tier_disagrees,
             )
             data = [snapshot_anchor_meta(row, sample_batch_id) for row in rows]
+            await _with_consensus_targets(session, data, rows)
             return {
                 "status": "success",
                 "message": (
@@ -306,8 +342,9 @@ async def get_batch_peak_ledger(
             *engine_tier_filters(BatchPeak, engine_tier, tier_disagrees)
         )
         bp_rows = (await session.execute(query.order_by(BatchPeak.mz))).scalars().all()
+        data = [_batch_peak_meta(bp) for bp in bp_rows]
+        await _with_consensus_targets(session, data, bp_rows)
 
-    data = [_batch_peak_meta(bp) for bp in bp_rows]
     return {
         "status": "success",
         "message": f"Retrieved {len(data)} batch peak{'s' if len(data) != 1 else ''}",

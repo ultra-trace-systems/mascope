@@ -421,6 +421,7 @@ async def fold_sample_into_batch_peaks(
                     r.ionization_mechanism_id,
                     source=getattr(r, "source", None),
                     listing=reference_listing(provenance.get("reference_identities")),
+                    target_compound_id=getattr(r, "target_compound_id", None) or None,
                 )
             session.add(
                 BatchPeakOccurrence(

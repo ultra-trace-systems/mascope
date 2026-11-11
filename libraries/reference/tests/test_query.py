@@ -27,6 +27,7 @@ from mascope_reference.query import (  # noqa: E402
     annotate_formulas,
     by_formula,
     by_mass_window,
+    listed_inchikeys,
     source_compounds,
     structures_by_formula,
     xref_cas_number,
@@ -303,6 +304,50 @@ async def _structures(db_path, formula: str, **kwargs):
 
 def _ids(page) -> list[str]:
     return [c.record.source_native_id for c in page.candidates]
+
+
+async def _listed(db_path, inchikeys, **kwargs):
+    maker, engine = _sessionmaker(db_path)
+    try:
+        async with maker() as session:
+            return await listed_inchikeys(session, inchikeys, **kwargs)
+    finally:
+        await engine.dispose()
+
+
+# -- listed_inchikeys: is a target's declared structure on a list ---------------
+
+
+@pytest.mark.asyncio
+async def test_listed_inchikeys_are_the_keys_an_active_row_carries(
+    sync_engine, db_path
+):
+    _seed_hexoses(sync_engine)
+    # Mannose's key is only on an inactive load; the last key is on no row.
+    asked = [GLUCOSE, GALACTOSE, MANNOSE, "Y" * 27, "", GLUCOSE]
+    assert await _listed(db_path, asked) == {GLUCOSE, GALACTOSE}
+
+
+@pytest.mark.asyncio
+async def test_listed_inchikeys_keep_to_the_licences_given(sync_engine, db_path):
+    _seed_hexoses(sync_engine)
+    # Galactose's row is CC0-1.0, glucose's CC-BY-4.0.
+    assert await _listed(db_path, [GLUCOSE, GALACTOSE], licenses={"CC0-1.0"}) == {
+        GALACTOSE
+    }
+
+
+@pytest.mark.asyncio
+async def test_listed_inchikeys_leave_out_a_spectral_library(sync_engine, db_path):
+    with sync_engine.begin() as conn:
+        library = _source(conn, "msms-library", kind=SPECTRUM_KIND)
+        _compound(conn, library, "S1", name="Glucose", inchikey=GLUCOSE)
+    assert await _listed(db_path, [GLUCOSE]) == set()
+
+
+@pytest.mark.asyncio
+async def test_listed_inchikeys_of_no_key_ask_nothing(sync_engine, db_path):
+    assert await _listed(db_path, []) == set()
 
 
 @pytest.mark.asyncio

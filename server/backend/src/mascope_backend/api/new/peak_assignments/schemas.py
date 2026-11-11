@@ -214,8 +214,12 @@ class PeakAssignmentRecord(BaseModel):
     #: "listed as" field shows it: ``name`` and ``source`` of the first identity
     #: the run matched from a list, the ``tags`` its lists carry (``background``)
     #: and the ``total`` of names matched (``listing.reference_listing``, off
-    #: provenance.reference_identities). None on a row no list names; the
-    #: target library's rows carry no identities and so none either. A row
+    #: provenance.reference_identities). A row matched to a target compound
+    #: carries what the compound declares under ``target``: ``label``
+    #: ``"target"``, its ``name`` and ``inchikey``, and ``listed``, whether a
+    #: list carries that key (None where it declares none); with no list name
+    #: the reference fields are None and ``total`` 0
+    #: (``listing.with_target``). None on a row neither names. A row
     #: derived from the batch ledger carries the listing its member's registry
     #: entry recorded.
     reference_listing: dict | None = None

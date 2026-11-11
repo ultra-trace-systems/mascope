@@ -394,6 +394,7 @@ def candidate_index(
     ionization_mechanism_id: Optional[str],
     source: Optional[str] = None,
     listing: Optional[dict] = None,
+    target_compound_id: Optional[str] = None,
 ) -> int:
     """Index of the candidate (``formula``, ``ion_formula``, mechanism) in
     ``candidates``, appending it when absent.
@@ -421,6 +422,11 @@ def candidate_index(
         written into, so a registry copied out of a loaded row leaves the
         row's own value alone and compares unequal to it. Not part of the
         match.
+    :param target_compound_id: The target compound the member was matched to,
+        where it came from the target library. Recorded as ``listing`` is: on a
+        new entry, and on an existing entry that has none, so the batch ledger
+        can say what the consensus's target declares
+        (``listing.consensus_target_id``). Not part of the match.
     :return: The position the member's row should name.
     """
     for index, entry in enumerate(candidates):
@@ -429,8 +435,13 @@ def candidate_index(
             and entry.get("ion_formula") == ion_formula
             and entry.get("ionization_mechanism_id") == ionization_mechanism_id
         ):
+            added = {}
             if listing is not None and not entry.get("listing"):
-                candidates[index] = {**entry, "listing": listing}
+                added["listing"] = listing
+            if target_compound_id is not None and not entry.get("target_compound_id"):
+                added["target_compound_id"] = target_compound_id
+            if added:
+                candidates[index] = {**entry, **added}
             return index
     entry = {
         "formula": formula,
@@ -441,6 +452,8 @@ def candidate_index(
         entry["source"] = source
     if listing is not None:
         entry["listing"] = listing
+    if target_compound_id is not None:
+        entry["target_compound_id"] = target_compound_id
     candidates.append(entry)
     return len(candidates) - 1
 
