@@ -173,8 +173,10 @@ from mascope_backend.api.new.peak_assignments.reagent_pass import (
     FragmentClaims,
     build_reagent_assignments,
     claim_fragments,
+    claim_ladder_peaks,
     claim_reagent_peaks,
     fragment_ladders_for,
+    ion_ladders_for,
     reagent_library_for,
 )
 from mascope_backend.api.new.peak_assignments.schemas import DEFAULT_PAGE_LIMIT
@@ -3093,16 +3095,20 @@ def _claim_reagent_lines(
         peaks_df,
         reagent_library_for(resolved_profile.profile.name),
         claim_ppm=resolved_profile.mz_precision_ppm,
-        # A labelled chemistry's reagent is read at the purity in effect: the
-        # sample's setup's, around a run. The profile's own figure is the
-        # library default a setup starts from; a site's bottle may differ.
-        purity=(
-            label_purity("^N")
-            if resolved_profile.profile.label_purity is not None
-            else None
-        ),
+        purity=_reagent_purity(resolved_profile),
         resolution=resolution,
     )
+
+
+def _reagent_purity(resolved_profile: ResolvedProfile) -> float | None:
+    """The purity a labelled chemistry's reagent is read at, None unlabelled.
+
+    The sample's setup's, around a run. The profile's own figure is the
+    library default a setup starts from; a site's bottle may differ.
+    """
+    if resolved_profile.profile.label_purity is None:
+        return None
+    return label_purity("^N")
 
 
 def _claimed_lines_offset(
@@ -3349,6 +3355,8 @@ def _reagent_assignments(
     peak_assignment_run_id: str,
     *,
     resolution: Callable[[float], float] | None,
+    own_mechanisms: list[SimpleNamespace],
+    sample_name: str,
 ) -> tuple[list[dict], set[str], ReagentOffset | None]:
     """The reagent pre-pass: the peaks the source made, claimed before the stages.
 
@@ -3365,14 +3373,39 @@ def _reagent_assignments(
     :param resolution: The file's resolving power as a function of m/z, at
         which an ion's isotope line is one peak of the file; None where it has
         none.
+    :param own_mechanisms: :func:`_searched_mechanisms` of the mode's own
+        channels: the channels the ladder claim reads, whether the run
+        abstracts a hydride and what a stage could read a rung as. A
+        ``swap_adducts`` decoy passes the ones resolved before its swap: the
+        source's lines are the sample's, so a decoy claims what its control
+        claims.
+    :param sample_name: For the log line.
     :return: The reagent rows, the peaks they take out of both stages, and where
         the claimed lines put the mass axis, which Stage A scores at where the
         target library fits no offset (:func:`reagent_line_offset`); None for a
-        profile with no reagent library.
+        profile with no reagent library. The offset is read off the library's
+        lines alone, as it was measured: a ladder's rungs do not move it.
     """
     hits, calibration = _claim_reagent_lines(
         peaks_df, resolved_profile, resolution=resolution
     )
+    rungs, ladder_summary = claim_ladder_peaks(
+        peaks_df,
+        ion_ladders_for(resolved_profile.profile.name),
+        calibration=calibration,
+        claimed=hits,
+        channels=[m.ionization_mechanism for m in own_mechanisms],
+        claim_ppm=resolved_profile.mz_precision_ppm,
+        purity=_reagent_purity(resolved_profile),
+        resolution=resolution,
+    )
+    if ladder_summary is not None and ladder_summary["claimed"]:
+        runtime.logger.info(
+            f"Sample '{sample_name}': {ladder_summary['claimed']} peaks claimed "
+            f"as rungs of {', '.join(ladder_summary['ladders'])} "
+            f"({ladder_summary['claimed_isotopologues']} of their lines with "
+            f"them); held: {ladder_summary['held']}"
+        )
     if calibration is not None and calibration.anchors:
         runtime.logger.info(
             "Reagent pre-pass anchored at "
@@ -3388,7 +3421,7 @@ def _reagent_assignments(
             + ("" if offset.beyond_width else ", inside the width")
         )
     rows = build_reagent_assignments(
-        hits,
+        hits + rungs,
         peaks_df,
         sample_item_id=sample_item_id,
         peak_assignment_run_id=peak_assignment_run_id,
@@ -3895,6 +3928,12 @@ async def _assign_sample(
                 f"'{sample.sample_item_name}': {decoy_plan.decoy.arm}, scored at "
                 "its control's calibration"
             )
+        # The mode's own channels, read before a decoy swaps them: the reagent
+        # pre-pass's ladder claim reads the source's lines through them, which
+        # are the sample's whatever the arm (:func:`_reagent_assignments`).
+        own_mechanisms = _searched_mechanisms(
+            mechanisms, secondary_mechanisms, resolved_profile
+        )
         if decoy_plan is not None and decoy_plan.decoy.swap_adducts:
             # Swapped after the chemistry is resolved, which reads the mode's
             # own channels: the profile, the grid and the reagent are the
@@ -3948,6 +3987,8 @@ async def _assign_sample(
             sample_item_id,
             run.peak_assignment_run_id,
             resolution=resolution,
+            own_mechanisms=own_mechanisms,
+            sample_name=sample.sample_item_name,
         )
         if reagent_assignments:
             runtime.logger.info(
@@ -4669,24 +4710,31 @@ async def _fold_sample_peaks_without_run(
         instrument_type=instrument_type,
         polarity=sample.polarity,
     )
-    # Read once, for the two passes here that predict an isotope line: the
-    # reagent pre-pass and the mass gate, as a run reads them.
-    resolution = await _resolution_of(sample)
-    reagent, reagent_peak_ids, reagent_offset = _reagent_assignments(
-        peaks_df, resolved_profile, sample_item_id, run_id, resolution=resolution
-    )
-    artifact, artifact_peak_ids = _artifact_assignments(
-        peaks_df, instrument_type, sample_item_id, run_id, reagent_peak_ids
-    )
-    claimed_peak_ids = reagent_peak_ids | artifact_peak_ids
-    # The channels a run would read: Stage A reads the reference lists through
-    # them, and the passes below read them.
+    # The channels a run would read: the reagent pre-pass's ladder claim reads
+    # them, Stage A reads the reference lists through them, and the passes
+    # below read them.
     resolved_profile, secondary_mechanisms = await _resolve_secondary_channels(
         sample, resolved_profile, peaks_df
     )
     searched_mechanisms = _searched_mechanisms(
         mechanisms, secondary_mechanisms, resolved_profile
     )
+    # Read once, for the two passes here that predict an isotope line: the
+    # reagent pre-pass and the mass gate, as a run reads them.
+    resolution = await _resolution_of(sample)
+    reagent, reagent_peak_ids, reagent_offset = _reagent_assignments(
+        peaks_df,
+        resolved_profile,
+        sample_item_id,
+        run_id,
+        resolution=resolution,
+        own_mechanisms=searched_mechanisms,
+        sample_name=sample.sample_item_name,
+    )
+    artifact, artifact_peak_ids = _artifact_assignments(
+        peaks_df, instrument_type, sample_item_id, run_id, reagent_peak_ids
+    )
+    claimed_peak_ids = reagent_peak_ids | artifact_peak_ids
     # Stage A's rows here are scored at the tolerance it fits, as a run's are,
     # but there is no run to record it on: the sample's later readers read it
     # at today's numbers, and its siblings' pools leave its lines out (#2989).

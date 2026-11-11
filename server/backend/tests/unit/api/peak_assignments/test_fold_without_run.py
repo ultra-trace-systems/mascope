@@ -622,6 +622,48 @@ async def test_the_fold_reads_a_list_through_the_channels_a_run_opens():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("abstracts", [True, False], ids=["hydride", "none"])
+async def test_the_fold_climbs_the_ladders_through_the_channels_a_run_opens(
+    abstracts,
+):
+    """The reagent pre-pass's ladder claim reads the channels the run opens,
+    so the fold resolves them first: an ethanol less a hydride holding a
+    second ethanol is the source's ion only where the run abstracts a hydride,
+    a channel a charge-transfer mode does not declare."""
+    from mascope_backend.api.new.peak_assignments.service import (
+        fold_sample_peaks_without_run,
+    )
+    from mascope_tools.composition.reagents import ion_mz
+
+    def mechanism(mechanism_id, notation):
+        return SimpleNamespace(
+            ionization_mechanism_id=mechanism_id,
+            ionization_mechanism=notation,
+            ionization_mechanism_polarity="+",
+        )
+
+    stack, mocks = _patched()
+    # The window ends below the beam, so the hydride channel is opened on the
+    # window's silence where the deployment has its row.
+    mocks["peaks"].return_value = pd.DataFrame(
+        {
+            "sample_peak_id": ["core", "rung"],
+            "mz": [ion_mz("C2H5O", 1), ion_mz("C4H11O2", 1)],
+            "intensity": [1.0e6, 5.0e5],
+        }
+    )
+    mocks["mechanisms"].return_value = (["m-ct"], [mechanism("m-ct", "[M]+.")])
+    mocks["secondary"].return_value = [mechanism("m-hy", "[M-H]+")] if abstracts else []
+    with stack:
+        stack.enter_context(patch(f"{_SVC}.get_instrument_type", return_value="orbi"))
+        assert await fold_sample_peaks_without_run("si-1") == "batch-1"
+
+    folded = {row.sample_peak_id: row for row in mocks["fold"].call_args.kwargs["rows"]}
+    assert (folded["rung"].role == "reagent") is abstracts
+    assert folded["core"].role != "reagent"
+
+
+@pytest.mark.asyncio
 async def test_an_ineligible_sample_is_skipped_and_nothing_is_written():
     """A blank, or a sample whose calibration is unverified, is refused a run;
     it is refused a fold on the same grounds, and nothing reaches the batch."""

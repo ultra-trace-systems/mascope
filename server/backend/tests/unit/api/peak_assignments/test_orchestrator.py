@@ -1475,6 +1475,56 @@ class TestTheListsAreReadThroughTheOpenedChannels:
         assert row["provenance"]["partner_gate"]["partner"] is False
 
 
+class TestTheLaddersAreClimbedThroughTheOpenedChannels:
+    """The reagent pre-pass's ladder claim reads the channels the run opens:
+    an ethanol less a hydride holding a second ethanol is the source's ion
+    only where the run abstracts a hydride, which a charge-transfer mode does
+    not declare (step 3.3d)."""
+
+    HYDRIDE = SimpleNamespace(
+        ionization_mechanism_id="im-hy",
+        ionization_mechanism="[M-H]+",
+        ionization_mechanism_polarity="+",
+    )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("abstracts", [True, False], ids=["hydride", "none"])
+    async def test_a_hydride_bound_rung_is_claimed_where_the_run_abstracts_one(
+        self, abstracts
+    ):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_tools.composition.reagents import ion_mz
+
+        opened = TestTheListsAreReadThroughTheOpenedChannels
+        peaks = _peaks_df(
+            [
+                ("core", ion_mz("C2H5O", 1), 1.0e6),
+                ("rung", ion_mz("C4H11O2", 1), 5.0e5),
+            ]
+        )
+        recorder = _Recorder()
+        patches = _patches(recorder, peaks, [])
+        patches["mechanisms"] = patch(
+            f"{_MOD}.fetch_sample_mechanisms",
+            new_callable=AsyncMock,
+            return_value=(["im-ct"], [opened.CT]),
+        )
+        patches["secondary"] = patch(
+            f"{_MOD}.fetch_mechanisms_by_notation",
+            new_callable=AsyncMock,
+            return_value=[opened.PROTON] + ([self.HYDRIDE] if abstracts else []),
+        )
+        _start(patches)
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        by_peak = {row["sample_peak_id"]: row for row in recorder.rows}
+        assert (by_peak["rung"]["role"] == "reagent") is abstracts
+        assert by_peak["core"]["role"] != "reagent"
+
+
 class TestTheRunRow:
     @pytest.mark.asyncio
     async def test_it_names_this_engine_and_its_version(self):

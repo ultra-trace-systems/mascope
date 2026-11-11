@@ -21,6 +21,8 @@ from test_engine import TestScoreIonsByFit  # same directory, as test_orchestrat
 from test_mass_gate import PRECISION, _anchors, _row
 from test_orchestrator import (
     _MOD,
+    TestTheLaddersAreClimbedThroughTheOpenedChannels,
+    TestTheListsAreReadThroughTheOpenedChannels,
     _patches,
     _peaks_df,
     _Recorder,
@@ -803,6 +805,63 @@ class TestADecoyRun:
             not in self.recorder.recorded_configs()[-1][ENVELOPE_TOLERANCE_KEY]
         )
         mocks["fold"].assert_awaited_once_with("si-1")
+
+
+class TestTheSourcesLaddersAreTheSamples:
+    """The adduct arm swaps what a stage reads a molecule through, never the
+    source's lines: the reagent pre-pass's ladder claim reads the mode's own
+    channels, so a decoy is offered the peaks its control is (step 3.3d)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("decoy", [None, SWAP], ids=["control", "decoy"])
+    async def test_a_hydride_bound_rung_is_claimed_by_the_decoy_as_by_its_control(
+        self, decoy
+    ):
+        from mascope_tools.composition.reagents import ion_mz
+
+        opened = TestTheListsAreReadThroughTheOpenedChannels
+        peaks = _peaks_df(
+            [
+                ("core", ion_mz("C2H5O", 1), 1.0e6),
+                ("rung", ion_mz("C4H11O2", 1), 5.0e5),
+            ]
+        )
+        recorder = _Recorder()
+        patches = _patches(recorder, peaks, [])
+        patches["mechanisms"] = patch(
+            f"{_MOD}.fetch_sample_mechanisms",
+            new_callable=AsyncMock,
+            return_value=(["im-ct"], [opened.CT]),
+        )
+        # The mode abstracts a hydride through an opened channel, which the
+        # swap closes for the stages.
+        patches["secondary"] = patch(
+            f"{_MOD}.fetch_mechanisms_by_notation",
+            new_callable=AsyncMock,
+            return_value=[
+                opened.PROTON,
+                TestTheLaddersAreClimbedThroughTheOpenedChannels.HYDRIDE,
+            ],
+        )
+        _start(patches)
+        sodium = _mechanism("im-na", "[M+Na]+")
+        patch(
+            f"{_MOD}.plan_sample_decoy",
+            new_callable=AsyncMock,
+            return_value=_plan(
+                SWAP, mechanisms=(sodium,), swapped={"[M]+.": "[M+Na]+"}
+            ),
+        ).start()
+        patch(
+            "mascope_backend.api.new.peak_assignments.batch_peaks_controller."
+            "fold_sample_into_batch_peaks",
+            new_callable=AsyncMock,
+        ).start()
+
+        await _run(PeakAssignmentConfig(run_untargeted=False, decoy=decoy))
+
+        by_peak = {row["sample_peak_id"]: row for row in recorder.rows}
+        assert by_peak["rung"]["role"] == "reagent"
 
 
 class TestPlanningTheAdductArm:

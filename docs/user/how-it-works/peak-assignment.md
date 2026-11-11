@@ -391,6 +391,63 @@ component all of whose ions sat on the ladder would have nothing left to be show
 row names the fragment's ion, the parent it was read against and what the stages had read
 the peak as; a compound of your own target library keeps its peak.
 
+**Ladders of the source's own.** A positive source carries solvent vapour, and builds
+clusters of it: two molecules sharing a proton, a molecule on a hydronium, a molecule
+less a hydride holding a second one. Ethanol's dimer at m/z 93.091 implies a neutral,
+C4H12O2, that is no molecule, so no stage can read it; acetone's dimer at m/z 117.091 is
+also protonated C6H12O2, an ordinary acid or ester, and a stage reads it as one. A
+source's solvent is not the sample. The charge-transfer and urea sources list water,
+methanol, ethanol and acetone, and the pass claims the rungs of their ladders that a work
+names: methanol's protonated dimer to tetramer [Grimsrud & Kebarle 1973][gri73], [Larson
+& McMahon 1982][lar82]; ethanol's protonated dimer and acetone's to its tetramer [Larson &
+McMahon 1982][lar82]; each solvent's protonated molecule with one water [Meot-Ner
+1984][mot84], and methanol's dimer with one; and ethanol and acetone less a hydride
+holding a second molecule, all in the ion clustering data of the [NIST WebBook][nist]. A
+mixed cluster of two solvents, ethanol's trimer and methanol less a hydride are named by
+no work found and left to the stages.
+
+A ladder claims a rung on its own shape, not on a name alone, and every one of these must
+hold:
+
+- **the ladder grows from an ion the spectrum shows**: the protonated solvent, or the
+  solvent less a hydride where the run searches hydride abstraction, at its mass and at a
+  thousandth of the base peak or more. That ion is not claimed: protonated acetone is the
+  sample's acetone to the stages;
+- **the ladder is contiguous from it**: the ion one step below the rung is in the
+  spectrum, so a dimer stands on its monomer and a trimer on its dimer;
+- **every rung's mass fits at the run's precision**, against the masses the source's own
+  ions corrected, and so does the step: the two peaks are one solvent's or one water's
+  exact mass apart;
+- **the heights fall along the ladder**: a rung stands no more than three times the rung
+  below it. A proton-bound dimer is the more stable ion where the vapour is dense, so the
+  fall is not asked to the count; a rung several times taller carries something else;
+- **a rung displaces a molecule only where its ladder outweighs it.** Where the rung's ion
+  also reads as a molecule through one of the run's channels, a closed-shell formula with
+  carbon in it, the rung takes the peak only if the ion it grew from stands at least ten
+  times taller than any peak that molecule shows of its own through another of the run's
+  channels. Acetone's dimer displaces C6H12O2 on a spectrum where protonated acetone is
+  loud and C6H12O2's radical cation is not there; where the molecule shows its own ion,
+  the stages read the peak;
+- **a rung holding water never displaces a molecule.** A humid source hydrates every ion
+  it makes, the proton's own ladder first [Good et al. 1970a][good70] and the analytes'
+  ions with it [Sunner et al. 1988][sun88], so a step of one water is the commonest
+  spacing in a spectrum and no evidence that the lower peak is a solvent's. Ethanol on a
+  hydronium, whose neutral is no molecule, is claimed on its ladder; acetone on a
+  hydronium, which is also protonated C3H8O2, is left to the stages.
+
+On a nitrate source the reagent's acid dimer core, (HNO3)2.NO3- [Jokinen et al.
+2012][jok12], is rung zero of a water ladder of its own, on any instrument: its first
+three hydrates are claimed under the same rules, one water at a time above it. No work
+found names them, and their rows say what shows them: the ladder in the spectrum. How far
+a reagent's water ladder reaches over a batch is the batch's question, not one spectrum's.
+
+A rung's row names its ion and the works that name it, as a library ion's does, with its
+ladder beside them: the ion it grew from, the rung below and the step between them, and
+the molecules its ion also reads as, each with the peak that molecule showed elsewhere if
+it showed one. Where one ion is a rung of two ladders, methanol's dimer and ethanol on a
+hydronium among them, the row names the first ladder that holds and lists the other. A
+rung's isotope lines are claimed with it.
+
 **How the rows read.** A reagent row names no compound, so the sample's assignment ledger
 shows its ion in the formula column instead, written with its charge (`Br-`, `C16H10+`),
 and the inspector heads the card with it; the *reagent* chip beside it says the source
@@ -1121,7 +1178,10 @@ A decoy run takes one of three arms:
   source; chloride, iodide, bromide on a negative one, in that order), and no
   secondary channel is opened. The ions are where they were and every neutral
   read off them is wrong, except where the swap reads an ion the control
-  already reads as another neutral, which the comparison counts apart.
+  already reads as another neutral, which the comparison counts apart. The
+  source's own lines are not swapped: the reagent pre-pass climbs the
+  solvent's ladders through the mode's own channels, so the decoy is offered
+  the peaks its control is.
 
 Every stage of a decoy run reads the arm: the peak table, the targeted
 matcher, the untargeted search, the mass gate and the tiering. And every stage
@@ -1684,7 +1744,23 @@ engine found, and leave the rest of the table alone.
   [link](https://doi.org/10.1039/c7cp07369k)
 - <a id="nist"></a>Linstrom, P. J.; Mallard, W. G. (eds.). *NIST Chemistry WebBook, NIST
   Standard Reference Database Number 69*; electron-ionization spectra from the NIST Mass
-  Spectrometry Data Center. [link](https://doi.org/10.18434/T4D303)
+  Spectrometry Data Center, and its ion clustering data.
+  [link](https://doi.org/10.18434/T4D303)
+- <a id="gri73"></a>Grimsrud, E. P.; Kebarle, P. *Gas phase ion equilibria studies of the
+  hydrogen ion by methanol, dimethyl ether, and water. Effect of hydrogen bonding.* J. Am.
+  Chem. Soc. 1973, 95:7939–7943. [link](https://doi.org/10.1021/ja00805a002)
+- <a id="lar82"></a>Larson, J. W.; McMahon, T. B. *Formation, thermochemistry, and
+  relative stabilities of proton-bound dimers of oxygen n-donor bases from ion cyclotron
+  resonance solvent-exchange equilibrium measurements.* J. Am. Chem. Soc. 1982,
+  104:6255–6261. [link](https://doi.org/10.1021/ja00387a016)
+- <a id="mot84"></a>Meot-Ner (Mautner), M. *The ionic hydrogen bond and ion solvation. 1.
+  NH+...O, NH+...N, and OH+...O bonds. Correlations with proton affinity. Deviations due to
+  structural effects.* J. Am. Chem. Soc. 1984, 106:1257–1264.
+  [link](https://doi.org/10.1021/ja00317a015)
+- <a id="sun88"></a>Sunner, J.; Nicol, G.; Kebarle, P. *Factors determining relative
+  sensitivity of analytes in positive mode atmospheric pressure ionization mass
+  spectrometry.* Anal. Chem. 1988, 60:1300–1307.
+  [link](https://doi.org/10.1021/ac00164a012)
 - <a id="wan03"></a>Wang, T.; Španěl, P.; Smith, D. *Selected ion flow tube, SIFT, studies
   of the reactions of H3O+, NO+ and O2+ with eleven C10H16 monoterpenes.* Int. J. Mass
   Spectrom. 2003, 228:117–126. [link](https://doi.org/10.1016/S1387-3806(03)00271-9)
@@ -1774,6 +1850,10 @@ engine found, and leave the rest of the table alone.
 [mar16]: #mar16
 [wes18]: #wes18
 [nist]: #nist
+[gri73]: #gri73
+[lar82]: #lar82
+[mot84]: #mot84
+[sun88]: #sun88
 [wan03]: #wan03
 [scn03]: #scn03
 [mat17]: #mat17

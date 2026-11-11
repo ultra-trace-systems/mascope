@@ -31,8 +31,10 @@ from mascope_backend.api.new.peak_assignments.import_validation import (
 from mascope_backend.api.new.peak_assignments.reagent_pass import (
     build_reagent_assignments,
     claim_fragments,
+    claim_ladder_peaks,
     claim_reagent_peaks,
     fragment_ladders_for,
+    ion_ladders_for,
     reagent_library_for,
 )
 from mascope_backend.api.new.peak_assignments.tiers import TIER_UNASSIGNED
@@ -46,6 +48,7 @@ from mascope_tools.composition.reagents import (
     KIND_FRAGMENT,
     FragmentIon,
     FragmentLadder,
+    ReagentCalibration,
     ion_mz,
 )
 
@@ -234,9 +237,14 @@ class TestTheIsotopologueRows:
 
 
 def _run_pre_pass(
-    peaks: pd.DataFrame, profile: str, instrument_type: str | None, resolution=None
+    peaks: pd.DataFrame,
+    profile: str,
+    instrument_type: str | None,
+    resolution=None,
+    channels: tuple[str, ...] = ("[M+H]+",),
 ):
-    """The pre-pass as a run calls it, with the chemistry a run would resolve."""
+    """The pre-pass as a run calls it, with the chemistry a run would resolve
+    and the channels it searches."""
     from mascope_backend.api.new.peak_assignments.config import (
         PeakAssignmentConfig,
     )
@@ -252,7 +260,15 @@ def _run_pre_pass(
         polarity="+",
     )
     return _reagent_assignments(
-        peaks, resolved, "sample1", "run1", resolution=resolution
+        peaks,
+        resolved,
+        "sample1",
+        "run1",
+        resolution=resolution,
+        own_mechanisms=[
+            SimpleNamespace(ionization_mechanism=notation) for notation in channels
+        ],
+        sample_name="sample",
     )
 
 
@@ -1341,3 +1357,210 @@ class TestTheFragmentClaim:
         assert claimed["provenance"]["cross_channel"][SAME_ION_SETTLED]["by"] == (
             SETTLED_BY_SECOND_CHANNEL
         )
+
+
+# --- the ladders --------------------------------------------------------------
+
+
+class TestTheLadderClaim:
+    """The source's solvent ladders and the reagent's water ladder, claimed
+    beside the cluster claim and written as its rows are (step 3.3d)."""
+
+    #: The fluoranthene beam, the base peak, and an ethanol ladder above
+    #: protonated ethanol: the dimer no stage can read.
+    ETHANOL = (("C16H10", 1, 1e7), ("C2H7O", 1, 1e6), ("C4H13O2", 1, 2e6))
+
+    def test_a_rung_is_a_reagent_row_with_its_ladder(self):
+        peaks = _peaks(*self.ETHANOL)
+        rows, claimed, _ = _run_pre_pass(peaks, "EASYIC_POS", "orbi")
+
+        (rung,) = [
+            row
+            for row in rows
+            if row["ion_formula"] == "C4H13O2+" and row["isotope_label"] is None
+        ]
+        assert (rung["role"], rung["assigned_formula"], rung["tier"]) == (
+            ROLE_REAGENT,
+            None,
+            TIER_UNASSIGNED,
+        )
+        reagent = rung["provenance"]["reagent"]
+        assert (reagent["ion"], reagent["family"]) == ("[(C2H6O)2+H]+", "solvent")
+        assert reagent["references"] == ["nist", "lar82"]
+        assert reagent["ladder"]["grew_from"]["ion"] == "[C2H6O+H]+"
+        assert reagent["ladder"]["below"]["step"] == "C2H6O"
+        # Its isotope lines fold under it, and every one leaves the stages.
+        lines = [
+            row
+            for row in rows
+            if row["owner_peak_assignment_id"] == rung["peak_assignment_id"]
+        ]
+        assert lines and {row["isotope_label"] for row in lines} >= {"13C"}
+        assert {rung["sample_peak_id"]} | {row["sample_peak_id"] for row in lines} <= (
+            claimed
+        )
+        # The core is the stages' to read.
+        core = peaks.loc[(peaks["mz"] - ion_mz("C2H7O", 1)).abs().idxmin()]
+        assert core["sample_peak_id"] not in claimed
+
+    def test_the_ladder_reads_the_runs_channels(self):
+        """The acetone dimer is also protonated C6H12O2, whose radical cation
+        stands at a sixth of the acetone core. A run that reads protons alone
+        has nothing else to show the molecule by, and the ladder takes the
+        peak; one that also reads electron transfer sees the molecule's own
+        ion, and the rung is left to the stages."""
+        peaks = _peaks(
+            ("C16H10", 1, 1e7),
+            ("C3H7O", 1, 3e6),
+            ("C6H13O2", 1, 1e5),
+            ("C6H12O2", 1, 5e5),
+        )
+
+        def dimer_claimed(channels):
+            rows, _, _ = _run_pre_pass(peaks, "EASYIC_POS", "orbi", channels=channels)
+            return any(row["ion_formula"] == "C6H13O2+" for row in rows)
+
+        assert dimer_claimed(("[M+H]+",))
+        assert not dimer_claimed(("[M+H]+", "[M]+."))
+
+    def test_a_hydride_bound_rung_needs_the_hydride_channel(self):
+        peaks = _peaks(("C16H10", 1, 1e7), ("C2H5O", 1, 1e6), ("C4H11O2", 1, 5e5))
+
+        def rung_claimed(channels):
+            rows, _, _ = _run_pre_pass(peaks, "EASYIC_POS", "orbi", channels=channels)
+            return any(row["ion_formula"] == "C4H11O2+" for row in rows)
+
+        assert rung_claimed(("[M]+.", "[M-H]+"))
+        assert not rung_claimed(("[M]+.",))
+
+    def test_the_rungs_do_not_move_the_reagent_lines_offset(self):
+        """The nitrate dimer core's hydrates are the reagent's family, but the
+        offset is read off the library's lines, where it was measured: here the
+        library's lines sit on their masses and the hydrates 2.5 ppm high."""
+        frame = _peaks(("NO3", -1, 1e7), ("HN2O6", -1, 3e6), ("H2N3O9", -1, 1e6))
+        hydrates = _peaks(("H4N3O10", -1, 2e5), ("H6N3O11", -1, 5e4))
+        hydrates["mz"] *= 1.0 + 2.5e-6
+        peaks = pd.concat([frame, hydrates], ignore_index=True).sort_values(
+            "mz", ignore_index=True
+        )
+        peaks["sample_peak_id"] = [f"p{index}" for index in range(len(peaks))]
+        rows, _, offset = _run_pre_pass(peaks, "NO3", "orbi", channels=("[M+NO3]-",))
+
+        ions = {row["provenance"]["reagent"]["ion"] for row in rows}
+        assert {"[NO3+2xHNO3+H2O]-", "[NO3+2xHNO3+2xH2O]-"} <= ions
+        rungs = {
+            row["peak_assignment_id"]
+            for row in rows
+            if "ladder" in row["provenance"]["reagent"]
+        }
+        library = [
+            row
+            for row in rows
+            if row["peak_assignment_id"] not in rungs
+            and row["owner_peak_assignment_id"] not in rungs
+        ]
+        assert offset.mu_ppm == pytest.approx(0.0, abs=0.05)
+        assert offset.lines == len(library) < len(rows)
+
+    def test_each_profile_climbs_its_own_ladders(self):
+        rows, _, _ = _run_pre_pass(_peaks(*self.ETHANOL), "UR", "orbi")
+
+        # The urea source lists the same solvents, so its ladder holds too...
+        assert any(row["ion_formula"] == "C4H13O2+" for row in rows)
+        # ...and a source that lists none claims no rung.
+        rows, _, _ = _run_pre_pass(_peaks(*self.ETHANOL), "none", "orbi")
+        assert rows == []
+
+    def test_the_claim_stands_down_with_nothing_to_climb_or_correct_by(self):
+        peaks = _peaks(*self.ETHANOL)
+        ladders = ion_ladders_for("EASYIC_POS")
+        common = {"claimed": [], "channels": ["[M]+."], "claim_ppm": ORBI_PPM}
+
+        assert claim_ladder_peaks(peaks, (), calibration=CALIBRATION, **common) == (
+            [],
+            None,
+        )
+        assert claim_ladder_peaks(peaks, ladders, calibration=None, **common) == (
+            [],
+            None,
+        )
+        assert claim_ladder_peaks(
+            peaks.iloc[:0], ladders, calibration=CALIBRATION, **common
+        ) == ([], None)
+        rungs, summary = claim_ladder_peaks(
+            peaks, ladders, calibration=CALIBRATION, **common
+        )
+        assert [hit.cluster.label for hit in rungs if not hit.is_isotopologue] == [
+            "[(C2H6O)2+H]+"
+        ]
+        assert summary["claimed"] == 1
+
+    def test_no_rung_takes_a_peak_the_cluster_claim_took(self):
+        peaks = _peaks(*self.ETHANOL)
+        dimer = int((peaks["mz"] - ion_mz("C4H13O2", 1)).abs().idxmin())
+        taken = SimpleNamespace(index=dimer)
+
+        rungs, _ = claim_ladder_peaks(
+            peaks,
+            ion_ladders_for("EASYIC_POS"),
+            calibration=CALIBRATION,
+            claimed=[taken],
+            channels=["[M]+."],
+            claim_ppm=ORBI_PPM,
+        )
+        assert rungs == []
+
+
+#: A calibration the anchors would give a spectrum on its masses.
+CALIBRATION = ReagentCalibration(0.0, ORBI_PPM)
+
+
+class TestARungsLinesFromTheBackend:
+    """The claim hands the file's resolving power and the reagent's purity to
+    the rung's isotope lines, as the cluster claim does."""
+
+    @staticmethod
+    def _frame(core: str, hydrate: str, reagent: str, resolution, purity):
+        """A nitrate dimer core and its hydrate's resolved envelope."""
+        from mascope_tools.composition.reagents import DEFAULT_ISOTOPOLOGUE_MIN_RELATIVE
+
+        rows = [
+            {"mz": float(m), "intensity": h}
+            for m, h in ((ion_mz(reagent, -1), 1e7), (ion_mz(core, -1), 3e6))
+        ]
+        lines_mz, lines_share, _ = predict_resolved_isotopes(
+            hydrate, -1, DEFAULT_ISOTOPOLOGUE_MIN_RELATIVE, resolution, purity
+        )
+        rows += [
+            {"mz": float(m), "intensity": 3e5 * float(share) / float(lines_share[0])}
+            for m, share in zip(lines_mz, lines_share)
+        ]
+        frame = pd.DataFrame(sorted(rows, key=lambda row: row["mz"]))
+        frame.insert(0, "sample_peak_id", [f"p{index}" for index in range(len(frame))])
+        return frame
+
+    @staticmethod
+    def _lines(peaks, profile, reagent, **kwargs) -> list[str]:
+        rungs, _ = claim_ladder_peaks(
+            peaks,
+            ion_ladders_for(profile),
+            calibration=CALIBRATION,
+            claimed=[],
+            channels=[f"[M+{reagent}]-"],
+            claim_ppm=ORBI_PPM,
+            **kwargs,
+        )
+        assert any(not hit.is_isotopologue for hit in rungs)
+        return [hit.isotope_label for hit in rungs if hit.is_isotopologue]
+
+    def test_at_the_files_resolution(self):
+        peaks = self._frame("H2N3O9", "H4N3O10", "NO3", tof, None)
+
+        assert "15N" in self._lines(peaks, "NO3", "NO3", resolution=tof)
+        assert "15N" not in self._lines(peaks, "NO3", "NO3")
+
+    def test_at_the_reagents_purity(self):
+        peaks = self._frame("H2O9^N3", "H4O10^N3", "^NO3", None, 0.9)
+
+        assert "14N" in self._lines(peaks, "NO3_15N", "^NO3", purity=0.9)
+        assert "14N" not in self._lines(peaks, "NO3_15N", "^NO3")

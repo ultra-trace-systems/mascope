@@ -52,9 +52,12 @@ The library holds more than the reagent's own ladder: the ions a source makes
 of the air it ionizes and the calibrant beam an Orbitrap's internal-calibration
 source runs, each ion carrying its family and the literature that names it -
 or, for the few no work found names, what shows it - which the row records so
-a reader can check the claim against a paper. A fourth family is claimed after
-the stages rather than before them: the fragments a source makes of an
-analyte, which only the analyte's own commit licenses (:func:`claim_fragments`).
+a reader can check the claim against a paper. Beside them the pass climbs the
+source's ladders, the clusters it builds of its solvent vapour and its
+reagent's water ladder, whose rungs are claimed on the ladder's own shape
+(:func:`claim_ladder_peaks`). A last family is claimed after the stages rather
+than before them: the fragments a source makes of an analyte, which only the
+analyte's own commit licenses (:func:`claim_fragments`).
 """
 
 from __future__ import annotations
@@ -88,10 +91,13 @@ from mascope_tools.composition.reagents import (
     KIND_FRAGMENT,
     FragmentIon,
     FragmentLadder,
+    IonLadder,
     ReagentCalibration,
     ReagentCluster,
     ReagentHit,
     fragment_ladders,
+    ion_ladders,
+    match_ion_ladders,
     match_reagent_clusters,
     reagent_library,
 )
@@ -101,8 +107,10 @@ __all__ = [
     "FragmentClaims",
     "build_reagent_assignments",
     "claim_fragments",
+    "claim_ladder_peaks",
     "claim_reagent_peaks",
     "fragment_ladders_for",
+    "ion_ladders_for",
     "reagent_library_for",
 ]
 
@@ -117,6 +125,18 @@ def reagent_library_for(profile_name: str) -> tuple[ReagentCluster, ...]:
     :return: Its reagent ions, empty when the profile has no single reagent.
     """
     return reagent_library(profile_name)
+
+
+def ion_ladders_for(profile_name: str) -> tuple[IonLadder, ...]:
+    """The ladders a resolved profile's source climbs: its solvents' clusters
+    and its reagent's water ladder.
+
+    A pass-through for the same reason :func:`reagent_library_for` is one.
+
+    :param profile_name: The resolved profile's name.
+    :return: Its ladders, empty when it names none.
+    """
+    return ion_ladders(profile_name)
 
 
 def fragment_ladders_for(profile_name: str) -> tuple[FragmentLadder, ...]:
@@ -168,6 +188,11 @@ def _provenance(hit: ReagentHit) -> dict:
         # belongs to is already in `ion` above, and which line of that cluster
         # is in the row's `isotope_label`.
         record["reagent"]["predicted_relative"] = round(hit.predicted_relative, 5)
+    if hit.ladder is not None:
+        # A rung is claimed on its ladder, and the row says on what: the ion
+        # the ladder grew from, the rung below and the step, and the molecules
+        # the rung's ion also reads as, which it displaced.
+        record["reagent"]["ladder"] = dict(hit.ladder)
     return record
 
 
@@ -285,6 +310,53 @@ def claim_reagent_peaks(
         library,
         peaks_df["mz"].to_numpy(),
         peaks_df["intensity"].to_numpy(),
+        claim_ppm=claim_ppm,
+        purity=purity,
+        resolution=resolution,
+    )
+
+
+def claim_ladder_peaks(
+    peaks_df: pd.DataFrame,
+    ladders: tuple[IonLadder, ...],
+    *,
+    calibration: ReagentCalibration | None,
+    claimed: list[ReagentHit],
+    channels: list[str] | tuple[str, ...],
+    claim_ppm: float,
+    purity: float | None = None,
+    resolution: Callable[[float], float] | None = None,
+) -> tuple[list[ReagentHit], dict | None]:
+    """Claim the rungs of the source's ladders, beside the cluster claim.
+
+    Made after :func:`claim_reagent_peaks`, on the masses its anchors
+    corrected and the peaks it left (``reagents.match_ion_ladders`` says
+    what licenses a rung). A ladder's evidence is its own shape rather than a
+    work naming the ion, which is why it is a claim of its own: a rung is
+    claimed only above an ion the spectrum shows, one step at a time.
+
+    :param peaks_df: The sample's peaks, as for :func:`claim_reagent_peaks`.
+    :param ladders: The profile's ladders, from :func:`ion_ladders_for`.
+    :param calibration: What the cluster claim's anchors said; None when it had
+        nothing to match, and then the ladders claim nothing either.
+    :param claimed: The cluster claim's hits, whose peaks no rung takes.
+    :param channels: The run's channels: whether it abstracts a hydride, and
+        what a stage could read a rung as.
+    :param claim_ppm: The run's own m/z precision.
+    :param purity: A labelled reagent's isotopic purity.
+    :param resolution: The file's resolving power as a function of m/z.
+    :return: The rungs and their isotope lines, and the claim's summary; None
+        for the summary where there were no ladders to climb.
+    """
+    if not ladders or calibration is None or peaks_df.empty:
+        return [], None
+    return match_ion_ladders(
+        ladders,
+        peaks_df["mz"].to_numpy(),
+        peaks_df["intensity"].to_numpy(),
+        calibration=calibration,
+        taken=[hit.index for hit in claimed],
+        channels=channels,
         claim_ppm=claim_ppm,
         purity=purity,
         resolution=resolution,
