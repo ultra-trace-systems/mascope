@@ -154,6 +154,37 @@ def test_the_draw_is_seeded_by_the_run():
     assert first != other
 
 
+def test_a_verdict_on_a_spot_check_leaves_the_others_in_place():
+    edge_rows = [_row(f"e{i:02d}", 0.45 + i * 0.001) for i in range(40)]
+    outside = [_row(f"o{i:03d}", 0.05 + i * 0.001) for i in range(160)]
+    rows = edge_rows + outside
+
+    def spots(queue):
+        return [e.sample_peak_id for e in queue if e.reason == REASON_SPOT_CHECK]
+
+    before = spots(_rank(rows))
+    judged = before[0]
+    after = spots(_rank(rows, verdicts=[_verdict(judged, utc=AFTER)]))
+    # The judged row leaves; every other one keeps its turn, and the draw
+    # still holds as many.
+    assert judged not in after
+    assert after[: len(before) - 1] == before[1:]
+    assert len(after) == len(before)
+
+
+def test_fewer_edge_rows_shorten_the_draw_from_its_end():
+    edge_rows = [_row(f"e{i:02d}", 0.45 + i * 0.001) for i in range(40)]
+    outside = [_row(f"o{i:03d}", 0.05 + i * 0.001) for i in range(160)]
+
+    def spots(queue):
+        return [e.sample_peak_id for e in queue if e.reason == REASON_SPOT_CHECK]
+
+    full = spots(_rank(edge_rows + outside))
+    fewer = spots(_rank(edge_rows[:12] + outside))
+    assert len(fewer) < len(full)
+    assert fewer == full[: len(fewer)]
+
+
 def test_a_run_with_few_edge_rows_still_draws_spot_checks():
     rows = [_row("e", 0.46)] + [_row(f"o{i}", 0.1) for i in range(10)]
     queue = _rank(rows)

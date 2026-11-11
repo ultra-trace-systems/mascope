@@ -75,6 +75,7 @@ async def queue_data(async_session_factory, pa_test_data):
         "earlier": gen_id(),
         "other_profile": gen_id(),
         "decoy": gen_id(),
+        "imported": gen_id(),
         "assignments": {},
         "other_file": gen_id(),
         "other_sample": gen_id(),
@@ -123,10 +124,19 @@ async def queue_data(async_session_factory, pa_test_data):
             verified_utc=at or now - timedelta(days=1),
         )
 
-    def run(run_id, created, *, run_profile=profile, decoy=None, sample=None):
+    def run(
+        run_id,
+        created,
+        *,
+        run_profile=profile,
+        decoy=None,
+        sample=None,
+        engine="mascope",
+    ):
         return PeakAssignmentRun(
             peak_assignment_run_id=run_id,
             sample_item_id=sample or ids["sample"],
+            engine=engine,
             engine_version="0.7.0-test",
             status="completed",
             config={"resolved_profile": {"profile": run_profile}},
@@ -208,6 +218,7 @@ async def queue_data(async_session_factory, pa_test_data):
         session.add(run(ids["earlier"], now - timedelta(days=2)))
         session.add(run(ids["run"], now - timedelta(hours=1)))
         session.add(run(ids["decoy"], now - timedelta(minutes=30), decoy="mass_offset"))
+        session.add(run(ids["imported"], now - timedelta(hours=3), engine="ext"))
         session.add_all(
             [
                 row("sp-edge", 0.46),
@@ -219,6 +230,8 @@ async def queue_data(async_session_factory, pa_test_data):
                 row("sp-reassigned", 0.95, formula="C7H8"),
                 # The decoy's own reading of an edge peak: no verdict to ask.
                 row("sp-decoy", 0.46, run_id=ids["decoy"]),
+                # An imported run's edge row: its verdict would teach no curve.
+                row("sp-imported", 0.46, run_id=ids["imported"]),
             ]
         )
         await session.flush()
@@ -352,7 +365,7 @@ async def test_a_verdict_takes_its_row_out_of_the_queue(
 
 
 @pytest.mark.asyncio
-async def test_a_named_run_is_ranked_and_a_decoy_answers_empty(
+async def test_a_named_run_is_ranked_and_a_decoy_or_import_answers_empty(
     guest_client, queue_data
 ):
     url = _queue_url(queue_data["sample"])
@@ -368,6 +381,14 @@ async def test_a_named_run_is_ranked_and_a_decoy_answers_empty(
     )
     assert decoy.status_code == 200, decoy.text
     assert decoy.json()["data"] == []
+
+    imported = await guest_client.get(
+        url, params={"peak_assignment_run_id": queue_data["imported"]}
+    )
+    assert imported.status_code == 200, imported.text
+    assert imported.json()["peak_assignment_run_id"] == queue_data["imported"]
+    assert imported.json()["data"] == []
+    assert "imported" in imported.json()["message"]
 
     missing = await guest_client.get(url, params={"peak_assignment_run_id": gen_id()})
     assert missing.status_code == 404
