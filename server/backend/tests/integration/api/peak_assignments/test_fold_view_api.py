@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     fold_sample_into_batch_peaks,
@@ -24,6 +24,7 @@ from mascope_backend.api.new.peak_assignments.fold_view import (
     fold_run_id,
 )
 from mascope_backend.db import (
+    BatchPeak,
     PeakAssignment,
     PeakAssignmentRun,
     SampleBatch,
@@ -322,8 +323,8 @@ async def test_the_derived_ledger_pages_and_filters(
     by_untargeted = await _ledger(guest_client, s1, source="untargeted")
     assert (by_untargeted["total"], by_untargeted["data"]) == (0, [])
 
-    # An engine's own tier is genuinely absent from a member, so filtering on
-    # one matches nothing: absence is not a match.
+    # No import gave any anchor a verdict, so filtering on an engine's own
+    # tier matches nothing: absence is not a match.
     by_engine_tier = await _ledger(guest_client, s1, engine_tier="assigned")
     assert (by_engine_tier["total"], by_engine_tier["data"]) == (0, [])
 
@@ -336,6 +337,70 @@ async def test_the_derived_ledger_pages_and_filters(
         params={"peak_assignment_run_id": fold_run_id(folded["s2"])},
     )
     assert other.status_code == 404
+
+
+async def _give_every_anchor_a_verdict(session_factory, batch_id, engine_tier):
+    """What an import's verdict write leaves, on every anchor of the batch at
+    once: the rule of which rows show it is the read's, so the anchors an
+    import would not have judged carry one here too."""
+    async with session_factory() as session:
+        await session.execute(
+            update(BatchPeak)
+            .where(BatchPeak.sample_batch_id == batch_id)
+            .values(engine_tier=engine_tier, engine_claim="the engine's words")
+        )
+        await session.commit()
+
+
+async def test_the_derived_ledger_shows_an_imports_verdict_on_the_judged_reading(
+    guest_client, async_session_factory, folded
+):
+    await _delete_runs(async_session_factory, folded["s1"], folded["s2"])
+    await _give_every_anchor_a_verdict(
+        async_session_factory, folded["batch_id"], "candidate"
+    )
+    s1, s2 = folded["s1"], folded["s2"]
+
+    rows = {r["sample_peak_id"]: r for r in (await _ledger(guest_client, s1))["data"]}
+    # S1's M0 reads the consensus: the verdict is about it.
+    assert (rows["p1"]["tier"], rows["p1"]["engine_tier"]) == ("assigned", "candidate")
+    # Its isotope line and the unassigned peak are not what the engine judged.
+    assert rows["p2"]["engine_tier"] is None
+    assert rows["p3"]["engine_tier"] is None
+    # S2's member of the same anchor dissents from the consensus formula.
+    (dissent,) = (await _ledger(guest_client, s2))["data"]
+    assert dissent["assigned_formula"] == "C5H12N2O4"
+    assert dissent["engine_tier"] is None
+
+    # The detail is the row plus the anchor's: it shows the same tier.
+    detail = await guest_client.get(
+        f"/api/peak-assignments/sample/{s1}/assignment/"
+        f"{rows['p1']['peak_assignment_id']}"
+    )
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["data"][0]["engine_tier"] == "candidate"
+
+    # The filters reach exactly the rows that show a verdict.
+    by_engine_tier = await _ledger(guest_client, s1, engine_tier="candidate")
+    assert [r["sample_peak_id"] for r in by_engine_tier["data"]] == ["p1"]
+    assert by_engine_tier["total"] == 1
+    assert (await _ledger(guest_client, s1, engine_tier="assigned"))["total"] == 0
+    assert (await _ledger(guest_client, s2, engine_tier="candidate"))["total"] == 0
+    disagrees = await _ledger(guest_client, s1, tier_disagrees=True)
+    assert [r["sample_peak_id"] for r in disagrees["data"]] == ["p1"]
+    assert disagrees["total"] == 1
+    # A row with no verdict is in neither answer.
+    assert (await _ledger(guest_client, s1, tier_disagrees=False))["total"] == 0
+    assert (await _ledger(guest_client, s2, tier_disagrees=True))["total"] == 0
+
+    # An engine that agrees with the member's tier.
+    await _give_every_anchor_a_verdict(
+        async_session_factory, folded["batch_id"], "assigned"
+    )
+    agrees = await _ledger(guest_client, s1, tier_disagrees=False)
+    assert [r["sample_peak_id"] for r in agrees["data"]] == ["p1"]
+    assert agrees["total"] == 1
+    assert (await _ledger(guest_client, s1, tier_disagrees=True))["total"] == 0
 
 
 async def test_the_derived_detail_carries_the_anchors_other_identities(

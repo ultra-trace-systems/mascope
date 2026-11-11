@@ -841,7 +841,9 @@ async def get_batch_peak_members_route(
     user: User = Depends(current_active_user),
 ) -> BatchPeakMembersResponse:
     """One page of a batch's ledger as flat rows: one per member, the anchor's
-    consensus beside the member's own reading. ``total`` says how many rows
+    consensus beside the member's own reading. The anchor's columns include an
+    importing engine's own verdict, ``engine_tier`` and ``engine_claim``, empty
+    where no import gave one. ``total`` says how many rows
     match, so a client pages until it has the whole ledger - the SDK's
     ``batch_peaks.members`` does exactly that.
 

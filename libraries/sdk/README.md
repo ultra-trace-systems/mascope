@@ -430,8 +430,9 @@ species = mascope.load_batch_ledger(dataset="My Dataset", members=False)
 ```
 
 Key columns of a member row: the anchor's `batch_peak_id`, `batch_mz`,
-`consensus_formula`, `consensus_tier`, `support_fraction`, `n_present`, `curated`
-(pinned by hand for the whole batch), beside the member's `sample_item_name`,
+`consensus_formula`, `consensus_tier`, `engine_tier` and `engine_claim` (an imported
+engine's own verdict on the batch peak, empty where none was given),
+`support_fraction`, `n_present`, `curated` (pinned by hand for the whole batch), beside the member's `sample_item_name`,
 `sample_peak_id`, `mz`, `intensity`, `assigned_formula`, `source`, `tier`, `role`,
 `fit_score` — so a sample that dissents from the batch reads as one row saying both.
 Per batch, the same reads are `mascope.batch_peaks.list(batch_id)`,

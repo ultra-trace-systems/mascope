@@ -24,6 +24,13 @@ label, no target ids, no evidence (the source is the registry entry's, where
 the member that brought the identity recorded one). Those are per-sample numbers a
 run computes and a member does not carry; the design note leaves them to an
 on-demand re-score.
+
+The engine tier is the anchor's: an import's verdict (``engine_tier``) is kept
+on the batch peak, about the identity its consensus names. A member shows it
+where the member is that reading in its sample - an M0 member whose registry
+entry names the consensus formula through the consensus mechanism - and no
+other row does: an isotope line, a reagent, or a sample that dissents from the
+batch is not what the engine judged (:func:`member_engine_tier`).
 """
 
 from __future__ import annotations
@@ -32,10 +39,12 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from fastapi import status
-from sqlalchemy import func, select
+from sqlalchemy import and_, case, func, select
 
 from mascope_backend.api.lib.exceptions.api_exceptions import CodedHTTPException
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    ROLE_M0,
+    TIER_CODES,
     mz_from_delta,
     resolve_candidate,
     role_code,
@@ -118,6 +127,45 @@ class DerivedAssignmentReadOnlyException(CodedHTTPException):
 # --- the row shape ------------------------------------------------------------
 
 
+def member_engine_tier(member: Any, anchor: Any, identity: dict) -> Optional[str]:
+    """The importing engine's tier a member's row shows: the anchor's, on an M0
+    member that reads the anchor's consensus identity; ``None`` on every other.
+
+    The verdict is about the formula and mechanism the consensus named when the
+    import wrote it (``batch_import.verdict_on_anchor``), so it reaches the
+    member that is that reading in its sample and no other. ``derived_ledger``
+    filters by the same rule (:func:`_engine_verdict_shown`).
+
+    :param member: The sample's ``BatchPeakOccurrence``.
+    :param anchor: The ``BatchPeak`` it sits in.
+    :param identity: The registry entry the member's index names.
+    """
+    formula = identity.get("formula")
+    if (
+        role_name(member.role) != ROLE_M0
+        or not formula
+        or formula != anchor.consensus_formula
+        or identity.get("ionization_mechanism_id") != anchor.ionization_mechanism_id
+    ):
+        return None
+    return anchor.engine_tier
+
+
+def _engine_verdict_shown():
+    """SQL for :func:`member_engine_tier`'s rule: the member's row shows its
+    anchor's engine tier. No IS NOT NULL on the tier beside it: the filters
+    that use this compare the tier, and a comparison with a NULL one is NULL,
+    which a WHERE drops."""
+    entry = BatchPeak.candidates[BatchPeakOccurrence.candidate]
+    return and_(
+        BatchPeakOccurrence.role == role_code(ROLE_M0),
+        entry["formula"].as_string() == BatchPeak.consensus_formula,
+        entry["ionization_mechanism_id"]
+        .as_string()
+        .is_not_distinct_from(BatchPeak.ionization_mechanism_id),
+    )
+
+
 def member_row(member: Any, anchor: Any) -> dict:
     """One derived ledger row, in the shape of ``schemas.PeakAssignmentRecord``.
 
@@ -155,7 +203,7 @@ def member_row(member: Any, anchor: Any) -> dict:
         "mz_error_ppm": None,
         "abundance_error": None,
         "tier": tier_name(member.tier) or TIER_UNASSIGNED,
-        "engine_tier": None,
+        "engine_tier": member_engine_tier(member, anchor, identity),
         "target_compound_id": None,
         "target_ion_id": None,
         "owner_peak_assignment_id": fold_assignment_id(owner) if owner else None,
@@ -384,12 +432,13 @@ async def derived_ledger(
     """The sample's ledger read off the batch peaks, as the list route answers it.
 
     ``None`` when the batch ledger does not know the sample at all - the caller
-    then answers as it always has for a sample with no run. Filters on what a
-    member does not carry - an engine's own tier, and whether it disagreed with
-    one - match nothing rather than everything: absence is not a match. The
-    source is not one of those. It is on the identity the member's registry
-    entry names, which is where ``member_row`` reads it from and where the
-    export writes it, so a row that shows one has to be findable by it.
+    then answers as it always has for a sample with no run. The filters on an
+    engine's own tier, and on whether it disagreed with the row's, reach only
+    the rows that show one (:func:`member_engine_tier`); a row with none matches
+    neither answer, as on a run-backed read: absence is not agreement. The
+    source is on the identity the member's registry entry names, which is
+    where ``member_row`` reads it from and where the export writes it, so a
+    row that shows one has to be findable by it.
 
     :param session: An open session.
     :param sample: The sample view row.
@@ -400,69 +449,78 @@ async def derived_ledger(
     if not await member_count(session, sample.sample_item_id):
         return None
 
-    if engine_tier is not None or tier_disagrees is not None:
-        total, rows = 0, []
-    else:
-        conditions = []
-        # The member stores codes; a filter names a tier or a role. An unknown
-        # name matches nothing, and a member with no code reads as unassigned.
-        if tier:
-            code = tier_code(_plain(tier))
-            conditions.append(
-                func.coalesce(BatchPeakOccurrence.tier, tier_code(TIER_UNASSIGNED))
-                == (code if code is not None else -1)
+    conditions = []
+    # The member stores codes; a filter names a tier or a role. An unknown
+    # name matches nothing, and a member with no code reads as unassigned.
+    if tier:
+        code = tier_code(_plain(tier))
+        conditions.append(
+            func.coalesce(BatchPeakOccurrence.tier, tier_code(TIER_UNASSIGNED))
+            == (code if code is not None else -1)
+        )
+    if role:
+        code = role_code(_plain(role))
+        conditions.append(
+            func.coalesce(BatchPeakOccurrence.role, role_code(ROLE_UNASSIGNED))
+            == (code if code is not None else -1)
+        )
+    # The source is on the anchor's registry entry, which the member's
+    # `candidate` index names - the same hop `member_row` makes to show it.
+    # A member with no entry (unassigned, or an index the registry does not
+    # reach) reads as NULL here and so matches no source, which is right:
+    # it displays none either.
+    if source:
+        conditions.append(
+            BatchPeak.candidates[BatchPeakOccurrence.candidate]["source"].as_string()
+            == _plain(source)
+        )
+    if engine_tier or tier_disagrees is not None:
+        conditions.append(_engine_verdict_shown())
+    if engine_tier:
+        conditions.append(BatchPeak.engine_tier == _plain(engine_tier))
+    if tier_disagrees is not None:
+        # The row's tier is the member's code, the engine's a name: compare
+        # codes. A name no code reads as is NULL here, so out both ways.
+        engine_code = case(TIER_CODES, value=BatchPeak.engine_tier)
+        member_code = func.coalesce(
+            BatchPeakOccurrence.tier, tier_code(TIER_UNASSIGNED)
+        )
+        conditions.append(
+            engine_code != member_code if tier_disagrees else engine_code == member_code
+        )
+    count = select(func.count()).select_from(BatchPeakOccurrence)
+    if source or engine_tier or tier_disagrees is not None:
+        # Only these filters reach the anchor, so only they pay for the
+        # join; the ordinary read counts the member table alone.
+        count = count.join(
+            BatchPeak,
+            BatchPeak.batch_peak_id == BatchPeakOccurrence.batch_peak_id,
+        )
+    total = (
+        await session.execute(
+            count.where(
+                BatchPeakOccurrence.sample_item_id == sample.sample_item_id,
+                *conditions,
             )
-        if role:
-            code = role_code(_plain(role))
-            conditions.append(
-                func.coalesce(BatchPeakOccurrence.role, role_code(ROLE_UNASSIGNED))
-                == (code if code is not None else -1)
+        )
+    ).scalar_one()
+    # Ordered by the member's m/z - the anchor's plus its offset - with the
+    # anchor id as a tiebreak, as the run-backed read orders by m/z and row
+    # id: two peaks can share an m/z.
+    members = (
+        await session.execute(
+            _members_of(sample.sample_item_id)
+            .where(*conditions)
+            .order_by(
+                BatchPeak.mz
+                * (1 + func.coalesce(BatchPeakOccurrence.mz_delta_ppm, 0) / 1e6),
+                BatchPeakOccurrence.batch_peak_id,
             )
-        # The source is on the anchor's registry entry, which the member's
-        # `candidate` index names - the same hop `member_row` makes to show it.
-        # A member with no entry (unassigned, or an index the registry does not
-        # reach) reads as NULL here and so matches no source, which is right:
-        # it displays none either.
-        if source:
-            conditions.append(
-                BatchPeak.candidates[BatchPeakOccurrence.candidate][
-                    "source"
-                ].as_string()
-                == _plain(source)
-            )
-        count = select(func.count()).select_from(BatchPeakOccurrence)
-        if source:
-            # Only the source filter reaches the anchor, so only it pays for the
-            # join; the ordinary read counts the member table alone.
-            count = count.join(
-                BatchPeak,
-                BatchPeak.batch_peak_id == BatchPeakOccurrence.batch_peak_id,
-            )
-        total = (
-            await session.execute(
-                count.where(
-                    BatchPeakOccurrence.sample_item_id == sample.sample_item_id,
-                    *conditions,
-                )
-            )
-        ).scalar_one()
-        # Ordered by the member's m/z - the anchor's plus its offset - with the
-        # anchor id as a tiebreak, as the run-backed read orders by m/z and row
-        # id: two peaks can share an m/z.
-        members = (
-            await session.execute(
-                _members_of(sample.sample_item_id)
-                .where(*conditions)
-                .order_by(
-                    BatchPeak.mz
-                    * (1 + func.coalesce(BatchPeakOccurrence.mz_delta_ppm, 0) / 1e6),
-                    BatchPeakOccurrence.batch_peak_id,
-                )
-                .offset(offset)
-                .limit(limit)
-            )
-        ).all()
-        rows = [member_row(member, anchor) for member, anchor in members]
+            .offset(offset)
+            .limit(limit)
+        )
+    ).all()
+    rows = [member_row(member, anchor) for member, anchor in members]
 
     return {
         "status": "success",

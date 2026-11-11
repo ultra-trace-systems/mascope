@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from mascope_backend.api.new.peak_assignments import batch_peaks_routes
 from mascope_backend.api.new.peak_assignments.batch_export import (
@@ -23,6 +23,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
 )
 from mascope_backend.api.new.temp.storage import user_temp_path
 from mascope_backend.db import (
+    BatchPeak,
     PeakAssignment,
     PeakAssignmentRun,
     SampleBatch,
@@ -164,6 +165,44 @@ async def test_the_members_route_pages_the_flat_ledger(guest_client, ledger):
     assert unassigned["sample_peak_id"] == "p3"
 
 
+async def _give_glucose_a_verdict(session_factory, batch_id):
+    async with session_factory() as session:
+        await session.execute(
+            update(BatchPeak)
+            .where(
+                BatchPeak.sample_batch_id == batch_id,
+                BatchPeak.consensus_formula == "C6H12O6",
+            )
+            .values(engine_tier="candidate", engine_claim="the engine's words")
+        )
+        await session.commit()
+
+
+async def test_the_members_route_carries_an_imports_verdict(
+    guest_client, async_session_factory, ledger
+):
+    await _give_glucose_a_verdict(async_session_factory, ledger["batch_id"])
+    response = await guest_client.get(
+        f"/api/batch-peaks/batch/{ledger['batch_id']}/members"
+    )
+    assert response.status_code == 200, response.text
+    rows = response.json()["data"]
+    verdicts = [
+        (
+            r["consensus_formula"],
+            r["consensus_tier"],
+            r["engine_tier"],
+            r["engine_claim"],
+        )
+        for r in rows
+    ]
+    assert verdicts == [
+        ("C6H12O6", "assigned", "candidate", "the engine's words"),
+        ("C6H12O6", "assigned", "candidate", "the engine's words"),
+        (None, "unassigned", None, None),
+    ]
+
+
 async def test_the_members_route_narrows_to_a_sample(guest_client, ledger):
     response = await guest_client.get(
         f"/api/batch-peaks/batch/{ledger['batch_id']}/members",
@@ -198,6 +237,32 @@ async def test_the_export_writes_the_whole_ledger_as_csv(ledger, test_users):
             "",
         ]
         assert frame["n_present"].tolist() == [2, 2, 1]
+        # No import judged this batch: the engine's columns are there, empty.
+        assert frame["engine_tier"].isna().all()
+        assert frame["engine_claim"].isna().all()
+    finally:
+        os.remove(path)
+
+
+async def test_the_export_writes_an_imports_verdict(
+    ledger, test_users, async_session_factory
+):
+    await _give_glucose_a_verdict(async_session_factory, ledger["batch_id"])
+    user_id = test_users["editor"].id
+    name, _ = await write_batch_ledger_csv(ledger["batch_id"], user_id)
+    path = user_temp_path(user_id, name, create=False)
+    try:
+        frame = pd.read_csv(path, sep=";")
+        assert frame["engine_tier"].fillna("").tolist() == [
+            "candidate",
+            "candidate",
+            "",
+        ]
+        assert frame["engine_claim"].fillna("").tolist() == [
+            "the engine's words",
+            "the engine's words",
+            "",
+        ]
     finally:
         os.remove(path)
 

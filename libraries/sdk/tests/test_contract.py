@@ -2184,6 +2184,9 @@ class TestBatchLedgerContract:
             "sample_peak_id",
             "assigned_formula",
             "intensity",
+            # The anchor's imported engine verdict, empty where none was given.
+            "engine_tier",
+            "engine_claim",
         } <= set(members.columns)
         # Every member belongs to a listed batch peak and an assigned sample.
         assert set(members["batch_peak_id"]) <= set(listed["batch_peak_id"])
