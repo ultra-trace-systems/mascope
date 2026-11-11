@@ -198,6 +198,13 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     apply_tiering,
     find_envelope_claims,
 )
+from mascope_backend.api.new.peak_assignments.tiers import normalize_tier_bands
+from mascope_backend.api.new.peak_assignments.verification_queue import (
+    REASON_BAND_EDGE,
+    REASON_SPOT_CHECK,
+    REASON_STALE,
+    rank_queue,
+)
 from mascope_backend.api.new.reference import service as reference_service
 from mascope_backend.api.new.reference.licenses import reference_license_gate
 from mascope_backend.db import (
@@ -597,6 +604,51 @@ def provenance_with_calibration(
     }
 
 
+async def _ledger_run(
+    session, sample, peak_assignment_run_id: str | None
+) -> PeakAssignmentRun | None:
+    """The run a sample-ledger read serves.
+
+    The run named, or the sample's latest completed run that is not a decoy
+    when none is. Shared by the ledger read and its verification queue, so the
+    queue ranks the very rows the ledger shows.
+
+    :param session: An open session.
+    :param sample: The sample read.
+    :param peak_assignment_run_id: The run asked for, or None for the latest.
+    :raises NotFoundException: The run named is not one of the sample's.
+    :raises RunStillAssemblingException: The run named is still being imported.
+    :return: The run, or None where the sample has no completed run.
+    """
+    sample_item_id = sample.sample_item_id
+    if peak_assignment_run_id is not None:
+        run = await session.get(PeakAssignmentRun, peak_assignment_run_id)
+        if run is None or run.sample_item_id != sample_item_id:
+            raise NotFoundException(
+                f"Peak assignment run '{peak_assignment_run_id}' not found "
+                f"for sample '{sample.sample_item_name}'"
+            )
+        if run.status == IMPORTING_STATUS:
+            raise RunStillAssemblingException(
+                peak_assignment_run_id, sample.sample_item_name
+            )
+        return run
+    return (
+        await session.execute(
+            select(PeakAssignmentRun)
+            .where(
+                PeakAssignmentRun.sample_item_id == sample_item_id,
+                PeakAssignmentRun.status == "completed",
+                # A decoy is read only by its id: it is no answer
+                # about the sample, whose chemistry it made wrong.
+                PeakAssignmentRun.decoy.is_(None),
+            )
+            .order_by(PeakAssignmentRun.peak_assignment_run_utc_created.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
 @api_controller()
 async def get_peak_assignments(
     sample_item_id: str,
@@ -669,32 +721,7 @@ async def get_peak_assignments(
                     f"for sample '{sample.sample_item_name}'"
                 )
             return derived
-        if peak_assignment_run_id is not None:
-            run = await session.get(PeakAssignmentRun, peak_assignment_run_id)
-            if run is None or run.sample_item_id != sample_item_id:
-                raise NotFoundException(
-                    f"Peak assignment run '{peak_assignment_run_id}' not found "
-                    f"for sample '{sample.sample_item_name}'"
-                )
-            if run.status == IMPORTING_STATUS:
-                raise RunStillAssemblingException(
-                    peak_assignment_run_id, sample.sample_item_name
-                )
-        else:
-            run = (
-                await session.execute(
-                    select(PeakAssignmentRun)
-                    .where(
-                        PeakAssignmentRun.sample_item_id == sample_item_id,
-                        PeakAssignmentRun.status == "completed",
-                        # A decoy is read only by its id: it is no answer
-                        # about the sample, whose chemistry it made wrong.
-                        PeakAssignmentRun.decoy.is_(None),
-                    )
-                    .order_by(PeakAssignmentRun.peak_assignment_run_utc_created.desc())
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
+        run = await _ledger_run(session, sample, peak_assignment_run_id)
 
         if run is None:
             # No run - but the batch ledger may still know the sample.
@@ -1453,6 +1480,71 @@ def _scope_envelope(data: list[dict], scope: str) -> dict:
     }
 
 
+async def _live_label_rows(session) -> list:
+    """The calibration's label pool, before it is split by instrument class.
+
+    Every **current** ``confirmed`` / ``rejected`` verification with an evidence
+    snapshot, of an **in-app** run (or of a run since pruned), never of a decoy
+    run's row: ``(verdict, evidence, evidence_level, filename, run config, mode
+    id, mode version)`` per label. Read by :func:`recalibrate_instrument`, which
+    fits on it, and by :func:`get_verification_queue`, which counts the labels
+    near a row's evidence, so the queue ranks by the labels the fit will see.
+    """
+    return (
+        await session.execute(
+            select(
+                AssignmentVerification.verdict,
+                AssignmentVerification.evidence,
+                AssignmentVerification.evidence_level,
+                Sample.filename,
+                PeakAssignmentRun.config,
+                Sample.ionization_mode_id,
+                IonizationMode.version,
+            )
+            .join(
+                Sample,
+                Sample.sample_item_id == AssignmentVerification.sample_item_id,
+            )
+            .outerjoin(
+                IonizationMode,
+                IonizationMode.ionization_mode_id == Sample.ionization_mode_id,
+            )
+            # Outer, and NULL passes: peak_assignment_run_id is nullable and
+            # carries no foreign key, so a label whose run has since been
+            # pruned no longer joins. Every run that existed before imports
+            # did is the in-app engine's, so admitting the unjoinable ones
+            # keeps an existing deployment's pool exactly as it was; only a
+            # verification that positively belongs to another engine's run
+            # is dropped.
+            .outerjoin(
+                PeakAssignmentRun,
+                PeakAssignmentRun.peak_assignment_run_id
+                == AssignmentVerification.peak_assignment_run_id,
+            )
+            .where(
+                AssignmentVerification.verdict.in_(["confirmed", "rejected"]),
+                AssignmentVerification.evidence.is_not(None),
+                # Live verdicts only. Without this the fit sees the whole history, so a
+                # user who changed their mind contributes one label to *each* class at an
+                # identical evidence value - a contradictory pair that is noise to a Platt
+                # fit, drags held-out AUC toward 0.5, and counts toward the minimum-label
+                # gates that are supposed to be the guardrail.
+                AssignmentVerification.superseded_utc.is_(None),
+                or_(
+                    PeakAssignmentRun.engine.is_(None),
+                    # A decoy run's rows take no verdict
+                    # (`create_verification`); kept out here as well, so
+                    # the pool does not rest on that refusal alone.
+                    and_(
+                        PeakAssignmentRun.engine == IN_APP_ENGINE,
+                        PeakAssignmentRun.decoy.is_(None),
+                    ),
+                ),
+            )
+        )
+    ).all()
+
+
 @api_controller()
 async def recalibrate_instrument(
     instrument: str,
@@ -1464,9 +1556,11 @@ async def recalibrate_instrument(
     samples on this instrument - one per identity, superseded verdicts excluded - uses the
     arbitration ``evidence`` snapshotted at verification time as the score and the verdict as the
     label, fits a new Platt curve, and writes it as the new active row in the calibration store
-    (carrying the corroboration weights forward). The curve stays **provisional**
-    unless enough positives carry strong (reference-standard / MS-MS) evidence -- a pile of visual
-    confirmations can't graduate it. Reports before/after held-out ECE so the change is auditable.
+    (carrying the corroboration weights forward). Each label is weighed by the evidence level its
+    verdict states (``EVIDENCE_LEVEL_WEIGHTS``: a reference standard or MS/MS above a visual look),
+    in the fit and in both held-out ECEs, and the curve records the weights. The curve stays
+    **provisional** unless enough positives carry strong (reference-standard / MS-MS) evidence --
+    a pile of visual confirmations can't graduate it. Reports before/after held-out ECE so the change is auditable.
 
     **Imported runs are excluded from the label pool.** Verifying an imported assignment is fine and
     useful -- the verification endpoints are engine-agnostic and the human verdict is what matters --
@@ -1481,59 +1575,7 @@ async def recalibrate_instrument(
     """
     inst = str(instrument).lower()
     async with async_session() as session:
-        rows = (
-            await session.execute(
-                select(
-                    AssignmentVerification.verdict,
-                    AssignmentVerification.evidence,
-                    AssignmentVerification.evidence_level,
-                    Sample.filename,
-                    PeakAssignmentRun.config,
-                    Sample.ionization_mode_id,
-                    IonizationMode.version,
-                )
-                .join(
-                    Sample,
-                    Sample.sample_item_id == AssignmentVerification.sample_item_id,
-                )
-                .outerjoin(
-                    IonizationMode,
-                    IonizationMode.ionization_mode_id == Sample.ionization_mode_id,
-                )
-                # Outer, and NULL passes: peak_assignment_run_id is nullable and
-                # carries no foreign key, so a label whose run has since been
-                # pruned no longer joins. Every run that existed before imports
-                # did is the in-app engine's, so admitting the unjoinable ones
-                # keeps an existing deployment's pool exactly as it was; only a
-                # verification that positively belongs to another engine's run
-                # is dropped.
-                .outerjoin(
-                    PeakAssignmentRun,
-                    PeakAssignmentRun.peak_assignment_run_id
-                    == AssignmentVerification.peak_assignment_run_id,
-                )
-                .where(
-                    AssignmentVerification.verdict.in_(["confirmed", "rejected"]),
-                    AssignmentVerification.evidence.is_not(None),
-                    # Live verdicts only. Without this the fit sees the whole history, so a
-                    # user who changed their mind contributes one label to *each* class at an
-                    # identical evidence value - a contradictory pair that is noise to a Platt
-                    # fit, drags held-out AUC toward 0.5, and counts toward the minimum-label
-                    # gates that are supposed to be the guardrail.
-                    AssignmentVerification.superseded_utc.is_(None),
-                    or_(
-                        PeakAssignmentRun.engine.is_(None),
-                        # A decoy run's rows take no verdict
-                        # (`create_verification`); kept out here as well, so
-                        # the pool does not rest on that refusal alone.
-                        and_(
-                            PeakAssignmentRun.engine == IN_APP_ENGINE,
-                            PeakAssignmentRun.decoy.is_(None),
-                        ),
-                    ),
-                )
-            )
-        ).all()
+        rows = await _live_label_rows(session)
 
     scores, labels, levels = [], [], []
     # The setups the labels were scored under, recorded on the curve: the run
@@ -1594,7 +1636,7 @@ async def recalibrate_instrument(
         "status": "success",
         "message": (
             f"Recalibrated '{inst}' from {result['n_pos'] + result['n_neg']} "
-            f"verification labels (held-out ECE "
+            f"verification labels weighed by evidence level (held-out ECE "
             f"{result['before_ece']} -> {result['after_ece']}"
             f"{'; provisional' if result['provisional'] else ''})"
         ),
@@ -1606,7 +1648,137 @@ async def recalibrate_instrument(
         "n_neg": result["n_neg"],
         "n_strong_positives": result["n_strong_positives"],
         "provisional": result["provisional"],
+        "label_weights": result["label_weights"],
     }
+
+
+def _instrument_class(filename: str | None) -> str | None:
+    """A sample's instrument class, or None where its file names none."""
+    try:
+        return get_instrument_type(filename) if filename else None
+    except ValueError:
+        return None
+
+
+def _run_profile(run_config: dict | None) -> str | None:
+    """The reagent profile a run resolved to, or None where it records none."""
+    resolved = (run_config or {}).get(RESOLVED_PROFILE_KEY)
+    return resolved.get("profile") if isinstance(resolved, dict) else None
+
+
+@api_controller()
+async def get_verification_queue(
+    sample_item_id: str, peak_assignment_run_id: str | None = None
+) -> dict:
+    """The assignments of a run worth a verdict next, in the order to ask.
+
+    Guardrail 3 of the verification loop (``verification_queue``): the rows
+    whose evidence sits near a tier band edge, where the confidence curve is
+    least constrained, ranked by how close they sit and by how few labels the
+    sample's instrument class and the run's reagent profile already hold near
+    that evidence, with seeded random spot checks between them; and first, the
+    rows a live verdict judged before this run and the run since read
+    differently, marked stale. No entry carries ``p_correct`` (guardrail 5).
+
+    The run is the one the ledger read serves (:func:`_ledger_run`). A decoy
+    run's rows take no verdict and a batch-derived ledger is no run, so both
+    answer an empty queue.
+
+    :param sample_item_id: The sample.
+    :param peak_assignment_run_id: The run; defaults to the latest completed one.
+    :return: Status envelope: ``total`` entries in queue order under ``data``,
+        ``counts`` by reason, and the ``peak_assignment_run_id`` ranked.
+    """
+    sample = await fetch_sample(sample_item_id)
+
+    def envelope(entries: list, run_id: str | None, message: str) -> dict:
+        counts = {
+            reason: sum(1 for e in entries if e.reason == reason)
+            for reason in (REASON_STALE, REASON_BAND_EDGE, REASON_SPOT_CHECK)
+        }
+        return {
+            "status": "success",
+            "message": message,
+            "results": len(entries),
+            "total": len(entries),
+            "peak_assignment_run_id": run_id,
+            "counts": counts,
+            "data": [entry.to_dict() for entry in entries],
+        }
+
+    if is_fold_id(peak_assignment_run_id):
+        return envelope(
+            [], None, "A ledger derived from the batch is no run: nothing to rank"
+        )
+    async with async_session() as session:
+        run = await _ledger_run(session, sample, peak_assignment_run_id)
+        if run is None or run.decoy is not None:
+            return envelope(
+                [],
+                run.peak_assignment_run_id if run is not None else None,
+                (
+                    "A decoy run's rows take no verdict"
+                    if run is not None
+                    else f"No completed peak assignment runs exist for sample "
+                    f"'{sample.sample_item_name}'"
+                ),
+            )
+        run_id = run.peak_assignment_run_id
+        rows = (
+            await session.execute(
+                select(
+                    PeakAssignment.peak_assignment_id,
+                    PeakAssignment.sample_peak_id,
+                    PeakAssignment.assigned_formula,
+                    PeakAssignment.ionization_mechanism_id,
+                    PeakAssignment.role,
+                    PeakAssignment.provenance["evidence"].as_float().label("evidence"),
+                ).where(PeakAssignment.peak_assignment_run_id == run_id)
+            )
+        ).all()
+        verdicts = (
+            await session.execute(
+                select(
+                    AssignmentVerification.assignment_verification_id,
+                    AssignmentVerification.sample_peak_id,
+                    AssignmentVerification.assigned_formula,
+                    AssignmentVerification.ionization_mechanism_id,
+                    AssignmentVerification.verdict,
+                    AssignmentVerification.evidence,
+                    AssignmentVerification.verified_utc,
+                ).where(
+                    AssignmentVerification.sample_item_id == sample_item_id,
+                    AssignmentVerification.superseded_utc.is_(None),
+                )
+            )
+        ).all()
+        pool = await _live_label_rows(session)
+        bands = normalize_tier_bands(run.tier_bands)
+        run_created = run.peak_assignment_run_utc_created
+        profile = _run_profile(run.config)
+
+    # The labels the calibration of this sample's curve would be fit on: its
+    # instrument class, and the run's reagent profile.
+    inst = _instrument_class(sample.filename)
+    label_evidence = [
+        evidence
+        for _verdict, evidence, _level, filename, run_config, *_ in pool
+        if _instrument_class(filename) == inst and _run_profile(run_config) == profile
+    ]
+    entries = rank_queue(
+        (row._asdict() for row in rows),
+        bands=bands,
+        label_evidence=label_evidence,
+        verdicts=[verdict._asdict() for verdict in verdicts],
+        run_created=run_created,
+        seed=run_id,
+    )
+    return envelope(
+        entries,
+        run_id,
+        f"{len(entries)} assignment{'s' if len(entries) != 1 else ''} worth "
+        f"verifying in sample '{sample.sample_item_name}'",
+    )
 
 
 # -------------------------------------------------------------------

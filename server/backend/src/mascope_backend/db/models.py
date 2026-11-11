@@ -3474,6 +3474,11 @@ class AssignmentCalibration(Base):
     #: setup still reads this curve, with a warning
     #: (``calibration_store.load_calibration``). NULL where none is known.
     ionization_setups: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    #: The ``{evidence level: weight}`` map the curve's labels were weighed by
+    #: in the fit (``mascope_tools...calibration.EVIDENCE_LEVEL_WEIGHTS``).
+    #: NULL for a curve fit on unweighted labels, every curve stored before
+    #: the weights existed among them.
+    label_weights: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     fit_utc: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
