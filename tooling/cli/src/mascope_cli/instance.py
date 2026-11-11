@@ -254,6 +254,7 @@ def resolve_or_allocate(
     worktree: str | None = None,
     home: Path | str | None = None,
     port_in_use: Callable[[int], bool] | None = None,
+    env: str | None = None,
 ) -> Instance:
     """
     Return the current worktree's instance, allocating one on first call.
@@ -266,8 +267,13 @@ def resolve_or_allocate(
 
     :param port_in_use: Port probe, ``_port_in_use`` by default; tests pass
         their own so they need no real listener.
+    :param env: The env a new binding gets instead of ``wt-<basename>``, for a
+        long-lived instance whose env is named for what it holds (the
+        assignment bench's ``bench``). One env is one database, so a name
+        another worktree is bound to is refused, and so is a worktree already
+        bound under another name: its binding is never renamed.
     :raises InstanceError: When every slot below ``MAX_SLOTS`` is taken in the
-        registry or on the host.
+        registry or on the host, or when ``env`` cannot be the worktree's.
     """
     home = _home(home)
     key = worktree or worktree_key()
@@ -275,7 +281,20 @@ def resolve_or_allocate(
         registry = _read_registry(home)
         instances = registry["instances"]
         if key in instances:
+            bound = instances[key]["env"]
+            if env is not None and bound != env:
+                raise InstanceError(
+                    f"{key} is bound to env '{bound}', not '{env}'. Release it "
+                    f"with `mascope instance rm {bound}` first."
+                )
             return Instance(worktree=key, **instances[key])
+        if env is not None:
+            for other, rec in instances.items():
+                if rec["env"] == env:
+                    raise InstanceError(
+                        f"Env '{env}' is bound to another worktree, {other}. "
+                        f"Release it with `mascope instance rm {env}` first."
+                    )
 
         probe = port_in_use or _port_in_use
         used_slots = {rec["slot"] for rec in instances.values()}
@@ -301,7 +320,8 @@ def resolve_or_allocate(
             raise InstanceError(
                 f"{message} Release one with `mascope instance rm <env>`."
             )
-        env = _env_name_for(key, {rec["env"] for rec in instances.values()})
+        if env is None:
+            env = _env_name_for(key, {rec["env"] for rec in instances.values()})
         inst = Instance(
             worktree=key,
             slot=slot,
