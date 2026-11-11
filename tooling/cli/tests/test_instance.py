@@ -227,6 +227,37 @@ def test_all_slots_taken_on_host_raises_naming_the_skip(tmp_path):
     assert len(inst.list_instances(home=tmp_path)) == inst.MAX_SLOTS // 2
 
 
+def test_a_named_env_is_given_to_a_new_binding(tmp_path):
+    _alloc(tmp_path, "/work/alice")  # slot 0
+
+    got = inst.resolve_or_allocate(worktree="/srv/bench/wt", home=tmp_path, env="bench")
+
+    assert (got.env, got.slot) == ("bench", 1)
+    again = inst.resolve_or_allocate(
+        worktree="/srv/bench/wt", home=tmp_path, env="bench"
+    )
+    assert again == got
+    # A later resolve that names no env, as the worktree's own
+    # `mascope dev run --instance` does, keeps the name.
+    assert _alloc(tmp_path, "/srv/bench/wt") == got
+
+
+def test_a_named_env_bound_to_another_worktree_is_refused(tmp_path):
+    inst.resolve_or_allocate(worktree="/srv/bench/wt", home=tmp_path, env="bench")
+
+    with pytest.raises(inst.InstanceError, match="bound to another worktree"):
+        inst.resolve_or_allocate(worktree="/srv/other", home=tmp_path, env="bench")
+    assert len(inst.list_instances(home=tmp_path)) == 1
+
+
+def test_a_binding_is_not_renamed_to_a_named_env(tmp_path):
+    _alloc(tmp_path, "/work/alice")
+
+    with pytest.raises(inst.InstanceError, match="bound to env 'wt-alice'"):
+        inst.resolve_or_allocate(worktree="/work/alice", home=tmp_path, env="bench")
+    assert [i.env for i in inst.list_instances(home=tmp_path)] == ["wt-alice"]
+
+
 def test_port_probe_sees_a_loopback_only_listener(monkeypatch):
     monkeypatch.undo()  # the real probe, not the autouse stand-in
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
