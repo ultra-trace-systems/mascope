@@ -38,13 +38,14 @@ export function queueTooltip(entry) {
     if (stale.kind === 'reassigned') {
       return (
         `A ${verdict} verdict on ${stale.assigned_formula ?? 'another formula'} was given ` +
-        'before this run, which assigns this peak another formula. The verdict is kept; ' +
+        'before this run, which assigns this peak another formula. That verdict stays; ' +
         'judge what the run reads now.'
       )
     }
     return (
       `The ${verdict} verdict was given before this run, which reads this assignment ` +
-      'with other evidence. The verdict is kept; judge it again.'
+      'with other evidence. It counts at its old score until you judge the row again; ' +
+      'a new verdict replaces it.'
     )
   }
   if (entry.reason === 'band_edge') {
