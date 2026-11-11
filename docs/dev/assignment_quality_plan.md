@@ -100,6 +100,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 4.5 - profiles as versioned rows, routing by detection | - |  | planned |
 | 4.6 - a structured adduct row beside the notation string | - |  | built: the row's columns on `ionization_mechanism`, filled by a migration that refuses an unreadable row; `[2M+H]+`, `[M+2H]2+` and `[M+H-H2O]+` read, written and given target ions; the finder and the engine leave them out; corroboration keys unchanged; moves no metric; MAS-318 |
 | 4.9 - refuse or segregate mixed-instrument batches at the fold | - |  | built: segregated; the fold searches a batch's anchors per mode and per instrument type, read off the anchor's intensity unit; the ledger and the series name the partition (`instrument_type`), the Batch peaks ledger shows one at a time and the chart draws only its selection; a single-instrument batch folds as before; moves no metric; MAS-321 |
+| 4.11 - temporal continuity: the ratio-stability pass, its columns and its endpoint | - |  | built: every isotope line and its family root, and every two channels of one neutral, at assigned or candidate, graded on the within-sample ratio across a time-ordered batch (spread 1.4826 x MAD, drift by Spearman rho and a Theil-Sen change): stable, drift (the traces co-vary per 4.2), red, inconclusive or insufficient, on two `batch_peak` columns the ledger serves with a stale mark; run by its endpoint and at a rebuild's end, the fold trigger off for 4.13; on the testbed's six folded analysis batches 1,752 pairs, 1,008 stable, 122 red, 24 drift, the isotope reds a dim line's response; no tier moves; MAS-323 |
 | 5.1 - the reference pinned at a release, a boundary review per peaky release | - |  | planned 2026-10-13; the first review is the section below; readiness check against the reference's main on 2026-10-22: nothing new to bin, 0.10.0 still uncut |
 | 5.2 - decoy arms in the gate: a shifted axis and swapped adducts through the in-app engine | #2981 |  | built: a `decoy` block on the run config (`mz_shift_ppm`, `mz_shift_da`, `swap_adducts`), every stage at the control's calibration and envelope tolerance, the arm on the run row and out of the fold, the listing, the verdicts and the retention quota; `compare_runs.py --decoy` reports the share held below and above m/z 350; read in the next pass, no target until two gates have read them (decision 31) |
 | 5.3 - measure the minor-line response: isotope lines by height and by area against expected S/N | - |  | measured 2026-10-16 on the pass-9 ledgers; 3.5b's form decided 2026-10-22 (decision 32) |
@@ -1495,6 +1496,120 @@ who edits chemistry and stays last.
   number moves; searching them is a follow-up. The corroboration weights are
   keyed as before (pinned in `test_calibration_layer.py`).
 - **Size.** M.
+
+### 4.11 Ratio stability, the diagnostic of 4.2's reading
+
+- **What** (decision 35). For every pair of related batch peaks - an M0
+  and one of its isotope lines, two channels of one neutral - read their
+  within-sample ratio across a time-ordered batch. Every effect that
+  scales a whole spectrum scales both peaks, so the ratio cancels it; its
+  spread and its drift say whether the channel chemistry moved (a smooth
+  drift while the two traces co-vary) or two species may share a trace (a
+  drift nothing says is shared, or a ratio that jumps). It never
+  identifies, and it is display-only until 4.13's null model gives it a
+  likelihood ratio. Design: the continuity note
+  (`peak_assignment_continuity.md`, in git history before 2026-10-22),
+  sections 1, 2, 8 and 9, increment A.
+- **As built (MAS-323).** `continuity.py`, its pure half and its pass.
+  - *The pairs.* An isotope line pairs with the root of its family, its
+    `isotopologue_of` walked by the rule the ledger draws families with
+    (`rootParentId`: a link it cannot follow, or a cycle, ends in no
+    parent), where both read one formula; a NULL link forms no pair. Two
+    channels of one neutral are 4.2's pairs
+    (`batch_coherence.partition_anchors`), one batch peak per channel (the
+    brightest), neither ambiguous. Both peaks of either kind are
+    `assigned` or `candidate`.
+  - *The series.* `ln(I_b / I_a)` over the samples both members are in,
+    in the order of `SampleFile.datetime_utc`, a file's segments by
+    `t0`. Left out: a blank (labelled `BLANK`, or a file with no
+    instrument function), an intensity that is zero, missing or not
+    finite, and a dissenting member, the dissent filter of the note's 1.5
+    re-based on the slim member: its `candidate` entry names another
+    formula than its batch peak's consensus. Each is counted on the pair.
+  - *The reading.* Spread 1.4826 x MAD of the log ratio; drift when
+    Spearman's |rho| against the acquisition order is 0.6 or more and the
+    Theil-Sen slope against time times the pair's span is at least ln 1.5
+    (isotope) or ln 2 (channel), either way. Graded in order:
+    `insufficient` (under 6 samples or 5 distinct times), `drift` (it
+    drifts and 4.2's record on either anchor reads the pair co-varying),
+    `red` (it drifts otherwise, or its spread is 0.5 or more), `stable`
+    (spread at most 0.15 isotope or 0.25 channel, on 8 samples or more,
+    MAD above zero), `inconclusive`. The note's `drifting` and `noisy`
+    are `red`, but for the drift decision 35 reads as the source's
+    chemistry; an isotope pair has no 4.2 reading, so its drift is red. An
+    anchor takes its most alarming pair's grade: red, drift, stable,
+    inconclusive, insufficient.
+  - *The gate of the note's 1.6.* An ACQUISITION batch is time-ordered;
+    another is where its largest gap between distinct acquisition times
+    is at most 10 times the median gap. A batch that is not has every
+    grade withdrawn, the reason on each anchor.
+  - *The columns* (one migration, `c3e8a5f1d7b2`):
+    `batch_peak.continuity_grade` (a CHECK on the five) and
+    `batch_peak.continuity` (JSON: what was graded - formula, mechanism,
+    `n_present_at_compute` - the pair count, the grades, `partial` where
+    the pass left some, and up to four pairs, the alarm first and then the
+    best supported, each with its ratio from the anchor's own side,
+    spread, rho, drift, counts and 4.2's verdict, r and count). Both on
+    `batch_peak_run_anchor` too. The ledger and a run's snapshot serve
+    them with `continuity_stale`: the anchor's prevalence, formula or
+    mechanism is no longer what was graded.
+  - *The pass* (`run_batch_continuity`): after the folds, never in one,
+    under `pg_try_advisory_xact_lock` in its own namespace (a second pass
+    on the batch skips); it reads the anchors, the pairs' members and the
+    samples, grades in a thread, and writes the two columns under the fold
+    lock through the table, only where they moved, clearing anchors no
+    longer in a pair; `batch_peak_utc_modified` stays the fold's. Not a
+    batch run. It runs from `POST
+    /api/batch-peaks/batch/{id}/recompute-continuity` (editor, behind the
+    flag, 409 while a batch run is in flight), at the end of a rebuild
+    (two pending packets on its channel), and after a fold where
+    `batch_peaks.CONTINUITY_ON_FOLD` says so: off, for 4.13 to decide; a
+    pass it triggers stands down where a grade was read after the fold
+    committed. Above `MAX_PAIRS_PER_BATCH` (20,000, the best supported
+    first) the anchors left are marked `partial`.
+  - *Built under the leanings* of the deferred decisions: no wash concept
+    (8.6), `MIN_DISTINCT_TIMES` doing the work; the gap heuristic (8.5);
+    every constant provisional (8.2). *Not built:* `n_no_parent` and
+    `mixed_parent` (8.7, still open), the note's `residual_rho` (4.2's r
+    stands in for it, decision 35), the grade in an anchor verdict's
+    context snapshot, the column and badge (4.12, MAS-346) and the
+    trigger's default (4.13, MAS-347).
+- **Measured** (2026-11-11, the testbed copy, read-only: each batch
+  ledger as it stands through the pure grading, with 4.2's reading run
+  in-process beside it, since the copy holds none). The testbed's batches
+  of 400 to 600 samples are the acquisition batches of sets A (423
+  samples), B (595) and C (423) and six analysis batches of 545 to 547.
+  All nine are time-ordered under the gate.
+  - B and C hold few folded members (12,000 and 1,600: their gate samples
+    and little else), so their pairs hold a median of 4 to 5 samples and
+    grade `insufficient` or `inconclusive` throughout, but for 5 of B's
+    channel pairs, `red` on their spread. A holds 186,000 members;
+    its 185 pairs hold a median of 7 to 8 samples: 102 `stable`, 30
+    `inconclusive`, 53 `insufficient`, none `red`.
+  - The six analysis batches, folded throughout: 1,752 pairs. Isotope
+    pairs (766): 475 `stable`, 156 `inconclusive`, 94 `insufficient`, 41
+    `red`. Channel pairs (986): 533 `stable`, 240 `inconclusive`, 108
+    `insufficient`, 81 `red`, 24 `drift`. Anchors: 1,356 `stable`, 468
+    `inconclusive`, 279 `insufficient`, 219 `red`, 44 `drift`.
+  - The 24 `drift` are channel drifts 4.2 reads as co-varying; without its
+    reading they are `red` (125 channel reds over the 20 ledgers, 101 with
+    it). 4.2 reads 332 of the 3,015 channel pairs co-varying, 613 not and
+    2,070 untestable.
+  - 38 of the 41 isotope reds are drifts, and they are not two species:
+    their log ratio follows the M0's own log intensity (median Spearman
+    0.71, against 0.15 over the 475 stable isotope pairs) and their M0s are
+    about five times dimmer (median 10^3.2 against 10^3.9). A minor line
+    read near the picker's floor (step 5.3's response) drifts with its
+    parent's level; where that level trends with time, the time drift
+    reads it. 4.13 has to tell an intensity-dependent ratio from a time
+    drift before a grade is read as evidence.
+  - Cost: the largest pass (872 pairs over 546 samples, 646,000 members in
+    the batch) reads its anchors in 0.13 s and its pairs' members in 1.3 s,
+    and grades in 1.6 s; every other ledger takes under 1.6 s in all. The
+    budget at ceiling scale is 4.13's to set.
+- **Not done here.** No gate number moves: the grade is read by nothing.
+  The pass on a live testbed clone (rather than the copy's ledgers through
+  the pure grading) and at 10^4 and 10^5 anchors are 4.13's.
 
 ## Milestone 6 - the bench
 

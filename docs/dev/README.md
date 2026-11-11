@@ -80,7 +80,7 @@ superseded them. Their text is in git history before that date.
 |---|---|
 | `peak_assignment_batch.md` | `peak_assignment_batch_primary.md` section 12 (its sections 2, 3, 5.3 and 8) |
 | `peak_assignment_copy.md` | `peak_assignment_batch_primary.md` sections 6.4 and 11; the feature itself was removed in 1.8.0 |
-| `peak_assignment_continuity.md` | `peak_assignment_batch_primary.md` section 6.3 (the shipped anchor verdicts); the ratio-stability design is in git history |
+| `peak_assignment_continuity.md` | `peak_assignment_batch_primary.md` section 6.3 (the shipped anchor verdicts); the ratio-stability design is in git history, built as `assignment_quality_plan.md` step 4.11 |
 | `peak_assignment_confidence_frontend.md` | `peak_assignment_frontend.md`, "Confidence" |
 | `verification_capture_frontend.md` | `verification_calibration_loop.md` section 4.5 |
 | `reference_peak_assignment_convergence.md` | `public_database_integration.md` Phase 3 and `peak_assignment_paradigm.md` 3.2 |
