@@ -763,6 +763,64 @@ async def _apply_search_rows(
     return written
 
 
+@dataclass(frozen=True)
+class MeasuredReading:
+    """What measuring an identity on one member's peak gives it: the ion's fit,
+    the evidence (fit x plausibility) and the tier that evidence bands to."""
+
+    ion_id: str
+    fit: float
+    evidence: float
+    tier: str
+
+
+async def score_in_sample(
+    sample_item_id: str, seeds: set[tuple[str, str]], config: PeakAssignmentConfig
+):
+    """Score ``seeds`` against one sample's own peaks, as the propagation does.
+
+    Centred where the search's own re-score centres the searched sample: the
+    reagent lines ``config``'s profile claims. Shared by the propagation and by
+    the batch curation's preview (``batch_curation.measure_batch_peak_candidate``),
+    so a measured alternative reads what its pin then writes.
+
+    :return: :func:`seeded_scoring.score_seeds`'s four maps.
+    """
+    sample = await fetch_sample(sample_item_id)
+    match_params = await default_match_params(sample_item_id)
+    return await score_seeds(sample, seeds, match_params, config=config)
+
+
+def measured_reading(
+    annotation: Annotation,
+    sample_peak_id: str,
+    ion_by_seed: dict,
+    fit_by_ion: dict,
+    errors_by_pairing: dict,
+    config: PeakAssignmentConfig,
+) -> Optional[MeasuredReading]:
+    """The reading a member on ``sample_peak_id`` takes from a scored identity,
+    or None when the ion's envelope did not pair to that peak or has no fit.
+
+    The tier is banded off the evidence under ``config``'s thresholds, the
+    search's own bands; no tiering rule is applied, as none is when the
+    propagation writes the member.
+    """
+    ion_id = ion_by_seed.get((annotation.formula, annotation.ionization_mechanism_id))
+    if ion_id is None or (ion_id, sample_peak_id) not in errors_by_pairing:
+        return None
+    fit = fit_by_ion.get(ion_id)
+    evidence = evidence_for(fit, annotation.formula)
+    if fit is None or evidence is None:
+        return None
+    tier = tier_for_evidence(
+        evidence,
+        candidate_threshold=config.candidate_threshold,
+        assigned_threshold=config.assigned_threshold,
+    )
+    return MeasuredReading(ion_id=ion_id, fit=fit, evidence=evidence, tier=tier)
+
+
 async def _propagate_to_sample(
     sample_batch_id: str,
     sample_item_id: str,
@@ -809,12 +867,8 @@ async def _propagate_to_sample(
     }
     if not seeds:
         return 0
-    sample = await fetch_sample(sample_item_id)
-    match_params = await default_match_params(sample_item_id)
-    # Centred where this search's own re-score centres the searched sample:
-    # the reagent lines its configuration's profile claims.
-    ion_by_seed, fit_by_ion, errors_by_pairing, _ = await score_seeds(
-        sample, seeds, match_params, config=config
+    ion_by_seed, fit_by_ion, errors_by_pairing, _ = await score_in_sample(
+        sample_item_id, seeds, config
     )
     if not ion_by_seed:
         return 0
@@ -854,20 +908,18 @@ async def _propagate_to_sample(
                 and skip_candidate.get(member.batch_peak_id) == member.candidate
             ):
                 continue
-            ion_id = ion_by_seed.get(
-                (annotation.formula, annotation.ionization_mechanism_id)
+            reading = measured_reading(
+                annotation,
+                member.sample_peak_id,
+                ion_by_seed,
+                fit_by_ion,
+                errors_by_pairing,
+                config,
             )
-            if (
-                ion_id is None
-                or (ion_id, member.sample_peak_id) not in errors_by_pairing
-            ):
-                continue
-            fit = fit_by_ion.get(ion_id)
-            evidence = evidence_for(fit, annotation.formula)
-            if fit is None or evidence is None:
+            if reading is None:
                 continue
             if prefer_better and not _takes_the_member(
-                member, anchors[member.batch_peak_id], annotation, evidence
+                member, anchors[member.batch_peak_id], annotation, reading.evidence
             ):
                 continue
             if displaced is not None:
@@ -884,14 +936,8 @@ async def _propagate_to_sample(
             if len(registry) != len(anchor.candidates or []):
                 anchor.candidates = registry
             member.candidate = index
-            member.tier = tier_code(
-                tier_for_evidence(
-                    evidence,
-                    candidate_threshold=config.candidate_threshold,
-                    assigned_threshold=config.assigned_threshold,
-                )
-            )
-            member.fit_score = fit
+            member.tier = tier_code(reading.tier)
+            member.fit_score = reading.fit
             member.role = role_code(annotation.role)
             member.owner_batch_peak_id = annotation.owner_batch_peak_id
             member.p_correct = None

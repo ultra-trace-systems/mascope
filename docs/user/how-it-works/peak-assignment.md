@@ -1080,6 +1080,16 @@ and says so when the two disagree - and a hand icon beside the formula in the *B
 peaks* ledger marks it. *Release*, in the inspector's note, undoes it: the samples that
 were re-measured go back to what they read before, and the batch decides again.
 
+Each of those identities was measured in the sample that brought it, not in the one
+you are looking at. So before you pin one, the inspector measures it on this sample's
+peak the way the pin will. The alternative then shows the fit, the m/z error, the tier
+the pin would give it here and how many of its isotope lines this spectrum holds. Its
+tooltip adds the plausibility, the evidence and what the sample reads now. These are
+the numbers the pin then writes for this sample. When the identity's isotope pattern
+does not reach this peak, the alternative says *not reached here*: a pin leaves this
+sample as it is. Nothing is saved by looking. The pin's note keeps what was measured
+before it was made.
+
 An identity that reads the peak as an isotope line of a compound, such as its 13C line,
 cannot be pinned there. The line is part of the compound's envelope, not an ion of its
 own. *Use this* on it says which batch peak holds the compound's monoisotopic line;

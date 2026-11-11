@@ -25,6 +25,12 @@ import { coVariationLabel, coVariationSummary, coVariationTooltip } from '@/lib/
 import { ROLE_BUCKETS, bucketRank } from '@/lib/tiers'
 import { EVIDENCE_LEVELS, VERDICT_META, claimCandidates } from '@/lib/verification'
 import { useBatchPeakCuration } from './stores/batchPeakCuration.js'
+import {
+  currentReading,
+  measuredLines,
+  measuredTierLabel,
+  measuredTooltipLines
+} from './candidateMeasure.js'
 
 const app = useApp()
 const curation = useBatchPeakCuration()
@@ -358,13 +364,18 @@ const scoreByFormula = computed(() => {
 // will never match the one they were archived under. Committing it would put
 // the formula back on the M0 alone and leave its family unassigned - under a
 // note on this same card that says the assignment cannot be put back by hand.
+//
+// `measured` is the other on-demand measurement: a derived row's alternative is
+// one of the batch peak's identities, measured on this sample's member before
+// "use this" pins it batch-wide (see `candidateMeasureOf`).
 const alternatives = computed(() =>
   storedAlternatives.value.map((alt, index) => ({
     ...alt,
     scored:
       alt?.assigned_formula && !isUndoEntry(alt, index)
         ? (scoreByFormula.value.get(alt.assigned_formula) ?? null)
-        : null
+        : null,
+    measured: candidateMeasureOf(alt)
   }))
 )
 
@@ -644,8 +655,10 @@ const isPoorMatch = (iso) => {
 // them from the on-demand measurement, which also names the adduct it found.
 // Falls back to the entry's own fields so a run stored before this existed,
 // and an imported one, read exactly as they did.
-const altFit = (alt) => alt?.fit_score ?? alt?.scored?.fit_score ?? null
-const altMzError = (alt) => alt?.mz_error_ppm ?? alt?.scored?.mz_error_ppm ?? null
+const altFit = (alt) => alt?.fit_score ?? alt?.scored?.fit_score ?? alt?.measured?.fit_score ?? null
+const altMzError = (alt) =>
+  alt?.mz_error_ppm ?? alt?.scored?.mz_error_ppm ?? alt?.measured?.mz_error_ppm ?? null
+const altPlausibility = (alt) => alt?.plausibility ?? alt?.measured?.plausibility ?? null
 const altAdduct = (alt) => alt?.scored?.ionization_mechanism ?? null
 
 // Stats for a close alternative (runner-up), surfaced on hover. Entries the
@@ -654,17 +667,28 @@ const altAdduct = (alt) => alt?.scored?.ionization_mechanism ?? null
 // there is none.
 const altTooltip = (alt, index) => {
   const fit = altFit(alt)
-  const measuring = fit == null && !alt?.scored && scoring.value
+  const measuring =
+    fit == null && !alt?.scored && !alt?.measured && (scoring.value || measuringAlt(alt))
   const kind = alternativeKind(alt)
   const lines = [
     ...(kind ? [kind.tooltip] : []),
-    `fit: ${fit != null ? formatFit(fit) : measuring ? '— measuring' : '— not measured'}`
+    `fit: ${
+      fit != null
+        ? formatFit(fit)
+        : measuring
+          ? '— measuring'
+          : alt?.measured
+            ? '— none on this peak'
+            : '— not measured'
+    }`
   ]
   const mzError = altMzError(alt)
   if (mzError != null) {
     lines.push(`m/z error: ${num.mzError.format(mzError)} ppm`)
   }
-  lines.push(`plausibility: ${alt.plausibility != null ? formatFit(alt.plausibility) : '—'}`)
+  const plausibility = altPlausibility(alt)
+  lines.push(`plausibility: ${plausibility != null ? formatFit(plausibility) : '—'}`)
+  lines.push(...measuredTooltipLines(alt.measured))
   // Named only when the measurement supplied it: an entry that arrived with an
   // adduct already shows it as its ion formula in the row above.
   if (altAdduct(alt)) lines.push(`adduct: ${altAdduct(alt)}`)
@@ -709,6 +733,47 @@ const LEDGER_CONFIDENCE_TOOLTIP =
   'Arbitration confidence comes from an assignment run of this sample, which weighs the ' +
   "peak's candidates against each other; a row served from the batch ledger carries one " +
   'identity and no such contest'
+
+// --- Measuring a batch identity before it is pinned (step 3.4c) ------------
+// A derived row's alternatives are the batch peak's other identities, each
+// measured in the sample that brought it and not in this one: "use this" pins
+// one batch-wide, which used to be the only way to see how it reads here. The
+// server measures each on this sample's member as the pin would - its fit, its
+// lines, plausibility and the tier the pin writes - beside what the member
+// reads now; nothing is written. One request at a time: each loads this
+// sample's peaks and builds an envelope.
+const peakStore = app.data.peakAssignment.peak
+const sampleBatchId = computed(() => app.data.batch?.focusedId ?? null)
+const derivedCandidates = computed(() =>
+  derivedRun.value && focusedAssignment.value?.batch_peak_id
+    ? storedAlternatives.value.map((alt) => alt?.candidate).filter((c) => c != null)
+    : []
+)
+const candidateMeasureOf = (alt) =>
+  derivedRun.value && alt?.candidate != null
+    ? peakStore.candidateMeasureOf(
+        peakStore.candidateMeasureKey(focusedAssignment.value, alt.candidate)
+      )
+    : null
+const measuringAlt = (alt) =>
+  derivedRun.value &&
+  alt?.candidate != null &&
+  peakStore.candidateMeasurePending(
+    peakStore.candidateMeasureKey(focusedAssignment.value, alt.candidate)
+  )
+watch(
+  [derivedCandidates, sampleBatchId],
+  async () => {
+    const row = focusedAssignment.value
+    const batchId = sampleBatchId.value
+    if (!batchId || !row) return
+    for (const candidate of derivedCandidates.value) {
+      // A failure already toasts; the entry keeps reading "not measured".
+      await peakStore.loadCandidateMeasure(batchId, row, candidate).catch(() => {})
+    }
+  },
+  { immediate: true }
+)
 
 // --- On-demand evidence for a derived row -----------------------------------
 // A row derived from the batch ledger carries its fit and its tier, but not what
@@ -1136,10 +1201,13 @@ async function promoteAlternative(alt, index) {
       // identity on the batch peak and measures it in every sample of the
       // batch. The guard is the consensus the card shows, not this member's
       // own formula, which is what the server compares against.
+      // The sample it was measured on goes with it, so the pin records the
+      // measurement the curator judged it by.
       await curation.curate({
         batch_peak_id: focusedAssignment.value.batch_peak_id,
         candidate: alt.candidate,
-        expected_formula: provenance.value?.batch_peak?.consensus_formula ?? null
+        expected_formula: provenance.value?.batch_peak?.consensus_formula ?? null,
+        sample_item_id: focusedAssignment.value.sample_item_id ?? app.data.sample.focusedId
       })
     } else {
       await app.data.peakAssignment.peak.curate(
@@ -1168,6 +1236,23 @@ const batchOverride = computed(() =>
     ? provenance.value.manual
     : null
 )
+// What the curator saw before the pin, kept on it by the server.
+const batchOverrideMeasured = computed(() => batchOverride.value?.measured ?? null)
+const measuredAtPin = computed(() => {
+  const record = batchOverrideMeasured.value
+  if (!record) return null
+  if (!record.takes_member) return record.blocked_reason ?? null
+  const parts = [`fit ${formatFit(record.fit_score)}`, measuredTierLabel(record)]
+  const lines = measuredLines(record)
+  if (lines) parts.push(lines)
+  return parts.filter(Boolean).join(', ')
+})
+// What this sample's member reads now, as the first measured alternative
+// reports it: the same member for every alternative.
+const measuredCurrent = computed(() => {
+  const first = alternatives.value.find((alt) => alt.measured?.current)
+  return first ? currentReading(first.measured) : null
+})
 const releasing = ref(false)
 async function releaseOverride() {
   if (releasing.value || !focusedAssignment.value?.batch_peak_id) return
@@ -1761,6 +1846,9 @@ const demotedCount = computed(() => {
           >
             in place of {{ batchOverride.previous.consensus_formula }}</template
           >: every sample in the batch reads this identity where it could be measured.
+          <span v-if="measuredAtPin" class="pin-measured"
+            >Measured before the pin: {{ measuredAtPin }}.</span
+          >
           <Button
             label="release"
             size="small"
@@ -1961,11 +2049,20 @@ const demotedCount = computed(() => {
                 >fit {{ formatFit(altFit(alt))
                 }}<span v-if="altMzError(alt) != null">
                   &middot; {{ num.mzError.format(altMzError(alt)) }} ppm</span
+                ><span v-if="alt.measured?.takes_member" class="alt-measured">
+                  &middot; {{ measuredTierLabel(alt.measured) }}</span
                 ></span
               >
-              <span v-else-if="scoring && !alt.scored" class="scoring">measuring&hellip;</span>
-              <span v-else-if="alt.plausibility != null"
-                >plaus {{ formatFit(alt.plausibility) }}</span
+              <span
+                v-else-if="(scoring && !alt.scored) || (measuringAlt(alt) && !alt.measured)"
+                class="scoring"
+                >measuring&hellip;</span
+              >
+              <span v-else-if="alt.measured && !alt.measured.takes_member" class="alt-unreached"
+                >not reached here</span
+              >
+              <span v-else-if="altPlausibility(alt) != null"
+                >plaus {{ formatFit(altPlausibility(alt)) }}</span
               >
               <span v-else class="no-stats"><span class="pi ph ph-info" /></span>
             </span>
@@ -1992,7 +2089,10 @@ const demotedCount = computed(() => {
         </div>
         <div v-if="derivedRun && !curateDenied" class="verify-denied">
           <span class="pi ph ph-info" /> Derived from the batch ledger: "use this" pins the identity
-          on the batch peak for the whole batch and measures it in every sample.
+          on the batch peak for the whole batch and measures it in every sample. Each alternative
+          shows what the pin would read in this sample<template v-if="measuredCurrent"
+            >, beside what it reads now: {{ measuredCurrent }}</template
+          >.
         </div>
         <div v-if="curateDenied" class="verify-denied">
           <span class="pi ph ph-lock-simple" /> Editor access is required to change an assignment.
@@ -2152,6 +2252,15 @@ const demotedCount = computed(() => {
 .alt .scoring {
   opacity: 0.6;
   font-style: italic;
+}
+/* Measured on this sample, and the pin would not reach its peak here: said as
+   plainly as a number, dimmed because there is none. */
+.alt .alt-unreached {
+  opacity: 0.6;
+}
+.pin-measured {
+  display: block;
+  opacity: 0.8;
 }
 /* The action is the row's, not the pane's: it stays out of the way until the
    pointer is on the candidate it would commit, so the list still reads as a

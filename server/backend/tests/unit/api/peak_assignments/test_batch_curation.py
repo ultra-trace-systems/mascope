@@ -8,12 +8,15 @@ and the task's closing message. See ``batch_curation.py`` and ``batch_peaks.py``
 
 from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 
 from mascope_backend.api.new.peak_assignments.batch_curation import (
     ACTION_PROMOTE_IDENTITY,
     ISOTOPE_LINE_CODE,
     IsotopeLineException,
+    _reading_of,
+    candidate_measurement,
     curation_outcome,
     manual_pin,
     monoisotopic_mz,
@@ -24,6 +27,12 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     compute_consensus,
     manual_pin_of,
     member_state,
+    tier_code,
+)
+from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+from mascope_backend.api.new.peak_assignments.engine import (
+    evidence_for,
+    tier_for_evidence,
 )
 from mascope_backend.api.new.peak_assignments.fold_view import member_detail
 
@@ -336,3 +345,209 @@ def test_the_outcome_names_the_samples_it_could_not_measure():
     assert two["message"].endswith(
         "2 samples could not be measured and keep their previous identity."
     )
+
+
+# --- measured before it is pinned (step 3.4c) ----------------------------------
+
+ENTRY = {
+    "formula": "C7H14O7",
+    "ion_formula": "C7H15O7+",
+    "ionization_mechanism_id": "mH",
+}
+
+
+def _scored(pairing, fit=0.81, lines=None):
+    """``score_in_sample``'s four maps for one ion, ``ion-x``."""
+    frame = pd.DataFrame(
+        lines
+        if lines is not None
+        else [
+            {
+                "target_ion_id": "ion-x",
+                "mz": 211.0812,
+                "relative_abundance": 0.9,
+                "sample_peak_id": "p1",
+                "target_isotope_formula": "C7H15O7",
+                "target_ion_formula": "C7H15O7+",
+                "match_mz_error": 0.9,
+                "match_abundance_error": 0.02,
+            },
+            {
+                "target_ion_id": "ion-x",
+                "mz": 212.0846,
+                "relative_abundance": 0.08,
+                "sample_peak_id": "p2",
+                "target_isotope_formula": "[13C]C6H15O7",
+                "target_ion_formula": "C7H15O7+",
+                "match_mz_error": 1.1,
+                "match_abundance_error": 0.05,
+            },
+            {
+                "target_ion_id": "ion-x",
+                "mz": 213.0855,
+                "relative_abundance": 0.02,
+                "sample_peak_id": None,
+                "target_isotope_formula": "C7H15O6[18O]",
+                "target_ion_formula": "C7H15O7+",
+                "match_mz_error": None,
+                "match_abundance_error": None,
+            },
+            # Another seed's ion in the same frame: none of its lines are this
+            # identity's.
+            {
+                "target_ion_id": "ion-y",
+                "mz": 211.0790,
+                "relative_abundance": 1.0,
+                "sample_peak_id": "p1",
+                "target_isotope_formula": "C11H11N2O2",
+                "target_ion_formula": "C11H11N2O2+",
+                "match_mz_error": -9.0,
+                "match_abundance_error": 0.0,
+            },
+        ]
+    )
+    return (
+        {("C7H14O7", "mH"): "ion-x"},
+        {"ion-x": fit},
+        pairing,
+        frame,
+    )
+
+
+def test_a_measured_candidate_reads_the_pins_numbers_and_its_lines():
+    config = PeakAssignmentConfig()
+    out = candidate_measurement(
+        ENTRY,
+        "p1",
+        _scored({("ion-x", "p1"): {"mz_error_ppm": 0.9, "abundance_error": 0.02}}),
+        config,
+    )
+    evidence = evidence_for(0.81, "C7H14O7")
+    assert out["fit_score"] == pytest.approx(0.81)
+    assert out["evidence"] == pytest.approx(evidence)
+    assert out["tier"] == tier_for_evidence(
+        evidence,
+        candidate_threshold=config.candidate_threshold,
+        assigned_threshold=config.assigned_threshold,
+    )
+    assert out["mz_error_ppm"] == pytest.approx(0.9)
+    assert out["abundance_error"] == pytest.approx(0.02)
+    assert out["takes_member"] is True
+    assert out["blocked_reason"] is None
+    assert [line["isotope_label"] for line in out["lines"]] == ["M0", "M+1", "M+2"]
+    assert [line["sample_peak_id"] for line in out["lines"]] == ["p1", "p2", None]
+    assert out["lines_found"] == 2
+
+
+def test_the_tier_bands_under_the_configuration_the_pin_measures_with():
+    strict = PeakAssignmentConfig(candidate_threshold=0.95, assigned_threshold=0.99)
+    out = candidate_measurement(
+        ENTRY, "p1", _scored({("ion-x", "p1"): {"mz_error_ppm": 0.9}}), strict
+    )
+    assert out["tier"] == "below_assignability"
+
+
+def test_a_candidate_whose_envelope_misses_the_members_peak_takes_nothing():
+    out = candidate_measurement(
+        ENTRY,
+        "p1",
+        _scored({("ion-x", "p7"): {"mz_error_ppm": 2.0}}),
+        PeakAssignmentConfig(),
+    )
+    assert out["takes_member"] is False
+    assert out["fit_score"] is None
+    assert out["evidence"] is None
+    assert out["tier"] is None
+    assert out["mz_error_ppm"] is None
+    assert "does not reach this sample's peak" in out["blocked_reason"]
+    # The lines are still what the spectrum holds of the ion.
+    assert out["lines_found"] == 2
+
+
+def test_a_candidate_with_no_fit_takes_nothing():
+    out = candidate_measurement(
+        ENTRY,
+        "p1",
+        _scored({("ion-x", "p1"): {"mz_error_ppm": 0.9}}, fit=None),
+        PeakAssignmentConfig(),
+    )
+    assert out["takes_member"] is False
+    assert out["fit_score"] is None
+
+
+def test_an_ion_that_cannot_be_built_says_so():
+    out = candidate_measurement(
+        ENTRY, "p1", ({}, {}, {}, pd.DataFrame()), PeakAssignmentConfig()
+    )
+    assert out["takes_member"] is False
+    assert out["lines"] == []
+    assert out["lines_found"] == 0
+    assert out["blocked_reason"] == "the ion could not be generated under its adduct"
+
+
+# C2H8N8 is a formula the heuristic filter finds unlikely (plausibility about
+# 0.42), so its evidence, fit x plausibility, is not its fit: what the preview
+# shows and the tier the pin writes both follow the evidence.
+UNLIKELY = {
+    "formula": "C2H8N8",
+    "ion_formula": "C2H9N8+",
+    "ionization_mechanism_id": "mH",
+}
+
+
+def test_an_unlikely_formula_is_measured_on_its_evidence_not_its_fit():
+    config = PeakAssignmentConfig()
+    scored = (
+        {("C2H8N8", "mH"): "ion-x"},
+        {"ion-x": 0.9},
+        {("ion-x", "p1"): {"mz_error_ppm": 0.4}},
+        pd.DataFrame(),
+    )
+    out = candidate_measurement(UNLIKELY, "p1", scored, config)
+    assert out["plausibility"] == pytest.approx(0.4224, abs=1e-4)
+    assert out["fit_score"] == pytest.approx(0.9)
+    assert out["evidence"] == pytest.approx(0.9 * out["plausibility"], abs=1e-3)
+    # The fit alone would band as assigned; the evidence does not reach a
+    # candidate.
+    assert config.assigned_threshold <= 0.9
+    assert out["evidence"] < config.candidate_threshold
+    assert out["tier"] == "below_assignability"
+
+
+def test_the_current_reading_carries_the_members_evidence():
+    anchor = SimpleNamespace(candidates=[ENTRY, UNLIKELY])
+    member = SimpleNamespace(
+        candidate=1, fit_score=0.9, tier=tier_code("below_assignability")
+    )
+    current = _reading_of(member, anchor)
+    assert current["assigned_formula"] == "C2H8N8"
+    assert current["ion_formula"] == "C2H9N8+"
+    assert current["fit_score"] == pytest.approx(0.9)
+    assert current["evidence"] == pytest.approx(evidence_for(0.9, "C2H8N8"))
+    assert current["evidence"] < 0.5
+    assert current["tier"] == "below_assignability"
+
+
+def test_an_unassigned_member_reads_no_evidence():
+    anchor = SimpleNamespace(candidates=[ENTRY])
+    member = SimpleNamespace(candidate=None, fit_score=None, tier=None)
+    current = _reading_of(member, anchor)
+    assert current["assigned_formula"] is None
+    assert current["evidence"] is None
+    assert current["tier"] is None
+
+
+def test_the_pin_records_the_measurement_it_was_made_on():
+    anchor = SimpleNamespace(
+        candidates=[ENTRY],
+        consensus_formula="C6H12O6",
+        consensus_ion_formula="C6H13O6+",
+        ionization_mechanism_id="mH",
+        consensus_tier="assigned",
+        best_fit_score=0.95,
+        support_fraction=0.5,
+        is_ambiguous=False,
+    )
+    measured = {"fit_score": 0.81, "tier": "candidate"}
+    assert manual_pin(anchor, 0, 7, "now", measured)["measured"] == measured
+    assert "measured" not in manual_pin(anchor, 0, 7, "now")

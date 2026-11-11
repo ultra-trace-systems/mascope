@@ -26,6 +26,17 @@ order:
 **Release** puts the archived member states back where nobody has changed them
 since, drops the pin and recomputes the plain vote.
 
+**Measure first** (design note step 3.4c). An identity the registry holds was
+measured in the sample that brought it, not in the one the inspector shows, so
+before "use this" the inspector asks :func:`measure_batch_peak_candidate` what
+the pin would make of this sample's member: the ion's fit, its envelope's lines
+and which of them the spectrum holds, the plausibility, the evidence and the
+tier, beside what the member reads now. Nothing is written. The measurement is
+the propagation's own (``batch_untargeted.score_in_sample`` and
+``measured_reading``), so the numbers shown are the ones the pin then writes on
+that member; a pin made from that sample records the measurement under
+``provenance.manual.measured``.
+
 The claim is guarded as a verdict's is: the client names the consensus formula it
 saw (``expected_formula``), and a mismatch is refused rather than a pin recorded
 over a consensus the user never read.
@@ -66,6 +77,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     manual_pin_of,
     member_state,
     resolve_candidate,
+    tier_name,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     _acquire_batch_fold_lock,
@@ -75,9 +87,17 @@ from mascope_backend.api.new.peak_assignments.batch_runs import touch_ledger
 from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     Annotation,
     _propagate_to_sample,
+    measured_reading,
+    score_in_sample,
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
-from mascope_backend.api.new.peak_assignments.engine import monoisotopic_row
+from mascope_backend.api.new.peak_assignments.derived_evidence import (
+    isotopologue_rows,
+)
+from mascope_backend.api.new.peak_assignments.engine import (
+    evidence_for,
+    monoisotopic_row,
+)
 from mascope_backend.api.new.peak_assignments.seeded_scoring import (
     build_seeded_isotopes_df,
     fetch_mechanisms_by_id,
@@ -88,6 +108,7 @@ from mascope_backend.socket.notifications import (
     UserNotification,
     send_progress_user_notification,
 )
+from mascope_tools.composition.heuristic_filter import formula_plausibility
 
 
 #: The notification channel the curation reports on, start to finish.
@@ -205,16 +226,24 @@ def monoisotopic_mz(formula: str, mechanism: Any) -> Optional[float]:
     return float(monoisotopic_row(isotopes)["mz"])
 
 
-def manual_pin(anchor: Any, candidate: int, user_id: Optional[int], at: str) -> dict:
+def manual_pin(
+    anchor: Any,
+    candidate: int,
+    user_id: Optional[int],
+    at: str,
+    measured: Optional[dict] = None,
+) -> dict:
     """The pin a curated anchor carries under ``provenance.manual``.
 
     The identity is read off the registry, never from the client, and the
     consensus being displaced is archived whole - the row path's ``previous`` -
     so the note can say what the species read before and a release can be
-    checked against it.
+    checked against it. ``measured`` is what :func:`measure_batch_peak_candidate`
+    measured on the sample the pin was made from, kept as the record of what
+    the curator judged it on; absent when the pin named no sample.
     """
     identity = resolve_candidate(anchor.candidates, candidate)
-    return {
+    pin = {
         "action": ACTION_PROMOTE_IDENTITY,
         "candidate": candidate,
         "formula": identity.get("formula"),
@@ -233,6 +262,9 @@ def manual_pin(anchor: Any, candidate: int, user_id: Optional[int], at: str) -> 
         },
         "displaced_members": [],
     }
+    if measured is not None:
+        pin["measured"] = measured
+    return pin
 
 
 def restore_member(member: Any, state: dict) -> None:
@@ -384,12 +416,199 @@ async def validate_curation(
     return {"formula": entry.get("formula"), "mz": anchor.mz}
 
 
+def _reading_of(member: Any, anchor: Any) -> dict:
+    """What a member reads now, in the measurement's terms."""
+    identity = resolve_candidate(anchor.candidates, member.candidate)
+    formula = identity.get("formula")
+    return {
+        "assigned_formula": formula,
+        "ion_formula": identity.get("ion_formula"),
+        "ionization_mechanism_id": identity.get("ionization_mechanism_id"),
+        "fit_score": member.fit_score,
+        "evidence": evidence_for(member.fit_score, formula) if formula else None,
+        "tier": tier_name(member.tier),
+    }
+
+
+def candidate_measurement(
+    entry: dict,
+    sample_peak_id: str,
+    scored: tuple,
+    config: PeakAssignmentConfig,
+) -> dict:
+    """The numbers a pin of ``entry`` would write on the member at
+    ``sample_peak_id``, read off one seeded scoring of the identity.
+
+    The fit, evidence and tier are :func:`batch_untargeted.measured_reading`'s,
+    the very reading the propagation writes; ``takes_member`` says whether the
+    pin re-points the member at all (False: the envelope did not reach its
+    peak, and it keeps what it reads). The lines are every isotopologue the ion
+    predicts, each with the peak of this sample it paired to, if any.
+
+    :param entry: The registry entry being measured.
+    :param sample_peak_id: The member's peak.
+    :param scored: ``score_in_sample``'s four maps.
+    :param config: The configuration the pin is measured under.
+    """
+    ion_by_seed, fit_by_ion, errors_by_pairing, scored_df = scored
+    formula = entry["formula"]
+    annotation = Annotation(
+        formula=formula,
+        ion_formula=entry.get("ion_formula"),
+        ionization_mechanism_id=entry.get("ionization_mechanism_id"),
+        role=ROLE_M0,
+        owner_batch_peak_id=None,
+    )
+    reading = measured_reading(
+        annotation, sample_peak_id, ion_by_seed, fit_by_ion, errors_by_pairing, config
+    )
+    ion_id = ion_by_seed.get((formula, annotation.ionization_mechanism_id))
+    lines: list[dict] = []
+    if (
+        ion_id is not None
+        and not scored_df.empty
+        and "target_ion_id" in scored_df.columns
+    ):
+        lines = isotopologue_rows(
+            scored_df[scored_df["target_ion_id"].astype(str) == str(ion_id)]
+        )
+    errors = errors_by_pairing.get((ion_id, sample_peak_id), {}) if ion_id else {}
+    return {
+        "plausibility": round(float(formula_plausibility(formula)), 4),
+        "fit_score": reading.fit if reading else None,
+        "evidence": reading.evidence if reading else None,
+        "tier": reading.tier if reading else None,
+        "mz_error_ppm": errors.get("mz_error_ppm"),
+        "abundance_error": errors.get("abundance_error"),
+        "lines": lines,
+        "lines_found": sum(1 for line in lines if line.get("sample_peak_id")),
+        "takes_member": reading is not None,
+        "blocked_reason": None
+        if reading is not None
+        else (
+            "the ion could not be generated under its adduct"
+            if ion_id is None
+            else "the ion's envelope does not reach this sample's peak, so a pin "
+            "leaves the sample reading what it does now"
+        ),
+    }
+
+
+@api_controller()
+async def measure_batch_peak_candidate(
+    sample_batch_id: str,
+    batch_peak_id: str,
+    candidate: int,
+    sample_item_id: str,
+    config: PeakAssignmentConfig | None = None,
+) -> dict:
+    """Measure one of a batch peak's identities on one sample's member, before
+    it is pinned: what "use this" would write there, beside what it reads now.
+
+    Nothing is written. An identity the pin would refuse (an isotope line of an
+    ion whose monoisotopic line is elsewhere) is answered with the refusal as
+    its ``blocked_reason``; one the member already carries is answered with the
+    member's own numbers, which a pin leaves as they are.
+
+    :param sample_batch_id: The batch.
+    :param batch_peak_id: The batch peak (anchor).
+    :param candidate: Index into its identity registry.
+    :param sample_item_id: The sample whose member is measured.
+    :param config: The configuration the pin measures under; the default's,
+        as :func:`curate_batch_peak` uses.
+    :return: Status envelope with one entry.
+    :raises NotFoundException: The batch peak is not this batch's, or the
+        sample holds no member of it.
+    :raises UnknownCandidateException: The index names no identity.
+    """
+    config = config or PeakAssignmentConfig()
+    async with async_session() as session:
+        anchor = await session.get(BatchPeak, batch_peak_id)
+        _check(anchor, sample_batch_id, batch_peak_id)
+        entry = registry_entry(anchor, candidate)
+        if entry is None:
+            raise UnknownCandidateException(batch_peak_id, candidate)
+        member = (
+            await session.execute(
+                select(BatchPeakOccurrence).where(
+                    BatchPeakOccurrence.batch_peak_id == batch_peak_id,
+                    BatchPeakOccurrence.sample_item_id == sample_item_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if member is None:
+            raise NotFoundException(
+                f"Sample '{sample_item_id}' holds no member of batch peak "
+                f"'{batch_peak_id}'"
+            )
+        refusal: Optional[str] = None
+        try:
+            await _check_monoisotopic(session, anchor, entry)
+        except IsotopeLineException as refused:
+            refusal = refused.detail
+        current = _reading_of(member, anchor)
+        sample_peak_id = str(member.sample_peak_id)
+        carried = member.candidate == candidate
+    measurement: dict[str, Any] = {
+        "batch_peak_id": batch_peak_id,
+        "sample_item_id": sample_item_id,
+        "sample_peak_id": sample_peak_id,
+        "candidate": candidate,
+        "assigned_formula": entry.get("formula"),
+        "ion_formula": entry.get("ion_formula"),
+        "ionization_mechanism_id": entry.get("ionization_mechanism_id"),
+        "current": current,
+    }
+    if refusal is not None:
+        measurement.update(
+            plausibility=round(float(formula_plausibility(entry["formula"])), 4),
+            takes_member=False,
+            blocked_reason=refusal,
+        )
+    elif carried:
+        measurement.update(
+            plausibility=round(float(formula_plausibility(entry["formula"])), 4),
+            fit_score=current["fit_score"],
+            evidence=current["evidence"],
+            tier=current["tier"],
+            takes_member=False,
+            blocked_reason="this sample already reads this identity",
+        )
+    elif not entry.get("ionization_mechanism_id"):
+        measurement.update(
+            plausibility=round(float(formula_plausibility(entry["formula"])), 4),
+            takes_member=False,
+            blocked_reason="the identity names no adduct, and the ion is built from one",
+        )
+    else:
+        scored = await score_in_sample(
+            sample_item_id,
+            {(entry["formula"], entry["ionization_mechanism_id"])},
+            config,
+        )
+        measurement.update(candidate_measurement(entry, sample_peak_id, scored, config))
+    scored_ok = measurement.get("takes_member")
+    return {
+        "status": "success",
+        "message": (
+            f"Measured {entry.get('formula')} on the sample's peak at batch peak "
+            f"m/z {anchor.mz:.4f}"
+            if scored_ok
+            else f"{entry.get('formula')} was not measured on the sample's peak: "
+            f"{measurement.get('blocked_reason')}"
+        ),
+        "results": 1,
+        "data": [measurement],
+    }
+
+
 async def _pin(
     sample_batch_id: str,
     batch_peak_id: str,
     candidate: int,
     expected_formula: Optional[str],
     user_id: Optional[int],
+    measured: Optional[dict] = None,
 ) -> tuple[dict, list[str]]:
     """Write the pin under the fold lock, re-checking the claim: it may have moved
     between the route's check and this task starting.
@@ -403,7 +622,7 @@ async def _pin(
         entry = _check_claim(anchor, batch_peak_id, candidate, expected_formula)
         await _check_monoisotopic(session, anchor, entry)
         now = dt.now(timezone.utc)
-        pin = manual_pin(anchor, candidate, user_id, now.isoformat())
+        pin = manual_pin(anchor, candidate, user_id, now.isoformat(), measured)
         provenance = (
             dict(anchor.provenance) if isinstance(anchor.provenance, dict) else {}
         )
@@ -457,13 +676,34 @@ async def run_batch_peak_curation(
     user_id: Optional[int] = None,
     process_id: Optional[str] = None,
     parent_id: Optional[str] = None,
+    measured_sample_item_id: Optional[str] = None,
 ) -> dict:
     """Pin, propagate, recompute - see the module docstring.
 
+    :param measured_sample_item_id: The sample the curator measured the
+        identity on before pinning it; measured again here, on the server, and
+        the result recorded on the pin. A measurement that fails leaves the pin
+        without one rather than unmade.
     :return: Counts: the formula pinned, samples measured, members re-pointed.
     """
+    measured = None
+    if measured_sample_item_id is not None:
+        try:
+            result = await measure_batch_peak_candidate(
+                sample_batch_id,
+                batch_peak_id,
+                candidate,
+                measured_sample_item_id,
+                config,
+            )
+            measured = result["data"][0]
+        except Exception:  # noqa: BLE001 - the record must not cost the pin
+            runtime.logger.exception(
+                f"Measuring candidate {candidate} of batch peak '{batch_peak_id}' "
+                f"on sample '{measured_sample_item_id}' for the pin failed."
+            )
     pin, samples = await _pin(
-        sample_batch_id, batch_peak_id, candidate, expected_formula, user_id
+        sample_batch_id, batch_peak_id, candidate, expected_formula, user_id, measured
     )
     counts = {
         "formula": pin["formula"],
@@ -555,6 +795,7 @@ async def curate_batch_peak(
     user_id: int | None = None,
     process_id: str | None = None,
     parent_id: str | None = None,
+    measured_sample_item_id: str | None = None,
 ) -> dict:
     """Pin one of a batch peak's identities as its species for the whole batch,
     measure it in every sample holding the peak, and recompute the anchor.
@@ -568,6 +809,7 @@ async def curate_batch_peak(
         user_id=user_id,
         process_id=process_id,
         parent_id=parent_id,
+        measured_sample_item_id=measured_sample_item_id,
     )
     return curation_outcome(counts, sample_batch_id)
 
@@ -644,7 +886,9 @@ __all__ = [
     "UNKNOWN_CANDIDATE_CODE",
     "curate_batch_peak",
     "curation_outcome",
+    "candidate_measurement",
     "manual_pin",
+    "measure_batch_peak_candidate",
     "member_state",
     "monoisotopic_mz",
     "registry_entry",
