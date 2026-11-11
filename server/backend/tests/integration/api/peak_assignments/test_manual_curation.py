@@ -2587,7 +2587,8 @@ async def test_the_files_resolving_power_shapes_the_prediction(
     editor_client, curated_run, asks_lines, async_session_factory, monkeypatch
 ):
     """At a resolving power of 5000 the 18O line is one peak with the 81Br
-    line, whose predicted share then holds both."""
+    line, whose predicted share then holds both, and the 13C2, 13C+17O and
+    13C+2H lines the same peak holds (mascope#3024)."""
 
     async def tof_resolution(sample):
         return lambda mz: 5000.0
@@ -2605,4 +2606,4 @@ async def test_the_files_resolving_power_shapes_the_prediction(
         for line in row.provenance["predicted_envelope"]["lines"]
         if line["line"] == "81Br"
     )
-    assert br81["predicted_share"] == pytest.approx(0.9848, abs=1e-4)
+    assert br81["predicted_share"] == pytest.approx(0.9851, abs=1e-4)

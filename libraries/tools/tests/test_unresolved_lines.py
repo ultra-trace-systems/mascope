@@ -11,7 +11,6 @@ import polars as pl
 import pytest
 
 from mascope_tools.composition import heuristic_filter
-from mascope_tools.composition.config import UNRESOLVED_MEMBER_DEPTH
 from mascope_tools.composition.heuristic_filter import (
     _fold_under_floor,
     match_isotopic_pattern,
@@ -238,10 +237,11 @@ def test_a_labelled_reagent_is_predicted_at_its_own_purity(power):
 
 
 def _m1_share(ion, floor, power):
-    """The predicted M+1 share of the ion's envelope, and every line it reaches.
+    """The predicted M+1 share of the ion's envelope, and every line at M+1.
 
-    The second value sums every fine-structure line at M+1 the predictor
-    reaches at the members' depth, each labelled.
+    The second value is every fine-structure line one mass unit up, each
+    labelled, predicted far deeper than any M+1 line of these ions, so it does
+    not move with the members' depth.
     """
     mzs, intensities, labels = predict_resolved_isotopes(
         ion, 1, floor, _resolving(power)
@@ -250,9 +250,7 @@ def _m1_share(ion, floor, power):
     at_m1 = np.round(mzs - mzs[anchor]) == 1
     predicted = float(intensities[at_m1].sum() / intensities[anchor])
 
-    fine_mz, fine, fine_labels = predict_isotopes(
-        ion, 1, threshold=floor * UNRESOLVED_MEMBER_DEPTH
-    )
+    fine_mz, fine, fine_labels = predict_isotopes(ion, 1, threshold=1e-7)
     fine_anchor = fine_labels.index("M0")
     reached = {
         label: float(share / fine[fine_anchor])
@@ -267,10 +265,10 @@ def _m1_share(ion, floor, power):
     [
         # The 15N line is 6.3 mDa under the 13C line, half a FWHM 5.4 mDa:
         # a bin of its own at 0.37% of M0, under the 1% floor.
-        ("C4H8NO", 8000.0, {"13C", "15N"}),
+        ("C4H8NO", 8000.0, {"13C", "15N", "2H", "17O"}),
         # The 13C bin takes the 33S line (4 mDa) but not the 15N line (6.3
         # mDa, half a FWHM 5.9 mDa), which alone is 0.73% of M0.
-        ("C6H12N2O2S", 15000.0, {"13C", "33S", "15N", "2H"}),
+        ("C6H12N2O2S", 15000.0, {"13C", "33S", "15N", "2H", "17O"}),
     ],
     ids=["C4H8NO+ at 8000", "C6H12N2O2S+ at 15000"],
 )
@@ -287,10 +285,26 @@ def test_a_line_under_the_floor_within_one_fwhm_of_a_kept_line_is_added_to_it(
 
 def test_a_line_under_the_floor_more_than_one_fwhm_away_is_still_dropped():
     # At 30000 a FWHM at m/z 87 is 2.9 mDa: the 15N line, 6.3 mDa from the
-    # 13C line, is a peak of its own, and under the floor it is not predicted.
+    # 13C line, is a peak of its own, and under the floor it is not predicted;
+    # so is the 2H line, 2.9 mDa over it. The 17O line, 0.9 mDa over it, is
+    # in the 13C peak.
     predicted, reached = _m1_share("C4H8NO", 0.01, 30000.0)
 
-    assert predicted == pytest.approx(reached["13C"], rel=1e-6)
+    assert predicted == pytest.approx(reached["13C"] + reached["17O"], rel=1e-6)
+
+
+@pytest.mark.parametrize("power", [4000.0, 8000.0])
+def test_a_small_ions_m1_peak_holds_its_lines_under_a_tenth_of_the_floor(power):
+    # mascope#3024: the 2H and 17O lines of C4H8NO+ are 0.093% and 0.038% of
+    # M0, both under a tenth of the 1% floor. Predicted only that deep, the
+    # TOF's M+1 peak left them out and read 2.6% low.
+    predicted, reached = _m1_share("C4H8NO", 0.01, power)
+
+    assert reached["2H"] < 1e-3
+    assert reached["17O"] < 1e-3
+    assert predicted == pytest.approx(
+        reached["13C"] + reached["15N"] + reached["2H"] + reached["17O"], rel=1e-6
+    )
 
 
 def test_a_fold_into_the_brightest_line_keeps_a_line_on_the_floor(monkeypatch):
