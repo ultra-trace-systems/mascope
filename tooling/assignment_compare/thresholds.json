@@ -1,0 +1,65 @@
+{
+  "format": 1,
+  "about": "The stage targets of the assignment quality plan: stages 1, 2 and 4 from the measurement log's table (docs/dev/assignment_quality_plan_log.md, Metrics and targets), stage 3's G9 to G14 from the plan's stage 3 text. The log states G1, G2 and the mass error for the Orbitrap sets A to D and C2, and reads G4 and G4a on A, B, D, E and F1 alone: on C, C2 and F2 the reference's reagent rows are another claim (only_sets). A stage a metric does not name holds the stage before it; null is no target; reading marks a target that is shown but left out of the verdict (decision 27). The README's 'The thresholds file' says the rest.",
+  "stage": "stage3",
+  "stages": ["stage1", "stage2", "stage3", "stage4"],
+  "not_gated_sets": ["J"],
+  "targets": {
+    "G1": {
+      "only_sets": ["A", "B", "C", "C2", "D"],
+      "instruments": ["orbitrap"],
+      "stage1": {"max": 45},
+      "stage2": {"max": 20},
+      "stage3": {"max": 20, "reading": true},
+      "stage4": {"max": 15, "reading": true}
+    },
+    "G1_conditioned": {
+      "only_sets": ["A", "B", "C", "C2", "D"],
+      "instruments": ["orbitrap"],
+      "stage2": {"max": 20},
+      "stage3": {"max": 20, "reading": true}
+    },
+    "G2_formula": {
+      "only_sets": ["A", "B", "C", "C2", "D"],
+      "instruments": ["orbitrap"],
+      "stage1": {"min": 80},
+      "stage2": {"min": 85},
+      "stage3": {"min": 85, "reading": true},
+      "sets": {"B": {"stage1": {"min": 70}}}
+    },
+    "G2_ion": {
+      "only_sets": ["A", "B", "C", "C2", "D"],
+      "instruments": ["orbitrap"],
+      "stage1": {"min": 95},
+      "stage3": {"min": 95, "reading": true}
+    },
+    "G3_N5": {"stage1": {"max": 1}},
+    "G3_carbon_free_untargeted": {"stage1": {"max": 0}},
+    "G4": {
+      "only_sets": ["A", "B", "D", "E", "F1"],
+      "stage1": {"min": 90},
+      "stage2": {"min": 100}
+    },
+    "G4a": {
+      "only_sets": ["A", "B", "D", "E", "F1"],
+      "stage1": {"min": 90},
+      "stage2": {"min": 100}
+    },
+    "G5": {"stage1": {"max": 0}},
+    "G6_assigned": {"stage2": {"max": 5}},
+    "G7": {"stage2": {"max": 0}},
+    "G8": {"stage1": {"max": 0}},
+    "MAD": {
+      "only_sets": ["A", "B", "C", "C2", "D"],
+      "instruments": ["orbitrap"],
+      "stage1": {"max": 0.35}
+    },
+    "reasons": {"stage2": {"min": 100}},
+    "G9": {"stage3": {"max": 2}},
+    "G10": {"stage3": {"min": 95}},
+    "G11": {"stage3": {"max": 0}},
+    "G12": {"stage3": {"max": 0}},
+    "G13": {"stage3": {"max": 0}},
+    "G14": {"stage3": {"max": 0}}
+  }
+}
