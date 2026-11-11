@@ -20,6 +20,7 @@ from mascope_tools.composition.custom_elements import (
     label_purity,
     labelled_purity,
 )
+from mascope_tools.composition.reagents import ReagentCalibration
 
 
 def test_a_setup_that_names_none_reads_the_library_default():
@@ -92,6 +93,46 @@ def test_the_reagent_pass_reads_a_labelled_reagent_at_the_setups_purity(
     ):
         service._claim_reagent_lines(MagicMock(), resolved, resolution=None)
     assert claim.call_args.kwargs["purity"] == claimed
+
+
+@pytest.mark.parametrize(
+    ("profile_purity", "claimed"), [(0.98, 0.9), (None, None)], ids=["labelled", "not"]
+)
+def test_the_ladder_claim_reads_a_labelled_reagent_at_the_setups_purity(
+    profile_purity, claimed
+):
+    """The reagent's water ladder is labelled as its library is, and claimed
+    beside it on what that claim left and its anchors said."""
+    resolved = SimpleNamespace(
+        profile=SimpleNamespace(name="NO3_15N", label_purity=profile_purity),
+        mz_precision_ppm=2.0,
+    )
+    hits, calibration, resolution = (
+        [MagicMock()],
+        ReagentCalibration(0.0, 2.0),
+        MagicMock(),
+    )
+    with (
+        patch.object(service, "claim_reagent_peaks", return_value=(hits, calibration)),
+        patch.object(service, "_claimed_lines_offset", return_value=None),
+        patch.object(service, "build_reagent_assignments", return_value=[]),
+        patch.object(service, "claim_ladder_peaks", return_value=([], None)) as climb,
+        labelled_purity(0.9),
+    ):
+        service._reagent_assignments(
+            MagicMock(),
+            resolved,
+            "sample1",
+            "run1",
+            resolution=resolution,
+            own_mechanisms=[SimpleNamespace(ionization_mechanism="[M+^NO3]-")],
+            sample_name="sample",
+        )
+    kwargs = climb.call_args.kwargs
+    assert kwargs["purity"] == claimed
+    assert (kwargs["calibration"], kwargs["claimed"]) == (calibration, hits)
+    assert (kwargs["claim_ppm"], kwargs["resolution"]) == (2.0, resolution)
+    assert kwargs["channels"] == ["[M+^NO3]-"]
 
 
 def test_reference_lines_read_a_labelled_element_at_the_purity_in_effect():

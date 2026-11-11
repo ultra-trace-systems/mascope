@@ -74,7 +74,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 3.3 - name the source ions | #2218 | 2026-09-26 | measured (pass 10): the air's ions read as reagent, 84% of I+'s intensity, 88% of K3's |
 | 3.3b - the standard adduct notation | #2203, #2204 stacked on it | 2026-09-25 | built: both notations read everywhere, rows stored in the standard form; moves no metric |
 | 3.3c - reagent rows read like rows | #2221 | 2026-09-26 | built: a reagent row's ion carries its charge and owns its isotope lines; not measured |
-| 3.3d - source-solvent clusters | - |  | planned, from the reference engine's reading (its #55): solvent ladders as reagent rows |
+| 3.3d - source-solvent clusters | #3128 |  | built: the reagent pass climbs the solvent ladders of the charge-transfer and urea sources (water, methanol, ethanol, acetone; the rungs a work names) and the nitrate acid dimer core's water ladder, claiming a rung above a core the spectrum shows, contiguous, on mass and step, falling, and displacing a molecule only where the core stands ten times its own peak through another channel, never with water; read offline on the testbed, the acetone dimer leaves C6H12O2 on the three I+ samples that show it and on five of L's six, nothing on K, K3 or the nitrate sets; no tier rule moves; MAS-57 |
 | 3.3e - the chemistry a run searches under is shipped | #2217 | 2026-09-26 | measured (pass 10): the shipped mechanisms are created at every start; no channel unavailable |
 | 3.3f - a list is read through the channels the run opened | #2220 | 2026-09-26 | built: Stage A reads the lists through the channels the run opened; pass 11 measures it |
 | 3.4 - an opportunistic channel needs a second channel | #3019 |  | built: a search row through a secondary channel reaches assigned only on a list naming its neutral or the neutral through a mode channel; its isotopologue is recorded and no longer lifts the cap; a list's reading through an opened channel keeps 3.3f's rule; tiering rule set 11; MAS-56 |
@@ -349,6 +349,41 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
 - **Verify.** G10 on I+ and K at or above target; no certified component of
   the cylinder claimed; the dimer rows on I+ claimed.
 - **Size.** S-M.
+- **As built (MAS-57).** A ladder claim beside the cluster claim
+  (`reagents.match_ion_ladders`, `reagent_pass.claim_ladder_peaks`), on the
+  masses the cluster claim's anchors corrected and the peaks it left. The
+  profiles carry the solvent lists (`ReagentProfile.source_solvents`): water,
+  methanol, ethanol and acetone on `EASYIC_POS` and `UR`. A ladder holds the
+  rungs a work names, the library's rule: methanol's (S)nH+ to n = 4, ethanol's
+  dimer, acetone's to n = 4, each solvent's S.H3O+ and methanol's dimer on a
+  hydronium, and [S-H]+.S for ethanol and acetone [gri73, lar82, mot84, nist];
+  a mixed-solvent cluster, ethanol's trimer and methanol less a hydride are
+  named by no work found and not built, and neither is the reference's
+  condensation rung (a cluster less water). The rules as the brief writes
+  them: the core (the protonated solvent, or the solvent less a hydride where
+  the run searches `[M-H]+`) is a peak at an anchor's share of the base peak
+  and is not claimed; the rung below is a peak of the spectrum; the rung and
+  the step fit at the run's precision; a rung stands at most three times the
+  rung below it. "Outweighs the analyte's by a bar" is read as the ladder's
+  core against the molecule's own evidence: a rung whose ion also reads as a
+  closed-shell, bondable formula with carbon through one of the run's channels
+  displaces it only where its core stands ten times taller than any unclaimed
+  peak that molecule shows through another channel; the reference's share of
+  the spectrum's signal (0.1%) would leave two of the three I+ dimers, at 0.01
+  to 0.02% of the signal. A water rung never displaces such a reading
+  [good70, sun88]. The nitrate profiles' water ladder takes `(HNO3)2.NO3-` as
+  rung zero and its first three hydrates, on any instrument class, under the
+  same rules; their rows say the ladder shows them (`observed`). The rows are
+  the pre-pass's, family `solvent` (the nitrate hydrates `reagent`), and
+  record their ladder (`provenance.reagent.ladder`); the reagent-line offset
+  is read off the library's lines alone, as it was measured. Read offline on
+  the testbed's stored peak lists with the branch's pre-pass: on I+ the
+  acetone dimer is claimed in the three samples that show it (each a
+  C6H12O2 candidate before); on L in five of six (one C6H12O2 assigned, four
+  candidate) and acetone less a hydride with a second one in one; on H one
+  dimer (a C6H12O2 assigned); nothing on K, K3, A, B, C, C2, G or the nitrate
+  TOF set, where the dimer core shows no hydrate at the run's precision. G10
+  is the plan owner's pass.
 
 ### 3.4 An opportunistic channel needs a second channel
 
