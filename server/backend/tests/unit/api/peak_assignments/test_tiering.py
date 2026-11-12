@@ -45,6 +45,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     REASON_ENVELOPE_CLAIM,
     REASON_ENVELOPE_NEIGHBOUR,
     REASON_EVIDENCE_BAND,
+    REASON_IN_SOURCE_FRAGMENT,
     REASON_INHERITED,
     REASON_LONE_PEAK,
     REASON_MINOR_CHANNEL,
@@ -1337,11 +1338,11 @@ class TestTheRunsRecord:
     def test_the_rule_version_is_recorded(self):
         assert run([row("pa-1")])["version"] == TIERING_RULES_VERSION
 
-    def test_the_rule_set_is_13(self):
+    def test_the_rule_set_is_14(self):
         # The number, not the imported constant: a tier is comparable across
         # runs only under the same rules, so the set moves on purpose and this
         # test moves with it.
-        assert run([row("pa-1")])["version"] == 13
+        assert run([row("pa-1")])["version"] == 14
 
     def test_the_thresholds_are_recorded_with_it(self):
         summary = run([row("pa-1")])
@@ -3533,3 +3534,102 @@ class TestASecondChannelOnASeparatedPeak:
         )
         assert tier_of(rows, "pa-1") == "assigned"
         assert rows[0]["provenance"]["cross_channel"][SEPARATED_THROUGH] == ["[M+NH4]+"]
+
+
+def fragment_of(*parents: tuple[str, str, float]) -> dict:
+    """A cross-channel record naming the heavier ions a row's ion may be the
+    in-source fragment of, as ``(parent, loss, height ratio)``."""
+    return {
+        "channels": SEEN_TWICE,
+        "in_source_fragment_of": [
+            {
+                "parent": parent,
+                "loss": loss,
+                "via": "[M+H]+",
+                "parent_peak_assignment_id": f"pa-{parent}",
+                "height_ratio": ratio,
+            }
+            for parent, loss, ratio in parents
+        ],
+    }
+
+
+class TestAPossibleInSourceFragment:
+    def test_it_is_named_and_caps_nothing(self):
+        rows = [
+            row(
+                "pa-1",
+                provenance={"cross_channel": fragment_of(("C6H14O7", "H2O", 0.25))},
+            )
+        ]
+        summary = run(rows)
+        assert tier_of(rows, "pa-1") == "assigned"
+        (reason,) = [
+            reason
+            for reason in rows[0]["provenance"]["tier_reasons"]
+            if reason["rule"] == REASON_IN_SOURCE_FRAGMENT
+        ]
+        assert reason["caps"] is False
+        assert reason["detail"] == (
+            "the run also commits C6H14O7 through [M+H]+, whose ion less H2O is "
+            "this row's ion, so this peak may be that ion's in-source fragment "
+            "rather than a compound of its own; its peak is 0.25 times as tall "
+            "as that one. Recorded as a grouping, not weighed as evidence"
+        )
+        assert summary[REASON_IN_SOURCE_FRAGMENT] == 1
+        # It is not what the row stands on: the row still names that.
+        assert REASON_CORROBORATED in rules_on(rows, "pa-1")
+
+    def test_a_small_height_ratio_reads_in_significant_figures(self):
+        rows = [
+            row(
+                "pa-1",
+                provenance={"cross_channel": fragment_of(("C6H14O7", "H2O", 3.333e-5))},
+            )
+        ]
+        run(rows)
+        (reason,) = [
+            reason
+            for reason in rows[0]["provenance"]["tier_reasons"]
+            if reason["rule"] == REASON_IN_SOURCE_FRAGMENT
+        ]
+        assert "; its peak is 3.3e-05 times as tall as that one." in reason["detail"]
+
+    def test_it_is_named_on_a_capped_row_too(self):
+        rows = [
+            row(
+                "pa-1",
+                RADICAL,
+                provenance={"cross_channel": fragment_of(("C6H13O7", "H2O", 0.5))},
+            )
+        ]
+        run(rows)
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert REASON_IN_SOURCE_FRAGMENT in rules_on(rows, "pa-1")
+
+    def test_the_brightest_heavier_ion_is_named_and_the_rest_counted(self):
+        rows = [
+            row(
+                "pa-1",
+                provenance={
+                    "cross_channel": fragment_of(
+                        ("C7H12O8", "CO2", 0.1), ("C6H14O7", "H2O", 0.3)
+                    )
+                },
+            )
+        ]
+        run(rows)
+        (reason,) = [
+            reason
+            for reason in rows[0]["provenance"]["tier_reasons"]
+            if reason["rule"] == REASON_IN_SOURCE_FRAGMENT
+        ]
+        assert reason["detail"].startswith("the run also commits C7H12O8")
+        assert "less CO2" in reason["detail"]
+        assert "; 1 more such ion." in reason["detail"]
+
+    def test_a_row_in_no_pair_is_not_named(self):
+        rows = [row("pa-1", channels=SEEN_TWICE)]
+        summary = run(rows)
+        assert REASON_IN_SOURCE_FRAGMENT not in rules_on(rows, "pa-1")
+        assert summary[REASON_IN_SOURCE_FRAGMENT] == 0
