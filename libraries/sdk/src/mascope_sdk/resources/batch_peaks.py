@@ -155,7 +155,7 @@ class BatchPeaksResource(BaseResource):
                  consensus formula: ``unit``, ``step``, ``depth``,
                  ``root_formula`` and ``root_batch_peak_id`` of the assigned
                  batch peak it starts at, ``units``, ``has_anchor``; null
-                 where none, and absent from a server that predates it), and
+                 where none, and absent from a server that predates it),
                  ``co_variation`` (how the batch peak's trace follows the same
                  neutral's other channels, as a *Read co-variation* run read
                  it: the strongest partner's ``verdict`` - ``co_varying``,
@@ -172,6 +172,17 @@ class BatchPeaksResource(BaseResource):
                  ratio, spread and drift, and what was graded) and
                  ``continuity_stale`` (true where a sample or a curation moved
                  the batch peak since it was graded); display-only, and absent
+                 from a server that predates them; ``diagnostic_isotopologues``
+                 (the diagnostic isotopologues a *Stamp isotopologues* run
+                 predicted for the consensus formula: per isotope under
+                 ``predicted`` its ``mz``, ``ratio``, whether it is
+                 ``resolved``, the ``batch_peak_id`` found at it, the samples
+                 ``judged`` and ``holds``, the ``share``, the ``verdict`` and
+                 whether it was ``stamped``) and ``stamped_isotopologue_of``
+                 (on a stamped line: the ``batch_peak_id`` it is an
+                 isotopologue of, the ``label``, the track's reading, and how
+                 many of its stamps were ``n_predicted`` or ``n_picker``);
+                 recorded only, no tier reads them; null where none, and absent
                  from a server that predates them.
                  ``consensus_tier`` is always this server's: the engine's tier
                  stands beside it.
@@ -223,8 +234,15 @@ class BatchPeaksResource(BaseResource):
                  ``sample_item_name``, ``sample_peak_id``, ``mz``,
                  ``intensity``, ``assigned_formula``, ``ion_formula``,
                  ``ionization_mechanism_id``, ``source``, ``tier``, ``role``,
-                 ``fit_score``, ``p_correct``, ``owner_batch_peak_id``. None
-                 when the batch has no ledger.
+                 ``fit_score``, ``p_correct``, ``owner_batch_peak_id``, and
+                 ``stamped_isotopologue_of`` and ``stamp_source``: where a
+                 *Stamp isotopologues* run stamped the member as a diagnostic
+                 isotopologue (15N, 18O, 34S, 29Si, 30Si, 37Cl or 81Br) of
+                 another batch peak, that batch peak and ``predicted`` (by the
+                 stamping) or ``picker`` (the sample's own run had read it as
+                 that peak's isotopologue); null otherwise, and absent from a
+                 server that predates them. No tier reads them. None when the
+                 batch has no ledger.
         :rtype: pd.DataFrame | None
         """
         path = f"batch-peaks/batch/{sample_batch_id}/members"

@@ -34,6 +34,7 @@ from mascope_backend.api.lib.api_features import (
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     ROLE_UNASSIGNED,
     manual_pin_of,
+    member_stamp,
     mz_from_delta,
     resolve_candidate,
     role_name,
@@ -86,6 +87,8 @@ COLUMNS = (
     "fit_score",
     "p_correct",
     "owner_batch_peak_id",
+    "stamped_isotopologue_of",
+    "stamp_source",
 )
 
 
@@ -94,11 +97,19 @@ def member_export_row(
 ) -> dict:
     """One flat row: the anchor's consensus beside the member's own reading.
 
+    ``stamped_isotopologue_of`` and ``stamp_source`` say, where the batch's
+    isotopologue stamping stamped the member, the parent batch peak it is a
+    diagnostic isotopologue of and where the stamp came from: ``predicted`` by
+    the stamping, or ``picker`` where the sample's own run already read the
+    member as the parent's isotopologue (``batch_isotopologues``); None
+    otherwise.
+
     :param member: The ``BatchPeakOccurrence``.
     :param anchor: The ``BatchPeak`` it sits in.
     :param sample_item_name: The member's sample, by name.
     """
     identity = resolve_candidate(anchor.candidates, member.candidate)
+    stamp = member_stamp(anchor, member.sample_item_id) or {}
     return {
         "sample_batch_id": anchor.sample_batch_id,
         "batch_peak_id": anchor.batch_peak_id,
@@ -130,6 +141,8 @@ def member_export_row(
         "fit_score": member.fit_score,
         "p_correct": member.p_correct,
         "owner_batch_peak_id": member.owner_batch_peak_id,
+        "stamped_isotopologue_of": stamp.get("batch_peak_id"),
+        "stamp_source": stamp.get("stamp_source"),
     }
 
 

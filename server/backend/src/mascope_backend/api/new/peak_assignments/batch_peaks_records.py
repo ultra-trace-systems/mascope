@@ -19,7 +19,9 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     instrument_type_of,
     manual_pin_of,
     mz_from_delta,
+    stamped_isotopologue_of_summary,
     standing_co_variation_record,
+    standing_diagnostic_isotopologues_record,
     standing_series_record,
     tier_name,
 )
@@ -76,6 +78,12 @@ def _batch_peak_meta(bp) -> dict:
     the anchor's pairs and its detail, as the batch's continuity pass left
     them (``continuity``), and ``continuity_stale`` says the ledger has moved
     past them since (``batch_peaks.continuity_stale``).
+    ``diagnostic_isotopologues`` is what the batch's isotopologue stamping
+    predicted for the consensus reading - every diagnostic isotopologue, the
+    batch peak it was found at, the samples judged and holding, and whether it
+    was stamped - and ``stamped_isotopologue_of`` is, on a stamped line, the
+    parent batch peak it is the isotopologue of with the track's reading
+    (``batch_isotopologues``); each None where the stamping left none.
     """
     return {
         "batch_peak_id": bp.batch_peak_id,
@@ -108,6 +116,8 @@ def _batch_peak_meta(bp) -> dict:
         "continuity_grade": bp.continuity_grade,
         "continuity": bp.continuity,
         "continuity_stale": continuity_stale(bp),
+        "diagnostic_isotopologues": standing_diagnostic_isotopologues_record(bp),
+        "stamped_isotopologue_of": stamped_isotopologue_of_summary(bp),
         "reference_listing": consensus_listing(
             bp.candidates,
             bp.consensus_formula,
