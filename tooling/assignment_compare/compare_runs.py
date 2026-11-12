@@ -891,11 +891,18 @@ def newest_decoys(runs: pd.DataFrame | None) -> dict[str, pd.Series]:
     return newest
 
 
-def decoy_report(client: MascopeClient, sample_ids: list[str]) -> dict:
+def decoy_report(
+    client: MascopeClient, sample_ids: list[str], controls: dict | None = None
+) -> dict:
     """Every sample's decoy arms against their controls, and the arms pooled.
 
     :param client: The SDK client.
     :param sample_ids: The samples of the set.
+    :param controls: The run a card reads of each sample, when a card asks:
+        an arm whose control is another run is not read, since it bounds a run
+        the card does not hold. A decoy refused before it ran makes no run, so
+        a sample's newest arm can be an older run's, made against an older
+        control the store still keeps.
     :return: ``{"pooled": {arm: ...}, "per_sample": {sample: {arm: ...}},
         "skipped": {sample: {arm: why}}}``.
     """
@@ -928,6 +935,11 @@ def decoy_report(client: MascopeClient, sample_ids: list[str]) -> dict:
                 # Each arm has a retention quota of its own, so a decoy can
                 # outlive the control it was scored against
                 skipped.setdefault(sample_id, {})[arm] = "its control run is gone"
+                continue
+            if controls is not None and controls.get(sample_id) != control_id:
+                skipped.setdefault(sample_id, {})[arm] = (
+                    "its control is not the run the card reads"
+                )
                 continue
             for run_id in (control_id, run["peak_assignment_run_id"]):
                 if run_id not in ledgers:
@@ -1717,6 +1729,7 @@ def collect_set(client: MascopeClient, name: str, spec: dict, args) -> dict:
     )
     samples = card_samples(client, spec)
     frames, source_ions, skipped = [], {}, 0
+    controls: dict[str, str] = {}
     versions = {"a": set(), "b": set()}
     rules = set()
     for sample_id in samples:
@@ -1731,6 +1744,7 @@ def collect_set(client: MascopeClient, name: str, spec: dict, args) -> dict:
             print(f"set {name}: {sample_id} skipped (empty ledger)")
             skipped += 1
             continue
+        controls[sample_id] = run_a
         run_b = latest_completed_run(runs, args.engine_b, before=args.engine_b_before)
         ledger_b = (
             client.peak_assignments.get(sample_id, run_id=run_b) if run_b else None
@@ -1788,7 +1802,7 @@ def collect_set(client: MascopeClient, name: str, spec: dict, args) -> dict:
             f"{sum(one is not None for one in provenance.values())} of "
             f"{len(provenance)} rows' provenance read"
         )
-    decoy = decoy_report(client, samples) if args.decoy else None
+    decoy = decoy_report(client, samples, controls=controls) if args.decoy else None
     return {
         "samples": samples,
         "skipped": skipped,

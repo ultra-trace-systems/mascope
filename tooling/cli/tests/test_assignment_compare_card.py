@@ -1607,3 +1607,30 @@ def test_the_reference_is_read_as_it_stood_before_an_instant(served, tmp_path):
     a = json.loads((out / "card.json").read_text())["columns"]["A"]
     assert a["engine_versions"]["b"] == ["0.7.0"]
     assert a["readings"]["G1"] == {"value": 100.0, "n": 2}
+
+
+def test_a_card_reads_no_arm_made_against_another_run_than_the_one_it_reads(
+    served, tmp_path
+):
+    # The +9 arm against ra1 was refused before it ran, so the newest +9 arm
+    # the store keeps is one an earlier build made against its own control.
+    _Client.runs["s1"] += [
+        _run(
+            "rd0",
+            "mascope",
+            "0.5.0",
+            "2026-11-09T11:00:00Z",
+            {"decoy_arm": {"control_run_id": "ra0"}},
+            decoy="mz_shift_ppm=+9",
+        ),
+        _run("ra0", "mascope", "0.5.0", "2026-11-09T10:00:00Z"),
+    ]
+    _Client.ledgers["rd0"] = [_row("p1")]
+    _Client.ledgers["ra0"] = [_row("p1"), _row("p2")]
+    out = tmp_path / "card"
+    assert (
+        compare_runs.main(["--sets", str(served), "--card", str(out), "--decoy"]) == 0
+    )
+    a = json.loads((out / "card.json").read_text())["columns"]["A"]
+    assert a["decoys_not_read"] == {"mz_shift_ppm=+9": 1}
+    assert "decoy mz_shift_ppm=+9 held" not in a["readings"]

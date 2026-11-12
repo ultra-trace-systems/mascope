@@ -250,3 +250,34 @@ def test_the_newest_completed_run_of_an_arm_is_the_one_read():
 
     assert list(newest) == ["swap_adducts"]
     assert newest["swap_adducts"]["peak_assignment_run_id"] == "completed"
+
+
+def test_a_card_reads_only_the_arms_of_the_run_it_reads():
+    # The newest +9 arm was refused before it ran, so the newest one the store
+    # keeps is an older ref's, against the control that ref made. A card that
+    # reads the newer control must not read that arm; the swap arm made
+    # against the newer control is read.
+    arm = pd.DataFrame([_row("p1", 181.0716, 4000.0, ion="C9H9O4+")])
+    runs = {
+        "s1": [
+            _run("swap", decoy="swap_adducts", control="new"),
+            _run("new"),
+            _run("old-arm", decoy="mz_shift_ppm=+9", control="old"),
+            _run("old"),
+        ]
+    }
+    ledgers = {"new": CONTROL, "old": CONTROL, "old-arm": arm, "swap": arm}
+    client = _Client(runs, ledgers)
+
+    result = compare_runs.decoy_report(client, ["s1"], controls={"s1": "new"})
+
+    assert list(result["per_sample"]["s1"]) == ["swap_adducts"]
+    assert result["skipped"] == {
+        "s1": {"mz_shift_ppm=+9": "its control is not the run the card reads"}
+    }
+    # A sample the card did not read has no arm it reads either.
+    result = compare_runs.decoy_report(client, ["s1"], controls={})
+    assert result["per_sample"] == {}
+    # Outside a card every arm is read against its own control, as before.
+    result = compare_runs.decoy_report(client, ["s1"])
+    assert set(result["per_sample"]["s1"]) == {"swap_adducts", "mz_shift_ppm=+9"}
