@@ -98,6 +98,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 4.2c - predicted diagnostic isotopologues in the batch fold | - |  | built: *Stamp isotopologues* predicts the 15N, 18O, 34S, 29Si, 30Si, 37Cl and 81Br lines of every committed monoisotopic batch peak at its trace centre (a labelled atom is the label's; a line under half the peak it falls in at the anchor's resolving power is unresolved), finds the batch peak there, and in each sample holding both reads the height ratio inside that sample's fitted envelope tolerance (two widths; a sample whose two widths reach past half the ratio cannot tell); a line holding in 80 % of three or more such samples is stamped in each, `predicted` or `picker`; recorded on both batch peaks and the member rows, no tier moves; MAS-824 |
 | 4.2f - merged isotopologue rows | - |  | built: *Strip isotopologue rows* reads every committed monoisotopic batch peak at the 13C and diagnostic lines of every brighter one below it (four times the partition's mass scatter, at least 1 ppm); a row whose height over the parent's is a median 0.4 to 1.4 times the line's share over three or more samples, fewer than a tenth above 2x, is stripped: its members and the samples' in-app rows become the parent's isotope line (recorded on both), so the consensus folds it under the parent; curated, hand-assigned and own-13C rows are held, imported runs never rewritten; read on the copy's batch ledgers, G6 on the batch ledger falls on A 9 -> 7, B 62 -> 56, D 46 -> 41 and holds on C and C2; MAS-827 |
 | 4.2g - batch isotope checks as positive facts | - |  | built: *Read batch checks* records three display-only facts on a batch peak's reading: the halogen lock (a 37Cl or 81Br line 4.2c stamped, its median offset within the batch's position window; where the window cannot tell 30Si, the 29Si line a silicon reading implies decides), the label twin (a labelled ion's 14N twin at the impurity share the batch's own reagent ions show, the setup's purity where none does, present, absent or untestable where an absent line would be charged) and the uronium neutral pair (4.2's co-variation of [M+H]+ and [M+CH4N2O+H]+); on the copy's batch ledgers D locks bromine on 144 bromide clusters (71 of its 121 assigned), C2's labelled cores read their twins present in 88 of 88 samples at 0.42 of the 98 % share, no unlabelled ion is read, A and B count 99 and 458 uronium pairs; no tier moves; MAS-828 |
+| 4.2h - known species decided once by pooled evidence | - |  | built: *Decide known species* reads each library ion a sample's reagent pass claimed (not a fragment) and each formula a list tags `background`, per mode and instrument type; present where its peak is in two samples or more and half or more, and one sample's own test held (the claim, or the listed formula at candidate or better), absent where none held, unpooled under that; a present species is claimed in every sample its peak is in (members and in-app rows: a library ion as the pre-pass's claim with its lines, a listed compound at candidate), hand, target, another ion's line or claim and a listed reading with lines of its own kept and recorded; a sample's next run claims a present library ion on the batch's word; co-variation with the core recorded only (decision 35); the copy's ledgers and runs predate the claim registry, so the Verify reading is the planner's pass; MAS-829 |
 | 4.3 - calibration from verdicts, per profile | - |  | planned |
 | 4.4 - gate automation | - |  | moved to milestone 6 as step 6.4, the gate card as code (MAS-64); see `assignment_bench.md`. Built: `compare_runs.py --card` prints G1 to G14, the mass error, the reason coverage and the decoy arms per set and pooled, each metric a function in `metrics.py`; `--gate` marks them against the stage targets of `thresholds.json` with a pass-or-fail line, `--baseline` lists the readings that moved, and the scrub refuses a card that holds a name; MAS-64 |
 | 4.5 - profiles as versioned rows, routing by detection | - |  | planned |
@@ -1785,6 +1786,91 @@ who edits chemistry and stays last.
     PKY-30's specification is a cross-check when it arrives. The planner's pass
     reads the facts on the current gate runs after the merge, where the ledgers
     hold their reagent ions; the copy's cannot show the labelled cores as such.
+
+- **As built (the seventh rider, known species decided once; step 4.2h,
+  MAS-829).** The pure half is `mascope_tools.composition.known_species`:
+  `PooledEvidence` counts, over a species' partition, the files, the files
+  its peak is present in, those whose own test held, those the batch may
+  claim and those a hold keeps; `decide_known_species` reads it as
+  *present* (present in `MIN_PRESENT_FILES` = 2 files or more, in
+  `MIN_PRESENT_SHARE` = half of them or more, and `MIN_TEST_FILES` = 1 file's
+  own test held), *absent* (present in enough files, no file's test held)
+  or *unpooled* (too few files: each keeps its own reading).
+  `reagents.match_batch_species` claims the ions a batch decided present on a
+  file's corrected mass at the claim's tolerance, with no height floor and no
+  ladder, their isotope lines with them. The batch half is
+  `batch_known_species.py`: *Decide known species*
+  (`POST /api/batch-peaks/batch/{id}/decide-known-species`), a batch run
+  (action `decide_known_species`, one migration with one snapshot column).
+  - **The species.** A monoisotopic batch peak is a library species where a
+    member is a pre-pass's claim (a reagent row, no formula, no owner), its
+    label, family, kind, works and exact mass read off the claims' rows, or,
+    where no row is left (a run-less fold), off the profiles' libraries by the
+    ion. A fragment is no species: it is licensed by its parent's commit in
+    the same file, which a batch cannot pool (its family on the row, or its
+    ion among any profile's fragment ions). A batch peak is a listed species
+    where its registry holds a formula a list tags `background`; the species
+    is the formula most of its committed members name, through the ion and
+    mechanism most of them read it through. A file's own test held where its
+    member is the claim, or reads the listed formula at candidate or better.
+  - **The claim.** In every file of a present species but those a hold keeps,
+    the member becomes the species and, where the file's folded run is
+    in-app, so does its row: a library ion as the pre-pass's claim
+    (`reagent_pass.batch_species_row`: role `reagent`, no formula, tier
+    `unassigned`, `provenance.reagent.reason = batch_known_species` with the
+    decision, the earlier reading under `read_as` and first among the
+    alternatives), the row's isotope lines with it as reagent lines owned as
+    before, as the fragment claim keeps a fragment's; a listed compound as
+    the list's reading off a file that committed it (off the batch peak's
+    registry entry, at the ion's exact mass, where no such row is left), at
+    candidate with no fit, the list's identities, the decision as its tier
+    reason and the earlier reading first among the alternatives; a file that
+    read the compound's own formula below candidate is only lifted to
+    candidate, its fit and its lines kept. Kept and recorded with their
+    readings: a hand assignment, a target compound, another ion's isotope
+    line, another source ion's claim, and for a listed compound a reading of
+    another formula that carries isotope lines of its own (its lines are that
+    formula's). A curated batch peak is held, and so is one whose vote the
+    claim would not turn (the consensus over the members as the claim leaves
+    them, a claimed member voting at the floor weight). Nothing but a known
+    species is ever claimed.
+  - **The record.** Every species read carries `provenance.known_species`:
+    the species, the verdict and its evidence, the hold, what the claim
+    rewrote (members, rows, lines, rows kept by why), the files kept with
+    their readings (`files_by_reason`, `files_recorded`) or, where the
+    verdict is not present, the files whose own claim stands, each member's
+    earlier state, the co-variation with the core, and the reading the anchor
+    holds since (`reads`). The consensus keeps it while the anchor reads
+    that; a new decision replaces every record. The ledger and a run's
+    snapshot serve it as `known_species`, the ledger marks the formula, and
+    a sample's next run (and the run-less fold) claims a present library ion
+    on the batch's word (`batch_species_for`, `claim_batch_species`).
+  - **Where it runs.** The brief puts the decision after the fold. As 4.2c
+    and 4.2f found, a reading of one anchor against others (here the core's
+    trace, and the files of the whole partition) is a batch run's, not the
+    per-fold consensus pass's; the per-file claim is the brief's
+    "reagent_pass takes a batch verdict", read when a sample is assigned.
+  - **The co-variation with the core** is recorded and decides nothing, as
+    decision 35 holds the co-variation reading display-only: a library ion is
+    read against the ion its ladder grew from, else the partition's brightest
+    reagent or calibrant ion, on log traces with the batch's common mode
+    removed and no reagent normalisation (the ion is part of the normaliser);
+    a listed compound carries its own *Read co-variation* record.
+  - **Calls left with the plan owner** (raised on the PR): the thresholds
+    (half the files, one file's own test) are the rider's two cases, not a
+    measurement; a listed compound is claimed at candidate, never assigned;
+    a library ion pooled from one file's claim needs no pooled ladder or
+    ratio test beyond the file's own.
+  - **Verify.** The testbed copy cannot read it: its gate-set batch ledgers
+    were folded on 2026-09-18, before a claimed member carried its ion in
+    the registry and before an identity carried its list's tags, and its
+    in-app runs are engine 0.5.0 (set B: 18 reagent rows over six files, no
+    background-tagged identity). The siloxane claims, G4 and G10 on the
+    uronium sets and G1 and G2 as readings are the planner's pass on fresh
+    runs after the merge, or the bench's card once milestone 6 reads it.
+  - **Not done here.** A listed compound's per-file claim on a sample's next
+    run (the stages read it; the next decision reads the sample again); a
+    pooled ladder or ratio test over the files' traces.
 
 ### 4.3 Calibration from verdicts, per profile
 

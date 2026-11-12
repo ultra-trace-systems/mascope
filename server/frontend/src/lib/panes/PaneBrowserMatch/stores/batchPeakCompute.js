@@ -153,6 +153,19 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
       "Read what only the batch can say of each batch peak: a chlorine or bromine line at its exact spacing, a labelled ion's 14N twin, a uronium compound's two channels moving together. Moves no tier."
   )
 
+  // The known-species decision: each source ion and each compound a list
+  // tags as background is decided once over the batch's samples, and claimed
+  // in every sample its peak is in where the batch decides it present. No
+  // parameters, and it waits on its own task as the strip does.
+  const deciding = ref(false)
+  const pendingDecideId = ref(null)
+  let decideTimer = null
+  const decideTooltip = computed(
+    () =>
+      blockedReason.value ??
+      "Decide each source ion and each compound a list tags as background once over the batch's samples, and claim it in every sample its peak is in where the batch holds it, in the batch and in its samples."
+  )
+
   function endComputing() {
     computing.value = false
     pendingProcessId.value = null
@@ -367,6 +380,34 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     }
   }
 
+  function endDeciding() {
+    deciding.value = false
+    pendingDecideId.value = null
+    clearTimeout(decideTimer)
+    decideTimer = null
+  }
+
+  async function decideKnownSpecies() {
+    const batchId = app.data.batch.focusedId
+    if (!batchId || deciding.value || blockedReason.value) return
+    deciding.value = true
+    launchError.value = null
+    clearTimeout(decideTimer)
+    decideTimer = setTimeout(endDeciding, COMPUTE_TIMEOUT)
+    try {
+      const response = await api.http.post(
+        `/batch-peaks/batch/${batchId}/decide-known-species`,
+        {},
+        { type: 'decide_batch_known_species', errors: 'inline' }
+      )
+      pendingDecideId.value = response?.headers?.['process-id'] ?? null
+    } catch (error) {
+      endDeciding()
+      launchRefused.value = isRefusedRequest(error) || error?.response?.status === 403
+      launchError.value = getApiErrorMessage(error, 'Could not start the known-species decision.')
+    }
+  }
+
   /** Backfill batch peaks from this batch's existing assignments; the ledger and
    *  chart refresh on the peak_assignment_reload event the task emits. */
   async function compute() {
@@ -478,6 +519,14 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     endChecking()
   })
 
+  app.ui.notification.on('decide_batch_known_species', (notification) => {
+    if (!deciding.value) return
+    if (notification?.status === 'pending') return
+    const id = notification?.process_id
+    if (pendingDecideId.value && id && id !== pendingDecideId.value) return
+    endDeciding()
+  })
+
   function reset() {
     endComputing()
     endSearching()
@@ -486,6 +535,7 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     endStamping()
     endStripping()
     endChecking()
+    endDeciding()
     endExporting()
     launchError.value = null
     launchRefused.value = false
@@ -516,6 +566,9 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     checking,
     checkTooltip,
     readBatchChecks,
+    deciding,
+    decideTooltip,
+    decideKnownSpecies,
     exporting,
     exportLedger,
     reset

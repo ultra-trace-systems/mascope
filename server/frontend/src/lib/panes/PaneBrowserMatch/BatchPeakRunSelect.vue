@@ -29,7 +29,8 @@ const ACTION_LABELS = {
   read_co_variation: 'Co-variation reading',
   stamp_isotopologues: 'Isotopologue stamping',
   strip_isotopologues: 'Isotopologue row strip',
-  read_batch_checks: 'Batch checks'
+  read_batch_checks: 'Batch checks',
+  decide_known_species: 'Known-species decision'
 }
 const IN_FLIGHT_STATUSES = ['running']
 
