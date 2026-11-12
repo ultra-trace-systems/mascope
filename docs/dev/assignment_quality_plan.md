@@ -4,7 +4,7 @@
 
 - **Status:** building
 - **As of:** 2026-11-16
-- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73, MAS-408 to MAS-410, MAS-443, MAS-568 to MAS-570, MAS-609, MAS-708, MAS-709, MAS-777, MAS-823 to MAS-841, MAS-870 and MAS-881)
+- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73, MAS-408 to MAS-410, MAS-443, MAS-568 to MAS-570, MAS-609, MAS-708, MAS-709, MAS-777, MAS-823 to MAS-841, MAS-860, MAS-870 and MAS-881)
 - **What:** The step-by-step plan closing the assignment quality gap: stages, gates, decisions and risks.
 
 ## Status
@@ -113,6 +113,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 4.11 - temporal continuity: the ratio-stability pass, its columns and its endpoint | - |  | built: every isotope line and its family root, and every two channels of one neutral, at assigned or candidate, graded on the within-sample ratio across a time-ordered batch (spread 1.4826 x MAD, drift by Spearman rho and a Theil-Sen change): stable, drift (the traces co-vary per 4.2), red, inconclusive or insufficient, on two `batch_peak` columns the ledger serves with a stale mark; run by its endpoint and at a rebuild's end, the fold trigger off for 4.13; on the testbed's six folded analysis batches 1,752 pairs, 1,008 stable, 122 red, 24 drift, the isotope reds a dim line's response; no tier moves; MAS-323 |
 | 4.12 - the continuity column and badge in the batch ledger, and the per-sample overlay | - |  | built: a *Continuity* column after *Samples* in the *Batch peaks* ledger, offered once the pass graded the batch: stable, drift and unstable (stored `red`) as a badge, inconclusive and insufficient muted, *Not graded* where the batch is not time-ordered, dashed where partial, a clock where stale; its own sort (unstable first, ungraded last) in the pane's projection; the pairs with their ratio, spread and drift in a popover; an isotope line's own grade on its row while unfolded; the help card; the per-sample overlay and its effective-verdict filter had shipped with the anchor verdicts; display-only; MAS-346 |
 | 4.15 - Stage B winner confidence | - |  | built, off by default: `stage_b_confidence` on the run config measures the formula-only shortlist of the untargeted stage's committed winners, the most intense first up to `stage_b_confidence_peaks` (200), in one seeded pass through every channel the run searched, scored at the width the winners were re-scored at, and stores each winner's `confidence`, `n_candidates` and `is_tie` in provenance as Stage A does, one candidate per ion on the peak (two splits of one ion are one hypothesis, the winner's own ion no rival) (`alternatives_scoring.measure_winner_confidence`, the inspector's placement rule); a winner past the budget records none; `search_scope.winner_confidence` records the counts and the seconds; `p_correct` stays null on Stage B rows (the scale now matches, the curve's population and the batch consensus that reads it do not); no tier moves; the runtime on the gate sets is the bench's to record; MAS-325 |
+| 4.16 - intensity consistency and in-source fragment corroboration | - |  | built, display-only: each sample reads a neutral's ratio between two channels against the same pair's over its other neutrals (`intensity_consistency`, consistent / loose / outlying) and pairs neutrals one in-source loss apart through one channel, the lighter on the shorter peak (`in_source_fragment_of`, a reason that caps nothing on the lighter row); measured on the anchor-swap benchmark with an intensity-matched null and two controls, neither enters P(correct): the consistent band is 0.79 to 0.92 on every adduct pair, and a loss reads mostly the lattice of related formulas (the same neutral gained, and the series units, read alike), its named pair beating its mirror by 5 to 12% but for HNO3 (1.9x), with no fragment's intensity signature; whether an eligible loss is folded is decision MAS-860; tiering rule set 14; no tier moves; MAS-326 |
 | 4.18 - bound the harm of a mismatched chemistry context, graded or gate | - |  | measured (2026-11-13, demo sets Db and Du, standing in for the gate sets, `tooling/score_eval/arbitration_eval.py`, pools merged by ion as Stage B elects them): the matched context lifts contested top-1 0.724 -> 0.989 and true winners kept at 5 % FDR 13,870 -> 15,962 against `none`, removing no true reading; the two defaults swapped stay above `none` (0.979, 15,830) at the cost of 80 glycerol readings; the worst context, combustion, removes 1,619 and leaves the uronium set no cut at 5 % FDR. Every removed truth was a ratio window's, never a cap's. 596 uronium anchors whose seeded reading loses its own ion's election are counted apart (#3191). Decision 11.4 of `chemistry_profiles.md` decided: a default must leave its own sets and every other bench set at or above `none` (BR and UR pass). The windows become a graded, floored factor (#3188); the identity context is pinned byte for byte (`TestTheIdentityContext`); MAS-328 |
 | 4.19 - the active-learning verification queue, with the three calibration-label calls | - |  | built: `GET /peak-assignments/sample/{id}/verification-queue` ranks the run's unjudged rows within 0.1 evidence of a band edge by closeness and by the labels the instrument class and reagent profile hold within 0.05, with seeded spot checks every fifth place and stale verdicts (a later run reassigned or rescored the judged peak) first; the ledger's *to verify* chip and column; no `p_correct` or evidence in the queue; the refit weighs labels by evidence level (reference standard and MS/MS 1, orthogonal 0.6, pattern 0.4, visual and unstated 0.25) and records the weights on the curve (`label_weights`); per instrument and profile, down-weight, keep the snapshot and mark it stale (section 7 of `verification_calibration_loop.md`); moves no metric; MAS-329 |
 | 5.1 - the reference pinned at a release, a boundary review per peaky release | - |  | planned 2026-10-13; the first review is the section below; readiness check against the reference's main on 2026-10-22: nothing new to bin, 0.10.0 still uncut |
@@ -2447,6 +2448,88 @@ who edits chemistry and stays last.
   (`anchorContext.overlayFor`, `PaneBrowserAssignment.vue`) and is unchanged.
 - **Not built.** The inspector's continuity line (the note's section 5) and
   a continuity filter chip.
+
+### 4.16 Intensity consistency and in-source fragments, measured before weighed
+
+- **What** (assignment confidence note, P3). The two layers of the CAMERA and
+  IPA model the adduct co-occurrence weights leave out: the channels of one
+  neutral should hold a consistent intensity ratio, and an in-source fragment
+  is a companion peak of its neutral. Both are measured on the anchor-swap
+  benchmark before they enter a probability, and folded only where the
+  likelihood ratio is above one with its interval clear of one.
+- **As built (MAS-326).**
+  - *The pure half* (`mascope_tools.composition.corroboration`).
+    `channel_ratio_consistency` reads, per sample and per pair of a
+    neutral's channels, `ln(I_b / I_a)` (`channel_log_ratio`, the point 4.11
+    reads over a batch) against the same pair's over the sample's other
+    neutrals, never the neutral itself: the distance from their median in
+    1.4826 x MAD, floored at 0.25 (4.11's stable spread for a channel pair),
+    graded `consistent` (within one spread), `loose` (two) or `outlying`,
+    the bands set before the measurement. A pair needs five other neutrals.
+    `in_source_fragment_pairs` finds the neutrals of one channel that are
+    another's less one of `IN_SOURCE_LOSSES`: H2O, CO, CO2, CH2O2, CH4O,
+    HNO3, SO3.
+  - *The run* (`cross_channel.py`). Each neutral is read at its brightest
+    monoisotopic row per channel at candidate or better. Both rows of a read
+    pair record it under `cross_channel.intensity_consistency`; the lighter
+    row of a fragment pair records `in_source_fragment_of` (the heavier
+    neutral, the loss, the channel, its row and the height ratio, brightest
+    first) and the heavier `in_source_fragments`. The run's cross-channel
+    summary counts both. The tiering pass names the pairing on the lighter
+    row as `in_source_fragment`, which caps nothing and is not what a row
+    keeps its tier on (rule set 14); the inspector marks it with an info
+    sign. Nothing enters P(correct) and no tier moves.
+- **Measured** (2026-11-12; the public demo dataset 1.4.4, 161 files,
+  15,057 detections; `corroboration_benchmark.py --json`, kept as
+  `tooling/score_eval/_step416_metrics.json`). Each LR is
+  P(outcome | real) / P(outcome | swap), a ratio of probabilities, with a
+  95% interval from a bootstrap over files. The swap re-anchors the real
+  offset on a peak among the 40 nearest the primary's own height: a ratio
+  read off a random anchor differs from the real one by the anchor's
+  brightness alone.
+  - *Ratio consistency, given the adduct is present.* The consistent band
+    is less likely for a real pair than for a chance one on every pair:
+    bromide over deprotonated 0.91 [0.87, 0.95] (2,260 real pairs), urea
+    over proton 0.92 [0.90, 0.93] (3,811), proton over ammonium 0.79
+    [0.78, 0.80] (5,227). The far bands clear one (outlying 1.93, 1.16 and
+    1.79): real pairs spread wider than chance ones, each compound's
+    chemistry setting its own ratio, and their partners are brighter (51 to
+    71% in the spectrum's top decile, against 35 to 62%). Inside each
+    quartile of partner brightness the consistent band stays at or under
+    one. Within one sample, a consistent ratio corroborates nothing; the
+    same compound's ratio over time is 4.11's.
+  - *In-source fragments.* A peak one loss below a real primary ion clears
+    one for every loss (H2O 1.40, CO 1.44, CH2O2 1.50, CH4O 1.47, CO2
+    1.54, HNO3 2.22; SO3 has too few sulfur neutrals). So does the same
+    neutral gained, asked of the same neutrals, though a source sheds a
+    neutral and never adds one: H2O 1.46, CO 1.43, CH2O2 1.47, CH4O 1.48,
+    CO2 1.38, HNO3 1.13; and the series units no source sheds read CH2
+    1.32 and O 1.33. Most of each loss's LR is the spectrum's lattice of
+    related formulas. The pair the engine names, a shorter peak one loss
+    down, against its mirror, a shorter peak the same neutral up: H2O 1.31
+    [1.29, 1.35] against 1.23 [1.20, 1.26], CO 1.47 [1.43, 1.53] against
+    1.40 [1.38, 1.43], CH2O2 1.44 [1.38, 1.50] against 1.30 [1.28, 1.33],
+    CO2 1.54 [1.49, 1.61] against 1.38 [1.35, 1.42], CH4O 1.40 [1.36,
+    1.44] against 1.34 [1.31, 1.37], HNO3 2.19 [2.09, 2.28] against 1.15
+    [1.10, 1.20]. Five clear their mirror (`eligible`), all but HNO3 by 5
+    to 12%. None shows a fragment's intensity signature: of the partners
+    present one loss down, the share on a shorter peak than the real ion is
+    no higher than a chance anchor's (H2O 76 against 81%, CO 74 against
+    72, CO2 71 against 71, HNO3 82 against 83).
+  - *On a dense sample* the pairing is common. Run in-process on the demo
+    uronium sample of 2025-08-11 14:23:12, 778 of its 1,230 committed
+    monoisotopic rows are another's less a loss through the same channel;
+    in 55% of those pairs the lighter peak is the taller, which the engine
+    sets aside, and 489 rows are named. The first bromide sample names 23
+    of 232.
+  - *The adduct weights on this dataset*, for the record: the presence
+    odds ratios the shipped weights are read as are bromide 6.6, ammonium
+    2.2 and urea 2.0 (2.28, 0.83 and 0.70 in log), and the weights are odds
+    ratios rather than likelihood ratios (#3161).
+- **Decided / open.** Whether an eligible loss enters P(correct), HNO3
+  above all, by which weight and where it would live, is decision MAS-860;
+  built here display-only, its recommendation. No gate number moves: no metric reads
+  P(correct), and no tier moved, so the rows a fold-in lifts number none.
 
 ## Milestone 6 - the bench
 
