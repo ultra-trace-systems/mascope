@@ -357,7 +357,8 @@ describe('BatchPeakComputeBar untargeted search', () => {
       'Search untargeted',
       'Detect series',
       'Read co-variation',
-      'Stamp isotopologues'
+      'Stamp isotopologues',
+      'Strip isotopologue rows'
     ])
     expect(buttons[1].attributes('disabled')).toBeUndefined()
   })
@@ -691,5 +692,107 @@ describe('BatchPeakComputeBar isotopologue stamping', () => {
     await compute.stampIsotopologues()
     compute.reset()
     expect(compute.stamping).toBe(false)
+  })
+})
+
+describe('BatchPeakComputeBar isotopologue row strip', () => {
+  const stripButton = () =>
+    wrapper.findAll('.compute-button').find((b) => b.text() === 'Strip isotopologue rows')
+  const button = (label) => wrapper.findAll('.compute-button').find((b) => b.text() === label)
+  const notifyStrip = (payload) =>
+    (notificationHandlers['strip_batch_isotopologue_rows'] ?? []).forEach((cb) => cb(payload))
+
+  it('offers the strip under the same gate, and says what it rewrites', () => {
+    mountBar()
+    expect(stripButton().attributes('disabled')).toBeUndefined()
+    expect(compute.stripTooltip).toMatch(/^Strip the ledger's rows that are a brighter compound's/)
+    expect(compute.stripTooltip).toMatch(/in the batch and in its samples\.$/)
+  })
+
+  it('disables it with the compute when no batch is focused, and says why', () => {
+    mountBar({ batch: null })
+    expect(stripButton().attributes('disabled')).toBeDefined()
+    expect(compute.stripTooltip).toBe(compute.blockedReason)
+  })
+
+  it('holds it while the ledger is rewritten or read, and the others while it strips', async () => {
+    mountBar()
+    for (const busy of ['computing', 'searching', 'detecting', 'reading', 'stamping']) {
+      compute[busy] = true
+      await wrapper.vm.$nextTick()
+      expect(stripButton().attributes('disabled')).toBeDefined()
+      compute[busy] = false
+    }
+    compute.stripping = true
+    await wrapper.vm.$nextTick()
+    for (const label of [
+      'Search untargeted',
+      'Detect series',
+      'Read co-variation',
+      'Stamp isotopologues'
+    ])
+      expect(button(label).attributes('disabled')).toBeDefined()
+  })
+
+  it('launches straight from the button and waits for its own task', async () => {
+    mountBar()
+    post.mockResolvedValueOnce(ack('proc-x'))
+    await stripButton().trigger('click')
+    await Promise.resolve()
+    expect(post).toHaveBeenCalledWith(
+      '/batch-peaks/batch/b-1/strip-isotopologues',
+      {},
+      expect.objectContaining({ type: 'strip_batch_isotopologue_rows', errors: 'inline' })
+    )
+    expect(compute.stripping).toBe(true)
+    expect(stripButton().attributes('data-loading')).toBe('true')
+    notifyStrip({ status: 'pending', process_id: 'proc-x' })
+    notifyStrip({ status: 'success', process_id: 'someone-else' })
+    expect(compute.stripping).toBe(true)
+    notifyStrip({ status: 'success', process_id: 'proc-x' })
+    expect(compute.stripping).toBe(false)
+  })
+
+  it('does not launch twice, nor while blocked', async () => {
+    mountBar()
+    post.mockReturnValueOnce(new Promise(() => {}))
+    compute.stripIsotopologues()
+    await compute.stripIsotopologues()
+    expect(post).toHaveBeenCalledTimes(1)
+    mountBar({ samples: [] })
+    post.mockClear()
+    await compute.stripIsotopologues()
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('gives up after the timeout', async () => {
+    mountBar()
+    await compute.stripIsotopologues()
+    expect(compute.stripping).toBe(true)
+    vi.advanceTimersByTime(5 * 60 * 1000)
+    expect(compute.stripping).toBe(false)
+  })
+
+  it('resets the button and records a refusal', async () => {
+    mountBar()
+    post.mockRejectedValueOnce(apiError(409, 'A batch run is still rewriting this ledger'))
+    await compute.stripIsotopologues()
+    expect(compute.stripping).toBe(false)
+    expect(compute.launchRefused).toBe(true)
+    expect(compute.launchError).toBe('A batch run is still rewriting this ledger')
+  })
+
+  it('falls back to its own message when the server gives none', async () => {
+    mountBar()
+    post.mockRejectedValueOnce({ response: { status: 500, data: {} } })
+    await compute.stripIsotopologues()
+    expect(compute.launchError).toBe('Could not start the isotopologue row strip.')
+  })
+
+  it('ends with the rest when the batch changes', async () => {
+    mountBar()
+    await compute.stripIsotopologues()
+    compute.reset()
+    expect(compute.stripping).toBe(false)
   })
 })

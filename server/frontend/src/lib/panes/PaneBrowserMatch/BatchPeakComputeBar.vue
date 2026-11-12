@@ -96,7 +96,8 @@ async function launchSearch() {
           compute.computing ||
           compute.detecting ||
           compute.reading ||
-          compute.stamping
+          compute.stamping ||
+          compute.stripping
         "
         @click="searchVisible = true"
         :pt="
@@ -130,7 +131,8 @@ async function launchSearch() {
           compute.computing ||
           compute.searching ||
           compute.reading ||
-          compute.stamping
+          compute.stamping ||
+          compute.stripping
         "
         @click="compute.detectSeries()"
         :pt="
@@ -166,7 +168,8 @@ async function launchSearch() {
           compute.computing ||
           compute.searching ||
           compute.detecting ||
-          compute.stamping
+          compute.stamping ||
+          compute.stripping
         "
         @click="compute.readCoVariation()"
         :pt="
@@ -201,7 +204,8 @@ async function launchSearch() {
           compute.computing ||
           compute.searching ||
           compute.detecting ||
-          compute.reading
+          compute.reading ||
+          compute.stripping
         "
         @click="compute.stampIsotopologues()"
         :pt="
@@ -216,6 +220,45 @@ async function launchSearch() {
             at least eight of every ten samples that can tell, over three or
             more, is stamped as the peak's isotopologue in each of them, and
             shows under its main peak with its isotope. It moves no tier.
+            </p>
+          `)
+        "
+      />
+    </span>
+    <!-- The batch's merged isotopologue rows: read off the ledger as it
+         stands, with no parameters. It rewrites the rows it strips, in the
+         batch and in their samples, so it is held while the others rewrite or
+         read the ledger, and they while it runs. -->
+    <span v-tooltip.left="compute.stripTooltip">
+      <Button
+        label="Strip isotopologue rows"
+        icon="pi ph ph-scissors"
+        size="small"
+        severity="secondary"
+        :loading="compute.stripping"
+        :disabled="
+          compute.blockedReason !== null ||
+          compute.computing ||
+          compute.searching ||
+          compute.detecting ||
+          compute.reading ||
+          compute.stamping
+        "
+        @click="compute.stripIsotopologues()"
+        :pt="
+          app.ui.help.left(`
+            <h1>Strip Isotopologue Rows</h1>
+            <p>
+            Reads every batch peak the batch commits a formula to against the
+            13C, 15N, 18O, 34S, 29Si, 30Si, 37Cl and 81Br lines of every
+            brighter one below it. Where a peak sits at such a line and, over
+            three or more samples, its height over the other's is a median 0.4
+            to 1.4 times the share the line predicts, with fewer than one
+            sample in ten above twice it, the peak is that compound's
+            isotopologue rather than a compound of its own: it folds under the
+            compound, and in each sample its row becomes the compound's isotope
+            line. Peaks curated by hand, assigned by hand in a sample, or with
+            a 13C line of their own are never stripped.
             </p>
           `)
         "

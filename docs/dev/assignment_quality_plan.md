@@ -96,6 +96,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 4.1 - series detection on the batch ledger | - |  | built: *Detect series* walks CH2, O, H2O, CO, CO2, C2H2O and, from a peak carrying their element, C2H6OSi and CF2 up to three steps from the batch's assigned peaks onto its unassigned and candidate ones within the search's window, commits a unit at 12 proposals and ten times its six decoys' mean (re-derived on the testbed: 3x commits every TOF family), measures each proposal through the propagation chain, records the series with `has_anchor` on the batch peak, and a run counts it as a second observation; tiering rule set 12; MAS-61 |
 | 4.2 - time-series coherence | - |  | built, the co-variation reading (decision 35): *Read co-variation* reads every neutral the batch sees through two channels, per mode and instrument type, as Pearson r of the log traces, reagent-normalised, the common mode (each spectrum's median of the persistent traces) removed; co-varying at r >= 0.6, untestable under 10 shared spectra or a residual spread under 0.02 in log10 (both measured against decoy pairs on the testbed's 20 batch ledgers); recorded on the batch peak, shown in the ledger and the inspector, no tier moves. The nine riders are steps of their own (MAS-777); MAS-62 |
 | 4.2c - predicted diagnostic isotopologues in the batch fold | - |  | built: *Stamp isotopologues* predicts the 15N, 18O, 34S, 29Si, 30Si, 37Cl and 81Br lines of every committed monoisotopic batch peak at its trace centre (a labelled atom is the label's; a line under half the peak it falls in at the anchor's resolving power is unresolved), finds the batch peak there, and in each sample holding both reads the height ratio inside that sample's fitted envelope tolerance (two widths; a sample whose two widths reach past half the ratio cannot tell); a line holding in 80 % of three or more such samples is stamped in each, `predicted` or `picker`; recorded on both batch peaks and the member rows, no tier moves; MAS-824 |
+| 4.2f - merged isotopologue rows | - |  | built: *Strip isotopologue rows* reads every committed monoisotopic batch peak at the 13C and diagnostic lines of every brighter one below it (four times the partition's mass scatter, at least 1 ppm); a row whose height over the parent's is a median 0.4 to 1.4 times the line's share over three or more samples, fewer than a tenth above 2x, is stripped: its members and the samples' in-app rows become the parent's isotope line (recorded on both), so the consensus folds it under the parent; curated, hand-assigned and own-13C rows are held, imported runs never rewritten; read on the copy's batch ledgers, G6 on the batch ledger falls on A 9 -> 7, B 62 -> 56, D 46 -> 41 and holds on C and C2; MAS-827 |
 | 4.3 - calibration from verdicts, per profile | - |  | planned |
 | 4.4 - gate automation | - |  | moved to milestone 6 as step 6.4, the gate card as code (MAS-64); see `assignment_bench.md`. Built: `compare_runs.py --card` prints G1 to G14, the mass error, the reason coverage and the decoy arms per set and pooled, each metric a function in `metrics.py`; `--gate` marks them against the stage targets of `thresholds.json` with a pass-or-fail line, `--baseline` lists the readings that moved, and the scrub refuses a card that holds a name; MAS-64 |
 | 4.5 - profiles as versioned rows, routing by detection | - |  | planned |
@@ -1543,6 +1544,113 @@ who edits chemistry and stays last.
     predicted from the natural nitrogen alone. G6 and G8 are per-sample run
     metrics and do not move; no tier moves. The planner's pass reads the
     stamps on the current gate runs after the merge.
+
+- **As built (the fifth rider, merged isotopologue rows; step 4.2f,
+  MAS-827).** The batch-level form of step 2.4e's claims. The pure half is
+  `mascope_tools.composition.merged_isotopologues`:
+  `predict_isotopologue_lines` reads a parent ion's 13C line and its
+  diagnostic lines through 4.2c's `predict_diagnostic_isotopologues` (which
+  takes the isotopes to read as a new argument, the diagnostic ones by
+  default), merged at the anchor's resolving power; `mass_scatter_ppm` is the
+  scaled median absolute deviation of the members' m/z around their rows'
+  centres, pooled over rows of five or more members, and
+  `position_window_ppm` four times it, floored at 1 ppm; `read_share` reads
+  the row's intensity over the parent's per sample holding both as a factor
+  of the predicted share, the row the parent's isotopologue where the median
+  is 0.4 to 1.4 over three or more samples with fewer than a tenth above 2.
+  The batch half is `batch_merged_isotopologues.py`: *Strip isotopologue
+  rows* (`POST /api/batch-peaks/batch/{id}/strip-isotopologues`), a batch
+  run (action `strip_isotopologues`, one migration with two snapshot
+  columns). It reads every committed monoisotopic, unclaimed batch peak (4.2c's
+  `is_parent`) at the lines of every brighter one below it in its partition;
+  a bromine or chlorine parent counts as brighter as far as its line's share
+  times 1.4 allows. Rows are read from the lowest m/z up, a row stripped is no
+  parent above it, and a row two parents' lines reach goes to the median factor
+  nearest one. Held: a pinned row, a row a sample of which is a hand assignment
+  (a member folded from a `manual` row, or an identity a person brought), a row
+  whose 13C line the consensus already folds under it, and a row too few of
+  whose samples hold the parent's reading for its members' vote to turn. In
+  each sample holding both, the row's member becomes the parent's
+  isotopologue (role, owner, the line's identity in its registry, the parent
+  member's tier and fit), and where the sample's folded run is in-app its row
+  on that peak an isotopologue child of its row on the parent's peak
+  (`service.read_as_batch_isotopologue`: the owner's convention as 2.4e
+  writes a line, the owner's tier and fit, the displaced reading first among
+  the alternatives as `displaced_by_claim`, `provenance.batch_isotopologue`;
+  the owner's `provenance.batch_isotopologues` lists the line). A sample whose
+  parent member reads another reading, whose row member a pre-pass claimed or
+  that carries lines of its own there is left as it is; an imported run's rows
+  are never rewritten. The consensus then reads the row as the parent's line by
+  its members' own vote, so a recompute and a re-fold keep it. The row records
+  `provenance.merged_isotopologue_of` (its parent, the line, the share read,
+  what it displaced, each member's earlier state) and the parent
+  `provenance.merged_isotopologues` (the lines it took); the ledger and a
+  run's snapshot serve both, the members' states left to the snapshot. The
+  summary counts per partition and lists the stripped and the held pairs. The
+  ledger folds a stripped row under its parent with its line outlined beside
+  the offset, marks the parent, and filters to the parents that took rows
+  (*Stripped rows*).
+  - **Where it runs.** The brief puts the reading in the fold's consensus
+    pass. That pass recomputes the anchors one fold touched, per anchor and
+    in chunks, and this reading needs every anchor of a partition against
+    every other and every sample's member of both; run per arrival fold it
+    would read the whole partition's members for each sample folded. It is a
+    batch run beside 4.2c's stamping instead, as 4.2c was built for the same
+    reason, and what it writes is what the consensus pass reads: the members,
+    whose vote then folds the row, and the records the consensus carries. The
+    stripped pairs are listed in the run's summary, the report the batch runs
+    card shows. A sample assigned again is read afresh by its own run, and a
+    later strip reads its rows again.
+  - **Height or area.** The member's intensity is the anchor's unit: an area on
+    a TOF and a height on an Orbitrap, which is what an Orbitrap's envelope
+    tolerance is read by (decision 32). Reading Orbitrap areas would open every
+    sample's peak list in the pass.
+  - **The mass scatter** is measured in the pass, per partition, as 4.2i will
+    record it on the batch; 4.2i can replace the measurement with the recorded
+    one. A partition with no row of five members (set E's three samples) reads
+    at the 1 ppm floor.
+  - **Verify, read on the copy's batch ledgers** (2026-11-12): the branch's
+    `plan_batch` over each gate set's batch ledger as the copy holds it, read
+    only, beside the reference's rows on the same peaks. G6 on the batch
+    ledger counts the committed monoisotopic batch peaks the reference reads
+    as an isotopologue in most of the samples it read.
+
+    | set | merged rows | at a line | stripped | held | off share | too few | G6 | window |
+    |---|---|---|---|---|---|---|---|---|
+    | A | 414 | 14 | 2 | 3 | 8 | 1 | 9 -> 7 | 1 ppm |
+    | B | 2,138 | 167 | 18 | 0 | 121 | 28 | 62 -> 56 | 1 ppm |
+    | C | 266 | 2 | 0 | 0 | 2 | 0 | 8 -> 8 | 1 ppm |
+    | C2 | 153 | 3 | 0 | 0 | 3 | 0 | 4 -> 4 | 1 ppm |
+    | D | 723 | 41 | 9 | 5 | 1 | 26 | 46 -> 41 | 1 ppm |
+    | E (TOF) | 906 | 6 | 0 | 0 | 1 | 5 | 6 -> 6 | 1 ppm |
+    | F1 (TOF) | 2,801 | 1,101 | 19 | 84 | 473 | 525 | 23 -> 23 | 43 ppm |
+    | F2 (TOF) | 2,372 | 640 | 11 | 7 | 329 | 293 | 13 -> 13 | 31 ppm |
+
+    G6 falls on every Orbitrap set that strips a row. Held: one row on D
+    carries its own 13C line, every other hold is a row too few of whose
+    samples hold the parent's reading (F1's 84 are the TOF's split traces,
+    4.2i's case). The Orbitrap strips by line: 13C 15, 81Br 7, 30Si 3, 29Si 2,
+    15N 1, 18O 1. The reference reads 11 of the 29 Orbitrap rows as the
+    parent's isotopologue, 2 as another formula's, 5 as an M0 of another
+    formula (all on B; where both engines committed an M0 there, G1's
+    disagreements fall by those 5 and G2's agreements do not move, no stripped
+    row having agreed with it), and leaves 11 unassigned; it leaves every TOF
+    strip unassigned. Read by hand, the strips are of three kinds. Sulfur
+    formulas sitting on the 13C line of a bright urea adduct (B, four rows at
+    a factor of 0.49 to 0.57, the Orbitrap reading a 13C line low by height)
+    or on the 81Br line of a bromide adduct (D, four rows at 0.76 to 1.09):
+    the 13C or 81Br line read as an analyte. Siloxane 29Si and 30Si lines read
+    as analytes holding no silicon (B, four rows at 0.63 to 1.01). And rows
+    some of whose samples' runs had read the peak as the parent's target-list
+    isotopologue and others as an M0 of another formula, which the vote had
+    left with no family link (B, D, F2: six rows); the strip links them and
+    rewrites the dissenting samples. On the TOF, one assigned row read 64 ppm
+    off its own formula is the 13C line of a compound 6 ppm away.
+  - **Not done here.** The planner's pass reads G6 on the gate's current runs
+    after the merge. A sample's later run does not read the batch's strips; it
+    reads its peaks afresh, and the next strip reads them again (#3169).
+    A strip is not undone by the app: the members' earlier states are on the
+    row's record and in the run before it.
 
 ### 4.3 Calibration from verdicts, per profile
 

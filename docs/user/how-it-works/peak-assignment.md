@@ -1536,6 +1536,72 @@ whose summary counts the isotope lines predicted, found and stamped per ionizati
 and instrument type, the parents that moved while it ran, and names the thresholds. It
 changes no tier, no member and no per-sample run.
 
+### Stripping isotopologue rows
+
+Each sample's run reads its peaks on its own. Where a run does not read a dim isotope
+line as its compound's, it can commit the line as a compound of its own, and the fold
+merges that reading into a row of the *Batch peaks* ledger that is no compound. The run
+itself reads such a line as its neighbour's where the neighbour is assigned and the
+line no taller than its envelope allows (**read as a neighbour's line**, in *Why a row
+holds its tier*); a dim line it cannot tell from noise in one file stays as it was. The batch can tell. A true isotope line sits at its compound's predicted mass and
+holds its predicted share of the compound's height in nearly every sample that shows
+both; another compound at that mass does so in few. *Strip isotopologue rows*, beside
+*Stamp isotopologues*, reads every row so:
+
+- **The lines.** Every batch peak whose consensus commits a formula predicts its 13C
+  line and its diagnostic lines (15N, 18O, 34S, 29Si, 30Si, 37Cl, 81Br), at the
+  median m/z of its members and its anchor's resolving power, as the stamping predicts
+  them [Łącki et al. 2017][lac17] [Meija et al. 2016][mei16]. A line a peak of that
+  width cannot show on its own is not read.
+- **At the line.** A row that commits a formula of its own is read against a brighter
+  compound below it where its median m/z is within four times the batch's mass scatter
+  of the compound's line, and never under 1 ppm. The mass scatter is how far the batch's
+  members sit from their rows' median m/z: the scaled median absolute deviation over the
+  rows of five or more members [Rousseeuw and Croux 1993][rc93]. A bromine or chlorine
+  line can be taller than its compound, and such a compound counts as brighter as far as
+  its line's share allows.
+- **At its share.** In every sample that holds both, the row's height over the
+  compound's is read as a factor of the line's predicted share, by area on a TOF and by
+  height on an Orbitrap. The row is the compound's isotope line where the median factor
+  over three or more samples is 0.4 to 1.4, with fewer than one sample in ten above
+  twice the share. The band reaches further below one than above: near the detection
+  floor an Orbitrap scan keeps a dim line only where it clears that scan's noise, so the
+  summed peak list reads it low. A row whose factor is often twice its share is another
+  compound sitting at the line's mass, and stays.
+- **Never stripped.** A row curated by hand for the whole batch, a row any sample of
+  which was assigned by hand, a row whose own 13C line the batch already folds under it,
+  and a row too few of whose samples hold the compound's reading for its samples to
+  follow. Each is listed in the run's summary with its reason.
+
+The rows are read from the lowest m/z up. A row stripped is no compound for the rows
+above it, and a row two compounds' lines reach goes to the one whose median factor is
+nearest one.
+
+A stripped row leaves the ledger as a compound of its own. In each sample that holds
+both, the row's member becomes the compound's isotope line, and so does the sample's
+row on that peak in its latest in-app run: an isotopologue of the sample's row on the
+compound's peak, at that row's tier and fit, with the reading it displaced kept first
+among its alternatives (**earlier reading**, which *use this* puts back). Both rows of
+the sample record the rewrite. A sample is left as it was where the compound's peak
+reads another formula there, where the reagent or artifact pass claimed the row's peak,
+or where the row carries isotope lines of its own in that sample. A run imported from
+another engine is that engine's record and is never rewritten. The batch peak then
+folds under the compound as any isotopologue does, with its line outlined beside the
+offset (**M+1 13C**); its tooltip says what the samples' runs had read it as. The
+compound carries a scissors mark listing the rows it took. **Stripped rows**, in the
+view menu behind the cog, keeps only those compounds.
+
+The ledger route and `batch_peaks.list` carry the stripped row's record as
+`merged_isotopologue_of` (its compound, the line, the share read and what the row was)
+and the compound's as `merged_isotopologues`. The row keeps its record for as long as
+its members read it as the compound's line, and the compound for as long as its
+consensus names the formula and ionization the lines were read against. The rewrite
+stays: a later *Strip isotopologue rows* reads the rows not yet stripped, and a
+sample assigned again is read afresh by its own run. It runs as a batch run, whose
+summary counts the rows read, at a line, stripped, held, off their share and on too few
+samples per ionization mode and instrument type, lists the stripped and the held pairs,
+and names the thresholds.
+
 The whole ledger leaves the app as a CSV from the view menu behind the cog: *Export
 ledger (CSV)* writes one row per member peak - every sample's reading of every batch
 peak, with the batch peak's consensus beside it - and the browser downloads the file
@@ -1592,7 +1658,8 @@ batch peak is an m/z anchor and carries no compound of its own — so a peak is 
 only when its per-sample assignments agree, across most of the samples that assigned
 it, that it belongs to another anchor's compound. One that is an isotopologue in one
 sample and a species in its own right in the rest stays a row of its own, unless a
-*Stamp isotopologues* run stamped it as one of the compound's diagnostic lines (above).
+*Stamp isotopologues* run stamped it as one of the compound's diagnostic lines, or a
+*Strip isotopologue rows* run read it as one of the compound's isotope lines (above).
 
 The *Intensity* column is the highest intensity the species reaches in any sample of
 the batch, in the instrument's own unit (summed peak heights on an Orbitrap, summed

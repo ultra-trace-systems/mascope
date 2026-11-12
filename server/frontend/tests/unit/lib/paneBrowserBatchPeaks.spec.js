@@ -1090,6 +1090,125 @@ describe('PaneBrowserBatchPeaks isotopologue stamps', () => {
   })
 })
 
+describe('PaneBrowserBatchPeaks merged isotopologue rows', () => {
+  const stripped = (parent, extra = {}) => ({
+    batch_peak_id: parent,
+    formula: 'C10H16O4',
+    label: '13C',
+    ratio: 0.1093,
+    spectra: 6,
+    median_factor: 1,
+    above: 0,
+    displaced: { formula: 'C9H12N2O2' },
+    ...extra
+  })
+  const took = (n) => ({
+    formula: 'C10H16O4',
+    n_lines: n,
+    lines: Array.from({ length: n }, () => ({ label: '13C', spectra: 6 }))
+  })
+  const PARENT = peak('bp-p', 'assigned', 0.95, {
+    mz: 199.0976,
+    consensus_formula: 'C10H16O4',
+    merged_isotopologues: took(1)
+  })
+  // Its members rewritten, the row's family link names the parent.
+  const LINE = peak('bp-x', 'assigned', 0.9, {
+    mz: 200.101,
+    consensus_formula: 'C10H16O4',
+    isotopologue_of: 'bp-p',
+    merged_isotopologue_of: stripped('bp-p')
+  })
+  const OTHER = peak('bp-other', 'candidate', 0.5, { mz: 300.2, consensus_formula: 'C12H18O5' })
+  const ids = () => wrapper.vm.rows.map((row) => row.batch_peak_id)
+
+  it('folds a stripped row under its parent and offers the filter', async () => {
+    wrapper = await mountPane({ peaks: [LINE, PARENT, OTHER] })
+    expect(ids()).toEqual(['bp-p', 'bp-other'])
+    expect(wrapper.vm.isotopologueCount(PARENT)).toBe(1)
+    expect(wrapper.vm.hasStrips).toBe(true)
+  })
+
+  it('keeps only the compounds that took rows under the filter, their rows with them', async () => {
+    wrapper = await mountPane({ peaks: [LINE, PARENT, OTHER] })
+    wrapper.vm.onlyStripped = true
+    await wrapper.vm.$nextTick()
+    expect(ids()).toEqual(['bp-p'])
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+    expect(ids()).toEqual(['bp-p', 'bp-x'])
+  })
+
+  it('offers no filter, and filters nothing, where no strip stands', async () => {
+    wrapper = await mountPane({
+      peaks: [PARENT, OTHER].map((p) => ({ ...p, merged_isotopologues: null }))
+    })
+    expect(wrapper.vm.hasStrips).toBe(false)
+    wrapper.vm.onlyStripped = true
+    await wrapper.vm.$nextTick()
+    expect(ids()).toEqual(['bp-p', 'bp-other'])
+  })
+
+  it('names the line of a stripped row only under the family it was stripped to', async () => {
+    const ELSEWHERE = peak('bp-m0', 'assigned', 0.9, { mz: 199.5, consensus_formula: 'C9H8' })
+    const line = { ...LINE, isotopologue_of: 'bp-m0' }
+    wrapper = await mountPane({ peaks: [line, PARENT, ELSEWHERE] })
+    const row = wrapper.vm.decorated.find((r) => r.batch_peak_id === 'bp-x')
+    expect(row.parentId).toBe('bp-m0')
+    expect(wrapper.vm.stripOf(row)).toBeNull()
+  })
+
+  async function formulaCells(peaks) {
+    const tableRows = ref([])
+    app = makeApp({ peaks })
+    localStorage.clear()
+    setActivePinia(createPinia())
+    wrapper = mount(PaneBrowserBatchPeaks, {
+      global: {
+        stubs: {
+          ...GLOBAL_STUBS,
+          DataTable: {
+            ...DataTableStub,
+            watch: {
+              value: { handler: (value) => (tableRows.value = value), immediate: true }
+            }
+          },
+          Column: {
+            ...ColumnStub,
+            setup: () => ({ rows: tableRows }),
+            template:
+              '<div class="column-stub" :data-field="field">' +
+              '<template v-for="(row, i) in rows" :key="i">' +
+              '<div class="stub-cell" :data-row="row.batch_peak_id">' +
+              '<slot name="body" :data="row" /></div></template></div>'
+          }
+        },
+        directives: { tooltip: {}, help: {} }
+      }
+    })
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+    const column = wrapper
+      .findAll('.column-stub')
+      .find((col) => col.attributes('data-field') === 'consensus_formula')
+    return Object.fromEntries(
+      column.findAll('.stub-cell').map((cell) => [cell.attributes('data-row'), cell])
+    )
+  }
+
+  it('tags an unfolded stripped row with its line, and marks the compound that took it', async () => {
+    const TWO = { ...PARENT, merged_isotopologues: took(2) }
+    const cells = await formulaCells([TWO, LINE, OTHER])
+    const tag = cells['bp-x'].find('[data-testid="strip-tag"]')
+    expect(tag.text()).toBe('13C')
+    expect(tag.classes()).toContain('stripped')
+    const mark = cells['bp-p'].find('[data-testid="strips-mark"]')
+    expect(mark.attributes('aria-label')).toBe("2 rows stripped to this compound's isotope lines")
+    expect(cells['bp-other'].find('[data-testid="strips-mark"]').exists()).toBe(false)
+    expect(cells['bp-other'].find('[data-testid="strip-tag"]').exists()).toBe(false)
+  })
+})
+
 describe('PaneBrowserBatchPeaks co-variation column', () => {
   const reading = (verdict, r, extra = {}) => ({
     formula: 'C6H12O6',
@@ -1849,6 +1968,7 @@ describe('PaneBrowserBatchPeaks batch runs', () => {
       ['detect_series', 'a series detection'],
       ['read_co_variation', 'a co-variation reading'],
       ['stamp_isotopologues', 'an isotopologue stamping'],
+      ['strip_isotopologues', 'a strip of isotopologue rows'],
       ['unknown_action', 'unknown_action']
     ]) {
       await viewEarlierRun(action)
