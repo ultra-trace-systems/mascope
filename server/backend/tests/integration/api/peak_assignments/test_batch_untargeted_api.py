@@ -507,11 +507,11 @@ async def _record_run(
         await session.commit()
 
 
-def _scoring(mu_ppm, mu_source):
+def _scoring(mu_ppm, mu_source, sigma_source="fitted", sigma_ppm=0.583):
     return {
-        "sigma_ppm": 0.583,
+        "sigma_ppm": sigma_ppm,
         "mu_ppm": mu_ppm,
-        "sigma_source": "fitted",
+        "sigma_source": sigma_source,
         "mu_source": mu_source,
         "fitted_anchors": 12,
         "reagent_lines": 3,
@@ -584,22 +584,64 @@ async def test_a_sample_with_a_run_is_re_scored_where_that_run_scored(
     assert await service.sample_reagent_offset(sample, config) is None
 
 
+#: The width a sample is scored at where nothing fitted one: the Orbitrap
+#: class's, widened as a fitted one is.
+_CLASS_WIDTH = math.hypot(INSTRUMENT_FALLBACK_SIGMA_PPM["orbi"], PRED_SIGMA_PPM)
+#: The width a run of the sample scored at where its library fitted one: well
+#: wide of the class's, as on a sample whose lines scatter more than its
+#: class's typical accuracy.
+_RUN_WIDTH = 1.2
+
+
 @pytest.mark.parametrize(
-    "shift_ppm, recorded, centre_ppm",
+    "shift_ppm, recorded, centre_ppm, width_ppm",
     [
         # No run recorded a centre, so the lines are claimed: beyond the width
         # they centre the sample...
-        pytest.param(-1.3, None, -1.3, id="lines-beyond-the-width"),
+        pytest.param(-1.3, None, -1.3, _CLASS_WIDTH, id="lines-beyond-the-width"),
         # ...and inside it they leave it at its nominal masses, as in a run.
-        pytest.param(-0.3, None, 0.0, id="lines-inside-the-width"),
+        pytest.param(-0.3, None, 0.0, _CLASS_WIDTH, id="lines-inside-the-width"),
         # A run whose library fitted its own offset scored the sample there,
-        # not on the lines.
-        pytest.param(-1.3, (-0.05, "fitted"), -0.05, id="run-fitted-offset"),
+        # not on the lines, and at the width it fitted.
+        pytest.param(
+            -1.3,
+            (-0.05, "fitted", "fitted", _RUN_WIDTH),
+            -0.05,
+            _RUN_WIDTH,
+            id="run-fitted-offset",
+        ),
         # A run that scored the sample uncorrected leaves it so, lines or not.
-        pytest.param(-1.3, (0.0, "none"), 0.0, id="run-uncorrected"),
+        # Its library matched too few ions to fit an offset, so too few to fit
+        # a width (`MASS_ACCURACY_MIN_ANCHORS`): it scored at the class's, and
+        # the search takes today's class width, not the one it recorded, as
+        # where a release since moved the class's.
+        pytest.param(
+            -1.3,
+            (0.0, "none", "instrument_class", _RUN_WIDTH),
+            0.0,
+            _CLASS_WIDTH,
+            id="run-uncorrected",
+        ),
+        # A run whose library fitted neither, but whose reagent lines stood in
+        # for the centre, scored the sample there and at the class's width.
+        pytest.param(
+            -1.3,
+            (-1.2, "reagent", "instrument_class", _CLASS_WIDTH),
+            -1.2,
+            _CLASS_WIDTH,
+            id="run-class-width",
+        ),
+        # Nor is a width read off a record that holds none.
+        pytest.param(
+            -1.3,
+            (-0.05, "fitted", "fitted", None),
+            -0.05,
+            _CLASS_WIDTH,
+            id="run-recorded-no-width",
+        ),
     ],
 )
-async def test_the_search_ranks_the_sample_at_the_centre_a_run_scores_it_at(
+async def test_the_search_ranks_the_sample_where_a_run_scores_it(
     async_session_factory,
     folded_batch,
     stubbed_engine,
@@ -607,10 +649,13 @@ async def test_the_search_ranks_the_sample_at_the_centre_a_run_scores_it_at(
     shift_ppm,
     recorded,
     centre_ppm,
+    width_ppm,
 ):
     # A run's untargeted stage ranks its candidates at the centre it scores
-    # the sample at. A batch search ranked them at zero, so on an axis beyond
-    # the width it chose readings a run of the sample would not.
+    # the sample at, and at the width its Stage A fitted. A batch search
+    # ranked them at zero and at the class's width, so on an axis beyond the
+    # width, or on a sample measured wider or narrower than its class, it
+    # chose readings a run of the sample would not.
     samples = folded_batch["samples"]
     monkeypatch.setattr(
         batch_untargeted,
@@ -634,11 +679,8 @@ async def test_the_search_ranks_the_sample_at_the_centre_a_run_scores_it_at(
     assert (SampleMassAccuracy(reagent=offset).scoring_mu_ppm or 0.0) == (
         scoring.mu_ppm
     )
-    # Only the centre: nothing on this path measured the sample's width, so
-    # it is still the instrument class's.
-    assert scoring.sigma_ppm == pytest.approx(
-        math.hypot(INSTRUMENT_FALLBACK_SIGMA_PPM["orbi"], PRED_SIGMA_PPM)
-    )
+    # The run records the width it scored at, which the search ranks at too.
+    assert scoring.sigma_ppm == pytest.approx(width_ppm, abs=1e-6)
 
 
 async def test_a_sample_with_a_run_is_searched_at_that_runs_line_tolerance(

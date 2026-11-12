@@ -102,6 +102,7 @@ from mascope_backend.api.new.peak_assignments.service import (
     fetch_sample_mechanisms,
     load_sample_peaks,
     sample_reagent_offset,
+    sample_recorded_width,
 )
 from mascope_backend.api.new.peak_assignments.tiers import TIER_RANK, TIER_UNASSIGNED
 from mascope_backend.db import BatchPeak, BatchPeakOccurrence, async_session
@@ -561,12 +562,15 @@ async def _search_sample_peaks(
     # The whole spectrum is the frame - isotope patterns are scored against it -
     # while only the representatives are enumerated.
     match_params = await default_match_params(sample_item_id)
-    # No Stage A ran on this path, so nothing has fitted this sample's mass
-    # width; the instrument class's width stands in for it (see
-    # `pattern_scoring_for`). A batch search therefore judges a candidate at
-    # the class's typical accuracy rather than this sample's own, which is the
-    # honest state of it: the width is a measurement, and this path has not
-    # made it.
+    # No Stage A ran on this path, so nothing here has fitted this sample's
+    # mass width. A run's own search ranks at the width its Stage A fitted, so
+    # the search ranks at the one the sample's latest run fitted, and at the
+    # instrument class's only where no run fitted one (`pattern_scoring_for`).
+    # Its commits are re-scored below as a run's are, at a width of their own
+    # where they are ions enough to fit one and at the class's where not: the
+    # recorded width ranks them, and tiers only a row whose ion the re-score
+    # could not measure, which keeps the search's own fit, as in a run.
+    width = await sample_recorded_width(sample_item_id)
     # Nor has it committed any envelopes to fit a line's tolerance on: a line
     # is read at the one the sample's latest run fitted, as the seeded
     # re-score below reads it, so the search ranks a reading at the tolerance
@@ -584,7 +588,7 @@ async def _search_sample_peaks(
     )
     scoring = pattern_scoring_for(
         match_params,
-        SampleMassAccuracy(reagent=reagent_offset),
+        SampleMassAccuracy(sigma_ppm=width, reagent=reagent_offset),
         get_instrument_type(sample.filename),
         await _resolution_of(sample),
         envelope_tolerance=envelope_tolerance,
