@@ -33,6 +33,7 @@ import {
 } from '@/lib/referenceListings'
 import { seriesTooltip } from '@/lib/batchSeries'
 import { coVariationLabel, coVariationRank, coVariationTooltip } from '@/lib/batchCoVariation'
+import { checkTags, checksRank, checksTooltip } from '@/lib/batchChecks'
 import {
   isPredicted,
   stampLabel,
@@ -102,7 +103,8 @@ const RUN_ACTION_LABELS = {
   detect_series: 'a series detection',
   read_co_variation: 'a co-variation reading',
   stamp_isotopologues: 'an isotopologue stamping',
-  strip_isotopologues: 'a strip of isotopologue rows'
+  strip_isotopologues: 'a strip of isotopologue rows',
+  read_batch_checks: 'a batch checks reading'
 }
 const viewedRunLabel = computed(() => {
   const run = runs.value.viewing
@@ -311,6 +313,13 @@ const engineTierTooltip = (row) => {
 // nothing but its own column sorts on it.
 const hasCoVariation = computed(() => shown.value.some((bp) => bp.co_variation != null))
 
+// --- The batch checks -----------------------------------------------------------
+
+// What a "Read batch checks" run states of a species' reading: the halogen
+// lock, the label twin, the uronium pair. Offered only where some batch peak
+// shown carries one, as the co-variation is; display-only.
+const hasBatchChecks = computed(() => shown.value.some((bp) => bp.batch_checks != null))
+
 // The ledger's records with the tier's confidence rank attached, which is what
 // the tier column sorts on: the raw tier string sorts alphabetically, and
 // "below_assignability" before "candidate" is not an ordering anyone asked for.
@@ -340,6 +349,8 @@ const decorated = computed(() => {
       engineTierRank: batchPeak.engine_tier != null ? tierRank(batchPeak.engine_tier) : null,
       // The strongest partner's r, null where none was read, so those sort last.
       coVariationRank: coVariationRank(batchPeak.co_variation),
+      // Facts holding less facts refuting, null where none was read.
+      checksRank: checksRank(batchPeak.batch_checks),
       verdictRank: verdictRank(batchPeak),
       parentId: rootParentId(batchPeak, index),
       listing,
@@ -810,6 +821,10 @@ const HEADER_TOOLTIPS = {
     "How this species' intensity follows the same compound through the mode's other " +
     'channels across the batch: Pearson r of the log intensities, reagent-normalised, with ' +
     "the batch's common mode taken out. 0.6 or more co-varies. No tier moves on it",
+  facts:
+    'What only the batch can state of this reading: a chlorine or bromine line at its exact ' +
+    "spacing, a labelled ion's 14N twin, a uronium compound's two channels moving together. " +
+    'No tier moves on them',
   samples: 'Number of samples this species is seen in',
   verdict:
     'Batch-level verdict: one judgment per species, covering every sample without a ' +
@@ -1458,6 +1473,40 @@ watch(
           </template>
         </Column>
 
+        <!-- The batch checks: one tag per fact the batch states of the row's
+             reading, outlined where it refutes and muted where it cannot say.
+             A reading aid alone, as the co-variation is. -->
+        <Column v-if="hasBatchChecks" field="checksRank" sortable style="min-width: 7rem">
+          <template #header>
+            <span
+              v-tooltip.top="HEADER_TOOLTIPS.facts"
+              v-help.top="{
+                title: 'Facts',
+                helpKey: 'batch-checks',
+                doc: app.ui.help.docUrl('how-it-works/peak-assignment/#reading-batch-checks')
+              }"
+              >Facts</span
+            >
+          </template>
+          <template #body="{ data }">
+            <span
+              v-if="data.batch_checks"
+              class="batch-checks"
+              data-testid="batch-checks"
+              v-tooltip.top="checksTooltip(data.batch_checks)"
+              ><span
+                v-for="tag in checkTags(data.batch_checks)"
+                :key="tag.key"
+                class="check-tag"
+                :class="tag.tone"
+                data-testid="check-tag"
+                >{{ tag.label }}</span
+              ></span
+            >
+            <span v-else-if="!data.parentId" class="no-co-variation">&mdash;</span>
+          </template>
+        </Column>
+
         <Column field="n_present" sortable style="min-width: 6rem">
           <template #header>
             <span v-tooltip.top="HEADER_TOOLTIPS.samples">Samples</span>
@@ -1652,6 +1701,27 @@ watch(
 .co-variation.not_co_varying,
 .co-variation.untestable,
 .no-co-variation {
+  opacity: 0.55;
+}
+/* The batch checks: a tag per fact. Display-only, so no tier colour: a fact
+   that holds reads plain, one that refutes is outlined, one that cannot say is
+   muted. */
+.batch-checks {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+.check-tag {
+  padding: 0 0.25rem;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  font-size: 0.74rem;
+  white-space: nowrap;
+}
+.check-tag.refutes {
+  border-color: var(--p-content-border-color);
+}
+.check-tag.unread {
   opacity: 0.55;
 }
 /* The isotope lines predicted for a row's formula; coloured once one is

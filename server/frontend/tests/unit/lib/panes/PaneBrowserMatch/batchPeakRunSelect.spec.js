@@ -79,6 +79,11 @@ describe('BatchPeakRunSelect', () => {
     expect(wrapper.findAll('.option')[0].text()).toBe('#4 · Isotopologue stamping · current')
   })
 
+  it('names a batch checks reading', () => {
+    const wrapper = mountSelect([run('r4', 'read_batch_checks', { current: true }), ...RUNS])
+    expect(wrapper.findAll('.option')[0].text()).toBe('#4 · Batch checks · current')
+  })
+
   it('names a strip of isotopologue rows', () => {
     const wrapper = mountSelect([run('r4', 'strip_isotopologues', { current: true }), ...RUNS])
     expect(wrapper.findAll('.option')[0].text()).toBe('#4 · Isotopologue row strip · current')

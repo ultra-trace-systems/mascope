@@ -357,6 +357,55 @@ describe('PanePeakAssign co-variation', () => {
   })
 })
 
+// The batch's isotope checks, served on the detail read where the row reads its
+// peak as the checks did: one line of tags, and never weighed.
+describe('PanePeakAssign batch checks', () => {
+  const ROW = {
+    peak_assignment_id: 'pa-checks',
+    sample_peak_id: 'p-checks',
+    sample_peak_mz: 138.94,
+    sample_peak_intensity: 12345,
+    assigned_formula: 'C2H4O2',
+    tier: 'assigned',
+    role: 'M0',
+    fit_score: 0.9
+  }
+  const checks = {
+    formula: 'C2H4O2',
+    ion_formula: 'C2H4BrO2-',
+    halogen_lock: {
+      element: 'Br',
+      label: '81Br',
+      n_ion: 1,
+      n_neutral: 0,
+      judged: 6,
+      holds: 6,
+      verdict: 'locked'
+    }
+  }
+  const line = (wrapper) => wrapper.find('[data-testid="batch-checks"]')
+
+  it("names the facts the batch states of the row's reading", async () => {
+    focusedAssignment = ROW
+    detailRecord = { provenance: {}, batch_checks: checks }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(line(wrapper).text()).toBe('Batch facts: Br lock')
+    expect(line(wrapper).attributes('data-tooltip')).toMatch(
+      /^Halogen lock: its 81Br line holds the share of 1 bromine at the exact spacing/
+    )
+    expect(line(wrapper).attributes('data-tooltip')).toMatch(/no tier moves on it\.$/)
+  })
+
+  it('shows nothing where the batch states none for the row', async () => {
+    focusedAssignment = ROW
+    detailRecord = { provenance: {}, batch_checks: null }
+    const wrapper = await mountPane()
+
+    expect(line(wrapper).exists()).toBe(false)
+  })
+})
+
 describe('PanePeakAssign unassigned card', () => {
   it('names the peak on the fallback card, which has no assignment row at all', async () => {
     const wrapper = await mountPane()

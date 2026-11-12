@@ -28,7 +28,8 @@ const ACTION_LABELS = {
   detect_series: 'Series detection',
   read_co_variation: 'Co-variation reading',
   stamp_isotopologues: 'Isotopologue stamping',
-  strip_isotopologues: 'Isotopologue row strip'
+  strip_isotopologues: 'Isotopologue row strip',
+  read_batch_checks: 'Batch checks'
 }
 const IN_FLIGHT_STATUSES = ['running']
 

@@ -358,7 +358,8 @@ describe('BatchPeakComputeBar untargeted search', () => {
       'Detect series',
       'Read co-variation',
       'Stamp isotopologues',
-      'Strip isotopologue rows'
+      'Strip isotopologue rows',
+      'Read batch checks'
     ])
     expect(buttons[1].attributes('disabled')).toBeUndefined()
   })
@@ -717,7 +718,7 @@ describe('BatchPeakComputeBar isotopologue row strip', () => {
 
   it('holds it while the ledger is rewritten or read, and the others while it strips', async () => {
     mountBar()
-    for (const busy of ['computing', 'searching', 'detecting', 'reading', 'stamping']) {
+    for (const busy of ['computing', 'searching', 'detecting', 'reading', 'stamping', 'checking']) {
       compute[busy] = true
       await wrapper.vm.$nextTick()
       expect(stripButton().attributes('disabled')).toBeDefined()
@@ -794,5 +795,115 @@ describe('BatchPeakComputeBar isotopologue row strip', () => {
     await compute.stripIsotopologues()
     compute.reset()
     expect(compute.stripping).toBe(false)
+  })
+})
+
+describe('BatchPeakComputeBar batch checks', () => {
+  const checksButton = () =>
+    wrapper.findAll('.compute-button').find((b) => b.text() === 'Read batch checks')
+  const button = (label) => wrapper.findAll('.compute-button').find((b) => b.text() === label)
+  const notifyChecks = (payload) =>
+    (notificationHandlers['read_batch_checks'] ?? []).forEach((cb) => cb(payload))
+
+  it('offers the checks under the same gate, and says they move no tier', () => {
+    mountBar()
+    expect(checksButton().attributes('disabled')).toBeUndefined()
+    expect(compute.checkTooltip).toMatch(/^Read what only the batch can say of each batch peak/)
+    expect(compute.checkTooltip).toMatch(/Moves no tier\.$/)
+  })
+
+  it('disables them with the compute when no batch is focused, and says why', () => {
+    mountBar({ batch: null })
+    expect(checksButton().attributes('disabled')).toBeDefined()
+    expect(compute.checkTooltip).toBe(compute.blockedReason)
+  })
+
+  it('holds them while the ledger is rewritten or read, and the others while they run', async () => {
+    mountBar()
+    for (const busy of [
+      'computing',
+      'searching',
+      'detecting',
+      'reading',
+      'stamping',
+      'stripping'
+    ]) {
+      compute[busy] = true
+      await wrapper.vm.$nextTick()
+      expect(checksButton().attributes('disabled')).toBeDefined()
+      compute[busy] = false
+    }
+    compute.checking = true
+    await wrapper.vm.$nextTick()
+    for (const label of [
+      'Search untargeted',
+      'Detect series',
+      'Read co-variation',
+      'Stamp isotopologues',
+      'Strip isotopologue rows'
+    ])
+      expect(button(label).attributes('disabled')).toBeDefined()
+  })
+
+  it('launches straight from the button and waits for its own task', async () => {
+    mountBar()
+    post.mockResolvedValueOnce(ack('proc-c'))
+    await checksButton().trigger('click')
+    await Promise.resolve()
+    expect(post).toHaveBeenCalledWith(
+      '/batch-peaks/batch/b-1/read-batch-checks',
+      {},
+      expect.objectContaining({ type: 'read_batch_checks', errors: 'inline' })
+    )
+    expect(compute.checking).toBe(true)
+    expect(checksButton().attributes('data-loading')).toBe('true')
+    notifyChecks({ status: 'pending', process_id: 'proc-c' })
+    notifyChecks({ status: 'success', process_id: 'someone-else' })
+    expect(compute.checking).toBe(true)
+    notifyChecks({ status: 'success', process_id: 'proc-c' })
+    expect(compute.checking).toBe(false)
+  })
+
+  it('does not launch twice, nor while blocked', async () => {
+    mountBar()
+    post.mockReturnValueOnce(new Promise(() => {}))
+    compute.readBatchChecks()
+    await compute.readBatchChecks()
+    expect(post).toHaveBeenCalledTimes(1)
+    mountBar({ samples: [] })
+    post.mockClear()
+    await compute.readBatchChecks()
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('gives up after the timeout', async () => {
+    mountBar()
+    await compute.readBatchChecks()
+    expect(compute.checking).toBe(true)
+    vi.advanceTimersByTime(5 * 60 * 1000)
+    expect(compute.checking).toBe(false)
+  })
+
+  it('resets the button and records a refusal', async () => {
+    mountBar()
+    post.mockRejectedValueOnce(apiError(409, 'A batch run is still rewriting this ledger'))
+    await compute.readBatchChecks()
+    expect(compute.checking).toBe(false)
+    expect(compute.launchRefused).toBe(true)
+    expect(compute.launchError).toBe('A batch run is still rewriting this ledger')
+  })
+
+  it('falls back to its own message when the server gives none', async () => {
+    mountBar()
+    post.mockRejectedValueOnce({ response: { status: 500, data: {} } })
+    await compute.readBatchChecks()
+    expect(compute.launchError).toBe('Could not start the batch checks.')
+  })
+
+  it('ends with the rest when the batch changes', async () => {
+    mountBar()
+    await compute.readBatchChecks()
+    compute.reset()
+    expect(compute.checking).toBe(false)
   })
 })

@@ -97,6 +97,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 4.2 - time-series coherence | - |  | built, the co-variation reading (decision 35): *Read co-variation* reads every neutral the batch sees through two channels, per mode and instrument type, as Pearson r of the log traces, reagent-normalised, the common mode (each spectrum's median of the persistent traces) removed; co-varying at r >= 0.6, untestable under 10 shared spectra or a residual spread under 0.02 in log10 (both measured against decoy pairs on the testbed's 20 batch ledgers); recorded on the batch peak, shown in the ledger and the inspector, no tier moves. The nine riders are steps of their own (MAS-777); MAS-62 |
 | 4.2c - predicted diagnostic isotopologues in the batch fold | - |  | built: *Stamp isotopologues* predicts the 15N, 18O, 34S, 29Si, 30Si, 37Cl and 81Br lines of every committed monoisotopic batch peak at its trace centre (a labelled atom is the label's; a line under half the peak it falls in at the anchor's resolving power is unresolved), finds the batch peak there, and in each sample holding both reads the height ratio inside that sample's fitted envelope tolerance (two widths; a sample whose two widths reach past half the ratio cannot tell); a line holding in 80 % of three or more such samples is stamped in each, `predicted` or `picker`; recorded on both batch peaks and the member rows, no tier moves; MAS-824 |
 | 4.2f - merged isotopologue rows | - |  | built: *Strip isotopologue rows* reads every committed monoisotopic batch peak at the 13C and diagnostic lines of every brighter one below it (four times the partition's mass scatter, at least 1 ppm); a row whose height over the parent's is a median 0.4 to 1.4 times the line's share over three or more samples, fewer than a tenth above 2x, is stripped: its members and the samples' in-app rows become the parent's isotope line (recorded on both), so the consensus folds it under the parent; curated, hand-assigned and own-13C rows are held, imported runs never rewritten; read on the copy's batch ledgers, G6 on the batch ledger falls on A 9 -> 7, B 62 -> 56, D 46 -> 41 and holds on C and C2; MAS-827 |
+| 4.2g - batch isotope checks as positive facts | - |  | built: *Read batch checks* records three display-only facts on a batch peak's reading: the halogen lock (a 37Cl or 81Br line 4.2c stamped, its median offset within the batch's position window; where the window cannot tell 30Si, the 29Si line a silicon reading implies decides), the label twin (a labelled ion's 14N twin at the impurity share the batch's own reagent ions show, the setup's purity where none does, present, absent or untestable where an absent line would be charged) and the uronium neutral pair (4.2's co-variation of [M+H]+ and [M+CH4N2O+H]+); on the copy's batch ledgers D locks bromine on 144 bromide clusters (71 of its 121 assigned), C2's labelled cores read their twins present in 88 of 88 samples at 0.42 of the 98 % share, no unlabelled ion is read, A and B count 99 and 458 uronium pairs; no tier moves; MAS-828 |
 | 4.3 - calibration from verdicts, per profile | - |  | planned |
 | 4.4 - gate automation | - |  | moved to milestone 6 as step 6.4, the gate card as code (MAS-64); see `assignment_bench.md`. Built: `compare_runs.py --card` prints G1 to G14, the mass error, the reason coverage and the decoy arms per set and pooled, each metric a function in `metrics.py`; `--gate` marks them against the stage targets of `thresholds.json` with a pass-or-fail line, `--baseline` lists the readings that moved, and the scrub refuses a card that holds a name; MAS-64 |
 | 4.5 - profiles as versioned rows, routing by detection | - |  | planned |
@@ -1653,6 +1654,136 @@ who edits chemistry and stays last.
     reads its peaks afresh, and the next strip reads them again (#3169).
     A strip is not undone by the app: the members' earlier states are on the
     row's record and in the run before it.
+
+- **As built (the sixth rider, the batch isotope checks as facts; step 4.2g,
+  MAS-828).** Written from the plan's riders and the reference's published
+  description of its batch checks (its rules H, K and U), never ported. The
+  pure half is `mascope_tools.composition.batch_checks`; the batch half is
+  `batch_checks.py`: *Read batch checks*
+  (`POST /api/batch-peaks/batch/{id}/read-batch-checks`), a batch run (action
+  `read_batch_checks`, one migration with one snapshot column). It reads the
+  ledger's own records - 4.2c's stamps, 4.2's co-variation - and every batch
+  peak's members, per ionization mode and instrument type, and records on each
+  batch peak `provenance.batch_checks`: the reading it was read for (ion,
+  formula, mechanism) and each fact that applies.
+  - **The halogen lock** (`halogen_lock`), on a committed monoisotopic,
+    unclaimed batch peak whose ion carries chlorine or bromine and that 4.2c
+    has read: its 37Cl or 81Br entry in the stamping's record. Untestable where
+    the ion carries both halogens (one M+2 peak holds both lines), the line is
+    unresolved or on too few samples, or no sample it was stamped in still
+    holds both lines (no offset to read); not locked where no batch peak
+    stands at it, its ratio does not hold, another parent took it, or its
+    median offset from the parent over the samples it was stamped in sits
+    outside the partition's position window (4.2f's, four times the mass
+    scatter, at least 1 ppm, measured in the pass). A 34S line is 1.25 mDa under 37Cl and outside
+    that window on an Orbitrap; a 30Si line is 0.21 mDa under it, inside from
+    m/z 206. Where the window cannot tell the two, the silicon reading is read:
+    the line as 30Si is ratio / (a30/a28) silicons, whose 29Si line is 1.515
+    times the line, one unit up, merged with the ion's own +1 lines at its
+    resolving power; the batch peak there is judged across the track as 4.2c
+    judges a stamp, and a held track makes the lock silicon's (`silicon`), one
+    on too few samples leaves it untestable. A bromine lock reads no silicon
+    test: no silicon count makes a bromine's height. A lock is a fact of the
+    ion, so a bromide cluster locks the reagent's bromine; the fact counts the
+    element's atoms in the ion and in the neutral.
+  - **The label twin** (`label_twin`), on a labelled ion: monoisotopic,
+    carrying the setup's labelled atom, the reagent's own ion or a committed
+    analyte. Its 14N twin is one unit down at (1 - p) / p per labelled atom
+    (`custom_elements.labelled_purity` with the setup's `label_purity`). A
+    purity is a certificate's minimum: on C2 the reagent's own ions carry
+    their 14N lines at 0.40 and 0.43 of the 98 % share, a reagent of about
+    99.2 %, and read at the setup's share their twins read absent. So the
+    partition's labelled reagent ions measure the share: each one's median
+    twin over ion over the setup's share across three or more samples holding
+    both, the median over the ions (`core_factor`, `impurity_factor`); every
+    labelled ion's twin is read at the setup's share times that factor, the
+    setup's alone where no reagent ion measures it. A sample tells where the
+    twin's expected S/N (the ion's, off its peak list, times the share) reaches
+    the detection threshold its run fitted (3.5b's `detect_snr`); the twin is
+    present there where its ratio is not under the admitted band by more than
+    two widths (above is no miss: ambient 14N only adds). Present where seen
+    in more than a fifth of such samples, absent where missing from 80 %,
+    untestable under three. The fact names the twin's batch peak and its
+    reading, and the *excess*: the median twin over ion over the read share in
+    every sample holding both. No unlabelled ion is read.
+  - **The neutral pair** (`neutral_pair`), on each committed monoisotopic,
+    unclaimed batch peak read through `[M+H]+` or `[M+CH4N2O+H]+` (by
+    `mechanism_key`) whose neutral the partition also reads through the other:
+    the strongest partner through the other channel in its co-variation
+    record, its r and spectra, `co_varying` read as established. The run
+    counts each pair of batch peaks once, from whichever channel names it: a
+    neutral split over two protonated batch peaks is two pairs. Where no
+    record pairs the two the channel is counted unread and the outcome asks
+    for *Read co-variation*.
+  - **Records.** The consensus keeps the record while it names the reading
+    (`compute_consensus`'s `batch_checks`); `standing_batch_checks_record`
+    serves a lock only while the stamping record it read stands
+    (`stamping_run_id`) and a pair only while its co-variation record does
+    (`co_variation_run_id`), so a later stamping or reading takes them off
+    until the next checks. The reading runs outside the fold lock and writes
+    under it; a batch peak whose reading moved or went gets no record
+    (`anchors_moved`), a fact naming a batch peak that went is left out. The
+    ledger and a run's snapshot serve `batch_checks`; the ledger export and
+    the members route close each row with `halogen_lock`, `halogen_element`,
+    `label_twin`, `neutral_pair` and `neutral_pair_r`; a sample's detail read
+    serves `batch_checks` on an M0 row of the same reading or a reagent row of
+    the same ion. The ledger shows a *Facts* column of tags, the inspector a
+    line. No tier, reason, member or per-sample run moves.
+  - **Where it runs, and three readings of the brief.** The brief puts the
+    pass after the fold. The facts read the stamping's and the co-variation's
+    records, which a fold does not refresh, and a pass after every fold would
+    read the whole partition per sample folded; it is a batch run beside 4.2c
+    and 4.2f, as both were built for the same reason, and the fold's part is
+    the consensus keeping or dropping the record. The brief's "export's
+    provenance sheet" is the ledger export it names (`batch_export.py`), which
+    has no sheets: the facts are columns of its rows. The "anchor detail" is
+    the *Facts* column's tooltip and the inspector's line. The twin test reads
+    labelled ions, whose 14N line the brief's excess clause is about: the
+    fact names that line and how far it runs above the impurity.
+  - **Verify, read on the copy's batch ledgers** (2026-11-12). The copy
+    predates 4.2c and 4.2, so a read-only probe ran the stamping, the
+    co-variation reading and the checks in memory through the branch's code,
+    each file at a 3.5b curve fitted on the batch's own 13C lines (4.2c's
+    probe records), each peak's S/N off its peak list; nothing was written.
+
+    | set | halogen parents | locked | not locked | untestable | labelled ions | twin present | absent | untestable | uronium pairs | established | not | untestable |
+    |---|---|---|---|---|---|---|---|---|---|---|---|---|
+    | A | 0 | | | | 0 | | | | 99 | 0 | 51 | 48 |
+    | B | 0 | | | | 0 | | | | 458 | 0 | 0 | 458 |
+    | C | 0 | | | | 63 | 0 | 1 | 62 | 0 | | | |
+    | C2 | 2 | 1 | 1 | 0 | 44 | 0 | 1 | 43 | 0 | | | |
+    | D | 442 | 154 | 114 | 174 | 0 | | | | 0 | | | |
+    | E (TOF) | 526 | 0 | 186 | 340 | 0 | | | | 0 | | | |
+    | F1 (TOF) | 1,682 | 0 | 263 | 1,419 | 0 | | | | 0 | | | |
+    | F2 (TOF) | 1 | 0 | 0 | 1 | 0 | | | | 0 | | | |
+
+    Every lock is bromine's. On D the 154 locks are 144 `[M+Br]-` and 10
+    `[M+Br2]-` clusters, 71 of them among its 121 assigned bromide clusters
+    (6 not locked, 44 on too few of its six samples): the stamping's own 71.
+    D's 114 not locked are 61 lines no batch peak stands at, 26 off their
+    ratio, 16 off the exact spacing and 11 chlorine lines; its untestable, 147
+    on too few samples and 17 ions with both halogens. No chlorine line locks
+    on any set (21, 65 and 475 chlorine parents on D, E and F1), so the
+    silicon test is not met on the copy; it is pinned by the tests. On the
+    TOF sets the stamping holds no line at the fitted tolerance (F1's window is
+    43 ppm), and nothing locks. The copy's ledgers were folded before the
+    reagent pass claimed its ions, so no batch peak reads a labelled core and
+    the twin test reads the labelled analytes alone: almost all untestable (a
+    2 % twin needs an ion at an S/N of 147), one absent on each of C and C2,
+    and their 14N lines run a median 274 (C) and 68 (C2) times the impurity's
+    share, the ambient nitrate's clusters. Read as the reagent's ions, the
+    batch peaks at C2's ^NO3- and H^NO3.^NO3- masses (C's scan holds neither)
+    carry their twins in 88 of 88 samples at 0.40 and 0.43 of the 98 % share;
+    they set C2's factor at 0.42, both read present, and the analytes' one
+    absent turns untestable. No unlabelled ion is read for a twin. On A the
+    co-variation reading pairs 144 channels, 65 flat, 74 not co-varying and
+    none co-varying (its largest r 0.36), so no uronium pair is established;
+    B's six samples are under the ten spectra a reading needs. No tier moves.
+  - **Not done here.** The step that counts the facts in the tiers follows on
+    its own, after the bench reads their reliability (decision 35's posture);
+    PKY-30's specification is a cross-check when it arrives. The planner's pass
+    reads the facts on the current gate runs after the merge, where the ledgers
+    hold their reagent ions; the copy's cannot show the labelled cores as such.
 
 ### 4.3 Calibration from verdicts, per profile
 
