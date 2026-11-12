@@ -140,6 +140,19 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
       "Strip the ledger's rows that are a brighter compound's 13C, 15N, 18O, 34S, Si, 37Cl or 81Br line at its share across the batch: they become that compound's isotopologues, in the batch and in its samples."
   )
 
+  // The batch checks: the facts only the batch can state of a batch peak's
+  // reading - the halogen lock, the label twin, the neutral pair - read off
+  // the stamps, the members and the co-variation reading. No parameters, it
+  // moves no tier, and it waits on its own task as the stamping does.
+  const checking = ref(false)
+  const pendingCheckId = ref(null)
+  let checkTimer = null
+  const checkTooltip = computed(
+    () =>
+      blockedReason.value ??
+      "Read what only the batch can say of each batch peak: a chlorine or bromine line at its exact spacing, a labelled ion's 14N twin, a uronium compound's two channels moving together. Moves no tier."
+  )
+
   function endComputing() {
     computing.value = false
     pendingProcessId.value = null
@@ -326,6 +339,34 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     }
   }
 
+  function endChecking() {
+    checking.value = false
+    pendingCheckId.value = null
+    clearTimeout(checkTimer)
+    checkTimer = null
+  }
+
+  async function readBatchChecks() {
+    const batchId = app.data.batch.focusedId
+    if (!batchId || checking.value || blockedReason.value) return
+    checking.value = true
+    launchError.value = null
+    clearTimeout(checkTimer)
+    checkTimer = setTimeout(endChecking, COMPUTE_TIMEOUT)
+    try {
+      const response = await api.http.post(
+        `/batch-peaks/batch/${batchId}/read-batch-checks`,
+        {},
+        { type: 'read_batch_checks', errors: 'inline' }
+      )
+      pendingCheckId.value = response?.headers?.['process-id'] ?? null
+    } catch (error) {
+      endChecking()
+      launchRefused.value = isRefusedRequest(error) || error?.response?.status === 403
+      launchError.value = getApiErrorMessage(error, 'Could not start the batch checks.')
+    }
+  }
+
   /** Backfill batch peaks from this batch's existing assignments; the ledger and
    *  chart refresh on the peak_assignment_reload event the task emits. */
   async function compute() {
@@ -429,6 +470,14 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     endStripping()
   })
 
+  app.ui.notification.on('read_batch_checks', (notification) => {
+    if (!checking.value) return
+    if (notification?.status === 'pending') return
+    const id = notification?.process_id
+    if (pendingCheckId.value && id && id !== pendingCheckId.value) return
+    endChecking()
+  })
+
   function reset() {
     endComputing()
     endSearching()
@@ -436,6 +485,7 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     endReading()
     endStamping()
     endStripping()
+    endChecking()
     endExporting()
     launchError.value = null
     launchRefused.value = false
@@ -463,6 +513,9 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     stripping,
     stripTooltip,
     stripIsotopologues,
+    checking,
+    checkTooltip,
+    readBatchChecks,
     exporting,
     exportLedger,
     reset

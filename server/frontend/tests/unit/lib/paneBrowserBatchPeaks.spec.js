@@ -1328,6 +1328,113 @@ describe('PaneBrowserBatchPeaks co-variation column', () => {
   })
 })
 
+describe('PaneBrowserBatchPeaks facts column', () => {
+  const checks = (facts) => ({
+    formula: 'C2H4O2',
+    ion_formula: 'C2H4BrO2-',
+    ionization_mechanism_id: 'm-1',
+    ...facts
+  })
+  const lock = (verdict, extra = {}) => ({
+    halogen_lock: {
+      element: 'Br',
+      label: '81Br',
+      n_ion: 1,
+      n_neutral: 0,
+      judged: 6,
+      holds: 6,
+      share: 1,
+      verdict,
+      ...extra
+    }
+  })
+  const twin = (verdict) => ({ label_twin: { judged: 6, present: 0, excess: null, verdict } })
+  const peaks = () => [
+    peak('bp-1', 'assigned', 0.9, { mz: 100.1, batch_checks: checks(lock('locked')) }),
+    peak('bp-2', 'candidate', 0.6, {
+      mz: 200.1,
+      batch_checks: checks({ ...lock('untestable', { reason: 'few_spectra' }), ...twin('absent') })
+    }),
+    peak('bp-3', 'assigned', 0.95, { mz: 300.1, batch_checks: null }),
+    peak('bp-4', 'assigned', 0.7, { mz: 301.1, isotopologue_of: 'bp-3' })
+  ]
+
+  // Renders the column's cells through a stub that hands each its row.
+  async function cells(rows) {
+    const tableRows = ref([])
+    app = makeApp({ peaks: rows })
+    localStorage.clear()
+    setActivePinia(createPinia())
+    wrapper = mount(PaneBrowserBatchPeaks, {
+      global: {
+        stubs: {
+          ...GLOBAL_STUBS,
+          DataTable: {
+            ...DataTableStub,
+            watch: { value: { handler: (value) => (tableRows.value = value), immediate: true } }
+          },
+          Column: {
+            ...ColumnStub,
+            setup: () => ({ rows: tableRows }),
+            template:
+              '<div class="column-stub" :data-field="field">' +
+              '<template v-for="(row, i) in rows" :key="i">' +
+              '<div class="stub-cell" :data-row="row.batch_peak_id">' +
+              '<slot name="body" :data="row" /></div></template></div>'
+          }
+        },
+        directives: { tooltip: {}, help: {} }
+      }
+    })
+    await wrapper.vm.$nextTick()
+    const column = wrapper
+      .findAll('.column-stub')
+      .find((col) => col.attributes('data-field') === 'checksRank')
+    return Object.fromEntries(
+      column.findAll('.stub-cell').map((cell) => [cell.attributes('data-row'), cell])
+    )
+  }
+
+  it('is absent from a ledger no reading reached', async () => {
+    wrapper = await mountPane({ peaks: peaks().map(({ batch_checks, ...bp }) => bp) })
+    expect(columnFor('checksRank')).toBeUndefined()
+  })
+
+  it('shows a tag per fact, each in its tone', async () => {
+    const found = await cells(peaks())
+    const tags = (id) =>
+      found[id].findAll('[data-testid="check-tag"]').map((tag) => [tag.text(), tag.classes()])
+    expect(tags('bp-1')).toEqual([['Br lock', ['check-tag', 'holds']]])
+    expect(tags('bp-2')).toEqual([
+      ['Br lock?', ['check-tag', 'unread']],
+      ['no 14N twin', ['check-tag', 'refutes']]
+    ])
+    // None read: a dash, and an unfolded isotopologue row stays blank.
+    expect(found['bp-3'].find('[data-testid="batch-checks"]').exists()).toBe(false)
+    expect(found['bp-3'].find('.no-co-variation').exists()).toBe(true)
+  })
+
+  it('sorts the facts that hold first, a row with none last', async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+    expect(columnFor('checksRank').props('sortable')).toBe(true)
+    const byId = Object.fromEntries(wrapper.vm.rows.map((row) => [row.batch_peak_id, row]))
+    expect(byId['bp-1'].checksRank).toBe(1)
+    expect(byId['bp-2'].checksRank).toBe(-1)
+    expect(byId['bp-3'].checksRank).toBeNull()
+    wrapper.vm.sortField = 'checksRank'
+    wrapper.vm.sortOrder = -1
+    await wrapper.vm.$nextTick()
+    const top = () => wrapper.vm.rows.filter((row) => !row.parentId).map((row) => row.batch_peak_id)
+    expect(top()).toEqual(['bp-1', 'bp-2', 'bp-3'])
+  })
+
+  it('explains the column, and that no tier moves on it', async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+    expect(wrapper.vm.HEADER_TOOLTIPS.facts).toMatch(/14N twin/)
+    expect(wrapper.vm.HEADER_TOOLTIPS.facts).toMatch(/No tier moves on them$/)
+  })
+})
+
 describe('PaneBrowserBatchPeaks selection cap', () => {
   const many = (n) => Array.from({ length: n }, (_, i) => peak(`bp-${i}`, 'assigned', 0.9))
 
@@ -1969,6 +2076,7 @@ describe('PaneBrowserBatchPeaks batch runs', () => {
       ['read_co_variation', 'a co-variation reading'],
       ['stamp_isotopologues', 'an isotopologue stamping'],
       ['strip_isotopologues', 'a strip of isotopologue rows'],
+      ['read_batch_checks', 'a batch checks reading'],
       ['unknown_action', 'unknown_action']
     ]) {
       await viewEarlierRun(action)

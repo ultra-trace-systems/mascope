@@ -27,6 +27,7 @@ import {
 } from '@/lib/referenceListings'
 import { holdsTierDown, reasonIcon, reasonTooltip, tierReasonsOf } from '@/lib/tierReasons'
 import { coVariationLabel, coVariationSummary, coVariationTooltip } from '@/lib/batchCoVariation'
+import { checksSummary, checksTooltip } from '@/lib/batchChecks'
 import { ROLE_BUCKETS, bucketRank } from '@/lib/tiers'
 import { EVIDENCE_LEVELS, VERDICT_META, claimCandidates } from '@/lib/verification'
 import { useBatchPeakCuration } from './stores/batchPeakCuration.js'
@@ -542,6 +543,13 @@ const batchCoVariationR = computed(() => {
   const record = batchCoVariation.value
   return record && record.r != null ? coVariationLabel(record) : ''
 })
+
+// --- The batch checks ----------------------------------------------------------
+// What a "Read batch checks" run states of the batch peak this row's peak is
+// in: its halogen lock, its labelled ion's 14N twin, its uronium pair. The
+// detail read serves them only where the row reads the peak as the checks did;
+// display-only, as the line says.
+const batchChecks = computed(() => focusedDetail.value?.batch_checks ?? null)
 
 // --- The other channels' peaks ------------------------------------------------
 // The badge names channels, which leaves the reader to find each one's peak in
@@ -1623,6 +1631,17 @@ const demotedCount = computed(() => {
           ></span
         >
       </div>
+      <!-- What only the batch can state of this reading: shown, never
+           weighed. -->
+      <div
+        v-if="checksSummary(batchChecks)"
+        class="batch-checks"
+        data-testid="batch-checks"
+        v-tooltip.top="checksTooltip(batchChecks)"
+      >
+        <span class="pi ph ph-seal-check" />
+        <span>{{ checksSummary(batchChecks) }}</span>
+      </div>
       <Popover ref="channelsMenu" aria-label="The other channels' peaks">
         <div class="other-readings">
           <div class="alts-label">The same neutral, through the other channels</div>
@@ -2579,6 +2598,20 @@ const demotedCount = computed(() => {
 .co-variation-r {
   font-family: var(--font-mono, ui-monospace, monospace);
   white-space: nowrap;
+}
+/* The batch checks: a plain line beside the co-variation, shown and never
+   weighed. */
+.batch-checks {
+  align-self: start;
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  font-size: 0.74rem;
+  cursor: default;
+}
+.batch-checks .pi {
+  flex: none;
+  font-size: 0.8rem;
 }
 /* Where the ledger holds the other channels' rows the badge opens them. */
 .corroboration.opens {

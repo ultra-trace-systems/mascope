@@ -97,7 +97,8 @@ async function launchSearch() {
           compute.detecting ||
           compute.reading ||
           compute.stamping ||
-          compute.stripping
+          compute.stripping ||
+          compute.checking
         "
         @click="searchVisible = true"
         :pt="
@@ -132,7 +133,8 @@ async function launchSearch() {
           compute.searching ||
           compute.reading ||
           compute.stamping ||
-          compute.stripping
+          compute.stripping ||
+          compute.checking
         "
         @click="compute.detectSeries()"
         :pt="
@@ -169,7 +171,8 @@ async function launchSearch() {
           compute.searching ||
           compute.detecting ||
           compute.stamping ||
-          compute.stripping
+          compute.stripping ||
+          compute.checking
         "
         @click="compute.readCoVariation()"
         :pt="
@@ -205,7 +208,8 @@ async function launchSearch() {
           compute.searching ||
           compute.detecting ||
           compute.reading ||
-          compute.stripping
+          compute.stripping ||
+          compute.checking
         "
         @click="compute.stampIsotopologues()"
         :pt="
@@ -242,7 +246,8 @@ async function launchSearch() {
           compute.searching ||
           compute.detecting ||
           compute.reading ||
-          compute.stamping
+          compute.stamping ||
+          compute.checking
         "
         @click="compute.stripIsotopologues()"
         :pt="
@@ -259,6 +264,44 @@ async function launchSearch() {
             compound, and in each sample its row becomes the compound's isotope
             line. Peaks curated by hand, assigned by hand in a sample, or with
             a 13C line of their own are never stripped.
+            </p>
+          `)
+        "
+      />
+    </span>
+    <!-- The batch checks: read off the ledger as it stands, with no
+         parameters, and recorded only. Held while the others rewrite or read
+         the ledger, and they while it runs. -->
+    <span v-tooltip.left="compute.checkTooltip">
+      <Button
+        label="Read batch checks"
+        icon="pi ph ph-seal-check"
+        size="small"
+        severity="secondary"
+        :loading="compute.checking"
+        :disabled="
+          compute.blockedReason !== null ||
+          compute.computing ||
+          compute.searching ||
+          compute.detecting ||
+          compute.reading ||
+          compute.stamping ||
+          compute.stripping
+        "
+        @click="compute.readBatchChecks()"
+        :pt="
+          app.ui.help.left(`
+            <h1>Read Batch Checks</h1>
+            <p>
+            Reads three facts only the batch can state. A <b>halogen lock</b>:
+            a compound with chlorine or bromine whose 37Cl or 81Br line
+            <i>Stamp isotopologues</i> stamped, sitting at the exact spacing
+            from it; where a silicon line could sit there instead, the 29Si line
+            decides. A <b>14N twin</b>: a labelled ion's impurity line one unit
+            down, present or absent where the label's purity says it must show.
+            A <b>uronium pair</b>: a compound's protonated and urea-clustered
+            peaks moving together, as <i>Read co-variation</i> reads them. They
+            show in the Facts column. No tier moves on them.
             </p>
           `)
         "

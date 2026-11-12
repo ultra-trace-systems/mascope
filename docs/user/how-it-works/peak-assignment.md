@@ -1654,6 +1654,84 @@ summary counts the rows read, at a line, stripped, held, off their share and on 
 samples per ionization mode and instrument type, lists the stripped and the held pairs,
 and names the thresholds.
 
+### Reading batch checks
+
+--8<-- "_help/batch-checks.md"
+
+Some things an ion's lines say hold only across a batch. *Read batch checks*, beside
+*Strip isotopologue rows*, reads three of them off what the ledger already holds: the
+lines *Stamp isotopologues* stamped, every batch peak's members, and the co-variation
+*Read co-variation* read. Run those two first; a fact whose source has not run is not
+read, and the run's summary says which to run.
+
+- **The halogen lock.** A compound holding chlorine or bromine carries its heavier
+  isotope line two units up: one 37Cl atom at 32 % of a monochloride's height, one 81Br
+  at 97 % of a monobromide's, n atoms at n times that [Meija et al. 2016][mei16]. Such
+  clusters are a classical mark of the element [McLafferty and Tureček 1993][mt93]
+  [Kind and Fiehn 2007][kf07]. A compound whose 37Cl or 81Br line the stamping stamped
+  is locked where that line also sits at the exact spacing: the median of its members'
+  offsets from the compound's, over the samples it was stamped in, within the batch's
+  position window, four times the batch's mass scatter and never under 1 ppm (as
+  *Stripping isotopologue rows* measures it). Where no sample it was stamped in still
+  holds both lines, there is no spacing to read, and the lock is not read. At that
+  window a 34S line, 1.25 mDa under 37Cl, is another peak on an Orbitrap. A 30Si line,
+  0.21 mDa under it, is not from m/z 206 up, and some number of silicon atoms can give
+  it any height. There the 29Si line decides: read as 30Si, the line implies a 29Si
+  line one unit up at 1.5 times its own height. Where the batch holds that line at that
+  height, as the stamping holds a stamp, the lock is silicon's (**Si, not Cl**); where
+  too few samples show it, the lock is not read. A compound carrying both chlorine and
+  bromine is never locked: one M+2 peak holds both lines. A lock is a fact about the
+  ion, so a bromide cluster locks bromine, the reagent's; the tooltip says whose the
+  atoms are.
+- **The 14N twin.** A labelled reagent is not pure: a 98 % 15N nitrate carries 2 %
+  14N. Every ion it makes, its own reagent ions and the clusters it forms, carries a
+  14N twin one unit down at (1 - p) / p of its height per labelled atom, p being the
+  purity the ionization setup records. Ambient 14N nitrate can only add to the twin. A
+  purity is a certificate's minimum, and a reagent can be purer: on one labelled-nitrate
+  set the reagent's own ions carry their 14N lines at about 0.4 of the share 98 % gives,
+  a reagent of about 99.2 %. So where the batch holds the reagent's own labelled ions
+  with their twins in three samples or more, they set the share: the median of how far
+  their twins run from the setup's, which the tooltip names. Each
+  labelled ion's twin is looked for at the batch peak at that mass, in every sample
+  where an absent line would be noticed: where the twin's expected signal-to-noise, the
+  labelled ion's times its share, reaches the detection threshold that sample's run
+  fitted (see *The fit score*). It is present in a sample where its height ratio does
+  not fall below the band the run admits at its share by more than two of its widths,
+  as a stamp is read. The twin is **present** where it is seen in more than a fifth of
+  those samples and **missing** where it is absent from at least eight in ten; fewer
+  than three samples that would show it read *untestable*. An ion read as labelled whose
+  twin is missing is not the label's: a chlorinated ion sits 0.044 mDa from a labelled
+  nitrate reading with two more carbons. The tooltip says how far the 14N line runs above
+  the impurity's share: an excess 14N line keeps its compound's cluster only beside this
+  labelled partner. No unlabelled ion is read.
+- **The urea pair.** A uronium source reads a compound protonated and clustered with
+  urea, 60.032 Da apart. Where both peaks of one compound stand in the batch,
+  *Read co-variation* has read their traces against each other [Pearson 1895][pea95];
+  the pair is **established** where they co-vary, **apart** where they do not, and
+  *untestable* where the reading could not say. Two ions of one molecule follow its
+  abundance together; two compounds a formula coincidence put under one neutral need
+  not.
+
+The facts are shown, never weighed: no tier, reason or member moves on them until a
+benchmark has measured how reliable each one is. The ledger shows them in a **Facts**
+column once a reading has run, one tag per fact: plain where it holds, outlined where it
+refutes, muted with a **?** where the batch cannot say, each fact's account on hover.
+The column sorts the rows with the most facts holding first. The inspector shows the
+same tags on a sample's peak where the sample reads the peak as the batch does:
+*Batch facts: Br lock, 14N twin*.
+
+The ledger route and `batch_peaks.list` carry them as `batch_checks`, with a
+`halogen_lock`, a `label_twin` and a `neutral_pair` where each applies, and every member
+row of the ledger's CSV export and of `batch_peaks.members` closes with the batch peak's
+`halogen_lock`, `halogen_element`, `label_twin`, `neutral_pair` and `neutral_pair_r`. A
+batch peak keeps its facts for as long as its consensus names the ion, formula and
+ionization they were read for. A lock stands only beside the stamping it read and a pair
+beside the co-variation reading: a later *Stamp isotopologues* or *Read co-variation*
+takes them off until the next *Read batch checks*, which replaces every fact. A batch
+peak whose reading moves while the checks run gets none. It runs as a batch run, whose
+summary counts each verdict per ionization mode and instrument type, with the position
+window it read at; it changes no tier, no member and no per-sample run.
+
 The whole ledger leaves the app as a CSV from the view menu behind the cog: *Export
 ledger (CSV)* writes one row per member peak - every sample's reading of every batch
 peak, with the batch peak's consensus beside it - and the browser downloads the file
@@ -1926,6 +2004,9 @@ engine found, and leave the rest of the table alone.
   molecular formulas obtained by accurate mass spectrometry.* BMC Bioinformatics 2007,
   8:105. [link](https://bmcbioinformatics.biomedcentral.com/articles/10.1186/1471-2105-8-105)
   ([open access](https://pmc.ncbi.nlm.nih.gov/articles/PMC1851972/))
+- <a id="mt93"></a>McLafferty, F. W.; Tureček, F. *Interpretation of Mass Spectra*,
+  4th ed. University Science Books, Mill Valley, 1993; chapter 2, the isotopic clusters
+  of chlorine, bromine and silicon.
 - <a id="rf69"></a>Robertson, C. A.; Fryer, J. G. *Some descriptive properties of normal
   mixtures.* Skandinavisk Aktuarietidskrift 1969, 52:137–146.
 - <a id="sw02"></a>Schilling, M. F.; Watkins, A. E.; Watkins, W. *Is human height bimodal?*
@@ -2238,3 +2319,4 @@ engine found, and leave the rest of the table alone.
 [sen68]: #sen68
 [lac17]: #lac17
 [mei16]: #mei16
+[mt93]: #mt93
