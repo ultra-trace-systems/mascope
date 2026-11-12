@@ -505,10 +505,13 @@ class's width and at the centre the sample's latest run in Mascope scored at, wh
 that was your library's offset or the reagent ions'. An imported run does not count. A
 sample with no such run is centred on its own reagent ions, as a run would be. The
 batch's *Search untargeted* (below) ranks the candidates it finds in a sample at that
-same width and centre, as a run's own search ranks at the centre the run scores the
-sample at. The formulas it chose are then held to the same counts, as a run's are: eight
-or more ions in the sample measure a width and centre of their own, and fewer are
-measured at the centre they were ranked at.
+same centre, as a run's own search ranks at the centre the run scores the sample at. It
+does not rank them at the class's width, though: a run's own search ranks at the width
+the run measured, so the batch search ranks at the width the sample's latest run
+measured, and at the class's only where that run measured none or the sample has no run.
+The formulas it chose are then held to the same counts, as a run's are: eight or more
+ions in the sample measure a width and centre of their own, and fewer are measured at
+the instrument class's width and the centre they were ranked at.
 
 How closely a line's height must follow its predicted share is the run's own, too. By
 default a clean line is held to 5% of its share, and a missing line counts against the

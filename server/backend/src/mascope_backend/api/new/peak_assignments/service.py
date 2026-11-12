@@ -112,6 +112,7 @@ from mascope_backend.api.new.peak_assignments.decoy import (
     DecoyPlan,
     DecoyRefused,
     declared_channels,
+    fitted_sigma_ppm,
     plan_decoy,
     swap_channels,
     wrong_adducts,
@@ -3742,6 +3743,28 @@ def _recorded_scoring_centre(
     return True, ReagentOffset(
         mu_ppm=float(snapshot["mu_ppm"]), lines=int(lines), beyond_width=True
     )
+
+
+async def sample_recorded_width(sample_item_id: str) -> float | None:
+    """The width the sample's latest run fitted its mass errors at, outside any run.
+
+    What the batch search ranks a sample's candidates at beside the run's
+    centre (:func:`sample_reagent_offset`), as a run's own untargeted stage
+    ranks at Stage A's fitted width (``engine.pattern_scoring_for``). The run
+    records the width it scored at, widened by ``PRED_SIGMA_PPM``; the fit is
+    read back from it as a decoy reads its control's
+    (``decoy.inherited_accuracy``).
+
+    :param sample_item_id: The sample.
+    :return: That width; None where the sample has no completed in-app run,
+        its latest recorded none, or it scored at the instrument class's width
+        because too few known ions matched to fit one.
+    """
+    snapshot = await _latest_run_pattern_scoring(sample_item_id) or {}
+    sigma = snapshot.get("sigma_ppm")
+    if snapshot.get("sigma_source") != "fitted" or sigma is None:
+        return None
+    return fitted_sigma_ppm(sigma)
 
 
 async def sample_reagent_offset(
