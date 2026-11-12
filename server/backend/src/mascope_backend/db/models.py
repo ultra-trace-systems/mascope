@@ -3549,7 +3549,7 @@ class BatchPeakRun(Base):
         CheckConstraint(
             "action IN ('fold', 'rebuild', 'search_untargeted', 'import', "
             "'detect_series', 'read_co_variation', 'stamp_isotopologues', "
-            "'strip_isotopologues')",
+            "'strip_isotopologues', 'read_batch_checks')",
             name="action_valid",
         ),
         CheckConstraint(
@@ -3618,6 +3618,10 @@ class BatchPeakRunAnchor(Base):
     # (``batch_peaks.standing_merged_isotopologues_record``); NULL for none.
     merged_isotopologue_of: Mapped[Optional[dict]] = mapped_column(JSON)
     merged_isotopologues: Mapped[Optional[dict]] = mapped_column(JSON)
+    # The batch's isotope checks as the run left them: the facts the batch
+    # states of the anchor's reading, those whose sources still stood
+    # (``batch_peaks.standing_batch_checks_record``); NULL for none.
+    batch_checks: Mapped[Optional[dict]] = mapped_column(JSON)
     candidates: Mapped[Optional[list]] = mapped_column(JSON)
     members: Mapped[Optional[dict]] = mapped_column(JSON)
 

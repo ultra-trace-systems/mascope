@@ -672,6 +672,11 @@ class PeakAssignmentsResource(BaseResource):
                  ``co_variation``, read with
                  :meth:`~mascope_sdk.resources.batch_peaks.BatchPeaksResource.list`);
                  None otherwise, and absent from a server that predates it.
+                 ``batch_checks``: what the batch's *Read batch checks* run
+                 states of that batch peak (its ``halogen_lock``,
+                 ``label_twin`` and ``neutral_pair``, the ledger's
+                 ``batch_checks``), where the row reads it as that run did;
+                 None otherwise, and absent from a server that predates it.
                  Returns None if the response carries no record.
         :rtype: dict | None
         :raises AuthenticationError: If authentication fails.

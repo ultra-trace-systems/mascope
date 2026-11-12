@@ -77,6 +77,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     SERIES_KEY,
     mz_from_delta,
     resolve_candidate,
+    row_batch_checks,
     row_co_variation,
     standing_series_record,
 )
@@ -881,6 +882,7 @@ async def get_peak_assignment_detail(
                 )
             derived = member_detail(*found)
             derived["batch_co_variation"] = row_co_variation(derived, found[1])
+            derived["batch_checks"] = row_batch_checks(derived, found[1])
         else:
             derived = None
             assignment = await session.get(PeakAssignment, peak_assignment_id)
@@ -890,12 +892,11 @@ async def get_peak_assignment_detail(
                     f"'{sample.sample_item_name}'"
                 )
             record = assignment.to_dict()
-            record["batch_co_variation"] = row_co_variation(
-                record,
-                await _batch_peak_of(
-                    session, sample_item_id, record.get("sample_peak_id")
-                ),
+            anchor = await _batch_peak_of(
+                session, sample_item_id, record.get("sample_peak_id")
             )
+            record["batch_co_variation"] = row_co_variation(record, anchor)
+            record["batch_checks"] = row_batch_checks(record, anchor)
             run = await session.get(
                 PeakAssignmentRun, assignment.peak_assignment_run_id
             )

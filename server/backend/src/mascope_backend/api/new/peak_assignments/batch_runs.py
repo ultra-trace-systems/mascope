@@ -56,6 +56,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     manual_pin_of,
     merged_isotopologue_of_summary,
     stamped_isotopologue_of_summary,
+    standing_batch_checks_record,
     standing_co_variation_record,
     standing_diagnostic_isotopologues_record,
     standing_merged_isotopologues_record,
@@ -86,6 +87,7 @@ ACTION_SERIES = "detect_series"
 ACTION_CO_VARIATION = "read_co_variation"
 ACTION_ISOTOPOLOGUES = "stamp_isotopologues"
 ACTION_STRIP_ISOTOPOLOGUES = "strip_isotopologues"
+ACTION_BATCH_CHECKS = "read_batch_checks"
 ACTIONS = (
     ACTION_FOLD,
     ACTION_REBUILD,
@@ -95,6 +97,7 @@ ACTIONS = (
     ACTION_CO_VARIATION,
     ACTION_ISOTOPOLOGUES,
     ACTION_STRIP_ISOTOPOLOGUES,
+    ACTION_BATCH_CHECKS,
 )
 
 STATUS_RUNNING = "running"
@@ -199,6 +202,7 @@ def anchor_snapshot_row(run_id: str, anchor: Any, members: Iterable[Any]) -> dic
         "stamped_isotopologue_of": stamped_isotopologue_of_summary(anchor),
         "merged_isotopologue_of": merged_isotopologue_of_summary(anchor),
         "merged_isotopologues": standing_merged_isotopologues_record(anchor),
+        "batch_checks": standing_batch_checks_record(anchor),
         "candidates": list(anchor.candidates or []),
         "members": member_arrays(members),
     }
@@ -240,6 +244,7 @@ def snapshot_anchor_meta(row: Any, sample_batch_id: str) -> dict:
         "stamped_isotopologue_of": row.stamped_isotopologue_of,
         "merged_isotopologue_of": row.merged_isotopologue_of,
         "merged_isotopologues": row.merged_isotopologues,
+        "batch_checks": row.batch_checks,
         "reference_listing": consensus_listing(
             row.candidates,
             row.consensus_formula,
@@ -353,11 +358,12 @@ async def touch_ledger(session, sample_batch_id: str) -> None:
     """Stamp the batch's current run with the time its live ledger was last
     written. Called by every write to the live ledger - a fold, a consensus
     recompute, a curation, a search's, an import's or a series detection's
-    rows, a co-variation reading's or an isotopologue stamping's records, a
-    merged-isotopologue reading's strips, a continuity pass's grades - in the write's own transaction, under the
-    batch's fold lock, so the stamp commits with the write and never without
-    it. A ledger with no current run yet has nothing
-    to stamp: its first fold mints the run before it writes."""
+    rows, a co-variation reading's, an isotopologue stamping's or the isotope
+    checks' records, a merged-isotopologue reading's strips, a continuity
+    pass's grades - in the write's own transaction, under the batch's fold
+    lock, so the stamp commits with the write and never without it. A ledger
+    with no current run yet has nothing to stamp: its first fold mints the run
+    before it writes."""
     await session.execute(
         update(BatchPeakRun)
         .where(
@@ -625,6 +631,7 @@ async def snapshot_rows(
 
 __all__ = [
     "ACTIONS",
+    "ACTION_BATCH_CHECKS",
     "ACTION_CO_VARIATION",
     "ACTION_FOLD",
     "ACTION_ISOTOPOLOGUES",

@@ -192,7 +192,19 @@ class BatchPeaksResource(BaseResource):
                  peak's samples had read it as) and ``merged_isotopologues``
                  (on the batch peak that took such rows: its ``formula`` and
                  the ``lines`` it took); null where none, and absent from a
-                 server that predates them.
+                 server that predates them; ``batch_checks`` (what a *Read
+                 batch checks* run states of the consensus reading: a
+                 ``halogen_lock`` - the ``element`` whose 37Cl or 81Br line
+                 holds at the exact spacing, its ``batch_peak_id``, the
+                 ``share`` of samples holding it and the ``verdict``
+                 ``locked``, ``silicon``, ``not_locked`` or ``untestable`` -, a
+                 ``label_twin`` - a labelled ion's 14N twin, ``present``,
+                 ``absent`` or ``untestable``, with its ``batch_peak_id`` and
+                 ``excess`` -, and a ``neutral_pair`` - the uronium channel's
+                 partner, the co-variation ``r`` and ``established``,
+                 ``not_established`` or ``untestable`` -, each where it
+                 applies); display-only, no tier reads them; null where none,
+                 and absent from a server that predates them.
                  ``consensus_tier`` is always this server's: the engine's tier
                  stands beside it.
                  None when the batch has no ledger yet.
@@ -250,8 +262,12 @@ class BatchPeaksResource(BaseResource):
                  another batch peak, that batch peak and ``predicted`` (by the
                  stamping) or ``picker`` (the sample's own run had read it as
                  that peak's isotopologue); null otherwise, and absent from a
-                 server that predates them. No tier reads them. None when the
-                 batch has no ledger.
+                 server that predates them. No tier reads them. The anchor's
+                 batch checks close the row: ``halogen_lock`` and
+                 ``halogen_element``, ``label_twin``, ``neutral_pair`` and
+                 ``neutral_pair_r``, the verdicts :meth:`list` serves under
+                 ``batch_checks``; null where none, and absent from a server
+                 that predates them. None when the batch has no ledger.
         :rtype: pd.DataFrame | None
         """
         path = f"batch-peaks/batch/{sample_batch_id}/members"
