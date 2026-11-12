@@ -56,6 +56,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     resolution_adaptive_tol_ppm,
     standing_merged_isotopologue_of_record,
     standing_merged_isotopologues_record,
+    without_merged_lines,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_records import (
     _batch_peak_meta,
@@ -769,6 +770,25 @@ class TestTheRecords:
         )
         assert merged_isotopologues_record(parent) is not None
         assert standing_merged_isotopologues_record(parent) is None
+
+    def test_a_released_row_comes_off_its_parents_lines(self):
+        record = {
+            "formula": "C10H16O4",
+            "ionization_mechanism_id": MECH,
+            "lines": [{"batch_peak_id": "X"}, {"batch_peak_id": "Y"}],
+            "n_lines": 2,
+        }
+        kept = without_merged_lines(record, {"X"})
+        assert kept["lines"] == [{"batch_peak_id": "Y"}]
+        assert kept["n_lines"] == 1
+        assert kept["formula"] == "C10H16O4"
+        assert kept["ionization_mechanism_id"] == MECH
+        assert len(record["lines"]) == 2
+        assert without_merged_lines(record, {"Z"}) == record
+        assert without_merged_lines(record, {"X", "Y"}) is None
+        # An entry that is no line is no row's either, and stays.
+        junk = {**record, "lines": ["junk", {"batch_peak_id": "X"}], "n_lines": 2}
+        assert without_merged_lines(junk, {"X"})["lines"] == ["junk"]
 
 
 class TestTheRun:

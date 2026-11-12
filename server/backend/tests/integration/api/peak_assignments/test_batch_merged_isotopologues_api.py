@@ -21,7 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from mascope_backend.api.new.peak_assignments import (
     batch_merged_isotopologues,
@@ -662,10 +662,11 @@ async def test_a_hand_assignment_made_since_the_reading_holds_its_row(
 async def test_a_row_its_samples_read_again_as_a_compound_is_read_again(
     async_session_factory, strip_batch
 ):
-    """Folded again from rows that read the line as a compound of its own -
-    every sample but the in-app one, whose rows the strip rewrote - the row
-    is a compound of the ledger again and its record comes off; the next
-    reading strips it again, and its parent lists it once."""
+    """Folded again from rows that read the lines as compounds of their own -
+    every sample but the in-app one, whose rows the strip rewrote - the rows
+    are compounds of the ledger again and their records come off, and so does
+    their parent's, which no row folds under any more; the next reading strips
+    them again, and their parent lists each once."""
     batch, samples, ids = strip_batch, strip_batch["samples"], strip_batch["ids"]
     await run_batch_merged_isotopologues(batch["batch_id"])
     for i in range(N_SAMPLES):
@@ -684,9 +685,11 @@ async def test_a_row_its_samples_read_again_as_a_compound_is_read_again(
             is not None
         )
     anchors = await _anchors(async_session_factory, batch)
-    assert anchors["x"].isotopologue_of is None
-    assert _stripped(anchors["x"]) is None
-    assert len(_lines(anchors["p"])["lines"]) == 2
+    for key in ("x", "o"):
+        assert anchors[key].isotopologue_of is None
+        assert _stripped(anchors[key]) is None
+    # The parent's mark and the "Stripped rows" filter read this record.
+    assert "merged_isotopologues" not in anchors["p"].provenance
 
     again = await run_batch_merged_isotopologues(batch["batch_id"])
     assert again["stripped"] == 2
@@ -696,6 +699,121 @@ async def test_a_row_its_samples_read_again_as_a_compound_is_read_again(
     assert sorted(entry["batch_peak_id"] for entry in lines) == sorted(
         [ids["x"], ids["o"]]
     )
+
+
+async def test_a_row_released_from_its_parent_leaves_the_parents_lines(
+    async_session_factory, strip_batch
+):
+    """The samples folded without a run are folded again, their runs reading
+    the 13C row as a compound of its own and the 18O row as the parent's
+    line: the 13C row is released and comes off the parent's list, though
+    the parent's own reading stands, and the 18O row stays on it."""
+    batch, samples, ids = strip_batch, strip_batch["samples"], strip_batch["ids"]
+    await run_batch_merged_isotopologues(batch["batch_id"])
+    for i in range(N_SAMPLES):
+        name = f"S{i:02d}"
+        if name in (RUN_SAMPLE, IMPORT_SAMPLE):
+            continue
+        rows = {row["sample_peak_id"]: row for row in _rows(samples[name], i)}
+        rows["o"].update(
+            role="iso_child",
+            assigned_formula="C10H16O4",
+            isotope_label="18O",
+            owner_peak_assignment_id=rows["p"]["peak_assignment_id"],
+        )
+        assert (
+            await fold_sample_into_batch_peaks(
+                samples[name],
+                rows=[SimpleNamespace(**r) for r in rows.values()],
+                persisted=False,
+            )
+            is not None
+        )
+    anchors = await _anchors(async_session_factory, batch)
+    assert anchors["x"].isotopologue_of is None
+    assert _stripped(anchors["x"]) is None
+    assert anchors["o"].isotopologue_of == ids["p"]
+    assert _stripped(anchors["o"])["batch_peak_id"] == ids["p"]
+    parent = _lines(anchors["p"])
+    assert [entry["batch_peak_id"] for entry in parent["lines"]] == [ids["o"]]
+    assert parent["n_lines"] == 1
+    assert parent["formula"] == "C10H16O4"
+
+
+async def _drop(session_factory, batch_peak_id):
+    """Take every member off a batch peak, as a re-fold that leaves it does."""
+    async with session_factory() as session:
+        await session.execute(
+            delete(BatchPeakOccurrence).where(
+                BatchPeakOccurrence.batch_peak_id == batch_peak_id
+            )
+        )
+        await session.commit()
+
+
+async def test_a_row_that_goes_leaves_the_parents_lines(
+    async_session_factory, strip_batch
+):
+    """Only the row is recomputed, and it goes: the parent, which the
+    recompute does not reach, drops it from its list all the same."""
+    batch, ids = strip_batch, strip_batch["ids"]
+    await run_batch_merged_isotopologues(batch["batch_id"])
+    before = (await _anchors(async_session_factory, batch))["p"]
+    await _drop(async_session_factory, ids["o"])
+    await recompute_batch_consensus(batch["batch_id"], {ids["o"]})
+    async with async_session_factory() as session:
+        assert await session.get(BatchPeak, ids["o"]) is None
+        parent = await session.get(BatchPeak, ids["p"])
+    assert [entry["batch_peak_id"] for entry in _lines(parent)["lines"]] == [ids["x"]]
+    assert _lines(parent)["n_lines"] == 1
+    assert parent.batch_peak_utc_modified > before.batch_peak_utc_modified
+
+    # The other goes too: the parent, which takes no line any more, carries
+    # no record at all.
+    await _drop(async_session_factory, ids["x"])
+    await recompute_batch_consensus(batch["batch_id"], {ids["x"]})
+    async with async_session_factory() as session:
+        parent = await session.get(BatchPeak, ids["p"])
+    assert "merged_isotopologues" not in parent.provenance
+
+
+@pytest.mark.parametrize(
+    "listed",
+    [
+        pytest.param(
+            lambda record, gone: {
+                **record,
+                "lines": [e for e in record["lines"] if e["batch_peak_id"] != gone],
+                "n_lines": len(record["lines"]) - 1,
+            },
+            id="lists-other-rows",
+        ),
+        pytest.param(lambda record, gone: None, id="no-record"),
+    ],
+)
+async def test_a_parent_that_no_longer_lists_a_row_is_left_as_it_is(
+    async_session_factory, strip_batch, listed
+):
+    """A row goes whose parent lists it no more, or lists nothing: the
+    parent is left as it is."""
+    batch, ids = strip_batch, strip_batch["ids"]
+    await run_batch_merged_isotopologues(batch["batch_id"])
+    async with async_session_factory() as session:
+        parent = await session.get(BatchPeak, ids["p"])
+        provenance = dict(parent.provenance)
+        record = listed(provenance.pop("merged_isotopologues"), ids["o"])
+        if record is not None:
+            provenance["merged_isotopologues"] = record
+        parent.provenance = provenance
+        await session.commit()
+    before = (await _anchors(async_session_factory, batch))["p"]
+    await _drop(async_session_factory, ids["o"])
+    await recompute_batch_consensus(batch["batch_id"], {ids["o"]})
+    async with async_session_factory() as session:
+        assert await session.get(BatchPeak, ids["o"]) is None
+        after = await session.get(BatchPeak, ids["p"])
+    assert after.batch_peak_utc_modified == before.batch_peak_utc_modified
+    assert after.provenance == before.provenance
 
 
 async def test_a_13c_line_folded_since_the_reading_holds_its_row(
