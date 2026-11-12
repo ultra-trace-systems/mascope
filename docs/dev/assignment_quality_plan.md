@@ -95,6 +95,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 3.7 - stage 3 gate, engine 0.6.0 | - |  | planned; read against the literature and chemical reasoning, not the reference (decision 27) |
 | 4.1 - series detection on the batch ledger | - |  | built: *Detect series* walks CH2, O, H2O, CO, CO2, C2H2O and, from a peak carrying their element, C2H6OSi and CF2 up to three steps from the batch's assigned peaks onto its unassigned and candidate ones within the search's window, commits a unit at 12 proposals and ten times its six decoys' mean (re-derived on the testbed: 3x commits every TOF family), measures each proposal through the propagation chain, records the series with `has_anchor` on the batch peak, and a run counts it as a second observation; tiering rule set 12; MAS-61 |
 | 4.2 - time-series coherence | - |  | built, the co-variation reading (decision 35): *Read co-variation* reads every neutral the batch sees through two channels, per mode and instrument type, as Pearson r of the log traces, reagent-normalised, the common mode (each spectrum's median of the persistent traces) removed; co-varying at r >= 0.6, untestable under 10 shared spectra or a residual spread under 0.02 in log10 (both measured against decoy pairs on the testbed's 20 batch ledgers); recorded on the batch peak, shown in the ledger and the inspector, no tier moves. The nine riders are steps of their own (MAS-777); MAS-62 |
+| 4.2c - predicted diagnostic isotopologues in the batch fold | - |  | built: *Stamp isotopologues* predicts the 15N, 18O, 34S, 29Si, 30Si, 37Cl and 81Br lines of every committed monoisotopic batch peak at its trace centre (a labelled atom is the label's; a line under half the peak it falls in at the anchor's resolving power is unresolved), finds the batch peak there, and in each sample holding both reads the height ratio inside that sample's fitted envelope tolerance (two widths; a sample whose two widths reach past half the ratio cannot tell); a line holding in 80 % of three or more such samples is stamped in each, `predicted` or `picker`; recorded on both batch peaks and the member rows, no tier moves; MAS-824 |
 | 4.3 - calibration from verdicts, per profile | - |  | planned |
 | 4.4 - gate automation | - |  | moved to milestone 6 as step 6.4, the gate card as code (MAS-64); see `assignment_bench.md`. Built: `compare_runs.py --card` prints G1 to G14, the mass error, the reason coverage and the decoy arms per set and pooled, each metric a function in `metrics.py`; `--gate` marks them against the stage targets of `thresholds.json` with a pass-or-fail line, `--baseline` lists the readings that moved, and the scrub refuses a card that holds a name; MAS-64 |
 | 4.5 - profiles as versioned rows, routing by detection | - |  | planned |
@@ -1378,12 +1379,12 @@ who edits chemistry and stays last.
     isotopologue, a channel or a series corroborates it: persistence
     proves the ion is real, and at a few counts nothing constrains which
     formula it got.
-  - **Predicted diagnostic satellites in the batch fold** (peaky #45). The
+  - **Predicted diagnostic isotopologues in the batch fold** (peaky #45). The
     15N, 18O, 34S, 29Si, 30Si, 37Cl and 81Br lines of every committed M0
     sit below the picker's edge in most files and stand only where a plume
     lifts them; the fold predicts them at the parent's trace centre and
     stamps a line only where the height ratio holds in the same sample
-    and across the track, since a true satellite passes in nearly every
+    and across the track, since a true isotope line passes in nearly every
     judged sample and an independent compound in few.
   - **The consensus rule, stated against peaky's.** peaky's merge is a
     two-stage file-count vote - which ion, then which label - with a
@@ -1399,7 +1400,7 @@ who edits chemistry and stays last.
   peaky's pass-7 skips.
 - **Size.** M. Depends on 2.3 and 2.4. Its nine riders are steps of their
   own since decision MAS-777 (2026-11-10), 4.2b to 4.2j: persistence as
-  admission, the predicted satellites in the fold, the consensus
+  admission, the predicted isotopologues in the fold, the consensus
   measurement, the flat series, the merged isotopologue rows, the batch
   isotope checks as facts, known species pooled, the merge window from
   the batch's scatter, the water ladder (Linear MAS-823 to MAS-831, each
@@ -1452,7 +1453,8 @@ who edits chemistry and stays last.
     of cases on the raw log traces and in 15 % on the residuals. The largest
     batch (8,368 batch peaks, 546 spectra) reads in 0.3 s.
   - **Not done here.** The four riders of the 0.8 line and the five of the
-    0.10 line: none is built. The plan owner decided on 2026-11-10
+    0.10 line: none is built here (the second, predicted isotopologues, is
+    step 4.2c below). The plan owner decided on 2026-11-10
     (MAS-777) that each becomes a step of its own, measured on its own
     pass, rather than a part of this one. The
     Verify line's comparison with the reference's pass-7 skips and its
@@ -1461,6 +1463,86 @@ who edits chemistry and stays last.
     be read on the testbed's copy: its batch ledgers hold no radical anion
     beside another channel of the same neutral (33 radical cations do, 21
     co-varying, none anti-correlated).
+
+- **As built (the second rider, predicted diagnostic isotopologues; step
+  4.2c, MAS-824).** The pure half is
+  `mascope_tools.composition.diagnostic_isotopologues`:
+  `predict_diagnostic_isotopologues` predicts an ion's envelope to 1e-5 of
+  its brightest line and reads off each diagnostic isotopologue (one heavy
+  atom, the rest light; its ratio to the monoisotopic line is n times the
+  heavy-to-light abundance ratio). A labelled reagent's atom (`^N`) is the
+  label's, so it adds no 15N isotope line and the offsets count from the
+  labelled line. At the anchor's resolving power (read back off its frozen
+  tolerance) the lines one peak cannot separate merge as the fit score
+  merges them; an isotope line under half of the peak it falls in is
+  unresolved and not judged, and a resolved one is read at that peak's
+  centre and share. `judge_ratio` reads one sample's ratio as
+  `score_pattern_v2` reads a share: the band the run's fitted tolerance
+  admits at the line's expected S/N, the distance outside it in the line's
+  width (both peaks' noise, the tolerance's floor, the score's 1e-3),
+  holding within two widths; a sample whose two widths at the predicted
+  ratio reach past half of it is uninformative and left out. `read_track`
+  stamps an isotope line where the ratio holds in 80 % of three or more
+  informative samples. The batch half is `batch_isotopologues.py`: *Stamp
+  isotopologues* (`POST /api/batch-peaks/batch/{id}/stamp-isotopologues`), a
+  batch run (action `stamp_isotopologues`), predicts at each committed
+  monoisotopic, unclaimed batch peak's trace centre (its members' median
+  m/z), finds the batch peak whose own trace centre is within its frozen
+  tolerance, judges every sample holding both with that sample's latest
+  in-app run tolerance (`envelope_fit.recorded_envelope_tolerances`) and
+  both peaks' S/N off the sample's peak list, and stamps the line in each
+  sample where it held: `picker` where the sample's own run read the member
+  as the parent's isotopologue, `predicted` otherwise. A line two parents
+  stamp goes to the larger share holding. The parent carries
+  `provenance.diagnostic_isotopologues` (each isotope line predicted, found,
+  judged, holding, its verdict and whether it was stamped) and the line
+  `provenance.stamped_isotopologue_of` (its parent, the track's reading, the
+  per-sample stamps); the ledger and a run's snapshot serve both
+  (`batch_peak_run_anchor.diagnostic_isotopologues` and
+  `.stamped_isotopologue_of`, one migration), the member rows
+  `stamped_isotopologue_of` and `stamp_source`. The consensus keeps a
+  parent's record while it names that reading, and a parent whose reading
+  moves, or that goes, takes the stamps off its lines. The ledger folds a
+  stamped line under its parent with its isotope beside the offset. No tier,
+  reason, member or per-sample run moves.
+  - **The measurement behind the thresholds**, on the testbed's 20 batch
+    ledgers (2026-11-11). Their runs predate 3.5b, so each file was read at
+    a 3.5b response curve fitted on the batch's own 13C lines (2,312
+    Orbitrap files at their own level, 1,879 pooled, 20 TOF files at a
+    centre and width). Each predicted isotope line was read beside a decoy: the
+    same parent, ratio and offset taken below the parent, where no line of
+    its envelope is. The share of tracks stamped, by informative samples:
+
+    | class | 3-4 samples | 5-9 | 10 or more |
+    |---|---|---|---|
+    | isotope lines the files' runs had found | 88 % of 57 | 88 % of 172 | 78 % of 64 |
+    | other lines at an isotope line's mass | 3 % of 395 | 18 % of 162 | 11 % of 652 |
+    | decoys | 0.9 % of 437 | 6.7 % of 210 | 0.5 % of 581 |
+
+    The decoys of the middle band are bromine's but one: an 81Br line is as
+    tall as its parent, so the mirror of a real 79Br/81Br pair looks like a
+    pair. Without the informative rule, decoys over five to nine samples
+    were stamped in 53 % of cases (the replicate-like gate sets hold any
+    ratio constant, and a dim line's width admits any peak of its size);
+    at today's default tolerance, isotope lines the runs had found were stamped
+    in 39 % of tracks over ten samples or more, the Orbitrap reading a dim
+    line low. Over all 20 ledgers: 36,638 isotope lines predicted, 20,625
+    resolved, 7,245 at a batch peak, 366 stamped (31,426 sample stamps,
+    13,552 of them predicted), 1,136 not, 5,743 untestable; 42 stamped lines
+    commit a formula of their own (7 assigned, 29 candidate, 6 below
+    assignability), the facts 4.2f and 4.2g read. A second null, the
+    one-atom line of an element the formula lacks, is stamped in 3 to 7 %
+    of tracks, and at the Cl and Br offsets in 14 to 18 % of long tracks:
+    real halogen lines under halogen-free formulas, which 4.2g's halogen
+    lock reads, not a false-stamp rate.
+  - **Verify.** On the bromide set D (its own six-sample batch): 122
+    assigned monoisotopic batch peaks predict an 81Br isotope line, 120 are
+    found at a batch peak, 71 are stamped (median track share 1.0), 4 do
+    not hold and 45 are untestable. On the labelled-nitrate set C, 95 of
+    356 predictions are on labelled ions, and each of the 20 15N ones is
+    predicted from the natural nitrogen alone. G6 and G8 are per-sample run
+    metrics and do not move; no tier moves. The planner's pass reads the
+    stamps on the current gate runs after the merge.
 
 ### 4.3 Calibration from verdicts, per profile
 
@@ -2735,7 +2817,7 @@ fix; and the per-range publish above.
     unreleased library, and it is rebased on main at 2.7a and at the
     release. peaky's isoprene list is lifted in 2.5b, its mass-dependent
     centre becomes step 2.2b, its persistence admission, predicted
-    satellites and vote rule are named in 4.2, and its two new profiles in
+    isotopologues and vote rule are named in 4.2, and its two new profiles in
     3.1 and 4.5. *Refreshed 2026-09-17 by step 2.7a: the branch is `26e0ff3`, the
     twelve commits and one that re-pins the library to this epic's head.*
 

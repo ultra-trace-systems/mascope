@@ -74,6 +74,11 @@ describe('BatchPeakRunSelect', () => {
     expect(wrapper.findAll('.option')[0].text()).toBe('#4 · Co-variation reading · current')
   })
 
+  it('names an isotopologue stamping', () => {
+    const wrapper = mountSelect([run('r4', 'stamp_isotopologues', { current: true }), ...RUNS])
+    expect(wrapper.findAll('.option')[0].text()).toBe('#4 · Isotopologue stamping · current')
+  })
+
   it('marks a running run as such', () => {
     const wrapper = mountSelect([run('r4', 'rebuild', { status: 'running' }), ...RUNS])
     expect(wrapper.findAll('.option')[0].text()).toBe('#4 · Rebuild · running…')

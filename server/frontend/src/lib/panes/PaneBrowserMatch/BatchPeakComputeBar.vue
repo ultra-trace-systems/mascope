@@ -95,7 +95,8 @@ async function launchSearch() {
           compute.blockedReason !== null ||
           compute.computing ||
           compute.detecting ||
-          compute.reading
+          compute.reading ||
+          compute.stamping
         "
         @click="searchVisible = true"
         :pt="
@@ -128,7 +129,8 @@ async function launchSearch() {
           compute.blockedReason !== null ||
           compute.computing ||
           compute.searching ||
-          compute.reading
+          compute.reading ||
+          compute.stamping
         "
         @click="compute.detectSeries()"
         :pt="
@@ -163,7 +165,8 @@ async function launchSearch() {
           compute.blockedReason !== null ||
           compute.computing ||
           compute.searching ||
-          compute.detecting
+          compute.detecting ||
+          compute.stamping
         "
         @click="compute.readCoVariation()"
         :pt="
@@ -178,6 +181,41 @@ async function launchSearch() {
             in fewer than ten spectra, or with a channel that hardly moves,
             cannot be read. The reading shows in the Co-variation column and
             in the peak inspector. It moves no tier.
+            </p>
+          `)
+        "
+      />
+    </span>
+    <!-- The batch's predicted diagnostic isotopologues: read off the ledger as
+         it stands, with no parameters, and recorded only. Held while the
+         others rewrite or read the ledger. -->
+    <span v-tooltip.left="compute.stampTooltip">
+      <Button
+        label="Stamp isotopologues"
+        icon="pi ph ph-stamp"
+        size="small"
+        severity="secondary"
+        :loading="compute.stamping"
+        :disabled="
+          compute.blockedReason !== null ||
+          compute.computing ||
+          compute.searching ||
+          compute.detecting ||
+          compute.reading
+        "
+        @click="compute.stampIsotopologues()"
+        :pt="
+          app.ui.help.left(`
+            <h1>Stamp Isotopologues</h1>
+            <p>
+            For every batch peak the batch commits a formula to, predicts its
+            15N, 18O, 34S, 29Si, 30Si, 37Cl and 81Br lines, looks for the batch
+            peak at each one's mass, and in every sample that holds both reads
+            the line's height against the share the formula predicts, inside
+            the tolerance that sample's run fitted. A line whose height holds in
+            at least eight of every ten samples that can tell, over three or
+            more, is stamped as the peak's isotopologue in each of them, and
+            shows under its main peak with its isotope. It moves no tier.
             </p>
           `)
         "

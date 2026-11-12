@@ -1463,6 +1463,79 @@ It runs as a batch run, whose summary counts each verdict per ionization mode an
 instrument type and names the thresholds; it changes no tier, no member and no
 per-sample run.
 
+### Stamping isotopologues
+
+A compound's heavier isotope lines say which elements it holds and how many. The 15N,
+18O, 34S, 29Si, 30Si, 37Cl and 81Br lines are the diagnostic ones: each is one atom of
+the element in its heavier isotope, at a mass defect no carbon line shares, at a height
+that grows with the element's count [Kind and Fiehn 2007][kf07]. Most are dim. One
+nitrogen's 15N line is 0.37 % of its parent, one oxygen's 18O line 0.2 %. In most files
+of a batch they sit below the peak picker's edge and stand only where a plume lifts the
+parent, so a sample's own run seldom reads them as the compound's lines. The batch still
+holds them: wherever one stood, it folded into a batch peak, unassigned or read as some
+other compound. *Stamp isotopologues*, beside *Read co-variation*, reads them there:
+
+- **Predicted.** For every batch peak whose consensus commits a formula, the ion's
+  envelope is predicted to its faintest diagnostic line [Łącki et al. 2017][lac17], with
+  the isotope masses and abundances of the IUPAC tables [Meija et al. 2016][mei16]. Each
+  diagnostic line sits its predicted offset above the parent's m/z: the median of the
+  parent's members across the batch. A labelled reagent's atom, the 15N of a 15N-nitrate
+  adduct, is the label's: it adds no 15N line, and the offsets are measured from the
+  labelled line.
+- **Resolved.** A line that a peak of the file's width cannot show on its own is not
+  read. On a TOF the 15N line sits inside the 13C peak. On an Orbitrap at a low resolution
+  the 18O line of a large ion merges with its 13C2 line. A line is read on its own where
+  it carries at least half of the peak it falls in, at that peak's height.
+- **Found.** The batch peak whose members sit within its own m/z tolerance of the
+  predicted mass is the line.
+- **Judged in each sample.** In every sample that holds both peaks, the line's height
+  over its parent's is read against the predicted ratio, the way the fit score reads an
+  isotope line: inside the band the sample's run fitted for its envelope (see *The fit
+  score*), the two peaks' noise read off the sample's peak list. The ratio holds within
+  two of the line's widths. A sample where two widths reach past half the predicted ratio
+  cannot tell the line from another peak, and is left out: a 15N line read at a low
+  signal-to-noise holds anything from nothing to twice its height.
+- **Never told apart under 0.4 %.** A line's width never falls under 0.1 % of its
+  parent's height, the fit score's floor, however high the signal. So no sample can
+  tell a line under 0.4 % of its parent, and it always ends *untestable*: one
+  nitrogen's 15N line and one oxygen's 18O line among them. A 15N or 18O line is read
+  only where the formula holds two or more of its atoms.
+- **Stamped across the batch.** A line whose ratio holds in at least eight of every ten
+  samples that can tell, over three or more such samples, is stamped as the parent's
+  isotope line, in each sample where it held. Fewer than three is *untestable*.
+
+The numbers are measured. On twenty batches of real data, each predicted line was read
+beside a decoy: the same parent and ratio, but the mass below the parent, where no line of
+its envelope is. Of the lines the samples' own runs had already found, 78 to 88 % were
+stamped. Of the decoys, under 1 % were, over three or four samples or ten and more. The
+exception is bromine: its line is as tall as its parent, so a real 79Br and 81Br pair can
+look like a decoy pair. Counting every sample, the samples that cannot tell included,
+half the decoys on six-sample sets would pass. That is why those samples are left out.
+
+A stamp is a recorded fact, not evidence any tier reads yet; the later batch isotope
+checks count it. A line two compounds both predict goes to the one whose ratio holds in
+the larger share of its samples, then in more of them. The parent's row in the
+*Batch peaks* ledger carries a stamp mark where the batch shows one of its isotope
+lines. On hover it lists every isotope line: stamped, found and not holding its ratio,
+predicted with no batch peak at its mass, or not separated from another line. A stamped
+line folds under its parent like an isotopologue, with the isotope beside its offset
+(**M+2 81Br**). The tag is outlined dashed where the stamping predicted the line, and
+solid where every sample's own run had already read it as the parent's isotopologue. A
+stamped line keeps its own tier and formula.
+
+The member rows of the ledger's CSV export and of the SDK's `batch_peaks.members` say,
+per sample, which parent a member was stamped for (`stamped_isotopologue_of`) and where
+the stamp came from (`stamp_source`: `predicted` or `picker`). The ledger route and
+`batch_peaks.list` carry the parent's record as `diagnostic_isotopologues` and the
+line's as `stamped_isotopologue_of`. A parent keeps its record for as long as its
+consensus names the formula and ionization the isotope lines were predicted for. A vote,
+a curation or a rebuild that moves the parent's reading takes its stamps off its lines,
+and the next *Stamp isotopologues* replaces every stamp. A parent whose reading moves
+while the stamping runs gets no record, and its lines no stamp. It runs as a batch run,
+whose summary counts the isotope lines predicted, found and stamped per ionization mode
+and instrument type, the parents that moved while it ran, and names the thresholds. It
+changes no tier, no member and no per-sample run.
+
 The whole ledger leaves the app as a CSV from the view menu behind the cog: *Export
 ledger (CSV)* writes one row per member peak - every sample's reading of every batch
 peak, with the batch peak's consensus beside it - and the browser downloads the file
@@ -1518,7 +1591,8 @@ underneath. The link is derived rather than given — a
 batch peak is an m/z anchor and carries no compound of its own — so a peak is folded
 only when its per-sample assignments agree, across most of the samples that assigned
 it, that it belongs to another anchor's compound. One that is an isotopologue in one
-sample and a species in its own right in the rest stays a row of its own.
+sample and a species in its own right in the rest stays a row of its own, unless a
+*Stamp isotopologues* run stamped it as one of the compound's diagnostic lines (above).
 
 The *Intensity* column is the highest intensity the species reaches in any sample of
 the batch, in the instrument's own unit (summed peak heights on an Orbitrap, summed
@@ -1698,6 +1772,12 @@ engine found, and leave the rest of the table alone.
   Qian, K. *Kendrick mass defect spectrum: a compact visual analysis for
   ultrahigh-resolution broadband mass spectra.* Anal. Chem. 2001, 73(19):4676–4681.
   [link](https://doi.org/10.1021/ac010560w)
+- <a id="lac17"></a>Łącki, M. K.; Startek, M.; Valkenborg, D.; Gambin, A. *IsoSpec:
+  hyperfast fine structure calculator.* Anal. Chem. 2017, 89(6):3272–3277.
+  [link](https://doi.org/10.1021/acs.analchem.6b01459)
+- <a id="mei16"></a>Meija, J. et al. *Isotopic compositions of the elements 2013 (IUPAC
+  Technical Report).* Pure Appl. Chem. 2016, 88(3):293–306.
+  [link](https://doi.org/10.1515/pac-2015-0503)
 - <a id="pea95"></a>Pearson, K. *Note on regression and inheritance in the case of two
   parents.* Proc. R. Soc. Lond. 1895, 58:240–242.
   [link](https://doi.org/10.1098/rspl.1895.0041)
@@ -2029,3 +2109,5 @@ engine found, and leave the rest of the table alone.
 [spe04]: #spe04
 [the50]: #the50
 [sen68]: #sen68
+[lac17]: #lac17
+[mei16]: #mei16
