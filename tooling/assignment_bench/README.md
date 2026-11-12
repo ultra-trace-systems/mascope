@@ -107,16 +107,20 @@ testbed env cannot send it elsewhere. `--jobs N` runs N samples at once
 (default 2), and `--set NAME` limits a call to the sets named.
 
 **What is cached.** A published sample is kept by pin, set, sample and
-`mascope-tools` version. A second call at the same pin publishes nothing
-and starts nothing. A new pin, or a reinstall that resolved another
-`mascope-tools`, publishes every set again. The call then lists the sets
-whose reference changed since the previous pin, sample by sample: the
-peak, role, formula, adduct and tier of each ledger row, compared as a
-digest. That list is the first reading of a peaky release's boundary
-review (step 5.1). A sample that failed is named, kept with its error,
-and run again by the next call. A publish that broke off resumes: its
-import id is derived from the pin, the library, the sample and the
-ledger.
+`mascope-tools` version, and by the profile and window it ran with. A
+second call at the same pin publishes nothing and starts nothing. A set
+whose profile or window the manifest changed (`init` records both) runs
+again. A new pin, or a reinstall that resolved another `mascope-tools`,
+starts a new reference block and publishes every set again, also when it
+goes back to an earlier pin. The call then lists the sets whose reference
+changed since the previous pin, sample by sample: the peak, role,
+formula, adduct and tier of each ledger row, compared as a digest. A set
+with no sample published at both pins is listed as not compared. That
+list is the first reading of a peaky release's boundary review (step
+5.1). A sample that failed is named, kept with its error, and run again
+by the next call. A publish that broke off resumes: its import id is
+derived from the block, the set, the sample, the profile, the window and
+the ledger.
 
 **What is reported.** A set whose profile the pinned peaky does not know
 is named as not run, in the output and by `status`. So is a sample `init`
