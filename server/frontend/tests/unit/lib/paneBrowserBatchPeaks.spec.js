@@ -932,6 +932,164 @@ describe('PaneBrowserBatchPeaks series mark', () => {
   })
 })
 
+describe('PaneBrowserBatchPeaks isotopologue stamps', () => {
+  const stamp = (parent, extra = {}) => ({
+    batch_peak_id: parent,
+    formula: 'C2H4O2',
+    label: '81Br',
+    ratio: 0.9728,
+    judged: 6,
+    holds: 6,
+    share: 1,
+    n_predicted: 4,
+    n_picker: 2,
+    ...extra
+  })
+  const isotopologues = (extra = {}) => ({
+    formula: 'C2H4O2',
+    n_predicted: 2,
+    n_found: 1,
+    n_stamped: 1,
+    predicted: [
+      { label: '81Br', stamped: true, judged: 6, holds: 6, share: 1, verdict: 'stamped' },
+      { label: '18O', stamped: false, reason: 'not_found', verdict: 'untestable' }
+    ],
+    ...extra
+  })
+  const PARENT = peak('bp-p', 'assigned', 0.95, {
+    mz: 138.94,
+    consensus_formula: 'C2H4O2',
+    diagnostic_isotopologues: isotopologues()
+  })
+  // A peak every sample assigned a formula of its own, stamped as the
+  // parent's 81Br line: it folds under the parent and keeps its tier.
+  const LINE = peak('bp-line', 'assigned', 0.8, {
+    mz: 140.938,
+    consensus_formula: 'C5H8O3',
+    stamped_isotopologue_of: stamp('bp-p')
+  })
+  const OTHER = peak('bp-other', 'candidate', 0.5, { mz: 300.2, consensus_formula: 'C12H18O5' })
+  const ids = () => wrapper.vm.rows.map((row) => row.batch_peak_id)
+
+  it('folds a stamped line under its parent, as an isotopologue folds', async () => {
+    wrapper = await mountPane({ peaks: [LINE, PARENT, OTHER] })
+    expect(ids()).toEqual(['bp-p', 'bp-other'])
+    expect(wrapper.vm.isotopologueCount(PARENT)).toBe(1)
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+    expect(ids()).toEqual(['bp-p', 'bp-line', 'bp-other'])
+    const line = wrapper.vm.rows[1]
+    expect(wrapper.vm.childLabel(line)).toBe('M+2')
+    expect(line.consensus_tier).toBe('assigned')
+  })
+
+  it("lets the members' own family link win over a stamp", async () => {
+    const ELSEWHERE = peak('bp-m0', 'assigned', 0.9, { mz: 139.5, consensus_formula: 'C9H8' })
+    const line = { ...LINE, isotopologue_of: 'bp-m0' }
+    wrapper = await mountPane({ peaks: [line, PARENT, ELSEWHERE] })
+    expect(wrapper.vm.isotopologueCount(ELSEWHERE)).toBe(1)
+    expect(wrapper.vm.isotopologueCount(PARENT)).toBe(0)
+    const row = wrapper.vm.decorated.find((r) => r.batch_peak_id === 'bp-line')
+    expect(wrapper.vm.stampOf(row)).toBeNull()
+  })
+
+  it('names the isotope of a line stamped under a parent that is itself a line', async () => {
+    const ROOT = peak('bp-root', 'assigned', 0.95, { mz: 136.94, consensus_formula: 'C9H8' })
+    const nested = { ...PARENT, isotopologue_of: 'bp-root' }
+    wrapper = await mountPane({ peaks: [ROOT, nested, LINE] })
+    const row = wrapper.vm.decorated.find((r) => r.batch_peak_id === 'bp-line')
+    expect(row.parentId).toBe('bp-root')
+    expect(wrapper.vm.stampOf(row)).toEqual(LINE.stamped_isotopologue_of)
+  })
+
+  it('walks a family up through a stamped line to its root', async () => {
+    // The 13C line of a stamped line folds under the stamped line's parent.
+    const ROOT = peak('bp-root', 'assigned', 0.95, { mz: 136.94, consensus_formula: 'C9H8' })
+    const middle = { ...PARENT, stamped_isotopologue_of: stamp('bp-root') }
+    const C13 = peak('bp-c13', 'assigned', 0.7, { mz: 139.94, isotopologue_of: 'bp-p' })
+    wrapper = await mountPane({ peaks: [ROOT, middle, C13] })
+    const row = wrapper.vm.decorated.find((r) => r.batch_peak_id === 'bp-c13')
+    expect(row.parentId).toBe('bp-root')
+    expect(wrapper.vm.isotopologueCount(ROOT)).toBe(2)
+  })
+
+  // Renders the formula cells through a column stub that hands each its row.
+  async function formulaCells(peaks) {
+    const tableRows = ref([])
+    app = makeApp({ peaks })
+    localStorage.clear()
+    setActivePinia(createPinia())
+    wrapper = mount(PaneBrowserBatchPeaks, {
+      global: {
+        stubs: {
+          ...GLOBAL_STUBS,
+          DataTable: {
+            ...DataTableStub,
+            watch: {
+              value: { handler: (value) => (tableRows.value = value), immediate: true }
+            }
+          },
+          Column: {
+            ...ColumnStub,
+            setup: () => ({ rows: tableRows }),
+            template:
+              '<div class="column-stub" :data-field="field">' +
+              '<template v-for="(row, i) in rows" :key="i">' +
+              '<div class="stub-cell" :data-row="row.batch_peak_id">' +
+              '<slot name="body" :data="row" /></div></template></div>'
+          }
+        },
+        directives: { tooltip: {}, help: {} }
+      }
+    })
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+    const column = wrapper
+      .findAll('.column-stub')
+      .find((col) => col.attributes('data-field') === 'consensus_formula')
+    return Object.fromEntries(
+      column.findAll('.stub-cell').map((cell) => [cell.attributes('data-row'), cell])
+    )
+  }
+
+  it('tags an unfolded stamped line with its isotope, dashed where the stamping predicted it', async () => {
+    const PICKED = peak('bp-picked', 'assigned', 0.8, {
+      mz: 140.9,
+      isotopologue_of: 'bp-p',
+      stamped_isotopologue_of: stamp('bp-p', { label: '37Cl', n_predicted: 0, n_picker: 6 })
+    })
+    const cells = await formulaCells([PARENT, LINE, PICKED, OTHER])
+    const tag = cells['bp-line'].find('[data-testid="stamp-tag"]')
+    expect(tag.text()).toBe('81Br')
+    expect(tag.classes()).toContain('predicted')
+    const picked = cells['bp-picked'].find('[data-testid="stamp-tag"]')
+    expect(picked.text()).toBe('37Cl')
+    expect(picked.classes()).not.toContain('predicted')
+    expect(cells['bp-other'].find('[data-testid="stamp-tag"]').exists()).toBe(false)
+  })
+
+  it('marks a parent the batch shows an isotopologue of, coloured once one is stamped', async () => {
+    const FOUND = peak('bp-found', 'assigned', 0.9, {
+      mz: 250.1,
+      diagnostic_isotopologues: isotopologues({ n_found: 1, n_stamped: 0 })
+    })
+    const NONE = peak('bp-none', 'assigned', 0.9, {
+      mz: 260.1,
+      diagnostic_isotopologues: isotopologues({ n_found: 0, n_stamped: 0 })
+    })
+    const cells = await formulaCells([PARENT, LINE, FOUND, NONE, OTHER])
+    const mark = cells['bp-p'].find('[data-testid="isotopologues-mark"]')
+    expect(mark.attributes('aria-label')).toBe('1 of 2 isotope lines stamped')
+    expect(mark.classes()).toContain('stamped')
+    const found = cells['bp-found'].find('[data-testid="isotopologues-mark"]')
+    expect(found.exists()).toBe(true)
+    expect(found.classes()).not.toContain('stamped')
+    // Nothing found: the record says so on hover elsewhere, no mark here.
+    expect(cells['bp-none'].find('[data-testid="isotopologues-mark"]').exists()).toBe(false)
+    expect(cells['bp-other'].find('[data-testid="isotopologues-mark"]').exists()).toBe(false)
+  })
+})
+
 describe('PaneBrowserBatchPeaks co-variation column', () => {
   const reading = (verdict, r, extra = {}) => ({
     formula: 'C6H12O6',
@@ -1690,6 +1848,7 @@ describe('PaneBrowserBatchPeaks batch runs', () => {
       ['import', 'an import'],
       ['detect_series', 'a series detection'],
       ['read_co_variation', 'a co-variation reading'],
+      ['stamp_isotopologues', 'an isotopologue stamping'],
       ['unknown_action', 'unknown_action']
     ]) {
       await viewEarlierRun(action)

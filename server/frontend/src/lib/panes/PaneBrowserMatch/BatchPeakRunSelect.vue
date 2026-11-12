@@ -26,7 +26,8 @@ const ACTION_LABELS = {
   search_untargeted: 'Untargeted search',
   import: 'Import',
   detect_series: 'Series detection',
-  read_co_variation: 'Co-variation reading'
+  read_co_variation: 'Co-variation reading',
+  stamp_isotopologues: 'Isotopologue stamping'
 }
 const IN_FLIGHT_STATUSES = ['running']
 

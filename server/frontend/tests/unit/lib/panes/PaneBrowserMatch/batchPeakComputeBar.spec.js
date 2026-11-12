@@ -356,7 +356,8 @@ describe('BatchPeakComputeBar untargeted search', () => {
       'Rebuild batch ledger',
       'Search untargeted',
       'Detect series',
-      'Read co-variation'
+      'Read co-variation',
+      'Stamp isotopologues'
     ])
     expect(buttons[1].attributes('disabled')).toBeUndefined()
   })
@@ -521,7 +522,7 @@ describe('BatchPeakComputeBar co-variation reading', () => {
 
   it('holds it while the ledger is rewritten, and the rewrites while it reads', async () => {
     mountBar()
-    for (const busy of ['computing', 'searching', 'detecting']) {
+    for (const busy of ['computing', 'searching', 'detecting', 'stamping']) {
       compute[busy] = true
       await wrapper.vm.$nextTick()
       expect(readButton().attributes('disabled')).toBeDefined()
@@ -593,5 +594,102 @@ describe('BatchPeakComputeBar co-variation reading', () => {
     await compute.readCoVariation()
     compute.reset()
     expect(compute.reading).toBe(false)
+  })
+})
+
+describe('BatchPeakComputeBar isotopologue stamping', () => {
+  const stampButton = () =>
+    wrapper.findAll('.compute-button').find((b) => b.text() === 'Stamp isotopologues')
+  const button = (label) => wrapper.findAll('.compute-button').find((b) => b.text() === label)
+  const notifyStamp = (payload) =>
+    (notificationHandlers['stamp_batch_isotopologues'] ?? []).forEach((cb) => cb(payload))
+
+  it('offers the stamping under the same gate, and says it moves no tier', () => {
+    mountBar()
+    expect(stampButton().attributes('disabled')).toBeUndefined()
+    expect(compute.stampTooltip).toMatch(/^Predict the 15N, 18O, 34S, Si, 37Cl and 81Br lines/)
+    expect(compute.stampTooltip).toMatch(/Moves no tier\.$/)
+  })
+
+  it('disables it with the compute when no batch is focused, and says why', () => {
+    mountBar({ batch: null })
+    expect(stampButton().attributes('disabled')).toBeDefined()
+    expect(compute.stampTooltip).toBe(compute.blockedReason)
+  })
+
+  it('holds it while the ledger is rewritten or read, and the others while it stamps', async () => {
+    mountBar()
+    for (const busy of ['computing', 'searching', 'detecting', 'reading']) {
+      compute[busy] = true
+      await wrapper.vm.$nextTick()
+      expect(stampButton().attributes('disabled')).toBeDefined()
+      compute[busy] = false
+    }
+    compute.stamping = true
+    await wrapper.vm.$nextTick()
+    for (const label of ['Search untargeted', 'Detect series', 'Read co-variation'])
+      expect(button(label).attributes('disabled')).toBeDefined()
+  })
+
+  it('launches straight from the button and waits for its own task', async () => {
+    mountBar()
+    post.mockResolvedValueOnce(ack('proc-s'))
+    await stampButton().trigger('click')
+    await Promise.resolve()
+    expect(post).toHaveBeenCalledWith(
+      '/batch-peaks/batch/b-1/stamp-isotopologues',
+      {},
+      expect.objectContaining({ type: 'stamp_batch_isotopologues', errors: 'inline' })
+    )
+    expect(compute.stamping).toBe(true)
+    expect(stampButton().attributes('data-loading')).toBe('true')
+    notifyStamp({ status: 'pending', process_id: 'proc-s' })
+    notifyStamp({ status: 'success', process_id: 'someone-else' })
+    expect(compute.stamping).toBe(true)
+    notifyStamp({ status: 'success', process_id: 'proc-s' })
+    expect(compute.stamping).toBe(false)
+  })
+
+  it('does not launch twice, nor while blocked', async () => {
+    mountBar()
+    post.mockReturnValueOnce(new Promise(() => {}))
+    compute.stampIsotopologues()
+    await compute.stampIsotopologues()
+    expect(post).toHaveBeenCalledTimes(1)
+    mountBar({ samples: [] })
+    post.mockClear()
+    await compute.stampIsotopologues()
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('gives up after the timeout', async () => {
+    mountBar()
+    await compute.stampIsotopologues()
+    expect(compute.stamping).toBe(true)
+    vi.advanceTimersByTime(5 * 60 * 1000)
+    expect(compute.stamping).toBe(false)
+  })
+
+  it('resets the button and records a refusal', async () => {
+    mountBar()
+    post.mockRejectedValueOnce(apiError(409, 'A batch run is still rewriting this ledger'))
+    await compute.stampIsotopologues()
+    expect(compute.stamping).toBe(false)
+    expect(compute.launchRefused).toBe(true)
+    expect(compute.launchError).toBe('A batch run is still rewriting this ledger')
+  })
+
+  it('falls back to its own message when the server gives none', async () => {
+    mountBar()
+    post.mockRejectedValueOnce({ response: { status: 500, data: {} } })
+    await compute.stampIsotopologues()
+    expect(compute.launchError).toBe('Could not start the isotopologue stamping.')
+  })
+
+  it('ends with the rest when the batch changes', async () => {
+    mountBar()
+    await compute.stampIsotopologues()
+    compute.reset()
+    expect(compute.stamping).toBe(false)
   })
 })

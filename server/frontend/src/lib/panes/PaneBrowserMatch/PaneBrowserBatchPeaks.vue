@@ -34,6 +34,14 @@ import {
 import { seriesTooltip } from '@/lib/batchSeries'
 import { coVariationLabel, coVariationRank, coVariationTooltip } from '@/lib/batchCoVariation'
 import {
+  isPredicted,
+  stampLabel,
+  stampParentId,
+  isotopologuesSummary,
+  isotopologuesTooltip,
+  stampTooltip
+} from '@/lib/batchIsotopologues'
+import {
   ENGINE_UNSTATED,
   ENGINE_UNSTATED_META,
   ROLE_BUCKETS,
@@ -84,7 +92,8 @@ const RUN_ACTION_LABELS = {
   search_untargeted: 'an untargeted search',
   import: 'an import',
   detect_series: 'a series detection',
-  read_co_variation: 'a co-variation reading'
+  read_co_variation: 'a co-variation reading',
+  stamp_isotopologues: 'an isotopologue stamping'
 }
 const viewedRunLabel = computed(() => {
   const run = runs.value.viewing
@@ -174,7 +183,11 @@ const breadcrumb = computed(() => {
 
 // Batch peaks are bare m/z anchors, so the family link is one the backend
 // derives from the members' per-sample assignments and hands over as
-// `isotopologue_of` - the anchor whose M0 this one is an isotopologue of.
+// `isotopologue_of` - the anchor whose M0 this one is an isotopologue of. A
+// line the batch's isotopologue stamping stamped is in the family too,
+// through `stamped_isotopologue_of`, where the members' own link names none:
+// the samples' runs read it as something else, or as nothing, and the batch
+// read it as the parent's diagnostic isotopologue.
 //
 // It is deliberately ONE hop, observed rather than reconciled, which leaves the
 // reader two things to settle and the whole ledger in hand to settle them with:
@@ -201,6 +214,10 @@ const instrumentShown = computed({
   }
 })
 
+// The row one up the family: the members' own isotopologue link, else the
+// parent the isotopologue stamping stamped the row as a line of.
+const familyLink = (row) => row.isotopologue_of ?? stampParentId(row)
+
 /**
  * The row this one folds under, or null when it stands on its own.
  *
@@ -211,13 +228,13 @@ const instrumentShown = computed({
  */
 const rootParentId = (row, index) => {
   const seen = new Set([row.batch_peak_id])
-  let parentId = row.isotopologue_of
+  let parentId = familyLink(row)
   while (parentId && !seen.has(parentId)) {
     const parent = index.get(parentId)
     if (!parent) return null
-    if (!parent.isotopologue_of) return parentId
+    if (!familyLink(parent)) return parentId
     seen.add(parentId)
-    parentId = parent.isotopologue_of
+    parentId = familyLink(parent)
   }
   return null
 }
@@ -364,6 +381,17 @@ const childLabel = (row) => {
   const offset = Math.round(row.mz - parent.mz)
   if (offset > 0) return `M+${offset}`
   return offset < 0 ? `M${offset}` : 'M0'
+}
+
+// A stamped line names its isotope beside the offset, when the stamp's parent
+// is in the family the row folds into; a stamp naming another family's peak
+// says nothing about this one.
+const stampOf = (row) => {
+  const parentId = stampParentId(row)
+  if (!parentId || !row.parentId) return null
+  const parent = byId.value.get(parentId)
+  const root = parent ? (rootParentId(parent, byId.value) ?? parentId) : parentId
+  return root === row.parentId ? row.stamped_isotopologue_of : null
 }
 
 // Fold isotopologues under their M0 by default: an isotopologue carries its family's
@@ -922,7 +950,8 @@ watch(
               The link is derived: a batch peak is an m/z anchor and carries no
               family of its own, so an isotopologue is one whose per-sample
               assignments agree, across the batch, that it belongs to another
-              anchor's compound.
+              anchor's compound, or one <b>Stamp isotopologues</b> stamped as a
+              diagnostic line of it, which shows its isotope beside the offset.
               </p>
               <p>
               After an import that carried the engine's own tiers,
@@ -1110,6 +1139,17 @@ watch(
               <span class="child-label" v-tooltip.top="data.consensus_formula || 'isotopologue'">{{
                 childLabel(data)
               }}</span>
+              <!-- A line the batch stamped as this family's isotopologue: its
+                   isotope, and a dashed outline where the stamping predicted
+                   it rather than the samples' runs finding it. -->
+              <span
+                v-if="stampOf(data)"
+                class="stamp-tag"
+                :class="{ predicted: isPredicted(stampOf(data)) }"
+                data-testid="stamp-tag"
+                v-tooltip.top="stampTooltip(stampOf(data))"
+                >{{ stampLabel(data) }}</span
+              >
             </span>
             <!-- The isotopologue count rides in the slot, outside what gets
                  copied, as the sample ledger's does. -->
@@ -1133,6 +1173,18 @@ watch(
                 role="img"
                 :aria-label="seriesTooltip(data.series)"
                 v-tooltip.top="seriesTooltip(data.series)"
+              />
+              <!-- The diagnostic isotopologues a "Stamp isotopologues" run
+                   predicted for this formula, where the batch shows one:
+                   predicted, found and stamped, on hover. -->
+              <span
+                v-if="data.diagnostic_isotopologues?.n_found"
+                class="pi ph ph-stamp isotopologues-mark"
+                :class="{ stamped: data.diagnostic_isotopologues.n_stamped > 0 }"
+                role="img"
+                data-testid="isotopologues-mark"
+                :aria-label="isotopologuesSummary(data.diagnostic_isotopologues)"
+                v-tooltip.top="isotopologuesTooltip(data.diagnostic_isotopologues)"
               />
               <span
                 v-if="isotopologueCount(data)"
@@ -1532,6 +1584,28 @@ watch(
 .co-variation.untestable,
 .no-co-variation {
   opacity: 0.55;
+}
+/* The isotope lines predicted for a row's formula; coloured once one is
+   stamped. */
+.isotopologues-mark {
+  margin-left: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--p-text-muted-color);
+}
+.isotopologues-mark.stamped {
+  color: var(--p-primary-color);
+}
+/* A stamped line's isotope beside its offset; dashed where the stamping
+   predicted it rather than the samples' runs finding it. */
+.stamp-tag {
+  margin-left: 0.35rem;
+  padding: 0 0.25rem;
+  border: 1px solid var(--p-content-border-color);
+  border-radius: 3px;
+  font-size: 0.7rem;
+}
+.stamp-tag.predicted {
+  border-style: dashed;
 }
 .curated,
 .series-mark {

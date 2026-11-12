@@ -114,6 +114,19 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
       'Read how the channels of every compound seen through two of them follow each other across the batch. Moves no tier.'
   )
 
+  // The isotopologue stamping: the diagnostic isotopologues of every
+  // committed batch peak, stamped where their height holds across the batch.
+  // It moves no tier, has no parameters, and waits on its own task as the
+  // reading does.
+  const stamping = ref(false)
+  const pendingStampId = ref(null)
+  let stampTimer = null
+  const stampTooltip = computed(
+    () =>
+      blockedReason.value ??
+      'Predict the 15N, 18O, 34S, Si, 37Cl and 81Br lines of every committed batch peak, and stamp the ones whose height holds across the batch. Moves no tier.'
+  )
+
   function endComputing() {
     computing.value = false
     pendingProcessId.value = null
@@ -244,6 +257,34 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     }
   }
 
+  function endStamping() {
+    stamping.value = false
+    pendingStampId.value = null
+    clearTimeout(stampTimer)
+    stampTimer = null
+  }
+
+  async function stampIsotopologues() {
+    const batchId = app.data.batch.focusedId
+    if (!batchId || stamping.value || blockedReason.value) return
+    stamping.value = true
+    launchError.value = null
+    clearTimeout(stampTimer)
+    stampTimer = setTimeout(endStamping, COMPUTE_TIMEOUT)
+    try {
+      const response = await api.http.post(
+        `/batch-peaks/batch/${batchId}/stamp-isotopologues`,
+        {},
+        { type: 'stamp_batch_isotopologues', errors: 'inline' }
+      )
+      pendingStampId.value = response?.headers?.['process-id'] ?? null
+    } catch (error) {
+      endStamping()
+      launchRefused.value = isRefusedRequest(error) || error?.response?.status === 403
+      launchError.value = getApiErrorMessage(error, 'Could not start the isotopologue stamping.')
+    }
+  }
+
   /** Backfill batch peaks from this batch's existing assignments; the ledger and
    *  chart refresh on the peak_assignment_reload event the task emits. */
   async function compute() {
@@ -331,11 +372,20 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     endReading()
   })
 
+  app.ui.notification.on('stamp_batch_isotopologues', (notification) => {
+    if (!stamping.value) return
+    if (notification?.status === 'pending') return
+    const id = notification?.process_id
+    if (pendingStampId.value && id && id !== pendingStampId.value) return
+    endStamping()
+  })
+
   function reset() {
     endComputing()
     endSearching()
     endDetecting()
     endReading()
+    endStamping()
     endExporting()
     launchError.value = null
     launchRefused.value = false
@@ -357,6 +407,9 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     reading,
     readTooltip,
     readCoVariation,
+    stamping,
+    stampTooltip,
+    stampIsotopologues,
     exporting,
     exportLedger,
     reset
