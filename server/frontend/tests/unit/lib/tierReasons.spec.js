@@ -36,6 +36,7 @@ const SERVER_RULES = [
   'same_ion_settled',
   'no_close_rival',
   'not_measured',
+  'in_source_fragment',
   'inherited_from_owner',
   'envelope_claim',
   'isotopologue_in_doubt',
@@ -170,6 +171,13 @@ describe('reasonIcon', () => {
       'ph-arrow-elbow-down-right'
     )
   })
+
+  // A grouping is neither what took the tier nor what the row kept it on, so
+  // it wears neither the arrow nor the check.
+  it('marks a grouping the run records apart from both', () => {
+    expect(reasonIcon({ rule: 'in_source_fragment', caps: false })).toBe('ph-info')
+    expect(holdsTierDown({ rule: 'in_source_fragment', caps: false })).toBe(false)
+  })
 })
 
 describe('reasonTooltip', () => {
@@ -195,6 +203,15 @@ describe('reasonTooltip', () => {
     expect(reasonTooltip(STANDS, 'assigned')).toBe(
       'Caps nothing: this row holds the tier its evidence earned'
     )
+  })
+
+  it('says a grouping neither caps nor keeps the tier', () => {
+    const grouping = { rule: 'in_source_fragment', caps: false }
+    for (const tier of ['assigned', 'candidate']) {
+      expect(reasonTooltip(grouping, tier)).toBe(
+        'Caps nothing and keeps nothing: a grouping the run records about this row'
+      )
+    }
   })
 
   // The band is where the row's evidence put it before any rule, so it does

@@ -609,6 +609,23 @@ class PeakAssignmentsResource(BaseResource):
         A row whose evidence is under the top band names that band first (rule
         ``evidence_band``, with the ``band`` its evidence reaches). It is where
         the row stands before any rule, not a rule, so it never ``caps``.
+        Rule ``in_source_fragment`` neither caps nor keeps a tier: the row's
+        ion is a heavier committed ion of its channel less a small neutral the
+        source can shed, on a shorter peak, so the peak may be that ion's
+        fragment. Its
+        ``cross_channel`` block then lists them under ``in_source_fragment_of``
+        (``parent``, ``loss``, ``via``, ``parent_peak_assignment_id``,
+        ``height_ratio``, the brightest first), and the heavier row its
+        fragments under ``in_source_fragments``. The brightest row of a
+        neutral's channel at candidate or better carries
+        ``intensity_consistency`` there too, one entry per other channel of
+        its neutral whose pair with the row's own five or more of the
+        sample's other neutrals share; a pair of two other channels is on
+        their rows, not this one. Each holds ``log_ratio`` (the natural log of the
+        second channel's peak over the first's), the sample's ``centre`` and
+        ``spread`` for that pair over ``n_reference`` other neutrals, ``z``
+        and ``band`` (``consistent``, ``loose``, ``outlying``). Neither
+        reading is weighed.
         Rules only ever demote, and the run's ``config.tiering`` records the
         rule set's version and the thresholds it judged at - a tier is only
         comparable across two runs together with those. A peak read as an

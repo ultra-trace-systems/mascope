@@ -701,6 +701,16 @@ In practice:
   chemically distinctive adduct like bromide corroborates strongly, while a generic one
   (ammonium, protonation) barely moves it. The lift is bounded, and — like the calibration
   curve — the per-adduct weights are specific to your instrument's reagent chemistry.
+- **Two more readings of the companions are recorded, not weighed.** The run reads, for
+  each compound seen through two channels, the ratio of its two peaks against the same
+  ratio over the sample's other compounds, and it groups the possible in-source fragments
+  (*Why a row holds its tier*, below). Each was measured the way the adduct lift was, and
+  neither earned a place in the probability: a real compound's two channels sit near the
+  sample's typical ratio less often than a chance pair's do, because each compound's
+  chemistry sets its own ratio. The API and the SDK serve both readings with the row's
+  cross-channel record (`intensity_consistency`, `in_source_fragment_of`,
+  `in_source_fragments`); the ratio is the single-sample point of the one
+  [ratio stability](#ratio-stability) grades across a batch.
 
 ## Confidence tiers
 
@@ -976,6 +986,21 @@ reads was recorded for the row, which is a statement of absence rather than a fi
 seen at another isotope, so it takes the M0's answer and loses the top tier with it, and
 the inspector shows the M0's reasons beneath its own. What was found about its own line -
 in doubt, off its M0, read as the M0's line - is listed above that.
+
+One reason neither caps a row nor is what it kept its tier on, and the inspector marks it
+with an info sign: **possible in-source fragment**. An ion can shed a small neutral in the
+source - water, carbon monoxide or dioxide, formic acid, methanol, nitric acid from an
+organonitrate, sulfur trioxide from an organosulfate - and the fragment shows as a second,
+lighter peak of the same compound ([Xu et al. 2015][xu15]; [Domingo-Almenara et al.
+2019][da19]). Where the run commits a neutral through a channel and also commits that
+neutral less one of these losses through the same channel, on a shorter peak, the lighter
+row names the heavier one, the loss, and how tall its peak is against the heavier one's. A
+lighter peak as tall as the heavier or taller is not named: a fragment's ions come from its
+precursor's. Nothing in one spectrum tells a fragment from a compound of its own, so this is
+a grouping to know about, not evidence: measured on the demo dataset, a peak one loss below
+a real ion turns out to be nearly as likely as a peak the same neutral above it, which is
+the spectrum's family of related formulas rather than fragmentation, nitric acid aside. On a
+dense spectrum many rows carry it. The tier is left as it was.
 
 The ledger lists each reading of a neutral as a row of its own, at its own m/z, so a
 compound seen through two channels is two rows far apart in the table. **Group by
@@ -2205,6 +2230,13 @@ engine found, and leave the rest of the table alone.
 - <a id="set09"></a>Settles, B. *Active learning literature survey.* Computer Sciences
   Technical Report 1648, University of Wisconsin–Madison, 2009.
   [link](https://burrsettles.com/pub/settles.activelearning.pdf)
+- <a id="xu15"></a>Xu, Y.-F.; Lu, W.; Rabinowitz, J. D. *Avoiding misannotation of
+  in-source fragmentation products as cellular metabolites in liquid
+  chromatography-mass spectrometry-based metabolomics.* Anal. Chem. 2015,
+  87(4):2273–2281. [link](https://doi.org/10.1021/ac504118y)
+- <a id="da19"></a>Domingo-Almenara, X. et al. *Autonomous METLIN-guided in-source
+  fragment annotation for untargeted metabolomics.* Anal. Chem. 2019, 91(5):3246–3253.
+  [link](https://doi.org/10.1021/acs.analchem.8b03126)
 - <a id="sch14"></a>Schymanski, E. L. et al. *Identifying small molecules via high
   resolution mass spectrometry: communicating confidence.* Environ. Sci. Technol. 2014,
   48(4):2097–2098. [link](https://pubs.acs.org/doi/10.1021/es5002105)
@@ -2416,6 +2448,8 @@ engine found, and leave the rest of the table alone.
 [sch14]: #sch14
 [lg94]: #lg94
 [set09]: #set09
+[xu15]: #xu15
+[da19]: #da19
 [sum07]: #sum07
 [hy15]: #hy15
 [wa21]: #wa21
