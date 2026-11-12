@@ -3,9 +3,8 @@ import { computed } from 'vue'
 
 import {
   CONTINUITY_DISPLAY_ONLY,
-  CONTINUITY_PARTIAL,
   GRADE_META,
-  continuityPartial,
+  continuityPartialSentence,
   continuityWarning,
   pairLine,
   pairsShownNote
@@ -32,7 +31,7 @@ const lines = computed(() =>
   (props.row.continuity?.pairs ?? []).map((pair) => pairLine(pair, props.isotopeLine))
 )
 const shownNote = computed(() => pairsShownNote(props.row))
-const partial = computed(() => continuityPartial(props.row))
+const partial = computed(() => continuityPartialSentence(props.row))
 // Not time-ordered, or behind the ledger: the tooltip's sentence, kept in one wording.
 const warning = computed(() => continuityWarning(props.row))
 </script>
@@ -46,7 +45,7 @@ const warning = computed(() => continuityWarning(props.row))
     <p v-if="grade" class="meaning">{{ sentence(grade.meaning) }}</p>
     <p v-if="warning" class="warning" data-testid="continuity-warning">{{ warning }}</p>
     <p v-if="partial" class="warning" data-testid="continuity-partial">
-      {{ CONTINUITY_PARTIAL }}
+      {{ partial }}
     </p>
     <table v-if="lines.length" class="pairs">
       <thead>

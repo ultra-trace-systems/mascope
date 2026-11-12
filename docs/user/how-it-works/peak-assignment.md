@@ -1896,7 +1896,8 @@ The *Batch peaks* ledger shows the grade in its **Continuity** column, after *Sa
 once the pass has graded the batch. Stable, drift and red are drawn as a badge;
 inconclusive and insufficient read muted, and a batch that is not time-ordered reads
 *Not graded*, its tooltip saying why. A badge drawn dashed is partial: the pass left
-some of the batch peak's pairs ungraded. A badge outlined in the warning colour, with a
+some of the batch peak's pairs ungraded, and where it left all of them the dashed badge
+reads *Not graded*. The pair counts it gives are of the graded pairs. A badge outlined in the warning colour, with a
 clock, is behind the ledger: a sample folded in since, or the consensus formula moved,
 and the next pass grades it again. Clicking the cell lists the pairs behind the grade -
 the most alarming first, up to four - each with its grade, the samples both peaks are

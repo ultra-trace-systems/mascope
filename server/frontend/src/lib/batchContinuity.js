@@ -10,6 +10,8 @@
  * display-only: no tier reads it, and these words say so.
  */
 
+import { VERDICT_CO_VARYING, VERDICT_NOT_CO_VARYING } from '@/lib/batchCoVariation'
+
 export const GRADE_RED = 'red'
 export const GRADE_DRIFT = 'drift'
 export const GRADE_STABLE = 'stable'
@@ -61,6 +63,9 @@ const DISPLAY_ONLY =
 const PARTIAL_SENTENCE =
   'Partial: the batch had more pairs than one pass grades, and some of these were left ungraded.'
 
+const PARTIAL_NONE_SENTENCE =
+  'Partial: the batch had more pairs than one pass grades, and none of these was graded.'
+
 const WITHDRAWN_REASONS = {
   gap:
     'The batch is not time-ordered: its largest gap between acquisition times is more than ' +
@@ -78,6 +83,27 @@ export function continuityPartial(row) {
   return Boolean(row?.continuity?.warnings?.includes(WARNING_PARTIAL))
 }
 
+/**
+ * Whether the pass graded none of the anchor's pairs because they all fell past
+ * the per-batch cap. The cap goes by support, so in a partial batch this is the
+ * usual partial anchor. A withdrawn anchor is never partial: nothing was graded.
+ */
+export function continuityUngraded(row) {
+  return Boolean(!row?.continuity_grade && continuityPartial(row))
+}
+
+/** The partial warning as a sentence, or '' where the pass graded every pair. */
+export function continuityPartialSentence(row) {
+  if (!continuityPartial(row)) return ''
+  return continuityUngraded(row) ? PARTIAL_NONE_SENTENCE : PARTIAL_SENTENCE
+}
+
+/** How many of the anchor's pairs the pass graded: the skipped ones are not counted. */
+export function gradedPairCount(row) {
+  const grades = row?.continuity?.grades ?? {}
+  return Object.values(grades).reduce((sum, count) => sum + count, 0)
+}
+
 /** Whether the ledger has moved past the grade: a sample folded since, or the claim moved. */
 export function continuityStale(row) {
   return Boolean(row?.continuity_stale)
@@ -86,7 +112,7 @@ export function continuityStale(row) {
 /** The cell's text, or '' where the pass left nothing on the anchor. */
 export function continuityLabel(row) {
   if (row?.continuity_grade) return GRADE_META[row.continuity_grade]?.label ?? row.continuity_grade
-  return continuityWithdrawn(row) ? 'Not graded' : ''
+  return continuityWithdrawn(row) || continuityUngraded(row) ? 'Not graded' : ''
 }
 
 /**
@@ -117,14 +143,16 @@ function staleSentence(row) {
 
 /**
  * What the reader must know before reading the grade, or '': that the batch is
- * not time-ordered, so nothing was graded, or that the ledger has moved past
- * the grade.
+ * not time-ordered, so nothing was graded, and that the ledger has moved past
+ * the grade - both where both hold, so the clock always has its reason.
  */
 export function continuityWarning(row) {
   if (!row?.continuity) return ''
+  const sentences = []
   if (continuityWithdrawn(row))
-    return WITHDRAWN_REASONS[row.continuity.reason] ?? 'The batch is not time-ordered.'
-  return continuityStale(row) ? staleSentence(row) : ''
+    sentences.push(WITHDRAWN_REASONS[row.continuity.reason] ?? 'The batch is not time-ordered.')
+  if (continuityStale(row)) sentences.push(staleSentence(row))
+  return sentences.join(' ')
 }
 
 /** The full account in one tooltip: the grade's meaning, the warnings, and that it is shown only. */
@@ -133,12 +161,13 @@ export function continuityTooltip(row) {
   const lines = []
   const meta = GRADE_META[row.continuity_grade]
   if (meta) {
-    const pairs = row.continuity.n_pairs ?? row.continuity.pairs?.length ?? 0
+    const pairs = gradedPairCount(row)
     lines.push(
-      `${meta.label} on its most alarming of ${pairs} pair${pairs === 1 ? '' : 's'}: ${meta.meaning}.`
+      `${meta.label} on its most alarming of ${pairs} graded pair${pairs === 1 ? '' : 's'}: ${meta.meaning}.`
     )
   }
-  if (continuityPartial(row)) lines.push(PARTIAL_SENTENCE)
+  const partial = continuityPartialSentence(row)
+  if (partial) lines.push(partial)
   const warning = continuityWarning(row)
   if (warning) lines.push(warning)
   lines.push(DISPLAY_ONLY)
@@ -170,9 +199,9 @@ export function pairLine(pair, isotopeLine = false) {
       : `${pair.drift_log >= 0 ? 'rises' : 'falls'} ${twoDigits.format(pair.drift_fold)}x` +
         (pair.rho == null ? '' : `, rho ${twoDigits.format(pair.rho)}`)
   const coVariation = pair.co_variation
-    ? pair.co_variation.verdict === 'co_varying'
+    ? pair.co_variation.verdict === VERDICT_CO_VARYING
       ? `co-varies, r ${twoDigits.format(pair.co_variation.r)}`
-      : pair.co_variation.verdict === 'not_co_varying'
+      : pair.co_variation.verdict === VERDICT_NOT_CO_VARYING
         ? `does not co-vary, r ${twoDigits.format(pair.co_variation.r)}`
         : 'co-variation untestable'
     : null
@@ -190,13 +219,15 @@ export function pairLine(pair, isotopeLine = false) {
   }
 }
 
-/** The popover's footnote on how many pairs it lists, or '' when it lists all. */
+/**
+ * The popover's footnote on how many graded pairs it lists, or '' when it
+ * lists all of them. Pairs the pass skipped are the partial sentence's.
+ */
 export function pairsShownNote(row) {
-  const detail = row?.continuity
-  const listed = detail?.pairs?.length ?? 0
-  const total = detail?.n_pairs ?? listed
+  const listed = row?.continuity?.pairs?.length ?? 0
+  const total = gradedPairCount(row)
   if (total <= listed) return ''
-  return `Showing ${listed} of ${total} pairs: the most alarming first, then the best supported.`
+  return `Showing ${listed} of ${total} graded pairs: the most alarming first, then the best supported.`
 }
 
-export { DISPLAY_ONLY as CONTINUITY_DISPLAY_ONLY, PARTIAL_SENTENCE as CONTINUITY_PARTIAL }
+export { DISPLAY_ONLY as CONTINUITY_DISPLAY_ONLY }

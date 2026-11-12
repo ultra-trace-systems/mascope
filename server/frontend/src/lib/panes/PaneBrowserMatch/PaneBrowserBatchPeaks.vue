@@ -344,7 +344,9 @@ const hasContinuity = computed(() => shown.value.some((bp) => bp.continuity != n
 const continuityClaims = (row) => CLAIM_GRADES.includes(row.continuity_grade)
 
 // One continuity popover for the table, pointed at the row whose cell opened
-// it, as the verdict popover is.
+// it, as the verdict popover is. Both cells stop their click, which PrimeVue's
+// outside-click listener on the document would otherwise see, so each opener
+// closes the other popover itself.
 const continuityMenu = ref()
 const continuityRowId = ref(null)
 const continuityTarget = computed(() =>
@@ -355,6 +357,7 @@ const continuityTarget = computed(() =>
 function openContinuity(event, row) {
   const menu = continuityMenu.value
   if (!menu) return
+  verdictMenu.value?.hide()
   if (continuityRowId.value === row.batch_peak_id) {
     menu.toggle(event)
     return
@@ -442,6 +445,7 @@ const verdictTarget = computed(() =>
 function openVerdict(event, row) {
   const menu = verdictMenu.value
   if (!menu) return
+  continuityMenu.value?.hide()
   if (verdictRowId.value === row.batch_peak_id) {
     menu.toggle(event)
     return

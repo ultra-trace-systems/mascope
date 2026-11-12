@@ -190,10 +190,23 @@ const ToggleSwitchStub = {
 // point of the menu, and `Popover: true` would render no slot at all - so the
 // isotopologue toggle inside it would not exist to flip. Its own open/close is
 // PrimeVue's; what this file tests is that the toggle lives in there.
+// What the cell popovers were asked to do, by the popover's aria-label, so a
+// test can tell the continuity popover from the verdict one.
+const popoverCalls = []
 const PopoverStub = {
   name: 'Popover',
   // The cell popovers call these; open or not, the stub renders its slot.
-  methods: { show: vi.fn(), hide: vi.fn(), toggle: vi.fn() },
+  methods: {
+    show() {
+      popoverCalls.push([this.$attrs['aria-label'], 'show'])
+    },
+    hide() {
+      popoverCalls.push([this.$attrs['aria-label'], 'hide'])
+    },
+    toggle() {
+      popoverCalls.push([this.$attrs['aria-label'], 'toggle'])
+    }
+  },
   template: '<div class="view-popover"><slot /></div>'
 }
 
@@ -1472,7 +1485,9 @@ describe('PaneBrowserBatchPeaks continuity column', () => {
     ionization_mechanism_id: null,
     n_present_at_compute: 2,
     n_pairs: grades.length,
-    grades: {},
+    grades: Object.fromEntries(
+      [...new Set(grades)].map((grade) => [grade, grades.filter((g) => g === grade).length])
+    ),
     warnings: [],
     pairs: grades.map((grade) => pair(grade)),
     ...extra
@@ -1503,6 +1518,13 @@ describe('PaneBrowserBatchPeaks continuity column', () => {
       continuity: detail([], { eligible: false, reason: 'gap', n_pairs: 1 })
     }),
     peak('bp-none', 'assigned', 0.9, { mz: 180.1 }),
+    // Every pair it is in fell past the per-batch cap: no grade, but partial.
+    peak('bp-ungraded', 'assigned', 0.9, {
+      mz: 185.1,
+      continuity_grade: null,
+      continuity: detail([], { warnings: ['partial'], n_pairs: 3 }),
+      continuity_stale: false
+    }),
     // The main peak of a family and its isotope line, graded on their pair.
     graded('bp-m0', 'stable', 190.1),
     graded('bp-m1', 'red', 191.1, {
@@ -1510,7 +1532,9 @@ describe('PaneBrowserBatchPeaks continuity column', () => {
       continuity: detail(['red'], {
         pairs: [pair('red', { kind: 'isotopologue', partner_batch_peak_id: 'bp-m0' })]
       })
-    })
+    }),
+    // An isotope line the pass left nothing on: an empty cell, not a dash.
+    peak('bp-m2', 'assigned', 0.9, { mz: 192.1, isotopologue_of: 'bp-m0' })
   ]
   const continuityCell = (cells, id) => cells[id].find('[data-testid="continuity"]')
 
@@ -1569,6 +1593,15 @@ describe('PaneBrowserBatchPeaks continuity column', () => {
     expect(cells['bp-none'].find('.no-continuity').exists()).toBe(true)
   })
 
+  it('says an anchor whose pairs all fell past the cap was not graded, dashed', async () => {
+    const cells = await cellsOf('continuityRank', peaks())
+    const ungraded = continuityCell(cells, 'bp-ungraded')
+    expect(ungraded.text()).toBe('Not graded')
+    expect(ungraded.attributes('aria-label')).toBe('Ratio stability: Not graded')
+    expect(ungraded.classes()).toContain('partial')
+    expect(ungraded.classes()).not.toContain('claim')
+  })
+
   it("shows an isotope line's own grade only while the isotopologues are unfolded", async () => {
     const cells = await cellsOf('continuityRank', peaks())
     expect(cells['bp-m1']).toBeUndefined()
@@ -1583,6 +1616,14 @@ describe('PaneBrowserBatchPeaks continuity column', () => {
     wrapper.vm.showIsotopologues = true
     await wrapper.vm.$nextTick()
     expect(childCell().find('[data-testid="continuity"]').text()).toBe('Red')
+    // An isotope line with nothing on it gets no dash: its main peak speaks for it.
+    const ungradedChild = wrapper
+      .findAll('.column-stub')
+      .find((col) => col.attributes('data-field') === 'continuityRank')
+      .findAll('.stub-cell')
+      .find((c) => c.attributes('data-row') === 'bp-m2')
+    expect(ungradedChild.find('[data-testid="continuity"]').exists()).toBe(false)
+    expect(ungradedChild.find('.no-continuity').exists()).toBe(false)
 
     wrapper.vm.showIsotopologues = false
     await wrapper.vm.$nextTick()
@@ -1602,11 +1643,11 @@ describe('PaneBrowserBatchPeaks continuity column', () => {
     await wrapper.vm.$nextTick()
     const top = () => wrapper.vm.rows.map((row) => row.batch_peak_id)
     expect(top()[0]).toBe('bp-red')
-    expect(top().slice(-2).sort()).toEqual(['bp-none', 'bp-withdrawn'])
+    expect(top().slice(-3).sort()).toEqual(['bp-none', 'bp-ungraded', 'bp-withdrawn'])
     wrapper.vm.sortOrder = -1
     await wrapper.vm.$nextTick()
     expect(top()[0]).toBe('bp-insufficient')
-    expect(top().slice(-2).sort()).toEqual(['bp-none', 'bp-withdrawn'])
+    expect(top().slice(-3).sort()).toEqual(['bp-none', 'bp-ungraded', 'bp-withdrawn'])
   })
 
   it('opens the pairs of the row whose cell was clicked', async () => {
@@ -1617,6 +1658,23 @@ describe('PaneBrowserBatchPeaks continuity column', () => {
     const popover = wrapper.findComponent({ name: 'BatchPeakContinuityPopover' })
     expect(popover.props('row').batch_peak_id).toBe('bp-red')
     expect(popover.props('isotopeLine')).toBe(false)
+  })
+
+  it('closes the verdict popover when a continuity cell opens, and the other way round', async () => {
+    const cells = await cellsOf('continuityRank', peaks())
+    const verdictCell = () =>
+      wrapper
+        .findAll('.column-stub')
+        .find((col) => col.attributes('data-field') === 'verdictRank')
+        .findAll('.stub-cell')
+        .find((c) => c.attributes('data-row') === 'bp-red')
+        .find('.verdict-cell')
+    popoverCalls.length = 0
+    await continuityCell(cells, 'bp-red').trigger('click')
+    expect(popoverCalls).toContainEqual(['Batch-level verdict', 'hide'])
+    popoverCalls.length = 0
+    await verdictCell().trigger('click')
+    expect(popoverCalls).toContainEqual(['Ratio stability', 'hide'])
   })
 
   it("opens an isotope line's pairs as the main peak's partner", async () => {
