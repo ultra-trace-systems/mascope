@@ -436,6 +436,18 @@ def test_lines_under_the_floor_one_fwhm_apart_are_not_merged(monkeypatch):
     assert labels == ["M0"]
 
 
+def test_lines_under_the_floor_just_inside_one_fwhm_are_merged(monkeypatch):
+    # The other side of the edge: B, 0.1 over A at a FWHM of 0.102 (0.98 FWHM),
+    # is held by A's peak, and together they clear the floor.
+    mzs, intensities, labels = _predicted_as(
+        monkeypatch, [100.0, 102.0, 102.1], [1.0, 0.006, 0.006], ["M0", "A", "B"]
+    )
+
+    assert labels == ["M0", "A"]
+    np.testing.assert_allclose(intensities, [1.0, 0.012])
+    assert mzs[1] == pytest.approx(102.05)
+
+
 def test_a_merged_line_under_the_floor_takes_a_further_one_in_its_fwhm(
     monkeypatch,
 ):
