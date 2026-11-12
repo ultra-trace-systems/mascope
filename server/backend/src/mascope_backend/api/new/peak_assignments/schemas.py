@@ -254,6 +254,14 @@ class PeakAssignmentDetailRecord(PeakAssignmentRecord):
     #: no reading, or one read for another formula or mechanism than the row's,
     #: and on an isotope line. Display-only: no tier reads it.
     batch_co_variation: dict | None = None
+    #: What the batch's isotope checks (``batch_checks``) state of the batch
+    #: peak this row's peak sits in, read when the row is read: its
+    #: ``halogen_lock``, ``label_twin`` and ``neutral_pair``, each where it
+    #: applies. None where the batch peak carries none, or carries them for
+    #: another reading than the row's (an M0 row's formula, ion and mechanism,
+    #: or a reagent row's ion), and on an isotope line. Display-only: no tier
+    #: reads them.
+    batch_checks: dict | None = None
 
 
 class PeakAssignmentsResponse(BaseModel):
@@ -1414,7 +1422,8 @@ class BatchPeakRunRecord(BaseModel):
     batch_peak_run_id: str
     sample_batch_id: str
     #: fold | rebuild | search_untargeted | import | detect_series |
-    #: read_co_variation
+    #: read_co_variation | stamp_isotopologues | strip_isotopologues |
+    #: read_batch_checks
     action: str
     engine: str
     engine_version: str

@@ -21,6 +21,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     merged_isotopologue_of_summary,
     mz_from_delta,
     stamped_isotopologue_of_summary,
+    standing_batch_checks_record,
     standing_co_variation_record,
     standing_diagnostic_isotopologues_record,
     standing_merged_isotopologues_record,
@@ -90,6 +91,11 @@ def _batch_peak_meta(bp) -> dict:
     reading stripped, the parent whose line it is, the share read and the
     reading it displaced, and ``merged_isotopologues`` on a parent the lines it
     took (``batch_merged_isotopologues``); each None where no strip stands.
+    ``batch_checks`` is what the batch's isotope checks state of the consensus
+    reading - its ``halogen_lock``, ``label_twin`` and ``neutral_pair``, each
+    where it applies - with only the facts whose stamping or co-variation
+    reading still stands (``batch_checks``,
+    ``batch_peaks.standing_batch_checks_record``); None where none does.
     """
     return {
         "batch_peak_id": bp.batch_peak_id,
@@ -126,6 +132,7 @@ def _batch_peak_meta(bp) -> dict:
         "stamped_isotopologue_of": stamped_isotopologue_of_summary(bp),
         "merged_isotopologue_of": merged_isotopologue_of_summary(bp),
         "merged_isotopologues": standing_merged_isotopologues_record(bp),
+        "batch_checks": standing_batch_checks_record(bp),
         "reference_listing": consensus_listing(
             bp.candidates,
             bp.consensus_formula,

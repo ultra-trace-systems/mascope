@@ -38,6 +38,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     mz_from_delta,
     resolve_candidate,
     role_name,
+    standing_batch_checks_record,
     tier_name,
 )
 from mascope_backend.api.new.peak_assignments.tiers import TIER_UNASSIGNED
@@ -89,6 +90,11 @@ COLUMNS = (
     "owner_batch_peak_id",
     "stamped_isotopologue_of",
     "stamp_source",
+    "halogen_lock",
+    "halogen_element",
+    "label_twin",
+    "neutral_pair",
+    "neutral_pair_r",
 )
 
 
@@ -104,12 +110,22 @@ def member_export_row(
     member as the parent's isotopologue (``batch_isotopologues``); None
     otherwise.
 
+    ``halogen_lock``, ``label_twin`` and ``neutral_pair`` are the verdicts the
+    batch's isotope checks read for the anchor's reading (``batch_checks``):
+    the lock with its ``halogen_element``, the twin, and the pair with its
+    co-variation ``neutral_pair_r``. They are the anchor's, repeated on each of
+    its members as the consensus is; None where the anchor carries none.
+
     :param member: The ``BatchPeakOccurrence``.
     :param anchor: The ``BatchPeak`` it sits in.
     :param sample_item_name: The member's sample, by name.
     """
     identity = resolve_candidate(anchor.candidates, member.candidate)
     stamp = member_stamp(anchor, member.sample_item_id) or {}
+    checks = standing_batch_checks_record(anchor) or {}
+    lock = checks.get("halogen_lock") or {}
+    twin = checks.get("label_twin") or {}
+    pair = checks.get("neutral_pair") or {}
     return {
         "sample_batch_id": anchor.sample_batch_id,
         "batch_peak_id": anchor.batch_peak_id,
@@ -143,6 +159,11 @@ def member_export_row(
         "owner_batch_peak_id": member.owner_batch_peak_id,
         "stamped_isotopologue_of": stamp.get("batch_peak_id"),
         "stamp_source": stamp.get("stamp_source"),
+        "halogen_lock": lock.get("verdict"),
+        "halogen_element": lock.get("element"),
+        "label_twin": twin.get("verdict"),
+        "neutral_pair": pair.get("verdict"),
+        "neutral_pair_r": pair.get("r"),
     }
 
 

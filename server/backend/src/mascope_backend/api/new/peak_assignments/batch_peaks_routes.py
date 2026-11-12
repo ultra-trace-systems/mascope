@@ -14,6 +14,7 @@ from mascope_backend.api.lib.api_features import api_route
 from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 from mascope_backend.api.models.base_pydantic_model import RequestBodyModel
 from mascope_backend.api.new.auth.dependencies import current_active_user
+from mascope_backend.api.new.peak_assignments.batch_checks import read_batch_checks
 from mascope_backend.api.new.peak_assignments.batch_coherence import (
     read_batch_co_variation,
 )
@@ -731,6 +732,56 @@ async def strip_isotopologues_batch_peaks_route(
             "Reading the merged rows of "
             f"'{sample_batch.sample_batch_name}' against each other's isotope "
             "lines, please wait."
+        ),
+        "process_id": process_id,
+    }
+
+
+@batch_peaks_router.post(
+    "/batch/{sample_batch_id}/read-batch-checks",
+    # Writes the batch peaks' records, gated like the stamping it reads and,
+    # like it, not opened to API tokens.
+    dependencies=[Depends(require_peak_assignment_enabled)],
+)
+@api_route(status_code=202)
+async def read_batch_checks_batch_peaks_route(
+    sample_batch_id: str,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(current_active_user),
+    membership=Depends(require_batch_role("editor")),
+) -> dict:
+    """Read the facts only the batch can state of its batch peaks' readings.
+
+    Three, each where it applies. The halogen lock: a committed batch peak
+    whose ion carries chlorine or bromine, its 37Cl or 81Br line stamped by
+    *Stamp isotopologues* and sitting at the exact spacing, with the 29Si line
+    deciding where a 30Si line could stand there instead. The label twin: a
+    labelled ion's 14N twin, present or absent at the label's impurity share
+    in the samples that would show it. The neutral pair: a uronium neutral's
+    protonated and urea-clustered channels, established where *Read
+    co-variation* reads them co-varying. Each batch peak records them under
+    ``provenance.batch_checks``, which the ledger serves as ``batch_checks``.
+    Display-only: no tier, member or sample row moves. Runs as a background
+    task, as a batch run, and emits ``peak_assignment_reload`` on completion.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param user: The current authenticated user. Requires workspace editor role.
+    :return: Acknowledgement message with the background process id.
+    """
+    sample_batch = await fetch_sample_batch(sample_batch_id)
+    await check_no_run_in_flight(sample_batch_id=sample_batch_id)
+    process_id = gen_id(8)
+    background_tasks.add_task(
+        read_batch_checks,
+        sample_batch_id=sample_batch_id,
+        independent_transaction=True,
+        user_id=user.id,
+        process_id=process_id,
+    )
+    return {
+        "message": (
+            f"Reading the batch checks of '{sample_batch.sample_batch_name}', "
+            "please wait."
         ),
         "process_id": process_id,
     }

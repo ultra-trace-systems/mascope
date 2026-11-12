@@ -988,6 +988,124 @@ def without_merged_lines(record: dict, released: set[str]) -> Optional[dict]:
     return {**record, "lines": lines, "n_lines": len(lines)}
 
 
+#: The anchor's provenance key the batch's isotope checks (``batch_checks.py``)
+#: write their facts under: the reading they were read for - its ion, formula
+#: and mechanism - and each fact the batch states of it.
+BATCH_CHECKS_KEY = "batch_checks"
+
+#: The facts a batch checks record carries, each a typed reading of its own:
+#: the halogen lock, the label twin and the neutral pair.
+BATCH_CHECK_FACTS = ("halogen_lock", "label_twin", "neutral_pair")
+
+
+def batch_checks_record_of(anchor: Any) -> Optional[dict]:
+    """The batch checks record an anchor carries under
+    ``provenance.batch_checks``, or None. A record names an ion; anything else
+    under that key is not one."""
+    provenance = _member(anchor, "provenance")
+    if not isinstance(provenance, dict):
+        return None
+    record = provenance.get(BATCH_CHECKS_KEY)
+    if isinstance(record, dict) and record.get("ion_formula"):
+        return record
+    return None
+
+
+def batch_checks_record_reads(
+    record: dict, ion_formula: Any, formula: Any, mechanism_id: Any
+) -> bool:
+    """Whether a batch checks record was read for this ion, formula and
+    mechanism. A reagent ion's reading names no formula, so the ion is what
+    every record names."""
+    return (
+        bool(ion_formula)
+        and record.get("ion_formula") == ion_formula
+        and record.get("formula") == formula
+        and record.get("ionization_mechanism_id") == mechanism_id
+    )
+
+
+def _record_run(record: Optional[dict]) -> Any:
+    return record.get("batch_peak_run_id") if isinstance(record, dict) else None
+
+
+def standing_batch_checks_record(anchor: Any) -> Optional[dict]:
+    """The batch checks record an anchor carries, where it was read for the
+    anchor's consensus reading, with only the facts whose sources still stand;
+    None where none is left.
+
+    The consensus keeps the record while it names that reading
+    (:func:`compute_consensus`). A fact also reads a record of another batch
+    run: a halogen lock the isotopologue stamping's (step 4.2c), a neutral pair
+    the co-variation reading's (step 4.2). A later stamping or reading
+    replaces those, and the fact read off the earlier one is not served
+    beside it: a lock stands while the anchor's diagnostic isotopologues
+    record is the one it read (``stamping_run_id``), a pair while its
+    co-variation record is (``co_variation_run_id``). A label twin reads the
+    members alone.
+    """
+    record = batch_checks_record_of(anchor)
+    if record is None or not batch_checks_record_reads(
+        record,
+        _member(anchor, "consensus_ion_formula"),
+        _member(anchor, "consensus_formula"),
+        _member(anchor, "ionization_mechanism_id"),
+    ):
+        return None
+    sources = {
+        "halogen_lock": (
+            "stamping_run_id",
+            standing_diagnostic_isotopologues_record(anchor),
+        ),
+        "neutral_pair": ("co_variation_run_id", standing_co_variation_record(anchor)),
+    }
+    facts = {}
+    for key in BATCH_CHECK_FACTS:
+        fact = record.get(key)
+        if not isinstance(fact, dict):
+            continue
+        if key in sources:
+            field, source = sources[key]
+            if source is None or _record_run(source) != fact.get(field):
+                continue
+        facts[key] = fact
+    if not facts:
+        return None
+    return {
+        **{key: value for key, value in record.items() if key not in BATCH_CHECK_FACTS},
+        **facts,
+    }
+
+
+def row_batch_checks(row: dict, anchor: Any) -> Optional[dict]:
+    """The batch checks record of the anchor a sample's row sits in, where the
+    row reads what the record was read for; None otherwise.
+
+    A monoisotopic row through the record's formula, ion and mechanism is the
+    anchor's reading in one sample, and so is a reagent row naming its ion;
+    the inspector shows the batch's facts beside it. An isotope line, or a row
+    that reads the peak another way, is not what was read.
+
+    :param row: The sample's row, with ``role``, ``assigned_formula``,
+        ``ion_formula`` and ``ionization_mechanism_id``.
+    :param anchor: The anchor its peak sits in, or None.
+    """
+    if anchor is None or row.get("role") not in (ROLE_M0, ROLE_REAGENT):
+        return None
+    record = standing_batch_checks_record(anchor)
+    if record is None:
+        return None
+    formula = row.get("assigned_formula") if row.get("role") == ROLE_M0 else None
+    if not batch_checks_record_reads(
+        record,
+        row.get("ion_formula"),
+        formula,
+        row.get("ionization_mechanism_id"),
+    ):
+        return None
+    return record
+
+
 def resolution_from_tol_ppm(
     tol_ppm: Optional[float], drift_margin_ppm: float = DEFAULT_DRIFT_MARGIN_PPM
 ) -> Optional[float]:
@@ -1089,9 +1207,10 @@ def compute_consensus(
     stamped_isotopologue_of: Optional[dict] = None,
     merged_isotopologue_of: Optional[dict] = None,
     merged_isotopologues: Optional[dict] = None,
+    batch_checks: Optional[dict] = None,
 ) -> Consensus:
     """:func:`vote_consensus`, with the anchor's series, co-variation,
-    stamping and strip records carried along.
+    stamping, strip and batch checks records carried along.
 
     The series record says a homologous series proposed a formula for this
     anchor. It is about that formula and not about the peak, so it stays in the
@@ -1110,7 +1229,9 @@ def compute_consensus(
     parent keeps its list of lines while it names the reading they were read
     against; a row whose record comes off comes off that list too, which the
     row's recompute does (:func:`without_merged_lines`), as the parent need
-    not be in it.
+    not be in it. The batch checks record states facts of the anchor's
+    reading - its ion, its formula and its mechanism - and stays for as long
+    as the consensus names all three (:func:`batch_checks_record_reads`).
 
     :param members: The batch peak's occurrences.
     :param batch_peak_id: This batch peak's own id.
@@ -1127,6 +1248,8 @@ def compute_consensus(
         carries (:func:`merged_isotopologue_of_record`), or None.
     :param merged_isotopologues: The parent's record the anchor carries
         (:func:`merged_isotopologues_record`), or None.
+    :param batch_checks: The batch checks record the anchor carries
+        (:func:`batch_checks_record_of`), or None.
     """
     consensus = vote_consensus(members, batch_peak_id=batch_peak_id, manual=manual)
     if (
@@ -1159,6 +1282,13 @@ def compute_consensus(
         consensus.ionization_mechanism_id,
     ):
         consensus.provenance[MERGED_ISOTOPOLOGUES_KEY] = merged_isotopologues
+    if isinstance(batch_checks, dict) and batch_checks_record_reads(
+        batch_checks,
+        consensus.consensus_ion_formula,
+        consensus.consensus_formula,
+        consensus.ionization_mechanism_id,
+    ):
+        consensus.provenance[BATCH_CHECKS_KEY] = batch_checks
     return consensus
 
 
