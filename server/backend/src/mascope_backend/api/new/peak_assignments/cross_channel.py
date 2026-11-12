@@ -120,6 +120,33 @@ chooses between them. The finder never proposes the labelled neutral, and a
 reading whose neutral carries a labelled atom is not weighed if one ever
 reaches a row (:func:`carries_label`): the label is the reagent's, and an
 analyte does not carry it.
+
+Two more readings of the same ledger, recorded and not weighed
+--------------------------------------------------------------
+
+Step 4.16 reads two more layers of the adduct model
+(``mascope_tools.composition.corroboration``), each off the peak a neutral
+is read at through each channel: the brightest monoisotopic row committing
+it at candidate or better (:func:`brightest_by_channel`).
+
+- **The ratio of a neutral's channels** (:data:`INTENSITY_CONSISTENCY`): per
+  pair of its channels, ``ln(I_b / I_a)`` read against the same pair's ratio
+  over the sample's other neutrals, in their robust spread, and its band. It
+  is the per-sample point of the ratio the continuity pass reads across a
+  batch (step 4.11).
+- **In-source fragments** (:data:`IN_SOURCE_FRAGMENT_OF`,
+  :data:`IN_SOURCE_FRAGMENTS`): two neutrals committed through one channel,
+  one the other less a small neutral an ion sheds in the source, the lighter
+  on the shorter peak. The tiering pass names the pair on the lighter row as
+  a reason that caps nothing.
+
+Neither enters ``p_correct`` or a tier. On the anchor-swap benchmark
+(``tooling/score_eval/corroboration_benchmark.py``) a real adduct pair's ratio
+sits in its sample's consistent band less often than a chance pair's, so the
+ratio corroborates no consistency; and a peak one loss below a real ion is
+nearly as likely as one the same neutral above it, the spectrum's lattice of
+related formulas rather than fragmentation, nitric acid aside. The measurement
+is step 4.16's in ``docs/dev/assignment_quality_plan.md``.
 """
 
 from __future__ import annotations
@@ -142,6 +169,11 @@ from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
     TIER_CANDIDATE,
     TIER_RANK,
+)
+from mascope_tools.composition.corroboration import (
+    RATIO_BANDS,
+    channel_ratio_consistency,
+    in_source_fragment_pairs,
 )
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
 from mascope_tools.composition.heuristic_filter import (
@@ -184,6 +216,17 @@ SETTLED_BY_SECOND_CHANNEL = "second_channel"
 SETTLED_BY_PARTNER = "partner"
 SETTLED_BY_TARGET_LIBRARY = "target_library"
 SETTLED_BY_RADICAL = "radical"
+
+#: The record a row carries of its channel's ratios to its neutral's other
+#: channels, each read against the same pair's over the sample's other
+#: neutrals (step 4.16).
+INTENSITY_CONSISTENCY = "intensity_consistency"
+
+#: The records a row carries of the in-source fragment pairs it is in: the
+#: neutrals it may be a fragment of, and those that may be its fragments, each
+#: through the row's own channel (step 4.16).
+IN_SOURCE_FRAGMENT_OF = "in_source_fragment_of"
+IN_SOURCE_FRAGMENTS = "in_source_fragments"
 
 
 def donates_nitrogen(notation: str | None) -> bool:
@@ -521,12 +564,14 @@ def _named(reading: dict) -> dict:
     return {"alternative": reading.get("assigned_formula"), "via": reading["channel"]}
 
 
-def neutral_key(formula: str | None) -> str:
-    """A neutral's identity, independent of how its formula was written.
+def neutral_counts(formula: str | None) -> dict[str, int] | None:
+    """A neutral's element counts, however its formula was written.
 
     A formula the element counter cannot read is read as the partner gate reads
     one (``engine.formula_identity``): a target library holds what a person
     typed, and ``C6H4(CH3)2`` is the xylene a search writes ``C8H10``.
+
+    :return: The counts, or None for a formula nothing can read.
     """
     text = str(formula or "")
     counts = element_counts(text)
@@ -537,10 +582,17 @@ def neutral_key(formula: str | None) -> str:
                 for symbol, count in parse_composition(text).items()
                 if count
             }
-        except Exception:  # noqa: BLE001 - an unreadable formula keeps its own text
+        except Exception:  # noqa: BLE001 - an unreadable formula has no counts
             counts = None
+    return counts or None
+
+
+def neutral_key(formula: str | None) -> str:
+    """A neutral's identity, independent of how its formula was written
+    (:func:`neutral_counts`); a formula nothing can read keeps its own text."""
+    counts = neutral_counts(formula)
     if not counts:
-        return text
+        return str(formula or "")
     return " ".join(f"{element}{counts[element]}" for element in sorted(counts))
 
 
@@ -660,6 +712,158 @@ def partner_heights(
     return heights
 
 
+def brightest_by_channel(
+    assignments: list[dict], notation_by_id: dict[str, str]
+) -> dict[str, dict[str, dict]]:
+    """The peak each neutral is read at through each channel.
+
+    Per neutral, per channel, the brightest monoisotopic row that commits it at
+    candidate or better - the partner gate's bar for a partner
+    (:func:`partner_heights`). Another row of the neutral through the same
+    channel is that ion again, split or on a shoulder, so one peak per channel
+    is read, as the continuity pass reads one batch peak per channel. Of two
+    rows as bright, the first is kept.
+
+    :param assignments: Every row built for this sample.
+    :param notation_by_id: The run's mechanisms, by the id the rows carry.
+    :return: Per neutral (:func:`neutral_key`), per channel, the row.
+    """
+    brightest: dict[str, dict[str, dict]] = {}
+    for row in assignments:
+        if (
+            not is_committed(row)
+            or row.get("role") != ROLE_M0
+            or row.get("tier") not in (TIER_ASSIGNED, TIER_CANDIDATE)
+        ):
+            continue
+        notation = notation_by_id.get(str(row.get("ionization_mechanism_id")))
+        if not notation:
+            continue
+        by_channel = brightest.setdefault(neutral_key(row.get("assigned_formula")), {})
+        held = by_channel.get(notation)
+        if held is None or _height(row) > _height(held):
+            by_channel[notation] = row
+    return brightest
+
+
+def intensity_consistency(
+    brightest: dict[str, dict[str, dict]],
+) -> tuple[dict[int, list[dict]], dict]:
+    """Each neutral's channel ratios, read against the sample's other neutrals'.
+
+    The reading of a pair is recorded on both of its rows: each is one of the
+    two peaks the ratio was read off.
+
+    :param brightest: :func:`brightest_by_channel`.
+    :return: The records per row (by the row's identity), and what the run
+        records of them.
+    """
+    heights = {
+        neutral: {channel: _height(row) for channel, row in channels.items()}
+        for neutral, channels in brightest.items()
+    }
+    readings = channel_ratio_consistency(heights)
+    records: dict[int, list[dict]] = {}
+    bands = {band: 0 for _, band in RATIO_BANDS}
+    for neutral, found in readings.items():
+        for reading in found:
+            bands[reading.band] += 1
+            for channel in reading.pair:
+                records.setdefault(id(brightest[neutral][channel]), []).append(
+                    reading.as_record()
+                )
+    summary = {
+        "neutrals": len(readings),
+        "readings": sum(bands.values()),
+        "bands": bands,
+        "rows": len(records),
+    }
+    return records, summary
+
+
+def in_source_fragments(
+    brightest: dict[str, dict[str, dict]],
+) -> tuple[dict[int, list[dict]], dict[int, list[dict]], dict]:
+    """The pairs of neutrals one channel commits that are one in-source loss apart.
+
+    A neutral less a loss that the same channel also commits may be the
+    heavier one's fragment rather than a compound of its own, where its peak
+    is the shorter: a fragment's ions are its precursor's, so one taller than
+    its precursor would need most of that ion to break up in a soft source,
+    and the pair is the spectrum's lattice of related formulas instead. On a
+    dense sample that is much of what the loss table finds: of a demo uronium
+    sample's 1,230 committed monoisotopic rows, 778 are another's less a loss
+    through the same channel, in 55% of those pairs the lighter peak is the
+    taller, and 489 rows are left named. A neutral whose formula carries a
+    labelled atom, or nothing can read, is in no pair.
+
+    :param brightest: :func:`brightest_by_channel`.
+    :return: Per row (by its identity), the neutrals it may be a fragment of,
+        the brightest first; per row, the neutrals that may be its fragments;
+        and what the run records of them.
+    """
+    by_channel: dict[str, dict[str, dict]] = {}
+    for neutral, channels in brightest.items():
+        for channel, row in channels.items():
+            by_channel.setdefault(channel, {})[neutral] = row
+    fragment_of: dict[int, list[tuple[float, dict]]] = {}
+    fragments: dict[int, list[dict]] = {}
+    by_loss: dict[str, int] = {}
+    taller = 0
+    for channel in sorted(by_channel):
+        rows = by_channel[channel]
+        counts = {
+            neutral: found
+            for neutral, row in rows.items()
+            if not carries_label(row.get("assigned_formula"))
+            and (found := neutral_counts(row.get("assigned_formula")))
+        }
+        for pair in in_source_fragment_pairs(counts):
+            parent, fragment = rows[pair.parent], rows[pair.fragment]
+            parent_height = _height(parent)
+            if not _height(fragment) < parent_height:
+                taller += 1
+                continue
+            # Four significant figures, not decimals: a fragment under 5e-5 of
+            # its parent would otherwise store 0.
+            ratio = float(f"{_height(fragment) / parent_height:.4g}")
+            by_loss[pair.loss] = by_loss.get(pair.loss, 0) + 1
+            fragment_of.setdefault(id(fragment), []).append(
+                (
+                    parent_height,
+                    {
+                        "parent": parent.get("assigned_formula"),
+                        "loss": pair.loss,
+                        "via": channel,
+                        "parent_peak_assignment_id": parent.get("peak_assignment_id"),
+                        "height_ratio": ratio,
+                    },
+                )
+            )
+            fragments.setdefault(id(parent), []).append(
+                {
+                    "fragment": fragment.get("assigned_formula"),
+                    "loss": pair.loss,
+                    "via": channel,
+                    "fragment_peak_assignment_id": fragment.get("peak_assignment_id"),
+                    "height_ratio": ratio,
+                }
+            )
+    ordered = {
+        key: [entry for _, entry in sorted(found, key=lambda item: -item[0])]
+        for key, found in fragment_of.items()
+    }
+    summary = {
+        "pairs": sum(by_loss.values()),
+        "by_loss": dict(sorted(by_loss.items())),
+        "fragment_rows": len(ordered),
+        # Neutrals one loss apart whose lighter peak is the taller, or of the
+        # same height: no fragment of the heavier.
+        "lighter_peak_taller": taller,
+    }
+    return ordered, fragments, summary
+
+
 def apply_cross_channel(
     assignments: list[dict],
     *,
@@ -690,6 +894,11 @@ def apply_cross_channel(
     donors = nitrogen_donating_channels(channels_searched)
     channels = channels_by_neutral(assignments, notation_by_id)
     partners = partner_heights(assignments, notation_by_id, minor_channels)
+    # Step 4.16's two readings, taken off the ledger before this pass caps a
+    # row: a cap holds a row at candidate, which is still the bar they read at.
+    brightest = brightest_by_channel(assignments, notation_by_id)
+    consistency, consistency_summary = intensity_consistency(brightest)
+    fragment_of, fragments, fragments_summary = in_source_fragments(brightest)
     summary = {
         "channels": channels_searched,
         "reagent_channels": sorted(donors),
@@ -736,6 +945,11 @@ def apply_cross_channel(
         # nitrogen reason can be about. The same-ion rule itself runs on every
         # sample, whatever this says.
         "reagent_rule_applied": bool(donors),
+        # Step 4.16: the neutrals whose channel ratios were read against the
+        # sample's, by band, and the in-source fragment pairs, by loss.
+        # Recorded, not weighed: neither moves a tier or a probability.
+        INTENSITY_CONSISTENCY: consistency_summary,
+        IN_SOURCE_FRAGMENTS: fragments_summary,
     }
 
     # Owner id -> the reason its cap carried, and whether its rival is one the
@@ -754,6 +968,13 @@ def apply_cross_channel(
             "corroborated": corroborated,
             "partner_tier": partner_tier(seen, own_channel),
         }
+        for key, found in (
+            (INTENSITY_CONSISTENCY, consistency),
+            (IN_SOURCE_FRAGMENT_OF, fragment_of),
+            (IN_SOURCE_FRAGMENTS, fragments),
+        ):
+            if id(row) in found:
+                record[key] = found[id(row)]
         question = same_ion_question(
             row,
             notation_by_id,
