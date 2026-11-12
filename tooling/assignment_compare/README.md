@@ -198,6 +198,10 @@ marked: every target is stated per set.
 `decoy <arm> held`, `held_lt_350`, `held_ge_350`, `held_intensity`,
 `new_ion` and `on_control_reagent`, per set and pooled. They have no target
 yet (decision 31).
+A card reads a sample's arm only where its control is the run the card
+reads of that sample. An arm refused before it ran makes no run, so the
+newest arm the store keeps can be one an earlier build made against its own
+control: that arm is counted among the decoy arms not read.
 
 `--baseline` diffs the card against a previous `card.json` (or a set's), in
 the columns both hold: every reading whose value or count differs, or that
