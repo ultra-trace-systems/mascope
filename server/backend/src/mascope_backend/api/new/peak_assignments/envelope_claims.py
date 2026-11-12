@@ -131,29 +131,35 @@ def apply_claims(
     ]
 
 
-def _line_names(
-    owner: dict, line: ClaimedLine
+def isotopologue_names(
+    owner: dict, label: str, line_mz: float
 ) -> tuple[str | None, str | None, str | None]:
-    """The label and formulas a claimed line is written with.
+    """The label and formulas a line read as an owner's isotopologue is
+    written with: its isotope label, its ion formula and its isotope formula.
 
     In its owner's convention, so a claimed line reads like the lines its owner
     committed itself: a target list's isotopologue is labelled by its nominal
     mass offset and keeps the ion's formula, with the isotopologue's own formula
     beside it, and an untargeted one is labelled by its substitution and carries
     the isotopologue's formula as its ion.
+
+    :param owner: The owner's row, with its ``ion_formula``, ``source`` and
+        ``sample_peak_mz``.
+    :param label: The line, as the envelope predictor names it (``13C``).
+    :param line_mz: Where the owner's envelope puts the line.
     """
     ion = owner.get("ion_formula")
     try:
-        isotopologue = replace_atom_with_isotope(str(ion), line.label) if ion else None
+        isotopologue = replace_atom_with_isotope(str(ion), label) if ion else None
     except ValueError:
         isotopologue = None
     if owner.get("source") == SOURCE_DATABASE:
         return (
-            _isotope_offset_label(line.line_mz, _float(owner.get("sample_peak_mz"))),
+            _isotope_offset_label(line_mz, _float(owner.get("sample_peak_mz"))),
             ion,
             fit_isotope_formula(isotopologue),
         )
-    return line.label, isotopologue or ion, None
+    return label, isotopologue or ion, None
 
 
 def _read_as_line(
@@ -168,7 +174,9 @@ def _read_as_line(
     displaced = reading_as_alternative(row, DISPLACED_BY_CLAIM)
     previous = row.get("provenance") or {}
     owner_provenance = owner.get("provenance") or {}
-    label, ion_formula, isotope_formula = _line_names(owner, line)
+    label, ion_formula, isotope_formula = isotopologue_names(
+        owner, line.label, line.line_mz
+    )
     peak_mz = _float(row.get("sample_peak_mz"))
     intensity = _float(row.get("sample_peak_intensity"))
     owner_intensity = _float(owner.get("sample_peak_intensity"))

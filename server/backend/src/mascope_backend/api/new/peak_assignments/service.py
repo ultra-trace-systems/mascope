@@ -15,6 +15,7 @@ read model ("every peak in sample X with its formula and confidence"):
 
 import asyncio
 import copy
+import math
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Sequence
@@ -90,6 +91,7 @@ from mascope_backend.api.new.peak_assignments.claims import (
 from mascope_backend.api.new.peak_assignments.config import (
     IN_APP_ENGINE,
     INGEST_LEDGER_BATCH,
+    MAX_ALTERNATIVES_CEILING,
     MAX_UNTARGETED_PEAKS_CEILING,
     PEAK_ASSIGNMENT_ENGINE_VERSION,
     PeakAssignmentConfig,
@@ -112,6 +114,7 @@ from mascope_backend.api.new.peak_assignments.decoy import (
 )
 from mascope_backend.api.new.peak_assignments.engine import (
     CROSS_CHANNEL_KEY,
+    DISPLACED_BY_CLAIM,
     ENVELOPE_TOLERANCE_KEY,
     FRAGMENTS_KEY,
     LIST_PRIOR_WEIGHT,
@@ -119,6 +122,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     PARTNER_GATE_KEY,
     PATTERN_SCORING_KEY,
     REFERENCE_IDENTITIES_COL,
+    ROLE_ISO_CHILD,
     ROLE_M0,
     SEARCH_SCOPE_KEY,
     SOURCE_DATABASE,
@@ -134,6 +138,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     listed_formula_identities,
     pattern_scoring_for,
     pattern_scoring_snapshot,
+    reading_as_alternative,
     record_displaced_list_readings,
     record_mirror_same_ion_readings,
     sample_mass_accuracy,
@@ -146,6 +151,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
 from mascope_backend.api.new.peak_assignments.envelope_claims import (
     EnvelopeClaim,
     apply_claims,
+    isotopologue_names,
 )
 from mascope_backend.api.new.peak_assignments.envelope_fit import (
     RunEnvelopeFit,
@@ -2136,6 +2142,170 @@ def stamp_series(rows: Iterable[dict], series_by_peak: dict[str, dict]) -> int:
         provenance[SERIES_KEY] = dict(record)
         stamped += 1
     return stamped
+
+
+#: The provenance block a sample's row carries once the batch's
+#: merged-isotopologue reading rewrote it as an owner's line (step 4.2f): the
+#: line, the batch peaks of the row and of its parent, the share the batch read
+#: over its spectra, and the reading the row displaced.
+BATCH_ISOTOPOLOGUE = "batch_isotopologue"
+
+#: The provenance list an owner's row carries of the lines the batch's
+#: reading rewrote as its isotopologues, one entry per row.
+BATCH_ISOTOPOLOGUES = "batch_isotopologues"
+
+
+@dataclass(frozen=True)
+class BatchLine:
+    """A line the batch read a merged row as: a parent's isotopologue.
+
+    :param label: The line, as the envelope predictor names it (``13C``).
+    :param mz_offset: Its m/z above the parent's monoisotopic line.
+    :param share: Its predicted share of the parent's line.
+    :param batch_peak_id: The batch peak of the row read as the line.
+    :param parent_batch_peak_id: The batch peak of the parent.
+    :param reading: What the batch read of the share over its spectra
+        (``merged_isotopologues.ShareReading.to_json``).
+    :param batch_peak_run_id: The batch run that read it.
+    """
+
+    label: str
+    mz_offset: float
+    share: float
+    batch_peak_id: str
+    parent_batch_peak_id: str
+    reading: dict
+    batch_peak_run_id: str | None = None
+
+
+def read_as_batch_isotopologue(row: dict, owner: dict, line: BatchLine) -> dict:
+    """The values that rewrite a sample's row as its owner's isotopologue,
+    where the batch read the row's peak as the owner's line (step 4.2f).
+
+    The per-sample side of a merged row the batch strips: the sample's row on
+    the line's peak becomes an isotopologue child of the sample's row on the
+    parent's peak, so the sample's ledger agrees with the batch's. Written as
+    step 2.4e's claims write a line (``envelope_claims``): in the owner's
+    convention (:func:`envelope_claims.isotopologue_names`), measured by the
+    owner's fit, with the reading it displaced first among its alternatives,
+    where "use this" puts it back. The tier is the owner's, as a line the
+    stages commit carries its owner's: the batch read the share over its
+    spectra, which is no doubt a single file could raise. The row is left as
+    it is; the caller writes the values, onto a dict or a stored row.
+
+    :param row: The sample's row on the line's peak.
+    :param owner: The sample's row on the parent's peak.
+    :param line: What the batch read the row as.
+    :return: The row's new column values.
+    """
+    displaced = reading_as_alternative(row, DISPLACED_BY_CLAIM)
+    previous = row.get("provenance") or {}
+    owner_provenance = owner.get("provenance") or {}
+    owner_mz = _finite(owner.get("sample_peak_mz"))
+    line_mz = None if owner_mz is None else owner_mz + line.mz_offset
+    label, ion_formula, isotope_formula = isotopologue_names(
+        owner, line.label, line_mz if line_mz is not None else 0.0
+    )
+    peak_mz = _finite(row.get("sample_peak_mz"))
+    intensity = _finite(row.get("sample_peak_intensity"))
+    owner_intensity = _finite(owner.get("sample_peak_intensity"))
+    observed = (
+        intensity / owner_intensity
+        if intensity is not None and owner_intensity
+        else None
+    )
+    record = {
+        "line": line.label,
+        "batch_peak_id": line.batch_peak_id,
+        "parent_batch_peak_id": line.parent_batch_peak_id,
+        "predicted_mz": None if line_mz is None else round(line_mz, 6),
+        "predicted_share": round(line.share, 6),
+        "observed_share": None if observed is None else round(observed, 6),
+        "reading": dict(line.reading),
+        "batch_peak_run_id": line.batch_peak_run_id,
+        "displaced": {
+            "role": row.get("role"),
+            "assigned_formula": row.get("assigned_formula"),
+            "ion_formula": row.get("ion_formula"),
+            "ionization_mechanism_id": row.get("ionization_mechanism_id"),
+            "isotope_label": row.get("isotope_label"),
+            "source": row.get("source"),
+            "tier": row.get("tier"),
+            "evidence": previous.get("evidence"),
+        },
+    }
+    alternatives = row.get("alternatives") or []
+    if row.get("assigned_formula"):
+        # A peak the run left unassigned had no reading to put back.
+        alternatives = [displaced, *alternatives]
+    return {
+        "role": ROLE_ISO_CHILD,
+        "assigned_formula": owner.get("assigned_formula"),
+        "ion_formula": ion_formula,
+        "ionization_mechanism_id": owner.get("ionization_mechanism_id"),
+        "isotope_label": label,
+        "isotope_formula": isotope_formula,
+        "source": owner.get("source"),
+        "fit_score": owner.get("fit_score"),
+        "mz_error_ppm": (
+            None
+            if peak_mz is None or line_mz is None
+            else (peak_mz - line_mz) / line_mz * 1e6
+        ),
+        "abundance_error": (
+            None if observed is None or line.share <= 0 else observed / line.share - 1.0
+        ),
+        "tier": owner.get("tier"),
+        "target_compound_id": owner.get("target_compound_id"),
+        "target_ion_id": owner.get("target_ion_id"),
+        "owner_peak_assignment_id": owner.get("peak_assignment_id"),
+        "alternatives": alternatives[:MAX_ALTERNATIVES_CEILING] or None,
+        "provenance": {
+            key: owner_provenance[key]
+            for key in ("plausibility", "evidence", "score_version")
+            if key in owner_provenance
+        }
+        | {BATCH_ISOTOPOLOGUE: record},
+    }
+
+
+def with_batch_isotopologue_line(owner: dict, row: dict, line: BatchLine) -> dict:
+    """The owner's provenance with the line the batch rewrote recorded on it,
+    so the rewrite is read on both rows: the row it took, its peak and batch
+    peak, and the line. A line recorded for the same peak before is replaced.
+
+    :param owner: The sample's row on the parent's peak.
+    :param row: The sample's row it took as its line.
+    :param line: What the batch read the row as.
+    :return: The owner's new provenance; the owner is left as it is.
+    """
+    provenance = dict(owner.get("provenance") or {})
+    entries = [
+        entry
+        for entry in provenance.get(BATCH_ISOTOPOLOGUES) or []
+        if isinstance(entry, dict)
+        and entry.get("sample_peak_id") != row.get("sample_peak_id")
+    ]
+    entries.append(
+        {
+            "peak_assignment_id": row.get("peak_assignment_id"),
+            "sample_peak_id": row.get("sample_peak_id"),
+            "line": line.label,
+            "batch_peak_id": line.batch_peak_id,
+            "parent_batch_peak_id": line.parent_batch_peak_id,
+            "batch_peak_run_id": line.batch_peak_run_id,
+        }
+    )
+    provenance[BATCH_ISOTOPOLOGUES] = entries
+    return provenance
+
+
+def _finite(value) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def judge_commits(

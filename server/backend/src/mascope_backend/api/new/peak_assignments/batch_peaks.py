@@ -34,7 +34,10 @@ This module holds the PURE logic (no DB, no I/O) behind the batch overview:
   and so do an isotopologue stamping's records: the diagnostic isotopologues
   predicted for the anchor's reading, and on a stamped line the parent it is an
   isotopologue of (:func:`diagnostic_isotopologues_record_of`,
-  :func:`stamped_isotopologue_of_record`).
+  :func:`stamped_isotopologue_of_record`). So do the records of a row the
+  merged-isotopologue reading stripped to a parent's line and of the parent
+  that took it (:func:`merged_isotopologue_of_record`,
+  :func:`merged_isotopologues_record`).
 
 - **Continuity's gates**: the provisional constants of the ratio-stability
   pass (``continuity.py``), beside the consensus constants, and the test a
@@ -883,6 +886,90 @@ def stamped_lines(record: Optional[dict]) -> set[str]:
     }
 
 
+#: The anchor's provenance key the batch's merged-isotopologue reading
+#: (``batch_merged_isotopologues.py``) writes a stripped row's record under: the
+#: parent whose isotope line the row is, which line, the share it read over
+#: the batch, the reading the row carried before, and per sample what each
+#: rewritten member read (``displaced_members``).
+MERGED_ISOTOPOLOGUE_OF_KEY = "merged_isotopologue_of"
+
+#: The key it writes the parent's record under: the reading the lines were
+#: read against, and each line the parent took from the ledger's rows.
+MERGED_ISOTOPOLOGUES_KEY = "merged_isotopologues"
+
+
+def merged_isotopologue_of_record(anchor: Any) -> Optional[dict]:
+    """The stripped row's record an anchor carries under
+    ``provenance.merged_isotopologue_of``, or None. A record names its parent;
+    anything else under that key is not one."""
+    provenance = _member(anchor, "provenance")
+    if not isinstance(provenance, dict):
+        return None
+    record = provenance.get(MERGED_ISOTOPOLOGUE_OF_KEY)
+    if isinstance(record, dict) and record.get("batch_peak_id"):
+        return record
+    return None
+
+
+def merged_isotopologue_of_reads(record: dict, isotopologue_of: Any) -> bool:
+    """Whether a stripped row's record stands beside the anchor's family link:
+    the members still read the row as that parent's line."""
+    return bool(isotopologue_of) and record.get("batch_peak_id") == isotopologue_of
+
+
+def standing_merged_isotopologue_of_record(anchor: Any) -> Optional[dict]:
+    """The stripped row's record an anchor carries, where its members still
+    read it as the parent's line; None otherwise.
+
+    The strip rewrote the members, so the consensus names the parent by its
+    members' own family link (:func:`resolve_isotopologue_of`). A vote, a
+    curation or a re-fold that moves the members off it takes the record off
+    (:func:`compute_consensus`).
+    """
+    record = merged_isotopologue_of_record(anchor)
+    if record is None or not merged_isotopologue_of_reads(
+        record, _member(anchor, "isotopologue_of")
+    ):
+        return None
+    return record
+
+
+def merged_isotopologue_of_summary(anchor: Any) -> Optional[dict]:
+    """What the ledger serves of a stripped row's record: everything but what
+    each member read before, which the strip's run snapshot keeps as the
+    members' own state."""
+    record = standing_merged_isotopologue_of_record(anchor)
+    if record is None:
+        return None
+    return {key: value for key, value in record.items() if key != "displaced_members"}
+
+
+def merged_isotopologues_record(anchor: Any) -> Optional[dict]:
+    """The parent's record an anchor carries under
+    ``provenance.merged_isotopologues``, or None. A record names a formula;
+    anything else under that key is not one."""
+    provenance = _member(anchor, "provenance")
+    if not isinstance(provenance, dict):
+        return None
+    record = provenance.get(MERGED_ISOTOPOLOGUES_KEY)
+    if isinstance(record, dict) and record.get("formula"):
+        return record
+    return None
+
+
+def standing_merged_isotopologues_record(anchor: Any) -> Optional[dict]:
+    """The parent's record an anchor carries, where its lines were read
+    against the anchor's consensus formula and mechanism; None otherwise."""
+    record = merged_isotopologues_record(anchor)
+    if record is None or not _reads(
+        record,
+        _member(anchor, "consensus_formula"),
+        _member(anchor, "ionization_mechanism_id"),
+    ):
+        return None
+    return record
+
+
 def resolution_from_tol_ppm(
     tol_ppm: Optional[float], drift_margin_ppm: float = DEFAULT_DRIFT_MARGIN_PPM
 ) -> Optional[float]:
@@ -982,9 +1069,11 @@ def compute_consensus(
     co_variation: Optional[dict] = None,
     diagnostic_isotopologues: Optional[dict] = None,
     stamped_isotopologue_of: Optional[dict] = None,
+    merged_isotopologue_of: Optional[dict] = None,
+    merged_isotopologues: Optional[dict] = None,
 ) -> Consensus:
-    """:func:`vote_consensus`, with the anchor's series, co-variation and
-    stamping records carried along.
+    """:func:`vote_consensus`, with the anchor's series, co-variation,
+    stamping and strip records carried along.
 
     The series record says a homologous series proposed a formula for this
     anchor. It is about that formula and not about the peak, so it stays in the
@@ -997,7 +1086,11 @@ def compute_consensus(
     isotopologues record, the lines predicted for that reading. A stamp record
     is about the line's height against its parent, not about what the line's
     own members read, so it stays whatever the line's consensus names; the
-    parent's recompute takes it off when the parent's reading moves.
+    parent's recompute takes it off when the parent's reading moves. A row the
+    merged-isotopologue reading stripped keeps its record while its members
+    still name that parent (:func:`merged_isotopologue_of_reads`), and the
+    parent keeps its list of lines while it names the reading they were read
+    against.
 
     :param members: The batch peak's occurrences.
     :param batch_peak_id: This batch peak's own id.
@@ -1010,6 +1103,10 @@ def compute_consensus(
         anchor carries (:func:`diagnostic_isotopologues_record_of`), or None.
     :param stamped_isotopologue_of: The stamp record the anchor carries
         (:func:`stamped_isotopologue_of_record`), or None.
+    :param merged_isotopologue_of: The stripped row's record the anchor
+        carries (:func:`merged_isotopologue_of_record`), or None.
+    :param merged_isotopologues: The parent's record the anchor carries
+        (:func:`merged_isotopologues_record`), or None.
     """
     consensus = vote_consensus(members, batch_peak_id=batch_peak_id, manual=manual)
     if (
@@ -1032,6 +1129,16 @@ def compute_consensus(
         "batch_peak_id"
     ):
         consensus.provenance[STAMPED_ISOTOPOLOGUE_OF_KEY] = stamped_isotopologue_of
+    if isinstance(merged_isotopologue_of, dict) and merged_isotopologue_of_reads(
+        merged_isotopologue_of, consensus.isotopologue_of
+    ):
+        consensus.provenance[MERGED_ISOTOPOLOGUE_OF_KEY] = merged_isotopologue_of
+    if isinstance(merged_isotopologues, dict) and _reads(
+        merged_isotopologues,
+        consensus.consensus_formula,
+        consensus.ionization_mechanism_id,
+    ):
+        consensus.provenance[MERGED_ISOTOPOLOGUES_KEY] = merged_isotopologues
     return consensus
 
 

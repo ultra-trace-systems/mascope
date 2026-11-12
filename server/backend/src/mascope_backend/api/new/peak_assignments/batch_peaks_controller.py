@@ -48,6 +48,8 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     diagnostic_isotopologues_record_of,
     fold_in_sample,
     manual_pin_of,
+    merged_isotopologue_of_record,
+    merged_isotopologues_record,
     mz_delta_ppm,
     resolution_adaptive_tol_ppm,
     resolve_candidate,
@@ -623,6 +625,8 @@ async def _recompute_consensus_chunk(
             co_variation=co_variation_record_of(bp),
             diagnostic_isotopologues=diagnostic_isotopologues,
             stamped_isotopologue_of=stamped_isotopologue_of_record(bp),
+            merged_isotopologue_of=merged_isotopologue_of_record(bp),
+            merged_isotopologues=merged_isotopologues_record(bp),
         )
         if (
             diagnostic_isotopologues is not None
