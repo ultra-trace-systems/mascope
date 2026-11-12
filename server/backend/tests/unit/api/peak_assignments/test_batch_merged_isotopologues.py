@@ -10,11 +10,15 @@ reading are the library's (``libraries/tools/tests/test_merged_isotopologues.py`
 See ``batch_merged_isotopologues.py``.
 """
 
+import threading
 from types import SimpleNamespace
 
 import pytest
 
-from mascope_backend.api.new.peak_assignments import service
+from mascope_backend.api.new.peak_assignments import (
+    batch_merged_isotopologues,
+    service,
+)
 from mascope_backend.api.new.peak_assignments.batch_merged_isotopologues import (
     ALREADY,
     HELD_CURATED,
@@ -765,6 +769,29 @@ class TestTheRecords:
         )
         assert merged_isotopologues_record(parent) is not None
         assert standing_merged_isotopologues_record(parent) is None
+
+
+class TestTheRun:
+    @pytest.mark.asyncio
+    async def test_the_reading_runs_off_the_event_loop(self, monkeypatch):
+        """Every merged ion's lines and every pair are read in a thread, as
+        the sibling batch runs read theirs: inline it holds the loop for a
+        second or more on a large batch."""
+        threads = []
+
+        async def load(sample_batch_id):
+            return [], {}, set()
+
+        def reading(anchors, members, hand):
+            threads.append(threading.get_ident())
+            return Plan()
+
+        monkeypatch.setattr(batch_merged_isotopologues, "_load_batch", load)
+        monkeypatch.setattr(batch_merged_isotopologues, "plan_batch", reading)
+        summary = await batch_merged_isotopologues.run_batch_merged_isotopologues("b")
+        assert summary["stripped"] == 0
+        assert len(threads) == 1
+        assert threads[0] != threading.get_ident()
 
 
 class TestTheSummary:

@@ -696,3 +696,77 @@ async def test_a_row_its_samples_read_again_as_a_compound_is_read_again(
     assert sorted(entry["batch_peak_id"] for entry in lines) == sorted(
         [ids["x"], ids["o"]]
     )
+
+
+async def test_a_13c_line_folded_since_the_reading_holds_its_row(
+    async_session_factory, strip_batch
+):
+    """Two samples folded again between the reading and the write bring the
+    13C row's own 13C line, folded under it: the row carries an envelope of
+    its own now, and is held, though its other samples still turn its vote.
+    The line is found where its members sit, not where its anchor was minted:
+    the first sample minted it 1.6 ppm off the line, outside the window, and
+    the two sit 0.7 ppm off it."""
+    batch, samples, ids = strip_batch, strip_batch["samples"], strip_batch["ids"]
+    plan = await _planned(batch["batch_id"])
+    [pair] = [p for p in plan.stripped if p.row.batch_peak_id == ids["x"]]
+    assert {p.row.batch_peak_id for p in plan.stripped} == {ids["x"], ids["o"]}
+    assert pair.window_ppm == pytest.approx(1.0)
+    [c13] = [
+        line
+        for line in batch_merged_isotopologues.lines_of(pair.row)
+        if line.isotopologue.label == "13C"
+    ]
+    for name, off_ppm in (("S02", 1.6), ("S03", -0.2)):
+        index = int(name[1:])
+        rows = _rows(samples[name], index)
+        [own] = [row for row in rows if row["sample_peak_id"] == "x"]
+        rows.append(
+            {
+                **own,
+                "peak_assignment_id": gen_id(32),
+                "sample_peak_id": "x13",
+                "sample_peak_mz": c13.mz * (1 + off_ppm / 1e6),
+                "sample_peak_intensity": own["sample_peak_intensity"]
+                * c13.isotopologue.ratio,
+                "role": "iso_child",
+                "ion_formula": "[13C]C8H11N2O2-",
+                "isotope_label": "13C",
+                "owner_peak_assignment_id": own["peak_assignment_id"],
+            }
+        )
+        assert (
+            await fold_sample_into_batch_peaks(
+                samples[name],
+                rows=[SimpleNamespace(**r) for r in rows],
+                persisted=False,
+            )
+            is not None
+        )
+    async with async_session_factory() as session:
+        [line] = (
+            (
+                await session.execute(
+                    select(BatchPeak).where(BatchPeak.isotopologue_of == ids["x"])
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert abs(line.mz - c13.mz) / c13.mz * 1e6 > pair.window_ppm
+    assert len(await _members(async_session_factory, line.batch_peak_id)) == 2
+
+    written = await batch_merged_isotopologues._write_chunk(
+        batch["batch_id"], plan.stripped, None
+    )
+    assert {w.pair.row.batch_peak_id: w.outcome for w in written} == {
+        ids["x"]: "own_13c",
+        ids["o"]: "stripped",
+    }
+    anchors = await _anchors(async_session_factory, batch)
+    assert anchors["x"].isotopologue_of is None
+    assert _stripped(anchors["x"]) is None
+    for member in (await _members(async_session_factory, ids["x"])).values():
+        assert member.role == role_code("M0")
+    rows = await _run_rows(async_session_factory, batch["runs"][RUN_SAMPLE])
+    assert rows["x"].role == "M0"
