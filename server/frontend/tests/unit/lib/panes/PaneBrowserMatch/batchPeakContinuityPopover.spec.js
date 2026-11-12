@@ -30,6 +30,7 @@ const row = (extra = {}, detail = {}) => ({
     formula: 'C6H12O6',
     n_present_at_compute: 40,
     n_pairs: 2,
+    grades: { red: 1, stable: 1 },
     warnings: [],
     pairs: [pair('red'), pair('stable')],
     ...detail
@@ -71,13 +72,31 @@ describe('BatchPeakContinuityPopover', () => {
 
   it('heads the list with a stale and a partial warning', () => {
     const wrapper = mountPopover({
-      row: row({ continuity_stale: true, n_present: 44 }, { warnings: ['partial'], n_pairs: 9 })
+      row: row(
+        { continuity_stale: true, n_present: 44 },
+        { warnings: ['partial'], n_pairs: 9, grades: { red: 3, stable: 2 } }
+      )
     })
     expect(wrapper.find('[data-testid="continuity-warning"]').text()).toMatch(
       /Graded at 40 samples - the batch peak is in 44 now/
     )
     expect(wrapper.find('[data-testid="continuity-partial"]').text()).toMatch(/^Partial/)
-    expect(wrapper.text()).toContain('Showing 2 of 9 pairs')
+    // Of the pairs the pass graded, not of the nine the anchor is in.
+    expect(wrapper.text()).toContain('Showing 2 of 5 graded pairs')
+  })
+
+  it('says none of the pairs was graded where all fell past the cap', () => {
+    const wrapper = mountPopover({
+      row: row(
+        { continuity_grade: null },
+        { warnings: ['partial'], n_pairs: 3, grades: {}, pairs: [] }
+      )
+    })
+    expect(wrapper.find('[data-testid="continuity-partial"]').text()).toMatch(
+      /none of these was graded/
+    )
+    expect(wrapper.find('table').exists()).toBe(false)
+    expect(wrapper.text()).not.toMatch(/Showing/)
   })
 
   it('says why a batch was not graded, with no pairs to list', () => {
