@@ -108,6 +108,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 4.8 - blend splitting: a batch peak whose members disagree along intensity or time | - |  | the flag half built, the split not: after every vote the two leading formulas are tested for a clean parting, intensity by a Mann-Whitney rank test (p 0.01, 90 % of pairs one way), acquisition time by an exact runs test (p 0.01, at most half the runs an interleaving gives), over the members at candidate or better, never two formulas reading one ion; a probable blend is recorded on the batch peak (`blend`), marked in the ledger with a filter, both formulas on the chart; read on the testbed's nine fully folded ledgers, 92 flags (0 on set A's batch, 1 on the largest analysis batch), four of ten read by hand two compounds on one peak, so the split waits; no tier moves; MAS-320 |
 | 4.9 - refuse or segregate mixed-instrument batches at the fold | - |  | built: segregated; the fold searches a batch's anchors per mode and per instrument type, read off the anchor's intensity unit; the ledger and the series name the partition (`instrument_type`), the Batch peaks ledger shows one at a time and the chart draws only its selection; a single-instrument batch folds as before; moves no metric; MAS-321 |
 | 4.11 - temporal continuity: the ratio-stability pass, its columns and its endpoint | - |  | built: every isotope line and its family root, and every two channels of one neutral, at assigned or candidate, graded on the within-sample ratio across a time-ordered batch (spread 1.4826 x MAD, drift by Spearman rho and a Theil-Sen change): stable, drift (the traces co-vary per 4.2), red, inconclusive or insufficient, on two `batch_peak` columns the ledger serves with a stale mark; run by its endpoint and at a rebuild's end, the fold trigger off for 4.13; on the testbed's six folded analysis batches 1,752 pairs, 1,008 stable, 122 red, 24 drift, the isotope reds a dim line's response; no tier moves; MAS-323 |
+| 4.12 - the continuity column and badge in the batch ledger, and the per-sample overlay | - |  | built: a *Continuity* column after *Samples* in the *Batch peaks* ledger, offered once the pass graded the batch: stable, drift and red as a badge, inconclusive and insufficient muted, *Not graded* where the batch is not time-ordered, dashed where partial, a clock where stale; its own sort (red first, ungraded last) in the pane's projection; the pairs with their ratio, spread and drift in a popover; an isotope line's own grade on its row while unfolded; the help card; the per-sample overlay and its effective-verdict filter had shipped with the anchor verdicts; display-only; MAS-346 |
 | 4.15 - Stage B winner confidence | - |  | built, off by default: `stage_b_confidence` on the run config measures the formula-only shortlist of the untargeted stage's committed winners, the most intense first up to `stage_b_confidence_peaks` (200), in one seeded pass through every channel the run searched, scored at the width the winners were re-scored at, and stores each winner's `confidence`, `n_candidates` and `is_tie` in provenance as Stage A does, one candidate per ion on the peak (two splits of one ion are one hypothesis, the winner's own ion no rival) (`alternatives_scoring.measure_winner_confidence`, the inspector's placement rule); a winner past the budget records none; `search_scope.winner_confidence` records the counts and the seconds; `p_correct` stays null on Stage B rows (the scale now matches, the curve's population and the batch consensus that reads it do not); no tier moves; the runtime on the gate sets is the bench's to record; MAS-325 |
 | 4.18 - bound the harm of a mismatched chemistry context, graded or gate | - |  | measured (2026-11-13, demo sets Db and Du, standing in for the gate sets, `tooling/score_eval/arbitration_eval.py`, pools merged by ion as Stage B elects them): the matched context lifts contested top-1 0.724 -> 0.989 and true winners kept at 5 % FDR 13,870 -> 15,962 against `none`, removing no true reading; the two defaults swapped stay above `none` (0.979, 15,830) at the cost of 80 glycerol readings; the worst context, combustion, removes 1,619 and leaves the uronium set no cut at 5 % FDR. Every removed truth was a ratio window's, never a cap's. 596 uronium anchors whose seeded reading loses its own ion's election are counted apart (#3191). Decision 11.4 of `chemistry_profiles.md` decided: a default must leave its own sets and every other bench set at or above `none` (BR and UR pass). The windows become a graded, floored factor (#3188); the identity context is pinned byte for byte (`TestTheIdentityContext`); MAS-328 |
 | 4.19 - the active-learning verification queue, with the three calibration-label calls | - |  | built: `GET /peak-assignments/sample/{id}/verification-queue` ranks the run's unjudged rows within 0.1 evidence of a band edge by closeness and by the labels the instrument class and reagent profile hold within 0.05, with seeded spot checks every fifth place and stale verdicts (a later run reassigned or rescored the judged peak) first; the ledger's *to verify* chip and column; no `p_correct` or evidence in the queue; the refit weighs labels by evidence level (reference standard and MS/MS 1, orthogonal 0.6, pattern 0.4, visual and unstated 0.25) and records the weights on the curve (`label_weights`); per instrument and profile, down-weight, keep the snapshot and mark it stale (section 7 of `verification_calibration_loop.md`); moves no metric; MAS-329 |
@@ -2240,6 +2241,34 @@ who edits chemistry and stays last.
 - **Not done here.** No gate number moves: the grade is read by nothing.
   The pass on a live testbed clone (rather than the copy's ledgers through
   the pure grading) and at 10^4 and 10^5 anchors are 4.13's.
+
+### 4.12 The continuity column and badge, and the per-sample overlay
+
+- **What.** The continuity note's increments C and D (sections 5 and 9):
+  the grade on the batch ledger, and the anchor verdict on the per-sample
+  ledger with its precedence.
+- **As built (MAS-346).** `PaneBrowserBatchPeaks.vue` gains a *Continuity*
+  column after *Samples*, offered once some batch peak shown carries a
+  `continuity` detail, as the co-variation column is offered. The three
+  grades that claim something (stable, drift, red) are an outlined badge in
+  a state colour; inconclusive and insufficient read muted; an anchor whose
+  batch had its grades withdrawn reads *Not graded*, with the reason. A
+  `partial` warning draws the badge dashed, and `continuity_stale` (the
+  note's one-fold-behind) outlines it in the warning colour with a clock.
+  `continuityRank` joins `tierRank` in the pane's `decorated` projection, the
+  order of alarm, so the column sorts through `compareBy` with nulls last;
+  nothing is added to the ledger store. The cell opens a popover with the
+  pairs the detail lists (`BatchPeakContinuityPopover.vue`): partner, grade,
+  samples, median ratio, spread, drift with rho, and 4.2's verdict on a
+  channel pair. An isotope line shows its own grade, on its pair with the
+  root, on its own row: only while the Isotopologues toggle is on, since a
+  folded child has no row. The words are `lib/batchContinuity.js`; the help
+  card `docs/user/_help/batch-continuity.md`. The per-sample half -
+  precedence, the claim-mismatch rule and the effective-verdict filter with
+  its release note - had shipped with the anchor verdicts
+  (`anchorContext.overlayFor`, `PaneBrowserAssignment.vue`) and is unchanged.
+- **Not built.** The inspector's continuity line (the note's section 5) and
+  a continuity filter chip.
 
 ## Milestone 6 - the bench
 
