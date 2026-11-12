@@ -23,11 +23,13 @@ from mascope_backend.api.new.peak_assignments.batch_known_species import (
     BACKGROUND_TAG,
     BATCH_CLAIM,
     HELD_CURATED,
+    HELD_TWIN,
     HELD_VOTE,
     KEPT_CARRIES_LINES,
     KEPT_CLAIMED_OTHERWISE,
     KEPT_HAND_ASSIGNED,
     KEPT_LINE_OF_ANOTHER,
+    KEPT_ON_TWIN,
     KEPT_TARGET_LIBRARY,
     LISTED_CLAIM_TIER,
     OWN_CLAIM,
@@ -406,6 +408,35 @@ class TestEachFile:
         assert not LIBRARY.can_have("")
         assert not LIBRARY.can_have(None)
 
+    def test_a_line_needs_as_many_atoms_as_its_label_names(self):
+        carbonate = Species(kind="library", ion_formula="CO3-")
+        bromide = Species(kind="library", ion_formula="Br-")
+        dibromide = Species(kind="library", ion_formula="HBr2-")
+
+        assert carbonate.can_have("13C")
+        assert not carbonate.can_have("13C2")
+        assert carbonate.can_have("18O3")
+        assert not carbonate.can_have("18O4")
+        assert not carbonate.can_have("13C+13C")
+        assert LIBRARY.can_have("13C3")
+        assert not LIBRARY.can_have("13C4")
+        # 2x81Br and 81Br2 both name two atoms; a pair's label names one.
+        assert not bromide.can_have("81Br2")
+        assert not bromide.can_have("2x81Br")
+        assert bromide.can_have("81Br(pair)")
+        assert dibromide.can_have("81Br2")
+        assert dibromide.can_have("2x81Br")
+        # A label read as no isotope is not one the ion can be shown to have.
+        assert not LIBRARY.can_have("M+1")
+        assert not LIBRARY.can_have("13C+M")
+
+    def test_a_two_atom_line_under_a_one_atom_ion_keeps_the_file(self):
+        carbonate = Species(kind="library", ion_formula="CO3-")
+        reading = analyte("s1", "C2H2O4", "C2HO4-")
+
+        assert sample_decision(reading, carbonate, ("13C",)) is None
+        assert sample_decision(reading, carbonate, ("13C2",)) == KEPT_CARRIES_LINES
+
     def test_an_unread_peak_and_an_analyte_are_claimed(self):
         assert sample_decision(member("s2"), LIBRARY) is None
         assert sample_decision(analyte("s1"), LIBRARY) is None
@@ -779,6 +810,176 @@ class TestThePlan:
         )
 
         assert plan.decisions == []
+
+
+def _twin(samples, key="W"):
+    """The trimer's trace split by the fold: a second batch peak of it, 3 ppm
+    higher, with ``samples`` -> its member there."""
+    mz = TRIMER_MZ * (1 + 3e-6)
+    return Row(
+        anchor(key, mz, ion=TRIMER, role="reagent"),
+        {s: found(s) for s, found in samples.items()},
+    )
+
+
+def _peak(sample, fn, **fields):
+    """A member of a twin, on a peak of its own in the sample."""
+    return fn(sample, mz=TRIMER_MZ * (1 + 3e-6), sample_peak_id=f"q-{sample}", **fields)
+
+
+class TestTheTwins:
+    """The fold split a species' trace over two batch peaks: one claims it."""
+
+    def _plan(self, *rows):
+        plan = plan_batch(
+            [row.anchor for row in rows],
+            {row.batch_peak_id: row.members for row in rows},
+            {},
+        )
+        return plan, {d.row.batch_peak_id: d for d in plan.decisions}
+
+    def _split(self):
+        """``T`` in s0-s3, claimed in s0; ``W`` in s0 and s2-s4, claimed in s3,
+        an analyte at assigned in s0."""
+        first = Row(
+            anchor("T", TRIMER_MZ, ion=TRIMER, role="reagent"),
+            {
+                "s0": claimed("s0"),
+                "s1": member("s1"),
+                "s2": member("s2"),
+                "s3": member("s3"),
+            },
+        )
+        second = _twin(
+            {
+                "s0": lambda s: _peak(s, analyte, formula="C4H12N4O4"),
+                "s2": lambda s: _peak(s, member),
+                "s3": lambda s: _peak(s, claimed),
+                "s4": lambda s: _peak(s, member),
+            }
+        )
+        return first, second
+
+    def test_one_batch_peak_per_ion_claims_and_keeps_a_sample_that_reads_it_on_the_other(
+        self,
+    ):
+        plan, by_id = self._plan(*self._split())
+
+        claiming, twin = by_id["T"], by_id["W"]
+        assert claiming.verdict.present and twin.verdict.present
+        assert claiming.held is None
+        assert claiming.twins == ["W"]
+        assert claiming.samples == {
+            "s0": ALREADY,
+            "s1": None,
+            "s2": None,
+            "s3": KEPT_ON_TWIN,
+        }
+        assert (
+            claiming.verdict.evidence.claimable,
+            claiming.verdict.evidence.kept,
+        ) == (
+            2,
+            1,
+        )
+        # The twin claims nothing: s0's analyte stands.
+        assert twin.held == HELD_TWIN
+        assert twin.twin_of == "T"
+        assert not twin.claims
+        [counts] = plan.counts.values()
+        assert (counts["claimed"], counts["held"]) == (1, 1)
+
+    def test_the_batch_peak_in_the_most_files_claims(self):
+        first, second = self._split()
+        second.members["s5"] = _peak("s5", member)
+        _, by_id = self._plan(first, second)
+
+        assert by_id["W"].held is None
+        assert by_id["W"].twins == ["T"]
+        # s0 reads the ion on T, its own claim: the analyte there stands.
+        assert by_id["W"].samples["s0"] == KEPT_ON_TWIN
+        assert by_id["T"].held == HELD_TWIN
+        assert by_id["T"].twin_of == "W"
+
+    def test_a_held_batch_peak_leaves_the_claim_to_its_twin(self):
+        first, second = self._split()
+        second.members["s5"] = _peak("s5", member)
+        second.anchor.provenance = {"manual": {"formula": "C4H12N4O4"}}
+        _, by_id = self._plan(first, second)
+
+        assert by_id["W"].held == HELD_CURATED
+        assert by_id["T"].held is None
+        assert by_id["T"].samples["s3"] == KEPT_ON_TWIN
+
+    def test_a_twin_that_is_not_pooled_still_keeps_the_sample_it_reads_in(self):
+        first = trimer_row(SAMPLES[:5])
+        second = _twin({"s2": lambda s: _peak(s, claimed)})
+        _, by_id = self._plan(first, second)
+
+        assert by_id["W"].verdict.verdict == VERDICT_UNPOOLED
+        assert by_id["W"].held is None
+        assert by_id["T"].held is None
+        assert by_id["T"].samples["s2"] == KEPT_ON_TWIN
+        assert by_id["T"].samples["s3"] is None
+
+    def test_a_species_with_no_twin_is_left_as_decided(self):
+        _, by_id = self._plan(trimer_row(SAMPLES[:5]))
+
+        assert by_id["T"].twins == []
+        assert by_id["T"].twin_of is None
+
+    def test_another_ion_is_no_twin(self):
+        first = trimer_row(SAMPLES[:5])
+        other = Row(
+            anchor("W", 199.11, ion="C3H15N6O4+", role="reagent"),
+            {s: claimed(s, ion="C3H15N6O4+", mz=199.11) for s in SAMPLES[2:5]},
+        )
+        _, by_id = self._plan(first, other)
+
+        assert by_id["T"].twins == []
+        assert by_id["W"].held is None
+
+    def test_two_batch_peaks_of_one_listed_formula(self):
+        """A twin's member that reads the listed formula, even below
+        candidate, keeps the sample."""
+        first = Row(
+            anchor("D", D4_MZ, formula=D4, ion=D4_ION, candidates=d4_candidates()),
+            {
+                "s0": analyte("s0", D4, D4_ION, mz=D4_MZ),
+                "s1": member("s1", mz=D4_MZ),
+                "s2": member("s2", mz=D4_MZ),
+                "s3": member("s3", mz=D4_MZ),
+            },
+        )
+        twin_mz = D4_MZ * (1 + 3e-6)
+        second = Row(
+            anchor("E", twin_mz, formula=D4, ion=D4_ION, candidates=d4_candidates()),
+            {
+                "s1": analyte("s1", D4, D4_ION, tier="below_assignability", mz=twin_mz),
+                "s2": analyte("s2", D4, D4_ION, mz=twin_mz),
+                "s4": member("s4", mz=twin_mz),
+            },
+        )
+        _, by_id = self._plan(first, second)
+
+        assert by_id["D"].held is None
+        assert by_id["D"].samples == {
+            "s0": ALREADY,
+            "s1": KEPT_ON_TWIN,
+            "s2": KEPT_ON_TWIN,
+            "s3": None,
+        }
+        assert by_id["E"].held == HELD_TWIN
+
+    def test_the_record_names_the_batch_peak_that_claims(self):
+        _, by_id = self._plan(*self._split())
+        record = species_record(by_id["W"], reads={}, batch_peak_run_id=None)
+
+        assert record["held"] == HELD_TWIN
+        assert record["twin_of"] == "T"
+        assert species_record(by_id["T"], reads={}, batch_peak_run_id=None)[
+            "files_by_reason"
+        ] == {KEPT_ON_TWIN: 1}
 
 
 class TestTheRecords:
