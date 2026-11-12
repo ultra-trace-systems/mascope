@@ -1780,17 +1780,23 @@ A sample is kept as it is where a person assigned the peak there, where the work
 target library named it, where the peak is another ion's isotope line or another source
 ion's claim, and where the sample's reading carries isotope lines of its own that the
 species cannot have: for a listed compound any of another formula, for a library ion one
-of an element it does not hold, such as a 13C line under a carbon-free ion. A run imported from another engine is that engine's record and is never
-rewritten. A batch peak curated by hand is never claimed, and neither is one whose
-reading the samples the claim may take would not turn. Nothing else is claimed: an
-analyte that is no known species is never read as one through the batch.
+of an element it does not hold, or of more atoms of it than the ion holds, such as a 13C
+line under a carbon-free ion, or a 13C2 line under an ion of one carbon. A run imported
+from another engine is that engine's record and is never rewritten. A batch peak curated
+by hand is never claimed, and neither is one whose reading the samples the claim may take
+would not turn. Where the fold split a species' trace over two batch peaks and both are
+decided present, only the one in the most samples claims it, and the other is held: its
+mark says which batch peak claims. A sample that reads the species on the other batch
+peak is kept, so no sample gets a second copy of it. Nothing else is claimed: an analyte
+that is no known species is never read as one through the batch.
 
 The batch peak carries the decision: a checklist mark beside its formula, in the primary
 colour where the species is present, and on hover the species, the verdict, the samples
 its peak is in and those whose own test held, how many samples the claim took, and the
 samples it kept with their readings. Where the batch did not decide a species present,
-the samples whose own claim stands are listed instead, and those an earlier decision
-claimed: a sample's reading is recorded, never silently overridden. The ledger route and `batch_peaks.list` carry the decision as
+the samples whose own claim stands are listed instead, and apart from them those still
+claimed on an earlier decision: a sample's reading is recorded, never silently
+overridden. The ledger route and `batch_peaks.list` carry the decision as
 `known_species`, which stays for as long as the batch peak reads what the decision left
 it reading. The co-variation of a species' trace with its core is recorded beside the
 verdict and decides nothing, as *Read co-variation* decides nothing: a library ion is read

@@ -35,7 +35,11 @@ from mascope_backend.api.new.peak_assignments.batch_known_species import (
     batch_species_for,
     run_batch_known_species,
 )
-from mascope_backend.api.new.peak_assignments.batch_peaks import role_code, tier_code
+from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    candidate_index,
+    role_code,
+    tier_code,
+)
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     fold_sample_into_batch_peaks,
     recompute_batch_consensus,
@@ -974,3 +978,78 @@ async def test_a_listed_compound_no_sample_row_committed_reads_off_the_registry(
     assert row.source == "database"
     exact = ion_mz("C8H25O4Si4", 1)
     assert row.mz_error_ppm == pytest.approx((MZ["d"] - exact) / exact * 1e6, abs=1e-3)
+
+
+async def test_a_split_trace_is_claimed_once_and_its_twin_is_held(
+    async_session_factory, known_batch, monkeypatch
+):
+    """The fold split the trimer's trace: a second batch peak of it, 3 ppm
+    higher, holds S03's own claim, an analyte in S04 and an unread peak in
+    S05. The trimer's batch peak, in more samples, claims; S03, which reads
+    the ion on the twin, is kept; the twin is held, its analyte standing.
+    One species per write, so the twin is read again in its own chunk."""
+    batch, samples, ids = known_batch, known_batch["samples"], known_batch["ids"]
+    twin_id = "~" + gen_id(15)
+    async with async_session_factory() as session:
+        trimer = await session.get(BatchPeak, ids["t"])
+        twin = BatchPeak(
+            **{
+                column.name: getattr(trimer, column.name)
+                for column in BatchPeak.__table__.columns
+            }
+        )
+        twin.batch_peak_id = twin_id
+        twin.mz = trimer.mz * (1 + 3e-6)
+        registry = list(trimer.candidates or [])
+        claim = candidate_index(registry, None, TRIMER, None, source="reagent")
+        other = candidate_index(
+            registry, "C4H12N4O4", TRIMER, MECH, source="untargeted"
+        )
+        twin.candidates = registry
+        session.add(twin)
+        await session.flush()
+        for name, role, tier, candidate in (
+            ("S03", "reagent", "unassigned", claim),
+            ("S04", "M0", "assigned", other),
+            ("S05", "unassigned", "unassigned", None),
+        ):
+            session.add(
+                BatchPeakOccurrence(
+                    batch_peak_id=twin_id,
+                    sample_item_id=samples[name],
+                    sample_peak_id="tw",
+                    mz_delta_ppm=0.0,
+                    intensity=1e5,
+                    tier=tier_code(tier),
+                    fit_score=0.9 if role == "M0" else None,
+                    candidate=candidate,
+                    role=role_code(role),
+                )
+            )
+        await session.commit()
+    monkeypatch.setattr(batch_known_species, "WRITE_CHUNK", 1)
+    await run_batch_known_species(batch["batch_id"])
+
+    anchors = await _anchors(async_session_factory, batch)
+    record = _record(anchors["t"])
+    assert record["claimed"] is True
+    assert record["twin_of"] is None
+    assert record["files_by_reason"] == {"reads_on_twin": 1}
+    assert samples["S03"] not in record["displaced_members"]
+    assert (await _members(async_session_factory, ids["t"]))[
+        samples["S03"]
+    ].role == role_code("unassigned")
+    async with async_session_factory() as session:
+        held = await session.get(BatchPeak, twin_id)
+    twin_record = _record(held)
+    assert twin_record["verdict"] == "present"
+    assert twin_record["held"] == "twin"
+    assert twin_record["twin_of"] == ids["t"]
+    assert twin_record["claimed"] is False
+    twin_members = await _members(async_session_factory, twin_id)
+    assert twin_members[samples["S04"]].role == role_code("M0")
+    assert twin_members[samples["S05"]].role == role_code("unassigned")
+    # The next run takes the ion once, off the batch peak that claimed it.
+    species = await batch_species_for(await fetch_sample(samples["S05"]))
+    trimers = [one for one in species if one.cluster.formula == "C3H13N6O3"]
+    assert [one.record["batch_peak_id"] for one in trimers] == [ids["t"]]

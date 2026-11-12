@@ -35,6 +35,8 @@ its partition and decides it once (``mascope_tools.composition.known_species``):
    under a carbon-free ion). An imported run's rows are another engine's
    record and are never rewritten. A curated batch peak is never claimed, and
    neither is one whose files the claim may take would not turn its vote.
+   Where the fold split a species' trace over two batch peaks, the one in
+   the most files claims it, and keeps a file that reads it on the other.
 4. **The record.** Every species read carries ``provenance.known_species``
    (``batch_peaks.KNOWN_SPECIES_KEY``): the species, the verdict and its
    evidence, the co-variation of its trace with its core (display-only, as
@@ -164,16 +166,18 @@ BACKGROUND_TAG = "background"
 #: holding: a reading that commits the formula.
 _COMMITTED = (TIER_ASSIGNED, TIER_CANDIDATE)
 
-#: An isotope a line's label names (``13C``, ``81Br2``; ``+`` joins them),
-#: by its element; and an element of a formula.
-_ISOTOPE = re.compile(r"\d+([A-Z][a-z]?)\d*")
-_ELEMENT = re.compile(r"[A-Z][a-z]?")
+#: An isotope a line's label names, with how many atoms of it: ``13C``,
+#: ``13C2``, ``2x81Br`` (two), ``81Br(pair)`` (one); ``+`` joins them. And an
+#: element of a formula, with its count.
+_ISOTOPE = re.compile(r"(?:(\d+)x)?\d+([A-Z][a-z]?)(\d*)(?:\([^()]*\))?")
+_ELEMENT = re.compile(r"([A-Z][a-z]?)(\d*)")
 
 #: The tier a listed compound's claim writes: the file's own lines did not
 #: commit it, and the batch's files say it is there.
 LISTED_CLAIM_TIER = TIER_CANDIDATE
 
-#: A sample whose own test held: it already reads the species.
+#: A sample that already reads the species: on its file's own test, or on
+#: the batch's word (:meth:`Species.own_test` tells them apart).
 ALREADY = "already"
 
 #: Why a sample of a present species is kept as it is.
@@ -182,6 +186,9 @@ KEPT_TARGET_LIBRARY = "target_library"
 KEPT_LINE_OF_ANOTHER = "line_of_another"
 KEPT_CLAIMED_OTHERWISE = "claimed_otherwise"
 KEPT_CARRIES_LINES = "carries_lines"
+#: Kept: the sample reads the species on a twin, another batch peak of the
+#: species' trace (:func:`settle_twins`).
+KEPT_ON_TWIN = "reads_on_twin"
 
 #: A file whose own claim stands against a verdict that is not present.
 OWN_CLAIM = "own_claim"
@@ -191,10 +198,12 @@ BATCH_CLAIM = "batch_claim"
 
 #: Why a species decided present was not claimed: its batch peak is pinned
 #: by hand; the files the claim may take would not turn its vote; its batch
-#: peak's readings moved between the reading and the write.
+#: peak's readings moved between the reading and the write; another batch
+#: peak of its trace, in more files, claims it (:func:`settle_twins`).
 HELD_CURATED = "curated"
 HELD_VOTE = "vote_holds"
 HELD_MOVED = "moved"
+HELD_TWIN = "twin"
 
 #: The species a run's summary lists at most; the counts are whole, and every
 #: species carries its record on the ledger.
@@ -374,11 +383,22 @@ class Species:
 
     def can_have(self, isotope_label: Optional[str]) -> bool:
         """Whether a library ion can have an isotope line of this label: every
-        isotope it names is of an element of the ion. A line of no label is
-        not one it can be shown to have."""
-        isotopes = _ISOTOPE.findall(isotope_label or "")
-        elements = set(_ELEMENT.findall((self.ion_formula or "").rstrip("+-")))
-        return bool(isotopes) and all(element in elements for element in isotopes)
+        isotope it names is of an element of the ion, in no more atoms than
+        the ion holds (a ``13C2`` line needs two carbons). A line of no label,
+        or of a label read as no isotopes, is not one it can be shown to have.
+        """
+        parts = (isotope_label or "").split("+")
+        wanted: Counter = Counter()
+        for part in parts:
+            found = _ISOTOPE.fullmatch(part)
+            if found is None:
+                return False
+            times, element, count = found.groups()
+            wanted[element] += int(times or 1) * int(count or 1)
+        held: Counter = Counter()
+        for element, count in _ELEMENT.findall((self.ion_formula or "").rstrip("+-")):
+            held[element] += int(count or 1)
+        return all(held[element] >= n for element, n in wanted.items())
 
     def lifts(self, member: Member) -> bool:
         """Whether a member reads a listed compound's own formula below the
@@ -459,12 +479,17 @@ class Decision:
     """One species, decided.
 
     :ivar samples: Sample -> None where the claim rewrites it, :data:`ALREADY`
-        where its own test held, else why it is kept; filled for a present
-        species only.
+        where it already reads the species (on its file's own test or on the
+        batch's word: ``own`` says which), else why it is kept; filled for a
+        present species only.
     :ivar held: Why a present species was not claimed; None where it was or
         where it is not present.
     :ivar own: The samples whose file's own test held (:func:`own_tests`), as
         the members stood when it was decided.
+    :ivar twins: The other batch peaks of the species' trace in its
+        partition, for the one that claims it (:func:`settle_twins`).
+    :ivar twin_of: The batch peak that claims the species, for a twin held
+        for it (:data:`HELD_TWIN`).
     """
 
     row: Row
@@ -474,6 +499,8 @@ class Decision:
     own: list[str] = field(default_factory=list)
     held: Optional[str] = None
     co_variation: Optional[dict] = None
+    twins: list[str] = field(default_factory=list)
+    twin_of: Optional[str] = None
 
     @property
     def claims(self) -> bool:
@@ -832,13 +859,33 @@ def _evidence(
     )
 
 
-def decide_row(row: Row, species: Species, files: int, carrying: Carrying) -> Decision:
+def species_key(species: Species) -> tuple[str, Optional[str], Optional[str]]:
+    """What makes two batch peaks' species one: its kind, ion and formula."""
+    return (species.kind, species.ion_formula, species.formula)
+
+
+def reads_on_twin(member: Optional[Member], species: Species) -> bool:
+    """Whether a twin's member reads the species in its sample: claimed as
+    the ion, or the listed formula at any tier."""
+    return member is not None and (species.reads(member) or species.lifts(member))
+
+
+def decide_row(
+    row: Row,
+    species: Species,
+    files: int,
+    carrying: Carrying,
+    twins: Sequence[Row] = (),
+) -> Decision:
     """Decide one species once for its partition, and what its claim does in
     each file.
 
     :param files: The partition's files.
     :param carrying: (sample, batch peak) -> the isotope labels of the members
         of the sample that name the batch peak as the owner of their line.
+    :param twins: The other batch peaks of the species' trace, where this one
+        claims it (:func:`settle_twins`): a sample that reads the species on
+        one of them is kept, so the claim writes no second copy of it there.
     """
     samples = {
         sample: sample_decision(
@@ -846,9 +893,16 @@ def decide_row(row: Row, species: Species, files: int, carrying: Carrying) -> De
         )
         for sample, member in sorted(row.members.items())
     }
+    for sample, decided in samples.items():
+        if decided is None and any(
+            reads_on_twin(twin.members.get(sample), species) for twin in twins
+        ):
+            samples[sample] = KEPT_ON_TWIN
     own = own_tests(row, species)
     verdict = decide_known_species(_evidence(row, own, files, samples))
-    decision = Decision(row, species, verdict, own=own)
+    decision = Decision(
+        row, species, verdict, own=own, twins=[twin.batch_peak_id for twin in twins]
+    )
     if not verdict.present:
         return decision
     decision.samples = samples
@@ -859,6 +913,45 @@ def decide_row(row: Row, species: Species, files: int, carrying: Carrying) -> De
     ):
         decision.held = HELD_VOTE
     return decision
+
+
+def settle_twins(
+    decisions: list[Decision], files: int, carrying: Carrying
+) -> list[Decision]:
+    """Let one batch peak claim each species of a partition.
+
+    Where the fold split a species' trace over two batch peaks, both may be
+    decided present, and both would claim it in a sample they share: the
+    second claim rewrites what that sample reads there as a second copy of
+    the species, an analyte included. Of the species' batch peaks decided
+    present and free to claim, the one in the most files claims it (the
+    first by id on a tie, as ``batch_species_for`` picks for a next run),
+    decided again with the others as its twins; each other one is held for
+    it (:data:`HELD_TWIN`).
+
+    :return: The decisions, the claiming ones decided again.
+    """
+    by_key: dict[tuple, list[Decision]] = defaultdict(list)
+    for decision in decisions:
+        by_key[species_key(decision.species)].append(decision)
+    settled = {id(decision): decision for decision in decisions}
+    for group in by_key.values():
+        free = [d for d in group if d.verdict.present and d.held is None]
+        if len(group) < 2 or not free:
+            continue
+        claiming = min(free, key=lambda d: (-len(d.row.members), d.row.batch_peak_id))
+        for decision in free:
+            if decision is not claiming:
+                decision.held = HELD_TWIN
+                decision.twin_of = claiming.row.batch_peak_id
+        settled[id(claiming)] = decide_row(
+            claiming.row,
+            claiming.species,
+            files,
+            carrying,
+            twins=[d.row for d in group if d is not claiming],
+        )
+    return [settled[id(decision)] for decision in decisions]
 
 
 def _core_of(decision: Decision, library: list[Decision]) -> Optional[Decision]:
@@ -957,9 +1050,11 @@ def plan_partition(
     decisions = []
     for row in sorted(rows, key=lambda r: r.batch_peak_id):
         species = species_of(row, claims)
-        if species is None:
-            continue
-        decision = decide_row(row, species, files, carrying)
+        if species is not None:
+            decisions.append(decide_row(row, species, files, carrying))
+    decisions = settle_twins(decisions, files, carrying)
+    for decision in decisions:
+        species = decision.species
         counts["species"] += 1
         counts[species.kind] += 1
         counts[decision.verdict.verdict] += 1
@@ -967,7 +1062,6 @@ def plan_partition(
             counts["held"] += 1
         elif decision.claims:
             counts["claimed"] += 1
-        decisions.append(decision)
     read_co_variations(rows, decisions)
     return decisions
 
@@ -1052,6 +1146,7 @@ def species_record(
         "species": decision.species.to_json(),
         **decision.verdict.to_json(),
         "held": decision.held,
+        "twin_of": decision.twin_of,
         "claimed": bool(displaced_members),
         "members_rewritten": len(displaced_members),
         "rows_rewritten": rows_rewritten,
@@ -1581,15 +1676,18 @@ async def _write_chunk(
     """Write a chunk of species in one transaction under the fold lock: claim
     those decided present in their files, read again as the ledger stands,
     record every one, and recompute the consensus of each batch peak the
-    claims touched."""
+    claims touched. A claiming species' twins' members are read with it, so
+    a sample that reads it on one of them is kept (:func:`settle_twins`);
+    what their rows mark is not needed for that."""
     ids = sorted({d.row.batch_peak_id for d in decisions})
+    read_ids = sorted(set(ids) | {twin for d in decisions for twin in d.twins})
     async with async_session() as session:
         await _acquire_batch_fold_lock(session, sample_batch_id)
         anchors = {
             anchor.batch_peak_id: anchor
             for anchor in (
                 await session.execute(
-                    select(BatchPeak).where(BatchPeak.batch_peak_id.in_(ids))
+                    select(BatchPeak).where(BatchPeak.batch_peak_id.in_(read_ids))
                 )
             )
             .scalars()
@@ -1600,7 +1698,7 @@ async def _write_chunk(
             (
                 await session.execute(
                     select(BatchPeakOccurrence).where(
-                        BatchPeakOccurrence.batch_peak_id.in_(ids)
+                        BatchPeakOccurrence.batch_peak_id.in_(read_ids)
                     )
                 )
             )
@@ -1677,6 +1775,15 @@ async def _write_chunk(
             .all()
         )
 
+        def fresh_row(anchor: Any) -> Row:
+            return Row(
+                anchor,
+                {
+                    sample: _member_from(member, anchor.mz, anchor.candidates, marks)
+                    for sample, member in members.get(anchor.batch_peak_id, {}).items()
+                },
+            )
+
         written: list[Written] = []
         displaced_of: dict[str, dict[str, dict]] = {}
         touched: set[str] = set()
@@ -1684,13 +1791,7 @@ async def _write_chunk(
             anchor = anchors.get(planned.row.batch_peak_id)
             if anchor is None:
                 continue
-            fresh = Row(
-                anchor,
-                {
-                    sample: _member_from(member, anchor.mz, anchor.candidates, marks)
-                    for sample, member in members.get(anchor.batch_peak_id, {}).items()
-                },
-            )
+            fresh = fresh_row(anchor)
             species = (
                 species_of(fresh, {}) if planned.species.kind == KIND_LISTED else None
             )
@@ -1706,8 +1807,12 @@ async def _write_chunk(
                 planned.species,
                 files.get(partition_of(anchor), planned.verdict.evidence.files),
                 carrying,
+                twins=[fresh_row(anchors[t]) for t in planned.twins if t in anchors],
             )
             decision.co_variation = planned.co_variation
+            if planned.held == HELD_TWIN and decision.verdict.present:
+                decision.held = HELD_TWIN
+                decision.twin_of = planned.twin_of
             if decision.claims:
                 by_sample: dict[str, list[tuple[Any, Any]]] = defaultdict(list)
                 if decision.species.kind == KIND_LIBRARY:
@@ -1940,8 +2045,10 @@ async def batch_species_for(sample: Any) -> list[BatchSpecies]:
     (``reagent_pass.claim_batch_species``).
 
     One entry per ion: where the fold split an ion's trace over two batch
-    peaks and both were decided present, the one in the most files speaks
-    for it. A second entry of the ion would claim another peak in the window.
+    peaks, the decision lets one claim it and holds the other
+    (:func:`settle_twins`), whose record serves no claim; should two records
+    stand all the same, the one in the most files speaks for it. A second
+    entry of the ion would claim another peak in the window.
 
     :param sample: The sample (``sample_batch_id``, ``ionization_mode_id``,
         ``filename``).
@@ -1989,11 +2096,13 @@ __all__ = [
     "BATCH_CLAIM",
     "HELD_CURATED",
     "HELD_MOVED",
+    "HELD_TWIN",
     "HELD_VOTE",
     "KEPT_CARRIES_LINES",
     "KEPT_CLAIMED_OTHERWISE",
     "KEPT_HAND_ASSIGNED",
     "KEPT_LINE_OF_ANOTHER",
+    "KEPT_ON_TWIN",
     "KEPT_TARGET_LIBRARY",
     "LISTED_CLAIM_TIER",
     "OWN_CLAIM",
@@ -2016,6 +2125,7 @@ __all__ = [
     "plan_batch",
     "run_batch_known_species",
     "sample_decision",
+    "settle_twins",
     "species_of",
     "species_record",
     "summarise",
