@@ -20,7 +20,8 @@ const KEPT = {
   line_of_another: "another ion's isotope line",
   claimed_otherwise: "another source ion's claim",
   carries_lines: 'a reading with isotope lines of its own',
-  own_claim: 'its own claim'
+  own_claim: 'its own claim',
+  batch_claim: 'claimed on an earlier batch decision'
 }
 
 const HELD = {

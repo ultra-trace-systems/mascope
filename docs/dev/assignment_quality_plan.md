@@ -1812,7 +1812,13 @@ who edits chemistry and stays last.
     where its registry holds a formula a list tags `background`; the species
     is the formula most of its committed members name, through the ion and
     mechanism most of them read it through. A file's own test held where its
-    member is the claim, or reads the listed formula at candidate or better.
+    member is the claim, or reads the listed formula at candidate or better,
+    on its own: not where its row was written on the batch's word (a
+    decision's rewrite, a run's claim on the decision), and, for a member no
+    row speaks for (none linked, or an import's the decision left), only
+    where the decision before counted it (the record's `own_test_samples`),
+    so the evidence never feeds on the batch's own claims (round 1 of the
+    review).
   - **The claim.** In every file of a present species but those a hold keeps,
     the member becomes the species and, where the file's folded run is
     in-app, so does its row: a library ion as the pre-pass's claim
@@ -1828,9 +1834,11 @@ who edits chemistry and stays last.
     read the compound's own formula below candidate is only lifted to
     candidate, its fit and its lines kept. Kept and recorded with their
     readings: a hand assignment, a target compound, another ion's isotope
-    line, another source ion's claim, and for a listed compound a reading of
-    another formula that carries isotope lines of its own (its lines are that
-    formula's). A curated batch peak is held, and so is one whose vote the
+    line, another source ion's claim, and a reading that carries isotope
+    lines the species cannot have: for a listed compound any of another
+    formula (its lines are that formula's), for a library ion one naming an
+    element the ion does not hold, or no label at all (a 13C line under a
+    carbon-free ion). A curated batch peak is held, and so is one whose vote the
     claim would not turn (the consensus over the members as the claim leaves
     them, a claimed member voting at the floor weight). Nothing but a known
     species is ever claimed.
@@ -1838,13 +1846,16 @@ who edits chemistry and stays last.
     the species, the verdict and its evidence, the hold, what the claim
     rewrote (members, rows, lines, rows kept by why), the files kept with
     their readings (`files_by_reason`, `files_recorded`) or, where the
-    verdict is not present, the files whose own claim stands, each member's
-    earlier state, the co-variation with the core, and the reading the anchor
+    verdict is not present, the files whose own claim stands and those an
+    earlier decision claimed (`batch_claim`), the samples whose own test
+    held, each member's earlier state, the co-variation with the core, and the reading the anchor
     holds since (`reads`). The consensus keeps it while the anchor reads
     that; a new decision replaces every record. The ledger and a run's
     snapshot serve it as `known_species`, the ledger marks the formula, and
     a sample's next run (and the run-less fold) claims a present library ion
-    on the batch's word (`batch_species_for`, `claim_batch_species`).
+    on the batch's word (`batch_species_for`, `claim_batch_species`), one
+    entry per ion: of two present batch peaks of one ion, the one in the
+    most files.
   - **Where it runs.** The brief puts the decision after the fold. As 4.2c
     and 4.2f found, a reading of one anchor against others (here the core's
     trace, and the files of the whole partition) is a batch run's, not the
@@ -1870,7 +1881,9 @@ who edits chemistry and stays last.
     runs after the merge, or the bench's card once milestone 6 reads it.
   - **Not done here.** A listed compound's per-file claim on a sample's next
     run (the stages read it; the next decision reads the sample again); a
-    pooled ladder or ratio test over the files' traces.
+    pooled ladder or ratio test over the files' traces; taking an earlier
+    decision's claims back where a later one no longer reads the species
+    present (they stay, recorded as `batch_claim`).
 
 ### 4.3 Calibration from verdicts, per profile
 
