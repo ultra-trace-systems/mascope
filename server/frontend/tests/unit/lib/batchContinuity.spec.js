@@ -7,6 +7,7 @@ import {
   continuityRank,
   continuityStale,
   continuityTooltip,
+  continuityUngraded,
   continuityWarning,
   continuityWithdrawn,
   pairLine,
@@ -20,6 +21,7 @@ const detail = (extra = {}) => ({
   ionization_mechanism_id: null,
   n_present_at_compute: 40,
   n_pairs: 2,
+  grades: { red: 1, stable: 1 },
   warnings: [],
   pairs: [],
   ...extra
@@ -49,6 +51,24 @@ describe('batchContinuity labels and rank', () => {
     expect(continuityWithdrawn({})).toBe(false)
   })
 
+  it('says an anchor whose pairs all fell past the cap was not graded', () => {
+    const ungraded = row(null, {
+      continuity: detail({ warnings: ['partial'], n_pairs: 3, grades: {}, pairs: [] })
+    })
+    expect(continuityUngraded(ungraded)).toBe(true)
+    expect(continuityWithdrawn(ungraded)).toBe(false)
+    expect(continuityLabel(ungraded)).toBe('Not graded')
+    const text = continuityTooltip(ungraded)
+    expect(text).toMatch(/^Partial: .*none of these was graded\./)
+    expect(text).not.toMatch(/most alarming/)
+    // A partial anchor with a grade had some graded, and a complete one is not partial.
+    const partial = row('stable', { continuity: detail({ warnings: ['partial'] }) })
+    expect(continuityUngraded(partial)).toBe(false)
+    expect(continuityTooltip(partial)).toMatch(/some of these were left ungraded/)
+    expect(continuityUngraded(row(null))).toBe(false)
+    expect(continuityLabel(row(null))).toBe('')
+  })
+
   it('ranks in the order of alarm, null where there is no grade', () => {
     expect(GRADES.map((grade) => continuityRank(row(grade)))).toEqual([0, 1, 2, 3, 4])
     expect(continuityRank(row(null))).toBeNull()
@@ -68,9 +88,18 @@ describe('batchContinuity labels and rank', () => {
 describe('batchContinuity tooltip and warning', () => {
   it("gives the grade's meaning over its pairs, and that it is shown only", () => {
     const text = continuityTooltip(row('red'))
-    expect(text).toMatch(/^Red on its most alarming of 2 pairs: .*two species may share a trace\./)
+    expect(text).toMatch(
+      /^Red on its most alarming of 2 graded pairs: .*two species may share a trace\./
+    )
     expect(text).toMatch(/never which species, and no tier moves on it\.$/)
     expect(continuityWarning(row('red'))).toBe('')
+  })
+
+  it('counts the graded pairs, not the ones the pass skipped', () => {
+    const partial = row('red', {
+      continuity: detail({ warnings: ['partial'], n_pairs: 3, grades: { red: 1 } })
+    })
+    expect(continuityTooltip(partial)).toMatch(/^Red on its most alarming of 1 graded pair: /)
   })
 
   it('says a stale grade was graded at another prevalence', () => {
@@ -90,6 +119,18 @@ describe('batchContinuity tooltip and warning', () => {
     const few = row(null, { continuity: detail({ eligible: false, reason: 'few_times' }) })
     expect(continuityWarning(few)).toMatch(/too few distinct acquisition times/)
     expect(continuityTooltip(gap)).not.toMatch(/most alarming/)
+  })
+
+  it('gives the reason for the clock on a batch that is not time-ordered too', () => {
+    const both = row(null, {
+      continuity: detail({ eligible: false, reason: 'gap' }),
+      continuity_stale: true,
+      n_present: 43
+    })
+    const warning = continuityWarning(both)
+    expect(warning).toMatch(/^The batch is not time-ordered: its largest gap/)
+    expect(warning).toMatch(/Graded at 40 samples - the batch peak is in 43 now/)
+    expect(continuityTooltip(both)).toContain('Graded at 40 samples')
   })
 
   it('names a partial grade', () => {
@@ -172,10 +213,20 @@ describe('batchContinuity pair lines', () => {
 
   it('notes when the detail lists fewer pairs than the anchor has', () => {
     expect(
-      pairsShownNote(row('red', { continuity: detail({ n_pairs: 7, pairs: [{}, {}] }) }))
-    ).toBe('Showing 2 of 7 pairs: the most alarming first, then the best supported.')
+      pairsShownNote(
+        row('red', {
+          continuity: detail({ n_pairs: 9, grades: { red: 5, stable: 2 }, pairs: [{}, {}] })
+        })
+      )
+    ).toBe('Showing 2 of 7 graded pairs: the most alarming first, then the best supported.')
     expect(
       pairsShownNote(row('red', { continuity: detail({ n_pairs: 2, pairs: [{}, {}] }) }))
+    ).toBe('')
+    // Pairs the pass skipped are the partial sentence's, not this note's.
+    expect(
+      pairsShownNote(
+        row(null, { continuity: detail({ warnings: ['partial'], n_pairs: 3, grades: {} }) })
+      )
     ).toBe('')
   })
 })
