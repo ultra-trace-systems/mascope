@@ -51,6 +51,11 @@ import {
   strippedTooltip
 } from '@/lib/batchMergedIsotopologues'
 import {
+  knownSpeciesSummary,
+  knownSpeciesTooltip,
+  knownSpeciesVerdict
+} from '@/lib/batchKnownSpecies'
+import {
   ENGINE_UNSTATED,
   ENGINE_UNSTATED_META,
   ROLE_BUCKETS,
@@ -104,7 +109,8 @@ const RUN_ACTION_LABELS = {
   read_co_variation: 'a co-variation reading',
   stamp_isotopologues: 'an isotopologue stamping',
   strip_isotopologues: 'a strip of isotopologue rows',
-  read_batch_checks: 'a batch checks reading'
+  read_batch_checks: 'a batch checks reading',
+  decide_known_species: 'a known-species decision'
 }
 const viewedRunLabel = computed(() => {
   const run = runs.value.viewing
@@ -1270,6 +1276,18 @@ watch(
                 :aria-label="strippedLinesSummary(data.merged_isotopologues)"
                 v-tooltip.top="strippedLinesTooltip(data.merged_isotopologues)"
               />
+              <!-- The batch's decision on the known species this row is: a
+                   source ion or a compound a list tags as background, decided
+                   once over the batch's samples. -->
+              <span
+                v-if="knownSpeciesVerdict(data)"
+                class="pi ph ph-list-checks known-species-mark"
+                :class="knownSpeciesVerdict(data)"
+                role="img"
+                data-testid="known-species-mark"
+                :aria-label="knownSpeciesSummary(data.known_species)"
+                v-tooltip.top="knownSpeciesTooltip(data.known_species)"
+              />
               <span
                 v-if="isotopologueCount(data)"
                 class="iso-count"
@@ -1754,6 +1772,17 @@ watch(
   margin-left: 0.25rem;
   font-size: 0.8rem;
   color: var(--p-primary-color);
+}
+/* A known species the batch decided: present in the primary colour, the
+   other verdicts muted. */
+.known-species-mark {
+  margin-left: 0.25rem;
+  font-size: 0.8rem;
+  opacity: 0.6;
+}
+.known-species-mark.present {
+  color: var(--p-primary-color);
+  opacity: 1;
 }
 .curated,
 .series-mark {

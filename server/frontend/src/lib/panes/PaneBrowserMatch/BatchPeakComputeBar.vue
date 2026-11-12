@@ -98,7 +98,8 @@ async function launchSearch() {
           compute.reading ||
           compute.stamping ||
           compute.stripping ||
-          compute.checking
+          compute.checking ||
+          compute.deciding
         "
         @click="searchVisible = true"
         :pt="
@@ -134,7 +135,8 @@ async function launchSearch() {
           compute.reading ||
           compute.stamping ||
           compute.stripping ||
-          compute.checking
+          compute.checking ||
+          compute.deciding
         "
         @click="compute.detectSeries()"
         :pt="
@@ -172,7 +174,8 @@ async function launchSearch() {
           compute.detecting ||
           compute.stamping ||
           compute.stripping ||
-          compute.checking
+          compute.checking ||
+          compute.deciding
         "
         @click="compute.readCoVariation()"
         :pt="
@@ -209,7 +212,8 @@ async function launchSearch() {
           compute.detecting ||
           compute.reading ||
           compute.stripping ||
-          compute.checking
+          compute.checking ||
+          compute.deciding
         "
         @click="compute.stampIsotopologues()"
         :pt="
@@ -247,7 +251,8 @@ async function launchSearch() {
           compute.detecting ||
           compute.reading ||
           compute.stamping ||
-          compute.checking
+          compute.checking ||
+          compute.deciding
         "
         @click="compute.stripIsotopologues()"
         :pt="
@@ -286,7 +291,8 @@ async function launchSearch() {
           compute.detecting ||
           compute.reading ||
           compute.stamping ||
-          compute.stripping
+          compute.stripping ||
+          compute.deciding
         "
         @click="compute.readBatchChecks()"
         :pt="
@@ -302,6 +308,45 @@ async function launchSearch() {
             A <b>uronium pair</b>: a compound's protonated and urea-clustered
             peaks moving together, as <i>Read co-variation</i> reads them. They
             show in the Facts column. No tier moves on them.
+            </p>
+          `)
+        "
+      />
+    </span>
+    <!-- The batch's known species: decided off the ledger as it stands, with
+         no parameters. It rewrites the samples it claims a species in, in the
+         batch and in their samples, so it is held while the others rewrite or
+         read the ledger, and they while it runs. -->
+    <span v-tooltip.left="compute.decideTooltip">
+      <Button
+        label="Decide known species"
+        icon="pi ph ph-list-checks"
+        size="small"
+        severity="secondary"
+        :loading="compute.deciding"
+        :disabled="
+          compute.blockedReason !== null ||
+          compute.computing ||
+          compute.searching ||
+          compute.detecting ||
+          compute.reading ||
+          compute.stamping ||
+          compute.stripping ||
+          compute.checking
+        "
+        @click="compute.decideKnownSpecies()"
+        :pt="
+          app.ui.help.left(`
+            <h1>Decide Known Species</h1>
+            <p>
+            Decides each known species once for the batch: every ion of the
+            source's own library a sample's reagent pass claimed, and every
+            compound a reference list tags as background. A species whose peak
+            is in half the samples or more, and that one sample read as the
+            species on its own evidence, is present: it is claimed in every
+            sample its peak is in, its rows rewritten. Samples assigned by hand,
+            named by the target library, or reading the peak as another ion's
+            line or claim are kept, and listed with their readings.
             </p>
           `)
         "

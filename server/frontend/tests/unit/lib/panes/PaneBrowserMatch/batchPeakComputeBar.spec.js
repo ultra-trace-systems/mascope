@@ -359,7 +359,8 @@ describe('BatchPeakComputeBar untargeted search', () => {
       'Read co-variation',
       'Stamp isotopologues',
       'Strip isotopologue rows',
-      'Read batch checks'
+      'Read batch checks',
+      'Decide known species'
     ])
     expect(buttons[1].attributes('disabled')).toBeUndefined()
   })
@@ -718,7 +719,15 @@ describe('BatchPeakComputeBar isotopologue row strip', () => {
 
   it('holds it while the ledger is rewritten or read, and the others while it strips', async () => {
     mountBar()
-    for (const busy of ['computing', 'searching', 'detecting', 'reading', 'stamping', 'checking']) {
+    for (const busy of [
+      'computing',
+      'searching',
+      'detecting',
+      'reading',
+      'stamping',
+      'checking',
+      'deciding'
+    ]) {
       compute[busy] = true
       await wrapper.vm.$nextTick()
       expect(stripButton().attributes('disabled')).toBeDefined()
@@ -826,7 +835,8 @@ describe('BatchPeakComputeBar batch checks', () => {
       'detecting',
       'reading',
       'stamping',
-      'stripping'
+      'stripping',
+      'deciding'
     ]) {
       compute[busy] = true
       await wrapper.vm.$nextTick()
@@ -840,7 +850,8 @@ describe('BatchPeakComputeBar batch checks', () => {
       'Detect series',
       'Read co-variation',
       'Stamp isotopologues',
-      'Strip isotopologue rows'
+      'Strip isotopologue rows',
+      'Decide known species'
     ])
       expect(button(label).attributes('disabled')).toBeDefined()
   })
@@ -905,5 +916,117 @@ describe('BatchPeakComputeBar batch checks', () => {
     await compute.readBatchChecks()
     compute.reset()
     expect(compute.checking).toBe(false)
+  })
+})
+
+describe('BatchPeakComputeBar known-species decision', () => {
+  const decideButton = () =>
+    wrapper.findAll('.compute-button').find((b) => b.text() === 'Decide known species')
+  const button = (label) => wrapper.findAll('.compute-button').find((b) => b.text() === label)
+  const notifyDecide = (payload) =>
+    (notificationHandlers['decide_batch_known_species'] ?? []).forEach((cb) => cb(payload))
+
+  it('offers the decision under the same gate, and says what it rewrites', () => {
+    mountBar()
+    expect(decideButton().attributes('disabled')).toBeUndefined()
+    expect(compute.decideTooltip).toMatch(/^Decide each source ion and each compound a list/)
+    expect(compute.decideTooltip).toMatch(/in the batch and in its samples\.$/)
+  })
+
+  it('disables it with the compute when no batch is focused, and says why', () => {
+    mountBar({ batch: null })
+    expect(decideButton().attributes('disabled')).toBeDefined()
+    expect(compute.decideTooltip).toBe(compute.blockedReason)
+  })
+
+  it('holds it while the ledger is rewritten or read, and the others while it decides', async () => {
+    mountBar()
+    for (const busy of [
+      'computing',
+      'searching',
+      'detecting',
+      'reading',
+      'stamping',
+      'stripping',
+      'checking'
+    ]) {
+      compute[busy] = true
+      await wrapper.vm.$nextTick()
+      expect(decideButton().attributes('disabled')).toBeDefined()
+      compute[busy] = false
+    }
+    compute.deciding = true
+    await wrapper.vm.$nextTick()
+    for (const label of [
+      'Search untargeted',
+      'Detect series',
+      'Read co-variation',
+      'Stamp isotopologues',
+      'Strip isotopologue rows',
+      'Read batch checks'
+    ])
+      expect(button(label).attributes('disabled')).toBeDefined()
+  })
+
+  it('launches straight from the button and waits for its own task', async () => {
+    mountBar()
+    post.mockResolvedValueOnce(ack('proc-k'))
+    await decideButton().trigger('click')
+    await Promise.resolve()
+    expect(post).toHaveBeenCalledWith(
+      '/batch-peaks/batch/b-1/decide-known-species',
+      {},
+      expect.objectContaining({ type: 'decide_batch_known_species', errors: 'inline' })
+    )
+    expect(compute.deciding).toBe(true)
+    expect(decideButton().attributes('data-loading')).toBe('true')
+    notifyDecide({ status: 'pending', process_id: 'proc-k' })
+    notifyDecide({ status: 'success', process_id: 'someone-else' })
+    expect(compute.deciding).toBe(true)
+    notifyDecide({ status: 'success', process_id: 'proc-k' })
+    expect(compute.deciding).toBe(false)
+  })
+
+  it('does not launch twice, nor while blocked', async () => {
+    mountBar()
+    post.mockReturnValueOnce(new Promise(() => {}))
+    compute.decideKnownSpecies()
+    await compute.decideKnownSpecies()
+    expect(post).toHaveBeenCalledTimes(1)
+    mountBar({ samples: [] })
+    post.mockClear()
+    await compute.decideKnownSpecies()
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('gives up after the timeout', async () => {
+    mountBar()
+    await compute.decideKnownSpecies()
+    expect(compute.deciding).toBe(true)
+    vi.advanceTimersByTime(5 * 60 * 1000)
+    expect(compute.deciding).toBe(false)
+  })
+
+  it('resets the button and records a refusal', async () => {
+    mountBar()
+    post.mockRejectedValueOnce(apiError(409, 'A batch run is still rewriting this ledger'))
+    await compute.decideKnownSpecies()
+    expect(compute.deciding).toBe(false)
+    expect(compute.launchRefused).toBe(true)
+    expect(compute.launchError).toBe('A batch run is still rewriting this ledger')
+  })
+
+  it('falls back to its own message when the server gives none', async () => {
+    mountBar()
+    post.mockRejectedValueOnce({ response: { status: 500, data: {} } })
+    await compute.decideKnownSpecies()
+    expect(compute.launchError).toBe('Could not start the known-species decision.')
+  })
+
+  it('ends with the rest when the batch changes', async () => {
+    mountBar()
+    await compute.decideKnownSpecies()
+    compute.reset()
+    expect(compute.deciding).toBe(false)
   })
 })

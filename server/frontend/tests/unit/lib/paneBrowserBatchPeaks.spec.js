@@ -1207,6 +1207,29 @@ describe('PaneBrowserBatchPeaks merged isotopologue rows', () => {
     expect(cells['bp-other'].find('[data-testid="strips-mark"]').exists()).toBe(false)
     expect(cells['bp-other'].find('[data-testid="strip-tag"]').exists()).toBe(false)
   })
+
+  // The known-species decision's mark sits beside the strip's in the same cell.
+  it('marks a known species with the batch verdict, present ones in the primary colour', async () => {
+    const decided = (verdict) => ({
+      species: { kind: 'library', label: '[(CH4N2O)3+H]+', ion_formula: 'C3H13N6O3+' },
+      verdict,
+      files: 6,
+      present: verdict === 'unpooled' ? 1 : 5,
+      test_held: 1
+    })
+    const cells = await formulaCells([
+      { ...PARENT, known_species: decided('present') },
+      { ...OTHER, known_species: decided('unpooled') },
+      LINE
+    ])
+    const present = cells['bp-p'].find('[data-testid="known-species-mark"]')
+    expect(present.attributes('aria-label')).toBe('[(CH4N2O)3+H]+: present across the batch')
+    expect(present.classes()).toContain('present')
+    const unpooled = cells['bp-other'].find('[data-testid="known-species-mark"]')
+    expect(unpooled.classes()).toContain('unpooled')
+    expect(unpooled.classes()).not.toContain('present')
+    expect(cells['bp-x'].find('[data-testid="known-species-mark"]').exists()).toBe(false)
+  })
 })
 
 describe('PaneBrowserBatchPeaks co-variation column', () => {

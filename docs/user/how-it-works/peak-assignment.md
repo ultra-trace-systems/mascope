@@ -1732,6 +1732,75 @@ peak whose reading moves while the checks run gets none. It runs as a batch run,
 summary counts each verdict per ionization mode and instrument type, with the position
 window it read at; it changes no tier, no member and no per-sample run.
 
+### Deciding known species
+
+Some species a run knows before it reads the sample: the ions of the source's own
+library (the reagent's ladder, the air's ions, an Orbitrap's calibrant beam, a solvent
+ladder's rungs; *The ions a source makes of itself*, above) and the compounds a reference
+list tags as background, the cyclic siloxanes first. Each sample's run decides on its own
+whether such a species is there. The reagent pass claims a library ion where that
+sample's spectrum puts it on its corrected mass above the pass's height floor, or where
+the ladder below it holds; the stages read a listed compound where that sample's lines
+commit it. So a species present across a batch is claimed in some samples and read as an
+analyte, or left unread, in the others. *Decide known species*, beside *Read batch
+checks*, decides each such species once, on the evidence of all the batch's
+samples of its ionization mode and instrument type:
+
+- **The species.** A batch peak is a library species where a sample's reagent pass
+  claimed it as an ion of the library. A fragment of an analyte is not one: it is claimed
+  only where its parent is committed in the same sample. A batch peak is a listed species
+  where a member matched a formula from a list that tags it *background*. A sample's own
+  test held where its run claimed the ion, or read the listed formula at candidate or
+  better.
+- **Present.** The species' peak is in two samples or more, in half the samples or more,
+  and one sample's own test held. The species is the batch's.
+- **Absent.** The peak is in enough samples, and no sample's own test held. The mass alone,
+  at the batch's tolerance, does not say the peak is the species.
+- **Unpooled.** The peak is in fewer samples than that. A species seen in one sample is
+  that sample's own reading, and each sample keeps its own.
+
+Where the batch decides a species present, it claims it in every sample its peak is in.
+The sample's member becomes the species, and so does the sample's row on that peak in its
+latest in-app run. A library ion's row becomes the reagent pass's claim: the ion and no
+compound, its tier *unassigned*, with the batch's decision as its reason, and the ion's
+isotope lines go with it. A listed compound's row reads the list's formula, through the
+ion and ionization the samples that committed it read it through, at *candidate* and with
+no fit: the batch's samples say the compound is there, and this sample's own lines did not
+commit it. A sample whose run read the compound's own formula below candidate keeps its
+reading, its fit and its isotope lines, and is lifted to *candidate*. In a batch folded
+without runs the reading comes off the batch peak's own record of the list's identity, at
+the ion's exact mass. The reading a row carried is kept first among its alternatives (**earlier
+reading**, which *use this* puts back).
+
+A sample is kept as it is where a person assigned the peak there, where the workspace's
+target library named it, where the peak is another ion's isotope line or another source
+ion's claim, and, for a listed compound, where the sample reads another formula that
+carries isotope lines of its own. A run imported from another engine is that engine's record and is never
+rewritten. A batch peak curated by hand is never claimed, and neither is one whose
+reading the samples the claim may take would not turn. Nothing else is claimed: an
+analyte that is no known species is never read as one through the batch.
+
+The batch peak carries the decision: a checklist mark beside its formula, in the primary
+colour where the species is present, and on hover the species, the verdict, the samples
+its peak is in and those whose own test held, how many samples the claim took, and the
+samples it kept with their readings. Where the batch did not decide a species present,
+the samples whose own claim stands are listed instead: a sample's reading is recorded,
+never silently overridden. The ledger route and `batch_peaks.list` carry the decision as
+`known_species`, which stays for as long as the batch peak reads what the decision left
+it reading. The co-variation of a species' trace with its core is recorded beside the
+verdict and decides nothing, as *Read co-variation* decides nothing: a library ion is read
+against the ion its ladder grew from, else against the source's brightest reagent or
+calibrant ion, and a listed compound carries its own *Read co-variation* reading.
+
+A sample's next run takes the batch's word for a library ion: its reagent pass claims a
+present ion on the sample's corrected mass where its own claim did not, with no height
+floor and no ladder below it, and the row names the batch's decision as its reason. A
+listed compound is the stages' to read, so a sample assigned again reads it afresh, and
+the next *Decide known species* reads its rows again. Each run replaces every decision
+before it. It runs as a batch run, whose summary counts the species read, present,
+absent, unpooled, held and claimed per ionization mode and instrument type, lists each
+species with its verdict, and names the thresholds.
+
 The whole ledger leaves the app as a CSV from the view menu behind the cog: *Export
 ledger (CSV)* writes one row per member peak - every sample's reading of every batch
 peak, with the batch peak's consensus beside it - and the browser downloads the file
