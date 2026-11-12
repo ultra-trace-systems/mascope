@@ -20,14 +20,14 @@ const KEPT = {
   line_of_another: "another ion's isotope line",
   claimed_otherwise: "another source ion's claim",
   carries_lines: 'a reading with isotope lines of its own',
-  own_claim: 'its own claim',
-  batch_claim: 'claimed on an earlier batch decision'
+  reads_on_twin: 'reading it on another batch peak of its trace'
 }
 
 const HELD = {
   curated: 'the batch peak is curated by hand',
   vote_holds: "the samples it could claim would not turn the batch peak's reading",
-  moved: 'the batch peak moved while it was decided'
+  moved: 'the batch peak moved while it was decided',
+  twin: 'another batch peak of its trace, in more samples, claims it'
 }
 
 /** The species a record names, as a reader knows it. */
@@ -58,6 +58,20 @@ function keptPhrase(record) {
   return entries.map(([reason, n]) => `${samples(n)} ${KEPT[reason] ?? reason}`).join(', ')
 }
 
+/** Of a species not decided present, the samples that read it anyway: on
+ *  their own claim, and on an earlier batch decision's, said apart. */
+function readAgainstPhrases(record) {
+  const byReason = record.files_by_reason ?? {}
+  const parts = []
+  if (byReason.own_claim) {
+    parts.push(`Each sample keeps its own reading: ${samples(byReason.own_claim)} claimed it.`)
+  }
+  if (byReason.batch_claim) {
+    parts.push(`Still claimed on an earlier batch decision: ${samples(byReason.batch_claim)}.`)
+  }
+  return parts
+}
+
 /** The mark's tooltip: the verdict, the evidence it was read on, and what
  *  the claim wrote and kept. */
 export function knownSpeciesTooltip(record) {
@@ -76,8 +90,7 @@ export function knownSpeciesTooltip(record) {
     const kept = keptPhrase(record)
     if (kept) parts.push(`Kept as they read: ${kept}.`)
   } else {
-    const kept = keptPhrase(record)
-    if (kept) parts.push(`Each sample keeps its own reading: ${kept}.`)
+    parts.push(...readAgainstPhrases(record))
   }
   return parts.join(' ')
 }

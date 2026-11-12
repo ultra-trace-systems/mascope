@@ -66,7 +66,7 @@ describe('batchKnownSpecies', () => {
       })
     )
     expect(text).toMatch(/\(listed as background\)\./)
-    expect(text).toMatch(/Each sample keeps its own reading: 1 sample its own claim\.$/)
+    expect(text).toMatch(/Each sample keeps its own reading: 1 sample claimed it\.$/)
     expect(text).not.toMatch(/Claimed in/)
   })
 
@@ -75,8 +75,28 @@ describe('batchKnownSpecies', () => {
       record({ verdict: 'absent', test_held: 0, files_by_reason: { batch_claim: 4 } })
     )
     expect(text).toMatch(/0 samples read it as the species on their own\./)
+    expect(text).toMatch(/Still claimed on an earlier batch decision: 4 samples\.$/)
+    expect(text).not.toMatch(/its own reading/)
+  })
+
+  it('says apart the samples on their own claim and on an earlier decision', () => {
+    const text = knownSpeciesTooltip(
+      record({ verdict: 'absent', files_by_reason: { batch_claim: 2, own_claim: 1 } })
+    )
     expect(text).toMatch(
-      /Each sample keeps its own reading: 4 samples claimed on an earlier batch decision\.$/
+      /Each sample keeps its own reading: 1 sample claimed it\. Still claimed on an earlier batch decision: 2 samples\.$/
+    )
+  })
+
+  it('names a twin batch peak that claims the species, and samples it reads in', () => {
+    const text = knownSpeciesTooltip(
+      record({ held: 'twin', members_rewritten: 0, files_by_reason: {} })
+    )
+    expect(text).toMatch(
+      /Not claimed: another batch peak of its trace, in more samples, claims it\.$/
+    )
+    expect(knownSpeciesTooltip(record({ files_by_reason: { reads_on_twin: 2 } }))).toMatch(
+      /Kept as they read: 2 samples reading it on another batch peak of its trace\.$/
     )
   })
 
