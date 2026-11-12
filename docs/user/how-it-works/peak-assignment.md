@@ -583,6 +583,8 @@ four, at the resolving power recorded for the file, and so does the check that r
 peak as a neighbour's isotope line (*a neighbour's isotope line*, below). A line too
 faint to predict on its own still counts when it sits less than one peak width from a
 line that is predicted: it is added to that line, since one peak that wide holds both.
+Two such faint lines less than one peak width apart that are bright enough together are
+predicted as one line: one peak holds both of them.
 A file with no recorded resolving power is read one isotopologue per line.
 
 **A consequence users see:** a lone mass-only match (one peak, no isotopic corroboration)

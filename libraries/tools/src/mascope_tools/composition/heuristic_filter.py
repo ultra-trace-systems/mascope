@@ -1251,12 +1251,13 @@ def group_unresolved_lines(
     predicted_mz,
     predicted_intensity,
     resolution: Callable[[float], float],
+    span: float = 0.5,
 ) -> list[np.ndarray]:
     """Group the predicted lines one peak of this width cannot separate.
 
     From the brightest line not yet taken, every line not yet taken within
-    half the FWHM either side of it is one group, the FWHM read off the
-    resolving power at that line. Starting from the brightest line rather than
+    ``span`` FWHM either side of it (half by default) is one group, the FWHM
+    read off the resolving power at that line. Starting from the brightest line rather than
     the lightest keeps a cluster whole: the 15N line sits 6 mDa under the 13C
     line, and a bin started there can take the 13C line and leave the 17O and
     2H lines, under 3 mDa from it, behind. A line whose resolving power or
@@ -1266,6 +1267,8 @@ def group_unresolved_lines(
     :param predicted_mz: The lines' m/z values.
     :param predicted_intensity: Their abundances, same order.
     :param resolution: The resolving power as a function of m/z.
+    :param span: How far either side of its brightest line a group reaches, in
+        FWHM.
     :return: One array of indices into the lines per group, the groups in the
         order their brightest lines were taken, each group's indices ascending.
     """
@@ -1287,10 +1290,8 @@ def group_unresolved_lines(
             resolving_power = float("nan")
         members = np.array([brightest])
         if np.isfinite(resolving_power) and resolving_power > 0:
-            half_fwhm = centre_mz / resolving_power / 2
-            within = np.flatnonzero(
-                ~taken & (np.abs(predicted_mz - centre_mz) < half_fwhm)
-            )
+            reach = centre_mz / resolving_power * span
+            within = np.flatnonzero(~taken & (np.abs(predicted_mz - centre_mz) < reach))
             # A width at or under zero (an m/z at or under zero) takes no
             # line, not even its own.
             if within.size:
@@ -1298,6 +1299,30 @@ def group_unresolved_lines(
         taken[members] = True
         groups.append(members)
     return groups
+
+
+def _merged_line(
+    members: np.ndarray,
+    mzs: np.ndarray,
+    intensities: np.ndarray,
+    labels: Sequence[str],
+) -> tuple[int, float, float]:
+    """The one line a group of lines makes: the member that names it, its m/z
+    (the members' abundance-weighted centre) and its abundance (their sum).
+
+    The member that names it is the ion's own line, ``M0``, where it is one,
+    else the brightest member.
+    """
+    weights = intensities[members]
+    total = float(weights.sum())
+    centre = (
+        float(np.sum(mzs[members] * weights) / total)
+        if total > 0
+        else float(mzs[members].mean())
+    )
+    own = [index for index in members if labels[index] == "M0"]
+    named = int(own[0]) if own else int(members[np.argmax(weights)])
+    return named, centre, total
 
 
 def merge_unresolved_lines(
@@ -1349,15 +1374,9 @@ def merge_unresolved_lines(
     for members in group_unresolved_lines(
         predicted_mz, predicted_intensity, resolution
     ):
-        weights = predicted_intensity[members]
-        total = float(weights.sum())
-        centre = (
-            float(np.sum(predicted_mz[members] * weights) / total)
-            if total > 0
-            else float(predicted_mz[members].mean())
+        named, centre, total = _merged_line(
+            members, predicted_mz, predicted_intensity, labels
         )
-        own = [index for index in members if labels[index] == "M0"]
-        named = int(own[0]) if own else int(members[np.argmax(weights)])
         merged.append((named, centre, total, labels[named]))
     merged.sort(key=lambda line: line[0])
     return (
@@ -1383,8 +1402,10 @@ def predict_resolved_isotopes(
     17O lines of a TOF's 13C peak, fainter still for a small ion - and the
     floor is then applied to the merged lines,
     so the envelope holds the lines it held before, each with its whole share.
-    A merged line under the floor less than one FWHM from a kept line is added
-    to it rather than dropped (:func:`_fold_under_floor`).
+    Merged lines under the floor less than one FWHM from one another that
+    together clear it are one kept line (:func:`_merge_under_floor`), and a
+    merged line still under the floor less than one FWHM from a kept line is
+    added to it rather than dropped (:func:`_fold_under_floor`).
 
     :param ion_formula: The ion's formula, no charge sign.
     :param ion_charge: Its charge.
@@ -1405,7 +1426,11 @@ def predict_resolved_isotopes(
     )
     if not intensities.size:
         return mzs, intensities, labels
-    keep = intensities >= threshold * intensities.max()
+    floor = threshold * intensities.max()
+    keep = intensities >= floor
+    mzs, intensities, labels, keep = _merge_under_floor(
+        mzs, intensities, labels, keep, floor, resolution
+    )
     mzs, intensities = _fold_under_floor(mzs, intensities, keep, resolution)
     return (
         mzs[keep],
@@ -1455,6 +1480,67 @@ def fold_targets(
         if within.size:
             targets[index] = int(kept[within[np.argmin(distance[within])]])
     return targets
+
+
+def _merge_under_floor(
+    mzs: np.ndarray,
+    intensities: np.ndarray,
+    labels: list[str],
+    keep: np.ndarray,
+    floor: float,
+    resolution: Callable[[float], float],
+) -> tuple[np.ndarray, np.ndarray, list[str], np.ndarray]:
+    """Make one kept line of merged lines under the floor one peak holds over it.
+
+    :func:`merge_unresolved_lines` bins at half a FWHM, so two lines under the
+    floor between half and one FWHM apart are bins of their own, each under the
+    floor, though one peak of that width holds both and together they clear it
+    (mascope#3027: the 33S and 15N lines of C6H12N2O2S+ at a resolving power of
+    40000, 0.79% and 0.73% of the brightest line, 2.4 mDa apart where a FWHM is
+    4.4 mDa). The lines under the floor are grouped as
+    :func:`group_unresolved_lines` groups, from the brightest, but one FWHM
+    either side, the reach :func:`_fold_under_floor` gives a kept line. A group
+    whose sum clears the floor is one kept line, at its members'
+    abundance-weighted centre and named as :func:`merge_unresolved_lines`
+    names a line; the other lines under the floor are left as they are, for
+    the fold. This runs before the fold, so a line that sits within one FWHM
+    of a kept line and of another line under the floor counts toward the line
+    it makes with the latter rather than leaving the latter to be dropped.
+    Lines over the floor are never merged with each other here.
+
+    :param floor: The abundance a line has to reach to be kept.
+    :return: The lines, labels and which lines are kept, each group that clears
+        the floor one kept line in its naming member's place, the other lines
+        as given and in their order.
+    """
+    under = np.flatnonzero(~keep)
+    # No group can clear the floor when all of them together do not: the usual
+    # TOF envelope, whose bins are wide.
+    if float(intensities[under].sum()) < floor:
+        return mzs, intensities, labels, keep
+    mzs = mzs.copy()
+    intensities = intensities.copy()
+    keep = keep.copy()
+    absorbed = np.zeros(mzs.size, dtype=bool)
+    for group in group_unresolved_lines(
+        mzs[under], intensities[under], resolution, span=1.0
+    ):
+        members = under[group]
+        if float(intensities[members].sum()) < floor:
+            continue
+        named, centre, total = _merged_line(members, mzs, intensities, labels)
+        absorbed[members] = True
+        absorbed[named] = False
+        mzs[named] = centre
+        intensities[named] = total
+        keep[named] = True
+    stays = ~absorbed
+    return (
+        mzs[stays],
+        intensities[stays],
+        [label for label, stay in zip(labels, stays) if stay],
+        keep[stays],
+    )
 
 
 def _fold_under_floor(
