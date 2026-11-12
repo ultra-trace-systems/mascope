@@ -42,6 +42,14 @@ import {
   stampTooltip
 } from '@/lib/batchIsotopologues'
 import {
+  strippedLabel,
+  strippedLinesCount,
+  strippedLinesSummary,
+  strippedLinesTooltip,
+  strippedParentId,
+  strippedTooltip
+} from '@/lib/batchMergedIsotopologues'
+import {
   ENGINE_UNSTATED,
   ENGINE_UNSTATED_META,
   ROLE_BUCKETS,
@@ -93,7 +101,8 @@ const RUN_ACTION_LABELS = {
   import: 'an import',
   detect_series: 'a series detection',
   read_co_variation: 'a co-variation reading',
-  stamp_isotopologues: 'an isotopologue stamping'
+  stamp_isotopologues: 'an isotopologue stamping',
+  strip_isotopologues: 'a strip of isotopologue rows'
 }
 const viewedRunLabel = computed(() => {
   const run = runs.value.viewing
@@ -269,6 +278,21 @@ const readsEngineTiers = computed(() => engineView.value && hasEngineTiers.value
 const onlyDisagreements = ref(false)
 const engineDisagrees = (row) => row.engine_tier != null && row.engine_tier !== row.consensus_tier
 
+// --- The merged-isotopologue reading --------------------------------------------
+
+// A row a "Strip isotopologue rows" run read as a brighter compound's isotope
+// line folds under that compound through its members, as every isotopologue
+// does; the compound carries the rows it took. Offered only where some batch
+// peak shown carries a strip, as the engine's tier is.
+const hasStrips = computed(() =>
+  shown.value.some((bp) => bp.merged_isotopologue_of != null || bp.merged_isotopologues != null)
+)
+
+// The stripped pairs: the compounds that took a row as a line, whose families
+// hold the rows they took.
+const onlyStripped = ref(false)
+const tookLines = (row) => strippedLinesCount(row.merged_isotopologues) > 0
+
 // Says which of the two tiers the chip is, and whether it agrees, as the
 // sample ledger's does.
 const engineTierTooltip = (row) => {
@@ -394,6 +418,16 @@ const stampOf = (row) => {
   return root === row.parentId ? row.stamped_isotopologue_of : null
 }
 
+// A stripped row names the line it was read as beside the offset, when the
+// compound it was stripped to is the family it folds into.
+const stripOf = (row) => {
+  const parentId = strippedParentId(row)
+  if (!parentId || !row.parentId) return null
+  const parent = byId.value.get(parentId)
+  const root = parent ? (rootParentId(parent, byId.value) ?? parentId) : parentId
+  return root === row.parentId ? row.merged_isotopologue_of : null
+}
+
 // Fold isotopologues under their M0 by default: an isotopologue carries its family's
 // formula, so unfolded it reads as a second row for one compound.
 const showIsotopologues = ref(false)
@@ -510,12 +544,14 @@ const passesFilters = (row) => {
 // the parent kept the family.
 const rows = computed(() => {
   const disagreeing = onlyDisagreements.value && hasEngineTiers.value
+  const stripped = onlyStripped.value && hasStrips.value
   // Set only in the engine-tier view: leaving it clears the chip.
   const engineBucket = engineChip.value
   const visible = parents.value.filter(
     (row) =>
       passesFilters(row) &&
       (!disagreeing || engineDisagrees(row)) &&
+      (!stripped || tookLines(row)) &&
       (engineBucket == null || row.engineBucket === engineBucket)
   )
   const byColumn = sortField.value ? compareBy(sortField.value, sortOrder.value) : null
@@ -952,6 +988,10 @@ watch(
               assignments agree, across the batch, that it belongs to another
               anchor's compound, or one <b>Stamp isotopologues</b> stamped as a
               diagnostic line of it, which shows its isotope beside the offset.
+              A row <b>Strip isotopologue rows</b> read as another compound's
+              isotope line folds under it too, its line outlined beside the
+              offset; <b>Stripped rows</b> keeps the compounds that took such
+              rows.
               </p>
               <p>
               After an import that carried the engine's own tiers,
@@ -1025,6 +1065,16 @@ watch(
                 <label for="batch-engine-disagrees">Engine disagrees</label>
               </div>
             </template>
+            <div
+              v-if="hasStrips"
+              class="unfold-toggle"
+              v-tooltip.top="
+                'Only the compounds that took rows of the ledger as their isotope lines; unfold the isotopologues to see the rows under them'
+              "
+            >
+              <ToggleSwitch v-model="onlyStripped" inputId="batch-stripped-rows" />
+              <label for="batch-stripped-rows">Stripped rows</label>
+            </div>
             <!-- The whole ledger as a CSV: every batch peak with every
                  sample's member, one row per member. A background task; the
                  browser downloads the file when it is ready. -->
@@ -1150,6 +1200,15 @@ watch(
                 v-tooltip.top="stampTooltip(stampOf(data))"
                 >{{ stampLabel(data) }}</span
               >
+              <!-- A row the batch stripped to this family's isotope line: the
+                   line, and on hover what the samples' runs had read it as. -->
+              <span
+                v-if="stripOf(data)"
+                class="stamp-tag stripped"
+                data-testid="strip-tag"
+                v-tooltip.top="strippedTooltip(stripOf(data))"
+                >{{ strippedLabel(data) }}</span
+              >
             </span>
             <!-- The isotopologue count rides in the slot, outside what gets
                  copied, as the sample ledger's does. -->
@@ -1185,6 +1244,16 @@ watch(
                 data-testid="isotopologues-mark"
                 :aria-label="isotopologuesSummary(data.diagnostic_isotopologues)"
                 v-tooltip.top="isotopologuesTooltip(data.diagnostic_isotopologues)"
+              />
+              <!-- The rows a "Strip isotopologue rows" run took from the
+                   ledger as this compound's isotope lines. -->
+              <span
+                v-if="tookLines(data)"
+                class="pi ph ph-scissors strips-mark"
+                role="img"
+                data-testid="strips-mark"
+                :aria-label="strippedLinesSummary(data.merged_isotopologues)"
+                v-tooltip.top="strippedLinesTooltip(data.merged_isotopologues)"
               />
               <span
                 v-if="isotopologueCount(data)"
@@ -1606,6 +1675,15 @@ watch(
 }
 .stamp-tag.predicted {
   border-style: dashed;
+}
+/* A row stripped to its family's isotope line. */
+.stamp-tag.stripped {
+  border-color: var(--p-primary-color);
+}
+.strips-mark {
+  margin-left: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--p-primary-color);
 }
 .curated,
 .series-mark {

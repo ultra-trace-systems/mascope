@@ -127,6 +127,19 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
       'Predict the 15N, 18O, 34S, Si, 37Cl and 81Br lines of every committed batch peak, and stamp the ones whose height holds across the batch. Moves no tier.'
   )
 
+  // The merged-isotopologue reading: a batch peak whose height holds a
+  // brighter compound's isotope line across the batch is stripped to that
+  // compound's isotopologue, its samples' rows rewritten. No parameters, and
+  // it waits on its own task as the stamping does.
+  const stripping = ref(false)
+  const pendingStripId = ref(null)
+  let stripTimer = null
+  const stripTooltip = computed(
+    () =>
+      blockedReason.value ??
+      "Strip the ledger's rows that are a brighter compound's 13C, 15N, 18O, 34S, Si, 37Cl or 81Br line at its share across the batch: they become that compound's isotopologues, in the batch and in its samples."
+  )
+
   function endComputing() {
     computing.value = false
     pendingProcessId.value = null
@@ -285,6 +298,34 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     }
   }
 
+  function endStripping() {
+    stripping.value = false
+    pendingStripId.value = null
+    clearTimeout(stripTimer)
+    stripTimer = null
+  }
+
+  async function stripIsotopologues() {
+    const batchId = app.data.batch.focusedId
+    if (!batchId || stripping.value || blockedReason.value) return
+    stripping.value = true
+    launchError.value = null
+    clearTimeout(stripTimer)
+    stripTimer = setTimeout(endStripping, COMPUTE_TIMEOUT)
+    try {
+      const response = await api.http.post(
+        `/batch-peaks/batch/${batchId}/strip-isotopologues`,
+        {},
+        { type: 'strip_batch_isotopologue_rows', errors: 'inline' }
+      )
+      pendingStripId.value = response?.headers?.['process-id'] ?? null
+    } catch (error) {
+      endStripping()
+      launchRefused.value = isRefusedRequest(error) || error?.response?.status === 403
+      launchError.value = getApiErrorMessage(error, 'Could not start the isotopologue row strip.')
+    }
+  }
+
   /** Backfill batch peaks from this batch's existing assignments; the ledger and
    *  chart refresh on the peak_assignment_reload event the task emits. */
   async function compute() {
@@ -380,12 +421,21 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     endStamping()
   })
 
+  app.ui.notification.on('strip_batch_isotopologue_rows', (notification) => {
+    if (!stripping.value) return
+    if (notification?.status === 'pending') return
+    const id = notification?.process_id
+    if (pendingStripId.value && id && id !== pendingStripId.value) return
+    endStripping()
+  })
+
   function reset() {
     endComputing()
     endSearching()
     endDetecting()
     endReading()
     endStamping()
+    endStripping()
     endExporting()
     launchError.value = null
     launchRefused.value = false
@@ -410,6 +460,9 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     stamping,
     stampTooltip,
     stampIsotopologues,
+    stripping,
+    stripTooltip,
+    stripIsotopologues,
     exporting,
     exportLedger,
     reset

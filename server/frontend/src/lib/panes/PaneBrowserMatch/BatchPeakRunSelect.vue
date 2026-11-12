@@ -27,7 +27,8 @@ const ACTION_LABELS = {
   import: 'Import',
   detect_series: 'Series detection',
   read_co_variation: 'Co-variation reading',
-  stamp_isotopologues: 'Isotopologue stamping'
+  stamp_isotopologues: 'Isotopologue stamping',
+  strip_isotopologues: 'Isotopologue row strip'
 }
 const IN_FLIGHT_STATUSES = ['running']
 
