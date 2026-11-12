@@ -43,6 +43,13 @@ vi.mock('@/lib/base', async () => ({
   // Real: the tier header's provisional mark is read off what it draws.
   BaseProvisionalMark: (await vi.importActual('@/lib/base/BaseProvisionalMark.vue')).default
 }))
+vi.mock('@/lib/panes/PaneBrowserMatch/BatchPeakContinuityPopover.vue', () => ({
+  default: {
+    name: 'BatchPeakContinuityPopover',
+    props: ['row', 'isotopeLine'],
+    template: '<div class="continuity-popover-stub" />'
+  }
+}))
 vi.mock('@/lib/panes/PaneBrowserMatch/BatchPeakVerdictPopover.vue', () => ({
   default: { name: 'BatchPeakVerdictPopover', template: '<div class="verdict-popover-stub" />' }
 }))
@@ -185,6 +192,8 @@ const ToggleSwitchStub = {
 // PrimeVue's; what this file tests is that the toggle lives in there.
 const PopoverStub = {
   name: 'Popover',
+  // The cell popovers call these; open or not, the stub renders its slot.
+  methods: { show: vi.fn(), hide: vi.fn(), toggle: vi.fn() },
   template: '<div class="view-popover"><slot /></div>'
 }
 
@@ -261,6 +270,45 @@ afterEach(() => {
   vi.useRealTimers()
   vi.clearAllMocks()
 })
+
+// Renders a column's cells through a stub that hands each its row.
+async function cellsOf(field, rows) {
+  const tableRows = ref([])
+  app = makeApp({ peaks: rows })
+  localStorage.clear()
+  setActivePinia(createPinia())
+  wrapper = mount(PaneBrowserBatchPeaks, {
+    global: {
+      stubs: {
+        ...GLOBAL_STUBS,
+        DataTable: {
+          ...DataTableStub,
+          watch: {
+            value: { handler: (value) => (tableRows.value = value), immediate: true }
+          }
+        },
+        Column: {
+          ...ColumnStub,
+          setup: () => ({ rows: tableRows }),
+          template:
+            '<div class="column-stub" :data-field="field">' +
+            '<template v-for="(row, i) in rows" :key="i">' +
+            '<div class="stub-cell" :data-row="row.batch_peak_id">' +
+            '<slot name="body" :data="row" /></div></template></div>'
+        }
+      },
+      directives: { tooltip: {}, help: {} }
+    }
+  })
+  await wrapper.vm.$nextTick()
+  const column = wrapper
+    .findAll('.column-stub')
+    .find((col) => col.attributes('data-field') === field)
+  if (!column) return null
+  return Object.fromEntries(
+    column.findAll('.stub-cell').map((cell) => [cell.attributes('data-row'), cell])
+  )
+}
 
 describe('PaneBrowserBatchPeaks compute refusal', () => {
   // The button is a row up, in the switch bar, but the refusal it comes back
@@ -1237,45 +1285,6 @@ describe('PaneBrowserBatchPeaks co-variation column', () => {
     peak('bp-5', 'assigned', 0.7, { mz: 401.1, isotopologue_of: 'bp-4' })
   ]
 
-  // Renders a column's cells through a stub that hands each its row.
-  async function cellsOf(field, rows) {
-    const tableRows = ref([])
-    app = makeApp({ peaks: rows })
-    localStorage.clear()
-    setActivePinia(createPinia())
-    wrapper = mount(PaneBrowserBatchPeaks, {
-      global: {
-        stubs: {
-          ...GLOBAL_STUBS,
-          DataTable: {
-            ...DataTableStub,
-            watch: {
-              value: { handler: (value) => (tableRows.value = value), immediate: true }
-            }
-          },
-          Column: {
-            ...ColumnStub,
-            setup: () => ({ rows: tableRows }),
-            template:
-              '<div class="column-stub" :data-field="field">' +
-              '<template v-for="(row, i) in rows" :key="i">' +
-              '<div class="stub-cell" :data-row="row.batch_peak_id">' +
-              '<slot name="body" :data="row" /></div></template></div>'
-          }
-        },
-        directives: { tooltip: {}, help: {} }
-      }
-    })
-    await wrapper.vm.$nextTick()
-    const column = wrapper
-      .findAll('.column-stub')
-      .find((col) => col.attributes('data-field') === field)
-    if (!column) return null
-    return Object.fromEntries(
-      column.findAll('.stub-cell').map((cell) => [cell.attributes('data-row'), cell])
-    )
-  }
-
   it('is absent from a ledger no reading reached', async () => {
     wrapper = await mountPane({ peaks: peaks().map(({ co_variation, ...bp }) => bp) })
     expect(columnFor('coVariationRank')).toBeUndefined()
@@ -1432,6 +1441,205 @@ describe('PaneBrowserBatchPeaks facts column', () => {
     wrapper = await mountPane({ peaks: peaks() })
     expect(wrapper.vm.HEADER_TOOLTIPS.facts).toMatch(/14N twin/)
     expect(wrapper.vm.HEADER_TOOLTIPS.facts).toMatch(/No tier moves on them$/)
+  })
+})
+
+describe('PaneBrowserBatchPeaks continuity column', () => {
+  // A pair entry as the continuity pass records it on an anchor.
+  const pair = (grade, extra = {}) => ({
+    kind: 'adduct',
+    partner_batch_peak_id: 'bp-partner',
+    partner_mz: 262.0569,
+    grade,
+    reason: null,
+    n: 41,
+    n_times: 41,
+    ratio_median: 0.42,
+    ratio_spread: 0.08,
+    sigma_log: 0.077,
+    rho: 0.12,
+    drift_log: 0.05,
+    drift_fold: 1.05,
+    co_variation: null,
+    ...extra
+  })
+  // An anchor's detail, graded for its own claim at its own prevalence.
+  const detail = (grades, extra = {}) => ({
+    v: 1,
+    eligible: true,
+    reason: null,
+    formula: 'C6H12O6',
+    ionization_mechanism_id: null,
+    n_present_at_compute: 2,
+    n_pairs: grades.length,
+    grades: {},
+    warnings: [],
+    pairs: grades.map((grade) => pair(grade)),
+    ...extra
+  })
+  const graded = (id, grade, mz, extra = {}) =>
+    peak(id, 'assigned', 0.9, {
+      mz,
+      continuity_grade: grade,
+      continuity: detail([grade]),
+      continuity_stale: false,
+      ...extra
+    })
+  const peaks = () => [
+    graded('bp-stable', 'stable', 100.1),
+    graded('bp-drift', 'drift', 110.1),
+    graded('bp-red', 'red', 120.1),
+    graded('bp-inconclusive', 'inconclusive', 130.1),
+    graded('bp-insufficient', 'insufficient', 140.1),
+    graded('bp-partial', 'stable', 150.1, {
+      continuity: detail(['stable'], { warnings: ['partial'], n_pairs: 9 })
+    }),
+    // A sample folded in since: graded at 2, present in 3 now.
+    graded('bp-stale', 'stable', 160.1, { n_present: 3, continuity_stale: true }),
+    // A batch that is not time-ordered: no grade, and the reason.
+    peak('bp-withdrawn', 'assigned', 0.9, {
+      mz: 170.1,
+      continuity_grade: null,
+      continuity: detail([], { eligible: false, reason: 'gap', n_pairs: 1 })
+    }),
+    peak('bp-none', 'assigned', 0.9, { mz: 180.1 }),
+    // The main peak of a family and its isotope line, graded on their pair.
+    graded('bp-m0', 'stable', 190.1),
+    graded('bp-m1', 'red', 191.1, {
+      isotopologue_of: 'bp-m0',
+      continuity: detail(['red'], {
+        pairs: [pair('red', { kind: 'isotopologue', partner_batch_peak_id: 'bp-m0' })]
+      })
+    })
+  ]
+  const continuityCell = (cells, id) => cells[id].find('[data-testid="continuity"]')
+
+  it('is absent from a ledger the pass has not graded', async () => {
+    wrapper = await mountPane({
+      peaks: peaks().map(({ continuity, continuity_grade, ...bp }) => bp)
+    })
+    expect(columnFor('continuityRank')).toBeUndefined()
+  })
+
+  it('draws the three claims as a badge and the two non-readings muted', async () => {
+    const cells = await cellsOf('continuityRank', peaks())
+    for (const [id, label] of [
+      ['bp-stable', 'Stable'],
+      ['bp-drift', 'Drift'],
+      ['bp-red', 'Red']
+    ]) {
+      const cell = continuityCell(cells, id)
+      expect(cell.text()).toBe(label)
+      expect(cell.classes()).toContain('claim')
+      expect(cell.classes()).toContain(label.toLowerCase())
+    }
+    for (const [id, label] of [
+      ['bp-inconclusive', 'Inconclusive'],
+      ['bp-insufficient', 'Insufficient']
+    ]) {
+      const cell = continuityCell(cells, id)
+      expect(cell.text()).toBe(label)
+      expect(cell.classes()).not.toContain('claim')
+      expect(cell.classes()).toContain(label.toLowerCase())
+    }
+  })
+
+  it('draws a partial grade dashed and a grade behind the ledger with a clock', async () => {
+    const cells = await cellsOf('continuityRank', peaks())
+    const partial = continuityCell(cells, 'bp-partial')
+    expect(partial.classes()).toContain('partial')
+    expect(partial.classes()).not.toContain('stale')
+    const stale = continuityCell(cells, 'bp-stale')
+    expect(stale.classes()).toContain('stale')
+    expect(stale.classes()).not.toContain('partial')
+    expect(stale.find('[data-testid="continuity-stale"]').exists()).toBe(true)
+    // A current, complete grade is neither.
+    const plain = continuityCell(cells, 'bp-stable')
+    expect(plain.classes()).not.toContain('partial')
+    expect(plain.classes()).not.toContain('stale')
+    expect(plain.find('[data-testid="continuity-stale"]').exists()).toBe(false)
+  })
+
+  it('says a batch that is not time-ordered was not graded, and dashes an ungraded peak', async () => {
+    const cells = await cellsOf('continuityRank', peaks())
+    const withdrawn = continuityCell(cells, 'bp-withdrawn')
+    expect(withdrawn.text()).toBe('Not graded')
+    expect(withdrawn.classes()).toContain('withdrawn')
+    expect(continuityCell(cells, 'bp-none').exists()).toBe(false)
+    expect(cells['bp-none'].find('.no-continuity').exists()).toBe(true)
+  })
+
+  it("shows an isotope line's own grade only while the isotopologues are unfolded", async () => {
+    const cells = await cellsOf('continuityRank', peaks())
+    expect(cells['bp-m1']).toBeUndefined()
+    expect(continuityCell(cells, 'bp-m0').text()).toBe('Stable')
+
+    const childCell = () =>
+      wrapper
+        .findAll('.column-stub')
+        .find((col) => col.attributes('data-field') === 'continuityRank')
+        .findAll('.stub-cell')
+        .find((c) => c.attributes('data-row') === 'bp-m1')
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+    expect(childCell().find('[data-testid="continuity"]').text()).toBe('Red')
+
+    wrapper.vm.showIsotopologues = false
+    await wrapper.vm.$nextTick()
+    expect(childCell()).toBeUndefined()
+  })
+
+  it('sorts on the order of alarm, red first, an ungraded peak last in both directions', async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+    expect(columnFor('continuityRank').props('sortable')).toBe(true)
+    const byId = Object.fromEntries(wrapper.vm.parents.map((row) => [row.batch_peak_id, row]))
+    expect(byId['bp-red'].continuityRank).toBe(0)
+    expect(byId['bp-insufficient'].continuityRank).toBe(4)
+    expect(byId['bp-none'].continuityRank).toBeNull()
+    expect(byId['bp-withdrawn'].continuityRank).toBeNull()
+    wrapper.vm.sortField = 'continuityRank'
+    wrapper.vm.sortOrder = 1
+    await wrapper.vm.$nextTick()
+    const top = () => wrapper.vm.rows.map((row) => row.batch_peak_id)
+    expect(top()[0]).toBe('bp-red')
+    expect(top().slice(-2).sort()).toEqual(['bp-none', 'bp-withdrawn'])
+    wrapper.vm.sortOrder = -1
+    await wrapper.vm.$nextTick()
+    expect(top()[0]).toBe('bp-insufficient')
+    expect(top().slice(-2).sort()).toEqual(['bp-none', 'bp-withdrawn'])
+  })
+
+  it('opens the pairs of the row whose cell was clicked', async () => {
+    const cells = await cellsOf('continuityRank', peaks())
+    await continuityCell(cells, 'bp-red').trigger('click')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.continuityTarget.batch_peak_id).toBe('bp-red')
+    const popover = wrapper.findComponent({ name: 'BatchPeakContinuityPopover' })
+    expect(popover.props('row').batch_peak_id).toBe('bp-red')
+    expect(popover.props('isotopeLine')).toBe(false)
+  })
+
+  it("opens an isotope line's pairs as the main peak's partner", async () => {
+    await cellsOf('continuityRank', peaks())
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+    await wrapper
+      .findAll('.column-stub')
+      .find((col) => col.attributes('data-field') === 'continuityRank')
+      .findAll('.stub-cell')
+      .find((c) => c.attributes('data-row') === 'bp-m1')
+      .find('[data-testid="continuity"]')
+      .trigger('click')
+    await wrapper.vm.$nextTick()
+    const popover = wrapper.findComponent({ name: 'BatchPeakContinuityPopover' })
+    expect(popover.props('row').batch_peak_id).toBe('bp-m1')
+    expect(popover.props('isotopeLine')).toBe(true)
+  })
+
+  it('says the column never identifies and moves no tier', async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+    expect(wrapper.vm.HEADER_TOOLTIPS.continuity).toMatch(/never identifies/)
+    expect(wrapper.vm.HEADER_TOOLTIPS.continuity).toMatch(/No tier moves on it$/)
   })
 })
 
