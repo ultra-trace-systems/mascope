@@ -970,6 +970,24 @@ def standing_merged_isotopologues_record(anchor: Any) -> Optional[dict]:
     return record
 
 
+def without_merged_lines(record: dict, released: set[str]) -> Optional[dict]:
+    """The parent's record with the lines of the released rows taken off: a
+    row whose own record came off is no longer this parent's line. None when
+    no line is left, so the parent carries no record at all.
+
+    :param record: The parent's record (:func:`merged_isotopologues_record`).
+    :param released: The rows whose records came off.
+    """
+    lines = [
+        entry
+        for entry in record.get("lines") or []
+        if not (isinstance(entry, dict) and entry.get("batch_peak_id") in released)
+    ]
+    if not lines:
+        return None
+    return {**record, "lines": lines, "n_lines": len(lines)}
+
+
 def resolution_from_tol_ppm(
     tol_ppm: Optional[float], drift_margin_ppm: float = DEFAULT_DRIFT_MARGIN_PPM
 ) -> Optional[float]:
@@ -1090,7 +1108,9 @@ def compute_consensus(
     merged-isotopologue reading stripped keeps its record while its members
     still name that parent (:func:`merged_isotopologue_of_reads`), and the
     parent keeps its list of lines while it names the reading they were read
-    against.
+    against; a row whose record comes off comes off that list too, which the
+    row's recompute does (:func:`without_merged_lines`), as the parent need
+    not be in it.
 
     :param members: The batch peak's occurrences.
     :param batch_peak_id: This batch peak's own id.

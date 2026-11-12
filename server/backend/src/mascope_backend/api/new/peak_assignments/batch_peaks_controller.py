@@ -35,6 +35,8 @@ from mascope_backend.api.new.ionization.modes.versions import root_ids
 from mascope_backend.api.new.peak_assignments import batch_peaks
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     DIAGNOSTIC_ISOTOPOLOGUES_KEY,
+    MERGED_ISOTOPOLOGUE_OF_KEY,
+    MERGED_ISOTOPOLOGUES_KEY,
     ROLE_ISO_CHILD,
     ROLE_REAGENT,
     SOURCE_ROLES,
@@ -60,6 +62,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     stamped_lines,
     tier_code,
     tier_name,
+    without_merged_lines,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_REBUILD,
@@ -609,12 +612,19 @@ async def _recompute_consensus_chunk(
     # isotopologues record comes off here: its reading moved, or the anchor
     # went.
     unstamped: dict[str, set[str]] = {}
+    # The rows a strip read as a parent's line whose record comes off here:
+    # their members read them otherwise now, or the anchor went. Parent id ->
+    # those rows.
+    released: dict[str, set[str]] = defaultdict(set)
     for bp in anchors:
         members = members_by_peak.get(bp.batch_peak_id, [])
         diagnostic_isotopologues = diagnostic_isotopologues_record_of(bp)
+        merged_isotopologue_of = merged_isotopologue_of_record(bp)
         if not members:
             if diagnostic_isotopologues is not None:
                 unstamped[bp.batch_peak_id] = stamped_lines(diagnostic_isotopologues)
+            if merged_isotopologue_of is not None:
+                released[merged_isotopologue_of["batch_peak_id"]].add(bp.batch_peak_id)
             await session.delete(bp)
             continue
         consensus = compute_consensus(
@@ -625,7 +635,7 @@ async def _recompute_consensus_chunk(
             co_variation=co_variation_record_of(bp),
             diagnostic_isotopologues=diagnostic_isotopologues,
             stamped_isotopologue_of=stamped_isotopologue_of_record(bp),
-            merged_isotopologue_of=merged_isotopologue_of_record(bp),
+            merged_isotopologue_of=merged_isotopologue_of,
             merged_isotopologues=merged_isotopologues_record(bp),
         )
         if (
@@ -633,8 +643,14 @@ async def _recompute_consensus_chunk(
             and DIAGNOSTIC_ISOTOPOLOGUES_KEY not in consensus.provenance
         ):
             unstamped[bp.batch_peak_id] = stamped_lines(diagnostic_isotopologues)
+        if (
+            merged_isotopologue_of is not None
+            and MERGED_ISOTOPOLOGUE_OF_KEY not in consensus.provenance
+        ):
+            released[merged_isotopologue_of["batch_peak_id"]].add(bp.batch_peak_id)
         _apply_consensus(bp, consensus, now)
     await _take_off_stamps(session, unstamped, now)
+    await _take_off_merged_lines(session, released, now)
 
 
 async def _take_off_stamps(
@@ -673,6 +689,49 @@ async def _take_off_stamps(
         provenance.pop(STAMPED_ISOTOPOLOGUE_OF_KEY, None)
         line.provenance = provenance
         line.batch_peak_utc_modified = now
+
+
+async def _take_off_merged_lines(
+    session, released: dict[str, set[str]], now: datetime
+) -> None:
+    """Take a stripped row off its parent's list of lines, once the row's own
+    record has come off.
+
+    The parent's record says which rows fold under it as its lines, and its
+    mark and the ledger's *Stripped rows* filter read it. A row released from
+    the parent - its samples assigned again, a re-fold, a curation, or the
+    anchor gone - is no longer one of them; the parent's own consensus cannot
+    see that happen, as the parent need not be in the recompute that released
+    the row, so the row's recompute does it. A parent with no line left
+    carries no record.
+
+    :param released: Parent id -> the rows whose records came off.
+    """
+    if not released:
+        return
+    parents = (
+        (
+            await session.execute(
+                select(BatchPeak).where(BatchPeak.batch_peak_id.in_(sorted(released)))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for parent in parents:
+        record = merged_isotopologues_record(parent)
+        if record is None:
+            continue
+        kept = without_merged_lines(record, released[parent.batch_peak_id])
+        if kept == record:
+            continue
+        provenance = dict(parent.provenance or {})
+        if kept is None:
+            provenance.pop(MERGED_ISOTOPOLOGUES_KEY, None)
+        else:
+            provenance[MERGED_ISOTOPOLOGUES_KEY] = kept
+        parent.provenance = provenance
+        parent.batch_peak_utc_modified = now
 
 
 def _json_shape(value):

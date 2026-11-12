@@ -1596,8 +1596,11 @@ view menu behind the cog, keeps only those compounds.
 The ledger route and `batch_peaks.list` carry the stripped row's record as
 `merged_isotopologue_of` (its compound, the line, the share read and what the row was)
 and the compound's as `merged_isotopologues`. The row keeps its record for as long as
-its members read it as the compound's line, and the compound for as long as its
-consensus names the formula and ionization the lines were read against. The rewrite
+its members read it as the compound's line. The compound lists the row for as long as
+the row keeps its record, and keeps its list for as long as its consensus names the
+formula and ionization the lines were read against. A row released from the compound
+(its samples assigned again, folded again or curated) leaves the list, and a compound
+with no row left loses its scissors mark and leaves **Stripped rows**. The rewrite
 stays: a later *Strip isotopologue rows* reads the rows not yet stripped, and a
 sample assigned again is read afresh by its own run. It runs as a batch run, whose
 summary counts the rows read, at a line, stripped, held, off their share and on too few
