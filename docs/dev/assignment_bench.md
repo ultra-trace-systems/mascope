@@ -151,6 +151,24 @@ published, not only the reference's Assigned rows; where the pinned peaky
 cannot do that, the bench publishes per sample and the ask goes to peaky's
 owner through 5.1.
 
+As built (6.3, `tooling/assignment_bench/reference.py`): `bench reference
+--pin vX.Y.Z` refuses anything but a release tag. It clones peaky into the
+bench's home, exports the tag's tree and installs it with `uv tool install
+--python 3.12` into a tool environment under the bench folder. The installed
+peaky is asked for its version string, the `mascope-tools` version it
+scores with, and which of the sets' profiles it knows. Each sample then runs
+alone through `peaky assign` with its set's profile and window, and
+`peaky publish` imports the ledger with that version string. The pinned
+0.9.0's per-sample publish already carries every role and peaky's own tier
+(`engine_tier`) on its M0 rows, so no ask of peaky's owner was needed. The
+cache key's "library version" is the installed `mascope-tools`, which
+peaky's own dependency range lets move under one tag; a reinstall that
+resolves another one publishes again. A new pin lists the sets whose
+reference changed, sample by sample, by a digest of each ledger row's
+peak, role, formula, adduct and tier. peaky runs with the bench's URL and
+token only: the caller's `MASCOPE_*` variables are dropped, so a sourced
+testbed env cannot redirect it.
+
 ## 6. The card
 
 Step 6.4 moves the metrics out of the planner's hands. Every metric of the
@@ -193,7 +211,7 @@ worker on the LAN host, are recorded in the decision.
 | 6.0 | MAS-835 | Decision: the box and the ask (taken: the agent box, no trigger) |
 | 6.1 | MAS-836 | Decision: the sets (taken: the demo dataset first) |
 | 6.2 | MAS-837 | `bench init`: the instance from a manifest (built: `tooling/assignment_bench/`) |
-| 6.3 | MAS-838 | `bench reference --pin`: peaky at a tag, published per set |
+| 6.3 | MAS-838 | `bench reference --pin`: peaky at a tag, published per set (built: `tooling/assignment_bench/reference.py`) |
 | 6.4 | MAS-64 | the gate card as code: metrics, thresholds, baseline, scrub (was 4.4) |
 | 6.5 | MAS-840 | `bench run <ref>`: build, run, compare, card, diff |
 | 6.6 | MAS-841 | `--post`: the PR comment, and the nightly baseline |
@@ -236,10 +254,9 @@ to run the commands against any instance and how to ask for a card.
 
 ## 11. Open
 
-- Whether the worker's identity can read peaky's repository for the
-  install at a tag (6.3); a *Needs input* if not.
-- Whether the pinned peaky publishes every tier (section 5); an ask of
-  peaky's owner through 5.1 if not.
+- Settled by 6.3: peaky's repository is public, so the bench clones it
+  with no credential; and the pinned 0.9.0's per-sample publish carries
+  every tier (section 5).
 - Whether the certified cylinder sets are in the corpus store (decision
   24's ground truth); if not, they are the first sets taken from the
   testbed copy under 6.8.

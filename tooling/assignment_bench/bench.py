@@ -1,6 +1,7 @@
 """The assignment bench: one persistent instance holding fixed sample sets.
 
     bench.py init <manifest> [--ref REF] [--rebuild] [--checkout DIR] [--keep-running] [--wait]
+    bench.py reference --pin vX.Y.Z [--reinstall] [--jobs N] [--set NAME ...] [--wait]
     bench.py status
 
 ``init`` builds the bench instance (env ``bench``) from a sets manifest
@@ -15,6 +16,9 @@ and has peaks. It records each sample's id under its set's name in
 ``state.json``, then stops the backend; the instance's database and filestore
 stay. A second ``init`` over the same manifest finds nothing to do and starts
 nothing; ``--rebuild`` drops the database and the filestore and builds again.
+
+``reference --pin`` installs peaky at a release tag and publishes its run of
+every sample into the instance beside the in-app runs (``reference.py``).
 
 Everything the bench keeps lives in its home, ``$MASCOPE_PATH/.runtime/bench``
 (``--home`` or ``MASCOPE_BENCH_HOME`` elsewhere): a copy of the manifest with
@@ -54,6 +58,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import manifest as bench_manifest  # noqa: E402
+import reference as bench_reference  # noqa: E402
 from manifest import Manifest, ManifestError, ResolvedFile  # noqa: E402
 
 
@@ -801,7 +806,8 @@ class Instance(Protocol):
 
     def checkout(self, ref: str) -> str: ...
 
-    def start(self) -> str: ...
+    def start(self, peak_assignment: bool = False) -> str:
+        """Start the backend; ``peak_assignment`` switches the feature on for it."""
 
     def stop(self) -> None: ...
 
@@ -810,6 +816,9 @@ class Instance(Protocol):
     def reference_seed(self, lists: list[str]) -> None: ...
 
     def samples(self) -> dict[str, dict]: ...
+
+    def sample_workspaces(self) -> dict[str, str]:
+        """Each sample's workspace id, by sample id."""
 
     def streams(self) -> tuple[list[str], list[str]]: ...
 
@@ -1004,8 +1013,13 @@ class DevInstance:
         subprocess.run(["uv", "sync", "--all-groups", "-q"], cwd=wt, check=True)
         return sha
 
-    def start(self) -> str:
-        """Start the worktree's backend and file converter on the bench slot."""
+    def start(self, peak_assignment: bool = False) -> str:
+        """Start the worktree's backend and file converter on the bench slot.
+
+        ``peak_assignment`` switches the peak-assignment feature on for this
+        start (``MASCOPE_PEAK_ASSIGNMENT``): its write routes, the import of a
+        reference run among them, answer 403 without it.
+        """
         if self.api_port is None:
             raise BenchError("bind the instance before starting it")
         base = f"http://localhost:{self.api_port}"
@@ -1019,6 +1033,8 @@ class DevInstance:
         )
         env = {**os.environ, "PYTHONUTF8": "1"}
         env.pop("MASCOPE_ENV", None)
+        if peak_assignment:
+            env["MASCOPE_PEAK_ASSIGNMENT"] = "1"
         with open(logfile, "ab") as out:
             proc = subprocess.Popen(
                 [
@@ -1166,6 +1182,14 @@ class DevInstance:
             "where f.sha256 is not null group by f.sample_file_id"
         )
         return {r["sha256"]: r for r in rows}
+
+    def sample_workspaces(self) -> dict[str, str]:
+        rows = self._query(
+            "select i.sample_item_id, d.workspace_id from sample_item i "
+            "join sample_batch b on b.sample_batch_id = i.sample_batch_id "
+            "join dataset d on d.dataset_id = b.dataset_id"
+        )
+        return {r["sample_item_id"]: r["workspace_id"] for r in rows}
 
     def streams(self) -> tuple[list[str], list[str]]:
         """The converter's queue: files waiting, and files it quarantined."""
@@ -1581,8 +1605,8 @@ class Bench:
                 f"window {window_text}, built at {', '.join(builds) or '-'}",
                 file=out,
             )
-        reference = state.get("reference")
-        print(f"reference {reference['pin'] if reference else 'none yet'}", file=out)
+        for line in bench_reference.status_lines(state.get("reference")):
+            print(line, file=out)
         cards = state.get("cards") or []
         if cards:
             print("cards", file=out)
@@ -1633,6 +1657,34 @@ def main(argv: list[str] | None = None) -> int:
     p_init.add_argument(
         "--wait", action="store_true", help="queue behind another bench command"
     )
+    p_ref = sub.add_parser(
+        "reference",
+        help="install peaky at a release tag and publish its run of every sample",
+    )
+    p_ref.add_argument("--pin", required=True, help="peaky's release tag, vX.Y.Z")
+    p_ref.add_argument(
+        "--reinstall",
+        action="store_true",
+        help="install the pin again, resolving its dependencies afresh",
+    )
+    p_ref.add_argument(
+        "--jobs", type=int, default=2, help="samples run at once (default 2)"
+    )
+    p_ref.add_argument(
+        "--set",
+        action="append",
+        dest="sets",
+        metavar="NAME",
+        help="only this set (repeatable; default every set)",
+    )
+    p_ref.add_argument(
+        "--peaky-url",
+        default=bench_reference.PEAKY_URL,
+        help="where peaky is cloned from, the first time",
+    )
+    p_ref.add_argument(
+        "--wait", action="store_true", help="queue behind another bench command"
+    )
     sub.add_parser("status", help="the env, slot, sets, reference pin and last cards")
     args = parser.parse_args(argv)
 
@@ -1649,6 +1701,20 @@ def main(argv: list[str] | None = None) -> int:
         bench = Bench(home=home, instance=instance, connect=connect)
         if args.command == "status":
             return bench.status()
+        if args.command == "reference":
+            runner = bench_reference.Reference(
+                peaky=bench_reference.Peaky(
+                    home.root / "reference", url=args.peaky_url
+                ),
+                instance=instance,
+                connect=connect,
+                env_file=home.env_file,
+                load_state=lambda: load_state(home, instance.env),
+                save_state=lambda state: save_state(home, state),
+                jobs=args.jobs,
+            )
+            with home.lock(wait=args.wait):
+                return runner.run(args.pin, reinstall=args.reinstall, only=args.sets)
         with home.lock(wait=args.wait):
             return bench.init(
                 args.manifest,
@@ -1657,7 +1723,7 @@ def main(argv: list[str] | None = None) -> int:
                 checkout=args.checkout,
                 keep_running=args.keep_running,
             )
-    except (BenchError, ManifestError) as error:
+    except (BenchError, ManifestError, bench_reference.ReferenceError) as error:
         print(f"bench: {error}", file=sys.stderr)
         return 2
 

@@ -3,10 +3,10 @@
 One persistent Mascope instance, env `bench`, that holds fixed sample sets,
 so that both assignment engines can be run on the same data on demand. The
 design is `docs/dev/assignment_bench.md` (milestone 6 of the assignment
-quality plan). This folder has its first step, `bench init`: the instance
-built from a sets manifest. The reference at a pin (`bench reference`), the
-run and its card (`bench run`) and the posting follow as steps 6.3, 6.5 and
-6.6.
+quality plan). This folder has its first two steps: `bench init`, the
+instance built from a sets manifest, and `bench reference`, the reference
+engine at a pinned release published into it. The run and its card
+(`bench run`) and the posting follow as steps 6.5 and 6.6.
 
 ## Commands
 
@@ -14,6 +14,7 @@ Run them from a checkout, with the dev stack up (`mascope dev up`):
 
 ```sh
 uv run python tooling/assignment_bench/bench.py init tooling/assignment_bench/manifests/demo.json
+uv run python tooling/assignment_bench/bench.py reference --pin v0.9.0
 uv run python tooling/assignment_bench/bench.py status
 ```
 
@@ -59,9 +60,12 @@ uv run python tooling/assignment_bench/bench.py status
   worktree, or nothing of it exists yet (no binding, no database, no env
   folder). Any other env belongs to another instance, and `init` refuses
   it.
+- **`reference --pin vX.Y.Z`** puts the reference engine, peaky, at a
+  release tag beside the in-app runs; the next section has the detail.
 - **`status`** prints the env and slot, the build the last `init` started,
   every set with its sample counts and the builds that ingested it, the
-  reference pin and the last cards. It needs no runtime home.
+  reference pin with peaky's version string and the `mascope-tools` it
+  scored with, and the last cards. It needs no runtime home.
 - `--checkout DIR` names a `corpus checkout` for a manifest that names
   corpus objects. `--keep-running` leaves the backend up. `--wait` queues
   behind another bench command. `--home` and `--env` put the bench
@@ -71,6 +75,52 @@ uv run python tooling/assignment_bench/bench.py status
 slot registry, so the same command builds a bench on any dev stack. The
 demo manifest needs nothing but the demo bundle, which `init` fetches when
 it is not cached. That makes it the set a CI run can build too.
+
+## The reference at a pin
+
+`bench reference --pin vX.Y.Z` reads the reference at a tagged release,
+never at a pre-release or a branch (decision 29 of the assignment quality
+plan). In order:
+
+1. It clones peaky into the bench's home the first time (`--peaky-url`
+   names another source) and fetches its tags.
+2. It exports the tag's tree and installs it with
+   `uv tool install --python 3.12` into a tool environment of the bench's
+   own (`reference/tools`, with `UV_TOOL_DIR` and `UV_TOOL_BIN_DIR` pointed
+   there). A pin installed before is reused. `--reinstall` installs it
+   again and resolves its dependencies afresh.
+3. It asks that peaky for its version string, the `mascope-tools` version
+   it scores with, and which of the sets' profiles it knows.
+4. It starts the instance's backend with peak assignment switched on, which
+   the import route needs, and writes `bench.env` afresh.
+5. For every sample of every set it runs `peaky assign` with the set's
+   profile, and with `--ppm` and `--search-ppm` from the set's window when
+   the manifest names one. It then runs `peaky publish` with that version
+   string. The run lands under the engine badge `peaky`. Peaky's batch
+   command picks its own samples, so each sample runs alone. A per-sample
+   publish carries every role and peaky's own tier on each row.
+6. It stops the backend.
+
+peaky runs with only the bench's URL and token: the caller's own
+`MASCOPE_*` variables are dropped, and `HOME` is the bench's, so a sourced
+testbed env cannot send it elsewhere. `--jobs N` runs N samples at once
+(default 2), and `--set NAME` limits a call to the sets named.
+
+**What is cached.** A published sample is kept by pin, set, sample and
+`mascope-tools` version. A second call at the same pin publishes nothing
+and starts nothing. A new pin, or a reinstall that resolved another
+`mascope-tools`, publishes every set again. The call then lists the sets
+whose reference changed since the previous pin, sample by sample: the
+peak, role, formula, adduct and tier of each ledger row, compared as a
+digest. That list is the first reading of a peaky release's boundary
+review (step 5.1). A sample that failed is named, kept with its error,
+and run again by the next call. A publish that broke off resumes: its
+import id is derived from the pin, the library, the sample and the
+ledger.
+
+**What is reported.** A set whose profile the pinned peaky does not know
+is named as not run, in the output and by `status`. So is a sample `init`
+left with a problem. Either makes the call exit 1, as a failed sample does.
 
 ## The manifest
 
@@ -139,6 +189,10 @@ repository.
 | `worktree/` | the git worktree the backend runs from |
 | `logs/` | one backend log per start |
 | `cards/` | the cards of later steps |
+| `reference/peaky/` | the clone of peaky the pins are installed from |
+| `reference/src/<pin>/`, `reference/tools/`, `reference/bin/` | the exported tag and its tool environment |
+| `reference/installed.json` | the pin and commit installed |
+| `reference/runs/<pin>/<set>/<sample>/` | each sample's ledger, manifest and peaky log |
 
 The runtime home is private to the box. The sample ids and a private
 manifest's names stay there, never in a checkout.
