@@ -22,11 +22,12 @@ command:
    the gate did. A per-sample publish carries every role and peaky's own
    tier on each row, not only its Assigned rows.
 
-A published sample is cached by (pin, set, sample, library version): a second
-call at the same pin publishes nothing and starts nothing; a new pin, or a
-reinstall that resolved another ``mascope-tools``, publishes every set again
-and lists the sets whose reference changed, for the boundary review of each
-peaky release (step 5.1). A set whose profile the pinned peaky does not know
+A published sample is cached by (pin, set, sample, library version), and
+by the profile and window it ran with: a second call at the same pin
+publishes nothing and starts nothing; a set whose profile or window the
+manifest changed runs again; a new pin, or a reinstall that resolved another
+``mascope-tools``, publishes every set again and lists the sets whose
+reference changed, for the boundary review of each peaky release (step 5.1). A set whose profile the pinned peaky does not know
 is reported, not skipped silently.
 
 This module holds the tool and the plan; ``bench.py`` gives it the instance,
@@ -47,6 +48,7 @@ import subprocess
 import tarfile
 import threading
 import tomllib
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -132,14 +134,18 @@ def ledger_digest(ledger: Path) -> str:
     ).hexdigest()
 
 
-def import_id(key: dict, set_name: str, sample: str, digest: str) -> str:
+def import_id(block: str, job: "Job", digest: str) -> str:
     """The import's idempotency key: the same ledger resumes, another starts anew.
 
     The server returns the run it already made for a key it has seen, so a
     publish that broke off resumes under the same one; a sample assigned
-    again (another digest) gets a fresh run.
+    again (another digest, profile or window) gets a fresh run. ``block``
+    is the reference block's own id, which fixes its pin and library: a
+    later block, even one back at an earlier pin, never replays an old
+    block's run.
     """
-    text = f"{key['pin']}|{key['library']}|{set_name}|{sample}|{digest}"
+    window = json.dumps(job.window, sort_keys=True)
+    text = f"{block}|{job.set_name}|{job.sample}|{job.profile}|{window}|{digest}"
     return "bench-" + hashlib.sha256(text.encode()).hexdigest()[:40]
 
 
@@ -438,6 +444,7 @@ class ReferencePlan:
 
     jobs: list[Job] = field(default_factory=list)
     cached: int = 0
+    stale: int = 0
     unrunnable: dict[str, str] = field(default_factory=dict)
     not_ready: list[str] = field(default_factory=list)
 
@@ -445,6 +452,7 @@ class ReferencePlan:
 def new_reference(record: dict, probe: dict, previous: dict | None) -> dict:
     """The state's reference block for a pin and library not published before."""
     return {
+        "block": uuid.uuid4().hex,
         "pin": record["pin"],
         "commit": record["commit"],
         "version": probe["version"],
@@ -496,7 +504,10 @@ def plan(
             )
             continue
         # The runs of one block share its pin and library (a new key starts a
-        # new block), so a sample with a run in it is published at this key.
+        # new block), so a sample with a run in it is published at this key;
+        # it is current while the set's profile and window are those it ran
+        # with (``init`` updates both in place).
+        window = held.get("reference_window_ppm")
         runs = reference["runs"].get(set_name, {})
         for record in held["samples"].values():
             if record.get("problems"):
@@ -505,16 +516,11 @@ def plan(
             for item in record["items"]:
                 entry = runs.get(item["sample_item_id"]) or {}
                 if entry.get("run_id"):
-                    p.cached += 1
-                    continue
-                p.jobs.append(
-                    Job(
-                        set_name,
-                        item["sample_item_id"],
-                        profile,
-                        held.get("reference_window_ppm"),
-                    )
-                )
+                    if (entry.get("profile"), entry.get("window")) == (profile, window):
+                        p.cached += 1
+                        continue
+                    p.stale += 1
+                p.jobs.append(Job(set_name, item["sample_item_id"], profile, window))
     return p
 
 
@@ -524,7 +530,11 @@ def changed_sets(reference: dict) -> dict | None:
     if not previous:
         return None
     out = {}
-    for set_name, runs in reference["runs"].items():
+    # A set run at only one of the two pins is listed too, as compared on
+    # no sample.
+    names = dict.fromkeys([*reference["runs"], *previous["digests"]])
+    for set_name in names:
+        runs = reference["runs"].get(set_name, {})
         before = previous["digests"].get(set_name, {})
         both = [
             s
@@ -603,6 +613,11 @@ class Reference:
         log(
             f"peaky {pin} ({probe['version']}, mascope-tools {probe['library']}): "
             f"{todo.cached} sample(s) published already, {len(todo.jobs)} to run"
+            + (
+                f" ({todo.stale} again, at a profile or window the manifest changed)"
+                if todo.stale
+                else ""
+            )
         )
 
         failures: list[str] = []
@@ -626,7 +641,12 @@ class Reference:
             key = key_of(reference)
 
             def one(job: Job) -> None:
-                entry = {"key": key, "at": now()}
+                entry = {
+                    "key": key,
+                    "profile": job.profile,
+                    "window": job.window,
+                    "at": now(),
+                }
                 try:
                     workspace = workspaces.get(job.sample)
                     if workspace is None:
@@ -666,7 +686,7 @@ class Reference:
             creds, job.sample, workspace, job.profile, job.window, out_dir
         )
         digest = ledger_digest(ledger)
-        key = import_id(key_of(reference), job.set_name, job.sample, digest)
+        key = import_id(reference["block"], job, digest)
         published = self.peaky.publish(
             creds, ledger, job.sample, workspace, reference["version"], key
         )
@@ -684,17 +704,25 @@ class Reference:
             )
         changed = reference.get("changed")
         if changed:
+            against = changed["against"]
             moved = {n: c for n, c in changed["sets"].items() if c["changed"]}
+            compared = [n for n, c in changed["sets"].items() if c["compared"]]
+            uncompared = [n for n, c in changed["sets"].items() if not c["compared"]]
             if moved:
                 log(
-                    f"sets whose reference changed since {changed['against']}: "
+                    f"sets whose reference changed since {against}: "
                     + ", ".join(
                         f"{n} ({c['changed']}/{c['compared']} samples)"
                         for n, c in moved.items()
                     )
                 )
-            else:
-                log(f"no set's reference changed since {changed['against']}")
+            elif compared:
+                log(f"no set's reference changed since {against}")
+            if uncompared:
+                log(
+                    f"not compared with {against} (no sample published at both "
+                    f"pins): {', '.join(uncompared)}"
+                )
         problems = (
             [f"set {n} not run: {why}" for n, why in reference["unrunnable"].items()]
             + todo.not_ready
@@ -724,12 +752,19 @@ def status_lines(reference: dict | None) -> list[str]:
         lines.append(f"  {set_name:<4} not run: {why}")
     changed = reference.get("changed")
     if changed:
+        sets = changed["sets"]
         moved = [
             f"{n} {c['changed']}/{c['compared']}"
-            for n, c in changed["sets"].items()
+            for n, c in sets.items()
             if c["changed"]
         ]
-        lines.append(
-            f"  changed since {changed['against']}: {', '.join(moved) or 'none'}"
-        )
+        if any(c["compared"] for c in sets.values()):
+            lines.append(
+                f"  changed since {changed['against']}: {', '.join(moved) or 'none'}"
+            )
+        uncompared = [n for n, c in sets.items() if not c["compared"]]
+        if uncompared:
+            lines.append(
+                f"  not compared with {changed['against']}: {', '.join(uncompared)}"
+            )
     return lines

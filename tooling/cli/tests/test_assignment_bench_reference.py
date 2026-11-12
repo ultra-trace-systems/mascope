@@ -555,9 +555,119 @@ def test_the_ledger_digest_reads_conclusions_not_row_order(tmp_path):
     c.write_text("peak_id,mz,role,tier\np1,1,M0,Candidate\np2,2,iso_child,\n")
 
     assert ref.ledger_digest(a) == ref.ledger_digest(b) != ref.ledger_digest(c)
-    key = {"pin": "v1.0.0", "library": "x"}
-    assert ref.import_id(key, "Db", "S1", "d") == ref.import_id(key, "Db", "S1", "d")
-    assert ref.import_id(key, "Db", "S1", "d") != ref.import_id(key, "Db", "S1", "e")
+    job = ref.Job("Db", "S1", "BR", None)
+    assert ref.import_id("b1", job, "d") == ref.import_id("b1", job, "d")
+    assert ref.import_id("b1", job, "d") != ref.import_id("b1", job, "e")
+    assert ref.import_id("b1", job, "d") != ref.import_id("b2", job, "d")
+
+
+def _import_ids(rig):
+    return {
+        _opt(c["argv"], "--sample-id"): _opt(c["argv"], "--import-id")
+        for c in rig.peaky("publish")
+    }
+
+
+def test_a_changed_window_or_profile_runs_that_set_again(rig, capsys):
+    assert rig.run() == 0
+    first = _import_ids(rig)
+    state = rig.state()
+    state["sets"]["Et"]["reference_window_ppm"] = {"trust": 5.0, "search": 20.0}
+    bench.save_state(rig.home, state)
+
+    assert rig.run() == 0
+
+    assigns = rig.peaky("assign")
+    assert [_opt(c["argv"], "--sample-id") for c in assigns] == ["S3"]
+    assert (
+        _opt(assigns[0]["argv"], "--ppm"),
+        _opt(assigns[0]["argv"], "--search-ppm"),
+    ) == (
+        "5",
+        "20",
+    )
+    assert "1 to run (1 again, at a profile or window" in capsys.readouterr().out
+    # The ledger came out the same: the server must still make a new run.
+    assert _import_ids(rig)["S3"] != first["S3"]
+    entry = rig.state()["reference"]["runs"]["Et"]["S3"]
+    assert (entry["profile"], entry["window"]) == ("BR", {"trust": 5.0, "search": 20.0})
+
+    state = rig.state()
+    state["sets"]["Db"]["profile"] = "UR"
+    bench.save_state(rig.home, state)
+    assert rig.run() == 0
+    assigns = rig.peaky("assign")
+    assert sorted(_opt(c["argv"], "--sample-id") for c in assigns) == ["S1", "S2"]
+    assert {_opt(c["argv"], "--reagent") for c in assigns} == {"UR"}
+    assert _import_ids(rig)["S1"] != first["S1"]
+
+    assert rig.run() == 0
+    assert rig.calls() == []
+
+
+def test_back_at_an_earlier_pin_every_sample_is_a_new_import(rig):
+    # Both pins write the same ledgers: only the block tells their imports apart.
+    assert rig.run("v1.0.0") == 0
+    first = _import_ids(rig)
+    assert rig.run("v1.1.0") == 0
+    second = _import_ids(rig)
+    assert rig.run("v1.0.0") == 0
+    third = _import_ids(rig)
+
+    assert sorted(first) == sorted(second) == sorted(third) == ["S1", "S2", "S3"]
+    for sample in first:
+        assert len({first[sample], second[sample], third[sample]}) == 3
+    reference = rig.state()["reference"]
+    assert reference["pin"] == "v1.0.0" and reference["previous"]["pin"] == "v1.1.0"
+
+
+def test_a_library_change_at_the_same_pin_is_a_new_import(rig, monkeypatch):
+    assert rig.run() == 0
+    first = _import_ids(rig)
+    monkeypatch.setenv("FAKE_LIBRARY", "2026.11.1")
+
+    assert rig.run(reinstall=True) == 0
+
+    second = _import_ids(rig)
+    assert all(second[s] != first[s] for s in first)
+
+
+def test_a_set_with_no_sample_at_both_pins_is_not_compared(rig, capsys):
+    rig.spec = {"fail": ["S3"]}
+    assert rig.run("v1.0.0") == 1
+    rig.spec = {}
+    capsys.readouterr()
+
+    assert rig.run("v1.1.0") == 0
+
+    assert rig.state()["reference"]["changed"]["sets"]["Et"] == {
+        "changed": 0,
+        "compared": 0,
+    }
+    out = capsys.readouterr().out
+    assert "no set's reference changed since v1.0.0" in out
+    assert "not compared with v1.0.0 (no sample published at both pins): Et" in out
+    status = _status(rig)
+    assert "changed since v1.0.0: none" in status
+    assert "not compared with v1.0.0: Et" in status
+
+
+def test_sets_run_at_only_one_pin_each_are_all_not_compared(rig, capsys):
+    assert rig.run("v1.0.0", only=["Db"]) == 0
+    capsys.readouterr()
+
+    assert rig.run("v1.1.0", only=["Et"]) == 0
+
+    assert rig.state()["reference"]["changed"]["sets"] == {
+        "Et": {"changed": 0, "compared": 0},
+        "Db": {"changed": 0, "compared": 0},
+    }
+    out = capsys.readouterr().out
+    assert "reference changed" not in out
+    assert "not compared with v1.0.0 (no sample published at both pins): Et, Db" in out
+    status = _status(rig)
+    assert "changed since" not in status
+    assert "not compared with v1.0.0: Et, Db" in status
 
 
 def _status(rig):
