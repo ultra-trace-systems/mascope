@@ -35,6 +35,9 @@ from mascope_backend.api.new.peak_assignments.batch_import import (
 from mascope_backend.api.new.peak_assignments.batch_isotopologues import (
     stamp_batch_isotopologues,
 )
+from mascope_backend.api.new.peak_assignments.batch_merged_isotopologues import (
+    strip_batch_isotopologue_rows,
+)
 from mascope_backend.api.new.peak_assignments.batch_peak_verification import (
     get_anchor_context,
     get_batch_peak_verdicts,
@@ -671,6 +674,63 @@ async def stamp_isotopologues_batch_peaks_route(
         "message": (
             "Stamping the predicted isotope lines of the batch peaks in "
             f"'{sample_batch.sample_batch_name}', please wait."
+        ),
+        "process_id": process_id,
+    }
+
+
+@batch_peaks_router.post(
+    "/batch/{sample_batch_id}/strip-isotopologues",
+    # A write into the batch ledger and the samples' rows, gated like the
+    # stamping above and, like it, not opened to API tokens.
+    dependencies=[Depends(require_peak_assignment_enabled)],
+)
+@api_route(status_code=202)
+async def strip_isotopologues_batch_peaks_route(
+    sample_batch_id: str,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(current_active_user),
+    membership=Depends(require_batch_role("editor")),
+) -> dict:
+    """Strip the batch ledger's rows that are another row's isotope line.
+
+    Every batch peak whose consensus commits a formula as its monoisotopic
+    line is read against the 13C, 15N, 18O, 34S, 29Si, 30Si, 37Cl and 81Br
+    lines of every brighter such batch peak below it, of its ionization mode
+    and instrument type, within four times the batch's mass scatter (1 ppm at
+    least). Where its intensity over the parent's has a median of 0.4 to 1.4
+    times the line's predicted share over three or more samples, with fewer
+    than a tenth of them above twice, it is the parent's isotopologue: each
+    sample's member, and the sample's own in-app row, becomes an isotopologue
+    child of the parent's, and the batch peak folds under the parent. A
+    curated batch peak, one a sample of which is a hand assignment, one that
+    carries its own 13C line and one whose samples would not follow the parent
+    are held. The stripped row records its parent under
+    ``provenance.merged_isotopologue_of`` and the parent its lines under
+    ``provenance.merged_isotopologues``; the ledger serves both as
+    ``merged_isotopologue_of`` and ``merged_isotopologues``, and the run's
+    summary lists the stripped pairs and the held ones. Runs as a background
+    task, as a batch run, and emits ``peak_assignment_reload`` on completion.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param user: The current authenticated user. Requires workspace editor role.
+    :return: Acknowledgement message with the background process id.
+    """
+    sample_batch = await fetch_sample_batch(sample_batch_id)
+    await check_no_run_in_flight(sample_batch_id=sample_batch_id)
+    process_id = gen_id(8)
+    background_tasks.add_task(
+        strip_batch_isotopologue_rows,
+        sample_batch_id=sample_batch_id,
+        independent_transaction=True,
+        user_id=user.id,
+        process_id=process_id,
+    )
+    return {
+        "message": (
+            "Reading the merged rows of "
+            f"'{sample_batch.sample_batch_name}' against each other's isotope "
+            "lines, please wait."
         ),
         "process_id": process_id,
     }

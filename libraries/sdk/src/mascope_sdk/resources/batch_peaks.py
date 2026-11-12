@@ -183,7 +183,16 @@ class BatchPeaksResource(BaseResource):
                  isotopologue of, the ``label``, the track's reading, and how
                  many of its stamps were ``n_predicted`` or ``n_picker``);
                  recorded only, no tier reads them; null where none, and absent
-                 from a server that predates them.
+                 from a server that predates them; ``merged_isotopologue_of``
+                 (on a batch peak a *Strip isotopologue rows* run read as a
+                 brighter batch peak's isotope line, and folded under it:
+                 that ``batch_peak_id``, its ``formula``, the ``label`` of the
+                 line, its ``ratio``, the ``spectra`` read and their
+                 ``median_factor``, and under ``displaced`` what the batch
+                 peak's samples had read it as) and ``merged_isotopologues``
+                 (on the batch peak that took such rows: its ``formula`` and
+                 the ``lines`` it took); null where none, and absent from a
+                 server that predates them.
                  ``consensus_tier`` is always this server's: the engine's tier
                  stands beside it.
                  None when the batch has no ledger yet.

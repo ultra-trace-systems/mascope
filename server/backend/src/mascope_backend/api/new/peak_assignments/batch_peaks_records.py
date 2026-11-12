@@ -18,10 +18,12 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     continuity_stale,
     instrument_type_of,
     manual_pin_of,
+    merged_isotopologue_of_summary,
     mz_from_delta,
     stamped_isotopologue_of_summary,
     standing_co_variation_record,
     standing_diagnostic_isotopologues_record,
+    standing_merged_isotopologues_record,
     standing_series_record,
     tier_name,
 )
@@ -84,6 +86,10 @@ def _batch_peak_meta(bp) -> dict:
     was stamped - and ``stamped_isotopologue_of`` is, on a stamped line, the
     parent batch peak it is the isotopologue of with the track's reading
     (``batch_isotopologues``); each None where the stamping left none.
+    ``merged_isotopologue_of`` is, on a row the batch's merged-isotopologue
+    reading stripped, the parent whose line it is, the share read and the
+    reading it displaced, and ``merged_isotopologues`` on a parent the lines it
+    took (``batch_merged_isotopologues``); each None where no strip stands.
     """
     return {
         "batch_peak_id": bp.batch_peak_id,
@@ -118,6 +124,8 @@ def _batch_peak_meta(bp) -> dict:
         "continuity_stale": continuity_stale(bp),
         "diagnostic_isotopologues": standing_diagnostic_isotopologues_record(bp),
         "stamped_isotopologue_of": stamped_isotopologue_of_summary(bp),
+        "merged_isotopologue_of": merged_isotopologue_of_summary(bp),
+        "merged_isotopologues": standing_merged_isotopologues_record(bp),
         "reference_listing": consensus_listing(
             bp.candidates,
             bp.consensus_formula,

@@ -3543,7 +3543,8 @@ class BatchPeakRun(Base):
     __table_args__ = (
         CheckConstraint(
             "action IN ('fold', 'rebuild', 'search_untargeted', 'import', "
-            "'detect_series', 'read_co_variation', 'stamp_isotopologues')",
+            "'detect_series', 'read_co_variation', 'stamp_isotopologues', "
+            "'strip_isotopologues')",
             name="action_valid",
         ),
         CheckConstraint(
@@ -3605,6 +3606,13 @@ class BatchPeakRunAnchor(Base):
     # (``batch_peaks.stamped_isotopologue_of_summary``); NULL for none.
     diagnostic_isotopologues: Mapped[Optional[dict]] = mapped_column(JSON)
     stamped_isotopologue_of: Mapped[Optional[dict]] = mapped_column(JSON)
+    # The batch's merged-isotopologue reading as the run left it: on a stripped
+    # row the parent whose line it is, what it read before, its per-member
+    # states left out (``batch_peaks.merged_isotopologue_of_summary``); on a
+    # parent the lines it took from the ledger's rows
+    # (``batch_peaks.standing_merged_isotopologues_record``); NULL for none.
+    merged_isotopologue_of: Mapped[Optional[dict]] = mapped_column(JSON)
+    merged_isotopologues: Mapped[Optional[dict]] = mapped_column(JSON)
     candidates: Mapped[Optional[list]] = mapped_column(JSON)
     members: Mapped[Optional[dict]] = mapped_column(JSON)
 

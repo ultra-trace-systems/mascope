@@ -54,9 +54,11 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     continuity_stale,
     instrument_type_of,
     manual_pin_of,
+    merged_isotopologue_of_summary,
     stamped_isotopologue_of_summary,
     standing_co_variation_record,
     standing_diagnostic_isotopologues_record,
+    standing_merged_isotopologues_record,
     standing_series_record,
     tier_name,
 )
@@ -83,6 +85,7 @@ ACTION_IMPORT = "import"
 ACTION_SERIES = "detect_series"
 ACTION_CO_VARIATION = "read_co_variation"
 ACTION_ISOTOPOLOGUES = "stamp_isotopologues"
+ACTION_STRIP_ISOTOPOLOGUES = "strip_isotopologues"
 ACTIONS = (
     ACTION_FOLD,
     ACTION_REBUILD,
@@ -91,6 +94,7 @@ ACTIONS = (
     ACTION_SERIES,
     ACTION_CO_VARIATION,
     ACTION_ISOTOPOLOGUES,
+    ACTION_STRIP_ISOTOPOLOGUES,
 )
 
 STATUS_RUNNING = "running"
@@ -193,6 +197,8 @@ def anchor_snapshot_row(run_id: str, anchor: Any, members: Iterable[Any]) -> dic
         "continuity": anchor.continuity,
         "diagnostic_isotopologues": standing_diagnostic_isotopologues_record(anchor),
         "stamped_isotopologue_of": stamped_isotopologue_of_summary(anchor),
+        "merged_isotopologue_of": merged_isotopologue_of_summary(anchor),
+        "merged_isotopologues": standing_merged_isotopologues_record(anchor),
         "candidates": list(anchor.candidates or []),
         "members": member_arrays(members),
     }
@@ -232,6 +238,8 @@ def snapshot_anchor_meta(row: Any, sample_batch_id: str) -> dict:
         "continuity_stale": continuity_stale(row),
         "diagnostic_isotopologues": row.diagnostic_isotopologues,
         "stamped_isotopologue_of": row.stamped_isotopologue_of,
+        "merged_isotopologue_of": row.merged_isotopologue_of,
+        "merged_isotopologues": row.merged_isotopologues,
         "reference_listing": consensus_listing(
             row.candidates,
             row.consensus_formula,
@@ -346,7 +354,7 @@ async def touch_ledger(session, sample_batch_id: str) -> None:
     written. Called by every write to the live ledger - a fold, a consensus
     recompute, a curation, a search's, an import's or a series detection's
     rows, a co-variation reading's or an isotopologue stamping's records, a
-    continuity pass's grades - in the write's own transaction, under the
+    merged-isotopologue reading's strips, a continuity pass's grades - in the write's own transaction, under the
     batch's fold lock, so the stamp commits with the write and never without
     it. A ledger with no current run yet has nothing
     to stamp: its first fold mints the run before it writes."""
@@ -624,6 +632,7 @@ __all__ = [
     "ACTION_REBUILD",
     "ACTION_SEARCH",
     "ACTION_SERIES",
+    "ACTION_STRIP_ISOTOPOLOGUES",
     "BATCH_RUN_KEEP",
     "BatchRunInFlightException",
     "MEMBER_FIELDS",
