@@ -36,6 +36,9 @@ from mascope_backend.api.new.peak_assignments.batch_import import (
 from mascope_backend.api.new.peak_assignments.batch_isotopologues import (
     stamp_batch_isotopologues,
 )
+from mascope_backend.api.new.peak_assignments.batch_known_species import (
+    decide_batch_known_species,
+)
 from mascope_backend.api.new.peak_assignments.batch_merged_isotopologues import (
     strip_batch_isotopologue_rows,
 )
@@ -782,6 +785,65 @@ async def read_batch_checks_batch_peaks_route(
         "message": (
             f"Reading the batch checks of '{sample_batch.sample_batch_name}', "
             "please wait."
+        ),
+        "process_id": process_id,
+    }
+
+
+@batch_peaks_router.post(
+    "/batch/{sample_batch_id}/decide-known-species",
+    # A write into the batch ledger and the samples' rows, gated like the
+    # strip above and, like it, not opened to API tokens.
+    dependencies=[Depends(require_peak_assignment_enabled)],
+)
+@api_route(status_code=202)
+async def decide_known_species_batch_peaks_route(
+    sample_batch_id: str,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(current_active_user),
+    membership=Depends(require_batch_role("editor")),
+) -> dict:
+    """Decide the batch's known species once, on the evidence of all its samples.
+
+    A known species is a batch peak a sample's reagent pre-pass claimed as an
+    ion of the source's library (not a fragment), or one whose registry holds
+    a formula a reference list tags as background. Per ionization mode and
+    instrument type, its evidence is pooled over the samples: the samples its
+    peak is in, and those whose own claim (or a committed reading of the
+    listed formula) held. It is present where its peak is in two samples or
+    more, in half the samples or more, and one sample's own test held; absent
+    where no sample's did; unpooled where it is in too few. Where it is
+    present, its member in every sample, and the sample's own in-app row, is
+    rewritten as the species - a library ion as the pre-pass claims it, its
+    isotope lines with it; a listed compound as the list's reading at
+    candidate - but for the samples a hold keeps: a hand assignment, a target
+    compound, another ion's line or claim, and a listed compound's reading
+    that carries lines of its own. A curated batch peak, and one whose vote
+    the claim would not turn, are held. Every species read records its verdict
+    under ``provenance.known_species``, which the ledger serves as
+    ``known_species``, with the samples kept and their readings; a sample's
+    next run claims a present library ion on the batch's word. Runs as a
+    background task, as a batch run, and emits ``peak_assignment_reload`` on
+    completion.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param user: The current authenticated user. Requires workspace editor role.
+    :return: Acknowledgement message with the background process id.
+    """
+    sample_batch = await fetch_sample_batch(sample_batch_id)
+    await check_no_run_in_flight(sample_batch_id=sample_batch_id)
+    process_id = gen_id(8)
+    background_tasks.add_task(
+        decide_batch_known_species,
+        sample_batch_id=sample_batch_id,
+        independent_transaction=True,
+        user_id=user.id,
+        process_id=process_id,
+    )
+    return {
+        "message": (
+            "Deciding the known species of "
+            f"'{sample_batch.sample_batch_name}' over its samples, please wait."
         ),
         "process_id": process_id,
     }

@@ -58,6 +58,14 @@ reagent's water ladder, whose rungs are claimed on the ladder's own shape
 (:func:`claim_ladder_peaks`). A last family is claimed after the stages rather
 than before them: the fragments a source makes of an analyte, which only the
 analyte's own commit licenses (:func:`claim_fragments`).
+
+A file's claim can also take its batch's word. Where the batch pooled a library
+ion's evidence over its files and decided it present (step 4.2h,
+``batch_known_species``), the pass claims the ion on the file's corrected mass
+even where the file's own floor or ladder would not (:func:`claim_batch_species`),
+and the row names the batch's decision as its reason. The batch's own claim on
+the files it has already folded writes the same row over the reading a file's
+run made (:func:`batch_species_row`).
 """
 
 from __future__ import annotations
@@ -68,16 +76,19 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from mascope_backend.api.new.peak_assignments.config import MAX_ALTERNATIVES_CEILING
 from mascope_backend.api.new.peak_assignments.cross_channel import (
     neutral_key,
     same_ion_readings,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
+    DISPLACED_BY_CLAIM,
     ROLE_ISO_CHILD,
     ROLE_M0,
     ROLE_REAGENT,
     SOURCE_REAGENT,
     is_target_library_row,
+    reading_as_alternative,
 )
 from mascope_backend.api.new.peak_assignments.mass_gate import is_committed
 from mascope_backend.api.new.peak_assignments.tiers import (
@@ -88,6 +99,8 @@ from mascope_backend.api.new.peak_assignments.tiers import (
 from mascope_backend.db.id import gen_id
 from mascope_tools.composition.reagents import (
     FAMILY_FRAGMENT,
+    FAMILY_REAGENT,
+    KIND_CLUSTER,
     KIND_FRAGMENT,
     FragmentIon,
     FragmentLadder,
@@ -97,6 +110,7 @@ from mascope_tools.composition.reagents import (
     ReagentHit,
     fragment_ladders,
     ion_ladders,
+    match_batch_species,
     match_ion_ladders,
     match_reagent_clusters,
     reagent_library,
@@ -104,8 +118,13 @@ from mascope_tools.composition.reagents import (
 
 
 __all__ = [
+    "REASON_BATCH_KNOWN_SPECIES",
+    "BatchSpecies",
     "FragmentClaims",
+    "batch_species_from",
+    "batch_species_row",
     "build_reagent_assignments",
+    "claim_batch_species",
     "claim_fragments",
     "claim_ladder_peaks",
     "claim_reagent_peaks",
@@ -164,11 +183,14 @@ def _signed_ion(formula: str, charge: int) -> str:
     return formula + ("+" * charge if charge > 0 else "-" * -charge)
 
 
-def _provenance(hit: ReagentHit) -> dict:
+def _provenance(hit: ReagentHit, batch: dict | None = None) -> dict:
     """What a reagent row records about why it was claimed.
 
     The ion's family and the literature that names it travel with every row, so
     a reader checks a claim against a paper rather than against the table.
+
+    :param batch: Where the file claimed the ion on its batch's word
+        (:func:`claim_batch_species`), what the batch decided; None otherwise.
     """
     record: dict = {
         "reagent": {
@@ -193,6 +215,9 @@ def _provenance(hit: ReagentHit) -> dict:
         # the ladder grew from, the rung below and the step, and the molecules
         # the rung's ion also reads as, which it displaced.
         record["reagent"]["ladder"] = dict(hit.ladder)
+    if batch is not None:
+        record["reagent"]["reason"] = REASON_BATCH_KNOWN_SPECIES
+        record["reagent"][REASON_BATCH_KNOWN_SPECIES] = dict(batch)
     return record
 
 
@@ -201,6 +226,7 @@ def build_reagent_assignments(
     peaks_df: pd.DataFrame,
     sample_item_id: str,
     peak_assignment_run_id: str,
+    batch: dict[str, dict] | None = None,
 ) -> list[dict]:
     """Turn claimed peaks into ledger rows.
 
@@ -215,8 +241,12 @@ def build_reagent_assignments(
     :param peaks_df: The frame the hits' positions index into, positionally.
     :param sample_item_id: The sample these rows belong to.
     :param peak_assignment_run_id: The run they belong to.
+    :param batch: Ion formula -> the batch's decision, for the ions the file
+        claimed on its batch's word (:func:`claim_batch_species`); their rows,
+        lines included, record it as their reason.
     :return: One row per claimed peak.
     """
+    batch = batch or {}
     peak_ids = peaks_df["sample_peak_id"].to_numpy()
     ids = [gen_id(32) for _ in hits]
     monoisotopic = {
@@ -256,7 +286,7 @@ def build_reagent_assignments(
                 "target_ion_id": None,
                 "owner_peak_assignment_id": owner_id,
                 "alternatives": None,
-                "provenance": _provenance(hit),
+                "provenance": _provenance(hit, batch.get(hit.cluster.formula)),
             }
         )
     return rows
@@ -361,6 +391,207 @@ def claim_ladder_peaks(
         purity=purity,
         resolution=resolution,
     )
+
+
+# --- the batch's word ---------------------------------------------------------
+#
+# A batch that pooled a library ion's evidence over its files and decided it
+# present (step 4.2h, ``batch_known_species``) has said what one file's floor
+# or ladder cannot. A file of that batch claims the ion on its batch's word, and
+# the batch's own decision writes the same row over a reading a file's run made.
+
+
+#: The reason a row claimed on its batch's decision names, under
+#: ``provenance.reagent.reason``, with the decision beside it under the same key.
+REASON_BATCH_KNOWN_SPECIES = "batch_known_species"
+
+
+@dataclass(frozen=True)
+class BatchSpecies:
+    """A library ion a file's batch decided present.
+
+    :param cluster: The ion, as the library names it.
+    :param record: What the batch decided, as a row records it: the batch
+        peak, the verdict and the evidence it was read on, and the batch run.
+    """
+
+    cluster: ReagentCluster
+    record: dict
+
+
+def _unsigned(ion_formula: str) -> tuple[str, int]:
+    """An ion's composition and charge from its formula written with the
+    charge (:func:`_signed_ion`'s inverse)."""
+    text = str(ion_formula or "").strip()
+    composition = text.rstrip("+-")
+    signs = text[len(composition) :]
+    return composition, signs.count("+") - signs.count("-")
+
+
+def batch_species_from(record: dict, batch_peak_id: str) -> BatchSpecies | None:
+    """The library ion an anchor's known-species record decided present.
+
+    :param record: The anchor's standing record
+        (``batch_peaks.standing_known_species_record``).
+    :param batch_peak_id: The anchor's id.
+    :return: The species, or None where the record is not a library ion's, did
+        not decide it present, or held its claim: a file then keeps its own.
+    """
+    species = record.get("species") if isinstance(record, dict) else None
+    if (
+        not isinstance(species, dict)
+        or species.get("kind") != "library"
+        or record.get("verdict") != "present"
+        or record.get("held")
+        or not species.get("ion_formula")
+    ):
+        return None
+    composition, charge = _unsigned(species["ion_formula"])
+    if not composition or not charge:
+        return None
+    cluster = ReagentCluster(
+        composition,
+        charge,
+        species.get("label") or species["ion_formula"],
+        species.get("ion_kind") or KIND_CLUSTER,
+        family=species.get("family") or FAMILY_REAGENT,
+        references=tuple(species.get("references") or ()),
+        observed=species.get("observed") or "",
+    )
+    return BatchSpecies(
+        cluster,
+        {
+            "batch_peak_id": batch_peak_id,
+            "verdict": record.get("verdict"),
+            "files": record.get("files"),
+            "present": record.get("present"),
+            "test_held": record.get("test_held"),
+            "batch_peak_run_id": record.get("batch_peak_run_id"),
+        },
+    )
+
+
+def claim_batch_species(
+    peaks_df: pd.DataFrame,
+    species: list[BatchSpecies] | tuple[BatchSpecies, ...],
+    *,
+    calibration: ReagentCalibration | None,
+    claimed: list[ReagentHit],
+    claim_ppm: float,
+    purity: float | None = None,
+    resolution: Callable[[float], float] | None = None,
+) -> list[ReagentHit]:
+    """Claim the library ions the file's batch decided present, where the
+    file's own claims did not (``reagents.match_batch_species``).
+
+    Made after :func:`claim_reagent_peaks` and :func:`claim_ladder_peaks`, on
+    the masses their anchors corrected and the peaks they left. An ion either
+    claim already took is the file's own, and its batch's word adds nothing.
+
+    :param peaks_df: The sample's peaks, as for :func:`claim_reagent_peaks`.
+    :param species: The ions the batch decided present (:func:`batch_species_from`).
+    :param calibration: What the cluster claim's anchors said; None where it
+        had nothing to match, and then nothing is claimed.
+    :param claimed: The file's own claims, whose peaks and ions are left.
+    :param claim_ppm: The run's own m/z precision.
+    :param purity: A labelled reagent's isotopic purity.
+    :param resolution: The file's resolving power as a function of m/z.
+    :return: The ions and their isotope lines.
+    """
+    if not species or calibration is None or peaks_df.empty:
+        return []
+    own = {hit.cluster.formula for hit in claimed}
+    return match_batch_species(
+        [one.cluster for one in species if one.cluster.formula not in own],
+        peaks_df["mz"].to_numpy(),
+        peaks_df["intensity"].to_numpy(),
+        calibration=calibration,
+        claim_ppm=claim_ppm,
+        taken=[hit.index for hit in claimed],
+        purity=purity,
+        resolution=resolution,
+    )
+
+
+def batch_species_row(
+    row: dict, species: BatchSpecies, *, exact_mz: float | None = None
+) -> dict:
+    """The values that rewrite a sample's row as the library ion its batch
+    decided present: the batch's own claim on a file it folded.
+
+    Shaped as the pre-pass's rows are (:func:`build_reagent_assignments`): the
+    ion and no analyte, its tier ``unassigned``. A monoisotopic row is measured
+    against the ion's own mass; an isotope line of the row keeps the label and
+    the errors its run measured it at, and the owner it folds under, as the
+    fragment claim keeps a claimed fragment's lines (:func:`claim_fragments`).
+    The reading the row carried is recorded, not dropped: under
+    ``provenance.reagent.read_as``, and first among its alternatives where it
+    named a formula, so "use this" puts it back. The row is left as it is; the
+    caller writes the values.
+
+    :param row: The sample's row on the ion's peak, or on one of its lines.
+    :param species: The ion and the batch's decision.
+    :param exact_mz: The ion's m/z, where the caller read it off a row the
+        file's own claim made; the library ion's otherwise.
+    :return: The row's new column values.
+    """
+    isotopologue = row.get("role") == ROLE_ISO_CHILD or bool(
+        row.get("owner_peak_assignment_id")
+    )
+    cluster = species.cluster
+    exact = exact_mz if exact_mz else cluster.mz
+    mz = row.get("sample_peak_mz")
+    record: dict = {
+        "ion": cluster.label,
+        "kind": cluster.kind,
+        "family": cluster.family,
+        "references": list(cluster.references),
+        "mz": round(exact, 5),
+        "reason": REASON_BATCH_KNOWN_SPECIES,
+        REASON_BATCH_KNOWN_SPECIES: dict(species.record),
+        "read_as": {
+            "role": row.get("role"),
+            "formula": row.get("assigned_formula"),
+            "ion_formula": row.get("ion_formula"),
+            "ionization_mechanism_id": row.get("ionization_mechanism_id"),
+            "isotope_label": row.get("isotope_label"),
+            "source": row.get("source"),
+            "tier": row.get("tier"),
+        },
+    }
+    if cluster.observed:
+        record["observed"] = cluster.observed
+    alternatives = list(row.get("alternatives") or [])
+    if row.get("assigned_formula") and not isotopologue:
+        alternatives = [reading_as_alternative(row, DISPLACED_BY_CLAIM), *alternatives]
+    try:
+        error = (
+            None
+            if isotopologue or mz is None
+            else round((float(mz) - exact) / exact * 1e6, 4)
+        )
+    except (TypeError, ValueError):
+        error = None
+    return {
+        "role": ROLE_REAGENT,
+        "assigned_formula": None,
+        "ion_formula": _signed_ion(cluster.formula, cluster.charge),
+        "ionization_mechanism_id": None,
+        "isotope_label": row.get("isotope_label") if isotopologue else None,
+        "isotope_formula": None,
+        "source": SOURCE_REAGENT,
+        "fit_score": None,
+        "mz_error_ppm": row.get("mz_error_ppm") if isotopologue else error,
+        "abundance_error": row.get("abundance_error") if isotopologue else None,
+        "tier": TIER_UNASSIGNED,
+        "target_compound_id": None,
+        "target_ion_id": None,
+        "owner_peak_assignment_id": (
+            row.get("owner_peak_assignment_id") if isotopologue else None
+        ),
+        "alternatives": alternatives[:MAX_ALTERNATIVES_CEILING] or None,
+        "provenance": {"reagent": record},
+    }
 
 
 # --- fragments ----------------------------------------------------------------

@@ -3549,7 +3549,7 @@ class BatchPeakRun(Base):
         CheckConstraint(
             "action IN ('fold', 'rebuild', 'search_untargeted', 'import', "
             "'detect_series', 'read_co_variation', 'stamp_isotopologues', "
-            "'strip_isotopologues', 'read_batch_checks')",
+            "'strip_isotopologues', 'read_batch_checks', 'decide_known_species')",
             name="action_valid",
         ),
         CheckConstraint(
@@ -3622,6 +3622,10 @@ class BatchPeakRunAnchor(Base):
     # states of the anchor's reading, those whose sources still stood
     # (``batch_peaks.standing_batch_checks_record``); NULL for none.
     batch_checks: Mapped[Optional[dict]] = mapped_column(JSON)
+    # The batch's known-species decision as the run left it: the species, the
+    # verdict and its evidence, what the claim wrote and kept, its per-member
+    # states left out (``batch_peaks.known_species_summary``); NULL for none.
+    known_species: Mapped[Optional[dict]] = mapped_column(JSON)
     candidates: Mapped[Optional[list]] = mapped_column(JSON)
     members: Mapped[Optional[dict]] = mapped_column(JSON)
 

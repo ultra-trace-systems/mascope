@@ -17,6 +17,7 @@ from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     continuity_stale,
     instrument_type_of,
+    known_species_summary,
     manual_pin_of,
     merged_isotopologue_of_summary,
     mz_from_delta,
@@ -96,6 +97,11 @@ def _batch_peak_meta(bp) -> dict:
     where it applies - with only the facts whose stamping or co-variation
     reading still stands (``batch_checks``,
     ``batch_peaks.standing_batch_checks_record``); None where none does.
+    ``known_species`` is the batch's verdict on the species the anchor is, where
+    the known-species decision read one: the species, whether the batch
+    decided it present and on what evidence, what its claim wrote and which
+    samples it kept, each with its reading (``batch_known_species``); None
+    where no decision stands.
     """
     return {
         "batch_peak_id": bp.batch_peak_id,
@@ -133,6 +139,7 @@ def _batch_peak_meta(bp) -> dict:
         "merged_isotopologue_of": merged_isotopologue_of_summary(bp),
         "merged_isotopologues": standing_merged_isotopologues_record(bp),
         "batch_checks": standing_batch_checks_record(bp),
+        "known_species": known_species_summary(bp),
         "reference_listing": consensus_listing(
             bp.candidates,
             bp.consensus_formula,

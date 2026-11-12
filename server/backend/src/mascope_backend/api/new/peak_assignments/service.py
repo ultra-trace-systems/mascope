@@ -69,6 +69,9 @@ from mascope_backend.api.new.peak_assignments.artifact_pass import (
     build_artifact_assignments,
     claim_artifact_peaks,
 )
+from mascope_backend.api.new.peak_assignments.batch_known_species import (
+    batch_species_for,
+)
 from mascope_backend.api.new.peak_assignments.batch_peak_verification import (
     claim_of,
     is_stale,
@@ -181,8 +184,10 @@ from mascope_backend.api.new.peak_assignments.profiles import (
     with_secondary_channels,
 )
 from mascope_backend.api.new.peak_assignments.reagent_pass import (
+    BatchSpecies,
     FragmentClaims,
     build_reagent_assignments,
+    claim_batch_species,
     claim_fragments,
     claim_ladder_peaks,
     claim_reagent_peaks,
@@ -3809,6 +3814,7 @@ def _reagent_assignments(
     resolution: Callable[[float], float] | None,
     own_mechanisms: list[SimpleNamespace],
     sample_name: str,
+    batch_species: Sequence[BatchSpecies] = (),
 ) -> tuple[list[dict], set[str], ReagentOffset | None]:
     """The reagent pre-pass: the peaks the source made, claimed before the stages.
 
@@ -3832,6 +3838,11 @@ def _reagent_assignments(
         source's lines are the sample's, so a decoy claims what its control
         claims.
     :param sample_name: For the log line.
+    :param batch_species: The library ions the sample's batch decided present
+        (step 4.2h, ``batch_known_species.batch_species_for``): claimed where
+        the file's own claims did not take them, on its corrected mass
+        (:func:`reagent_pass.claim_batch_species`). The offset is read off the
+        file's own claims alone.
     :return: The reagent rows, the peaks they take out of both stages, and where
         the claimed lines put the mass axis, which Stage A scores at where the
         target library fits no offset (:func:`reagent_line_offset`); None for a
@@ -3878,11 +3889,31 @@ def _reagent_assignments(
             f"over {offset.lines} lines"
             + ("" if offset.beyond_width else ", inside the width")
         )
+    pooled = claim_batch_species(
+        source,
+        batch_species,
+        calibration=calibration,
+        claimed=hits + rungs,
+        claim_ppm=resolved_profile.mz_precision_ppm,
+        purity=_reagent_purity(resolved_profile),
+        resolution=resolution,
+    )
+    if pooled:
+        runtime.logger.info(
+            f"Sample '{sample_name}': {len(pooled)} peaks claimed on the batch's "
+            "known-species decision"
+        )
+    decided = {one.cluster.formula: one.record for one in batch_species}
     rows = build_reagent_assignments(
-        hits + rungs,
+        hits + rungs + pooled,
         source,
         sample_item_id=sample_item_id,
         peak_assignment_run_id=peak_assignment_run_id,
+        batch={
+            hit.cluster.formula: decided[hit.cluster.formula]
+            for hit in pooled
+            if hit.cluster.formula in decided
+        },
     )
     if source is not peaks_df:
         read_mz = dict(
@@ -4444,6 +4475,9 @@ async def _assign_sample(
         # is sample chemistry, so they are claimed here and taken out of what
         # either stage may assign. Ordering is the whole mechanism - nothing
         # downstream is ever offered the peak, so nothing can overwrite it.
+        # The library ions the sample's batch decided present (step 4.2h):
+        # the file claims them on the batch's word where its own claim does not.
+        batch_species = await batch_species_for(sample)
         reagent_assignments, reagent_peak_ids, reagent_offset = _reagent_assignments(
             peaks_df,
             resolved_profile,
@@ -4452,6 +4486,7 @@ async def _assign_sample(
             resolution=resolution,
             own_mechanisms=own_mechanisms,
             sample_name=sample.sample_item_name,
+            batch_species=batch_species,
         )
         if reagent_assignments:
             runtime.logger.info(
@@ -5186,6 +5221,7 @@ async def _fold_sample_peaks_without_run(
     # Read once, for the two passes here that predict an isotope line: the
     # reagent pre-pass and the mass gate, as a run reads them.
     resolution = await _resolution_of(sample)
+    # As a run takes its batch's word (step 4.2h), so the two ledgers agree.
     reagent, reagent_peak_ids, reagent_offset = _reagent_assignments(
         peaks_df,
         resolved_profile,
@@ -5194,6 +5230,7 @@ async def _fold_sample_peaks_without_run(
         resolution=resolution,
         own_mechanisms=searched_mechanisms,
         sample_name=sample.sample_item_name,
+        batch_species=await batch_species_for(sample),
     )
     artifact, artifact_peak_ids = _artifact_assignments(
         peaks_df, instrument_type, sample_item_id, run_id, reagent_peak_ids
