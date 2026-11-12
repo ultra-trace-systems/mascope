@@ -21,6 +21,7 @@ from mascope_backend.api.new.peak_assignments import service
 from mascope_backend.api.new.peak_assignments.batch_known_species import (
     ALREADY,
     BACKGROUND_TAG,
+    BATCH_CLAIM,
     HELD_CURATED,
     HELD_VOTE,
     KEPT_CARRIES_LINES,
@@ -38,6 +39,7 @@ from mascope_backend.api.new.peak_assignments.batch_known_species import (
     claim_turns,
     decide_row,
     deciding_outcome,
+    earlier_own,
     library_species,
     listed_species,
     listed_species_row,
@@ -290,6 +292,21 @@ class TestTheSpecies:
         assert species.ionization_mechanism_id == MECH
         assert species.listing == LISTING
 
+    def test_a_tie_over_a_reading_that_names_no_mechanism_is_broken(self):
+        """An imported row may name no mechanism: a tie between it and one that
+        does picks one, and does not fail the run."""
+        members = {
+            "s0": analyte("s0", D4, D4_ION, mz=D4_MZ),
+            "s1": analyte("s1", D4, D4_ION, mz=D4_MZ, ionization_mechanism_id=None),
+        }
+        row = Row(anchor("D", D4_MZ, candidates=d4_candidates()), members)
+        species = listed_species(row)
+
+        assert species.formula == D4
+        assert species.ionization_mechanism_id is None
+        members["s1"], members["s0"] = members["s0"], members["s1"]
+        assert listed_species(row).ionization_mechanism_id is None
+
     def test_a_list_without_the_background_tag_names_no_species(self):
         candidates = d4_candidates()
         candidates[0]["listing"] = {**LISTING, "tags": ["indoor"]}
@@ -311,21 +328,21 @@ class TestTheSpecies:
 
 class TestEachFile:
     def test_a_file_whose_own_test_held(self):
-        assert sample_decision(claimed("s0"), LIBRARY, False) == ALREADY
-        assert sample_decision(analyte("s0", D4, D4_ION), LISTED, False) == ALREADY
+        assert sample_decision(claimed("s0"), LIBRARY) == ALREADY
+        assert sample_decision(analyte("s0", D4, D4_ION), LISTED) == ALREADY
 
     def test_a_listed_reading_below_candidate_is_no_test_held(self):
         below = analyte("s0", D4, D4_ION, tier="below_assignability")
 
-        assert sample_decision(below, LISTED, False) is None
+        assert sample_decision(below, LISTED) is None
 
     def test_a_hand_assignment_is_kept(self):
-        assert sample_decision(analyte("s1", hand=True), LIBRARY, False) == (
+        assert sample_decision(analyte("s1", hand=True), LIBRARY) == (
             KEPT_HAND_ASSIGNED
         )
 
     def test_a_target_compound_is_kept(self):
-        assert sample_decision(analyte("s1", target=True), LIBRARY, False) == (
+        assert sample_decision(analyte("s1", target=True), LIBRARY) == (
             KEPT_TARGET_LIBRARY
         )
 
@@ -335,22 +352,22 @@ class TestEachFile:
             "s1", role="reagent", ion_formula="CH5N2O+", owner_batch_peak_id="X"
         )
 
-        assert sample_decision(line, LIBRARY, False) == KEPT_LINE_OF_ANOTHER
-        assert sample_decision(reagent_line, LIBRARY, False) == KEPT_LINE_OF_ANOTHER
+        assert sample_decision(line, LIBRARY) == KEPT_LINE_OF_ANOTHER
+        assert sample_decision(reagent_line, LIBRARY) == KEPT_LINE_OF_ANOTHER
 
     def test_another_source_ions_claim_is_kept(self):
-        assert sample_decision(claimed("s1", ion="C2H9N4O2+"), LIBRARY, False) == (
+        assert sample_decision(claimed("s1", ion="C2H9N4O2+"), LIBRARY) == (
             KEPT_CLAIMED_OTHERWISE
         )
-        assert sample_decision(member("s1", role="artifact"), LIBRARY, False) == (
+        assert sample_decision(member("s1", role="artifact"), LIBRARY) == (
             KEPT_CLAIMED_OTHERWISE
         )
 
     def test_a_reading_that_carries_lines_keeps_a_listed_compound_off(self):
         other = analyte("s1", "C9H24N2O4Si3", D4_ION)
 
-        assert sample_decision(other, LISTED, True) == KEPT_CARRIES_LINES
-        assert sample_decision(other, LISTED, False) is None
+        assert sample_decision(other, LISTED, ("13C",)) == KEPT_CARRIES_LINES
+        assert sample_decision(other, LISTED) is None
 
     def test_a_listed_compounds_own_reading_below_candidate_is_lifted_lines_and_all(
         self,
@@ -358,22 +375,45 @@ class TestEachFile:
         own = analyte("s1", D4, D4_ION, tier="below_assignability")
 
         assert LISTED.lifts(own)
-        assert sample_decision(own, LISTED, True) is None
+        assert sample_decision(own, LISTED, ("13C",)) is None
         assert not LISTED.lifts(analyte("s1", D4, D4_ION))
         assert not LISTED.lifts(analyte("s1", "C9H24N2O4Si3", D4_ION))
         assert not LIBRARY.lifts(analyte("s1", tier="below_assignability"))
 
     def test_a_library_ions_claim_takes_the_lines_with_it(self):
-        assert sample_decision(analyte("s1"), LIBRARY, True) is None
+        assert sample_decision(analyte("s1"), LIBRARY, ("13C",)) is None
+        assert sample_decision(analyte("s1"), LIBRARY, ("13C", "15N", "18O")) is None
+
+    def test_a_line_a_library_ion_cannot_have_keeps_the_file(self):
+        """A carbon-free ion takes no 13C line: the file read an analyte that
+        has carbon there, and keeps it, its lines and all."""
+        hydrate = Species(kind="library", ion_formula="H5O2+", label="[H3O+H2O]+")
+        reading = analyte("s1", "C2H4O", "C2H5O+")
+
+        assert sample_decision(reading, hydrate, ("13C",)) == KEPT_CARRIES_LINES
+        assert sample_decision(reading, hydrate, ("18O",)) is None
+        assert sample_decision(reading, hydrate, ("18O", "13C")) == KEPT_CARRIES_LINES
+        assert sample_decision(reading, LIBRARY, ("81Br",)) == KEPT_CARRIES_LINES
+        # A line no row labels is not one the ion can be shown to have.
+        assert sample_decision(reading, LIBRARY, (None,)) == KEPT_CARRIES_LINES
+
+    def test_the_isotopes_a_library_ion_can_have(self):
+        assert LIBRARY.can_have("13C")
+        assert LIBRARY.can_have("13C2+15N")
+        assert LIBRARY.can_have("2H")
+        assert not LIBRARY.can_have("34S")
+        assert not LIBRARY.can_have("13C+81Br")
+        assert not LIBRARY.can_have("")
+        assert not LIBRARY.can_have(None)
 
     def test_an_unread_peak_and_an_analyte_are_claimed(self):
-        assert sample_decision(member("s2"), LIBRARY, False) is None
-        assert sample_decision(analyte("s1"), LIBRARY, False) is None
+        assert sample_decision(member("s2"), LIBRARY) is None
+        assert sample_decision(analyte("s1"), LIBRARY) is None
 
 
 class TestTheDecision:
     def test_a_species_in_most_files_is_claimed_in_all(self):
-        decision = decide_row(trimer_row(SAMPLES[:5]), LIBRARY, 6, set())
+        decision = decide_row(trimer_row(SAMPLES[:5]), LIBRARY, 6, {})
 
         assert decision.verdict.verdict == VERDICT_PRESENT
         assert decision.samples == {
@@ -388,7 +428,7 @@ class TestTheDecision:
 
     def test_a_species_in_one_file_is_not_pooled(self):
         row = Row(anchor("T", TRIMER_MZ), {"s0": claimed("s0")})
-        decision = decide_row(row, LIBRARY, 6, set())
+        decision = decide_row(row, LIBRARY, 6, {})
 
         assert decision.verdict.verdict == VERDICT_UNPOOLED
         assert decision.verdict.reason == REASON_ONE_FILE
@@ -397,7 +437,7 @@ class TestTheDecision:
 
     def test_a_species_no_file_claimed_is_absent(self):
         row = Row(anchor("T", TRIMER_MZ), {s: member(s) for s in SAMPLES})
-        decision = decide_row(row, LIBRARY, 6, set())
+        decision = decide_row(row, LIBRARY, 6, {})
 
         assert decision.verdict.verdict == VERDICT_ABSENT
         assert decision.verdict.reason == REASON_TEST_NEVER_HELD
@@ -406,7 +446,7 @@ class TestTheDecision:
     def test_the_evidence_counts_each_file(self):
         row = trimer_row(SAMPLES)
         row.members["s5"] = analyte("s5", hand=True)
-        decision = decide_row(row, LIBRARY, 8, set())
+        decision = decide_row(row, LIBRARY, 8, {})
 
         evidence = decision.verdict.evidence
         assert (evidence.files, evidence.present, evidence.test_held) == (8, 6, 1)
@@ -415,7 +455,7 @@ class TestTheDecision:
     def test_a_curated_batch_peak_is_held(self):
         row = trimer_row(SAMPLES)
         row.anchor.provenance = {"manual": {"formula": "C3H12N6O3"}}
-        decision = decide_row(row, LIBRARY, 6, set())
+        decision = decide_row(row, LIBRARY, 6, {})
 
         assert decision.held == HELD_CURATED
         assert not decision.claims
@@ -426,18 +466,137 @@ class TestTheDecision:
         row = trimer_row(SAMPLES[:2])
         for sample in SAMPLES[2:]:
             row.members[sample] = analyte(sample, hand=True)
-        decision = decide_row(row, LIBRARY, 6, set())
+        decision = decide_row(row, LIBRARY, 6, {})
 
         assert decision.verdict.present
         assert decision.held == HELD_VOTE
 
     def test_a_present_species_with_nothing_to_claim_is_not_held(self):
         row = Row(anchor("T", TRIMER_MZ), {s: claimed(s) for s in SAMPLES})
-        decision = decide_row(row, LIBRARY, 6, set())
+        decision = decide_row(row, LIBRARY, 6, {})
 
         assert decision.verdict.present
         assert decision.held is None
         assert not decision.claims
+
+
+def _earlier(own, species=LIBRARY):
+    """A record an earlier decision left, naming the samples it read as their
+    file's own."""
+    return {
+        KNOWN_SPECIES_KEY: {
+            "species": species.to_json(),
+            "verdict": VERDICT_PRESENT,
+            "reads": READS_TRIMER,
+            "own_test_samples": list(own),
+        }
+    }
+
+
+def batch_claimed(sample, **fields):
+    """A member a decision claimed: its row says so."""
+    return claimed(
+        sample,
+        row_reading=("reagent", None, TRIMER, "unassigned"),
+        **{
+            "row_batch": True,
+            **fields,
+        },
+    )
+
+
+class TestTheOwnTest:
+    """The evidence counts each file's own test, never the batch's own claims."""
+
+    def test_a_row_written_on_the_batchs_word_is_the_batchs(self):
+        assert not LIBRARY.own_test(batch_claimed("s1"), None)
+        assert LIBRARY.reads(batch_claimed("s1"))
+        assert sample_decision(batch_claimed("s1"), LIBRARY) == ALREADY
+
+    def test_a_row_that_reads_the_species_is_its_files(self):
+        own = claimed("s0", row_reading=("reagent", None, TRIMER, "unassigned"))
+
+        assert LIBRARY.own_test(own, set())
+        listed = analyte("s0", D4, D4_ION, row_reading=("M0", D4, D4_ION, "candidate"))
+        assert LISTED.own_test(listed, set())
+        # A row that names a formula is no source ion's claim, whatever its role.
+        named = claimed("s0", row_reading=("reagent", "C3H12N6O3", TRIMER, "assigned"))
+        assert not LIBRARY.own_test(named, set())
+
+    def test_a_member_with_no_row_to_say_so_goes_by_the_earlier_decision(self):
+        """No row linked, or an import's row the decision left as it read."""
+        rowless = claimed("s3", peak_assignment_id=None)
+        imported = claimed("s1", row_reading=("M0", "C3H12N6O3", TRIMER, "assigned"))
+
+        for one in (rowless, imported):
+            assert LIBRARY.own_test(one, None)
+            assert not LIBRARY.own_test(one, {"s0"})
+        assert LIBRARY.own_test(rowless, {"s3"})
+
+    def test_the_earlier_decision_is_the_anchors_record_of_this_species(self):
+        bp = anchor("T", TRIMER_MZ, provenance=_earlier(["s0", "s2"]))
+
+        assert earlier_own(bp, LIBRARY) == {"s0", "s2"}
+        assert earlier_own(anchor("T", TRIMER_MZ), LIBRARY) is None
+        other = anchor("T", TRIMER_MZ, provenance=_earlier(["s0"], LISTED))
+        assert earlier_own(other, LIBRARY) is None
+
+    def _decided_once(self):
+        """The trimer claimed in s0 by its own run and by the batch in the
+        rest: s1's row rewritten, s2 an import's, s3 to s4 no row."""
+        row = Row(
+            anchor("T", TRIMER_MZ, ion=TRIMER, role="reagent"),
+            {
+                "s0": claimed(
+                    "s0", row_reading=("reagent", None, TRIMER, "unassigned")
+                ),
+                "s1": batch_claimed("s1"),
+                "s2": claimed(
+                    "s2", row_reading=("M0", "C3H12N6O3", TRIMER, "assigned")
+                ),
+                "s3": claimed("s3", peak_assignment_id=None),
+                "s4": claimed("s4", peak_assignment_id=None),
+            },
+        )
+        row.anchor.provenance = _earlier(["s0"])
+        return row
+
+    def test_a_second_decision_keeps_the_evidence_of_the_first(self):
+        decision = decide_row(self._decided_once(), LIBRARY, 6, {})
+
+        assert decision.verdict.present
+        assert decision.verdict.evidence.test_held == 1
+        assert decision.own == ["s0"]
+        assert set(decision.samples.values()) == {ALREADY}
+        assert species_record(decision, reads={}, batch_peak_run_id=None)[
+            "own_test_samples"
+        ] == ["s0"]
+
+    def test_the_batchs_claims_alone_are_no_evidence(self):
+        """The one file whose own test held is gone: the batch's earlier claims
+        do not keep the species present, and the record says they stand."""
+        row = self._decided_once()
+        del row.members["s0"]
+        decision = decide_row(row, LIBRARY, 6, {})
+
+        assert decision.verdict.verdict == VERDICT_ABSENT
+        assert decision.verdict.evidence.test_held == 0
+        record = species_record(decision, reads={}, batch_peak_run_id=None)
+        assert record["files_by_reason"] == {BATCH_CLAIM: 4}
+        assert record["own_test_samples"] == []
+
+    def test_a_file_whose_own_test_held_stands_against_the_verdict(self):
+        row = self._decided_once()
+        del row.members["s0"]
+        row.members["s5"] = claimed(
+            "s5", row_reading=("reagent", None, TRIMER, "unassigned")
+        )
+        record = species_record(
+            decide_row(row, LIBRARY, 12, {}), reads={}, batch_peak_run_id=None
+        )
+
+        assert record["verdict"] != VERDICT_PRESENT
+        assert record["files_by_reason"] == {BATCH_CLAIM: 4, OWN_CLAIM: 1}
 
 
 class TestTheVote:
@@ -626,7 +785,7 @@ class TestTheRecords:
     def _present(self):
         row = trimer_row(SAMPLES)
         row.members["s5"] = analyte("s5", hand=True)
-        return decide_row(row, LIBRARY, 6, set())
+        return decide_row(row, LIBRARY, 6, {})
 
     def test_a_present_species_lists_the_files_it_kept_with_their_readings(self):
         record = species_record(
@@ -668,7 +827,7 @@ class TestTheRecords:
             anchor("T", TRIMER_MZ),
             {"s0": claimed("s0"), "s1": member("s1")},
         )
-        decision = decide_row(row, LIBRARY, 6, set())
+        decision = decide_row(row, LIBRARY, 6, {})
         record = species_record(decision, reads={}, batch_peak_run_id=None)
 
         assert record["verdict"] == VERDICT_UNPOOLED
@@ -694,6 +853,7 @@ def _standing(reads, verdict=VERDICT_PRESENT, **extra):
         "held": None,
         "reads": reads,
         "displaced_members": {"s1": {"tier": 3}},
+        "own_test_samples": ["s0"],
         "batch_peak_run_id": "run-1",
         **extra,
     }
@@ -774,7 +934,9 @@ class TestTheConsensusAndTheLedger:
 
         assert served["verdict"] == VERDICT_PRESENT
         assert "displaced_members" not in served
+        assert "own_test_samples" not in served
         assert known_species_record_of(bp)["displaced_members"]
+        assert known_species_record_of(bp)["own_test_samples"] == ["s0"]
         snapshot = SimpleNamespace(**anchor_snapshot_row("run-1", bp, []))
         assert snapshot_anchor_meta(snapshot, "b")["known_species"] == served
 

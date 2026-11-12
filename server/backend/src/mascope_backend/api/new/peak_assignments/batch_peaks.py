@@ -1177,11 +1177,21 @@ def standing_known_species_record(anchor: Any) -> Optional[dict]:
 def known_species_summary(anchor: Any) -> Optional[dict]:
     """What the ledger serves of a known-species record: everything but what
     each member read before, which the decision's run snapshot keeps as the
-    members' own state."""
+    members' own state, and the samples whose own test held, which the next
+    decision reads (the record's ``test_held`` counts them)."""
     record = standing_known_species_record(anchor)
     if record is None:
         return None
-    return {key: value for key, value in record.items() if key != "displaced_members"}
+    return {
+        key: value
+        for key, value in record.items()
+        if key not in _KNOWN_SPECIES_KEPT_BACK
+    }
+
+
+#: What a known-species record keeps for the decision alone: the ledger and a
+#: run's snapshot serve the rest (:func:`known_species_summary`).
+_KNOWN_SPECIES_KEPT_BACK = frozenset({"displaced_members", "own_test_samples"})
 
 
 def resolution_from_tol_ppm(
