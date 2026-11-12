@@ -3543,7 +3543,7 @@ class BatchPeakRun(Base):
     __table_args__ = (
         CheckConstraint(
             "action IN ('fold', 'rebuild', 'search_untargeted', 'import', "
-            "'detect_series', 'read_co_variation')",
+            "'detect_series', 'read_co_variation', 'stamp_isotopologues')",
             name="action_valid",
         ),
         CheckConstraint(
@@ -3598,6 +3598,13 @@ class BatchPeakRunAnchor(Base):
     # (``BatchPeak.continuity_grade``, ``BatchPeak.continuity``), NULL for none.
     continuity_grade: Mapped[Optional[str]] = mapped_column(String(16))
     continuity: Mapped[Optional[dict]] = mapped_column(JSON)
+    # The batch's isotopologue stamping as the run left it: on a parent the
+    # diagnostic isotopologues predicted for its reading
+    # (``batch_peaks.standing_diagnostic_isotopologues_record``), on a stamped
+    # line the parent it is an isotopologue of, its per-sample stamps left out
+    # (``batch_peaks.stamped_isotopologue_of_summary``); NULL for none.
+    diagnostic_isotopologues: Mapped[Optional[dict]] = mapped_column(JSON)
+    stamped_isotopologue_of: Mapped[Optional[dict]] = mapped_column(JSON)
     candidates: Mapped[Optional[list]] = mapped_column(JSON)
     members: Mapped[Optional[dict]] = mapped_column(JSON)
 

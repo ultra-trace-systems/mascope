@@ -34,15 +34,18 @@ from mascope_backend.api.new.instrument_configs.lib import read_instrument_funct
 from mascope_backend.api.new.ionization.modes.versions import root_ids
 from mascope_backend.api.new.peak_assignments import batch_peaks
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    DIAGNOSTIC_ISOTOPOLOGUES_KEY,
     ROLE_ISO_CHILD,
     ROLE_REAGENT,
     SOURCE_ROLES,
+    STAMPED_ISOTOPOLOGUE_OF_KEY,
     Anchor,
     AnchorSet,
     Consensus,
     candidate_index,
     co_variation_record_of,
     compute_consensus,
+    diagnostic_isotopologues_record_of,
     fold_in_sample,
     manual_pin_of,
     mz_delta_ppm,
@@ -51,6 +54,8 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     role_code,
     role_name,
     series_record_of,
+    stamped_isotopologue_of_record,
+    stamped_lines,
     tier_code,
     tier_name,
 )
@@ -598,22 +603,72 @@ async def _recompute_consensus_chunk(
             }
         )
 
+    # The lines each parent stamped, where the parent's diagnostic
+    # isotopologues record comes off here: its reading moved, or the anchor
+    # went.
+    unstamped: dict[str, set[str]] = {}
     for bp in anchors:
         members = members_by_peak.get(bp.batch_peak_id, [])
+        diagnostic_isotopologues = diagnostic_isotopologues_record_of(bp)
         if not members:
+            if diagnostic_isotopologues is not None:
+                unstamped[bp.batch_peak_id] = stamped_lines(diagnostic_isotopologues)
             await session.delete(bp)
             continue
-        _apply_consensus(
-            bp,
-            compute_consensus(
-                members,
-                batch_peak_id=bp.batch_peak_id,
-                manual=manual_pin_of(bp),
-                series=series_record_of(bp),
-                co_variation=co_variation_record_of(bp),
-            ),
-            now,
+        consensus = compute_consensus(
+            members,
+            batch_peak_id=bp.batch_peak_id,
+            manual=manual_pin_of(bp),
+            series=series_record_of(bp),
+            co_variation=co_variation_record_of(bp),
+            diagnostic_isotopologues=diagnostic_isotopologues,
+            stamped_isotopologue_of=stamped_isotopologue_of_record(bp),
         )
+        if (
+            diagnostic_isotopologues is not None
+            and DIAGNOSTIC_ISOTOPOLOGUES_KEY not in consensus.provenance
+        ):
+            unstamped[bp.batch_peak_id] = stamped_lines(diagnostic_isotopologues)
+        _apply_consensus(bp, consensus, now)
+    await _take_off_stamps(session, unstamped, now)
+
+
+async def _take_off_stamps(
+    session, unstamped: dict[str, set[str]], now: datetime
+) -> None:
+    """Take a parent's stamps off the lines it stamped, once its diagnostic
+    isotopologues record has come off.
+
+    A stamp says a line holds its predicted height against the parent's
+    reading, so it goes with the reading. The line's own consensus cannot see
+    that happen - the line need not be in the recompute that moved the parent
+    - so the parent's recompute does it. A line stamped since by another
+    parent keeps that one's stamp.
+
+    :param unstamped: Parent id -> the lines its record stamped.
+    """
+    lines = sorted({line for ids in unstamped.values() for line in ids})
+    if not lines:
+        return
+    anchors = (
+        (
+            await session.execute(
+                select(BatchPeak).where(BatchPeak.batch_peak_id.in_(lines))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for line in anchors:
+        record = stamped_isotopologue_of_record(line)
+        if record is None or line.batch_peak_id not in unstamped.get(
+            record["batch_peak_id"], ()
+        ):
+            continue
+        provenance = dict(line.provenance or {})
+        provenance.pop(STAMPED_ISOTOPOLOGUE_OF_KEY, None)
+        line.provenance = provenance
+        line.batch_peak_utc_modified = now
 
 
 def _json_shape(value):

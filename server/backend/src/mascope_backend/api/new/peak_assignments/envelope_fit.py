@@ -409,6 +409,26 @@ async def recorded_envelope_tolerance(sample_item_id: str) -> EnvelopeTolerance:
     return EnvelopeTolerance.from_record(rows[0][1] if rows else None)
 
 
+async def recorded_envelope_tolerances(
+    sample_batch_id: str,
+) -> dict[str, EnvelopeTolerance]:
+    """The tolerance each sample of a batch scored at, as
+    :func:`recorded_envelope_tolerance` reads it for one: what the batch's
+    isotopologue stamping (``batch_isotopologues``) judges a line's share at in
+    each sample. A sample with no such run is not named; its reader takes
+    today's.
+
+    :param sample_batch_id: The batch.
+    :return: Sample -> its tolerance.
+    """
+    return {
+        sample_item_id: EnvelopeTolerance.from_record(record)
+        for sample_item_id, record in await _latest_records(
+            None, batch_id=sample_batch_id
+        )
+    }
+
+
 @dataclass(frozen=True)
 class RunEnvelopeFit:
     """The tolerance a run scores at, with what it records of it.

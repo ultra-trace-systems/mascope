@@ -30,7 +30,11 @@ This module holds the PURE logic (no DB, no I/O) behind the batch overview:
   carry instead - the source's ion, the detector's ringing - with that ion, as
   the per-sample ledger reads such a peak. A homologous series the batch's
   series detection found for the anchor's formula travels with the consensus
-  for as long as the consensus names that formula (:func:`series_record_of`).
+  for as long as the consensus names that formula (:func:`series_record_of`),
+  and so do an isotopologue stamping's records: the diagnostic isotopologues
+  predicted for the anchor's reading, and on a stamped line the parent it is an
+  isotopologue of (:func:`diagnostic_isotopologues_record_of`,
+  :func:`stamped_isotopologue_of_record`).
 
 - **Continuity's gates**: the provisional constants of the ratio-stability
   pass (``continuity.py``), beside the consensus constants, and the test a
@@ -764,6 +768,132 @@ def continuity_stale(anchor: Any) -> bool:
     )
 
 
+#: The anchor's provenance key the batch's isotopologue stamping
+#: (``batch_isotopologues.py``) writes a parent's record under: the diagnostic
+#: isotopologues predicted for its formula, which of them a batch peak stands
+#: at, and which of those were stamped.
+DIAGNOSTIC_ISOTOPOLOGUES_KEY = "diagnostic_isotopologues"
+
+#: The key it writes a stamped line's record under: the parent the line is an
+#: isotopologue of, which one, the track's reading, and the samples it was
+#: stamped in with where each stamp came from (``stamps``).
+STAMPED_ISOTOPOLOGUE_OF_KEY = "stamped_isotopologue_of"
+
+#: Where a stamped member's stamp came from: predicted by the batch's
+#: stamping where the sample's own run did not read the line as the parent's,
+#: or found there by the run's own isotope match (the peak picker's line, read
+#: as the parent's isotopologue), which the stamping confirms.
+STAMP_PREDICTED = "predicted"
+STAMP_PICKER = "picker"
+
+
+def diagnostic_isotopologues_record_of(anchor: Any) -> Optional[dict]:
+    """The diagnostic isotopologues record an anchor carries under
+    ``provenance.diagnostic_isotopologues``, or None. A record names a formula;
+    anything else under that key is not one."""
+    provenance = _member(anchor, "provenance")
+    if not isinstance(provenance, dict):
+        return None
+    record = provenance.get(DIAGNOSTIC_ISOTOPOLOGUES_KEY)
+    if isinstance(record, dict) and record.get("formula"):
+        return record
+    return None
+
+
+def standing_diagnostic_isotopologues_record(anchor: Any) -> Optional[dict]:
+    """The diagnostic isotopologues record an anchor carries, where it was
+    predicted for the anchor's consensus formula and mechanism; None otherwise.
+
+    The consensus keeps the record only while it names that reading
+    (:func:`compute_consensus`), so a vote, a curation or a re-fold that moves
+    it takes the record off, and with it the stamps on its lines
+    (``batch_peaks_controller``).
+    """
+    record = diagnostic_isotopologues_record_of(anchor)
+    if record is None or not diagnostic_isotopologues_record_reads(record, anchor):
+        return None
+    return record
+
+
+def diagnostic_isotopologues_record_reads(record: dict, anchor: Any) -> bool:
+    """Whether a diagnostic isotopologues record was predicted for the anchor's
+    consensus formula and mechanism, the reading it stands beside."""
+    return _reads(
+        record,
+        _member(anchor, "consensus_formula"),
+        _member(anchor, "ionization_mechanism_id"),
+    )
+
+
+def stamped_isotopologue_of_record(anchor: Any) -> Optional[dict]:
+    """The stamp record an anchor carries under
+    ``provenance.stamped_isotopologue_of``, or None. A record names its parent;
+    anything else under that key is not one.
+
+    The record is about the line's height against its parent, not about what
+    the line's own members read, so the line's consensus keeps it whatever it
+    names; it comes off when the parent's reading moves.
+    """
+    provenance = _member(anchor, "provenance")
+    if not isinstance(provenance, dict):
+        return None
+    record = provenance.get(STAMPED_ISOTOPOLOGUE_OF_KEY)
+    if isinstance(record, dict) and record.get("batch_peak_id"):
+        return record
+    return None
+
+
+def stamped_isotopologue_of_summary(anchor: Any) -> Optional[dict]:
+    """What the ledger serves of an anchor's stamp record: everything but the
+    per-sample stamps, which the member rows carry (:func:`member_stamp`)."""
+    record = stamped_isotopologue_of_record(anchor)
+    if record is None:
+        return None
+    return {key: value for key, value in record.items() if key != "stamps"}
+
+
+def member_stamp(anchor: Any, sample_item_id: Any) -> Optional[dict]:
+    """The stamp an anchor's member in one sample carries, or None: the parent
+    batch peak it is the isotopologue of, the isotope line, and the stamp's
+    source (:data:`STAMP_PREDICTED` or :data:`STAMP_PICKER`)."""
+    record = stamped_isotopologue_of_record(anchor)
+    if record is None:
+        return None
+    stamps = record.get("stamps")
+    source = stamps.get(sample_item_id) if isinstance(stamps, dict) else None
+    if source is None:
+        return None
+    return {
+        "batch_peak_id": record["batch_peak_id"],
+        "label": record.get("label"),
+        "stamp_source": source,
+    }
+
+
+def stamped_lines(record: Optional[dict]) -> set[str]:
+    """The batch peaks a parent's diagnostic isotopologues record stamped."""
+    if not isinstance(record, dict):
+        return set()
+    return {
+        entry["batch_peak_id"]
+        for entry in record.get("predicted") or []
+        if isinstance(entry, dict)
+        and entry.get("stamped")
+        and entry.get("batch_peak_id")
+    }
+
+
+def resolution_from_tol_ppm(
+    tol_ppm: Optional[float], drift_margin_ppm: float = DEFAULT_DRIFT_MARGIN_PPM
+) -> Optional[float]:
+    """The resolving power an anchor's frozen tolerance was minted at, or None
+    where it was minted without one: :func:`resolution_adaptive_tol_ppm`
+    inverted, half the FWHM being the tolerance less the drift margin."""
+    if tol_ppm is None or not tol_ppm > drift_margin_ppm + 1e-9:
+        return None
+    return 0.5e6 / (tol_ppm - drift_margin_ppm)
+
+
 def member_state(member: Any) -> dict:
     """What a member reads - the fields a curation may overwrite and a release
     puts back. ``tier`` and ``role`` stay as the codes the row stores."""
@@ -850,9 +980,11 @@ def compute_consensus(
     manual: Optional[dict] = None,
     series: Optional[dict] = None,
     co_variation: Optional[dict] = None,
+    diagnostic_isotopologues: Optional[dict] = None,
+    stamped_isotopologue_of: Optional[dict] = None,
 ) -> Consensus:
-    """:func:`vote_consensus`, with the anchor's series and co-variation
-    records carried along.
+    """:func:`vote_consensus`, with the anchor's series, co-variation and
+    stamping records carried along.
 
     The series record says a homologous series proposed a formula for this
     anchor. It is about that formula and not about the peak, so it stays in the
@@ -861,7 +993,11 @@ def compute_consensus(
     anchor to another reading: a series never vouches for a formula it did not
     propose. The co-variation record is about the anchor's reading - its
     formula through its mechanism, read against the neutral's other channels -
-    and stays for as long as the consensus names both.
+    and stays for as long as the consensus names both; so does the diagnostic
+    isotopologues record, the lines predicted for that reading. A stamp record
+    is about the line's height against its parent, not about what the line's
+    own members read, so it stays whatever the line's consensus names; the
+    parent's recompute takes it off when the parent's reading moves.
 
     :param members: The batch peak's occurrences.
     :param batch_peak_id: This batch peak's own id.
@@ -870,6 +1006,10 @@ def compute_consensus(
         (:func:`series_record_of`), or None.
     :param co_variation: The co-variation record the anchor carries
         (:func:`co_variation_record_of`), or None.
+    :param diagnostic_isotopologues: The diagnostic isotopologues record the
+        anchor carries (:func:`diagnostic_isotopologues_record_of`), or None.
+    :param stamped_isotopologue_of: The stamp record the anchor carries
+        (:func:`stamped_isotopologue_of_record`), or None.
     """
     consensus = vote_consensus(members, batch_peak_id=batch_peak_id, manual=manual)
     if (
@@ -882,6 +1022,16 @@ def compute_consensus(
         co_variation, consensus.consensus_formula, consensus.ionization_mechanism_id
     ):
         consensus.provenance[CO_VARIATION_KEY] = co_variation
+    if isinstance(diagnostic_isotopologues, dict) and _reads(
+        diagnostic_isotopologues,
+        consensus.consensus_formula,
+        consensus.ionization_mechanism_id,
+    ):
+        consensus.provenance[DIAGNOSTIC_ISOTOPOLOGUES_KEY] = diagnostic_isotopologues
+    if isinstance(stamped_isotopologue_of, dict) and stamped_isotopologue_of.get(
+        "batch_peak_id"
+    ):
+        consensus.provenance[STAMPED_ISOTOPOLOGUE_OF_KEY] = stamped_isotopologue_of
     return consensus
 
 

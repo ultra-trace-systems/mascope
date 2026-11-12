@@ -32,6 +32,9 @@ from mascope_backend.api.new.peak_assignments.batch_import import (
     import_batch_run,
     validate_batch_import,
 )
+from mascope_backend.api.new.peak_assignments.batch_isotopologues import (
+    stamp_batch_isotopologues,
+)
 from mascope_backend.api.new.peak_assignments.batch_peak_verification import (
     get_anchor_context,
     get_batch_peak_verdicts,
@@ -613,6 +616,60 @@ async def recompute_continuity_batch_peaks_route(
     return {
         "message": (
             "Grading the ratio stability of the batch peaks of "
+            f"'{sample_batch.sample_batch_name}', please wait."
+        ),
+        "process_id": process_id,
+    }
+
+
+@batch_peaks_router.post(
+    "/batch/{sample_batch_id}/stamp-isotopologues",
+    # A write into the batch ledger's anchors, gated like the co-variation
+    # reading above and, like it, not opened to API tokens.
+    dependencies=[Depends(require_peak_assignment_enabled)],
+)
+@api_route(status_code=202)
+async def stamp_isotopologues_batch_peaks_route(
+    sample_batch_id: str,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(current_active_user),
+    membership=Depends(require_batch_role("editor")),
+) -> dict:
+    """Stamp the diagnostic isotopologues of the batch's committed peaks where
+    their height ratio holds across the batch.
+
+    For every committed monoisotopic batch peak, the 15N, 18O, 34S, 29Si, 30Si,
+    37Cl and 81Br lines its consensus ion predicts are looked for at the
+    parent's m/z plus each line's offset, among the batch peaks of its
+    ionization mode and instrument type. In every sample holding both, the
+    line's intensity over the parent's is judged against the predicted ratio
+    inside the envelope tolerance that sample's run fitted; a line whose ratio
+    holds in enough of the samples judged is stamped in each sample where it
+    held. The parent records what was predicted, found and stamped under
+    ``provenance.diagnostic_isotopologues`` and a stamped line its parent under
+    ``provenance.stamped_isotopologue_of``; the ledger serves both as
+    ``diagnostic_isotopologues`` and ``stamped_isotopologue_of``, and the
+    member rows a stamp's ``stamped_isotopologue_of`` and ``stamp_source``. No
+    tier moves. Runs as a background task, as a batch run, and emits
+    ``peak_assignment_reload`` on completion.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param user: The current authenticated user. Requires workspace editor role.
+    :return: Acknowledgement message with the background process id.
+    """
+    sample_batch = await fetch_sample_batch(sample_batch_id)
+    await check_no_run_in_flight(sample_batch_id=sample_batch_id)
+    process_id = gen_id(8)
+    background_tasks.add_task(
+        stamp_batch_isotopologues,
+        sample_batch_id=sample_batch_id,
+        independent_transaction=True,
+        user_id=user.id,
+        process_id=process_id,
+    )
+    return {
+        "message": (
+            "Stamping the predicted isotope lines of the batch peaks in "
             f"'{sample_batch.sample_batch_name}', please wait."
         ),
         "process_id": process_id,
