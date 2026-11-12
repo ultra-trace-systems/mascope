@@ -1,0 +1,899 @@
+{
+  "method": "anchor-swap null re-anchored on peaks of about the primary's height; LR = P(outcome | real) / P(outcome | swap), 95% interval by a bootstrap over files",
+  "ratio_consistency": {
+    "bands": {
+      "consistent": 1.0,
+      "loose": 2.0
+    },
+    "min_reference": 5,
+    "spread_floor": 0.25,
+    "pairs": {
+      "[M+Br]-|[M-H]-": {
+        "n_real": 2260,
+        "n_swap": 1946,
+        "bands": {
+          "consistent": {
+            "p_real": 0.656,
+            "p_swap": 0.721,
+            "lr": 0.91,
+            "lr_ci": [
+              0.874,
+              0.949
+            ],
+            "clears_one": false,
+            "eligible": false
+          },
+          "loose": {
+            "p_real": 0.252,
+            "p_swap": 0.231,
+            "lr": 1.091,
+            "lr_ci": [
+              0.958,
+              1.253
+            ],
+            "clears_one": false,
+            "eligible": false
+          },
+          "outlying": {
+            "p_real": 0.092,
+            "p_swap": 0.048,
+            "lr": 1.926,
+            "lr_ci": [
+              1.563,
+              2.421
+            ],
+            "clears_one": true,
+            "eligible": false
+          }
+        },
+        "partner_brightness": {
+          "median_pct_real": 0.917,
+          "median_pct_swap": 0.821,
+          "top_decile_real": 0.552,
+          "top_decile_swap": 0.35
+        },
+        "within_partner_brightness": {
+          "q1 [0.32, 0.71]": {
+            "consistent": {
+              "p_real": 0.278,
+              "p_swap": 0.431,
+              "lr": 0.647,
+              "lr_ci": [
+                0.544,
+                0.754
+              ],
+              "clears_one": false
+            },
+            "loose": {
+              "p_real": 0.456,
+              "p_swap": 0.458,
+              "lr": 0.995,
+              "lr_ci": [
+                0.864,
+                1.14
+              ],
+              "clears_one": false
+            },
+            "outlying": {
+              "p_real": 0.266,
+              "p_swap": 0.111,
+              "lr": 2.392,
+              "lr_ci": [
+                1.834,
+                3.195
+              ],
+              "clears_one": true
+            }
+          },
+          "q2 [0.71, 0.88]": {
+            "consistent": {
+              "p_real": 0.771,
+              "p_swap": 0.791,
+              "lr": 0.974,
+              "lr_ci": [
+                0.928,
+                1.025
+              ],
+              "clears_one": false
+            },
+            "loose": {
+              "p_real": 0.229,
+              "p_swap": 0.196,
+              "lr": 1.171,
+              "lr_ci": [
+                0.985,
+                1.414
+              ],
+              "clears_one": false
+            },
+            "outlying": {
+              "p_real": 0.0,
+              "p_swap": 0.013,
+              "lr": null,
+              "lr_ci": [
+                null,
+                null
+              ],
+              "clears_one": false
+            }
+          },
+          "q3 [0.88, 0.96]": {
+            "consistent": {
+              "p_real": 0.881,
+              "p_swap": 0.95,
+              "lr": 0.928,
+              "lr_ci": [
+                0.895,
+                0.966
+              ],
+              "clears_one": false
+            },
+            "loose": {
+              "p_real": 0.107,
+              "p_swap": 0.05,
+              "lr": 2.12,
+              "lr_ci": [
+                1.287,
+                4.397
+              ],
+              "clears_one": true
+            },
+            "outlying": {
+              "p_real": 0.012,
+              "p_swap": 0.0,
+              "lr": null,
+              "lr_ci": [
+                null,
+                null
+              ],
+              "clears_one": false
+            }
+          },
+          "q4 [0.96, 1.00]": {
+            "consistent": {
+              "p_real": 0.567,
+              "p_swap": 0.903,
+              "lr": 0.628,
+              "lr_ci": [
+                0.6,
+                0.662
+              ],
+              "clears_one": false
+            },
+            "loose": {
+              "p_real": 0.294,
+              "p_swap": 0.062,
+              "lr": 4.737,
+              "lr_ci": [
+                2.959,
+                8.692
+              ],
+              "clears_one": true
+            },
+            "outlying": {
+              "p_real": 0.14,
+              "p_swap": 0.035,
+              "lr": 3.981,
+              "lr_ci": [
+                2.472,
+                7.576
+              ],
+              "clears_one": true
+            }
+          }
+        }
+      },
+      "[M+CH4N2O+H]+|[M+H]+": {
+        "n_real": 3811,
+        "n_swap": 11999,
+        "bands": {
+          "consistent": {
+            "p_real": 0.592,
+            "p_swap": 0.645,
+            "lr": 0.918,
+            "lr_ci": [
+              0.903,
+              0.933
+            ],
+            "clears_one": false,
+            "eligible": false
+          },
+          "loose": {
+            "p_real": 0.235,
+            "p_swap": 0.206,
+            "lr": 1.141,
+            "lr_ci": [
+              1.098,
+              1.19
+            ],
+            "clears_one": true,
+            "eligible": false
+          },
+          "outlying": {
+            "p_real": 0.173,
+            "p_swap": 0.15,
+            "lr": 1.158,
+            "lr_ci": [
+              1.094,
+              1.229
+            ],
+            "clears_one": true,
+            "eligible": false
+          }
+        },
+        "partner_brightness": {
+          "median_pct_real": 0.953,
+          "median_pct_swap": 0.936,
+          "top_decile_real": 0.712,
+          "top_decile_swap": 0.617
+        },
+        "within_partner_brightness": {
+          "q1 [0.24, 0.78]": {
+            "consistent": {
+              "p_real": 0.085,
+              "p_swap": 0.284,
+              "lr": 0.299,
+              "lr_ci": [
+                0.242,
+                0.357
+              ],
+              "clears_one": false
+            },
+            "loose": {
+              "p_real": 0.235,
+              "p_swap": 0.248,
+              "lr": 0.947,
+              "lr_ci": [
+                0.867,
+                1.036
+              ],
+              "clears_one": false
+            },
+            "outlying": {
+              "p_real": 0.68,
+              "p_swap": 0.468,
+              "lr": 1.454,
+              "lr_ci": [
+                1.387,
+                1.53
+              ],
+              "clears_one": true
+            }
+          },
+          "q2 [0.78, 0.94]": {
+            "consistent": {
+              "p_real": 0.582,
+              "p_swap": 0.705,
+              "lr": 0.827,
+              "lr_ci": [
+                0.8,
+                0.855
+              ],
+              "clears_one": false
+            },
+            "loose": {
+              "p_real": 0.288,
+              "p_swap": 0.245,
+              "lr": 1.176,
+              "lr_ci": [
+                1.093,
+                1.267
+              ],
+              "clears_one": true
+            },
+            "outlying": {
+              "p_real": 0.13,
+              "p_swap": 0.051,
+              "lr": 2.553,
+              "lr_ci": [
+                2.178,
+                3.047
+              ],
+              "clears_one": true
+            }
+          },
+          "q3 [0.94, 0.97]": {
+            "consistent": {
+              "p_real": 0.756,
+              "p_swap": 0.831,
+              "lr": 0.91,
+              "lr_ci": [
+                0.891,
+                0.928
+              ],
+              "clears_one": false
+            },
+            "loose": {
+              "p_real": 0.214,
+              "p_swap": 0.154,
+              "lr": 1.388,
+              "lr_ci": [
+                1.277,
+                1.516
+              ],
+              "clears_one": true
+            },
+            "outlying": {
+              "p_real": 0.03,
+              "p_swap": 0.015,
+              "lr": 2.05,
+              "lr_ci": [
+                1.41,
+                3.172
+              ],
+              "clears_one": true
+            }
+          },
+          "q4 [0.97, 1.00]": {
+            "consistent": {
+              "p_real": 0.785,
+              "p_swap": 0.797,
+              "lr": 0.985,
+              "lr_ci": [
+                0.962,
+                1.008
+              ],
+              "clears_one": false
+            },
+            "loose": {
+              "p_real": 0.213,
+              "p_swap": 0.168,
+              "lr": 1.27,
+              "lr_ci": [
+                1.154,
+                1.407
+              ],
+              "clears_one": true
+            },
+            "outlying": {
+              "p_real": 0.002,
+              "p_swap": 0.035,
+              "lr": 0.052,
+              "lr_ci": [
+                null,
+                null
+              ],
+              "clears_one": false
+            }
+          }
+        }
+      },
+      "[M+H]+|[M+NH4]+": {
+        "n_real": 5227,
+        "n_swap": 12421,
+        "bands": {
+          "consistent": {
+            "p_real": 0.601,
+            "p_swap": 0.764,
+            "lr": 0.787,
+            "lr_ci": [
+              0.776,
+              0.797
+            ],
+            "clears_one": false,
+            "eligible": false
+          },
+          "loose": {
+            "p_real": 0.217,
+            "p_swap": 0.135,
+            "lr": 1.614,
+            "lr_ci": [
+              1.519,
+              1.722
+            ],
+            "clears_one": true,
+            "eligible": false
+          },
+          "outlying": {
+            "p_real": 0.182,
+            "p_swap": 0.102,
+            "lr": 1.791,
+            "lr_ci": [
+              1.685,
+              1.91
+            ],
+            "clears_one": true,
+            "eligible": false
+          }
+        },
+        "partner_brightness": {
+          "median_pct_real": 0.906,
+          "median_pct_swap": 0.85,
+          "top_decile_real": 0.513,
+          "top_decile_swap": 0.382
+        },
+        "within_partner_brightness": {
+          "q1 [0.22, 0.70]": {
+            "consistent": {
+              "p_real": 0.286,
+              "p_swap": 0.489,
+              "lr": 0.586,
+              "lr_ci": [
+                0.553,
+                0.619
+              ],
+              "clears_one": false
+            },
+            "loose": {
+              "p_real": 0.435,
+              "p_swap": 0.276,
+              "lr": 1.578,
+              "lr_ci": [
+                1.453,
+                1.728
+              ],
+              "clears_one": true
+            },
+            "outlying": {
+              "p_real": 0.279,
+              "p_swap": 0.236,
+              "lr": 1.182,
+              "lr_ci": [
+                1.09,
+                1.279
+              ],
+              "clears_one": true
+            }
+          },
+          "q2 [0.70, 0.87]": {
+            "consistent": {
+              "p_real": 0.753,
+              "p_swap": 0.815,
+              "lr": 0.923,
+              "lr_ci": [
+                0.903,
+                0.944
+              ],
+              "clears_one": false
+            },
+            "loose": {
+              "p_real": 0.107,
+              "p_swap": 0.124,
+              "lr": 0.863,
+              "lr_ci": [
+                0.75,
+                0.999
+              ],
+              "clears_one": false
+            },
+            "outlying": {
+              "p_real": 0.14,
+              "p_swap": 0.061,
+              "lr": 2.318,
+              "lr_ci": [
+                1.955,
+                2.788
+              ],
+              "clears_one": true
+            }
+          },
+          "q3 [0.87, 0.94]": {
+            "consistent": {
+              "p_real": 0.716,
+              "p_swap": 0.902,
+              "lr": 0.794,
+              "lr_ci": [
+                0.778,
+                0.811
+              ],
+              "clears_one": false
+            },
+            "loose": {
+              "p_real": 0.222,
+              "p_swap": 0.072,
+              "lr": 3.092,
+              "lr_ci": [
+                2.684,
+                3.591
+              ],
+              "clears_one": true
+            },
+            "outlying": {
+              "p_real": 0.062,
+              "p_swap": 0.027,
+              "lr": 2.323,
+              "lr_ci": [
+                1.881,
+                2.907
+              ],
+              "clears_one": true
+            }
+          },
+          "q4 [0.94, 1.00]": {
+            "consistent": {
+              "p_real": 0.624,
+              "p_swap": 0.878,
+              "lr": 0.711,
+              "lr_ci": [
+                0.701,
+                0.721
+              ],
+              "clears_one": false
+            },
+            "loose": {
+              "p_real": 0.122,
+              "p_swap": 0.049,
+              "lr": 2.497,
+              "lr_ci": [
+                2.139,
+                2.957
+              ],
+              "clears_one": true
+            },
+            "outlying": {
+              "p_real": 0.254,
+              "p_swap": 0.073,
+              "lr": 3.46,
+              "lr_ci": [
+                3.037,
+                4.03
+              ],
+              "clears_one": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "in_source_fragments": {
+    "losses": {
+      "CH2O2": {
+        "gain": {
+          "n_real": 13709,
+          "n_swap": 41100,
+          "shorter": {
+            "p_real": 0.416,
+            "p_swap": 0.319,
+            "lr": 1.303,
+            "lr_ci": [
+              1.281,
+              1.329
+            ],
+            "clears_one": true
+          },
+          "p_real": 0.59,
+          "p_swap": 0.401,
+          "lr": 1.47,
+          "lr_ci": [
+            1.443,
+            1.503
+          ],
+          "clears_one": true,
+          "dimmer_real": 0.705,
+          "dimmer_swap": 0.795
+        },
+        "loss": {
+          "n_real": 11923,
+          "n_swap": 30111,
+          "shorter": {
+            "p_real": 0.447,
+            "p_swap": 0.311,
+            "lr": 1.437,
+            "lr_ci": [
+              1.381,
+              1.501
+            ],
+            "clears_one": true
+          },
+          "p_real": 0.597,
+          "p_swap": 0.398,
+          "lr": 1.5,
+          "lr_ci": [
+            1.444,
+            1.558
+          ],
+          "clears_one": true,
+          "dimmer_real": 0.749,
+          "dimmer_swap": 0.781
+        },
+        "eligible": true
+      },
+      "CH4O": {
+        "gain": {
+          "n_real": 14698,
+          "n_swap": 44070,
+          "shorter": {
+            "p_real": 0.409,
+            "p_swap": 0.305,
+            "lr": 1.339,
+            "lr_ci": [
+              1.31,
+              1.371
+            ],
+            "clears_one": true
+          },
+          "p_real": 0.571,
+          "p_swap": 0.385,
+          "lr": 1.483,
+          "lr_ci": [
+            1.461,
+            1.51
+          ],
+          "clears_one": true,
+          "dimmer_real": 0.716,
+          "dimmer_swap": 0.793
+        },
+        "loss": {
+          "n_real": 13250,
+          "n_swap": 35317,
+          "shorter": {
+            "p_real": 0.521,
+            "p_swap": 0.372,
+            "lr": 1.399,
+            "lr_ci": [
+              1.363,
+              1.44
+            ],
+            "clears_one": true
+          },
+          "p_real": 0.654,
+          "p_swap": 0.445,
+          "lr": 1.468,
+          "lr_ci": [
+            1.429,
+            1.513
+          ],
+          "clears_one": true,
+          "dimmer_real": 0.797,
+          "dimmer_swap": 0.837
+        },
+        "eligible": false
+      },
+      "CO": {
+        "gain": {
+          "n_real": 14776,
+          "n_swap": 44297,
+          "shorter": {
+            "p_real": 0.59,
+            "p_swap": 0.422,
+            "lr": 1.4,
+            "lr_ci": [
+              1.379,
+              1.426
+            ],
+            "clears_one": true
+          },
+          "p_real": 0.746,
+          "p_swap": 0.523,
+          "lr": 1.427,
+          "lr_ci": [
+            1.407,
+            1.452
+          ],
+          "clears_one": true,
+          "dimmer_real": 0.791,
+          "dimmer_swap": 0.806
+        },
+        "loss": {
+          "n_real": 13894,
+          "n_swap": 37968,
+          "shorter": {
+            "p_real": 0.451,
+            "p_swap": 0.306,
+            "lr": 1.473,
+            "lr_ci": [
+              1.431,
+              1.528
+            ],
+            "clears_one": true
+          },
+          "p_real": 0.609,
+          "p_swap": 0.423,
+          "lr": 1.44,
+          "lr_ci": [
+            1.407,
+            1.476
+          ],
+          "clears_one": true,
+          "dimmer_real": 0.74,
+          "dimmer_swap": 0.723
+        },
+        "eligible": true
+      },
+      "CO2": {
+        "gain": {
+          "n_real": 13709,
+          "n_swap": 41106,
+          "shorter": {
+            "p_real": 0.461,
+            "p_swap": 0.335,
+            "lr": 1.378,
+            "lr_ci": [
+              1.346,
+              1.418
+            ],
+            "clears_one": true
+          },
+          "p_real": 0.535,
+          "p_swap": 0.387,
+          "lr": 1.384,
+          "lr_ci": [
+            1.355,
+            1.417
+          ],
+          "clears_one": true,
+          "dimmer_real": 0.861,
+          "dimmer_swap": 0.865
+        },
+        "loss": {
+          "n_real": 12148,
+          "n_swap": 31039,
+          "shorter": {
+            "p_real": 0.353,
+            "p_swap": 0.229,
+            "lr": 1.542,
+            "lr_ci": [
+              1.492,
+              1.606
+            ],
+            "clears_one": true
+          },
+          "p_real": 0.5,
+          "p_swap": 0.323,
+          "lr": 1.544,
+          "lr_ci": [
+            1.497,
+            1.593
+          ],
+          "clears_one": true,
+          "dimmer_real": 0.707,
+          "dimmer_swap": 0.708
+        },
+        "eligible": true
+      },
+      "H2O": {
+        "gain": {
+          "n_real": 14776,
+          "n_swap": 44312,
+          "shorter": {
+            "p_real": 0.413,
+            "p_swap": 0.336,
+            "lr": 1.231,
+            "lr_ci": [
+              1.204,
+              1.262
+            ],
+            "clears_one": true
+          },
+          "p_real": 0.656,
+          "p_swap": 0.449,
+          "lr": 1.46,
+          "lr_ci": [
+            1.434,
+            1.489
+          ],
+          "clears_one": true,
+          "dimmer_real": 0.63,
+          "dimmer_swap": 0.747
+        },
+        "loss": {
+          "n_real": 14286,
+          "n_swap": 40200,
+          "shorter": {
+            "p_real": 0.542,
+            "p_swap": 0.412,
+            "lr": 1.314,
+            "lr_ci": [
+              1.288,
+              1.346
+            ],
+            "clears_one": true
+          },
+          "p_real": 0.713,
+          "p_swap": 0.508,
+          "lr": 1.401,
+          "lr_ci": [
+            1.371,
+            1.44
+          ],
+          "clears_one": true,
+          "dimmer_real": 0.76,
+          "dimmer_swap": 0.811
+        },
+        "eligible": true
+      },
+      "HNO3": {
+        "gain": {
+          "n_real": 5062,
+          "n_swap": 15173,
+          "shorter": {
+            "p_real": 0.21,
+            "p_swap": 0.183,
+            "lr": 1.146,
+            "lr_ci": [
+              1.101,
+              1.2
+            ],
+            "clears_one": true
+          },
+          "p_real": 0.233,
+          "p_swap": 0.206,
+          "lr": 1.128,
+          "lr_ci": [
+            1.082,
+            1.18
+          ],
+          "clears_one": true,
+          "dimmer_real": 0.9,
+          "dimmer_swap": 0.886
+        },
+        "loss": {
+          "n_real": 4673,
+          "n_swap": 9649,
+          "shorter": {
+            "p_real": 0.418,
+            "p_swap": 0.191,
+            "lr": 2.187,
+            "lr_ci": [
+              2.094,
+              2.28
+            ],
+            "clears_one": true
+          },
+          "p_real": 0.509,
+          "p_swap": 0.229,
+          "lr": 2.223,
+          "lr_ci": [
+            2.133,
+            2.319
+          ],
+          "clears_one": true,
+          "dimmer_real": 0.821,
+          "dimmer_swap": 0.834
+        },
+        "eligible": true
+      }
+    },
+    "lattice_controls": {
+      "CH2": {
+        "n_real": 14443,
+        "n_swap": 41027,
+        "shorter": {
+          "p_real": 0.692,
+          "p_swap": 0.527,
+          "lr": 1.313,
+          "lr_ci": [
+            1.291,
+            1.337
+          ],
+          "clears_one": true
+        },
+        "p_real": 0.869,
+        "p_swap": 0.659,
+        "lr": 1.318,
+        "lr_ci": [
+          1.299,
+          1.341
+        ],
+        "clears_one": true,
+        "dimmer_real": 0.797,
+        "dimmer_swap": 0.8
+      },
+      "O": {
+        "n_real": 14429,
+        "n_swap": 40825,
+        "shorter": {
+          "p_real": 0.487,
+          "p_swap": 0.38,
+          "lr": 1.282,
+          "lr_ci": [
+            1.245,
+            1.325
+          ],
+          "clears_one": true
+        },
+        "p_real": 0.751,
+        "p_swap": 0.565,
+        "lr": 1.329,
+        "lr_ci": [
+          1.302,
+          1.355
+        ],
+        "clears_one": true,
+        "dimmer_real": 0.648,
+        "dimmer_swap": 0.672
+      }
+    }
+  },
+  "source": "corroboration_benchmark.py on mascope-demo-dataset-1.4.4 (161 files, 15057 detections)"
+}
