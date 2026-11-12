@@ -24,7 +24,7 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.new.peak_assignments import (
@@ -552,11 +552,48 @@ async def test_a_second_decision_claims_nothing_twice(
     async_session_factory, known_batch
 ):
     await run_batch_known_species(known_batch["batch_id"])
+    first = {
+        key: _record(anchor)
+        for key, anchor in (await _anchors(async_session_factory, known_batch)).items()
+    }
     again = await run_batch_known_species(known_batch["batch_id"])
     assert again["members_rewritten"] == 0
     assert again["present"] == 3
     anchors = await _anchors(async_session_factory, known_batch)
     assert _record(anchors["t"])["verdict"] == "present"
+    # The evidence is each file's own test, as the first decision read it: the
+    # batch's own claims (a rewritten row, an import's member, members with no
+    # row) are not files whose test held.
+    for key in ("t", "m", "d"):
+        assert _record(anchors[key])["test_held"] == first[key]["test_held"]
+        assert (
+            _record(anchors[key])["own_test_samples"] == first[key]["own_test_samples"]
+        )
+    assert _record(anchors["t"])["own_test_samples"] == [known_batch["samples"]["S02"]]
+    assert first["d"]["test_held"] == 2
+    assert first["m"]["test_held"] == N_SAMPLES
+
+
+async def test_the_batchs_own_claims_never_keep_a_species_present(
+    async_session_factory, known_batch
+):
+    """The one sample whose own test held leaves the trimer: the batch's
+    earlier claims do not keep it present, and the record lists them."""
+    batch, samples, ids = known_batch, known_batch["samples"], known_batch["ids"]
+    await run_batch_known_species(batch["batch_id"])
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(BatchPeakOccurrence).where(
+                BatchPeakOccurrence.batch_peak_id == ids["t"],
+                BatchPeakOccurrence.sample_item_id == samples["S02"],
+            )
+        )
+        await session.commit()
+    await run_batch_known_species(batch["batch_id"])
+    record = _record((await _anchors(async_session_factory, batch))["t"])
+    assert record["verdict"] == "absent"
+    assert (record["present"], record["test_held"]) == (4, 0)
+    assert record["files_by_reason"] == {"batch_claim": 4}
 
 
 async def test_a_new_decision_replaces_every_record(async_session_factory, known_batch):
@@ -619,6 +656,38 @@ async def test_a_samples_next_run_takes_the_batchs_word(
     assert trimer.cluster.charge == 1
     assert trimer.record["batch_peak_id"] == batch["ids"]["t"]
     assert trimer.record["verdict"] == "present"
+
+
+async def test_a_samples_run_takes_one_entry_per_ion(
+    async_session_factory, known_batch
+):
+    """The fold split the trimer's trace over batch peaks decided present: the
+    run claims the ion once, as the one in the most samples, whichever comes
+    first or last by id."""
+    batch = known_batch
+    await run_batch_known_species(batch["batch_id"])
+    async with async_session_factory() as session:
+        trimer = await session.get(BatchPeak, batch["ids"]["t"])
+        record = _record(trimer)
+        # Ids that sort before and after any the fold mints.
+        for i, key in enumerate(("!" + gen_id(15), "~" + gen_id(15))):
+            twin = BatchPeak(
+                **{
+                    column.name: getattr(trimer, column.name)
+                    for column in BatchPeak.__table__.columns
+                }
+            )
+            twin.batch_peak_id = key
+            twin.mz = trimer.mz * (1 + (i + 1) * 3e-6)
+            twin.provenance = {
+                **(trimer.provenance or {}),
+                "known_species": {**record, "present": 2},
+            }
+            session.add(twin)
+        await session.commit()
+    species = await batch_species_for(await fetch_sample(batch["samples"]["S04"]))
+    trimers = [one for one in species if one.cluster.formula == "C3H13N6O3"]
+    assert [one.record["batch_peak_id"] for one in trimers] == [batch["ids"]["t"]]
 
 
 async def test_the_ledger_and_an_earlier_run_serve_the_record(
@@ -760,6 +829,130 @@ async def test_a_listed_species_whose_registry_moved_is_left_for_the_next_run(
     assert members[samples["S04"]].tier == tier_code("below_assignability")
     assert members[samples["S02"]].tier == tier_code("candidate")
     assert members[samples["S02"]].fit_score == pytest.approx(0.5)
+
+
+async def test_a_listed_species_whose_readings_moved_to_another_listed_formula_is_held(
+    async_session_factory, known_batch
+):
+    """Between the reading and the write the list tags the other formula too,
+    which most samples commit: the batch peak is another listed compound now,
+    and the planned one is not claimed over it."""
+    batch, samples, ids = known_batch, known_batch["samples"], known_batch["ids"]
+    anchors, members, claims = await batch_known_species._load_batch(batch["batch_id"])
+    plan = batch_known_species.plan_batch(anchors, members, claims)
+    [planned] = [d for d in plan.decisions if d.row.batch_peak_id == ids["d"]]
+    assert (planned.species.formula, planned.verdict.verdict) == (D4, "present")
+    async with async_session_factory() as session:
+        siloxane = await session.get(BatchPeak, ids["d"])
+        listing = next(e["listing"] for e in siloxane.candidates if e.get("listing"))
+        siloxane.candidates = [
+            {**entry, "listing": listing} if entry["formula"] == OTHER else entry
+            for entry in siloxane.candidates
+        ]
+        await session.commit()
+    files = {partition: c["files"] for partition, c in plan.counts.items()}
+    written = await batch_known_species._write_chunk(
+        batch["batch_id"], plan.decisions, files, None
+    )
+    [done] = [w for w in written if w.decision.row.batch_peak_id == ids["d"]]
+    assert not done.claimed
+    assert done.decision.held == "moved"
+    members = await _members(async_session_factory, ids["d"])
+    assert members[samples["S02"]].tier == tier_code("candidate")
+    assert members[samples["S04"]].tier == tier_code("below_assignability")
+    row = (await _run_rows(async_session_factory, batch["runs"]["S02"]))["d"]
+    assert row.assigned_formula == OTHER
+
+
+async def test_a_line_the_ion_cannot_have_keeps_its_sample(
+    async_session_factory, known_batch
+):
+    """S00 read the trimer's peak as an analyte whose line its row labels
+    81Br: the trimer has no bromine, so S00 keeps its reading and the line."""
+    batch, samples, ids = known_batch, known_batch["samples"], known_batch["ids"]
+    async with async_session_factory() as session:
+        await session.execute(
+            update(PeakAssignment)
+            .where(
+                PeakAssignment.peak_assignment_run_id == batch["runs"]["S00"],
+                PeakAssignment.sample_peak_id == "t13",
+            )
+            .values(isotope_label="81Br")
+        )
+        await session.commit()
+    await run_batch_known_species(batch["batch_id"])
+    record = _record((await _anchors(async_session_factory, batch))["t"])
+    assert record["claimed"] is True
+    assert record["files_by_reason"] == {"carries_lines": 1}
+    assert samples["S00"] not in record["displaced_members"]
+    assert record["lines_rewritten"] == 0
+    rows = await _run_rows(async_session_factory, batch["runs"]["S00"])
+    assert (rows["t"].role, rows["t13"].role) == ("M0", "iso_child")
+    line_member = (await _members(async_session_factory, ids["t13"]))[samples["S00"]]
+    assert line_member.role == role_code("iso_child")
+
+
+async def test_the_plan_reads_each_lines_label_off_its_row(
+    async_session_factory, known_batch
+):
+    """S00's 13C line under the trimer, a carbon ion, goes with the claim."""
+    batch, samples, ids = known_batch, known_batch["samples"], known_batch["ids"]
+    anchors, members, claims = await batch_known_species._load_batch(batch["batch_id"])
+    assert members[ids["t13"]][samples["S00"]].isotope_label == "13C"
+    plan = batch_known_species.plan_batch(anchors, members, claims)
+    [trimer] = [d for d in plan.decisions if d.row.batch_peak_id == ids["t"]]
+    assert trimer.samples[samples["S00"]] is None
+
+
+async def test_a_samples_own_claim_made_since_counts_as_its_own(
+    async_session_factory, known_batch
+):
+    """S00's run claims the trimer again on its own after the first decision:
+    its row says so, and the next decision counts it, though the first read
+    S00 as the batch's."""
+    batch, samples = known_batch, known_batch["samples"]
+    await run_batch_known_species(batch["batch_id"])
+    rows = await _run_rows(async_session_factory, batch["runs"]["S00"])
+    async with async_session_factory() as session:
+        await session.execute(
+            update(PeakAssignment)
+            .where(PeakAssignment.peak_assignment_id == rows["t"].peak_assignment_id)
+            .values(provenance={"reagent": {"ion": "[(CH4N2O)3+H]+"}})
+        )
+        await session.commit()
+    await run_batch_known_species(batch["batch_id"])
+    record = _record((await _anchors(async_session_factory, batch))["t"])
+    assert record["test_held"] == 2
+    assert record["own_test_samples"] == sorted([samples["S00"], samples["S02"]])
+
+
+async def test_a_line_row_another_row_owns_is_left_as_it_was(
+    async_session_factory, known_batch
+):
+    """S00's line member names the trimer's batch peak, but its row is owned
+    by another of the sample's rows: the member goes with the claim, the row
+    is that other row's line and is not rewritten."""
+    batch, samples, ids = known_batch, known_batch["samples"], known_batch["ids"]
+    rows = await _run_rows(async_session_factory, batch["runs"]["S00"])
+    async with async_session_factory() as session:
+        await session.execute(
+            update(PeakAssignment)
+            .where(PeakAssignment.peak_assignment_id == rows["t13"].peak_assignment_id)
+            .values(owner_peak_assignment_id=rows["a"].peak_assignment_id)
+        )
+        await session.commit()
+    await run_batch_known_species(batch["batch_id"])
+    record = _record((await _anchors(async_session_factory, batch))["t"])
+    assert samples["S00"] in record["displaced_members"]
+    assert record["lines_rewritten"] == 1
+    line_member = (await _members(async_session_factory, ids["t13"]))[samples["S00"]]
+    assert line_member.role == role_code("reagent")
+    after = await _run_rows(async_session_factory, batch["runs"]["S00"])
+    assert after["t"].role == "reagent"
+    line = after["t13"]
+    assert line.role == "iso_child"
+    assert line.assigned_formula == "C3H12N6O3"
+    assert line.owner_peak_assignment_id == rows["a"].peak_assignment_id
 
 
 async def test_a_listed_compound_no_sample_row_committed_reads_off_the_registry(

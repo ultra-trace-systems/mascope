@@ -13,7 +13,11 @@ its partition and decides it once (``mascope_tools.composition.known_species``):
    fragment, which only its parent's commit in the same file licenses), and a
    listed species where its registry holds a formula a list tags
    ``background``. A file's own test held where its run claimed the ion, or
-   read the listed formula at candidate or better.
+   read the listed formula at candidate or better - on its own, not on the
+   batch's word: a member whose row a decision rewrote, or a run claimed on
+   the batch's decision, is the batch's, and so is one with no row to say
+   so that the decision before read as the batch's (the record keeps the
+   samples it read as their own). The evidence never feeds on its claims.
 2. **The verdict.** Present where the species' peak is in two files or more,
    in half the partition's files or more, and one file's own test held;
    absent where it is in enough files and no file's test held; unpooled where
@@ -26,8 +30,9 @@ its partition and decides it once (``mascope_tools.composition.known_species``):
    sample's own in-app row on that peak. A file is kept as it is where a
    person assigned the peak there, where the workspace's target library named
    it, where the peak is another ion's isotope line or another source ion's
-   claim, and, for a listed compound, where the file's reading carries
-   isotope lines of its own. An imported run's rows are another engine's
+   claim, where the file's reading carries isotope lines of its own - for a
+   listed compound any, for a library ion one it cannot have (a 13C line
+   under a carbon-free ion). An imported run's rows are another engine's
    record and are never rewritten. A curated batch peak is never claimed, and
    neither is one whose files the claim may take would not turn its vote.
 4. **The record.** Every species read carries ``provenance.known_species``
@@ -56,11 +61,12 @@ Design: ``docs/dev/assignment_quality_plan.md``, step 4.2, the seventh rider.
 from __future__ import annotations
 
 import asyncio
+import re
 import statistics
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Sequence
 
 from sqlalchemy import select
 
@@ -158,6 +164,11 @@ BACKGROUND_TAG = "background"
 #: holding: a reading that commits the formula.
 _COMMITTED = (TIER_ASSIGNED, TIER_CANDIDATE)
 
+#: An isotope a line's label names (``13C``, ``81Br2``; ``+`` joins them),
+#: by its element; and an element of a formula.
+_ISOTOPE = re.compile(r"\d+([A-Z][a-z]?)\d*")
+_ELEMENT = re.compile(r"[A-Z][a-z]?")
+
 #: The tier a listed compound's claim writes: the file's own lines did not
 #: commit it, and the batch's files say it is there.
 LISTED_CLAIM_TIER = TIER_CANDIDATE
@@ -174,6 +185,9 @@ KEPT_CARRIES_LINES = "carries_lines"
 
 #: A file whose own claim stands against a verdict that is not present.
 OWN_CLAIM = "own_claim"
+#: A file that reads the species on an earlier decision's word, against a
+#: verdict that is not present now.
+BATCH_CLAIM = "batch_claim"
 
 #: Why a species decided present was not claimed: its batch peak is pinned
 #: by hand; the files the claim may take would not turn its vote; its batch
@@ -231,6 +245,12 @@ class Member:
     :ivar formula: The neutral formula its registry entry names, or None.
     :ivar hand: Whether the sample's row on the peak is a hand assignment.
     :ivar target: Whether the sample's row was matched to a target compound.
+    :ivar isotope_label: The isotope its sample's row names it as (``13C``,
+        ``13C+81Br``), for an isotope line; None where no row is linked.
+    :ivar row_reading: What the linked row reads, (role, formula, ion, tier);
+        None where no row is linked.
+    :ivar row_batch: Whether the linked row was written on the batch's word:
+        rewritten by a decision, or claimed by a run on the batch's decision.
     """
 
     sample_item_id: str
@@ -247,6 +267,9 @@ class Member:
     peak_assignment_id: Optional[str] = None
     hand: bool = False
     target: bool = False
+    isotope_label: Optional[str] = None
+    row_reading: Optional[tuple[Optional[str], ...]] = None
+    row_batch: bool = False
 
     @property
     def source_claim(self) -> bool:
@@ -306,16 +329,56 @@ class Species:
         }
 
     def reads(self, member: Member) -> bool:
-        """Whether a member reads the peak as this species on its file's own
-        test: claimed as the ion, or the listed formula at candidate or
-        better."""
+        """Whether a member reads the peak as this species: claimed as the
+        ion, or the listed formula at candidate or better - on its file's own
+        test or on the batch's word (:meth:`own_test` tells them apart)."""
         if self.kind == KIND_LIBRARY:
             return member.source_claim and member.ion_formula == self.ion_formula
-        return (
-            member.role == ROLE_M0
-            and member.formula == self.formula
-            and member.tier in _COMMITTED
+        return self._reading_reads(
+            member.role, member.formula, member.ion_formula, member.tier
         )
+
+    def _reading_reads(
+        self,
+        role: Optional[str],
+        formula: Optional[str],
+        ion_formula: Optional[str],
+        tier: Optional[str],
+    ) -> bool:
+        if self.kind == KIND_LIBRARY:
+            return (
+                role == ROLE_REAGENT and not formula and ion_formula == self.ion_formula
+            )
+        return role == ROLE_M0 and formula == self.formula and tier in _COMMITTED
+
+    def own_test(self, member: Member, earlier: Optional[set[str]]) -> bool:
+        """Whether a member reads the species on its file's own test, not on
+        the batch's word.
+
+        A member whose row was written on the batch's word (a decision's
+        rewrite, or a run's claim on the batch's decision) is the batch's.
+        One whose row reads the species is its file's. One with no row that
+        says so - none linked, or an import's the decision did not rewrite -
+        is its file's only where the batch never decided the species, or
+        where the decision before this one read it as its file's own: a
+        decision's claim in such a member leaves no other trace.
+
+        :param earlier: The samples the anchor's earlier decision of this
+            species read as their file's own; None where there is none.
+        """
+        if not self.reads(member) or member.row_batch:
+            return False
+        if member.row_reading is not None and self._reading_reads(*member.row_reading):
+            return True
+        return earlier is None or member.sample_item_id in earlier
+
+    def can_have(self, isotope_label: Optional[str]) -> bool:
+        """Whether a library ion can have an isotope line of this label: every
+        isotope it names is of an element of the ion. A line of no label is
+        not one it can be shown to have."""
+        isotopes = _ISOTOPE.findall(isotope_label or "")
+        elements = set(_ELEMENT.findall((self.ion_formula or "").rstrip("+-")))
+        return bool(isotopes) and all(element in elements for element in isotopes)
 
     def lifts(self, member: Member) -> bool:
         """Whether a member reads a listed compound's own formula below the
@@ -362,6 +425,23 @@ class Species:
         )
 
 
+#: (sample, batch peak) -> the isotope labels of the members of the sample
+#: that name the batch peak as the owner of their line.
+Carrying = dict[tuple[str, str], tuple[Optional[str], ...]]
+
+
+def carrying_of(
+    lines: Iterable[tuple[str, Optional[str], Optional[str]]],
+) -> Carrying:
+    """:data:`Carrying` from (sample, owner batch peak, isotope label) per
+    member; a member naming no owner is no line."""
+    found: dict[tuple[str, str], list[Optional[str]]] = defaultdict(list)
+    for sample, owner, label in lines:
+        if owner:
+            found[(sample, owner)].append(label)
+    return {key: tuple(labels) for key, labels in found.items()}
+
+
 @dataclass
 class Row:
     """One batch peak and its members, sample -> member."""
@@ -383,12 +463,15 @@ class Decision:
         species only.
     :ivar held: Why a present species was not claimed; None where it was or
         where it is not present.
+    :ivar own: The samples whose file's own test held (:func:`own_tests`), as
+        the members stood when it was decided.
     """
 
     row: Row
     species: Species
     verdict: SpeciesVerdict
     samples: dict[str, Optional[str]] = field(default_factory=dict)
+    own: list[str] = field(default_factory=list)
     held: Optional[str] = None
     co_variation: Optional[dict] = None
 
@@ -480,12 +563,21 @@ def _monoisotopic(anchor: Any) -> bool:
     return not anchor.isotopologue_of and (not ion or "[" not in ion)
 
 
+def _order(value: Any) -> Any:
+    """A value's place in a tie-break: a tuple's parts in order, a None among
+    them before any text (an imported row may name no mechanism)."""
+    if isinstance(value, tuple):
+        return tuple((part is not None, str(part or "")) for part in value)
+    return (True, str(value))
+
+
 def _mode(values: Iterable[Any]) -> Any:
+    """The value most often given, the first in :func:`_order` on a tie."""
     counts = Counter(value for value in values if value is not None)
     if not counts:
         return None
     best = max(counts.values())
-    return min(value for value, n in counts.items() if n == best)
+    return min((value for value, n in counts.items() if n == best), key=_order)
 
 
 def library_species(row: Row, claims: dict[str, dict]) -> Optional[Species]:
@@ -610,16 +702,19 @@ def species_of(row: Row, claims: dict[str, dict]) -> Optional[Species]:
 
 
 def sample_decision(
-    member: Member, species: Species, carries_lines: bool
+    member: Member, species: Species, lines: Sequence[Optional[str]] = ()
 ) -> Optional[str]:
     """What becomes of a present species' member in one file: None where the
-    claim rewrites it, :data:`ALREADY` where the file's own test held, else
-    why it is kept.
+    claim rewrites it, :data:`ALREADY` where it already reads the species,
+    else why it is kept.
 
-    :param carries_lines: Whether some member of the file names the batch peak
-        as the owner of its line. A listed compound's claim keeps such a
-        member, whose lines are another formula's, unless it reads the
-        compound's own formula (:meth:`Species.lifts`).
+    :param lines: The isotope labels of the members of the file that name the
+        batch peak as the owner of their line (None for one no row labels). A
+        listed compound's claim keeps a member with lines, which are another
+        formula's, unless it reads the compound's own formula
+        (:meth:`Species.lifts`). A library ion's claim takes the lines with
+        the ion, so it keeps a member with a line the ion cannot have
+        (:meth:`Species.can_have`): a 13C line under a carbon-free ion.
     """
     if species.reads(member):
         return ALREADY
@@ -631,7 +726,13 @@ def sample_decision(
         return KEPT_LINE_OF_ANOTHER
     if member.role in SOURCE_ROLES:
         return KEPT_CLAIMED_OTHERWISE
-    if carries_lines and species.kind == KIND_LISTED and not species.lifts(member):
+    if lines and species.kind == KIND_LISTED and not species.lifts(member):
+        return KEPT_CARRIES_LINES
+    if (
+        lines
+        and species.kind == KIND_LIBRARY
+        and not all(species.can_have(label) for label in lines)
+    ):
         return KEPT_CARRIES_LINES
     return None
 
@@ -694,36 +795,60 @@ def claim_turns(row: Row, species: Species, samples: dict[str, Optional[str]]) -
     )
 
 
+def earlier_own(anchor: Any, species: Species) -> Optional[set[str]]:
+    """The samples the anchor's earlier decision of this species read as
+    their file's own (:meth:`Species.own_test`); None where the anchor
+    carries no record of the species."""
+    record = known_species_record_of(anchor)
+    earlier = (record or {}).get("species")
+    if not isinstance(earlier, dict) or (
+        earlier.get("kind"),
+        earlier.get("ion_formula"),
+        earlier.get("formula"),
+    ) != (species.kind, species.ion_formula, species.formula):
+        return None
+    return set(record.get("own_test_samples") or ())
+
+
+def own_tests(row: Row, species: Species) -> list[str]:
+    """The samples whose file's own test held, as the decision pools them."""
+    earlier = earlier_own(row.anchor, species)
+    return sorted(
+        sample
+        for sample, member in row.members.items()
+        if species.own_test(member, earlier)
+    )
+
+
 def _evidence(
-    row: Row, species: Species, files: int, samples: dict[str, Optional[str]]
+    row: Row, own: list[str], files: int, samples: dict[str, Optional[str]]
 ) -> PooledEvidence:
     return PooledEvidence(
         files=files,
         present=len(row.members),
-        test_held=sum(1 for member in row.members.values() if species.reads(member)),
+        test_held=len(own),
         claimable=sum(1 for decision in samples.values() if decision is None),
         kept=sum(1 for decision in samples.values() if decision not in (None, ALREADY)),
     )
 
 
-def decide_row(
-    row: Row, species: Species, files: int, carrying: set[tuple[str, str]]
-) -> Decision:
+def decide_row(row: Row, species: Species, files: int, carrying: Carrying) -> Decision:
     """Decide one species once for its partition, and what its claim does in
     each file.
 
     :param files: The partition's files.
-    :param carrying: (sample, batch peak) pairs where some member of the
-        sample names the batch peak as the owner of its line.
+    :param carrying: (sample, batch peak) -> the isotope labels of the members
+        of the sample that name the batch peak as the owner of their line.
     """
     samples = {
         sample: sample_decision(
-            member, species, (sample, row.batch_peak_id) in carrying
+            member, species, carrying.get((sample, row.batch_peak_id), ())
         )
         for sample, member in sorted(row.members.items())
     }
-    verdict = decide_known_species(_evidence(row, species, files, samples))
-    decision = Decision(row, species, verdict)
+    own = own_tests(row, species)
+    verdict = decide_known_species(_evidence(row, own, files, samples))
+    decision = Decision(row, species, verdict, own=own)
     if not verdict.present:
         return decision
     decision.samples = samples
@@ -824,12 +949,11 @@ def plan_partition(
     """One partition's species, decided. ``counts`` is filled in."""
     files = len({sample for row in rows for sample in row.members})
     counts["files"] = files
-    carrying = {
-        (member.sample_item_id, member.owner_batch_peak_id)
+    carrying = carrying_of(
+        (member.sample_item_id, member.owner_batch_peak_id, member.isotope_label)
         for row in rows
         for member in row.members.values()
-        if member.owner_batch_peak_id
-    }
+    )
     decisions = []
     for row in sorted(rows, key=lambda r: r.batch_peak_id):
         species = species_of(row, claims)
@@ -891,7 +1015,8 @@ def _member_reading(member: Member, reason: str) -> dict:
 def files_recorded(decision: Decision) -> tuple[list[dict], dict[str, int]]:
     """The files a record lists with their readings, and their counts by why:
     for a present species the files it kept, for one that is not the files
-    whose own claim stands against the verdict."""
+    that read it against the verdict - on their own test, or on an earlier
+    decision's word."""
     row = decision.row
     if decision.verdict.present:
         entries = [
@@ -900,8 +1025,9 @@ def files_recorded(decision: Decision) -> tuple[list[dict], dict[str, int]]:
             if reason not in (None, ALREADY)
         ]
     else:
+        own = set(decision.own)
         entries = [
-            _member_reading(member, OWN_CLAIM)
+            _member_reading(member, OWN_CLAIM if sample in own else BATCH_CLAIM)
             for sample, member in sorted(row.members.items())
             if decision.species.reads(member)
         ]
@@ -933,6 +1059,7 @@ def species_record(
         "rows_kept": dict(sorted((rows_kept or {}).items())),
         "files_by_reason": by_reason,
         "files_recorded": files,
+        "own_test_samples": list(decision.own),
         "co_variation": decision.co_variation,
         "displaced_members": displaced_members,
         "reads": reads,
@@ -1049,15 +1176,33 @@ def listed_species_row(
 # --- the run --------------------------------------------------------------------
 
 
+@dataclass
+class Marks:
+    """Per member, what its sample's row says the decision must respect.
+
+    :ivar hand: The (batch peak, sample) pairs whose row is a hand assignment.
+    :ivar target: Those whose row was matched to a target compound.
+    :ivar claims: Peak assignment id -> the ``provenance.reagent`` record of
+        every row a pre-pass claimed.
+    :ivar rows: (batch peak, sample) -> what the linked row reads, (role,
+        formula, ion, tier), its isotope label, and whether it was written on
+        the batch's word.
+    """
+
+    hand: set[tuple[str, str]] = field(default_factory=set)
+    target: set[tuple[str, str]] = field(default_factory=set)
+    claims: dict[str, dict] = field(default_factory=dict)
+    rows: dict[tuple[str, str], tuple[tuple, Optional[str], bool]] = field(
+        default_factory=dict
+    )
+
+
 def _member_from(
-    row: Any,
-    anchor_mz: float,
-    registry: Optional[list],
-    hand: set[tuple[str, str]],
-    target: set[tuple[str, str]],
+    row: Any, anchor_mz: float, registry: Optional[list], marks: Marks
 ) -> Member:
     identity = resolve_candidate(registry, row.candidate)
     key = (row.batch_peak_id, row.sample_item_id)
+    reading, label, batch = marks.rows.get(key, (None, None, False))
     return Member(
         sample_item_id=row.sample_item_id,
         sample_peak_id=str(row.sample_peak_id),
@@ -1071,18 +1216,21 @@ def _member_from(
         tier=tier_name(row.tier),
         fit_score=row.fit_score,
         peak_assignment_id=row.peak_assignment_id,
-        hand=key in hand,
-        target=key in target,
+        hand=key in marks.hand,
+        target=key in marks.target,
+        isotope_label=label,
+        row_reading=reading,
+        row_batch=batch,
     )
 
 
 async def _row_marks(
     session, sample_batch_id: str, batch_peak_ids: Optional[list[str]] = None
-) -> tuple[set[tuple[str, str]], set[tuple[str, str]], dict[str, dict]]:
-    """Per member, what its sample's row says the decision must respect: the
-    (batch peak, sample) pairs whose row is a hand assignment, those whose row
-    was matched to a target compound, and the ``provenance.reagent`` record of
-    every row a pre-pass claimed."""
+) -> Marks:
+    """Per member, what its sample's row says the decision must respect
+    (:class:`Marks`). A row was written on the batch's word where it names the
+    decision: a library ion's under ``provenance.reagent.reason``, a listed
+    compound's under its own key."""
     query = (
         select(
             BatchPeakOccurrence.batch_peak_id,
@@ -1091,6 +1239,16 @@ async def _row_marks(
             PeakAssignment.source,
             PeakAssignment.target_compound_id,
             PeakAssignment.role,
+            PeakAssignment.assigned_formula,
+            PeakAssignment.ion_formula,
+            PeakAssignment.tier,
+            PeakAssignment.isotope_label,
+            PeakAssignment.provenance[("reagent", "reason")]
+            .as_string()
+            .label("reagent_reason"),
+            PeakAssignment.provenance[REASON_BATCH_KNOWN_SPECIES]
+            .as_string()
+            .label("batch_listed"),
         )
         .join(
             PeakAssignment,
@@ -1101,18 +1259,23 @@ async def _row_marks(
     )
     if batch_peak_ids is not None:
         query = query.where(BatchPeakOccurrence.batch_peak_id.in_(batch_peak_ids))
-    hand: set[tuple[str, str]] = set()
-    target: set[tuple[str, str]] = set()
+    marks = Marks()
     reagent_rows: list[str] = []
     for row in (await session.execute(query)).all():
         key = (row.batch_peak_id, row.sample_item_id)
         if row.source == SOURCE_MANUAL:
-            hand.add(key)
+            marks.hand.add(key)
         if row.target_compound_id:
-            target.add(key)
+            marks.target.add(key)
         if row.role == ROLE_REAGENT and row.source == SOURCE_REAGENT:
             reagent_rows.append(row.peak_assignment_id)
-    claims: dict[str, dict] = {}
+        marks.rows[key] = (
+            (row.role, row.assigned_formula, row.ion_formula, row.tier),
+            row.isotope_label,
+            row.reagent_reason == REASON_BATCH_KNOWN_SPECIES
+            or row.batch_listed is not None,
+        )
+    claims = marks.claims
     for start in range(0, len(reagent_rows), ROW_READ_CHUNK):
         for peak_assignment_id, provenance in (
             await session.execute(
@@ -1128,7 +1291,7 @@ async def _row_marks(
             record = (provenance or {}).get("reagent")
             if isinstance(record, dict):
                 claims[peak_assignment_id] = record
-    return hand, target, claims
+    return marks
 
 
 _MEMBER_COLUMNS = (
@@ -1172,15 +1335,15 @@ async def _load_batch(
                 .where(BatchPeak.sample_batch_id == sample_batch_id)
             )
         ).all()
-        hand, target, claims = await _row_marks(session, sample_batch_id)
+        marks = await _row_marks(session, sample_batch_id)
     by_id = {anchor.batch_peak_id: anchor for anchor in anchors}
     members: dict[str, dict[str, Member]] = defaultdict(dict)
     for row in rows:
         anchor = by_id[row.batch_peak_id]
         members[row.batch_peak_id][row.sample_item_id] = _member_from(
-            row, anchor.mz, anchor.candidates, hand, target
+            row, anchor.mz, anchor.candidates, marks
         )
-    return list(anchors), dict(members), claims
+    return list(anchors), dict(members), marks.claims
 
 
 #: The columns of a sample's row the rewrite reads.
@@ -1473,22 +1636,26 @@ async def _write_chunk(
                 .all()
             ):
                 line_anchors[anchor.batch_peak_id] = anchor
-        carrying = {
-            (m.sample_item_id, m.owner_batch_peak_id)
-            for m in line_members
-            if m.owner_batch_peak_id
-        } | {
-            (sample_item_id, owner)
-            for sample_item_id, owner in (
+        # Every member naming one of these as its owner, with the label its
+        # sample's row gives the line.
+        carrying = carrying_of(
+            (
                 await session.execute(
                     select(
                         BatchPeakOccurrence.sample_item_id,
                         BatchPeakOccurrence.owner_batch_peak_id,
-                    ).where(BatchPeakOccurrence.owner_batch_peak_id.in_(ids))
+                        PeakAssignment.isotope_label,
+                    )
+                    .outerjoin(
+                        PeakAssignment,
+                        PeakAssignment.peak_assignment_id
+                        == BatchPeakOccurrence.peak_assignment_id,
+                    )
+                    .where(BatchPeakOccurrence.owner_batch_peak_id.in_(ids))
                 )
             ).all()
-        }
-        hand, target, _ = await _row_marks(session, sample_batch_id, ids)
+        )
+        marks = await _row_marks(session, sample_batch_id, ids)
         links = [
             m.peak_assignment_id
             for by_sample in members.values()
@@ -1520,9 +1687,7 @@ async def _write_chunk(
             fresh = Row(
                 anchor,
                 {
-                    sample: _member_from(
-                        member, anchor.mz, anchor.candidates, hand, target
-                    )
+                    sample: _member_from(member, anchor.mz, anchor.candidates, marks)
                     for sample, member in members.get(anchor.batch_peak_id, {}).items()
                 },
             )
@@ -1774,6 +1939,10 @@ async def batch_species_for(sample: Any) -> list[BatchSpecies]:
     partition: what its run's reagent pre-pass claims on the batch's word
     (``reagent_pass.claim_batch_species``).
 
+    One entry per ion: where the fold split an ion's trace over two batch
+    peaks and both were decided present, the one in the most files speaks
+    for it. A second entry of the ion would claim another peak in the window.
+
     :param sample: The sample (``sample_batch_id``, ``ionization_mode_id``,
         ``filename``).
     :return: The species; none for a sample with no batch, or a batch that
@@ -1800,18 +1969,24 @@ async def batch_species_for(sample: Any) -> list[BatchSpecies]:
             .scalars()
             .all()
         )
-    species = []
+    by_ion: dict[tuple[str, int], BatchSpecies] = {}
     for anchor in sorted(anchors, key=lambda a: a.batch_peak_id):
         record = standing_known_species_record(anchor)
         one = batch_species_from(record, anchor.batch_peak_id) if record else None
-        if one is not None:
-            species.append(one)
-    return species
+        if one is None:
+            continue
+        ion = (one.cluster.formula, one.cluster.charge)
+        if ion not in by_ion or (one.record.get("present") or 0) > (
+            by_ion[ion].record.get("present") or 0
+        ):
+            by_ion[ion] = one
+    return list(by_ion.values())
 
 
 __all__ = [
     "ALREADY",
     "BACKGROUND_TAG",
+    "BATCH_CLAIM",
     "HELD_CURATED",
     "HELD_MOVED",
     "HELD_VOTE",
@@ -1823,6 +1998,7 @@ __all__ = [
     "LISTED_CLAIM_TIER",
     "OWN_CLAIM",
     "Decision",
+    "Marks",
     "Member",
     "Plan",
     "Row",
@@ -1832,9 +2008,11 @@ __all__ = [
     "decide_batch_known_species",
     "decide_row",
     "deciding_outcome",
+    "earlier_own",
     "listed_species",
     "listed_species_row",
     "library_species",
+    "own_tests",
     "plan_batch",
     "run_batch_known_species",
     "sample_decision",
