@@ -556,6 +556,8 @@ class Reference:
     :ivar load_state: Reads the bench's state.
     :ivar save_state: Writes it back.
     :ivar connect: Signs in on a started instance and writes ``bench.env``.
+    :ivar prepare: Builds the backend the import runs on, before it starts:
+        a bench run removes its build when it is done, so none may be there.
     """
 
     peaky: Peaky
@@ -565,6 +567,7 @@ class Reference:
     load_state: Callable[[], dict]
     save_state: Callable[[dict], None]
     jobs: int = 2
+    prepare: Callable[[], None] | None = None
 
     def run(
         self, pin: str, reinstall: bool = False, only: list[str] | None = None
@@ -631,6 +634,8 @@ class Reference:
     def _run_jobs(self, state: dict, reference: dict, jobs: list[Job]) -> list[str]:
         self.instance.check_env()
         self.instance.bind()
+        if self.prepare is not None:
+            self.prepare()
         base = self.instance.start(peak_assignment=True)
         failures: list[str] = []
         lock = threading.Lock()
