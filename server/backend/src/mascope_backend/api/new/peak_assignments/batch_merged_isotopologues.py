@@ -49,20 +49,24 @@ before. The parent carries ``provenance.merged_isotopologues``
 against, and each line it took. The run's summary lists the stripped pairs and
 the held ones.
 
-The reading runs outside the fold lock and the writes under it, a chunk of
-pairs per transaction. Each pair is checked again against the ledger as it
-stands then: a row or a parent whose reading moved since is left out and
-counted, and a row whose samples no longer turn its vote is held.
+The reading runs outside the fold lock (and off the event loop) and the
+writes under it, a chunk of pairs per transaction. Each pair is checked again
+against the ledger as it stands then: a row or a parent whose reading moved
+since is left out and counted, and a row a hold reaches now - a curation, a
+hand assignment, a 13C line folded under it, or samples that no longer turn
+its vote - is held.
 
 Design: ``docs/dev/assignment_quality_plan.md``, step 4.2, the fifth rider.
 """
 
 from __future__ import annotations
 
+import asyncio
 import bisect
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any, Iterable, Optional
 
 from sqlalchemy import select
@@ -813,9 +817,14 @@ async def _write_pair(
     in_app_runs: set[str],
     hand: set[str],
     carrying: set[tuple[str, str]],
+    lines_below: dict[str, list[Row]],
     batch_peak_run_id: Optional[str],
 ) -> Written:
-    """Strip one row to its parent's line, on the ledger as it stands."""
+    """Strip one row to its parent's line, on the ledger as it stands.
+
+    :param lines_below: Row id -> the batch peaks that are its isotopologues
+        now (:func:`_isotopologues_of`), for the own-13C hold.
+    """
     if not _still_planned(pair, anchors):
         return Written(pair, "moved")
     row_bp = anchors[pair.row.batch_peak_id]
@@ -844,7 +853,12 @@ async def _write_pair(
         pair.window_ppm,
         pair.scatter_ppm,
     )
-    reason = _held_reason(fresh, hand, set(), carrying)
+    # A fold since the reading may have made a batch peak at the row's 13C
+    # position its isotopologue, so the hold is read again here.
+    carrying_13c = carries_own_13c(
+        [fresh_row, *lines_below.get(row_bp.batch_peak_id, ())], pair.window_ppm
+    )
+    reason = _held_reason(fresh, hand, carrying_13c, carrying)
     if reason is not None:
         return Written(pair, reason)
 
@@ -946,6 +960,40 @@ async def _write_pair(
     )
 
 
+async def _isotopologues_of(session, batch_peak_ids: list[str]) -> dict[str, list[Row]]:
+    """Row id -> the batch peaks that are its isotopologues, at their trace
+    centres: what :func:`carries_own_13c` reads a row's 13C line from."""
+    anchors = (
+        (
+            await session.execute(
+                select(BatchPeak).where(BatchPeak.isotopologue_of.in_(batch_peak_ids))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not anchors:
+        return {}
+    by_id = {anchor.batch_peak_id: anchor for anchor in anchors}
+    mzs: dict[str, list[SimpleNamespace]] = defaultdict(list)
+    for batch_peak_id, mz_delta_ppm in (
+        await session.execute(
+            select(
+                BatchPeakOccurrence.batch_peak_id,
+                BatchPeakOccurrence.mz_delta_ppm,
+            ).where(BatchPeakOccurrence.batch_peak_id.in_(list(by_id)))
+        )
+    ).all():
+        mzs[batch_peak_id].append(
+            SimpleNamespace(mz=mz_from_delta(by_id[batch_peak_id].mz, mz_delta_ppm))
+        )
+    lines: dict[str, list[Row]] = defaultdict(list)
+    for anchor in anchors:
+        centre = trace_centre(anchor.mz, mzs.get(anchor.batch_peak_id, ()))
+        lines[anchor.isotopologue_of].append(Row(anchor, centre=centre))
+    return dict(lines)
+
+
 async def _write_chunk(
     sample_batch_id: str, pairs: list[Pair], batch_peak_run_id: Optional[str]
 ) -> list[Written]:
@@ -995,6 +1043,7 @@ async def _write_chunk(
             ).all()
         }
         hand = await hand_assigned_anchors(session, sample_batch_id, row_ids)
+        lines_below = await _isotopologues_of(session, row_ids)
         row_links = [
             member.peak_assignment_id
             for by_sample in members.values()
@@ -1040,6 +1089,7 @@ async def _write_chunk(
                 in_app_runs,
                 hand,
                 carrying,
+                lines_below,
                 batch_peak_run_id,
             )
             for pair in pairs
@@ -1120,7 +1170,7 @@ async def run_batch_merged_isotopologues(
     :return: The run's summary (:func:`summarise`).
     """
     anchors, members, hand = await _load_batch(sample_batch_id)
-    plan = plan_batch(anchors, members, hand)
+    plan = await asyncio.to_thread(plan_batch, anchors, members, hand)
     written: list[Written] = []
     for start in range(0, len(plan.stripped), WRITE_CHUNK):
         written.extend(
