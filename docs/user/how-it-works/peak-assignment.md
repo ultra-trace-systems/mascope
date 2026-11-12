@@ -1751,7 +1751,11 @@ samples of its ionization mode and instrument type:
   only where its parent is committed in the same sample. A batch peak is a listed species
   where a member matched a formula from a list that tags it *background*. A sample's own
   test held where its run claimed the ion, or read the listed formula at candidate or
-  better.
+  better, on its own. A sample that reads the species on the batch's word is not one: its
+  row was rewritten by an earlier decision, or claimed by a run on the batch's decision.
+  A sample with no row to say which, folded without a run or from an imported run, counts
+  where the decision before this one counted it. So the batch's own claims never keep a
+  species present.
 - **Present.** The species' peak is in two samples or more, in half the samples or more,
   and one sample's own test held. The species is the batch's.
 - **Absent.** The peak is in enough samples, and no sample's own test held. The mass alone,
@@ -1774,8 +1778,9 @@ reading**, which *use this* puts back).
 
 A sample is kept as it is where a person assigned the peak there, where the workspace's
 target library named it, where the peak is another ion's isotope line or another source
-ion's claim, and, for a listed compound, where the sample reads another formula that
-carries isotope lines of its own. A run imported from another engine is that engine's record and is never
+ion's claim, and where the sample's reading carries isotope lines of its own that the
+species cannot have: for a listed compound any of another formula, for a library ion one
+of an element it does not hold, such as a 13C line under a carbon-free ion. A run imported from another engine is that engine's record and is never
 rewritten. A batch peak curated by hand is never claimed, and neither is one whose
 reading the samples the claim may take would not turn. Nothing else is claimed: an
 analyte that is no known species is never read as one through the batch.
@@ -1784,8 +1789,8 @@ The batch peak carries the decision: a checklist mark beside its formula, in the
 colour where the species is present, and on hover the species, the verdict, the samples
 its peak is in and those whose own test held, how many samples the claim took, and the
 samples it kept with their readings. Where the batch did not decide a species present,
-the samples whose own claim stands are listed instead: a sample's reading is recorded,
-never silently overridden. The ledger route and `batch_peaks.list` carry the decision as
+the samples whose own claim stands are listed instead, and those an earlier decision
+claimed: a sample's reading is recorded, never silently overridden. The ledger route and `batch_peaks.list` carry the decision as
 `known_species`, which stays for as long as the batch peak reads what the decision left
 it reading. The co-variation of a species' trace with its core is recorded beside the
 verdict and decides nothing, as *Read co-variation* decides nothing: a library ion is read
@@ -1794,7 +1799,9 @@ calibrant ion, and a listed compound carries its own *Read co-variation* reading
 
 A sample's next run takes the batch's word for a library ion: its reagent pass claims a
 present ion on the sample's corrected mass where its own claim did not, with no height
-floor and no ladder below it, and the row names the batch's decision as its reason. A
+floor and no ladder below it, and the row names the batch's decision as its reason. Where
+the fold split an ion's trace over two batch peaks decided present, the run claims the ion
+once, as the batch peak in the most samples. A
 listed compound is the stages' to read, so a sample assigned again reads it afresh, and
 the next *Decide known species* reads its rows again. Each run replaces every decision
 before it. It runs as a batch run, whose summary counts the species read, present,

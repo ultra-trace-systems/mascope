@@ -70,6 +70,16 @@ describe('batchKnownSpecies', () => {
     expect(text).not.toMatch(/Claimed in/)
   })
 
+  it('says which samples an earlier batch decision claimed against the verdict', () => {
+    const text = knownSpeciesTooltip(
+      record({ verdict: 'absent', test_held: 0, files_by_reason: { batch_claim: 4 } })
+    )
+    expect(text).toMatch(/0 samples read it as the species on their own\./)
+    expect(text).toMatch(
+      /Each sample keeps its own reading: 4 samples claimed on an earlier batch decision\.$/
+    )
+  })
+
   it('is empty for no record', () => {
     expect(knownSpeciesTooltip(undefined)).toBe('')
   })
