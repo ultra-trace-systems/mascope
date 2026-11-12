@@ -835,3 +835,59 @@ class TestTheFoldClaimsInTheRunsWindow:
 
         assert seen["instrument_type"] is None
         mocks["fold"].assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_the_fold_takes_its_batchs_word_as_a_run_does():
+    """The reagent pre-pass reads the batch's known species on this path too
+    (step 4.2h), so the two ledgers agree on which peaks are the source's."""
+    from mascope_backend.api.new.peak_assignments.reagent_pass import (
+        batch_species_from,
+    )
+    from mascope_backend.api.new.peak_assignments.service import (
+        fold_sample_peaks_without_run,
+    )
+    from mascope_tools.composition.reagents import ion_mz
+
+    species = batch_species_from(
+        {
+            "species": {"kind": "library", "ion_formula": "C3H13N6O3+"},
+            "verdict": "present",
+            "held": None,
+            "reads": {},
+        },
+        "bp-trimer",
+    )
+    stack, mocks = _patched()
+    batch_species = stack.enter_context(
+        patch(
+            f"{_SVC}.batch_species_for",
+            new_callable=AsyncMock,
+            return_value=[species],
+        )
+    )
+    stack.enter_context(patch(f"{_SVC}.get_instrument_type", return_value="orbi"))
+    mocks["peaks"].return_value = pd.DataFrame(
+        {
+            "sample_peak_id": ["m", "d", "t"],
+            "mz": [ion_mz("CH5N2O", 1), ion_mz("C2H9N4O2", 1), ion_mz("C3H13N6O3", 1)],
+            "intensity": [1.0e9, 5.0e8, 1.0e3],
+        }
+    )
+    mocks["mechanisms"].return_value = (
+        ["m-urea"],
+        [
+            SimpleNamespace(
+                ionization_mechanism_id="m-urea",
+                ionization_mechanism="[M+CH4N2O+H]+",
+                ionization_mechanism_polarity="+",
+            )
+        ],
+    )
+    with stack:
+        assert await fold_sample_peaks_without_run("si-1") == "batch-1"
+
+    batch_species.assert_awaited_once()
+    rows = {row.sample_peak_id: row for row in mocks["fold"].call_args.kwargs["rows"]}
+    assert rows["t"].role == "reagent"
+    assert rows["t"].provenance["reagent"]["reason"] == "batch_known_species"

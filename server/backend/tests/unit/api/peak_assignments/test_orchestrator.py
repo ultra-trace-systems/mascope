@@ -257,6 +257,11 @@ def _patches(
         "resolution": patch(
             f"{_MOD}._resolution_of", new_callable=AsyncMock, return_value=None
         ),
+        # What the sample's batch decided of its known species lives with its
+        # batch ledger in the database; these samples' batches decided none.
+        "batch_species": patch(
+            f"{_MOD}.batch_species_for", new_callable=AsyncMock, return_value=[]
+        ),
         # What the file was acquired at, which a thin Orbitrap file's pooled
         # curve is matched on, is read off its stream row and its .props:
         # neither exists here, as for a file converted before either kept it,
@@ -2739,3 +2744,77 @@ async def test_the_run_records_the_setup_it_searched_under():
     assert len(configs) == 2
     assert [config["ionization_setup"] for config in configs] == [stamp, stamp]
     assert mocks["calibration"].await_args.kwargs["ionization_setup"] == stamp
+
+
+class TestTheRunTakesItsBatchsWord:
+    """The reagent pre-pass claims a library ion its sample's batch decided
+    present, where the file's own claim leaves it (step 4.2h): the urea
+    trimer at a millionth of the base peak, under the pass's floor."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("decided", [True, False], ids=["decided", "not"])
+    async def test_an_ion_the_batch_decided_present_is_claimed(self, decided):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_backend.api.new.peak_assignments.reagent_pass import (
+            batch_species_from,
+        )
+        from mascope_tools.composition.reagents import ion_mz
+
+        peaks = _peaks_df(
+            [
+                ("monomer", ion_mz("CH5N2O", 1), 1.0e9),
+                ("dimer", ion_mz("C2H9N4O2", 1), 5.0e8),
+                ("trimer", ion_mz("C3H13N6O3", 1), 1.0e3),
+            ]
+        )
+        species = batch_species_from(
+            {
+                "species": {
+                    "kind": "library",
+                    "ion_formula": "C3H13N6O3+",
+                    "label": "[(CH4N2O)3+H]+",
+                },
+                "verdict": "present",
+                "held": None,
+                "reads": {},
+            },
+            "bp-trimer",
+        )
+        recorder = _Recorder()
+        patches = _patches(recorder, peaks, [])
+        patches["mechanisms"] = patch(
+            f"{_MOD}.fetch_sample_mechanisms",
+            new_callable=AsyncMock,
+            return_value=(
+                ["im-u"],
+                [
+                    SimpleNamespace(
+                        ionization_mechanism_id="im-u",
+                        ionization_mechanism="[M+CH4N2O+H]+",
+                        ionization_mechanism_polarity="+",
+                    )
+                ],
+            ),
+        )
+        patches["batch_species"] = patch(
+            f"{_MOD}.batch_species_for",
+            new_callable=AsyncMock,
+            return_value=[species] if decided else [],
+        )
+        mocks = _start(patches)
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        mocks["batch_species"].assert_awaited_once()
+        by_peak = {row["sample_peak_id"]: row for row in recorder.rows}
+        trimer = by_peak["trimer"]
+        assert (trimer["role"] == "reagent") is decided
+        if decided:
+            reagent = trimer["provenance"]["reagent"]
+            assert reagent["reason"] == "batch_known_species"
+            assert reagent["batch_known_species"]["batch_peak_id"] == "bp-trimer"
+        # The file's own claims are its own either way.
+        assert by_peak["monomer"]["role"] == "reagent"
+        assert "reason" not in by_peak["monomer"]["provenance"]["reagent"]

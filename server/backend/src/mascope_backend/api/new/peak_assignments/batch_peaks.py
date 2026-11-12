@@ -37,7 +37,8 @@ This module holds the PURE logic (no DB, no I/O) behind the batch overview:
   :func:`stamped_isotopologue_of_record`). So do the records of a row the
   merged-isotopologue reading stripped to a parent's line and of the parent
   that took it (:func:`merged_isotopologue_of_record`,
-  :func:`merged_isotopologues_record`).
+  :func:`merged_isotopologues_record`), and of a known species the batch
+  decided once over its files (:func:`known_species_record_of`).
 
 - **Continuity's gates**: the provisional constants of the ratio-stability
   pass (``continuity.py``), beside the consensus constants, and the test a
@@ -1106,6 +1107,83 @@ def row_batch_checks(row: dict, anchor: Any) -> Optional[dict]:
     return record
 
 
+#: The provenance key the known-species decision
+#: (``batch_known_species.py``) writes an anchor's record under: the species,
+#: the batch's verdict on it and the evidence pooled for it, what the claim
+#: wrote and what it kept, per sample what each rewritten member read before
+#: (``displaced_members``), and the reading the anchor holds since (``reads``).
+KNOWN_SPECIES_KEY = "known_species"
+
+#: The parts of an anchor's reading a known-species record is read for.
+_READING_KEYS = (
+    ("role", "consensus_role"),
+    ("formula", "consensus_formula"),
+    ("ion_formula", "consensus_ion_formula"),
+    ("ionization_mechanism_id", "ionization_mechanism_id"),
+)
+
+
+def known_species_record_of(anchor: Any) -> Optional[dict]:
+    """The known-species record an anchor carries under
+    ``provenance.known_species``, or None. A record names its verdict and the
+    reading it was decided for; anything else under that key is not one."""
+    provenance = _member(anchor, "provenance")
+    if not isinstance(provenance, dict):
+        return None
+    record = provenance.get(KNOWN_SPECIES_KEY)
+    if (
+        isinstance(record, dict)
+        and record.get("verdict")
+        and isinstance(record.get("reads"), dict)
+    ):
+        return record
+    return None
+
+
+def known_species_reads(record: dict, anchor: Any) -> bool:
+    """Whether a known-species record stands beside an anchor's reading: its
+    role, formula, ion and mechanism are the ones the decision left it with.
+
+    :param record: The record (:func:`known_species_record_of`).
+    :param anchor: The anchor, or its fresh :class:`Consensus`.
+    """
+    reads = record.get("reads") or {}
+    return all(
+        reads.get(key) == _member(anchor, column) for key, column in _READING_KEYS
+    )
+
+
+def reading_of(anchor: Any) -> dict:
+    """An anchor's reading as a known-species record names it
+    (:func:`known_species_reads`)."""
+    return {key: _member(anchor, column) for key, column in _READING_KEYS}
+
+
+def standing_known_species_record(anchor: Any) -> Optional[dict]:
+    """The known-species record an anchor carries, where the anchor still
+    reads what the decision left it reading; None otherwise.
+
+    The decision claims the species in the anchor's members, so the consensus
+    reads the species by its members' own vote. A new sample's vote, a
+    curation or a re-fold that moves the reading takes the record off
+    (:func:`compute_consensus`); a new decision replaces every record.
+    """
+    record = known_species_record_of(anchor)
+    if record is None or not known_species_reads(record, anchor):
+        return None
+    return record
+
+
+def known_species_summary(anchor: Any) -> Optional[dict]:
+    """What the ledger serves of a known-species record: everything but what
+    each member read before, which the decision's run snapshot keeps as the
+    members' own state."""
+    record = standing_known_species_record(anchor)
+    if record is None:
+        return None
+    return {key: value for key, value in record.items() if key != "displaced_members"}
+
+
 def resolution_from_tol_ppm(
     tol_ppm: Optional[float], drift_margin_ppm: float = DEFAULT_DRIFT_MARGIN_PPM
 ) -> Optional[float]:
@@ -1208,9 +1286,10 @@ def compute_consensus(
     merged_isotopologue_of: Optional[dict] = None,
     merged_isotopologues: Optional[dict] = None,
     batch_checks: Optional[dict] = None,
+    known_species: Optional[dict] = None,
 ) -> Consensus:
     """:func:`vote_consensus`, with the anchor's series, co-variation,
-    stamping, strip and batch checks records carried along.
+    stamping, strip, batch checks and known-species records carried along.
 
     The series record says a homologous series proposed a formula for this
     anchor. It is about that formula and not about the peak, so it stays in the
@@ -1231,7 +1310,9 @@ def compute_consensus(
     row's recompute does (:func:`without_merged_lines`), as the parent need
     not be in it. The batch checks record states facts of the anchor's
     reading - its ion, its formula and its mechanism - and stays for as long
-    as the consensus names all three (:func:`batch_checks_record_reads`).
+    as the consensus names all three (:func:`batch_checks_record_reads`). A
+    known-species record stays while the anchor reads what the decision left
+    it reading (:func:`known_species_reads`).
 
     :param members: The batch peak's occurrences.
     :param batch_peak_id: This batch peak's own id.
@@ -1250,6 +1331,8 @@ def compute_consensus(
         (:func:`merged_isotopologues_record`), or None.
     :param batch_checks: The batch checks record the anchor carries
         (:func:`batch_checks_record_of`), or None.
+    :param known_species: The known-species record the anchor carries
+        (:func:`known_species_record_of`), or None.
     """
     consensus = vote_consensus(members, batch_peak_id=batch_peak_id, manual=manual)
     if (
@@ -1289,6 +1372,10 @@ def compute_consensus(
         consensus.ionization_mechanism_id,
     ):
         consensus.provenance[BATCH_CHECKS_KEY] = batch_checks
+    if isinstance(known_species, dict) and known_species_reads(
+        known_species, consensus
+    ):
+        consensus.provenance[KNOWN_SPECIES_KEY] = known_species
     return consensus
 
 

@@ -204,7 +204,16 @@ class BatchPeaksResource(BaseResource):
                  partner, the co-variation ``r`` and ``established``,
                  ``not_established`` or ``untestable`` -, each where it
                  applies); display-only, no tier reads them; null where none,
-                 and absent from a server that predates them.
+                 and absent from a server that predates them;
+                 ``known_species`` (on a batch peak a *Decide known species*
+                 run read as a source ion or a compound a list tags as
+                 background: the ``species``, the batch's ``verdict`` -
+                 ``present``, ``absent`` or ``unpooled`` - and its
+                 ``reason``, the ``files``, the files it is ``present`` in and
+                 those whose own ``test_held``, how many members the claim
+                 rewrote, and under ``files_recorded`` the samples it kept or
+                 whose own claim stands, each with its reading); null where
+                 none, and absent from a server that predates it.
                  ``consensus_tier`` is always this server's: the engine's tier
                  stands beside it.
                  None when the batch has no ledger yet.

@@ -53,6 +53,7 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     continuity_stale,
     instrument_type_of,
+    known_species_summary,
     manual_pin_of,
     merged_isotopologue_of_summary,
     stamped_isotopologue_of_summary,
@@ -88,6 +89,7 @@ ACTION_CO_VARIATION = "read_co_variation"
 ACTION_ISOTOPOLOGUES = "stamp_isotopologues"
 ACTION_STRIP_ISOTOPOLOGUES = "strip_isotopologues"
 ACTION_BATCH_CHECKS = "read_batch_checks"
+ACTION_KNOWN_SPECIES = "decide_known_species"
 ACTIONS = (
     ACTION_FOLD,
     ACTION_REBUILD,
@@ -98,6 +100,7 @@ ACTIONS = (
     ACTION_ISOTOPOLOGUES,
     ACTION_STRIP_ISOTOPOLOGUES,
     ACTION_BATCH_CHECKS,
+    ACTION_KNOWN_SPECIES,
 )
 
 STATUS_RUNNING = "running"
@@ -203,6 +206,7 @@ def anchor_snapshot_row(run_id: str, anchor: Any, members: Iterable[Any]) -> dic
         "merged_isotopologue_of": merged_isotopologue_of_summary(anchor),
         "merged_isotopologues": standing_merged_isotopologues_record(anchor),
         "batch_checks": standing_batch_checks_record(anchor),
+        "known_species": known_species_summary(anchor),
         "candidates": list(anchor.candidates or []),
         "members": member_arrays(members),
     }
@@ -245,6 +249,7 @@ def snapshot_anchor_meta(row: Any, sample_batch_id: str) -> dict:
         "merged_isotopologue_of": row.merged_isotopologue_of,
         "merged_isotopologues": row.merged_isotopologues,
         "batch_checks": row.batch_checks,
+        "known_species": row.known_species,
         "reference_listing": consensus_listing(
             row.candidates,
             row.consensus_formula,
