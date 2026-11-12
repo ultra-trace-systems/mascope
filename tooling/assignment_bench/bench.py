@@ -2,6 +2,8 @@
 
     bench.py init <manifest> [--ref REF] [--rebuild] [--checkout DIR] [--keep-running] [--wait]
     bench.py reference --pin vX.Y.Z [--reinstall] [--jobs N] [--set NAME ...] [--wait]
+    bench.py run <ref> [--sets A,D,...] [--decoys] [--baseline] [--no-wait] [--jobs N] [--budget-min M] [--workers N]
+    bench.py baseline [CARD]
     bench.py status
 
 ``init`` builds the bench instance (env ``bench``) from a sets manifest
@@ -19,6 +21,11 @@ nothing; ``--rebuild`` drops the database and the filestore and builds again.
 
 ``reference --pin`` installs peaky at a release tag and publishes its run of
 every sample into the instance beside the in-app runs (``reference.py``).
+
+``run <ref>`` builds a ref, runs its in-app engine on the sets beside the
+pinned reference and writes the card, diffed against develop's rolling
+baseline with ``--baseline``; ``baseline`` shows that baseline or makes a card
+of develop it (``run.py``).
 
 Everything the bench keeps lives in its home, ``$MASCOPE_PATH/.runtime/bench``
 (``--home`` or ``MASCOPE_BENCH_HOME`` elsewhere): a copy of the manifest with
@@ -59,6 +66,7 @@ if str(_HERE) not in sys.path:
 
 import manifest as bench_manifest  # noqa: E402
 import reference as bench_reference  # noqa: E402
+import run as bench_run  # noqa: E402
 from manifest import Manifest, ManifestError, ResolvedFile  # noqa: E402
 
 
@@ -112,7 +120,11 @@ _ENV_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$")
 
 
 def log(message: str) -> None:
-    print(f"{datetime.datetime.now():%H:%M:%S} {message}", flush=True)
+    line = f"{datetime.datetime.now():%H:%M:%S} {message}"
+    print(line, flush=True)
+    # A bench run copies every line into its run log.
+    for tee in list(bench_run.TEES):
+        tee.write(line)
 
 
 def now() -> str:
@@ -175,19 +187,23 @@ class Home:
             sub.mkdir(exist_ok=True)
 
     @contextlib.contextmanager
-    def lock(self, wait: bool = False):
-        """One bench command at a time on this home."""
+    def lock(self, wait: bool = False, hint: str = "--wait to queue"):
+        """One bench command at a time on this home; ``wait`` queues behind
+        the one that holds it, saying so, instead of refusing."""
         self.make()
         handle = open(self.root / "bench.lock", "a+")
         try:
-            fcntl.flock(handle, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             handle.seek(0)
             holder = handle.read().strip() or "?"
-            handle.close()
-            raise BenchError(
-                f"another bench command holds the lock ({holder}); --wait to queue"
-            ) from None
+            if not wait:
+                handle.close()
+                raise BenchError(
+                    f"another bench command holds the lock ({holder}); {hint}"
+                ) from None
+            log(f"another bench command holds the lock ({holder}); waiting for it")
+            fcntl.flock(handle, fcntl.LOCK_EX)
         handle.seek(0)
         handle.truncate()
         handle.write(f"pid {os.getpid()} since {now()}\n")
@@ -220,6 +236,7 @@ def new_state(env: str) -> dict:
         "sets": {},
         "reference": None,
         "cards": [],
+        "baseline": None,
         "created": now(),
         "updated": None,
     }
@@ -806,8 +823,9 @@ class Instance(Protocol):
 
     def checkout(self, ref: str) -> str: ...
 
-    def start(self, peak_assignment: bool = False) -> str:
-        """Start the backend; ``peak_assignment`` switches the feature on for it."""
+    def start(self, peak_assignment: bool = False, workers: int = 1) -> str:
+        """Start the backend; ``peak_assignment`` switches the feature on for
+        it, ``workers`` is its uvicorn worker count."""
 
     def stop(self) -> None: ...
 
@@ -825,6 +843,48 @@ class Instance(Protocol):
     def bundle_seed(self, version: str) -> dict: ...
 
     def owner_secret(self) -> Path: ...
+
+    def develop_sha(self) -> str:
+        """develop's head, as the last checkout fetched it."""
+
+    def is_on_develop(self, sha: str) -> bool:
+        """Whether a commit is develop's head or behind it."""
+
+    def db_revisions(self) -> list[str]:
+        """The alembic revisions the env's database is at."""
+
+    def ref_revisions(self) -> tuple[list[str], list[str]]:
+        """The checked-out ref's alembic heads, and every revision it knows."""
+
+    def migrate(self) -> None:
+        """Migrate the env's database to the checked-out ref's head."""
+
+    def remove_worktree(self) -> None:
+        """Remove the checked-out build; the env, its slot and its data stay."""
+
+    def private_names(self) -> dict[str, list[str]]:
+        """The instance's own names (``names``) and ids (``ids``), which no
+        card may hold."""
+
+
+#: The first line of the env's own config layer when the bench wrote it.
+CONFIG_MARK = (
+    "# Written by tooling/assignment_bench/bench.py: the bench backend's workers."
+)
+
+#: The checked-out ref's alembic heads and revisions, read in its own
+#: environment from its own script directory (no database is touched).
+ALEMBIC_PROBE = """
+import json
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+
+script = ScriptDirectory.from_config(Config("alembic.ini"))
+print(json.dumps({
+    "heads": list(script.get_heads()),
+    "revisions": [r.revision for r in script.walk_revisions()],
+}))
+"""
 
 
 class DevInstance:
@@ -992,7 +1052,9 @@ class DevInstance:
         wt = self.home.worktree
         if (wt / ".git").exists():
             subprocess.run(
-                ["git", "-C", str(wt), "checkout", "-q", "--detach", sha], check=True
+                # The bench's own build: whatever a sync left in it is dropped.
+                ["git", "-C", str(wt), "checkout", "-q", "--force", "--detach", sha],
+                check=True,
             )
         else:
             subprocess.run(
@@ -1010,18 +1072,101 @@ class DevInstance:
                 check=True,
             )
         log(f"uv sync in {wt}")
-        subprocess.run(["uv", "sync", "--all-groups", "-q"], cwd=wt, check=True)
+        # The ref's own lock as it is: a sync never relocks a ref.
+        subprocess.run(
+            ["uv", "sync", "--frozen", "--all-groups", "-q"], cwd=wt, check=True
+        )
         return sha
 
-    def start(self, peak_assignment: bool = False) -> str:
+    def _git(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", "-C", str(self.repo), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def develop_sha(self) -> str:
+        out = self._git("rev-parse", "--verify", "-q", "origin/develop^{commit}")
+        if out.returncode != 0:
+            raise BenchError("no origin/develop in the checkout")
+        return out.stdout.strip()
+
+    def is_on_develop(self, sha: str) -> bool:
+        self._git("fetch", "-q", "origin", "develop")
+        return (
+            self._git("merge-base", "--is-ancestor", sha, "origin/develop").returncode
+            == 0
+        )
+
+    def db_revisions(self) -> list[str]:
+        return [
+            r["version_num"]
+            for r in self._query("select version_num from alembic_version")
+        ]
+
+    def ref_revisions(self) -> tuple[list[str], list[str]]:
+        out = subprocess.run(
+            ["uv", "run", "--no-sync", "python", "-c", ALEMBIC_PROBE],
+            cwd=self.home.worktree / "server" / "backend",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if out.returncode != 0:
+            raise BenchError(
+                f"cannot read the ref's migrations: {out.stderr.strip()[-400:]}"
+            )
+        found = json.loads(out.stdout.strip().splitlines()[-1])
+        return found["heads"], found["revisions"]
+
+    def migrate(self) -> None:
+        """``mascope dev migrate upgrade`` with the worktree's alembic, on the env."""
+        self._cli("dev", "migrate", "upgrade")
+
+    def remove_worktree(self) -> None:
+        wt = self.home.worktree
+        if (wt / ".git").exists():
+            self._git("worktree", "remove", "--force", str(wt))
+        shutil.rmtree(wt, ignore_errors=True)
+        self._git("worktree", "prune")
+
+    def private_names(self) -> dict[str, list[str]]:
+        names = self._query(
+            "select distinct name from ("
+            "select workspace_name as name from workspace "
+            "union all select dataset_name from dataset "
+            "union all select sample_batch_name from sample_batch "
+            "union all select sample_item_name from sample_item "
+            "union all select filename from sample_file "
+            "union all select source_filename from sample_file "
+            "union all select ionization_mode_name from ionization_mode "
+            "union all select target_collection_name from target_collection"
+            ") n where name is not null"
+        )
+        ids = self._query(
+            "select workspace_id as id from workspace "
+            "union all select dataset_id from dataset "
+            "union all select sample_batch_id from sample_batch "
+            "union all select sample_item_id from sample_item "
+            "union all select sample_file_id from sample_file"
+        )
+        return {
+            "names": [r["name"] for r in names],
+            "ids": [r["id"] for r in ids],
+        }
+
+    def start(self, peak_assignment: bool = False, workers: int = 1) -> str:
         """Start the worktree's backend and file converter on the bench slot.
 
         ``peak_assignment`` switches the peak-assignment feature on for this
         start (``MASCOPE_PEAK_ASSIGNMENT``): its write routes, the import of a
-        reference run among them, answer 403 without it.
+        reference run among them, answer 403 without it. ``workers`` is the
+        backend's uvicorn worker count (``configure``).
         """
         if self.api_port is None:
             raise BenchError("bind the instance before starting it")
+        self.configure(workers)
         base = f"http://localhost:{self.api_port}"
         with socket.socket() as probe:
             if probe.connect_ex(("127.0.0.1", self.api_port)) == 0:
@@ -1078,6 +1223,34 @@ class DevInstance:
             time.sleep(2)
         self.stop()
         raise BenchError(f"the backend did not answer within 10 min; see {logfile}")
+
+    @property
+    def config_file(self) -> Path:
+        """The env's own config layer, over the ref's dev defaults."""
+        return self.env_dir / "dev.mascope.toml"
+
+    def configure(self, workers: int) -> None:
+        """Give the next backend ``workers`` uvicorn workers.
+
+        The dev defaults hold one worker, and a run's engine and the card's
+        detail reads are CPU-bound in it. The env's own config layer is the
+        one setting every ref reads, so the bench writes it there, and removes
+        its file for one worker. A file the bench did not write is left as it
+        is, and its workers are what it says.
+        """
+        path = self.config_file
+        if path.exists() and not path.read_text(encoding="utf-8").startswith(
+            CONFIG_MARK
+        ):
+            log(f"{path} is not the bench's: its backend workers are as it says")
+            return
+        if workers <= 1:
+            path.unlink(missing_ok=True)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            f"{CONFIG_MARK}\n[backend]\nworkers = {int(workers)}\n", encoding="utf-8"
+        )
 
     def stop(self) -> None:
         if not self.home.pid.exists():
@@ -1607,12 +1780,20 @@ class Bench:
             )
         for line in bench_reference.status_lines(state.get("reference")):
             print(line, file=out)
+        baseline = state.get("baseline")
+        print(
+            f"baseline  {baseline['ref']} at {str(baseline['sha'])[:9]}, {baseline['at']}"
+            if baseline
+            else "baseline  none yet",
+            file=out,
+        )
         cards = state.get("cards") or []
         if cards:
             print("cards", file=out)
             for card in cards[-5:]:
                 print(
-                    f"  {card.get('at')}  {card.get('ref')}  {card.get('path')}",
+                    f"  {card.get('at')}  {card.get('ref')} at {str(card.get('sha'))[:9]}  "
+                    f"{card.get('verdict') or '-'}  {card.get('path')}",
                     file=out,
                 )
         else:
@@ -1685,6 +1866,57 @@ def main(argv: list[str] | None = None) -> int:
     p_ref.add_argument(
         "--wait", action="store_true", help="queue behind another bench command"
     )
+    p_run = sub.add_parser(
+        "run",
+        help="run a ref's in-app engine on the sets beside the pinned reference, and card it",
+    )
+    p_run.add_argument("ref", help="a branch, tag or commit (origin/<ref> first)")
+    p_run.add_argument(
+        "--sets",
+        type=lambda text: [n.strip() for n in text.split(",") if n.strip()],
+        help="only these sets, comma-separated (default every set)",
+    )
+    p_run.add_argument(
+        "--decoys", action="store_true", help="run the decoy arms too (step 5.2)"
+    )
+    p_run.add_argument(
+        "--baseline",
+        action="store_true",
+        help="diff the card against develop's rolling baseline; a run of develop's "
+        "head becomes the next baseline",
+    )
+    p_run.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="refuse rather than wait while another bench command runs",
+    )
+    p_run.add_argument(
+        "--jobs",
+        type=int,
+        default=bench_run.JOBS,
+        help=f"samples run at once (default {bench_run.JOBS})",
+    )
+    p_run.add_argument(
+        "--budget-min",
+        type=float,
+        default=bench_run.BUDGET_MIN,
+        help=f"minutes a set may take (default {bench_run.BUDGET_MIN:g})",
+    )
+    p_run.add_argument(
+        "--workers",
+        type=int,
+        default=bench_run.WORKERS,
+        help=f"the ref's backend's uvicorn workers (default {bench_run.WORKERS})",
+    )
+    p_base = sub.add_parser(
+        "baseline", help="develop's rolling baseline card, or make a card of develop it"
+    )
+    p_base.add_argument(
+        "card", nargs="?", help="a card folder under cards/ to make the baseline"
+    )
+    p_base.add_argument(
+        "--wait", action="store_true", help="queue behind another bench command"
+    )
     sub.add_parser("status", help="the env, slot, sets, reference pin and last cards")
     args = parser.parse_args(argv)
 
@@ -1701,7 +1933,42 @@ def main(argv: list[str] | None = None) -> int:
         bench = Bench(home=home, instance=instance, connect=connect)
         if args.command == "status":
             return bench.status()
+        if args.command in ("run", "baseline"):
+            runner = bench_run.BenchRun(
+                home=home,
+                instance=instance,
+                connect=connect,
+                load_state=lambda: load_state(home, instance.env),
+                save_state=lambda state: save_state(home, state),
+                jobs=getattr(args, "jobs", bench_run.JOBS),
+                budget_s=getattr(args, "budget_min", bench_run.BUDGET_MIN) * 60,
+                workers=getattr(args, "workers", bench_run.WORKERS),
+            )
+            if args.command == "baseline":
+                if args.card is None:
+                    return runner.baseline()
+                with home.lock(wait=args.wait):
+                    return runner.baseline(args.card)
+            with home.lock(
+                wait=not args.no_wait, hint="without --no-wait a run waits for it"
+            ):
+                return runner.run(
+                    args.ref,
+                    sets=args.sets,
+                    decoys=args.decoys,
+                    baseline=args.baseline,
+                )
         if args.command == "reference":
+
+            def prepare() -> None:
+                # The build the bench's data was ingested with, at its head:
+                # a bench run leaves no build behind, and moves the database
+                # to the head of the ref it ran.
+                ref = (load_state(home, instance.env).get("build") or {}).get(
+                    "ref"
+                ) or "develop"
+                bench_run.migrate(instance, ref, instance.checkout(ref), log)
+
             runner = bench_reference.Reference(
                 peaky=bench_reference.Peaky(
                     home.root / "reference", url=args.peaky_url
@@ -1712,6 +1979,7 @@ def main(argv: list[str] | None = None) -> int:
                 load_state=lambda: load_state(home, instance.env),
                 save_state=lambda state: save_state(home, state),
                 jobs=args.jobs,
+                prepare=prepare,
             )
             with home.lock(wait=args.wait):
                 return runner.run(args.pin, reinstall=args.reinstall, only=args.sets)
@@ -1723,7 +1991,12 @@ def main(argv: list[str] | None = None) -> int:
                 checkout=args.checkout,
                 keep_running=args.keep_running,
             )
-    except (BenchError, ManifestError, bench_reference.ReferenceError) as error:
+    except (
+        BenchError,
+        ManifestError,
+        bench_reference.ReferenceError,
+        bench_run.RunError,
+    ) as error:
         print(f"bench: {error}", file=sys.stderr)
         return 2
 

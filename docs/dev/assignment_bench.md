@@ -3,7 +3,7 @@
 # The assignment bench: both engines on demand, on the agent box
 
 - **Status:** building
-- **As of:** 2026-11-11
+- **As of:** 2026-11-12
 - **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, milestone 6: MAS-64, MAS-835 to MAS-841, MAS-849)
 - **What:** One command on the agent box that runs a branch's in-app assignment engine beside peaky at a pinned release on fixed sample sets, prints the plan's metrics as a card, and posts it on the PR; a worker runs it in its own session.
 
@@ -188,6 +188,40 @@ instrument names, host names) is checked over the card's text, and a
 match refuses the card and names the token. Nothing leaves the cards
 folder unscrubbed.
 
+As built (6.5, `tooling/assignment_bench/run.py`): `bench run <ref>` checks
+the ref out into the bench's worktree with `uv sync --frozen`, refuses it
+when it does not know the bench database's alembic revision, and otherwise
+migrates the database to the ref's head. It starts the ref's backend on the
+bench slot with peak assignment on and four uvicorn workers, written into
+the env's own config layer, since an engine run and the card's detail reads
+are CPU-bound in their worker. It leaves out a sample whose newest
+reference run is not the one `bench reference` published at the pin, and
+runs the in-app engine on every other sample with no run config, the
+engine's own defaults; `--decoys` adds the arms of the set's class (9 ppm
+either way and the swapped adducts on an Orbitrap, 0.35 Da and the swapped
+adducts on a TOF), each against that run. A set has a time budget of its
+own; one that runs out is left off the card whole. After the runs it checks
+that each sample's newest in-app run is this run's and its newest reference
+run still the pin's, since the card reads the newest. The card is made by
+the comparison tool of the checkout the bench runs from, never the ref's,
+and on a card that tool now reads a decoy arm only where its control is the
+run the card reads. The comparison has no budget, since its time grows with
+the rows it reads; one that writes nothing for 30 minutes is stopped. The
+bench gives the tool a deny list of every name and id the instance holds,
+then scrubs what the tool wrote again before it moves it into
+`cards/<ref>/<timestamp>/`. The private run log and the comparison's input
+stay beside it. `--baseline` diffs against develop's rolling baseline,
+which a run of develop's head with `--baseline` replaces when it read every
+set with nothing left out; a run of some sets diffs those sets' columns
+only. The backend is stopped and the worktree removed after every run,
+including a failed one, so `bench reference` now checks its own build out
+before it starts a backend.
+
+A branch with a migration of its own moves the bench database to its
+revision, and develop is then refused until that migration is on develop;
+one that never lands leaves the bench where only `init --rebuild` brings it
+back. The brief's rule, kept as written; the options are #3171.
+
 ## 7. The ask and the answer
 
 Decided 2026-11-11 (MAS-835): there is no trigger. An implementer whose
@@ -213,7 +247,7 @@ worker on the LAN host, are recorded in the decision.
 | 6.2 | MAS-837 | `bench init`: the instance from a manifest (built: `tooling/assignment_bench/`) |
 | 6.3 | MAS-838 | `bench reference --pin`: peaky at a tag, published per set (built: `tooling/assignment_bench/reference.py`) |
 | 6.4 | MAS-64 | the gate card as code: metrics, thresholds, baseline, scrub (was 4.4) |
-| 6.5 | MAS-840 | `bench run <ref>`: build, run, compare, card, diff |
+| 6.5 | MAS-840 | `bench run <ref>`: build, run, compare, card, diff (built: `tooling/assignment_bench/run.py`) |
 | 6.6 | MAS-841 | `--post`: the PR comment, and the nightly baseline |
 | 6.7 | MAS-839 | the agents' skills run the bench and read the card (the ops repository, OPS-91) |
 | 6.8 | MAS-849 | more sets after the demo set: from the fleet corpus and the gate sets (the owner's picks) |
@@ -243,14 +277,36 @@ when it exists.
 
 ## 10. Operations
 
-On the agent box, in the agents' home: a bench folder with the private
-manifest, `state.json`, the reference's tool environment, the cards and
-the lock; an env file holding the bench instance's URL and SDK token,
+On the agent box, in the agents' runtime home: a bench folder with the
+private manifest, `state.json`, the reference's tool environment, the cards
+and the lock; an env file holding the bench instance's URL and SDK token,
 beside the testbed copy's; a user systemd unit for the nightly baseline;
 the guard's allow rows for the bench commands. The exact paths and the
 install steps are in the testbed notes and the ops repository's handbook,
 not here. The repository's README under `tooling/assignment_bench/` says how
 to run the commands against any instance and how to ask for a card.
+
+- **The bench folder** is `.runtime/bench` in the runtime home
+  (`MASCOPE_PATH`), private to the box, mode 700. Each run adds
+  `cards/<ref>/<timestamp>/`: the card, the diff and `run.json`, scrubbed,
+  which are what may leave the box, and `run.log` and `work/`, which name
+  samples and never do. `state.json` lists the cards and names develop's
+  rolling baseline.
+- **The env file** is the folder's `bench.env`: `MASCOPE_URL` and an SDK
+  token, written afresh each time a command signs in. A run sends its
+  assign requests with that token, which outlives a signed-in session, and
+  hands the comparison that URL and token alone, with every other
+  `MASCOPE_*` variable of the caller dropped.
+- **The lock** is the folder's `bench.lock`: one bench command at a time.
+  A run waits for it, naming the command that holds it; `--no-wait`
+  refuses instead, and `init` and `reference` refuse unless given `--wait`.
+- **The cost.** On the agent box, with the backend's four workers and four
+  samples at once, the engine takes about 26 minutes over the two demo sets
+  and the card about 67, since it reads each committed row's provenance
+  with a request of its own (#3134): about an hour and a half a run. The
+  decoy arms add three engine runs per Orbitrap sample. The default budget
+  is 120 minutes a set, for its runs; the card has none, and is stopped
+  only when it writes nothing for 30 minutes.
 
 ## 11. Open
 
