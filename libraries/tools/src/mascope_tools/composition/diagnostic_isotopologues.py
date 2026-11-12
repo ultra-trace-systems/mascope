@@ -202,18 +202,23 @@ class DiagnosticIsotopologue:
 
 
 def predict_diagnostic_isotopologues(
-    ion_formula: str, resolution: float | None = None
+    ion_formula: str,
+    resolution: float | None = None,
+    isotopes: Sequence[str] = DIAGNOSTIC_ISOTOPES,
 ) -> tuple[DiagnosticIsotopologue, ...]:
-    """An ion's diagnostic isotopologues, in :data:`DIAGNOSTIC_ISOTOPES` order.
+    """An ion's diagnostic isotopologues, in ``isotopes`` order.
 
     :param ion_formula: The ion's formula with its charge (``C10H18O7^N-``);
         a labelled reagent's atom is the label's.
     :param resolution: The resolving power (m / FWHM) of the file the lines
         are read in, or None, which merges nothing: one peak per isotopologue,
         as the fit score predicts where a run could read no resolution.
-    :return: One :class:`DiagnosticIsotopologue` per diagnostic isotope the ion
-    holds a natural atom of; none for a formula with no charge or no
-    prediction.
+    :param isotopes: The one-heavy-atom lines to read off, as the envelope
+        predictor labels them, in the order returned. The diagnostic ones by
+        default; a reader of the batch's merged rows adds the ``13C`` line
+        (``merged_isotopologues``).
+    :return: One :class:`DiagnosticIsotopologue` per isotope the ion holds a
+    natural atom of; none for a formula with no charge or no prediction.
     """
     charge = ion_charge(ion_formula)
     if not charge:
@@ -236,7 +241,7 @@ def predict_diagnostic_isotopologues(
     mono_share = float(intensities[mono_group].sum())
     mono_centre = _centre(mzs, intensities, mono_group)
     isotopologues = []
-    for label in DIAGNOSTIC_ISOTOPES:
+    for label in isotopes:
         if label not in labels:
             continue
         index = labels.index(label)
