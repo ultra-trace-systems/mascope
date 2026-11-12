@@ -170,10 +170,15 @@ and its m/z their abundance-weighted centre. The envelope's floor then applies t
 lines, and a line under it that sits less than one FWHM from a kept line is added to that
 line rather than dropped: one peak of that width does not separate the two (#2591; the
 15N line of C4H8NO+ at a resolving power of 8000 is 6.3 mDa from its 13C line, where
-half a FWHM is 5.4 mDa). The targeted path's TOF library groups its lines the same way
+half a FWHM is 5.4 mDa). Before that fold, the lines under the floor are grouped among
+themselves the same way, from the brightest, but one FWHM either side: a group whose sum
+clears the floor is one kept line, at its members' abundance-weighted centre (#3027; the
+33S and 15N lines of C6H12N2O2S+ at 40000, 0.79 % and 0.73 % of M0, are 2.4 mDa apart
+where a FWHM is 4.4 mDa). The targeted path's TOF library groups its lines the same way
 (`heuristic_filter.group_unresolved_lines`, at a resolving power of 10,000) and folds a
 line under 1 % of its most abundant one into a line over it less than one FWHM away
-(`heuristic_filter.fold_targets`). It drops nothing: a line under 1 % with no such
+(`heuristic_filter.fold_targets`), but does not group its lines under 1 % among
+themselves first (#3163). It drops nothing: a line under 1 % with no such
 neighbour stays a line of its own, down to 0.001 % (#2587). A file with no
 resolution read is scored one line per isotopologue.
 

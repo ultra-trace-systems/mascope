@@ -329,6 +329,131 @@ def test_a_fold_into_the_brightest_line_keeps_a_line_on_the_floor(monkeypatch):
     np.testing.assert_allclose(intensities, [1.005, 0.01])
 
 
+@pytest.mark.parametrize("power", [40000.0, 50000.0])
+def test_two_lines_under_the_floor_one_peak_holds_over_it_are_one_line(power):
+    # mascope#3027: the 33S and 15N lines of C6H12N2O2S+ are 0.79% and 0.73%
+    # of M0, 2.35 mDa apart; at 40000 a FWHM at m/z 177 is 4.4 mDa, over half
+    # a FWHM apart, so each was a bin of its own under the floor. The 33S bin
+    # folded into the 13C line, the 15N bin, 6.3 mDa from it, was dropped and
+    # M+1 read 9% low. Together they clear the floor: one peak, one line.
+    mzs, intensities, labels = predict_resolved_isotopes(
+        "C6H12N2O2S", 1, 0.01, _resolving(power)
+    )
+    predicted, reached = _m1_share("C6H12N2O2S", 0.01, power)
+
+    assert predicted == pytest.approx(sum(reached.values()), rel=1e-6)
+    _, mass = _fine_structure_of("C6H12N2O2S")
+    line = labels.index("33S")
+    share = intensities / intensities[labels.index("M0")]
+    assert share[line] == pytest.approx(reached["33S"] + reached["15N"], rel=1e-6)
+    assert mzs[line] == pytest.approx(
+        (mass["33S"] * reached["33S"] + mass["15N"] * reached["15N"])
+        / (reached["33S"] + reached["15N"]),
+        abs=1e-7,
+    )
+
+
+def test_lines_under_the_floor_over_one_fwhm_apart_stay_apart():
+    # At 80000 a FWHM at m/z 177 is 2.2 mDa: the 33S and 15N lines, 2.35 mDa
+    # apart, are two peaks, each under the floor, and neither is predicted.
+    predicted, reached = _m1_share("C6H12N2O2S", 0.01, 80000.0)
+
+    assert predicted == pytest.approx(reached["13C"] + reached["17O"], rel=1e-6)
+
+
+def _fine_structure_of(ion):
+    mzs, intensities, labels = predict_isotopes(ion, 1, threshold=1e-7)
+    share = dict(zip(labels, intensities / intensities[labels.index("M0")]))
+    return share, dict(zip(labels, mzs))
+
+
+def _predicted_as(monkeypatch, mzs, intensities, labels, power=1000.0):
+    """Predict ``X+`` with the predictor's lines replaced by these."""
+    monkeypatch.setattr(
+        heuristic_filter,
+        "predict_isotopes",
+        lambda *args, **kwargs: (
+            np.array(mzs, dtype=float),
+            np.array(intensities, dtype=float),
+            list(labels),
+        ),
+    )
+    return predict_resolved_isotopes("X", 1, 0.01, _resolving(power))
+
+
+def test_the_merged_line_is_kept_in_its_brightest_members_place(monkeypatch):
+    # At m/z 101 and a resolving power of 1000 a FWHM is 0.101. The A and B
+    # lines are 0.06 from each other and A from the 13C line, over half a FWHM:
+    # three bins, A and B under the 1% floor. Together they are 1.1%: one line,
+    # named and placed as A, at their weighted centre. It is merged before the
+    # fold, so A is not added to the 13C line and B left to be dropped.
+    mzs, intensities, labels = _predicted_as(
+        monkeypatch,
+        [100.0, 100.88, 101.0, 100.94],
+        [1.0, 0.005, 0.1, 0.006],
+        ["M0", "B", "13C", "A"],
+    )
+
+    assert labels == ["M0", "13C", "A"]
+    np.testing.assert_allclose(intensities, [1.0, 0.1, 0.011])
+    np.testing.assert_allclose(mzs[:2], [100.0, 101.0])
+    assert mzs[2] == pytest.approx((100.94 * 0.006 + 100.88 * 0.005) / 0.011)
+
+
+def test_lines_under_the_floor_that_reach_it_exactly_are_kept(monkeypatch):
+    # The floor is the same one a merged line is kept by: at it, not over it.
+    _, intensities, labels = _predicted_as(
+        monkeypatch, [100.0, 102.0, 102.06], [1.0, 0.005, 0.005], ["M0", "A", "B"]
+    )
+
+    assert labels == ["M0", "A"]
+    np.testing.assert_allclose(intensities, [1.0, 0.01])
+
+
+def test_lines_under_the_floor_that_do_not_reach_it_are_left_to_the_fold(
+    monkeypatch,
+):
+    # 0.9% together: A is still added to the 13C line it sits 0.06 from, and B,
+    # 0.12 from it, still dropped.
+    _, intensities, labels = _predicted_as(
+        monkeypatch,
+        [100.0, 100.88, 101.0, 100.94],
+        [1.0, 0.004, 0.1, 0.005],
+        ["M0", "B", "13C", "A"],
+    )
+
+    assert labels == ["M0", "13C"]
+    np.testing.assert_allclose(intensities, [1.0, 0.105])
+
+
+def test_lines_under_the_floor_one_fwhm_apart_are_not_merged(monkeypatch):
+    # At m/z 102 and 1000 a FWHM is 0.102: B, 0.1025 over A, is a peak of its
+    # own. Neither line reaches the floor, and no kept line is near to fold in.
+    _, _, labels = _predicted_as(
+        monkeypatch, [100.0, 102.0, 102.1025], [1.0, 0.006, 0.006], ["M0", "A", "B"]
+    )
+
+    assert labels == ["M0"]
+
+
+def test_a_merged_line_under_the_floor_takes_a_further_one_in_its_fwhm(
+    monkeypatch,
+):
+    # A group reaches one FWHM either side of its brightest line: B and C,
+    # 0.08 under and over A at a FWHM of 0.102, are both A's, though 0.16
+    # apart.
+    mzs, intensities, labels = _predicted_as(
+        monkeypatch,
+        [100.0, 101.92, 102.0, 102.08],
+        [1.0, 0.004, 0.005, 0.004],
+        ["M0", "B", "A", "C"],
+    )
+
+    assert labels == ["M0", "A"]
+    np.testing.assert_allclose(intensities, [1.0, 0.013])
+    assert mzs[1] == pytest.approx(102.0)
+
+
 def _fold(mzs, intensities, keep, power):
     return _fold_under_floor(
         np.asarray(mzs, dtype=float),
