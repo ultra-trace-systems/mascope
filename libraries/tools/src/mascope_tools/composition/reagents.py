@@ -2110,6 +2110,97 @@ def match_reagent_clusters(
     return hits, calibration
 
 
+def match_batch_species(
+    species: Sequence[ReagentCluster],
+    mz: Sequence[float] | np.ndarray,
+    intensity: Sequence[float] | np.ndarray,
+    *,
+    calibration: ReagentCalibration,
+    claim_ppm: float,
+    taken: Iterable[int] = (),
+    purity: float | None = None,
+    isotopologue_min_relative: float = DEFAULT_ISOTOPOLOGUE_MIN_RELATIVE,
+    isotopologue_max_excess: float = DEFAULT_ISOTOPOLOGUE_MAX_EXCESS,
+    resolution: Callable[[float], float] | None = None,
+) -> list[ReagentHit]:
+    """Claim the ions the file's batch decided present, where the file's own
+    claim did not.
+
+    A batch that pooled a library ion's evidence over its files and decided
+    it present (step 4.2h of the assignment plan) has said what one file's
+    height floor or ladder cannot: the ion is the source's in this batch. So
+    the file claims it on its corrected mass at the claim's own tolerance, as
+    :func:`match_reagent_clusters` claims a library ion, with no height floor
+    and no ladder below it to hold: the batch's decision stands in for both.
+    The mass still has to hold, so a peak the batch's wider tolerance merged
+    with the ion but this file puts off its corrected mass is not taken. Its
+    isotopologue lines are claimed with it, as a library ion's are.
+
+    :param species: The ions the batch decided present.
+    :param mz: The spectrum's m/z values.
+    :param intensity: Their intensities, in the same order.
+    :param calibration: What the file's own anchors said
+        (:func:`match_reagent_clusters`): the offset an ion's mass is
+        corrected by, and the tolerance it is claimed in.
+    :param claim_ppm: The instrument's m/z precision, the window an
+        isotopologue line is claimed in around the ion's own observed mass.
+    :param taken: The peaks the file's own claims took, which this claim
+        leaves alone.
+    :param purity: A labelled reagent's isotopic purity.
+    :param isotopologue_min_relative: As for :func:`match_reagent_clusters`.
+    :param isotopologue_max_excess: As for :func:`match_reagent_clusters`.
+    :param resolution: The file's resolving power as a function of m/z.
+    :return: The hits, monoisotopic before their isotopologues.
+    """
+    mz_array = np.asarray(mz, dtype=float)
+    intensity_array = np.asarray(intensity, dtype=float)
+    if mz_array.size == 0 or not species:
+        return []
+    scale = 1.0 + calibration.offset_ppm * 1e-6
+    taken_set = {int(index) for index in taken}
+    parents: list[ReagentHit] = []
+    for cluster in sorted(species, key=lambda item: item.mz):
+        exact = cluster.mz
+        index = _brightest_in_window(
+            mz_array,
+            intensity_array,
+            exact * scale,
+            calibration.tolerance_ppm,
+            taken_set,
+        )
+        if index is None:
+            continue
+        taken_set.add(index)
+        observed = float(mz_array[index])
+        parents.append(
+            ReagentHit(
+                cluster=cluster,
+                index=index,
+                mz=observed,
+                intensity=float(intensity_array[index]),
+                mz_error_ppm=(observed - exact) / exact * 1e6,
+            )
+        )
+    hits: list[ReagentHit] = []
+    for parent in parents:
+        hits.append(parent)
+        hits.extend(
+            _isotopologue_hits(
+                parent.cluster,
+                parent,
+                mz_array,
+                intensity_array,
+                taken_set,
+                ppm=claim_ppm,
+                purity=purity,
+                min_relative=isotopologue_min_relative,
+                max_excess=isotopologue_max_excess,
+                resolution=resolution,
+            )
+        )
+    return hits
+
+
 # --- ion ladders --------------------------------------------------------------
 #
 # The library above claims an ion because a work names it. A ladder claims a
