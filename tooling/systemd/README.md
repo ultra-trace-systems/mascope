@@ -23,6 +23,11 @@ copy them there. For the full operations story see
 | `mascope-assignment-prune.timer` | `mascope-assignment-prune.timer` | **yes - on by default** | Fire the retention pass nightly at 03:30. |
 | `prune.env.example` | `/etc/mascope/prune.env` (chmod 600) | seeded once | Retention overrides (keep-per-sample, grace hours). |
 
+`bench-baseline.service` and `bench-baseline.timer` are not a deployment's:
+they are user units of the box the assignment bench runs on, which make
+develop's baseline card every night. `mascope prod units install` leaves
+them out; `docs/dev/assignment_bench.md` ("Operations") installs them.
+
 The `.service` files template `@@USER@@`, `@@MASCOPE_BIN@@`,
 `@@MASCOPE_PATH@@`, `@@DISK_CHECK@@` and `@@UPDATE_SCRIPT@@`; `MASCOPE_PATH`
 and `LD_PRELOAD` come from `/etc/environment`, matching how `ubuntu.sh`

@@ -60,6 +60,10 @@ class FakeInstance:
         }
         self.sha = None
         self.on_develop = {DEVELOP}
+        #: Per (sha, onto), the merge base; develop's head by default.
+        self.merge_bases = {}
+        #: (ancestor, sha) pairs beside a commit being its own ancestor.
+        self.ancestry = set()
         self.workspaces = {"S1": "W1", "S2": "W1", "S3": "W2", "S4": "W1"}
         self.names = {
             "names": ["Acquisitions Instrument9", "2025-08-11 Bromide acquisition"],
@@ -86,6 +90,13 @@ class FakeInstance:
 
     def is_on_develop(self, sha):
         return sha in self.on_develop
+
+    def merge_base(self, sha, onto):
+        self.calls.append(("merge_base", sha, onto))
+        return self.merge_bases.get((sha, onto), DEVELOP)
+
+    def contains(self, ancestor, sha):
+        return ancestor == sha or (ancestor, sha) in self.ancestry
 
     def db_revisions(self):
         return list(self.db)
@@ -1491,8 +1502,9 @@ def test_the_command_line_runs_a_run(tmp_path, monkeypatch):
         def __init__(self, **kwargs):
             calls.append(kwargs)
 
-        def run(self, ref, sets, decoys, baseline):
+        def run(self, ref, sets, decoys, baseline, post):
             calls.append((ref, sets, decoys, baseline))
+            assert post is None
             return 0
 
         def baseline(self, card=None):

@@ -65,12 +65,18 @@ def _render(home: Path, sources: units.Sources | None = None) -> dict[str, str]:
 # --- The templates and what fills them ---
 
 
+# The units in tooling/systemd that are not a deployment's: the assignment
+# bench's nightly baseline is a user unit of the box the bench runs on.
+NOT_A_DEPLOYMENT_S = {"bench-baseline.service", "bench-baseline.timer"}
+
+
 @needs_checkout
 def test_every_template_in_the_checkout_is_installed():
     on_disk = {
         p.name for p in SYSTEMD_DIR.iterdir() if p.suffix in (".service", ".timer")
     }
-    assert on_disk == set(units.UNITS)
+    assert NOT_A_DEPLOYMENT_S <= on_disk
+    assert on_disk - NOT_A_DEPLOYMENT_S == set(units.UNITS)
 
 
 @pytest.mark.parametrize("origin", ["checkout", "bundled"])
