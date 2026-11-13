@@ -14,6 +14,7 @@ const segment = (index, verdict, extra = {}) => ({
 const RECORD = {
   rung: { core: '[Br]-', ion: '[Br+16xH2O]-', ion_formula: 'BrH32O16-', track: 'M0', waters: 16 },
   segments: [segment(0, 'absent', { presence: 0.2 }), segment(1, 'passed')],
+  partition_segments: 2,
   passed_in: [1],
   members_rewritten: 11,
   moved_analyte: true,
@@ -28,6 +29,21 @@ describe('batchWaterLadder', () => {
       '[Br+16xH2O]-: a water-ladder rung in 1 of 2 stretches of acquisition'
     )
     expect(waterLadderSummary(null)).toBe('')
+  })
+
+  it('counts every stretch of the batch, not only the ones the ladder reached', () => {
+    // Four stretches; the core shows in one, where the rung passed.
+    const record = {
+      ...RECORD,
+      segments: [segment(2, 'passed')],
+      passed_in: [2],
+      partition_segments: 4
+    }
+    expect(waterLadderSummary(record)).toBe(
+      '[Br+16xH2O]-: a water-ladder rung in 1 of 4 stretches of acquisition'
+    )
+    const single = { ...record, partition_segments: 1 }
+    expect(waterLadderSummary(single)).toMatch(/in 1 of 1 stretch of acquisition$/)
   })
 
   it("names a heavier line's track beside its ion", () => {
@@ -74,11 +90,12 @@ describe('batchWaterLadder', () => {
         listed: 1,
         line_of_another: 3,
         claimed_otherwise: 1,
-        carries_lines: 1
+        carries_lines: 1,
+        no_monoisotopic: 2
       }
     }
     expect(waterLadderTooltip(record)).toMatch(
-      /Kept as they read: 2 samples named by the target library, 1 sample named by a reference list, 3 samples another ion's isotope line, 1 sample another source ion's claim, 1 sample a reading with an isotope line the hydrate cannot have\.$/
+      /Kept as they read: 2 samples named by the target library, 1 sample named by a reference list, 3 samples another ion's isotope line, 1 sample another source ion's claim, 1 sample a reading with an isotope line the hydrate cannot have, 2 samples a heavier line whose hydrate's own peak reads otherwise\.$/
     )
   })
 })
