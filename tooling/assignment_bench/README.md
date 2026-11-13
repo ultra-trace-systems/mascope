@@ -8,7 +8,9 @@ sets manifest; `bench reference`, the reference engine at a pinned release
 published into it; `bench run`, a ref's in-app engine on the sets beside
 that reference, with the plan's card and its diff against develop; and
 `bench run --post`, the card posted on a pull request. A nightly user unit
-makes develop's baseline card.
+makes develop's baseline card. `bench review` turns the engines'
+disagreements into verdicts for the confidence curve (step 4.3 of the
+plan).
 
 ## Commands
 
@@ -20,6 +22,8 @@ uv run python tooling/assignment_bench/bench.py reference --pin v0.9.0
 uv run python tooling/assignment_bench/bench.py run origin/develop --baseline
 uv run python tooling/assignment_bench/bench.py run <your branch> --baseline
 uv run python tooling/assignment_bench/bench.py run <your branch> --post <pr>
+uv run python tooling/assignment_bench/bench.py review
+uv run python tooling/assignment_bench/bench.py review --record <sheet> --recalibrate
 uv run python tooling/assignment_bench/bench.py status
 ```
 
@@ -71,6 +75,9 @@ uv run python tooling/assignment_bench/bench.py status
   card; **`baseline`** shows develop's rolling baseline card. Their section
   below has the detail. **`run <ref> --post <pr>`** also posts the card on
   a pull request; "Asking for a card on a PR" below.
+- **`review`** writes the engines' top tier disagreements to a sheet for
+  a person to fill with verdicts; **`review --record`** posts them. Its
+  section below has the detail.
 - **`status`** prints the env and slot, the build the last `init` started,
   every set with its sample counts and the builds that ingested it, the
   reference pin with peaky's version string and the `mascope-tools` it
@@ -321,6 +328,55 @@ A card that failed its gate still exits 1, which the unit counts as
 success; a run that made no card fails the unit. The install steps are in
 `docs/dev/assignment_bench.md`, "Operations".
 
+## Verdicts from the engines' disagreements
+
+The confidence curve, P(correct), is refit from verdicts, and a verdict
+teaches it most where the two engines disagree. `review` finds those rows
+and `review --record` posts what a person made of them
+(`review.py`).
+
+1. **`review [--sets A,D] [--top N]`** reads the bench database and touches
+   nothing else; it starts no backend and takes no lock. For each set, it
+   takes the reference's published rows whose own tier and this server's
+   tier differ: the ledger's `tier_disagrees`. On each such peak it takes the
+   in-app run's row. That is the sample's latest completed run that is not a
+   decoy, and the row is a monoisotopic formula with an evidence. A row whose
+   reading already has a live verdict is left out.
+2. It keeps one row per formula and mechanism, from the sample where it is
+   brightest, then the brightest `N` (default 25). A set repeats one
+   acquisition's ions, and one verdict per reading teaches the curve more
+   than one reading judged many times.
+3. It writes them to `reviews/<timestamp>.csv` in the bench's home. Each row
+   holds the set, sample, peak, m/z and intensity, the run's reagent profile,
+   the in-app row's id, formula, mechanism and tier, and the reference's
+   formula, mechanism, own tier and this server's tier. It never shows the
+   evidence or P(correct): the verdict is about the data, not the number.
+4. A person opens each peak in the app and fills `verdict` (`confirmed`,
+   `rejected`, `unsure`), `evidence_level` (`reference_standard`, `msms`,
+   `orthogonal`, `pattern`, `visual`), and a `note` if they like. A
+   confirmation on a reference standard, MS/MS or an orthogonal technique
+   names its structure in `claimed_inchikey` (and `claimed_name`), as the
+   verify route asks. Rows left without a verdict are skipped.
+5. **`review --record <sheet> [--recalibrate] [--wait]`** checks every
+   filled row against the verify route's rules first. One problem, and
+   nothing is posted. Otherwise it checks out and migrates the build the
+   bench was ingested with, starts the backend, and posts each verdict on
+   its in-app row as the bench's account. With `--recalibrate` it then
+   refits the curve of each instrument class the confirmed and rejected
+   verdicts hold, once per class, since the app keeps one curve per class.
+   The refit reads every verdict of the class on the bench, not only this
+   sheet's. Where they all share a reagent profile, the curve is that
+   profile's and its adduct weights are refit too. Where they span
+   profiles, as the two demo sets would, the curve is pooled across them
+   and keeps the weights it had; the output says which. To fit one
+   profile alone, call the route with `profile=` yourself. It prints each
+   refit's answer with its calibration error before and after. The backend is stopped
+   after, whatever happened. A refused verdict makes the command exit 1.
+
+The verdicts are attributed to the bench's account; say who judged in the
+note. A refit changes the P(correct) of the bench's later runs, not their
+tiers.
+
 ## The manifest
 
 ```json
@@ -389,6 +445,7 @@ repository.
 | `logs/` | one backend log per start |
 | `bench.lock` | held by the bench command that runs; it names its pid |
 | `cards/<ref>/<timestamp>/` | one run's card, diff, summary, run log and inputs |
+| `reviews/<timestamp>.csv` | a review sheet: the engines' top disagreements, and the verdicts given on them |
 | `reference/peaky/` | the clone of peaky the pins are installed from |
 | `reference/src/<pin>/`, `reference/tools/`, `reference/bin/` | the exported tag and its tool environment |
 | `reference/installed.json` | the pin and commit installed |
