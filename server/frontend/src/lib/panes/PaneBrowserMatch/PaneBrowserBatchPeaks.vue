@@ -55,6 +55,7 @@ import {
   knownSpeciesTooltip,
   knownSpeciesVerdict
 } from '@/lib/batchKnownSpecies'
+import { blendOf, blendSummary, blendTooltip } from '@/lib/batchBlend'
 import {
   ENGINE_UNSTATED,
   ENGINE_UNSTATED_META,
@@ -300,6 +301,15 @@ const hasStrips = computed(() =>
 // hold the rows they took.
 const onlyStripped = ref(false)
 const tookLines = (row) => strippedLinesCount(row.merged_isotopologues) > 0
+
+// --- Probable blends ------------------------------------------------------------
+
+// A batch peak whose two leading formulas part cleanly along intensity or
+// acquisition time: two compounds may share its trace. The consensus records
+// it; nothing else reads it. Offered only where some batch peak shown carries
+// one, as the strips are.
+const hasBlends = computed(() => shown.value.some((bp) => blendOf(bp) != null))
+const onlyBlends = ref(false)
 
 // Says which of the two tiers the chip is, and whether it agrees, as the
 // sample ledger's does.
@@ -562,6 +572,7 @@ const passesFilters = (row) => {
 const rows = computed(() => {
   const disagreeing = onlyDisagreements.value && hasEngineTiers.value
   const stripped = onlyStripped.value && hasStrips.value
+  const blended = onlyBlends.value && hasBlends.value
   // Set only in the engine-tier view: leaving it clears the chip.
   const engineBucket = engineChip.value
   const visible = parents.value.filter(
@@ -569,6 +580,7 @@ const rows = computed(() => {
       passesFilters(row) &&
       (!disagreeing || engineDisagrees(row)) &&
       (!stripped || tookLines(row)) &&
+      (!blended || blendOf(row) != null) &&
       (engineBucket == null || row.engineBucket === engineBucket)
   )
   const byColumn = sortField.value ? compareBy(sortField.value, sortOrder.value) : null
@@ -1015,6 +1027,14 @@ watch(
               rows.
               </p>
               <p>
+              A batch peak whose samples split between two formulas - one on
+              the bright samples and the other on the dim ones, or one early in
+              the batch and the other late - may be two compounds sharing one
+              peak. It carries an intersect mark beside its formula, the chart
+              names it by both formulas, and <b>Probable blends</b> keeps only
+              those. Its consensus and tier stay as the samples voted.
+              </p>
+              <p>
               After an import that carried the engine's own tiers,
               <b>Engine tier</b> makes the tier chips count and filter by that
               engine's tier, with <b>not stated</b> for the formulas it gave
@@ -1095,6 +1115,16 @@ watch(
             >
               <ToggleSwitch v-model="onlyStripped" inputId="batch-stripped-rows" />
               <label for="batch-stripped-rows">Stripped rows</label>
+            </div>
+            <div
+              v-if="hasBlends"
+              class="unfold-toggle"
+              v-tooltip.top="
+                'Only the batch peaks whose samples split between two formulas along intensity or acquisition time'
+              "
+            >
+              <ToggleSwitch v-model="onlyBlends" inputId="batch-probable-blends" />
+              <label for="batch-probable-blends">Probable blends</label>
             </div>
             <!-- The whole ledger as a CSV: every batch peak with every
                  sample's member, one row per member. A background task; the
@@ -1287,6 +1317,16 @@ watch(
                 data-testid="known-species-mark"
                 :aria-label="knownSpeciesSummary(data.known_species)"
                 v-tooltip.top="knownSpeciesTooltip(data.known_species)"
+              />
+              <!-- A probable blend: the samples split between two formulas
+                   along intensity or acquisition time. -->
+              <span
+                v-if="blendOf(data)"
+                class="pi ph ph-intersect blend-mark"
+                role="img"
+                data-testid="blend-mark"
+                :aria-label="blendSummary(blendOf(data))"
+                v-tooltip.top="blendTooltip(blendOf(data))"
               />
               <span
                 v-if="isotopologueCount(data)"
@@ -1783,6 +1823,12 @@ watch(
 .known-species-mark.present {
   color: var(--p-primary-color);
   opacity: 1;
+}
+/* A probable blend: a caution, so in the warning colour. */
+.blend-mark {
+  margin-left: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--state-warning);
 }
 .curated,
 .series-mark {

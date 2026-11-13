@@ -126,6 +126,31 @@ describe('chart.batch.assignments data store (selection-driven)', () => {
     expect(tic.name).toBe('TIC')
   })
 
+  it('names a probable blend by both formulas and says so on hover', async () => {
+    const series = { sample_item_ids: ['s1'], intensities: [5], tiers: ['assigned'] }
+    api.http.post.mockResolvedValue([
+      peakRecord('bp1', series, {
+        blend: {
+          formulas: ['C6H12O6', 'C7H16O5'],
+          ions: ['C6H13O6+', 'C7H17O5+'],
+          n: [8, 8],
+          axis: 'intensity'
+        }
+      }),
+      peakRecord('bp2', series, { mz: 200.05, consensus_formula: 'C10H8O' })
+    ])
+    mockApp.data.batchPeak.selectedIds = ['bp1', 'bp2']
+    await flushAsync()
+
+    const [blended, plain] = store.traces
+    expect(blended.name).toBe('C6H12O6 + C7H16O5 · 181.0707')
+    expect(blended.hovertemplate).toContain(
+      'Probable blend of C6H12O6 and C7H16O5, parted by intensity<br>'
+    )
+    expect(plain.name).toBe('C10H8O · 200.0500')
+    expect(plain.hovertemplate).not.toContain('Probable blend')
+  })
+
   it("draws only the shown instrument type's selection on a batch of two", async () => {
     // Heights and areas cannot share an axis: a selection that reaches the
     // other partition's batch peaks by some route still plots only this one's.

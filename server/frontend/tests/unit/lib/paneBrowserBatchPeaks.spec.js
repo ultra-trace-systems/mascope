@@ -1090,6 +1090,89 @@ describe('PaneBrowserBatchPeaks isotopologue stamps', () => {
   })
 })
 
+describe('PaneBrowserBatchPeaks probable blends', () => {
+  const blend = {
+    formulas: ['C10H16O4', 'C9H12N2O2'],
+    ions: ['C10H15O4-', 'C9H12N3O5-'],
+    n: [40, 12],
+    axis: 'time',
+    intensity: null,
+    time: { p: 1e-6, runs: 2, expected_runs: 19.5, separates: true, earlier: 'C9H12N2O2' }
+  }
+  const BLENDED = peak('bp-b', 'candidate', 0.6, {
+    mz: 199.0976,
+    consensus_formula: 'C10H16O4',
+    blend
+  })
+  const OTHER = peak('bp-other', 'candidate', 0.5, { mz: 300.2, consensus_formula: 'C12H18O5' })
+  const ids = () => wrapper.vm.rows.map((row) => row.batch_peak_id)
+
+  async function formulaCells(peaks) {
+    const tableRows = ref([])
+    app = makeApp({ peaks })
+    localStorage.clear()
+    setActivePinia(createPinia())
+    wrapper = mount(PaneBrowserBatchPeaks, {
+      global: {
+        stubs: {
+          ...GLOBAL_STUBS,
+          DataTable: {
+            ...DataTableStub,
+            watch: {
+              value: { handler: (value) => (tableRows.value = value), immediate: true }
+            }
+          },
+          Column: {
+            ...ColumnStub,
+            setup: () => ({ rows: tableRows }),
+            template:
+              '<div class="column-stub" :data-field="field">' +
+              '<template v-for="(row, i) in rows" :key="i">' +
+              '<div class="stub-cell" :data-row="row.batch_peak_id">' +
+              '<slot name="body" :data="row" /></div></template></div>'
+          }
+        },
+        directives: { tooltip: {}, help: {} }
+      }
+    })
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+    const column = wrapper
+      .findAll('.column-stub')
+      .find((col) => col.attributes('data-field') === 'consensus_formula')
+    return Object.fromEntries(
+      column.findAll('.stub-cell').map((cell) => [cell.attributes('data-row'), cell])
+    )
+  }
+
+  it('marks a blended batch peak beside its formula, and no other', async () => {
+    const cells = await formulaCells([BLENDED, OTHER])
+    const mark = cells['bp-b'].find('[data-testid="blend-mark"]')
+    expect(mark.exists()).toBe(true)
+    expect(mark.attributes('aria-label')).toBe(
+      'Probable blend of C10H16O4 and C9H12N2O2, parted by acquisition time'
+    )
+    expect(cells['bp-other'].find('[data-testid="blend-mark"]').exists()).toBe(false)
+  })
+
+  it('keeps only the probable blends under the filter', async () => {
+    wrapper = await mountPane({ peaks: [BLENDED, OTHER] })
+    expect(wrapper.vm.hasBlends).toBe(true)
+    expect(ids()).toEqual(['bp-b', 'bp-other'])
+    wrapper.vm.onlyBlends = true
+    await wrapper.vm.$nextTick()
+    expect(ids()).toEqual(['bp-b'])
+  })
+
+  it('offers no filter, and filters nothing, where no batch peak is a blend', async () => {
+    wrapper = await mountPane({ peaks: [{ ...BLENDED, blend: null }, OTHER] })
+    expect(wrapper.vm.hasBlends).toBe(false)
+    wrapper.vm.onlyBlends = true
+    await wrapper.vm.$nextTick()
+    expect(ids()).toEqual(['bp-b', 'bp-other'])
+  })
+})
+
 describe('PaneBrowserBatchPeaks merged isotopologue rows', () => {
   const stripped = (parent, extra = {}) => ({
     batch_peak_id: parent,

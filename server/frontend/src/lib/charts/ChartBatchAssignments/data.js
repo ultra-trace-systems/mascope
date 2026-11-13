@@ -5,6 +5,7 @@ import { getApiErrorMessage } from '@/api/utils'
 import { beautifySnakeCase } from '@/lib/utils'
 import { useApp } from '@/stores'
 import { batchPeakLabel } from '@/lib/batchChart'
+import { blendOf, blendSummary } from '@/lib/batchBlend'
 import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger'
 import { glasbey } from '../colors.js'
 
@@ -15,6 +16,13 @@ const TIER_SYMBOL = {
   candidate: 'square-open',
   below_assignability: 'diamond-open',
   unassigned: 'circle-open'
+}
+
+/** A blended batch peak's hover line - which axis parts its two formulas -
+ *  closed by a break; empty for any other batch peak. */
+const blendLine = (record) => {
+  const blend = blendOf(record)
+  return blend ? `${blendSummary(blend)}<br>` : ''
 }
 
 /** Batch peaks per POST /batch-peaks/records/series request. */
@@ -338,7 +346,7 @@ export const useChartAssignmentsData = defineStore('chart.batch.assignments', ()
           <b>${traceName}</b>
           <br>
           Tier: ${record.consensus_tier}${record.n_present ? ` · ${record.n_present} samples` : ''}
-          <br>
+          <br>${blendLine(record)}
           <b>%{text}</b>
           <br>
           Intensity: %{y:,.2e} %{customdata[1]}
