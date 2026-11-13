@@ -349,6 +349,17 @@ def test_no_rung_is_read_where_the_core_is_absent():
     assert reading.core_presence == pytest.approx(0.45)
     assert reading.rungs == ()
     assert reading.reach == 0
+    # A core in half the spectra exactly is present, and its ladder climbed.
+    traces = _laid(BROMIDE, BROMIDE.tracks[0], spectra, top=6)[1:]
+    traces += _laid(BROMIDE, BROMIDE.tracks[0], spectra[:10], top=0, key="c")
+    reading = read_ladder(
+        BROMIDE,
+        BROMIDE.tracks[0],
+        _partition(traces + _floor(spectra)),
+        Segment(0, tuple(spectra)),
+    )
+    assert reading.core_presence == pytest.approx(0.5)
+    assert reading.reach == 6
 
 
 def test_a_ladder_is_read_per_segment():
