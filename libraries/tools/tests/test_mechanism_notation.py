@@ -18,7 +18,13 @@ What is pinned:
   have no legacy spelling;
 - a mechanism and its structured row map onto each other exactly, for every
   spelling the fleet stores, the library's tables and the new shapes, and the
-  row derives the ion's charge and polarity rather than storing them.
+  row derives the ion's charge and polarity rather than storing them;
+- one ion of a charge above one has one spelling: one species written as many
+  times as the charge folds into its coefficient, and a species of a single
+  charge is refused where it would carry more (alone, or repeated inside its
+  formula), with the spelling meant;
+- a removed proton is never a neutral loss, and only a mechanism that adds has
+  one.
 """
 
 import itertools
@@ -264,7 +270,29 @@ NEW_SHAPES = [
     ("[M+Ca]2+", "[M+Ca]2+", AdductRow("add", "Ca", 2)),
     ("[M+H+Na]2+", "[M+H+Na]2+", AdductRow("add", "(H)Na", 2)),
     ("[M+Na+H]2+", "[M+H+Na]2+", AdductRow("add", "(H)Na", 2)),
-    ("[M+H2]2+", "[M+H2]2+", AdductRow("add", "H2", 2)),
+    # One species as many times as the charge is the coefficient form.
+    ("[M+H+H]2+", "[M+2H]2+", AdductRow("add", "(H)2", 2)),
+    ("[M+(H)H]2+", "[M+2H]2+", AdductRow("add", "(H)2", 2)),
+    ("[M-H-H]2-", "[M-2H]2-", AdductRow("remove", "(H)2", 2)),
+    ("[M+H+H+H]3+", "[M+3H]3+", AdductRow("add", "(H)3", 3)),
+    ("[M+K+K]2+", "[M+2K]2+", AdductRow("add", "(K)2", 2)),
+    ("[2M+H+H]2+", "[2M+2H]2+", AdductRow("add", "(H)2", 2, multimer_n=2)),
+    (
+        "[M+H+H-H2O]2+",
+        "[M+2H-H2O]2+",
+        AdductRow("add", "(H)2", 2, neutral_loss="H2O"),
+    ),
+    # Several species stay one term each, as the coefficient's hint says.
+    ("[M+H+H+Na]3+", "[M+H+H+Na]3+", AdductRow("add", "(H)(H)Na", 3)),
+    # Multivalent ions carry the whole charge.
+    ("[M+Mg]2+", "[M+Mg]2+", AdductRow("add", "Mg", 2)),
+    ("[M+Fe]3+", "[M+Fe]3+", AdductRow("add", "Fe", 3)),
+    ("[M+Hg2]2+", "[M+Hg2]2+", AdductRow("add", "Hg2", 2)),
+    # Fewer repeats than the charge stay as typed: each Ca carries two.
+    ("[M+Ca+Ca]4+", "[M+Ca+Ca]4+", AdductRow("add", "(Ca)Ca", 4)),
+    # A count in the formula other than the charge is no coefficient written
+    # into it.
+    ("[M+H3]2+", "[M+H3]2+", AdductRow("add", "H3", 2)),
     # A group multiplied by anything but the ion's charge is no coefficient.
     ("[M+(H)3]2+", "[M+(H)3]2+", AdductRow("add", "(H)3", 2)),
     ("[M+H-H2O]+", "[M+H-H2O]+", AdductRow("add", "H", 1, neutral_loss="H2O")),
@@ -280,6 +308,8 @@ NEW_SHAPES = [
         "[M+H-(H2O)2]+",
         AdductRow("add", "H", 1, neutral_loss="(H2O)2"),
     ),
+    # Dihydrogen is a neutral; a removed proton is not.
+    ("[M+H-H2]+", "[M+H-H2]+", AdductRow("add", "H", 1, neutral_loss="H2")),
     (
         "[2M+2H-H2O]2+",
         "[2M+2H-H2O]2+",
@@ -375,7 +405,11 @@ def test_a_row_derives_the_ions_charge_and_polarity(
         # Terms out of order, and a group that would split: another spelling
         # of a mechanism the row would then not round-trip to.
         (AdductRow("add", "(H)CH4N2O", 1), "not written as a mechanism reads"),
-        (AdductRow("add", "H2", 2, neutral_loss="(NH3)H2O"), "not written as"),
+        (AdductRow("add", "Ca", 2, neutral_loss="(NH3)H2O"), "not written as"),
+        # Another spelling of an ion that has one: two protons are (H)2.
+        (AdductRow("add", "(H)H", 2), "not written as"),
+        # One proton carries one charge.
+        (AdductRow("add", "H", 2), "write '\\[M\\+2H\\]2\\+'"),
         # A mechanism that removes loses no neutral: written out, the loss
         # reads as part of what is removed.
         (AdductRow("remove", "H", 1, neutral_loss="H2O"), "not written as"),
@@ -403,3 +437,77 @@ def test_every_formula_a_mechanism_moves_is_listed(notation, formulas):
     # What the write validator checks for real elements, the neutral loss's
     # included.
     assert parse_mechanism(notation).formulas == formulas
+
+
+@pytest.mark.parametrize(
+    ("notation", "meant"),
+    [
+        # The coefficient left out: one species of a single charge carrying
+        # the ion's whole charge.
+        ("[M+H]2+", "[M+2H]2+"),
+        ("[M-H]2-", "[M-2H]2-"),
+        ("[M+Na]3+", "[M+3Na]3+"),
+        ("[M+NH4]2+", "[M+2NH4]2+"),
+        ("[M+NO3]2-", "[M+2NO3]2-"),
+        ("[M+Ag]2+", "[M+2Ag]2+"),
+        ("[M+Cl]2-", "[M+2Cl]2-"),
+        ("[2M+H-H2O]2+", "[2M+2H-H2O]2+"),
+        # The coefficient written into the formula.
+        ("[M+H2]2+", "[M+2H]2+"),
+        ("[M-H2]2-", "[M-2H]2-"),
+        ("[M+Na2]2+", "[M+2Na]2+"),
+        ("[M+H3]3+", "[M+3H]3+"),
+        ("[M+Br2]2-", "[M+2Br]2-"),
+    ],
+)
+def test_a_species_of_one_charge_carrying_more_is_refused_with_the_ion_meant(
+    notation, meant
+):
+    with pytest.raises(MechanismNotationError, match="one charge") as refused:
+        parse_mechanism(notation)
+    assert f"write {meant!r}" in str(refused.value)
+    assert standard_notation(meant) == meant
+
+
+#: The species that carry one charge, never more: the frontend's table too.
+SINGLE_CHARGE_SPECIES = "H Li Na K Rb Cs F Cl Br I NH4 NO3 Ag".split()
+
+
+@pytest.mark.parametrize("species", SINGLE_CHARGE_SPECIES)
+def test_every_species_of_one_charge_is_refused_on_two(species):
+    with pytest.raises(MechanismNotationError, match="one charge"):
+        parse_mechanism(f"[M+{species}]2+")
+    assert standard_notation(f"[M+2{species}]2+") == f"[M+2{species}]2+"
+
+
+@pytest.mark.parametrize(
+    "notation",
+    [
+        "[M+H2O-H]-",
+        "[M+Na-H-H]-",
+        "[M+Na+Na-H]+",
+        "[M+Na-(H)H]-",
+        "[M+NH4-H-H2O]+",
+    ],
+)
+def test_a_removed_proton_is_never_a_neutral_loss(notation):
+    with pytest.raises(MechanismNotationError, match="'H' is a proton"):
+        parse_mechanism(notation)
+
+
+@pytest.mark.parametrize(
+    ("notation", "species"),
+    [("[M-H-H2O]-", "(H)H2O"), ("[M-CO2-H]-", "(CO2)H")],
+)
+def test_only_a_mechanism_that_adds_has_a_neutral_loss(notation, species):
+    # What a mechanism removes is all its species; these are read as they
+    # were before neutral losses existed, and keep their legacy spelling.
+    row = to_row(notation)
+    assert (row.operation, row.species, row.neutral_loss) == ("remove", species, None)
+    assert row.legacy is not None
+
+
+def test_coefficients_still_go_on_the_only_term():
+    # Repeated coefficient terms do not fold into a group of a group.
+    with pytest.raises(MechanismNotationError, match="only term"):
+        parse_mechanism("[M+2H+2H]2+")

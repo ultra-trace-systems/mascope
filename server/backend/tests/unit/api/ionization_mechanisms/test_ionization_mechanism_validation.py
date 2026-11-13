@@ -72,6 +72,8 @@ def _mechanism(length: int) -> str:
         ("[M+H-H2O]+", "[M+H-H2O]+", "+"),  # a neutral loss
         ("[M-H2O+H]+", "[M+H-H2O]+", "+"),
         ("[2M+2H-H2O]2+", "[2M+2H-H2O]2+", "+"),
+        ("[M+H+H]2+", "[M+2H]2+", "+"),  # one species as often as the charge
+        ("[M-H-H]2-", "[M-2H]2-", "-"),
     ],
 )
 def test_either_notation_is_accepted_and_stored_in_the_standard_one(
@@ -107,6 +109,11 @@ def test_either_notation_is_accepted_and_stored_in_the_standard_one(
         "[M+H-()]+",  # a neutral loss with no atoms
         "[M+2Zz]2+",  # a coefficient of an unknown element
         "[M+()]+",  # a term with no atoms
+        "[M+H]2+",  # one proton carrying two charges: [M+2H]2+ mistyped
+        "[M-H]2-",
+        "[M+H2]2+",  # two protons written as a formula
+        "[M+H2O-H]-",  # a removed proton read as a neutral loss
+        "[M+Na-H-H]-",
     ],
 )
 def test_invalid_mechanisms_rejected(mechanism):

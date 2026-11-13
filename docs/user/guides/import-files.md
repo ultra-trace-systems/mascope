@@ -109,9 +109,16 @@ Three more shapes are written in the same notation:
 - `[M+2H]2+`, `[M-2H]2-`, `[M+Ca]2+` — a doubly charged ion: the charge's size
   before its sign. A count on the term itself is the ion's charge, one charge for
   each species, and is written only on a mechanism's one term: `[M+3H]3+`, but
-  `[M+H+H+Na]3+` for three species
+  `[M+H+H+Na]3+` for three species. One species typed as many times as the
+  charge is saved with the count, so `[M+H+H]2+` is saved as `[M+2H]2+`. A
+  species that carries one charge (H, Li, Na, K, Rb, Cs, F, Cl, Br, I, NH4, NO3,
+  Ag) cannot carry more: `[M+H]2+` and `[M+H2]2+` are refused, and the message
+  names `[M+2H]2+`
 - `[M+H-H2O]+` — a neutral loss: a term removed from a mechanism that adds. The
-  ion's charge comes with what is added, and what is removed is neutral
+  ion's charge comes with what is added, and what is removed is neutral, so a
+  removed proton is refused there (`[M+H2O-H]-`, `[M+Na-H-H]-`). Only a mechanism
+  that adds has a neutral loss for now: `[M-H-H2O]-` removes H and H2O together,
+  and is searched as it was before
 
 The ion's polarity is the sign at the end, so a mechanism of the wrong polarity
 cannot be saved. Under the field, Mascope shows the ion the typed mechanism makes:

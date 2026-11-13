@@ -19,7 +19,12 @@
  * multimer, `[2M+H]+`; a charge above one, `[M+2H]2+` or `[M+Ca]2+`, where a
  * coefficient is written on the one term and is the ion's charge (`2H` is
  * the formula `(H)2`); and a neutral loss, `[M+H-H2O]+`, a term removed from
- * a mechanism that adds. They have no legacy spelling.
+ * a mechanism that adds. They have no legacy spelling. One species written as
+ * many times as the charge is folded into the coefficient (`[M+H+H]2+` is
+ * `[M+2H]2+`); a species of one charge alone on a higher one (`[M+H]2+`) or
+ * repeated in its formula (`[M+H2]2+`) is refused, and so is a removed proton
+ * in a mechanism that adds (`[M+H2O-H]-`). Only a mechanism that adds has a
+ * neutral loss.
  *
  * A mechanism is also a row (`mechanismRow`): whether its species is added
  * or removed, the species and its charge, how many molecules the ion holds,
@@ -38,6 +43,26 @@ const SIGNED_TERM = /([+-])([^+-]+)/g
 const STANDARD_HEAD = /^\[(\d+)?M/
 const STANDARD_TAIL = /\](\d+)?([+-])$/
 const COEFFICIENT_TERM = /^(\d+)(.*)$/s
+// One element repeated, `H2` or `Na2`: the element and its count.
+const REPEATED_ELEMENT = /^([A-Z][a-z]?)(\d+)$/
+// The species that carry one charge each, never more. One of them alone on an
+// ion of a higher charge is a coefficient left out (`[M+H]2+`), and the same
+// element repeated as a formula is the coefficient written as one (`[M+H2]2+`).
+const MONOVALENT_SPECIES = new Set([
+  'H',
+  'Li',
+  'Na',
+  'K',
+  'Rb',
+  'Cs',
+  'F',
+  'Cl',
+  'Br',
+  'I',
+  'NH4',
+  'NO3',
+  'Ag'
+])
 
 /** The index of the parenthesis closing the one `text` starts with. */
 function closingParen(text) {
@@ -172,6 +197,44 @@ function addedFormula(term, size, alone) {
   return `(${species})${coefficient}`
 }
 
+/**
+ * The terms of an ion of charge `size`, one species repeated as many times as
+ * the charge folded into the group it multiplies: `[M+H+H]2+` is `(H)2`, the
+ * moiety of `[M+2H]2+`. Any other terms as they are: `[M+H+H+Na]3+` keeps three.
+ */
+function foldedTerms(terms, size) {
+  if (size === 1) return terms
+  const ordered = orderedTerms(terms)
+  if (ordered.length !== size || new Set(ordered).size !== 1 || isDigit(ordered[0][0])) {
+    return terms
+  }
+  return [`(${ordered[0]})${size}`]
+}
+
+/**
+ * Refuse one species of a single charge written as carrying the ion's whole
+ * charge, `[M+H]2+`, or with the coefficient written into its formula,
+ * `[M+H2]2+`: both mean `[M+2H]2+`.
+ */
+function checkSingleCharges(terms, parts) {
+  const size = Math.abs(parts.charge)
+  if (size === 1 || terms.length !== 1) return
+  const [term] = terms
+  const repeated = term.match(REPEATED_ELEMENT)
+  let species, reading
+  if (MONOVALENT_SPECIES.has(term)) {
+    species = term
+    reading = `One ${term} carries one charge, not ${size}`
+  } else if (repeated && MONOVALENT_SPECIES.has(repeated[1]) && Number(repeated[2]) === size) {
+    species = repeated[1]
+    reading = `'${term}' is ${size} ${species}, which carry one charge each`
+  } else {
+    return
+  }
+  const meant = writeStandard({ ...parts, moiety: `(${species})${size}` })
+  throw new Error(`${reading}; write '${meant}'`)
+}
+
 function parseStandard(notation) {
   const radical = notation.endsWith('.')
   const body = radical ? notation.slice(0, -1) : notation
@@ -209,14 +272,22 @@ function parseStandard(notation) {
       throw new Error(`Write the neutral loss '${term}' as a formula, '(H2O)2' not '2H2O'`)
     }
   }
-  const formulas = terms.map((term) => addedFormula(term, size, terms.length === 1))
-  return {
+  // A removed proton carries a charge, so it is never the neutral loss:
+  // [M+H2O-H]- and [M+Na-H-H]- say an ion the row has no way to write.
+  if (lost.length && orderedTerms(lost).includes('H')) {
+    throw new Error("A removed 'H' is a proton, not a neutral loss, as 'H2O' is in '[M+H-H2O]+'")
+  }
+  const folded = foldedTerms(terms, size)
+  const formulas = folded.map((term) => addedFormula(term, size, folded.length === 1))
+  const parts = {
     addition: added.length > 0,
     moiety: joinTerms(orderedTerms(formulas)),
     charge,
     multimer,
     neutralLoss: lost.length ? joinTerms(orderedTerms(lost)) : ''
   }
+  checkSingleCharges(folded, parts)
+  return parts
 }
 
 /**

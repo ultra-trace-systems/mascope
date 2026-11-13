@@ -40,15 +40,21 @@ it writes them:
   before the ion's sign. A term may then carry a coefficient, and only as the
   mechanism's one term with the ion's charge as its count (one charge per
   species): ``2H`` is stored as the formula ``(H)2``, and written back as
-  ``2H`` wherever the ion's charge is two;
+  ``2H`` wherever the ion's charge is two. One species written out as many
+  times as the charge is the same ion and is folded into that form
+  (``[M+H+H]2+`` is ``[M+2H]2+``); several species stay as they are typed
+  (``[M+H+H+Na]3+``). A species that carries one charge is refused alone on
+  an ion of a higher one (``[M+H]2+``, the 2 left out) and repeated inside
+  its formula (``[M+H2]2+``): each is ``[M+2H]2+`` mistyped;
 - a **neutral loss**, ``[M+H-H2O]+``: a term removed from a mechanism that
   adds. The ion's charge is carried by what is added, and what is removed is
-  neutral.
+  neutral. Only a mechanism that adds has one: what a mechanism removes is
+  all its species (``[M-H-H2O]-`` removes ``(H)H2O``).
 
-Anything else that both adds and removes, a coefficient anywhere but there
-and an electron transfer that changes more than one charge are refused rather
-than approximated. Those three shapes have no legacy spelling
-(:attr:`MechanismParts.legacy` is None).
+Anything else that both adds and removes, a removed proton among them
+(``[M+H2O-H]-``), a coefficient anywhere but there and an electron transfer
+that changes more than one charge are refused rather than approximated. Those
+three shapes have no legacy spelling (:attr:`MechanismParts.legacy` is None).
 
 A mechanism is also a **row** (:class:`AdductRow`, :func:`to_row`,
 :func:`from_row`): whether a species is added or removed, its formula, the
@@ -85,6 +91,19 @@ _STANDARD_TAIL = re.compile(r"\]([0-9]+)?([+-])\Z")
 
 #: A term with a coefficient, ``2H``: the count and what it counts.
 _COEFFICIENT_TERM = re.compile(r"([0-9]+)(.*)", re.DOTALL)
+
+#: One element repeated, ``H2`` or ``Na2``: the element and its count.
+_REPEATED_ELEMENT = re.compile(r"([A-Z][a-z]?)([0-9]+)")
+
+#: The species that carry one charge each, never more: the proton, the alkali
+#: metals, the halides, ammonium, nitrate and silver. One of them alone with a
+#: charge above one is a coefficient left out (``[M+H]2+`` for ``[M+2H]2+``),
+#: and the same element repeated as a formula is the coefficient written as
+#: one (``[M+H2]2+``). A species missing here lets that mistake through, as
+#: before; a multivalent ion is never refused (``[M+Ca]2+``).
+_MONOVALENT_SPECIES = frozenset(
+    {"H", "Li", "Na", "K", "Rb", "Cs", "F", "Cl", "Br", "I", "NH4", "NO3", "Ag"}
+)
 
 
 class MechanismNotationError(ValueError):
@@ -349,6 +368,56 @@ def _added_formula(term: str, size: int, alone: bool, notation: str) -> str:
     return f"({species}){count}"
 
 
+def _folded_terms(terms: list[str], size: int) -> list[str]:
+    """The terms of an ion of charge ``size``, one species repeated as many
+    times as the charge folded into the group it multiplies: ``H`` and ``H``
+    of ``[M+H+H]2+`` are ``(H)2``, the moiety of ``[M+2H]2+``. Any other terms
+    as they are, so ``[M+H+H+Na]3+`` keeps its three. The terms are counted
+    split as far as they split, so ``[M+(H)H]2+`` folds too."""
+    if size == 1:
+        return terms
+    ordered = _ordered_terms(terms)
+    if len(ordered) != size or len(set(ordered)) != 1 or ordered[0][0].isdigit():
+        return terms
+    return [f"({ordered[0]}){size}"]
+
+
+def _check_single_charges(
+    terms: list[str], parts: MechanismParts, notation: str
+) -> None:
+    """Refuse one species that carries a single charge written as carrying
+    the ion's whole charge, ``[M+H]2+``, or the coefficient written into the
+    formula, ``[M+H2]2+``: both mean ``[M+2H]2+``."""
+    size = abs(parts.charge)
+    if size == 1 or len(terms) != 1:
+        return
+    (term,) = terms
+    repeated = _REPEATED_ELEMENT.fullmatch(term)
+    if term in _MONOVALENT_SPECIES:
+        species = term
+        reading = f"one {term} carries one charge, not {size}"
+    elif (
+        repeated is not None
+        and repeated.group(1) in _MONOVALENT_SPECIES
+        and int(repeated.group(2)) == size
+    ):
+        species = repeated.group(1)
+        reading = f"{term!r} is {size} {species}, which carry one charge each"
+    else:
+        return
+    meant = MechanismParts(
+        addition=parts.addition,
+        moiety=f"({species}){size}",
+        charge=parts.charge,
+        multimer=parts.multimer,
+        neutral_loss=parts.neutral_loss,
+    )
+    raise MechanismNotationError(
+        f"Ionization mechanism {notation!r}: {reading}; write "
+        f"{meant.standard!r}, one charge for each species."
+    )
+
+
 def _parse_standard(notation: str) -> MechanismParts:
     radical = notation.endswith(".")
     body = notation[:-1] if radical else notation
@@ -411,17 +480,29 @@ def _parse_standard(notation: str) -> MechanismParts:
                 f"Ionization mechanism {notation!r}: write the neutral loss "
                 f"{term!r} as a formula, '(H2O)2' rather than '2H2O'."
             )
+    neutral_loss = _join_terms(_ordered_terms(lost)) if lost else ""
+    # A removed proton carries a charge, so it is never the neutral loss:
+    # [M+H2O-H]- and [M+Na-H-H]- say an ion the row has no way to write.
+    if lost and "H" in _ordered_terms(lost):
+        raise MechanismNotationError(
+            f"Ionization mechanism {notation!r}: a removed 'H' is a proton, "
+            "not a neutral loss. A mechanism that adds and removes adds what "
+            "carries the charge and loses a neutral, as in '[M+H-H2O]+'."
+        )
+    moiety_terms = _folded_terms(moiety_terms, size)
     formulas = [
         _added_formula(term, size, len(moiety_terms) == 1, notation)
         for term in moiety_terms
     ]
-    return MechanismParts(
+    parts = MechanismParts(
         addition=bool(added),
         moiety=_join_terms(_ordered_terms(formulas)),
         charge=charge,
         multimer=multimer,
-        neutral_loss=_join_terms(_ordered_terms(lost)) if lost else "",
+        neutral_loss=neutral_loss,
     )
+    _check_single_charges(moiety_terms, parts, notation)
+    return parts
 
 
 @lru_cache(maxsize=1024)

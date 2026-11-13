@@ -86,7 +86,24 @@ const NEW_SHAPES = [
   ['[M+Ca]2+', '[M+Ca]2+', ['add', 'Ca', 2, 1, null]],
   ['[M+H+Na]2+', '[M+H+Na]2+', ['add', '(H)Na', 2, 1, null]],
   ['[M+Na+H]2+', '[M+H+Na]2+', ['add', '(H)Na', 2, 1, null]],
-  ['[M+H2]2+', '[M+H2]2+', ['add', 'H2', 2, 1, null]],
+  // One species as many times as the charge is the coefficient form.
+  ['[M+H+H]2+', '[M+2H]2+', ['add', '(H)2', 2, 1, null]],
+  ['[M+(H)H]2+', '[M+2H]2+', ['add', '(H)2', 2, 1, null]],
+  ['[M-H-H]2-', '[M-2H]2-', ['remove', '(H)2', 2, 1, null]],
+  ['[M+H+H+H]3+', '[M+3H]3+', ['add', '(H)3', 3, 1, null]],
+  ['[M+K+K]2+', '[M+2K]2+', ['add', '(K)2', 2, 1, null]],
+  ['[2M+H+H]2+', '[2M+2H]2+', ['add', '(H)2', 2, 2, null]],
+  ['[M+H+H-H2O]2+', '[M+2H-H2O]2+', ['add', '(H)2', 2, 1, 'H2O']],
+  // Several species stay one term each, as the coefficient's hint says.
+  ['[M+H+H+Na]3+', '[M+H+H+Na]3+', ['add', '(H)(H)Na', 3, 1, null]],
+  // Multivalent ions carry the whole charge.
+  ['[M+Mg]2+', '[M+Mg]2+', ['add', 'Mg', 2, 1, null]],
+  ['[M+Fe]3+', '[M+Fe]3+', ['add', 'Fe', 3, 1, null]],
+  ['[M+Hg2]2+', '[M+Hg2]2+', ['add', 'Hg2', 2, 1, null]],
+  // Fewer repeats than the charge stay as typed: each Ca carries two.
+  ['[M+Ca+Ca]4+', '[M+Ca+Ca]4+', ['add', '(Ca)Ca', 4, 1, null]],
+  // A count in the formula other than the charge is no coefficient written into it.
+  ['[M+H3]2+', '[M+H3]2+', ['add', 'H3', 2, 1, null]],
   // A group multiplied by anything but the ion's charge is no coefficient.
   ['[M+(H)3]2+', '[M+(H)3]2+', ['add', '(H)3', 2, 1, null]],
   ['[M+H-H2O]+', '[M+H-H2O]+', ['add', 'H', 1, 1, 'H2O']],
@@ -94,6 +111,8 @@ const NEW_SHAPES = [
   ['[M+Na-CO2]+', '[M+Na-CO2]+', ['add', 'Na', 1, 1, 'CO2']],
   ['[M+H-NH3-H2O]+', '[M+H-H2O-NH3]+', ['add', 'H', 1, 1, '(H2O)NH3']],
   ['[M+H-(H2O)2]+', '[M+H-(H2O)2]+', ['add', 'H', 1, 1, '(H2O)2']],
+  // Dihydrogen is a neutral; a removed proton is not.
+  ['[M+H-H2]+', '[M+H-H2]+', ['add', 'H', 1, 1, 'H2']],
   ['[2M+2H-H2O]2+', '[2M+2H-H2O]2+', ['add', '(H)2', 2, 2, 'H2O']]
 ]
 
@@ -215,6 +234,50 @@ describe('mechanismProblem', () => {
   ])('says why %s does not read', (notation, reason) => {
     expect(mechanismProblem(notation)).toContain(reason)
   })
+
+  it.each([
+    // The coefficient left out: one species of a single charge carrying the
+    // ion's whole charge.
+    ['[M+H]2+', '[M+2H]2+'],
+    ['[M-H]2-', '[M-2H]2-'],
+    ['[M+Na]3+', '[M+3Na]3+'],
+    ['[M+NH4]2+', '[M+2NH4]2+'],
+    ['[M+NO3]2-', '[M+2NO3]2-'],
+    ['[M+Ag]2+', '[M+2Ag]2+'],
+    ['[M+Cl]2-', '[M+2Cl]2-'],
+    ['[2M+H-H2O]2+', '[2M+2H-H2O]2+'],
+    // The coefficient written into the formula.
+    ['[M+H2]2+', '[M+2H]2+'],
+    ['[M-H2]2-', '[M-2H]2-'],
+    ['[M+Na2]2+', '[M+2Na]2+'],
+    ['[M+H3]3+', '[M+3H]3+'],
+    ['[M+Br2]2-', '[M+2Br]2-']
+  ])('refuses %s, a species of one charge carrying more, for %s', (notation, meant) => {
+    const problem = mechanismProblem(notation)
+    expect(problem).toContain('one charge')
+    expect(problem).toContain(`write '${meant}'`)
+    expect(mechanismProblem(meant)).toBeNull()
+  })
+
+  // The library's test pins the same table.
+  it.each('H Li Na K Rb Cs F Cl Br I NH4 NO3 Ag'.split(' '))(
+    'refuses one %s carrying two charges',
+    (species) => {
+      expect(mechanismProblem(`[M+${species}]2+`)).toContain('one charge')
+      expect(mechanismProblem(`[M+2${species}]2+`)).toBeNull()
+    }
+  )
+
+  it.each(['[M+H2O-H]-', '[M+Na-H-H]-', '[M+Na+Na-H]+', '[M+Na-(H)H]-', '[M+NH4-H-H2O]+'])(
+    'refuses %s: a removed proton is never a neutral loss',
+    (notation) => {
+      expect(mechanismProblem(notation)).toContain("'H' is a proton")
+    }
+  )
+
+  it('keeps a coefficient on the only term', () => {
+    expect(mechanismProblem('[M+2H+2H]2+')).toContain('only term')
+  })
 })
 
 describe('mechanismTerms', () => {
@@ -257,7 +320,10 @@ describe('mechanismRow', () => {
     ['[M+Br]-', 'add', 'Br', -1, -1],
     ['[M]+.', 'remove', '', -1, 1],
     ['[M]-.', 'add', '', -1, -1],
-    ['[M-2H]2-', 'remove', '(H)2', 2, -2]
+    ['[M-2H]2-', 'remove', '(H)2', 2, -2],
+    // Only a mechanism that adds has a neutral loss: these remove all they name.
+    ['[M-H-H2O]-', 'remove', '(H)H2O', 1, -1],
+    ['[M-CO2-H]-', 'remove', '(CO2)H', 1, -1]
   ])('derives the ion of %s from its row', (notation, operation, species, speciesCharge, ion) => {
     expect(mechanismRow(notation)).toEqual({
       operation,

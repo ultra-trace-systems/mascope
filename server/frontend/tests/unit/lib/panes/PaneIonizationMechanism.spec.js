@@ -98,6 +98,18 @@ describe('PaneIonizationMechanism', () => {
   it('says how a new shape is stored', async () => {
     expect(await hintFor('[M-H2O+H]+')).toBe('Stored as [M+H-H2O]+')
     expect(await hintFor('[M+(H)2]2+')).toBe('Stored as [M+2H]2+')
+    expect(await hintFor('[M+H+H]2+')).toBe('Stored as [M+2H]2+')
+  })
+
+  it.each([
+    ['[M+H]2+', "write '[M+2H]2+'"],
+    ['[M+H2]2+', "write '[M+2H]2+'"],
+    ['[M+H2O-H]-', "'H' is a proton"]
+  ])('refuses %s and shows no ion for it', async (typed, reason) => {
+    const hints = await hintsFor(typed)
+    expect(hints.status).toContain(reason)
+    expect(hints.derived).toBe('')
+    expect(hints.addDisabled).toBe(true)
   })
 
   it.each(['', '[M+H]', '[M+H-H2o]+'])('shows no ion for %j', async (typed) => {
@@ -159,7 +171,12 @@ describe('PaneIonizationMechanism', () => {
 
   describe('with mechanisms on the server', () => {
     beforeEach(() => {
-      mechanisms.splice(0, mechanisms.length, { ionization_mechanism: '[M-H]-' })
+      mechanisms.splice(
+        0,
+        mechanisms.length,
+        { ionization_mechanism: '[M-H]-' },
+        { ionization_mechanism: '[M+2H]2+' }
+      )
     })
     afterEach(() => {
       mechanisms.splice(0, mechanisms.length)
@@ -169,6 +186,12 @@ describe('PaneIonizationMechanism', () => {
       const hints = await hintsFor(typed)
       expect(hints.status).toBe('[M-H]- is already a mechanism')
       expect(hints.statusSeverity).toBe('error')
+      expect(hints.addDisabled).toBe(true)
+    })
+
+    it('refuses two protons spelled term by term, which is already there', async () => {
+      const hints = await hintsFor('[M+H+H]2+')
+      expect(hints.status).toBe('[M+2H]2+ is already a mechanism')
       expect(hints.addDisabled).toBe(true)
     })
 
