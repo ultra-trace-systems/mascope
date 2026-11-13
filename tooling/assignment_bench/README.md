@@ -220,7 +220,9 @@ the card names its own as not on the baseline. Without a baseline yet, the
 run says so and makes no diff. `bench baseline` prints the baseline, and
 `bench baseline <card>` makes an earlier card of develop the baseline. The
 card is named by its folder under `cards/`, and its commit must be on
-develop.
+develop. It is held to the rule a run is held to, but for being develop's
+head: a gate verdict, every set the bench holds now on the card, and
+nothing left out. The baseline records the sets the card read.
 
 **One run at a time.** A run waits for the bench's lock while another bench
 command holds it, and says so; `--no-wait` refuses instead. `init` and

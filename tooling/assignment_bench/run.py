@@ -758,12 +758,12 @@ class BenchRun:
         summary["finished"] = now()
         summary["minutes"] = round((self.clock() - started) / 60, 1)
         summary["card"] = {k: card[k] for k in ("verdict", "gate", "sets") if k in card}
-        problems = self._problems(plans, results)
+        problems = run_problems(summary["sets"])
         if base and card.get("diff") is not None:
             summary["baseline"] = {k: base[k] for k in ("ref", "sha", "at", "path")}
         promoted = None
         if baseline and card["verdict"] in ("pass", "fail"):
-            promoted = self._promote(ref, chosen, summary, problems, state, out, say)
+            promoted = self._promote(ref, summary, problems, state, out, say)
         summary["is_baseline"] = promoted is not None
         self._write_outputs(out, summary, card, runlog)
         self._record(state, ref, summary, card, base, out)
@@ -1204,34 +1204,12 @@ class BenchRun:
                 out["decoys"][arm] = dict(sorted(tally.items()))
         return out
 
-    def _problems(self, plans: dict, results: dict) -> list[str]:
-        """What makes a run exit 1 beside a failed gate: anything left out, a
-        set over its budget, a decoy arm that failed rather than was refused."""
-        problems = []
-        for name, p in plans.items():
-            for reason, n in p.counts().items():
-                problems.append(f"set {name}: {n} sample(s) {reason}")
-            result = results.get(name)
-            if result:
-                failed = sum(
-                    1
-                    for outcomes in result["decoys"].values()
-                    for o in outcomes.values()
-                    if o.status in ("failed", "cancelled", "lost")
-                )
-                if failed:
-                    problems.append(f"set {name}: {failed} decoy run(s) failed")
-        return problems
-
-    def _promote(self, ref, chosen, summary, problems, state, out, say) -> dict | None:
+    def _promote(self, ref, summary, problems, state, out, say) -> dict | None:
         """Make this card develop's rolling baseline, when it is one."""
-        why = None
         if summary["sha"] != summary["develop"]:
             why = f"{ref} is not develop's head ({str(summary['develop'])[:9]})"
-        elif set(chosen) != set(state["sets"]):
-            why = "it reads only some of the bench's sets"
-        elif problems:
-            why = "samples were left out (" + "; ".join(problems) + ")"
+        else:
+            why = not_whole(summary["card"]["sets"], state["sets"], problems)
         if why:
             if summary["sha"] == summary["develop"]:
                 say(f"not made the baseline: {why}")
@@ -1241,7 +1219,7 @@ class BenchRun:
             "sha": summary["sha"],
             "at": summary["finished"],
             "path": str(out.relative_to(self.home.cards)),
-            "sets": list(chosen),
+            "sets": list(summary["card"]["sets"]),
             "decoys": summary["decoys"],
         }
         state["baseline"] = record
@@ -1361,12 +1339,21 @@ class BenchRun:
                 f"{summary['ref']} at {summary['sha'][:9]} is not on develop: the "
                 f"baseline is develop's"
             )
+        # The rule a run of develop's head is held to before it becomes the
+        # baseline, but for the head: an earlier card of develop is the point.
+        if summary["card"]["verdict"] not in ("pass", "fail"):
+            raise RunError(f"{folder} holds no card with a gate verdict")
+        why = not_whole(
+            summary["card"]["sets"], state["sets"], run_problems(summary["sets"])
+        )
+        if why:
+            raise RunError(f"{folder} cannot be the baseline: {why}")
         state["baseline"] = {
             "ref": summary["ref"],
             "sha": summary["sha"],
             "at": summary["finished"],
             "path": str(folder.relative_to(cards)),
-            "sets": list(summary["sets"]),
+            "sets": list(summary["card"]["sets"]),
             "decoys": summary["decoys"],
         }
         self.save_state(state)
@@ -1375,6 +1362,35 @@ class BenchRun:
             file=out,
         )
         return 0
+
+
+def run_problems(sets: dict) -> list[str]:
+    """What makes a run exit 1 beside a failed gate, read off ``run.json``'s
+    sets: anything left out, a set over its budget among them, and a decoy
+    arm that failed, was cancelled or was lost rather than refused."""
+    problems = []
+    for name, s in sets.items():
+        for reason, n in s["left_out"].items():
+            problems.append(f"set {name}: {n} sample(s) {reason}")
+        failed = sum(
+            n
+            for tally in s["decoys"].values()
+            for status, n in tally.items()
+            if status in ("failed", "cancelled", "lost")
+        )
+        if failed:
+            problems.append(f"set {name}: {failed} decoy run(s) failed")
+    return problems
+
+
+def not_whole(card_sets: list[str], bench_sets, problems: list[str]) -> str | None:
+    """Why a card of develop is no baseline, or None: it must read every set
+    the bench holds, with nothing left out."""
+    if set(card_sets) != set(bench_sets):
+        return "it reads only some of the bench's sets"
+    if problems:
+        return "samples were left out (" + "; ".join(problems) + ")"
+    return None
 
 
 def diff_markdown(diff: dict) -> str:
