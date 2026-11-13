@@ -33,9 +33,12 @@ Two later layers of the same model (step 4.16 of the assignment plan) sit below 
   one channel may be one compound and its fragment ([Xu et al. 2015][xu2015];
   [Domingo-Almenara et al. 2019][misa]).
 
-Each enters a probability only once the anchor-swap benchmark
-(``tooling/score_eval/corroboration_benchmark.py``) measures a likelihood ratio above one with
-its interval clear of one; until then it is recorded, not weighed.
+Both are recorded on the rows and weighed nowhere (decision 36 of the assignment plan). The
+anchor-swap benchmark (``tooling/score_eval/corroboration_benchmark.py``) found neither showing
+the effect it is named for: a consistent ratio's likelihood ratio is under one on every adduct
+pair, and a loss's reads mostly the lattice of related formulas, so the losses it marks
+``eligible`` are not due for a fold. A weight, if one is ever earned, enters through step
+4.3's calibration from verdicts, not here.
 
 [camera]: https://pubs.acs.org/doi/10.1021/ac202450g
 [ipa]: https://pubs.acs.org/doi/10.1021/acs.analchem.9b02354
