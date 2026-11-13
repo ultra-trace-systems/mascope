@@ -3549,7 +3549,8 @@ class BatchPeakRun(Base):
         CheckConstraint(
             "action IN ('fold', 'rebuild', 'search_untargeted', 'import', "
             "'detect_series', 'read_co_variation', 'stamp_isotopologues', "
-            "'strip_isotopologues', 'read_batch_checks', 'decide_known_species')",
+            "'strip_isotopologues', 'read_batch_checks', 'decide_known_species', "
+            "'measure_water_ladders')",
             name="action_valid",
         ),
         CheckConstraint(
@@ -3626,6 +3627,11 @@ class BatchPeakRunAnchor(Base):
     # verdict and its evidence, what the claim wrote and kept, its per-member
     # states left out (``batch_peaks.known_species_summary``); NULL for none.
     known_species: Mapped[Optional[dict]] = mapped_column(JSON)
+    # The rung of a reagent ion's water ladder the anchor sits at, as the
+    # run left it: the rung, its reading per acquisition segment, what the
+    # claim wrote and kept, its per-member states left out
+    # (``batch_peaks.water_ladder_summary``); NULL for none.
+    water_ladder: Mapped[Optional[dict]] = mapped_column(JSON)
     candidates: Mapped[Optional[list]] = mapped_column(JSON)
     members: Mapped[Optional[dict]] = mapped_column(JSON)
 

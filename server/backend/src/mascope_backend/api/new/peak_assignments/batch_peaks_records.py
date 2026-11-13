@@ -28,6 +28,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     standing_merged_isotopologues_record,
     standing_series_record,
     tier_name,
+    water_ladder_summary,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
     engine_tier_filters,
@@ -101,7 +102,11 @@ def _batch_peak_meta(bp) -> dict:
     the known-species decision read one: the species, whether the batch
     decided it present and on what evidence, what its claim wrote and which
     samples it kept, each with its reading (``batch_known_species``); None
-    where no decision stands.
+    where no decision stands. ``water_ladder`` is the rung of a reagent ion's
+    water ladder the anchor sits at, where the batch's series passed it in an
+    acquisition segment: the rung, its reading per segment, what its claim
+    wrote and the samples it kept (``batch_water_ladder``); None where no
+    reading stands.
     """
     return {
         "batch_peak_id": bp.batch_peak_id,
@@ -140,6 +145,7 @@ def _batch_peak_meta(bp) -> dict:
         "merged_isotopologues": standing_merged_isotopologues_record(bp),
         "batch_checks": standing_batch_checks_record(bp),
         "known_species": known_species_summary(bp),
+        "water_ladder": water_ladder_summary(bp),
         "reference_listing": consensus_listing(
             bp.candidates,
             bp.consensus_formula,

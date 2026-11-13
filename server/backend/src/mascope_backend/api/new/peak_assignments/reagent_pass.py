@@ -65,7 +65,10 @@ ion's evidence over its files and decided it present (step 4.2h,
 even where the file's own floor or ladder would not (:func:`claim_batch_species`),
 and the row names the batch's decision as its reason. The batch's own claim on
 the files it has already folded writes the same row over the reading a file's
-run made (:func:`batch_species_row`).
+run made (:func:`batch_species_row`). So does its water ladder: where the
+batch's own series passes a rung of a reagent ion's water ladder in an
+acquisition segment (step 4.2j, ``batch_water_ladder``), the files of that
+segment read the rung's peak as the reagent's ion (:func:`water_rung_row`).
 """
 
 from __future__ import annotations
@@ -119,6 +122,7 @@ from mascope_tools.composition.reagents import (
 
 __all__ = [
     "REASON_BATCH_KNOWN_SPECIES",
+    "REASON_BATCH_WATER_LADDER",
     "BatchSpecies",
     "FragmentClaims",
     "batch_species_from",
@@ -131,6 +135,7 @@ __all__ = [
     "fragment_ladders_for",
     "ion_ladders_for",
     "reagent_library_for",
+    "water_rung_row",
 ]
 
 
@@ -591,6 +596,112 @@ def batch_species_row(
         ),
         "alternatives": alternatives[:MAX_ALTERNATIVES_CEILING] or None,
         "provenance": {"reagent": record},
+    }
+
+
+#: The reason a row claimed as a rung of its batch's water ladder names, under
+#: ``provenance.reagent.reason``, with the batch's reading of the rung beside it
+#: under the same key.
+REASON_BATCH_WATER_LADDER = "batch_water_ladder"
+
+
+def water_rung_row(
+    row: dict,
+    rung: ReagentCluster,
+    record: dict,
+    *,
+    exact_mz: float,
+    isotope_label: str | None = None,
+    owner_peak_assignment_id: str | None = None,
+    keep_line: bool = False,
+) -> dict:
+    """The values that rewrite a sample's row as a rung of its batch's water
+    ladder: the batch's claim on a file of a segment the rung passed in.
+
+    Shaped as the pre-pass's ladder rows are (:func:`build_reagent_assignments`):
+    the ion and no analyte, its tier ``unassigned``, its family and works, and
+    the batch's reading of the rung (``record``) as its reason. Three kinds of
+    row take it. The rung's monoisotopic peak is measured against the rung's
+    own mass. A line of a row the claim rewrites (``keep_line``), the rung's
+    81Br line a stage read as the analyte's, keeps the label and the errors its
+    run measured it at and the owner it folds under, as
+    :func:`batch_species_row` keeps a library ion's lines. A peak at one of the
+    rung's heavier lines read on its own takes the line's label and, where the
+    file's row on the rung's monoisotopic peak is the rung, that row as its
+    owner. The reading the row carried is recorded under
+    ``provenance.reagent.read_as``, and first among its alternatives where it
+    named a formula and was no line, so "use this" puts it back. The row is
+    left as it is; the caller writes the values.
+
+    :param row: The sample's row.
+    :param rung: The rung.
+    :param record: The batch's reading of the rung, as the row records it.
+    :param exact_mz: The mass of the line the row sits at.
+    :param isotope_label: The line's label, for a heavier line read on its
+        own; None for the monoisotopic peak.
+    :param owner_peak_assignment_id: The file's row on the rung's monoisotopic
+        peak, for a heavier line read on its own, where that row is the rung.
+    :param keep_line: Whether the row is a line of a row the claim rewrites.
+    :return: The row's new column values.
+    """
+    mz = row.get("sample_peak_mz")
+    reagent: dict = {
+        "ion": rung.label,
+        "kind": rung.kind,
+        "family": rung.family,
+        "references": list(rung.references),
+        "mz": round(exact_mz, 5),
+        "reason": REASON_BATCH_WATER_LADDER,
+        REASON_BATCH_WATER_LADDER: dict(record),
+        "read_as": {
+            "role": row.get("role"),
+            "formula": row.get("assigned_formula"),
+            "ion_formula": row.get("ion_formula"),
+            "ionization_mechanism_id": row.get("ionization_mechanism_id"),
+            "isotope_label": row.get("isotope_label"),
+            "source": row.get("source"),
+            "tier": row.get("tier"),
+        },
+    }
+    if rung.observed:
+        reagent["observed"] = rung.observed
+    alternatives = list(row.get("alternatives") or [])
+    if row.get("assigned_formula") and not keep_line:
+        alternatives = [reading_as_alternative(row, DISPLACED_BY_CLAIM), *alternatives]
+    if keep_line:
+        label = row.get("isotope_label")
+        error = row.get("mz_error_ppm")
+        abundance = row.get("abundance_error")
+        owner = row.get("owner_peak_assignment_id")
+    else:
+        label = isotope_label
+        try:
+            error = (
+                None
+                if mz is None
+                else round((float(mz) - exact_mz) / exact_mz * 1e6, 4)
+            )
+        except (TypeError, ValueError, ZeroDivisionError):
+            error = None
+        abundance = None
+        owner = owner_peak_assignment_id if isotope_label else None
+    return {
+        "role": ROLE_REAGENT,
+        "assigned_formula": None,
+        "ion_formula": _signed_ion(rung.formula, rung.charge),
+        "ionization_mechanism_id": None,
+        "isotope_label": label,
+        "isotope_formula": None,
+        "source": SOURCE_REAGENT,
+        "fit_score": None,
+        "mz_error_ppm": error,
+        "abundance_error": abundance,
+        "tier": TIER_UNASSIGNED,
+        "target_compound_id": None,
+        "target_ion_id": None,
+        "owner_peak_assignment_id": owner,
+        "alternatives": alternatives[:MAX_ALTERNATIVES_CEILING] or None,
+        "provenance": {"reagent": reagent},
     }
 
 

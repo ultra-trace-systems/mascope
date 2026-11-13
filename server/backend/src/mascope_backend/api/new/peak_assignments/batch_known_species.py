@@ -121,6 +121,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
 )
 from mascope_backend.api.new.peak_assignments.reagent_pass import (
     REASON_BATCH_KNOWN_SPECIES,
+    REASON_BATCH_WATER_LADDER,
     BatchSpecies,
     batch_species_from,
     batch_species_row,
@@ -1340,13 +1341,18 @@ def _member_from(
     )
 
 
+#: The reasons a pre-pass row names where the batch, not the file, claimed it.
+_BATCH_REASONS = (REASON_BATCH_KNOWN_SPECIES, REASON_BATCH_WATER_LADDER)
+
+
 async def _row_marks(
     session, sample_batch_id: str, batch_peak_ids: Optional[list[str]] = None
 ) -> Marks:
     """Per member, what its sample's row says the decision must respect
     (:class:`Marks`). A row was written on the batch's word where it names the
-    decision: a library ion's under ``provenance.reagent.reason``, a listed
-    compound's under its own key."""
+    decision - a library ion's under ``provenance.reagent.reason``, a listed
+    compound's under its own key - or the batch's water ladder, whose claim
+    on a rung is a segment's and not the file's own test."""
     query = (
         select(
             BatchPeakOccurrence.batch_peak_id,
@@ -1388,8 +1394,7 @@ async def _row_marks(
         marks.rows[key] = (
             (row.role, row.assigned_formula, row.ion_formula, row.tier),
             row.isotope_label,
-            row.reagent_reason == REASON_BATCH_KNOWN_SPECIES
-            or row.batch_listed is not None,
+            row.reagent_reason in _BATCH_REASONS or row.batch_listed is not None,
         )
     claims = marks.claims
     for start in range(0, len(reagent_rows), ROW_READ_CHUNK):
