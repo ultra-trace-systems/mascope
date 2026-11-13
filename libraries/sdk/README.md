@@ -430,6 +430,9 @@ species = mascope.load_batch_ledger(dataset="My Dataset", members=False)
 ```
 
 Key columns of a member row: the anchor's `batch_peak_id`, `batch_mz`,
+`instrument_type` (`orbi` or `tof`) and `intensity_variable` (the unit of
+`max_intensity` and `intensity`: Orbitrap heights or TOF areas; group by
+`instrument_type` before summing on a batch of both),
 `consensus_formula`, `consensus_tier`, `engine_tier` and `engine_claim` (an imported
 engine's own verdict on the batch peak, empty where none was given),
 `support_fraction`, `n_present`, `curated` (pinned by hand for the whole batch), beside the member's `sample_item_name`,

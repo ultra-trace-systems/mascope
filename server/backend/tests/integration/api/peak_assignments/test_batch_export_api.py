@@ -13,7 +13,10 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select, update
 
-from mascope_backend.api.new.peak_assignments import batch_peaks_routes
+from mascope_backend.api.new.peak_assignments import (
+    batch_peaks_controller,
+    batch_peaks_routes,
+)
 from mascope_backend.api.new.peak_assignments.batch_export import (
     COLUMNS,
     write_batch_ledger_csv,
@@ -42,6 +45,8 @@ _ROWS = {
         ("p3", 200.1234, None, None, "unassigned", None, 300.0),
     ],
     "S2": [("p1", 181.0708, "C6H12O6", "C6H13O6+", "assigned", 0.90, 4000.0)],
+    # The TOF sample of the mixed batch: the same species, its intensity an area.
+    "T1": [("p1", 181.0709, "C6H12O6", "C6H13O6+", "assigned", 0.85, 90000.0)],
 }
 
 
@@ -127,6 +132,96 @@ async def ledger(async_session_factory, pa_test_data):
     assert await fold_sample_into_batch_peaks(s1) == batch_id
     assert await fold_sample_into_batch_peaks(s2) == batch_id
     return {"batch_id": batch_id, "s1": s1, "s2": s2}
+
+
+@pytest_asyncio.fixture
+async def mixed_ledger(async_session_factory, pa_test_data, monkeypatch):
+    """A batch of one Orbitrap and one TOF sample, the same species in both:
+    two batch peaks at the same m/z, one per instrument type's partition."""
+    # The fold reads the instrument type off the file name; T1 is the TOF file.
+    monkeypatch.setattr(
+        batch_peaks_controller,
+        "get_instrument_type",
+        lambda filename: "tof" if "-T1-" in filename else "orbi",
+    )
+    now = datetime.now(timezone.utc)
+    batch_id = gen_id()
+    async with async_session_factory() as session:
+        dataset_id = (
+            await session.execute(
+                select(SampleBatch.dataset_id).where(
+                    SampleBatch.sample_batch_id == pa_test_data["sample_batch_id"]
+                )
+            )
+        ).scalar_one()
+        session.add(
+            SampleBatch(
+                sample_batch_id=batch_id,
+                dataset_id=dataset_id,
+                sample_batch_name=f"Mixed ledger export {batch_id}",
+                sample_batch_utc_created=now,
+            )
+        )
+        s1 = await _seed_sample(session, batch_id, "S1", _ROWS["S1"], now)
+        t1 = await _seed_sample(session, batch_id, "T1", _ROWS["T1"], now)
+        await session.commit()
+    assert await fold_sample_into_batch_peaks(s1) == batch_id
+    assert await fold_sample_into_batch_peaks(t1) == batch_id
+    return {"batch_id": batch_id, "s1": s1, "t1": t1}
+
+
+def _partitions(rows):
+    """(sample, instrument type, unit, formula, intensity) per row, sorted."""
+    return sorted(
+        (
+            r["sample_item_id"],
+            r["instrument_type"],
+            r["intensity_variable"],
+            r["consensus_formula"] or "",
+            r["intensity"],
+        )
+        for r in rows
+    )
+
+
+async def test_the_members_route_names_each_rows_partition(guest_client, mixed_ledger):
+    response = await guest_client.get(
+        f"/api/batch-peaks/batch/{mixed_ledger['batch_id']}/members"
+    )
+    assert response.status_code == 200, response.text
+    rows = response.json()["data"]
+    s1, t1 = mixed_ledger["s1"], mixed_ledger["t1"]
+    assert _partitions(rows) == sorted(
+        [
+            (s1, "orbi", "sum_peak_heights", "C6H12O6", 5000.0),
+            (s1, "orbi", "sum_peak_heights", "", 300.0),
+            (t1, "tof", "sum_peak_areas", "C6H12O6", 90000.0),
+        ]
+    )
+    # The two glucose rows are two batch peaks, one per partition.
+    glucose = [r for r in rows if r["consensus_formula"] == "C6H12O6"]
+    assert len({r["batch_peak_id"] for r in glucose}) == 2
+
+
+async def test_the_export_names_each_rows_partition(mixed_ledger, test_users):
+    user_id = test_users["editor"].id
+    name, rows = await write_batch_ledger_csv(mixed_ledger["batch_id"], user_id)
+    assert rows == 3
+    path = user_temp_path(user_id, name, create=False)
+    try:
+        frame = pd.read_csv(path, sep=";")
+        assert list(frame.columns) == list(COLUMNS)
+        frame["consensus_formula"] = frame["consensus_formula"].fillna("")
+        s1, t1 = mixed_ledger["s1"], mixed_ledger["t1"]
+        assert _partitions(frame.to_dict("records")) == sorted(
+            [
+                (s1, "orbi", "sum_peak_heights", "C6H12O6", 5000.0),
+                (s1, "orbi", "sum_peak_heights", "", 300.0),
+                (t1, "tof", "sum_peak_areas", "C6H12O6", 90000.0),
+            ]
+        )
+    finally:
+        os.remove(path)
 
 
 async def test_the_members_route_pages_the_flat_ledger(guest_client, ledger):

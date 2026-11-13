@@ -15,6 +15,7 @@ def _anchor(**over):
         sample_batch_id="sb-1",
         batch_peak_id="bp-1",
         mz=181.0707,
+        intensity_variable="sum_peak_heights",
         consensus_formula="C6H12O6",
         consensus_ion_formula="C6H13O6+",
         ionization_mechanism_id="mH",
@@ -85,6 +86,23 @@ def test_a_row_carries_the_anchors_engine_verdict_beside_the_consensus():
     # An anchor column: every member of the anchor carries it, whatever it reads.
     other = member_export_row(_member(role=2, candidate=None), anchor, "Sample 2")
     assert (other["engine_tier"], other["engine_claim"]) == ("candidate", "level 3")
+
+
+@pytest.mark.parametrize(
+    ("intensity_variable", "instrument_type"),
+    [("sum_peak_heights", "orbi"), ("sum_peak_areas", "tof"), (None, None)],
+)
+def test_a_row_names_its_anchors_partition_and_intensity_unit(
+    intensity_variable, instrument_type
+):
+    """An Orbitrap and a TOF batch peak can share a batch_mz; the row says
+    which partition it is, so heights and areas are never summed together."""
+    anchor = _anchor(intensity_variable=intensity_variable)
+    row = member_export_row(_member(), anchor, "Sample 1")
+    assert (row["instrument_type"], row["intensity_variable"]) == (
+        instrument_type,
+        intensity_variable,
+    )
 
 
 def test_an_anchor_no_import_judged_carries_no_engine_verdict():
