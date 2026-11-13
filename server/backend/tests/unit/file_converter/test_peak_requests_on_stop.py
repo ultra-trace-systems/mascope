@@ -12,7 +12,9 @@ and the socket handler refuses a request that arrives once the stop is set.
 Both release the ``PeakDetectionGuard`` slot the request held. Those answers
 are only queued on the socket, and a disconnect right after them closes it
 before most are sent, so the stop waits, a bounded time, for the backend to
-acknowledge them; only a real server shows that they arrive.
+acknowledge them. So it does for the last events the threads it joined sent:
+a peak detection that was running when the stop came, a conversion finished
+in the grace period. Only a real server shows that they arrive.
 """
 
 import asyncio
@@ -27,10 +29,11 @@ from unittest.mock import MagicMock, patch
 import socketio
 import uvicorn
 
-from mascope_backend.file_converter import service
+from mascope_backend.file_converter import peak_recompute_worker, service
 from mascope_backend.file_converter.peak_guard import PeakDetectionGuard
 from mascope_backend.file_converter.peak_recompute_worker import (
     STOPPED_MESSAGE,
+    PeakRecomputeWorker,
     drain_on_stop,
 )
 from mascope_backend.file_converter.socket.client import FileConverterSocketClient
@@ -55,14 +58,27 @@ def _errors(socket_client) -> list[tuple[dict, dict]]:
 
 
 @contextmanager
-def _stop_path(tmp_path, shutdown, queue, guard, socket_client, requests):
+def _stop_path(
+    tmp_path,
+    shutdown,
+    queue,
+    guard,
+    socket_client,
+    requests,
+    raw_processor=None,
+    before_stop=None,
+):
     """``service.run()`` with its pipeline faked and the real peak workers.
 
     The requests go on the queue once the stop is set and the workers have
     left their loop, as ones that arrive while a conversion drains do.
+    ``raw_processor`` builds the raw processors (a mock by default), and
+    ``before_stop`` runs before the stop is set.
     """
 
     def main(supervised):
+        if before_stop is not None:
+            before_stop()
         shutdown.set()
         for slot in supervised:
             slot.join()
@@ -88,7 +104,7 @@ def _stop_path(tmp_path, shutdown, queue, guard, socket_client, requests):
         patch.object(service, "wait_for_backend", lambda: True),
         patch.object(service, "FSWatcher", MagicMock()),
         patch.object(service, "H5Processor", MagicMock()),
-        patch.object(service, "RawProcessor", MagicMock()),
+        patch.object(service, "RawProcessor", raw_processor or MagicMock()),
         patch.object(service, "main", main),
     ):
         yield
@@ -120,7 +136,6 @@ def test_the_stop_answers_a_request_left_on_the_queue(tmp_path):
         < names.index("wait_for_acknowledgements")
         < names.index("sio.disconnect")
     )
-    assert socket_client.emit.call_args.kwargs["awaited"] is True
     socket_client.wait_for_acknowledgements.assert_called_once_with(
         service.STOP_ACKNOWLEDGEMENT_SECONDS
     )
@@ -128,11 +143,13 @@ def test_the_stop_answers_a_request_left_on_the_queue(tmp_path):
 
 @contextmanager
 def _backend():
-    """A Socket.IO server on loopback that records the errors it receives.
+    """A Socket.IO server on loopback that records the events it receives.
 
-    It acknowledges each event as the backend does, with its handler's return.
+    It records a peak detection error by its process id, and any other event
+    as ``(event, filename)``. It acknowledges each event as the backend does,
+    with its handler's return.
     """
-    received: list[str] = []
+    received: list = []
     sio = socketio.AsyncServer(async_mode="asgi", namespaces=["/file-converter"])
 
     @sio.on("connect", namespace="/file-converter")
@@ -142,6 +159,13 @@ def _backend():
     @sio.on("peak_detection_error", namespace="/file-converter")
     async def peak_detection_error(sid, data):
         received.append(data["process_id"])
+
+    for event in ("peak_detection_complete", "file_processing_success"):
+
+        async def handler(sid, data, event=event):
+            received.append((event, data["filename"]))
+
+        sio.on(event, handler, namespace="/file-converter")
 
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
@@ -181,6 +205,99 @@ def test_the_stop_delivers_its_answers_before_it_disconnects(tmp_path):
 
         assert not client.sio.connected
         assert sorted(received) == sorted(r["process_id"] for r in requests)
+
+
+def _peak_workers_gone(timeout: float = 10) -> None:
+    deadline = time.monotonic() + timeout
+    while any(isinstance(t, PeakRecomputeWorker) for t in threading.enumerate()):
+        assert time.monotonic() < deadline, "the peak workers did not stop"
+        time.sleep(0.01)
+
+
+class _LastConversions(threading.Thread):
+    """Raw processors whose conversions end in the stop's grace period.
+
+    The peak workers leave within a second of the stop, a conversion in
+    flight can take much longer, so these send their successes once every
+    peak worker is gone: right before the last join returns and the
+    disconnect follows.
+    """
+
+    def __init__(self, socket_client, shutdown_event, **_):
+        super().__init__(daemon=True)
+        self.socket_client = socket_client
+        self.shutdown_event = shutdown_event
+
+    def run(self):
+        self.shutdown_event.wait()
+        _peak_workers_gone()
+        for n in range(40):
+            self.socket_client.emit(
+                "file_processing_success",
+                {"filename": f"converted-{n}", "instrument": "instrument X"},
+            )
+
+
+@contextmanager
+def _in_flight_peaks(requests: list[dict]):
+    """A backend, and a client whose peak workers are each running one of
+    ``requests`` when the stop comes; each finishes once the stop is set."""
+    shutdown = Event()
+    queue = Queue()
+    guard = PeakDetectionGuard()
+    running = threading.Semaphore(0)
+
+    def compute_peaks(filename, instrument_functions, progress_callback):
+        running.release()
+        shutdown.wait()
+
+    def all_running():
+        for _ in requests:
+            assert running.acquire(timeout=10), "a peak detection did not start"
+
+    for request in requests:
+        guard.acquire(request["filename"])
+        queue.put(request)
+    with (
+        _backend() as (url, received),
+        patch.object(peak_recompute_worker, "is_blank_sample_file", lambda *a: False),
+        patch.object(peak_recompute_worker, "fetch_instrument_functions", MagicMock()),
+        patch.object(peak_recompute_worker, "compute_peaks", compute_peaks),
+        patch.object(PeakRecomputeWorker, "_check_rebuilt_store"),
+    ):
+        client = FileConverterSocketClient(
+            url, peak_recompute_queue=queue, peak_guard=guard, shutdown_event=shutdown
+        )
+        client.connect()
+        yield client, received, shutdown, queue, guard, all_running
+
+
+def test_the_stop_delivers_a_peak_detection_running_when_it_came(tmp_path):
+    """Each worker sends its result and leaves at once: the disconnect would
+    follow right after."""
+    requests = [
+        _request(f"in-flight-{n}", f"process-{n}")
+        for n in range(service.PEAK_CONCURRENCY)
+    ]
+    with _in_flight_peaks(requests) as (client, received, *stop, all_running):
+        with _stop_path(tmp_path, *stop, client, [], before_stop=all_running):
+            service.run()
+
+        assert not client.sio.connected
+    assert sorted(received) == sorted(
+        ("peak_detection_complete", r["filename"]) for r in requests
+    )
+
+
+def test_the_stop_delivers_a_conversion_finished_in_its_grace_period(tmp_path):
+    with _in_flight_peaks([]) as (client, received, *stop, _):
+        with _stop_path(tmp_path, *stop, client, [], raw_processor=_LastConversions):
+            service.run()
+
+        assert not client.sio.connected
+    assert sorted(received) == sorted(
+        ("file_processing_success", f"converted-{n}") for n in range(40)
+    )
 
 
 def test_the_drain_answers_every_request_and_survives_a_failed_emit():
@@ -273,10 +390,10 @@ def _acknowledge(client, n: int = -1, *args) -> None:
     client.sio.emit.call_args_list[n].kwargs["callback"](*args)
 
 
-def test_an_awaited_event_is_waited_for_until_acknowledged():
+def test_an_event_is_waited_for_until_acknowledged():
     client = _counting_client()
-    client.emit("peak_detection_error", {"filename": "sample"}, awaited=True)
-    client.emit("peak_detection_error", {"filename": "other"}, awaited=True)
+    client.emit("peak_detection_error", {"filename": "sample"})
+    client.emit("peak_detection_error", {"filename": "other"})
 
     assert client.wait_for_acknowledgements(0.05) is False
     _acknowledge(client, 0)
@@ -288,7 +405,7 @@ def test_an_awaited_event_is_waited_for_until_acknowledged():
 
 def test_an_acknowledgement_wakes_the_wait():
     client = _counting_client()
-    client.emit("peak_detection_error", {"filename": "sample"}, awaited=True)
+    client.emit("peak_detection_error", {"filename": "sample"})
     timer = threading.Timer(0.1, _acknowledge, args=(client,))
     timer.start()
 
@@ -298,24 +415,26 @@ def test_an_acknowledgement_wakes_the_wait():
     timer.join()
 
 
-def test_an_event_not_awaited_is_not_waited_for():
+def test_every_event_is_waited_for():
     client = _counting_client()
-    client.emit("conversion_progress", {"filename": "sample"})
+    client.emit("file_processing_success", {"filename": "sample"})
 
+    assert client.wait_for_acknowledgements(0.05) is False
+    _acknowledge(client)
     assert client.wait_for_acknowledgements(0) is True
 
 
 def test_an_event_that_was_not_sent_is_not_waited_for():
     client = _counting_client()
     client.sio.emit.side_effect = RuntimeError("socket gone")
-    client.emit("peak_detection_error", {"filename": "sample"}, awaited=True)
+    client.emit("peak_detection_error", {"filename": "sample"})
 
     assert client.wait_for_acknowledgements(0) is True
 
 
 def test_a_disconnect_ends_the_wait_for_its_acknowledgements():
     client = _counting_client()
-    client.emit("peak_detection_error", {"filename": "sample"}, awaited=True)
+    client.emit("peak_detection_error", {"filename": "sample"})
 
     on_disconnect = client.sio.handlers["/file-converter"]["disconnect"]
     timer = threading.Timer(0.1, on_disconnect)
@@ -331,14 +450,14 @@ def test_a_disconnect_ends_the_wait_for_its_acknowledgements():
     assert client.wait_for_acknowledgements(0) is True
 
 
-def test_an_awaited_event_still_has_its_acknowledgement_read():
+def test_a_waited_for_event_still_has_its_acknowledgement_read():
     client = _counting_client()
     data = {"filename": "sample", "access_token": "token-1"}
-    client.emit("peak_detection_error", dict(data), awaited=True)
+    client.emit("peak_detection_error", dict(data))
 
     _acknowledge(client, -1, {"error": "SOCKET_FORBIDDEN"})
 
     # The rejected token holds the next event back, as for any event.
-    client.emit("peak_detection_error", dict(data), awaited=True)
+    client.emit("peak_detection_error", dict(data))
     assert client.sio.emit.call_count == 1
     assert client.wait_for_acknowledgements(0) is True
