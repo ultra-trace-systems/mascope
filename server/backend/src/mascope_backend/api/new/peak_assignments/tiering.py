@@ -122,6 +122,16 @@ it was, whatever series it sits in. Nor does it hold a row against being read
 as a neighbour's isotope line, which a second channel does: a series says the
 formula has homologues, not that the peak is not a line.
 
+``persistence_only`` - step 4.2b, a batch peak's rule rather than this pass's.
+The batch's untargeted search takes a peak present in more of its partition's
+spectra than the batch's split of their occurrence distribution, however faint
+(``batch_untargeted.py``): persistence says an ion is there. It does not say
+which formula, so a reading the search elected on that admission alone is held
+at candidate on its batch peak until a line of its isotope pattern, another
+channel or a series of the batch sees it - this pass's second observations,
+read across the batch (``batch_peaks.hold_persistence_only``). It is named here
+so the batch ledger's reasons and a run's share one vocabulary.
+
 ``absent_line`` - step 3.4e: a line the spectrum should have shown is not
 there. Each committed monoisotopic row's envelope is predicted as the claims
 read it (:func:`predicted_envelope`), and a line is asked where the fit's own
@@ -314,6 +324,16 @@ REASON_CANDIDATE_DENSITY = "candidate_density"
 #: saw its neutral: no line of its own isotope pattern, no second channel, no
 #: list.
 REASON_LONE_PEAK = "lone_peak"
+
+#: The batch's untargeted search took the peak because it is present in more
+#: of its partition's spectra than the batch's split of their occurrence
+#: distribution, not because of its height (step 4.2b), and nothing besides
+#: the peak saw the reading it elected there: no line of its isotope pattern
+#: in a sample, no other channel of the batch, no series. A batch peak's rule,
+#: applied by its consensus (``batch_peaks.hold_persistence_only``), which
+#: records it in this vocabulary and lifts it on the second observations
+#: :data:`REASON_LONE_PEAK` reads.
+REASON_PERSISTENCE_ONLY = "persistence_only"
 
 #: A line of the row's predicted envelope that the detectability gate says the
 #: spectrum should have shown, and that the spectrum does not hold.

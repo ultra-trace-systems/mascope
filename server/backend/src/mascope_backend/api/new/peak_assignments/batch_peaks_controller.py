@@ -25,6 +25,7 @@ import json
 import statistics
 from collections import defaultdict
 from datetime import datetime, timezone
+from typing import Iterable
 
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -35,8 +36,10 @@ from mascope_backend.api.new.ionization.modes.versions import root_ids
 from mascope_backend.api.new.peak_assignments import batch_peaks
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     DIAGNOSTIC_ISOTOPOLOGUES_KEY,
+    HELD_MEMBERS_KEY,
     MERGED_ISOTOPOLOGUE_OF_KEY,
     MERGED_ISOTOPOLOGUES_KEY,
+    PERSISTENCE_KEY,
     ROLE_ISO_CHILD,
     ROLE_REAGENT,
     SOURCE_ROLES,
@@ -44,17 +47,23 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     Anchor,
     AnchorSet,
     Consensus,
+    PersistenceFacts,
     batch_checks_record_of,
     candidate_index,
     co_variation_record_of,
     compute_consensus,
     diagnostic_isotopologues_record_of,
     fold_in_sample,
+    held_member_tiers,
+    hold_persistence_only,
     known_species_record_of,
     manual_pin_of,
+    measured_members,
     merged_isotopologue_of_record,
     merged_isotopologues_record,
     mz_delta_ppm,
+    persistence_asks,
+    persistence_record_of,
     resolution_adaptive_tol_ppm,
     resolve_candidate,
     role_code,
@@ -74,6 +83,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     start_run,
     touch_ledger,
 )
+from mascope_backend.api.new.peak_assignments.cross_channel import neutral_key
 from mascope_backend.api.new.peak_assignments.listing import reference_listing
 from mascope_backend.db import (
     BatchPeak,
@@ -542,32 +552,54 @@ async def _recompute_consensus(
 
     Runs on the caller's session and inside the caller's transaction; the chunks
     are statements, not transactions.
+
+    The persistence rule reads its second channel off the other batch peaks'
+    readings (:func:`_persistence_facts`), and a chunk reads those of a later
+    chunk as they stood before this pass. So where the set took more than one
+    chunk, the anchors the rule asked are recomputed once more at the end,
+    when every reading in the set is the new one.
     """
     ids = sorted(batch_peak_ids)
+    asked: set[str] = set()
     for start in range(0, len(ids), _CONSENSUS_CHUNK):
-        await _recompute_consensus_chunk(
+        asked |= await _recompute_consensus_chunk(
             session, ids[start : start + _CONSENSUS_CHUNK], now
         )
+    if len(ids) > _CONSENSUS_CHUNK and asked:
+        settle = sorted(asked)
+        for start in range(0, len(settle), _CONSENSUS_CHUNK):
+            await _recompute_consensus_chunk(
+                session, settle[start : start + _CONSENSUS_CHUNK], now
+            )
 
 
 async def _recompute_consensus_chunk(
     session, id_list: list[str], now: datetime
-) -> None:
+) -> set[str]:
     """One statement's worth of :func:`_recompute_consensus`.
 
     Reads the anchors, when their batches' samples were acquired, and the
-    members, and nothing else: a member's
-    formula, ion formula and mechanism are the registry entry its
-    ``candidate`` index names on its own anchor, its tier and role are codes
-    (``tier_name``, ``role_name``), and its family link and P(correct) are
-    columns of its own. The per-sample ledger is not consulted, so a member
-    whose ledger row has since been pruned or deleted votes exactly as it did
-    the day it was folded. The acquisition times are for the probable-blend
-    test's time axis (``batch_blend.py``), read once per batch rather than
-    joined to every member.
+    members, and nothing else: a member's formula, ion formula and mechanism
+    are the registry entry its ``candidate`` index names on its own anchor, its
+    tier and role are codes (``tier_name``, ``role_name``), and its family link
+    and P(correct) are columns of its own. The per-sample ledger is not
+    consulted, so a member whose ledger row has since been pruned or deleted
+    votes exactly as it did the day it was folded. The acquisition times are
+    for the probable-blend test's time axis (``batch_blend.py``), read once per
+    batch rather than joined to every member.
+
+    Every anchor's vote is taken before any is written. The persistence rule
+    (``batch_peaks.hold_persistence_only``) then reads, for the readings it
+    asks, what other batch peaks hold beside them (:func:`_persistence_facts`)
+    - this chunk's at the readings just voted - and only then is each anchor
+    written, and the members of a reading the rule holds stored at candidate
+    (:func:`_store_held_members`). The vote reads those members at the tiers
+    they were measured at (``batch_peaks.measured_members``).
+
+    :return: The anchors the persistence rule asked.
     """
     if not id_list:
-        return
+        return set()
     # One read for the anchors rather than one `get` per anchor: a whole-batch
     # recompute walks thousands of them.
     anchors = (
@@ -638,8 +670,15 @@ async def _recompute_consensus_chunk(
     # their members read them otherwise now, or the anchor went. Parent id ->
     # those rows.
     released: dict[str, set[str]] = defaultdict(set)
+    voted: dict[str, tuple[BatchPeak, Consensus]] = {}
     for bp in anchors:
-        members = members_by_peak.get(bp.batch_peak_id, [])
+        persistence = persistence_record_of(bp)
+        # The vote reads a member the persistence rule holds at the tier it
+        # was measured at; the rule then decides what each is stored at.
+        members = measured_members(
+            members_by_peak.get(bp.batch_peak_id, []), persistence
+        )
+        members_by_peak[bp.batch_peak_id] = members
         diagnostic_isotopologues = diagnostic_isotopologues_record_of(bp)
         merged_isotopologue_of = merged_isotopologue_of_record(bp)
         if not members:
@@ -661,6 +700,7 @@ async def _recompute_consensus_chunk(
             merged_isotopologues=merged_isotopologues_record(bp),
             batch_checks=batch_checks_record_of(bp),
             known_species=known_species_record_of(bp),
+            persistence=persistence,
         )
         if (
             diagnostic_isotopologues is not None
@@ -672,9 +712,217 @@ async def _recompute_consensus_chunk(
             and MERGED_ISOTOPOLOGUE_OF_KEY not in consensus.provenance
         ):
             released[merged_isotopologue_of["batch_peak_id"]].add(bp.batch_peak_id)
+        voted[bp.batch_peak_id] = (bp, consensus)
+    asked = {
+        bp_id: consensus
+        for bp_id, (_, consensus) in voted.items()
+        if persistence_asks(consensus) is not None
+    }
+    holds: dict[str, bool] = {}
+    if asked:
+        facts = await _persistence_facts(session, asked, voted)
+        for bp_id, consensus in asked.items():
+            holds[bp_id] = hold_persistence_only(
+                consensus, facts.get(bp_id, PersistenceFacts())
+            )
+    for bp_id, (bp, consensus) in voted.items():
+        await _store_held_members(
+            session, bp_id, consensus, members_by_peak[bp_id], holds.get(bp_id, False)
+        )
         _apply_consensus(bp, consensus, now)
     await _take_off_stamps(session, unstamped, now)
     await _take_off_merged_lines(session, released, now)
+    return set(asked)
+
+
+async def _store_held_members(
+    session, bp_id: str, consensus: Consensus, members: list[dict], holds: bool
+) -> None:
+    """Store the anchor's members at the tiers the persistence rule gives them
+    (``batch_peaks.held_member_tiers``), and keep on its record the ones it
+    holds, so a sample's own view of the reading stands where the batch's
+    does and a lift can put them back. Nothing for an anchor with no record.
+    """
+    record = consensus.provenance.get(PERSISTENCE_KEY)
+    if not isinstance(record, dict):
+        return
+    moves, held = held_member_tiers(members, record, holds)
+    record = {key: value for key, value in record.items() if key != HELD_MEMBERS_KEY}
+    if held:
+        record[HELD_MEMBERS_KEY] = held
+    consensus.provenance[PERSISTENCE_KEY] = record
+    by_tier: dict[str, list[str]] = defaultdict(list)
+    for sample_item_id, tier in moves.items():
+        by_tier[tier].append(sample_item_id)
+    for tier, samples in sorted(by_tier.items()):
+        await session.execute(
+            update(BatchPeakOccurrence)
+            .where(
+                BatchPeakOccurrence.batch_peak_id == bp_id,
+                BatchPeakOccurrence.sample_item_id.in_(sorted(samples)),
+            )
+            .values(tier=tier_code(tier))
+        )
+
+
+def line_samples(rows: Iterable[tuple], asked: dict[str, Consensus]) -> dict[str, int]:
+    """How many samples hold a committed line of each asked reading's isotope
+    pattern.
+
+    A member names an owner batch peak only where its sample read it as a line
+    of the owner's row: an analyte's isotopologue, under the owner's formula,
+    or a source ion's line, under none. So a member naming the batch peak
+    under the reading's formula and mechanism is a line of that reading; one
+    under another formula is a line of another reading of the peak, a sample
+    that dissents from the batch.
+
+    :param rows: (owner batch peak id, sample id, formula, mechanism) of every
+        member that names an asked batch peak as its owner.
+    :param asked: Batch peak id -> the fresh consensus the rule asks.
+    :return: Batch peak id -> the samples holding such a line; absent for none.
+    """
+    samples: dict[str, set] = defaultdict(set)
+    for owner, sample_item_id, formula, mechanism in rows:
+        consensus = asked.get(owner)
+        if (
+            consensus is not None
+            and formula == consensus.consensus_formula
+            and mechanism == consensus.ionization_mechanism_id
+        ):
+            samples[owner].add(sample_item_id)
+    return {owner: len(held) for owner, held in samples.items()}
+
+
+def partition_channels(
+    stored: Iterable[tuple], fresh: dict[str, tuple[tuple, Consensus]]
+) -> dict[tuple, set[str]]:
+    """The mechanisms each neutral is committed through, per partition.
+
+    As a run counts a second channel (``cross_channel.channels_by_neutral``):
+    a reading that commits a formula on a peak of its own - no line of
+    another batch peak's - through a mechanism, keyed on the neutral's
+    element counts (``cross_channel.neutral_key``), so two spellings of one
+    formula are one neutral. A batch peak's fresh consensus replaces what the
+    ledger stored for it.
+
+    :param stored: (batch peak id, partition, formula, mechanism,
+        ``isotopologue_of``) as the ledger holds them.
+    :param fresh: Batch peak id -> (its partition, its fresh consensus).
+    :return: (partition, neutral key) -> the mechanisms committing it.
+    """
+    readings = {
+        bp_id: (partition, formula, mechanism, isotopologue_of)
+        for bp_id, partition, formula, mechanism, isotopologue_of in stored
+    }
+    for bp_id, (partition, consensus) in fresh.items():
+        readings[bp_id] = (
+            partition,
+            consensus.consensus_formula,
+            consensus.ionization_mechanism_id,
+            consensus.isotopologue_of,
+        )
+    keys: dict[str, str] = {}
+    channels: dict[tuple, set[str]] = defaultdict(set)
+    for partition, formula, mechanism, isotopologue_of in readings.values():
+        if not formula or not mechanism or isotopologue_of is not None:
+            continue
+        if formula not in keys:
+            keys[formula] = neutral_key(formula)
+        channels[(partition, keys[formula])].add(mechanism)
+    return channels
+
+
+def _partition_of(bp: BatchPeak) -> tuple:
+    return (bp.sample_batch_id, bp.ionization_mode_id, bp.intensity_variable)
+
+
+async def _persistence_facts(
+    session,
+    asked: dict[str, Consensus],
+    voted: dict[str, tuple[BatchPeak, Consensus]],
+) -> dict[str, PersistenceFacts]:
+    """What the batch holds beside each reading the persistence rule asks.
+
+    - **A line of its isotope pattern**: the samples in which a member of
+      another batch peak is that reading's isotopologue (:func:`line_samples`)
+      - a line a sample's run committed, a line the search paired, a row the
+      strip rewrote: each is a member whose sample read its peak as the
+      reading's line.
+    - **Another channel**: the mechanisms other than the reading's through
+      which a batch peak of the same partition - the batch, the ionization
+      mode, the instrument type - commits the same neutral, at any tier that
+      commits it, as a run counts a second channel
+      (:func:`partition_channels`). This chunk's batch peaks are read at the
+      readings just voted, every other at the one the ledger holds.
+
+    :param asked: Anchor id -> the fresh consensus the rule asks.
+    :param voted: Every anchor of the chunk, with its fresh consensus.
+    :return: Anchor id -> its facts; an anchor with none is absent.
+    """
+    ids = sorted(asked)
+    # The readings earlier chunks of this pass wrote are still pending on the
+    # session; read without a flush, a session that does not autoflush would
+    # answer with what they read before the pass.
+    await session.flush()
+    entry = BatchPeak.candidates[BatchPeakOccurrence.candidate]
+    lines = line_samples(
+        (
+            await session.execute(
+                select(
+                    BatchPeakOccurrence.owner_batch_peak_id,
+                    BatchPeakOccurrence.sample_item_id,
+                    entry["formula"].as_string(),
+                    entry["ionization_mechanism_id"].as_string(),
+                )
+                .join(
+                    BatchPeak,
+                    BatchPeak.batch_peak_id == BatchPeakOccurrence.batch_peak_id,
+                )
+                .where(BatchPeakOccurrence.owner_batch_peak_id.in_(ids))
+            )
+        ).all(),
+        asked,
+    )
+    # Every reading of the batch, each in its own partition: the batch's
+    # committed batch peaks are a few thousand rows of four short columns.
+    sample_batch_ids = sorted({voted[bp_id][0].sample_batch_id for bp_id in ids})
+    stored = [
+        (bp_id, (sample_batch_id, mode, unit), formula, mechanism, isotopologue_of)
+        for bp_id, sample_batch_id, mode, unit, formula, mechanism, isotopologue_of in (
+            await session.execute(
+                select(
+                    BatchPeak.batch_peak_id,
+                    BatchPeak.sample_batch_id,
+                    BatchPeak.ionization_mode_id,
+                    BatchPeak.intensity_variable,
+                    BatchPeak.consensus_formula,
+                    BatchPeak.ionization_mechanism_id,
+                    BatchPeak.isotopologue_of,
+                ).where(
+                    BatchPeak.sample_batch_id.in_(sample_batch_ids),
+                    BatchPeak.consensus_formula.is_not(None),
+                )
+            )
+        ).all()
+    ]
+    channels = partition_channels(
+        stored,
+        {
+            bp_id: (_partition_of(bp), consensus)
+            for bp_id, (bp, consensus) in voted.items()
+        },
+    )
+    facts: dict[str, PersistenceFacts] = {}
+    for bp_id in ids:
+        bp, consensus = voted[bp_id]
+        others = channels.get(
+            (_partition_of(bp), neutral_key(consensus.consensus_formula)), set()
+        ) - {consensus.ionization_mechanism_id}
+        if lines.get(bp_id) or others:
+            facts[bp_id] = PersistenceFacts(
+                line_samples=lines.get(bp_id, 0), channels=tuple(sorted(others))
+            )
+    return facts
 
 
 async def _take_off_stamps(
@@ -852,13 +1100,26 @@ async def recompute_batch_consensus(
     """
     anchor_ids = sorted(batch_peak_ids)
     now = datetime.now(timezone.utc)
+    asked: set[str] = set()
     for start in range(0, len(anchor_ids), _CONSENSUS_CHUNK):
-        chunk = set(anchor_ids[start : start + _CONSENSUS_CHUNK])
+        chunk = anchor_ids[start : start + _CONSENSUS_CHUNK]
         async with async_session() as session:
             await _acquire_batch_fold_lock(session, sample_batch_id)
-            await _recompute_consensus(session, chunk, now)
+            asked |= await _recompute_consensus_chunk(session, chunk, now)
             await touch_ledger(session, sample_batch_id)
             await session.commit()
+    # The persistence rule's second pass, as `_recompute_consensus` takes one:
+    # a chunk read the later chunks' readings as they stood before this pass.
+    if len(anchor_ids) > _CONSENSUS_CHUNK and asked:
+        settle = sorted(asked)
+        for start in range(0, len(settle), _CONSENSUS_CHUNK):
+            async with async_session() as session:
+                await _acquire_batch_fold_lock(session, sample_batch_id)
+                await _recompute_consensus_chunk(
+                    session, settle[start : start + _CONSENSUS_CHUNK], now
+                )
+                await touch_ledger(session, sample_batch_id)
+                await session.commit()
     return len(anchor_ids)
 
 

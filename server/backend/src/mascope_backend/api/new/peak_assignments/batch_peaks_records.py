@@ -22,6 +22,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     manual_pin_of,
     merged_isotopologue_of_summary,
     mz_from_delta,
+    persistence_summary,
     stamped_isotopologue_of_summary,
     standing_batch_checks_record,
     standing_co_variation_record,
@@ -29,6 +30,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     standing_merged_isotopologues_record,
     standing_series_record,
     tier_name,
+    tier_reasons_of,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
     engine_tier_filters,
@@ -106,6 +108,15 @@ def _batch_peak_meta(bp) -> dict:
     its two leading formulas' members separate cleanly along intensity or
     acquisition time, with the two formulas, the axis and each axis' reading
     (``batch_blend``); None where they do not.
+    ``persistence`` is the batch search's admission of the anchor on its
+    peak's persistence, where its height did not admit it: the share of its
+    partition's spectra the peak was in, the counts, the split it cleared and
+    the reading the search elected (``batch_untargeted``); None where the
+    search took the anchor on its height or never searched it.
+    ``tier_reasons`` is what the batch's own rules say of the anchor's reading,
+    in a run's vocabulary (``rule``, ``detail``, ``caps``): the persistence
+    rule's cap, or the second observations that lift it
+    (``batch_peaks.hold_persistence_only``); None where no rule asked it.
     """
     return {
         "batch_peak_id": bp.batch_peak_id,
@@ -145,6 +156,8 @@ def _batch_peak_meta(bp) -> dict:
         "batch_checks": standing_batch_checks_record(bp),
         "known_species": known_species_summary(bp),
         "blend": blend_record_of(bp),
+        "persistence": persistence_summary(bp),
+        "tier_reasons": tier_reasons_of(bp),
         "reference_listing": consensus_listing(
             bp.candidates,
             bp.consensus_formula,

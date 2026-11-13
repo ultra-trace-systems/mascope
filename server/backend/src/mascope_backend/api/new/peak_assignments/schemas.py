@@ -262,6 +262,17 @@ class PeakAssignmentDetailRecord(PeakAssignmentRecord):
     #: or a reagent row's ion), and on an isotope line. Display-only: no tier
     #: reads them.
     batch_checks: dict | None = None
+    #: The batch search's admission of the batch peak this row's peak sits in
+    #: on the peak's persistence (``batch_untargeted``), read when the row is
+    #: read: the ``share`` of its partition's spectra the peak was in, with
+    #: ``n_present`` and ``n_samples``, the partition's ``split`` it cleared,
+    #: and the reading the search elected there (``formula``, ``ion_formula``,
+    #: ``ionization_mechanism_id``). ``tier_reasons`` is the batch's reasons
+    #: about that reading - held at candidate on persistence alone, or what
+    #: corroborates it - on a monoisotopic row that reads it, None on any
+    #: other. None where the search took the peak on its height, or never
+    #: searched it.
+    batch_persistence: dict | None = None
 
 
 class PeakAssignmentsResponse(BaseModel):

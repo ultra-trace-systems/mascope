@@ -3629,6 +3629,12 @@ class BatchPeakRunAnchor(Base):
     # The probable blend the anchor's consensus read as the run left it
     # (``batch_blend.blend_record_of``); NULL for none.
     blend: Mapped[Optional[dict]] = mapped_column(JSON)
+    # The batch search's admission of the anchor on its peak's persistence as
+    # the run left it (``batch_peaks.persistence_record_of``), and what the
+    # batch's own rules said of its reading (``batch_peaks.tier_reasons_of``);
+    # NULL for none.
+    persistence: Mapped[Optional[dict]] = mapped_column(JSON)
+    tier_reasons: Mapped[Optional[list]] = mapped_column(JSON)
     candidates: Mapped[Optional[list]] = mapped_column(JSON)
     members: Mapped[Optional[dict]] = mapped_column(JSON)
 
