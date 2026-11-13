@@ -309,9 +309,13 @@ probability is the representative's, folded with the capped multi-sample lift th
 design doc already specifies (§5.4 there).
 
 Blend and degeneracy detection is unchanged: the ~10 % of anchors whose members disagree
-along the intensity or time axis are flagged `is_ambiguous`, and the runner-up stays in the
-candidate list. Because every member still carries its own Stage-A fit and candidate index,
-the disagreement is visible per member exactly as it is now.
+are flagged `is_ambiguous`, and the runner-up stays in the candidate list. Because every
+member still carries its own Stage-A fit and candidate index, the disagreement is visible
+per member exactly as it is now. Whether it runs along the intensity or the time axis is
+read since step 4.8 of the assignment quality plan (MAS-320): a clean parting of the two
+leading formulas marks the anchor a probable blend (`provenance.blend`), shown, never
+weighed; the split into two traces waits for the flag to prove right more often than not
+(the plan note's section 4.8 holds the testbed count and reading).
 
 ### 5.3 Stage B runs once per anchor
 
@@ -655,7 +659,8 @@ as PR [#1841](https://github.com/ultra-trace-systems/mascope/pull/1841): `BatchP
 counterpart routes, the batch assignments chart and the ledger browser. What this note then
 changed is recorded above (§3, §4, §5.1, §10): members carry their assignment, and ingest
 folds a sample without a per-sample run, so where the text below says a per-sample Stage A
-run precedes the fold, read §5.1. Blend splitting shipped as an `is_ambiguous` flag only;
+run precedes the fold, read §5.1. Blend splitting shipped as an `is_ambiguous` flag only,
+and since MAS-320 a probable-blend reason beside it (§5.2);
 the `sample_batch_peak_created` event was never built (the coarse `peak_assignment_reload`
 is used); the occurrence no longer carries formula and tier strings (§4.2). Its items still
 open - seeding anchors from a target list, splitting blends, refusing or segregating

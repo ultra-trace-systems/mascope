@@ -103,6 +103,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 4.4 - gate automation | - |  | moved to milestone 6 as step 6.4, the gate card as code (MAS-64); see `assignment_bench.md`. Built: `compare_runs.py --card` prints G1 to G14, the mass error, the reason coverage and the decoy arms per set and pooled, each metric a function in `metrics.py`; `--gate` marks them against the stage targets of `thresholds.json` with a pass-or-fail line, `--baseline` lists the readings that moved, and the scrub refuses a card that holds a name; MAS-64 |
 | 4.5 - profiles as versioned rows, routing by detection | - |  | planned |
 | 4.6 - a structured adduct row beside the notation string | - |  | built: the row's columns on `ionization_mechanism`, filled by a migration that refuses an unreadable row; `[2M+H]+`, `[M+2H]2+` and `[M+H-H2O]+` read, written and given target ions; the finder and the engine leave them out; corroboration keys unchanged; moves no metric; MAS-318 |
+| 4.8 - blend splitting: a batch peak whose members disagree along intensity or time | - |  | the flag half built, the split not: after every vote the two leading formulas are tested for a clean parting, intensity by a Mann-Whitney rank test (p 0.01, 90 % of pairs one way), acquisition time by an exact runs test (p 0.01, at most half the runs an interleaving gives), over the members at candidate or better, never two formulas reading one ion; a probable blend is recorded on the batch peak (`blend`), marked in the ledger with a filter, both formulas on the chart; read on the testbed's nine fully folded ledgers, 92 flags (0 on set A's batch, 1 on the largest analysis batch), four of ten read by hand two compounds on one peak, so the split waits; no tier moves; MAS-320 |
 | 4.9 - refuse or segregate mixed-instrument batches at the fold | - |  | built: segregated; the fold searches a batch's anchors per mode and per instrument type, read off the anchor's intensity unit; the ledger and the series name the partition (`instrument_type`), the Batch peaks ledger shows one at a time and the chart draws only its selection; a single-instrument batch folds as before; moves no metric; MAS-321 |
 | 4.11 - temporal continuity: the ratio-stability pass, its columns and its endpoint | - |  | built: every isotope line and its family root, and every two channels of one neutral, at assigned or candidate, graded on the within-sample ratio across a time-ordered batch (spread 1.4826 x MAD, drift by Spearman rho and a Theil-Sen change): stable, drift (the traces co-vary per 4.2), red, inconclusive or insufficient, on two `batch_peak` columns the ledger serves with a stale mark; run by its endpoint and at a rebuild's end, the fold trigger off for 4.13; on the testbed's six folded analysis batches 1,752 pairs, 1,008 stable, 122 red, 24 drift, the isotope reds a dim line's response; no tier moves; MAS-323 |
 | 4.19 - the active-learning verification queue, with the three calibration-label calls | - |  | built: `GET /peak-assignments/sample/{id}/verification-queue` ranks the run's unjudged rows within 0.1 evidence of a band edge by closeness and by the labels the instrument class and reagent profile hold within 0.05, with seeded spot checks every fifth place and stale verdicts (a later run reassigned or rescored the judged peak) first; the ledger's *to verify* chip and column; no `p_correct` or evidence in the queue; the refit weighs labels by evidence level (reference standard and MS/MS 1, orthogonal 0.6, pattern 0.4, visual and unstated 0.25) and records the weights on the curve (`label_weights`); per instrument and profile, down-weight, keep the snapshot and mark it stale (section 7 of `verification_calibration_loop.md`); moves no metric; MAS-329 |
@@ -1939,6 +1940,66 @@ who edits chemistry and stays last.
   sample's channels (`_readable`) with one warning, so no engine or gate
   number moves; searching them is a follow-up. The corroboration weights are
   keyed as before (pinned in `test_calibration_layer.py`).
+- **Size.** M.
+
+### 4.8 Probable blends: a batch peak whose members part along intensity or time
+
+- **What** (`peak_assignment_batch_primary.md` section 12, open item
+  "splitting blends"). The consensus marks an anchor ambiguous when its top two
+  formulas tie, not how its members disagree. Two compounds sharing a peak
+  part along an axis: one holds the bright samples, or the early ones. V1
+  flags that; splitting the anchor into two traces follows once the flag is
+  right more often than not.
+- **As built** (`batch_blend.py`). After the vote, the winner (or the pin)
+  and the runner-up are tested over their members at candidate or better,
+  three or more a side: intensity by a two-sided Mann-Whitney test, separating
+  where p <= 0.01 and the pair share (U over n1 x n2) is 0.9 or more either
+  way; acquisition time by an exact one-sided Wald-Wolfowitz runs test, the
+  members ordered as the continuity pass orders samples, separating where
+  p <= 0.01 and the runs are at most half the interleaved expectation. Two
+  formulas whose sides' most common ion is one are not tested. The record
+  (`provenance.blend`: the formulas, their ions, the counts, the axis, each
+  axis' reading) is computed afresh by every recompute; the recompute reads
+  the batch's acquisition times once per chunk. The ledger and the series
+  serve it as `blend`, the run snapshot keeps it
+  (`batch_peak_run_anchor.blend`), the ledger marks it with a filter
+  (*Probable blends*), the chart names the trace by both formulas. No tier,
+  vote or `is_ambiguous` reads it. Every threshold is provisional.
+- **Measured** (2026-11-13, the branch's test over the testbed copy's nine
+  fully folded batch ledgers, read-only; the two batches the brief names are
+  set A's acquisition batch and the largest analysis batch, 8,368 anchors).
+  As first written (every member carrying a formula, no ion rule) the test
+  flagged 287: 1 on set A's batch and 2 on the analysis batch, and 73 and
+  204 on two other analysis batches. Read by hand, two patterns were not two
+  compounds. One ion read through two mechanisms (a neutral at [M+H]+ in a
+  batch's first ~50 samples and another at [M+NH4]+ after): 141 of the 204.
+  And dim members a weak fit flipped to another formula below assignability
+  (on set A, 73 of the dimmer samples of a C10 compound read as another C10
+  formula at fit 0; on the analysis batch, three dim members of a phthalate's
+  [M+H]+ in 545 samples). With both rules the test flags 92: 0 on set A's
+  batch, 1 on the analysis batch, and 3, 1, 55 and 32 on four other
+  analysis batches; 47 by time, 44 by intensity, 20 by both. Ten read by
+  hand, across the batches and both axes:
+  - **Two compounds on one peak (4).** The trace's level steps where the
+    reading switches: one ion goes and another comes. Three partings in time
+    (levels moving 1.5 to 3 times at the switch) and one in intensity and
+    time (a 13C line of an ozone cluster near 270 giving way to a nitrate
+    cluster near 80).
+  - **Undecided (3).** An organonitrate cluster and an organosulfate's 34S
+    line taking turns at a slightly lower level, a known isobaric pair; a
+    parting in time at a flat level, which a slow mass drift would also
+    give; and a clean two-block switch at the sample where its whole batch
+    changes mechanism (the one-ion pattern above), with two ions 7 ppm
+    apart that may be one.
+  - **Not a blend (3).** A high-mass anchor in 45 of 546 samples carrying
+    16 formulas, whose two leading ones are both implausible; and two where
+    5 and 10 dim members of a compound assigned in hundreds read a 13C or
+    18O line of something else - dim flips at candidate tier, which the
+    tier rule does not catch.
+  - **So** four of ten, not more often than not: the split is not built. A
+    sharper test would hold the minority side to a share of the anchor's
+    members (the three misses are minorities of 2 % or less, or scatter
+    over many formulas) and read the level step at a time switch.
 - **Size.** M.
 
 ### 4.11 Ratio stability, the diagnostic of 4.2's reading
