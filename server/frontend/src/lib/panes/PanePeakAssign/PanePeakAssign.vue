@@ -28,6 +28,7 @@ import {
 import { holdsTierDown, reasonIcon, reasonTooltip, tierReasonsOf } from '@/lib/tierReasons'
 import { coVariationLabel, coVariationSummary, coVariationTooltip } from '@/lib/batchCoVariation'
 import { checksSummary, checksTooltip } from '@/lib/batchChecks'
+import { heldOnPersistence, persistenceSummary, persistenceTooltip } from '@/lib/batchPersistence'
 import { ROLE_BUCKETS, bucketRank } from '@/lib/tiers'
 import { EVIDENCE_LEVELS, VERDICT_META, claimCandidates } from '@/lib/verification'
 import { useBatchPeakCuration } from './stores/batchPeakCuration.js'
@@ -550,6 +551,14 @@ const batchCoVariationR = computed(() => {
 // detail read serves them only where the row reads the peak as the checks did;
 // display-only, as the line says.
 const batchChecks = computed(() => focusedDetail.value?.batch_checks ?? null)
+
+// --- The batch search's persistence admission -------------------------------
+// Where "Search untargeted" took the batch peak this row's peak is in because
+// the peak recurs across the batch rather than for its height: the share of
+// the batch's spectra the admission rested on, and - on a row that reads what
+// the search elected there - whether the batch holds that reading at
+// candidate.
+const batchPersistence = computed(() => focusedDetail.value?.batch_persistence ?? null)
 
 // --- The other channels' peaks ------------------------------------------------
 // The badge names channels, which leaves the reader to find each one's peak in
@@ -1642,6 +1651,23 @@ const demotedCount = computed(() => {
         <span class="pi ph ph-seal-check" />
         <span>{{ checksSummary(batchChecks) }}</span>
       </div>
+      <!-- Why the batch search took this peak: the share of the batch's
+           spectra it recurs in, not its height. -->
+      <div
+        v-if="batchPersistence"
+        class="batch-persistence"
+        :class="{ held: heldOnPersistence(batchPersistence.tier_reasons) }"
+        data-testid="batch-persistence"
+        v-tooltip.top="persistenceTooltip(batchPersistence)"
+      >
+        <span class="pi ph ph-repeat" />
+        <span
+          >{{ persistenceSummary(batchPersistence)
+          }}<span v-if="heldOnPersistence(batchPersistence.tier_reasons)"
+            >, held at candidate</span
+          ></span
+        >
+      </div>
       <Popover ref="channelsMenu" aria-label="The other channels' peaks">
         <div class="other-readings">
           <div class="alts-label">The same neutral, through the other channels</div>
@@ -2610,6 +2636,18 @@ const demotedCount = computed(() => {
   cursor: default;
 }
 .batch-checks .pi {
+  flex: none;
+  font-size: 0.8rem;
+}
+.batch-persistence {
+  align-self: start;
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  font-size: 0.74rem;
+  cursor: default;
+}
+.batch-persistence .pi {
   flex: none;
   font-size: 0.8rem;
 }

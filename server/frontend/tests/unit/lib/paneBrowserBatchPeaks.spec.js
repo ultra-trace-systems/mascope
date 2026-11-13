@@ -1257,7 +1257,7 @@ describe('PaneBrowserBatchPeaks merged isotopologue rows', () => {
     expect(wrapper.vm.stripOf(row)).toBeNull()
   })
 
-  async function formulaCells(peaks) {
+  async function formulaCells(peaks, field = 'consensus_formula') {
     const tableRows = ref([])
     app = makeApp({ peaks })
     localStorage.clear()
@@ -1289,7 +1289,7 @@ describe('PaneBrowserBatchPeaks merged isotopologue rows', () => {
     await wrapper.vm.$nextTick()
     const column = wrapper
       .findAll('.column-stub')
-      .find((col) => col.attributes('data-field') === 'consensus_formula')
+      .find((col) => col.attributes('data-field') === field)
     return Object.fromEntries(
       column.findAll('.stub-cell').map((cell) => [cell.attributes('data-row'), cell])
     )
@@ -1328,6 +1328,47 @@ describe('PaneBrowserBatchPeaks merged isotopologue rows', () => {
     expect(unpooled.classes()).toContain('unpooled')
     expect(unpooled.classes()).not.toContain('present')
     expect(cells['bp-x'].find('[data-testid="known-species-mark"]').exists()).toBe(false)
+  })
+
+  // The search's persistence admission marks the formula, and the tier cell
+  // names what the batch's own rules hold the tier down on.
+  it('marks a batch peak searched on persistence, and the reason that holds its tier', async () => {
+    const admitted = {
+      share: 0.9167,
+      n_present: 11,
+      n_samples: 12,
+      split: 0.4583,
+      formula: 'C10H16O4'
+    }
+    const held = [{ rule: 'persistence_only', detail: 'searched because ...', caps: true }]
+    const lifted = [{ rule: 'second_line', detail: 'a line of ...', caps: false }]
+    // A batch peak the search took on its height carries neither.
+    const PLAIN = peak('bp-plain', 'candidate', 0.6, { mz: 320.2, consensus_formula: 'C13H20O6' })
+    const peaks = [
+      { ...PARENT, consensus_tier: 'candidate', persistence: admitted, tier_reasons: held },
+      { ...OTHER, persistence: admitted, tier_reasons: lifted },
+      PLAIN,
+      LINE
+    ]
+    const cells = await formulaCells(peaks)
+    const mark = cells['bp-p'].find('[data-testid="persistence-mark"]')
+    expect(mark.attributes('aria-label')).toBe(
+      'Searched on persistence: in 11 of 12 spectra (92 %)'
+    )
+    expect(mark.classes()).toContain('held')
+    const kept = cells['bp-other'].find('[data-testid="persistence-mark"]')
+    expect(kept.exists()).toBe(true)
+    expect(kept.classes()).not.toContain('held')
+    expect(cells['bp-x'].find('[data-testid="persistence-mark"]').exists()).toBe(false)
+    expect(cells['bp-plain'].find('[data-testid="persistence-mark"]').exists()).toBe(false)
+
+    wrapper.unmount()
+    const tiers = await formulaCells(peaks, 'consensus_tier')
+    const reason = tiers['bp-p'].find('[data-testid="tier-reason-mark"]')
+    expect(reason.attributes('aria-label')).toBe('persistence only')
+    expect(tiers['bp-other'].find('[data-testid="tier-reason-mark"]').exists()).toBe(false)
+    expect(tiers['bp-x'].find('[data-testid="tier-reason-mark"]').exists()).toBe(false)
+    expect(tiers['bp-plain'].find('[data-testid="tier-reason-mark"]').exists()).toBe(false)
   })
 })
 
