@@ -1,7 +1,7 @@
 # Peak Assignment & Identification Confidence — Study, Design and Plan
 
 - **Status:** building
-- **As of:** 2026-11-12
+- **As of:** 2026-11-13
 - **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear; MAS-73 carries the identification level; MAS-324 to MAS-327 the open P2 to P4 steps)
 - **What:** The layered science of going from a peak to a confident identification: plausibility, arbitration, calibration, tiers.
 
@@ -520,7 +520,10 @@ no backend or DB, only `mascope_tools` + tests.
     and O (1.32, 1.33), the spectrum's lattice of related formulas; against that mirror the named
     pair gains 5 to 12% but for HNO3 (1.9x), and no loss shows a fragment's intensity signature.
     A reason on the row that caps nothing (`in_source_fragment`).
-  - Neither enters `p_correct`; whether an eligible loss should is decision MAS-860.
+  - Neither enters `p_correct` (the assignment plan's decision 36, MAS-860). HNO3's excess over
+    its mirror is what the mirror's nitrogen imbalance predicts without fragmentation: the loss
+    lands on a formula without nitrogen, the gain on a dinitrate. A weight, if one is earned,
+    enters through calibration from verdicts (step 4.3).
 
 ### P4 design: a retention-time term
 
