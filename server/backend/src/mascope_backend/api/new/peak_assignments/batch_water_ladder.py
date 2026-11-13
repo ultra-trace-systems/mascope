@@ -25,8 +25,10 @@ each ladder on the batch's own series instead (``mascope_tools.composition
    is the sample's own in-app row (``reagent_pass.water_rung_row``), the
    reading it displaced first among its alternatives. The member's isotope
    lines go with it, as a library ion's do; a heavier track's peak read on its
-   own becomes the rung's line, owned by the rung's monoisotopic peak where
-   that is the rung in the sample. A sample is kept as it is where a person
+   own becomes the rung's line, owned by the rung's monoisotopic peak, and is
+   claimed only where that peak is the rung in the sample: the ledger says a
+   line by its owner alone, so a line claimed with none would read as the
+   rung's own ion. A sample is kept as it is where a person
    assigned the peak, where the target library or a reference list named its
    reading (a cited analyte), where the peak is another ion's isotope line or
    another source ion's claim, and where its reading carries an isotope line
@@ -38,10 +40,15 @@ each ladder on the batch's own series instead (``mascope_tools.composition
    ``provenance.water_ladder`` (``batch_peaks.WATER_LADDER_KEY``): the rung,
    its reading in every segment it was read in, what the claim wrote and kept,
    each rewritten member's earlier state, and the reading the batch peak holds
-   since. The run's summary reports per partition the segments, each ladder's
-   reach per segment, the rungs tested and passed, the batch peaks and rows
-   moved, and the share of the partition's signal no committed reading, source
-   role or isotope line explains, before and after.
+   since. It names the samples whose member reads the rung on the ladder's
+   word (``claimed_samples``), this measurement's and those an earlier one
+   claimed that read it still, so *Decide known species* reads them as the
+   batch's word, whatever their row, and spreads no rung over segments it
+   did not pass in. The run's summary reports per partition the segments,
+   each ladder's reach per segment, the rungs tested and passed, the batch
+   peaks, samples and rows moved, and the share of the partition's signal no
+   committed reading, source role or isotope line explains, before and
+   after.
 
 A sample's next run reads its peaks afresh; the next measurement reads them
 again. The reading runs outside the fold lock (and off the event loop) and the
@@ -156,6 +163,10 @@ KEPT_LISTED = "listed"
 #: A heavier line's peak the sample reads as the line of the rung's
 #: monoisotopic peak: the claim on that peak moves it, as its line.
 WITH_MONOISOTOPIC = "with_monoisotopic"
+#: Kept: a heavier line's peak in a sample whose member of the rung's
+#: monoisotopic peak does not read the rung, so it has no peak to be the line
+#: of.
+KEPT_NO_MONOISOTOPIC = "no_monoisotopic"
 
 #: Why a batch peak at a passing rung was not claimed: it is pinned by hand.
 HELD_CURATED = "curated"
@@ -447,7 +458,7 @@ def sample_decision(
     member: Member,
     claim: Claim,
     lines: Lines,
-    monoisotopic: Optional[set[str]] = None,
+    monoisotopic: Optional[dict[str, Optional[str]]] = None,
 ) -> Optional[str]:
     """What becomes of one sample's member of a batch peak at a passing rung:
     None where the claim rewrites it, :data:`ALREADY` where it reads the rung
@@ -457,8 +468,11 @@ def sample_decision(
     :param lines: The lines each sample's members name a batch peak the
         owner of. The claim takes the lines with the member, so a line the
         rung cannot have keeps it (:func:`rungs_own_line`).
-    :param monoisotopic: For a heavier track, the samples the claim on the
-        rung's monoisotopic peak rewrites.
+    :param monoisotopic: For a heavier track, the samples whose member of the
+        rung's monoisotopic peak reads the rung once its claim is written
+        (:func:`_monoisotopic_samples`). A heavier line is claimed only as
+        such a member's line, so a sample missing from it is kept
+        (:data:`KEPT_NO_MONOISOTOPIC`).
     """
     line = claim.line
     if reads_rung(member, line):
@@ -469,11 +483,13 @@ def sample_decision(
         return KEPT_TARGET_LIBRARY
     if _listed(member, claim.row.anchor):
         return KEPT_LISTED
+    mono = monoisotopic or {}
     if member.role == ROLE_ISO_CHILD or member.owner_batch_peak_id:
         # A monoisotopic track's claim names no monoisotopic peak of its own.
         if (
             member.owner_batch_peak_id in claim.monoisotopic
-            and member.sample_item_id in (monoisotopic or ())
+            and member.sample_item_id in mono
+            and mono[member.sample_item_id] is None
         ):
             return WITH_MONOISOTOPIC
         return KEPT_LINE_OF_ANOTHER
@@ -482,13 +498,15 @@ def sample_decision(
     carried = lines.get((member.sample_item_id, claim.batch_peak_id), ())
     if not all(rungs_own_line(line, *carried_line) for carried_line in carried):
         return KEPT_CARRIES_LINES
+    if monoisotopic is not None and member.sample_item_id not in monoisotopic:
+        return KEPT_NO_MONOISOTOPIC
     return None
 
 
 def decide_claim(
     claim: Claim,
     lines: Lines,
-    monoisotopic: Optional[set[str]] = None,
+    monoisotopic: Optional[dict[str, Optional[str]]] = None,
 ) -> Claim:
     """Fill a claim's samples in, and hold a curated batch peak."""
     claim.samples = {
@@ -621,13 +639,18 @@ def plan_partition(
     return part
 
 
-def _monoisotopic_samples(claim: Claim, decided: dict[str, Claim]) -> Optional[set]:
-    """The samples the claim on a heavier track's rung's monoisotopic peak
-    rewrites, over every batch peak at that line that claims the rung; None
-    for a monoisotopic track."""
+def _monoisotopic_samples(
+    claim: Claim, decided: dict[str, Claim]
+) -> Optional[dict[str, Optional[str]]]:
+    """The samples whose member of a heavier track's rung's monoisotopic peak
+    reads the rung once that peak's claim is written, over every batch peak at
+    that line that claims the rung: None where the claim rewrites it,
+    :data:`ALREADY` where it read the rung already as its own ion (not as
+    another peak's line). A curated batch peak holds its members, so none of
+    them is a line's owner. None for a monoisotopic track."""
     if claim.line.track.monoisotopic:
         return None
-    samples: set[str] = set()
+    samples: dict[str, Optional[str]] = {}
     for key in claim.monoisotopic:
         mono = decided.get(key)
         if (
@@ -637,7 +660,13 @@ def _monoisotopic_samples(claim: Claim, decided: dict[str, Claim]) -> Optional[s
             or not mono.line.track.monoisotopic
         ):
             continue
-        samples.update(s for s, decision in mono.samples.items() if decision is None)
+        for sample, decision in mono.samples.items():
+            if decision is None:
+                samples[sample] = None
+            elif (
+                decision == ALREADY and not mono.row.members[sample].owner_batch_peak_id
+            ):
+                samples.setdefault(sample, ALREADY)
     return samples
 
 
@@ -702,6 +731,34 @@ def segment_readings(claim: Claim, segments: list[Segment]) -> list[dict]:
     ]
 
 
+def claimed_samples(
+    claim: Claim, rewritten: Iterable[str], earlier: Optional[dict]
+) -> list[str]:
+    """The samples whose member of the claim's batch peak reads the rung on
+    the ladder's word: those this claim rewrote, and those an earlier
+    measurement claimed the same rung in whose member reads it still. A
+    file's own claim of the rung is not among them.
+
+    A second measurement finds the members the first one claimed reading the
+    rung already, and rewrites none of them; the samples are carried over, so
+    *Decide known species* still reads them as the batch's word
+    (``batch_known_species.ladder_claimed``).
+
+    :param rewritten: The samples this claim rewrote.
+    :param earlier: The record the batch peak carried before this
+        measurement (:func:`batch_peaks.water_ladder_record_of`), or None.
+    """
+    samples = set(rewritten)
+    if earlier is not None and earlier["rung"].get("ion_formula") == (
+        claim.line.ion_formula
+    ):
+        for sample in earlier.get("claimed_samples") or ():
+            member = claim.row.members.get(sample)
+            if member is not None and reads_rung(member, claim.line):
+                samples.add(sample)
+    return sorted(samples)
+
+
 def _anchor_reading(anchor: Any) -> dict:
     return {
         "role": anchor.consensus_role,
@@ -722,8 +779,16 @@ def ladder_record(
     rows_rewritten: int = 0,
     lines_rewritten: int = 0,
     rows_kept: Optional[dict[str, int]] = None,
+    claimed: Iterable[str] = (),
 ) -> dict:
-    """The record a batch peak at a passing rung carries."""
+    """The record a batch peak at a passing rung carries.
+
+    :param segments: The partition's segments, every one: ``segments`` lists
+        the rung's reading in those its ladder reached it in, and
+        ``partition_segments`` counts them all.
+    :param claimed: The samples whose member reads the rung on the ladder's
+        word (:func:`claimed_samples`).
+    """
     files, by_reason = files_recorded(claim)
     displaced_members = displaced_members or {}
     turned = reads.get("role") == ROLE_REAGENT and before.get("role") != ROLE_REAGENT
@@ -731,6 +796,7 @@ def ladder_record(
     return {
         "rung": claim.line.to_json(),
         "segments": segment_readings(claim, segments),
+        "partition_segments": len(segments),
         "passed_in": claim.line.passed_in,
         "samples": len(claim.samples),
         "held": claim.held,
@@ -746,6 +812,7 @@ def ladder_record(
         "turned": turned,
         "moved_analyte": moved,
         "displaced_members": displaced_members,
+        "claimed_samples": sorted(claimed),
         "reads": reads,
         "batch_peak_run_id": batch_peak_run_id,
     }
@@ -817,10 +884,14 @@ async def _load_extras(
 
 @dataclass
 class Written:
-    """What one claim's write did."""
+    """What one claim's write did.
+
+    :ivar samples: The samples whose member it rewrote.
+    """
 
     claim: Claim
     claimed: bool
+    samples: tuple[str, ...] = ()
     members_rewritten: int = 0
     rows_rewritten: int = 0
     lines_rewritten: int = 0
@@ -944,6 +1015,7 @@ def _write_claim(
         Written(
             claim,
             True,
+            samples=tuple(sorted(displaced)),
             members_rewritten=len(displaced),
             rows_rewritten=rows_rewritten,
             lines_rewritten=lines_rewritten,
@@ -1064,6 +1136,9 @@ async def _write_chunk(
             )
 
         before = {key: _anchor_reading(anchor) for key, anchor in anchors.items()}
+        earlier = {
+            key: water_ladder_record_of(anchor) for key, anchor in anchors.items()
+        }
         written: list[Written] = []
         displaced_of: dict[str, dict[str, dict]] = {}
         touched: set[str] = set()
@@ -1126,6 +1201,9 @@ async def _write_chunk(
                 rows_rewritten=done.rows_rewritten,
                 lines_rewritten=done.lines_rewritten,
                 rows_kept=done.rows_kept,
+                claimed=claimed_samples(
+                    done.claim, done.samples, earlier[anchor.batch_peak_id]
+                ),
             )
             done.turned = done.claimed and record["turned"]
             done.moved = done.claimed and record["moved_analyte"]
@@ -1244,15 +1322,20 @@ def summarise(
 ) -> dict:
     """The run's summary: per partition its segments, each ladder's reach per
     segment, the counts and the unexplained share before and after; over the
-    batch the sums, and the rungs claimed at, each as the write decided it."""
+    batch the sums, and the rungs claimed at, each as the write decided it.
+
+    ``members_rewritten`` counts sample peaks, one per sample and batch peak;
+    ``samples_claimed`` the samples any claim rewrote a member of."""
     final = {done.claim.batch_peak_id: done for done in written}
     partitions = []
     listed = []
     rows_kept: Counter = Counter()
     samples_kept: Counter = Counter()
     held: Counter = Counter()
+    claimed_in: set[str] = set()
     for part in plan.partitions:
         counts = {key: 0 for key in _COUNTS}
+        part_claimed_in: set[str] = set()
         counts["spectra"] = part.spectra
         counts["rungs_tested"] = part.rungs_tested
         counts["rungs_passed"] = part.rungs_passed
@@ -1265,6 +1348,7 @@ def summarise(
                 held[claim.held] += 1
             if done is not None and done.claimed:
                 counts["claimed"] += 1
+                part_claimed_in.update(done.samples)
                 counts["members_rewritten"] += done.members_rewritten
                 counts["rows_rewritten"] += done.rows_rewritten
                 counts["lines_rewritten"] += done.lines_rewritten
@@ -1275,6 +1359,7 @@ def summarise(
                 if reason not in (None, ALREADY, WITH_MONOISOTOPIC)
             )
             listed.append(claim)
+        claimed_in |= part_claimed_in
         partitions.append(
             {
                 "ionization_mode_id": part.key[0],
@@ -1288,6 +1373,7 @@ def summarise(
                     if reading.core_presence > 0 or reading.rungs
                 ],
                 **counts,
+                "samples_claimed": len(part_claimed_in),
                 "unexplained_before": _share(part.unexplained_before),
                 "unexplained_after": _share(after.get(part.key)),
             }
@@ -1301,6 +1387,7 @@ def summarise(
         "thresholds": thresholds(),
         "partitions": partitions,
         **{key: sum(p[key] for p in partitions) for key in _COUNTS},
+        "samples_claimed": len(claimed_in),
         "held_by_reason": dict(sorted(held.items())),
         "rows_kept": dict(sorted(rows_kept.items())),
         "samples_kept": dict(sorted(samples_kept.items())),
@@ -1370,8 +1457,8 @@ def measuring_outcome(summary: dict, sample_batch_id: str) -> dict:
             f"Read {summary['rungs_tested']} water-ladder rungs: "
             f"{summary['rungs_passed']} passed, {summary['claimed']} batch peak"
             f"{'s' if summary['claimed'] != 1 else ''} claimed in "
-            f"{summary['members_rewritten']} sample"
-            f"{'s' if summary['members_rewritten'] != 1 else ''}; "
+            f"{summary['samples_claimed']} sample"
+            f"{'s' if summary['samples_claimed'] != 1 else ''}; "
             f"{summary['peaks_turned']} now read as the reagent, "
             f"{summary['rows_moved']} of them analytes before."
         ),
@@ -1413,11 +1500,13 @@ async def measure_batch_water_ladders(
 __all__ = [
     "HELD_CURATED",
     "KEPT_LISTED",
+    "KEPT_NO_MONOISOTOPIC",
     "WITH_MONOISOTOPIC",
     "Claim",
     "Line",
     "Plan",
     "PartitionPlan",
+    "claimed_samples",
     "decide_claim",
     "explained",
     "ladder_record",

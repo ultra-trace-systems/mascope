@@ -42,6 +42,7 @@ from mascope_backend.api.new.peak_assignments.batch_known_species import (
     decide_row,
     deciding_outcome,
     earlier_own,
+    ladder_claimed,
     library_species,
     listed_species,
     listed_species_row,
@@ -54,6 +55,7 @@ from mascope_backend.api.new.peak_assignments.batch_known_species import (
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     KNOWN_SPECIES_KEY,
+    WATER_LADDER_KEY,
     compute_consensus,
     known_species_record_of,
     known_species_summary,
@@ -563,6 +565,62 @@ class TestTheOwnTest:
             assert LIBRARY.own_test(one, None)
             assert not LIBRARY.own_test(one, {"s0"})
         assert LIBRARY.own_test(rowless, {"s3"})
+
+    def test_a_member_the_water_ladder_claimed_is_the_batchs_whatever_its_row(self):
+        """A rung passes per acquisition segment: its claim is the batch's
+        word, on a member with no row or an import's, before any decision."""
+        rowless = claimed("s3", peak_assignment_id=None)
+        imported = claimed("s1", row_reading=("M0", "C3H12N6O3", TRIMER, "assigned"))
+        for one in (rowless, imported):
+            assert not LIBRARY.own_test(one, None, frozenset({"s1", "s3"}))
+            assert LIBRARY.own_test(one, None, frozenset({"s0"}))
+        # A file's own claim since, on its row, is its own.
+        own = claimed("s0", row_reading=("reagent", None, TRIMER, "unassigned"))
+        assert LIBRARY.own_test(own, None, frozenset({"s0"}))
+
+    def test_the_ladders_claims_are_its_record_of_this_ion(self):
+        record = {
+            "rung": {"ion_formula": TRIMER},
+            "reads": READS_TRIMER,
+            "claimed_samples": ["s1", "s3"],
+        }
+        bp = anchor("T", TRIMER_MZ, provenance={WATER_LADDER_KEY: record})
+
+        assert ladder_claimed(bp, LIBRARY) == {"s1", "s3"}
+        assert ladder_claimed(anchor("T", TRIMER_MZ), LIBRARY) == frozenset()
+        other = {**record, "rung": {"ion_formula": "C2H9N4O2+"}}
+        assert (
+            ladder_claimed(
+                anchor("T", TRIMER_MZ, provenance={WATER_LADDER_KEY: other}), LIBRARY
+            )
+            == frozenset()
+        )
+
+    def test_the_ladders_claims_alone_are_no_evidence(self):
+        """Claimed by the ladder in a humid stretch, with no row to say so:
+        no file's test held, so the decision spreads nothing."""
+        row = Row(
+            anchor(
+                "T",
+                TRIMER_MZ,
+                provenance={
+                    WATER_LADDER_KEY: {
+                        "rung": {"ion_formula": TRIMER},
+                        "reads": READS_TRIMER,
+                        "claimed_samples": ["s0", "s1", "s2"],
+                    }
+                },
+            ),
+            {
+                **{s: claimed(s, peak_assignment_id=None) for s in SAMPLES[:3]},
+                **{s: analyte(s, "C4H4O", "C4H5O+") for s in SAMPLES[3:]},
+            },
+        )
+        decision = decide_row(row, LIBRARY, 6, {})
+
+        assert decision.own == []
+        assert not decision.verdict.present
+        assert not decision.claims
 
     def test_the_earlier_decision_is_the_anchors_record_of_this_species(self):
         bp = anchor("T", TRIMER_MZ, provenance=_earlier(["s0", "s2"]))

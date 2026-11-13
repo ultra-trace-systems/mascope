@@ -17,7 +17,9 @@ its partition and decides it once (``mascope_tools.composition.known_species``):
    batch's word: a member whose row a decision rewrote, or a run claimed on
    the batch's decision, is the batch's, and so is one with no row to say
    so that the decision before read as the batch's (the record keeps the
-   samples it read as their own). The evidence never feeds on its claims.
+   samples it read as their own), or that the batch's water ladder claimed
+   as a rung in one segment (its record names the samples,
+   ``batch_water_ladder``). The evidence never feeds on its claims.
 2. **The verdict.** Present where the species' peak is in two files or more,
    in half the partition's files or more, and one file's own test held;
    absent where it is in enough files and no file's test held; unpooled where
@@ -95,6 +97,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     tier_code,
     tier_name,
     vote_consensus,
+    water_ladder_record_of,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     _acquire_batch_fold_lock,
@@ -361,25 +364,35 @@ class Species:
             )
         return role == ROLE_M0 and formula == self.formula and tier in _COMMITTED
 
-    def own_test(self, member: Member, earlier: Optional[set[str]]) -> bool:
+    def own_test(
+        self,
+        member: Member,
+        earlier: Optional[set[str]],
+        claimed: frozenset[str] = frozenset(),
+    ) -> bool:
         """Whether a member reads the species on its file's own test, not on
         the batch's word.
 
         A member whose row was written on the batch's word (a decision's
-        rewrite, or a run's claim on the batch's decision) is the batch's.
-        One whose row reads the species is its file's. One with no row that
-        says so - none linked, or an import's the decision did not rewrite -
-        is its file's only where the batch never decided the species, or
-        where the decision before this one read it as its file's own: a
-        decision's claim in such a member leaves no other trace.
+        rewrite, a run's claim on the batch's decision, or the batch's water
+        ladder) is the batch's. One whose row reads the species is its
+        file's. One with no row that says so - none linked, or an import's
+        the batch did not rewrite - is the batch's where its water ladder
+        claimed it, and else its file's only where the batch never decided
+        the species, or where the decision before this one read it as its
+        file's own: a batch's claim in such a member leaves no other trace.
 
         :param earlier: The samples the anchor's earlier decision of this
             species read as their file's own; None where there is none.
+        :param claimed: The samples the batch's water ladder claimed the
+            species in at the anchor (:func:`ladder_claimed`).
         """
         if not self.reads(member) or member.row_batch:
             return False
         if member.row_reading is not None and self._reading_reads(*member.row_reading):
             return True
+        if member.sample_item_id in claimed:
+            return False
         return earlier is None or member.sample_item_id in earlier
 
     def can_have(self, isotope_label: Optional[str]) -> bool:
@@ -840,13 +853,27 @@ def earlier_own(anchor: Any, species: Species) -> Optional[set[str]]:
     return set(record.get("own_test_samples") or ())
 
 
+def ladder_claimed(anchor: Any, species: Species) -> frozenset[str]:
+    """The samples the batch's water ladder claimed a species in at the
+    anchor: those whose member its measurement, or one before it, rewrote as
+    the rung (``batch_water_ladder.claimed_samples``). A rung passes per
+    acquisition segment, so its claim is the batch's word, never a file's
+    own test, whatever row the sample links. Empty where the anchor carries
+    no measurement of the species' ion."""
+    record = water_ladder_record_of(anchor)
+    if record is None or record["rung"].get("ion_formula") != species.ion_formula:
+        return frozenset()
+    return frozenset(record.get("claimed_samples") or ())
+
+
 def own_tests(row: Row, species: Species) -> list[str]:
     """The samples whose file's own test held, as the decision pools them."""
     earlier = earlier_own(row.anchor, species)
+    claimed = ladder_claimed(row.anchor, species)
     return sorted(
         sample
         for sample, member in row.members.items()
-        if species.own_test(member, earlier)
+        if species.own_test(member, earlier, claimed)
     )
 
 
@@ -2145,6 +2172,7 @@ __all__ = [
     "decide_row",
     "deciding_outcome",
     "earlier_own",
+    "ladder_claimed",
     "listed_species",
     "listed_species_row",
     "library_species",
