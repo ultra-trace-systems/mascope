@@ -31,7 +31,10 @@ from mascope_backend.api.new.peak_assignments import (
     batch_peaks_routes,
     batch_water_ladder,
 )
-from mascope_backend.api.new.peak_assignments.batch_known_species import _row_marks
+from mascope_backend.api.new.peak_assignments.batch_known_species import (
+    _row_marks,
+    run_batch_known_species,
+)
 from mascope_backend.api.new.peak_assignments.batch_peaks import role_code
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     fold_sample_into_batch_peaks,
@@ -491,8 +494,10 @@ async def test_a_heavier_line_read_on_its_own_becomes_its_rungs_line(
 
     record = _record(anchors["r5b"])
     assert record["rung"]["track"] == "81Br"
-    assert record["files_by_reason"] == {"hand_assigned": 1}
-    assert record["files_recorded"][0]["sample_item_id"] == samples["H01"]
+    assert record["files_by_reason"] == {"hand_assigned": 1, "no_monoisotopic": 1}
+    assert {
+        entry["sample_item_id"]: entry["reason"] for entry in record["files_recorded"]
+    } == {samples["H01"]: "hand_assigned", samples["H03"]: "no_monoisotopic"}
     members = await _members(async_session_factory, batch["ids"]["r5b"])
     assert members[samples["H01"]].role == role_code("M0")
     assert members[samples["H00"]].role == role_code("reagent")
@@ -504,8 +509,10 @@ async def test_a_heavier_line_read_on_its_own_becomes_its_rungs_line(
     hand = await _run_rows(async_session_factory, runs["H01"])
     assert hand["r5b"].assigned_formula == F5B
     assert anchors["r5b"].consensus_role == "reagent"
-    # Where the rung's peak is another ion's claim, its line is no line of it.
-    assert members[samples["H03"]].role == role_code("reagent")
+    # Where the rung's peak is another ion's claim, the line has no peak of the
+    # rung to be the line of: claimed with no owner it would read as the
+    # rung's own ion, so it keeps its reading.
+    assert members[samples["H03"]].role == role_code("M0")
     assert members[samples["H03"]].owner_batch_peak_id is None
     assert _record(anchors["r5"])["files_by_reason"] == {"claimed_otherwise": 1}
 
@@ -624,6 +631,67 @@ async def test_the_known_species_decision_reads_a_ladders_claim_as_the_batchs(
     ]
     assert reading[0] == "reagent"
     assert on_the_batchs_word is True
+
+
+async def _decided_after(async_session_factory, batch):
+    """Decide known species, and what r5's members and D00's row read then."""
+    await run_batch_known_species(batch["batch_id"])
+    anchors = await _anchors(async_session_factory, batch)
+    members = await _members(async_session_factory, batch["ids"]["r5"])
+    rows = await _run_rows(async_session_factory, batch["runs"]["D00"])
+    return anchors, members, rows
+
+
+async def test_known_species_decided_after_a_measurement_spreads_no_rung(
+    async_session_factory, ladder_batch
+):
+    """Br-.(H2O)5 passed in the humid segment alone. Its claims there are the
+    batch's word, whatever the sample's row - none, an import's or a
+    rewritten one - so the decision counts no file's own test in them and
+    the dry segment keeps its analyte."""
+    batch, samples = ladder_batch, ladder_batch["samples"]
+    await run_batch_water_ladders(batch["batch_id"])
+    claimed = set(
+        _record((await _anchors(async_session_factory, batch))["r5"])["claimed_samples"]
+    )
+    assert claimed == {samples[name] for name in HUMID if name != "H03"}
+
+    anchors, members, rows = await _decided_after(async_session_factory, batch)
+    decided = (anchors["r5"].provenance or {})["known_species"]
+    assert decided["species"]["ion_formula"] == ion(5)
+    assert decided["test_held"] == 0
+    assert decided["verdict"] == "absent"
+    assert decided["own_test_samples"] == []
+    for name in DRY:
+        assert members[samples[name]].role == role_code("M0")
+    assert rows["r5"].assigned_formula == F5
+    for name in HUMID:
+        if name != "H03":
+            assert members[samples[name]].role == role_code("reagent")
+
+
+async def test_a_second_measurement_keeps_the_claims_the_batchs(
+    async_session_factory, ladder_batch
+):
+    """The second measurement finds every claim reading the rung already and
+    rewrites none; its record still names them, so the decision after it
+    spreads nothing either."""
+    batch, samples = ladder_batch, ladder_batch["samples"]
+    await run_batch_water_ladders(batch["batch_id"])
+    await run_batch_water_ladders(batch["batch_id"], batch_peak_run_id="second")
+    record = _record((await _anchors(async_session_factory, batch))["r5"])
+    assert record["batch_peak_run_id"] == "second"
+    assert record["displaced_members"] == {}
+    assert set(record["claimed_samples"]) == {
+        samples[name] for name in HUMID if name != "H03"
+    }
+
+    anchors, members, rows = await _decided_after(async_session_factory, batch)
+    decided = (anchors["r5"].provenance or {})["known_species"]
+    assert (decided["verdict"], decided["test_held"]) == ("absent", 0)
+    for name in DRY:
+        assert members[samples[name]].role == role_code("M0")
+    assert rows["r5"].assigned_formula == F5
 
 
 async def test_the_route_runs_it_as_a_batch_run(

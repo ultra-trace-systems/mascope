@@ -51,11 +51,13 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
 from mascope_backend.api.new.peak_assignments.batch_water_ladder import (
     HELD_CURATED,
     KEPT_LISTED,
+    KEPT_NO_MONOISOTOPIC,
     WITH_MONOISOTOPIC,
     Claim,
     Written,
     _chunks,
     _monoisotopic_samples,
+    claimed_samples,
     explained,
     ladder_record,
     lines_of,
@@ -343,7 +345,8 @@ def _batch():
             isotope_label="13C",
         )
     }
-    # n = 7: curated by hand.
+    # n = 7: curated by hand; its 81Br line read as its line in half the humid
+    # samples, on its own in the rest.
     put(
         "r7",
         7,
@@ -351,7 +354,20 @@ def _batch():
         {s: lambda s, mz: member(s, mz, 1e4) for s in HUMID},
         provenance={"manual": {"formula": "C9H8"}},
     )
-    put("r7b", 7, BR81, {s: lambda s, mz: member(s, mz, 1e4) for s in HUMID})
+    put(
+        "r7b",
+        7,
+        BR81,
+        {
+            **{
+                s: lambda s, mz: member(
+                    s, mz, 1e4, role="iso_child", owner_batch_peak_id="r7"
+                )
+                for s in HUMID[:6]
+            },
+            **{s: lambda s, mz: member(s, mz, 1e4) for s in HUMID[6:]},
+        },
+    )
     return anchors, members
 
 
@@ -463,6 +479,16 @@ class TestThePlan:
         assert r7.held == HELD_CURATED
         assert not r7.claims
 
+    def test_a_curated_rungs_peak_owns_no_heavier_line(self, plan):
+        """Its members stay as a person left them, so its line stays where it
+        was, and a heavier peak read on its own has no rung's peak to be the
+        line of."""
+        plan, _ = plan
+        r7b = _claims(plan)["r7b"]
+        assert all(r7b.samples[s] == KEPT_LINE_OF_ANOTHER for s in HUMID[:6])
+        assert all(r7b.samples[s] == KEPT_NO_MONOISOTOPIC for s in HUMID[6:])
+        assert not r7b.claims
+
     def test_monoisotopic_tracks_come_first(self, plan):
         plan, _ = plan
         order = [c.batch_peak_id for c in plan.claims]
@@ -519,11 +545,27 @@ class TestStrength:
         plan, _ = plan
         claims = _claims(plan)
         r6b = claims["r6b"]
-        assert _monoisotopic_samples(r6b, claims) == set(HUMID[4:])
+        assert _monoisotopic_samples(r6b, claims) == {s: None for s in HUMID[4:]}
         # The batch peak at the monoisotopic line claimed for another rung.
         claims = {**claims, "r6": replace_line(claims["r6"], claims["r5"].line)}
-        assert _monoisotopic_samples(r6b, claims) == set()
+        assert _monoisotopic_samples(r6b, claims) == {}
         assert _monoisotopic_samples(claims["r6"], claims) is None
+
+    def test_a_rungs_peak_that_read_it_already_is_its_lines_owner(self, plan):
+        """As its own ion: a member read as another peak's line is not."""
+        plan, _ = plan
+        claims = _claims(plan)
+        r6 = claims["r6"]
+        samples = {**r6.samples, "h05": ALREADY, "h06": ALREADY}
+        members = {
+            **r6.row.members,
+            "h06": replace(r6.row.members["h06"], owner_batch_peak_id="elsewhere"),
+        }
+        mono = Claim(Row(r6.row.anchor, members), r6.line, samples=samples)
+        found = _monoisotopic_samples(claims["r6b"], {**claims, "r6": mono})
+        assert found["h05"] == ALREADY
+        assert "h06" not in found
+        assert found["h07"] is None
 
 
 def replace_line(claim, line):
@@ -562,18 +604,42 @@ class TestSampleDecision:
     ):
         claims, members = self._claim()
         line = members["r6b"]["h05"]
-        assert sample_decision(line, claims["r6b"], {}, {"h05"}) == WITH_MONOISOTOPIC
-        assert sample_decision(line, claims["r6b"], {}, set()) == KEPT_LINE_OF_ANOTHER
+        assert (
+            sample_decision(line, claims["r6b"], {}, {"h05": None}) == WITH_MONOISOTOPIC
+        )
+        assert sample_decision(line, claims["r6b"], {}, {}) == KEPT_LINE_OF_ANOTHER
+        # Where the rung's peak read the rung already, its line read so too, or
+        # is another reading's line the claim does not move.
+        assert (
+            sample_decision(line, claims["r6b"], {}, {"h05": ALREADY})
+            == KEPT_LINE_OF_ANOTHER
+        )
         # A monoisotopic track's member owned by another peak is that peak's line.
         assert (
             sample_decision(
                 replace(members["r5"]["h05"], owner_batch_peak_id="r6"),
                 claims["r5"],
                 {},
-                {"h05"},
+                {"h05": None},
             )
             == KEPT_LINE_OF_ANOTHER
         )
+
+    def test_a_heavier_line_read_on_its_own_is_claimed_only_under_its_rungs_peak(
+        self,
+    ):
+        """The ledger says a line by its owner alone: a heavier line claimed
+        where the rung's peak is not the rung would read as the rung's ion."""
+        claims, members = self._claim()
+        r5b = members["r5b"]["h05"]
+        assert sample_decision(r5b, claims["r5b"], {}, {"h05": None}) is None
+        assert sample_decision(r5b, claims["r5b"], {}, {"h05": ALREADY}) is None
+        assert (
+            sample_decision(r5b, claims["r5b"], {}, {"h04": None})
+            == KEPT_NO_MONOISOTOPIC
+        )
+        # A monoisotopic track's peak needs no other.
+        assert sample_decision(members["r5"]["h05"], claims["r5"], {}, None) is None
 
     def test_a_line_the_rung_can_have_does_not_keep_it(self):
         claims, members = self._claim()
@@ -679,6 +745,7 @@ def _record(plan, key="r3", reads=READS_REAGENT, **extra):
         rows_rewritten=3,
         lines_rewritten=2,
         rows_kept={"no_row": 1},
+        claimed=["h00", "d00"],
         **extra,
     )
 
@@ -696,6 +763,7 @@ class TestRecords:
         assert record["rung"]["observed"].startswith("no work found")
         assert record["passed_in"] == [0, 1]
         assert [s["segment"] for s in record["segments"]] == [0, 1]
+        assert record["partition_segments"] == 2
         assert record["segments"][0]["spectra"] == 12
         assert record["segments"][0]["verdict"] == "passed"
         assert record["samples"] == 24
@@ -703,9 +771,37 @@ class TestRecords:
         assert record["members_rewritten"] == 1
         assert (record["rows_rewritten"], record["lines_rewritten"]) == (3, 2)
         assert record["rows_kept"] == {"no_row": 1}
+        assert record["claimed_samples"] == ["d00", "h00"]
         assert record["turned"] is True
         assert record["moved_analyte"] is True
         assert record["batch_peak_run_id"] == "run-1"
+
+    def test_a_rung_its_ladder_reached_in_one_segment_counts_them_all(self, plan):
+        plan, _ = plan
+        record = _record(plan, "r5")
+        assert [s["segment"] for s in record["segments"]] == [1]
+        assert record["partition_segments"] == 2
+
+    def test_the_claimed_samples_carry_an_earlier_measurements_claim(self, plan):
+        """A second measurement finds the first one's claims reading the rung
+        already: they stay the ladder's, where they read it still."""
+        plan, _ = plan
+        claims = _claims(plan)
+        assert claimed_samples(claims["r3"], ["h01", "h00"], None) == ["h00", "h01"]
+        earlier = {
+            "rung": {"ion_formula": ion(1)},
+            "reads": {},
+            "claimed_samples": ["d00", "h03", "gone"],
+        }
+        # The members of r1 read the rung; a sample no longer at it is gone.
+        assert claimed_samples(claims["r1"], [], earlier) == ["d00", "h03"]
+        # A member read otherwise since is no claim of the ladder's.
+        assert claimed_samples(claims["r3"], ["h00"], earlier) == ["h00"]
+        on_r3 = {**earlier, "rung": {"ion_formula": ion(3)}}
+        assert claimed_samples(claims["r3"], [], on_r3) == []
+        # An earlier record of another rung carries nothing.
+        on_r2 = {**earlier, "rung": {"ion_formula": ion(2)}}
+        assert claimed_samples(claims["r1"], [], on_r2) == []
 
     def test_a_record_lists_the_kept_samples_with_their_readings(self, plan):
         plan, _ = plan
@@ -825,7 +921,9 @@ class TestRecords:
         served = _batch_peak_meta(bp)["water_ladder"]
         assert served["rung"]["ion"] == "[Br+3xH2O]-"
         assert "displaced_members" not in served
+        assert "claimed_samples" not in served
         assert water_ladder_record_of(bp)["displaced_members"]
+        assert water_ladder_record_of(bp)["claimed_samples"] == ["d00", "h00"]
         snapshot = SimpleNamespace(**anchor_snapshot_row("run-1", bp, []))
         assert snapshot_anchor_meta(snapshot, "b")["water_ladder"] == served
 
@@ -872,6 +970,7 @@ class TestSummary:
             Written(
                 claims["r3"],
                 True,
+                samples=tuple(DRY + HUMID),
                 members_rewritten=24,
                 rows_rewritten=2,
                 lines_rewritten=24,
@@ -879,8 +978,20 @@ class TestSummary:
                 turned=True,
                 moved=True,
             ),
-            Written(claims["r4"], True, members_rewritten=12, turned=True),
-            Written(claims["r5"], True, members_rewritten=12, rows_rewritten=1),
+            Written(
+                claims["r4"],
+                True,
+                samples=tuple(HUMID),
+                members_rewritten=12,
+                turned=True,
+            ),
+            Written(
+                claims["r5"],
+                True,
+                samples=tuple(HUMID),
+                members_rewritten=12,
+                rows_rewritten=1,
+            ),
             Written(claims["r7"], False),
         ]
         summary = summarise(plan, written, {PARTITION: 0.01}, cleared=2)
@@ -891,7 +1002,9 @@ class TestSummary:
         assert part["rungs_passed"] == 14 and part["rungs_tested"] == 16
         assert part["claimed"] == 3
         assert part["held"] == 1
+        # 48 sample peaks, in the 24 samples.
         assert part["members_rewritten"] == 48
+        assert part["samples_claimed"] == 24
         assert part["rows_rewritten"] == 3
         assert part["lines_rewritten"] == 24
         assert part["peaks_turned"] == 2
@@ -904,12 +1017,15 @@ class TestSummary:
             ("[Br]-", 1),
         }
         assert summary["claimed"] == 3
+        assert summary["members_rewritten"] == 48
+        assert summary["samples_claimed"] == 24
         assert summary["peaks_turned"] == 2
         assert summary["rows_moved"] == 1
         assert summary["held_by_reason"] == {HELD_CURATED: 1}
         assert summary["rows_kept"] == {"no_row": 22}
         assert summary["samples_kept"][KEPT_HAND_ASSIGNED] == 1
-        assert summary["samples_kept"][KEPT_LINE_OF_ANOTHER] == 4
+        assert summary["samples_kept"][KEPT_LINE_OF_ANOTHER] == 10
+        assert summary["samples_kept"][KEPT_NO_MONOISOTOPIC] == 6
         assert summary["records_cleared"] == 2
         assert summary["thresholds"]["presence_share"] == 0.5
         listed = {entry["batch_peak_id"]: entry for entry in summary["rungs_listed"]}
@@ -925,14 +1041,22 @@ class TestSummary:
             plan,
             [
                 Written(
-                    claims["r3"], True, members_rewritten=24, turned=True, moved=True
-                )
+                    claims["r3"],
+                    True,
+                    samples=tuple(DRY + HUMID),
+                    members_rewritten=24,
+                    turned=True,
+                    moved=True,
+                ),
+                Written(claims["r5"], True, samples=tuple(HUMID), members_rewritten=12),
             ],
             {},
         )
         outcome = measuring_outcome(summary, "b")
         assert outcome["status"] == "success"
         assert "16 water-ladder rungs: 14 passed" in outcome["message"]
+        # Samples, not the 36 sample peaks.
+        assert "2 batch peaks claimed in 24 samples;" in outcome["message"]
         assert (
             "1 now read as the reagent, 1 of them analytes before"
             in (outcome["message"])

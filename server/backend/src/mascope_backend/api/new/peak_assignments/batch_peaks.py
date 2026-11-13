@@ -1200,8 +1200,9 @@ _KNOWN_SPECIES_KEPT_BACK = frozenset({"displaced_members", "own_test_samples"})
 #: an anchor's record under, on a batch peak at a rung of a reagent ion's water
 #: ladder that passed in an acquisition segment: the rung, its reading in each
 #: segment, what the claim wrote and what it kept, per sample what each
-#: rewritten member read before (``displaced_members``), and the reading the
-#: anchor holds since (``reads``).
+#: rewritten member read before (``displaced_members``), the samples whose
+#: member reads the rung on the ladder's word (``claimed_samples``), and the
+#: reading the anchor holds since (``reads``).
 WATER_LADDER_KEY = "water_ladder"
 
 
@@ -1253,11 +1254,21 @@ def standing_water_ladder_record(anchor: Any) -> Optional[dict]:
 def water_ladder_summary(anchor: Any) -> Optional[dict]:
     """What the ledger serves of a water-ladder record: everything but what
     each member read before, which the pass's run snapshot keeps as the
-    members' own state."""
+    members' own state, and the samples it claimed, which the next
+    measurement and *Decide known species* read."""
     record = standing_water_ladder_record(anchor)
     if record is None:
         return None
-    return {key: value for key, value in record.items() if key != "displaced_members"}
+    return {
+        key: value
+        for key, value in record.items()
+        if key not in _WATER_LADDER_KEPT_BACK
+    }
+
+
+#: What a water-ladder record keeps for the passes alone: the ledger and a
+#: run's snapshot serve the rest (:func:`water_ladder_summary`).
+_WATER_LADDER_KEPT_BACK = frozenset({"displaced_members", "claimed_samples"})
 
 
 def resolution_from_tol_ppm(
