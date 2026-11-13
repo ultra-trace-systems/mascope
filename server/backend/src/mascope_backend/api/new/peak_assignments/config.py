@@ -26,6 +26,14 @@ from mascope_tools.composition.profiles import (
 # Stored on every PeakAssignmentRun so runs stay reproducible and comparable.
 PEAK_ASSIGNMENT_ENGINE_VERSION = "0.5.0"
 
+# The first engine version whose every row's evidence is on the fit-score v2
+# scale. Stage A scored with v2 before it; the untargeted stage moved to v2
+# in step 2.1, between 0.4.0 and this version, while its rows were stamped
+# `score_version` 2 all along (assignment quality plan, decision 12). The
+# confidence calibration's label pool admits a verdict on an untargeted row
+# from a run of this version or later only.
+STAGE_B_V2_ENGINE_VERSION = "0.5.0"
+
 # The in-app engine's identity, stamped on every run this server computes. It is
 # reserved: an import that could stamp it would defeat the provenance badge that
 # the whole import trust model leans on, and it is the value the instrument

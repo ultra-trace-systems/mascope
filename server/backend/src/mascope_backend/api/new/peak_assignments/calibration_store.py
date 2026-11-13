@@ -16,7 +16,9 @@ A stored curve also records the ionization setups its labels were scored under
 ``(instrument, score_version)`` key cannot say which. The lookup still answers with the
 instrument's curve, but warns when a run's setup is not among them: the record-it form of
 ``docs/dev/ingest_routing_and_splitting.md`` phase 8 (the retired ionization note's 8.2),
-before the setup becomes part of the key.
+before the setup becomes part of the key. It records the reagent profile its labels were
+scored under the same way (``docs/dev/chemistry_profiles.md`` 3.3, the first step): a run
+under another profile reads the curve, with a warning.
 """
 
 from __future__ import annotations
@@ -39,9 +41,13 @@ class StoredCalibration(Calibration):
     each a version of an ionization mode some of the curve's labels were scored
     under. Empty where the row records none: a curve fit before setups were
     recorded, whose labels the migration could not trace to a sample.
+
+    ``reagent_profile`` is the profile every label was scored under, None where
+    they span several or the row predates the record.
     """
 
     ionization_setups: tuple[dict, ...] = field(default=())
+    reagent_profile: str | None = None
 
 
 def fit_under(
@@ -59,8 +65,25 @@ def fit_under(
     return ionization_setup in setups
 
 
+def fit_under_profile(
+    calibration: Calibration | None, reagent_profile: str | None
+) -> bool | None:
+    """Whether a curve was fit under the reagent profile a run resolved to.
+
+    :return: True or False where both are known, None where the curve records
+        no single profile (the in-code provisional curve, a pooled fit, a curve
+        stored before the record) or the run resolved none.
+    """
+    fitted = getattr(calibration, "reagent_profile", None)
+    if fitted is None or reagent_profile is None:
+        return None
+    return fitted == reagent_profile
+
+
 #: (row, setup) pairs already warned about: once per process, not once per sample.
 _warned: set[tuple[int, str, int | None]] = set()
+#: (row, profile) pairs already warned about, likewise.
+_warned_profiles: set[tuple[int, str]] = set()
 
 
 def _to_calibration(row: AssignmentCalibration) -> Calibration:
@@ -86,6 +109,7 @@ def _to_stored(row: AssignmentCalibration) -> StoredCalibration:
     return StoredCalibration(
         **{name: getattr(plain, name) for name in plain.__dataclass_fields__},
         ionization_setups=tuple(row.ionization_setups or ()),
+        reagent_profile=row.reagent_profile,
     )
 
 
@@ -93,6 +117,7 @@ async def load_calibration(
     instrument: str | None,
     score_version: int,
     ionization_setup: dict | None = None,
+    reagent_profile: str | None = None,
 ) -> Calibration | None:
     """The calibration for ``(instrument, score_version)``: the active DB row if present, else
     the in-code provisional curve, else ``None`` (uncalibrated instrument).
@@ -103,7 +128,9 @@ async def load_calibration(
 
     A row is returned as a :class:`StoredCalibration`. Given the setup the run searches under,
     a curve fit under other setups only is still applied - it is the instrument's curve - but
-    with a warning, once per curve and setup, rather than silently."""
+    with a warning, once per curve and setup, rather than silently. A curve fit
+    under another reagent profile than the run's is applied with a warning too,
+    once per curve and profile."""
     if not instrument:
         return None
     inst = str(instrument).lower()
@@ -141,6 +168,17 @@ async def load_calibration(
                     "searches under. It is applied all the same; refit it from "
                     "verifications of this setup's samples to calibrate them."
                 )
+        if fit_under_profile(stored, reagent_profile) is False:
+            warned_profile = (row.assignment_calibration_id, reagent_profile)
+            if warned_profile not in _warned_profiles:
+                _warned_profiles.add(warned_profile)
+                runtime.logger.warning(
+                    f"The confidence calibration of '{inst}' was fit under the "
+                    f"reagent profile '{stored.reagent_profile}', not under "
+                    f"'{reagent_profile}', which this run resolved to. It is "
+                    "applied all the same; refit it from verifications of this "
+                    "profile's samples to calibrate them."
+                )
         return stored
     return calibration_for(inst)
 
@@ -149,12 +187,14 @@ async def save_calibration(
     calibration: Calibration,
     score_version: int,
     ionization_setups: list[dict] | None = None,
+    reagent_profile: str | None = None,
 ) -> None:
     """Persist ``calibration`` as the new **active** row for its instrument + ``score_version``,
     deactivating any previously active row (the V2 recalibration write). Append-only: old rows are
     kept (``is_active=False``) as history, so a bad refit can be traced and rolled back.
 
-    ``ionization_setups`` are the setups the labels were scored under, recorded on the row."""
+    ``ionization_setups`` are the setups the labels were scored under, and
+    ``reagent_profile`` the profile every one of them was, recorded on the row."""
     inst = (calibration.instrument or "").lower()
     async with async_session() as session:
         await session.execute(
@@ -183,6 +223,7 @@ async def save_calibration(
                     else None
                 ),
                 ionization_setups=ionization_setups or None,
+                reagent_profile=reagent_profile,
                 label_weights=(
                     dict(calibration.label_weights)
                     if calibration.label_weights
