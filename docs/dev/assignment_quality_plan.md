@@ -95,6 +95,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 3.7 - stage 3 gate, engine 0.6.0 | - |  | planned; read against the literature and chemical reasoning, not the reference (decision 27) |
 | 4.1 - series detection on the batch ledger | - |  | built: *Detect series* walks CH2, O, H2O, CO, CO2, C2H2O and, from a peak carrying their element, C2H6OSi and CF2 up to three steps from the batch's assigned peaks onto its unassigned and candidate ones within the search's window, commits a unit at 12 proposals and ten times its six decoys' mean (re-derived on the testbed: 3x commits every TOF family), measures each proposal through the propagation chain, records the series with `has_anchor` on the batch peak, and a run counts it as a second observation; tiering rule set 12; MAS-61 |
 | 4.2 - time-series coherence | - |  | built, the co-variation reading (decision 35): *Read co-variation* reads every neutral the batch sees through two channels, per mode and instrument type, as Pearson r of the log traces, reagent-normalised, the common mode (each spectrum's median of the persistent traces) removed; co-varying at r >= 0.6, untestable under 10 shared spectra or a residual spread under 0.02 in log10 (both measured against decoy pairs on the testbed's 20 batch ledgers); recorded on the batch peak, shown in the ledger and the inspector, no tier moves. The nine riders are steps of their own (MAS-777); MAS-62 |
+| 4.2b - persistence is admission, not evidence | - |  | built: *Search untargeted* also takes a batch peak whose peak is in more of its partition's spectra than the partition's Otsu split of the occurrence distribution (one share per batch peak; held in 0.25 to 0.75; none under 10 spectra), however faint; one the intensity floor or the peak cap would have left out carries `provenance.persistence` (share, counts, split, the reading elected), and that reading is held at candidate (`persistence_only`) until a committed line of its isotope pattern in a sample, the neutral through another channel of the partition or a standing series lifts it, never the fit; read on the copy's ledgers of 87 to 547 samples the split falls at 0.48 to 0.56; at the default config (floor 0, no cap) nothing is admitted on persistence alone; MAS-823 |
 | 4.2c - predicted diagnostic isotopologues in the batch fold | - |  | built: *Stamp isotopologues* predicts the 15N, 18O, 34S, 29Si, 30Si, 37Cl and 81Br lines of every committed monoisotopic batch peak at its trace centre (a labelled atom is the label's; a line under half the peak it falls in at the anchor's resolving power is unresolved), finds the batch peak there, and in each sample holding both reads the height ratio inside that sample's fitted envelope tolerance (two widths; a sample whose two widths reach past half the ratio cannot tell); a line holding in 80 % of three or more such samples is stamped in each, `predicted` or `picker`; recorded on both batch peaks and the member rows, no tier moves; MAS-824 |
 | 4.2f - merged isotopologue rows | - |  | built: *Strip isotopologue rows* reads every committed monoisotopic batch peak at the 13C and diagnostic lines of every brighter one below it (four times the partition's mass scatter, at least 1 ppm); a row whose height over the parent's is a median 0.4 to 1.4 times the line's share over three or more samples, fewer than a tenth above 2x, is stripped: its members and the samples' in-app rows become the parent's isotope line (recorded on both), so the consensus folds it under the parent; curated, hand-assigned and own-13C rows are held, imported runs never rewritten; read on the copy's batch ledgers, G6 on the batch ledger falls on A 9 -> 7, B 62 -> 56, D 46 -> 41 and holds on C and C2; MAS-827 |
 | 4.2g - batch isotope checks as positive facts | - |  | built: *Read batch checks* records three display-only facts on a batch peak's reading: the halogen lock (a 37Cl or 81Br line 4.2c stamped, its median offset within the batch's position window; where the window cannot tell 30Si, the 29Si line a silicon reading implies decides), the label twin (a labelled ion's 14N twin at the impurity share the batch's own reagent ions show, the setup's purity where none does, present, absent or untestable where an absent line would be charged) and the uronium neutral pair (4.2's co-variation of [M+H]+ and [M+CH4N2O+H]+); on the copy's batch ledgers D locks bromine on 144 bromide clusters (71 of its 121 assigned), C2's labelled cores read their twins present in 88 of 88 samples at 0.42 of the 98 % share, no unlabelled ion is read, A and B count 99 and 458 uronium pairs; no tier moves; MAS-828 |
@@ -1472,6 +1473,64 @@ who edits chemistry and stays last.
     be read on the testbed's copy: its batch ledgers hold no radical anion
     beside another channel of the same neutral (33 radical cations do, 21
     co-varying, none anti-correlated).
+
+- **As built (the first rider, persistence as admission; step 4.2b,
+  MAS-823).** The batch half alone, in `batch_untargeted.py`, with the
+  rule in the consensus (`batch_peaks.hold_persistence_only`). Before any
+  search the fold's members are counted: each batch peak's spectra over
+  its partition's (mode and instrument type), one share per batch peak, so
+  a trace counts once however many spectra hold it. `occurrence_split`
+  is Otsu's threshold over those shares (Otsu 1979), placed midway between
+  the two neighbouring shares it falls between, held in 0.25 to 0.75
+  (`SPLIT_BOUNDS`: the method splits a one-mode batch too), none under 10
+  spectra (`MIN_PERSISTENCE_SPECTRA`) or where every share is one. Read
+  read-only on the copy's batch ledgers (twenty partitions): every one of 87 to
+  547 samples is cleanly bimodal (Otsu's separability 0.89 to 0.94) and
+  splits at 0.48 to 0.56; those of three to six samples split on the
+  coarse steps of a share and are why the minimum is there. A sample's
+  search takes a representative of a persistent batch peak beside the ones
+  the floor and the cap admit (`admitted_targets`), within the ceiling, the
+  faint ones brightest first, and the frame it reads takes those peaks
+  under the floor too. A batch peak persistence alone admitted carries
+  `provenance.persistence` (share, `n_present`, `n_samples`, split, the
+  reading the merge decided if it is a monoisotopic one of its own, the
+  run), written after the merge and before any member, so the consensus
+  pass in the search's `finally` holds it even after a stop; a batch peak
+  the search took on its height loses an earlier record. The record is
+  about the peak and stays whatever the batch peak reads; the rule asks
+  only the reading it names, unpinned, on its own peak, as no source's ion
+  (`persistence_asks`). Uncorroborated, an assigned reading is lowered to
+  candidate with `persistence_only` under `provenance.tier_reasons`, in a
+  run's vocabulary; it never promotes, and a reading under the top band
+  still records the reason with `caps`. The second observations are a
+  run's lone-peak escapes read across the batch
+  (`batch_peaks_controller._persistence_facts`): a member of another batch
+  peak read as the reading's isotope line (its owner link, under the
+  reading's formula and mechanism) in any sample, the same neutral
+  (`cross_channel.neutral_key`) committed through another mechanism by a
+  batch peak of the partition, and a standing series record with
+  `has_anchor`; each that holds is named instead (`second_line`,
+  `corroborated`, `series_anchor`). Where the rule holds, the members that
+  read the elected reading at assigned are stored at candidate too, so a
+  sample's derived view reads the batch's cap, and the record keeps them
+  (`held_members`, sample -> fit); the vote reads each at its measured
+  tier while it is the one held (`measured_members`), and a lift puts it
+  back. A consensus chunk takes every vote first and reads the facts with
+  its own batch peaks at their new readings; where a recompute spans
+  chunks, the batch peaks the rule asked are recomputed once more at the
+  end. The ledger serves
+  `persistence` and `tier_reasons` (the snapshot keeps both, one
+  migration), a sample's detail read `batch_persistence`; the ledger marks
+  the formula and puts a down arrow by the tier, the inspector names the
+  share. The search's summary counts the batch peaks admitted on
+  persistence and those held, and each partition's split.
+  - **Read on the copy.** At the default config (floor 0, no cap) every
+    representative is admitted on its height, so no batch peak is admitted
+    on persistence alone and none is held: the rule reaches a search run
+    with a floor or a cap. The copy's persistent batch peaks that read
+    nothing today number 20 to 408 per ledger of 423 to 547 samples, the
+    reach such a search has. G1 and G2, and the counts on a floored
+    search of the two batches, are the planner's pass.
 
 - **As built (the second rider, predicted diagnostic isotopologues; step
   4.2c, MAS-824).** The pure half is

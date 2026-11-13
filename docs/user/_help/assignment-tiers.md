@@ -21,6 +21,10 @@ rather than a settled verdict. The mark goes when the rules are settled.
 A tier chip names the tier alone; hovering it gives the evidence, which says how
 well the formula explains the peak, not the chance it is right. A *batch peak*'s
 tier is a vote across the samples it appears in, so its chip names no evidence.
+A batch peak the batch's untargeted search took only because its peak recurs
+across the batch, not for its height, holds the formula it found at
+*candidate* (**persistence only**, a down arrow beside the chip) until an
+isotope line, another channel or a series of the batch sees it too.
 
 A run imported from another engine can also carry that engine's own tier, in an
 **engine tier** column beside Mascope's. Where the two differ, the peak is worth
