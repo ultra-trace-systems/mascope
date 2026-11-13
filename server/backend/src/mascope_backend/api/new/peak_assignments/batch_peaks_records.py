@@ -32,6 +32,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     standing_series_record,
     tier_name,
     tier_reasons_of,
+    water_ladder_summary,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
     engine_tier_filters,
@@ -126,6 +127,10 @@ def _batch_peak_meta(bp) -> dict:
     reading the ion of the batch's own source list its ion is
     (``batch_coherence.flat_series_record``); an origin flag, display-only;
     None where none was read for the reading the anchor names.
+    ``water_ladder`` is the rung of a reagent ion's water ladder the anchor
+    sits at, where the batch's series passed it in an acquisition segment: the
+    rung, its reading per segment, what its claim wrote and the samples it kept
+    (``batch_water_ladder``); None where no reading stands.
     """
     return {
         "batch_peak_id": bp.batch_peak_id,
@@ -171,6 +176,7 @@ def _batch_peak_meta(bp) -> dict:
         "persistence": persistence_summary(bp),
         "tier_reasons": tier_reasons_of(bp),
         "flat_series": standing_flat_series_record(bp),
+        "water_ladder": water_ladder_summary(bp),
         "reference_listing": consensus_listing(
             bp.candidates,
             bp.consensus_formula,

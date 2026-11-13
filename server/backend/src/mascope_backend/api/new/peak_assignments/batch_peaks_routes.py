@@ -69,6 +69,9 @@ from mascope_backend.api.new.peak_assignments.batch_series import (
 from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     search_batch_untargeted,
 )
+from mascope_backend.api.new.peak_assignments.batch_water_ladder import (
+    measure_batch_water_ladders,
+)
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.continuity import (
     recompute_batch_continuity,
@@ -843,6 +846,65 @@ async def decide_known_species_batch_peaks_route(
     return {
         "message": (
             "Deciding the known species of "
+            f"'{sample_batch.sample_batch_name}' over its samples, please wait."
+        ),
+        "process_id": process_id,
+    }
+
+
+@batch_peaks_router.post(
+    "/batch/{sample_batch_id}/measure-water-ladders",
+    # A write into the batch ledger and the samples' rows, gated like the
+    # known-species decision above and, like it, not opened to API tokens.
+    dependencies=[Depends(require_peak_assignment_enabled)],
+)
+@api_route(status_code=202)
+async def measure_water_ladders_batch_peaks_route(
+    sample_batch_id: str,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(current_active_user),
+    membership=Depends(require_batch_role("editor")),
+) -> dict:
+    """Measure the reagent ions' water ladders on the batch's own series, and
+    claim the rungs that pass.
+
+    Per ionization mode and instrument type, the profile a sample of it
+    resolves to declares the cores whose water ladder is read (bromide, its
+    dimer, trimer and HBr cluster; nitrate, its acid clusters and nitrite;
+    the labelled cores; none on a positive profile). The samples are cut into
+    acquisition segments at long gaps, and each core's ladder, core.(H2O)n up
+    to 45 waters, is climbed per segment on the batch peaks: a rung passes
+    where it and every rung below it are present in half the segment's
+    samples, three times as often as at its decoy masses, and, on a TOF, its
+    M+1 line shows no carbon. A batch peak at a passing rung is rewritten as
+    the reagent's ion in the samples of the segments it passed in - its
+    member and the sample's own in-app row, its isotope lines with it - but
+    for the samples a hold keeps: a hand assignment, a target compound or a
+    reference list's identity, another ion's line or claim, a reading with an
+    isotope line the rung cannot have. A curated batch peak is never claimed.
+    Each one records the rung under ``provenance.water_ladder``, which the
+    ledger serves as ``water_ladder``; the run's summary reports the segments,
+    each ladder's reach, the rungs tested and passed, the rows moved and the
+    unexplained share of signal before and after. Runs as a background task,
+    as a batch run, and emits ``peak_assignment_reload`` on completion.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param user: The current authenticated user. Requires workspace editor role.
+    :return: Acknowledgement message with the background process id.
+    """
+    sample_batch = await fetch_sample_batch(sample_batch_id)
+    await check_no_run_in_flight(sample_batch_id=sample_batch_id)
+    process_id = gen_id(8)
+    background_tasks.add_task(
+        measure_batch_water_ladders,
+        sample_batch_id=sample_batch_id,
+        independent_transaction=True,
+        user_id=user.id,
+        process_id=process_id,
+    )
+    return {
+        "message": (
+            "Measuring the water ladders of "
             f"'{sample_batch.sample_batch_name}' over its samples, please wait."
         ),
         "process_id": process_id,
