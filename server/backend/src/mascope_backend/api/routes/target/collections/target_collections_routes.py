@@ -109,6 +109,8 @@ async def update_target_collection_route(
 
     `target_compound_ids` and `target_compounds_create` together replace the
     collection's compound list: a compound the request does not name is removed.
+    An id that names no compound in the library refuses the request with a 422
+    that lists the unknown ids, and nothing is changed.
     `sample_batch_ids` likewise replace the collection's batch list: a batch the
     request does not name is detached, and marked for rematch.
 

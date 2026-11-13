@@ -964,7 +964,10 @@ mascope.matching.save_batch(batch_id)
   collection is associated with, and an empty list detaches it from them all.
   `collections.update` sets a collection's compounds to the ones it creates
   (`compounds=`) and names (`compound_ids=`): to add compounds, send the
-  current `compound_ids` too, or the ones left out are taken out.
+  current `compound_ids` too, or the ones left out are taken out. An id
+  that names no compound in the library refuses the whole call with
+  `ValidationError` (422), which lists the unknown ids, and changes nothing;
+  `collections.create` refuses one the same way.
   `samples.update` takes the whole sample: start from `samples.get`, and give
   an ingested sample (type `ACQUISITION`, which only the system sets) a user
   type in the same call, or the route refuses it.
