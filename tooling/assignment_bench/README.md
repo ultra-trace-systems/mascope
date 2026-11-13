@@ -176,7 +176,10 @@ box in the caller's own session, one run at a time. In order:
 6. **The time budget.** Each set has `--budget-min` minutes (default 120)
    for its runs. A set that runs out is left off the card whole, so a diff
    never compares half a set. The runs it left behind are released when the
-   backend next starts.
+   backend next starts. A Ctrl-C, or a sample's job that breaks, stops the
+   runs in flight from being waited on at their next poll: no arm is asked
+   for after it, and the cleanup follows within one poll (10 s), or within
+   a request's 2-minute timeout should the server hang.
 7. **The checks.** A sample is read only where its newest completed in-app
    run is the one this run made and its newest reference run is still the
    pin's. A sample whose run failed or that the server would not assign is

@@ -419,7 +419,8 @@ class Outcome:
 
     :ivar status: ``completed``, ``failed``, ``cancelled``, ``refused``
         (the request was refused, or a decoy the engine refused at run time),
-        ``lost`` (the run left the listing) or ``over_budget``.
+        ``lost`` (the run left the listing), ``over_budget``, or ``stopped``
+        (the bench stopped waiting: Ctrl-C, or another sample's job broke).
     """
 
     status: str
@@ -808,22 +809,26 @@ class BenchRun:
         """The set's control runs, then its decoy arms, within its budget.
 
         Samples run side by side; one sample's runs follow each other, since
-        the server holds one run of a sample at a time.
+        the server holds one run of a sample at a time. When the main thread
+        leaves the pool on an exception, a Ctrl-C or a job that broke, the
+        jobs still running stop at their next poll and launch nothing more,
+        rather than hold the lock and the backend until the budget runs out.
         """
         arms = DECOY_ARMS.get(p.instrument, ()) if decoys else ()
         before = p.snapshot()
         start = self.clock()
         deadline = start + self.budget_s
         lock = threading.Lock()
+        stop = threading.Event()
         done = [0]
 
         def job(sample: str) -> tuple[str, Outcome, dict[str, Outcome]]:
-            control = self._one(api, sample, DEFAULT_CONFIG, deadline)
+            control = self._one(api, sample, DEFAULT_CONFIG, deadline, stop)
             outcomes: dict[str, Outcome] = {}
             if control.status == "completed":
                 for arm in arms:
                     outcomes[arm_name(arm)] = self._one(
-                        api, sample, {"decoy": arm}, deadline
+                        api, sample, {"decoy": arm}, deadline, stop
                     )
             with lock:
                 done[0] += 1
@@ -849,7 +854,13 @@ class BenchRun:
             + f", {self.jobs} at once, within {self.budget_s / 60:.0f} min"
         )
         with ThreadPoolExecutor(max_workers=max(1, self.jobs)) as pool:
-            rows = list(pool.map(job, list(p.samples)))
+            try:
+                rows = list(pool.map(job, list(p.samples)))
+            except BaseException:
+                # map has cancelled the samples still queued; leaving the
+                # block waits for the running ones, which this stops.
+                stop.set()
+                raise
 
         controls: dict[str, Outcome] = {}
         decoy_outcomes: dict[str, dict[str, Outcome]] = {}
@@ -891,13 +902,21 @@ class BenchRun:
         }
 
     def _one(
-        self, api: RunApi, sample: str, config: dict | None, deadline: float
+        self,
+        api: RunApi,
+        sample: str,
+        config: dict | None,
+        deadline: float,
+        stop: threading.Event,
     ) -> Outcome:
-        """Launch one run of a sample and wait for it, while the budget lasts."""
+        """Launch one run of a sample and wait for it, while the budget lasts
+        and until ``stop`` is set."""
         transient = 0
         while True:
             if self.clock() > deadline:
                 return Outcome("over_budget")
+            if stop.is_set():
+                return Outcome("stopped")
             try:
                 launch = api.assign(sample, config)
             except TransientError as error:
@@ -953,6 +972,8 @@ class BenchRun:
                     return Outcome(status, launch.run_id, detail=error)
             if self.clock() > deadline:
                 return Outcome("over_budget", launch.run_id)
+            if stop.is_set():
+                return Outcome("stopped", launch.run_id)
             self.sleep(self.poll_s)
 
     def _check_controls(self, api, plans, results, reference, runlog) -> None:
