@@ -805,17 +805,17 @@ def _paced(clock):
     return sleep
 
 
-def _waits_on_a_result(thread, within_s=10.0):
-    """Wait until ``thread`` blocks on a future's result. A signal that lands
-    earlier, while the pool still starts its second worker in ``submit``,
-    leaves that worker out of the pool's join: it then ends on the stop flag
-    by itself, after the test."""
+def _waits_on_the_jobs(thread, within_s=10.0):
+    """Wait until ``thread`` blocks waiting on the pool's jobs. A signal that
+    lands earlier, while the pool still starts its second worker in
+    ``submit``, leaves that worker out of the pool's join: it then ends on
+    the stop flag by itself, after the test."""
     end = time.monotonic() + within_s
     while time.monotonic() < end:
         frame = sys._current_frames().get(thread.ident)
         while frame is not None:
             code = frame.f_code
-            if code.co_name == "result" and "concurrent" in code.co_filename:
+            if code.co_name == "wait" and "concurrent" in code.co_filename:
                 return True
             frame = frame.f_back
         time.sleep(0.001)
@@ -847,7 +847,7 @@ def test_leaving_the_engine_runs_stops_every_job_at_its_next_poll(rig, leave):
         return real_assign(sample, config)
 
     def interrupt():
-        if polling.wait(10) and busy.wait(10) and _waits_on_a_result(main):
+        if polling.wait(10) and busy.wait(10) and _waits_on_the_jobs(main):
             signal.pthread_kill(main.ident, signal.SIGINT)
 
     main = threading.main_thread()
@@ -873,6 +873,44 @@ def test_leaving_the_engine_runs_stops_every_job_at_its_next_poll(rig, leave):
         "mz_shift_ppm=+9",
     }
     assert rig.instance.calls[-2:] == ["stop", "remove_worktree"]
+
+
+def test_a_job_that_breaks_behind_a_running_sample_stops_the_run_when_it_breaks(rig):
+    # S1's control never ends, and S2's job breaks at its first poll. The
+    # run leaves when S2 breaks, not once S1's run ends at the budget.
+    rig.server.ends[("S1", None)] = None
+    real_runs = rig.server.runs
+
+    def runs(sample, include_decoys=False):
+        if sample == "S2" and include_decoys:
+            raise ValueError("a bug in the bench")
+        return real_runs(sample, include_decoys)
+
+    rig.server.runs = runs
+    runner = rig.runner(jobs=2, budget_s=3600.0, sleep=_paced(rig.clock))
+    with pytest.raises(ValueError, match="a bug in the bench"):
+        runner.run("topic", decoys=True, sets=["Db"])
+
+    assert rig.clock() < 600
+    assert rig.instance.calls[-2:] == ["stop", "remove_worktree"]
+
+
+def test_a_sample_still_queued_when_a_job_breaks_is_never_started(rig):
+    real_runs = rig.server.runs
+
+    def runs(sample, include_decoys=False):
+        if sample == "S1" and include_decoys:
+            raise ValueError("a bug in the bench")
+        return real_runs(sample, include_decoys)
+
+    rig.server.runs = runs
+    with pytest.raises(ValueError, match="a bug in the bench"):
+        rig.runner(jobs=1).run("topic", sets=["Db"])
+
+    (log,) = rig.home.cards.glob("*/*/run.log")
+    assert "stopped: ValueError: a bug in the bench" in log.read_text()
+    assert "S2: control" not in log.read_text()
+    assert [s for s, _, _ in rig.server.assigned] == ["S1"]
 
 
 def test_a_card_reads_this_run_s_control_or_leaves_the_sample_out(rig):
