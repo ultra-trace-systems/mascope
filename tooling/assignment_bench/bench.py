@@ -2,7 +2,7 @@
 
     bench.py init <manifest> [--ref REF] [--rebuild] [--checkout DIR] [--keep-running] [--wait]
     bench.py reference --pin vX.Y.Z [--reinstall] [--jobs N] [--set NAME ...] [--wait]
-    bench.py run <ref> [--sets A,D,...] [--decoys] [--baseline] [--no-wait] [--jobs N] [--budget-min M] [--workers N]
+    bench.py run <ref> [--sets A,D,...] [--decoys] [--baseline] [--post PR] [--no-wait] [--jobs N] [--budget-min M] [--workers N]
     bench.py baseline [CARD]
     bench.py status
 
@@ -25,7 +25,8 @@ every sample into the instance beside the in-app runs (``reference.py``).
 ``run <ref>`` builds a ref, runs its in-app engine on the sets beside the
 pinned reference and writes the card, diffed against develop's rolling
 baseline with ``--baseline``; ``baseline`` shows that baseline or makes a card
-of develop it (``run.py``).
+of develop it (``run.py``). ``run --post <pr>`` posts the card on the PR as one
+comment, edited in place on a re-run (``post.py``).
 
 Everything the bench keeps lives in its home, ``$MASCOPE_PATH/.runtime/bench``
 (``--home`` or ``MASCOPE_BENCH_HOME`` elsewhere): a copy of the manifest with
@@ -65,6 +66,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import manifest as bench_manifest  # noqa: E402
+import post as bench_post  # noqa: E402
 import reference as bench_reference  # noqa: E402
 import run as bench_run  # noqa: E402
 from manifest import Manifest, ManifestError, ResolvedFile  # noqa: E402
@@ -850,6 +852,12 @@ class Instance(Protocol):
     def is_on_develop(self, sha: str) -> bool:
         """Whether a commit is develop's head or behind it."""
 
+    def merge_base(self, sha: str, onto: str) -> str | None:
+        """The merge base of a commit and a ref (``origin/develop``), or None."""
+
+    def contains(self, ancestor: str, sha: str) -> bool:
+        """Whether ``ancestor`` is ``sha`` or behind it."""
+
     def db_revisions(self) -> list[str]:
         """The alembic revisions the env's database is at."""
 
@@ -1098,6 +1106,15 @@ class DevInstance:
             self._git("merge-base", "--is-ancestor", sha, "origin/develop").returncode
             == 0
         )
+
+    def merge_base(self, sha: str, onto: str) -> str | None:
+        out = self._git("merge-base", sha, onto)
+        if out.returncode != 0:
+            return None
+        return out.stdout.strip() or None
+
+    def contains(self, ancestor: str, sha: str) -> bool:
+        return self._git("merge-base", "--is-ancestor", ancestor, sha).returncode == 0
 
     def db_revisions(self) -> list[str]:
         return [
@@ -1894,6 +1911,13 @@ def main(argv: list[str] | None = None) -> int:
         "head becomes the next baseline",
     )
     p_run.add_argument(
+        "--post",
+        type=int,
+        metavar="PR",
+        help="post the card on this pull request as one comment, edited in place "
+        "on a re-run; diffs against develop's baseline as --baseline does",
+    )
+    p_run.add_argument(
         "--no-wait",
         action="store_true",
         help="refuse rather than wait while another bench command runs",
@@ -1957,6 +1981,11 @@ def main(argv: list[str] | None = None) -> int:
                     return runner.baseline()
                 with home.lock(wait=args.wait):
                     return runner.baseline(args.card)
+            poster = None
+            if args.post is not None:
+                # Before the lock: a fork is refused before anything waits or runs.
+                poster = bench_post.Poster(gh=bench_post.GhCli(), number=args.post)
+                poster.open()
             with home.lock(
                 wait=not args.no_wait, hint="without --no-wait a run waits for it"
             ):
@@ -1964,7 +1993,8 @@ def main(argv: list[str] | None = None) -> int:
                     args.ref,
                     sets=args.sets,
                     decoys=args.decoys,
-                    baseline=args.baseline,
+                    baseline=args.baseline or poster is not None,
+                    post=poster,
                 )
         if args.command == "reference":
 
@@ -2004,6 +2034,7 @@ def main(argv: list[str] | None = None) -> int:
         ManifestError,
         bench_reference.ReferenceError,
         bench_run.RunError,
+        bench_post.PostError,
     ) as error:
         print(f"bench: {error}", file=sys.stderr)
         return 2

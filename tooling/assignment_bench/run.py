@@ -1,6 +1,6 @@
 """``bench run``: a ref's in-app engine on the bench sets, beside the pinned reference.
 
-    bench.py run <ref> [--sets A,D,...] [--decoys] [--baseline] [--no-wait] [--jobs N] [--budget-min M] [--workers N]
+    bench.py run <ref> [--sets A,D,...] [--decoys] [--baseline] [--post PR] [--no-wait] [--jobs N] [--budget-min M] [--workers N]
     bench.py baseline [CARD]
 
 The command the bench exists for (step 6.5 of the assignment quality plan).
@@ -26,6 +26,11 @@ One run, behind the bench's lock:
 5. It scrubs the card again with the bench's whole deny list, the instance's
    own names and ids included, before anything is written.
 6. It stops the ref's backend and removes its worktree. The instance stays.
+7. With ``--post <pr>`` it posts the card on the PR as one comment, edited in
+   place on a re-run (``post.py``): the card, a refused card's refusal, or a
+   failed run's error, each scrubbed again. ``--post`` diffs against develop's
+   baseline as ``--baseline`` does, but not against one older than the PR's
+   merge base.
 
 Each run writes ``cards/<ref>/<timestamp>/`` in the bench's home: the card
 (``card.md``, ``card.json`` and one pair per set), the diff against the
@@ -55,6 +60,12 @@ from typing import Callable, Protocol
 
 
 _HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+
+import post as bench_post  # noqa: E402
+
+
 REPO = _HERE.parents[1]
 COMPARE = REPO / "tooling" / "assignment_compare" / "compare_runs.py"
 
@@ -608,10 +619,30 @@ class BenchRun:
         sets: list[str] | None = None,
         decoys: bool = False,
         baseline: bool = False,
+        post: bench_post.Poster | None = None,
     ) -> int:
         """One run of ``ref``; 0 when the card passes with nothing left out,
         1 when it fails its gate or something was left out, 2 when no card was
-        written."""
+        written.
+
+        With ``post`` the run diffs against develop's baseline, as with
+        ``baseline``, and its outcome goes on the PR: the card, the scrub's
+        refusal, or, for a run that stops on an error, the error's tail.
+        """
+        if post is None:
+            return self._run_once(ref, sets, decoys, baseline, None, {})
+        if post.pr is None:
+            post.open()
+        progress: dict = {}
+        try:
+            return self._run_once(ref, sets, decoys, True, post, progress)
+        except bench_post.PostError:
+            raise
+        except Exception as error:
+            self._post_failure(post, ref, error, progress)
+            raise
+
+    def _run_once(self, ref, sets, decoys, baseline, post, progress) -> int:
         state = self.load_state()
         chosen = choose_sets(state, sets)
         reference = state.get("reference")
@@ -645,6 +676,8 @@ class BenchRun:
                 work,
                 runlog,
                 state,
+                post,
+                progress,
             )
 
     def _card_dir(self, ref: str) -> Path:
@@ -681,9 +714,12 @@ class BenchRun:
         work,
         runlog,
         state,
+        post=None,
+        progress=None,
     ) -> int:
         say = runlog.say
         started = self.clock()
+        progress = {} if progress is None else progress
         summary = {
             "format": SUMMARY_FORMAT,
             "ref": ref,
@@ -713,16 +749,28 @@ class BenchRun:
                 if base
                 else "baseline: none yet (`bench.py run origin/develop --baseline` makes one)"
             )
+        no_diff = (
+            "No diff: there is no baseline of develop yet."
+            if post is not None and base is None
+            else None
+        )
 
         self.instance.check_env()
         self.instance.bind()
         card = None
         results: dict[str, dict] = {}
+        progress["results"] = results
         try:
             sha = self.instance.checkout(ref)
             develop = self.instance.develop_sha()
             summary.update(sha=sha, develop=develop)
+            progress["sha"] = sha
             say(f"{ref} is {sha[:9]}" + (" (develop's head)" if sha == develop else ""))
+            if post is not None and base is not None:
+                no_diff = self._stale(base, sha, post.pr.base_branch)
+                if no_diff:
+                    say(no_diff)
+                    base = None
             summary["migration"] = migrate(self.instance, ref, sha, say)
             base_url = self.instance.start(peak_assignment=True, workers=self.workers)
             self.connect(base_url)
@@ -767,7 +815,10 @@ class BenchRun:
         summary["is_baseline"] = promoted is not None
         self._write_outputs(out, summary, card, runlog)
         self._record(state, ref, summary, card, base, out)
-        return self._report(chosen, summary, card, problems, out, say)
+        code = self._report(chosen, summary, card, problems, out, say)
+        if post is not None:
+            self._post_card(post, summary, card, out, problems, no_diff, runlog)
+        return code
 
     # -------------------------------------------------------------- build
 
@@ -1072,10 +1123,23 @@ class BenchRun:
         clean = lambda xs: sorted({x for x in xs if x and str(x).strip()})  # noqa: E731
         return clean(names), clean(ids), clean(strict)
 
+    def _url(self) -> str | None:
+        if not self.home.env_file.exists():
+            return None
+        return read_env_file(self.home.env_file).get("MASCOPE_URL")
+
+    def _kind(self, token: str, deny) -> str:
+        """The kind of name a refused token is, for what is posted: never the token."""
+        names, ids, strict = deny
+        hosts = _compare_module().host_names(self._url())
+        return bench_post.token_kind(
+            token, {"ids": ids, "strict": strict, "hosts": hosts, "names": names}
+        )
+
     def _tokens(self, deny, set_names, own_words) -> list[str]:
         cr = _compare_module()
         names, ids, strict = deny
-        url = read_env_file(self.home.env_file).get("MASCOPE_URL")
+        url = self._url()
         return cr.deny_tokens(
             names,
             ids,
@@ -1142,14 +1206,20 @@ class BenchRun:
         staged = staging / "card.json"
         if not staged.exists():
             shutil.rmtree(staging, ignore_errors=True)
+            output = _compare_output(runlog.path)
             if code == 2:
                 say(
                     "the card was refused by the scrub: nothing written (run.log names the token)"
                 )
                 card["verdict"] = "refused"
+                found = bench_post.refused_token(output)
+                if found:
+                    card["refusal"] = (found[0], self._kind(found[1], deny))
             else:
                 say(f"the comparison wrote no card (exit {code}); see run.log")
                 card["verdict"] = "error"
+                card["code"] = code
+                card["tail"] = bench_post.tail(output)
             return card
 
         files = {
@@ -1173,6 +1243,7 @@ class BenchRun:
             )
             shutil.rmtree(staging, ignore_errors=True)
             card["verdict"] = "refused"
+            card["refusal"] = (refused.where, self._kind(refused.token, deny))
             return card
         for name in files:
             shutil.move(str(staging / name), str(out / name))
@@ -1321,6 +1392,143 @@ class BenchRun:
             return 2
         return 1 if card["verdict"] == "fail" or problems else 0
 
+    # ---------------------------------------------------------------- post
+
+    def _stale(self, base: dict, sha: str, branch: str) -> str | None:
+        """Why the card is not diffed against develop's baseline on this PR,
+        or None: a baseline older than the PR's merge base would read the
+        changes merged since as the PR's own."""
+        onto = f"origin/{branch}"
+        merge_base = self.instance.merge_base(sha, onto)
+        if merge_base is None:
+            return f"No diff: the merge base of this PR ({sha[:9]} and {onto}) could not be found."
+        if self.instance.contains(merge_base, base["sha"]):
+            return None
+        return (
+            f"No diff: develop's baseline ({base['sha'][:9]}, made {base['at']}) is "
+            f"older than this PR's merge base {merge_base[:9]}; the nightly run of "
+            f"develop's head makes a newer one."
+        )
+
+    def _post_card(self, post, summary, card, out, problems, no_diff, runlog) -> None:
+        """Post what the run made: the card, its refusal, or why there is none."""
+        cr = _compare_module()
+        own = (
+            set(card.get("own") or ())
+            | _key_words(summary)
+            | set(_words(summary["ref"]))
+            | bench_post.WORDS
+        )
+        if (out / "diff.json").exists():
+            own |= _key_words(json.loads((out / "diff.json").read_text("utf-8")))
+        tokens = self._tokens(card["deny"], list(summary["sets"]), sorted(own))
+        verdict = card["verdict"]
+        if verdict in ("pass", "fail", "written") and (out / "card.json").exists():
+            body = bench_post.card_body(
+                summary, out, post.pr, problems, cr, no_diff=no_diff
+            )
+        elif verdict == "refused":
+            where, kind = card.get("refusal") or ("the card", bench_post.UNKNOWN_KIND)
+            body = bench_post.refused_body(summary, post.pr, where, kind)
+        elif verdict == "error":
+            text, withheld = self._scrubbed(
+                card.get("tail"), tokens, card["deny"], runlog
+            )
+            body = bench_post.failed_body(
+                summary,
+                post.pr,
+                f"The comparison wrote no card (exit {card.get('code')}).",
+                text,
+                withheld=withheld,
+            )
+        else:
+            body = bench_post.failed_body(
+                summary, post.pr, "No set could be read.", None
+            )
+        self._publish(
+            post, body, tokens, card["deny"], summary, runlog.say, runlog.note
+        )
+
+    def _scrubbed(
+        self, text, tokens, deny, runlog=None
+    ) -> tuple[str | None, str | None]:
+        """An error's text if the scrub lets it through, else why it is withheld."""
+        if not text:
+            return None, None
+        cr = _compare_module()
+        try:
+            cr.scrub({"the error": text}, tokens)
+        except cr.CardRefused as refused:
+            if runlog is not None:
+                runlog.note(f"the scrub refused the error's text: {refused}")
+            return None, (
+                f"The error's text was refused by the scrub: it holds "
+                f"{self._kind(refused.token, deny)}. It is printed where the run ran."
+            )
+        return text, None
+
+    def _publish(self, post, body, tokens, deny, summary, say, note) -> None:
+        """Scrub the comment and post it; a comment the scrub refuses is
+        replaced by the refusal, which names the kind of name, not the name."""
+        cr = _compare_module()
+        try:
+            cr.scrub({"the comment": body}, tokens)
+        except cr.CardRefused as refused:
+            note(f"the scrub refused the comment: {refused}")
+            kind = self._kind(refused.token, deny)
+            say(
+                f"the comment was refused by the scrub: it holds {kind}; posting the refusal"
+            )
+            body = bench_post.refused_body(summary, post.pr, bench_post.COMMENT, kind)
+            try:
+                cr.scrub({"the refusal": body}, tokens)
+            except cr.CardRefused:
+                raise bench_post.PostError(
+                    "the scrub refused even the comment's refusal: nothing was posted"
+                ) from None
+        url, edited = post.post(body)
+        say(
+            ("edited the bench comment" if edited else "posted the bench comment")
+            + f" on PR #{post.pr.number}: {url}"
+        )
+
+    def _post_failure(self, post, ref, error, progress) -> None:
+        """Post a run that stopped on an error: the error's tail, scrubbed."""
+        summary = {"ref": ref, "sha": progress.get("sha"), "sets": {}}
+        kind = type(error).__name__
+        what = f"The run stopped: {kind}."
+        say = lambda line: print(
+            f"{datetime.datetime.now():%H:%M:%S} {line}", flush=True
+        )  # noqa: E731
+        try:
+            state = self.load_state()
+            deny = self._deny(state, {}, progress.get("results") or {})
+            own = set(_words(ref)) | set(_words(kind)) | bench_post.WORDS
+            tokens = self._tokens(deny, list(state.get("sets") or {}), sorted(own))
+        except Exception as why:  # the state or the database could not be read
+            say(
+                f"the deny list could not be built ({type(why).__name__}): the error's text is not posted"
+            )
+            body = bench_post.failed_body(
+                summary,
+                post.pr,
+                what,
+                None,
+                withheld="The deny list could not be built to scrub the error, so its text is not posted.",
+            )
+            try:
+                url, edited = post.post(body)
+                say(f"posted the failure on PR #{post.pr.number}: {url}")
+            except bench_post.PostError as failed:
+                say(f"the failure could not be posted: {failed}")
+            return
+        text, withheld = self._scrubbed(bench_post.tail(str(error)), tokens, deny)
+        body = bench_post.failed_body(summary, post.pr, what, text, withheld=withheld)
+        try:
+            self._publish(post, body, tokens, deny, summary, say, lambda line: None)
+        except bench_post.PostError as failed:
+            say(f"the failure could not be posted: {failed}")
+
     # ------------------------------------------------------------ baseline
 
     def baseline(self, card: str | None = None, out=None) -> int:
@@ -1411,6 +1619,13 @@ def not_whole(card_sets: list[str], bench_sets, problems: list[str]) -> str | No
     if problems:
         return "samples were left out (" + "; ".join(problems) + ")"
     return None
+
+
+def _compare_output(log: Path) -> str:
+    """What the last comparison wrote into the run log."""
+    text = log.read_text(encoding="utf-8") if log.exists() else ""
+    start = text.rfind("$ compare_runs.py")
+    return text[start:].split("\n", 1)[1] if start >= 0 and "\n" in text[start:] else ""
 
 
 def diff_markdown(diff: dict) -> str:

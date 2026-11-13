@@ -3,11 +3,12 @@
 One persistent Mascope instance, env `bench`, that holds fixed sample sets,
 so that both assignment engines can be run on the same data on demand. The
 design is `docs/dev/assignment_bench.md` (milestone 6 of the assignment
-quality plan). This folder has its first three steps: `bench init`, the
-instance built from a sets manifest; `bench reference`, the reference
-engine at a pinned release published into it; and `bench run`, a ref's
-in-app engine on the sets beside that reference, with the plan's card and
-its diff against develop. Posting the card on a PR follows as step 6.6.
+quality plan). This folder has `bench init`, the instance built from a
+sets manifest; `bench reference`, the reference engine at a pinned release
+published into it; `bench run`, a ref's in-app engine on the sets beside
+that reference, with the plan's card and its diff against develop; and
+`bench run --post`, the card posted on a pull request. A nightly user unit
+makes develop's baseline card.
 
 ## Commands
 
@@ -18,6 +19,7 @@ uv run python tooling/assignment_bench/bench.py init tooling/assignment_bench/ma
 uv run python tooling/assignment_bench/bench.py reference --pin v0.9.0
 uv run python tooling/assignment_bench/bench.py run origin/develop --baseline
 uv run python tooling/assignment_bench/bench.py run <your branch> --baseline
+uv run python tooling/assignment_bench/bench.py run <your branch> --post <pr>
 uv run python tooling/assignment_bench/bench.py status
 ```
 
@@ -67,7 +69,8 @@ uv run python tooling/assignment_bench/bench.py status
   release tag beside the in-app runs; its section below has the detail.
 - **`run <ref>`** runs a ref's in-app engine on the sets and writes the
   card; **`baseline`** shows develop's rolling baseline card. Their section
-  below has the detail.
+  below has the detail. **`run <ref> --post <pr>`** also posts the card on
+  a pull request; "Asking for a card on a PR" below.
 - **`status`** prints the env and slot, the build the last `init` started,
   every set with its sample counts and the builds that ingested it, the
   reference pin with peaky's version string and the `mascope-tools` it
@@ -257,6 +260,66 @@ moves the bench database to the branch's revision. develop is then refused,
 by the rule above, until that migration is on develop. A branch whose
 migration never lands leaves the bench where only `init --rebuild` brings
 it back (#3171).
+
+## Asking for a card on a PR
+
+An agent or a person asks for a card by running the bench on the branch,
+from a checkout on the box the bench lives on (the agent box), once the
+PR's CI is green:
+
+```sh
+uv run python tooling/assignment_bench/bench.py run <branch> --post <pr>
+```
+
+There is no queue and no trigger to set: the command runs in the caller's
+own session, and posts as the caller's own `gh` identity (on the agent box,
+the builder App for an implementer and the reviewer App for a reviewer). One
+run at a time: a second caller waits on the bench's lock and says so
+(`--no-wait` refuses instead). A run takes about an hour and a half; `--sets`
+shortens it to the sets named, `--decoys` adds the arms.
+
+In order:
+
+1. **The PR.** It reads the PR with `gh pr view` before it takes the lock. A
+   PR whose branch lives in a fork is refused, and nothing runs.
+2. **The diff.** `--post` diffs the card against develop's rolling baseline,
+   as `--baseline` does. A baseline older than the PR's merge base with
+   develop is not diffed against: it would count what develop merged since
+   as the branch's. The comment says so, with the baseline's commit and
+   the merge base. So does a comment with no baseline yet.
+3. **The run**, as below.
+4. **The comment.** It posts one comment on the PR, which starts with the
+   marker `<!-- mascope-bench-card -->`. A re-run on the same PR, at a new
+   head or by another caller, edits that comment rather than adding one. A
+   comment the caller may not edit is passed over, and a new one is made.
+
+What the comment holds:
+
+| the run | the comment |
+|---|---|
+| wrote its card | the ref and its commit, and whether that is the PR's head; the reference's pin; the samples read per set; the gate line; the headline table (the samples read and every gated reading, a set per column, `MISS` where a set missed); the baseline line and the headline readings that moved; what was left out; the whole card and each set's card in collapsed sections |
+| its card was refused by the scrub | the file that held a denied name and the kind of name (an id, a raw file's name, a host, a name the instance holds), never the name |
+| stopped on an error, or made no card | what stopped it and the tail of the error, or of the comparison's output |
+
+**Everything posted is scrubbed again** with the run's whole deny list
+before it leaves the box. A comment the scrub refuses is replaced by the
+refusal. An error's text the scrub refuses is left out, with the kind of
+name it held; the error stays on the caller's console. The comment never
+names a sample, a file or a host: those stay in `run.log`.
+
+The run exits as it would without `--post`. A comment `gh` could not post
+exits 2 and names `gh`'s error; the card is written all the same.
+
+## Develop's nightly baseline
+
+`tooling/systemd/bench-baseline.service` and `bench-baseline.timer` are user
+units for the box the bench lives on, never a deployment's. Every night at
+01:30 the service moves a checkout of its own to develop's head and runs
+`bench run origin/develop --baseline` from it, so develop's card is made by
+develop's own comparison tool. A whole card becomes the rolling baseline.
+A card that failed its gate still exits 1, which the unit counts as
+success; a run that made no card fails the unit. The install steps are in
+`docs/dev/assignment_bench.md`, "Operations".
 
 ## The manifest
 

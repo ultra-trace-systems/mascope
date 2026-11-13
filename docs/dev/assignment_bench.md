@@ -3,7 +3,7 @@
 # The assignment bench: both engines on demand, on the agent box
 
 - **Status:** building
-- **As of:** 2026-11-12
+- **As of:** 2026-11-13
 - **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, milestone 6: MAS-64, MAS-835 to MAS-841, MAS-849)
 - **What:** One command on the agent box that runs a branch's in-app assignment engine beside peaky at a pinned release on fixed sample sets, prints the plan's metrics as a card, and posts it on the PR; a worker runs it in its own session.
 
@@ -238,6 +238,26 @@ that must hold. The options set aside, a PR label polled by a watcher on
 the LAN host, a forced-command SSH key from the agent box, an agent
 worker on the LAN host, are recorded in the decision.
 
+As built (6.6, `tooling/assignment_bench/post.py`): `bench run <ref> --post
+<pr>` reads the PR with `gh` before it takes the lock and refuses one whose
+branch lives in a fork. It diffs against develop's baseline as `--baseline`
+does, but not against a baseline older than the PR's merge base with
+develop, which would count what develop merged since as the branch's; the
+comment then says which baseline and which merge base. The comment starts
+with a fixed marker, and a re-run edits the first marked comment it may
+edit, so a PR carries one bench comment. It holds the ref and its commit
+(and whether that is the PR's head), the reference's pin, the samples read,
+the gate line, the headline table (the samples read and every gated
+reading, a set per column), the baseline line with the headline readings
+that moved, what was left out, and the whole card and each set's card
+collapsed. A card the scrub refused posts the file and the kind of name it
+held (an id, a raw file's name, a host, a name the instance holds), never
+the name; a run that stopped on an error, or whose comparison wrote no card,
+posts what stopped it and its tail. The whole comment is scrubbed again with
+the run's deny list before it is posted, and one the scrub refuses is
+replaced by the refusal. The nightly baseline is the user units
+`tooling/systemd/bench-baseline.{service,timer}` (section 10).
+
 ## 8. The steps
 
 | step | Linear | what |
@@ -248,7 +268,7 @@ worker on the LAN host, are recorded in the decision.
 | 6.3 | MAS-838 | `bench reference --pin`: peaky at a tag, published per set (built: `tooling/assignment_bench/reference.py`) |
 | 6.4 | MAS-64 | the gate card as code: metrics, thresholds, baseline, scrub (was 4.4) |
 | 6.5 | MAS-840 | `bench run <ref>`: build, run, compare, card, diff (built: `tooling/assignment_bench/run.py`) |
-| 6.6 | MAS-841 | `--post`: the PR comment, and the nightly baseline |
+| 6.6 | MAS-841 | `--post`: the PR comment, and the nightly baseline (built: `tooling/assignment_bench/post.py`, `tooling/systemd/bench-baseline.*`) |
 | 6.7 | MAS-839 | the agents' skills run the bench and read the card (the ops repository, OPS-91) |
 | 6.8 | MAS-849 | more sets after the demo set: from the fleet corpus and the gate sets (the owner's picks) |
 
@@ -281,9 +301,9 @@ On the agent box, in the agents' runtime home: a bench folder with the
 private manifest, `state.json`, the reference's tool environment, the cards
 and the lock; an env file holding the bench instance's URL and SDK token,
 beside the testbed copy's; a user systemd unit for the nightly baseline;
-the guard's allow rows for the bench commands. The exact paths and the
-install steps are in the testbed notes and the ops repository's handbook,
-not here. The repository's README under `tooling/assignment_bench/` says how
+the guard's allow rows for the bench commands. The units' install is below;
+the box's other paths and the guard's rows are in the testbed notes and the
+ops repository's handbook, not here. The repository's README under `tooling/assignment_bench/` says how
 to run the commands against any instance and how to ask for a card.
 
 - **The bench folder** is `.runtime/bench` in the runtime home
@@ -300,6 +320,27 @@ to run the commands against any instance and how to ask for a card.
 - **The lock** is the folder's `bench.lock`: one bench command at a time.
   A run waits for it, naming the command that holds it; `--no-wait`
   refuses instead, and `init` and `reference` refuse unless given `--wait`.
+- **The nightly baseline** is the user units
+  `tooling/systemd/bench-baseline.service` and `.timer`, installed in the
+  account the agents run as, beside the testbed's service. At 01:30 the
+  service moves a checkout kept for it alone to develop's head and runs
+  `bench run origin/develop --baseline` from it, so develop's card is made
+  by develop's comparison tool; it waits on the lock behind a run in
+  progress. Exit 1, a card that failed its gate, counts as success; a run
+  that made no card fails the unit. The install, once, from a checkout:
+
+  ```sh
+  git -C "$MASCOPE_PATH" worktree add --detach "$MASCOPE_PATH/.runtime/bench-checkout" origin/develop
+  mkdir -p ~/.config/mascope ~/.config/systemd/user
+  printf 'MASCOPE_PATH=%s\nBENCH_CHECKOUT=%s\n' "$MASCOPE_PATH" "$MASCOPE_PATH/.runtime/bench-checkout" > ~/.config/mascope/bench-baseline.env
+  cp tooling/systemd/bench-baseline.service tooling/systemd/bench-baseline.timer ~/.config/systemd/user/
+  systemctl --user daemon-reload && systemctl --user enable --now bench-baseline.timer
+  ```
+
+  The account needs lingering (`loginctl enable-linger`) for the timer to
+  fire with nobody signed in, as the testbed's service does. `journalctl
+  --user -u bench-baseline` has each night's console, and `bench.py
+  baseline` the card it made.
 - **The cost.** On the agent box, with the backend's four workers and four
   samples at once, the engine takes about 26 minutes over the two demo sets
   and the card about 67, since it reads each committed row's provenance

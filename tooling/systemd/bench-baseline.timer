@@ -1,0 +1,12 @@
+[Unit]
+Description=Mascope assignment bench: develop's baseline card, nightly
+
+[Timer]
+# At night, when the bench is least likely to be busy; a run that holds its
+# lock makes this one wait.
+OnCalendar=*-*-* 01:30:00
+# Catch up one run if the box was off at the time.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

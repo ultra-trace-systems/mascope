@@ -1,0 +1,23 @@
+[Unit]
+Description=Mascope assignment bench: develop's baseline card
+Documentation=https://github.com/ultra-trace-systems/mascope/blob/develop/tooling/assignment_bench/README.md
+# A user unit of the box the bench runs on, never a deployment's: `mascope
+# prod units install` does not install it. docs/dev/assignment_bench.md
+# ("Operations") has the install steps.
+
+[Service]
+Type=oneshot
+# MASCOPE_PATH is the runtime home the bench lives in (.runtime/bench) and
+# whose dev stack it runs on. BENCH_CHECKOUT is a checkout of this repository
+# kept for this run alone, which the run moves to develop's head first, so
+# develop's card is made by develop's own comparison tool.
+EnvironmentFile=%h/.config/mascope/bench-baseline.env
+# A login shell, for the PATH uv and docker are on. The bench's lock holds
+# this run behind another bench command, and the next one behind it.
+ExecStart=/bin/bash -lc 'set -eu; cd "$$BENCH_CHECKOUT"; git fetch -q origin develop; git checkout -q --force --detach origin/develop; uv sync --frozen --all-groups -q; exec uv run --no-sync python tooling/assignment_bench/bench.py run origin/develop --baseline'
+# Exit 1 is a card that failed its gate or left samples out: a card was made,
+# and it became the baseline if it read everything. Exit 2 made no card.
+SuccessExitStatus=1
+# A run takes about an hour and a half, after any run it waits for.
+TimeoutStartSec=8h
+Nice=10
