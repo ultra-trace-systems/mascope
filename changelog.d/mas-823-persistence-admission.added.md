@@ -5,7 +5,7 @@
   type, held between 25 and 75 %; none under 10 spectra), however faint, beside
   the peaks the intensity threshold and the peak ceiling admit. Persistence
   says an ion is there, not which formula it is, so a batch peak taken on
-  persistence alone holds the formula the search found at candidate
+  persistence alone holds the formula the search found at candidate at most
   (**persistence only**) until a line of its isotope pattern, the same neutral
   through another channel or a series of the batch sees it; a better fit does
   not lift it. A repeat mark beside the formula in the *Batch peaks* ledger
