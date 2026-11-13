@@ -371,7 +371,10 @@ async def score_seeds(
         caller outside a run wants.
     :param inherited_accuracy: Inside a decoy run, the control's measurement,
         which the seeds are scored at whatever their number
-        (:func:`gate_and_score`). None everywhere else.
+        (:func:`gate_and_score`); in a run's winner-confidence pass, the run's
+        own, since the seeds there are a shortlist of mostly wrong formulas
+        (``alternatives_scoring.measure_winner_confidence``). None everywhere
+        else.
     :return: ``(ion by seed, fit by ion, errors by pairing, the scored frame)``.
     """
     if not seeds:

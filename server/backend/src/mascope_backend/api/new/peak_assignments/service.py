@@ -4966,6 +4966,40 @@ async def _assign_sample(
             )
         )
         committed_rows = judged.rows
+        # -- The untargeted winners' confidence, where the run asks for it: the
+        # shortlist each winner's row carries, measured on the peak it names,
+        # and the winner's share of the scored field recorded as Stage A
+        # records its own. Read off the finished ledger, after every pass that
+        # may swap a reading, so the share is the committed row's; it writes
+        # provenance alone, so no pass above would read it anyway.
+        if config.stage_b_confidence and search_scope is not None:
+            # Imported here: the inspector's module imports this one.
+            from mascope_backend.api.new.peak_assignments.alternatives_scoring import (
+                WINNER_CONFIDENCE_KEY,
+                measure_winner_confidence,
+            )
+
+            winner_confidence = await measure_winner_confidence(
+                sample,
+                committed_rows,
+                mechanisms,
+                match_params,
+                peak_budget=config.stage_b_confidence_peaks,
+                reagent_offset=_run_scoring_centre(mass_accuracy),
+                envelope_tolerance=envelope.tolerance,
+                accuracy=mass_accuracy,
+            )
+            search_scope[WINNER_CONFIDENCE_KEY] = winner_confidence
+            runtime.logger.info(
+                f"Sample '{sample.sample_item_name}' measured the shortlists of "
+                f"{winner_confidence['measured']} of "
+                f"{winner_confidence['winners']} untargeted winners "
+                f"({winner_confidence['unreached']} past the budget of "
+                f"{winner_confidence['peak_budget']}): "
+                f"{winner_confidence['placed']} of {winner_confidence['formulas']} "
+                f"formulas placed on their peak, {winner_confidence['ties']} "
+                f"winners tied ({winner_confidence['seconds']:.1f} s)"
+            )
         await _record_resolved_profile(
             run.peak_assignment_run_id,
             config,

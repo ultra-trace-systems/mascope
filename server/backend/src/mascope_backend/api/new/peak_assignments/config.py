@@ -481,6 +481,35 @@ class PeakAssignmentConfig(BaseModel):
             "JSON column on the highest-volume table, so it is capped."
         ),
     )
+    # -- Stage B winner confidence (assignment quality plan, step 4.15). The
+    # finder's shortlist reaches a row as formulas with no fit, so a Stage B
+    # winner has no share of a scored candidate set to report. This measures
+    # that shortlist in one seeded pass over the run's committed winners and
+    # records the confidence Stage A records; it moves no tier. Off by default
+    # until its runtime cost is measured on the gate sets. The budget is a
+    # count of winners, the most intense first, and is bounded by the peaks
+    # the stage may search at all, since it commits no more winners than that;
+    # what each winner costs is bounded by `max_alternatives`, which caps the
+    # shortlist it stores.
+    stage_b_confidence: bool = Field(
+        False,
+        description=(
+            "Measure the formula-only shortlist of the untargeted stage's "
+            "committed winners and record each winner's arbitration confidence "
+            "and tie flag, as the database stage does. Reported only: no tier "
+            "moves. Off by default."
+        ),
+    )
+    stage_b_confidence_peaks: int = Field(
+        200,
+        gt=0,
+        le=MAX_UNTARGETED_PEAKS_CEILING,
+        description=(
+            "Per-run budget of the option above: how many of the untargeted "
+            "stage's winners, the most intense first, have their shortlist "
+            "measured. A winner past it records no confidence."
+        ),
+    )
 
     # Confidence-tier bands on the EVIDENCE scale -- fit x chemical plausibility, the
     # same product both stages arbitrate a contested peak in (see

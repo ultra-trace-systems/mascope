@@ -742,9 +742,16 @@ fit = mascope.peak_assignments.fit_aggregate(
   The run carries on, and `wait_for_run` waits again.
 - `config` takes the run's settings, any of them: `run_untargeted`, `profile`,
   `context`, `mz_precision_ppm`, `formula_ranges`, `max_untargeted_peaks`,
-  `peak_intensity_threshold`, `max_alternatives`, `assigned_threshold` and
+  `peak_intensity_threshold`, `max_alternatives`, `stage_b_confidence`,
+  `stage_b_confidence_peaks`, `assigned_threshold` and
   `candidate_threshold`. One left out takes the server's default. A run
   records the settings it ran with under `config` in `list_runs`.
+- `stage_b_confidence=True` measures the shortlist of the untargeted
+  stage's winners, the `stage_b_confidence_peaks` most intense of them (200
+  by default), and stores each one's `confidence`, `n_candidates` and
+  `is_tie` in its `provenance`, as the database stage does. It changes no
+  tier. The run's `config.search_scope.winner_confidence` says how many
+  winners it measured and how long it took.
 - **`verify`** records a verdict: `confirmed`, `rejected` or `unsure`.
   `confirmed` needs an `evidence_level`: `reference_standard`, `msms`,
   `orthogonal`, `pattern` or `visual`. The server keeps every verdict and

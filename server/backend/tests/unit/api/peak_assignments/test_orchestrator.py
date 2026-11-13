@@ -32,6 +32,8 @@ import pandas as pd
 import pytest
 from test_engine import _isotope_row  # same directory; pytest puts it on sys.path
 
+from mascope_tools.composition.mass_accuracy import ReagentOffset
+
 
 _MOD = "mascope_backend.api.new.peak_assignments.service"
 
@@ -2818,3 +2820,158 @@ class TestTheRunTakesItsBatchsWord:
         # The file's own claims are its own either way.
         assert by_peak["monomer"]["role"] == "reagent"
         assert "reason" not in by_peak["monomer"]["provenance"]["reagent"]
+
+
+class TestStageBWinnerConfidence:
+    """The run measures its untargeted winners' shortlists only when asked
+    (step 4.15), records what it found, and moves no tier."""
+
+    WINNER = {
+        "mz": 300.1234,
+        "formula": "C16H21NO4",
+        "ion": "C16H22NO4+",
+        "isotope_label": "M0",
+        "ionization_mechanism": "[M+H]+",
+        "isotopic_pattern_score": 0.95,
+        "composition_error_ppm": 0.3,
+        "candidate_density": 2,
+        "other_candidates": "C14H13N5O2, C18H17N3",
+    }
+
+    CENTRE = ReagentOffset(-0.9, 10, beyond_width=True)
+
+    def _start_with(self, recorder):
+        peaks = _peaks_df(
+            [
+                ("p1", 181.0707, 10000.0),
+                ("p2", 182.0741, 660.0),
+                ("p3", 300.1234, 500.0),
+            ]
+        )
+        patches = _patches(
+            recorder, peaks, _stage_a_rows(), pd.DataFrame([self.WINNER])
+        )
+        # The shortlist pass reads the sample file through the seeded chain;
+        # here it states what it found: one entry on the winner's own peak, one
+        # whose monoisotopic line sits on another peak.
+        patches["shortlist"] = patch(
+            "mascope_backend.api.new.peak_assignments.alternatives_scoring.score_seeds",
+            new_callable=AsyncMock,
+            return_value=(
+                {
+                    ("C14H13N5O2", "im-1"): "ion-a",
+                    ("C18H17N3", "im-1"): "ion-b",
+                },
+                {"ion-a": 0.9, "ion-b": 0.99},
+                {},
+                pd.DataFrame(
+                    [
+                        {
+                            "target_ion_id": "ion-a",
+                            "target_ion_formula": "C14H14N5O2+",
+                            "mz": 300.12,
+                            "sample_peak_id": "p3",
+                            "match_mz_error": 0.4,
+                            "match_abundance_error": 0.05,
+                        },
+                        {
+                            "target_ion_id": "ion-b",
+                            "target_ion_formula": "C18H18N3+",
+                            "mz": 276.15,
+                            "sample_peak_id": "elsewhere",
+                            "match_mz_error": 0.1,
+                            "match_abundance_error": 0.05,
+                        },
+                    ]
+                ),
+            ),
+        )
+        # A centre the run did measure, so the pass is seen to take the run's
+        # rather than one of its own.
+        patches["centre"] = patch(
+            f"{_MOD}._run_scoring_centre", return_value=self.CENTRE
+        )
+        return _start(patches)
+
+    async def _ledger(self, **options):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        recorder = _Recorder()
+        mocks = self._start_with(recorder)
+        await _run(PeakAssignmentConfig(run_untargeted=True, **options))
+        rows = {row["sample_peak_id"]: row for row in recorder.rows}
+        scope = recorder.recorded_configs()[-1]["search_scope"]
+        patch.stopall()
+        return rows, scope, mocks
+
+    @pytest.mark.asyncio
+    async def test_off_by_default_it_measures_and_records_nothing(self):
+        rows, scope, mocks = await self._ledger()
+
+        mocks["shortlist"].assert_not_awaited()
+        assert rows["p3"]["source"] == "untargeted"
+        assert "confidence" not in rows["p3"]["provenance"]
+        assert "is_tie" not in rows["p3"]["provenance"]
+        assert "winner_confidence" not in scope
+
+    @pytest.mark.asyncio
+    async def test_on_the_winner_records_its_share_of_the_measured_field(self):
+        rows, scope, mocks = await self._ledger(stage_b_confidence=True)
+
+        provenance = rows["p3"]["provenance"]
+        # The winner and the one entry the pass placed on its peak; the other
+        # entry explains another peak and is no candidate for this one.
+        assert provenance["n_candidates"] == 2
+        assert provenance["is_tie"] is True
+        assert 0.0 < provenance["confidence"] < 1.0
+        # The shortlist stays formula-only: the share is stored, not the fits.
+        assert [alt for alt in rows["p3"]["alternatives"] if "fit_score" in alt] == []
+        # A database winner keeps the confidence its own stage gave it.
+        assert rows["p1"]["source"] == "database"
+        assert rows["p1"]["provenance"]["n_candidates"] == 1
+        summary = scope["winner_confidence"]
+        assert {key: summary[key] for key in summary if key != "seconds"} == {
+            "peak_budget": 200,
+            "winners": 1,
+            "measured": 1,
+            "unreached": 0,
+            "formulas": 2,
+            "placed": 1,
+            "ties": 1,
+        }
+        assert summary["seconds"] >= 0
+
+    @pytest.mark.asyncio
+    async def test_the_pass_is_seeded_and_scored_as_the_run_scores(self):
+        _rows, _scope, mocks = await self._ledger(stage_b_confidence=True)
+
+        call = mocks["shortlist"].await_args
+        # Every shortlist formula under the sample's own adducts.
+        assert call.args[1] == {("C14H13N5O2", "im-1"), ("C18H17N3", "im-1")}
+        # At the measurement the run scored everything else at, never one
+        # fitted off a frame of mostly wrong formulas.
+        accuracy = mocks["centre"].call_args.args[0]
+        assert call.kwargs["inherited_accuracy"] is accuracy
+        assert call.kwargs["reagent_offset"] is self.CENTRE
+        rescore = mocks["seeded"].call_args.kwargs
+        assert call.kwargs["envelope_tolerance"] is rescore["envelope_tolerance"]
+
+    @pytest.mark.asyncio
+    async def test_the_budget_reaches_the_pass(self):
+        rows, scope, mocks = await self._ledger(
+            stage_b_confidence=True, stage_b_confidence_peaks=1
+        )
+
+        assert scope["winner_confidence"]["peak_budget"] == 1
+        assert scope["winner_confidence"]["measured"] == 1
+
+    @pytest.mark.asyncio
+    async def test_no_tier_moves(self):
+        off, _scope, _mocks = await self._ledger()
+        on, _scope, _mocks = await self._ledger(stage_b_confidence=True)
+
+        assert {peak: row["tier"] for peak, row in on.items()} == {
+            peak: row["tier"] for peak, row in off.items()
+        }
