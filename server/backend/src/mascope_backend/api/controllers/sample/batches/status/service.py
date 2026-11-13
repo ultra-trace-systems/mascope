@@ -26,6 +26,7 @@ async def update_sample_batch_status(
     status: str,
     independent_transaction: bool = False,
     never_lower: bool = False,
+    only_over: list[str] | None = None,
 ) -> dict:
     """
     Updates the status of multiple sample batches and emits targeted partial updates.
@@ -41,6 +42,11 @@ async def update_sample_batch_status(
         ``rematch`` request keeps a pending ``recalibrate``. For flaggers that
         ask for work; a re-process that clears the flag leaves it off.
     :type never_lower: bool
+    :param only_over: Write only over these statuses, and leave a batch at
+        any other alone. For a run that set ``processing`` and finishes:
+        an edit that flagged the batch meanwhile asked for work after the
+        run's, so its flag stays.
+    :type only_over: list[str] | None
     :raises NotFoundException: When batches are not found
     :raises ValueError: When status is invalid
     :return: Update results with count of affected batches
@@ -59,6 +65,8 @@ async def update_sample_batch_status(
         stronger = PENDING_STATUS_RANK[PENDING_STATUS_RANK.index(status) + 1 :]
         if stronger:
             guards.append(or_(SampleBatch.status.not_in(stronger), ~has_samples))
+    if only_over is not None:
+        guards.append(SampleBatch.status.in_(only_over))
 
     async with async_session() as session:
         result = await session.execute(

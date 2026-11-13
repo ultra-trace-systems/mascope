@@ -10,8 +10,13 @@ covered here through their routes, the target collection create, update and
 delete, a target ion edit, a compound formula change and deletion, a sample
 copy into another batch, and a change of a batch's collections. A rematch
 forced on a batch pending a recalibration puts it back at ``recalibrate``,
-whether it fails or ends with any outcome. A batch without samples still goes to ``ready``, and the
-socket event carries the status each batch holds, not the one asked for.
+whether it fails or ends with any outcome. A flag an edit sets while a
+rematch runs survives the rematch's final write (``only_over``), and two
+pending needs keep the stronger; a second rematch asked for meanwhile is
+locked out by the first's claim (``rematch_claim``), and the outcome log says
+the status the batch holds. A batch without samples still goes to
+``ready``, and the socket event carries the status each batch holds, not the
+one asked for.
 """
 
 from datetime import datetime, timezone
@@ -20,6 +25,7 @@ from unittest.mock import AsyncMock
 import pytest
 import pytest_asyncio
 from sqlalchemy import func, select, text
+from test_utils import captured_logs
 
 from mascope_backend.api.controllers.match import match_controller
 from mascope_backend.api.controllers.sample.batches.status import service
@@ -223,6 +229,23 @@ async def test_never_lower_still_readies_a_batch_without_samples(
     )
 
     assert await _status(async_session_factory, batch_id) == "ready"
+
+
+@pytest.mark.asyncio
+async def test_only_over_leaves_other_statuses_alone(
+    async_session_factory, status_dataset
+):
+    """``only_over`` writes over the statuses it names and no other."""
+    running = await _batch(async_session_factory, status_dataset, "processing")
+    flagged = await _batch(async_session_factory, status_dataset, "rematch")
+
+    result = await service.update_sample_batch_status(
+        sample_batch_ids=[running, flagged], status="ready", only_over=["processing"]
+    )
+
+    assert await _status(async_session_factory, running) == "ready"
+    assert await _status(async_session_factory, flagged) == "rematch"
+    assert result["data"]["updated_batches"] == 1
 
 
 # ============= The target collection flaggers =============
@@ -555,6 +578,26 @@ async def test_a_failed_rematch_keeps_a_recalibrate_flagged_meanwhile(
     assert await _status(async_session_factory, batch_id) == "recalibrate"
 
 
+@pytest.mark.asyncio
+async def test_a_failed_rematch_leaves_a_status_set_meanwhile(
+    owner_client, async_session_factory, status_dataset, monkeypatch
+):
+    """A failed rematch writes only over its own ``processing``: a batch set
+    to ``ready`` meanwhile, as the batch status route can, stays there, where
+    a write that only never lowers would put it back at ``rematch``."""
+    batch_id = await _batch(async_session_factory, status_dataset, "rematch")
+    monkeypatch.setattr(
+        match_controller,
+        "match_remove_batch",
+        _failing_removal(async_session_factory, batch_id, flag="ready"),
+    )
+
+    resp = await owner_client.post(f"/api/match/rematch/batch/{batch_id}")
+
+    assert resp.status_code == 202, resp.text
+    assert await _status(async_session_factory, batch_id) == "ready"
+
+
 # ============= A finished rematch =============
 
 
@@ -608,3 +651,186 @@ async def test_a_finished_rematch_keeps_a_pending_recalibrate(
     assert resp.status_code == 202, resp.text
     expected = "recalibrate" if before == "recalibrate" else outcome
     assert await _status(async_session_factory, batch_id) == expected
+
+
+def _flagging_step(async_session_factory, batch_id, status, flag):
+    """A compute step that reports ``status``, after setting the batch to
+    ``flag``: an edit flagging it while the rematch runs."""
+
+    async def _run(**_):
+        async with async_session_factory() as session:
+            (await session.get(SampleBatch, batch_id)).status = flag
+            await session.commit()
+        return await _step(status)()
+
+    return _run
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("remove_status", "compute_status", "outcome"), _OUTCOMES)
+@pytest.mark.parametrize(
+    ("before", "flag", "after"),
+    [
+        pytest.param("rematch", "rematch", "rematch", id="rematch-flagged-rematch"),
+        pytest.param(
+            "rematch", "recalibrate", "recalibrate", id="rematch-flagged-recalibrate"
+        ),
+        pytest.param(
+            "recalibrate", "rematch", "recalibrate", id="recalibrate-flagged-rematch"
+        ),
+        pytest.param(
+            "recalibrate",
+            "recalibrate",
+            "recalibrate",
+            id="recalibrate-flagged-recalibrate",
+        ),
+    ],
+)
+async def test_a_finished_rematch_keeps_a_flag_set_meanwhile(
+    owner_client,
+    async_session_factory,
+    status_dataset,
+    monkeypatch,
+    remove_status,
+    compute_status,
+    outcome,
+    before,
+    flag,
+    after,
+):
+    """An edit that flagged the batch while the rematch ran asked for work
+    after the run's matches: whatever the outcome, its flag stays, and a
+    recalibration the run still owes is not lowered to it."""
+    batch_id = await _batch(async_session_factory, status_dataset, before)
+    monkeypatch.setattr(match_controller, "match_remove_batch", _step(remove_status))
+    monkeypatch.setattr(
+        match_controller,
+        "match_compute_batch",
+        _flagging_step(async_session_factory, batch_id, compute_status, flag),
+    )
+
+    resp = await owner_client.post(
+        f"/api/match/rematch/batch/{batch_id}", params={"force": True}
+    )
+
+    assert resp.status_code == 202, resp.text
+    assert await _status(async_session_factory, batch_id) == after
+
+
+@pytest.mark.asyncio
+async def test_a_failed_rematch_owed_a_recalibration_keeps_it_over_a_rematch_flag(
+    owner_client, async_session_factory, status_dataset, monkeypatch
+):
+    """A rematch forced on a batch pending a recalibration that fails after an
+    edit asked for a rematch meanwhile still ends at ``recalibrate``."""
+    batch_id = await _batch(async_session_factory, status_dataset, "recalibrate")
+    monkeypatch.setattr(
+        match_controller,
+        "match_remove_batch",
+        _failing_removal(async_session_factory, batch_id, flag="rematch"),
+    )
+
+    resp = await owner_client.post(
+        f"/api/match/rematch/batch/{batch_id}", params={"force": True}
+    )
+
+    assert resp.status_code == 202, resp.text
+    assert await _status(async_session_factory, batch_id) == "recalibrate"
+
+
+@pytest.mark.asyncio
+async def test_the_outcome_log_says_the_status_the_batch_holds(
+    owner_client, async_session_factory, status_dataset, monkeypatch
+):
+    """A run whose status the batch did not take, because an edit flagged it
+    meanwhile, logs the status the batch holds and why, not its own."""
+    batch_id = await _batch(async_session_factory, status_dataset, "rematch")
+    monkeypatch.setattr(match_controller, "match_remove_batch", _step("success"))
+    monkeypatch.setattr(
+        match_controller,
+        "match_compute_batch",
+        _flagging_step(async_session_factory, batch_id, "success", "rematch"),
+    )
+
+    with captured_logs("INFO") as records:
+        resp = await owner_client.post(f"/api/match/rematch/batch/{batch_id}")
+
+    assert resp.status_code == 202, resp.text
+    outcome = [
+        r["message"] for r in records if "rematch status: success" in r["message"]
+    ]
+    assert len(outcome) == 1, outcome
+    assert outcome[0].endswith(
+        "batch status - rematch (not ready: the batch was flagged while the"
+        " rematch ran)."
+    )
+
+
+# ============= Two rematches =============
+
+
+def _overlapping_step(async_session_factory, owner_client, batch_id, first, second):
+    """A compute step that reports ``first`` on its first call, after an edit
+    flags the batch ``rematch`` and a second rematch of it is asked for while
+    this one runs; on a later call, a second run's, it reports ``second``.
+
+    ``calls`` counts the calls, ``during`` holds the status the batch held
+    once the second rematch's request was done."""
+    state = {"calls": 0, "during": None}
+
+    async def _run(**_):
+        state["calls"] += 1
+        if state["calls"] > 1:
+            return await _step(second)()
+        async with async_session_factory() as session:
+            (await session.get(SampleBatch, batch_id)).status = "rematch"
+            await session.commit()
+        resp = await owner_client.post(f"/api/match/rematch/batch/{batch_id}")
+        assert resp.status_code == 202, resp.text
+        state["during"] = await _status(async_session_factory, batch_id)
+        return await _step(first)()
+
+    return _run, state
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("first", "second", "after_second"),
+    [
+        pytest.param("success", "partial", "rematch", id="success-then-partial"),
+        pytest.param("partial", "success", "ready", id="partial-then-success"),
+    ],
+)
+async def test_a_second_rematch_is_locked_out_while_the_first_runs(
+    owner_client,
+    async_session_factory,
+    status_dataset,
+    monkeypatch,
+    first,
+    second,
+    after_second,
+):
+    """An edit that flags the batch while a rematch runs takes its
+    ``processing``, but a second rematch asked for then is still locked out:
+    it neither runs nor touches the status, and the first run, finishing,
+    leaves the edit's flag. Once the first is done, a rematch runs again and
+    its outcome lands."""
+    batch_id = await _batch(async_session_factory, status_dataset, "rematch")
+    step, state = _overlapping_step(
+        async_session_factory, owner_client, batch_id, first, second
+    )
+    monkeypatch.setattr(match_controller, "match_remove_batch", _step("skipped"))
+    monkeypatch.setattr(match_controller, "match_compute_batch", step)
+
+    resp = await owner_client.post(f"/api/match/rematch/batch/{batch_id}")
+
+    assert resp.status_code == 202, resp.text
+    assert state["calls"] == 1
+    assert state["during"] == "rematch"
+    assert await _status(async_session_factory, batch_id) == "rematch"
+
+    resp = await owner_client.post(f"/api/match/rematch/batch/{batch_id}")
+
+    assert resp.status_code == 202, resp.text
+    assert state["calls"] == 2
+    assert await _status(async_session_factory, batch_id) == after_second

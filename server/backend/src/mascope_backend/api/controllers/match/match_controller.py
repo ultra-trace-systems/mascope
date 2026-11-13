@@ -17,7 +17,9 @@ from mascope_backend.api.controllers.match.lib.match_compute import (
     compute_and_create_sample_match_isotope_data,
 )
 from mascope_backend.api.controllers.match.lib.match_remove import remove_matches
+from mascope_backend.api.controllers.match.lib.rematch_claim import rematch_claim
 from mascope_backend.api.controllers.sample.batches.status.service import (
+    PENDING_STATUS_RANK,
     update_sample_batch_status,
 )
 from mascope_backend.api.controllers.sample.files.sample_files_controller import (
@@ -1263,6 +1265,46 @@ def _status_after_rematch(started_at: str, outcome_status: str) -> str:
     return "recalibrate" if started_at == "recalibrate" else outcome_status
 
 
+async def _write_status_after_rematch(sample_batch_id: str, status: str) -> str:
+    """
+    Write the status a rematch ends at, unless an edit flagged the batch
+    while it ran.
+
+    The run holds the batch at ``processing``. An edit flagger that runs
+    meanwhile writes over it, and asked for work after the matches the run
+    computed, so its flag stays: the run writes only over ``processing``, or
+    over a weaker pending status (``PENDING_STATUS_RANK``) when it ends at a
+    stronger one itself, so a recalibration the run still owes is not lost
+    to a rematch flagged meanwhile. Two pending needs keep the stronger. No
+    other rematch can have set ``processing`` meanwhile: the run holds the
+    batch's claim (``rematch_claim``).
+
+    :param sample_batch_id: The rematched batch
+    :type sample_batch_id: str
+    :param status: The status the run's outcome maps to
+    :type status: str
+    :return: The status the batch holds after the write
+    :rtype: str
+    """
+    weaker = (
+        PENDING_STATUS_RANK[: PENDING_STATUS_RANK.index(status)]
+        if status in PENDING_STATUS_RANK
+        else []
+    )
+    await update_sample_batch_status(
+        sample_batch_ids=[sample_batch_id],
+        status=status,
+        independent_transaction=True,  # reload UI status icons
+        only_over=["processing", *weaker],
+    )
+    async with async_session() as session:
+        return await session.scalar(
+            select(SampleBatch.status).where(
+                SampleBatch.sample_batch_id == sample_batch_id
+            )
+        )
+
+
 @api_controller_background_task(
     success_notification_rooms=["sample_batch_id"],
     success_reload=[("match", "sample_batch_id")],
@@ -1285,7 +1327,12 @@ async def rematch_batch(
     - Removes orphaned/all matches based on full_remove parameter
     - Computes missing matches
     - Updates batch status to ready on success or rematch on failure; a batch
-      forced from recalibrate goes back to recalibrate whatever the outcome
+      forced from recalibrate goes back to recalibrate whatever the outcome,
+      and a flag an edit set while the run went stays
+      (``_write_status_after_rematch``)
+    - Holds the batch's claim (``rematch_claim``) for the run, so a second
+      rematch is locked out even after an edit flagged the batch over its
+      processing
 
     Operation status logic:
     - skipped: No changes made to batch (no orphans to remove, no new matches to compute)
@@ -1328,20 +1375,6 @@ async def rematch_batch(
 
     # Check batch status - processing is never bypassable
     if not force and batch_status != "rematch" or batch_status == "processing":
-        async with async_session() as session:
-            skipped_samples_count = await session.scalar(
-                select(func.count()).where(Sample.sample_batch_id == sample_batch_id)
-            )
-        response_data = {
-            "data": {
-                "removed_match_isotopes_count": 0,
-                "computed_samples_count": 0,
-                "failed_samples_count": 0,
-                "skipped_samples_count": skipped_samples_count,
-            },
-            "_notification_data": {"sample_batch_id": sample_batch_id},
-        }
-
         if batch_status == "processing":
             status, message = (
                 "locked",
@@ -1358,8 +1391,93 @@ async def rematch_batch(
                 f"{message} Use force=True to override the status check."
             )
 
-        return {"status": status, "message": message, **response_data}
+        return await _not_rematched(sample_batch_id, status, message)
 
+    # An edit that flags the batch while a run goes writes over its
+    # processing, so the status alone no longer says a run is going: the
+    # claim does, and a second run is locked out while the first holds it
+    async with rematch_claim(sample_batch_id) as claimed:
+        if not claimed:
+            message = f"Sample batch '{sample_batch_name}' is still being rematched - rematch is locked."
+            runtime.logger.info(message)
+            return await _not_rematched(sample_batch_id, "locked", message)
+
+        return await _rematch_claimed_batch(
+            sample_batch_id=sample_batch_id,
+            sample_batch_name=sample_batch_name,
+            batch_status=batch_status,
+            full_remove=full_remove,
+            user_id=user_id,
+            process_id=process_id,
+            parent_id=parent_id,
+            user=user,
+        )
+
+
+async def _not_rematched(sample_batch_id: str, status: str, message: str) -> dict:
+    """
+    The response of a rematch that did not run: every sample skipped.
+
+    :param sample_batch_id: The batch the rematch was asked for
+    :type sample_batch_id: str
+    :param status: ``locked`` or ``skipped``
+    :type status: str
+    :param message: Why the rematch did not run
+    :type message: str
+    :return: The rematch response
+    :rtype: dict
+    """
+    async with async_session() as session:
+        skipped_samples_count = await session.scalar(
+            select(func.count()).where(Sample.sample_batch_id == sample_batch_id)
+        )
+    return {
+        "status": status,
+        "message": message,
+        "data": {
+            "removed_match_isotopes_count": 0,
+            "computed_samples_count": 0,
+            "failed_samples_count": 0,
+            "skipped_samples_count": skipped_samples_count,
+        },
+        "_notification_data": {"sample_batch_id": sample_batch_id},
+    }
+
+
+async def _rematch_claimed_batch(
+    sample_batch_id: str,
+    sample_batch_name: str,
+    batch_status: str,
+    full_remove: bool,
+    user_id: int | None,
+    process_id: str | None,
+    parent_id: str | None,
+    user: User | None,
+) -> dict:
+    """
+    The rematch itself, run under the batch's claim (``rematch_claim``).
+
+    :param sample_batch_id: ID of the sample batch for rematching
+    :type sample_batch_id: str
+    :param sample_batch_name: Its name, for the messages
+    :type sample_batch_name: str
+    :param batch_status: The status it held when the rematch was asked for
+    :type batch_status: str
+    :param full_remove: If True, removes all matches; if False, removes only orphaned matches
+    :type full_remove: bool
+    :param user_id: Current user triggered operation (for user notifications)
+    :type user_id: int | None
+    :param process_id: Process identifier for progress tracking
+    :type process_id: str | None
+    :param parent_id: Parent process identifier
+    :type parent_id: str | None
+    :param user: The user the run acts for (``rematch_batch``)
+    :type user: User | None
+    :raises ApiException: When the rematch fails
+    :return: Batch data with rematch results, status, and aggregated statistics
+    :rtype: dict
+    """
+    operation_type = "Full" if full_remove else "Partial"
     await update_sample_batch_status(
         sample_batch_ids=[sample_batch_id],
         status="processing",
@@ -1504,16 +1622,19 @@ async def rematch_batch(
         # recalibration goes back to waiting for it, whatever the outcome
         result_batch_status = _status_after_rematch(batch_status, result_batch_status)
 
-        # Update batch status
-        await update_sample_batch_status(
-            sample_batch_ids=[sample_batch_id],
-            status=result_batch_status,
-            independent_transaction=True,  # reload UI status icons
+        # Update batch status, keeping a flag an edit set meanwhile
+        held_status = await _write_status_after_rematch(
+            sample_batch_id, result_batch_status
         )
 
         # Step 6: Log final outcome and return structured response
+        kept = (
+            ""
+            if held_status == result_batch_status
+            else f" (not {result_batch_status}: the batch was flagged while the rematch ran)"
+        )
         runtime.logger.info(
-            f"{message} rematch status: {rematch_status}, batch status - {result_batch_status}."
+            f"{message} rematch status: {rematch_status}, batch status - {held_status}{kept}."
         )
 
         return {
@@ -1534,11 +1655,8 @@ async def rematch_batch(
     except ApiException as e:
         # Step 7: Revert status on failure to allow retry rematching, or to
         # the recalibration the batch waited for (_status_after_rematch)
-        await update_sample_batch_status(
-            sample_batch_ids=[sample_batch_id],
-            status=_status_after_rematch(batch_status, "rematch"),
-            independent_transaction=True,  # reload UI status icons
-            never_lower=True,
+        await _write_status_after_rematch(
+            sample_batch_id, _status_after_rematch(batch_status, "rematch")
         )
         runtime.logger.exception(
             f"Rematch failed for batch '{sample_batch_name}': {e.user_message}"
