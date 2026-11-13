@@ -208,6 +208,18 @@ def test_an_ambiguous_scope_does_nothing_and_says_so(server, command, tmp_path):
     assert "error: The scope is ambiguous (dataset matches 2)" in result.stderr
 
 
+def test_status_says_two_polarities_each_read_by_one_run_mix_nothing(server):
+    # The run changes after the first batch, which is of the other polarity
+    server.batch_polarity[server.batch_ids[0]] = "+"
+    payload("store", "sync", *DATASET)
+
+    status = payload("store", "status", *DATASET)
+    assert status["mixed_runs"] is False
+    assert status["run_changes"] == []
+    shown = text("store", "status", *DATASET)
+    assert "  formula readings (2, one reading per polarity):" in shown
+
+
 def test_scopes_lists_up_to_the_limit(server):
     found = payload("scopes", *DATASET, "--limit", "1")
     assert [b["sample_batch_id"] for b in found["batches"]] == server.batch_ids[:1]

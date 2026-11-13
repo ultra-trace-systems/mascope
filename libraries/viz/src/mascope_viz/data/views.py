@@ -44,15 +44,17 @@ What the views share:
   day``, ``week``, ...), ``normalise`` and ``normalise_name`` (what the
   values are divided by, by name), ``keys``, ``start`` and ``end`` (the
   window, ISO in UTC), ``mixed_runs`` and ``run_changes`` (whether the
-  window's batches read formulas with more than one ledger run, and where
-  the reading changes: a run change is flagged, never silently joined; both
-  empty without a formula key or a formula to normalise by) and the store's
-  ``provenance``.
+  batches of the window's samples carry more than one ledger reading in a
+  polarity the formulas are read in, and where the reading changes between
+  them: a run change is flagged, never silently joined; both empty without
+  a formula key or a formula to normalise by) and the store's
+  ``provenance``. A formula is read in one polarity only, so a change in
+  the other polarity's batches is none of its keys'.
 """
 
 import math
 import zoneinfo
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -61,7 +63,7 @@ import pandas as pd
 from pandas.tseries.frequencies import to_offset
 
 from .scope import INSTRUMENT_TZ, _zone_of
-from .store import BINS, CampaignStore
+from .store import BINS, CampaignStore, _run_changes
 
 
 #: The key of the samples' TIC.
@@ -493,37 +495,34 @@ def _normaliser(
 
 
 def _run_attrs(
-    store: CampaignStore, keys: list[str], windows: Sequence[Window]
+    store: CampaignStore, reading: Collection[str], drawn: Collection[str]
 ) -> dict[str, Any]:
-    """Whether the batches of *windows* (``(start, end)`` pairs, None for
-    open) read formulas with more than one ledger reading, and where it
-    changes from the earliest start to the latest end; neither when no key
-    of *keys* is a formula's."""
+    """Whether the batches a view draws carry more than one ledger reading
+    of a polarity a formula is read in, and where it changes between them;
+    neither when no batch reads a formula.
+
+    :param reading: The batches that read a formula key, or the formula
+        normalised by, in the view's window: their polarities are the ones
+        followed. A formula is read in one polarity only, so a change in
+        another polarity's batches is none of its keys'.
+    :param drawn: The batches of the window's samples, which the view
+        keeps by ``t_mid_utc``: a batch whose files started before the
+        window is drawn when its samples are.
+    """
     none = {"mixed_runs": False, "run_changes": []}
-    if not any(k.startswith("formula:") for k in keys):
+    if not reading:
         return none
-    status = store.status()
-    batches = status.batches
+    batches = store.status().batches
     if batches.empty:
         return none
-    inside = pd.Series(False, index=batches.index)
-    for start, end in windows:
-        held = pd.Series(True, index=batches.index)
-        if start is not None:
-            held &= batches["last_datetime_utc"] >= start
-        if end is not None:
-            held &= batches["first_datetime_utc"] < end
-        inside |= held
-    starts, ends = zip(*windows)
-    start = None if None in starts else min(starts)
-    end = None if None in ends else max(ends)
-    readings = set(batches.loc[inside, "reading"].dropna())
-    changes = [
-        change.to_dict()
-        for change in status.run_changes
-        if (start is None or change.at >= start) and (end is None or change.at < end)
-    ]
-    return {"mixed_runs": len(readings) > 1, "run_changes": changes}
+    ids = batches["sample_batch_id"]
+    polarities = batches.loc[ids.isin(list(reading)), "polarity"]
+    kept = ids.isin(list(drawn)) & batches["polarity"].isin(list(polarities))
+    changes = _run_changes(batches[kept])
+    return {
+        "mixed_runs": bool(changes),
+        "run_changes": [change.to_dict() for change in changes],
+    }
 
 
 def _attrs(
@@ -536,11 +535,9 @@ def _attrs(
     normalise_name: str | None = None,
     start: pd.Timestamp | None = None,
     end: pd.Timestamp | None = None,
-    windows: Sequence[Window] | None = None,
 ) -> dict[str, Any]:
-    """What every frame of a view says (see the module); the run flags are
-    over *keys* and a formula *normalise*, and over *windows* when given,
-    else over the one from *start* to *end*."""
+    """What every frame of a view says (see the module); the run flags say
+    no change until the view's values are read (:func:`_with_present`)."""
     return {
         "view": view,
         "tz": zone,
@@ -549,8 +546,7 @@ def _attrs(
         "keys": list(keys),
         "start": None if start is None else start.isoformat(),
         "end": None if end is None else end.isoformat(),
-        # A formula normaliser divides every value by what a run reads
-        **_run_attrs(store, [*keys, normalise], windows or [(start, end)]),
+        **_run_attrs(store, (), ()),
         "provenance": store.meta.get("provenance"),
     }
 
@@ -573,6 +569,8 @@ class _Values:
     :ivar attrs: What every frame of these values says.
     :ivar batch_ids: The batches, by code.
     :ivar window: The window, in UTC; None for an open bound.
+    :ivar reading: The batches that read a formula key, or the formula
+        normalised by, in the window.
     """
 
     zone: str
@@ -587,6 +585,7 @@ class _Values:
     attrs: dict[str, Any]
     batch_ids: tuple[str, ...] = ()
     window: Window = (None, None)
+    reading: frozenset[str] = frozenset()
 
     def reads(self, k: int) -> np.ndarray:
         """Which samples are of a batch that reads key *k*."""
@@ -697,9 +696,34 @@ def _with_rows(store: CampaignStore, values: _Values, normalise: str) -> _Values
     present[values.batch[pos], key] = True
     pos, key, value = _per_sample(pos, key, value, len(values.keys))
     divisor, _ = _normaliser(store, normalise, samples, index)
+    divided = None
     if divisor is not None:
         value = value / divisor[pos]
-    return replace(values, present=present, pos=pos, key=key, value=value)
+        if normalise.startswith("formula:"):
+            # A formula normaliser divides every value by what a run reads
+            divided = np.zeros(len(present), dtype=bool)
+            divided[values.batch[np.isfinite(divisor)]] = True
+    values = replace(values, pos=pos, key=key, value=value)
+    return _with_present(store, values, present, divided)
+
+
+def _with_present(
+    store: CampaignStore,
+    values: _Values,
+    present: np.ndarray,
+    divided: np.ndarray | None = None,
+) -> _Values:
+    """*values* with *present*, and the run flags (:func:`_run_attrs`) over
+    its batches in the polarities a formula is read in: by the batches that
+    read a formula key, and with *divided* (``[batch]``), by those that hold
+    the formula normalised by."""
+    formula = [k for k, name in enumerate(values.keys) if name.startswith("formula:")]
+    reads = present[:, formula].any(axis=1)
+    if divided is not None:
+        reads |= divided
+    reading = frozenset(values.batch_ids[c] for c in np.flatnonzero(reads))
+    attrs = dict(values.attrs, **_run_attrs(store, reading, values.batch_ids))
+    return replace(values, present=present, attrs=attrs, reading=reading)
 
 
 def _stamp(frame: pd.DataFrame, attrs: dict[str, Any]) -> pd.DataFrame:
@@ -843,13 +867,13 @@ def series(
     values = _sampled(
         store, keys, normalise=normalise, tz=tz, start=start, end=end, view="series"
     )
-    attrs = dict(values.attrs, stat=stat, band=band, auto=cadence == "auto")
+    extra = {"stat": stat, "band": band, "auto": cadence == "auto"}
     if offset is not None and _rollable(store, values, offset, stat, band):
-        frame = _rolled_series(store, values, offset, stat, attrs)
+        frame = _rolled_series(store, values, offset, stat, extra)
         if frame is not None:
             return frame
     values = _with_rows(store, values, values.attrs["normalise"])
-    attrs["source"] = "rows"
+    attrs = dict(values.attrs, **extra, source="rows")
     reads_any = values.reads_any
     if not reads_any.any():
         name = "raw" if cadence == "raw" else _cadence_name(offset or to_offset("1min"))
@@ -1033,13 +1057,15 @@ def _rolled_series(
     values: _Values,
     offset: pd.DateOffset,
     stat: str,
-    attrs: dict[str, Any],
+    extra: dict[str, Any],
 ) -> pd.DataFrame | None:
     """:func:`series` of *values* from the store's rollups, and the TIC from
-    the samples; None when the rollups would not give the frame the rows
-    give: bins that are no UTC hours or days of the rollups, or a formula
-    with two readings in a bin, which the rollups keep apart."""
-    values = replace(values, present=_rolled_present(store, values))
+    the samples, with *extra* in its attrs; None when the rollups would not
+    give the frame the rows give: bins that are no UTC hours or days of the
+    rollups, or a formula with two readings in a bin, which the rollups keep
+    apart."""
+    values = _with_present(store, values, _rolled_present(store, values))
+    attrs = dict(values.attrs, **extra)
     if not values.reads_any.any():
         return None
     offset, edges, first, n_bins, sample_bin = _series_bins(values, offset, False)
@@ -1720,8 +1746,8 @@ def spectrum(
         less ``other_value``, a key without a value in one of them counting
         0 there) and ``ratio`` (``value`` over ``other_value``, NaN without
         both). ``attrs`` adds ``period`` and ``other``, ISO in UTC; its
-        ``mixed_runs`` and ``run_changes`` are over both windows and the
-        time between them.
+        ``mixed_runs`` and ``run_changes`` are over the batches both windows
+        draw, so a change between them is flagged.
     """
     normalise = _check_normalise(normalise)
     zone = display_zone(store, tz)
@@ -1743,8 +1769,6 @@ def spectrum(
                 "batch peaks' formula keys have one, target ions do not"
             )
 
-    # A comparison of two windows joins what each reads: flag a run change
-    # over both, and between them
     attrs = _attrs(
         store,
         "spectrum",
@@ -1752,7 +1776,6 @@ def spectrum(
         keys=keys,
         normalise=normalise,
         normalise_name=_normaliser_name(store, normalise),
-        windows=list(windows.values()),
     )
     attrs.update(cadence="period", other=None)
     for name, window in windows.items():
@@ -1767,6 +1790,8 @@ def spectrum(
         return _stamp(_empty(columns, zone), attrs)
 
     means = {}
+    reading: set[str] = set()
+    drawn: set[str] = set()
     for name, window in windows.items():
         values = _read(
             store,
@@ -1778,6 +1803,8 @@ def spectrum(
             view="spectrum",
             window=window,
         )
+        reading |= values.reading
+        drawn.update(values.batch_ids)
         grouped = _grouped(values.key, values.value)
         means[name] = pd.DataFrame(
             {"value": grouped.mean(), "n": grouped.count()}
@@ -1801,6 +1828,9 @@ def spectrum(
         frame["ratio"] = frame["value"] / frame["other_value"]
         seen |= frame["other_n"] > 0
     frame = frame[seen].sort_values(["mz", "key"], kind="stable").reset_index(drop=True)
+    # A comparison of two windows joins what each reads: flag a run change
+    # over the batches of both, and between them
+    attrs.update(_run_attrs(store, reading, drawn))
     return _stamp(frame, attrs)
 
 

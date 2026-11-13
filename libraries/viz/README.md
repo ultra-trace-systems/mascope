@@ -58,7 +58,7 @@ store.table("ion_series")  # one row per (sample, target ion), keyed ion:<target
 store.table("rollups")  # hourly and daily median, mean, p10, p90 and n per key
 status = store.status()
 status.batches  # each batch: when it was synced, its ledger run, failed or not
-status.mixed_runs  # whether the batches' formulas come from different engine runs
+status.mixed_runs  # whether one polarity's formulas come from different engine runs
 ```
 
 The tables are those of section 2.2 of the note, in UTC:
@@ -105,8 +105,9 @@ An isotopologue batch peak repeats its parent's formula, so only the parent
 carries the formula's series. A formula is read by the ledger run of each
 batch, and runs of different engine versions or settings can read the
 same peak as different formulas: `status().runs` lists the readings the
-batches carry, `run_changes` where they change, and a rollup never mixes
-two readings in one bin.
+batches carry, `run_changes` where they change between batches of one
+polarity (a formula is read in one polarity only), and a rollup never
+mixes two readings in one bin.
 
 A store lives under `$MASCOPE_VIZ_STORE`, else the user's cache directory
 (`~/.cache/mascope_viz/stores` on Linux), one directory per server,
@@ -173,7 +174,9 @@ What every view does the same way:
   `normalise` and `normalise_name`, `keys`, the window, the store's
   `provenance`, and `mixed_runs` and `run_changes`: whether the window's
   formulas, the keys' or the one normalised by, come from more than one
-  engine run, and where the run changes.
+  engine run, and where the run changes. They are over the batches whose
+  samples the view draws, in the polarity the formulas are read in: a
+  change between the other polarity's batches is not flagged.
   A chart prints them; a run change is flagged, never joined silently. A
   `spectrum` against another period flags a change between the two.
 - **Long series come from the rollups.** `series` at `cadence="1h"`, in

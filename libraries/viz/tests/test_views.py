@@ -1392,9 +1392,12 @@ def test_a_spectrum_across_the_run_change_counts_a_missing_side_as_zero(month):
         (change.at - day, change.at - hour),
     )
     for period, other in ((later, earlier), (earlier, later)):
-        flags = views.spectrum(store, period, other).attrs
-        assert flags["mixed_runs"]
-        assert [c["at"] for c in flags["run_changes"]] == [change.at.isoformat()]
+        for keys in (None, sorted(old)):
+            # The new run's batches read none of the old formulas, and are
+            # still the batches compared with
+            flags = views.spectrum(store, period, other, keys=keys).attrs
+            assert flags["mixed_runs"], keys
+            assert [c["at"] for c in flags["run_changes"]] == [change.at.isoformat()]
     assert not before.attrs["mixed_runs"] and before.attrs["run_changes"] == []
     same = views.spectrum(store, (change.at - 2 * day, change.at - day), before_)
     assert not same.attrs["mixed_runs"] and same.attrs["run_changes"] == []
@@ -1758,6 +1761,93 @@ def test_a_run_change_of_the_formula_normalised_by_is_flagged(month):
         store, ion, "day", normalise=kept, start=change.at - day, end=change.at
     )
     assert not before.attrs["mixed_runs"] and before.attrs["run_changes"] == []
+
+
+def test_a_run_change_of_the_other_polarity_is_not_the_formulas(
+    short_campaign, tmp_path
+):
+    """A formula is read in one polarity only: a change of reading between
+    the other polarity's batches is not flagged on its series."""
+    client = FakeClient(short_campaign)
+    first, middle, last = client.batch_ids
+    client.runs[first] = f"run-2:{first}"
+    client.runs[middle] = f"run-1:{middle}"
+    client.runs[last] = f"run-2:{last}"
+    client.batch_polarity[middle] = client.batch_polarity[last] = "+"
+    store = _sync(client, tmp_path)
+    # Two formulas every batch reads, whichever run
+    renamed = _renamed(short_campaign)
+    negative, positive = sorted(
+        k
+        for k in short_campaign.truth.cycles
+        if k.startswith("formula:") and k not in renamed
+    )[:2]
+    ion = sorted(k for k in short_campaign.truth.cycles if k.startswith("ion:"))[0]
+    # The negative batch reads one formula, the positive ones the other
+    for batch in client.batch_ids:
+        dropped = positive if batch == first else negative
+        for table in ("peak_series", "species"):
+            path = store.path / table / f"{batch}.parquet"
+            rows = store.table(table, batches=[batch])
+            rows = rows[rows["series_key"].astype(str) != dropped]
+            store_module._write(path, rows, table, {"sample_batch_id": batch})
+    change = store.status().run_changes
+
+    assert [(c.sample_batch_id, c.polarity) for c in change] == [(last, "+")]
+    for view in (
+        views.series(store, negative),
+        views.series(store, negative, cadence="1h", tz="UTC"),
+        views.periods(store, negative, "day"),
+        views.series(store, views.TIC, normalise=negative),
+        # An ion is no run's reading
+        views.series(store, views.TIC, normalise=ion),
+    ):
+        assert not view.attrs["mixed_runs"]
+        assert view.attrs["run_changes"] == []
+    rolled = views.series(store, positive, cadence="1h", tz="UTC")
+    assert rolled.attrs["source"] == "rollups"
+    for view in (
+        rolled,
+        views.series(store, positive),
+        views.series(store, [negative, positive]),
+        views.series(store, views.TIC, normalise=positive),
+    ):
+        assert view.attrs["mixed_runs"]
+        assert view.attrs["run_changes"] == [change[0].to_dict()]
+
+
+def test_a_window_draws_a_batch_by_its_samples_times(short_campaign, tmp_path):
+    """A window that starts after the last file of a batch started, but
+    before its last sample's middle, draws that batch: a run change to the
+    next one is flagged, with the batch's samples on the chart."""
+    store = _sync(short_campaign, tmp_path)
+    change = store.status().run_changes[0]
+    batches = store.status().batches.set_index("sample_batch_id")
+    samples = store.table("samples")
+    position = list(batches.index).index(change.sample_batch_id)
+    earlier = batches.index[position - 1]
+    last_start = batches.loc[earlier, "last_datetime_utc"]
+    last_mid = samples.loc[
+        samples["sample_batch_id"].astype(str) == earlier, "t_mid_utc"
+    ].max()
+    start = last_start + (last_mid - last_start) / 2
+    end = change.at + pd.Timedelta(hours=1)
+    formula = sorted(
+        k for k in short_campaign.truth.cycles if k.startswith("formula:")
+    )[0]
+
+    assert last_start < start < last_mid
+    frame = views.series(store, formula, cadence="raw", start=start, end=end)
+    drawn = views.series(store, views.TIC, cadence="raw", start=start, end=end)
+
+    assert (drawn["t"] < change.at).any()
+    assert frame.attrs["mixed_runs"]
+    assert frame.attrs["run_changes"] == [change.to_dict()]
+    # Without the batch's last samples, there is no change to flag
+    after = last_mid + pd.Timedelta(seconds=1)
+    later = views.series(store, formula, cadence="raw", start=after, end=end)
+    assert not later.attrs["mixed_runs"]
+    assert later.attrs["run_changes"] == []
 
 
 def test_keys_can_be_a_column_an_index_or_an_array(month):

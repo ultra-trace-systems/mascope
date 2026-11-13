@@ -1036,7 +1036,9 @@ def test_run_changes_are_followed_per_polarity(short_campaign, clock, pauses, tm
 
     status = sync(client, SCOPE, root=tmp_path).store.status()
 
-    assert status.mixed_runs
+    # Each polarity is read by one run: nothing is mixed
+    assert not status.mixed_runs
+    assert len(status.runs) == 2
     assert status.run_changes == ()
     assert list(status.batches["polarity"]) == ["-", "+", "-"]
 
@@ -1049,6 +1051,7 @@ def test_run_changes_are_followed_per_polarity(short_campaign, clock, pauses, tm
         (middle, "-"),
         (last, "-"),
     ]
+    assert status.mixed_runs
 
 
 def test_status_says_what_is_cached_and_how_stale(synced):
