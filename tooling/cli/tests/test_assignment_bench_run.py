@@ -1688,6 +1688,12 @@ def test_the_dev_instance_reads_its_revisions_and_names_from_the_database(
         "source_filename",
         "ionization_mode_name",
         "target_collection_name",
+        # The instrument by every name it goes by, and its serial number.
+        "name from instrument",
+        "serial_number from instrument",
+        "instrument from sample_file",
+        "instrument from dataset",
+        "instrument from ionization_mode",
     ):
         assert (
             f"select {column}" in names_sql or f"select {column} as name" in names_sql
@@ -1698,6 +1704,7 @@ def test_the_dev_instance_reads_its_revisions_and_names_from_the_database(
         "sample_batch_id",
         "sample_item_id",
         "sample_file_id",
+        "instrument_id from instrument",
     ):
         assert column in ids_sql
 

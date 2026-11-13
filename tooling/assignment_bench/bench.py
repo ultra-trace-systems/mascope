@@ -1141,7 +1141,14 @@ class DevInstance:
             "union all select filename from sample_file "
             "union all select source_filename from sample_file "
             "union all select ionization_mode_name from ionization_mode "
-            "union all select target_collection_name from target_collection"
+            "union all select target_collection_name from target_collection "
+            # The instrument's own name and serial, and the names a file, a
+            # dataset or a mode's scope gave it: a file's name need not hold it.
+            "union all select name from instrument "
+            "union all select serial_number from instrument "
+            "union all select instrument from sample_file "
+            "union all select instrument from dataset "
+            "union all select instrument from ionization_mode"
             ") n where name is not null"
         )
         ids = self._query(
@@ -1149,7 +1156,8 @@ class DevInstance:
             "union all select dataset_id from dataset "
             "union all select sample_batch_id from sample_batch "
             "union all select sample_item_id from sample_item "
-            "union all select sample_file_id from sample_file"
+            "union all select sample_file_id from sample_file "
+            "union all select instrument_id from instrument"
         )
         return {
             "names": [r["name"] for r in names],
