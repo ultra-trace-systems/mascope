@@ -3479,6 +3479,12 @@ class AssignmentCalibration(Base):
     #: NULL for a curve fit on unweighted labels, every curve stored before
     #: the weights existed among them.
     label_weights: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    #: The reagent profile every label of the curve was scored under (the
+    #: profile name a run resolves, ``config.resolved_profile.profile``).
+    #: Recorded, not keyed on, like ``ionization_setups``: a run under another
+    #: profile still reads this curve, with a warning. NULL where the labels
+    #: span several profiles, or the curve predates the record.
+    reagent_profile: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     fit_utc: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
