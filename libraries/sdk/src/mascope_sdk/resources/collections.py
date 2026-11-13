@@ -151,6 +151,8 @@ class CollectionsResource(BaseResource):
         :raises PermissionDeniedError: Without the editor role in the
             workspace (a global collection: the global admin role), or on the
             batches.
+        :raises ValidationError: If a compound id names no compound in the
+            library; nothing is created.
         """
         workspace_id = None if is_global else workspace_id or self._client.workspace_id
         body: dict[str, Any] = {
@@ -222,6 +224,8 @@ class CollectionsResource(BaseResource):
         :raises PermissionDeniedError: Without the editor role in the
             collection's workspace (a global collection: the global admin
             role).
+        :raises ValidationError: If a compound id names no compound in the
+            library; the collection is left as it was.
         """
         body: dict[str, Any] = {}
         if name is not None:

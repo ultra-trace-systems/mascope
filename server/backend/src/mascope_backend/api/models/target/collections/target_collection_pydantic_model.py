@@ -98,7 +98,10 @@ class TargetCollectionCreate(TargetCollectionValidator, TargetCollectionBase):
     )
     target_compound_ids: list[str] | None = Field(
         None,
-        description="IDs of already existing in DB target compounds to be associated with the target collection",
+        description=(
+            "IDs of existing target compounds to associate with the target "
+            "collection. An id no compound has refuses the request (422)."
+        ),
     )
     sample_batch_ids: list[str] | None = Field(
         None, description="IDs of sample batches where to add the new target collection"
@@ -131,7 +134,8 @@ class TargetCollectionUpdate(TargetCollectionValidator, TargetCollectionBase):
         None,
         description=(
             "The existing compounds the collection is to hold, all of them; "
-            "with `target_compounds_create` they replace its list."
+            "with `target_compounds_create` they replace its list. An id no "
+            "compound has refuses the request (422)."
         ),
     )
     target_compounds_create: list[TargetCompoundBase] | None = Field(

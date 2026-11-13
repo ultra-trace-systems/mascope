@@ -53,6 +53,55 @@ from mascope_backend.socket.records.service import (
 )
 
 
+# How many unknown ids a refusal names in its message; the rest are counted.
+_MISSING_IDS_SHOWN = 10
+
+
+async def verify_target_compound_ids(target_compound_ids: list[str]) -> list[str]:
+    """
+    Return the distinct given compound ids, refusing any the library lacks.
+
+    The collection's compound list is replaced by what a request names, so an
+    unknown id dropped quietly would remove compounds no one meant to remove: a
+    list of stale ids alone would empty the collection.
+
+    :param target_compound_ids: The compound ids a request names
+    :type target_compound_ids: list[str]
+    :raises ApiException: 422 naming the ids no ``TargetCompound`` has
+    :return: The ids, each once
+    :rtype: list[str]
+    """
+    requested = list(dict.fromkeys(target_compound_ids))
+    if not requested:
+        return []
+    async with async_session() as session:
+        existing = set(
+            (
+                await session.execute(
+                    select(TargetCompound.target_compound_id).where(
+                        TargetCompound.target_compound_id.in_(requested)
+                    )
+                )
+            ).scalars()
+        )
+    missing = [cid for cid in requested if cid not in existing]
+    if missing:
+        shown = ", ".join(f"'{cid}'" for cid in missing[:_MISSING_IDS_SHOWN])
+        more = len(missing) - _MISSING_IDS_SHOWN
+        msg = (
+            f"{len(missing)} target compound ID(s) not found: {shown}"
+            + (f" and {more} more" if more > 0 else "")
+            + ". Nothing was changed."
+        )
+        # No log here: the raised ApiException is logged by the pipeline
+        raise ApiException(
+            user_message=msg,
+            tech_message={"missing_target_compound_ids": missing},
+            status_code=422,
+        )
+    return requested
+
+
 @api_controller()
 async def get_target_collections(
     target_collection_name: str | None = None,
@@ -261,8 +310,8 @@ async def create_target_collection(
 
     Steps:
     1. Validate sample batch type constraints
-    2. Create new target compounds if provided
-    3. Verify existing target compound IDs and combine with created IDs
+    2. Verify the given target compound IDs: an unknown one refuses the request
+    3. Create new target compounds if provided
     4. Create new target collection with basic fields
     5. Associate compounds and sample batches with the collection
     6. Set rematch status for affected sample batches
@@ -291,7 +340,11 @@ async def create_target_collection(
             workspace_id=target_collection_create.workspace_id,
         )
 
-    # Step 2: Create new target compounds if provided
+    # Step 2: Refuse compound IDs the library does not have, before anything
+    # is created
+    verified_target_compound_ids = await verify_target_compound_ids(target_compound_ids)
+
+    # Step 3: Create new target compounds if provided
     created_target_compound_ids = []
     if target_compounds_to_create:
         compounds_result = await create_target_compound(
@@ -299,28 +352,6 @@ async def create_target_collection(
             independent_transaction=True,
         )
         created_target_compound_ids = compounds_result.get("target_compound_ids", [])
-
-    # Step 3: Verify existing target compound IDs and combine with created IDs
-    verified_target_compound_ids = []
-    if target_compound_ids:
-        async with async_session() as session:
-            existing_compounds = set(
-                (
-                    await session.execute(
-                        select(TargetCompound.target_compound_id).where(
-                            TargetCompound.target_compound_id.in_(target_compound_ids)
-                        )
-                    )
-                ).scalars()
-            )
-            verified_target_compound_ids = list(existing_compounds)
-
-            # Log excluded compounds if any
-            excluded_count = len(set(target_compound_ids) - existing_compounds)
-            if excluded_count > 0:
-                runtime.logger.info(
-                    f"{excluded_count} added compound ID(s) were not found in the db"
-                )
 
     # Combine all (created and added) compound IDs
     # Empty set is valid - allows creating an empty collection to be
@@ -425,8 +456,8 @@ async def update_target_collection(
     Steps:
     1. Fetch existing target collection with associations
     2. Validate new configurations when provided
-    3. Create new target compounds if provided
-    4. Verify existing target compound IDs and combine with created IDs
+    3. Verify the given target compound IDs: an unknown one refuses the request
+    4. Create new target compounds if provided
     5. Detect changes between current and proposed state
     6. Update collection data and associations
     7. Set rematch status for affected sample batches
@@ -439,6 +470,7 @@ async def update_target_collection(
     :param independent_transaction: Controls transaction and event behavior
     :type independent_transaction: bool
     :raises NotFoundException: When target collection is not found
+    :raises ApiException: 422 when a target compound ID is not in the library
     :raises ValueError: When validation fails
     :return: Updated target collection data with success message
     :rtype: dict
@@ -483,7 +515,13 @@ async def update_target_collection(
             workspace_id=effective_workspace_id,
         )
 
-    # Step 3: Create new target compounds if provided
+    # Step 3: Refuse compound IDs the library does not have, before anything
+    # is created or replaced
+    verified_target_compound_ids = await verify_target_compound_ids(
+        target_compounds_update or []
+    )
+
+    # Step 4: Create new target compounds if provided
     created_target_compound_ids = []
     if target_compounds_to_create and len(target_compounds_to_create) > 0:
         created_target_compound_ids = (
@@ -492,31 +530,6 @@ async def update_target_collection(
                 independent_transaction=True,
             )
         ).get("target_compound_ids", [])
-
-    # Step 4: Verify provided target compound IDs and combine with created IDs
-    verified_target_compound_ids = []
-    if target_compounds_update:
-        async with async_session() as session:
-            existing_compounds = set(
-                (
-                    await session.execute(
-                        select(TargetCompound.target_compound_id).where(
-                            TargetCompound.target_compound_id.in_(
-                                target_compounds_update
-                            )
-                        )
-                    )
-                ).scalars()
-            )
-            verified_target_compound_ids = list(existing_compounds)
-            # Log excluded compounds if any
-            excluded_compounds_count = len(
-                set(target_compounds_update) - set(verified_target_compound_ids)
-            )
-            if excluded_compounds_count > 0:
-                runtime.logger.info(
-                    f"{excluded_compounds_count} provided compound ID(s) were not found"
-                )
 
     # Step 5: Detect changes between current and proposed state
     updated_compound_ids = None
