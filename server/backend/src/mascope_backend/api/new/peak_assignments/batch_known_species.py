@@ -199,7 +199,7 @@ BATCH_CLAIM = "batch_claim"
 #: Why a species decided present was not claimed: its batch peak is pinned
 #: by hand; the files the claim may take would not turn its vote; its batch
 #: peak's readings moved between the reading and the write; another batch
-#: peak of its trace, in more files, claims it (:func:`settle_twins`).
+#: peak of its trace claims it (:func:`settle_twins`).
 HELD_CURATED = "curated"
 HELD_VOTE = "vote_holds"
 HELD_MOVED = "moved"
@@ -489,7 +489,8 @@ class Decision:
     :ivar twins: The other batch peaks of the species' trace in its
         partition, for the one that claims it (:func:`settle_twins`).
     :ivar twin_of: The batch peak that claims the species, for a twin held
-        for it (:data:`HELD_TWIN`).
+        for it (:data:`HELD_TWIN`); ``twin_of_mz`` its trace's centre, which
+        the ledger's mark names.
     """
 
     row: Row
@@ -501,6 +502,7 @@ class Decision:
     co_variation: Optional[dict] = None
     twins: list[str] = field(default_factory=list)
     twin_of: Optional[str] = None
+    twin_of_mz: Optional[float] = None
 
     @property
     def claims(self) -> bool:
@@ -923,13 +925,16 @@ def settle_twins(
     Where the fold split a species' trace over two batch peaks, both may be
     decided present, and both would claim it in a sample they share: the
     second claim rewrites what that sample reads there as a second copy of
-    the species, an analyte included. Of the species' batch peaks decided
-    present and free to claim, the one in the most files claims it (the
-    first by id on a tie, as ``batch_species_for`` picks for a next run),
-    decided again with the others as its twins; each other one is held for
-    it (:data:`HELD_TWIN`).
+    the species, an analyte included. Each of the species' batch peaks
+    decided present and free to claim is decided again with the others as
+    its twins, in the most files first (the first by id on a tie, as
+    ``batch_species_for`` picks for a next run), and the first that still
+    claims claims it; each other one is held for it (:data:`HELD_TWIN`).
+    Where none claims beside its twins, say one held on the vote once the
+    samples that read the species on a twin keep their reading, each stands
+    as decided with its twins, and none writes.
 
-    :return: The decisions, the claiming ones decided again.
+    :return: The decisions, the free ones of a split trace decided again.
     """
     by_key: dict[tuple, list[Decision]] = defaultdict(list)
     for decision in decisions:
@@ -939,18 +944,33 @@ def settle_twins(
         free = [d for d in group if d.verdict.present and d.held is None]
         if len(group) < 2 or not free:
             continue
-        claiming = min(free, key=lambda d: (-len(d.row.members), d.row.batch_peak_id))
+        again: dict[int, Decision] = {}
+        claiming: Optional[Decision] = None
+        for candidate in sorted(
+            free, key=lambda d: (-len(d.row.members), d.row.batch_peak_id)
+        ):
+            again[id(candidate)] = decide_row(
+                candidate.row,
+                candidate.species,
+                files,
+                carrying,
+                twins=[d.row for d in group if d is not candidate],
+            )
+            if again[id(candidate)].claims:
+                claiming = candidate
+                break
+        if claiming is None:
+            settled.update(again)
+            continue
+        settled[id(claiming)] = again[id(claiming)]
+        claiming_mz = round(
+            trace_centre(claiming.row.anchor.mz, claiming.row.members.values()), 6
+        )
         for decision in free:
             if decision is not claiming:
                 decision.held = HELD_TWIN
                 decision.twin_of = claiming.row.batch_peak_id
-        settled[id(claiming)] = decide_row(
-            claiming.row,
-            claiming.species,
-            files,
-            carrying,
-            twins=[d.row for d in group if d is not claiming],
-        )
+                decision.twin_of_mz = claiming_mz
     return [settled[id(decision)] for decision in decisions]
 
 
@@ -1147,6 +1167,7 @@ def species_record(
         **decision.verdict.to_json(),
         "held": decision.held,
         "twin_of": decision.twin_of,
+        "twin_of_mz": decision.twin_of_mz,
         "claimed": bool(displaced_members),
         "members_rewritten": len(displaced_members),
         "rows_rewritten": rows_rewritten,
@@ -1813,6 +1834,7 @@ async def _write_chunk(
             if planned.held == HELD_TWIN and decision.verdict.present:
                 decision.held = HELD_TWIN
                 decision.twin_of = planned.twin_of
+                decision.twin_of_mz = planned.twin_of_mz
             if decision.claims:
                 by_sample: dict[str, list[tuple[Any, Any]]] = defaultdict(list)
                 if decision.species.kind == KIND_LIBRARY:

@@ -901,6 +901,77 @@ class TestTheTwins:
         assert by_id["T"].held == HELD_TWIN
         assert by_id["T"].twin_of == "W"
 
+    def test_the_twin_claims_where_the_larger_one_would_hold_on_the_vote(self):
+        """``T`` is in more samples, but its analytes in s1 and s2 read the ion
+        on ``W``: kept, they hold ``T``'s vote, so ``W`` claims in its place."""
+        twin_mz = TRIMER_MZ * (1 + 3e-6)
+        first = Row(
+            anchor("T", TRIMER_MZ, ion=TRIMER, role="reagent"),
+            {
+                "s0": claimed("s0"),
+                "s1": analyte("s1", formula="C4H12N4O4"),
+                "s2": analyte("s2", formula="C4H12N4O4"),
+                "s3": member("s3"),
+            },
+        )
+        second = _twin(
+            {
+                "s1": lambda s: _peak(s, claimed),
+                "s2": lambda s: _peak(s, claimed),
+                "s4": lambda s: _peak(s, member),
+            }
+        )
+        alone, _ = self._plan(first)
+        assert alone.decisions[0].claims
+        plan, by_id = self._plan(first, second)
+
+        assert by_id["W"].held is None
+        assert by_id["W"].twins == ["T"]
+        assert by_id["W"].samples == {"s1": ALREADY, "s2": ALREADY, "s4": None}
+        assert by_id["T"].held == HELD_TWIN
+        assert by_id["T"].twin_of == "W"
+        assert by_id["T"].twin_of_mz == pytest.approx(twin_mz, abs=1e-6)
+        [counts] = plan.counts.values()
+        assert (counts["claimed"], counts["held"]) == (1, 1)
+
+    def test_where_neither_twin_claims_beside_the_other_neither_is_held_for_it(self):
+        """Each reads the ion in two samples and an analyte where the other
+        reads it: kept, neither has a sample left to claim."""
+        twin = lambda s: _peak(s, analyte, formula="C4H12N4O4")  # noqa: E731
+        first = Row(
+            anchor("T", TRIMER_MZ, ion=TRIMER, role="reagent"),
+            {
+                "s0": claimed("s0"),
+                "s1": claimed("s1"),
+                "s2": analyte("s2", formula="C4H12N4O4"),
+                "s3": analyte("s3", formula="C4H12N4O4"),
+            },
+        )
+        second = _twin(
+            {
+                "s0": twin,
+                "s1": twin,
+                "s2": lambda s: _peak(s, claimed),
+                "s3": lambda s: _peak(s, claimed),
+            }
+        )
+        plan, by_id = self._plan(first, second)
+
+        for key, other in (("T", "W"), ("W", "T")):
+            assert by_id[key].verdict.present
+            assert by_id[key].held is None
+            assert by_id[key].twin_of is None
+            assert by_id[key].twins == [other]
+            assert not by_id[key].claims
+        assert by_id["T"].samples == {
+            "s0": ALREADY,
+            "s1": ALREADY,
+            "s2": KEPT_ON_TWIN,
+            "s3": KEPT_ON_TWIN,
+        }
+        [counts] = plan.counts.values()
+        assert (counts["claimed"], counts["held"]) == (0, 0)
+
     def test_a_held_batch_peak_leaves_the_claim_to_its_twin(self):
         first, second = self._split()
         second.members["s5"] = _peak("s5", member)
@@ -977,6 +1048,7 @@ class TestTheTwins:
 
         assert record["held"] == HELD_TWIN
         assert record["twin_of"] == "T"
+        assert record["twin_of_mz"] == pytest.approx(TRIMER_MZ, abs=1e-6)
         assert species_record(by_id["T"], reads={}, batch_peak_run_id=None)[
             "files_by_reason"
         ] == {KEPT_ON_TWIN: 1}

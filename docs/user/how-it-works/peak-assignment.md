@@ -1785,9 +1785,12 @@ line under a carbon-free ion, or a 13C2 line under an ion of one carbon. A run i
 from another engine is that engine's record and is never rewritten. A batch peak curated
 by hand is never claimed, and neither is one whose reading the samples the claim may take
 would not turn. Where the fold split a species' trace over two batch peaks and both are
-decided present, only the one in the most samples claims it, and the other is held: its
-mark says which batch peak claims. A sample that reads the species on the other batch
-peak is kept, so no sample gets a second copy of it. Nothing else is claimed: an analyte
+decided present, only one claims it, and the other is held: its mark names the m/z of the
+batch peak that claims. A sample that reads the species on the other batch peak is kept,
+so no sample gets a second copy of it. The batch peak in the most samples claims, or on
+a tie the first by its id. Where keeping those samples leaves its claim unable to turn
+its reading, the other claims in its place; where neither can, neither claims.
+Nothing else is claimed: an analyte
 that is no known species is never read as one through the batch.
 
 The batch peak carries the decision: a checklist mark beside its formula, in the primary

@@ -90,11 +90,15 @@ describe('batchKnownSpecies', () => {
 
   it('names a twin batch peak that claims the species, and samples it reads in', () => {
     const text = knownSpeciesTooltip(
-      record({ held: 'twin', members_rewritten: 0, files_by_reason: {} })
+      record({ held: 'twin', twin_of_mz: 193.1044, members_rewritten: 0, files_by_reason: {} })
     )
     expect(text).toMatch(
-      /Not claimed: another batch peak of its trace, in more samples, claims it\.$/
+      /Not claimed: another batch peak of its trace, at m\/z 193\.1044, claims it\.$/
     )
+    // A record without the m/z still says another batch peak claims.
+    expect(
+      knownSpeciesTooltip(record({ held: 'twin', members_rewritten: 0, files_by_reason: {} }))
+    ).toMatch(/Not claimed: another batch peak of its trace claims it\.$/)
     expect(knownSpeciesTooltip(record({ files_by_reason: { reads_on_twin: 2 } }))).toMatch(
       /Kept as they read: 2 samples reading it on another batch peak of its trace\.$/
     )

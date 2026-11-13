@@ -1045,6 +1045,7 @@ async def test_a_split_trace_is_claimed_once_and_its_twin_is_held(
     assert twin_record["verdict"] == "present"
     assert twin_record["held"] == "twin"
     assert twin_record["twin_of"] == ids["t"]
+    assert twin_record["twin_of_mz"] == pytest.approx(anchors["t"].mz, rel=1e-6)
     assert twin_record["claimed"] is False
     twin_members = await _members(async_session_factory, twin_id)
     assert twin_members[samples["S04"]].role == role_code("M0")

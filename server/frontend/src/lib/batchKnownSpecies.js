@@ -11,6 +11,8 @@
  * and the samples it kept with their readings.
  */
 
+import { num } from '@/lib/formatters'
+
 const samples = (n) => `${n} sample${n === 1 ? '' : 's'}`
 const moreSamples = (n) => `${n} more sample${n === 1 ? '' : 's'}`
 
@@ -26,8 +28,17 @@ const KEPT = {
 const HELD = {
   curated: 'the batch peak is curated by hand',
   vote_holds: "the samples it could claim would not turn the batch peak's reading",
-  moved: 'the batch peak moved while it was decided',
-  twin: 'another batch peak of its trace, in more samples, claims it'
+  moved: 'the batch peak moved while it was decided'
+}
+
+/** Why a species decided present was not claimed, in words; a twin's names
+ *  the batch peak that claims it by its m/z. */
+function heldPhrase(record) {
+  if (record.held === 'twin') {
+    const at = record.twin_of_mz != null ? `, at m/z ${num.mz.format(record.twin_of_mz)},` : ''
+    return `another batch peak of its trace${at} claims it`
+  }
+  return HELD[record.held] ?? record.held
 }
 
 /** The species a record names, as a reader knows it. */
@@ -83,7 +94,7 @@ export function knownSpeciesTooltip(record) {
   const parts = [`${knownSpeciesSummary(record)} (${kind}).`, evidence]
   if (record.verdict === 'present') {
     if (record.held) {
-      parts.push(`Not claimed: ${HELD[record.held] ?? record.held}.`)
+      parts.push(`Not claimed: ${heldPhrase(record)}.`)
     } else if (record.members_rewritten) {
       parts.push(`Claimed in ${moreSamples(record.members_rewritten)}.`)
     }
