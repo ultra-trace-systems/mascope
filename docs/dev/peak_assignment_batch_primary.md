@@ -788,7 +788,10 @@ polarity, the `HIGH` isotope rows on an Orbitrap and the `LOW` ones on a TOF), a
 tolerance the folding sample's resolution gives that m/z, marked `batch_peak.seeded`. Seeds
 go in ascending m/z and a seed inside an anchor's window mints nothing, so two target ions
 one window apart share an anchor. A seeded anchor no peak joins stays with no members
-(`n_present` 0). A ledger that exists is seeded only by a rebuild that asks
+(`n_present` 0), and so does one whose last member leaves it: the consensus recompute that
+deletes a memberless anchor puts a seed back to a fresh seed's columns instead
+(`_reset_seed`), since a deleted seed would never come back once its partition holds
+anchors. A ledger that exists is seeded only by a rebuild that asks
 (`backfill?reseed=true`), and then append-only: the seeds no anchor holds are minted and no
 anchor moves, so a re-seed does not undo the first sample's placement of an anchor that is
 already there. The measurement is in the assignment quality plan's status table (step 4.7).

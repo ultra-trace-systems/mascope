@@ -1418,7 +1418,8 @@ ionization mechanisms of the sample's polarity, at the isotope resolution the
 instrument is matched at. Then the sample's peaks fold, and a peak within a seeded
 batch peak's window joins it. Each target's trace then sits at the ion's own m/z, not
 wherever the first sample put it. A seeded batch peak is marked `seeded` in the ledger,
-and one that no sample's peak has joined yet is listed with no samples. Where two
+and one that no sample's peak has joined yet is listed with no samples. It stays when
+its last sample's peak leaves it, and goes back to having no samples and no formula. Where two
 target ions fall within one window, one batch peak holds both, as it would two peaks.
 
 Seeding is off by default. It is a setting of the batch, `seed_batch_peaks`, set when

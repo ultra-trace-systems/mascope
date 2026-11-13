@@ -295,21 +295,26 @@ async def test_a_null_seeding_option_is_refused(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("given", "expected"), [({}, False), ({"seed_batch_peaks": True}, True)]
+)
 async def test_a_batch_is_created_with_the_seeding_option(
-    editor_client, async_session_factory, alpha_dataset
+    editor_client, async_session_factory, alpha_dataset, given, expected
 ):
+    """A batch made through the API without the option is off: seeding is
+    opt-in. Made with it on, it is stored and served on."""
     resp = await editor_client.post(
         "/api/sample/batches",
         json={
             "dataset_id": alpha_dataset,
             "sample_batch_name": "Seeded Batch",
             "target_collection_ids": [],
-            "seed_batch_peaks": True,
+            **given,
         },
     )
     assert resp.status_code == 201, resp.text
-    assert resp.json()["data"]["seed_batch_peaks"] is True
+    assert resp.json()["data"]["seed_batch_peaks"] is expected
     batch, _ = await _stored(
         async_session_factory, resp.json()["data"]["sample_batch_id"]
     )
-    assert batch.seed_batch_peaks is True
+    assert batch.seed_batch_peaks is expected

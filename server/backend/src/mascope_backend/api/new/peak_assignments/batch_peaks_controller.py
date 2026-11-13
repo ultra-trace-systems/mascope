@@ -697,7 +697,12 @@ async def _recompute_consensus(
     session, batch_peak_ids: set[str], now: datetime
 ) -> None:
     """Recompute (and persist) the consensus of the given batch peaks from their
-    members' per-sample assignments. A batch peak left with no members is deleted.
+    members' per-sample assignments. A batch peak left with no members is
+    deleted, unless it is seeded: a seed stands for a target ion whether or not
+    a sample's peak has joined it, so it goes back to what a fresh seed holds
+    (:func:`_reset_seed`). Deleting it would leave its partition unseeded
+    there for good - the partition is no longer empty, so no fold seeds it
+    again, and the next peak there mints an anchor at its own m/z.
 
     Walked in statements of :data:`_CONSENSUS_CHUNK` anchors. The caller's set is
     not bounded: a fold's touched set is one anchor per detected peak, and
@@ -814,7 +819,10 @@ async def _recompute_consensus_chunk(
                 unstamped[bp.batch_peak_id] = stamped_lines(diagnostic_isotopologues)
             if merged_isotopologue_of is not None:
                 released[merged_isotopologue_of["batch_peak_id"]].add(bp.batch_peak_id)
-            await session.delete(bp)
+            if bp.seeded:
+                _reset_seed(bp, now)
+            else:
+                await session.delete(bp)
             continue
         consensus = compute_consensus(
             members,
@@ -929,6 +937,49 @@ def _json_shape(value):
     """``value`` as a JSON column hands it back, so a freshly computed list or
     dict compares equal to the stored one (tuples become lists, keys strings)."""
     return json.loads(json.dumps(value))
+
+
+#: What a seed holds before any sample's peak joins it: the columns' defaults,
+#: everything a consensus, a curation, an import or the continuity pass wrote
+#: taken off. The m/z, the tolerance and the registry stay.
+_FRESH_SEED = {
+    "consensus_formula": None,
+    "consensus_ion_formula": None,
+    "ionization_mechanism_id": None,
+    "consensus_tier": "unassigned",
+    "consensus_role": None,
+    "best_fit_score": None,
+    "support_fraction": None,
+    "n_present": 0,
+    "is_ambiguous": 0,
+    "max_intensity": None,
+    "isotopologue_of": None,
+    "alternatives": None,
+    "provenance": None,
+    "engine_tier": None,
+    "engine_claim": None,
+    "continuity_grade": None,
+    "continuity": None,
+}
+
+
+def _reset_seed(bp: BatchPeak, now: datetime) -> bool:
+    """Put a seeded anchor whose last member left back to a fresh seed's state,
+    rather than deleting it as an unseeded anchor with no members is.
+
+    :return: Whether anything was written.
+    """
+    changed = {
+        column: value
+        for column, value in _FRESH_SEED.items()
+        if getattr(bp, column) != value
+    }
+    if not changed:
+        return False
+    for column, value in changed.items():
+        setattr(bp, column, value)
+    bp.batch_peak_utc_modified = now
+    return True
 
 
 def _apply_consensus(bp: BatchPeak, consensus: Consensus, now: datetime) -> bool:

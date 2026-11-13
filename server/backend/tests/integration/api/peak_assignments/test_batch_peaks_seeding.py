@@ -431,6 +431,139 @@ async def test_the_next_fold_snaps_to_the_seed_and_seeds_nothing_more(
     }
 
 
+#: The columns a consensus, a curation, an import or the continuity pass
+#: write on an anchor, which a seed with no members holds at their defaults.
+_CONSENSUS_COLUMNS = (
+    "consensus_formula",
+    "consensus_ion_formula",
+    "ionization_mechanism_id",
+    "consensus_tier",
+    "consensus_role",
+    "best_fit_score",
+    "support_fraction",
+    "n_present",
+    "is_ambiguous",
+    "max_intensity",
+    "isotopologue_of",
+    "alternatives",
+    "provenance",
+    "engine_tier",
+    "engine_claim",
+    "continuity_grade",
+    "continuity",
+)
+
+
+def _consensus_of(anchor: BatchPeak) -> dict:
+    return {column: getattr(anchor, column) for column in _CONSENSUS_COLUMNS}
+
+
+async def test_a_recompute_keeps_a_seed_no_peak_has_joined(
+    async_session_factory, make_batch
+):
+    """A consensus recompute over a seed with no members - what *Search
+    untargeted* runs over every unassigned anchor at its end - keeps it as it
+    was, rather than deleting it as it does an anchor of a peak's."""
+    batch_id, samples = await make_batch(seed=True, collection=True)
+    await fold_sample_into_batch_peaks(samples["A"])
+    naphthol = next(
+        a for a in await _anchors(async_session_factory, batch_id) if a.seeded
+    )
+    assert naphthol.mz == NAPHTHOL_MZ
+
+    await batch_peaks_controller.recompute_batch_consensus(
+        batch_id, {naphthol.batch_peak_id}
+    )
+
+    after = {
+        a.batch_peak_id: a for a in await _anchors(async_session_factory, batch_id)
+    }
+    kept = after[naphthol.batch_peak_id]
+    assert kept.seeded
+    assert kept.mz == NAPHTHOL_MZ
+    assert _consensus_of(kept) == _consensus_of(naphthol)
+    assert kept.batch_peak_utc_modified == naphthol.batch_peak_utc_modified
+
+
+async def _move_peak(session_factory, sample_item_id, peak_id, mz) -> None:
+    async with session_factory() as session:
+        await session.execute(
+            update(PeakAssignment)
+            .where(
+                PeakAssignment.sample_item_id == sample_item_id,
+                PeakAssignment.sample_peak_id == peak_id,
+            )
+            .values(sample_peak_mz=mz)
+        )
+        await session.commit()
+
+
+async def test_a_seed_its_last_member_leaves_stays_as_a_fresh_seed(
+    async_session_factory, make_batch
+):
+    """A re-fold that takes the glucose seed's only member away keeps the
+    seed, holding what a seed no peak has joined holds: whatever the
+    consensus, an import or the continuity pass wrote comes off. The peak
+    mints an anchor of its own where it went, and when it comes back it joins
+    the seed again, and that anchor, left with no members, is deleted."""
+    batch_id, samples = await make_batch(seed=True, collection=True)
+    await fold_sample_into_batch_peaks(samples["A"])
+    anchors = await _anchors(async_session_factory, batch_id)
+    glucose = next(a for a in anchors if a.mz == GLUCOSE_MZ)
+    naphthol = next(a for a in anchors if a.mz == NAPHTHOL_MZ)
+    assert glucose.consensus_formula == "C6H12O6"
+    async with async_session_factory() as session:
+        mechanism_id = (
+            await session.execute(
+                select(IonizationMechanism.ionization_mechanism_id).where(
+                    IonizationMechanism.ionization_mechanism == "[M+H]+"
+                )
+            )
+        ).scalar_one()
+        await session.execute(
+            update(BatchPeak)
+            .where(BatchPeak.batch_peak_id == glucose.batch_peak_id)
+            .values(
+                ionization_mechanism_id=mechanism_id,
+                consensus_role="reagent",
+                is_ambiguous=1,
+                isotopologue_of=naphthol.batch_peak_id,
+                engine_tier="confirmed",
+                engine_claim="an engine's words",
+                continuity_grade="stable",
+                continuity={"pairs": []},
+            )
+        )
+        await session.commit()
+
+    await _move_peak(async_session_factory, samples["A"], "A1", _ppm(GLUCOSE_MZ, 60))
+    await fold_sample_into_batch_peaks(samples["A"])
+
+    after = {
+        a.batch_peak_id: a for a in await _anchors(async_session_factory, batch_id)
+    }
+    kept = after[glucose.batch_peak_id]
+    assert kept.seeded
+    assert kept.mz == GLUCOSE_MZ
+    assert await _members(async_session_factory, kept.batch_peak_id) == set()
+    assert _consensus_of(kept) == _consensus_of(naphthol)
+    assert kept.consensus_tier == "unassigned"
+    assert kept.n_present == 0
+    moved = next(
+        a for a in after.values() if a.mz == pytest.approx(_ppm(GLUCOSE_MZ, 59))
+    )
+    assert not moved.seeded
+    assert await _members(async_session_factory, moved.batch_peak_id) == {"A1"}
+
+    await _move_peak(async_session_factory, samples["A"], "A1", _ppm(GLUCOSE_MZ, 2.5))
+    await fold_sample_into_batch_peaks(samples["A"])
+
+    back = {a.batch_peak_id: a for a in await _anchors(async_session_factory, batch_id)}
+    assert moved.batch_peak_id not in back
+    assert await _members(async_session_factory, glucose.batch_peak_id) == {"A1"}
+    assert back[glucose.batch_peak_id].consensus_formula == "C6H12O6"
+
+
 #: The ledger fields that name the batch's own rows: ids every batch mints.
 _BATCH_OWN = ("batch_peak_id", "sample_batch_id", "ionization_mode_id")
 
