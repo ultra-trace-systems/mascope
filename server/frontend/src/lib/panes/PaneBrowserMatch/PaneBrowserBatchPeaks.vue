@@ -56,6 +56,7 @@ import {
   knownSpeciesVerdict
 } from '@/lib/batchKnownSpecies'
 import { blendOf, blendSummary, blendTooltip } from '@/lib/batchBlend'
+import { waterLadderSummary, waterLadderTooltip } from '@/lib/batchWaterLadder'
 import {
   flatSeriesKind,
   flatSeriesOf,
@@ -133,7 +134,8 @@ const RUN_ACTION_LABELS = {
   stamp_isotopologues: 'an isotopologue stamping',
   strip_isotopologues: 'a strip of isotopologue rows',
   read_batch_checks: 'a batch checks reading',
-  decide_known_species: 'a known-species decision'
+  decide_known_species: 'a known-species decision',
+  measure_water_ladders: 'a water ladder measurement'
 }
 const viewedRunLabel = computed(() => {
   const run = runs.value.viewing
@@ -1365,6 +1367,17 @@ watch(
                 v-tooltip.top="strippedTooltip(stripOf(data))"
                 >{{ strippedLabel(data) }}</span
               >
+              <!-- A heavier line of a water-ladder rung, folded under the
+                   rung: the same mark as on the rung's own row. -->
+              <span
+                v-if="data.water_ladder"
+                class="pi ph ph-drop water-ladder-mark"
+                :class="{ claimed: data.water_ladder.reads?.role === 'reagent' }"
+                role="img"
+                data-testid="water-ladder-mark"
+                :aria-label="waterLadderSummary(data.water_ladder)"
+                v-tooltip.top="waterLadderTooltip(data.water_ladder)"
+              />
             </span>
             <!-- The isotopologue count rides in the slot, outside what gets
                  copied, as the sample ledger's does. -->
@@ -1459,6 +1472,17 @@ watch(
                 v-tooltip.top="
                   persistenceTooltip(data.persistence, data.tier_reasons, data.consensus_tier)
                 "
+              />
+              <!-- A rung of a reagent ion's water ladder, as the batch's own
+                   series passed it in a stretch of its acquisition. -->
+              <span
+                v-if="data.water_ladder"
+                class="pi ph ph-drop water-ladder-mark"
+                :class="{ claimed: data.water_ladder.reads?.role === 'reagent' }"
+                role="img"
+                data-testid="water-ladder-mark"
+                :aria-label="waterLadderSummary(data.water_ladder)"
+                v-tooltip.top="waterLadderTooltip(data.water_ladder)"
               />
               <span
                 v-if="isotopologueCount(data)"
@@ -2105,6 +2129,18 @@ watch(
   font-size: 0.75rem;
   opacity: 0.75;
   vertical-align: middle;
+}
+/* A rung of a reagent ion's water ladder: in the primary colour where the
+   batch peak reads the reagent's ion, muted where its samples' vote kept
+   another reading. */
+.water-ladder-mark {
+  margin-left: 0.25rem;
+  font-size: 0.8rem;
+  opacity: 0.6;
+}
+.water-ladder-mark.claimed {
+  color: var(--p-primary-color);
+  opacity: 1;
 }
 .curated,
 .series-mark {
