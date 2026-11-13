@@ -555,13 +555,16 @@ async def _recompute_consensus_chunk(
 ) -> None:
     """One statement's worth of :func:`_recompute_consensus`.
 
-    Reads the anchors first and the members second, and nothing else: a
-    member's formula, ion formula and mechanism are the registry entry its
+    Reads the anchors, when their batches' samples were acquired, and the
+    members, and nothing else: a member's
+    formula, ion formula and mechanism are the registry entry its
     ``candidate`` index names on its own anchor, its tier and role are codes
     (``tier_name``, ``role_name``), and its family link and P(correct) are
     columns of its own. The per-sample ledger is not consulted, so a member
     whose ledger row has since been pruned or deleted votes exactly as it did
-    the day it was folded.
+    the day it was folded. The acquisition times are for the probable-blend
+    test's time axis (``batch_blend.py``), read once per batch rather than
+    joined to every member.
     """
     if not id_list:
         return
@@ -577,11 +580,24 @@ async def _recompute_consensus_chunk(
         .all()
     )
     registries = {bp.batch_peak_id: bp.candidates for bp in anchors}
+    acquired = {
+        row.sample_item_id: (row.datetime_utc, row.t0)
+        for row in (
+            await session.execute(
+                select(Sample.sample_item_id, Sample.datetime_utc, Sample.t0).where(
+                    Sample.sample_batch_id.in_(
+                        sorted({bp.sample_batch_id for bp in anchors})
+                    )
+                )
+            )
+        ).all()
+    }
 
     rows = (
         await session.execute(
             select(
                 BatchPeakOccurrence.batch_peak_id,
+                BatchPeakOccurrence.sample_item_id,
                 BatchPeakOccurrence.tier,
                 BatchPeakOccurrence.fit_score,
                 BatchPeakOccurrence.intensity,
@@ -596,8 +612,12 @@ async def _recompute_consensus_chunk(
     members_by_peak: dict[str, list] = defaultdict(list)
     for r in rows:
         identity = resolve_candidate(registries.get(r.batch_peak_id), r.candidate)
+        when, t0 = acquired.get(r.sample_item_id, (None, None))
         members_by_peak[r.batch_peak_id].append(
             {
+                "sample_item_id": r.sample_item_id,
+                "acquired": when,
+                "t0": t0,
                 "assigned_formula": identity.get("formula"),
                 "ion_formula": identity.get("ion_formula"),
                 "ionization_mechanism_id": identity.get("ionization_mechanism_id"),

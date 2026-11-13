@@ -57,6 +57,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
+from mascope_backend.api.new.peak_assignments.batch_blend import BLEND_KEY, blend_of
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
     TIER_BELOW_ASSIGNABILITY,
@@ -1409,7 +1410,12 @@ def vote_consensus(
     Confidence (formula, tier, support) is decided over the **assigned** members;
     prevalence (``n_present``) is reported separately. Ties and blend-like
     disagreement set ``is_ambiguous`` and populate ``alternatives`` rather than
-    inventing a single certain answer.
+    inventing a single certain answer. Where the two leading formulas'
+    members separate cleanly along intensity or acquisition time, the
+    provenance records a probable blend under ``blend``
+    (:func:`~mascope_backend.api.new.peak_assignments.batch_blend.blend_of`);
+    members carry ``acquired``, ``t0`` and ``sample_item_id`` for its time
+    test, and one without ``acquired`` is left out of it.
 
     :param members: The batch peak's occurrences.
     :param batch_peak_id: This batch peak's own id, used only to keep the
@@ -1516,6 +1522,16 @@ def vote_consensus(
     if pin is not None:
         provenance["manual"] = pin
         provenance["vote_winner"] = vote_winner
+    # How the two leading formulas disagree, where they split cleanly along
+    # the members' intensity or acquisition time: a probable blend of two
+    # chemistries on one trace (batch_blend.py). A reason only; nothing above
+    # reads it.
+    if others:
+        blend = blend_of(
+            winner, winner_members, others[0][0], members_by_formula[others[0][0]]
+        )
+        if blend is not None:
+            provenance[BLEND_KEY] = blend
     return Consensus(
         consensus_formula=winner,
         consensus_ion_formula=ion_formula,

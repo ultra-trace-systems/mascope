@@ -3626,6 +3626,9 @@ class BatchPeakRunAnchor(Base):
     # verdict and its evidence, what the claim wrote and kept, its per-member
     # states left out (``batch_peaks.known_species_summary``); NULL for none.
     known_species: Mapped[Optional[dict]] = mapped_column(JSON)
+    # The probable blend the anchor's consensus read as the run left it
+    # (``batch_blend.blend_record_of``); NULL for none.
+    blend: Mapped[Optional[dict]] = mapped_column(JSON)
     candidates: Mapped[Optional[list]] = mapped_column(JSON)
     members: Mapped[Optional[dict]] = mapped_column(JSON)
 

@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
+from mascope_backend.api.new.peak_assignments.batch_blend import blend_record_of
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     continuity_stale,
     instrument_type_of,
@@ -101,7 +102,10 @@ def _batch_peak_meta(bp) -> dict:
     the known-species decision read one: the species, whether the batch
     decided it present and on what evidence, what its claim wrote and which
     samples it kept, each with its reading (``batch_known_species``); None
-    where no decision stands.
+    where no decision stands. ``blend`` says the anchor is a probable blend:
+    its two leading formulas' members separate cleanly along intensity or
+    acquisition time, with the two formulas, the axis and each axis' reading
+    (``batch_blend``); None where they do not.
     """
     return {
         "batch_peak_id": bp.batch_peak_id,
@@ -140,6 +144,7 @@ def _batch_peak_meta(bp) -> dict:
         "merged_isotopologues": standing_merged_isotopologues_record(bp),
         "batch_checks": standing_batch_checks_record(bp),
         "known_species": known_species_summary(bp),
+        "blend": blend_record_of(bp),
         "reference_listing": consensus_listing(
             bp.candidates,
             bp.consensus_formula,
