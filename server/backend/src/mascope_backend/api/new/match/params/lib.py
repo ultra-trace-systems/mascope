@@ -11,6 +11,18 @@ from mascope_match.params import (
 )
 
 
+#: The abundance error at which a line on its mass loses its intensity too.
+#: Keeping a line whose peak reads (1 + e) times its expected share puts r * e
+#: of interference into the ion's sum, dropping it leaves its own share r
+#: out; the two errors are equal at e = 1, and above it dropping is the
+#: smaller one. It is also where the score's abundance term reaches 0, so a
+#: stored row (raw score above 0) is always under it and the stored sums
+#: agree with the live ones (#3000). It catches two kinds of line: one whose
+#: peak reads at twice its expected share or more, and any minor line of an
+#: ion whose main line has no peak, whose ratio is read as 0 (an error of -1).
+RATIO_MISS_DROPS_INTENSITY = 1.0
+
+
 def instrument_default_match_params(
     instrument_name: str, instrument_type: str | None = None
 ) -> BaseMatchParams:
@@ -174,20 +186,23 @@ def apply_match_params(
     )
 
     # The mass gate says whether the peak is the line at all; the ratio gate
-    # says whether the line fits the ion's pattern in this file. Only the mass
-    # gate takes the intensity: a line on its mass still carries its signal
-    # into the ion's sum when its per-file ratio misses, which is noisy on a
+    # says whether the line fits the ion's pattern in this file. The mass gate
+    # takes the intensity: a line on its mass still carries its signal into
+    # the ion's sum when its per-file ratio misses, which is noisy on a
     # mid-intensity line, while its score (and so the category) still says
-    # that the pattern did not fit.
+    # that the pattern did not fit. A miss of RATIO_MISS_DROPS_INTENSITY or
+    # more takes the intensity as well: that peak is not the line read noisily.
     within_mz = df["match_mz_error"].abs() <= params_df["mz_tolerance"]
+    abundance_error = df["match_abundance_error"].abs()
     score_accepted = (
         within_mz
-        & (df["match_abundance_error"].abs() <= params_df["isotope_ratio_tolerance"])
+        & (abundance_error <= params_df["isotope_ratio_tolerance"])
         & (df["sample_peak_intensity"] >= params_df["peak_min_intensity"])
     )
+    keeps_intensity = within_mz & (abundance_error < RATIO_MISS_DROPS_INTENSITY)
 
     df.loc[valid & ~score_accepted, "match_score"] = 0
-    df.loc[valid & ~within_mz, "sample_peak_intensity"] = 0
+    df.loc[valid & ~keeps_intensity, "sample_peak_intensity"] = 0
 
     # Determine match category based on the (filtered) match_score
     match_category = pd.Series(0, index=df.index, dtype=object)

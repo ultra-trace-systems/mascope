@@ -126,10 +126,13 @@ The checks do not all take the same thing from a line.
 - **Outside the isotope ratio tolerance**, the line is on its mass but does not fit the ion's pattern in this file.
   Its score is set to 0, so the ion's score and category drop.
   Its intensity is kept.
+- **Off its ratio by 100 % or more**, the line's score and its intensity are both set to 0, as outside the m/z tolerance.
+  That takes in two cases: a line whose peak reads at twice its expected share or more, and any minor line of an ion whose most abundant line has no peak.
+  A minor line's ratio is read against the most abundant line, so without that line's peak the ratio reads 0, which is off by 100 %.
 - **Under the minimum peak intensity**, the line's score is set to 0 and its intensity is kept.
 
 An ion's intensity is the sum of its lines' intensities, and it is what the batch overview chart plots for the ion in each file.
-So a line that misses the ratio in one file still counts towards the ion's intensity in that file.
+So a line that misses the ratio by less than 100 % in one file still counts towards the ion's intensity in that file.
 
 This matters most for an ion with two near-equal lines, such as a bromide adduct, whose 79Br and 81Br lines are about 51 % and 49 % of the ion.
 The ratio read from one file is noisier than its signal-to-noise suggests.
@@ -140,7 +143,14 @@ The trade-off is deliberate.
 A line that really carries an interference adds that interference to the ion's intensity, where before it would have taken half the ion away.
 The category still shows when the pattern did not fit.
 
-Before this was changed, a ratio miss also set the line's intensity to 0.
+The cut at 100 % is where the trade-off turns.
+Take a line that should be a share *r* of the ion and whose peak reads (1 + *e*) times that share.
+If the extra signal is interference, keeping the line puts *r*·*e* too much into the ion's intensity, and dropping it leaves *r* out.
+The two errors are equal at *e* = 1, so above it dropping the line is the smaller error, whatever the line's share.
+A bromide ion keeps what the rule above gives it: its 81Br line's misses of 0.2 to 0.5 keep their intensity.
+100 % is also where a line's score reaches 0, and a batch match stores no line that scored 0, so the stored intensities and the match tree count the same lines.
+
+Before this was changed, a ratio miss of any size also set the line's intensity to 0.
 Batches matched before then are put right by the maintenance script `reaggregate_ratio_gated_intensity`, which an operator runs once (`docs/maintaining.md`).
 
 ### Target Ion Match Score
