@@ -4,7 +4,7 @@
 
 - **Status:** building
 - **As of:** 2026-11-11
-- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73, MAS-408 to MAS-410, MAS-443, MAS-568 to MAS-570, MAS-609, MAS-708, MAS-709, MAS-777 and MAS-823 to MAS-841)
+- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73, MAS-408 to MAS-410, MAS-443, MAS-568 to MAS-570, MAS-609, MAS-708, MAS-709, MAS-777, MAS-823 to MAS-841, MAS-870 and MAS-881)
 - **What:** The step-by-step plan closing the assignment quality gap: stages, gates, decisions and risks.
 
 ## Status
@@ -99,6 +99,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 4.2f - merged isotopologue rows | - |  | built: *Strip isotopologue rows* reads every committed monoisotopic batch peak at the 13C and diagnostic lines of every brighter one below it (four times the partition's mass scatter, at least 1 ppm); a row whose height over the parent's is a median 0.4 to 1.4 times the line's share over three or more samples, fewer than a tenth above 2x, is stripped: its members and the samples' in-app rows become the parent's isotope line (recorded on both), so the consensus folds it under the parent; curated, hand-assigned and own-13C rows are held, imported runs never rewritten; read on the copy's batch ledgers, G6 on the batch ledger falls on A 9 -> 7, B 62 -> 56, D 46 -> 41 and holds on C and C2; MAS-827 |
 | 4.2g - batch isotope checks as positive facts | - |  | built: *Read batch checks* records three display-only facts on a batch peak's reading: the halogen lock (a 37Cl or 81Br line 4.2c stamped, its median offset within the batch's position window; where the window cannot tell 30Si, the 29Si line a silicon reading implies decides), the label twin (a labelled ion's 14N twin at the impurity share the batch's own reagent ions show, the setup's purity where none does, present, absent or untestable where an absent line would be charged) and the uronium neutral pair (4.2's co-variation of [M+H]+ and [M+CH4N2O+H]+); on the copy's batch ledgers D locks bromine on 144 bromide clusters (71 of its 121 assigned), C2's labelled cores read their twins present in 88 of 88 samples at 0.42 of the 98 % share, no unlabelled ion is read, A and B count 99 and 458 uronium pairs; no tier moves; MAS-828 |
 | 4.2h - known species decided once by pooled evidence | - |  | built: *Decide known species* reads each library ion a sample's reagent pass claimed (not a fragment) and each formula a list tags `background`, per mode and instrument type; present where its peak is in two samples or more and half or more, and one sample's own test held (the claim, or the listed formula at candidate or better), absent where none held, unpooled under that; a present species is claimed in every sample its peak is in (members and in-app rows: a library ion as the pre-pass's claim with its lines, a listed compound at candidate), hand, target, another ion's line or claim and a listed reading with lines of its own kept and recorded; where the fold split a trace, one batch peak claims (the one in the most samples whose claim still turns its reading once the samples reading the species on the other are kept) and the other is held; a sample's next run claims a present library ion on the batch's word; co-variation with the core recorded only (decision 35); the copy's ledgers and runs predate the claim registry, so the Verify reading is the planner's pass; MAS-829 |
+| 4.2i - the merge window sized from the batch's own mass scatter | - |  | not built, not applicable to Mascope's fold (decision MAS-870, 2026-11-13): an anchor already snaps at half the FWHM plus 2 ppm, 46 to 108 ppm on a TOF against a member scatter of 2.8 to 10.8 ppm; on the copy's 20 batch ledgers three pairs of anchors sharing no sample sit within four scatters of each other, all on F1, against the reference's quarter of well-populated TOF rows; half the FWHM plus four scatters, capped at today's margin, would narrow only the Orbitrap's window, a median 5.35 to 3.95 ppm (scatter 0.06 to 0.64 ppm), splitting 0 to 2.3 % of members, and a merge by that window would join TOF anchors a median 6 to 16 scatters apart; 4.2f's strip keeps measuring the scatter in its pass; what a shared TOF anchor drops is MAS-881's measurement; MAS-830 |
 | 4.3 - calibration from verdicts, per profile | - |  | planned |
 | 4.4 - gate automation | - |  | moved to milestone 6 as step 6.4, the gate card as code (MAS-64); see `assignment_bench.md`. Built: `compare_runs.py --card` prints G1 to G14, the mass error, the reason coverage and the decoy arms per set and pooled, each metric a function in `metrics.py`; `--gate` marks them against the stage targets of `thresholds.json` with a pass-or-fail line, `--baseline` lists the readings that moved, and the scrub refuses a card that holds a name; MAS-64 |
 | 4.5 - profiles as versioned rows, routing by detection | - |  | planned |
@@ -1409,8 +1410,9 @@ who edits chemistry and stays last.
   admission, the predicted isotopologues in the fold, the consensus
   measurement, the flat series, the merged isotopologue rows, the batch
   isotope checks as facts, known species pooled, the merge window from
-  the batch's scatter, the water ladder (Linear MAS-823 to MAS-831, each
-  with its brief), chained where two edit one function.
+  the batch's scatter (not built, decision MAS-870: below), the water
+  ladder (Linear MAS-823 to MAS-831, each with its brief), chained where
+  two edit one function.
 - **As built (the co-variation reading; MAS-62).** The pure half is
   `mascope_tools.composition.coherence`: `batch_residuals` puts a
   partition's traces in log10, divides each spectrum by its summed reagent
@@ -1610,10 +1612,12 @@ who edits chemistry and stays last.
     a TOF and a height on an Orbitrap, which is what an Orbitrap's envelope
     tolerance is read by (decision 32). Reading Orbitrap areas would open every
     sample's peak list in the pass.
-  - **The mass scatter** is measured in the pass, per partition, as 4.2i will
-    record it on the batch; 4.2i can replace the measurement with the recorded
-    one. A partition with no row of five members (set E's three samples) reads
-    at the 1 ppm floor.
+  - **The mass scatter** is measured in the pass, per partition, and each
+    strip run records it in its summary beside the window it read at
+    (`scatter_ppm`, `window_ppm`). Nothing records it on the batch: 4.2i,
+    which would have, was not built (decision MAS-870, below), and a stored
+    copy would go stale as samples fold in at ingest. A partition with no row
+    of five members (set E's three samples) reads at the 1 ppm floor.
   - **Verify, read on the copy's batch ledgers** (2026-11-12): the branch's
     `plan_batch` over each gate set's batch ledger as the copy holds it, read
     only, beside the reference's rows on the same peaks. G6 on the batch
@@ -1633,8 +1637,9 @@ who edits chemistry and stays last.
 
     G6 falls on every Orbitrap set that strips a row. Held: one row on D
     carries its own 13C line, every other hold is a row too few of whose
-    samples hold the parent's reading (F1's 84 are the TOF's split traces,
-    4.2i's case). The Orbitrap strips by line: 13C 15, 81Br 7, 30Si 3, 29Si 2,
+    samples hold the parent's reading. F1's 84 are not split traces: F1 has
+    three pairs of anchors that could hold one trace (4.2i's reading,
+    below). The Orbitrap strips by line: 13C 15, 81Br 7, 30Si 3, 29Si 2,
     15N 1, 18O 1. The reference reads 11 of the 29 Orbitrap rows as the
     parent's isotopologue, 2 as another formula's, 5 as an M0 of another
     formula (all on B; where both engines committed an M0 there, G1's
@@ -1884,6 +1889,59 @@ who edits chemistry and stays last.
     pooled ladder or ratio test over the files' traces; taking an earlier
     decision's claims back where a later one no longer reads the species
     present (they stay, recorded as `batch_claim`).
+
+- **Not built (the eighth rider, the merge window from the batch's scatter;
+  step 4.2i, MAS-830).** The rider sizes the fold's snap window from the
+  batch's own mass scatter, a multiple of it floored at the half-width rule
+  and capped at today's margin, and merges the anchors the new window calls
+  one trace. Its premise is the reference's TOF finding: two winners 8 ppm
+  apart minted two anchors for one ion. Read on the copy's 20 batch ledgers
+  before any code (2026-11-12 and 13, read only), the premise does not hold
+  for Mascope's fold, and the plan owner closed the step as not applicable
+  (decision MAS-870, 2026-11-13).
+  - **The window is already wide on a TOF.** An anchor's frozen tolerance is
+    half the FWHM at its m/z plus `DEFAULT_DRIFT_MARGIN_PPM` (2 ppm): 46 to
+    108 ppm on the TOF ledgers (median 80), against the reference's 12 ppm,
+    and 3.9 to 10 ppm on the Orbitrap (median 5.35). On F1 and F2 no two
+    adjacent anchors of five or more members have frozen m/z within 82 ppm
+    of each other. Across TOF anchors of any size the closest are about
+    47 ppm apart, on the ledger with a scatter of 2.8 ppm.
+  - **The scatter**, as 4.2f measures it: 0.06 to 0.64 ppm on the Orbitrap
+    ledgers, most 0.1 to 0.16; 2.8 to 10.8 ppm on the TOF (F1 10.8, F2 7.8);
+    E has no anchor of five members.
+  - **The window could only shrink.** The window read here is half the FWHM
+    plus four scatters, capped at today's half the FWHM plus 2 ppm; every
+    number below is under that rule. Four scatters are 11 to 43 ppm on the
+    TOF ledgers, so their windows stay, as does the Orbitrap ledger's at
+    0.64 ppm. Every other Orbitrap window narrows, from a median 5.35 to
+    3.95 ppm, and a re-fold would mint new anchors for 0 to 2.3 % of members
+    (A 0.07 %, B 0.09 %, C 0, C2 0.28 %, D 0; TOF at most 0.01 %). Uncapped,
+    the rule would widen every TOF window by 9 to 41 ppm, where MAS-881
+    (below) asks whether today's is already too wide.
+  - **Little the scatter calls one trace.** The merge, read as MAS-870 does,
+    joins adjacent anchors that share no sample and whose trace centres (the
+    median of their members' m/z) fall inside the window. It would join 0 to
+    4 pairs per Orbitrap ledger (4 on the largest) and 19 to 113 per TOF
+    ledger with a scatter (F1 113, F2 52). Those sit a median 6 to 16
+    scatters apart on the TOF and 6 or more on the Orbitrap: the window's
+    width, not one trace's scatter. Within four scatters of each other sit
+    three such pairs, all on F1, each three samples beside the other three.
+    No two anchors of five or more members on a TOF ledger have trace
+    centres within six scatters, though on ledgers of five and six samples
+    two such anchors always share samples.
+  - **What stays.** 4.2f's strip measures the scatter in its pass and records
+    it per run; the batch records none. 4.2j does not wait for this step.
+  - **Measured next (MAS-881).** On a TOF the window cuts the other way: at
+    7 to 10 times the scatter on F1 and F2, two ions within about 80 ppm can
+    share one anchor, the nearer peak joining in each sample and the other
+    left out of the ledger (on F1, 533 of 1,488 anchors of five or more
+    members hold a member more than four scatters off their centre). MAS-881
+    counts the peaks the fold drops per sample on F1 and F2, and reads
+    whether the Orbitrap's adjacent anchors a median 6.5 ppm apart by
+    frozen m/z with no shared sample are one ion across an axis step
+    between acquisition periods or two ions. One large ledger holds 1,317
+    such pairs of anchors of five or more members, and 2,176 that share at
+    most a tenth of their samples.
 
 ### 4.3 Calibration from verdicts, per profile
 
