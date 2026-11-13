@@ -682,6 +682,15 @@ class PeakAssignmentsResource(BaseResource):
                  ``label_twin`` and ``neutral_pair``, the ledger's
                  ``batch_checks``), where the row reads it as that run did;
                  None otherwise, and absent from a server that predates it.
+                 ``batch_persistence``: where *Search untargeted* took that
+                 batch peak because its peak recurs across the batch rather
+                 than for its height, the ``share`` of its partition's
+                 spectra the peak was in, ``n_present``, ``n_samples``, the
+                 ``split`` it cleared and the reading the search elected
+                 (``formula``, ``ion_formula``, ``ionization_mechanism_id``),
+                 with ``tier_reasons`` - the batch's reasons about that
+                 reading, the ledger's - on a monoisotopic row that reads it;
+                 None otherwise, and absent from a server that predates it.
                  Returns None if the response carries no record.
         :rtype: dict | None
         :raises AuthenticationError: If authentication fails.

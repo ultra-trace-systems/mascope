@@ -82,6 +82,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     resolve_candidate,
     row_batch_checks,
     row_co_variation,
+    row_persistence,
     standing_series_record,
 )
 from mascope_backend.api.new.peak_assignments.calibration_store import (
@@ -892,6 +893,7 @@ async def get_peak_assignment_detail(
             derived = member_detail(*found)
             derived["batch_co_variation"] = row_co_variation(derived, found[1])
             derived["batch_checks"] = row_batch_checks(derived, found[1])
+            derived["batch_persistence"] = row_persistence(derived, found[1])
         else:
             derived = None
             assignment = await session.get(PeakAssignment, peak_assignment_id)
@@ -906,6 +908,7 @@ async def get_peak_assignment_detail(
             )
             record["batch_co_variation"] = row_co_variation(record, anchor)
             record["batch_checks"] = row_batch_checks(record, anchor)
+            record["batch_persistence"] = row_persistence(record, anchor)
             run = await session.get(
                 PeakAssignmentRun, assignment.peak_assignment_run_id
             )

@@ -223,7 +223,21 @@ class BatchPeaksResource(BaseResource):
                  ``brighter`` - and ``time`` - ``p``, ``runs``,
                  ``expected_runs``, ``earlier`` -, null where untested);
                  display-only, no tier reads it; null where none, and absent
-                 from a server that predates it.
+                 from a server that predates it;
+                 ``persistence`` (on a batch peak *Search untargeted* searched
+                 because its peak recurs across the batch, where the intensity
+                 floor or the peak cap would have left it out: the ``share``
+                 of its partition's spectra the peak was in, ``n_present`` and
+                 ``n_samples``, the batch's ``split`` of that distribution it
+                 cleared, and the reading the search elected - ``formula``,
+                 ``ion_formula``, ``ionization_mechanism_id``) and
+                 ``tier_reasons`` (what the batch's own rules say of the
+                 consensus reading, each a ``rule``, a ``detail`` and whether
+                 it ``caps`` the tier: ``persistence_only`` where the reading
+                 the search elected on persistence alone is held at candidate,
+                 or ``second_line``, ``corroborated`` and ``series_anchor`` for
+                 what lifts it); null where none, and absent from a server that
+                 predates them.
                  ``consensus_tier`` is always this server's: the engine's tier
                  stands beside it.
                  None when the batch has no ledger yet.

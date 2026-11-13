@@ -716,3 +716,331 @@ def test_a_series_record_stands_beside_the_formula_it_names(consensus_formula, r
 def test_a_malformed_record_stands_nowhere():
     anchor = {"provenance": {SERIES_KEY: {"unit": "CH2"}}, "consensus_formula": "A"}
     assert standing_series_record(anchor) is None
+
+
+# --- persistence: the batch search's second admission (step 4.2b) ---------------
+#
+# The batch search records on an anchor that it took the anchor's peak because
+# the peak recurs across the batch rather than for its height, and the reading
+# it elected there is held at candidate until a second observation lifts it.
+
+_ADMITTED = {
+    "share": 0.9167,
+    "n_present": 11,
+    "n_samples": 12,
+    "split": 0.4583,
+    "formula": "C5H8O2",
+    "ion_formula": "C5H9O2+",
+    "ionization_mechanism_id": "mech-h",
+    "batch_peak_run_id": "run-1",
+}
+
+
+def _elected(formula="C5H8O2", mechanism="mech-h", fit=0.9, tier="assigned"):
+    return _m0(
+        formula,
+        fit_score=fit,
+        intensity=50.0,
+        tier=tier,
+        ion_formula=f"{formula}+",
+        ionization_mechanism_id=mechanism,
+    )
+
+
+def _persistent(*members, **records):
+    return compute_consensus(list(members), persistence=_ADMITTED, **records)
+
+
+def test_the_persistence_rules_names_are_the_tiering_passes():
+    from mascope_backend.api.new.peak_assignments import batch_peaks, tiering
+
+    assert batch_peaks.REASON_PERSISTENCE_ONLY == tiering.REASON_PERSISTENCE_ONLY
+    assert batch_peaks.REASON_SECOND_LINE == tiering.REASON_SECOND_LINE
+    assert batch_peaks.REASON_CORROBORATED == tiering.REASON_CORROBORATED
+    assert batch_peaks.REASON_SERIES_ANCHOR == tiering.REASON_SERIES_ANCHOR
+
+
+def test_the_record_stays_whatever_the_anchor_reads():
+    from mascope_backend.api.new.peak_assignments.batch_peaks import PERSISTENCE_KEY
+
+    for members in ([_elected()], [_elected("C9H9N")], [_bare()]):
+        c = compute_consensus(members, persistence=_ADMITTED)
+        assert c.provenance[PERSISTENCE_KEY] == _ADMITTED
+    assert PERSISTENCE_KEY not in compute_consensus([_elected()]).provenance
+
+
+def test_an_uncorroborated_reading_elected_on_persistence_is_held_at_candidate():
+    from mascope_backend.api.new.peak_assignments.batch_peaks import (
+        PersistenceFacts,
+        hold_persistence_only,
+        tier_reasons_of,
+    )
+
+    c = _persistent(_elected(), _elected())
+    assert c.consensus_tier == "assigned"
+    assert hold_persistence_only(c, PersistenceFacts()) is True
+    assert c.consensus_tier == "candidate"
+    (reason,) = tier_reasons_of({"provenance": c.provenance})
+    assert reason["rule"] == "persistence_only"
+    assert reason["caps"] is True
+    # The reason names the share the admission rested on, and the split.
+    assert "11 of its partition's 12 spectra (92 %" in reason["detail"]
+    assert "split at 46 %" in reason["detail"]
+
+
+def test_the_fit_alone_never_lifts_it():
+    from mascope_backend.api.new.peak_assignments.batch_peaks import (
+        PersistenceFacts,
+        hold_persistence_only,
+    )
+
+    c = _persistent(_elected(fit=0.999), _elected(fit=0.999))
+    hold_persistence_only(c, PersistenceFacts())
+    assert c.consensus_tier == "candidate"
+
+
+@pytest.mark.parametrize(
+    "facts, rule",
+    [
+        ({"line_samples": 1}, "second_line"),
+        ({"channels": ("mech-na",)}, "corroborated"),
+    ],
+    ids=["a 13C line", "another channel"],
+)
+def test_a_second_observation_lifts_it(facts, rule):
+    from mascope_backend.api.new.peak_assignments.batch_peaks import (
+        PersistenceFacts,
+        hold_persistence_only,
+        tier_reasons_of,
+    )
+
+    c = _persistent(_elected(), _elected())
+    assert hold_persistence_only(c, PersistenceFacts(**facts)) is False
+    assert c.consensus_tier == "assigned"
+    (reason,) = tier_reasons_of({"provenance": c.provenance})
+    assert reason["rule"] == rule
+    assert reason["caps"] is False
+
+
+def test_a_series_anchoring_the_reading_lifts_it():
+    from mascope_backend.api.new.peak_assignments.batch_peaks import (
+        PersistenceFacts,
+        hold_persistence_only,
+        tier_reasons_of,
+    )
+
+    series = {
+        "formula": "C5H8O2",
+        "ionization_mechanism_id": "mech-h",
+        "unit": "CH2",
+        "has_anchor": True,
+    }
+    c = _persistent(_elected(), _elected(), series=series)
+    hold_persistence_only(c, PersistenceFacts())
+    assert c.consensus_tier == "assigned"
+    assert [r["rule"] for r in tier_reasons_of({"provenance": c.provenance})] == [
+        "series_anchor"
+    ]
+    # A series through another mechanism, or one with no assigned anchor,
+    # vouches for nothing here.
+    for record in (
+        {**series, "ionization_mechanism_id": "mech-na"},
+        {**series, "has_anchor": False},
+    ):
+        c = _persistent(_elected(), _elected(), series=record)
+        hold_persistence_only(c, PersistenceFacts())
+        assert c.consensus_tier == "candidate"
+
+
+def test_every_second_observation_is_named():
+    from mascope_backend.api.new.peak_assignments.batch_peaks import (
+        PersistenceFacts,
+        hold_persistence_only,
+        tier_reasons_of,
+    )
+
+    c = _persistent(_elected(), _elected())
+    hold_persistence_only(c, PersistenceFacts(line_samples=3, channels=("a", "b")))
+    reasons = tier_reasons_of({"provenance": c.provenance})
+    assert [r["rule"] for r in reasons] == ["second_line", "corroborated"]
+    assert "in 3 samples" in reasons[0]["detail"]
+    assert "2 other channels" in reasons[1]["detail"]
+
+
+@pytest.mark.parametrize("tier", ["candidate", "below_assignability"])
+def test_it_never_promotes_and_still_says_what_it_would_take(tier):
+    from mascope_backend.api.new.peak_assignments.batch_peaks import (
+        PersistenceFacts,
+        hold_persistence_only,
+        tier_reasons_of,
+    )
+
+    c = _persistent(_elected(tier=tier), _elected(tier=tier))
+    assert c.consensus_tier == tier
+    # The rule holds the reading; there is no top tier to take.
+    assert hold_persistence_only(c, PersistenceFacts()) is True
+    assert c.consensus_tier == tier
+    assert tier_reasons_of({"provenance": c.provenance})[0]["caps"] is True
+
+
+@pytest.mark.parametrize(
+    "members, records",
+    [
+        # Another reading than the search elected: a later vote's, not the
+        # admission's.
+        ([_m0("C9H9N", ionization_mechanism_id="mech-h", tier="assigned")], {}),
+        ([_m0("C5H8O2", ionization_mechanism_id="mech-na", tier="assigned")], {}),
+        # A person's pin.
+        (
+            [_m0("C5H8O2", ionization_mechanism_id="mech-h", tier="assigned")],
+            {"manual": {"formula": "C5H8O2", "ionization_mechanism_id": "mech-h"}},
+        ),
+        # Another row's line.
+        (
+            [
+                _m0(
+                    "C5H8O2",
+                    ionization_mechanism_id="mech-h",
+                    tier="assigned",
+                    role="iso_child",
+                    owner_batch_peak_id="bp-owner",
+                )
+            ]
+            * 2,
+            {},
+        ),
+    ],
+    ids=["another formula", "another mechanism", "pinned", "a line"],
+)
+def test_a_reading_not_elected_on_persistence_alone_is_not_asked(members, records):
+    from mascope_backend.api.new.peak_assignments.batch_peaks import (
+        PersistenceFacts,
+        hold_persistence_only,
+        persistence_asks,
+        tier_reasons_of,
+    )
+
+    c = _persistent(*members, **records)
+    tier = c.consensus_tier
+    assert persistence_asks(c) is None
+    assert hold_persistence_only(c, PersistenceFacts()) is False
+    assert c.consensus_tier == tier
+    assert tier_reasons_of({"provenance": c.provenance}) is None
+
+
+def test_an_admission_that_elected_nothing_asks_nothing():
+    from mascope_backend.api.new.peak_assignments.batch_peaks import persistence_asks
+
+    c = compute_consensus(
+        [_elected(), _elected()],
+        persistence={**_ADMITTED, "formula": None, "ion_formula": None},
+    )
+    assert persistence_asks(c) is None
+
+
+def test_a_row_is_served_the_record_and_the_reasons_of_its_reading():
+    from mascope_backend.api.new.peak_assignments.batch_peaks import row_persistence
+
+    reasons = [{"rule": "persistence_only", "detail": "...", "caps": True}]
+    anchor = {"provenance": {"persistence": _ADMITTED, "tier_reasons": reasons}}
+    reading = {
+        "role": "M0",
+        "assigned_formula": "C5H8O2",
+        "ionization_mechanism_id": "mech-h",
+    }
+    assert row_persistence(reading, anchor) == {**_ADMITTED, "tier_reasons": reasons}
+    # Another reading of the same peak, or a line on it: the admission, not
+    # the reasons, which are about the elected reading.
+    for row in (
+        {**reading, "assigned_formula": "C9H9N"},
+        {**reading, "role": "iso_child"},
+        {"role": "unassigned"},
+    ):
+        assert row_persistence(row, anchor) == {**_ADMITTED, "tier_reasons": None}
+    assert row_persistence(reading, {"provenance": {}}) is None
+    assert row_persistence(reading, None) is None
+
+
+def _member_of(sample, tier, fit=0.9, formula="C5H8O2", mechanism="mech-h", role="M0"):
+    return {
+        "sample_item_id": sample,
+        "assigned_formula": formula,
+        "ionization_mechanism_id": mechanism,
+        "role": role,
+        "tier": tier,
+        "fit_score": fit,
+    }
+
+
+def test_the_rule_stores_the_elected_readings_assigned_members_at_candidate():
+    from mascope_backend.api.new.peak_assignments.batch_peaks import (
+        held_member_tiers,
+        measured_members,
+    )
+
+    members = measured_members(
+        [
+            _member_of("s1", "assigned", 0.9),
+            _member_of("s2", "candidate", 0.6),
+            # Another reading of the peak, a line, and another mechanism.
+            _member_of("s3", "assigned", 0.95, formula="C9H9N"),
+            _member_of("s4", "assigned", 0.9, role="iso_child"),
+            _member_of("s5", "assigned", 0.9, mechanism="mech-na"),
+        ],
+        _ADMITTED,
+    )
+    moves, held = held_member_tiers(members, _ADMITTED, holds=True)
+    assert moves == {"s1": "candidate"}
+    assert held == {"s1": 0.9}
+    # Let go, nothing moves and nothing is held.
+    assert held_member_tiers(members, _ADMITTED, holds=False) == ({}, {})
+
+
+def test_a_held_member_votes_and_is_put_back_at_its_measured_tier():
+    from mascope_backend.api.new.peak_assignments.batch_peaks import (
+        held_member_tiers,
+        measured_members,
+    )
+
+    record = {**_ADMITTED, "held_members": {"s1": 0.9, "s2": 0.8, "s4": 0.8}}
+    stored = [
+        _member_of("s1", "candidate", 0.9),
+        # A fold replaced these since: another fit, or another tier.
+        _member_of("s2", "candidate", 0.7),
+        _member_of("s3", "assigned", 0.9),
+        _member_of("s4", "below_assignability", 0.8),
+    ]
+    members = measured_members(stored, record)
+    assert [m["tier"] for m in members] == [
+        "assigned",
+        "candidate",
+        "assigned",
+        "below_assignability",
+    ]
+    assert [m["stored_tier"] for m in members] == [m["tier"] for m in stored]
+    # Corroborated: the held one goes back; the replaced ones are their own.
+    assert held_member_tiers(members, record, holds=False) == ({"s1": "assigned"}, {})
+    # Still held: s1 stays where it is stored, s3 joins it.
+    assert held_member_tiers(members, record, holds=True) == (
+        {"s3": "candidate"},
+        {"s1": 0.9, "s3": 0.9},
+    )
+    # No record of held members: every member votes as stored.
+    assert [m["tier"] for m in measured_members(stored, _ADMITTED)] == [
+        m["tier"] for m in stored
+    ]
+
+
+def test_a_reader_is_not_served_the_held_members():
+    from mascope_backend.api.new.peak_assignments.batch_peaks import (
+        persistence_summary,
+        row_persistence,
+    )
+
+    anchor = {"provenance": {"persistence": {**_ADMITTED, "held_members": {"s1": 0.9}}}}
+    assert persistence_summary(anchor) == _ADMITTED
+    assert row_persistence({"role": "M0"}, anchor) == {
+        **_ADMITTED,
+        "tier_reasons": None,
+    }
+    assert persistence_summary({"provenance": {}}) is None

@@ -38,7 +38,11 @@ This module holds the PURE logic (no DB, no I/O) behind the batch overview:
   merged-isotopologue reading stripped to a parent's line and of the parent
   that took it (:func:`merged_isotopologue_of_record`,
   :func:`merged_isotopologues_record`), and of a known species the batch
-  decided once over its files (:func:`known_species_record_of`).
+  decided once over its files (:func:`known_species_record_of`). An anchor the
+  batch search took because its peak is persistent rather than bright
+  carries that admission whatever it reads (:func:`persistence_record_of`),
+  and the reading the search elected on it alone is held at candidate until
+  a second observation corroborates it (:func:`hold_persistence_only`).
 
 - **Continuity's gates**: the provisional constants of the ratio-stability
   pass (``continuity.py``), beside the consensus constants, and the test a
@@ -1195,6 +1199,324 @@ def known_species_summary(anchor: Any) -> Optional[dict]:
 _KNOWN_SPECIES_KEPT_BACK = frozenset({"displaced_members", "own_test_samples"})
 
 
+# --- persistence: the batch search's second admission (step 4.2b) ---------------
+
+#: The anchor's provenance key the batch's untargeted search
+#: (``batch_untargeted.py``) writes its record under where it searched the
+#: anchor because its peak is persistent and not because of its height: the
+#: share of its partition's spectra the peak is present in, the counts behind
+#: it, the partition's split, the reading the search elected (``formula``,
+#: ``ion_formula``, ``ionization_mechanism_id``; None where it elected no
+#: monoisotopic reading), and the run.
+PERSISTENCE_KEY = "persistence"
+
+#: The anchor's provenance key for the reasons its batch-level rules record
+#: about its reading, in the shape a run's rows carry theirs
+#: (``tiering.py``: ``rule``, ``detail``, ``caps``), so a reader names them
+#: with the same labels.
+TIER_REASONS_KEY = "tier_reasons"
+
+#: The rule names the persistence rule records, spelled again from
+#: ``tiering.py`` for the reason :data:`ROLE_ISO_CHILD` is; a unit test holds
+#: the spellings in step. The cap, and the three second observations that
+#: lift it: a line of the reading's isotope pattern, another channel, a series.
+REASON_PERSISTENCE_ONLY = "persistence_only"
+REASON_SECOND_LINE = "second_line"
+REASON_CORROBORATED = "corroborated"
+REASON_SERIES_ANCHOR = "series_anchor"
+
+
+def persistence_record_of(anchor: Any) -> Optional[dict]:
+    """The persistence record an anchor carries under
+    ``provenance.persistence``, or None.
+
+    A record names the share its admission rested on; anything else under that
+    key is not one. It is about the anchor's peak, so it stays whatever the
+    anchor reads (:func:`compute_consensus`); the rule it feeds asks only the
+    reading the search elected (:func:`persistence_asks`).
+    """
+    provenance = _member(anchor, "provenance")
+    if not isinstance(provenance, dict):
+        return None
+    record = provenance.get(PERSISTENCE_KEY)
+    if isinstance(record, dict) and record.get("share") is not None:
+        return record
+    return None
+
+
+def tier_reasons_of(anchor: Any) -> Optional[list]:
+    """The reasons the anchor's batch-level rules recorded about its reading
+    (:data:`TIER_REASONS_KEY`), or None where none did."""
+    provenance = _member(anchor, "provenance")
+    if not isinstance(provenance, dict):
+        return None
+    reasons = provenance.get(TIER_REASONS_KEY)
+    return reasons if isinstance(reasons, list) and reasons else None
+
+
+def persistence_asks(consensus: "Consensus") -> Optional[dict]:
+    """The persistence record the rule asks a consensus about, or None.
+
+    Asked where the anchor carries a record whose search elected a
+    monoisotopic reading, and the consensus still reads the peak so: that
+    formula through that mechanism, on its own peak, as no source's ion and no
+    other row's line. A pinned reading is a person's word and is not asked,
+    nor is any other reading a later vote moved the anchor to: it was not
+    elected on the persistence admission.
+
+    :param consensus: A freshly computed consensus (:func:`compute_consensus`).
+    """
+    record = consensus.provenance.get(PERSISTENCE_KEY)
+    if not isinstance(record, dict):
+        return None
+    if (
+        consensus.isotopologue_of is not None
+        or "manual" in consensus.provenance
+        or not _reads(
+            record, consensus.consensus_formula, consensus.ionization_mechanism_id
+        )
+    ):
+        return None
+    return record
+
+
+def row_persistence(row: dict, anchor: Any) -> Optional[dict]:
+    """The persistence record of the anchor a sample's row sits in, for the
+    inspector; None where the anchor carries none.
+
+    The record is about the peak - the share of its partition's spectra it
+    was in, which is why the batch search took it - so every row on the peak
+    is served it. The anchor's reasons ride with it (``tier_reasons``) only
+    on a monoisotopic row that reads what the search elected there: they are
+    about that reading.
+
+    :param row: The sample's row, with ``role``, ``assigned_formula`` and
+        ``ionization_mechanism_id``.
+    :param anchor: The anchor its peak sits in, or None.
+    """
+    if anchor is None:
+        return None
+    record = persistence_summary(anchor)
+    if record is None:
+        return None
+    reads = row.get("role") == ROLE_M0 and _reads(
+        record, row.get("assigned_formula"), row.get("ionization_mechanism_id")
+    )
+    return {**record, "tier_reasons": tier_reasons_of(anchor) if reads else None}
+
+
+@dataclass(frozen=True)
+class PersistenceFacts:
+    """What the batch holds beside an anchor's reading that the reading's own
+    peak did not show: the second observations the persistence rule reads.
+
+    Read by the controller rather than here, since both are facts about other
+    batch peaks: :attr:`line_samples`, the samples that hold a committed line
+    of the reading's isotope pattern (a member of another batch peak read as
+    the reading's isotopologue, under the reading's formula), and
+    :attr:`channels`, the other mechanisms through which the partition's
+    batch peaks commit the same neutral.
+    """
+
+    line_samples: int = 0
+    channels: tuple[str, ...] = ()
+
+
+def _reason(rule: str, detail: str, *, caps: bool) -> dict:
+    """One reason, in the shape ``tiering.py`` writes a run's row's."""
+    return {"rule": rule, "detail": detail, "caps": caps}
+
+
+def _percent(share: Any) -> str:
+    try:
+        return f"{100.0 * float(share):.0f} %"
+    except (TypeError, ValueError):
+        return "an unknown share"
+
+
+def _plural(count: int, one: str, many: str) -> str:
+    return one if count == 1 else many
+
+
+def hold_persistence_only(consensus: "Consensus", facts: PersistenceFacts) -> bool:
+    """Cap a reading the batch search elected on persistence alone, unless a
+    second observation corroborates it; in place.
+
+    A peak present in more of its partition's spectra than the batch's split
+    of their occurrence distribution is a real ion whatever its height, which
+    is why the search took it. It does not say which formula the ion is: at a
+    few counts its isotope lines are under the picker and nothing in its own
+    peak separates the elected formula from the others the window holds. So
+    the reading is held at ``candidate`` (:data:`REASON_PERSISTENCE_ONLY`)
+    until something besides the peak saw it - the second observations
+    ``tiering.lone_peak_reason`` reads in a run: a line of its isotope pattern
+    committed in a sample, the same neutral through another channel of the
+    batch, a homologous series of the batch anchoring the formula. One lifts
+    it, and each that holds is named instead (``second_line``,
+    ``corroborated``, ``series_anchor``). The fit never does.
+
+    Never promotes: an uncorroborated reading the vote put under ``assigned``
+    keeps its tier, and the reason still says what the rule would take, as a
+    run's reasons do (``caps``). The members are the controller's to hold
+    with it (:func:`held_member_tiers`).
+
+    :param consensus: The anchor's fresh consensus, carrying its persistence
+        record (:func:`persistence_asks`); left as it is where the rule does
+        not ask it.
+    :param facts: What the batch holds beside the reading.
+    :return: Whether the rule holds the reading: asked, and nothing
+        corroborates it.
+    """
+    record = persistence_asks(consensus)
+    if record is None:
+        return False
+    formula = consensus.consensus_formula
+    standing: list[dict] = []
+    if facts.line_samples > 0:
+        standing.append(
+            _reason(
+                REASON_SECOND_LINE,
+                "a line of its isotope pattern is committed with it in "
+                f"{facts.line_samples} "
+                f"{_plural(facts.line_samples, 'sample', 'samples')} of the batch",
+                caps=False,
+            )
+        )
+    if facts.channels:
+        count = len(facts.channels)
+        standing.append(
+            _reason(
+                REASON_CORROBORATED,
+                f"the batch commits the same neutral through {count} other "
+                f"{_plural(count, 'channel', 'channels')}",
+                caps=False,
+            )
+        )
+    series = consensus.provenance.get(SERIES_KEY)
+    if (
+        isinstance(series, dict)
+        and series.get("has_anchor")
+        and _reads(series, formula, consensus.ionization_mechanism_id)
+    ):
+        standing.append(
+            _reason(
+                REASON_SERIES_ANCHOR,
+                "a homologous series of its batch anchors it, in "
+                f"{series.get('unit') or 'its repeat unit'}",
+                caps=False,
+            )
+        )
+    if standing:
+        consensus.provenance[TIER_REASONS_KEY] = standing
+        return False
+    consensus.provenance[TIER_REASONS_KEY] = [
+        _reason(
+            REASON_PERSISTENCE_ONLY,
+            f"searched because its peak is in {record.get('n_present')} of its "
+            f"partition's {record.get('n_samples')} spectra "
+            f"({_percent(record.get('share'))}, above the batch's split at "
+            f"{_percent(record.get('split'))}), not because of its height: "
+            f"persistence says an ion is there, not that it is {formula}. No "
+            "line of its isotope pattern is committed, no other channel of the "
+            "batch commits its neutral and no series of the batch anchors it",
+            caps=True,
+        )
+    ]
+    if consensus.consensus_tier == TIER_ASSIGNED:
+        consensus.consensus_tier = TIER_CANDIDATE
+    return True
+
+
+#: The key of a persistence record under which the members the rule holds
+#: are kept, sample id -> the fit the member was measured at: the rule
+#: stores each at ``candidate``, and the record is how a lift knows which to
+#: put back at ``assigned``.
+HELD_MEMBERS_KEY = "held_members"
+
+
+def measured_members(members: list[dict], record: Optional[dict]) -> list[dict]:
+    """The members as they were measured, for the vote.
+
+    Where the persistence rule holds a reading, its members are stored at
+    ``candidate`` (:func:`held_member_tiers`), so a sample's own view reads
+    the batch's cap. The vote still reads each at the tier its measurement
+    gave it - otherwise a held reading could never vote its way back once a
+    second observation arrives. A held member is read so while it is the one
+    the rule held: still at ``candidate``, at the fit it was held at. One a
+    fold has since replaced reads as stored.
+
+    :param members: The anchor's members as the recompute reads them, with
+        ``sample_item_id``, ``tier`` and ``fit_score``.
+    :param record: The anchor's persistence record, or None.
+    :return: The members, each with ``stored_tier`` (its stored tier) and
+        ``tier`` (as measured).
+    """
+    held = (record or {}).get(HELD_MEMBERS_KEY) or {}
+    measured = []
+    for member in members:
+        tier = member.get("tier")
+        sample = member.get("sample_item_id")
+        if (
+            sample in held
+            and tier == TIER_CANDIDATE
+            and member.get("fit_score") == held[sample]
+        ):
+            tier = TIER_ASSIGNED
+        measured.append({**member, "stored_tier": member.get("tier"), "tier": tier})
+    return measured
+
+
+def held_member_tiers(
+    members: list[dict], record: dict, holds: bool
+) -> tuple[dict[str, str], dict[str, Any]]:
+    """The tier each member is stored at under the persistence rule.
+
+    Where the rule holds the reading the search elected, a member that reads
+    it in its sample - monoisotopic, that formula through that mechanism -
+    and was measured at ``assigned`` is stored at ``candidate``, so no
+    sample's row of the reading stands above the batch's. Every other member,
+    and every member once the rule lets go (a second observation, a pin,
+    another reading), is stored at its measured tier.
+
+    :param members: The members as measured (:func:`measured_members`).
+    :param record: The anchor's persistence record.
+    :param holds: Whether the rule holds the reading
+        (:func:`hold_persistence_only`).
+    :return: Sample id -> the tier to store, for the members whose stored
+        tier moves; and the members now held, sample id -> fit, for the
+        record's :data:`HELD_MEMBERS_KEY`.
+    """
+    moves: dict[str, str] = {}
+    held: dict[str, Any] = {}
+    for member in members:
+        sample = member.get("sample_item_id")
+        tier = member.get("tier")
+        if (
+            holds
+            and tier == TIER_ASSIGNED
+            and member.get("role") == ROLE_M0
+            and _reads(
+                record,
+                member.get("assigned_formula"),
+                member.get("ionization_mechanism_id"),
+            )
+        ):
+            held[sample] = member.get("fit_score")
+            tier = TIER_CANDIDATE
+        if tier != member.get("stored_tier"):
+            moves[sample] = tier
+    return moves, held
+
+
+def persistence_summary(anchor: Any) -> Optional[dict]:
+    """What a reader is served of an anchor's persistence record: all but the
+    members the rule holds, which the recompute alone reads."""
+    record = persistence_record_of(anchor)
+    if record is None:
+        return None
+    return {key: value for key, value in record.items() if key != HELD_MEMBERS_KEY}
+
+
 def resolution_from_tol_ppm(
     tol_ppm: Optional[float], drift_margin_ppm: float = DEFAULT_DRIFT_MARGIN_PPM
 ) -> Optional[float]:
@@ -1298,9 +1620,11 @@ def compute_consensus(
     merged_isotopologues: Optional[dict] = None,
     batch_checks: Optional[dict] = None,
     known_species: Optional[dict] = None,
+    persistence: Optional[dict] = None,
 ) -> Consensus:
     """:func:`vote_consensus`, with the anchor's series, co-variation,
-    stamping, strip, batch checks and known-species records carried along.
+    stamping, strip, batch checks, known-species and persistence records
+    carried along.
 
     The series record says a homologous series proposed a formula for this
     anchor. It is about that formula and not about the peak, so it stays in the
@@ -1323,7 +1647,12 @@ def compute_consensus(
     reading - its ion, its formula and its mechanism - and stays for as long
     as the consensus names all three (:func:`batch_checks_record_reads`). A
     known-species record stays while the anchor reads what the decision left
-    it reading (:func:`known_species_reads`).
+    it reading (:func:`known_species_reads`). A persistence record is about
+    the anchor's peak - how many of its partition's spectra hold it, which is
+    why the batch search took it - so it stays whatever the anchor reads; the
+    rule it feeds is applied once the facts it reads off other batch peaks
+    are in hand (:func:`hold_persistence_only`), and asks only the reading
+    the search elected.
 
     :param members: The batch peak's occurrences.
     :param batch_peak_id: This batch peak's own id.
@@ -1344,6 +1673,8 @@ def compute_consensus(
         (:func:`batch_checks_record_of`), or None.
     :param known_species: The known-species record the anchor carries
         (:func:`known_species_record_of`), or None.
+    :param persistence: The persistence record the anchor carries
+        (:func:`persistence_record_of`), or None.
     """
     consensus = vote_consensus(members, batch_peak_id=batch_peak_id, manual=manual)
     if (
@@ -1387,6 +1718,8 @@ def compute_consensus(
         known_species, consensus
     ):
         consensus.provenance[KNOWN_SPECIES_KEY] = known_species
+    if isinstance(persistence, dict):
+        consensus.provenance[PERSISTENCE_KEY] = persistence
     return consensus
 
 
