@@ -1835,6 +1835,8 @@ And a peak focused from the batch side - the chart, the arrow beside a batch pea
 
 ### Ratio stability
 
+--8<-- "_help/batch-continuity.md"
+
 Every effect that scales a whole spectrum - the source's strength, its drift, the
 number of scans, a dilution - scales both peaks of a related pair alike, so their
 ratio within one sample cancels it. An isotope line's ratio to its main peak is fixed
@@ -1888,7 +1890,22 @@ has folded the last sample, and `POST /api/batch-peaks/batch/{id}/recompute-cont
 grades it on request. The ledger's records carry the grade as `continuity_grade`, the
 pairs under `continuity` (each with its ratio, spread, drift and the co-variation
 reading it was graded with), and `continuity_stale` where a sample folded since, a
-curation or a re-fold has moved the batch peak. The ledger shows no column for it yet.
+curation or a re-fold has moved the batch peak.
+
+The *Batch peaks* ledger shows the grade in its **Continuity** column, after *Samples*,
+once the pass has graded the batch. Stable, drift and red are drawn as a badge;
+inconclusive and insufficient read muted, and a batch that is not time-ordered reads
+*Not graded*, its tooltip saying why. A badge drawn dashed is partial: the pass left
+some of the batch peak's pairs ungraded, and where it left all of them the dashed badge
+reads *Not graded*. The pair counts it gives are of the graded pairs. A badge outlined in the warning colour, with a
+clock, is behind the ledger: a sample folded in since, or the consensus formula moved,
+and the next pass grades it again. Clicking the cell lists the pairs behind the grade -
+the most alarming first, up to four - each with its grade, the samples both peaks are
+in, the median ratio, its spread and its drift, and for two channels what *Read
+co-variation* said of them. An isotope line has a grade of its own, on its pair with
+the main peak, shown on its own row while the view options unfold the isotopologues.
+The column sorts red first, and batch peaks without a grade last. No tier, verdict or
+filter reads it.
 
 ### Batch runs
 

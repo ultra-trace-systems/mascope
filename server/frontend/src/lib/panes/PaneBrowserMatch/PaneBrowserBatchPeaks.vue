@@ -51,6 +51,14 @@ import {
   strippedTooltip
 } from '@/lib/batchMergedIsotopologues'
 import {
+  CLAIM_GRADES,
+  continuityLabel,
+  continuityPartial,
+  continuityRank,
+  continuityStale,
+  continuityTooltip
+} from '@/lib/batchContinuity'
+import {
   ENGINE_UNSTATED,
   ENGINE_UNSTATED_META,
   ROLE_BUCKETS,
@@ -73,6 +81,7 @@ import { useBatchPeakCompute } from './stores/batchPeakCompute.js'
 import { useLedgerListing } from './stores/ledgerListing.js'
 import { useLedgerSort } from './stores/ledgerSort.js'
 import BatchPeakVerdictPopover from './BatchPeakVerdictPopover.vue'
+import BatchPeakContinuityPopover from './BatchPeakContinuityPopover.vue'
 
 /**
  * Batch-peak ledger: the selection surface for the peak-centric batch overview.
@@ -320,6 +329,44 @@ const hasCoVariation = computed(() => shown.value.some((bp) => bp.co_variation !
 // shown carries one, as the co-variation is; display-only.
 const hasBatchChecks = computed(() => shown.value.some((bp) => bp.batch_checks != null))
 
+// --- Ratio stability --------------------------------------------------------------
+
+// Whether an anchor's related pairs - an isotope line and its main peak, two
+// channels of one compound - hold their within-sample ratio across the batch,
+// as the batch's continuity pass graded it. Offered only where some batch peak
+// shown carries a grade or the reason it has none; display-only, so nothing
+// but its own column sorts on it. An isotope line has a grade of its own, on
+// its pair with the main peak, and shows it on its own row: only while the
+// Isotopologues toggle is on, since folded it has no row.
+const hasContinuity = computed(() => shown.value.some((bp) => bp.continuity != null))
+// stable, drift and red say something of the pair and are drawn as a badge;
+// inconclusive and insufficient say it could not be read, and read muted.
+const continuityClaims = (row) => CLAIM_GRADES.includes(row.continuity_grade)
+
+// One continuity popover for the table, pointed at the row whose cell opened
+// it, as the verdict popover is. Both cells stop their click, which PrimeVue's
+// outside-click listener on the document would otherwise see, so each opener
+// closes the other popover itself.
+const continuityMenu = ref()
+const continuityRowId = ref(null)
+const continuityTarget = computed(() =>
+  continuityRowId.value
+    ? (decorated.value.find((row) => row.batch_peak_id === continuityRowId.value) ?? null)
+    : null
+)
+function openContinuity(event, row) {
+  const menu = continuityMenu.value
+  if (!menu) return
+  verdictMenu.value?.hide()
+  if (continuityRowId.value === row.batch_peak_id) {
+    menu.toggle(event)
+    return
+  }
+  continuityRowId.value = row.batch_peak_id
+  menu.hide()
+  nextTick(() => menu.show(event))
+}
+
 // The ledger's records with the tier's confidence rank attached, which is what
 // the tier column sorts on: the raw tier string sorts alphabetically, and
 // "below_assignability" before "candidate" is not an ordering anyone asked for.
@@ -351,6 +398,9 @@ const decorated = computed(() => {
       coVariationRank: coVariationRank(batchPeak.co_variation),
       // Facts holding less facts refuting, null where none was read.
       checksRank: checksRank(batchPeak.batch_checks),
+      // The grade's place in the order of alarm, red first; null where the
+      // pass left none, so those sort last in both directions.
+      continuityRank: continuityRank(batchPeak),
       verdictRank: verdictRank(batchPeak),
       parentId: rootParentId(batchPeak, index),
       listing,
@@ -395,6 +445,7 @@ const verdictTarget = computed(() =>
 function openVerdict(event, row) {
   const menu = verdictMenu.value
   if (!menu) return
+  continuityMenu.value?.hide()
   if (verdictRowId.value === row.batch_peak_id) {
     menu.toggle(event)
     return
@@ -826,6 +877,10 @@ const HEADER_TOOLTIPS = {
     "spacing, a labelled ion's 14N twin, a uronium compound's two channels moving together. " +
     'No tier moves on them',
   samples: 'Number of samples this species is seen in',
+  continuity:
+    "Ratio stability: whether this peak's ratio to its isotope line or its other channel " +
+    'holds flat across the time-ordered batch, as one species keeps it. It never identifies ' +
+    'a species. No tier moves on it',
   verdict:
     'Batch-level verdict: one judgment per species, covering every sample without a ' +
     'verdict of its own'
@@ -1514,6 +1569,53 @@ watch(
           <template #body="{ data }">{{ data.n_present }}</template>
         </Column>
 
+        <!-- Ratio stability: after Samples, since it is evidence about the
+             trace that column counts. The cell is a button that opens the
+             pairs behind the grade. A grade the pass left partial is drawn
+             dashed, and one the ledger has moved past since outlined in the
+             warning colour with a clock. Display-only: the tier column is
+             what the table sorts, filters and folds on. -->
+        <Column v-if="hasContinuity" field="continuityRank" sortable style="min-width: 7rem">
+          <template #header>
+            <span
+              v-tooltip.top="HEADER_TOOLTIPS.continuity"
+              v-help.top="{
+                title: 'Ratio Stability',
+                helpKey: 'batch-continuity',
+                doc: app.ui.help.docUrl('how-it-works/peak-assignment/#ratio-stability')
+              }"
+              >Continuity</span
+            >
+          </template>
+          <template #body="{ data }">
+            <button
+              v-if="data.continuity"
+              type="button"
+              class="continuity"
+              :class="[
+                data.continuity_grade ?? 'withdrawn',
+                {
+                  claim: continuityClaims(data),
+                  partial: continuityPartial(data),
+                  stale: continuityStale(data)
+                }
+              ]"
+              data-testid="continuity"
+              :aria-label="`Ratio stability: ${continuityLabel(data)}`"
+              v-tooltip.top="continuityTooltip(data)"
+              @click.stop="openContinuity($event, data)"
+            >
+              <span
+                v-if="continuityStale(data)"
+                class="pi ph ph-clock-counter-clockwise"
+                data-testid="continuity-stale"
+              />
+              {{ continuityLabel(data) }}
+            </button>
+            <span v-else-if="!data.parentId" class="no-continuity">&mdash;</span>
+          </template>
+        </Column>
+
         <!-- Batch-level verdict: one judgment per species at this batch peak,
              covering every sample in the batch without a verdict of its own. The
              cell is a button whichever state it is in, so an unjudged row is
@@ -1550,6 +1652,14 @@ watch(
           </template>
         </Column>
       </DataTable>
+
+      <Popover ref="continuityMenu" aria-label="Ratio stability">
+        <BatchPeakContinuityPopover
+          v-if="continuityTarget"
+          :row="continuityTarget"
+          :isotopeLine="Boolean(continuityTarget.parentId)"
+        />
+      </Popover>
 
       <Popover ref="verdictMenu" aria-label="Batch-level verdict">
         <BatchPeakVerdictPopover
@@ -1696,6 +1806,55 @@ watch(
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.86rem;
   white-space: nowrap;
+}
+/* The continuity grade. A claim - stable, drift, red - is a small outlined
+   badge in a state colour; inconclusive and insufficient, which say the
+   ratio could not be read, are muted text, as is a batch whose grades were
+   withdrawn. Partial: dashed, the pass left some of the pairs. Stale: the
+   warning outline and a clock, the ledger has moved since. */
+.continuity {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0 0.35rem;
+  border: 1px solid transparent;
+  border-radius: 0.25rem;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 0.8rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.continuity.claim {
+  border-color: currentColor;
+}
+.continuity.stable {
+  color: var(--state-success);
+}
+.continuity.drift {
+  color: var(--state-info);
+}
+.continuity.red {
+  color: var(--state-error);
+}
+.continuity.inconclusive,
+.continuity.insufficient,
+.continuity.withdrawn,
+.no-continuity {
+  opacity: 0.55;
+}
+.continuity.partial {
+  border-style: dashed;
+  border-color: currentColor;
+}
+.continuity.stale {
+  outline: 1px dashed var(--state-warning);
+  outline-offset: 1px;
+}
+.continuity.stale .pi {
+  color: var(--state-warning);
+  font-size: 0.75rem;
 }
 /* Display-only, so no tier colour: co-varying reads plain, the rest muted. */
 .co-variation.not_co_varying,

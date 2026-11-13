@@ -104,6 +104,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 4.6 - a structured adduct row beside the notation string | - |  | built: the row's columns on `ionization_mechanism`, filled by a migration that refuses an unreadable row; `[2M+H]+`, `[M+2H]2+` and `[M+H-H2O]+` read, written and given target ions; the finder and the engine leave them out; corroboration keys unchanged; moves no metric; MAS-318 |
 | 4.9 - refuse or segregate mixed-instrument batches at the fold | - |  | built: segregated; the fold searches a batch's anchors per mode and per instrument type, read off the anchor's intensity unit; the ledger and the series name the partition (`instrument_type`), the Batch peaks ledger shows one at a time and the chart draws only its selection; a single-instrument batch folds as before; moves no metric; MAS-321 |
 | 4.11 - temporal continuity: the ratio-stability pass, its columns and its endpoint | - |  | built: every isotope line and its family root, and every two channels of one neutral, at assigned or candidate, graded on the within-sample ratio across a time-ordered batch (spread 1.4826 x MAD, drift by Spearman rho and a Theil-Sen change): stable, drift (the traces co-vary per 4.2), red, inconclusive or insufficient, on two `batch_peak` columns the ledger serves with a stale mark; run by its endpoint and at a rebuild's end, the fold trigger off for 4.13; on the testbed's six folded analysis batches 1,752 pairs, 1,008 stable, 122 red, 24 drift, the isotope reds a dim line's response; no tier moves; MAS-323 |
+| 4.12 - the continuity column and badge in the batch ledger, and the per-sample overlay | - |  | built: a *Continuity* column after *Samples* in the *Batch peaks* ledger, offered once the pass graded the batch: stable, drift and red as a badge, inconclusive and insufficient muted, *Not graded* where the batch is not time-ordered, dashed where partial, a clock where stale; its own sort (red first, ungraded last) in the pane's projection; the pairs with their ratio, spread and drift in a popover; an isotope line's own grade on its row while unfolded; the help card; the per-sample overlay and its effective-verdict filter had shipped with the anchor verdicts; display-only; MAS-346 |
 | 4.19 - the active-learning verification queue, with the three calibration-label calls | - |  | built: `GET /peak-assignments/sample/{id}/verification-queue` ranks the run's unjudged rows within 0.1 evidence of a band edge by closeness and by the labels the instrument class and reagent profile hold within 0.05, with seeded spot checks every fifth place and stale verdicts (a later run reassigned or rescored the judged peak) first; the ledger's *to verify* chip and column; no `p_correct` or evidence in the queue; the refit weighs labels by evidence level (reference standard and MS/MS 1, orthogonal 0.6, pattern 0.4, visual and unstated 0.25) and records the weights on the curve (`label_weights`); per instrument and profile, down-weight, keep the snapshot and mark it stale (section 7 of `verification_calibration_loop.md`); moves no metric; MAS-329 |
 | 5.1 - the reference pinned at a release, a boundary review per peaky release | - |  | planned 2026-10-13; the first review is the section below; readiness check against the reference's main on 2026-10-22: nothing new to bin, 0.10.0 still uncut |
 | 5.2 - decoy arms in the gate: a shifted axis and swapped adducts through the in-app engine | #2981 |  | built: a `decoy` block on the run config (`mz_shift_ppm`, `mz_shift_da`, `swap_adducts`), every stage at the control's calibration and envelope tolerance, the arm on the run row and out of the fold, the listing, the verdicts and the retention quota; `compare_runs.py --decoy` reports the share held below and above m/z 350; read in the next pass, no target until two gates have read them (decision 31); a shifted arm looks for the source's own ions (the channels' carriers, the reagent lines) on the axis as stored, so it opens and claims what its control did (MAS-720, #2980) |
@@ -1954,6 +1955,34 @@ who edits chemistry and stays last.
 - **Not done here.** No gate number moves: the grade is read by nothing.
   The pass on a live testbed clone (rather than the copy's ledgers through
   the pure grading) and at 10^4 and 10^5 anchors are 4.13's.
+
+### 4.12 The continuity column and badge, and the per-sample overlay
+
+- **What.** The continuity note's increments C and D (sections 5 and 9):
+  the grade on the batch ledger, and the anchor verdict on the per-sample
+  ledger with its precedence.
+- **As built (MAS-346).** `PaneBrowserBatchPeaks.vue` gains a *Continuity*
+  column after *Samples*, offered once some batch peak shown carries a
+  `continuity` detail, as the co-variation column is offered. The three
+  grades that claim something (stable, drift, red) are an outlined badge in
+  a state colour; inconclusive and insufficient read muted; an anchor whose
+  batch had its grades withdrawn reads *Not graded*, with the reason. A
+  `partial` warning draws the badge dashed, and `continuity_stale` (the
+  note's one-fold-behind) outlines it in the warning colour with a clock.
+  `continuityRank` joins `tierRank` in the pane's `decorated` projection, the
+  order of alarm, so the column sorts through `compareBy` with nulls last;
+  nothing is added to the ledger store. The cell opens a popover with the
+  pairs the detail lists (`BatchPeakContinuityPopover.vue`): partner, grade,
+  samples, median ratio, spread, drift with rho, and 4.2's verdict on a
+  channel pair. An isotope line shows its own grade, on its pair with the
+  root, on its own row: only while the Isotopologues toggle is on, since a
+  folded child has no row. The words are `lib/batchContinuity.js`; the help
+  card `docs/user/_help/batch-continuity.md`. The per-sample half -
+  precedence, the claim-mismatch rule and the effective-verdict filter with
+  its release note - had shipped with the anchor verdicts
+  (`anchorContext.overlayFor`, `PaneBrowserAssignment.vue`) and is unchanged.
+- **Not built.** The inspector's continuity line (the note's section 5) and
+  a continuity filter chip.
 
 ## Milestone 6 - the bench
 
