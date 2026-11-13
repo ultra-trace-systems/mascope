@@ -48,7 +48,7 @@ import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Protocol
@@ -810,9 +810,10 @@ class BenchRun:
 
         Samples run side by side; one sample's runs follow each other, since
         the server holds one run of a sample at a time. When the main thread
-        leaves the pool on an exception, a Ctrl-C or a job that broke, the
-        jobs still running stop at their next poll and launch nothing more,
-        rather than hold the lock and the backend until the budget runs out.
+        leaves the pool on an exception, a Ctrl-C or any sample's job that
+        broke, the jobs still running stop at their next poll and launch
+        nothing more, rather than hold the lock and the backend until the
+        budget runs out.
         """
         arms = DECOY_ARMS.get(p.instrument, ()) if decoys else ()
         before = p.snapshot()
@@ -854,12 +855,22 @@ class BenchRun:
             + f", {self.jobs} at once, within {self.budget_s / 60:.0f} min"
         )
         with ThreadPoolExecutor(max_workers=max(1, self.jobs)) as pool:
+            futures = []
             try:
-                rows = list(pool.map(job, list(p.samples)))
+                futures = [pool.submit(job, sample) for sample in p.samples]
+                # Wait on every job, not in sample order: a job that broke
+                # behind a sample still running is seen when it breaks.
+                finished, _ = wait(futures, return_when=FIRST_EXCEPTION)
+                for future in futures:
+                    if future in finished and future.exception() is not None:
+                        raise future.exception()
+                rows = [future.result() for future in futures]
             except BaseException:
-                # map has cancelled the samples still queued; leaving the
-                # block waits for the running ones, which this stops.
+                # Leaving the block waits for the running jobs, which this
+                # stops, and would start the queued ones, which this cancels.
                 stop.set()
+                for future in futures:
+                    future.cancel()
                 raise
 
         controls: dict[str, Outcome] = {}
