@@ -3,7 +3,7 @@
 # Closing the assignment quality gap: the work, step by step
 
 - **Status:** building
-- **As of:** 2026-11-11
+- **As of:** 2026-11-13
 - **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73, MAS-408 to MAS-410, MAS-443, MAS-568 to MAS-570, MAS-609, MAS-708, MAS-709, MAS-777 and MAS-823 to MAS-841)
 - **What:** The step-by-step plan closing the assignment quality gap: stages, gates, decisions and risks.
 
@@ -99,7 +99,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 4.2f - merged isotopologue rows | - |  | built: *Strip isotopologue rows* reads every committed monoisotopic batch peak at the 13C and diagnostic lines of every brighter one below it (four times the partition's mass scatter, at least 1 ppm); a row whose height over the parent's is a median 0.4 to 1.4 times the line's share over three or more samples, fewer than a tenth above 2x, is stripped: its members and the samples' in-app rows become the parent's isotope line (recorded on both), so the consensus folds it under the parent; curated, hand-assigned and own-13C rows are held, imported runs never rewritten; read on the copy's batch ledgers, G6 on the batch ledger falls on A 9 -> 7, B 62 -> 56, D 46 -> 41 and holds on C and C2; MAS-827 |
 | 4.2g - batch isotope checks as positive facts | - |  | built: *Read batch checks* records three display-only facts on a batch peak's reading: the halogen lock (a 37Cl or 81Br line 4.2c stamped, its median offset within the batch's position window; where the window cannot tell 30Si, the 29Si line a silicon reading implies decides), the label twin (a labelled ion's 14N twin at the impurity share the batch's own reagent ions show, the setup's purity where none does, present, absent or untestable where an absent line would be charged) and the uronium neutral pair (4.2's co-variation of [M+H]+ and [M+CH4N2O+H]+); on the copy's batch ledgers D locks bromine on 144 bromide clusters (71 of its 121 assigned), C2's labelled cores read their twins present in 88 of 88 samples at 0.42 of the 98 % share, no unlabelled ion is read, A and B count 99 and 458 uronium pairs; no tier moves; MAS-828 |
 | 4.2h - known species decided once by pooled evidence | - |  | built: *Decide known species* reads each library ion a sample's reagent pass claimed (not a fragment) and each formula a list tags `background`, per mode and instrument type; present where its peak is in two samples or more and half or more, and one sample's own test held (the claim, or the listed formula at candidate or better), absent where none held, unpooled under that; a present species is claimed in every sample its peak is in (members and in-app rows: a library ion as the pre-pass's claim with its lines, a listed compound at candidate), hand, target, another ion's line or claim and a listed reading with lines of its own kept and recorded; where the fold split a trace, one batch peak claims (the one in the most samples whose claim still turns its reading once the samples reading the species on the other are kept) and the other is held; a sample's next run claims a present library ion on the batch's word; co-variation with the core recorded only (decision 35); the copy's ledgers and runs predate the claim registry, so the Verify reading is the planner's pass; MAS-829 |
-| 4.3 - calibration from verdicts, per profile | - |  | planned |
+| 4.3 - calibration from verdicts, per profile | #3196 |  | built: `assignment_calibration.reagent_profile` recorded on every refit (the one profile its labels share), a run under another profile reads the curve with a warning and records `profile_mismatch`; the label pool admits untargeted rows of runs from 0.5.0 on; `POST /calibration/{instrument}/recalibrate?profile=` fits one profile's labels and refits its corroboration weights as smoothed likelihood ratios; a refit with a worse held-out ECE than the curve in force is not saved; `bench review` writes the engines' top tier disagreements as a sheet of verdicts to give and `--record` posts them. The mass-dependent axis term was step 2.2b's. No verdict labels exist yet, so no curve on the bench was refit |
 | 4.4 - gate automation | - |  | moved to milestone 6 as step 6.4, the gate card as code (MAS-64); see `assignment_bench.md`. Built: `compare_runs.py --card` prints G1 to G14, the mass error, the reason coverage and the decoy arms per set and pooled, each metric a function in `metrics.py`; `--gate` marks them against the stage targets of `thresholds.json` with a pass-or-fail line, `--baseline` lists the readings that moved, and the scrub refuses a card that holds a name; MAS-64 |
 | 4.5 - profiles as versioned rows, routing by detection | - |  | planned |
 | 4.6 - a structured adduct row beside the notation string | - |  | built: the row's columns on `ionization_mechanism`, filled by a migration that refuses an unreadable row; `[2M+H]+`, `[M+2H]2+` and `[M+H-H2O]+` read, written and given target ions; the finder and the engine leave them out; corroboration keys unchanged; moves no metric; MAS-318 |
@@ -1903,6 +1903,71 @@ who edits chemistry and stays last.
 - **Verify.** Before and after ECE from the recalibration route; the
   provisional gate behaves.
 - **Size.** M. Depends on 2.1 and the verification UI (shipped).
+- **As built (MAS-63).**
+  - *The profile on the curve.* `assignment_calibration.reagent_profile`
+    (migration `02867c7fba58`) holds the profile every label of a curve was
+    scored under: the one a refit is asked for, or the one all its labels
+    share; NULL for a curve fit across profiles and every curve stored
+    before. Recorded, not keyed on (`chemistry_profiles.md` 3.3, first
+    step): a run under another profile reads the instrument's curve, the
+    store warns once per curve and profile, and the run's
+    `confidence_calibration` records `fit_profile` and `profile_mismatch`
+    beside the setups' `setup_mismatch`.
+  - *Stage B rows.* The label pool (`_live_label_rows`) admitted a verdict
+    on an untargeted row since it recorded its evidence (July), on whatever
+    scale it was scored on. It now admits one only from a run at
+    `STAGE_B_V2_ENGINE_VERSION` (0.5.0) or later, the first version whose
+    every row is on the v2 scale (decision 12: the untargeted stage moved to
+    v2 between 0.4.0 and 0.5.0). An older run's label is admitted where its
+    judged row is still there to say it is Stage A's; a label whose run is
+    gone is admitted as before. The route reports `n_untargeted`.
+  - *Per profile.* `recalibrate_instrument(profile=...)`, and the route's
+    `profile` query, fit only the labels of runs that resolved to that
+    profile. The queue already counted labels per class and profile (4.19).
+  - *The corroboration refit.* Where the curve has one profile, its
+    weights are refit from that profile's labels
+    (`mascope_tools...calibration.refit_corroboration`): an adduct's weight
+    is the log likelihood ratio of a confirmed label's compound also being
+    committed through it against a rejected one's, read off the judged
+    run's database-stage monoisotopic rows of that target compound tiered
+    assigned or candidate, less its own channel: the siblings
+    `engine._fold_adduct_corroboration` folds a weight in for, where
+    `cross_channel.channels` lists any tier of either stage. Only labels on
+    database-stage rows of a target compound move the weights, as only
+    those rows have one folded in; the rest, untargeted ones included, fit
+    the curve alone. Each rate is smoothed
+    by half a count (Jeffreys' prior) and weighed by evidence level as the
+    Platt fit is. At least 10 labels of each class with a cross-channel
+    reading, and 5 labels that saw an adduct, before that adduct is refit;
+    every other weight is carried forward. A label whose row is gone fits
+    the curve and sits out the weights.
+  - *The provisional gate.* The route now honours `recalibrate`'s
+    `activate`: a refit whose held-out ECE is worse than the active curve's
+    on the same labels is reported (`refusal: ece_regression`) and not
+    saved, and labels that make no usable curve are reported rather than
+    raised.
+  - *The review routine.* `bench review` (`tooling/assignment_bench/review.py`)
+    reads the bench database for the reference's rows whose own tier and
+    this server's differ (`tier_disagrees`) and writes, per set, the
+    brightest in-app readings on those peaks with no live verdict, one per
+    formula and mechanism, to a private sheet without the evidence or
+    P(correct). A person fills in verdict, evidence level and the claim;
+    `bench review --record SHEET [--recalibrate]` posts them as verdicts on
+    the in-app rows and refits each instrument class they hold once, as the
+    store keeps one curve per class: the curve is a profile's where every
+    verdict of the class shares it, and pooled across profiles, its weights
+    carried forward, where they do not. It prints the ECE before and after. On the bench's two demo sets the sheet finds
+    586 bromide and 1,875 uronium readings to ask about.
+  - *The axis term.* Step 2.2b fitted the mass-dependent centre from the
+    run's own anchors, which reach m/z 57; the verdicts are not needed for
+    it, and nothing more is built here.
+  - *Measured.* No verdict label exists on the bench or the testbed copy (3
+    on the testbed, none on the bench), so the ECE before and after is not
+    read from the bench yet. On a demo copy with planted labels the route
+    reported before and after ECE, kept the curve in force against a worse
+    refit, held a curve provisional at 12 strong positives and graduated
+    one at 60, recorded the profile, refit two weights, and a run under
+    the other profile recorded the mismatch.
 
 ### 4.4 Gate automation
 
