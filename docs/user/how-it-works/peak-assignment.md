@@ -1869,7 +1869,11 @@ holds mixed batch peaks until *Rebuild batch ledger* folds its samples again, wh
 separates them. This is the rule batch alignment keeps too: it
 refuses a batch of two instrument types, since one alignment has one intensity unit.
 The ledger route and the SDK's `batch_peaks.list` name each batch peak's type in
-`instrument_type` (`orbi` or `tof`). A verdict or a pin is on one batch peak, so on
+`instrument_type` (`orbi` or `tof`). So does every row of *Export ledger (CSV)* and of
+the SDK's member rows, beside `intensity_variable`, the unit of the row's
+`max_intensity` and `intensity` (`sum_peak_heights` or `sum_peak_areas`). Group by
+`instrument_type` before summing an intensity, or heights and areas add together. A
+verdict or a pin is on one batch peak, so on
 such a batch it covers one instrument type's samples: the Orbitrap and the TOF row of
 one species each take their own.
 

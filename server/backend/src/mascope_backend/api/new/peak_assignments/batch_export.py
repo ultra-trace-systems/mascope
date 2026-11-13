@@ -14,6 +14,14 @@ dissenting sample reads as one: the batch says one thing, the member another,
 side by side. Where an import gave the anchor its engine's own verdict, the
 anchor's ``engine_tier`` and ``engine_claim`` stand beside ``consensus_tier`` on
 every member row, as the species read serves them; empty otherwise.
+
+A batch holding both Orbitrap and TOF files keeps a partition of batch peaks
+per instrument type, and the two can sit at the same ``batch_mz``. Each row
+names its anchor's partition: ``instrument_type`` (``orbi`` or ``tof``) and
+``intensity_variable``, the unit of ``max_intensity`` and of the member's
+``intensity`` (``sum_peak_heights`` for an Orbitrap, ``sum_peak_areas`` for a
+TOF). A reader that sums intensities groups by ``instrument_type`` too, or it
+adds heights to areas.
 """
 
 from __future__ import annotations
@@ -33,6 +41,7 @@ from mascope_backend.api.lib.api_features import (
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     ROLE_UNASSIGNED,
+    instrument_type_of,
     manual_pin_of,
     member_stamp,
     mz_from_delta,
@@ -61,6 +70,8 @@ COLUMNS = (
     "sample_batch_id",
     "batch_peak_id",
     "batch_mz",
+    "instrument_type",
+    "intensity_variable",
     "consensus_formula",
     "consensus_ion_formula",
     "consensus_role",
@@ -110,6 +121,10 @@ def member_export_row(
     member as the parent's isotopologue (``batch_isotopologues``); None
     otherwise.
 
+    ``instrument_type`` and ``intensity_variable`` name the anchor's partition
+    and the unit its ``max_intensity`` and the member's ``intensity`` are in,
+    as the ledger route serves them.
+
     ``halogen_lock``, ``label_twin`` and ``neutral_pair`` are the verdicts the
     batch's isotope checks read for the anchor's reading (``batch_checks``):
     the lock with its ``halogen_element``, the twin, and the pair with its
@@ -130,6 +145,8 @@ def member_export_row(
         "sample_batch_id": anchor.sample_batch_id,
         "batch_peak_id": anchor.batch_peak_id,
         "batch_mz": anchor.mz,
+        "instrument_type": instrument_type_of(anchor.intensity_variable),
+        "intensity_variable": anchor.intensity_variable,
         "consensus_formula": anchor.consensus_formula,
         "consensus_ion_formula": anchor.consensus_ion_formula,
         "consensus_role": anchor.consensus_role,

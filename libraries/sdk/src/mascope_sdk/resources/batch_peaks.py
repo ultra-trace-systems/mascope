@@ -261,7 +261,11 @@ class BatchPeaksResource(BaseResource):
         :param sample_id: Only this sample's members.
         :type sample_id: str, optional
         :return: A DataFrame with one row per member. Anchor columns:
-                 ``batch_peak_id``, ``batch_mz``, ``consensus_formula``,
+                 ``batch_peak_id``, ``batch_mz``, ``instrument_type``
+                 (``orbi`` or ``tof``) and ``intensity_variable``
+                 (``sum_peak_heights`` or ``sum_peak_areas``, the unit of
+                 ``max_intensity`` and ``intensity``; absent from a server
+                 that predates them), ``consensus_formula``,
                  ``consensus_ion_formula``, ``consensus_role``,
                  ``consensus_ionization_mechanism_id``,
                  ``consensus_tier``, ``engine_tier``, ``engine_claim``,
