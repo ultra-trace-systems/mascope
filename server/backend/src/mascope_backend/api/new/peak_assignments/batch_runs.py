@@ -67,6 +67,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     standing_series_record,
     tier_name,
     tier_reasons_of,
+    water_ladder_summary,
 )
 from mascope_backend.api.new.peak_assignments.config import (
     IN_APP_ENGINE,
@@ -94,6 +95,7 @@ ACTION_ISOTOPOLOGUES = "stamp_isotopologues"
 ACTION_STRIP_ISOTOPOLOGUES = "strip_isotopologues"
 ACTION_BATCH_CHECKS = "read_batch_checks"
 ACTION_KNOWN_SPECIES = "decide_known_species"
+ACTION_WATER_LADDERS = "measure_water_ladders"
 ACTIONS = (
     ACTION_FOLD,
     ACTION_REBUILD,
@@ -105,6 +107,7 @@ ACTIONS = (
     ACTION_STRIP_ISOTOPOLOGUES,
     ACTION_BATCH_CHECKS,
     ACTION_KNOWN_SPECIES,
+    ACTION_WATER_LADDERS,
 )
 
 STATUS_RUNNING = "running"
@@ -216,6 +219,7 @@ def anchor_snapshot_row(run_id: str, anchor: Any, members: Iterable[Any]) -> dic
         "persistence": persistence_summary(anchor),
         "tier_reasons": tier_reasons_of(anchor),
         "flat_series": standing_flat_series_record(anchor),
+        "water_ladder": water_ladder_summary(anchor),
         "candidates": list(anchor.candidates or []),
         "members": member_arrays(members),
     }
@@ -264,6 +268,7 @@ def snapshot_anchor_meta(row: Any, sample_batch_id: str) -> dict:
         "persistence": row.persistence,
         "tier_reasons": row.tier_reasons,
         "flat_series": row.flat_series,
+        "water_ladder": row.water_ladder,
         "reference_listing": consensus_listing(
             row.candidates,
             row.consensus_formula,
