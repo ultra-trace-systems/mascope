@@ -10,9 +10,11 @@ current version before it reads their mode.
 """
 
 import asyncio
+import functools
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
+import anyio
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select, text
@@ -1063,6 +1065,98 @@ async def test_a_batch_rematch_moves_its_samples_first(
             mode["batch_id"], force=True, process_id=gen_id(8)
         )
     assert seen["mode"] == new_id
+
+
+async def _set_batch_status(async_session_factory, batch_id, status) -> None:
+    async with async_session_factory() as session:
+        (await session.get(SampleBatch, batch_id)).status = status
+        await session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "step", ["move_to_current_versions", "bring_batch_collections_current"]
+)
+@pytest.mark.parametrize(
+    ("before", "force"), [("rematch", False), ("recalibrate", True)]
+)
+async def test_a_batch_rematch_that_fails_off_the_api_releases_its_batch(
+    async_session_factory, mode, monkeypatch, step, before, force
+):
+    """A step that raises an error of its own, not an ApiException, still
+    puts the batch back to where a retry can start: a batch left at
+    processing would refuse every later rematch until a restart."""
+    await _set_batch_status(async_session_factory, mode["batch_id"], before)
+    monkeypatch.setattr(match_controller, step, AsyncMock(side_effect=_Stop))
+    monkeypatch.setattr(
+        match_controller, "send_progress_user_notification", AsyncMock()
+    )
+
+    with pytest.raises(Exception):  # noqa: B017, PT011
+        await match_controller.rematch_batch(
+            mode["batch_id"], force=force, process_id=gen_id(8)
+        )
+    assert await _batch_status(async_session_factory, mode["batch_id"]) == before
+
+
+@pytest.mark.asyncio
+async def test_a_rematch_that_fails_reading_its_outcome_releases_the_batch(
+    async_session_factory, mode, monkeypatch
+):
+    """Reading the steps' outcome (step 5) is not decorated: a compute
+    result without its status raises a KeyError there, and the batch still
+    lands at rematch, not processing."""
+    await _set_batch_status(async_session_factory, mode["batch_id"], "rematch")
+    monkeypatch.setattr(
+        match_controller,
+        "match_compute_batch",
+        AsyncMock(return_value={"data": {}}),
+    )
+    monkeypatch.setattr(
+        match_controller, "send_progress_user_notification", AsyncMock()
+    )
+
+    # rematch_batch's own decorator wraps the KeyError on the way out
+    with pytest.raises(Exception):  # noqa: B017, PT011
+        await match_controller.rematch_batch(mode["batch_id"], process_id=gen_id(8))
+    assert await _batch_status(async_session_factory, mode["batch_id"]) == "rematch"
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_batch_rematch_releases_its_batch(
+    async_session_factory, mode, monkeypatch
+):
+    """The app runs a background task inside the http middlewares' anyio task
+    group, whose cancellation is level-triggered: every later await of the
+    cancelled task is cancelled too, the revert's write included unless it is
+    shielded."""
+    await _set_batch_status(async_session_factory, mode["batch_id"], "rematch")
+    removing = asyncio.Event()
+
+    async def hanging_remove(**kwargs):
+        removing.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(match_controller, "match_remove_batch", hanging_remove)
+    monkeypatch.setattr(
+        match_controller, "send_progress_user_notification", AsyncMock()
+    )
+
+    before = asyncio.all_tasks()
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(
+            functools.partial(
+                match_controller.rematch_batch,
+                mode["batch_id"],
+                process_id=gen_id(8),
+            )
+        )
+        await removing.wait()
+        tg.cancel_scope.cancel()
+
+    # The shielded writes run on past the cancelled task: wait for them
+    await asyncio.gather(*(asyncio.all_tasks() - before - {asyncio.current_task()}))
+    assert await _batch_status(async_session_factory, mode["batch_id"]) == "rematch"
 
 
 @pytest.mark.asyncio

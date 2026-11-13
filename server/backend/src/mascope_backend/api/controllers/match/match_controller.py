@@ -5,6 +5,7 @@ This module contains all the functionalities and endpoints related to
 the matching/rematching processes and related operations.
 """
 
+import asyncio
 from collections import Counter
 from collections.abc import Mapping
 
@@ -1652,14 +1653,25 @@ async def _rematch_claimed_batch(
             "_notification_data": {"sample_batch_id": sample_batch_id},
         }
 
-    except ApiException as e:
+    except (Exception, asyncio.CancelledError) as e:
         # Step 7: Revert status on failure to allow retry rematching, or to
-        # the recalibration the batch waited for (_status_after_rematch)
-        await _write_status_after_rematch(
-            sample_batch_id, _status_after_rematch(batch_status, "rematch")
-        )
+        # the recalibration the batch waited for (_status_after_rematch).
+        # Any error, not only an ApiException: the steps that are not
+        # decorated (sending the progress notification, moving to current
+        # versions, bringing the collections current, reading the outcome in
+        # step 5) raise their own, and a batch left at processing stays
+        # locked until the server restarts. A cancelled run is reverted too.
+        reason = e.user_message if isinstance(e, ApiException) else repr(e)
         runtime.logger.exception(
-            f"Rematch failed for batch '{sample_batch_name}': {e.user_message}"
+            f"Rematch failed for batch '{sample_batch_name}': {reason}"
+        )
+        # Shielded: a background task runs inside the http middlewares' anyio
+        # task group, whose cancellation is level-triggered, so an unshielded
+        # write of a cancelled run would be cancelled in turn.
+        await asyncio.shield(
+            _write_status_after_rematch(
+                sample_batch_id, _status_after_rematch(batch_status, "rematch")
+            )
         )
         raise
 
