@@ -22,6 +22,7 @@ from mascope_backend.api.new.peak_assignments import service as assignments
 from mascope_backend.api.new.peak_assignments.calibration_store import (
     StoredCalibration,
     fit_under,
+    fit_under_profile,
     load_calibration,
     save_calibration,
 )
@@ -252,6 +253,41 @@ async def test_a_run_under_another_setup_is_warned_about_once(
 
 
 @pytest.mark.asyncio
+async def test_a_curve_keeps_its_profile_and_warns_a_run_under_another_once(
+    instrument_class, monkeypatch
+):
+    monkeypatch.setattr(calibration_store, "_warned_profiles", set())
+    await save_calibration(_curve(instrument_class), 1, reagent_profile="bromide")
+
+    with captured_logs("WARNING") as records:
+        same = await load_calibration(instrument_class, 1, reagent_profile="bromide")
+        other = await load_calibration(instrument_class, 1, reagent_profile="uronium")
+        await load_calibration(instrument_class, 1, reagent_profile="uronium")
+        await load_calibration(instrument_class, 1)
+
+    assert same.reagent_profile == "bromide"
+    assert fit_under_profile(same, "bromide") is True
+    # Applied all the same - it is the instrument's curve - and said once.
+    assert other.a == 2.0
+    warned = [r for r in records if "reagent profile" in r["message"]]
+    assert len(warned) == 1
+    assert "'bromide', not under 'uronium'" in warned[0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_curve_with_no_recorded_profile_warns_about_none(
+    instrument_class, monkeypatch
+):
+    monkeypatch.setattr(calibration_store, "_warned_profiles", set())
+    await save_calibration(_curve(instrument_class), 1)
+    with captured_logs("WARNING") as records:
+        loaded = await load_calibration(instrument_class, 1, reagent_profile="x")
+    assert loaded.reagent_profile is None
+    assert fit_under_profile(loaded, "x") is None
+    assert not [r for r in records if "reagent profile" in r["message"]]
+
+
+@pytest.mark.asyncio
 async def test_a_curve_with_no_recorded_setups_warns_about_none(
     instrument_class, monkeypatch
 ):
@@ -282,8 +318,22 @@ def test_the_run_records_whether_its_curve_was_fit_under_its_setup():
     assert calibration_meta(curve, other)["fit_setups"] == [under]
     assert "setup_mismatch" not in calibration_meta(curve, None)
     # The in-code curve records none, and its record is as it was.
-    plain = calibration_meta(_curve("orbi"), other)
+    plain = calibration_meta(_curve("orbi"), other, "bromide")
     assert set(plain) == {"instrument", "provisional", "source"}
+
+
+def test_the_run_records_whether_its_curve_was_fit_under_its_profile():
+    curve = StoredCalibration(a=1.0, b=0.0, instrument="orbi", reagent_profile="x")
+
+    assert calibration_meta(curve, None, "x")["profile_mismatch"] is False
+    assert calibration_meta(curve, None, "y")["profile_mismatch"] is True
+    assert calibration_meta(curve, None, "y")["fit_profile"] == "x"
+    assert "profile_mismatch" not in calibration_meta(curve, None, None)
+    # a pooled curve records no profile, and says nothing of a mismatch
+    pooled = calibration_meta(
+        StoredCalibration(a=1.0, b=0.0, instrument="orbi"), None, "y"
+    )
+    assert "fit_profile" not in pooled and "profile_mismatch" not in pooled
 
 
 @pytest.mark.asyncio
@@ -336,7 +386,9 @@ async def test_a_refit_records_the_setups_its_labels_were_scored_under(
         assignments,
         "recalibrate",
         # What the response reads of a fit, beyond the curve: counts.
-        lambda *args, **kwargs: defaultdict(int, calibration=_curve("orbi")),
+        lambda *args, **kwargs: defaultdict(
+            int, calibration=_curve("orbi"), activate=True
+        ),
     )
     await assignments.recalibrate_instrument("orbi")
 

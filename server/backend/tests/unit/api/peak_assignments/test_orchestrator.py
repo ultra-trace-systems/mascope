@@ -2750,6 +2750,34 @@ async def test_the_run_records_the_setup_it_searched_under():
     assert mocks["calibration"].await_args.kwargs["ionization_setup"] == stamp
 
 
+@pytest.mark.asyncio
+async def test_the_calibration_is_looked_up_for_the_profile_the_run_resolved():
+    """The curve's record of its profile is compared with the run's own (MAS-63)."""
+    from mascope_backend.api.new.peak_assignments.calibration_store import (
+        StoredCalibration,
+    )
+    from mascope_backend.api.new.peak_assignments.config import (
+        PeakAssignmentConfig,
+    )
+
+    peaks = _peaks_df([("p1", 181.0707, 10000.0)])
+    recorder = _Recorder()
+    mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+    mocks["calibration"].return_value = StoredCalibration(
+        a=5.74, b=-3.36, instrument="orbi", reagent_profile="another-profile"
+    )
+
+    await _run(PeakAssignmentConfig(run_untargeted=False))
+
+    resolved = recorder.recorded_configs()[0]["resolved_profile"]["profile"]
+    assert resolved and resolved != "another-profile"
+    assert mocks["calibration"].await_args.kwargs["reagent_profile"] == resolved
+    # and the run's record of the curve says it was fit under another one
+    (record,) = recorder.recorded_calibrations()
+    assert record["fit_profile"] == "another-profile"
+    assert record["profile_mismatch"] is True
+
+
 class TestTheRunTakesItsBatchsWord:
     """The reagent pre-pass claims a library ion its sample's batch decided
     present, where the file's own claim leaves it (step 4.2h): the urea

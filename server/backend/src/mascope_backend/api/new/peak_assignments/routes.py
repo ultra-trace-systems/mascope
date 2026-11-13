@@ -670,6 +670,13 @@ async def curate_assignment_route(
 @api_route(token_access=True)
 async def recalibrate_instrument_route(
     instrument: str,
+    profile: str | None = Query(
+        default=None,
+        description=(
+            "Fit only the labels of runs that resolved to this reagent profile "
+            "(its name, as a run's config records it); every profile's when absent"
+        ),
+    ),
     user: User = Depends(current_superuser),
 ) -> RecalibrateResponse:
     """
@@ -677,15 +684,20 @@ async def recalibrate_instrument_route(
 
     Instrument-wide: it rewrites the active calibration curve that every assignment's P(correct)
     reads, so it is restricted to superusers. The curve stays provisional unless enough
-    reference-grade labels back it. No-op (``recalibrated: false``) when there are too few labels.
+    reference-grade labels back it. No-op (``recalibrated: false``) when there are too few labels,
+    and when the refit's held-out ECE is worse than the active curve's (``refusal``).
+
+    With ``profile``, or when every label shares one, the curve records that reagent profile and
+    its corroboration weights are refit from those labels.
 
     Returns 403 when peak assignment is not enabled for this environment.
 
     :param instrument: Instrument class to recalibrate (e.g. "orbi").
+    :param profile: The reagent profile whose labels to fit, or None for all.
     :param user: The current authenticated user. Requires superuser.
     :return: Whether it recalibrated, with before/after ECE and label counts.
     """
-    result = await recalibrate_instrument(instrument=instrument)
+    result = await recalibrate_instrument(instrument=instrument, profile=profile)
     return RecalibrateResponse.model_validate(result)
 
 

@@ -32,6 +32,7 @@ from mascope_tools.composition.calibration import (
     holdout_split,
     label_weights,
     recalibrate,
+    refit_corroboration,
 )
 from mascope_tools.composition.mechanism_notation import (
     from_row,
@@ -614,3 +615,79 @@ def test_recalibrate_without_levels_or_weights_is_unweighted():
         assert out["label_weights"] is None
         assert out["calibration"].label_weights is None
         assert out["calibration"].a == pytest.approx(flat.a)
+
+
+def _corroboration_pool(n_pos=20, n_neg=20, br_pos=10, br_neg=2):
+    """Labels of one profile: ``br_pos`` confirmed and ``br_neg`` rejected ones saw [M+Br]-."""
+    observed = [["[M+Br]-"] if i < br_pos else [] for i in range(n_pos)]
+    observed += [["[M+Br]-"] if i < br_neg else [] for i in range(n_neg)]
+    labels = [1] * n_pos + [0] * n_neg
+    return observed, labels
+
+
+def test_refit_corroboration_is_the_smoothed_log_likelihood_ratio():
+    observed, labels = _corroboration_pool()
+    out = refit_corroboration(observed, labels, evidence_weights=None)
+    expected = np.log((10 + 0.5) / 21) - np.log((2 + 0.5) / 21)
+    assert out["refit"] == {
+        "[M+Br]-": {"weight": round(expected, 4), "n_pos": 10, "n_neg": 2}
+    }
+    assert out["weights"] == {"[M+Br]-": round(expected, 4)}
+    assert out["refusal"] is None
+    # an adduct seen more often beside rejected labels weighs against
+    observed, labels = _corroboration_pool(br_pos=2, br_neg=10)
+    assert refit_corroboration(observed, labels)["weights"]["[M+Br]-"] < 0
+
+
+def test_refit_corroboration_weighs_labels_by_evidence_level():
+    observed, labels = _corroboration_pool()
+    # the confirmed labels that saw the adduct are MS/MS, every other label visual
+    levels = [
+        "msms" if (lab == 1 and obs) else "visual" for obs, lab in zip(observed, labels)
+    ]
+    out = refit_corroboration(observed, labels, levels)
+    w_pos = 10 * 1.0 + 10 * 0.25
+    w_neg = 20 * 0.25
+    expected = np.log((10 + 0.5) / (w_pos + 1)) - np.log((2 * 0.25 + 0.5) / (w_neg + 1))
+    assert out["weights"]["[M+Br]-"] == round(expected, 4)
+
+
+def test_refit_corroboration_carries_forward_what_it_cannot_refit():
+    current = {"+Br-": 2.28, "[M+NH4]+": 0.83}
+    # too few labels of a class: nothing refit, the weights as they were
+    observed, labels = _corroboration_pool(n_neg=MIN_CALIBRATION_CLASS_LABELS - 1)
+    out = refit_corroboration(observed, labels, current=current)
+    assert out["refusal"] == "too_few_labels"
+    assert out["refit"] == {}
+    assert out["weights"] == current
+    # an adduct seen by too few labels keeps its weight; one seen enough replaces the
+    # weight of the same adduct under another spelling
+    observed, labels = _corroboration_pool()
+    observed[0] = ["[M+Br]-", "[M+NH4]+"]
+    out = refit_corroboration(observed, labels, current=current)
+    assert set(out["refit"]) == {"[M+Br]-"}
+    assert out["weights"]["[M+NH4]+"] == 0.83
+    assert "+Br-" not in out["weights"]
+    assert out["weights"]["[M+Br]-"] == out["refit"]["[M+Br]-"]["weight"]
+    # the floor on an adduct counts labels, not weight
+    observed, labels = _corroboration_pool(br_pos=4, br_neg=0)
+    out = refit_corroboration(observed, labels)
+    assert out["refit"] == {}
+    assert out["refusal"] == "too_few_labels"
+    observed, labels = _corroboration_pool(br_pos=4, br_neg=1)
+    assert set(refit_corroboration(observed, labels)["refit"]) == {"[M+Br]-"}
+
+
+def test_refit_corroboration_counts_two_spellings_of_one_adduct_once():
+    observed, labels = _corroboration_pool()
+    observed[0] = ["+Br-", "[M+Br]-"]
+    observed[1] = ["+Br-"]
+    out = refit_corroboration(observed, labels, evidence_weights=None)
+    # named in the standard notation, though the other spelling came first
+    assert out["refit"]["[M+Br]-"]["n_pos"] == 10
+    assert list(out["weights"]) == ["[M+Br]-"]
+
+
+def test_refit_corroboration_refuses_mismatched_lengths():
+    with pytest.raises(ValueError):
+        refit_corroboration([[]], [1, 0])

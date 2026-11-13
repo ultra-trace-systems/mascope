@@ -494,7 +494,7 @@ def recalibrate(
     The V2 refit of the verification-calibration loop: turns a batch of user verdicts (positives =
     confirmed, negatives = rejected; ``score`` is the arbitration evidence snapshotted at
     verification) into a new :class:`Calibration`, carrying the corroboration weights forward from
-    ``current`` (those are refit separately, from the offset-decoy benchmark).
+    ``current`` (those are refit per reagent profile, by :func:`refit_corroboration`).
 
     The ``provisional`` gate is the honest part: the curve stays provisional unless at least
     ``provisional_min_strong`` positives carry *strong* evidence (``strong_evidence`` — reference
@@ -588,6 +588,118 @@ def recalibrate(
         "activate": refusal is None,
         "refusal": refusal,
     }
+
+
+# Fewest labels of each class, among those with a cross-channel reading, before a reagent
+# profile's corroboration weights are refit from them: the Platt fit's own per-class floor.
+MIN_CORROBORATION_CLASS_LABELS = MIN_CALIBRATION_CLASS_LABELS
+
+# Fewest labels, of either class, that saw an adduct as another channel of their neutral
+# before that adduct's weight is refit. Below it the adduct keeps the weight it had.
+MIN_CORROBORATION_ADDUCT_LABELS = 5
+
+# The pseudo-count added to each side of an adduct's two rates (Jeffreys' prior on a rate):
+# an adduct seen on every confirmed label and no rejected one gets a large finite weight
+# rather than an infinite one.
+CORROBORATION_PRIOR = 0.5
+
+
+def refit_corroboration(
+    observed: Sequence[Sequence[str]],
+    labels: Sequence[int],
+    evidence_levels: Sequence[str | None] | None = None,
+    *,
+    current: Mapping[str, float] | None = None,
+    evidence_weights: Mapping[str, float] | None = EVIDENCE_LEVEL_WEIGHTS,
+    min_class_labels: int = MIN_CORROBORATION_CLASS_LABELS,
+    min_adduct_labels: int = MIN_CORROBORATION_ADDUCT_LABELS,
+    prior: float = CORROBORATION_PRIOR,
+) -> dict:
+    """Refit the per-adduct corroboration log-odds from verdict labels of one reagent profile.
+
+    The weight :func:`apply_corroboration` adds for an adduct ``a`` is a log likelihood
+    ratio: how much likelier a confirmed assignment is than a rejected one to have its
+    neutral also seen through ``a``. Read straight off the labels, that is
+
+        ``w_a = ln((k1_a + prior) / (n1 + 2 prior)) - ln((k0_a + prior) / (n0 + 2 prior))``
+
+    where ``k1_a`` of the ``n1`` confirmed labels and ``k0_a`` of the ``n0`` rejected ones
+    saw ``a``. The counts are weighed by the evidence level each verdict states, as the
+    Platt fit's are (``evidence_weights``; None counts every label as 1). Summing these
+    over the adducts seen is the naive-Bayes update, which is why
+    :func:`apply_corroboration` caps the sum.
+
+    One profile's labels at a time: an adduct's weight is a property of the reagent
+    chemistry, and pooling a bromide profile's labels with a uronium one's would weigh
+    each by the other's base rates.
+
+    :param observed: Per label, the OTHER channels its neutral was committed through in
+        the judged run (its own channel left out); empty where it was seen through its
+        own alone.
+    :param labels: 1 for a confirmed label, 0 for a rejected one.
+    :param evidence_levels: Each label's evidence level, None where it states none.
+    :param current: The weights in force, carried forward for every adduct not refit.
+    :param evidence_weights: Evidence level -> weight, or None for unweighted counts.
+    :param min_class_labels: Fewest labels of each class to refit anything.
+    :param min_adduct_labels: Fewest labels, either class, that saw an adduct to refit it.
+    :param prior: The pseudo-count on each side of an adduct's two rates.
+    :return: ``{weights, refit, n_pos, n_neg, refusal}``: the merged map (``current`` with
+        each refit adduct replaced, matched by mechanism, not spelling), the refit adducts
+        with their weight and how many labels of each class saw them, the class counts,
+        and ``"too_few_labels"`` under ``refusal`` when nothing could be refit.
+    """
+    y = np.asarray(labels, int)
+    if len(observed) != len(y):
+        raise ValueError("observed and labels differ in length")
+    w = (
+        label_weights(evidence_levels, evidence_weights)
+        if evidence_levels is not None and evidence_weights is not None
+        else np.ones(len(y))
+    )
+    n_pos, n_neg = int((y == 1).sum()), int((y == 0).sum())
+    merged = dict(current or {})
+    result = {
+        "weights": merged,
+        "refit": {},
+        "n_pos": n_pos,
+        "n_neg": n_neg,
+        "refusal": None,
+    }
+    if n_pos < min_class_labels or n_neg < min_class_labels:
+        result["refusal"] = "too_few_labels"
+        return result
+
+    # One spelling per adduct, so two spellings of one adduct count once: the first
+    # met in the standard notation, else the first met.
+    spelling: dict[str, str] = {}
+    seen_by: list[set[str]] = []
+    for channels in observed:
+        keys = set()
+        for adduct in channels:
+            key = mechanism_key(adduct)
+            if key not in spelling or (
+                adduct.strip().startswith("[")
+                and not spelling[key].strip().startswith("[")
+            ):
+                spelling[key] = adduct
+            keys.add(key)
+        seen_by.append(keys)
+    total_pos, total_neg = float(w[y == 1].sum()), float(w[y == 0].sum())
+    for key, adduct in sorted(spelling.items(), key=lambda kv: kv[1]):
+        saw = np.array([key in keys for keys in seen_by], bool)
+        k_pos, k_neg = int((saw & (y == 1)).sum()), int((saw & (y == 0)).sum())
+        if k_pos + k_neg < min_adduct_labels:
+            continue
+        rate_pos = (float(w[saw & (y == 1)].sum()) + prior) / (total_pos + 2 * prior)
+        rate_neg = (float(w[saw & (y == 0)].sum()) + prior) / (total_neg + 2 * prior)
+        weight = round(float(np.log(rate_pos) - np.log(rate_neg)), 4)
+        for old in [k for k in merged if mechanism_key(k) == key]:
+            del merged[old]
+        merged[adduct] = weight
+        result["refit"][adduct] = {"weight": weight, "n_pos": k_pos, "n_neg": k_neg}
+    if not result["refit"]:
+        result["refusal"] = "too_few_labels"
+    return result
 
 
 # ---------------------------------------------------------------------------

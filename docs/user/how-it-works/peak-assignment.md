@@ -695,12 +695,32 @@ In practice:
   are most of the record. The curve records the weights it was fit under, and its
   calibration error is measured under the same weights. The curve stays provisional
   until enough confirmations come from a reference standard or MS/MS.
+- **A refit can read one reagent profile.** An administrator refits a curve from the
+  verdicts through `POST /api/peak-assignments/calibration/{instrument}/recalibrate`,
+  optionally with `profile=` to read only the verdicts of runs under that reagent
+  profile. The curve records the profile its verdicts share. A run under another
+  profile still reads the instrument's curve, and its record says so
+  (`profile_mismatch`). Verdicts on rows the formula search assigned count from engine
+  0.5.0 on, the first version that scores them on the same scale as the rest.
+- **A worse refit is not put in force.** Each refit reports its calibration error before
+  and after, on the same held-out verdicts. If the new curve's error is the larger, the
+  curve in force stays, and the answer says why.
 - **The adduct lift is measured, not assumed.** A real compound rarely appears as a single
   ion — it also shows up through other adducts (e.g. `[M+H]⁺` alongside `[M+NH₄]⁺`, or
   `[M−H]⁻` alongside `[M+Br]⁻`), and each adduct's corroborating worth is *measured*: a
   chemically distinctive adduct like bromide corroborates strongly, while a generic one
   (ammonium, protonation) barely moves it. The lift is bounded, and — like the calibration
   curve — the per-adduct weights are specific to your instrument's reagent chemistry.
+- **A profile's verdicts refit its adduct weights.** When a refit reads one reagent
+  profile, each adduct's weight is refit from its verdicts. The weight is the log of how
+  much likelier a confirmed assignment's compound is than a rejected one's to be assigned,
+  or held as a candidate, through that adduct as well: a likelihood ratio, the *weight of evidence* of
+  [Good (1950)][good50]. Each of the two rates gets half a count of each outcome
+  ([Jeffreys 1946][jef46]), so an adduct seen only beside confirmations gets a large,
+  finite weight. Only verdicts on Stage A rows of a target library compound count here,
+  and only that compound's other Stage A rows, since only those rows get the weight in a run.
+  An adduct needs 5 verdicts that saw it, and the profile 10 verdicts of
+  each kind, before its weight moves; the others keep theirs.
 
 ## Confidence tiers
 
@@ -1173,8 +1193,8 @@ Click it and the table shows only those rows, in this order:
 2. **Near a tier edge**: rows with no verdict whose evidence is within 0.1 of a band
    edge. The closest come first, and so do the rows where the instrument holds few
    verdicts at similar evidence (within 0.05). Those verdicts are counted for the
-   sample's instrument class and the run's reagent profile. The curve itself is fit
-   per instrument class, from the verdicts of every profile.
+   sample's instrument class and the run's reagent profile, the verdicts a refit for
+   that profile reads.
 3. **Spot check**: every fifth place is a row drawn at random from the rest. A
    ranking only finds what it looks for; a random draw guards its blind spots. The draw
    is fixed per run, so the queue reads the same on every visit, and a verdict on one
@@ -2397,6 +2417,11 @@ engine found, and leave the rest of the table alone.
   chemical-ionization mass spectrometry (NI-PT-CIMS) for the measurement of gas-phase
   organic acids in the atmosphere.* Int. J. Mass Spectrom. 2008, 274:48–55.
   [link](https://doi.org/10.1016/j.ijms.2008.04.032)
+- <a id="good50"></a>Good, I. J. *Probability and the Weighing of Evidence.* Charles
+  Griffin, London, 1950.
+- <a id="jef46"></a>Jeffreys, H. *An invariant form for the prior probability in
+  estimation problems.* Proc. R. Soc. Lond. A 1946, 186:453–461.
+  [link](https://doi.org/10.1098/rspa.1946.0056)
 - <a id="ber11"></a>Bertram, T. H.; Kimmel, J. R.; Crisp, T. A.; Ryder, O. S.; Yatavelli,
   R. L. N.; Thornton, J. A.; Cubison, M. J.; Gonin, M.; Worsnop, D. R. *A
   field-deployable, chemical ionization time-of-flight mass spectrometer.* Atmos. Meas.
@@ -2431,6 +2456,8 @@ engine found, and leave the rest of the table alone.
 [sab13]: #sab13
 [kol04]: #kol04
 [dus25]: #dus25
+[good50]: #good50
+[jef46]: #jef46
 [han95]: #han95
 [pfe20]: #pfe20
 [ska04]: #ska04
