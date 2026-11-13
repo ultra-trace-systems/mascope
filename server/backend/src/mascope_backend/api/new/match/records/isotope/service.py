@@ -20,6 +20,7 @@ from mascope_backend.api.new.ionization.modes.util import (
     fetch_sample_ionization_mechanism_ids,
 )
 from mascope_backend.api.new.match.params.lib import (
+    RATIO_MISS_DROPS_INTENSITY,
     instrument_default_match_params,
     isotope_abundance_threshold_expr,
 )
@@ -379,9 +380,13 @@ def _apply_match_params(
     if not passes_filters:
         match_data["match_score"] = 0
 
-    # Only the mass gate takes the intensity: a line on its mass keeps its
-    # signal when its ratio misses, as apply_match_params does
-    if abs(match_data["match_mz_error"]) > params["mz_tolerance"]:
+    # The mass gate takes the intensity, and a ratio miss of
+    # RATIO_MISS_DROPS_INTENSITY or more: a line on its mass keeps its signal
+    # when its ratio misses by less, as apply_match_params does
+    if (
+        abs(match_data["match_mz_error"]) > params["mz_tolerance"]
+        or abs(match_data["match_abundance_error"]) >= RATIO_MISS_DROPS_INTENSITY
+    ):
         match_data["sample_peak_intensity"] = 0
 
     # Calculate match_category based on match_score

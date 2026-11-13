@@ -2565,9 +2565,11 @@ mascope prod db script run reflag_orbitrap_weak_peaks
 
 ### Match intensities of isotope lines that missed their ratio
 
-A matched isotope line outside the isotope ratio tolerance keeps its
-intensity now; only its score, and so the match category, takes the miss
-(`docs/user/how-it-works/matching.md`, *The tolerances: what a line keeps*).
+A matched isotope line outside the isotope ratio tolerance, by less than
+100 %, keeps its intensity now; only its score, and so the match category,
+takes the miss (`docs/user/how-it-works/matching.md`, *The tolerances: what
+a line keeps*). A miss of 100 % or more takes the intensity too, and such a
+line was never stored, so the script finds nothing to change for it.
 Before, it lost its intensity too, so an ion with two near-equal lines, such
 as a bromide adduct, was stored at half its intensity in each file where one
 of them missed. The intensity of every match level is written when a

@@ -878,8 +878,9 @@ def score_ions_by_fit(
     The returned frame carries that verdict: an isotopologue the gating rejected
     comes back with ``sample_peak_intensity`` zeroed, not just excluded from the
     arithmetic. `apply_match_params` only zeroes the intensity of pairings outside
-    the *m/z* tolerance - one it rejected on the isotope ratio or the intensity
-    floor keeps its intensity, the signal the targeted ion sum counts - so without
+    the *m/z* tolerance or missing the isotope ratio by 100 % or more - one it
+    rejected on a smaller ratio miss or the intensity floor keeps its intensity,
+    the signal the targeted ion sum counts - so without
     this the ownership guard in
     `invert_matches_to_peak_assignments` would let a pairing this function counted
     as ABSENT claim its peak anyway, carrying the ion's (possibly "assigned") fit
@@ -940,8 +941,9 @@ def score_ions_by_fit(
 
     df = match_isotope_df.copy()
     # Honour apply_match_params gating: an isotopologue it rejected (score 0) is
-    # absent to the fit score (its intensity may still be set, e.g. outside the
-    # isotope ratio tolerance or below the intensity floor but on its m/z).
+    # absent to the fit score (its intensity may still be set, e.g. a little
+    # outside the isotope ratio tolerance or below the intensity floor but on
+    # its m/z).
     if "match_score" in df.columns:
         gated_out = pd.to_numeric(df["match_score"], errors="coerce").fillna(0.0) == 0
         df.loc[gated_out, "sample_peak_intensity"] = 0.0

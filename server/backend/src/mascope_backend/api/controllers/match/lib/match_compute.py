@@ -39,7 +39,11 @@ def select_match_isotopes_to_persist(match_isotope_df: pd.DataFrame) -> pd.DataF
     >= 100%) that apply_match_params can never raise them to a match at any
     read-time tolerance - so they are dropped here and reconstructed on read in
     aggregate_match_isotope_filtered_data. This matches the "found peak"
-    definition used by export_goldens (match_score > 0).
+    definition used by export_goldens (match_score > 0). A dropped row on its
+    mass loses no intensity either: apply_match_params also zeroes the
+    intensity of a line whose abundance error reaches
+    RATIO_MISS_DROPS_INTENSITY (1.0, where its score is 0), so the stored ion
+    sums equal the live ones (#3000).
 
     INVARIANT: dropping zero-score rows preserves read-time tolerance loosening
     only because the UI sliders cap at exactly the scoring's zero points - m/z

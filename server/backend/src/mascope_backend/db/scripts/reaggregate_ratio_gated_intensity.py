@@ -8,8 +8,10 @@ A line outside the isotope ratio tolerance used to lose its intensity as well
 as its score, so an ion whose line missed the ratio by a little was stored at
 part of its intensity: a bromide ion, whose two lines are near-equal, at
 half. Its batch time series toggled between 1x and 2x from file to file
-(#2943). A line on its mass now keeps its intensity whatever its ratio; only
-its score, and so the category, takes the miss.
+(#2943). A line on its mass now keeps its intensity when its ratio misses
+by less than 100 %; only its score, and so the category, takes the miss. A
+stored line always misses by less: one that misses by more scores 0 and is
+not stored (#3000).
 
 ``sample_peak_intensity_sum`` on ``match_ion``, ``match_compound``,
 ``match_collection`` and ``match_sample`` is written when a sample's matches
