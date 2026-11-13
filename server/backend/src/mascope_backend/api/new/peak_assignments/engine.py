@@ -2489,15 +2489,17 @@ def untargeted_matches_to_peak_assignments(
         # the one table no re-run can rebuild, so the number is captured now even though
         # nothing fits it yet.
         #
-        # Confidence and P(correct) stay database-arbitration concepts, but for
-        # one reason now rather than two. Confidence needs the peak's full scored
+        # Confidence is not written here. It needs the peak's full scored
         # candidate set, which the untargeted search does not expose here
-        # (other_candidates carries formulas only, no per-candidate fit). The
-        # scale objection to P(correct) is gone: the fit below is the seeded
-        # re-score, the same ion_score_v2 the Stage A curve was fitted on, so
-        # the curve would no longer be borrowed across scales. Whether a Stage B
-        # row should carry a probability is the confidence layer's call and not
-        # this conversion's, so nothing here starts asserting one.
+        # (other_candidates carries formulas only, no per-candidate fit); a run
+        # that asks for it measures the shortlist once the ledger is judged
+        # (`alternatives_scoring.measure_winner_confidence`, the run option
+        # `stage_b_confidence`). The scale objection to P(correct) is gone: the
+        # fit below is the seeded re-score, the same ion_score_v2 the Stage A
+        # curve was fitted on, so the curve would no longer be borrowed across
+        # scales. Whether a Stage B row should carry a probability is the
+        # confidence layer's call and not this conversion's, so nothing here
+        # starts asserting one.
         evidence = round(winner["fit"] * winner["plausibility"], 4)
         provenance = {
             "plausibility": winner["plausibility"],

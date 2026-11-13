@@ -392,22 +392,50 @@ no backend or DB, only `mascope_tools` + tests.
 
 - **Remaining P2 / next:** replace the provisional Orbitrap curve with a curated fit and add
   a TOF curve once a TOF golden set exists; the **persisted, user-refittable per-instrument
-  store** (a DB table — deferred); then Stage B's confidence. Stage B already *tiers* on
-  evidence — its contenders carry a fit and a plausibility and it records
-  `provenance.evidence` for its winner, so the untargeted stage is not blind to chemistry.
-  It also already *competes* the candidates that land on one observed peak: they are
-  ranked by evidence, closest mass, then formula, and the losers are kept as
-  `alternatives` each with its own fit. What is still deferred is the **confidence** —
-  the winner's share among the peak's full scored candidate set — because the finder's
-  `other_candidates` shortlist is formula names only, with no per-candidate fit to take a
-  share of (the plausibility shown against those entries is computed here from the
-  formula, not carried by the finder). The inspector *can* now measure that shortlist for
-  one peak on request (`alternatives_scoring.py`), but that does not close this gap: a
-  confidence is a property of the run, and the reason the run does not measure the
-  shortlist is precisely that doing it for every peak of a sample is an isotope-envelope
-  match per candidate. Confidence stays deferred until the run itself can afford one. A
-  P(correct) there would additionally mean applying the Stage A curve across the v1/v2 fit
-  gap, which is the fabricated probability the calibration layer exists to refuse.
+  store** (a DB table — deferred). Stage B already *tiers* on evidence — its contenders
+  carry a fit and a plausibility and it records `provenance.evidence` for its winner, so
+  the untargeted stage is not blind to chemistry. It also already *competes* the
+  candidates that land on one observed peak: they are ranked by evidence, closest mass,
+  then formula, and the losers are kept as `alternatives` each with its own fit.
+- **Stage B's confidence — built, behind a run option (step 4.15, MAS-325).** The
+  winner's share among the peak's full scored candidate set needs a fit for every entry
+  of the finder's `other_candidates` shortlist, which reaches the row as formula names
+  only. The inspector measures one peak's shortlist on request (`alternatives_scoring.py`);
+  a run now affords the same measurement once it is bounded. With
+  `stage_b_confidence` on (off by default until the runtime cost is measured on the gate
+  sets), `alternatives_scoring.measure_winner_confidence` takes the run's committed
+  untargeted M0 winners after the judging passes, the most intense first up to
+  `stage_b_confidence_peaks` (200) of them, and seeds each one's stored formula-only
+  shortlist (at most `max_alternatives`) under every adduct of the sample in **one**
+  `compute_match_isotopes` pass. A formula counts for the peak only where its ion's
+  monoisotopic line paired to it, by the inspector's own rule (`placements`), and the
+  pass is scored at the run's own mass accuracy rather than one fitted off a frame of
+  mostly wrong formulas. The winner, its recorded rivals (not the `same_ion` readings,
+  which the finder elects before anything is ranked) and the placed entries go through
+  `arbitrate_candidates` as **one candidate per ion on the peak** (`ion_identity`): the
+  shortlist lists every composition whose mass fits under every adduct searched, so it
+  carries one ion split two ways (a neutral read through `[M+Br]-` beside the neutral
+  plus HBr read through `[M-H]-`). Counted as two, such a pair split its own weight and,
+  where it was the winner's ion, tied the winner with itself: on the demo's bromide set
+  that first cut flagged a third of the winners a tie. An entry reading the winner's
+  ion is the winner; of another ion's readings the best evidence stands for it. The
+  winner's `confidence`, `n_candidates` and `is_tie` are
+  stored in provenance under Stage A's keys, so the inspector's confidence row reads them
+  unchanged. A winner past the budget records none — a share of part of the field would
+  read as a share of all of it — and one with no shortlist records its share among the
+  rivals it already carries, at no cost. Nothing else moves: the tier, the fit and the
+  alternatives stay what the run decided. The run records the counts and the seconds the
+  pass took in `search_scope.winner_confidence`, which is where the gate-set measurement
+  reads the cost.
+
+  **`p_correct` stays null on Stage B rows.** The scale objection is gone: both stages'
+  fit is the seeded `ion_score_v2` re-score (milestone 2), so the curve would no longer be
+  read across the v1/v2 gap. What still does not match is the population: the provisional
+  curve was fitted on Stage A's candidates (library targets against near-mass decoys), and
+  a Stage B row's `p_correct` would also enter the batch consensus, which takes the best
+  member's `p_correct` (`batch_peaks`) and whose untargeted members are written
+  uncalibrated on purpose. Whether the untargeted stage carries a probability is the
+  calibration's call once it has untargeted labels, not this option's.
 
 ### P3 progress
 

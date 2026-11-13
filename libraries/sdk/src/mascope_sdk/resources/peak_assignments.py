@@ -122,6 +122,11 @@ class AssignmentConfig(TypedDict, total=False):
     peak_intensity_threshold: float
     #: How many runner-up candidates are kept per peak.
     max_alternatives: int
+    #: Measure the untargeted winners' formula-only shortlists and record each
+    #: winner's ``confidence`` and ``is_tie`` in its provenance. Off by default.
+    stage_b_confidence: bool
+    #: How many untargeted winners, the most intense first, that measures.
+    stage_b_confidence_peaks: int
     #: Evidence at or above which a row is tiered ``assigned``. The server
     #: also reads the old name ``identified_threshold``.
     assigned_threshold: float
