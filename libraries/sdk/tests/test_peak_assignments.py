@@ -237,6 +237,24 @@ class TestListRuns:
             runs["peak_assignment_run_utc_created"]
         )
 
+    def test_a_mixed_precision_audit_column_comes_out_as_datetimes(
+        self, server, resource
+    ):
+        # The server drops the fraction of a time whose microseconds are 0.
+        server.runs = [
+            {**RUNS[1], "peak_assignment_run_utc_created": "2026-08-17T10:00:00Z"},
+            {
+                **RUNS[2],
+                "peak_assignment_run_utc_created": "2026-08-10T10:00:00.250000Z",
+            },
+        ]
+
+        runs = resource.list_runs(SAMPLE_ID)
+
+        created = runs["peak_assignment_run_utc_created"]
+        assert pd.api.types.is_datetime64_any_dtype(created)
+        assert created.iloc[1] == pd.Timestamp("2026-08-10T10:00:00.25", tz="UTC")
+
     def test_returns_none_when_sample_has_no_runs(self, server, resource):
         server.runs = []
 

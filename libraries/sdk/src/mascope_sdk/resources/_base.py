@@ -19,6 +19,10 @@ def _coerce_datetime_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     Columns ending with a UTC suffix are converted to ``datetime64[ns, UTC]``.
     Columns matching a local datetime name are converted to ``datetime64[ns]``.
+
+    Parsed as ISO 8601, not in a format inferred from the first value: the
+    server leaves the fraction out of a time whose microseconds are 0, so one
+    column can hold both ``10:45:57`` and ``10:45:57.708105``.
     """
     for col in df.columns:
         if pd.api.types.is_datetime64_any_dtype(df[col]):
@@ -26,7 +30,7 @@ def _coerce_datetime_columns(df: pd.DataFrame) -> pd.DataFrame:
         if "datetime" in col:
             is_utc = "utc" in col
             try:
-                df[col] = pd.to_datetime(df[col], utc=is_utc)
+                df[col] = pd.to_datetime(df[col], utc=is_utc, format="ISO8601")
             except Exception as e:
                 # INFO: fires per column per DataFrame on odd data
                 logger.info(f"Failed to convert column {col} to datetime: {e}")
@@ -39,13 +43,13 @@ def _coerce_utc_columns(df: pd.DataFrame) -> pd.DataFrame:
     The run and assignment records name their timestamps
     ``peak_assignment_run_utc_created`` / ``..._utc_completed``, which the
     shared ``_coerce_datetime_columns`` (keyed on ``datetime`` in the column
-    name) does not catch.
+    name) does not catch. Parsed as ISO 8601 for the same reason.
     """
     for col in df.columns:
         if "_utc" not in col or pd.api.types.is_datetime64_any_dtype(df[col]):
             continue
         try:
-            df[col] = pd.to_datetime(df[col], utc=True)
+            df[col] = pd.to_datetime(df[col], utc=True, format="ISO8601")
         except Exception as e:
             # INFO: fires per column per DataFrame on odd data
             logger.info(f"Failed to convert column {col} to datetime: {e}")
