@@ -192,10 +192,12 @@ box in the caller's own session, one run at a time. In order:
    one that writes nothing for 30 minutes is taken for hung and stopped.
 9. **The scrub.** The comparison is given a deny list: every name and id
    the instance holds (its workspaces, datasets, batches, samples, files,
-   modes and collections), every sample's file name and id, the reference's
-   and this run's run ids, and the hosts. The bench then scrubs every file
-   the comparison wrote again with the same list. A card either refuses is
-   reported, by file, and never written.
+   modes and collections, and its instruments by name, by the names its
+   files, datasets and modes gave them, and by serial number), every
+   sample's file name and id, the reference's and this run's run ids, and
+   the hosts. The bench then scrubs every file the comparison wrote again
+   with the same list. A card either refuses is reported, by file, and never
+   written.
 10. **The cleanup.** It stops the ref's backend and removes its worktree,
     also when a step fails. The instance stays: its env, slot, database and
     filestore.
