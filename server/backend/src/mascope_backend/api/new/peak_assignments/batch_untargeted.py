@@ -65,7 +65,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     ROLE_ISO_CHILD,
     TIER_REASONS_KEY,
     candidate_index,
-    member_state,
+    measured_state,
     resolve_candidate,
     role_code,
     tier_code,
@@ -123,7 +123,11 @@ from mascope_backend.api.new.peak_assignments.service import (
     sample_reagent_offset,
     sample_recorded_width,
 )
-from mascope_backend.api.new.peak_assignments.tiers import TIER_RANK, TIER_UNASSIGNED
+from mascope_backend.api.new.peak_assignments.tiers import (
+    TIER_CANDIDATE,
+    TIER_RANK,
+    TIER_UNASSIGNED,
+)
 from mascope_backend.db import BatchPeak, BatchPeakOccurrence, async_session
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.notifications import (
@@ -746,8 +750,9 @@ async def _mark_persistence(
 
 
 async def _held_by_persistence(sample_batch_id: str, anchor_ids: set[str]) -> int:
-    """How many of ``anchor_ids`` the persistence rule holds: their reading is
-    the one elected on persistence alone, and nothing corroborates it."""
+    """How many of ``anchor_ids`` the persistence rule holds at candidate:
+    their reading is the one elected on persistence alone, nothing
+    corroborates it, and the samples' vote did not already put it lower."""
     if not anchor_ids:
         return 0
     async with async_session() as session:
@@ -764,7 +769,8 @@ async def _held_by_persistence(sample_batch_id: str, anchor_ids: set[str]) -> in
             .all()
         )
     return sum(
-        any(
+        anchor.consensus_tier == TIER_CANDIDATE
+        and any(
             isinstance(reason, dict) and reason.get("rule") == REASON_PERSISTENCE_ONLY
             for reason in (anchor.provenance or {}).get(TIER_REASONS_KEY) or []
         )
@@ -1189,8 +1195,9 @@ async def _propagate_to_sample(
     member rather than the unassigned ones (``only_unassigned=False``),
     skipping members that already carry it (``skip_candidate``, anchor id ->
     registry index) and archiving what each re-pointed member read before
-    (``displaced``, appended to). ``source`` is recorded on a registry entry
-    this write creates.
+    (``displaced``, appended to): a member the persistence rule holds at
+    candidate at the tier it was measured at (``batch_peaks.measured_state``).
+    ``source`` is recorded on a registry entry this write creates.
 
     The series detection measures its proposals over every member too, and
     with ``prefer_better``: a member that already reads its peak another way
@@ -1264,9 +1271,9 @@ async def _propagate_to_sample(
                 member, anchors[member.batch_peak_id], annotation, reading.evidence
             ):
                 continue
-            if displaced is not None:
-                displaced.append(member_state(member))
             anchor = anchors[member.batch_peak_id]
+            if displaced is not None:
+                displaced.append(measured_state(member, anchor))
             registry = list(anchor.candidates or [])
             index = candidate_index(
                 registry,
@@ -1669,13 +1676,22 @@ def search_outcome(counts: dict, sample_batch_id: str) -> dict:
     # and a reading held at candidate on them needs its reason.
     admitted = counts.get("anchors_admitted_by_persistence", 0)
     held = counts.get("anchors_held_by_persistence", 0)
+    if not held:
+        holding = ""
+    elif admitted == 1:
+        holding = "; its reading is held at candidate"
+    else:
+        holding = f"; {held} of them {'are' if held != 1 else 'is'} held at candidate"
     persistence = (
         f" {admitted} batch peak{'s' if admitted != 1 else ''} under the "
         f"intensity floor or past the peak cap {'were' if admitted != 1 else 'was'} "
-        "searched because the peak recurs across the batch; "
-        f"{held} of {'them' if admitted != 1 else 'it'} "
-        f"{'are' if held != 1 else 'is'} held at candidate until an isotope "
-        "line, another channel or a series of the batch corroborates the reading."
+        f"searched because the peak recurs across the batch{holding}"
+        + (
+            " until an isotope line, another channel or a series of the batch "
+            "corroborates the reading."
+            if held
+            else "."
+        )
         if admitted
         else ""
     )

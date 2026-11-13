@@ -1514,16 +1514,21 @@ who edits chemistry and stays last.
   read the elected reading at assigned are stored at candidate too, so a
   sample's derived view reads the batch's cap, and the record keeps them
   (`held_members`, sample -> fit); the vote reads each at its measured
-  tier while it is the one held (`measured_members`), and a lift puts it
-  back. A consensus chunk takes every vote first and reads the facts with
-  its own batch peaks at their new readings; where a recompute spans
-  chunks, the batch peaks the rule asked are recomputed once more at the
-  end. The ledger serves
-  `persistence` and `tier_reasons` (the snapshot keeps both, one
-  migration), a sample's detail read `batch_persistence`; the ledger marks
-  the formula and puts a down arrow by the tier, the inspector names the
-  share. The search's summary counts the batch peaks admitted on
-  persistence and those held, and each partition's split.
+  tier while it is the one held - still the elected reading, at candidate,
+  at that fit (`measured_members`) - and a lift puts it back. A pin lets
+  go of the hold and archives a held member it re-points at its measured
+  tier (`measured_state`), so its release puts back the measurement and
+  the rule holds it again. A consensus chunk takes every vote first and
+  reads the facts with its own batch peaks at their new readings; where a
+  recompute spans chunks, the batch peaks the rule asked are recomputed
+  once more at the end. The ledger serves `persistence` and
+  `tier_reasons` (the snapshot keeps both, one migration), a sample's
+  detail read `batch_persistence` with the batch
+  peak's tier; the ledger marks the formula and puts a down arrow by the
+  tier, the inspector names the share, each worded off the batch peak's
+  tier (held at candidate, or already below it). The search's summary
+  counts the batch peaks admitted on persistence and those held at
+  candidate, and each partition's split.
   - **Read on the copy.** At the default config (floor 0, no cap) every
     representative is admitted on its height, so no batch peak is admitted
     on persistence alone and none is held: the rule reaches a search run
