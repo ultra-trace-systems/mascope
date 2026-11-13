@@ -777,9 +777,21 @@ The hard
 the live path (it is a single point of failure that worsens as the batch grows); the per-sample
 μ replaces it, and VLM stays only as an optional offline refinement.
 
-**Seeding [open, recommended].** Where a target-ion m/z list exists for the batch, seed the
+**Seeding [built, MAS-319, off by default].** Where a target-ion m/z list exists for the batch, seed the
 initial anchors from it, so bins are not hostage to the first sample's calibration and line up
-with existing target identities; data-created anchors fill the rest.
+with existing target identities; data-created anchors fill the rest. As built
+(`batch_peaks.seed_anchors`, `batch_peaks_controller.target_ion_seed_mzs`): a batch whose
+`seed_batch_peaks` is on mints, on the first fold of each partition and inside the fold
+lock, an anchor at the monoisotopic m/z of every target ion of the batch's collections that
+a run of the folding sample searches (the mode's readable mechanisms of the sample's
+polarity, the `HIGH` isotope rows on an Orbitrap and the `LOW` ones on a TOF), at the
+tolerance the folding sample's resolution gives that m/z, marked `batch_peak.seeded`. Seeds
+go in ascending m/z and a seed inside an anchor's window mints nothing, so two target ions
+one window apart share an anchor. A seeded anchor no peak joins stays with no members
+(`n_present` 0). A ledger that exists is seeded only by a rebuild that asks
+(`backfill?reseed=true`), and then append-only: the seeds no anchor holds are minted and no
+anchor moves, so a re-seed does not undo the first sample's placement of an anchor that is
+already there. The measurement is in the assignment quality plan's status table (step 4.7).
 
 **Backfill.** For batches assigned before this feature, a one-time fold-in walks each sample's
 latest completed run in time order through the same routine. It reports as it goes, on the

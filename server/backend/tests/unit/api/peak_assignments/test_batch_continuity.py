@@ -110,6 +110,7 @@ def anchor(key, formula="C6H12O6", mechanism="m-h", **extra):
             {"formula": "C9H9NO", "ionization_mechanism_id": mechanism},
         ],
         provenance=None,
+        seeded=False,
         continuity_grade=None,
         continuity=None,
     )
@@ -805,6 +806,7 @@ def test_two_passes_reaching_one_reading_compare_equal():
 
 def _graded(**over):
     fields = dict(
+        seeded=False,
         continuity_grade=GRADE_STABLE,
         continuity={
             "formula": "C6H12O6",

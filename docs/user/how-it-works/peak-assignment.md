@@ -1405,6 +1405,30 @@ never assigned, or to refresh after an import. There is no batch-wide assignment
 the untargeted search runs once per batch peak instead (below), and a species is
 curated once at its batch peak rather than sample by sample.
 
+### Seeding the batch peaks from the target ions
+
+A batch peak's m/z is frozen when it is made, and by default the first sample whose
+peak lands there makes it: the batch peak sits where that sample measured the peak,
+after the sample's own mass offset is taken off. A batch that has target collections
+knows its target ions' m/z before any sample arrives, and it can seed its batch peaks
+from them instead. With seeding on, the first sample to fold in each ionization mode and
+instrument type first puts a batch peak at the monoisotopic m/z of every target ion a
+run of that sample would search: the target collections' ions through the setup's
+ionization mechanisms of the sample's polarity, at the isotope resolution the
+instrument is matched at. Then the sample's peaks fold, and a peak within a seeded
+batch peak's window joins it. Each target's trace then sits at the ion's own m/z, not
+wherever the first sample put it. A seeded batch peak is marked `seeded` in the ledger,
+and one that no sample's peak has joined yet is listed with no samples. Where two
+target ions fall within one window, one batch peak holds both, as it would two peaks.
+
+Seeding is off by default. It is a setting of the batch, `seed_batch_peaks`, set when
+the batch is created or edited through the API (`PATCH /api/sample/batches/{id}`).
+Turning it on for a batch whose ledger already exists seeds nothing by itself, because
+batch peaks are never moved once made. *Rebuild batch ledger* seeds such a batch when
+asked to (`POST /api/batch-peaks/batch/{id}/backfill?reseed=true`): a target ion's m/z
+that no batch peak holds yet gets a seeded batch peak, and the batch peaks already
+there stay where they are.
+
 *Search untargeted*, beside *Rebuild batch ledger*, first asks for the search's parameters
 - m/z precision, formula ranges, the peak ceiling, the intensity threshold and the number
 of alternatives kept, the same settings as a per-sample run's untargeted stage, applied

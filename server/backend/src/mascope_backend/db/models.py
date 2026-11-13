@@ -854,6 +854,16 @@ class SampleBatch(Base):
     source_filter: Mapped[Optional[dict]] = mapped_column(
         JSONB(none_as_null=True), nullable=True
     )
+    # Whether the batch ledger seeds its anchors from the batch's target ions:
+    # the first fold of each partition (ionization mode and instrument type)
+    # mints an anchor at every target ion's monoisotopic m/z before the
+    # sample's own peaks fold, so those traces sit at the ion's m/z rather
+    # than wherever the first sample put them (``BatchPeak.seeded``). Off by
+    # default; a batch whose ledger already exists is seeded only when a
+    # rebuild asks for it.
+    seed_batch_peaks: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
 
     # Relationships
     dataset = relationship("Dataset", back_populates="sample_batch")
@@ -3028,6 +3038,14 @@ class BatchPeak(Base):
     mz: Mapped[float] = mapped_column(Float)
     mz_tol_ppm: Mapped[float] = mapped_column(Float)
     intensity_variable: Mapped[Optional[str]] = mapped_column(String(32))
+    # True for an anchor minted from the batch's target-ion list rather than by
+    # a sample's peak: at a target ion's monoisotopic m/z, before the first
+    # sample of its partition folded (``SampleBatch.seed_batch_peaks``) or when
+    # a rebuild asked for it. Frozen like the m/z; a seeded anchor no sample's
+    # peak has joined yet has no members and the server defaults below.
+    seeded: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
     # Evidence-weighted consensus over DETECTED members (see batch_peaks engine).
     consensus_formula: Mapped[Optional[str]] = mapped_column(String(256))
     consensus_ion_formula: Mapped[Optional[str]] = mapped_column(String(4096))
@@ -3629,6 +3647,11 @@ class BatchPeakRunAnchor(Base):
     # The probable blend the anchor's consensus read as the run left it
     # (``batch_blend.blend_record_of``); NULL for none.
     blend: Mapped[Optional[dict]] = mapped_column(JSON)
+    # Whether the anchor was seeded from the batch's target-ion list
+    # (``BatchPeak.seeded``).
+    seeded: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
     candidates: Mapped[Optional[list]] = mapped_column(JSON)
     members: Mapped[Optional[dict]] = mapped_column(JSON)
 

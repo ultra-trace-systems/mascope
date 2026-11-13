@@ -333,6 +333,39 @@ class AnchorSet:
         return anchor
 
 
+def seed_anchors(
+    anchor_set: AnchorSet,
+    seed_mzs: Iterable[float],
+    *,
+    new_id: Callable[[], str],
+    tol_fn: Callable[[float], float],
+) -> list[Anchor]:
+    """Mint an anchor at each seed m/z no anchor of ``anchor_set`` already holds.
+
+    A seed is a target ion's m/z, known before any sample arrives. Minted
+    before a partition's first sample folds, it gives the target's trace the
+    ion's m/z rather than the first sample's, and the fold snaps peaks to it
+    with the same frozen tolerance a peak-minted anchor carries (``tol_fn``).
+    Seeds go in ascending m/z, each into the set the earlier ones extended, so
+    a seed inside the window of an anchor already there - an earlier seed's or
+    a sample's - mints nothing: two anchors one window holds would split a
+    trace, and the anchor there is frozen. That is also what makes seeding an
+    existing ledger append-only: no anchor moves, a seed fills only m/z no
+    anchor covers.
+
+    :param anchor_set: The partition's anchors, extended in place.
+    :param seed_mzs: The seeds' m/z, in any order, duplicates allowed.
+    :param new_id: Zero-arg factory for a fresh ``batch_peak_id``.
+    :param tol_fn: ``mz -> tol_ppm`` for an anchor minted at that m/z.
+    :returns: The anchors minted, in ascending m/z.
+    """
+    minted: list[Anchor] = []
+    for mz in sorted(float(m) for m in seed_mzs):
+        if anchor_set.find(mz) is None:
+            minted.append(anchor_set.add(Anchor(new_id(), mz, tol_fn(mz))))
+    return minted
+
+
 @dataclass
 class FoldedPeak:
     """One peak folded into a batch peak during :func:`fold_in_sample`."""

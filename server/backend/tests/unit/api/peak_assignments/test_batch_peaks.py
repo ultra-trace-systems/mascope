@@ -26,6 +26,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     resolution_adaptive_tol_ppm,
     resolve_candidate,
     resolve_isotopologue_of,
+    seed_anchors,
     series_record_of,
     standing_series_record,
 )
@@ -105,6 +106,55 @@ def test_fold_in_is_order_independent():
     assert [round(a.mz, 6) for a in a1.anchors()] == [
         round(a.mz, 6) for a in a2.anchors()
     ]
+
+
+def test_seeds_mint_an_anchor_each_in_ascending_mz():
+    aset = AnchorSet()
+    minted = seed_anchors(
+        aset, [300.0, 100.0, 200.0], new_id=_ids(), tol_fn=lambda mz: 3.0
+    )
+    assert [(a.batch_peak_id, a.mz, a.tol_ppm) for a in minted] == [
+        ("bp0", 100.0, 3.0),
+        ("bp1", 200.0, 3.0),
+        ("bp2", 300.0, 3.0),
+    ]
+    assert [a.mz for a in aset.anchors()] == [100.0, 200.0, 300.0]
+
+
+def test_a_seed_an_anchor_already_holds_mints_nothing():
+    # 200.0004 is 2 ppm from the anchor at 200.0, inside its 3 ppm; a repeat
+    # and a seed 1 ppm above an earlier seed are held by that seed's anchor.
+    # 300.0 is 3.3 ppm from 300.001, outside it.
+    aset = AnchorSet([Anchor("old", 200.0, 3.0), Anchor("far", 300.001, 3.0)])
+    minted = seed_anchors(
+        aset,
+        [200.0004, 150.0, 150.0, 150.00015, 300.0],
+        new_id=_ids(),
+        tol_fn=lambda mz: 3.0,
+    )
+    assert [a.mz for a in minted] == [150.0, 300.0]
+    assert [(a.batch_peak_id, a.mz) for a in aset.anchors()] == [
+        ("bp0", 150.0),
+        ("old", 200.0),
+        ("bp1", 300.0),
+        ("far", 300.001),
+    ]
+
+
+def test_a_sample_folds_onto_the_seed_not_where_its_peak_sits():
+    aset = AnchorSet()
+    seed_anchors(aset, [181.0707], new_id=lambda: "seed", tol_fn=lambda mz: 5.0)
+    folded = fold_in_sample(
+        aset,
+        [{"mz": 181.0707 * (1 + 3e-6)}, {"mz": 250.1}],
+        new_id=lambda: "new",
+        tol_fn=lambda mz: 5.0,
+    )
+    by_id = {f.batch_peak_id: f for f in folded}
+    assert by_id["seed"].is_new_anchor is False
+    assert by_id["seed"].mz_error_ppm == pytest.approx(3.0)
+    assert by_id["new"].is_new_anchor is True
+    assert [a.mz for a in aset.anchors()] == [181.0707, 250.1]
 
 
 def test_same_sample_collision_keeps_one_member_nearest_wins():

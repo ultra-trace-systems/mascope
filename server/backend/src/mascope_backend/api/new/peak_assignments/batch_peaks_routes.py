@@ -369,6 +369,14 @@ async def get_batch_peak_lists_route(
 async def backfill_batch_peaks_route(
     sample_batch_id: str,
     background_tasks: BackgroundTasks,
+    reseed: bool = Query(
+        False,
+        description=(
+            "Seed the batch peaks from the batch's target ions as well: an "
+            "anchor at each target ion's m/z that no batch peak holds yet. "
+            "The batch peaks the ledger has are kept."
+        ),
+    ),
     user: User = Depends(current_active_user),
     membership=Depends(require_batch_role("editor")),
 ) -> dict:
@@ -378,9 +386,13 @@ async def backfill_batch_peaks_route(
 
     Use this for a batch that predates the ledger, was never assigned, or was
     imported. Runs as a background task and emits ``peak_assignment_reload`` on
-    completion so the Assignments chart refreshes.
+    completion so the Assignments chart refreshes. A partition the rebuild
+    folds first is seeded from the batch's target ions where the batch's
+    ``seed_batch_peaks`` is on; ``reseed`` seeds every partition, the anchors
+    it has kept.
 
     :param sample_batch_id: The unique identifier of the sample batch.
+    :param reseed: Seed the anchors from the batch's target ions as well.
     :param user: The current authenticated user. Requires workspace editor role.
     :return: Acknowledgement message with the background process id.
     """
@@ -393,6 +405,7 @@ async def backfill_batch_peaks_route(
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
+        reseed=reseed,
     )
     return {
         "message": (

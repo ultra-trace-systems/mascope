@@ -106,12 +106,22 @@ class SampleBatchBase(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+_SEED_BATCH_PEAKS = (
+    "Whether the batch ledger seeds its batch peaks from the batch's target "
+    "ions: the first fold of each ionization mode and instrument type puts a "
+    "batch peak at every target ion's m/z before the sample's own peaks fold. "
+    "Off by default. Turning it on for a batch whose ledger exists seeds "
+    "nothing until a rebuild asks to re-seed."
+)
+
+
 class SampleBatchCreate(SampleBatchValidator, SampleBatchBase):
     """Model used for sample batch creation requests."""
 
     target_collection_ids: list[str] = Field(
         ..., description="IDs of target collections associated with the sample batch"
     )
+    seed_batch_peaks: bool = Field(False, description=_SEED_BATCH_PEAKS)
 
 
 class SampleBatchRead(SampleBatchBase):
@@ -138,6 +148,7 @@ class SampleBatchRead(SampleBatchBase):
     sample_batch_utc_modified: datetime | None = Field(
         None, description="Timestamp when sample batch was last modified"
     )
+    seed_batch_peaks: bool = Field(False, description=_SEED_BATCH_PEAKS)
 
 
 class SampleBatchListed(SampleBatchRead):
@@ -197,8 +208,21 @@ class SampleBatchUpdate(SampleBatchBaseValidator, BaseModel):
             "the associations stay as they are; an empty list detaches them all."
         ),
     )
+    seed_batch_peaks: bool | None = Field(
+        None,
+        description=_SEED_BATCH_PEAKS + " Absent, it stays as it is; null is refused.",
+    )
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("seed_batch_peaks")
+    @classmethod
+    def validate_seed_batch_peaks(cls, value: bool | None) -> bool:
+        """Refuse an explicit null: the column is NOT NULL, and a field left
+        out never reaches a validator."""
+        if value is None:
+            raise ValueError("seed_batch_peaks cannot be null.")
+        return value
 
 
 class SampleBatchUpdateStatusBody(BaseModel):
