@@ -812,6 +812,8 @@ def _status_lines(status: StoreStatus, key: str, limit: int) -> list[str]:
         mixed = (
             "mixed: a formula's series joins readings of different runs"
             if status.mixed_runs
+            else "one reading per polarity"
+            if len(status.runs) > 1
             else "one reading"
         )
         lines.append(f"  formula readings ({len(status.runs):,}, {mixed}):")

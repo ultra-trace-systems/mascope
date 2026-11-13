@@ -467,6 +467,31 @@ class RunChange:
         }
 
 
+def _run_changes(batches: pd.DataFrame) -> tuple[RunChange, ...]:
+    """Where the reading changes from one ledger batch of *batches* to the
+    next of the same polarity, in time order.
+
+    :param batches: Rows of :attr:`StoreStatus.batches`, oldest first; a
+        batch without a ledger reading is passed over.
+    """
+    changes = []
+    previous: dict[Any, str] = {}
+    for row in batches[batches["reading"].notna()].itertuples():
+        before = previous.get(row.polarity)
+        if before is not None and row.reading != before:
+            changes.append(
+                RunChange(
+                    at=row.first_datetime_utc,
+                    sample_batch_id=row.sample_batch_id,
+                    polarity=row.polarity,
+                    before=before,
+                    after=row.reading,
+                )
+            )
+        previous[row.polarity] = row.reading
+    return tuple(changes)
+
+
 @dataclass(frozen=True)
 class StoreStatus:
     """What a store holds, how old it is, and which runs read it.
@@ -532,9 +557,11 @@ class StoreStatus:
 
     @property
     def mixed_runs(self) -> bool:
-        """Whether the batches carry more than one reading: a formula's
-        series then joins readings of different runs, and a chart says so."""
-        return len(self.runs) > 1
+        """Whether the batches of one polarity carry more than one reading:
+        a formula's series then joins readings of different runs, and a
+        chart says so. A formula is read in one polarity only, so two
+        polarities read by a run each mix nothing."""
+        return bool(self.run_changes)
 
     @property
     def failed(self) -> dict[str, str]:
@@ -756,22 +783,6 @@ class CampaignStore:
             if not ledger.empty
             else pd.DataFrame(columns=_STATUS_RUN_COLUMNS)
         )
-        changes = []
-        previous: dict[Any, str] = {}
-        for row in ledger.itertuples():
-            before = previous.get(row.polarity)
-            if before is not None and row.reading != before:
-                changes.append(
-                    RunChange(
-                        at=row.first_datetime_utc,
-                        sample_batch_id=row.sample_batch_id,
-                        polarity=row.polarity,
-                        before=before,
-                        after=row.reading,
-                    )
-                )
-            previous[row.polarity] = row.reading
-
         held = self.batch_ids()
         counted = {
             table: sum(
@@ -798,7 +809,7 @@ class CampaignStore:
             age=None if synced is None else now - synced,
             batches=batches,
             runs=runs,
-            run_changes=tuple(changes),
+            run_changes=_run_changes(batches),
             rows=counted,
             n_files=meta.get("files", {}).get("rows", 0),
             n_unfiled=meta.get("files", {}).get("unfiled", 0),
