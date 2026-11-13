@@ -10,6 +10,7 @@ makes two runs wait for each other, and the command line. No host, no server.
 import importlib.util
 import json
 import os
+import re
 import signal
 import sys
 import threading
@@ -1326,6 +1327,47 @@ def test_baseline_makes_a_card_of_develop_the_baseline(rig, capsys):
         runner.baseline(str(rig.home.root))
     with pytest.raises(brun.RunError, match="holds no written card"):
         runner.baseline("develop")
+
+
+@pytest.mark.parametrize(
+    "spoil, why",
+    [
+        # Et runs over its budget: the card reads Db alone.
+        (
+            lambda rig: rig.server.ends.update({("S3", None): None}),
+            "it reads only some of the bench's sets",
+        ),
+        (
+            lambda rig: rig.server.ends.update({("S1", None): ("failed", "x")}),
+            "samples were left out (set Db: 1 sample(s) failed)",
+        ),
+        (
+            lambda rig: rig.server.ends.update(
+                {("S1", "swap_adducts"): ("cancelled", None)}
+            ),
+            "samples were left out (set Db: 1 decoy run(s) failed)",
+        ),
+    ],
+)
+def test_baseline_takes_no_card_of_develop_a_run_would_not_make_it(rig, spoil, why):
+    spoil(rig)
+    rig.run("develop", decoys=True, budget_s=30.0)
+
+    with pytest.raises(
+        brun.RunError, match=re.escape(f"cannot be the baseline: {why}")
+    ):
+        rig.runner().baseline("develop/20261112-120000")
+    assert rig.state()["baseline"] is None
+
+
+def test_baseline_takes_no_card_without_a_gate_verdict(rig):
+    rig.compare.edit = lambda card: card.update(gate=None)
+    rig.run("develop")
+    assert rig.state()["cards"][-1]["verdict"] == "written"
+
+    with pytest.raises(brun.RunError, match="holds no card with a gate verdict"):
+        rig.runner().baseline("develop/20261112-120000")
+    assert rig.state()["baseline"] is None
 
 
 def test_status_shows_the_baseline_and_each_card_s_verdict(rig):
