@@ -1978,6 +1978,47 @@ pairs under `continuity` (each with its ratio, spread, drift and the co-variatio
 reading it was graded with), and `continuity_stale` where a sample folded since, a
 curation or a re-fold has moved the batch peak. The ledger shows no column for it yet.
 
+### Probable blends
+
+A batch peak is one m/z across the batch, and its formula is what most of its samples
+read there. Where two compounds share that m/z, each sample reads the one that dominates
+it, and the vote averages two answers into one. A plain disagreement scatters: the two
+formulas take turns from sample to sample. Two compounds sharing a peak part along an
+axis instead. One holds the bright samples and the other the dim ones, or one holds the
+batch's early samples and the other its late ones.
+
+So after every vote, the consensus tests the two formulas it ranked first:
+
+- **Intensity**: the Mann-Whitney rank test of the two formulas' intensities
+  [Mann and Whitney 1947][mw47]. It reads the share of pairs, one sample of each, in
+  which the first formula's sample is the brighter.
+- **Acquisition time**: the Wald-Wolfowitz runs test of the two formulas in acquisition
+  order [Wald and Wolfowitz 1940][ww40], counted exactly. It reads how many runs of one
+  formula the sequence holds, against what an interleaving gives. The segments of one
+  file are ordered by where they start in it.
+
+An axis parts the two where its test is significant at p 0.01 and the parting is clean.
+For intensity, at least 90% of the pairs order one way. For time, the formulas come in at
+most half the runs an interleaving would give. Each formula needs three samples or more,
+counting only those that read it at *candidate* or better. Two formulas whose samples read
+one ion are not tested: that is one compound read through two mechanisms, the same ion on
+the peak. A batch peak that is parted on either axis is a probable blend.
+
+A probable blend carries an intersect mark beside its formula in the *Batch peaks* ledger.
+Its tooltip names the two formulas with their ions and how many samples read each, and
+says which holds the bright or early samples. **Probable blends**, in the ledger's view
+menu, keeps only those batch peaks. The chart names such a trace by both formulas, the
+consensus first, and its hover says the axis.
+
+The flag is shown, never weighed: the consensus, its tier and the alternatives stay as the
+samples voted. Every threshold is provisional. Of ten flags read by hand on real batches,
+four were two compounds on one peak, three could not be told and three were scatter the
+tests still let through. So splitting a blend into two traces waits for a sharper test. Every recompute of a batch
+peak's consensus tests it: a sample folding in, *Rebuild batch ledger*, a curation. A batch
+folded before the test existed shows its blends after a rebuild. The ledger's records carry
+the reason as `blend`, with `formulas`, `ions`, `n`, `axis` and each axis' reading under
+`intensity` and `time`.
+
 ### Batch runs
 
 --8<-- "_help/batch-runs.md"
@@ -2084,6 +2125,12 @@ engine found, and leave the rest of the table alone.
 - <a id="sen68"></a>Sen, P. K. *Estimates of the regression coefficient based on
   Kendall's tau.* J. Am. Stat. Assoc. 1968, 63(324):1379–1389.
   [link](https://doi.org/10.1080/01621459.1968.10480934)
+- <a id="mw47"></a>Mann, H. B.; Whitney, D. R. *On a test of whether one of two random
+  variables is stochastically larger than the other.* Ann. Math. Stat. 1947,
+  18(1):50–60. [link](https://doi.org/10.1214/aoms/1177730491)
+- <a id="ww40"></a>Wald, A.; Wolfowitz, J. *On a test whether two samples are from the
+  same population.* Ann. Math. Stat. 1940, 11(2):147–162.
+  [link](https://doi.org/10.1214/aoms/1177731909)
 - <a id="kf06"></a>Kind, T.; Fiehn, O. *Metabolomic database annotations via query of
   elemental compositions: mass accuracy is insufficient even at less than 1 ppm.* BMC
   Bioinformatics 2006, 7:234.
@@ -2405,6 +2452,8 @@ engine found, and leave the rest of the table alone.
 [spe04]: #spe04
 [the50]: #the50
 [sen68]: #sen68
+[mw47]: #mw47
+[ww40]: #ww40
 [lac17]: #lac17
 [mei16]: #mei16
 [mt93]: #mt93

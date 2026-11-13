@@ -213,7 +213,17 @@ class BatchPeaksResource(BaseResource):
                  those whose own ``test_held``, how many members the claim
                  rewrote, and under ``files_recorded`` the samples it kept or
                  whose own claim stands, each with its reading); null where
-                 none, and absent from a server that predates it.
+                 none, and absent from a server that predates it;
+                 ``blend`` (on a probable blend, a batch peak whose two
+                 leading formulas' samples part cleanly along intensity or
+                 acquisition time: the two ``formulas``, the consensus first,
+                 their ``ions``, the ``n`` samples reading each at candidate
+                 or better, the ``axis`` that parts them, and each axis'
+                 reading under ``intensity`` - ``p``, ``separation``,
+                 ``brighter`` - and ``time`` - ``p``, ``runs``,
+                 ``expected_runs``, ``earlier`` -, null where untested);
+                 display-only, no tier reads it; null where none, and absent
+                 from a server that predates it.
                  ``consensus_tier`` is always this server's: the engine's tier
                  stands beside it.
                  None when the batch has no ledger yet.
