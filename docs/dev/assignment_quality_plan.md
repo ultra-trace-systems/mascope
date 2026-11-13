@@ -114,7 +114,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 4.11 - temporal continuity: the ratio-stability pass, its columns and its endpoint | - |  | built: every isotope line and its family root, and every two channels of one neutral, at assigned or candidate, graded on the within-sample ratio across a time-ordered batch (spread 1.4826 x MAD, drift by Spearman rho and a Theil-Sen change): stable, drift (the traces co-vary per 4.2), red, inconclusive or insufficient, on two `batch_peak` columns the ledger serves with a stale mark; run by its endpoint and at a rebuild's end, the fold trigger off for 4.13; on the testbed's six folded analysis batches 1,752 pairs, 1,008 stable, 122 red, 24 drift, the isotope reds a dim line's response; no tier moves; MAS-323 |
 | 4.12 - the continuity column and badge in the batch ledger, and the per-sample overlay | - |  | built: a *Continuity* column after *Samples* in the *Batch peaks* ledger, offered once the pass graded the batch: stable, drift and unstable (stored `red`) as a badge, inconclusive and insufficient muted, *Not graded* where the batch is not time-ordered, dashed where partial, a clock where stale; its own sort (unstable first, ungraded last) in the pane's projection; the pairs with their ratio, spread and drift in a popover; an isotope line's own grade on its row while unfolded; the help card; the per-sample overlay and its effective-verdict filter had shipped with the anchor verdicts; display-only; MAS-346 |
 | 4.15 - Stage B winner confidence | - |  | built, off by default: `stage_b_confidence` on the run config measures the formula-only shortlist of the untargeted stage's committed winners, the most intense first up to `stage_b_confidence_peaks` (200), in one seeded pass through every channel the run searched, scored at the width the winners were re-scored at, and stores each winner's `confidence`, `n_candidates` and `is_tie` in provenance as Stage A does, one candidate per ion on the peak (two splits of one ion are one hypothesis, the winner's own ion no rival) (`alternatives_scoring.measure_winner_confidence`, the inspector's placement rule); a winner past the budget records none; `search_scope.winner_confidence` records the counts and the seconds; `p_correct` stays null on Stage B rows (the scale now matches, the curve's population and the batch consensus that reads it do not); no tier moves; the runtime on the gate sets is the bench's to record; MAS-325 |
-| 4.16 - intensity consistency and in-source fragment corroboration | - |  | built, display-only: each sample reads a neutral's ratio between two channels against the same pair's over its other neutrals (`intensity_consistency`, consistent / loose / outlying) and pairs neutrals one in-source loss apart through one channel, the lighter on the shorter peak (`in_source_fragment_of`, a reason that caps nothing on the lighter row); measured on the anchor-swap benchmark with an intensity-matched null and two controls, neither enters P(correct): the consistent band is 0.79 to 0.92 on every adduct pair, and a loss reads mostly the lattice of related formulas (the same neutral gained, and the series units, read alike), its named pair beating its mirror by 5 to 12% but for HNO3 (1.9x), with no fragment's intensity signature; whether an eligible loss is folded is decision MAS-860; tiering rule set 14; no tier moves; MAS-326 |
+| 4.16 - intensity consistency and in-source fragment corroboration | - |  | built, display-only: each sample reads a neutral's ratio between two channels against the same pair's over its other neutrals (`intensity_consistency`, consistent / loose / outlying) and pairs neutrals one in-source loss apart through one channel, the lighter on the shorter peak (`in_source_fragment_of`, a reason that caps nothing on the lighter row); measured on the anchor-swap benchmark with an intensity-matched null and two controls, neither enters P(correct): the consistent band is 0.79 to 0.92 on every adduct pair, and a loss reads mostly the lattice of related formulas (the same neutral gained, and the series units, read alike), its named pair beating its mirror by 5 to 12% but for HNO3 (1.9x), with no fragment's intensity signature; kept display-only with the loss table whole (decision 37); tiering rule set 14; no tier moves; MAS-326 |
 | 4.18 - bound the harm of a mismatched chemistry context, graded or gate | - |  | measured (2026-11-13, demo sets Db and Du, standing in for the gate sets, `tooling/score_eval/arbitration_eval.py`, pools merged by ion as Stage B elects them): the matched context lifts contested top-1 0.724 -> 0.989 and true winners kept at 5 % FDR 13,870 -> 15,962 against `none`, removing no true reading; the two defaults swapped stay above `none` (0.979, 15,830) at the cost of 80 glycerol readings; the worst context, combustion, removes 1,619 and leaves the uronium set no cut at 5 % FDR. Every removed truth was a ratio window's, never a cap's. 596 uronium anchors whose seeded reading loses its own ion's election are counted apart (#3191). Decision 11.4 of `chemistry_profiles.md` decided: a default must leave its own sets and every other bench set at or above `none` (BR and UR pass). The windows become a graded, floored factor (#3188); the identity context is pinned byte for byte (`TestTheIdentityContext`); MAS-328 |
 | 4.19 - the active-learning verification queue, with the three calibration-label calls | - |  | built: `GET /peak-assignments/sample/{id}/verification-queue` ranks the run's unjudged rows within 0.1 evidence of a band edge by closeness and by the labels the instrument class and reagent profile hold within 0.05, with seeded spot checks every fifth place and stale verdicts (a later run reassigned or rescored the judged peak) first; the ledger's *to verify* chip and column; no `p_correct` or evidence in the queue; the refit weighs labels by evidence level (reference standard and MS/MS 1, orthogonal 0.6, pattern 0.4, visual and unstated 0.25) and records the weights on the curve (`label_weights`); per instrument and profile, down-weight, keep the snapshot and mark it stale (section 7 of `verification_calibration_loop.md`); moves no metric; MAS-329 |
 | 5.1 - the reference pinned at a release, a boundary review per peaky release | - |  | planned 2026-10-13; the first review is the section below; readiness check against the reference's main on 2026-10-22: nothing new to bin, 0.10.0 still uncut |
@@ -2675,10 +2675,24 @@ who edits chemistry and stays last.
     odds ratios the shipped weights are read as are bromide 6.6, ammonium
     2.2 and urea 2.0 (2.28, 0.83 and 0.70 in log), and the weights are odds
     ratios rather than likelihood ratios (#3161).
-- **Decided / open.** Whether an eligible loss enters P(correct), HNO3
-  above all, by which weight and where it would live, is decision MAS-860;
-  built here display-only, its recommendation. No gate number moves: no metric reads
-  P(correct), and no tier moved, so the rows a fold-in lifts number none.
+- **Decided (decision 37, 2026-11-13; MAS-860).** Display-only, as built:
+  neither factor enters P(correct), and the loss table keeps its seven
+  losses. Neither showed the effect it is named for. HNO3's excess over its
+  mirror, the one loss-specific reading, is one the mirror is not balanced
+  for: it is asked of neutrals that hold a nitrogen, so the loss lands on a
+  formula without one and the gain on a dinitrate, a far rarer class. A
+  peak one HNO3 down is then likelier than one up with no fragmentation at
+  all, and the real ions read so (present 51% against 23%; their swaps 23
+  and 21%). Two readings would tell fragmentation from that composition:
+  HNO3 shifted by a series unit (CH3NO3, HNO4), which crosses the same
+  nitrogen boundary and no source sheds, read beside it on the benchmark;
+  and the pair's height ratio over a batch, which a fragment holds and a
+  chemical sibling, a nitrate beside its non-nitrate, lets drift with the
+  chemistry (4.11's grading, applied to two neutrals through one channel).
+  A weight, if one is earned, enters through 4.3's calibration from
+  verdicts, measured against labelled truth rather than a swap null. No
+  gate number moves: no metric reads P(correct), and no tier moved, so the
+  rows a fold-in lifts number none.
 
 ## Milestone 6 - the bench
 
@@ -3279,7 +3293,7 @@ with the averaged profile kept as measured.
 - Its known-species registry and certified-neutral passes (the note's
   "Not in this plan").
 
-### Decisions proposed to the plan owner (30 taken 2026-10-14, 29 and 31 on 2026-10-23, 32 on 2026-10-22, 33 on 2026-10-30, 34 and 35 on 2026-11-05, 36 on 2026-11-16)
+### Decisions proposed to the plan owner (30 taken 2026-10-14, 29 and 31 on 2026-10-23, 32 on 2026-10-22, 33 on 2026-10-30, 34 and 35 on 2026-11-05, 36 on 2026-11-16, 37 on 2026-11-13)
 
 29. **The reference is pinned at a release, and each peaky minor gets a
     boundary review** (step 5.1). Taken 2026-10-23 by the plan owner
@@ -3380,6 +3394,20 @@ with the averaged profile kept as measured.
     source chemistry, rather than held below assigned. The gate card reading
     it so is #3241. The 0.25 bar, the two guards and the 0.5 floor share
     stand as the reading's defaults until a bench reads the flag.
+37. **Step 4.16's two factors stay display-only, and the in-source loss
+    table stays whole** (taken 2026-11-13 by the plan owner, as
+    recommended; Linear MAS-860). Neither factor showed the effect it is
+    named for: within one sample a consistent channel ratio is less likely
+    for a real pair than for a chance one, and no loss shows a fragment's
+    intensity signature. The one loss-specific excess, HNO3's 1.9x over
+    its mirror, is what the mirror's nitrogen imbalance predicts without
+    fragmentation (4.16, Decided), so the benchmark cannot weigh it as a
+    fragment. No tier and no gate reads P(correct), so a fold would move
+    nothing; a weight enters through 4.3's calibration from verdicts if
+    labelled truth earns one. The table keeps its seven losses: narrowed to
+    HNO3, the reason would name only the loss likeliest to be a chemical
+    sibling, and one dataset's reagents are too narrow a ground to prune a
+    table taken from the literature.
 
 ### Worth watching
 
