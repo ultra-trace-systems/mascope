@@ -1626,7 +1626,11 @@ acknowledgement is an error payload naming why:
 
 An accepted event's acknowledgement is whatever its handler returns, today nothing. Only a
 client that emits with a callback (`sio.emit(..., callback=...)` or `sio.call`) receives it.
-The converter emits every event with one (`FileConverterSocketClient.emit`). On a rejection
+The converter emits every event with one (`FileConverterSocketClient.emit`). It also counts each
+event until its acknowledgement arrives, and a stopping converter waits for that count to
+reach zero, at most `STOP_ACKNOWLEDGEMENT_SECONDS`, before it disconnects: `sio.emit` only
+queues a packet, and a disconnect closes the websocket without writing the queue, so the
+last results its threads sent would otherwise be lost. On a rejection
 it logs a WARNING once per file, token and code, naming the event and the code. When the
 code is a verdict on the token (`SOCKET_UNAUTHENTICATED`, `SOCKET_FORBIDDEN`), it sends no
 further events for that file with that token: the backend would drop them too. A fresh token

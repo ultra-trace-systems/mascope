@@ -334,8 +334,8 @@ URL = f"http://{HOST}:{runtime.meta.api_port}"
 PEAK_CONCURRENCY = 3
 PEAK_GUARD = PeakDetectionGuard()
 PEAK_RECOMPUTE_QUEUE = Queue()
-# The most seconds the stop waits for the backend to acknowledge the peak
-# detection requests it answered, before it disconnects. On loopback they all
+# The most seconds the stop waits for the backend to acknowledge the events
+# still unacknowledged, before it disconnects. On loopback they all
 # arrive within a fraction of a second; the bound only keeps a backend that
 # stopped answering from holding the stop.
 STOP_ACKNOWLEDGEMENT_SECONDS = 5
@@ -480,14 +480,15 @@ def run():
         # lost with the process and its caller left waiting on it, so each is
         # answered now, while the socket is still up.
         drain_on_stop(SOCKET_CLIENT, PEAK_RECOMPUTE_QUEUE, PEAK_GUARD)
-        # Those answers, and the handler's refusals since the stop, are only
-        # queued on the socket. A disconnect now would close it before most
-        # are sent, so it waits, a bounded time, for the backend to
-        # acknowledge them.
+        # Those answers, the handler's refusals since the stop, and the last
+        # events the workers and processors sent before they were joined (a
+        # peak detection's result, a conversion's success) are only queued on
+        # the socket. A disconnect now would close it before most are sent,
+        # so it waits, a bounded time, for the backend to acknowledge them.
         if not SOCKET_CLIENT.wait_for_acknowledgements(STOP_ACKNOWLEDGEMENT_SECONDS):
             runtime.logger.warning(
-                "The backend did not acknowledge every peak detection request "
-                "answered at the stop; their callers may stay pending"
+                "The backend did not acknowledge every event sent before the "
+                "stop; a peak detection or an upload may stay pending"
             )
         # Leave now rather than at the backend's ping timeout: until then it
         # still counts the converter as connected and accepts uploads for it.

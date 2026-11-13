@@ -73,11 +73,15 @@ class FileConverterSocketClient:
         # callbacks, read from the processing threads that emit.
         self._rejections: OrderedDict[str | None, _FileRejections] = OrderedDict()
         self._rejected_lock = threading.Lock()
-        # How many events sent with ``awaited`` the backend has not
-        # acknowledged yet. ``sio.emit`` only queues a packet, and
-        # ``sio.disconnect`` closes the websocket without waiting for the
-        # queue, so an event sent right before it is mostly lost; the stop
-        # waits on this count before it disconnects.
+        # How many sent events the backend has not acknowledged yet.
+        # ``sio.emit`` only queues a packet, and ``sio.disconnect`` closes the
+        # websocket without waiting for the queue, so an event sent right
+        # before it is mostly lost; the stop waits on this count before it
+        # disconnects. Every event is counted: the backend acknowledges each
+        # one it handles, a rejection included, and the last ones a worker or
+        # a processor sends while the converter stops (a peak detection's
+        # result, a conversion's success) are as easily lost as the stop's
+        # own answers.
         self._awaited = 0
         self._awaited_changed = threading.Condition()
         self.event_handler = SocketEventHandler(
@@ -129,11 +133,11 @@ class FileConverterSocketClient:
             transports=["websocket"],
         )
 
-    def emit(self, event: str, data: dict, auth: dict = {}, awaited: bool = False):
+    def emit(self, event: str, data: dict, auth: dict = {}):
         """Emit an event to the server, with optional auth.
         If auth is not provided, will try to fill from file context
         (if filename is in data and context exists).
-        An ``awaited`` event is counted until the backend acknowledges it, so
+        The event is counted until the backend acknowledges it, so
         ``wait_for_acknowledgements`` can hold a disconnect until it is
         delivered.
 
@@ -143,8 +147,6 @@ class FileConverterSocketClient:
         :type data: dict
         :param auth: Optional auth dict with 'access_token' and 'user_id'.
         :type auth: dict | None, optional
-        :param awaited: Count the event until its acknowledgement arrives.
-        :type awaited: bool, optional
         """
         counted = False
         try:
@@ -172,12 +174,12 @@ class FileConverterSocketClient:
                     "the backend rejected its access token"
                 )
                 return
-            callback = self._acknowledgement_handler(event, file_key, access_token)
-            if awaited:
-                callback = self._counted(callback)
-                with self._awaited_changed:
-                    self._awaited += 1
-                counted = True
+            callback = self._counted(
+                self._acknowledgement_handler(event, file_key, access_token)
+            )
+            with self._awaited_changed:
+                self._awaited += 1
+            counted = True
             self.sio.emit(
                 event,
                 data,
@@ -217,7 +219,7 @@ class FileConverterSocketClient:
             self._awaited_changed.notify_all()
 
     def wait_for_acknowledgements(self, timeout: float) -> bool:
-        """Wait until the backend has acknowledged every ``awaited`` event.
+        """Wait until the backend has acknowledged every event sent.
 
         :param timeout: The most seconds to wait.
         :type timeout: float
