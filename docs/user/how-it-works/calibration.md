@@ -100,7 +100,10 @@ That fit is the one the file had before the cap, and the verification below stil
 
 The fit's record says what the cap did, under `calibrant_cap` in its quality block: the cap in effect (`tic_share_max`, `peak_intensity_max`), how many lines it left out (`n_excluded`), and whether it was set aside (`fell_back`).
 A file calibrated range by range has the same block for each range, and the file's counts the lines left out across them.
-Set the parameters in the calibration dialog's request, or leave them out to take the instrument's default.
+The calibration dialog has no field for the cap, so a fit from the dialog uses the instrument's default.
+Through the API, either parameter can be set in the request body of `POST /api/calibration/mz_fit`, and of the `mz_calibrate` routes for a sample or a batch.
+A parameter that is left out or `null` takes the instrument's default, so `null` does not turn the cap off.
+To turn the share cap off, send a `calibrant_tic_share_max` of 1 or more: no line carries more than the whole ion current.
 
 Peak assignment's mass gate reads the source's own lines by the same cap.
 A reagent line brighter than it does not anchor the gate's calibration, and the run's record counts such lines as `reagent_capped` ([peak assignment](peak-assignment.md)).
