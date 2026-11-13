@@ -4,6 +4,7 @@
     bench.py reference --pin vX.Y.Z [--reinstall] [--jobs N] [--set NAME ...] [--wait]
     bench.py run <ref> [--sets A,D,...] [--decoys] [--baseline] [--post PR] [--no-wait] [--jobs N] [--budget-min M] [--workers N]
     bench.py baseline [CARD]
+    bench.py review [--sets A,D,...] [--top N] | --record SHEET [--recalibrate] [--wait]
     bench.py status
 
 ``init`` builds the bench instance (env ``bench``) from a sets manifest
@@ -68,6 +69,7 @@ if str(_HERE) not in sys.path:
 import manifest as bench_manifest  # noqa: E402
 import post as bench_post  # noqa: E402
 import reference as bench_reference  # noqa: E402
+import review as bench_review  # noqa: E402
 import run as bench_run  # noqa: E402
 from manifest import Manifest, ManifestError, ResolvedFile  # noqa: E402
 
@@ -1829,6 +1831,17 @@ class Bench:
 # ---------------------------------------------------------------------- cli
 
 
+def positive_int(text: str) -> int:
+    """An argument that is a whole number of at least 1."""
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a whole number") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"{value} is not 1 or more")
+    return value
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="bench.py", description=__doc__.split("\n\n")[0]
@@ -1949,6 +1962,37 @@ def main(argv: list[str] | None = None) -> int:
     p_base.add_argument(
         "--wait", action="store_true", help="queue behind another bench command"
     )
+    p_review = sub.add_parser(
+        "review",
+        help="the engines' top tier disagreements as a sheet of verdicts to give, "
+        "or record a filled one",
+    )
+    p_review.add_argument(
+        "--sets",
+        type=lambda text: [n.strip() for n in text.split(",") if n.strip()],
+        help="only these sets, comma-separated (default every set)",
+    )
+    p_review.add_argument(
+        "--top",
+        type=positive_int,
+        default=bench_review.TOP,
+        help=f"rows per set on the sheet (default {bench_review.TOP})",
+    )
+    p_review.add_argument(
+        "--record",
+        type=Path,
+        metavar="SHEET",
+        help="post the verdicts a filled sheet holds",
+    )
+    p_review.add_argument(
+        "--recalibrate",
+        action="store_true",
+        help="with --record: refit the curve of each instrument class the "
+        "verdicts hold, once per class",
+    )
+    p_review.add_argument(
+        "--wait", action="store_true", help="queue behind another bench command"
+    )
     sub.add_parser("status", help="the env, slot, sets, reference pin and last cards")
     args = parser.parse_args(argv)
 
@@ -1996,17 +2040,35 @@ def main(argv: list[str] | None = None) -> int:
                     baseline=args.baseline or poster is not None,
                     post=poster,
                 )
+
+        def prepare() -> None:
+            # The build the bench's data was ingested with, at its head:
+            # a bench run leaves no build behind, and moves the database
+            # to the head of the ref it ran.
+            ref = (load_state(home, instance.env).get("build") or {}).get(
+                "ref"
+            ) or "develop"
+            bench_run.migrate(instance, ref, instance.checkout(ref), log)
+
+        if args.command == "review":
+            review = bench_review.Review(
+                reviews=home.root / "reviews",
+                instance=instance,
+                query=instance._query,
+                connect=connect,
+                load_state=lambda: load_state(home, instance.env),
+                write_private=home.write_private,
+                prepare=prepare,
+                say=log,
+            )
+            if args.record is None:
+                if args.recalibrate:
+                    raise BenchError("--recalibrate goes with --record")
+                review.sheet(args.sets, top=args.top)
+                return 0
+            with home.lock(wait=args.wait):
+                return review.record(args.record, recalibrate=args.recalibrate)
         if args.command == "reference":
-
-            def prepare() -> None:
-                # The build the bench's data was ingested with, at its head:
-                # a bench run leaves no build behind, and moves the database
-                # to the head of the ref it ran.
-                ref = (load_state(home, instance.env).get("build") or {}).get(
-                    "ref"
-                ) or "develop"
-                bench_run.migrate(instance, ref, instance.checkout(ref), log)
-
             runner = bench_reference.Reference(
                 peaky=bench_reference.Peaky(
                     home.root / "reference", url=args.peaky_url
@@ -2033,6 +2095,7 @@ def main(argv: list[str] | None = None) -> int:
         BenchError,
         ManifestError,
         bench_reference.ReferenceError,
+        bench_review.ReviewError,
         bench_run.RunError,
         bench_post.PostError,
     ) as error:
