@@ -433,8 +433,13 @@ describe('PanePeakAssign persistence admission', () => {
   const line = (wrapper) => wrapper.find('[data-testid="batch-persistence"]')
 
   it('names the share the admission rested on, and that the batch holds the reading', async () => {
+    // A run's own row of the reading, at the run's tier: what the line says
+    // is the batch peak's.
     focusedAssignment = ROW
-    detailRecord = { provenance: {}, batch_persistence: { ...record, tier_reasons: held } }
+    detailRecord = {
+      provenance: {},
+      batch_persistence: { ...record, tier_reasons: held, consensus_tier: 'candidate' }
+    }
     const wrapper = await mountPane({ recordTooltips: true })
 
     expect(line(wrapper).text()).toBe(
@@ -444,16 +449,36 @@ describe('PanePeakAssign persistence admission', () => {
     expect(line(wrapper).attributes('data-tooltip')).toMatch(
       /above the batch's split at 46 %, not because of its height\./
     )
-    expect(line(wrapper).attributes('data-tooltip')).toMatch(/held at candidate until/)
+    expect(line(wrapper).attributes('data-tooltip')).toMatch(/is held at candidate until/)
+  })
+
+  it('says the reading is already below candidate where the vote put the batch peak there', async () => {
+    focusedAssignment = { ...ROW, tier: 'below_assignability' }
+    detailRecord = {
+      provenance: {},
+      batch_persistence: { ...record, tier_reasons: held, consensus_tier: 'below_assignability' }
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(line(wrapper).text()).toBe(
+      'Searched on persistence: in 11 of 12 spectra (92 %), already below candidate'
+    )
+    expect(line(wrapper).classes()).toContain('lower')
+    expect(line(wrapper).classes()).not.toContain('held')
+    expect(line(wrapper).attributes('data-tooltip')).toMatch(/would be held at candidate/)
   })
 
   it('names the share alone on a row that reads the peak another way', async () => {
     focusedAssignment = { ...ROW, assigned_formula: 'C10H13N' }
-    detailRecord = { provenance: {}, batch_persistence: { ...record, tier_reasons: null } }
+    detailRecord = {
+      provenance: {},
+      batch_persistence: { ...record, tier_reasons: null, consensus_tier: null }
+    }
     const wrapper = await mountPane()
 
     expect(line(wrapper).text()).toBe('Searched on persistence: in 11 of 12 spectra (92 %)')
     expect(line(wrapper).classes()).not.toContain('held')
+    expect(line(wrapper).classes()).not.toContain('lower')
   })
 
   it('shows nothing where the search took the peak on its height', async () => {

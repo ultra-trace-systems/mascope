@@ -57,9 +57,9 @@ import {
 } from '@/lib/batchKnownSpecies'
 import { blendOf, blendSummary, blendTooltip } from '@/lib/batchBlend'
 import {
-  heldOnPersistence,
   holdingReasons,
   holdingTooltip,
+  persistenceHold,
   persistenceSummary,
   persistenceTooltip
 } from '@/lib/batchPersistence'
@@ -1342,15 +1342,18 @@ watch(
               />
               <!-- The batch search took this peak because it recurs across
                    the batch, not for its height: the share on hover, and
-                   whether the reading it elected is held at candidate. -->
+                   whether the reading it elected is held at candidate, or
+                   already below it on the samples' vote. -->
               <span
                 v-if="data.persistence"
                 class="pi ph ph-repeat persistence-mark"
-                :class="{ held: heldOnPersistence(data.tier_reasons) }"
+                :class="persistenceHold(data.tier_reasons, data.consensus_tier)"
                 role="img"
                 data-testid="persistence-mark"
                 :aria-label="persistenceSummary(data.persistence)"
-                v-tooltip.top="persistenceTooltip(data.persistence, data.tier_reasons)"
+                v-tooltip.top="
+                  persistenceTooltip(data.persistence, data.tier_reasons, data.consensus_tier)
+                "
               />
               <span
                 v-if="isotopologueCount(data)"
@@ -1510,7 +1513,7 @@ watch(
                   .map((reason) => reason.label)
                   .join(', ')
               "
-              v-tooltip.top="holdingTooltip(data.tier_reasons)"
+              v-tooltip.top="holdingTooltip(data.tier_reasons, data.consensus_tier)"
             />
           </template>
           <template #filter="{ filterModel, filterCallback }">
@@ -1874,7 +1877,8 @@ watch(
   font-size: 0.8rem;
   opacity: 0.6;
 }
-.persistence-mark.held {
+.persistence-mark.held,
+.persistence-mark.lower {
   opacity: 1;
 }
 .tier-reason-mark {

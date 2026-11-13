@@ -1441,7 +1441,9 @@ lines are under the peak picker, and nothing in the peak tells the formula the s
 elected from the others the window holds. So a batch peak the search took on
 persistence alone, where the threshold or the ceiling would have left it out, holds
 the reading the search elected at *candidate* (**persistence only**), in the
-batch ledger and in every sample's view of the batch peak. Something
+batch ledger and in every sample's view of the batch peak. The cap never raises a
+reading: one the samples' vote already puts below candidate stays there, and the
+reason is still named. Something
 besides the peak lifts it: a line of its isotope pattern committed in a sample, the
 same neutral through another channel of the batch, or a homologous series of the
 batch (*Detecting series*, below). A better fit does not. The batch peak's formula
