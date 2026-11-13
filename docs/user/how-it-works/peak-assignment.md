@@ -1862,9 +1862,11 @@ in its latest in-app run. The row reads the ion and no compound, at tier *unassi
 with the batch's reading of the rung as its reason. The reading it carried is kept first
 among its alternatives (**earlier reading**, which *use this* puts back). The row's
 isotope lines go with it. A peak at the rung's 81Br line, read on its own, becomes that
-line, owned by the rung's peak where that is the rung in the sample. The samples of
-other stretches keep their readings: the same mass there can be another ion. The batch
-peak then reads what its samples' vote reads.
+line, owned by the rung's peak. Where the rung's peak is not the rung in that sample, the
+81Br line's peak keeps its reading: with no peak to belong to, it would read as the
+hydrate itself at the wrong mass. The samples of other stretches keep their readings:
+the same mass there can be another ion. The batch peak then reads what its samples' vote
+reads.
 
 A sample is kept as it is where a person assigned the peak, where the target library or a
 reference list named its reading, where the peak is another ion's isotope line or another
@@ -1872,19 +1874,26 @@ source ion's claim, and where its reading carries an isotope line the hydrate ca
 have, such as a 13C line under a carbon-free cluster. A run imported from another engine
 is never rewritten, and a batch peak curated by hand is never claimed.
 
+A hydrate the measurement claimed in a sample is the batch's word there, not that
+sample's own finding. *Decide known species*, run after it, does not count such a sample
+as one whose own test held, whether or not the sample has a row of its own on the peak.
+So a hydrate that passed in one stretch is not decided present over the batch and
+claimed in the others. A sample whose own run claimed the hydrate still counts.
+
 A batch peak at a passing rung carries a drop mark beside its formula. It is in the
 primary colour where the batch peak reads the reagent's ion, and muted where its other
 samples' readings kept the batch peak's own. On hover it shows the rung, the stretches
-it passed in with how often it and the masses beside it were seen, how many samples the
-claim took, what the batch peak read before, and the samples kept with their readings.
+it passed in out of the batch's stretches, how often it and the masses beside it were
+seen there, how many samples the claim took, what the batch peak read before, and the
+samples kept with their readings.
 The ledger route and `batch_peaks.list` carry it as `water_ladder` for as long as the
 batch peak reads what the measurement left it reading. Each measurement replaces every
 one before it. A sample assigned again reads its peaks afresh, and the next measurement
 reads them again. It runs as a batch run. Its summary gives per ionization mode and
 instrument type the stretches, how far each core's ladder reached in each, the rungs
-tested and passed, the batch peaks claimed, and the analyte rows that left the ledger. It
-also gives the share of the batch's signal that no committed reading, source role or
-isotope line explains, before and after.
+tested and passed, the batch peaks claimed, the samples they were claimed in, and the
+analyte rows that left the ledger. It also gives the share of the batch's signal that no
+committed reading, source role or isotope line explains, before and after.
 
 The whole ledger leaves the app as a CSV from the view menu behind the cog: *Export
 ledger (CSV)* writes one row per member peak - every sample's reading of every batch

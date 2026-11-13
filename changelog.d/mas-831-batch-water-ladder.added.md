@@ -9,7 +9,9 @@
   ion. Its peak is claimed as such in that stretch's samples, in the batch
   and in each sample's latest in-app run, its isotope lines with it.
   Samples assigned by hand, named by a target or reference list, or read
-  as another ion's line are kept. A drop mark beside the formula gives the
+  as another ion's line are kept. A hydrate claimed this way is the batch's
+  word to *Decide known species*, which does not spread it over the
+  stretches where it did not pass. A drop mark beside the formula gives the
   rung and how often it was seen, and the run's summary reports how far
   each ladder reached, the rows that left the ledger as analytes, and the
   share of signal nothing explains before and after. `batch_peaks.list`

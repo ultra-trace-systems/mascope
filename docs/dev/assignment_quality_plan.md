@@ -1931,13 +1931,17 @@ who edits chemistry and stays last.
     rung's numbers in that segment, the reading displaced under `read_as` and
     first among the alternatives). The member's isotope lines go with it, as
     a library ion's do; a heavier track's peak read on its own becomes the
-    rung's line, owned by the rung's monoisotopic peak in that sample where
-    that is the rung. Kept, and recorded with their readings: a hand
+    rung's line, owned by the rung's monoisotopic peak in that sample, and is
+    claimed only where that peak is the rung there: the ledger says a line by
+    its owner alone, so a heavier line claimed with none would read as the
+    rung's own ion at its line's mass, and *Decide known species* would read
+    it so. Kept, and recorded with their readings: a hand
     assignment, a target compound, a reading a reference list names (a cited
-    analyte), another ion's isotope line, another source ion's claim, and a
+    analyte), another ion's isotope line, another source ion's claim, a
     reading carrying an isotope line the rung cannot have (by its label, or,
     with no row to label it, by whether it sits at a line of the rung's
-    envelope). An imported run's rows are never rewritten and a curated batch
+    envelope), and a heavier line whose rung's peak is not the rung in the
+    sample. An imported run's rows are never rewritten and a curated batch
     peak is never claimed. The samples of other segments keep their readings,
     so the batch peak reads its members' vote; the rider's "leaves the
     ledger" is where the claim turns that vote, and the record says whether it
@@ -1946,20 +1950,32 @@ who edits chemistry and stays last.
     in a dry stretch and the water cluster in a humid one.
   - **The record and the report.** Each batch peak at a passing line carries
     `provenance.water_ladder`: the rung, its reading in each segment the
-    ladder reached it in (presence, decoys, the carbon test, the verdict), the
-    segments it passed in, what the claim wrote and kept, what the batch peak
-    read before, whether it turned and whether an analyte moved, each member's
-    earlier state, and the reading it holds since; the consensus keeps it
+    ladder reached it in (presence, decoys, the carbon test, the verdict) and
+    how many segments the partition has, the segments it passed in, what the
+    claim wrote and kept, what the batch peak read before, whether it turned
+    and whether an analyte moved, each member's earlier state, the samples
+    whose member reads the rung on the ladder's word (`claimed_samples`:
+    this measurement's claims and an earlier one's that read it still), and
+    the reading it holds since; the consensus keeps it
     while the batch peak reads that, a new measurement replaces every record,
     and the ledger and a run's snapshot serve it as `water_ladder`. The run's
     summary reports per partition the profile, the segments, each core's
     reach per track and segment, the rungs tested and passed, the batch peaks
-    claimed and turned, the analyte rows moved, and the unexplained share of
-    the partition's signal (summed member intensity on batch peaks no
-    committed reading, source role or isotope line explains) before and after.
-    The ledger shows a drop mark beside the formula, its tooltip the rung and
-    its segments. A row this pass writes is the batch's word to *Decide known
-    species*, which does not count it as a file's own test.
+    claimed and turned, the samples claimed in, the analyte rows moved, and
+    the unexplained share of the partition's signal (summed member intensity
+    on batch peaks no committed reading, source role or isotope line
+    explains) before and after. The ledger shows a drop mark beside the
+    formula, its tooltip the rung and its segments out of the partition's.
+    A member this pass claimed is the batch's word to *Decide known
+    species*, whatever its row: a rewritten row says so, and for a member
+    with no row or an import's the decision reads `claimed_samples`
+    (`batch_known_species.ladder_claimed`). It never counts such a member as
+    a file's own test, so a rung that passed in one segment is not decided
+    present over the batch and claimed in the others. A file's own claim of
+    the rung, on its row, stays its own. Like a decision's own tests, this
+    holds while the record stands: a later measurement that no longer passes
+    the rung there, or a fold that moves the batch peak's reading, takes the
+    record off.
   - **Where it runs.** The brief puts the pass after the fold. As 4.2c, 4.2f
     and 4.2h found, a reading of one anchor against others across the whole
     partition is a batch run's, not the per-fold consensus pass's; the fold's
@@ -1983,9 +1999,23 @@ who edits chemistry and stays last.
     present in every spectrum and already the pre-pass's claims (the copy's
     claimed members name no ion, so the pass reads them as another source's
     claim and keeps them). On F2 the acid clusters climb: HNO3.NO3- to three
-    waters and (HNO3)2.NO3- to four, and the seven rows that leave the ledger
-    as analytes are small nitrogen-rich or oxygenated formulas read through
-    the nitrate (one assigned, three candidate, three below assignability).
+    waters and (HNO3)2.NO3- to four. Seven rows leave the ledger as analytes
+    read through the nitrate (one assigned, three candidate, three below
+    assignability): C2HN3O, C2HN3O2, C3H5NO4, C5H8O7 twice, C8H6O6 and
+    C13H10S, three under five carbons, three with five to nine and one with
+    thirteen. None of them moved on a rung the carbon test was asked on. They
+    sit on HNO3.NO3-.(H2O)1 to 3 and (HNO3)2.NO3-.(H2O)3 and 4, whose heights
+    are 0.05 to 0.84 against local floors of 0.01 to 0.07 and local medians
+    of 0.06 to 0.74: five carbons' 13C, 5.4 % of the rung, never clears the
+    floor, so the test is not asked. These are ordinary small peaks present
+    in all five spectra, not bright reagent lines (NO3-.H2O, at 11 to 22, is
+    asked and passes). C13H10S left (HNO3)2.NO3-.(H2O)4 at 3.1 times its
+    decoys (presence 1.0 against 0.325). That is the rule as the brief and
+    the reference write it: presence, contiguity and the decoy margin, the
+    carbon test only where a 13C line could show. Whether a dim rung on a
+    segment of five spectra should move a committed candidate at all, or
+    only an unread peak or one below assignability, is the plan owner's to
+    weigh; as built it moves it.
     On the third TOF ledger NO3- passes two waters, its third to fifth fail
     the carbon test (median M+1 0.07 to 0.12 against a bar of 0.06) and
     HNO3.NO3-'s hydrates their decoys on a crowded axis. On the Orbitrap one
