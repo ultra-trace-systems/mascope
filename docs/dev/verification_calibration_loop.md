@@ -1,7 +1,7 @@
 # Interactive verification → the calibration golden set
 
 - **Status:** building
-- **As of:** 2026-11-11
+- **As of:** 2026-11-13
 - **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear; MAS-63 covers V2 activation and the corroboration refit; the V3 active-learning queue is MAS-329, with the three section 7 decisions recorded inside it)
 - **Supersedes:** `verification_capture_frontend.md` (retired 2026-10-22; section 4.5)
 - **What:** Human verdicts on assignments feeding the confidence calibration.
@@ -17,9 +17,9 @@ instrument's confidence calibration. This closes the loop opened by the P2 calib
 V2 (close the loop) is **built** — `mascope_tools.recalibrate` +
 `calibration_store.save_calibration` + `recalibrate_instrument` + `POST /calibration/{instrument}/recalibrate`
 (superuser), verified on synthetic labels and live on the demo; it just waits on real V1-UI labels
-to switch on real labels. V3 (quality) is partly **built** (MAS-329, §4.7): the active-learning
-queue with its stale mark, and evidence-level weighting in the refit; the corroboration refit and
-the identification level on the assignment are still to come (§6).
+to switch on real labels. V3 (quality) is partly **built** (MAS-329, §4.7; MAS-63, §4.8): the
+active-learning queue with its stale mark, evidence-level weighting in the refit, the per-profile
+refit and the corroboration refit; the identification level on the assignment is still to come (§6).
 
 ## 1. Why
 
@@ -303,8 +303,7 @@ flowchart TD
 - *Labels near* counts the live labels of the calibration's pool (`_live_label_rows`, shared with
   `recalibrate_instrument`) on the sample's instrument class and the run's reagent profile
   (`config.resolved_profile.profile`) within 0.05 of the row's evidence. Ten of them, the fit's
-  per-class floor, halve a row's rank. The fit itself pools every profile of the class; a
-  per-profile fit is MAS-63's.
+  per-class floor, halve a row's rank. A refit can be asked for one profile's labels (§4.8).
 - The spot checks are the pool's rows with the lowest `sha256(run id : row id)`: a run's queue
   reads the same on every load, a verdict on one spot check removes only that row, and a change in
   how many are drawn moves only the end of the draw. At least three are drawn wherever the pool
@@ -334,6 +333,28 @@ labels:* down-weighted, not excluded; the provisional gate still refuses to grad
 them. *A re-run that changes the assignment:* the snapshot label is kept and still fits at the
 score it was judged at until the row is judged again; the row is marked stale in the queue for a
 new verdict, which supersedes the old one only when it is on the same identity (a rescored row).
+
+### 4.8 Built: per profile, the corroboration refit and the kept curve (MAS-63)
+
+- **The profile.** A refit asked for a reagent profile
+  (`POST /calibration/{instrument}/recalibrate?profile=...`) fits only the labels of runs that
+  resolved to it. The curve records the profile its labels share
+  (`assignment_calibration.reagent_profile`; NULL across profiles) and a run under another
+  profile reads it with a warning and `profile_mismatch` on its record: recorded, not keyed on.
+- **Stage B.** The pool admits a verdict on an untargeted row from a run at engine 0.5.0 or
+  later, the first whose every row is on the v2 scale; before it, only rows still there to say
+  they are Stage A's.
+- **The corroboration weights** are refit from the labels of a curve's one profile
+  (`refit_corroboration`): each adduct's weight is the smoothed log likelihood ratio of a
+  confirmed label's compound also being committed through it at assigned or candidate, against a
+  rejected one's, read off the judged run's own database-stage rows, the event the run's fold
+  adds the weight for (a lower tier, or an untargeted row of the same neutral, adds none there
+  either). Only labels on database-stage rows of a target compound move the weights; the rest,
+  untargeted ones included, fit the curve alone. Adducts too few labels saw keep their weight.
+- **The kept curve.** A refit with a worse held-out ECE than the curve in force is reported and
+  not saved; labels that make no usable curve are reported, not raised.
+- **Labels on the bench.** `bench review` writes the engines' top tier disagreements as a sheet
+  of verdicts for a person to give, and `--record` posts them (`tooling/assignment_bench`).
 
 ## 5. The central risk: the confirmation-bias loop
 
@@ -376,9 +397,10 @@ prophecy. Everything else here is secondary to getting this right.
   (reference-standard/MS-MS) evidence — visual-only confirmations can't graduate it. Verified on
   synthetic labels + live on the demo. *Real value waits on V1-UI labels accumulating.*
 - **V3 — quality & scale.** Active-learning queue (guardrail 3) and evidence-level weighting in the
-  fit: **built** (MAS-329, §4.7), with the stale mark. Still to come: refit of the corroboration
-  weights (MAS-63), Schymanski-level surfacing on the assignment (MAS-73), and (optionally)
-  cross-linking confirmations to `reference_compound` standards.
+  fit: **built** (MAS-329, §4.7), with the stale mark; the per-profile refit and the refit of the
+  corroboration weights: **built** (MAS-63, §4.8). Still to come: Schymanski-level surfacing on
+  the assignment (MAS-73), and (optionally) cross-linking confirmations to `reference_compound`
+  standards.
 
 ## 7. Open questions
 
@@ -386,7 +408,8 @@ prophecy. Everything else here is secondary to getting this right.
   ion, not the compound, and not across adducts (§4.5). Aggregating to the compound for
   corroboration stays open.
 - Shared vs per-user calibration. *Answered (MAS-329):* per instrument class, as the fit is, with
-  per-user attribution retained on the verdict; not per user (§4.7).
+  per-user attribution retained on the verdict; not per user (§4.7). A fit may be asked for one
+  reagent profile's labels (MAS-63, §4.8); the lookup is not keyed on the profile yet.
 - How to weight `visual` labels. *Answered (MAS-329):* down-weighted, not excluded
   (`EVIDENCE_LEVEL_WEIGHTS`, §4.7).
 - Re-verification when a re-run changes an assignment. *Answered (MAS-329):* keep the snapshot
