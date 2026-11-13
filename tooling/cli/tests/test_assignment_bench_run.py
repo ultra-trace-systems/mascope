@@ -848,7 +848,12 @@ def test_leaving_the_engine_runs_stops_every_job_at_its_next_poll(rig, leave):
 
     def interrupt():
         if polling.wait(10) and busy.wait(10) and _waits_on_the_jobs(main):
-            signal.pthread_kill(main.ident, signal.SIGINT)
+            # Seen in ``wait`` is not yet blocked in its lock: a signal handled
+            # before that wakes nothing, and the run leaves at the budget. On
+            # a busy core the gap is wide enough to hit, so let it close.
+            time.sleep(0.05)
+            if _waits_on_the_jobs(main):
+                signal.pthread_kill(main.ident, signal.SIGINT)
 
     main = threading.main_thread()
     rig.server.runs, rig.server.assign = runs, assign
