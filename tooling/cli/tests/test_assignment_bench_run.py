@@ -895,12 +895,19 @@ def test_a_job_that_breaks_behind_a_running_sample_stops_the_run_when_it_breaks(
     assert rig.instance.calls[-2:] == ["stop", "remove_worktree"]
 
 
-def test_a_sample_still_queued_when_a_job_breaks_is_never_started(rig):
+def test_a_sample_still_queued_when_a_job_breaks_launches_no_run(rig):
+    # One worker, and S1's job breaks at its third poll, once the main thread
+    # waits on the jobs: S2 is queued by then, and the worker that broke
+    # takes it at once, before the main thread wakes.
+    rig.server.ends[("S1", None)] = None
+    main, polls = threading.main_thread(), [0]
     real_runs = rig.server.runs
 
     def runs(sample, include_decoys=False):
         if sample == "S1" and include_decoys:
-            raise ValueError("a bug in the bench")
+            polls[0] += 1
+            if polls[0] == 3 and _waits_on_the_jobs(main):
+                raise ValueError("a bug in the bench")
         return real_runs(sample, include_decoys)
 
     rig.server.runs = runs
@@ -908,8 +915,14 @@ def test_a_sample_still_queued_when_a_job_breaks_is_never_started(rig):
         rig.runner(jobs=1).run("topic", sets=["Db"])
 
     (log,) = rig.home.cards.glob("*/*/run.log")
-    assert "stopped: ValueError: a bug in the bench" in log.read_text()
-    assert "S2: control" not in log.read_text()
+    text = log.read_text()
+    assert "stopped: ValueError: a bug in the bench" in text
+    # S2's job, taken before the main thread could cancel it, only stopped.
+    assert all(
+        "S2: control stopped" in line
+        for line in text.splitlines()
+        if "S2: control" in line
+    )
     assert [s for s, _, _ in rig.server.assigned] == ["S1"]
 
 

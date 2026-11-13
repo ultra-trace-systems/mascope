@@ -179,7 +179,7 @@ box in the caller's own session, one run at a time. In order:
    backend next starts. A Ctrl-C, or a job that breaks on any sample, the
    first or one behind a run still going, stops the runs in flight from
    being waited on at their next poll: no arm is asked for after it, the
-   samples still queued are not started, and the cleanup follows within
+   samples still queued launch no run, and the cleanup follows within
    one poll (10 s), or within a request's 2-minute timeout should the
    server hang.
 7. **The checks.** A sample is read only where its newest completed in-app

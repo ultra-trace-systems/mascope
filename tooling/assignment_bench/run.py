@@ -824,6 +824,15 @@ class BenchRun:
         done = [0]
 
         def job(sample: str) -> tuple[str, Outcome, dict[str, Outcome]]:
+            try:
+                return work(sample)
+            except BaseException:
+                # Set here, in the thread that broke: its worker takes the
+                # next queued sample at once, before the main thread wakes.
+                stop.set()
+                raise
+
+        def work(sample: str) -> tuple[str, Outcome, dict[str, Outcome]]:
             control = self._one(api, sample, DEFAULT_CONFIG, deadline, stop)
             outcomes: dict[str, Outcome] = {}
             if control.status == "completed":
