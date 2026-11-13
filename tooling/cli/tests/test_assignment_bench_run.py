@@ -162,11 +162,14 @@ class FakeServer:
             # The server's control: the newest completed in-app run, no decoy.
             control = (
                 next(
-                    r
-                    for r in self.listing[sample]
-                    if r["engine"] == "mascope"
-                    and r["status"] == "completed"
-                    and not r["decoy"]
+                    (
+                        r
+                        for r in self.listing[sample]
+                        if r["engine"] == "mascope"
+                        and r["status"] == "completed"
+                        and not r["decoy"]
+                    ),
+                    {"peak_assignment_run_id": None},
                 )
                 if arm
                 else None
@@ -576,6 +579,48 @@ def test_a_decoy_the_engine_refuses_at_run_time_is_refused_and_one_that_fails_is
         "refused": 1,
     }
     assert "set Db: 1 decoy run(s) failed" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("status", ["cancelled", "lost"])
+def test_a_cancelled_or_lost_decoy_run_is_a_problem(rig, capsys, status):
+    if status == "cancelled":
+        for sample in ("S1", "S2"):
+            rig.server.ends[(sample, "swap_adducts")] = ("cancelled", None)
+    else:
+        real = rig.server.runs
+
+        def lose(sample, include_decoys=False):
+            rows = real(sample, include_decoys)
+            return [
+                r for r in rows if not (sample == "S1" and r["decoy"] == "swap_adducts")
+            ]
+
+        rig.server.runs = lose
+
+    assert rig.run("topic", decoys=True, sets=["Db"]) == 1
+
+    summary = json.loads((rig.card_dir() / "run.json").read_text())
+    n = 2 if status == "cancelled" else 1
+    assert summary["sets"]["Db"]["decoys"]["swap_adducts"] == (
+        {status: n} | ({"completed": 1} if n == 1 else {})
+    )
+    assert f"set Db: {n} decoy run(s) failed" in capsys.readouterr().out
+
+
+def test_a_sample_whose_control_did_not_complete_gets_no_decoy_run(rig):
+    rig.server.refuse[("S1", None)] = ("sample_ineligible", "it has no peaks")
+    rig.server.ends[("S2", None)] = ("failed", "the engine crashed")
+
+    rig.run("topic", decoys=True)
+
+    asked = [(s, arm) for s, arm, _ in rig.server.assigned]
+    assert [a for a in asked if a[0] != "S3"] == [("S1", None), ("S2", None)]
+    # The sample whose control completed has its arms.
+    assert [arm for s, arm in asked if s == "S3"] == [
+        None,
+        "mz_shift_da=+0.35",
+        "swap_adducts",
+    ]
 
 
 def test_no_decoys_without_the_flag(rig):
