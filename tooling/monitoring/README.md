@@ -528,8 +528,11 @@ the retention of a staging run's.
 
    Only a suite released after v1.16.0 reads `MASCOPE_PENTEST_BASELINE`. A
    copy synced to v1.16.0 or earlier (step 2) ignores it and reads its own
-   `baseline.json`, so every deployment keeps staging's acceptances, and
-   nothing in the run says so. Sync the production copy to a later release
+   `baseline.json`, so every deployment keeps staging's acceptances. Such a
+   copy's report has no `baseline` field and its header says nothing of one;
+   a later suite's report names the file it read (`baseline` in
+   `pentest-report.json`, the **Baseline** line in `pentest-report.md`), which
+   should be `prod-<NAME>.json`. Sync the production copy to a later release
    before relying on these files.
 6. Cron it beside the others. It takes the same lock, so it never runs inside
    a staging run, waiting up to `LOCK_WAIT` like the periodic run. It neither
