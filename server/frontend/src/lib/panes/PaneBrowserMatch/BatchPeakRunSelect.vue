@@ -30,7 +30,8 @@ const ACTION_LABELS = {
   stamp_isotopologues: 'Isotopologue stamping',
   strip_isotopologues: 'Isotopologue row strip',
   read_batch_checks: 'Batch checks',
-  decide_known_species: 'Known-species decision'
+  decide_known_species: 'Known-species decision',
+  measure_water_ladders: 'Water ladder measurement'
 }
 const IN_FLIGHT_STATUSES = ['running']
 
