@@ -7,7 +7,8 @@
  * per stretch of acquisition, and claims a hydrate that passes as the
  * reagent's ion in that stretch's samples. A batch peak at a passing hydrate
  * carries the reading under `water_ladder`: the rung, its reading in each
- * stretch, what the claim wrote and the samples it kept with their readings.
+ * stretch its ladder reached it in, how many stretches the batch has, what
+ * the claim wrote and the samples it kept with their readings.
  */
 
 const samples = (n) => `${n} sample${n === 1 ? '' : 's'}`
@@ -19,7 +20,8 @@ const KEPT = {
   listed: 'named by a reference list',
   line_of_another: "another ion's isotope line",
   claimed_otherwise: "another source ion's claim",
-  carries_lines: 'a reading with an isotope line the hydrate cannot have'
+  carries_lines: 'a reading with an isotope line the hydrate cannot have',
+  no_monoisotopic: "a heavier line whose hydrate's own peak reads otherwise"
 }
 
 const HELD = {
@@ -36,11 +38,12 @@ function rungName(record) {
   return rung.track && rung.track !== 'M0' ? `${ion} (${rung.track} line)` : ion
 }
 
-/** The mark's short account: the rung and where it passed. */
+/** The mark's short account: the rung and where it passed, out of every
+ *  stretch of the batch's ionization mode and instrument type. */
 export function waterLadderSummary(record) {
   if (!record) return ''
   const passed = record.passed_in ?? []
-  const stretches = (record.segments ?? []).length
+  const stretches = record.partition_segments ?? (record.segments ?? []).length
   return `${rungName(record)}: a water-ladder rung in ${passed.length} of ${stretches} stretch${
     stretches === 1 ? '' : 'es'
   } of acquisition`
