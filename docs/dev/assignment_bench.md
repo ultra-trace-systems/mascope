@@ -311,7 +311,9 @@ to run the commands against any instance and how to ask for a card.
   `cards/<ref>/<timestamp>/`: the card, the diff and `run.json`, scrubbed,
   which are what may leave the box, and `run.log` and `work/`, which name
   samples and never do. `state.json` lists the cards and names develop's
-  rolling baseline.
+  rolling baseline. `bench review` adds `reviews/<timestamp>.csv`, a sheet
+  of the engines' top tier disagreements and the verdicts given on them,
+  which names samples and never leaves the box (step 4.3 of the plan).
 - **The env file** is the folder's `bench.env`: `MASCOPE_URL` and an SDK
   token, written afresh each time a command signs in. A run sends its
   assign requests with that token, which outlives a signed-in session, and
