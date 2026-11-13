@@ -10,6 +10,7 @@ makes two runs wait for each other, and the command line. No host, no server.
 import importlib.util
 import json
 import os
+import signal
 import sys
 import threading
 import time
@@ -790,6 +791,87 @@ def test_samples_run_side_by_side(rig):
     rig.server.polls = 3
     assert rig.run("topic", jobs=3, decoys=True) == 0
     assert len(rig.server.assigned) == 3 + 2 * 3 + 2
+
+
+def _paced(clock):
+    """The rig's sleep, also paced in real time, so that the main thread can
+    leave the pool while the jobs are still waiting."""
+
+    def sleep(s):
+        clock.sleep(s)
+        time.sleep(0.002)
+
+    return sleep
+
+
+def _waits_on_a_result(thread, within_s=10.0):
+    """Wait until ``thread`` blocks on a future's result. A signal that lands
+    earlier, while the pool still starts its second worker in ``submit``,
+    leaves that worker out of the pool's join: it then ends on the stop flag
+    by itself, after the test."""
+    end = time.monotonic() + within_s
+    while time.monotonic() < end:
+        frame = sys._current_frames().get(thread.ident)
+        while frame is not None:
+            code = frame.f_code
+            if code.co_name == "result" and "concurrent" in code.co_filename:
+                return True
+            frame = frame.f_back
+        time.sleep(0.001)
+    return False
+
+
+@pytest.mark.parametrize("leave", ["ctrl-c", "a job broke"])
+def test_leaving_the_engine_runs_stops_every_job_at_its_next_poll(rig, leave):
+    if leave == "ctrl-c" and not hasattr(signal, "pthread_kill"):
+        pytest.skip("a Ctrl-C is sent to the main thread with POSIX signals")
+    # S1's control never ends. S2's completes, and the server answers its
+    # first arm busy for ever. Neither job ends but by the stop or the budget.
+    polling, busy = threading.Event(), threading.Event()
+    rig.server.ends[("S1", None)] = None
+    real_runs, real_assign = rig.server.runs, rig.server.assign
+
+    def runs(sample, include_decoys=False):
+        if sample == "S1" and include_decoys:
+            polling.set()
+            if leave == "a job broke" and busy.wait(10):
+                raise ValueError("a bug in the bench")
+        return real_runs(sample, include_decoys)
+
+    def assign(sample, config):
+        if sample == "S2" and config:
+            rig.server.assigned.append((sample, brun.arm_name(config["decoy"]), config))
+            busy.set()
+            return brun.Launch(busy=True, code="assignment_in_flight")
+        return real_assign(sample, config)
+
+    def interrupt():
+        if polling.wait(10) and busy.wait(10) and _waits_on_a_result(main):
+            signal.pthread_kill(main.ident, signal.SIGINT)
+
+    main = threading.main_thread()
+    rig.server.runs, rig.server.assign = runs, assign
+    runner = rig.runner(jobs=2, budget_s=3600.0, sleep=_paced(rig.clock))
+    previous = signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        if leave == "ctrl-c":
+            threading.Thread(target=interrupt, daemon=True).start()
+        with pytest.raises(KeyboardInterrupt if leave == "ctrl-c" else ValueError):
+            runner.run("topic", decoys=True, sets=["Db"])
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+    # Within a few polls of leaving, not at the end of the hour's budget.
+    assert rig.clock() < 600
+    # S2's first arm stopped waiting, and its other arms were never asked for.
+    assert [arm for s, arm, _ in rig.server.assigned if s == "S2"][-1] == (
+        "mz_shift_ppm=+9"
+    )
+    assert {arm for s, arm, _ in rig.server.assigned if s == "S2"} == {
+        None,
+        "mz_shift_ppm=+9",
+    }
+    assert rig.instance.calls[-2:] == ["stop", "remove_worktree"]
 
 
 def test_a_card_reads_this_run_s_control_or_leaves_the_sample_out(rig):
