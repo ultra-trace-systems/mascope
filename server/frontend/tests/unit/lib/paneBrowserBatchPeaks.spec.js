@@ -1230,6 +1230,44 @@ describe('PaneBrowserBatchPeaks merged isotopologue rows', () => {
     expect(unpooled.classes()).not.toContain('present')
     expect(cells['bp-x'].find('[data-testid="known-species-mark"]').exists()).toBe(false)
   })
+
+  // The water ladder's mark sits beside them in the same cell.
+  it('marks a rung of a water ladder, claimed ones in the primary colour', async () => {
+    const rung = (role) => ({
+      rung: { core: '[Br]-', ion: '[Br+16xH2O]-', track: 'M0', waters: 16 },
+      segments: [
+        { segment: 0, spectra: 12, presence: 0.9, decoy_presence: 0.05, verdict: 'passed' }
+      ],
+      passed_in: [0],
+      reads: { role }
+    })
+    const cells = await formulaCells([
+      { ...PARENT, water_ladder: rung('reagent') },
+      { ...OTHER, water_ladder: rung(null) },
+      LINE
+    ])
+    expect(cells['bp-x'].find('[data-testid="water-ladder-mark"]').exists()).toBe(false)
+    const claimed = cells['bp-p'].find('[data-testid="water-ladder-mark"]')
+    expect(claimed.attributes('aria-label')).toBe(
+      '[Br+16xH2O]-: a water-ladder rung in 1 of 1 stretch of acquisition'
+    )
+    expect(claimed.classes()).toContain('claimed')
+    const kept = cells['bp-other'].find('[data-testid="water-ladder-mark"]')
+    expect(kept.classes()).not.toContain('claimed')
+  })
+
+  it('marks a heavier line of a rung folded under it', async () => {
+    const line = {
+      rung: { core: '[Br]-', ion: '[Br+16xH2O]-', track: '81Br', waters: 16 },
+      segments: [],
+      passed_in: [0],
+      reads: { role: 'reagent' }
+    }
+    const cells = await formulaCells([PARENT, { ...LINE, water_ladder: line }, OTHER])
+    const mark = cells['bp-x'].find('.child-cell [data-testid="water-ladder-mark"]')
+    expect(mark.attributes('aria-label')).toMatch(/^\[Br\+16xH2O\]- \(81Br line\): /)
+    expect(mark.classes()).toContain('claimed')
+  })
 })
 
 describe('PaneBrowserBatchPeaks co-variation column', () => {

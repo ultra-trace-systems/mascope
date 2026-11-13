@@ -360,7 +360,8 @@ describe('BatchPeakComputeBar untargeted search', () => {
       'Stamp isotopologues',
       'Strip isotopologue rows',
       'Read batch checks',
-      'Decide known species'
+      'Decide known species',
+      'Measure water ladders'
     ])
     expect(buttons[1].attributes('disabled')).toBeUndefined()
   })
@@ -726,7 +727,8 @@ describe('BatchPeakComputeBar isotopologue row strip', () => {
       'reading',
       'stamping',
       'checking',
-      'deciding'
+      'deciding',
+      'measuring'
     ]) {
       compute[busy] = true
       await wrapper.vm.$nextTick()
@@ -836,7 +838,8 @@ describe('BatchPeakComputeBar batch checks', () => {
       'reading',
       'stamping',
       'stripping',
-      'deciding'
+      'deciding',
+      'measuring'
     ]) {
       compute[busy] = true
       await wrapper.vm.$nextTick()
@@ -851,7 +854,8 @@ describe('BatchPeakComputeBar batch checks', () => {
       'Read co-variation',
       'Stamp isotopologues',
       'Strip isotopologue rows',
-      'Decide known species'
+      'Decide known species',
+      'Measure water ladders'
     ])
       expect(button(label).attributes('disabled')).toBeDefined()
   })
@@ -948,7 +952,8 @@ describe('BatchPeakComputeBar known-species decision', () => {
       'reading',
       'stamping',
       'stripping',
-      'checking'
+      'checking',
+      'measuring'
     ]) {
       compute[busy] = true
       await wrapper.vm.$nextTick()
@@ -963,7 +968,8 @@ describe('BatchPeakComputeBar known-species decision', () => {
       'Read co-variation',
       'Stamp isotopologues',
       'Strip isotopologue rows',
-      'Read batch checks'
+      'Read batch checks',
+      'Measure water ladders'
     ])
       expect(button(label).attributes('disabled')).toBeDefined()
   })
@@ -1028,5 +1034,119 @@ describe('BatchPeakComputeBar known-species decision', () => {
     await compute.decideKnownSpecies()
     compute.reset()
     expect(compute.deciding).toBe(false)
+  })
+})
+
+describe('BatchPeakComputeBar water ladder measurement', () => {
+  const measureButton = () =>
+    wrapper.findAll('.compute-button').find((b) => b.text() === 'Measure water ladders')
+  const button = (label) => wrapper.findAll('.compute-button').find((b) => b.text() === label)
+  const notifyMeasure = (payload) =>
+    (notificationHandlers['measure_batch_water_ladders'] ?? []).forEach((cb) => cb(payload))
+
+  it('offers the measurement under the same gate, and says what it rewrites', () => {
+    mountBar()
+    expect(measureButton().attributes('disabled')).toBeUndefined()
+    expect(compute.measureTooltip).toMatch(/^Read how far each reagent ion's water ladder/)
+    expect(compute.measureTooltip).toMatch(/in the batch and in its samples\.$/)
+  })
+
+  it('disables it with the compute when no batch is focused, and says why', () => {
+    mountBar({ batch: null })
+    expect(measureButton().attributes('disabled')).toBeDefined()
+    expect(compute.measureTooltip).toBe(compute.blockedReason)
+  })
+
+  it('holds it while the ledger is rewritten or read, and the others while it measures', async () => {
+    mountBar()
+    for (const busy of [
+      'computing',
+      'searching',
+      'detecting',
+      'reading',
+      'stamping',
+      'stripping',
+      'checking',
+      'deciding'
+    ]) {
+      compute[busy] = true
+      await wrapper.vm.$nextTick()
+      expect(measureButton().attributes('disabled')).toBeDefined()
+      compute[busy] = false
+    }
+    compute.measuring = true
+    await wrapper.vm.$nextTick()
+    for (const label of [
+      'Search untargeted',
+      'Detect series',
+      'Read co-variation',
+      'Stamp isotopologues',
+      'Strip isotopologue rows',
+      'Read batch checks',
+      'Decide known species'
+    ])
+      expect(button(label).attributes('disabled')).toBeDefined()
+  })
+
+  it('launches straight from the button and waits for its own task', async () => {
+    mountBar()
+    post.mockResolvedValueOnce(ack('proc-w'))
+    await measureButton().trigger('click')
+    await Promise.resolve()
+    expect(post).toHaveBeenCalledWith(
+      '/batch-peaks/batch/b-1/measure-water-ladders',
+      {},
+      expect.objectContaining({ type: 'measure_batch_water_ladders', errors: 'inline' })
+    )
+    expect(compute.measuring).toBe(true)
+    expect(measureButton().attributes('data-loading')).toBe('true')
+    notifyMeasure({ status: 'pending', process_id: 'proc-w' })
+    notifyMeasure({ status: 'success', process_id: 'someone-else' })
+    expect(compute.measuring).toBe(true)
+    notifyMeasure({ status: 'success', process_id: 'proc-w' })
+    expect(compute.measuring).toBe(false)
+  })
+
+  it('does not launch twice, nor while blocked', async () => {
+    mountBar()
+    post.mockReturnValueOnce(new Promise(() => {}))
+    compute.measureWaterLadders()
+    await compute.measureWaterLadders()
+    expect(post).toHaveBeenCalledTimes(1)
+    mountBar({ samples: [] })
+    post.mockClear()
+    await compute.measureWaterLadders()
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('gives up after the timeout', async () => {
+    mountBar()
+    await compute.measureWaterLadders()
+    expect(compute.measuring).toBe(true)
+    vi.advanceTimersByTime(5 * 60 * 1000)
+    expect(compute.measuring).toBe(false)
+  })
+
+  it('resets the button and records a refusal', async () => {
+    mountBar()
+    post.mockRejectedValueOnce(apiError(409, 'A batch run is still rewriting this ledger'))
+    await compute.measureWaterLadders()
+    expect(compute.measuring).toBe(false)
+    expect(compute.launchRefused).toBe(true)
+    expect(compute.launchError).toBe('A batch run is still rewriting this ledger')
+  })
+
+  it('falls back to its own message when the server gives none', async () => {
+    mountBar()
+    post.mockRejectedValueOnce({ response: { status: 500, data: {} } })
+    await compute.measureWaterLadders()
+    expect(compute.launchError).toBe('Could not start the water ladder measurement.')
+  })
+
+  it('ends with the rest when the batch changes', async () => {
+    mountBar()
+    await compute.measureWaterLadders()
+    compute.reset()
+    expect(compute.measuring).toBe(false)
   })
 })

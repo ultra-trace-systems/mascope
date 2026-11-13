@@ -94,6 +94,11 @@ describe('BatchPeakRunSelect', () => {
     expect(wrapper.findAll('.option')[0].text()).toBe('#4 · Known-species decision · current')
   })
 
+  it('names a water ladder measurement', () => {
+    const wrapper = mountSelect([run('r4', 'measure_water_ladders', { current: true }), ...RUNS])
+    expect(wrapper.findAll('.option')[0].text()).toBe('#4 · Water ladder measurement · current')
+  })
+
   it('marks a running run as such', () => {
     const wrapper = mountSelect([run('r4', 'rebuild', { status: 'running' }), ...RUNS])
     expect(wrapper.findAll('.option')[0].text()).toBe('#4 · Rebuild · running…')

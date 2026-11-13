@@ -99,6 +99,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 4.2f - merged isotopologue rows | - |  | built: *Strip isotopologue rows* reads every committed monoisotopic batch peak at the 13C and diagnostic lines of every brighter one below it (four times the partition's mass scatter, at least 1 ppm); a row whose height over the parent's is a median 0.4 to 1.4 times the line's share over three or more samples, fewer than a tenth above 2x, is stripped: its members and the samples' in-app rows become the parent's isotope line (recorded on both), so the consensus folds it under the parent; curated, hand-assigned and own-13C rows are held, imported runs never rewritten; read on the copy's batch ledgers, G6 on the batch ledger falls on A 9 -> 7, B 62 -> 56, D 46 -> 41 and holds on C and C2; MAS-827 |
 | 4.2g - batch isotope checks as positive facts | - |  | built: *Read batch checks* records three display-only facts on a batch peak's reading: the halogen lock (a 37Cl or 81Br line 4.2c stamped, its median offset within the batch's position window; where the window cannot tell 30Si, the 29Si line a silicon reading implies decides), the label twin (a labelled ion's 14N twin at the impurity share the batch's own reagent ions show, the setup's purity where none does, present, absent or untestable where an absent line would be charged) and the uronium neutral pair (4.2's co-variation of [M+H]+ and [M+CH4N2O+H]+); on the copy's batch ledgers D locks bromine on 144 bromide clusters (71 of its 121 assigned), C2's labelled cores read their twins present in 88 of 88 samples at 0.42 of the 98 % share, no unlabelled ion is read, A and B count 99 and 458 uronium pairs; no tier moves; MAS-828 |
 | 4.2h - known species decided once by pooled evidence | - |  | built: *Decide known species* reads each library ion a sample's reagent pass claimed (not a fragment) and each formula a list tags `background`, per mode and instrument type; present where its peak is in two samples or more and half or more, and one sample's own test held (the claim, or the listed formula at candidate or better), absent where none held, unpooled under that; a present species is claimed in every sample its peak is in (members and in-app rows: a library ion as the pre-pass's claim with its lines, a listed compound at candidate), hand, target, another ion's line or claim and a listed reading with lines of its own kept and recorded; where the fold split a trace, one batch peak claims (the one in the most samples whose claim still turns its reading once the samples reading the species on the other are kept) and the other is held; a sample's next run claims a present library ion on the batch's word; co-variation with the core recorded only (decision 35); the copy's ledgers and runs predate the claim registry, so the Verify reading is the planner's pass; MAS-829 |
+| 4.2j - the reagent-ion water ladder measured on the batch's own series | - |  | built: *Measure water ladders* reads each core the profile declares (Br-, Br2-, Br3-, HBr.Br-; NO3-, its two acid clusters, NO2-; the labelled cores) on every bright line of its envelope, core.(H2O)n to n = 45, per acquisition segment (cut at gaps over an hour and five times the median spacing, a segment under ten spectra joining its nearer neighbour); a rung passes where it, its core and every rung between are in half the segment's spectra, it is three times its decoys' mean presence (+-0.02/0.035/0.05 Da on an Orbitrap, +-2 to 5 line widths on a TOF) and, on a TOF, its M+1 shows no more than its own and five carbons' 13C; its batch peak is claimed as the reagent's ion in the samples of the segments it passed in (members and in-app rows, lines with it; hand, target or listed readings, another ion's line or claim and a line the rung cannot have kept), the batch peak then reading its members' vote; the summary reports reach per segment, rungs tested and passed, rows moved and the unexplained share before and after; read on the copy's ledgers: on the nitrate TOF set F2 seven rungs pass and seven analyte rows move, the bromide TOF sets reach two waters, already the pre-pass's, and on 16 Orbitrap ledgers no row moves; MAS-831 |
 | 4.3 - calibration from verdicts, per profile | - |  | planned |
 | 4.4 - gate automation | - |  | moved to milestone 6 as step 6.4, the gate card as code (MAS-64); see `assignment_bench.md`. Built: `compare_runs.py --card` prints G1 to G14, the mass error, the reason coverage and the decoy arms per set and pooled, each metric a function in `metrics.py`; `--gate` marks them against the stage targets of `thresholds.json` with a pass-or-fail line, `--baseline` lists the readings that moved, and the scrub refuses a card that holds a name; MAS-64 |
 | 4.5 - profiles as versioned rows, routing by detection | - |  | planned |
@@ -1884,6 +1885,124 @@ who edits chemistry and stays last.
     pooled ladder or ratio test over the files' traces; taking an earlier
     decision's claims back where a later one no longer reads the species
     present (they stay, recorded as `batch_claim`).
+
+- **As built (the ninth rider, the reagent-ion water ladder; step 4.2j,
+  MAS-831).** Written from the plan's rider and the reference's published
+  description of its step (its 0.10 line and its merge note, step 4a), never
+  ported. The grammar is in `mascope_tools.composition.reagents`: per profile
+  the cores whose water ladder a batch measures (`WATER_CORE_LABELS`: Br-,
+  Br2-, Br3- and HBr.Br- on `BR`; NO3-, HNO3.NO3-, (HNO3)2.NO3- and NO2- on
+  `NO3`; the three labelled nitrate cores on `NO3_15N`; none on a positive
+  profile, whose hydrates are the solvents' and the air's, 3.3d's), each
+  core's rungs core.(H2O)n to n = 45 (the library's own ion where the
+  library names the hydrate, its works with it, else a rung that says what
+  shows it), and its tracks: the monoisotopic line and each line of the
+  core's envelope at a quarter of its brightest or more, so a bromide is read
+  on its 79Br and 81Br lines and a trimer on four, each a ladder of its own.
+  The rule is `mascope_tools.composition.water_ladder`, on a partition's
+  batch peaks read as traces (trace centre, frozen window, intensity per
+  spectrum): the spectra cut into acquisition segments where two distinct
+  times are more than an hour and five times the median spacing apart, a
+  segment under ten spectra joining its nearer neighbour, spectra with no
+  time a segment of their own; per core, track and segment the ladder climbed
+  from its core to its first rung present in under half the spectra; a rung
+  passing where it is present in half or more (the core and every rung
+  below too, by the climb), three times the mean presence of its decoys
+  (+-0.02, 0.035 and 0.05 Da on an Orbitrap, +-2, 2.5, 3, 3.5, 4 and 5 line
+  widths on a TOF, the width read back off the fold's windows; none at
+  another declared ladder's line; the mean floored at 0.02), and on a TOF
+  carbon-free: where the rung is bright enough for a five-carbon 13C line to
+  clear the spectrum's local floor (the 5th percentile of its peaks within
+  25 Da), its median M+1 over those spectra no taller than its own predicted
+  M+1 and five carbons' 13C, not asked where the M+1 sits at a line of
+  another ladder whose core and line the segment shows. The batch half is
+  `batch_water_ladder.py`: *Measure water ladders*
+  (`POST /api/batch-peaks/batch/{id}/measure-water-ladders`), a batch run
+  (action `measure_water_ladders`, one migration with one snapshot column).
+  Each partition's profile is resolved on its first sample as a run of it
+  resolves its chemistry.
+  - **The claim.** A batch peak at a passing line is the reagent's ion in the
+    samples of the segments the line passed in; where two passing lines reach
+    one batch peak, the one present more often claims it and the other is
+    named (`also_reads_as`). In each of those samples the member becomes the
+    rung (role reagent, no formula, the rung's ion in the registry) and so
+    does the sample's in-app row (`reagent_pass.water_rung_row`: the ion, tier
+    `unassigned`, `provenance.reagent.reason = batch_water_ladder` with the
+    rung's numbers in that segment, the reading displaced under `read_as` and
+    first among the alternatives). The member's isotope lines go with it, as
+    a library ion's do; a heavier track's peak read on its own becomes the
+    rung's line, owned by the rung's monoisotopic peak in that sample where
+    that is the rung. Kept, and recorded with their readings: a hand
+    assignment, a target compound, a reading a reference list names (a cited
+    analyte), another ion's isotope line, another source ion's claim, and a
+    reading carrying an isotope line the rung cannot have (by its label, or,
+    with no row to label it, by whether it sits at a line of the rung's
+    envelope). An imported run's rows are never rewritten and a curated batch
+    peak is never claimed. The samples of other segments keep their readings,
+    so the batch peak reads its members' vote; the rider's "leaves the
+    ledger" is where the claim turns that vote, and the record says whether it
+    did. A rung is claimed per segment rather than over the batch, as the
+    reference's own TOF strip came to do: one reading can be a real species
+    in a dry stretch and the water cluster in a humid one.
+  - **The record and the report.** Each batch peak at a passing line carries
+    `provenance.water_ladder`: the rung, its reading in each segment the
+    ladder reached it in (presence, decoys, the carbon test, the verdict), the
+    segments it passed in, what the claim wrote and kept, what the batch peak
+    read before, whether it turned and whether an analyte moved, each member's
+    earlier state, and the reading it holds since; the consensus keeps it
+    while the batch peak reads that, a new measurement replaces every record,
+    and the ledger and a run's snapshot serve it as `water_ladder`. The run's
+    summary reports per partition the profile, the segments, each core's
+    reach per track and segment, the rungs tested and passed, the batch peaks
+    claimed and turned, the analyte rows moved, and the unexplained share of
+    the partition's signal (summed member intensity on batch peaks no
+    committed reading, source role or isotope line explains) before and after.
+    The ledger shows a drop mark beside the formula, its tooltip the rung and
+    its segments. A row this pass writes is the batch's word to *Decide known
+    species*, which does not count it as a file's own test.
+  - **Where it runs.** The brief puts the pass after the fold. As 4.2c, 4.2f
+    and 4.2h found, a reading of one anchor against others across the whole
+    partition is a batch run's, not the per-fold consensus pass's; the fold's
+    part is the consensus keeping or dropping the record.
+  - **Verify, read on the copy's batch ledgers** (2026-11-13): the branch's
+    `plan_batch` over every batch ledger the copy holds, read only, the claims
+    played through the consensus vote for the share after (the copy's ledgers
+    were folded before a claimed member counted in the vote, so "before" is
+    the same vote without the claims).
+
+    | ledger | profile | spectra | rungs tested | passed | batch peaks | members claimed | rows moved | unexplained before -> after |
+    |---|---|---|---|---|---|---|---|---|
+    | F1 (TOF) | BR | 6 | 12 | 4 | 4 | 0 | 0 | 77.0 % -> 77.0 % |
+    | F2 (TOF) | NO3 | 5 | 15 | 7 | 11 | 40 | 7 | 88.61 % -> 88.59 % |
+    | the third TOF ledger | NO3 | 6 | 15 | 3 | 3 | 3 | 0 | 84.0 % -> 84.0 % |
+    | E (TOF) | BR | 3 | 14 | 2 | 2 | 0 | 0 | 65.5 % -> 65.5 % |
+    | 16 Orbitrap ledgers | BR, NO3_15N, UR, EASYIC | 5 to 547 | 12 | 1 | 1 | 0 | 0 | unchanged |
+
+    Every copy ledger is one segment (the TOF ledgers hold a single day's
+    five or six files). On F1 and E the bromide ladder ends at two waters,
+    present in every spectrum and already the pre-pass's claims (the copy's
+    claimed members name no ion, so the pass reads them as another source's
+    claim and keeps them). On F2 the acid clusters climb: HNO3.NO3- to three
+    waters and (HNO3)2.NO3- to four, and the seven rows that leave the ledger
+    as analytes are small nitrogen-rich or oxygenated formulas read through
+    the nitrate (one assigned, three candidate, three below assignability).
+    On the third TOF ledger NO3- passes two waters, its third to fifth fail
+    the carbon test (median M+1 0.07 to 0.12 against a bar of 0.06) and
+    HNO3.NO3-'s hydrates their decoys on a crowded axis. On the Orbitrap one
+    rung passes, ^NO3-.H2O on the 547-sample labelled-nitrate ledger, the
+    library's own ion every sample's pre-pass claims; no Orbitrap row moves,
+    as the reference reports for its Orbitrap batches. No member was kept for
+    a target or a list: the copy's registries carry no list tags. The
+    reference's batch-level G4 analogue (members its runs call reagent that
+    ours read as a source's) does not move on the TOF sets (F1 50 of 291, E
+    48 of 309): its runs on the copy are 0.5.0, before its own water step.
+  - **Not done here.** The reference's 17 to 6 % fall was read on a five-day
+    humid TOF batch; the copy holds none, so the share barely moves here, and
+    the reach on a long batch is the planner's pass or the bench's card. G4
+    and G10 on fresh runs are the planner's. A sample's next run reads its
+    peaks afresh; the next measurement reads them again (#3198 asks for a
+    file's run to take the batch's word, as 4.2h's library ions do). The reference's ladder extension past a weak rung by co-variation
+    with its neighbours is not built: the rider asks for contiguity.
 
 ### 4.3 Calibration from verdicts, per profile
 

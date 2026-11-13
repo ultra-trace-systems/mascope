@@ -99,7 +99,8 @@ async function launchSearch() {
           compute.stamping ||
           compute.stripping ||
           compute.checking ||
-          compute.deciding
+          compute.deciding ||
+          compute.measuring
         "
         @click="searchVisible = true"
         :pt="
@@ -136,7 +137,8 @@ async function launchSearch() {
           compute.stamping ||
           compute.stripping ||
           compute.checking ||
-          compute.deciding
+          compute.deciding ||
+          compute.measuring
         "
         @click="compute.detectSeries()"
         :pt="
@@ -175,7 +177,8 @@ async function launchSearch() {
           compute.stamping ||
           compute.stripping ||
           compute.checking ||
-          compute.deciding
+          compute.deciding ||
+          compute.measuring
         "
         @click="compute.readCoVariation()"
         :pt="
@@ -213,7 +216,8 @@ async function launchSearch() {
           compute.reading ||
           compute.stripping ||
           compute.checking ||
-          compute.deciding
+          compute.deciding ||
+          compute.measuring
         "
         @click="compute.stampIsotopologues()"
         :pt="
@@ -252,7 +256,8 @@ async function launchSearch() {
           compute.reading ||
           compute.stamping ||
           compute.checking ||
-          compute.deciding
+          compute.deciding ||
+          compute.measuring
         "
         @click="compute.stripIsotopologues()"
         :pt="
@@ -292,7 +297,8 @@ async function launchSearch() {
           compute.reading ||
           compute.stamping ||
           compute.stripping ||
-          compute.deciding
+          compute.deciding ||
+          compute.measuring
         "
         @click="compute.readBatchChecks()"
         :pt="
@@ -332,7 +338,8 @@ async function launchSearch() {
           compute.reading ||
           compute.stamping ||
           compute.stripping ||
-          compute.checking
+          compute.checking ||
+          compute.measuring
         "
         @click="compute.decideKnownSpecies()"
         :pt="
@@ -347,6 +354,48 @@ async function launchSearch() {
             sample its peak is in, its rows rewritten. Samples assigned by hand,
             named by the target library, or reading the peak as another ion's
             line or claim are kept, and listed with their readings.
+            </p>
+          `)
+        "
+      />
+    </span>
+    <!-- The reagent ions' water ladders: measured off the ledger as it
+         stands, with no parameters. It rewrites the samples it claims a rung
+         in, in the batch and in their samples, so it is held while the others
+         rewrite or read the ledger, and they while it runs. -->
+    <span v-tooltip.left="compute.measureTooltip">
+      <Button
+        label="Measure water ladders"
+        icon="pi ph ph-drop"
+        size="small"
+        severity="secondary"
+        :loading="compute.measuring"
+        :disabled="
+          compute.blockedReason !== null ||
+          compute.computing ||
+          compute.searching ||
+          compute.detecting ||
+          compute.reading ||
+          compute.stamping ||
+          compute.stripping ||
+          compute.checking ||
+          compute.deciding
+        "
+        @click="compute.measureWaterLadders()"
+        :pt="
+          app.ui.help.left(`
+            <h1>Measure Water Ladders</h1>
+            <p>
+            Reads how far each reagent ion's water ladder reaches on the
+            batch's own samples: Br-.(H2O)n, NO3-.(H2O)n and the like, up to
+            45 waters, in each stretch of acquisition the batch splits into at
+            its long gaps. A hydrate that, with every hydrate below it, is in
+            half the stretch's samples, three times as often as at the masses
+            beside it, and on a TOF shows no carbon, is the reagent's ion: its
+            peak is claimed as such in that stretch's samples, its rows
+            rewritten. Samples assigned by hand, named by a target or reference
+            list, or reading the peak as another ion's line or claim are kept,
+            and listed with their readings.
             </p>
           `)
         "
