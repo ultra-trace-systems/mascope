@@ -1060,7 +1060,20 @@ def test_the_outcome_says_what_persistence_admitted_and_what_it_holds():
     }
     message = search_outcome(counts, "sb-1")["message"]
     assert "3 batch peaks under the intensity floor or past the peak cap" in message
-    assert "2 of them are held at candidate" in message
+    assert "2 of them are held at candidate until an isotope line" in message
+    counts["anchors_held_by_persistence"] = 1
+    assert "1 of them is held at candidate" in search_outcome(counts, "sb-1")["message"]
+    # One admitted, and its reading held.
+    counts["anchors_admitted_by_persistence"] = 1
+    message = search_outcome(counts, "sb-1")["message"]
+    assert "1 batch peak under" in message
+    assert "recurs across the batch; its reading is held at candidate" in message
+    # None held - each lifted, or below candidate on the vote: nothing is said
+    # held.
+    counts["anchors_held_by_persistence"] = 0
+    message = search_outcome(counts, "sb-1")["message"]
+    assert "searched because the peak recurs across the batch." in message
+    assert "held" not in message
     counts["anchors_admitted_by_persistence"] = 0
     assert "recurs" not in search_outcome(counts, "sb-1")["message"]
 

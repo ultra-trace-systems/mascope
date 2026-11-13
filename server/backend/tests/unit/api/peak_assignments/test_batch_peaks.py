@@ -942,13 +942,22 @@ def test_a_row_is_served_the_record_and_the_reasons_of_its_reading():
     from mascope_backend.api.new.peak_assignments.batch_peaks import row_persistence
 
     reasons = [{"rule": "persistence_only", "detail": "...", "caps": True}]
-    anchor = {"provenance": {"persistence": _ADMITTED, "tier_reasons": reasons}}
+    anchor = {
+        "provenance": {"persistence": _ADMITTED, "tier_reasons": reasons},
+        "consensus_tier": "below_assignability",
+    }
     reading = {
         "role": "M0",
         "assigned_formula": "C5H8O2",
         "ionization_mechanism_id": "mech-h",
     }
-    assert row_persistence(reading, anchor) == {**_ADMITTED, "tier_reasons": reasons}
+    # The batch peak's tier rides with its reasons: it says what they did to
+    # the reading, which the row's own tier - its run's - need not.
+    assert row_persistence(reading, anchor) == {
+        **_ADMITTED,
+        "tier_reasons": reasons,
+        "consensus_tier": "below_assignability",
+    }
     # Another reading of the same peak, or a line on it: the admission, not
     # the reasons, which are about the elected reading.
     for row in (
@@ -956,7 +965,11 @@ def test_a_row_is_served_the_record_and_the_reasons_of_its_reading():
         {**reading, "role": "iso_child"},
         {"role": "unassigned"},
     ):
-        assert row_persistence(row, anchor) == {**_ADMITTED, "tier_reasons": None}
+        assert row_persistence(row, anchor) == {
+            **_ADMITTED,
+            "tier_reasons": None,
+            "consensus_tier": None,
+        }
     assert row_persistence(reading, {"provenance": {}}) is None
     assert row_persistence(reading, None) is None
 
@@ -1042,5 +1055,91 @@ def test_a_reader_is_not_served_the_held_members():
     assert row_persistence({"role": "M0"}, anchor) == {
         **_ADMITTED,
         "tier_reasons": None,
+        "consensus_tier": None,
     }
     assert persistence_summary({"provenance": {}}) is None
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"assigned_formula": "C9H9N"},
+        {"ionization_mechanism_id": "mech-na"},
+        {"role": "iso_child"},
+    ],
+    ids=["another formula", "another mechanism", "a line"],
+)
+def test_a_member_re_measured_at_the_held_fit_is_its_own(over):
+    from mascope_backend.api.new.peak_assignments.batch_peaks import (
+        held_member_tiers,
+        measured_members,
+    )
+
+    # A pin or a series re-pointed s1 at another reading, which it measured
+    # at candidate at the very fit the rule held it at: it is not the member
+    # the rule held, so it votes, and stays, at candidate.
+    record = {**_ADMITTED, "held_members": {"s1": 0.9}}
+    (member,) = measured_members(
+        [{**_member_of("s1", "candidate", 0.9), **over}], record
+    )
+    assert member["tier"] == "candidate"
+    assert held_member_tiers([member], record, holds=False) == ({}, {})
+
+
+def test_a_pin_archives_a_held_member_at_its_measured_tier():
+    from types import SimpleNamespace
+
+    from mascope_backend.api.new.peak_assignments.batch_peaks import (
+        measured_state,
+        member_state,
+        role_code,
+        tier_code,
+    )
+
+    anchor = {
+        "candidates": [
+            {
+                "formula": "C5H8O2",
+                "ion_formula": "C5H9O2+",
+                "ionization_mechanism_id": "mech-h",
+            },
+            {
+                "formula": "C9H9N",
+                "ion_formula": "C9H10N+",
+                "ionization_mechanism_id": "mech-h",
+            },
+        ],
+        "provenance": {
+            "persistence": {**_ADMITTED, "held_members": {"s1": 0.9, "s2": 0.9}}
+        },
+    }
+
+    def member(sample, candidate=0, tier="candidate", fit=0.9, role="M0"):
+        return SimpleNamespace(
+            sample_item_id=sample,
+            candidate=candidate,
+            tier=tier_code(tier),
+            fit_score=fit,
+            role=role_code(role),
+            owner_batch_peak_id=None,
+            p_correct=None,
+        )
+
+    held = member("s1")
+    # Held: the measurement is archived, the rest as the member reads.
+    assert measured_state(held, anchor) == {
+        **member_state(held),
+        "tier": tier_code("assigned"),
+    }
+    # Not held - another fit, another reading, a line, another tier, a sample
+    # the record does not name, no record at all: archived as stored.
+    for other, on in (
+        (member("s2", fit=0.7), anchor),
+        (member("s2", candidate=1), anchor),
+        (member("s2", role="iso_child"), anchor),
+        (member("s2", tier="below_assignability"), anchor),
+        (member("s3"), anchor),
+        (held, {**anchor, "provenance": {"persistence": _ADMITTED}}),
+        (held, {**anchor, "provenance": {}}),
+    ):
+        assert measured_state(other, on) == member_state(other)

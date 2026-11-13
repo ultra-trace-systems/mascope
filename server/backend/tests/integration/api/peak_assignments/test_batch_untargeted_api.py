@@ -25,9 +25,14 @@ from mascope_backend.api.new.peak_assignments import (
     batch_untargeted,
     service,
 )
+from mascope_backend.api.new.peak_assignments.batch_curation import (
+    release_batch_peak_curation,
+    run_batch_peak_curation,
+)
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     PERSISTENCE_KEY,
     TIER_REASONS_KEY,
+    candidate_index,
     resolve_candidate,
     role_name,
     tier_name,
@@ -1313,6 +1318,98 @@ async def test_the_same_neutral_through_another_channel_lifts_it(
     assert _reason_rules(anchors[150]) == ["corroborated"]
 
 
+async def test_a_pin_and_its_release_leave_the_hold_for_a_lift_to_take(
+    async_session_factory, persistence_batch, monkeypatch
+):
+    batch_id, samples = persistence_batch["batch_id"], persistence_batch["samples"]
+    await _search_persistence(persistence_batch)
+    faint = (await _anchors_by_mz(async_session_factory, batch_id))[150]
+    held = set(faint.provenance[PERSISTENCE_KEY]["held_members"])
+    assert held == set(samples.values()) - {samples["S12"]}
+    # Another reading of the peak in its registry, one a sample once carried.
+    async with async_session_factory() as session:
+        anchor = await session.get(BatchPeak, faint.batch_peak_id)
+        registry = list(anchor.candidates)
+        other = candidate_index(registry, "C8H11N3", "C8H12N3+", "mech-h")
+        anchor.candidates = registry
+        await session.commit()
+    # The pin measures it in each sample, where its envelope reaches the
+    # faint peak, and re-points every member.
+    _stub_engine(
+        monkeypatch,
+        samples,
+        _PERSISTENCE_PEAKS,
+        _persistence_matches,
+        {"C8H11N3": ("ion-other", 0.84, ["pf"])},
+    )
+    counts = await run_batch_peak_curation(
+        batch_id, faint.batch_peak_id, other, "C9H11NO", PeakAssignmentConfig()
+    )
+    assert counts["members_repointed"] == len(held)
+    pinned = (await _anchors_by_mz(async_session_factory, batch_id))[150]
+    assert pinned.consensus_formula == "C8H11N3"
+    assert "held_members" not in pinned.provenance[PERSISTENCE_KEY]
+    # What the pin archives is each member's measurement, not the hold, which
+    # went with the pin's recompute.
+    archived = pinned.provenance["manual"]["displaced_members"]
+    assert {state["sample_item_id"] for state in archived} == held
+    assert {tier_name(state["tier"]) for state in archived} == {"assigned"}
+
+    # Released, the elected reading is held again, its members with it.
+    await release_batch_peak_curation(batch_id, faint.batch_peak_id)
+    released = (await _anchors_by_mz(async_session_factory, batch_id))[150]
+    assert released.consensus_formula == "C9H11NO"
+    assert released.consensus_tier == "candidate"
+    assert _reason_rules(released) == ["persistence_only"]
+    assert set(released.provenance[PERSISTENCE_KEY]["held_members"]) == held
+    s2 = await _members(async_session_factory, samples["S2"])
+    assert tier_name(s2["pf"].tier) == "candidate"
+
+    # And a second channel lifts it, the members it held too.
+    await _sodium_mechanism(async_session_factory)
+    await _add_sample(async_session_factory, batch_id, "S13", _sodiated_rows)
+    lifted = (await _anchors_by_mz(async_session_factory, batch_id))[150]
+    assert lifted.consensus_tier == "assigned"
+    assert _reason_rules(lifted) == ["corroborated"]
+    assert "held_members" not in lifted.provenance[PERSISTENCE_KEY]
+    s2 = await _members(async_session_factory, samples["S2"])
+    assert tier_name(s2["pf"].tier) == "assigned"
+
+
+async def test_a_reading_the_vote_puts_below_candidate_is_not_counted_held(
+    async_session_factory, persistence_batch, monkeypatch
+):
+    batch_id = persistence_batch["batch_id"]
+    # Every sample measures the faint ion at a fit no tier above
+    # below_assignability takes.
+    _stub_engine(
+        monkeypatch,
+        persistence_batch["samples"],
+        _PERSISTENCE_PEAKS,
+        _persistence_matches,
+        {
+            "C6H12O6": ("ion-glc", 0.81, ["p1", "p2"]),
+            "C9H11NO": ("ion-faint", 0.05, ["pf"]),
+        },
+    )
+
+    async def seeded_fits(sample, params, seeds, *, reagent_offset, envelope_tolerance):
+        return {seed: 0.05 if seed[0] == "C9H11NO" else 0.88 for seed in seeds}
+
+    monkeypatch.setattr(batch_untargeted, "_seeded_fits", seeded_fits)
+    counts, _ = await _search_persistence(persistence_batch)
+
+    faint = (await _anchors_by_mz(async_session_factory, batch_id))[150]
+    assert faint.consensus_formula == "C9H11NO"
+    assert faint.consensus_tier == "below_assignability"
+    # The rule stands on the reading - nothing corroborates it - but holds
+    # nothing at candidate: the summary does not count it held.
+    assert _reason_rules(faint) == ["persistence_only"]
+    assert counts["anchors_admitted_by_persistence"] == 1
+    assert counts["anchors_held_by_persistence"] == 0
+    assert "held" not in search_outcome(counts, batch_id)["message"]
+
+
 @pytest.mark.parametrize("deferred", [False, True], ids=["fold", "backfill"])
 async def test_a_channel_in_a_later_chunk_lifts_it_in_the_same_pass(
     async_session_factory, persistence_batch, monkeypatch, deferred
@@ -1430,7 +1527,11 @@ async def test_the_ledger_the_snapshot_and_the_inspector_show_it(
     )
     assert response.status_code == 200, response.text
     [row] = response.json()["data"]
-    assert row["batch_persistence"] == {**record, "tier_reasons": reasons}
+    assert row["batch_persistence"] == {
+        **record,
+        "tier_reasons": reasons,
+        "consensus_tier": "candidate",
+    }
     # The sample's own row of the reading stands where the batch's does.
     assert row["tier"] == "candidate"
 
@@ -1642,6 +1743,16 @@ async def test_a_runs_own_row_on_the_peak_reads_the_admission(
         if key != "held_members"
     }
     reasons = faint.provenance[TIER_REASONS_KEY]
-    assert await detail(ids["elected"]) == {**record, "tier_reasons": reasons}
+    # The run's row reads assigned; the batch peak's tier, served with the
+    # batch's reasons, is what they did to the batch's reading.
+    assert await detail(ids["elected"]) == {
+        **record,
+        "tier_reasons": reasons,
+        "consensus_tier": "candidate",
+    }
     # Another reading of the peak is served the admission, not the reasons.
-    assert await detail(ids["another"]) == {**record, "tier_reasons": None}
+    assert await detail(ids["another"]) == {
+        **record,
+        "tier_reasons": None,
+        "consensus_tier": None,
+    }

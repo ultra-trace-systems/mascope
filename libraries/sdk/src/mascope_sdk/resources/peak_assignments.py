@@ -689,8 +689,9 @@ class PeakAssignmentsResource(BaseResource):
                  ``split`` it cleared and the reading the search elected
                  (``formula``, ``ion_formula``, ``ionization_mechanism_id``),
                  with ``tier_reasons`` - the batch's reasons about that
-                 reading, the ledger's - on a monoisotopic row that reads it;
-                 None otherwise, and absent from a server that predates it.
+                 reading, the ledger's - and ``consensus_tier``, the batch
+                 peak's tier, on a monoisotopic row that reads it; None
+                 otherwise, and absent from a server that predates it.
                  Returns None if the response carries no record.
         :rtype: dict | None
         :raises AuthenticationError: If authentication fails.

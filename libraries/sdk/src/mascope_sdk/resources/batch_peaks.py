@@ -234,7 +234,7 @@ class BatchPeaksResource(BaseResource):
                  ``tier_reasons`` (what the batch's own rules say of the
                  consensus reading, each a ``rule``, a ``detail`` and whether
                  it ``caps`` the tier: ``persistence_only`` where the reading
-                 the search elected on persistence alone is held at candidate,
+                 the search elected on persistence alone is capped at candidate,
                  or ``second_line``, ``corroborated`` and ``series_anchor`` for
                  what lifts it); null where none, and absent from a server that
                  predates them.

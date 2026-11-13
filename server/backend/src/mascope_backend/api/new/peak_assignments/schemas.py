@@ -269,9 +269,11 @@ class PeakAssignmentDetailRecord(PeakAssignmentRecord):
     #: and the reading the search elected there (``formula``, ``ion_formula``,
     #: ``ionization_mechanism_id``). ``tier_reasons`` is the batch's reasons
     #: about that reading - held at candidate on persistence alone, or what
-    #: corroborates it - on a monoisotopic row that reads it, None on any
-    #: other. None where the search took the peak on its height, or never
-    #: searched it.
+    #: corroborates it - and ``consensus_tier`` the batch peak's tier, which
+    #: says whether the cap holds the reading at candidate or the samples'
+    #: vote already put it lower; both on a monoisotopic row that reads it,
+    #: None on any other. None where the search took the peak on its height,
+    #: or never searched it.
     batch_persistence: dict | None = None
 
 

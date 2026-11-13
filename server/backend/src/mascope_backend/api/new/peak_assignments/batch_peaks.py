@@ -1288,7 +1288,9 @@ def row_persistence(row: dict, anchor: Any) -> Optional[dict]:
     was in, which is why the batch search took it - so every row on the peak
     is served it. The anchor's reasons ride with it (``tier_reasons``) only
     on a monoisotopic row that reads what the search elected there: they are
-    about that reading.
+    about that reading. So does the anchor's tier (``consensus_tier``), which
+    says what the reasons did to the reading - held at candidate, or already
+    below it - where the row's own tier may be its run's.
 
     :param row: The sample's row, with ``role``, ``assigned_formula`` and
         ``ionization_mechanism_id``.
@@ -1302,7 +1304,11 @@ def row_persistence(row: dict, anchor: Any) -> Optional[dict]:
     reads = row.get("role") == ROLE_M0 and _reads(
         record, row.get("assigned_formula"), row.get("ionization_mechanism_id")
     )
-    return {**record, "tier_reasons": tier_reasons_of(anchor) if reads else None}
+    return {
+        **record,
+        "tier_reasons": tier_reasons_of(anchor) if reads else None,
+        "consensus_tier": _member(anchor, "consensus_tier") if reads else None,
+    }
 
 
 @dataclass(frozen=True)
@@ -1434,6 +1440,36 @@ def hold_persistence_only(consensus: "Consensus", facts: PersistenceFacts) -> bo
 HELD_MEMBERS_KEY = "held_members"
 
 
+def _held_member(member: dict, record: Optional[dict]) -> bool:
+    """Whether the persistence rule holds this member: kept on the record
+    (:data:`HELD_MEMBERS_KEY`) and still the one it held - the elected reading,
+    monoisotopic, at ``candidate``, at the fit it was held at. A member a
+    fold, a pin or a series has since re-measured is its own, even at an
+    equal fit.
+
+    :param member: A member as the recompute reads it, with
+        ``sample_item_id``, ``tier``, ``fit_score``, ``role``,
+        ``assigned_formula`` and ``ionization_mechanism_id`` (names, not
+        codes).
+    :param record: The anchor's persistence record, or None.
+    """
+    if record is None:
+        return False
+    held = record.get(HELD_MEMBERS_KEY) or {}
+    sample = member.get("sample_item_id")
+    return (
+        sample in held
+        and member.get("tier") == TIER_CANDIDATE
+        and member.get("fit_score") == held[sample]
+        and member.get("role") == ROLE_M0
+        and _reads(
+            record,
+            member.get("assigned_formula"),
+            member.get("ionization_mechanism_id"),
+        )
+    )
+
+
 def measured_members(members: list[dict], record: Optional[dict]) -> list[dict]:
     """The members as they were measured, for the vote.
 
@@ -1442,28 +1478,53 @@ def measured_members(members: list[dict], record: Optional[dict]) -> list[dict]:
     the batch's cap. The vote still reads each at the tier its measurement
     gave it - otherwise a held reading could never vote its way back once a
     second observation arrives. A held member is read so while it is the one
-    the rule held: still at ``candidate``, at the fit it was held at. One a
-    fold has since replaced reads as stored.
+    the rule held (:func:`_held_member`). One a fold has since replaced reads
+    as stored.
 
     :param members: The anchor's members as the recompute reads them, with
-        ``sample_item_id``, ``tier`` and ``fit_score``.
+        ``sample_item_id``, ``tier``, ``fit_score``, ``role``,
+        ``assigned_formula`` and ``ionization_mechanism_id``.
     :param record: The anchor's persistence record, or None.
     :return: The members, each with ``stored_tier`` (its stored tier) and
         ``tier`` (as measured).
     """
-    held = (record or {}).get(HELD_MEMBERS_KEY) or {}
     measured = []
     for member in members:
-        tier = member.get("tier")
-        sample = member.get("sample_item_id")
-        if (
-            sample in held
-            and tier == TIER_CANDIDATE
-            and member.get("fit_score") == held[sample]
-        ):
-            tier = TIER_ASSIGNED
+        tier = TIER_ASSIGNED if _held_member(member, record) else member.get("tier")
         measured.append({**member, "stored_tier": member.get("tier"), "tier": tier})
     return measured
+
+
+def measured_state(member: Any, anchor: Any) -> dict:
+    """:func:`member_state`, at the tier the member was measured at where the
+    persistence rule holds it on ``anchor`` (:func:`measured_members`).
+
+    What a pin archives of a member it re-points, for its release to put
+    back. The pin lets go of the hold, and its recompute drops the record of
+    the members held, so a release that put back the stored ``candidate``
+    would put back a measurement nobody made, one no later lift could reach.
+    Put back as measured, the member is held again by the release's own
+    recompute where the rule still asks.
+
+    :param member: The member as loaded: codes, and its anchor's registry
+        index.
+    :param anchor: Its anchor, for the registry and the persistence record.
+    """
+    state = member_state(member)
+    identity = resolve_candidate(_member(anchor, "candidates"), state["candidate"])
+    if _held_member(
+        {
+            "sample_item_id": state["sample_item_id"],
+            "tier": tier_name(state["tier"]),
+            "fit_score": state["fit_score"],
+            "role": role_name(state["role"]),
+            "assigned_formula": identity.get("formula"),
+            "ionization_mechanism_id": identity.get("ionization_mechanism_id"),
+        },
+        persistence_record_of(anchor),
+    ):
+        state["tier"] = tier_code(TIER_ASSIGNED)
+    return state
 
 
 def held_member_tiers(
