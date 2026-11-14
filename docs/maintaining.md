@@ -46,7 +46,9 @@ Everything below assumes an Ubuntu host provisioned with
 
 The `mascope` commands write their log lines to stderr and their output to
 stdout. So `> plan.txt` saves only a `--dry-run` plan, and `| jq` gets only
-the `--json` report. Add `2>&1` to keep the log lines too.
+the `--json` report. Add `2>&1` to keep the log lines too. The same holds
+for the commands that hand off to another program, such as `mascope prod
+docker exec`: the program's output goes to stdout and its log to stderr.
 
 ## Health at a glance
 

@@ -34,6 +34,11 @@ def run(
     should check `result.returncode`. Most callers can ignore the return value —
     the subprocess output is streamed directly to the terminal.
 
+    The child inherits both streams as they are: its stdout goes to this
+    process's stdout and its stderr, where a Python child's log goes, to this
+    process's stderr. So redirecting a passthrough command's stdout to a file
+    keeps only the child's output, as it does for the CLI's own commands.
+
     :param command: Shell command string to execute. Split via `shlex.split`
                     before passing to the subprocess — no shell interpolation.
     :type command: str
@@ -59,7 +64,6 @@ def run(
     return subprocess.run(
         shlex.split(command),
         cwd=_cwd,
-        stderr=subprocess.STDOUT,
         env=env,
         check=False,  # callers handle errors via logged output
     )
