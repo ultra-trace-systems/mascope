@@ -1471,6 +1471,21 @@ class RecalibrateResponse(BaseModel):
     #: The ``{evidence level: weight}`` map the labels were weighed by in the
     #: fit and in both held-out ECEs; None when nothing was fit.
     label_weights: dict[str, float] | None = None
+    #: The reagent profile every label was scored under: the one asked for, or
+    #: the one all the labels share; None where they span several. Recorded on
+    #: the curve, and the only case its corroboration weights are refit in.
+    reagent_profile: str | None = None
+    #: How many of the labels judged an untargeted (Stage B) row.
+    n_untargeted: int = 0
+    #: Why a fitted curve was not put in force: ``ece_regression`` when its
+    #: held-out ECE is worse than the active curve's on the same labels.
+    refusal: str | None = None
+    #: The adducts whose corroboration weight the profile's labels refit, each
+    #: with its new weight and how many confirmed (``n_pos``) and rejected
+    #: (``n_neg``) labels saw it as another channel; None when none were.
+    corroboration_refit: dict[str, dict[str, int | float]] | None = None
+    #: The corroboration weights the new curve carries, refit and carried forward.
+    corroboration_weights: dict[str, float] | None = None
 
 
 # ---------------------------------------------------------------------------
