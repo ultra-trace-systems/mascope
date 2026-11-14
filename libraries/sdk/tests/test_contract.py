@@ -320,6 +320,20 @@ class TestPeakAssignmentContract:
         assert (scored["sigma_ppm"] > 0).all()
         assert scored["sigma_source"].notna().all()
 
+    def test_list_runs_says_whether_each_run_names_the_current_peaks(self, mascope):
+        # No probe: the SDK passes the server's run records through whole, so
+        # the column is the server's, and develop's server serves it.
+        sample_id = _sample_with_completed_run(mascope)
+
+        runs = mascope.peak_assignments.list_runs(sample_id)
+
+        assert "peaks_current" in runs.columns
+        # Only a completed run is checked; any other is null.
+        unchecked = runs[runs["status"] != "completed"]
+        assert unchecked["peaks_current"].isna().all()
+        checked = runs["peaks_current"].dropna()
+        assert checked.map(lambda value: value in (True, False)).all()
+
     def test_a_decoy_run_is_listed_only_on_request(self, mascope):
         _skip_unless_param(mascope.peak_assignments.list_runs, "include_decoys")
         sample_id = _sample_with_completed_run(mascope)

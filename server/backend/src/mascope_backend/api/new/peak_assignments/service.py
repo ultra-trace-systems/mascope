@@ -178,6 +178,7 @@ from mascope_backend.api.new.peak_assignments.mass_gate import (
     SpectrumLines,
     apply_mass_gate,
 )
+from mascope_backend.api.new.peak_assignments.peak_ids import load_peak_ids
 from mascope_backend.api.new.peak_assignments.profiles import (
     RESOLVED_PROFILE_KEY,
     ResolvedProfile,
@@ -329,6 +330,64 @@ def run_record(run: PeakAssignmentRun) -> dict:
     return {**run.to_dict(), **scoring_width(run)}
 
 
+async def _run_peak_probes(session, runs: Sequence[PeakAssignmentRun]) -> dict:
+    """One row's peak id for each completed run that has rows.
+
+    The smallest ``sample_peak_id`` of each run, read in one query: a scalar
+    ``min`` per run, which the ``(peak_assignment_run_id, sample_peak_id)``
+    unique index answers with one index probe instead of a scan of the run's
+    rows. One row decides the run, since every detection mints a fresh id for
+    every peak and a run is written against one detection.
+
+    :param session: An open session.
+    :param runs: The runs being listed.
+    :return: Run id -> peak id, for the completed runs with at least one row.
+    """
+    completed = [
+        run.peak_assignment_run_id for run in runs if run.status == "completed"
+    ]
+    if not completed:
+        return {}
+    probe = (
+        select(func.min(PeakAssignment.sample_peak_id))
+        .where(
+            PeakAssignment.peak_assignment_run_id
+            == PeakAssignmentRun.peak_assignment_run_id
+        )
+        .scalar_subquery()
+    )
+    rows = await session.execute(
+        select(PeakAssignmentRun.peak_assignment_run_id, probe).where(
+            PeakAssignmentRun.peak_assignment_run_id.in_(completed)
+        )
+    )
+    return {run_id: peak_id for run_id, peak_id in rows if peak_id is not None}
+
+
+async def _peaks_current(sample, probes: dict) -> dict:
+    """Whether each probed run's peak id is still one the sample has.
+
+    The sample's peak ids are read once, and only when there is a run to
+    check. A read that fails (a missing or unreadable peak file) leaves every
+    run unflagged rather than failing the listing.
+
+    :param sample: The sample view row.
+    :param probes: Run id -> one of its rows' peak ids (``_run_peak_probes``).
+    :return: Run id -> True or False; a run left out is null.
+    """
+    if not probes:
+        return {}
+    try:
+        peak_ids = await load_peak_ids(sample)
+    except Exception as error:
+        runtime.logger.warning(
+            f"Runs of sample '{sample.sample_item_id}' listed without "
+            f"peaks_current: its peak ids could not be read: {error}"
+        )
+        return {}
+    return {run_id: peak_id in peak_ids for run_id, peak_id in probes.items()}
+
+
 @api_controller()
 async def get_peak_assignment_runs(
     sample_item_id: str, include_decoys: bool = False
@@ -341,6 +400,10 @@ async def get_peak_assignment_runs(
     the sample's result, and a decoy is the engine's answer to a sample whose
     chemistry was made wrong on purpose: listed by default, the newest decoy
     would be read as the sample's ledger by every client that predates it.
+
+    Each completed run says whether its rows still name the sample's peaks
+    (``peaks_current``), checked from one row per run against the sample's
+    peak ids, read once per listing.
 
     :param sample_item_id: Unique identifier of the sample item
     :param include_decoys: List the sample's decoy runs too, in their place by
@@ -372,7 +435,13 @@ async def get_peak_assignment_runs(
         # the fallback for a sample that has none.
         derived = await fold_run_record(session, sample)
 
-    data = [run_record(run) for run in runs]
+        probes = await _run_peak_probes(session, runs)
+
+    current = await _peaks_current(sample, probes)
+    data = [
+        {**run_record(run), "peaks_current": current.get(run.peak_assignment_run_id)}
+        for run in runs
+    ]
     if derived is not None:
         data.append(derived)
     return {

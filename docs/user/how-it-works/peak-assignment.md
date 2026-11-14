@@ -985,11 +985,15 @@ the badge as a count only. Below it, where the batch has read how the neutral's 
 follow each other across the batch, the inspector says so in one line
 ([reading co-variation](#reading-co-variation)).
 
-A run keeps the peaks it read. When a sample's peaks are found again after a run - the
-file re-ingested, the peaks detected again - the run's rows name peaks the sample no
-longer has. They still show what the run stored, but there is no peak to focus: the
-ledger dims them and says how many there are above the table, and the inspector lists
-such a reading without a link. Run the assignment again to read the current peaks.
+A run keeps the peaks it read. Finding a sample's peaks gives every peak a new id, so
+when they are found again after a run - peak detection run again, an operator's refit of
+the peaks, a filestore restored from a snapshot - the run's rows name peaks the sample no
+longer has. Re-processing a file is not one of these: it replaces the file's samples, and
+their runs go with them. The run selector marks such a run ***old peaks*** before it is
+opened, and the runs listing the SDK reads says the same in `peaks_current`. Open it and
+the rows still show what the run stored, but there is no peak to focus: the ledger dims
+them and says how many there are above the table, and the inspector lists such a reading
+without a link. Run the assignment again to read the current peaks.
 
 **Beside the reasons.** The peak inspector also names what the row is, and shows two
 measurements the reasons read.

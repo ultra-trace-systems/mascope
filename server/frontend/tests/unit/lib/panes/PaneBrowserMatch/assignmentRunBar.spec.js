@@ -79,9 +79,19 @@ const GLOBAL_STUBS = {
 const { default: AssignmentRunBar } =
   await import('@/lib/panes/PaneBrowserMatch/AssignmentRunBar.vue')
 
+// Records the tooltip text on the element, so a test can read what it says.
+const TOOLTIP = {
+  mounted(el, binding) {
+    el.dataset.tooltip = binding.value ?? ''
+  },
+  updated(el, binding) {
+    el.dataset.tooltip = binding.value ?? ''
+  }
+}
+
 async function mountBar() {
   const wrapper = mount(AssignmentRunBar, {
-    global: { stubs: GLOBAL_STUBS, directives: { tooltip: {}, help: {} } }
+    global: { stubs: GLOBAL_STUBS, directives: { tooltip: TOOLTIP, help: {} } }
   })
   await wrapper.vm.$nextTick()
   return wrapper
@@ -173,6 +183,57 @@ describe('AssignmentRunBar run provenance', () => {
 
     expect(runFocus).toHaveBeenCalledTimes(1)
     expect(runFocus.mock.calls[0][0].peak_assignment_run_id).toBe('run-1')
+  })
+})
+
+// A run whose rows name peaks the sample no longer has (its peaks were found
+// again after it ran) is marked where the run is chosen, not only once its
+// ledger is open: the listing's `peaks_current` says so for every run.
+describe('AssignmentRunBar stale-peaks mark', () => {
+  const runSelect = (wrapper) => wrapper.find('.select')
+  const closedMark = (wrapper) => runSelect(wrapper).find('.select-value [data-testid="stale-run"]')
+  const optionMark = (wrapper) =>
+    runSelect(wrapper).find('.select-option [data-testid="stale-run"]')
+
+  it('marks a run whose peaks are gone, closed and in the list', async () => {
+    runList = [{ ...IN_APP, peaks_current: false }]
+    const wrapper = await mountBar()
+
+    expect(closedMark(wrapper).exists()).toBe(true)
+    expect(optionMark(wrapper).exists()).toBe(true)
+    // Says what the ledger's notice says, before the run is opened.
+    expect(optionMark(wrapper).attributes('data-tooltip')).toContain(
+      'The peaks were found again after this run'
+    )
+    expect(closedMark(wrapper).attributes('data-tooltip')).toContain(
+      'Run the assignment again to read the current peaks'
+    )
+  })
+
+  it.each([
+    ['current', true],
+    ['not checked', null],
+    ['from a server that predates the field', undefined]
+  ])('marks nothing for a run whose peaks are %s', async (_name, peaksCurrent) => {
+    runList = [{ ...IN_APP, peaks_current: peaksCurrent }]
+    const wrapper = await mountBar()
+
+    expect(closedMark(wrapper).exists()).toBe(false)
+    expect(optionMark(wrapper).exists()).toBe(false)
+  })
+
+  it('marks only the run that is stale', async () => {
+    runList = [
+      { ...IMPORTED, peaks_current: true },
+      { ...IN_APP, peaks_current: false }
+    ]
+    const wrapper = await mountBar()
+    const options = runSelect(wrapper).findAll('.select-option')
+
+    // The closed selector shows the newest run, which is current.
+    expect(closedMark(wrapper).exists()).toBe(false)
+    expect(options[0].find('[data-testid="stale-run"]').exists()).toBe(false)
+    expect(options[1].find('[data-testid="stale-run"]').exists()).toBe(true)
   })
 })
 
