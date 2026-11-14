@@ -197,7 +197,10 @@ from mascope_backend.api.new.peak_assignments.reagent_pass import (
     reagent_library_for,
 )
 from mascope_backend.api.new.peak_assignments.schemas import DEFAULT_PAGE_LIMIT
-from mascope_backend.api.new.peak_assignments.seeded_scoring import score_seeds
+from mascope_backend.api.new.peak_assignments.seeded_scoring import (
+    score_seeds,
+    scored_accuracy,
+)
 from mascope_backend.api.new.peak_assignments.target_listing import (
     with_target_listings,
 )
@@ -4015,6 +4018,28 @@ async def _seeded_fits(
     envelope_tolerance: EnvelopeTolerance | None,
     inherited_accuracy: SampleMassAccuracy | None = None,
 ) -> dict[tuple[str, str], float | None]:
+    """:func:`_seeded_rescore`'s fits, for a caller that ranks nothing beside
+    them."""
+    fits, _accuracy = await _seeded_rescore(
+        sample,
+        match_params,
+        seeds,
+        reagent_offset=reagent_offset,
+        envelope_tolerance=envelope_tolerance,
+        inherited_accuracy=inherited_accuracy,
+    )
+    return fits
+
+
+async def _seeded_rescore(
+    sample,
+    match_params,
+    seeds: set[tuple[str, str]],
+    *,
+    reagent_offset: ReagentOffset | None,
+    envelope_tolerance: EnvelopeTolerance | None,
+    inherited_accuracy: SampleMassAccuracy | None = None,
+) -> tuple[dict[tuple[str, str], float | None], SampleMassAccuracy | None]:
     """Measure the untargeted stage's readings the way Stage A measures one.
 
     One ``compute_match_isotopes`` pass over the sample for the whole seed list,
@@ -4041,12 +4066,14 @@ async def _seeded_fits(
         latest run recorded. None is today's numbers.
     :param inherited_accuracy: In a decoy run, its control's measurement, which
         the seeds are scored at instead of one fitted off them.
-    :return: Fit per seed; a seed whose ion the pass could not score is absent,
-        and its rows fall back to the finder's own number.
+    :return: Fit per seed, where a seed whose ion the pass could not score is
+        absent and its rows fall back to the finder's own number; and the
+        measurement the fits were scored at (``seeded_scoring.scored_accuracy``),
+        None where the pass scored nothing.
     """
     if not seeds:
-        return {}
-    ion_by_seed, fit_by_ion, _errors, _scored = await score_seeds(
+        return {}, None
+    ion_by_seed, fit_by_ion, _errors, scored_df = await score_seeds(
         sample,
         seeds,
         match_params,
@@ -4065,7 +4092,11 @@ async def _seeded_fits(
             f"{len(fits)} of {len(seeds)} untargeted readings measured as ions; "
             "the rest keep the finder's own fit"
         )
-    return fits
+    return fits, scored_accuracy(
+        scored_df,
+        reagent_offset=reagent_offset,
+        inherited_accuracy=inherited_accuracy,
+    )
 
 
 async def _stage_a_assignments(
@@ -4608,6 +4639,10 @@ async def _assign_sample(
             resolution,
             envelope_tolerance=envelope.tolerance,
         )
+        # The measurement the untargeted winners' fits were scored at: the
+        # seeded re-score's where it scored any, else Stage A's, which the
+        # finder's own numbers were scored at.
+        winner_accuracy = mass_accuracy
         if config.run_untargeted:
             eligible_df = peaks_df[
                 ~peaks_df["sample_peak_id"].isin(assigned_peak_ids)
@@ -4745,7 +4780,7 @@ async def _assign_sample(
                 # match pass over the sample, gated by the run's match params.
                 # That second measurement is what the row is tiered on, so a
                 # Stage B "assigned" and a Stage A "assigned" mean one thing.
-                fit_by_seed = await _seeded_fits(
+                fit_by_seed, rescored_accuracy = await _seeded_rescore(
                     sample,
                     match_params,
                     untargeted_seeds(
@@ -4759,6 +4794,8 @@ async def _assign_sample(
                         None if decoy_plan is None else decoy_plan.accuracy
                     ),
                 )
+                if rescored_accuracy is not None:
+                    winner_accuracy = rescored_accuracy
                 stage_b_assignments = untargeted_matches_to_peak_assignments(
                     election.matches,
                     peaks_df=search_peaks_df,
@@ -4967,11 +5004,13 @@ async def _assign_sample(
         )
         committed_rows = judged.rows
         # -- The untargeted winners' confidence, where the run asks for it: the
-        # shortlist each winner's row carries, measured on the peak it names,
-        # and the winner's share of the scored field recorded as Stage A
-        # records its own. Read off the finished ledger, after every pass that
-        # may swap a reading, so the share is the committed row's; it writes
-        # provenance alone, so no pass above would read it anyway.
+        # shortlist each winner's row carries, measured on the peak it names
+        # through every channel the search went through and at the width the
+        # winners were re-scored at, and the winner's share of the scored
+        # field recorded as Stage A records its own. Read off the finished
+        # ledger, after every pass that may swap a reading, so the share is the
+        # committed row's; it writes provenance alone, so no pass above would
+        # read it anyway.
         if config.stage_b_confidence and search_scope is not None:
             # Imported here: the inspector's module imports this one.
             from mascope_backend.api.new.peak_assignments.alternatives_scoring import (
@@ -4982,12 +5021,12 @@ async def _assign_sample(
             winner_confidence = await measure_winner_confidence(
                 sample,
                 committed_rows,
-                mechanisms,
+                searched_mechanisms,
                 match_params,
                 peak_budget=config.stage_b_confidence_peaks,
                 reagent_offset=_run_scoring_centre(mass_accuracy),
                 envelope_tolerance=envelope.tolerance,
-                accuracy=mass_accuracy,
+                accuracy=winner_accuracy,
             )
             search_scope[WINNER_CONFIDENCE_KEY] = winner_confidence
             runtime.logger.info(

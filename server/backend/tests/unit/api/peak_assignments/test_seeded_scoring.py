@@ -390,6 +390,80 @@ async def test_a_decoy_s_re_score_is_scored_at_its_control_s_measurement(
     assert reagent.calls == []
 
 
+@pytest.mark.parametrize("frame", ["crowd", "bright", "centred"])
+async def test_a_runs_re_score_hands_on_the_measurement_it_scored_at(stubbed, frame):
+    """A run's winner-confidence pass scores the winners' shortlists where the
+    seeded re-score scored the winners (``seeded_scoring.scored_accuracy``),
+    so an ion read there reads as it did among them: one width for a winner
+    and its rivals. Whatever the re-score scored at: a crowd's own fit off the
+    axis, the class's width for a lone bright ion whose own lines would fit
+    one, the reagent lines' centre for a frame too short to fit any."""
+    seeds = {TARGET}
+    offset = None
+    if frame == "crowd":
+        stubbed.others_centre_ppm = TARGET_ERROR_PPM
+        seeds |= OTHERS
+    elif frame == "bright":
+        stubbed.found_abundance = ORBI_DEFAULT_ISOTOPE_ABUNDANCE_THRESHOLD
+    else:
+        stubbed.target_error_ppm = AXIS_PPM
+        offset = ReagentOffset(mu_ppm=AXIS_PPM, lines=7, beyond_width=True)
+
+    fits, accuracy = await service._seeded_rescore(
+        SAMPLE,
+        OrbiMatchParams(),
+        seeds,
+        reagent_offset=offset,
+        envelope_tolerance=None,
+    )
+
+    assert await _fit({TARGET}, inherited_accuracy=accuracy) == pytest.approx(
+        fits[TARGET]
+    )
+    if frame == "crowd":
+        # The premise: twenty-one ions fit an offset of their own, off the
+        # axis, so a lone seed fitting none reads differently.
+        assert accuracy.mu_ppm == pytest.approx(TARGET_ERROR_PPM, abs=0.05)
+        assert fits[TARGET] - await _fit({TARGET}) > 0.05
+
+
+async def test_a_decoy_s_re_score_hands_on_its_control_s_measurement(stubbed):
+    control = SampleMassAccuracy(mu_ppm=0.0, sigma_ppm=0.2, anchors=40, anchor_ions=12)
+
+    _fits, accuracy = await service._seeded_rescore(
+        SAMPLE,
+        OrbiMatchParams(),
+        {TARGET} | OTHERS,
+        reagent_offset=None,
+        envelope_tolerance=None,
+        inherited_accuracy=control,
+    )
+
+    assert accuracy is control
+
+
+async def test_a_re_score_that_scored_nothing_hands_on_nothing(stubbed, monkeypatch):
+    """Its winners keep the finder's own fits, which the run's caller reads at
+    Stage A's measurement instead."""
+    _fits, no_seeds = await service._seeded_rescore(
+        SAMPLE, OrbiMatchParams(), set(), reagent_offset=None, envelope_tolerance=None
+    )
+
+    async def nothing_matched(filename, target_isotopes_df, polarity):
+        return pd.DataFrame()
+
+    monkeypatch.setattr(seeded_scoring, "compute_match_isotopes", nothing_matched)
+    fits, no_lines = await service._seeded_rescore(
+        SimpleNamespace(**vars(SAMPLE), sample_item_name="Sample One"),
+        OrbiMatchParams(),
+        {TARGET},
+        reagent_offset=ReagentOffset(mu_ppm=AXIS_PPM, lines=7, beyond_width=True),
+        envelope_tolerance=None,
+    )
+
+    assert (no_seeds, no_lines, fits) == (None, None, {})
+
+
 async def test_a_run_centres_its_re_score_where_stage_a_was_scored():
     """Stage A and the search are scored at ``scoring_mu_ppm``: the library's
     own fit where it made one, which need not be the reagent lines', and the

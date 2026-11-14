@@ -38,7 +38,10 @@ from mascope_backend.api.controllers.target.lib.compute.target_ions_compute impo
 from mascope_backend.api.new.ionization.modes.versions import sample_label_purity
 from mascope_backend.api.new.match.params.lib import apply_match_params
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
-from mascope_backend.api.new.peak_assignments.engine import score_ions_by_fit
+from mascope_backend.api.new.peak_assignments.engine import (
+    sample_mass_accuracy,
+    score_ions_by_fit,
+)
 from mascope_backend.api.new.peak_assignments.envelope_fit import (
     recorded_envelope_tolerance,
 )
@@ -266,6 +269,36 @@ def gate_and_score(
     )
 
 
+def scored_accuracy(
+    scored_df: pd.DataFrame,
+    *,
+    reagent_offset: ReagentOffset | None,
+    inherited_accuracy: SampleMassAccuracy | None = None,
+) -> SampleMassAccuracy | None:
+    """The measurement :func:`gate_and_score` scored a seeded frame at.
+
+    Read off the frame it returned, which holds the gating's verdict as the
+    fit read it, so the width and offset are the ones its fits were computed
+    at. Another pass scored at this measurement (``inherited_accuracy``) reads
+    its ions on the same scale: a run's winner-confidence pass scores the
+    shortlist where the run's seeded re-score scored the winners it ranks
+    them against (``alternatives_scoring.measure_winner_confidence``).
+
+    :param scored_df: The frame :func:`gate_and_score` returned.
+    :param reagent_offset: The centre it was handed.
+    :param inherited_accuracy: The measurement it was handed, if any, which is
+        then the one it scored at.
+    :return: The measurement, or None for a frame that scored nothing.
+    """
+    if inherited_accuracy is not None:
+        return inherited_accuracy
+    if scored_df.empty:
+        return None
+    return sample_mass_accuracy(
+        scored_df, reagent=reagent_offset, min_anchor_ions=SEEDED_FIT_MIN_IONS
+    )
+
+
 def scored_maps(
     scored_df: pd.DataFrame,
 ) -> tuple[dict[str, float | None], dict[tuple[str, str], dict]]:
@@ -371,8 +404,9 @@ async def score_seeds(
         caller outside a run wants.
     :param inherited_accuracy: Inside a decoy run, the control's measurement,
         which the seeds are scored at whatever their number
-        (:func:`gate_and_score`); in a run's winner-confidence pass, the run's
-        own, since the seeds there are a shortlist of mostly wrong formulas
+        (:func:`gate_and_score`); in a run's winner-confidence pass, the one
+        its seeded re-score scored the winners at (:func:`scored_accuracy`),
+        since the seeds there are a shortlist of mostly wrong formulas
         (``alternatives_scoring.measure_winner_confidence``). None everywhere
         else.
     :return: ``(ion by seed, fit by ion, errors by pairing, the scored frame)``.

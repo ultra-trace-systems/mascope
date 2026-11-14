@@ -41,6 +41,7 @@ from mascope_backend.api.new.peak_assignments.config import (
     PeakAssignmentConfig,
 )
 from mascope_tools.composition.arbitration import arbitrate_candidates
+from mascope_tools.composition.heuristic_filter import formula_plausibility
 
 
 _MOD = "mascope_backend.api.new.peak_assignments.alternatives_scoring"
@@ -623,6 +624,22 @@ class TestOneIonIsOneCandidate:
         assert forward == backward
         assert forward["is_tie"] is True
         assert forward["confidence"] == pytest.approx(0.5)
+
+    def test_plausibility_picks_the_reading_that_stands_for_its_ion(self):
+        row = _winner("p1", 10.0, fit=0.9)
+        row["ion_formula"] = "C5H11O2+"
+        # Readings of one ion share one fit: one ion, one envelope. So what
+        # picks the neutral that stands for the ion is its plausibility, and
+        # here the reading that sorts last is the implausible one.
+        plausible, implausible = ("C4H6O3", 0.9, "C4H7O3+"), ("CH2O5", 0.9, "C4H7O3+")
+        assert formula_plausibility("CH2O5") < formula_plausibility("C4H6O3")
+        assert "CH2O5" > "C4H6O3"
+
+        both = winner_arbitration(row, [plausible, implausible])
+
+        assert both == winner_arbitration(row, [plausible])
+        assert both != winner_arbitration(row, [implausible])
+        assert both["is_tie"] is True
 
     def test_a_recorded_rival_of_the_winners_ion_does_not_compete(self):
         row = _winner(

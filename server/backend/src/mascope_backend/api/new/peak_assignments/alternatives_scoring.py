@@ -513,18 +513,20 @@ async def measure_winner_confidence(
 
     The run-level form of :func:`score_row_alternatives`: the same shortlist
     (:func:`unscorable_alternatives`, so at most the run's
-    ``max_alternatives``), each formula seeded under every adduct of the
-    sample and placed on the peak by the same rule (:func:`placements`). What
+    ``max_alternatives``), each formula seeded under every adduct the run
+    searched and placed on the peak by the same rule (:func:`placements`). What
     the inspector does for one peak on request this does for the run's
     winners, the most intense first, up to ``peak_budget`` of them, in ONE
     seeded pass, so the cost is one ``compute_match_isotopes`` read however
     many winners it covers.
 
-    The pass is scored at the run's own measurement of its mass accuracy
-    (``accuracy``), never at one fitted off the seeds. A shortlist is mostly
-    wrong formulas, and a frame of those fitted on its own lines would judge
-    every one of them against the width their chance matches happened to
-    make.
+    The pass is scored at the measurement the winners' own fits were scored
+    at (``accuracy``): the run's seeded re-score's, which was fitted on the
+    committed winners. So the winner and its rivals are judged at one width,
+    as Stage A judges its candidates inside one frame. It is never one
+    fitted off the seeds: a shortlist is mostly wrong formulas, and a frame of
+    those fitted on its own lines would judge every one of them against the
+    width their chance matches happened to make.
 
     A winner whose shortlist the budget did not reach records nothing: a share
     taken of part of the field would read as a share of all of it. A winner
@@ -535,13 +537,16 @@ async def measure_winner_confidence(
     :param sample: The sample being assigned.
     :param rows: The run's committed rows; winners' provenance is updated in
         place.
-    :param mechanisms: The adducts a shortlist formula is tried under: the
-        sample's, as the inspector tries it.
+    :param mechanisms: The adducts a shortlist formula is tried under: every
+        one the run searched, the secondary channels it opened included, since
+        the finder proposed the shortlist through them all. In a decoy arm
+        that swaps adducts, the swapped set.
     :param match_params: The sample's resolved match parameters.
     :param peak_budget: How many winners' shortlists to measure.
     :param reagent_offset: The run's scoring centre, as its re-score takes it.
     :param envelope_tolerance: The tolerance the run fitted.
-    :param accuracy: The run's mass accuracy, which the pass is scored at.
+    :param accuracy: The measurement the winners' fits were scored at, which
+        the pass is scored at (``seeded_scoring.scored_accuracy``).
     :return: What the pass did, for the run's record.
     """
     started = time.perf_counter()
