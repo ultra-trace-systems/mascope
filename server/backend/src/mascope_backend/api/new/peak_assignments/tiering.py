@@ -165,6 +165,16 @@ is a series of the batch, which vouches for the formula, not the peak. A
 spectrum whose widths the run did not read asks nothing, and a hand assignment
 is not asked.
 
+``in_source_fragment`` - step 4.16: the row's ion is another committed ion less
+a small neutral an ion sheds in the source (water, carbon monoxide or dioxide,
+formic acid, methanol, nitric acid, sulfur trioxide), the two read through one
+channel, so the peak may be that ion's in-source fragment rather than a compound
+of its own (the cross-channel pass's ``in_source_fragment_of``). It is a
+grouping, not evidence, so it caps nothing and keeps nothing: on the anchor-swap
+benchmark a peak one loss below a real ion is nearly as likely as one the same
+neutral above it, which is the spectrum's lattice of related formulas rather than
+fragmentation. It is named on every monoisotopic row it reaches, capped or not.
+
 Rules the earlier passes already applied
 ----------------------------------------
 
@@ -204,6 +214,7 @@ import numpy as np
 from mascope_backend.api.new.peak_assignments.cross_channel import (
     AMBIGUITY_REASONS,
     CHANNELS_FOR_CORROBORATION,
+    IN_SOURCE_FRAGMENT_OF,
     REASON_AMBIGUOUS_ADDUCT,
     REASON_AMBIGUOUS_NITROGEN,
     SAME_ION_SETTLED,
@@ -261,7 +272,7 @@ from mascope_tools.composition.implausibility import implausible_signatures
 #: run, because a tier is only comparable across runs together with the rules
 #: that produced it - the same statement the tier BANDS carry, for the same
 #: reason.
-TIERING_RULES_VERSION = 13
+TIERING_RULES_VERSION = 14
 
 #: The row's evidence is under the band its tier would need. Not a rule of
 #: this pass: the band is the floor every rule here lowers from, and naming it
@@ -436,6 +447,11 @@ _EARLIER_RULES = frozenset(
 #: deliberately one that only fires when the line could account for the peak
 #: OUTRIGHT, not when it merely contributes to it.
 ENVELOPE_HEIGHT_TOLERANCE = 2.0
+
+#: The row's ion is another committed ion less a small neutral the source can
+#: shed, through one channel: a grouping the run records, which caps nothing
+#: and keeps nothing.
+REASON_IN_SOURCE_FRAGMENT = "in_source_fragment"
 
 #: What a row says when it was committed before this pass existed, or by an
 #: engine that measures none of what the rules read. Honest about being an
@@ -1906,6 +1922,41 @@ def implausibility_reasons(row: dict) -> list[dict]:
     ]
 
 
+def in_source_fragment_reason(row: dict) -> dict | None:
+    """The heavier ion a row's peak may be the in-source fragment of.
+
+    Read off the cross-channel pass's record (``in_source_fragment_of``), whose
+    first entry is the brightest such ion. A grouping, not evidence: the reason
+    never caps, and it is not what a row keeps its tier on.
+
+    :param row: A committed monoisotopic row.
+    :return: The reason, or None where the row is in no such pair.
+    """
+    found = (_provenance(row).get("cross_channel") or {}).get(IN_SOURCE_FRAGMENT_OF)
+    if not isinstance(found, list) or not found or not isinstance(found[0], dict):
+        return None
+    first = found[0]
+    parent = first.get("parent") or "another neutral"
+    detail = (
+        f"the run also commits {parent} through "
+        f"{first.get('via') or 'the same channel'}, whose ion less "
+        f"{first.get('loss') or 'a small neutral'} is this row's ion, so this "
+        "peak may be that ion's in-source fragment rather than a compound of "
+        "its own"
+    )
+    ratio = first.get("height_ratio")
+    if isinstance(ratio, (int, float)) and math.isfinite(ratio):
+        detail += f"; its peak is {ratio:.2g} times as tall as that one"
+    others = len(found) - 1
+    if others:
+        detail += f"; {others} more such ion{'s' if others > 1 else ''}"
+    return _reason(
+        REASON_IN_SOURCE_FRAGMENT,
+        detail + ". Recorded as a grouping, not weighed as evidence",
+        caps=False,
+    )
+
+
 def standing_reasons(row: dict, lines: Sequence[dict] = ()) -> list[dict]:
     """Why a row that nothing capped holds the tier it holds.
 
@@ -2159,6 +2210,7 @@ def apply_tiering(
     capped_earlier: set[str] = set()
     capped = 0
     under_band = 0
+    in_source_fragment = 0
 
     for row in m0:
         own_lines = lines_of.get(str(row.get("peak_assignment_id")), [])
@@ -2216,6 +2268,12 @@ def apply_tiering(
         held_down = any(reason["caps"] for reason in reasons)
         if not held_down:
             reasons.extend(standing_reasons(row, own_lines))
+        # A grouping, named whatever else the row says: neither a cap nor
+        # what it stands on.
+        fragment = in_source_fragment_reason(row)
+        if fragment:
+            reasons.append(fragment)
+            in_source_fragment += 1
         # The band leads, and it is not a rule: it is the floor the rules lower
         # from, so it is no cap and does not hide what the row stands on - a
         # row the band holds low still says what it has.
@@ -2316,6 +2374,9 @@ def apply_tiering(
         # Monoisotopic rows whose evidence is under the top band, which name
         # the band first.
         "under_band": under_band,
+        # Monoisotopic rows named as a heavier ion's possible in-source
+        # fragment, which caps none of them.
+        REASON_IN_SOURCE_FRAGMENT: in_source_fragment,
         "density_limit": DENSITY_LIMIT,
         "envelope_height_tolerance": ENVELOPE_HEIGHT_TOLERANCE,
         # What the absent-line rule asked at, and what it found: the match

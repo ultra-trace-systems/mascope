@@ -3,10 +3,15 @@ nothing measured tells apart."""
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from mascope_backend.api.new.peak_assignments.cross_channel import (
     CHANNELS_FOR_CORROBORATION,
+    IN_SOURCE_FRAGMENT_OF,
+    IN_SOURCE_FRAGMENTS,
+    INTENSITY_CONSISTENCY,
     REASON_AMBIGUOUS_ADDUCT,
     REASON_AMBIGUOUS_NITROGEN,
     SAME_ION_SETTLED,
@@ -1493,3 +1498,228 @@ def test_channels_by_neutral_reads_only_committed_monoisotopic_rows():
     assert channels_by_neutral(rows, dict(POSITIVE)) == {
         neutral_key("C6H12O6"): {"[M+H]+": "assigned"}
     }
+
+
+#: Neutrals a bromide sample shows through both its channels, by the log of
+#: the deprotonated peak's height over the bromide cluster's.
+TYPICAL_RATIOS = {
+    "C5H8O3": 0.0,
+    "C6H10O4": 0.1,
+    "C7H10O5": -0.1,
+    "C8H12O4": 0.08,
+    "C9H14O4": -0.08,
+    "C10H16O3": 0.05,
+}
+
+
+def both_channels(ratios: dict[str, float], **kwargs) -> list[dict]:
+    """Each neutral through the bromide cluster at 1e5 and deprotonated at
+    1e5 times e to its ratio."""
+    rows = []
+    for formula, ratio in ratios.items():
+        rows.append(row(f"{formula}-br", formula, BROMIDE, intensity=1.0e5, **kwargs))
+        rows.append(
+            row(f"{formula}-h", formula, DEPROT, intensity=1.0e5 * math.exp(ratio))
+        )
+    return rows
+
+
+def record(rows: list[dict], row_id: str) -> dict:
+    found = next(r for r in rows if r["peak_assignment_id"] == row_id)
+    return found["provenance"]["cross_channel"]
+
+
+class TestTheRatioOfANeutralsChannels:
+    def test_a_neutral_is_read_against_the_samples_other_neutrals(self):
+        rows = both_channels({**TYPICAL_RATIOS, "C11H18O5": 2.5})
+        summary = gate(rows, NEGATIVE)
+        (reading,) = record(rows, "C11H18O5-br")[INTENSITY_CONSISTENCY]
+        assert reading["pair"] == ["[M+Br]-", "[M-H]-"]
+        assert reading["log_ratio"] == pytest.approx(2.5)
+        assert reading["n_reference"] == len(TYPICAL_RATIOS)
+        assert reading["band"] == "outlying"
+        # The same reading on both of the peaks it was read off.
+        assert record(rows, "C11H18O5-h")[INTENSITY_CONSISTENCY] == [reading]
+        (typical,) = record(rows, "C6H10O4-h")[INTENSITY_CONSISTENCY]
+        assert typical["band"] == "consistent"
+        assert summary[INTENSITY_CONSISTENCY] == {
+            "neutrals": 7,
+            "readings": 7,
+            "bands": {"consistent": 6, "loose": 0, "outlying": 1},
+            "rows": 14,
+        }
+
+    def test_a_pair_too_few_neutrals_share_is_not_read(self):
+        rows = both_channels(dict(list(TYPICAL_RATIOS.items())[:5]))
+        summary = gate(rows, NEGATIVE)
+        assert all(
+            INTENSITY_CONSISTENCY not in record(rows, r["peak_assignment_id"])
+            for r in rows
+        )
+        assert summary[INTENSITY_CONSISTENCY]["readings"] == 0
+
+    def test_only_the_brightest_peak_of_a_channel_is_read(self):
+        rows = both_channels(TYPICAL_RATIOS)
+        # A shoulder of C5H8O3's deprotonated ion, far dimmer: the same ion
+        # again, so the ratio stays the main peak's.
+        rows.append(row("shoulder", "C5H8O3", DEPROT, intensity=10.0))
+        gate(rows, NEGATIVE)
+        assert INTENSITY_CONSISTENCY not in record(rows, "shoulder")
+        (reading,) = record(rows, "C5H8O3-h")[INTENSITY_CONSISTENCY]
+        assert reading["log_ratio"] == pytest.approx(0.0)
+
+    def test_a_row_below_candidate_is_neither_read_nor_a_reference(self):
+        rows = both_channels(TYPICAL_RATIOS)
+        rows[0]["tier"] = "below_assignability"  # C5H8O3 through bromide
+        summary = gate(rows, NEGATIVE)
+        assert INTENSITY_CONSISTENCY not in record(rows, "C5H8O3-h")
+        assert summary[INTENSITY_CONSISTENCY]["readings"] == 0  # five left
+
+    def test_an_isotopologue_is_not_a_channels_peak(self):
+        rows = both_channels(TYPICAL_RATIOS)
+        rows.append(
+            row(
+                "iso",
+                "C5H8O3",
+                BROMIDE,
+                role="iso_child",
+                owner="C5H8O3-br",
+                intensity=1.0e9,
+            )
+        )
+        gate(rows, NEGATIVE)
+        (reading,) = record(rows, "C5H8O3-br")[INTENSITY_CONSISTENCY]
+        assert reading["log_ratio"] == pytest.approx(0.0)
+
+    def test_the_reading_moves_no_tier_and_no_probability(self):
+        rows = both_channels({**TYPICAL_RATIOS, "C11H18O5": 2.5})
+        for entry in rows:
+            entry["provenance"] = {"p_correct": 0.5}
+        gate(rows, NEGATIVE)
+        assert {entry["tier"] for entry in rows} == {"assigned"}
+        assert {entry["provenance"]["p_correct"] for entry in rows} == {0.5}
+
+
+class TestAnInSourceFragment:
+    def test_a_neutral_less_water_through_the_same_channel_is_named(self):
+        rows = [
+            row("parent", "C10H16O4", DEPROT, intensity=1.0e5),
+            row("fragment", "C10H14O3", DEPROT, intensity=2.0e4),
+        ]
+        summary = gate(rows, NEGATIVE)
+        assert record(rows, "fragment")[IN_SOURCE_FRAGMENT_OF] == [
+            {
+                "parent": "C10H16O4",
+                "loss": "H2O",
+                "via": "[M-H]-",
+                "parent_peak_assignment_id": "parent",
+                "height_ratio": 0.2,
+            }
+        ]
+        assert record(rows, "parent")[IN_SOURCE_FRAGMENTS] == [
+            {
+                "fragment": "C10H14O3",
+                "loss": "H2O",
+                "via": "[M-H]-",
+                "fragment_peak_assignment_id": "fragment",
+                "height_ratio": 0.2,
+            }
+        ]
+        assert IN_SOURCE_FRAGMENTS not in record(rows, "fragment")
+        assert IN_SOURCE_FRAGMENT_OF not in record(rows, "parent")
+        assert summary[IN_SOURCE_FRAGMENTS] == {
+            "pairs": 1,
+            "by_loss": {"H2O": 1},
+            "fragment_rows": 1,
+            "lighter_peak_taller": 0,
+        }
+
+    @pytest.mark.parametrize(
+        ("parent", "fragment", "ratio"),
+        [(3.0e5, 1.0e5, 0.3333), (3.0e6, 100.0, 3.333e-5)],
+    )
+    def test_the_height_ratio_keeps_four_significant_figures(
+        self, parent, fragment, ratio
+    ):
+        # A fragment far under its parent, as on a TOF in ions/s, keeps its
+        # ratio rather than storing 0.
+        rows = [
+            row("parent", "C10H16O4", DEPROT, intensity=parent),
+            row("fragment", "C10H14O3", DEPROT, intensity=fragment),
+        ]
+        gate(rows, NEGATIVE)
+        (found,) = record(rows, "fragment")[IN_SOURCE_FRAGMENT_OF]
+        assert found["height_ratio"] == ratio
+        (named,) = record(rows, "parent")[IN_SOURCE_FRAGMENTS]
+        assert named["height_ratio"] == ratio
+
+    @pytest.mark.parametrize("height", [1.0e5, 3.0e5])
+    def test_a_lighter_peak_as_tall_or_taller_is_no_fragment(self, height):
+        # A fragment's ions are its precursor's: a lighter peak this tall is
+        # the lattice of related formulas, not the heavier ion breaking up.
+        rows = [
+            row("parent", "C10H16O4", DEPROT, intensity=1.0e5),
+            row("lighter", "C10H14O3", DEPROT, intensity=height),
+        ]
+        summary = gate(rows, NEGATIVE)
+        assert IN_SOURCE_FRAGMENT_OF not in record(rows, "lighter")
+        assert IN_SOURCE_FRAGMENTS not in record(rows, "parent")
+        assert summary[IN_SOURCE_FRAGMENTS]["pairs"] == 0
+        assert summary[IN_SOURCE_FRAGMENTS]["lighter_peak_taller"] == 1
+
+    def test_through_another_channel_it_is_no_fragment(self):
+        # A fragment keeps the ion's charge carrier: the bromide cluster less
+        # water is no deprotonated ion.
+        rows = [
+            row("parent", "C10H16O4", BROMIDE),
+            row("other", "C10H14O3", DEPROT),
+        ]
+        summary = gate(rows, NEGATIVE)
+        assert IN_SOURCE_FRAGMENT_OF not in record(rows, "other")
+        assert summary[IN_SOURCE_FRAGMENTS]["pairs"] == 0
+
+    def test_the_brightest_heavier_ion_comes_first(self):
+        rows = [
+            row("less-water", "C10H16O4", DEPROT, intensity=1.0e4),
+            row("less-co2", "C11H14O5", DEPROT, intensity=5.0e4),
+            row("fragment", "C10H14O3", DEPROT, intensity=1.0e3),
+        ]
+        gate(rows, NEGATIVE)
+        assert [
+            (entry["parent"], entry["loss"])
+            for entry in record(rows, "fragment")[IN_SOURCE_FRAGMENT_OF]
+        ] == [("C11H14O5", "CO2"), ("C10H16O4", "H2O")]
+
+    def test_a_row_below_candidate_or_an_isotopologue_is_in_no_pair(self):
+        rows = [
+            row("parent", "C10H16O4", DEPROT, tier="below_assignability"),
+            row("fragment", "C10H14O3", DEPROT, intensity=1.0e3),
+            row("iso", "C11H14O5", DEPROT, role="iso_child", owner="x"),
+        ]
+        gate(rows, NEGATIVE)
+        assert IN_SOURCE_FRAGMENT_OF not in record(rows, "fragment")
+
+    def test_a_labelled_formula_is_in_no_pair(self):
+        rows = [
+            row("parent", "C10H15[15N]O6", DEPROT),
+            row("fragment", "C10H14O3", DEPROT, intensity=1.0e3),
+        ]
+        gate(rows, NEGATIVE)
+        assert IN_SOURCE_FRAGMENT_OF not in record(rows, "fragment")
+
+    def test_a_typed_formula_is_read_by_its_counts(self):
+        # A target library holds what a person typed.
+        rows = [
+            row("parent", "C10H16O4", DEPROT),
+            row("fragment", "C6H4(CH3)2", DEPROT, intensity=1.0e3),  # C8H10
+            row("fragment-2", "C9H15(CO2H)", DEPROT, intensity=1.0e3),  # less O2
+            row("fragment-3", "C9H13(CHO)O", DEPROT, intensity=1.0e3),  # less H2O, O
+        ]
+        gate(rows, NEGATIVE)
+        assert all(
+            IN_SOURCE_FRAGMENT_OF not in record(rows, row_id)
+            for row_id in ("fragment", "fragment-2", "fragment-3")
+        )
+        rows.append(row("typed", "C9H13(CHO)O2", DEPROT, intensity=1.0e3))  # C10H14O3
+        gate(rows, NEGATIVE)
+        assert record(rows, "typed")[IN_SOURCE_FRAGMENT_OF][0]["loss"] == "H2O"

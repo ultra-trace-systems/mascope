@@ -43,6 +43,8 @@ export const TIER_REASON_LABELS = Object.freeze({
   same_ion_settled: 'same ion, settled',
   no_close_rival: 'no close rival',
   not_measured: 'not measured',
+  // A grouping the run records, which neither caps nor keeps the tier.
+  in_source_fragment: 'possible in-source fragment',
   // An isotopologue is judged through its M0, and on its own line.
   inherited_from_owner: 'follows its M0',
   envelope_claim: "read as a neighbour's line",
@@ -121,9 +123,16 @@ export function holdsTierDown(reason) {
 }
 
 /**
+ * Reasons that record a grouping rather than judge the row: they cap nothing
+ * and are not what the row kept its tier on.
+ */
+const GROUPINGS = new Set(['in_source_fragment'])
+
+/**
  * The icon a reason is marked with: a down arrow for one that caps, a dash for
  * one that claims nothing, an elbow for an isotopologue that follows its M0
- * without being taken down, a check for what a row kept its tier on.
+ * without being taken down, an info mark for a grouping the run records, a
+ * check for what a row kept its tier on.
  *
  * Capping decides first, including for an isotopologue its M0 took down, so
  * every line that holds a tier down wears the same mark.
@@ -135,6 +144,7 @@ export function reasonIcon(reason) {
   if (holdsTierDown(reason)) return 'ph-arrow-down'
   if (reason?.rule === 'not_measured') return 'ph-minus'
   if (reason?.rule === 'inherited_from_owner') return 'ph-arrow-elbow-down-right'
+  if (GROUPINGS.has(reason?.rule)) return 'ph-info'
   return 'ph-check'
 }
 
@@ -157,6 +167,8 @@ export function reasonTooltip(reason, tier, { viaM0 = false } = {}) {
   if (reason?.rule === 'evidence_band') {
     // Not a rule that lowered the tier but the floor every rule lowers from.
     text = `Sets ${subject}'s tier: the reasons below can only lower it further`
+  } else if (!reason?.caps && GROUPINGS.has(reason?.rule)) {
+    text = `Caps nothing and keeps nothing: a grouping the run records about ${subject}`
   } else if (!reason?.caps) {
     text = `Caps nothing: ${subject} holds the tier its evidence earned`
   } else if (tier === 'candidate') {

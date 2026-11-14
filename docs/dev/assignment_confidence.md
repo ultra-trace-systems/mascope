@@ -1,7 +1,7 @@
 # Peak Assignment & Identification Confidence — Study, Design and Plan
 
 - **Status:** building
-- **As of:** 2026-11-11
+- **As of:** 2026-11-13
 - **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear; MAS-73 carries the identification level; MAS-324 to MAS-327 the open P2 to P4 steps)
 - **What:** The layered science of going from a peak to a confident identification: plausibility, arbitration, calibration, tiers.
 
@@ -136,8 +136,9 @@ isotopes, adducts, and biochemical relations into a single Bayesian model.
 progress): a compound seen via several confident adducts lifts each winner by a measured per-adduct
 log-odds (bounded odds update), with the weights carried in the per-instrument calibration store
 (D6). Isotope corroboration already lives in the fit score.
-*Gap.* Intensity-consistency across adducts and in-source-fragment grouping are not yet there (the
-fuller CAMERA/IPA model).
+*Gap.* Intensity-consistency across adducts and in-source-fragment grouping are measured and
+recorded (§4, P3 progress, step 4.16) but not weighed: within one sample neither showed the effect
+it is named for.
 
 ### L3 — Instrument & acquisition context
 *Basis.* The instrument and method constrain identity. **Mass resolution** sets the mass
@@ -503,8 +504,26 @@ no backend or DB, only `mascope_tools` + tests.
   weights are **instrument/library-specific** (they encode the Br/Ur reagent chemistry); "present"
   is monoisotopic-only, so the LRs are a **conservative lower bound**; and the anchor-swap pool
   includes real primaries (also conservative). Weights: `_corroboration_metrics.json`.
-- **Then:** intensity-consistency across adducts and in-source-fragment grouping (the deeper
-  CAMERA/IPA model).
+- **Intensity consistency and in-source fragments, measured (step 4.16).** The two deeper layers
+  of the CAMERA/IPA model, measured the same way on the public demo dataset 1.4.4 (161 files,
+  15,057 detections), with true likelihood ratios, an intensity-matched anchor swap and a
+  bootstrap over files; the numbers and the controls are in `assignment_quality_plan.md`, step
+  4.16, and `tooling/score_eval/_step416_metrics.json`.
+  - *A neutral's channel ratio against its sample's other neutrals'*
+    (`corroboration.channel_ratio_consistency`): the consistent band is 0.79 to 0.92 on every
+    adduct pair, under one; real pairs spread wider than chance ones. It corroborates nothing
+    within one sample and is recorded on the row (`cross_channel.intensity_consistency`), the
+    per-sample point of the ratio the continuity pass reads over a batch.
+  - *In-source fragments* (`corroboration.in_source_fragment_pairs`, a neutral-loss table of
+    H2O, CO, CO2, CH2O2, CH4O, HNO3, SO3, the lighter on the shorter peak): every loss clears one
+    (1.40 to 2.22), and so does the same neutral gained (1.13 to 1.48) and the series units CH2
+    and O (1.32, 1.33), the spectrum's lattice of related formulas; against that mirror the named
+    pair gains 5 to 12% but for HNO3 (1.9x), and no loss shows a fragment's intensity signature.
+    A reason on the row that caps nothing (`in_source_fragment`).
+  - Neither enters `p_correct` (the assignment plan's decision 36, MAS-860). HNO3's excess over
+    its mirror is what the mirror's nitrogen imbalance predicts without fragmentation: the loss
+    lands on a formula without nitrogen, the gain on a dinitrate. A weight, if one is earned,
+    enters through calibration from verdicts (step 4.3).
 
 ### P4 design: a retention-time term
 
