@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
+import { reactive } from 'vue'
 
 const get = vi.fn()
 vi.mock('@/api', () => ({
@@ -8,8 +9,11 @@ vi.mock('@/api', () => ({
     socket: { on: vi.fn(), off: vi.fn(), addSubscription: vi.fn(), removeSubscription: vi.fn() }
   }
 }))
+// The focused batch, as the batch store reports it; a test switches batch by
+// setting it.
+const batchState = reactive({ focusedId: 'sb-1' })
 vi.mock('@/stores/data/modules/batch', () => ({
-  useBatch: () => ({ focusedId: 'sb-1' })
+  useBatch: () => batchState
 }))
 // The run the ledger is reading, as the run store reports it: null is the
 // live ledger, an id is an earlier run's snapshot.
@@ -25,6 +29,7 @@ beforeEach(async () => {
   vi.clearAllMocks()
   vi.resetModules()
   runState.viewingId = null
+  batchState.focusedId = 'sb-1'
   get.mockResolvedValue([])
   ;({ useBatchPeakLedger } = await import('@/stores/data/modules/batchPeak/ledger'))
 })
@@ -144,6 +149,33 @@ describe('batchPeak ledger store: the instrument partition', () => {
     store.select({ batch_peak_id: 'bp-t' })
     get.mockResolvedValue([row('bp-t', 'tof'), row('bp-o', 'orbi')])
     await store.load('test')
+    expect(store.instrumentType).toBe('orbi')
+  })
+
+  it('opens another batch of both types on Orbitrap, whatever the last one showed', async () => {
+    get.mockResolvedValue([row('bp-t', 'tof'), row('bp-o', 'orbi')])
+    const store = useBatchPeakLedger()
+    await store.load('test')
+    store.showInstrument('tof')
+    expect(store.instrumentType).toBe('tof')
+
+    batchState.focusedId = 'sb-2'
+    get.mockResolvedValue([row('bp-t2', 'tof'), row('bp-o2', 'orbi')])
+    await store.load('test')
+    expect(get).toHaveBeenLastCalledWith('/batch-peaks/batch/sb-2', expect.anything())
+    expect(store.instrumentType).toBe('orbi')
+  })
+
+  it("does not take the previous batch's selection as the choice", async () => {
+    get.mockResolvedValue([row('bp-t', 'tof')])
+    const store = useBatchPeakLedger()
+    await store.load('test')
+    store.select({ batch_peak_id: 'bp-t' })
+
+    batchState.focusedId = 'sb-2'
+    get.mockResolvedValue([row('bp-t2', 'tof'), row('bp-o2', 'orbi')])
+    await store.load('test')
+    expect(store.selectedIds).toEqual([])
     expect(store.instrumentType).toBe('orbi')
   })
 })

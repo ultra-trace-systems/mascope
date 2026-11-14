@@ -1844,7 +1844,9 @@ Orbitrap's intensities are peak heights and a TOF's are peak areas, so the two
 cannot share a trace: each instrument type's samples fold into batch peaks of their
 own, even at an m/z the other type also saw. The ledger then shows a picker above the
 tier chips, **Orbitrap** or **TOF**, and lists, counts and selects one type's batch
-peaks at a time; the batch chart draws only that type's selection. Switching type
+peaks at a time; the batch chart draws only that type's selection. A batch opens
+on **Orbitrap**, whatever type the batch before it showed. One that gains its second
+type while you look at it stays on the type of the rows you selected. Switching type
 clears the other type's rows from the selection. The chart icon on a sample ledger row
 of the other type switches the ledger to that type and says so. A batch of one
 instrument type shows no picker. A batch folded before the ledger kept the two apart
