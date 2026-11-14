@@ -220,6 +220,19 @@ def test_status_says_two_polarities_each_read_by_one_run_mix_nothing(server):
     assert "  formula readings (2, one reading per polarity):" in shown
 
 
+def test_status_says_a_change_to_polarity_switching_batches_mixes(server):
+    # The run changes after the first batch, and the others are "+-"
+    for batch_id in server.batch_ids[1:]:
+        server.batch_polarity[batch_id] = "+-"
+    payload("store", "sync", *DATASET)
+
+    status = payload("store", "status", *DATASET)
+    assert status["mixed_runs"] is True
+    assert [c["polarity"] for c in status["run_changes"]] == ["-"]
+    shown = text("store", "status", *DATASET)
+    assert "mixed: a formula's series joins readings of different runs" in shown
+
+
 def test_scopes_lists_up_to_the_limit(server):
     found = payload("scopes", *DATASET, "--limit", "1")
     assert [b["sample_batch_id"] for b in found["batches"]] == server.batch_ids[:1]
