@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
 import { useSampleScroller } from '@/lib/panes/PaneBrowserSample/stores/sampleScroller.js'
@@ -27,8 +27,15 @@ function table(rows, { accessor = true } = {}) {
   }
 }
 
-// The stores yield to the DOM (setTimeout 0) before they scroll.
-const settled = () => new Promise((resolve) => setTimeout(resolve, 5))
+// The stores yield to the DOM (setTimeout 0) before they scroll, nudge the
+// row into view 100 ms later on the fallback, and release their lock at
+// 300 ms. The clock is a fake one run past all three, so no timer outlives
+// the test: one left behind fires after the file's environment is gone and
+// fails the whole run on `document is not defined` (#2993).
+const scrolled = async (pending) => {
+  await vi.advanceTimersByTimeAsync(300)
+  await pending
+}
 
 const CASES = [
   {
@@ -52,8 +59,15 @@ const CASES = [
 ]
 
 beforeEach(() => {
+  vi.useFakeTimers()
   localStorage.clear()
   setActivePinia(createPinia())
+})
+
+afterEach(() => {
+  expect(vi.getTimerCount()).toBe(0)
+  vi.useRealTimers()
+  document.body.innerHTML = ''
 })
 
 describe.each(CASES)('$name scroller', ({ use, key, scroll }) => {
@@ -64,8 +78,7 @@ describe.each(CASES)('$name scroller', ({ use, key, scroll }) => {
     const store = use()
     store.bind(t, () => rows)
 
-    await scroll(store, 'c')
-    await settled()
+    await scrolled(scroll(store, 'c'))
 
     expect(t.scrollInView).toHaveBeenCalledWith(2)
     expect(t.container.scrollTop).toBe(0)
@@ -80,12 +93,16 @@ describe.each(CASES)('$name scroller', ({ use, key, scroll }) => {
     t.container.__vnode = { component: { exposed: { scrollInView: t.scrollInView } } }
     const store = use()
     store.bind(t, () => rows)
+    const row = document.createElement('div')
+    row.id = 'd'
+    row.scrollIntoView = vi.fn()
+    document.body.appendChild(row)
 
-    await scroll(store, 'd')
-    await settled()
+    await scrolled(scroll(store, 'd'))
 
     expect(t.scrollInView).not.toHaveBeenCalled()
     expect(t.container.scrollTop).toBeGreaterThan(0)
+    expect(row.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'nearest' })
   })
 
   it('scrolls nowhere for a row the table does not show', async () => {
@@ -93,8 +110,7 @@ describe.each(CASES)('$name scroller', ({ use, key, scroll }) => {
     const store = use()
     store.bind(t, () => rows)
 
-    await scroll(store, 'zz')
-    await settled()
+    await scrolled(scroll(store, 'zz'))
 
     expect(t.scrollInView).not.toHaveBeenCalled()
     expect(t.container.scrollTop).toBe(0)
