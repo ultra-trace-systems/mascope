@@ -89,18 +89,33 @@ export const useBatchPeakLedger = defineStore('app.data.batchPeak', () => {
     if (types.length < 2) return null
     return instrumentChoice.value ?? types[0]
   })
+  // The choice is the focused batch's own: another batch opens on its first
+  // type, whatever was shown on the one before.
+  watch(
+    () => useBatch().focusedId,
+    () => {
+      instrumentChoice.value = null
+    },
+    { flush: 'sync' }
+  )
   // A batch going from one type to two - a sample of the other type folding
   // in - keeps showing what was selected rather than hiding it from the chart.
   // The selection's type is taken once, as the second type arrives, and held
   // as the choice: read on every change instead, unticking the last row of it
   // would switch the whole ledger to the other type.
+  //
+  // The watch runs as the new rows land, before the loader restores the
+  // selection onto them, so the selection may still be another batch's rows.
+  // Only a selected row the new list still holds is one the restore keeps,
+  // and only its type is taken.
   watch(
     instrumentTypes,
     (types, previous) => {
       if (types.length < 2 || (previous?.length ?? 0) >= 2 || instrumentChoice.value) return
-      const selectedType = data.selected.value.find((bp) =>
-        types.includes(bp?.instrument_type)
-      )?.instrument_type
+      const rows = new Map(data.list.value.map((bp) => [bp[key], bp]))
+      const selectedType = data.selected.value
+        .map((bp) => rows.get(bp?.[key])?.instrument_type)
+        .find((type) => types.includes(type))
       if (selectedType) instrumentChoice.value = selectedType
     },
     { flush: 'sync' }
