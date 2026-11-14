@@ -66,12 +66,12 @@ sample moves every pair's series, and it needs the acquisition times, a join
 the fold does not make. It is an idempotent overwrite under a lock of its own,
 taken with ``pg_try_advisory_xact_lock`` so a second pass on the batch skips
 rather than queues. It runs from its endpoint, at the end of a ledger rebuild,
-and after a fold where ``CONTINUITY_ON_FOLD`` says so (off until step 4.13 has
-measured its cost). A grade the ledger has moved past since is served marked
-(``batch_peaks.continuity_stale``).
+and after a fold where ``CONTINUITY_ON_FOLD`` says so (off: step 4.13 measured
+it over a fold's budget at ceiling scale). A grade the ledger has moved past
+since is served marked (``batch_peaks.continuity_stale``).
 
 The gates are constants beside the consensus constants in ``batch_peaks.py``,
-every one provisional. Design: the continuity note, sections 1, 2, 8 and 9
+every one provisional; step 4.13 read them on real batches and moved none. Design: the continuity note, sections 1, 2, 8 and 9
 (``docs/dev/peak_assignment_continuity.md``, in git history before
 2026-10-22), and ``docs/dev/assignment_quality_plan.md``, step 4.11.
 """

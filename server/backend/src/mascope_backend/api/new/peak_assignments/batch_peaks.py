@@ -110,11 +110,13 @@ SOURCE_ROLES = (ROLE_REAGENT, ROLE_ARTIFACT)
 # --- continuity: the ratio-stability pass (step 4.11) ---------------------------
 #
 # The gates and thresholds of ``continuity.py``, the pass that reads the
-# within-sample ratio of two related batch peaks across the batch. EVERY ONE IS
-# PROVISIONAL: a first-principles starting point, not a measured one, until step
-# 4.13 has run the pass on real time-ordered batches (the continuity design,
-# section 1.4, in git history before 2026-10-22). The grade is display-only: no
-# tier, reason or level reads it.
+# within-sample ratio of two related batch peaks across the batch. Each is a
+# first-principles starting point (the continuity design, section 1.4, in git
+# history before 2026-10-22), marked provisional. Step 4.13 read them on the
+# testbed's time-ordered batches on 2026-11-14 and moved none: the spreads split
+# where isotope statistics would, but most drifts follow the parent's level
+# rather than time, which no constant separates (#3233; the assignment plan,
+# step 4.13). The grade is display-only: no tier, reason or level reads it.
 
 #: The two kinds of pair a ratio is read for: an M0 and one of its isotope
 #: lines (the ratio is fixed by isotopic abundance), and two channels of one
@@ -163,9 +165,12 @@ MAX_PAIRS_PER_BATCH = 20_000
 #: time-ordered by construction.
 MAX_GAP_FACTOR = 10
 
-#: Whether a fold runs the pass after it commits. Off: the pass ships with its
-#: manual endpoint and the rebuild's trigger, and step 4.13 measures its cost at
-#: ceiling scale before the folds trigger it.
+#: Whether a fold runs the pass after it commits. Off: the pass runs from its
+#: endpoint and at a rebuild's end only. A fold-triggered pass may cost about what
+#: the fold it follows does, 10 s and 500 MB at the ceiling of order 10^5 batch
+#: peaks; step 4.13 measured 43 s and over 1 GB there (3.7 s at most on the
+#: testbed's batches), so the trigger stays off until the pass meets that budget
+#: (#3234; the assignment plan, step 4.13).
 CONTINUITY_ON_FOLD = False
 
 #: A pair's grade, and an anchor's, which is its most alarming pair's. ``red``:

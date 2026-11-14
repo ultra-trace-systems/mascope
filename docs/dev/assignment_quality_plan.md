@@ -114,6 +114,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 4.10 - fold-in and series benchmarks, and the two measurement-gated calls | - |  | built: three benchmarks in the read-path suite, run on a copy of the bench (`peak_assignment_batch_primary.md` section 7.1); the fold is O(P x N), not bounded: 2 s per arrival at 160 samples, 35 s at 5,000 (#3231); the series read holds its latency, but a chunk of 100 batch peaks over 5,000 samples is 37 MB (#3232); the anchor axis and the Stage B cost per anchor read for decisions 10.4 and 10.5, which stay the plan owner's; moves no metric; MAS-322 |
 | 4.11 - temporal continuity: the ratio-stability pass, its columns and its endpoint | - |  | built: every isotope line and its family root, and every two channels of one neutral, at assigned or candidate, graded on the within-sample ratio across a time-ordered batch (spread 1.4826 x MAD, drift by Spearman rho and a Theil-Sen change): stable, drift (the traces co-vary per 4.2), red, inconclusive or insufficient, on two `batch_peak` columns the ledger serves with a stale mark; run by its endpoint and at a rebuild's end, the fold trigger off for 4.13; on the testbed's six folded analysis batches 1,752 pairs, 1,008 stable, 122 red, 24 drift, the isotope reds a dim line's response; no tier moves; MAS-323 |
 | 4.12 - the continuity column and badge in the batch ledger, and the per-sample overlay | - |  | built: a *Continuity* column after *Samples* in the *Batch peaks* ledger, offered once the pass graded the batch: stable, drift and unstable (stored `red`) as a badge, inconclusive and insufficient muted, *Not graded* where the batch is not time-ordered, dashed where partial, a clock where stale; its own sort (unstable first, ungraded last) in the pane's projection; the pairs with their ratio, spread and drift in a popover; an isotope line's own grade on its row while unfolded; the help card; the per-sample overlay and its effective-verdict filter had shipped with the anchor verdicts; display-only; MAS-346 |
+| 4.13 - the continuity pass at ceiling scale, and its fold trigger | - |  | measured 2026-11-14: 43 s and 1.4 GB at 99,688 batch peaks and 4.8 M members (the demo ledger in 34 copies), 6.2 s at 11,728, 3.7 s at most on the testbed's batches, against a fold of 1.5 to 8.7 s; budget for a fold-triggered pass 10 s and 500 MB at ceiling, so `CONTINUITY_ON_FOLD` stays off (manual and rebuild) until the pass meets it (#3234); at ceiling the 20,000-pair cut leaves 56,920 batch peaks partial; on the testbed no gate constant moves, but 37 of 38 isotope drift reds and 51 of 68 channel ones follow the parent's level, not time (#3233); MAS-347 |
 | 4.15 - Stage B winner confidence | - |  | built, off by default: `stage_b_confidence` on the run config measures the formula-only shortlist of the untargeted stage's committed winners, the most intense first up to `stage_b_confidence_peaks` (200), in one seeded pass through every channel the run searched, scored at the width the winners were re-scored at, and stores each winner's `confidence`, `n_candidates` and `is_tie` in provenance as Stage A does, one candidate per ion on the peak (two splits of one ion are one hypothesis, the winner's own ion no rival) (`alternatives_scoring.measure_winner_confidence`, the inspector's placement rule); a winner past the budget records none; `search_scope.winner_confidence` records the counts and the seconds; `p_correct` stays null on Stage B rows (the scale now matches, the curve's population and the batch consensus that reads it do not); no tier moves; the runtime on the gate sets is the bench's to record; MAS-325 |
 | 4.16 - intensity consistency and in-source fragment corroboration | - |  | built, display-only: each sample reads a neutral's ratio between two channels against the same pair's over its other neutrals (`intensity_consistency`, consistent / loose / outlying) and pairs neutrals one in-source loss apart through one channel, the lighter on the shorter peak (`in_source_fragment_of`, a reason that caps nothing on the lighter row); measured on the anchor-swap benchmark with an intensity-matched null and two controls, neither enters P(correct): the consistent band is 0.79 to 0.92 on every adduct pair, and a loss reads mostly the lattice of related formulas (the same neutral gained, and the series units, read alike), its named pair beating its mirror by 5 to 12% but for HNO3 (1.9x), with no fragment's intensity signature; kept display-only with the loss table whole (decision 37); tiering rule set 14; no tier moves; MAS-326 |
 | 4.18 - bound the harm of a mismatched chemistry context, graded or gate | - |  | measured (2026-11-13, demo sets Db and Du, standing in for the gate sets, `tooling/score_eval/arbitration_eval.py`, pools merged by ion as Stage B elects them): the matched context lifts contested top-1 0.724 -> 0.989 and true winners kept at 5 % FDR 13,870 -> 15,962 against `none`, removing no true reading; the two defaults swapped stay above `none` (0.979, 15,830) at the cost of 80 glycerol readings; the worst context, combustion, removes 1,619 and leaves the uronium set no cut at 5 % FDR. Every removed truth was a ratio window's, never a cap's. 596 uronium anchors whose seeded reading loses its own ion's election are counted apart (#3191). Decision 11.4 of `chemistry_profiles.md` decided: a default must leave its own sets and every other bench set at or above `none` (BR and UR pass). The windows become a graded, floored factor (#3188); the identity context is pinned byte for byte (`TestTheIdentityContext`); MAS-328 |
@@ -2652,6 +2653,111 @@ who edits chemistry and stays last.
   (`anchorContext.overlayFor`, `PaneBrowserAssignment.vue`) and is unchanged.
 - **Not built.** The inspector's continuity line (the note's section 5) and
   a continuity filter chip.
+
+### 4.13 The continuity pass at ceiling scale, and its fold trigger
+
+- **What.** Run 4.11's pass at ceiling scale and on the testbed's
+  time-ordered batches, read its grades against its gate constants, and
+  from the numbers set the budget a fold-triggered pass must meet and the
+  trigger's default. This answers the continuity note's open questions 2
+  (the thresholds) and 3 (the rollout budget). Its section 2 is where the
+  note put the trigger; the note is in git history before 2026-10-22, so
+  the answer is recorded here.
+- **How it was measured** (2026-11-14, develop at `25f08f995`).
+  - *The tools.* `server/backend/tests/system/benchmark/expand_batch_peaks.sql`
+    clones a folded ledger's batch peaks and members `mult` times. Each
+    copy sits in an ionization mode of its own, so it forms the seed's
+    pairs again among its own peaks. `continuity_ceiling.py` beside it
+    runs the real pass with each phase timed and prints the cut, the
+    grades, the rows written and the peak resident memory.
+  - *Ceiling scale.* The demo bench's uronium ledger (81 samples, 2,932
+    batch peaks, 141,868 members) on a migrated clone, expanded to 4
+    copies (11,728 batch peaks) and 34 copies (99,688 batch peaks, 4.8 M
+    members). 4.2's co-variation was read before each pass.
+  - *The testbed.* A migrated clone of the copy, never the copy itself:
+    4.2's reading run on each of the nine batches of 400 to 600 samples,
+    then the pass. Each pass ran twice: the first from cleared grades
+    (it writes every graded batch peak, as a first pass or a rebuild's
+    does), the second over its own grades (it writes what moved, as a
+    pass after a fold does).
+- **Cost.**
+
+  | ledger | batch peaks | members | pairs (graded) | seconds | peak memory |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | testbed, set A (423 samples) | 783 | 186,433 | 185 | 0.7 | 58 MB |
+  | testbed, largest analysis batch (546) | 1,932 | 646,208 | 872 | 3.7 | 184 MB |
+  | demo uronium | 2,932 | 141,868 | 1,773 | 1.6 | 58 MB |
+  | demo, 4 copies | 11,728 | 567,472 | 7,092 | 6.2 | 185 MB |
+  | demo, 34 copies | 99,688 | 4,823,512 | 60,282 (20,000) | 43.2 | 1,404 MB |
+  | demo, 34 copies, no cut | 99,688 | 4,823,512 | 60,282 | 55.7 | 1,528 MB |
+
+  - Every other testbed batch passes in under 2.3 s. The pass scales with
+    the members of its paired batch peaks: 4 copies cost 4 times the
+    seed's 1.6 s. A second pass costs the same; it writes nothing.
+  - At 99,688 batch peaks the pass spends 4.0 s reading the anchors, 1.7 s
+    forming pairs, 20.7 s reading members, 11.2 s grading and 5.4 s
+    writing 71,094 rows (39 MB of JSON). The member read covers every
+    paired batch peak, 3.8 M rows, though only 20,000 pairs are graded.
+  - *The cut.* At ceiling, `MAX_PAIRS_PER_BATCH` grades 20,000 of 60,282
+    pairs and marks 56,920 of 71,094 paired batch peaks `partial`. The cut
+    saves 12.5 s, because the members are read whether or not they are
+    graded.
+  - *A fold*, for scale: re-folding one sample of the testbed batches takes
+    1.5 to 8.7 s (6.7 to 7.4 s on the largest analysis batch). A fold on
+    the expanded ledger is no measure: its copies share the seed's
+    samples, so re-folding one deletes that sample's members in every copy.
+- **The budget and the default.** A fold-triggered pass may cost about
+  what the fold it follows does: **10 s and 500 MB at the ceiling of order
+  10^5 batch peaks**, the ceiling the continuity note took from the batch
+  design's section 7 (both in git history). On the testbed and up to 10^4
+  batch peaks the pass meets it (6.2 s and 185 MB at most). At
+  ceiling it takes 43 s and over 1 GB on every fold. So **the default stays
+  manual and rebuild only: `batch_peaks.CONTINUITY_ON_FOLD = False`.** The
+  grade is read by nothing yet either: no tier, and no column until 4.12.
+  The trigger goes on once a ceiling pass meets the budget. Reading members
+  only for the pairs the cut grades, and reading the anchors' columns rather
+  than whole rows, should get it there (#3234).
+- **The grades on the testbed.** The live pass agrees with 4.11's pure
+  reading count for count. Over the six analysis batches and set A, folded
+  throughout: isotope pairs 506 `stable`, 169 `inconclusive`, 117
+  `insufficient`, 41 `red`; channel pairs 604 `stable`, 257
+  `inconclusive`, 138 `insufficient`, 81 `red`, 24 `drift`. Set A alone has
+  no `red` among its 185 pairs. The largest analysis batch has 23 isotope
+  and 27 channel reds among 872 pairs. Sets B and C hold too few folded
+  members to grade: 1,581 pairs, all `insufficient` or `inconclusive` but
+  for 5 channel reds on their spread.
+- **The thresholds against the grades.**
+  - *The spread splits where isotope statistics would.* Over the tested
+    isotope pairs the median spread is 0.06 to 0.14 per batch. Most
+    `inconclusive` isotope pairs sit just above `SPREAD_STABLE` (0.15):
+    0.20 would make 67 more of the 169 `stable`. A 13C ratio that scatters
+    by a fifth from sample to sample is consistent with one species. It
+    does not confirm one, so `inconclusive` is the right word for it. The
+    channel cut (0.25) and `SPREAD_RED` (0.5, 3 isotope and 13 channel
+    reds) hold as well.
+  - *The drift splits on the wrong axis.* 38 of the 41 isotope reds are
+    drifts. In 37 of them the drift is gone once the log ratio's linear
+    dependence on the M0's log intensity is taken out: a minor line read
+    near the picker's floor drifts with its parent's level (5.3's
+    response), and where that level trends with time, the time test reads
+    it. 51 of the 68 channel drift reds go the same way. A channel ratio
+    that follows the neutral's level is the source's chemistry, which
+    decision 35 reads as `drift`. The same residual test would add 11
+    channel drifts among today's `stable` and `inconclusive` pairs.
+    Tightening the constants only thins the reds without separating the
+    two: at `RHO_DRIFT` 0.8, 5 isotope drift reds remain, at a drift of
+    ln 3, 4.
+  - *So no gate constant moves.* Proposed instead: test the drift on the
+    log ratio's residual after a robust fit against the denominator's log
+    intensity, and record the level dependence on the pair as a fact of its
+    own (#3233). Proposed for the cut: since a rebuild's or the endpoint's
+    pass is off the fold's path, give it a cut of 100,000 pairs. Grading a
+    whole ceiling batch then costs 56 s rather than 43 s.
+- **Not done here.** The null model that would give a grade a likelihood
+  ratio (the continuity note's question 1, which 4.2 and 4.11 point to as
+  4.13's) is not this measurement and stays open: no tier reads the grade.
+  No chemist read the pairs one by one. The spread and drift readings above
+  are statistical, the per-pair reading is the plan owner's.
 
 ### 4.16 Intensity consistency and in-source fragments, measured before weighed
 
