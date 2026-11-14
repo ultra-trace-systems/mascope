@@ -2149,6 +2149,121 @@ class TestResolvedProfile:
         assert heuristics.context_ratio_windows == (presets.AMBIENT_AIR.ratio_windows())
 
 
+# Protonated neutrals the identity grid reaches, chosen so a context has
+# something to act on: oxalic and citric acid, a nitrogen-rich base past ambient
+# air's N cap, nitric acid with no carbon at all, and two terpenoids.
+_IDENTITY_PEAKS = [
+    ("p1", 91.00259, 20000.0),  # C2H2O4 + H+
+    ("p2", 193.03428, 15000.0),  # C6H8O7 + H+
+    ("p3", 127.07267, 12000.0),  # C3H6N6 + H+
+    ("p4", 155.10666, 18000.0),  # C9H14O2 + H+
+    ("p5", 169.12231, 9000.0),  # C10H16O2 + H+
+    ("p6", 64.00292, 7000.0),  # HNO3 + H+
+]
+
+
+async def _untargeted_ledger(config, *, without_context_layer=False) -> str:
+    """The ledger one run writes through the real untargeted search, as bytes.
+
+    The composition search runs unfaked, so its grid and its heuristic rules are
+    the ones the run resolved. ``without_context_layer`` takes the chemistry
+    context out of the untargeted search at the two places it reaches there: the
+    grid its caps narrow and the ratio gate in the heuristic rules. What is left
+    is that search before contexts existed. Stage A's reference fetch is faked
+    (``_patches``), so the ceiling a context sets over it runs in neither
+    ledger; ``test_stage_a_matches_the_reference_under_the_resolved_contexts_ceiling``
+    pins that ceiling.
+    """
+    import json
+
+    from mascope_backend.api.new.peak_assignments import profiles as resolution
+    from mascope_tools.composition import heuristic_filter
+    from mascope_tools.composition.models import HeuristicFilterConfig
+    from mascope_tools.composition.profiles import ChemistryContext
+
+    recorder = _Recorder()
+    patches = _patches(recorder, _peaks_df(_IDENTITY_PEAKS), [])
+    del patches["compositions"]
+    if without_context_layer:
+        patches["context"] = patch.object(
+            resolution,
+            "get_chemistry_context",
+            lambda name: ChemistryContext(name="none", label="None", known_window=None),
+        )
+        patches["grid"] = patch.object(
+            resolution,
+            "resolve_element_ranges",
+            lambda profile, context, min_carbon=None: profile.element_ranges,
+        )
+        patches["filter"] = patch.object(
+            resolution.ResolvedProfile,
+            "heuristics_config",
+            lambda self, *, use_senior=True: HeuristicFilterConfig(
+                use_senior=use_senior
+            ),
+        )
+        patches["rules"] = patch.object(
+            heuristic_filter,
+            "HEURISTIC_RULES",
+            [
+                rule
+                for rule in heuristic_filter.HEURISTIC_RULES
+                if rule is not heuristic_filter.rule_context_ratios
+            ],
+        )
+    _start(patches)
+    try:
+        await _run(config)
+    finally:
+        patch.stopall()
+    text = json.dumps(recorder.rows, sort_keys=True, default=str)
+    # A row's id is drawn fresh on every run; it is relabelled by the order the
+    # rows were written in, wherever it is referenced, so two runs compare on
+    # everything else.
+    for index, row in enumerate(recorder.rows):
+        text = text.replace(row["peak_assignment_id"], f"assignment-{index}")
+    return text
+
+
+class TestTheIdentityContext:
+    """``context = none`` with no profile bound leaves the ledger as it was.
+
+    The chemistry profiles note (section 7) asks for this as a regression test,
+    not a hope: a run that names neither a reagent profile nor a matrix writes
+    the rows, byte for byte, that the engine wrote before contexts existed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_ledger_is_byte_identical_to_the_engine_without_contexts(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        config = PeakAssignmentConfig(profile="none", context="none")
+
+        identity = await _untargeted_ledger(config)
+        before_contexts = await _untargeted_ledger(config, without_context_layer=True)
+
+        assert identity == before_contexts
+
+    @pytest.mark.asyncio
+    async def test_a_context_changes_the_same_ledger(self):
+        # Without this the identity above could hold because nothing on these
+        # peaks is anything a context acts on.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        identity = await _untargeted_ledger(
+            PeakAssignmentConfig(profile="none", context="none")
+        )
+        ambient = await _untargeted_ledger(
+            PeakAssignmentConfig(profile="none", context="ambient-air")
+        )
+
+        assert ambient != identity
+
+
 def _bright_ion_rows(error_ppm: float = 0.6) -> list[dict]:
     """One bright ion matching ten lines of its own, every one ``error_ppm`` off.
 

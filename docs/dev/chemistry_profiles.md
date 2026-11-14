@@ -3,7 +3,7 @@
 # Reagent-Ion Chemistry Profiles & Chemistry Context: Design & Plan
 
 - **Status:** building
-- **As of:** 2026-10-27
+- **As of:** 2026-11-13
 - **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear: MAS-59, MAS-61, MAS-63, MAS-65; MAS-328 the mismatched-context harm bound; MAS-342 is where 4.4's `reference_tags` activation lives)
 - **What:** Reagent-ion chemistry profiles and chemistry contexts as the unit a run searches under.
 
@@ -403,13 +403,149 @@ benches.
   contested top-1), and must not degrade calibration ECE. Run with the matched
   context vs `none` to quantify the layer, and with a *mismatched* context to
   bound the harm of a wrong user choice.
+
+  **Measured 2026-11-13** (step 4.18, MAS-328; develop at `33a82469e`). Sets:
+  the demo bundle 1.4.4's two bench sets, `Db`, bromide negative (`BR`,
+  default context ambient air; 5,660 anchors), and `Du`, uronium positive
+  (`UR`, default uronium; 10,360 anchors). They stand in for the testbed's gate sets (A to
+  L, `assignment_bench.md` section 4) because the harness needs seeded truth,
+  which the gate sets lack. An anchor is a seeded target's monoisotopic peak
+  whose true reading the reagent grid holds and the spectrum scores. Its pool
+  is what Stage B would compete there: the grid's readings within the
+  profile's window, the context's caps and the finder's row cap, the heuristic
+  rules with the context's windows, then one reading per ion, elected as Stage
+  B elects it (`elect_same_ion_families`). Truth joins unless the context
+  removes it. The pool is ranked by fit x plausibility. *Mismatched* swaps the
+  two defaults: uronium on the bromide set, ambient air on the uronium set, a
+  default applied to another matrix's data. Combustion is the worst of the
+  eight shipped contexts. *Graded* is a stand-in for section 4.2's factor:
+  caps kept as the grid, and outside a ratio window the plausibility floor
+  (0.1) at once, with no taper.
+
+  596 uronium anchors are left out of every arm. There the seeded reading
+  loses its own ion's election under `none`, so Stage B keeps it only as a
+  same-ion alternative on the elected row, whatever the context. Eight seeded
+  species make them, each a nitrogen-bearing neutral through `[M+NH4]+` or
+  `[M+H]+` that the election reads as a lighter neutral through the urea
+  adduct or `[M+NH4]+`
+  ([#3191](https://github.com/ultra-trace-systems/mascope/issues/3191)). That
+  is the election rule against the seed, not the context. A context only
+  removes readings, so a truth that wins its election under `none` wins it in
+  every arm that keeps it. Both sets pooled:
+
+  | arm | top-1 | contested top-1 | false winners | kept at 5 % FDR (true) | true readings removed | wrong at confidence >= 0.9 | ECE, candidates / winners |
+  |---|---|---|---|---|---|---|---|
+  | `none` | 0.911 | 0.724 | 8.8 % | 14,600 (13,870) | 0 | 3 | 0.081 / 0.153 |
+  | matched | 0.996 | 0.989 | 0.4 % | 16,020 (15,962) | 0 | 0 | 0.207 / 0.247 |
+  | matched, graded | 0.995 | 0.986 | 0.5 % | 16,020 (15,947) | 0 | 0 | 0.150 / 0.246 |
+  | mismatched | 0.988 | 0.979 | 0.7 % | 15,940 (15,830) | 80 | 5 | 0.182 / 0.243 |
+  | mismatched, graded | 0.993 | 0.978 | 0.7 % | 16,020 (15,906) | 0 | 1 | 0.158 / 0.246 |
+  | combustion | 0.889 | 0.890 | 4.8 % | 14,968 (14,243) | 1,619 | 569 | 0.134 / 0.203 |
+  | combustion, graded | 0.990 | 0.969 | 1.0 % | 16,020 (15,859) | 0 | 0 | 0.197 / 0.315 |
+
+  Contested top-1 is read on the 5,139 anchors contested under `none`; a
+  removed truth counts as a miss. The pooled cut mixes the two sets, so it
+  hides where a context fails; per set (top-1 / contested top-1 / true
+  winners kept at 5 % FDR / true readings removed):
+
+  | arm | bromide (5,660; 2,618 contested) | uronium (10,360; 2,521 contested) |
+  |---|---|---|
+  | `none` | 0.965 / 0.925 / 5,464 / 0 | 0.882 / 0.516 / 8,452 / 0 |
+  | matched | 0.994 / 0.986 / 5,624 / 0 | 0.998 / 0.991 / 10,338 / 0 |
+  | matched, caps only | 0.965 / 0.925 / 5,464 / 0 | 0.998 / 0.991 / 10,338 / 0 |
+  | matched, ratios only | 0.994 / 0.986 / 5,624 / 0 | 0.981 / 0.922 / 10,164 / 0 |
+  | mismatched | 0.970 / 0.966 / 5,492 / 80 | 0.998 / 0.991 / 10,338 / 0 |
+  | combustion | 0.961 / 0.947 / 5,441 / 80 | 0.850 / 0.832 / 0 / 1,539 |
+  | combustion, graded | 0.975 / 0.946 / 5,518 / 0 | 0.998 / 0.993 / 10,341 / 0 |
+
+  Readings:
+
+  - *The layer earns its place.* The matched context lifts contested top-1
+    0.724 to 0.989 and cuts the false winners from 8.8 % to 0.4 %, on both
+    sets: bromide 0.925 to 0.986, uronium 0.516 to 0.991. On the bromide set
+    the ratio windows carry all of it (caps alone change nothing). On the
+    uronium set the caps carry it (windows alone reach 0.922).
+  - *The harm is the ratio gate's, and only under a wrong context.* No
+    matched context removed a true reading. Every one removed elsewhere went
+    to a ratio window, never to a cap. The swap removes 80 readings of one
+    genuine low-carbon species, glycerol C3H8O3 (H/C 2.67 against uronium's
+    2.6). Chamber removes 11 of C4H4O2 (DBE/C 0.75 against 0.7). Combustion
+    and water (H/C to 2.2) remove 1,619: glycerol's 80, and 1,539 on the
+    uronium set (15 % of it), mostly saturated C6 to C9 glycols and glycol
+    ethers. A removed truth leaves a decoy alone in its pool, at full
+    confidence, so 567 wrong winners sit at the top of the uronium set's
+    confidence order. No cut on that set then reaches 5 % FDR.
+  - *Contested top-1 alone would pass a harmful context.* Combustion's caps
+    still prune decoys, so its contested top-1 (0.890) stays above `none`'s.
+    Its top-1 over all anchors and its FDR-kept count show the removed truths.
+    The decision below reads those two.
+  - *Calibration ECE moves for a reason the context is not.* The shipped
+    curve maps evidence alone to P(correct). A context removes decoys, which
+    raises the winners' accuracy (0.91 to 1.00) and leaves their evidence,
+    and their mean P (0.76 to 0.75), where it was. The winners' ECE grows
+    0.153 to 0.247 by underconfidence, not by misranking. On these Stage B
+    pools the curve misses by 0.08 to 0.34 in every arm, `none` included,
+    against the 0.029 it was fit to on the wider `make_candidates.py` pools.
+    Its refit per profile is step 4.3 of the assignment plan.
+
+  **Acceptable degradation (decision 11.4, decided 2026-11-13).** A context
+  other than `none` becomes a mode's default only when the harness, run on the
+  bench sets, shows:
+
+  1. *Matched:* on the mode's own sets, contested top-1 and the true winners
+     kept at 5 % FDR at or above `none`'s.
+  2. *Mismatched:* on every other bench set, top-1 over all anchors and the
+     true winners kept at 5 % FDR at or above `none`'s on that set. A default
+     applied to the wrong matrix must leave it no worse than no context.
+  3. The species it removes are named in the record. ECE is reported, not
+     gated, until the curve is fit per profile (step 4.3).
+
+  The two measured defaults pass. Ambient air on the uronium set: top-1 0.998
+  against 0.882, true winners kept 10,338 against 8,452, the same as
+  uronium, the set's own default. Uronium on the bromide set: 0.970 against
+  0.965, 5,492 against 5,464, at the cost of the glycerol readings.
+  Combustion fails as a default for both demo modes: on the bromide set
+  0.961 against 0.965 and 5,441 against 5,464, on the uronium set 0.850
+  against 0.882 and none kept. Water fails on the uronium set alone, with the
+  same numbers there. The ambient-air defaults of `NO3`, `NO3_15N`, `IODIDE`
+  and `EASYIC_*` pass rule 2 on both sets. Rule 1 is unmeasured until the
+  bench has a set of each mode.
+
+  **Graded factor or the shipped gate (the deferred decision).** The gate
+  costs genuine low-carbon species: glycerol and C4H4O2 under a wrong
+  context. The note's halocarbon example is not in the demo's targets, and
+  on the bromide grid it is bounded by the caps, not by a window. The graded
+  stand-in keeps the matched gain (0.995 against 0.996 top-1) and removes no
+  true reading in any arm. In the worst case it turns the 569 confidently
+  wrong winners into none, and the uronium set keeps 10,341 true winners at
+  5 % FDR where the combustion gate keeps none. So the leaning holds: the
+  windows become the graded, floored factor of section 4.2, in a PR of its
+  own ([#3188](https://github.com/ultra-trace-systems/mascope/issues/3188)).
+  The caps stay a gate on the grid (decision 10.3).
+
+  Reproduce: export the seed's target ions as the harness's docstring says,
+  then `python tooling/score_eval/arbitration_eval.py <bundle> --ions
+  demo_ions.csv --arms
+  all,matched:graded,mismatched:graded,combustion:graded,matched:caps,matched:ratios`
+  (about 3 minutes on 12 workers). `all` adds `matched`, `none`,
+  `mismatched` and every shipped context; the run gives every row of both
+  tables, each set under `by_set`.
 - **Reagent pre-pass**: on the demo Br/Ur bundles, every peak the library
   claims must be re-checked against its current assignment — reagent rows
   should absorb previously-unassigned bright peaks and known reagent-cluster
   mis-assignments, never confident analyte identifications.
 - **Golden reproducibility**: with `context = none` and no profile bound,
   ledgers must be byte-identical to today's (the identity path is a regression
-  test, not a hope).
+  test, not a hope). Pinned since 2026-11-13 by `TestTheIdentityContext` in
+  `server/backend/tests/unit/api/peak_assignments/test_orchestrator.py`. It runs
+  the real untargeted search with `profile = none, context = none`, then again
+  with the context taken out at the two places it reaches in that search: the
+  grid its caps narrow and the ratio gate. The two ledgers must serialize to
+  the same bytes, and an ambient-air run on the same peaks must not. Stage A's
+  reference fetch is faked there, so the ceiling a context sets over it runs
+  in neither ledger. The reference fetch's own `known_window` test pins that
+  ceiling (`test_stage_a_matches_the_reference_under_the_resolved_contexts_ceiling`,
+  same file).
 - Campaign-tuned constants inherited from peaky (O-cap 11, series thresholds,
   scaffold minimums) are **re-derived on our decoy sets**, not trusted.
 
@@ -532,7 +668,9 @@ designed not to touch the same files until then.
    as a full settings page with versioning UI (the eventual home)? Suggest
    dialog-first.
 4. **Mismatched-context harm bound.** §7 measures it; decide the acceptable
-   degradation before defaulting any context ≠ `none` for a mode.
+   degradation before defaulting any context ≠ `none` for a mode. Decided
+   2026-11-13 (MAS-328): a default must leave its own sets and every other
+   bench set at or above `none` (§7). The bromide and uronium defaults pass.
 5. **Naming.** "Chemistry profile" (umbrella), `ReagentProfile`,
    `ChemistryContext` are used here; the ionization doc's user-facing rename
    ("IonizationSetup") should win for the reagent axis when they merge —
