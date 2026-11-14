@@ -5,8 +5,9 @@ assigned members agree on a formula; where the top two tie, or the winner holds
 too few of them, it marks the anchor ``is_ambiguous`` and keeps the runner-up
 as an alternative. What it does not read is *how* they disagree. Where the
 members that carry one formula are the bright ones and those that carry the
-other the dim ones, or the one formula holds the batch's early samples and the
-other its late ones, the disagreement is not scatter: two chemistries share
+other the dim ones, or the one formula holds blocks of the batch's samples in
+acquisition order - its early ones, its late ones, a run in the middle - and
+the other the rest, the disagreement is not scatter: two chemistries share
 one m/z trace, each dominating where it is the stronger, and the vote's one
 answer averages them. This module tests the two formulas the vote ranked first
 for exactly that, after the vote and with the members it read
@@ -98,22 +99,32 @@ def _significant(p: float) -> float:
     return float(f"{p:.3g}")
 
 
+def _finite_intensities(members: list) -> list[float]:
+    values = (_get(m, "intensity") for m in members)
+    return [float(v) for v in values if v is not None and math.isfinite(float(v))]
+
+
 def intensity_reading(first: list, second: list) -> Optional[dict]:
     """The rank test of two formulas' member intensities, or None where either
-    has fewer than :data:`BLEND_MIN_MEMBERS` members carrying an intensity.
+    has fewer than :data:`BLEND_MIN_MEMBERS` members carrying a finite
+    intensity, or where the test reads nothing (every intensity tied).
 
     :param first: The first formula's members.
     :param second: The second formula's members.
     :return: ``p`` (two-sided), ``separation`` (the probability a member of
         the first is the brighter of a pair across the two) and ``separates``.
     """
-    a = [float(v) for v in (_get(m, "intensity") for m in first) if v is not None]
-    b = [float(v) for v in (_get(m, "intensity") for m in second) if v is not None]
+    a = _finite_intensities(first)
+    b = _finite_intensities(second)
     if len(a) < BLEND_MIN_MEMBERS or len(b) < BLEND_MIN_MEMBERS:
         return None
     result = mannwhitneyu(a, b, alternative="two-sided")
     p = float(result.pvalue)
     separation = float(result.statistic) / (len(a) * len(b))
+    # All tied, the test has no ranks to read and answers NaN. The record is
+    # JSON in Postgres, which refuses NaN, and an untested axis is what it is.
+    if not (math.isfinite(p) and math.isfinite(separation)):
+        return None
     clean = max(separation, 1.0 - separation) >= BLEND_MIN_SEPARATION
     return {
         "p": _significant(p),
@@ -215,7 +226,9 @@ def blend_of(
         ``axis`` (the separating axis, the more significant where both
         separate), and each axis' reading under ``intensity`` and ``time`` -
         None where it could not be tested - with the formula on its bright
-        side (``brighter``) or its early side (``earlier``).
+        side (``brighter``) or its early side (``earlier``, by mean
+        acquisition rank: the early and the late side only where the time
+        reading has two runs; past two, the formulas come in blocks).
     """
     first = [m for m in first if _get(m, "tier") in BLEND_TIERS]
     second = [m for m in second if _get(m, "tier") in BLEND_TIERS]
