@@ -54,7 +54,6 @@ renders, and an imported run's verdicts stay out of the instrument-wide
 calibration pool.
 """
 
-import asyncio
 from collections import OrderedDict
 from datetime import datetime as dt
 from datetime import timezone
@@ -64,7 +63,6 @@ from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.exc import DBAPIError
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
-from mascope_backend.api.controllers.samples.lib.samples_peaks import extract_peaks
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     ApiException,
@@ -95,6 +93,9 @@ from mascope_backend.api.new.peak_assignments.import_validation import (
     unknown_peak_ids,
     unresolved_owner_error,
 )
+from mascope_backend.api.new.peak_assignments.peak_ids import (
+    load_peak_ids as _load_peak_ids,
+)
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_BELOW_ASSIGNABILITY,
     TIER_UNASSIGNED,
@@ -121,31 +122,6 @@ class UnprocessableImportException(HTTPException):
 
     def __init__(self, detail: str):
         super().__init__(status_code=422, detail=detail)
-
-
-async def _load_peak_ids(sample) -> set[str]:
-    """Every peak id the sample's peak file holds.
-
-    Deliberately the id-only read: validation needs the id set, while the
-    engine's full load additionally opens the raw data source per call - on
-    every chunk, and again on every retry - only to compute an averaging
-    divisor. Offloaded to a thread because it is blocking file I/O in a request
-    handler.
-
-    :param sample: The sample being imported into.
-    :return: The sample's peak ids.
-    """
-    peak_data = await asyncio.to_thread(
-        extract_peaks,
-        sample.filename,
-        sample.polarity,
-        sample.t0,
-        sample.t1,
-        areas=False,
-        heights=False,
-        average=False,
-    )
-    return {str(peak_id) for peak_id in peak_data.peak_ids}
 
 
 #: Peak id sets held for the life of one assembling import, keyed by run id.

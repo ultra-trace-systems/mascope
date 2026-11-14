@@ -301,6 +301,14 @@ class PeakAssignmentsResource(BaseResource):
                    other run, and absent from a server older than decoys.
                    Its ``config`` names the run it is a decoy of under
                    ``decoy_arm``.
+                 - ``peaks_current``: Whether a completed run's rows still
+                   name the sample's peaks. False once the peaks were found
+                   again after the run (peak detection run again, a refit, a
+                   restored filestore): its rows no longer match the peak
+                   list, so re-run the assignment before reading it as the
+                   sample's result. Null for a run that is not completed or
+                   has no rows, for the ``batch`` run, when the server could
+                   not read the peaks, and absent from an older server.
                  - ``error``: Failure reason, if any
                  - ``peak_assignment_run_utc_created`` /
                    ``peak_assignment_run_utc_completed``: Timestamps (UTC)

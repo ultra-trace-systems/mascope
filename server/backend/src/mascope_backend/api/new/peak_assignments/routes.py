@@ -315,7 +315,13 @@ async def get_peak_assignment_runs_route(
     :param user: The current authenticated user. Requires workspace guest role.
     :return: Run records with status, engine version, and configuration,
         and the mass-error width each run scored at (`sigma_ppm`, `mu_ppm`
-        and their sources), null where a run recorded none.
+        and their sources), null where a run recorded none. `peaks_current`
+        says whether a completed run's rows still name the sample's peaks:
+        false once the peaks were found again after the run (peak detection
+        run again, an operator refit, a restored filestore), so its rows no
+        longer open against the peak list. Null for a run that is not
+        completed or has no rows, for the batch-derived run, and when the
+        sample's peak ids could not be read.
     """
     await check_sample_access(sample_item_id, user, "guest")
     result = await get_peak_assignment_runs(
