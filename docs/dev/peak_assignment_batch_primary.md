@@ -1,7 +1,7 @@
 # Batch-Primary Peak Assignment: the Batch Ledger as the Durable Object — Design Note
 
 - **Status:** built
-- **As of:** 2026-10-22
+- **As of:** 2026-11-14
 - **Tracked in:** closed; decisions 10.4 and 10.5 are carried inside MAS-321 and MAS-322 ([Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) milestone 4)
 - **Supersedes:** `peak_assignment_batch.md` (section 12), `peak_assignment_copy.md` and `peak_assignment_continuity.md` (sections 6.3 and 6.4); all three retired 2026-10-22
 - **What:** The batch ledger as the durable assignment object; samples fold in at ingest.
@@ -543,6 +543,90 @@ The slim-member design puts assignment growth below raw-data growth. That is the
 deployment that can store its samples can store their assignments, at the volume ratio it
 has today.
 
+### 7.1 Benchmarks
+
+*Measured 2026-11-14 (MAS-322).* The batch layer was designed against a ceiling of order
+10^5 anchors and 10^7 member rows. Three benchmarks in
+`server/backend/tests/system/benchmark/test_api_benchmark.py` measure it, run with
+`MASCOPE_BENCH_TEST=1` against a stack whose batches hold a ledger. They skip on the demo
+stack, which has none. The module docstring has the settings.
+
+**The stack.** The agent box's dev Postgres. A copy of the bench instance's database
+(`tooling/assignment_bench`, the demo manifest): the two demo Orbitrap batches of 81 and 80
+samples, their ledgers as the bench built them on 2026-11-12. One backend worker of the
+branch on its own instance slot. `expand_demo.sql` grows a batch by cloning its samples
+with their member rows (phase 3), so a clone sits on its seed's anchors. The TOF readings
+come from the testbed's ledgers, read only.
+
+**Fold-in per arrival** (`test_fold_in_per_arrival`). The 80-sample batch, grown to each
+size; each arrival is a copy of the batch's largest sample (1,291 peaks), folded as ingest
+folds it (`fold_sample_into_batch_peaks` with the rows in memory). Median of three:
+
+| batch size | s per arrival | anchors touched | members read | µs per member read |
+| ---: | ---: | ---: | ---: | ---: |
+| 160 | 2.0 | 1,291 | 124,499 | 16.0 |
+| 563 | 5.0 | 1,291 | 429,937 | 11.7 |
+| 1,046 | 8.6 | 1,291 | 795,688 | 10.9 |
+| 2,569 | 18.8 | 1,291 | 1,945,508 | 9.7 |
+| 5,052 | 35.1 | 1,291 | 3,819,084 | 9.2 |
+
+**Not bounded.** The cost is O(P x N), not the O(P log A) of §12.3. The snap is cheap. The
+consensus recompute that ends the fold reads every member of every anchor the arrival
+joined and votes them again. At 5,000 samples an arrival costs 35 s, all of it under the
+batch's fold lock. Filed as
+[#3231](https://github.com/ultra-trace-systems/mascope/issues/3231);
+`test_fold_in_is_bounded` holds the bound (an arrival at the largest size costs at most
+twice one at the smallest) as a strict expected failure until it is fixed.
+
+**Series read** (`test_batch_peak_series`). `POST /api/batch-peaks/records/series` for the P
+anchors with the most members over the batch grown to 5,055 samples, in chunks of 100 as
+the batch chart asks (it plots at most 300):
+
+| P | requests | slowest s | largest body MB | points |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 1 | 0.24 | 0.41 | 5,055 |
+| 10 | 1 | 0.48 | 3.76 | 50,550 |
+| 100 | 1 | 3.13 | 37.14 | 505,500 |
+| 300 | 3 | 3.15 | 37.41 | 1,516,500 |
+
+Latency holds the 20 s budget easily. The payload does not: about 73 bytes a point, so a
+full chunk over 5,000 samples is 37 MB against the 12 MB budget. Filed as
+[#3232](https://github.com/ultra-trace-systems/mascope/issues/3232);
+`test_batch_peak_series_payload` is its strict expected failure.
+
+**The anchor axis** (`test_anchor_axis_growth`). An anchor's first member in acquisition
+order is the sample that minted it, so the ledger itself is the growth curve:
+
+| batch | samples | anchors | after 1 / 10 / 50 % of the samples | new per arrival, last quarter | singletons | singletons' member rows |
+| --- | ---: | ---: | --- | ---: | ---: | ---: |
+| demo uronium | 81 | 2,932 | 1,644 / 2,659 / 2,814 | 3.2 | 224 (8 %) | 0.2 % |
+| demo bromide | 80 | 1,688 | 586 / 1,537 / 1,641 | 1.3 | 145 (9 %) | 0.2 % |
+| testbed Orbitrap, 10 batches of 87-547 | | 339-8,368 | | 0.0-2.8 | 4-15 % | 0.0-0.4 % |
+| testbed Orbitrap, 6 batches of 5-6 | | 321-3,021 | | 9-67 | 9-56 % | 2.3-21 % |
+| testbed TOF, 4 batches of 3-6 | | 1,707-4,003 | | 246-872 | 30-50 % | 9-21 % |
+
+The axis is nearly built after a tenth of a batch; after that a late Orbitrap arrival mints
+a few anchors at most. The occupancy default (`min_n_present=2`, the series' full-batch
+load and the ledger route) hides the singletons, and not all of them are noise: on the demo
+batches 51 and 22 of them carry an assigned consensus, 112 and 60 a candidate one. The
+batch ledger in the app asks for `min_n_present=1`, so it shows them.
+
+**What the readings say for the two open decisions** (§10, items 4 and 5; the calls stay
+the plan owner's):
+
+- *Singletons on the anchor (10.4).* "Saves 9 % of member rows" was the share of anchors
+  that are singletons. The share of member rows they hold is 0.2 % on the demo batches and
+  at most 0.4 % on every testbed Orbitrap batch of 87 samples or more. It is large only on
+  small batches: 2-21 % on Orbitrap batches of 5-6 samples, 9-21 % on the TOF batches. The
+  testbed copy keeps one day of each TOF batch (3-6 samples), so no TOF batch of a size
+  where the saving would matter has been measured.
+- *Stage B at ingest for new anchors (10.5).* The batch-triggered search costs about 0.2 s
+  per anchor it searches: 124 anchors in 27 s on the 81-sample batch, 225 in 48 s on the
+  80-sample one, rescoring every sample included, so an upper bound for one arrival's own
+  anchors. A late Orbitrap arrival mints 0-3 anchors, so searching them at ingest adds
+  under a second against the fold's 2 s at 160 samples and 35 s at 5,000. On a small TOF
+  batch an arrival mints hundreds, which would be a minute or more.
+
 ---
 
 ## 8. What NOT to do
@@ -624,8 +708,12 @@ aggregates" (§12.1). The per-sample
 4. **Singletons on the anchor.** Carrying the first member's ids on the anchor and
    materializing a member row only from the second sample on saves 9 % of member rows here,
    more on noisy TOF data. *Recommend later; measure on a TOF batch first.*
+   *Measured (§7.1): 0.2-0.4 % of member rows on Orbitrap batches of 80 samples or more,
+   9-21 % on small batches of either type; no large TOF batch measured yet.*
 5. **Stage B at ingest for new anchors.** Affordable once per anchor; whether it should run
    unasked is a product call. *Recommend no until the batch-triggered path has been used.*
+   *Measured (§7.1): about 0.2 s per anchor searched, under a second per late Orbitrap
+   arrival; the fold itself costs 2-35 s per arrival over 160-5,000 samples (#3231).*
 
 ---
 

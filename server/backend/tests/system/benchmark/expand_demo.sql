@@ -1,6 +1,8 @@
 -- Scale a demo batch to benchmark size by cloning, inside one transaction:
 --   1. the target collection's compounds/ions `imult` times (bigger collection)
 --   2. the batch's samples `mult` times, with every ion-level match row
+--   3. the batch ledger's members onto those cloned samples, when the batch
+--      has a ledger (a demo stack has none; the bench instance does)
 --
 -- Idempotent. Cloned rows are tagged with a "[bench-clone ...]" marker in their
 -- name, and only the unmarked *seed* rows (the pristine dataset) are ever
@@ -15,8 +17,8 @@
 --   imult       collection-ion generations to add (0 = leave collection as is)
 --   mult        sample generations to add (0 = leave batch as is)
 --
--- Cloning happens at the SQL level: the chart and match-record endpoints read
--- these rows directly, so no raw files or reprocessing are needed. The result
+-- Cloning happens at the SQL level: the chart, match-record and batch-peak
+-- endpoints read these rows directly, so no raw files or reprocessing are needed. The result
 -- is representative for read/query benchmarks, not for pipeline correctness.
 
 \set ON_ERROR_STOP on
@@ -125,6 +127,36 @@ FROM match_ion mi
 JOIN sample_clone_map scm ON scm.orig_id = mi.sample_item_id
 ON CONFLICT (match_ion_id) DO NOTHING;
 
+-- ---------- Phase 3: the batch ledger's members ----------
+-- A cloned sample joins every batch peak its seed is a member of, with the
+-- seed's own member row. The anchors are not re-drawn - the fold's anchors are
+-- frozen and a clone's peaks sit on its seed's - so this is the ledger the fold
+-- would have built had the clones arrived. Each touched anchor's n_present is
+-- brought to its member count; the other consensus columns stay as the seed
+-- members left them, which the fold benchmark's own recompute rewrites.
+INSERT INTO batch_peak_occurrence (
+    batch_peak_id, sample_item_id, sample_peak_id, peak_assignment_id, intensity,
+    tier, fit_score, candidate, role, owner_batch_peak_id, p_correct, mz_delta_ppm
+)
+SELECT o.batch_peak_id, scm.new_id, o.sample_peak_id, o.peak_assignment_id,
+       o.intensity, o.tier, o.fit_score, o.candidate, o.role,
+       o.owner_batch_peak_id, o.p_correct, o.mz_delta_ppm
+FROM batch_peak_occurrence o
+JOIN sample_clone_map scm ON scm.orig_id = o.sample_item_id
+ON CONFLICT (batch_peak_id, sample_item_id) DO NOTHING;
+
+UPDATE batch_peak bp
+SET n_present = m.n
+FROM (
+    SELECT o.batch_peak_id, count(*) AS n
+    FROM batch_peak_occurrence o
+    JOIN batch_peak b ON b.batch_peak_id = o.batch_peak_id
+    WHERE b.sample_batch_id = :'batch'
+    GROUP BY o.batch_peak_id
+) m
+WHERE bp.batch_peak_id = m.batch_peak_id
+  AND bp.n_present <> m.n;
+
 -- Benchmarks exercise read paths; make sure the batch is not locked out of
 -- the copy/delete endpoints.
 UPDATE sample_batch SET locked = 0 WHERE sample_batch_id = :'batch';
@@ -136,3 +168,5 @@ ANALYZE match_ion;
 ANALYZE target_ion;
 ANALYZE target_compound;
 ANALYZE target_compound_in_target_collection;
+ANALYZE batch_peak;
+ANALYZE batch_peak_occurrence;
