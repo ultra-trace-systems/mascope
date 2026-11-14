@@ -55,39 +55,72 @@ to choose its chemistry. This applies to both upload paths. Name files as:
 - **Timestamp** — an acquisition date/time somewhere in the name, in one of the
   recognised forms (for example `20240115_1430`, `20240115143000`, or
   `2024.01.15-14h30m00s`). Mascope uses it to place and order the file.
-- **Ionization token** — the short token of a configured **ionization mode** in
-  the name is how Mascope knows how the sample was ionized, and lets it
-  process the file on its own. The name must match exactly one mode for each
-  polarity in the file: a file acquired in both polarities needs the token of a
-  positive mode and the token of a negative mode. A file whose name matches no
-  mode, or two modes of the same polarity, is still uploaded and converted, but
-  it gets no samples until you
+- **Ionization token** (optional) — the short token of one of your server's own
+  **ionization modes** in the name tells Mascope how the sample was ionized,
+  and lets it process the file on its own. The name must match exactly one mode
+  for each polarity in the file: a file acquired in both polarities needs the
+  token of a positive mode and the token of a negative mode. A file whose name
+  matches no mode, or two modes of the same polarity, is still uploaded and
+  converted, but it gets no samples until you
   [choose its chemistry](#choose-the-chemistry-of-a-file-that-needs-one).
 
-**Configured ionization modes.** A file is processed on its own only when its
-name carries the token of a configured ionization mode, so the modes you use
-should exist first: a file uploaded before its mode waits for someone to choose
-its chemistry. This is a prerequisite in its own right — see
-[Set up ionization modes](#set-up-ionization-modes) below.
+**A chemistry for each file.** Mascope processes a file under the chemistry it
+was acquired under, and looks for it in this order: a chemistry someone chose
+for the file, what the file's [acquisition record](../instruments/acquisition-records.md)
+names, the token of a mode in its name, and, on a server that routes files by
+their acquisition method, the chemistry the file's method has been seen
+running. A file none of these names waits as **Needs a chemistry**. A fresh
+server needs nothing set up for it: every server ships
+[chemistry profiles](#chemistry-profiles), and choosing one for the file is a
+single click. Modes and tokens of your own are the
+[advanced path](#advanced-modes-of-your-own), for files that should be
+processed on their own by name.
 
 **A place to analyse in.** Your copies of the samples will live in a **batch**,
 which lives in a **dataset** inside a **workspace** of your own. If you do not
 have them yet, create them first — see
 [First steps in the app](../getting-started/first-steps.md#create-a-dataset-and-a-batch).
 
-## Set up ionization modes
+## Chemistry profiles
 
-An **ionization mode** tells Mascope how a measurement was ionized, and it is
-what links a raw file to the right processing. Its filename token is what lets
-Mascope recognise and process an uploaded file on its own, so configure the
-modes you acquire under before you import; a file whose name carries no token
-still uploads, and waits for its chemistry to be chosen. See
+A **chemistry profile** is a chemistry Mascope ships: its name, its polarity,
+the [ionization mechanisms](../concepts/index.md#ionization-modes-and-mechanisms)
+its ions are formed by and, where it has a reagent of its own, the calibrants
+its files are calibrated on. Every server has the same profiles from its first
+start, so they are there before anything has been processed, and nothing has to
+be set up or adopted to use one: choosing a profile for a file is how it is
+used (see [Choose the chemistry of a file that needs one](#choose-the-chemistry-of-a-file-that-needs-one)).
+
+Open the **Raw files** tab and click **Chemistry** (the sliders button beside
+the instrument) to open the *Chemistry* settings. Its **Profiles** tab lists
+the profiles, each marked **Shipped**, with the calibrants it ships, how many
+files it has routed and when the newest of them was acquired.
+
+| Profiles | Calibrants they ship |
+| --- | --- |
+| Nitrate, Nitrate 15N, Bromide and Iodide (negative); Uronium (positive) | The reagent ion and its own clusters, such as `[Br]-`, `[Br2]-` and `[Br3]-` for bromide. An Orbitrap needs one of them in its scan window; a TOF fit needs three, and they all sit at the low end of the range. |
+| Charge transfer (EASY-IC), negative and positive | The one ion of an Orbitrap's EASY-IC source, its lock mass. A TOF fit cannot use a single anchor, so a TOF file under one of these is not calibrated. |
+| Deprotonation (negative); Protonation, Ammonium and Ammonium 15N (positive) | None: they have no reagent of their own. Their files are not calibrated until the profile is pointed at a calibrant collection under **Advanced**. |
+
+A profile's name, polarity and mechanisms are the chemistry's, the same on every
+server, so they cannot be changed and a profile cannot be deleted. The
+collections it points at can: under **Advanced**, a profile can be pointed at a
+calibrant or diagnostic collection of your own in place of the one it ships.
+
+### Advanced: modes of your own
+
+An **ionization mode** of your own describes a chemistry the profiles do not, or
+the way your site names its files. Its filename token is what lets Mascope
+recognise and process an uploaded file on its own, so set up the modes whose
+tokens your file names carry before you import; a file whose name carries no
+token still uploads, and waits for its chemistry to be chosen. See
 [Concepts → Ionization](../concepts/index.md#ionization-modes-and-mechanisms) for
 what a mode represents.
 
-Open the **Raw files** tab and click **Edit ionizations** to open the *Edit
-Ionization Settings* dialog. It has two tabs: **Ionization Modes** and
-**Ionization Mechanisms**.
+The **Advanced** tab of the *Chemistry* settings has two tabs of its own:
+**Ionization Modes** and **Ionization Mechanisms**. The modes table lists your
+server's own modes first, then the profiles: a profile's row edits only its
+calibration and diagnostic collections.
 
 **1. Define the mechanisms first (Ionization Mechanisms tab).** A mechanism
 describes a single charge-forming reaction, written in the standard adduct
@@ -162,13 +195,16 @@ in this mode automatically on import — without it, samples in this mode stay
 uncalibrated.
 
 !!! note "Who can change modes"
-    Any **editor** can create a mode. **Editing or deleting** a mode requires
-    **admin**, because it affects every sample already processed under it —
-    changing the calibrant collection flags the affected batches for
-    re-calibration, and changing the mechanisms or diagnostic collection flags
-    them for re-matching. The re-match swaps the collections the mode gave
-    each daily batch for its new ones, and keeps any collection added under
-    **Edit batch targets**. An analysis batch keeps its collections.
+    Any **editor** can create, edit or delete a mode of your own, and point a
+    profile at other collections. Changing the calibrant collection flags the
+    batches already processed under the mode for re-calibration, which fits
+    them on the new calibrants; changing the mechanisms or the diagnostic
+    collection flags them for re-matching. The re-match swaps the collections
+    the mode gave each daily batch for its new ones, and keeps any collection
+    added under **Edit batch targets**. An analysis batch keeps its
+    collections: to match one against a new collection, add it under
+    **Edit batch targets**
+    ([Attach or detach an existing collection](target-collections.md#attach-or-detach-an-existing-collection)).
 
 ## Get the raw files in
 
@@ -217,7 +253,7 @@ re-processed long after it was acquired is listed too.
 |---|---|
 | Converted, Queued, Bound, Calibrated | Still being processed: the file was read (or processing was asked for again, and waits its turn), its samples exist, and its m/z axis was calibrated. |
 | Done | Every sample of the file was matched, or it has nothing to match: a blank measurement, or an acquisition of fragmentation (MS2) scans alone, which has no MS1 peaks. The detail says when the file was not calibrated, and why. |
-| Needs a chemistry | The file's name binds it to no ionization mode - it carries no mode's token, tokens of two modes of one polarity, or, for a file of both polarities, a token for only one of them - so it was not processed. A new file has no samples yet; a file processed before keeps the samples it had, and the detail says so. Choose its chemistry (below), or fix the tokens and re-process it. |
+| Needs a chemistry | Nothing named the file's chemistry: its name binds it to no ionization mode - it carries no mode's token, tokens of two modes of one polarity, or, for a file of both polarities, a token for only one of them - and no record, choice or method did either, so it was not processed. A new file has no samples yet; a file processed before keeps the samples it had, and the detail says so. Choose its chemistry (below), or fix the tokens and re-process it. |
 | Calibration failed | An m/z calibration failed or is below the quality bar, so some or all of the samples were not matched. A TOF file is matched only on a verified m/z calibration, so one whose ionization mode has no calibration collection ends here too, and the detail names the missing collection. |
 | Failed | Processing stopped on an error, or was interrupted by a server restart. Re-process the file. |
 
@@ -241,16 +277,23 @@ attention** in the notifications pane.
 1. In the **Raw files** tab, set the status filter to **Needs a chemistry**.
 2. Select the files that share a chemistry, right-click them and choose
    **Choose chemistry**.
-3. Pick an ionization mode for each polarity the files hold, then **Process**.
+3. Pick a chemistry for each polarity the files hold, then **Process**. The
+   list offers the [profiles](#chemistry-profiles) that ship calibrants first,
+   under **Profiles**, and your server's own modes under **Advanced**, with a
+   profile that ships no calibrants marked *(no calibrants)*. When none of them
+   is the chemistry the files were run under, **Set up a mode of your own**
+   opens the *Chemistry* settings at **Advanced** and brings you back.
 
-The files are processed under those modes as if their names carried the
-modes' tokens: calibrated, matched, and filed in the daily acquisition
-batches. An editor of the instrument may do it. The modes stay with the file:
-re-processing it later keeps them, whatever tokens its name carries and
-whatever tokens are configured by then, and its status goes on saying so:
-"Matched 1 sample. Bound to 'Nitrate' (-) as chosen by hand." To change them,
-or to put the file under the mode its name would bind it to, choose its
-chemistry again.
+The files are processed under that chemistry as if their names carried its
+token: calibrated, matched, and filed in the daily acquisition batches, one
+named after the profile or mode. An editor of the instrument may do it. The
+choice stays with the file: re-processing it later keeps it, whatever tokens
+its name carries and whatever tokens are configured by then, and its status
+goes on saying so: "Matched 1 sample. Bound to the profile 'Nitrate,
+negative' (-) as chosen by hand." A file bound to a profile names it so in its
+status whatever bound it, since a profile has no token for the file's name to
+show. To change the choice, or to put the file under the mode its name would
+bind it to, choose its chemistry again.
 
 A chosen mode calibrates the file as a token's mode would: when no calibrant
 of the mode is found in the file, even at the widest tolerance, the file ends
@@ -446,8 +489,9 @@ batch has samples, you can go straight to analysis:
   timestamp is present, then fix the name and re-upload. A missing ionization
   token no longer rejects a file: it waits in Raw files as *Needs a chemistry*.
 - **The filename token isn't recognised.** Confirm an ionization mode with that
-  exact token exists in **Edit ionizations → Ionization Modes**, and that the
-  token field is filled in (a mode with no token cannot match a filename).
+  exact token exists in **Chemistry → Advanced → Ionization Modes**, and that
+  the token field is filled in (a mode with no token, a profile included,
+  cannot match a filename).
   Processing a single file by hand does not depend on the token — pick the
   ionization mode in the dialog instead — and neither does uploading: a file
   without a token waits in Raw files for its chemistry to be chosen. Batch

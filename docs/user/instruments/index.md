@@ -278,10 +278,14 @@ instrument wrote.
   you. The agent does not retry these: the server has understood the name
   and refused it, so the file is set aside in `failed_uploads` immediately.
 - *The upload succeeded but the file has no samples*: the file arrived, but
-  it could not be processed; the agent's own line about it says why. Most often its name matches no ionization mode
-  token (see [Import data files](../guides/import-files.md#prerequisites)),
-  and it waits in Raw files as *Needs a chemistry* until someone
-  [chooses its chemistry](../guides/import-files.md#choose-the-chemistry-of-a-file-that-needs-one).
+  it could not be processed; the agent's own line about it says why. Most often
+  nothing named its chemistry - its name carries no ionization mode token, and
+  no record or earlier choice names one (see
+  [Import data files](../guides/import-files.md#prerequisites)) - and it waits in
+  Raw files as *Needs a chemistry* until someone
+  [chooses its chemistry](../guides/import-files.md#choose-the-chemistry-of-a-file-that-needs-one):
+  one of the [chemistry profiles](../guides/import-files.md#chemistry-profiles)
+  every server ships, in one click, or a mode of the server's own.
   Otherwise processing failed, and the file's status in Raw files says why.
   Either way it is shown as it happens to anyone viewing that instrument's
   raw files and, for a paired agent, to the person who approved its pairing.
@@ -319,7 +323,9 @@ Mascope processes them automatically into acquisition batches, which you **copy*
 into your own workspace. The
 [Import data files](../guides/import-files.md#build-your-batch-from-the-acquisition-samples)
 guide covers this, and its [prerequisites](../guides/import-files.md#prerequisites)
-(filename rules and ionization modes) apply to File Agent uploads too.
+(the filename rules, and a chemistry for each file) apply to File Agent uploads
+too. A fresh server needs no ionization mode set up first: a file whose name
+carries no token waits once, and choosing a shipped profile for it is one click.
 
 <!-- TODO Phase 3. Outline:
 - Acquisition workflow specifics (Orbitrap, TOF)
