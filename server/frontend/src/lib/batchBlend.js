@@ -4,12 +4,13 @@
  * The consensus (step 4.8 of the assignment plan, `batch_blend.py`) tests
  * the two formulas its vote ranked first: where their members part cleanly
  * along intensity - one formula on the bright samples, the other on the dim
- * ones - or along acquisition time - one early, the other late - two
- * chemistries share the trace, and the batch peak carries the reason under
- * `blend`: the two `formulas` (the consensus first), their `ions`, the `n`
- * members of each at candidate or better, the `axis` that parts them, and
- * each axis' reading under `intensity` (`separation`, `p`, `brighter`) and
- * `time` (`runs`, `expected_runs`, `p`, `earlier`), null where untested.
+ * ones - or along acquisition time - one early, the other late, or each in
+ * blocks of its own - two chemistries share the trace, and the batch peak
+ * carries the reason under `blend`: the two `formulas` (the consensus
+ * first), their `ions`, the `n` members of each at candidate or better, the
+ * `axis` that parts them, and each axis' reading under `intensity`
+ * (`separation`, `p`, `brighter`) and `time` (`runs`, `expected_runs`, `p`,
+ * `earlier`), null where untested.
  * A reason only: the tier and the consensus stand as the vote left them.
  */
 
@@ -38,13 +39,16 @@ function axisSentence(record, axis) {
       `${share}% of their pairs order that way (${p(reading.p)}).`
     )
   }
-  const early = reading.earlier ?? first
-  const late = early === first ? second : first
-  return (
-    `${early} holds the early samples and ${late} the late ones: ` +
+  const runs =
     `${reading.runs} runs in acquisition order, where interleaved they would ` +
     `give ${Math.round(reading.expected_runs)} (${p(reading.p)}).`
-  )
+  // `earlier` compares mean ranks, which name an early and a late side only
+  // where the order switches once; a block in the middle of the batch has
+  // the other formula on both sides of it.
+  if (reading.runs !== 2) return `${first} and ${second} come in blocks: ${runs}`
+  const early = reading.earlier ?? first
+  const late = early === first ? second : first
+  return `${early} holds the early samples and ${late} the late ones: ${runs}`
 }
 
 /** The mark's short account. */

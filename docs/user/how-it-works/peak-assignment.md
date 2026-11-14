@@ -1988,8 +1988,9 @@ A batch peak is one m/z across the batch, and its formula is what most of its sa
 read there. Where two compounds share that m/z, each sample reads the one that dominates
 it, and the vote averages two answers into one. A plain disagreement scatters: the two
 formulas take turns from sample to sample. Two compounds sharing a peak part along an
-axis instead. One holds the bright samples and the other the dim ones, or one holds the
-batch's early samples and the other its late ones.
+axis instead. One holds the bright samples and the other the dim ones, or each holds
+blocks of the batch's samples in acquisition order: one its early samples and the other
+its late ones, or one a run in the middle and the other the samples around it.
 
 So after every vote, the consensus tests the two formulas it ranked first:
 
@@ -2010,7 +2011,8 @@ the peak. A batch peak that is parted on either axis is a probable blend.
 
 A probable blend carries an intersect mark beside its formula in the *Batch peaks* ledger.
 Its tooltip names the two formulas with their ions and how many samples read each, and
-says which holds the bright or early samples. **Probable blends**, in the ledger's view
+says which holds the bright samples, or the early ones where the order switches once.
+Where it switches more often, the tooltip says the two come in blocks. **Probable blends**, in the ledger's view
 menu, keeps only those batch peaks. The chart names such a trace by both formulas, the
 consensus first, and its hover says the axis.
 

@@ -1028,8 +1028,8 @@ watch(
               </p>
               <p>
               A batch peak whose samples split between two formulas - one on
-              the bright samples and the other on the dim ones, or one early in
-              the batch and the other late - may be two compounds sharing one
+              the bright samples and the other on the dim ones, or each in
+              blocks of the batch's samples - may be two compounds sharing one
               peak. It carries an intersect mark beside its formula, the chart
               names it by both formulas, and <b>Probable blends</b> keeps only
               those. Its consensus and tier stay as the samples voted.
