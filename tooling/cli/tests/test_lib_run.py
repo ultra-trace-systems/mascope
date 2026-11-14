@@ -7,7 +7,9 @@ variables (DB name, version tag) winning over inherited ones, while
 process-level vars (MASCOPE_LOGLEVEL etc.) must still reach the child.
 """
 
+import shlex
 import subprocess
+import sys
 
 from mascope_cli.cmd import lib
 from mascope_cli.runtime import runtime
@@ -73,3 +75,16 @@ def test_returncode_passes_through_real_subprocess(mascope_home):
     # already required by parse_version, so it is a safe dependency here.
     assert lib.run("git --version").returncode == 0
     assert lib.run("git frobnicate-not-a-command").returncode != 0
+
+
+def test_child_streams_stay_apart(mascope_home, capfd):
+    # A passthrough keeps the child's stderr (its log) off the CLI's stdout,
+    # so redirecting a compose exec's stdout to a file saves only its output.
+    script = "import sys; print('out-line'); print('err-line', file=sys.stderr)"
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+
+    assert lib.run(command).returncode == 0
+
+    captured = capfd.readouterr()
+    assert captured.out == "out-line\n"
+    assert captured.err == "err-line\n"
