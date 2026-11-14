@@ -317,15 +317,10 @@ async def aggregate_match_isotope_filtered_data(
             select(
                 MatchIsotope.sample_item_id,
                 MatchIsotope.target_isotope_id,
-                MatchIsotope.match_mz_error,
-                MatchIsotope.match_abundance_error,
-                MatchIsotope.sample_peak_intensity,
-                MatchIsotope.sample_peak_intensity_relative,
-                MatchIsotope.sample_peak_mz,
-                MatchIsotope.sample_peak_tof,
-                MatchIsotope.match_score,
-                MatchIsotope.signal_to_noise,
-                MatchIsotope.ratio_scan_count,
+                *(
+                    getattr(MatchIsotope, column)
+                    for column in MATCH_ISOTOPE_VALUE_COLUMNS
+                ),
             )
             .select_from(MatchIsotope)
             .where(MatchIsotope.sample_item_id.in_(sample_item_ids))
@@ -429,15 +424,9 @@ def _assemble_filtered_isotope_frame(
         "mz",
         "relative_abundance",
         "resolution",
-        "match_mz_error",
-        "match_abundance_error",
-        "sample_peak_intensity",
-        "sample_peak_intensity_relative",
-        "ratio_scan_count",
-        "signal_to_noise",
-        "sample_peak_mz",
-        "sample_peak_tof",
-        "match_score",
+        # The fetched values, from the list the query selects: a hand-kept
+        # copy here dropped every value it did not name, with no error.
+        *MATCH_ISOTOPE_VALUE_COLUMNS,
     ]
 
     # Reorder the columns according to the defined order and sort the DataFrame by 'mz'

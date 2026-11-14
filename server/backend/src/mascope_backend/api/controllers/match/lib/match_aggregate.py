@@ -25,18 +25,21 @@ from mascope_tools.composition.mass_accuracy import fit_sample_mass_accuracy
 
 
 # Value columns of a match_isotope row fetched for aggregation (everything except
-# the sample_item_id / target_isotope_id keys). Used to seed an empty stored frame
-# so unmatched reconstruction can run even when a sample has no matched isotopes.
+# the sample_item_id / target_isotope_id keys), in the order the isotope frame
+# shows them. The one list of them: the aggregation query selects exactly these,
+# the isotope frame's column order takes them from here, and an empty stored
+# frame is seeded with them so unmatched reconstruction can run even when a
+# sample has no matched isotopes. A value column added here reaches the frame.
 MATCH_ISOTOPE_VALUE_COLUMNS = [
     "match_mz_error",
     "match_abundance_error",
     "sample_peak_intensity",
     "sample_peak_intensity_relative",
+    "ratio_scan_count",
+    "signal_to_noise",
     "sample_peak_mz",
     "sample_peak_tof",
     "match_score",
-    "signal_to_noise",
-    "ratio_scan_count",
 ]
 
 
