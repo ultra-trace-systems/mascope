@@ -241,7 +241,13 @@ provisioned by the CLI that knows about it. The doctor's exit 3 - a healthy
 stack whose disk is projected to reach its free-space floor within days - is
 a warning, not a failure: the play prints a note for that server and carries
 on, since a filling disk needs an operator rather than a fleet stuck on the old
-release. No sudo (and therefore no vault password) is needed:
+release. The play does not reinstall the systemd units: an update leaves them,
+and the scripts copied to `/usr/local/lib/mascope`, as the release that
+installed them wrote them. When the doctor flags them `OUTDATED` on its Units
+row, which does not change its exit code, the play prints a note naming the
+server and carries on. Run `mascope prod units install` there as the deploy
+account afterwards, with the `--bin` the units were installed with, if any; it
+goes through `sudo` itself, which the rollout does not. No sudo (and therefore no vault password) is needed:
 
 ```sh
 ansible-playbook update.yml -e mascope_version=vX.Y.Z --limit <canary-host>
