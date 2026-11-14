@@ -9,7 +9,7 @@ const record = (extra = {}) => ({
   n: [488, 20],
   axis: 'time',
   intensity: { p: 0.2, separation: 0.6, separates: false, brighter: 'C7H14O5' },
-  time: { p: 4.3e-71, runs: 4, expected_runs: 39.43, separates: true, earlier: 'C6H12NO' },
+  time: { p: 4.3e-71, runs: 2, expected_runs: 39.43, separates: true, earlier: 'C6H12NO' },
   ...extra
 })
 
@@ -38,11 +38,27 @@ describe('batchBlend', () => {
       'C7H14O5 (C7H13O5-) in 488 samples and C6H12NO (C6H12NO4-) in 20 samples'
     )
     expect(text).toContain('C6H12NO holds the early samples and C7H14O5 the late ones')
-    expect(text).toContain('4 runs in acquisition order, where interleaved they would give 39')
+    expect(text).toContain('2 runs in acquisition order, where interleaved they would give 39')
     expect(text).toContain('p < 0.001')
     // An axis that does not part them is not described.
     expect(text).not.toContain('bright samples')
     expect(text).toContain('The consensus and its tier are unchanged')
+  })
+
+  it('says the formulas come in blocks, not early and late, past a single switch', () => {
+    // A block of one formula in the middle of the batch: the other on both
+    // sides, though its mean rank is the earlier.
+    const text = blendTooltip(
+      record({
+        time: { p: 0.000582, runs: 3, expected_runs: 6.83, separates: true, earlier: 'C6H12NO' }
+      })
+    )
+    expect(text).toContain(
+      'C7H14O5 and C6H12NO come in blocks: 3 runs in acquisition order, ' +
+        'where interleaved they would give 7 (p < 0.001).'
+    )
+    expect(text).not.toContain('early samples')
+    expect(text).not.toContain('late ones')
   })
 
   it('says which formula holds the bright samples, and how cleanly', () => {
