@@ -74,6 +74,8 @@ def _batch_peak_meta(bp) -> dict:
     (:func:`~mascope_backend.api.new.peak_assignments.listing.consensus_listing`).
     ``engine_tier`` and ``engine_claim`` are what an importing engine said of
     the consensus identity (``batch_import``), None on every other anchor.
+    ``seeded`` says the anchor was minted at a target ion's m/z before a
+    sample's peak joined it (``batch_peaks.seed_anchors``).
     ``series`` is the homologous series the batch's series detection found
     for the consensus formula (``batch_series``), None where it found none.
     ``co_variation`` is how the anchor's trace follows the same neutral's
@@ -131,6 +133,9 @@ def _batch_peak_meta(bp) -> dict:
         "isotopologue_of": bp.isotopologue_of,
         # Pinned by hand for the whole batch (batch_curation.py).
         "curated": manual_pin_of(bp) is not None,
+        # Minted at a target ion's m/z rather than by a sample's peak
+        # (batch_peaks.seed_anchors).
+        "seeded": bool(bp.seeded),
         "engine_tier": bp.engine_tier,
         "engine_claim": bp.engine_claim,
         "series": standing_series_record(bp),

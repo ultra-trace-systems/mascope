@@ -539,6 +539,7 @@ def _ledger_anchor(**over):
         provenance={CO_VARIATION_KEY: _RECORD},
         engine_tier=None,
         engine_claim=None,
+        seeded=False,
         continuity_grade=None,
         continuity=None,
     )

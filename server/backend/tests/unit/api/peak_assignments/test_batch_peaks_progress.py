@@ -285,7 +285,8 @@ async def test_the_consensus_is_recomputed_once_after_every_sample_folded():
     }
     assert len(deferred) == 1
     for call in mocks["fold"].await_args_list:
-        assert set(call.kwargs) == {"defer_consensus_to"}
+        assert set(call.kwargs) == {"defer_consensus_to", "reseed"}
+        assert call.kwargs["reseed"] is False
     mocks["recompute"].assert_awaited_once_with("sb-1", set())
     assert id(mocks["recompute"].await_args.args[1]) in deferred
 

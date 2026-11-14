@@ -5179,7 +5179,10 @@ async def _assign_sample(
 
 
 async def fold_sample_peaks_without_run(
-    sample_item_id: str, *, defer_consensus_to: set[str] | None = None
+    sample_item_id: str,
+    *,
+    defer_consensus_to: set[str] | None = None,
+    reseed: bool = False,
 ) -> str | None:
     """Fold the sample under the same admission an explicit run takes.
 
@@ -5195,6 +5198,7 @@ async def fold_sample_peaks_without_run(
 
     :param sample_item_id: The sample to fold.
     :param defer_consensus_to: As for :func:`_fold_sample_peaks_without_run`.
+    :param reseed: As for :func:`_fold_sample_peaks_without_run`.
     :return: The batch folded into, or None when the sample was skipped.
     """
     # Claimed before the first await: checking and adding either side of one
@@ -5217,14 +5221,17 @@ async def fold_sample_peaks_without_run(
                 )
                 return None
             return await _fold_sample_peaks_without_run(
-                sample_item_id, defer_consensus_to=defer_consensus_to
+                sample_item_id, defer_consensus_to=defer_consensus_to, reseed=reseed
             )
     finally:
         _sample_assignments_in_flight.discard(sample_item_id)
 
 
 async def _fold_sample_peaks_without_run(
-    sample_item_id: str, *, defer_consensus_to: set[str] | None = None
+    sample_item_id: str,
+    *,
+    defer_consensus_to: set[str] | None = None,
+    reseed: bool = False,
 ) -> str | None:
     """Assign a newly processed sample database-first and fold the result straight
     into its batch's batch peaks, writing no per-sample run.
@@ -5267,6 +5274,8 @@ async def _fold_sample_peaks_without_run(
     :param sample_item_id: The sample to fold.
     :param defer_consensus_to: As for ``fold_sample_into_batch_peaks``: a
         whole-batch walk collects the anchors touched and recomputes once.
+    :param reseed: As for ``fold_sample_into_batch_peaks``: a rebuild that
+        asked to seed the anchors from the batch's target ions.
     :return: The batch folded into, or None when the sample was skipped.
     """
     sample = await fetch_sample(sample_item_id)
@@ -5421,6 +5430,7 @@ async def _fold_sample_peaks_without_run(
         ],
         persisted=False,
         defer_consensus_to=defer_consensus_to,
+        reseed=reseed,
     )
 
 

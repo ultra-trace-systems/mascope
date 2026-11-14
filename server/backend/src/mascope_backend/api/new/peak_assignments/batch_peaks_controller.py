@@ -59,6 +59,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     resolve_candidate,
     role_code,
     role_name,
+    seed_anchors,
     series_record_of,
     stamped_isotopologue_of_record,
     stamped_lines,
@@ -74,13 +75,24 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     start_run,
     touch_ledger,
 )
+from mascope_backend.api.new.peak_assignments.engine import (
+    is_monoisotopic_formula,
+    labelled_isotopes,
+)
 from mascope_backend.api.new.peak_assignments.listing import reference_listing
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
+    IonizationMechanism,
+    IonizationMode,
     PeakAssignment,
     PeakAssignmentRun,
     Sample,
+    SampleBatch,
+    TargetCollectionInSampleBatch,
+    TargetCompoundInTargetCollection,
+    TargetIon,
+    TargetIsotope,
     async_session,
 )
 from mascope_backend.db.id import gen_id
@@ -197,12 +209,125 @@ def _tolerance_fn(resolution_func):
     return tol_fn
 
 
+def _monoisotopic_mz(isotopes: list) -> float:
+    """The m/z of an ion's monoisotopic line among its isotope rows: the row
+    the engine counts every role and label from (``engine.monoisotopic_row``),
+    the lightest where no formula tells the lines apart."""
+    ordered = sorted(isotopes, key=lambda row: row.mz)
+    labels = labelled_isotopes(ordered[0].target_ion_formula)
+    for row in ordered:
+        if is_monoisotopic_formula(row.target_isotope_formula, labels):
+            return float(row.mz)
+    return float(ordered[0].mz)
+
+
+async def target_ion_seed_mzs(
+    session,
+    *,
+    sample_batch_id: str,
+    ionization_mode_id: str | None,
+    polarity: str | None,
+    resolution: str,
+) -> list[float]:
+    """The m/z a partition's anchors are seeded at: the monoisotopic line of
+    every target ion of the batch's collections that a run of a sample in this
+    mode searches - through the mode's mechanisms of the sample's polarity, a
+    mechanism a run does not search left out - at the isotope resolution the
+    run reads (``HIGH`` for an Orbitrap, ``LOW`` for a TOF, whose merged
+    lines are the ones it matches).
+
+    Selected column by column on the fold's own session: it runs inside the
+    fold's critical section, which may open no second session.
+
+    :param session: The fold's session.
+    :param sample_batch_id: The batch whose collections are read.
+    :param ionization_mode_id: The folding sample's mode (its version); None
+        seeds nothing, as a run of such a sample searches no target.
+    :param polarity: The sample's polarity.
+    :param resolution: ``HIGH`` or ``LOW``.
+    :return: One m/z per target ion, in no order; the same m/z may repeat.
+    """
+    # Imported here, as the backfill imports the service: the service imports
+    # this module's fold, so neither can be the other's module-level import.
+    from mascope_backend.api.new.peak_assignments.service import _readable
+
+    if ionization_mode_id is None:
+        return []
+    mechanism_ids = (
+        await session.execute(
+            select(IonizationMode.ionization_mechanism_ids).where(
+                IonizationMode.ionization_mode_id == ionization_mode_id
+            )
+        )
+    ).scalar_one_or_none() or []
+    if not mechanism_ids:
+        return []
+    mechanisms = (
+        await session.execute(
+            select(
+                IonizationMechanism.ionization_mechanism_id,
+                IonizationMechanism.ionization_mechanism,
+            ).where(
+                IonizationMechanism.ionization_mechanism_id.in_(mechanism_ids),
+                IonizationMechanism.ionization_mechanism_polarity == polarity,
+            )
+        )
+    ).all()
+    searched = [m.ionization_mechanism_id for m in mechanisms if _readable(m)]
+    if not searched:
+        return []
+    rows = (
+        await session.execute(
+            select(
+                TargetIsotope.target_ion_id,
+                TargetIsotope.target_isotope_formula,
+                TargetIsotope.mz,
+                TargetIon.target_ion_formula,
+            )
+            .join(TargetIon, TargetIon.target_ion_id == TargetIsotope.target_ion_id)
+            .join(
+                TargetCompoundInTargetCollection,
+                TargetCompoundInTargetCollection.target_compound_id
+                == TargetIon.target_compound_id,
+            )
+            .join(
+                TargetCollectionInSampleBatch,
+                TargetCollectionInSampleBatch.target_collection_id
+                == TargetCompoundInTargetCollection.target_collection_id,
+            )
+            .where(
+                TargetCollectionInSampleBatch.sample_batch_id == sample_batch_id,
+                TargetIon.ionization_mechanism_id.in_(searched),
+                TargetIsotope.resolution == resolution,
+            )
+        )
+    ).all()
+    by_ion: dict[str, list] = defaultdict(list)
+    for row in rows:
+        by_ion[row.target_ion_id].append(row)
+    return [_monoisotopic_mz(isotopes) for isotopes in by_ion.values()]
+
+
+async def _seeds_on_first_fold(session, sample_batch_id: str) -> bool:
+    """Whether the batch seeds a partition's anchors before its first fold."""
+    return bool(
+        (
+            await session.execute(
+                select(SampleBatch.seed_batch_peaks).where(
+                    SampleBatch.sample_batch_id == sample_batch_id
+                )
+            )
+        ).scalar_one_or_none()
+    )
+
+
 async def fold_sample_into_batch_peaks(
     sample_item_id: str,
     *,
     defer_consensus_to: set[str] | None = None,
     rows: list | None = None,
     persisted: bool = True,
+    reseed: bool = False,
 ) -> str | None:
     """Fold a sample's latest completed assignment into its batch's batch peaks.
 
@@ -231,6 +356,13 @@ async def fold_sample_into_batch_peaks(
         for rows that were never written: the members then link to no ledger
         row, while the ids the rows carry still resolve the family link among
         themselves.
+    :param reseed: Seed the partition's anchors from the batch's target ions
+        before folding, whether or not it has anchors already and whatever
+        the batch's option says: a rebuild that asked to re-seed. Without it,
+        a partition is seeded only on its first fold, and only where the
+        batch's ``seed_batch_peaks`` is on. Seeding is append-only either way
+        (``batch_peaks.seed_anchors``): a seed an anchor already holds mints
+        nothing, so seeding again changes nothing.
     :returns: the ``sample_batch_id`` (for the caller's reload event) or ``None``
         when there is nothing to fold (unknown sample / no completed run).
     """
@@ -338,6 +470,43 @@ async def fold_sample_into_batch_peaks(
         anchor_set = AnchorSet(
             [Anchor(bp.batch_peak_id, bp.mz, bp.mz_tol_ppm) for bp in existing]
         )
+        rows_by_id = {bp.batch_peak_id: bp for bp in existing}
+        now = datetime.now(timezone.utc)
+
+        # Seeds: an anchor at each target ion's m/z, minted before this
+        # sample's peaks fold so they snap to it, at the tolerance a peak's
+        # anchor would carry here. On a partition's first fold where the batch
+        # asks for it, or whenever a rebuild asks to re-seed. Inside the lock:
+        # whether the partition is empty is part of what it serialises.
+        if reseed or (
+            not existing and await _seeds_on_first_fold(session, sample_batch_id)
+        ):
+            seed_mzs = await target_ion_seed_mzs(
+                session,
+                sample_batch_id=sample_batch_id,
+                ionization_mode_id=sample.ionization_mode_id,
+                polarity=sample.polarity,
+                resolution=(
+                    "LOW" if intensity_variable == "sum_peak_areas" else "HIGH"
+                ),
+            )
+            for a in seed_anchors(
+                anchor_set, seed_mzs, new_id=lambda: gen_id(16), tol_fn=tol_fn
+            ):
+                bp = BatchPeak(
+                    batch_peak_id=a.batch_peak_id,
+                    sample_batch_id=sample_batch_id,
+                    ionization_mode_id=ionization_mode_id,
+                    mz=a.mz,
+                    mz_tol_ppm=a.tol_ppm,
+                    intensity_variable=intensity_variable,
+                    seeded=True,
+                    candidates=[],
+                    batch_peak_utc_created=now,
+                    batch_peak_utc_modified=now,
+                )
+                session.add(bp)
+                rows_by_id[a.batch_peak_id] = bp
 
         # Idempotency: drop this sample's prior occurrences (a re-fold), noting the
         # anchors it touched so their consensus is recomputed even if it now leaves
@@ -375,7 +544,6 @@ async def fold_sample_into_batch_peaks(
             }
             for r in rows
         ]
-        now = datetime.now(timezone.utc)
 
         folded = fold_in_sample(
             anchor_set, peaks, new_id=lambda: gen_id(16), tol_fn=tol_fn
@@ -383,7 +551,6 @@ async def fold_sample_into_batch_peaks(
 
         new_ids = {f.batch_peak_id for f in folded if f.is_new_anchor}
         anchors_by_id = {a.batch_peak_id: a for a in anchor_set.anchors()}
-        rows_by_id = {bp.batch_peak_id: bp for bp in existing}
         for bp_id in new_ids:
             a = anchors_by_id[bp_id]
             bp = BatchPeak(
@@ -530,7 +697,12 @@ async def _recompute_consensus(
     session, batch_peak_ids: set[str], now: datetime
 ) -> None:
     """Recompute (and persist) the consensus of the given batch peaks from their
-    members' per-sample assignments. A batch peak left with no members is deleted.
+    members' per-sample assignments. A batch peak left with no members is
+    deleted, unless it is seeded: a seed stands for a target ion whether or not
+    a sample's peak has joined it, so it goes back to what a fresh seed holds
+    (:func:`_reset_seed`). Deleting it would leave its partition unseeded
+    there for good - the partition is no longer empty, so no fold seeds it
+    again, and the next peak there mints an anchor at its own m/z.
 
     Walked in statements of :data:`_CONSENSUS_CHUNK` anchors. The caller's set is
     not bounded: a fold's touched set is one anchor per detected peak, and
@@ -647,7 +819,10 @@ async def _recompute_consensus_chunk(
                 unstamped[bp.batch_peak_id] = stamped_lines(diagnostic_isotopologues)
             if merged_isotopologue_of is not None:
                 released[merged_isotopologue_of["batch_peak_id"]].add(bp.batch_peak_id)
-            await session.delete(bp)
+            if bp.seeded:
+                _reset_seed(bp, now)
+            else:
+                await session.delete(bp)
             continue
         consensus = compute_consensus(
             members,
@@ -762,6 +937,49 @@ def _json_shape(value):
     """``value`` as a JSON column hands it back, so a freshly computed list or
     dict compares equal to the stored one (tuples become lists, keys strings)."""
     return json.loads(json.dumps(value))
+
+
+#: What a seed holds before any sample's peak joins it: the columns' defaults,
+#: everything a consensus, a curation, an import or the continuity pass wrote
+#: taken off. The m/z, the tolerance and the registry stay.
+_FRESH_SEED = {
+    "consensus_formula": None,
+    "consensus_ion_formula": None,
+    "ionization_mechanism_id": None,
+    "consensus_tier": "unassigned",
+    "consensus_role": None,
+    "best_fit_score": None,
+    "support_fraction": None,
+    "n_present": 0,
+    "is_ambiguous": 0,
+    "max_intensity": None,
+    "isotopologue_of": None,
+    "alternatives": None,
+    "provenance": None,
+    "engine_tier": None,
+    "engine_claim": None,
+    "continuity_grade": None,
+    "continuity": None,
+}
+
+
+def _reset_seed(bp: BatchPeak, now: datetime) -> bool:
+    """Put a seeded anchor whose last member left back to a fresh seed's state,
+    rather than deleting it as an unseeded anchor with no members is.
+
+    :return: Whether anything was written.
+    """
+    changed = {
+        column: value
+        for column, value in _FRESH_SEED.items()
+        if getattr(bp, column) != value
+    }
+    if not changed:
+        return False
+    for column, value in changed.items():
+        setattr(bp, column, value)
+    bp.batch_peak_utc_modified = now
+    return True
 
 
 def _apply_consensus(bp: BatchPeak, consensus: Consensus, now: datetime) -> bool:
@@ -993,6 +1211,7 @@ async def backfill_sample_batch_peaks(
     user_id: int | None = None,
     process_id: str | None = None,
     parent_id: str | None = None,
+    reseed: bool = False,
 ) -> tuple[int, int]:
     """Fold every sample of a batch into the batch peaks, in acquisition-time
     order: from its latest completed assignment run where it has one, otherwise
@@ -1025,6 +1244,11 @@ async def backfill_sample_batch_peaks(
         generated one would open a new bar per packet -- so the stream is
         skipped entirely rather than emitted anonymously.
     :param parent_id: The owning process, when this backfill is nested in one.
+    :param reseed: Seed every partition's anchors from the batch's target ions
+        as its samples fold, the anchors the ledger already has kept: only a
+        target m/z no anchor holds gets an anchor of its own
+        (``fold_sample_into_batch_peaks``). Without it the rebuild seeds only
+        a partition it folds first, and only where the batch's option is on.
     :return: ``(folded, failed)`` sample counts.
     :rtype: tuple[int, int]
     """
@@ -1087,11 +1311,11 @@ async def backfill_sample_batch_peaks(
                 # unverified calibration the same way.
                 if (
                     await fold_sample_into_batch_peaks(
-                        sample_item_id, defer_consensus_to=touched
+                        sample_item_id, defer_consensus_to=touched, reseed=reseed
                     )
                     is not None
                     or await fold_sample_peaks_without_run(
-                        sample_item_id, defer_consensus_to=touched
+                        sample_item_id, defer_consensus_to=touched, reseed=reseed
                     )
                     is not None
                 ):
@@ -1287,11 +1511,13 @@ async def rebuild_batch_ledger(
     user_id: int | None = None,
     process_id: str | None = None,
     parent_id: str | None = None,
+    reseed: bool = False,
 ) -> dict:
     """The rebuild as a batch run: opened before the first fold (refused if one
     is in flight; the current run's state is snapshotted), closed as completed
     with the outcome's counts - or as failed, the live ledger then being
-    whatever the folds left."""
+    whatever the folds left. ``reseed`` as for
+    :func:`backfill_sample_batch_peaks`."""
     run_id = await start_run(sample_batch_id, ACTION_REBUILD, user_id=user_id)
     try:
         await clear_engine_verdicts(sample_batch_id)
@@ -1300,6 +1526,7 @@ async def rebuild_batch_ledger(
             user_id=user_id,
             process_id=process_id,
             parent_id=parent_id,
+            reseed=reseed,
         )
     except Exception as exc:
         await fail_run(sample_batch_id, run_id, f"{type(exc).__name__}: {exc}")
@@ -1320,6 +1547,7 @@ async def compute_batch_peaks(
     user_id: int | None = None,
     process_id: str | None = None,
     parent_id: str | None = None,
+    reseed: bool = False,
 ) -> dict:
     """Rebuild a batch's batch peaks from every one of its samples - from a
     completed assignment run where there is one, otherwise from a fresh Stage A
@@ -1334,11 +1562,13 @@ async def compute_batch_peaks(
     Folds sample by sample and reports as it goes, so the wait is a filling bar
     rather than a spinner: the per-sample packets are pending ones on this same
     ``compute_batch_peaks`` channel, and the decorator's terminal packet ends
-    the bar.
+    the bar. ``reseed`` seeds the anchors from the batch's target ions as well
+    (:func:`backfill_sample_batch_peaks`).
     """
     return await rebuild_batch_ledger(
         sample_batch_id,
         user_id=user_id,
         process_id=process_id,
         parent_id=parent_id,
+        reseed=reseed,
     )

@@ -342,3 +342,26 @@ async def test_the_route_stub_is_not_needed_for_the_runs_read(
     task routes' stubs."""
     monkeypatch.setattr(batch_peaks_routes, "compute_batch_peaks", None)
     assert len(await _runs(guest_client, folded["batch_id"])) == 1
+
+
+@pytest.mark.parametrize(
+    ("query", "reseed"),
+    [("", False), ("?reseed=false", False), ("?reseed=true", True)],
+    ids=["absent", "false", "true"],
+)
+async def test_the_rebuild_route_reseeds_only_when_asked(
+    editor_client, folded, assignment_enabled, monkeypatch, query, reseed
+):
+    """``reseed`` reaches the rebuild's task as the request gave it, off when
+    the request leaves it out."""
+    calls = []
+
+    async def record(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(batch_peaks_routes, "compute_batch_peaks", record)
+    response = await editor_client.post(
+        f"/api/batch-peaks/batch/{folded['batch_id']}/backfill{query}"
+    )
+    assert response.status_code == 202, response.text
+    assert [call["reseed"] for call in calls] == [reseed]

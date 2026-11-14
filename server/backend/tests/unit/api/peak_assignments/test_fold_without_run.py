@@ -195,6 +195,23 @@ async def test_folds_stage_a_and_the_placeholders_without_persisting():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reseed", [False, True])
+async def test_the_fold_reseeds_only_when_the_rebuild_asked(reseed):
+    """A rebuild that asked to seed the anchors from the batch's target ions
+    asks it of a sample folded without a run too; anything else does not."""
+    from mascope_backend.api.new.peak_assignments.service import (
+        fold_sample_peaks_without_run,
+    )
+
+    stack, mocks = _patched()
+    with stack:
+        kwargs = {"reseed": True} if reseed else {}
+        assert await fold_sample_peaks_without_run("si-1", **kwargs) == "batch-1"
+
+    assert mocks["fold"].call_args.kwargs["reseed"] is reseed
+
+
+@pytest.mark.asyncio
 async def test_stage_a_is_told_where_the_reagent_lines_put_the_axis():
     """The fold's Stage A falls back to the reagent lines' offset as a run's does.
 
