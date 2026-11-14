@@ -2317,10 +2317,18 @@ peaks say why. One pass grades up to 20,000 pairs, the best supported first, and
 a batch peak whose other pairs it left as partial.
 
 The grade is shown, never weighed. It says two peaks behave as one species, never
-which species, and no tier reads it. Every threshold is provisional until it has been
-measured on real time-ordered batches. *Rebuild batch ledger* grades the batch when it
-has folded the last sample, and `POST /api/batch-peaks/batch/{id}/recompute-continuity`
-grades it on request. The ledger's records carry the grade as `continuity_grade`, the
+which species, and no tier reads it. The thresholds have been read on real
+time-ordered batches and still stand, with one known blind spot: the drift test reads
+time, and most ratios that drift follow the main peak's own level instead. An isotope
+line read near the detection floor rises or falls with its main peak, and a channel
+ratio moves with the compound's amount. Where that amount trends over the batch, the
+pair grades *unstable* on a drift that says nothing of two species. Read an unstable
+isotope pair on a dim main peak with that in mind.
+
+*Rebuild batch ledger* grades the batch when it has folded the last sample, and
+`POST /api/batch-peaks/batch/{id}/recompute-continuity` grades it on request. A sample
+folding in later does not regrade the batch, because on the largest batches a pass
+costs more than the fold itself. The ledger's records carry the grade as `continuity_grade`, the
 pairs under `continuity` (each with its ratio, spread, drift and the co-variation
 reading it was graded with), and `continuity_stale` where a sample folded since, a
 curation or a re-fold has moved the batch peak. The API names each grade as the
