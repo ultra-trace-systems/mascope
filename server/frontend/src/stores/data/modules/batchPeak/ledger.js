@@ -36,19 +36,27 @@ export const useBatchPeakLedger = defineStore('app.data.batchPeak', () => {
   const name = 'batch_peak'
   const key = 'batch_peak_id'
 
+  // The batch each loaded list was read for. The loader writes the list a
+  // load returned as it is, and only the newest load's, so a list it writes
+  // names its batch here - which, while another batch loads, is not the
+  // focused one. A record event writes a list of its own, of the same batch.
+  const batchOfRows = new WeakMap()
+
   const data = useData(
     name,
-    ({ sample_batch_id, batch_peak_run_id }) => {
+    async ({ sample_batch_id, batch_peak_run_id }) => {
       if (!sample_batch_id) return []
       // min_n_present=1: the ledger lists every batch peak so any (even
       // event-specific, low-prevalence) species is selectable; the selection is
       // what limits the plot, and the selection is capped rather than the list.
-      return api.http.get(`/batch-peaks/batch/${sample_batch_id}`, {
+      const rows = await api.http.get(`/batch-peaks/batch/${sample_batch_id}`, {
         // An earlier run reads off its snapshot; the live ledger names no run.
         params: { min_n_present: 1, ...(batch_peak_run_id ? { batch_peak_run_id } : {}) },
         use: 'read',
         type: 'load_batch_peak_ledger'
       })
+      if (rows && typeof rows === 'object') batchOfRows.set(rows, sample_batch_id)
+      return rows
     },
     {
       key,
@@ -89,33 +97,38 @@ export const useBatchPeakLedger = defineStore('app.data.batchPeak', () => {
     if (types.length < 2) return null
     return instrumentChoice.value ?? types[0]
   })
-  // The choice is the focused batch's own: another batch opens on its first
-  // type, whatever was shown on the one before.
+  /** The batch whose rows the ledger holds, which may lag the focused one. */
+  const rowsBatch = ref(null)
   watch(
-    () => useBatch().focusedId,
-    () => {
-      instrumentChoice.value = null
+    data.list,
+    (list) => {
+      if (batchOfRows.has(list)) rowsBatch.value = batchOfRows.get(list)
     },
     { flush: 'sync' }
   )
+  // The choice is the batch's own, and is dropped as another batch's rows land:
+  // not as the focus moves, since the old batch's rows and selection stay on
+  // screen while the new one loads, after a failed load, and come back with
+  // their selection when the focus returns before the load lands.
+  //
   // A batch going from one type to two - a sample of the other type folding
   // in - keeps showing what was selected rather than hiding it from the chart.
   // The selection's type is taken once, as the second type arrives, and held
   // as the choice: read on every change instead, unticking the last row of it
-  // would switch the whole ledger to the other type.
-  //
-  // The watch runs as the new rows land, before the loader restores the
-  // selection onto them, so the selection may still be another batch's rows.
-  // Only a selected row the new list still holds is one the restore keeps,
-  // and only its type is taken.
+  // would switch the whole ledger to the other type. Only a reload of the same
+  // batch is a fold-in: another batch's rows land before the loader restores
+  // the selection onto them, so the selection is still the old batch's.
   watch(
-    instrumentTypes,
-    (types, previous) => {
+    [rowsBatch, instrumentTypes],
+    ([batch, types], [previousBatch, previous] = []) => {
+      if (batch !== previousBatch) {
+        instrumentChoice.value = null
+        return
+      }
       if (types.length < 2 || (previous?.length ?? 0) >= 2 || instrumentChoice.value) return
-      const rows = new Map(data.list.value.map((bp) => [bp[key], bp]))
-      const selectedType = data.selected.value
-        .map((bp) => rows.get(bp?.[key])?.instrument_type)
-        .find((type) => types.includes(type))
+      const selectedType = data.selected.value.find((bp) =>
+        types.includes(bp?.instrument_type)
+      )?.instrument_type
       if (selectedType) instrumentChoice.value = selectedType
     },
     { flush: 'sync' }
