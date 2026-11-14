@@ -10,8 +10,9 @@ vi.mock('@/api', () => ({
   }
 }))
 // The focused batch, as the batch store reports it; a test switches batch by
-// setting it.
-const batchState = reactive({ focusedId: 'sb-1' })
+// setting it. A new one per test, so an earlier test's store, still watching
+// its own, does not load along.
+let batchState = reactive({ focusedId: 'sb-1' })
 vi.mock('@/stores/data/modules/batch', () => ({
   useBatch: () => batchState
 }))
@@ -24,14 +25,16 @@ vi.mock('@/stores/data/modules/batchPeak/run', () => ({
 vi.mock('@/stores/auth', () => ({ useAuth: () => ({ user: {}, onLogin: vi.fn() }) }))
 
 let useBatchPeakLedger
+let api
 beforeEach(async () => {
   setActivePinia(createPinia())
   vi.clearAllMocks()
   vi.resetModules()
   runState.viewingId = null
-  batchState.focusedId = 'sb-1'
+  batchState = reactive({ focusedId: 'sb-1' })
   get.mockResolvedValue([])
   ;({ useBatchPeakLedger } = await import('@/stores/data/modules/batchPeak/ledger'))
+  ;({ api } = await import('@/api'))
 })
 
 describe('batchPeak ledger store and the run it reads', () => {
@@ -177,5 +180,79 @@ describe('batchPeak ledger store: the instrument partition', () => {
     await store.load('test')
     expect(store.selectedIds).toEqual([])
     expect(store.instrumentType).toBe('orbi')
+  })
+
+  // A batch switch the loader has not finished: the old batch's rows and
+  // selection stay on screen, so its choice must stay with them.
+  const pendingLoad = () => {
+    let settle
+    get.mockImplementationOnce(
+      () => new Promise((resolve, reject) => (settle = { resolve, reject }))
+    )
+    return () => settle
+  }
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+  it("keeps a batch's choice with its rows while another batch loads and when the focus returns", async () => {
+    const rowsA = [row('bp-t', 'tof'), row('bp-o', 'orbi')]
+    get.mockResolvedValue(rowsA)
+    const store = useBatchPeakLedger()
+    await store.load('test')
+    store.showInstrument('tof')
+    store.select({ batch_peak_id: 'bp-t' })
+
+    const loadB = pendingLoad()
+    batchState.focusedId = 'sb-2'
+    await flush()
+    expect(get).toHaveBeenLastCalledWith('/batch-peaks/batch/sb-2', expect.anything())
+    // B is still loading: A's rows, A's selection, A's choice.
+    expect(store.instrumentType).toBe('tof')
+    expect(store.selectedIds).toEqual(['bp-t'])
+
+    // Back to A before B lands; A reloads with the same rows, then B's load,
+    // superseded, lands and is discarded.
+    batchState.focusedId = 'sb-1'
+    await flush()
+    expect(get).toHaveBeenLastCalledWith('/batch-peaks/batch/sb-1', expect.anything())
+    loadB().resolve([row('bp-t2', 'tof'), row('bp-o2', 'orbi')])
+    await flush()
+    expect(store.selectedIds).toEqual(['bp-t'])
+    expect(store.instrumentType).toBe('tof')
+    expect(store.selected.every(store.inPartition)).toBe(true)
+  })
+
+  it("keeps a batch's choice with its rows when another batch's load fails", async () => {
+    get.mockResolvedValue([row('bp-t', 'tof'), row('bp-o', 'orbi')])
+    const store = useBatchPeakLedger()
+    await store.load('test')
+    store.showInstrument('tof')
+    store.select({ batch_peak_id: 'bp-t' })
+
+    const loadB = pendingLoad()
+    batchState.focusedId = 'sb-2'
+    await flush()
+    loadB().reject(new Error('offline'))
+    await flush()
+    expect(store.error).toBeTruthy()
+    expect(store.selectedIds).toEqual(['bp-t'])
+    expect(store.instrumentType).toBe('tof')
+  })
+
+  it("keeps a batch's choice when a record event patches its rows", async () => {
+    get.mockResolvedValue([row('bp-t', 'tof'), row('bp-o', 'orbi')])
+    const store = useBatchPeakLedger()
+    await store.load('test')
+    store.showInstrument('tof')
+
+    const [, onUpdated] = api.socket.on.mock.calls.find(([event]) => event === 'batch_peak_updated')
+    onUpdated({
+      event_id: 'e-1',
+      operation: 'updated',
+      record_id: 'bp-o',
+      record: { formula: 'C2H4O2' },
+      changed_fields: ['formula']
+    })
+    expect(store.list.find((bp) => bp.batch_peak_id === 'bp-o').formula).toBe('C2H4O2')
+    expect(store.instrumentType).toBe('tof')
   })
 })
