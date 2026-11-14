@@ -2576,6 +2576,241 @@ def ion_ladders(profile_name: str) -> tuple[IonLadder, ...]:
     return ION_LADDERS.get(profile_name, ())
 
 
+# --- the batch's water ladders --------------------------------------------------
+#
+# A soft-interface source carries its reagent ions hydrated, each core with a
+# ladder of waters, and how far a ladder reaches moves with the source and the
+# humidity: on a long TOF batch a ladder that ends at a few waters before an
+# instrument restart runs past fifteen after it. One spectrum cannot tell a high
+# rung from an organic of the same mass, which is why the pre-pass climbs a core
+# only as far as a work names its hydrates (3.3d); the batch can, on its own
+# series (step 4.2j, ``water_ladder``). This is that ladder's grammar: per
+# profile, the cores whose water ladder a batch measures, each core's rungs
+# core.(H2O)n, and the isotope lines a rung is read on. A water rung is the
+# commonest step a humid source makes [good70, sun88]
+# (:data:`WATER_RUNG_REFERENCES`); declaring a core claims nothing by itself.
+
+
+#: How many waters a batch climbs a core's ladder: past the 35 the reference
+#: engine reads on a humid TOF batch (its 0.10 line), as it climbs.
+MAX_BATCH_WATERS = 45
+
+#: The cores whose water ladder a batch measures, per profile, by the label the
+#: profile's library names each by: the bromide reagent, its dimer and trimer
+#: and its cluster with the HBr the source sheds; the nitrate reagent, its two
+#: acid clusters and the air's nitrite; the labelled reagent's labelled cores.
+#: A positive profile declares none: its hydrated ions are the solvents' and the
+#: air's, which the pre-pass climbs (3.3d).
+WATER_CORE_LABELS: dict[str, tuple[str, ...]] = {
+    "BR": ("[Br]-", "[Br2]-", "[Br3]-", "[Br+HBr]-"),
+    "NO3": ("[NO3]-", "[NO3+HNO3]-", "[NO3+2xHNO3]-", "[NO2]-"),
+    "NO3_15N": ("[^NO3]-", "[^NO3+H^NO3]-", "[^NO3+2xH^NO3]-"),
+}
+
+#: A line of a core's envelope is a track of its own where it stands at this
+#: share of the envelope's brightest line or more: a bromide's 79Br and 81Br
+#: lines, a dimer's three, a trimer's four. Each track is a ladder read on its
+#: own, so a rung's two bromine lines are two traces of the batch and neither
+#: hides the other; a fainter line (a 17O, a 15N) rides on its rung.
+WATER_TRACK_MIN_SHARE = 0.25
+
+#: The floor the envelopes behind the tracks and a rung's own M+1 line are
+#: predicted to.
+_WATER_ENVELOPE_FLOOR = 1e-4
+
+
+@dataclass(frozen=True)
+class WaterTrack:
+    """One line of a core's envelope a water ladder is read on.
+
+    :param label: The line's isotope label (``M0``, ``81Br``, ``81Br2``), as a
+        row names an isotope line.
+    :param offset: How far above the core's monoisotopic line it sits, in Da;
+        a water adds no line its share reaches, so every rung's track sits as
+        far above the rung's monoisotopic line.
+    :param share: Its abundance over the monoisotopic line's.
+    """
+
+    label: str
+    offset: float
+    share: float
+
+    @property
+    def monoisotopic(self) -> bool:
+        """Whether the track is the monoisotopic line's."""
+        return self.label == "M0"
+
+
+@dataclass(frozen=True)
+class WaterLadder:
+    """One declared core and its water ladder.
+
+    :param core: The core, the library's ion.
+    :param rungs: core.(H2O)n for n = 1 to :data:`MAX_BATCH_WATERS`, in order:
+        the library's own ion where the library names one (its works with it),
+        else the rung as this grammar builds it, which says what shows it.
+    :param tracks: The core's lines a ladder is read on, the monoisotopic one
+        first.
+    :param purity: A labelled core's isotopic purity, for its envelope.
+    """
+
+    core: ReagentCluster
+    rungs: tuple[ReagentCluster, ...]
+    tracks: tuple[WaterTrack, ...]
+    purity: float | None = None
+
+    def rung(self, waters: int) -> ReagentCluster:
+        """The ion with this many waters; the core for none."""
+        return self.core if waters == 0 else self.rungs[waters - 1]
+
+    def line_mz(self, waters: int, track: WaterTrack) -> float:
+        """Where a rung's track sits."""
+        return self.rung(waters).mz + track.offset
+
+    def m1_share(self, waters: int, track: WaterTrack) -> float:
+        """A rung's own line one mass unit above a track, over the track's
+        line: its 2H, 17O and 15N, which a carbon-free ion has and nothing
+        more (:func:`water_rung_m1_share`)."""
+        return water_rung_m1_share(self.rung(waters), track, self.purity)
+
+
+def _hydrate_label(core_label: str, waters: int) -> str:
+    """A core's label with waters on it: ``[Br]-`` -> ``[Br+16xH2O]-``, as
+    the library writes its own hydrates (``[Br+H2O]-``, ``[Br+2xH2O]-``)."""
+    close = core_label.rindex("]")
+    count = "" if waters == 1 else f"{waters}x"
+    return f"{core_label[:close]}+{count}{WATER}{core_label[close:]}"
+
+
+#: What shows a rung no work names, as a batch's ladder claims it.
+_BATCH_RUNG_SEEN = _seen(
+    "claimed on its batch's water ladder: its core and every hydrate below it "
+    "in at least half the spectra of an acquisition segment, three times as "
+    "often as at its decoy masses"
+)
+
+
+def water_rung(
+    core: ReagentCluster,
+    waters: int,
+    named: Mapping[tuple[str, int], ReagentCluster] | None = None,
+) -> ReagentCluster:
+    """A core with ``waters`` waters on it.
+
+    :param core: The core.
+    :param waters: How many waters, one or more.
+    :param named: The profile's library by composition and charge: a rung the
+        library names is its ion, with the works that name it.
+    :return: The rung.
+    """
+    formula = _ion_formula((core.formula, 1), (WATER, waters))
+    if named is not None and (formula, core.charge) in named:
+        return named[(formula, core.charge)]
+    return ReagentCluster(
+        formula,
+        core.charge,
+        _hydrate_label(core.label, waters),
+        KIND_ADDUCT,
+        family=core.family,
+        observed=_BATCH_RUNG_SEEN,
+    )
+
+
+def water_tracks(
+    core: ReagentCluster, purity: float | None = None
+) -> tuple[WaterTrack, ...]:
+    """The lines of a core's envelope its ladder is read on: the monoisotopic
+    line, and each line at :data:`WATER_TRACK_MIN_SHARE` of the brightest or
+    more."""
+    mzs, abundances, labels = predict_resolved_isotopes(
+        core.formula, core.charge, _WATER_ENVELOPE_FLOOR, None, purity
+    )
+    monoisotopic = monoisotopic_index(mzs, labels)
+    base = float(abundances[monoisotopic])
+    brightest = float(max(abundances))
+    tracks = [WaterTrack("M0", 0.0, 1.0)]
+    for position in np.argsort(mzs):
+        position = int(position)
+        if position == monoisotopic:
+            continue
+        if float(abundances[position]) < WATER_TRACK_MIN_SHARE * brightest:
+            continue
+        tracks.append(
+            WaterTrack(
+                labels[position],
+                float(mzs[position] - mzs[monoisotopic]),
+                float(abundances[position]) / base,
+            )
+        )
+    return tuple(tracks)
+
+
+def water_rung_m1_share(
+    rung: ReagentCluster, track: WaterTrack, purity: float | None = None
+) -> float:
+    """A rung's own lines one mass unit above one of its tracks, over that
+    track's line: what a carbon-free cluster shows at M+1 (its 2H, 17O and
+    15N), so a line there taller than this plus a few carbons' 13C is another
+    ion's."""
+    mzs, abundances, _ = predict_resolved_isotopes(
+        rung.formula, rung.charge, _WATER_ENVELOPE_FLOOR, None, purity
+    )
+    mzs = np.asarray(mzs, dtype=float)
+    abundances = np.asarray(abundances, dtype=float)
+    target = rung.mz + track.offset
+    at_track = np.abs(mzs - target) < 0.1
+    if not at_track.any():
+        return 0.0
+    above = (mzs - target > 0.5) & (mzs - target < 1.5)
+    return float(abundances[above].sum() / abundances[at_track].sum())
+
+
+def _water_ladder(profile_name: str) -> tuple[WaterLadder, ...]:
+    """A profile's water ladders, built from its library (a ``KeyError`` for a
+    declared core the library does not name)."""
+    library = reagent_library(profile_name)
+    by_label = {cluster.label: cluster for cluster in library}
+    named = {(cluster.formula, cluster.charge): cluster for cluster in library}
+    purity = _profile_purity(profile_name)
+    ladders = []
+    for label in WATER_CORE_LABELS.get(profile_name, ()):
+        core = by_label[label]
+        ladders.append(
+            WaterLadder(
+                core,
+                tuple(
+                    water_rung(core, waters, named)
+                    for waters in range(1, MAX_BATCH_WATERS + 1)
+                ),
+                water_tracks(core, purity),
+                purity,
+            )
+        )
+    return tuple(ladders)
+
+
+def _profile_purity(name: str) -> float | None:
+    """A labelled profile's reagent purity, read from the profile itself."""
+    from mascope_tools.composition.profiles import REAGENT_PROFILES
+
+    return REAGENT_PROFILES[name].label_purity
+
+
+#: The water ladders per profile, keyed the way :data:`REAGENT_CLUSTERS` is.
+WATER_LADDERS: dict[str, tuple[WaterLadder, ...]] = {
+    name: _water_ladder(name) for name in WATER_CORE_LABELS
+}
+
+
+def water_ladders(profile_name: str) -> tuple[WaterLadder, ...]:
+    """The cores whose water ladder a batch of this profile measures.
+
+    :param profile_name: The profile's name.
+    :return: Its ladders, empty when it declares no core.
+    """
+    return WATER_LADDERS.get(profile_name, ())
+
+
 def covalent_readings(
     formula: str,
     charge: int,

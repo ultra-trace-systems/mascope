@@ -1820,6 +1820,81 @@ before it. It runs as a batch run, whose summary counts the species read, presen
 absent, unpooled, held and claimed per ionization mode and instrument type, lists each
 species with its verdict, and names the thresholds.
 
+### Measuring water ladders
+
+A soft-ionization source carries its reagent ions hydrated: Br-.(H2O)n, NO3-.(H2O)n,
+HNO3.NO3-.(H2O)n. How far a ladder reaches moves with the source and the humidity. On a
+long TOF batch a ladder that ends at a few waters before an instrument restart can run
+past fifteen after it. A sample's reagent pass claims a hydrate only as far as a work
+names it, and one water above a peak is no evidence on its own: a humid source hydrates
+every ion it makes [Good et al. 1970a][good70], [Sunner et al. 1988][sun88] (*The ions a
+source makes of itself*, above). So on a humid stretch the high rungs read as organics,
+or as nothing at all. *Measure water ladders*, beside *Decide known species*, reads each
+ladder on the batch's own samples instead, per ionization mode and instrument type:
+
+- **The cores.** The profile a sample of the partition resolves to names the cores whose
+  ladder is read. On a bromide source these are Br-, its dimer and trimer, and its cluster
+  with HBr. On a nitrate source they are NO3-, its two acid clusters and nitrite, and on a
+  15N-nitrate source its labelled cores. A positive source names none: its hydrates are the
+  solvents' and the air's, which the reagent pass climbs. Each core is read on each bright
+  line of its own envelope: a bromide on its 79Br and its 81Br line, a trimer on its four
+  lines. Each line is a ladder of its own.
+- **The stretches.** The samples are put in acquisition order and cut where two of them
+  are more than an hour apart and more than five times the batch's usual spacing: an
+  instrument restart, a night off. A stretch of fewer than ten samples joins the one it
+  is closer to in time. Every rung is read per stretch.
+- **A rung passes** where it, its core and every rung between them are each in half the
+  stretch's samples or more, so the ladder is unbroken from its core. Each rung is
+  core.(H2O)n, up to 45 waters, and the ladder ends at its first rung in fewer. It must
+  also be in its samples at least three times as often as at the masses beside it, where
+  only chance puts a peak: 0.02, 0.035 and 0.05 Da either side on an Orbitrap, two to five
+  line widths either side on a TOF, whose picker reports weak satellites within a width
+  of a bright line. A mass at another ladder's line is that ladder's, and is not read. On
+  a TOF a hydrated cluster and an organic share a nominal mass, and the line one mass
+  unit up tells them apart. Where the rung is bright enough that a five-carbon ion's 13C
+  line would clear the sample's local floor, the line one unit up is no taller than the
+  cluster's own 2H, 17O and 15N lines and five carbons' 13C. That is not asked where the
+  line blends with another ladder's line the stretch shows.
+
+A batch peak at a passing rung is the reagent's ion in the samples of the stretches it
+passed in. There its member becomes the rung, and so does the sample's row on that peak
+in its latest in-app run. The row reads the ion and no compound, at tier *unassigned*,
+with the batch's reading of the rung as its reason. The reading it carried is kept first
+among its alternatives (**earlier reading**, which *use this* puts back). The row's
+isotope lines go with it. A peak at the rung's 81Br line, read on its own, becomes that
+line, owned by the rung's peak. Where the rung's peak is not the rung in that sample, the
+81Br line's peak keeps its reading: with no peak to belong to, it would read as the
+hydrate itself at the wrong mass. The samples of other stretches keep their readings:
+the same mass there can be another ion. The batch peak then reads what its samples' vote
+reads.
+
+A sample is kept as it is where a person assigned the peak, where the target library or a
+reference list named its reading, where the peak is another ion's isotope line or another
+source ion's claim, and where its reading carries an isotope line the hydrate cannot
+have, such as a 13C line under a carbon-free cluster. A run imported from another engine
+is never rewritten, and a batch peak curated by hand is never claimed.
+
+A hydrate the measurement claimed in a sample is the batch's word there, not that
+sample's own finding. *Decide known species*, run after it, does not count such a sample
+as one whose own test held, whether or not the sample has a row of its own on the peak.
+So a hydrate that passed in one stretch is not decided present over the batch and
+claimed in the others. A sample whose own run claimed the hydrate still counts.
+
+A batch peak at a passing rung carries a drop mark beside its formula. It is in the
+primary colour where the batch peak reads the reagent's ion, and muted where its other
+samples' readings kept the batch peak's own. On hover it shows the rung, the stretches
+it passed in out of the batch's stretches, how often it and the masses beside it were
+seen there, how many samples the claim took, what the batch peak read before, and the
+samples kept with their readings.
+The ledger route and `batch_peaks.list` carry it as `water_ladder` for as long as the
+batch peak reads what the measurement left it reading. Each measurement replaces every
+one before it. A sample assigned again reads its peaks afresh, and the next measurement
+reads them again. It runs as a batch run. Its summary gives per ionization mode and
+instrument type the stretches, how far each core's ladder reached in each, the rungs
+tested and passed, the batch peaks claimed, the samples they were claimed in, and the
+analyte rows that left the ledger. It also gives the share of the batch's signal that no
+committed reading, source role or isotope line explains, before and after.
+
 The whole ledger leaves the app as a CSV from the view menu behind the cog: *Export
 ledger (CSV)* writes one row per member peak - every sample's reading of every batch
 peak, with the batch peak's consensus beside it - and the browser downloads the file

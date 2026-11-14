@@ -166,6 +166,19 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
       "Decide each source ion and each compound a list tags as background once over the batch's samples, and claim it in every sample its peak is in where the batch holds it, in the batch and in its samples."
   )
 
+  // The water ladders' measurement: each reagent core's water ladder is read
+  // on the batch's own samples, per stretch of acquisition, and a passing
+  // rung claimed as the reagent's ion in that stretch's samples. No
+  // parameters, and it waits on its own task as the decision does.
+  const measuring = ref(false)
+  const pendingMeasureId = ref(null)
+  let measureTimer = null
+  const measureTooltip = computed(
+    () =>
+      blockedReason.value ??
+      "Read how far each reagent ion's water ladder reaches on the batch's own samples, per stretch of acquisition, and claim the hydrates that pass as the reagent's ions in that stretch's samples, in the batch and in its samples."
+  )
+
   function endComputing() {
     computing.value = false
     pendingProcessId.value = null
@@ -408,6 +421,34 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     }
   }
 
+  function endMeasuring() {
+    measuring.value = false
+    pendingMeasureId.value = null
+    clearTimeout(measureTimer)
+    measureTimer = null
+  }
+
+  async function measureWaterLadders() {
+    const batchId = app.data.batch.focusedId
+    if (!batchId || measuring.value || blockedReason.value) return
+    measuring.value = true
+    launchError.value = null
+    clearTimeout(measureTimer)
+    measureTimer = setTimeout(endMeasuring, COMPUTE_TIMEOUT)
+    try {
+      const response = await api.http.post(
+        `/batch-peaks/batch/${batchId}/measure-water-ladders`,
+        {},
+        { type: 'measure_batch_water_ladders', errors: 'inline' }
+      )
+      pendingMeasureId.value = response?.headers?.['process-id'] ?? null
+    } catch (error) {
+      endMeasuring()
+      launchRefused.value = isRefusedRequest(error) || error?.response?.status === 403
+      launchError.value = getApiErrorMessage(error, 'Could not start the water ladder measurement.')
+    }
+  }
+
   /** Backfill batch peaks from this batch's existing assignments; the ledger and
    *  chart refresh on the peak_assignment_reload event the task emits. */
   async function compute() {
@@ -527,6 +568,14 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     endDeciding()
   })
 
+  app.ui.notification.on('measure_batch_water_ladders', (notification) => {
+    if (!measuring.value) return
+    if (notification?.status === 'pending') return
+    const id = notification?.process_id
+    if (pendingMeasureId.value && id && id !== pendingMeasureId.value) return
+    endMeasuring()
+  })
+
   function reset() {
     endComputing()
     endSearching()
@@ -536,6 +585,7 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     endStripping()
     endChecking()
     endDeciding()
+    endMeasuring()
     endExporting()
     launchError.value = null
     launchRefused.value = false
@@ -569,6 +619,9 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     deciding,
     decideTooltip,
     decideKnownSpecies,
+    measuring,
+    measureTooltip,
+    measureWaterLadders,
     exporting,
     exportLedger,
     reset

@@ -64,6 +64,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     stamped_lines,
     tier_code,
     tier_name,
+    water_ladder_record_of,
     without_merged_lines,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
@@ -641,6 +642,7 @@ async def _recompute_consensus_chunk(
             merged_isotopologues=merged_isotopologues_record(bp),
             batch_checks=batch_checks_record_of(bp),
             known_species=known_species_record_of(bp),
+            water_ladder=water_ladder_record_of(bp),
         )
         if (
             diagnostic_isotopologues is not None

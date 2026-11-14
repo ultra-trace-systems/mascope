@@ -213,7 +213,16 @@ class BatchPeaksResource(BaseResource):
                  those whose own ``test_held``, how many members the claim
                  rewrote, and under ``files_recorded`` the samples it kept or
                  whose own claim stands, each with its reading); null where
-                 none, and absent from a server that predates it.
+                 none, and absent from a server that predates it;
+                 ``water_ladder`` (on a batch peak at a rung of a reagent
+                 ion's water ladder a *Measure water ladders* run passed: the
+                 ``rung`` - its ``core``, ``ion``, ``waters`` and ``track`` -,
+                 its reading in each acquisition segment under ``segments``,
+                 the segments it ``passed_in``, how many members the claim
+                 rewrote, whether it ``moved_analyte`` and what the batch peak
+                 read before, and under ``files_recorded`` the samples it
+                 kept, each with its reading); null where none, and absent
+                 from a server that predates it.
                  ``consensus_tier`` is always this server's: the engine's tier
                  stands beside it.
                  None when the batch has no ledger yet.
