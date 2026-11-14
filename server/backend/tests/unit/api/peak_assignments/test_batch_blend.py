@@ -7,6 +7,8 @@ reading as a blend, and the members the time test leaves out.
 """
 
 import itertools
+import json
+import math
 import random
 from datetime import datetime, timedelta, timezone
 
@@ -372,6 +374,34 @@ def test_the_record_keeps_a_p_value_to_three_significant_digits():
     ).provenance[BLEND_KEY]
     assert blend["time"]["p"] == 0.000155
     assert runs_p_value(8, 8, 2) == pytest.approx(2 / 12870)
+
+
+def test_all_tied_intensities_leave_the_axis_untested():
+    # The rank test answers NaN where every intensity ties; the record is
+    # JSON in Postgres, which refuses NaN.
+    tied = _batch([A] * 5 + [B] * 5, [1.0] * 10)
+    assert intensity_reading(*_split(tied)) is None
+
+
+def test_a_time_blend_with_tied_intensities_writes_a_strict_json_record():
+    labels = [A] * 30 + [B] * 5
+    blend = vote_consensus(_batch(labels, [1.0] * 35)).provenance[BLEND_KEY]
+    assert blend["axis"] == AXIS_TIME
+    assert blend["intensity"] is None
+    json.dumps(blend, allow_nan=False)
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf])
+def test_a_member_with_a_non_finite_intensity_is_left_out_of_the_rank_test(bad):
+    labels = [A, B] * 8
+    intensities = [5000.0 + 100 * i if f == A else 200.0 for i, f in enumerate(labels)]
+    members = _batch(labels, intensities)
+    members[0]["intensity"] = bad
+    members[1]["intensity"] = bad
+    reading = intensity_reading(*_split(members))
+    assert reading["separates"] is True
+    assert reading["separation"] == 1.0
+    json.dumps(reading, allow_nan=False)
 
 
 def _split(members):
