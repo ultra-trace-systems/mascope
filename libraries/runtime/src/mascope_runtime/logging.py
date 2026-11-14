@@ -647,7 +647,9 @@ class RuntimeLogging:
             tags = ["dim"] if not match else []
 
             # FORMAT
-            fmt = self.style(f" {head} {message} {tail}\n", *tags)
+            # the newline after the styled part, so the line's reset code
+            # ends it rather than starting the next line on the stream
+            fmt = self.style(f" {head} {message} {tail}", *tags) + "\n"
 
             # TRACEBACKS
             output = io.StringIO()

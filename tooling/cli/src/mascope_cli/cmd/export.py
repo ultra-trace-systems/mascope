@@ -56,9 +56,9 @@ def _outcome(line: str) -> dict | None:
 
     The builder prints it as one JSON object, ``{"package": ...}`` or
     ``{"error": ...}``. Its log, on stderr (on stdout in a container of an
-    older release), is merged into the same pipe, and a colourised log line
-    leaves its reset code at the start of the next line, so the object is
-    read from the line's first brace.
+    older release), is merged into the same pipe, and an older release's
+    colourised log line leaves its reset code at the start of the next line,
+    so the object is read from the line's first brace.
 
     :param line: A line the builder printed.
     :return: The outcome, or None when the line is not it.
