@@ -180,3 +180,86 @@ def test_the_verdict_stays_while_the_identity_does():
         anchor, _consensus(consensus_tier="candidate", n_present=3), _NOW
     )
     assert (anchor.engine_tier, anchor.engine_claim) == ("candidate", "level 3")
+
+
+# --- the persistence rule's facts, read across the batch (step 4.2b) -------------
+
+
+def _reading(formula="C9H11NO", mechanism="mech-h", isotopologue_of=None):
+    return Consensus(
+        consensus_formula=formula,
+        ionization_mechanism_id=mechanism,
+        consensus_tier="assigned",
+        isotopologue_of=isotopologue_of,
+    )
+
+
+def test_a_line_counts_once_per_sample_and_only_under_the_reading():
+    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+        line_samples,
+    )
+
+    asked = {"bp-a": _reading()}
+    rows = [
+        ("bp-a", "s1", "C9H11NO", "mech-h"),
+        # The same sample's second line: one sample.
+        ("bp-a", "s1", "C9H11NO", "mech-h"),
+        ("bp-a", "s2", "C9H11NO", "mech-h"),
+        # A sample that read the peak as another formula, or through another
+        # mechanism, and committed that reading's line.
+        ("bp-a", "s3", "C10H13N", "mech-h"),
+        ("bp-a", "s4", "C9H11NO", "mech-na"),
+        # A source ion's line names no formula.
+        ("bp-a", "s5", None, None),
+        ("bp-other", "s1", "C9H11NO", "mech-h"),
+    ]
+    assert line_samples(rows, asked) == {"bp-a": 2}
+    assert line_samples(rows[3:5], asked) == {}
+
+
+def test_the_channels_are_the_partitions_own_readings_on_peaks_of_their_own():
+    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+        partition_channels,
+    )
+    from mascope_backend.api.new.peak_assignments.cross_channel import neutral_key
+
+    here, there = ("sb", "mode", "heights"), ("sb", "mode", "areas")
+    stored = [
+        ("bp-h", here, "C9H11NO", "mech-h", None),
+        # The same neutral spelled another way, through sodium.
+        ("bp-na", here, "C9H11N1O1", "mech-na", None),
+        # Another partition's reading is not this one's channel.
+        ("bp-k", there, "C9H11NO", "mech-k", None),
+        # A line of another batch peak is no peak of its own.
+        ("bp-line", here, "C9H11NO", "mech-nh4", "bp-x"),
+        # A reading with no mechanism names no channel.
+        ("bp-none", here, "C9H11NO", None, None),
+    ]
+    key = neutral_key("C9H11NO")
+    assert partition_channels(stored, {})[(here, key)] == {"mech-h", "mech-na"}
+    assert partition_channels(stored, {})[(there, key)] == {"mech-k"}
+
+
+def test_a_fresh_reading_replaces_what_the_ledger_stored():
+    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+        partition_channels,
+    )
+    from mascope_backend.api.new.peak_assignments.cross_channel import neutral_key
+
+    here = ("sb", "mode", "heights")
+    stored = [
+        ("bp-h", here, "C9H11NO", "mech-h", None),
+        ("bp-na", here, "C9H11NO", "mech-na", None),
+    ]
+    key = neutral_key("C9H11NO")
+    # This pass moved the sodiated batch peak to another formula, and made a
+    # third one, stored with nothing, a reading through ammonium.
+    fresh = {
+        "bp-na": (here, _reading("C10H13N", "mech-na")),
+        "bp-nh4": (here, _reading("C9H11NO", "mech-nh4")),
+    }
+    channels = partition_channels(stored, fresh)
+    assert channels[(here, key)] == {"mech-h", "mech-nh4"}
+    # A fresh reading that is a line of another batch peak commits nothing.
+    fresh = {"bp-na": (here, _reading("C9H11NO", "mech-na", isotopologue_of="bp-h"))}
+    assert partition_channels(stored, fresh)[(here, key)] == {"mech-h"}

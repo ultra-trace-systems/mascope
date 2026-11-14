@@ -20,14 +20,31 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
-from mascope_backend.api.new.peak_assignments import batch_untargeted, service
+from mascope_backend.api.new.peak_assignments import (
+    batch_peaks_controller,
+    batch_untargeted,
+    service,
+)
+from mascope_backend.api.new.peak_assignments.batch_curation import (
+    release_batch_peak_curation,
+    run_batch_peak_curation,
+)
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    PERSISTENCE_KEY,
+    TIER_REASONS_KEY,
+    candidate_index,
     resolve_candidate,
     role_name,
     tier_name,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     fold_sample_into_batch_peaks,
+    recompute_batch_consensus,
+)
+from mascope_backend.api.new.peak_assignments.batch_runs import (
+    ACTION_SEARCH,
+    complete_run,
+    start_run,
 )
 from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     run_batch_untargeted_search,
@@ -37,11 +54,15 @@ from mascope_backend.api.new.peak_assignments.config import (
     IN_APP_ENGINE,
     PeakAssignmentConfig,
 )
-from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
+from mascope_backend.api.new.peak_assignments.fold_view import (
+    fold_assignment_id,
+    fold_run_id,
+)
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
     IonizationMechanism,
+    PeakAssignment,
     PeakAssignmentRun,
     SampleBatch,
     SampleFile,
@@ -990,3 +1011,748 @@ async def test_a_line_searched_in_another_sample_than_its_ion_reads_as_its_line(
         assert role_name(members["p2"].role) == "iso_child"
         assert members["p2"].owner_batch_peak_id == glucose.batch_peak_id
         assert role_name(members["p3"].role) == "M0"
+
+
+# --- persistence: the second admission (step 4.2b) ---------------------------------
+#
+# Twelve samples. Glucose and its M+1 are bright in all of them; a faint peak at
+# 150 is in eleven, under the run's intensity floor everywhere; a faint peak at
+# 160 is in two; and each sample has a bright peak no other sample has. The
+# occurrence distribution is the batch's two modes: twelve traces in one
+# sample, one in two, and three in eleven or twelve.
+
+_FLOOR = 100.0
+_FAINT = 150.0913  # C9H11NO + H+
+_LINE = 151.0947  # its 13C line
+_SODIATED = 172.0733  # C9H11NO + Na+
+_TRANSIENT = 160.1
+
+
+def _persistence_peaks():
+    peaks = {}
+    for i in range(1, 13):
+        bright = 9000.0 if i == 1 else 4000.0
+        sample = [
+            ("p1", 181.0707, bright),
+            ("p2", 182.0741, bright / 12),
+            (f"x{i}", 200.0 + i, 1000.0),
+        ]
+        if i <= 11:
+            sample.append(("pf", _FAINT, 60.0 if i == 1 else 40.0))
+        if i <= 2:
+            sample.append(("pt", _TRANSIENT, 50.0))
+        peaks[f"S{i}"] = sample
+    return peaks
+
+
+_PERSISTENCE_PEAKS = _persistence_peaks()
+
+
+def _persistence_matches(targets):
+    rows = []
+    if 181.0707 in targets:
+        rows += [
+            _reading(181.0707, "C6H12O6", "C6H13O6+"),
+            _reading(182.0741, "C6H12O6", "[13C]C5H13O6+", label="13C"),
+        ]
+    if _FAINT in targets:
+        rows.append(_reading(_FAINT, "C9H11NO", "C9H12NO+"))
+    if _TRANSIENT in targets:
+        rows.append(_reading(_TRANSIENT, "C10H13N", "C10H14N+"))
+    return pd.DataFrame(rows), {}
+
+
+@pytest_asyncio.fixture
+async def persistence_batch(async_session_factory, pa_test_data, monkeypatch):
+    batch = await _fold_batch(async_session_factory, pa_test_data, _PERSISTENCE_PEAKS)
+    batch["calls"] = _stub_engine(
+        monkeypatch,
+        batch["samples"],
+        _PERSISTENCE_PEAKS,
+        _persistence_matches,
+        {
+            "C6H12O6": ("ion-glc", 0.81, ["p1", "p2"]),
+            "C9H11NO": ("ion-faint", 0.86, ["pf"]),
+            "C10H13N": ("ion-transient", 0.86, ["pt"]),
+        },
+    )
+    return batch
+
+
+async def _search_persistence(batch):
+    config = PeakAssignmentConfig(peak_intensity_threshold=_FLOOR)
+    run_id = await start_run(batch["batch_id"], ACTION_SEARCH)
+    counts = await run_batch_untargeted_search(
+        batch["batch_id"], config, batch_peak_run_id=run_id
+    )
+    await complete_run(batch["batch_id"], run_id, summary=counts)
+    return counts, run_id
+
+
+def _reason_rules(anchor):
+    return [
+        reason["rule"] for reason in (anchor.provenance or {}).get(TIER_REASONS_KEY, [])
+    ]
+
+
+async def test_a_faint_peak_in_most_spectra_is_searched_and_one_in_few_is_not(
+    async_session_factory, persistence_batch
+):
+    batch_id = persistence_batch["batch_id"]
+    counts, run_id = await _search_persistence(persistence_batch)
+
+    # S1 represents glucose, its line and both faint peaks: the floor admits
+    # the bright ones, persistence the faint one in eleven samples, and
+    # nothing admits the faint one in two.
+    (s1_targets,) = [
+        targets for targets in persistence_batch["calls"]["search"] if _FAINT in targets
+    ]
+    assert {181.0707, 182.0741, _FAINT} <= set(s1_targets)
+    assert not any(
+        _TRANSIENT in targets for targets in persistence_batch["calls"]["search"]
+    )
+    assert counts["anchors_admitted_by_persistence"] == 1
+    (split,) = counts["persistence_splits"]
+    # Between the transient mode (one and two of twelve) and the persistent
+    # one (eleven and twelve).
+    assert 2 / 12 < split["split"] < 11 / 12
+
+    anchors = await _anchors_by_mz(async_session_factory, batch_id)
+    record = anchors[150].provenance[PERSISTENCE_KEY]
+    assert record["share"] == pytest.approx(11 / 12, abs=1e-4)
+    assert (record["n_present"], record["n_samples"]) == (11, 12)
+    assert record["split"] == split["split"]
+    assert record["formula"] == "C9H11NO"
+    assert record["ionization_mechanism_id"] == "mech-h"
+    assert record["batch_peak_run_id"] == run_id
+    # The bright peaks were admitted on their height, as before: no record.
+    assert PERSISTENCE_KEY not in (anchors[181].provenance or {})
+    assert anchors[160].consensus_tier == "unassigned"
+    assert PERSISTENCE_KEY not in (anchors[160].provenance or {})
+
+
+async def test_a_reading_elected_on_persistence_alone_is_held_at_candidate(
+    async_session_factory, persistence_batch
+):
+    batch_id, samples = persistence_batch["batch_id"], persistence_batch["samples"]
+    counts, _ = await _search_persistence(persistence_batch)
+
+    anchors = await _anchors_by_mz(async_session_factory, batch_id)
+    faint = anchors[150]
+    assert faint.consensus_formula == "C9H11NO"
+    # Every member measured the ion at a fit the assigned band takes, and the
+    # batch peak still stands at candidate: the fit alone never lifts it. Its
+    # members are stored there too, so no sample's row of it reads assigned,
+    # and the record keeps which, to put them back.
+    s2 = await _members(async_session_factory, samples["S2"])
+    assert s2["pf"].fit_score == pytest.approx(0.86)
+    assert tier_name(s2["pf"].tier) == "candidate"
+    held = faint.provenance[PERSISTENCE_KEY]["held_members"]
+    assert set(held) == set(samples.values()) - {samples["S12"]}
+    assert faint.consensus_tier == "candidate"
+    assert _reason_rules(faint) == ["persistence_only"]
+    (reason,) = faint.provenance[TIER_REASONS_KEY]
+    assert reason["caps"] is True
+    assert "11 of its partition's 12 spectra" in reason["detail"]
+    assert counts["anchors_held_by_persistence"] == 1
+    assert "held at candidate" in search_outcome(counts, batch_id)["message"]
+    # Glucose, searched on its height with its 13C line, is not asked.
+    assert anchors[181].consensus_tier == "assigned"
+    assert _reason_rules(anchors[181]) == []
+
+
+async def _add_sample(session_factory, batch_id, name, rows_of, defer_to=None):
+    """Add a sample to the batch and fold ``rows_of(sample_item_id)`` into it,
+    its consensus deferred to ``defer_to`` where given, as a backfill folds."""
+    now = datetime.now(timezone.utc)
+    sample_file_id, sample_item_id = gen_id(), gen_id()
+    async with session_factory() as session:
+        session.add(
+            SampleFile(
+                sample_file_id=sample_file_id,
+                filename=f"orbi-untargeted-{name}-{sample_file_id}.zarr",
+                instrument="orbi-test",
+                datetime=datetime(2026, 7, 4, 12, 0, 0),
+                datetime_utc=now,
+                length=60.0,
+                range=[50.0, 500.0],
+                polarity="+",
+            )
+        )
+        session.add(
+            SampleItem(
+                sample_item_id=sample_item_id,
+                sample_batch_id=batch_id,
+                sample_file_id=sample_file_id,
+                sample_item_name=f"Untargeted {name}",
+                sample_item_type="sample",
+                polarity="+",
+                sample_item_utc_created=now,
+            )
+        )
+        await session.commit()
+    rows = rows_of(sample_item_id)
+    assert (
+        await fold_sample_into_batch_peaks(
+            sample_item_id, rows=rows, persisted=False, defer_consensus_to=defer_to
+        )
+        == batch_id
+    )
+    return sample_item_id
+
+
+def _row(sample_item_id, peak, mz, *, formula=None, mechanism=None, **over):
+    """A ledger row of ``sample_item_id`` as a run left it, unassigned unless
+    it names a formula."""
+    row = _unassigned_rows(sample_item_id, [(peak, mz, 500.0)])[0]
+    if formula:
+        row.role = "M0"
+        row.assigned_formula = formula
+        row.ion_formula = f"{formula}+"
+        row.ionization_mechanism_id = mechanism
+        row.tier = "assigned"
+        row.fit_score = 0.99
+        row.source = "untargeted"
+    for key, value in over.items():
+        setattr(row, key, value)
+    return row
+
+
+def _elected_row(sample_item_id, **over):
+    # The ion the search elected, its own ion formula: the registry entry the
+    # search wrote, which this row then names.
+    return _row(
+        sample_item_id,
+        "pf",
+        _FAINT,
+        formula="C9H11NO",
+        mechanism="mech-h",
+        ion_formula="C9H12NO+",
+        **over,
+    )
+
+
+async def test_a_sample_reading_it_at_a_better_fit_does_not_lift_it(
+    async_session_factory, persistence_batch
+):
+    batch_id = persistence_batch["batch_id"]
+    await _search_persistence(persistence_batch)
+    await _add_sample(
+        async_session_factory,
+        batch_id,
+        "S13",
+        lambda sample: [_elected_row(sample)],
+    )
+    faint = (await _anchors_by_mz(async_session_factory, batch_id))[150]
+    assert faint.consensus_tier == "candidate"
+    assert _reason_rules(faint) == ["persistence_only"]
+
+
+async def test_its_13c_line_in_a_sample_lifts_it(
+    async_session_factory, persistence_batch
+):
+    batch_id = persistence_batch["batch_id"]
+    await _search_persistence(persistence_batch)
+
+    def rows(sample):
+        m0 = _elected_row(sample)
+        line = _row(
+            sample,
+            "pl",
+            _LINE,
+            formula="C9H11NO",
+            mechanism="mech-h",
+            ion_formula="[13C]C8H12NO+",
+            role="iso_child",
+            owner_peak_assignment_id=m0.peak_assignment_id,
+        )
+        return [m0, line]
+
+    await _add_sample(async_session_factory, batch_id, "S13", rows)
+    anchors = await _anchors_by_mz(async_session_factory, batch_id)
+    faint = anchors[150]
+    assert anchors[151].isotopologue_of == faint.batch_peak_id
+    assert faint.consensus_tier == "assigned"
+    assert _reason_rules(faint) == ["second_line"]
+    # The admission stays on the record whatever lifts the cap; the members
+    # it held are back at the tier they were measured at.
+    assert faint.provenance[PERSISTENCE_KEY]["formula"] == "C9H11NO"
+    assert "held_members" not in faint.provenance[PERSISTENCE_KEY]
+    s2 = await _members(async_session_factory, persistence_batch["samples"]["S2"])
+    assert tier_name(s2["pf"].tier) == "assigned"
+
+
+async def _sodium_mechanism(session_factory):
+    async with session_factory() as session:
+        if await session.get(IonizationMechanism, "mech-na") is None:
+            session.add(
+                IonizationMechanism(
+                    ionization_mechanism_id="mech-na",
+                    ionization_mechanism_polarity="+",
+                    ionization_mechanism="Na+ (untargeted search test)",
+                )
+            )
+            await session.commit()
+
+
+def _sodiated_rows(sample):
+    # The same neutral through sodium, and the faint peak itself unread: the
+    # sample's fold reaches the batch peak, which is recomputed.
+    return [
+        _row(sample, "pf", _FAINT),
+        _row(sample, "pna", _SODIATED, formula="C9H11NO", mechanism="mech-na"),
+    ]
+
+
+async def test_the_same_neutral_through_another_channel_lifts_it(
+    async_session_factory, persistence_batch
+):
+    batch_id = persistence_batch["batch_id"]
+    await _search_persistence(persistence_batch)
+    await _sodium_mechanism(async_session_factory)
+    await _add_sample(async_session_factory, batch_id, "S13", _sodiated_rows)
+
+    anchors = await _anchors_by_mz(async_session_factory, batch_id)
+    assert anchors[172].consensus_formula == "C9H11NO"
+    assert anchors[150].consensus_tier == "assigned"
+    assert _reason_rules(anchors[150]) == ["corroborated"]
+
+
+async def test_a_pin_and_its_release_leave_the_hold_for_a_lift_to_take(
+    async_session_factory, persistence_batch, monkeypatch
+):
+    batch_id, samples = persistence_batch["batch_id"], persistence_batch["samples"]
+    await _search_persistence(persistence_batch)
+    faint = (await _anchors_by_mz(async_session_factory, batch_id))[150]
+    held = set(faint.provenance[PERSISTENCE_KEY]["held_members"])
+    assert held == set(samples.values()) - {samples["S12"]}
+    # Another reading of the peak in its registry, one a sample once carried.
+    async with async_session_factory() as session:
+        anchor = await session.get(BatchPeak, faint.batch_peak_id)
+        registry = list(anchor.candidates)
+        other = candidate_index(registry, "C8H11N3", "C8H12N3+", "mech-h")
+        anchor.candidates = registry
+        await session.commit()
+    # The pin measures it in each sample, where its envelope reaches the
+    # faint peak, and re-points every member.
+    _stub_engine(
+        monkeypatch,
+        samples,
+        _PERSISTENCE_PEAKS,
+        _persistence_matches,
+        {"C8H11N3": ("ion-other", 0.84, ["pf"])},
+    )
+    counts = await run_batch_peak_curation(
+        batch_id, faint.batch_peak_id, other, "C9H11NO", PeakAssignmentConfig()
+    )
+    assert counts["members_repointed"] == len(held)
+    pinned = (await _anchors_by_mz(async_session_factory, batch_id))[150]
+    assert pinned.consensus_formula == "C8H11N3"
+    assert "held_members" not in pinned.provenance[PERSISTENCE_KEY]
+    # What the pin archives is each member's measurement, not the hold, which
+    # went with the pin's recompute.
+    archived = pinned.provenance["manual"]["displaced_members"]
+    assert {state["sample_item_id"] for state in archived} == held
+    assert {tier_name(state["tier"]) for state in archived} == {"assigned"}
+
+    # Released, the elected reading is held again, its members with it.
+    await release_batch_peak_curation(batch_id, faint.batch_peak_id)
+    released = (await _anchors_by_mz(async_session_factory, batch_id))[150]
+    assert released.consensus_formula == "C9H11NO"
+    assert released.consensus_tier == "candidate"
+    assert _reason_rules(released) == ["persistence_only"]
+    assert set(released.provenance[PERSISTENCE_KEY]["held_members"]) == held
+    s2 = await _members(async_session_factory, samples["S2"])
+    assert tier_name(s2["pf"].tier) == "candidate"
+
+    # And a second channel lifts it, the members it held too.
+    await _sodium_mechanism(async_session_factory)
+    await _add_sample(async_session_factory, batch_id, "S13", _sodiated_rows)
+    lifted = (await _anchors_by_mz(async_session_factory, batch_id))[150]
+    assert lifted.consensus_tier == "assigned"
+    assert _reason_rules(lifted) == ["corroborated"]
+    assert "held_members" not in lifted.provenance[PERSISTENCE_KEY]
+    s2 = await _members(async_session_factory, samples["S2"])
+    assert tier_name(s2["pf"].tier) == "assigned"
+
+
+async def test_a_reading_the_vote_puts_below_candidate_is_not_counted_held(
+    async_session_factory, persistence_batch, monkeypatch
+):
+    batch_id = persistence_batch["batch_id"]
+    # Every sample measures the faint ion at a fit no tier above
+    # below_assignability takes.
+    _stub_engine(
+        monkeypatch,
+        persistence_batch["samples"],
+        _PERSISTENCE_PEAKS,
+        _persistence_matches,
+        {
+            "C6H12O6": ("ion-glc", 0.81, ["p1", "p2"]),
+            "C9H11NO": ("ion-faint", 0.05, ["pf"]),
+        },
+    )
+
+    async def seeded_fits(sample, params, seeds, *, reagent_offset, envelope_tolerance):
+        return {seed: 0.05 if seed[0] == "C9H11NO" else 0.88 for seed in seeds}
+
+    monkeypatch.setattr(batch_untargeted, "_seeded_fits", seeded_fits)
+    counts, _ = await _search_persistence(persistence_batch)
+
+    faint = (await _anchors_by_mz(async_session_factory, batch_id))[150]
+    assert faint.consensus_formula == "C9H11NO"
+    assert faint.consensus_tier == "below_assignability"
+    # The rule stands on the reading - nothing corroborates it - but holds
+    # nothing at candidate: the summary does not count it held.
+    assert _reason_rules(faint) == ["persistence_only"]
+    assert counts["anchors_admitted_by_persistence"] == 1
+    assert counts["anchors_held_by_persistence"] == 0
+    assert "held" not in search_outcome(counts, batch_id)["message"]
+
+
+@pytest.mark.parametrize("deferred", [False, True], ids=["fold", "backfill"])
+async def test_a_channel_in_a_later_chunk_lifts_it_in_the_same_pass(
+    async_session_factory, persistence_batch, monkeypatch, deferred
+):
+    # One anchor per chunk, and the sodiated one minted with an id that sorts
+    # last: when the faint one is recomputed the other channel still reads
+    # what it held before the pass - nothing. The persistence rule's second
+    # pass reads it again once every chunk is written.
+    batch_id = persistence_batch["batch_id"]
+    await _search_persistence(persistence_batch)
+    await _sodium_mechanism(async_session_factory)
+    monkeypatch.setattr(batch_peaks_controller, "_CONSENSUS_CHUNK", 1)
+    monkeypatch.setattr(
+        batch_peaks_controller, "gen_id", lambda length=16: "zzz" + gen_id(length - 3)
+    )
+    if deferred:
+        touched: set[str] = set()
+        await _add_sample(
+            async_session_factory, batch_id, "S13", _sodiated_rows, defer_to=touched
+        )
+        await recompute_batch_consensus(batch_id, touched)
+    else:
+        await _add_sample(async_session_factory, batch_id, "S13", _sodiated_rows)
+
+    anchors = await _anchors_by_mz(async_session_factory, batch_id)
+    assert anchors[150].batch_peak_id < anchors[172].batch_peak_id
+    assert anchors[150].consensus_tier == "assigned"
+    assert _reason_rules(anchors[150]) == ["corroborated"]
+
+
+async def test_a_series_of_the_batch_anchoring_it_lifts_it(
+    async_session_factory, persistence_batch
+):
+    batch_id = persistence_batch["batch_id"]
+    await _search_persistence(persistence_batch)
+    faint_id = (await _anchors_by_mz(async_session_factory, batch_id))[
+        150
+    ].batch_peak_id
+    async with async_session_factory() as session:
+        anchor = await session.get(BatchPeak, faint_id)
+        anchor.provenance = {
+            **(anchor.provenance or {}),
+            "series": {
+                "formula": "C9H11NO",
+                "ionization_mechanism_id": "mech-h",
+                "has_anchor": True,
+                "unit": "CH2",
+            },
+        }
+        await session.commit()
+    await recompute_batch_consensus(batch_id, {faint_id})
+
+    faint = (await _anchors_by_mz(async_session_factory, batch_id))[150]
+    assert faint.consensus_tier == "assigned"
+    assert _reason_rules(faint) == ["series_anchor"]
+
+
+async def test_a_chunk_reports_the_batch_peaks_the_rule_asked(
+    async_session_factory, persistence_batch
+):
+    # The set a recompute spanning chunks takes its second pass over: the
+    # faint batch peak, never glucose, which the search took on its height.
+    batch_id = persistence_batch["batch_id"]
+    await _search_persistence(persistence_batch)
+    anchors = await _anchors_by_mz(async_session_factory, batch_id)
+    ids = [anchors[150].batch_peak_id, anchors[181].batch_peak_id]
+    async with async_session_factory() as session:
+        asked = await batch_peaks_controller._recompute_consensus_chunk(
+            session, ids, datetime.now(timezone.utc)
+        )
+        await session.rollback()
+    assert asked == {anchors[150].batch_peak_id}
+
+
+async def test_the_ledger_the_snapshot_and_the_inspector_show_it(
+    async_session_factory, persistence_batch, guest_client
+):
+    batch_id, samples = persistence_batch["batch_id"], persistence_batch["samples"]
+    _, run_id = await _search_persistence(persistence_batch)
+    faint = (await _anchors_by_mz(async_session_factory, batch_id))[150]
+    record = {
+        key: value
+        for key, value in faint.provenance[PERSISTENCE_KEY].items()
+        if key != "held_members"
+    }
+    reasons = faint.provenance[TIER_REASONS_KEY]
+
+    async def ledger(**params):
+        response = await guest_client.get(
+            f"/api/batch-peaks/batch/{batch_id}",
+            params={"min_n_present": 1, **params},
+        )
+        assert response.status_code == 200, response.text
+        return {row["batch_peak_id"]: row for row in response.json()["data"]}
+
+    live = await ledger()
+    assert live[faint.batch_peak_id]["persistence"] == record
+    assert live[faint.batch_peak_id]["tier_reasons"] == reasons
+    assert live[faint.batch_peak_id]["consensus_tier"] == "candidate"
+    others = [row for key, row in live.items() if key != faint.batch_peak_id]
+    assert all(row["persistence"] is None for row in others)
+
+    # A later run snapshots this one; read back, the snapshot still says it.
+    later = await start_run(batch_id, ACTION_SEARCH)
+    await complete_run(batch_id, later)
+    earlier = await ledger(batch_peak_run_id=run_id)
+    assert earlier[faint.batch_peak_id]["persistence"] == record
+    assert earlier[faint.batch_peak_id]["tier_reasons"] == reasons
+
+    # The inspector reads the share the admission rested on off a sample's
+    # derived row of the elected reading, with the batch's reasons.
+    response = await guest_client.get(
+        f"/api/peak-assignments/sample/{samples['S3']}/assignment/"
+        f"{fold_assignment_id(faint.batch_peak_id)}"
+    )
+    assert response.status_code == 200, response.text
+    [row] = response.json()["data"]
+    assert row["batch_persistence"] == {
+        **record,
+        "tier_reasons": reasons,
+        "consensus_tier": "candidate",
+    }
+    # The sample's own row of the reading stands where the batch's does.
+    assert row["tier"] == "candidate"
+
+
+async def test_a_sample_searched_again_takes_its_persistent_peak_again(
+    async_session_factory, pa_test_data, monkeypatch
+):
+    # S2 represents both glucose's M+1 and the faint peak. Its search reads
+    # the M+1 on its own; S1's reads it as glucose's line, so S2 is searched
+    # again without it - and the faint peak, under the floor, is taken on
+    # persistence in that search too.
+    peaks = _persistence_peaks()
+    peaks["S1"] = [
+        ("p1", 181.0707, 9000.0),
+        ("p2", 182.0741, 300.0),
+        ("x1", 201.0, 1000.0),
+    ]
+    peaks["S2"] = [
+        ("p1", 181.0707, 4000.0),
+        ("p2", 182.0741, 700.0),
+        ("pf", _FAINT, 60.0),
+        ("x2", 202.0, 1000.0),
+    ]
+    for name, sample in peaks.items():
+        if name not in ("S1", "S2"):
+            peaks[name] = [
+                (peak, mz, 50.0 if peak == "pf" else min(intensity, 4000.0))
+                if peak != "p2"
+                else (peak, mz, 300.0)
+                for peak, mz, intensity in sample
+            ]
+    batch = await _fold_batch(async_session_factory, pa_test_data, peaks)
+
+    def matches(targets):
+        frame, extra = _persistence_matches(targets)
+        rows = frame.to_dict("records")
+        if 182.0741 in targets:
+            rows.append(_reading(182.0741, "C8H11N3", "C8H12N3+"))
+        return pd.DataFrame(rows), extra
+
+    calls = _stub_engine(
+        monkeypatch,
+        batch["samples"],
+        peaks,
+        matches,
+        {
+            "C6H12O6": ("ion-glc", 0.81, ["p1", "p2"]),
+            "C9H11NO": ("ion-faint", 0.86, ["pf"]),
+        },
+    )
+    counts, _ = await _search_persistence(batch)
+
+    assert counts["samples_researched"] == 1
+    again = [targets for targets in calls["search"] if 182.0741 not in targets]
+    assert any(_FAINT in targets for targets in again)
+    faint = (await _anchors_by_mz(async_session_factory, batch["batch_id"]))[150]
+    assert faint.provenance[PERSISTENCE_KEY]["formula"] == "C9H11NO"
+    assert faint.consensus_tier == "candidate"
+
+
+async def test_a_batch_peak_a_later_search_takes_on_its_height_loses_the_record(
+    async_session_factory, pa_test_data, monkeypatch
+):
+    batch = await _fold_batch(async_session_factory, pa_test_data, _PERSISTENCE_PEAKS)
+    finds = {"faint": False}
+
+    def matches(targets):
+        frame, extra = _persistence_matches(targets)
+        if not finds["faint"]:
+            frame = frame[frame["mz"] != _FAINT]
+        return frame, extra
+
+    _stub_engine(
+        monkeypatch,
+        batch["samples"],
+        _PERSISTENCE_PEAKS,
+        matches,
+        {
+            "C6H12O6": ("ion-glc", 0.81, ["p1", "p2"]),
+            "C9H11NO": ("ion-f", 0.86, ["pf"]),
+        },
+    )
+    # Taken on persistence, nothing found: the admission is recorded, no
+    # reading elected on it.
+    await _search_persistence(batch)
+    faint = (await _anchors_by_mz(async_session_factory, batch["batch_id"]))[150]
+    assert faint.consensus_tier == "unassigned"
+    assert faint.provenance[PERSISTENCE_KEY]["formula"] is None
+
+    # With no floor the next search takes it on its height.
+    finds["faint"] = True
+    await run_batch_untargeted_search(batch["batch_id"], PeakAssignmentConfig())
+    faint = (await _anchors_by_mz(async_session_factory, batch["batch_id"]))[150]
+    assert PERSISTENCE_KEY not in (faint.provenance or {})
+    assert faint.consensus_tier == "assigned"
+    assert _reason_rules(faint) == []
+
+
+@pytest.mark.parametrize(
+    "formula, mechanism",
+    [("C10H13N", "mech-h"), ("C9H11NO", "mech-na")],
+    ids=["another formula", "another mechanism"],
+)
+async def test_a_line_of_another_reading_of_the_peak_does_not_lift_it(
+    async_session_factory, persistence_batch, formula, mechanism
+):
+    # A sample that reads the faint peak its own way, and commits that
+    # reading's 13C line: the line is not the batch's reading's.
+    batch_id = persistence_batch["batch_id"]
+    await _search_persistence(persistence_batch)
+    await _sodium_mechanism(async_session_factory)
+
+    def rows(sample):
+        m0 = _row(sample, "pf", _FAINT, formula=formula, mechanism=mechanism)
+        line = _row(
+            sample,
+            "pl",
+            _LINE,
+            formula=formula,
+            mechanism=mechanism,
+            role="iso_child",
+            owner_peak_assignment_id=m0.peak_assignment_id,
+        )
+        return [m0, line]
+
+    await _add_sample(async_session_factory, batch_id, "S13", rows)
+    anchors = await _anchors_by_mz(async_session_factory, batch_id)
+    assert anchors[151].isotopologue_of == anchors[150].batch_peak_id
+    assert anchors[150].consensus_formula == "C9H11NO"
+    assert anchors[150].ionization_mechanism_id == "mech-h"
+    assert anchors[150].consensus_tier == "candidate"
+    assert _reason_rules(anchors[150]) == ["persistence_only"]
+
+
+async def test_a_runs_own_row_on_the_peak_reads_the_admission(
+    async_session_factory, persistence_batch, guest_client
+):
+    batch_id, samples = persistence_batch["batch_id"], persistence_batch["samples"]
+    await _search_persistence(persistence_batch)
+    faint = (await _anchors_by_mz(async_session_factory, batch_id))[150]
+    now = datetime.now(timezone.utc)
+    run_id = gen_id()
+    rows = {
+        "elected": ("C9H11NO", "mech-h"),
+        "another": ("C10H13N", "mech-h"),
+    }
+    ids = {}
+    async with async_session_factory() as session:
+        session.add(
+            PeakAssignmentRun(
+                peak_assignment_run_id=run_id,
+                sample_item_id=samples["S2"],
+                engine_version="0.1.0-test",
+                status="completed",
+                config={},
+                peak_assignment_run_utc_created=now,
+                peak_assignment_run_utc_completed=now,
+            )
+        )
+        await session.flush()
+        for key, (formula, mechanism) in rows.items():
+            ids[key] = gen_id(32)
+            # One row per run and peak: the second reading sits on another run.
+            this_run = run_id if key == "elected" else gen_id()
+            if this_run != run_id:
+                session.add(
+                    PeakAssignmentRun(
+                        peak_assignment_run_id=this_run,
+                        sample_item_id=samples["S2"],
+                        engine_version="0.1.0-test",
+                        status="completed",
+                        config={},
+                        peak_assignment_run_utc_created=now - timedelta(minutes=1),
+                        peak_assignment_run_utc_completed=now - timedelta(minutes=1),
+                    )
+                )
+                await session.flush()
+            session.add(
+                PeakAssignment(
+                    peak_assignment_id=ids[key],
+                    peak_assignment_run_id=this_run,
+                    sample_item_id=samples["S2"],
+                    sample_peak_id="pf",
+                    sample_peak_mz=_FAINT,
+                    sample_peak_intensity=40.0,
+                    role="M0",
+                    assigned_formula=formula,
+                    ion_formula=f"{formula}+",
+                    ionization_mechanism_id=mechanism,
+                    source="untargeted",
+                    tier="assigned",
+                    fit_score=0.9,
+                )
+            )
+        await session.commit()
+
+    async def detail(peak_assignment_id):
+        response = await guest_client.get(
+            f"/api/peak-assignments/sample/{samples['S2']}/assignment/"
+            f"{peak_assignment_id}"
+        )
+        assert response.status_code == 200, response.text
+        [row] = response.json()["data"]
+        return row["batch_persistence"]
+
+    record = {
+        key: value
+        for key, value in faint.provenance[PERSISTENCE_KEY].items()
+        if key != "held_members"
+    }
+    reasons = faint.provenance[TIER_REASONS_KEY]
+    # The run's row reads assigned; the batch peak's tier, served with the
+    # batch's reasons, is what they did to the batch's reading.
+    assert await detail(ids["elected"]) == {
+        **record,
+        "tier_reasons": reasons,
+        "consensus_tier": "candidate",
+    }
+    # Another reading of the peak is served the admission, not the reasons.
+    assert await detail(ids["another"]) == {
+        **record,
+        "tier_reasons": None,
+        "consensus_tier": None,
+    }

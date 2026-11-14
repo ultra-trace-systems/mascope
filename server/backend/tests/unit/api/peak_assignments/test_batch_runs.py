@@ -206,3 +206,23 @@ def test_completion_prunes_the_oldest_non_current_runs_beyond_the_keep():
     )
     assert "cur" not in runs_to_prune(runs + [old_current], keep=1)
     assert runs_to_prune(runs[:3], keep=5) == []
+
+
+def test_a_snapshot_keeps_the_persistence_admission_and_the_batch_s_reasons():
+    # The run selector shows an earlier search's admissions and caps beside
+    # the tiers they explain.
+    record = {"share": 0.9167, "n_present": 11, "n_samples": 12, "split": 0.4583}
+    reasons = [{"rule": "persistence_only", "detail": "...", "caps": True}]
+    anchor = _anchor(
+        sample_batch_id="sb-1",
+        consensus_tier="candidate",
+        provenance={"persistence": record, "tier_reasons": reasons},
+    )
+    row = anchor_snapshot_row("run-1", anchor, [])
+    assert (row["persistence"], row["tier_reasons"]) == (record, reasons)
+    meta = snapshot_anchor_meta(SimpleNamespace(**row), "sb-1")
+    assert (meta["persistence"], meta["tier_reasons"]) == (record, reasons)
+    live = _batch_peak_meta(anchor)
+    assert (live["persistence"], live["tier_reasons"]) == (record, reasons)
+    bare = _batch_peak_meta(_anchor(sample_batch_id="sb-1"))
+    assert (bare["persistence"], bare["tier_reasons"]) == (None, None)

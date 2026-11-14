@@ -15,11 +15,18 @@ import pytest
 from mascope_backend.api.new.peak_assignments import batch_untargeted
 from mascope_backend.api.new.peak_assignments.batch_peaks import role_code
 from mascope_backend.api.new.peak_assignments.batch_untargeted import (
+    MIN_PERSISTENCE_SPECTRA,
+    SPLIT_BOUNDS,
+    Annotation,
+    Occurrence,
+    admitted_targets,
     choose_representatives,
     gate_search_rows,
     group_by_sample,
     merge_search_rows,
+    occurrence_split,
     owner_anchor_of,
+    persistent_anchors,
     search_config,
     search_outcome,
 )
@@ -780,7 +787,7 @@ async def _search_ammonium_reading(*, opened, known):
         patch.object(batch_untargeted, "_fetch_known_isotopes", known_isotopes),
         patch.object(batch_untargeted, "assign_compositions", finder),
     ):
-        rows, _ = await batch_untargeted._search_sample_peaks(
+        rows, _, _ = await batch_untargeted._search_sample_peaks(
             "si-1", {"p2"}, PeakAssignmentConfig()
         )
     return rows, known_isotopes
@@ -835,3 +842,255 @@ async def test_a_batch_search_with_no_secondary_channel_reads_no_list():
         opened=False, known=pd.DataFrame()
     )
     known_isotopes.assert_not_awaited()
+
+
+# --- persistence: the second admission (step 4.2b) --------------------------------
+
+
+def _bimodal(n_spectra, transient, persistent):
+    """Shares of a partition of ``n_spectra``: ``transient`` traces in one or
+    two spectra, ``persistent`` ones in all but one or all."""
+    shares = [(1 + i % 2) / n_spectra for i in range(transient)]
+    shares += [(n_spectra - i % 2) / n_spectra for i in range(persistent)]
+    return shares
+
+
+def test_the_split_falls_between_the_two_modes():
+    split = occurrence_split(_bimodal(40, 200, 30), 40)
+    # Above every transient share and below every persistent one.
+    assert 2 / 40 < split < 39 / 40
+    assert SPLIT_BOUNDS[0] <= split <= SPLIT_BOUNDS[1]
+
+
+def test_the_split_is_the_batchs_own():
+    # Two batches of one size whose modes sit apart split apart: the split is
+    # measured off the distribution, not a constant.
+    low = [0.1] * 50 + [0.3] * 50
+    high = [0.6] * 50 + [0.9] * 50
+    assert occurrence_split(low, 20) == pytest.approx(0.25)
+    assert occurrence_split(high, 20) == pytest.approx(0.75)
+    middle = [0.3] * 50 + [0.6] * 50
+    assert occurrence_split(middle, 20) == pytest.approx(0.45)
+
+
+def test_the_split_sits_midway_between_neighbouring_shares():
+    shares = [1 / 12] * 30 + [2 / 12] * 10 + [11 / 12] * 8 + [1.0] * 4
+    split = occurrence_split(shares, 12)
+    assert split == pytest.approx(0.5 * (2 / 12 + 11 / 12))
+
+
+def test_a_one_mode_batch_is_held_inside_the_bounds():
+    # Nearly every trace transient: Otsu still splits, near the low end, and
+    # the bound keeps the split from taking every recurring noise line.
+    nearly_all_low = [1 / 50] * 300 + [2 / 50] * 100 + [3 / 50] * 5
+    assert occurrence_split(nearly_all_low, 50) == SPLIT_BOUNDS[0]
+    nearly_all_high = [48 / 50] * 5 + [49 / 50] * 100 + [1.0] * 300
+    assert occurrence_split(nearly_all_high, 50) == SPLIT_BOUNDS[1]
+
+
+def test_too_few_spectra_or_one_share_have_no_split():
+    shares = _bimodal(MIN_PERSISTENCE_SPECTRA - 1, 20, 5)
+    assert occurrence_split(shares, MIN_PERSISTENCE_SPECTRA - 1) is None
+    assert occurrence_split(_bimodal(MIN_PERSISTENCE_SPECTRA, 20, 5), 10) is not None
+    assert occurrence_split([0.5] * 30, 20) is None
+
+
+def test_persistent_anchors_are_read_per_partition():
+    orbitrap = ("mode", "sum_peak_heights")
+    tof = ("mode", "sum_peak_areas")
+    counts = [(f"o{i}", orbitrap, 1) for i in range(20)]
+    counts += [("o-persistent", orbitrap, 11), ("o-faint", orbitrap, 2)]
+    # The TOF partition has too few spectra for a split: nothing there is
+    # persistent, however often it recurs.
+    counts += [(f"t{i}", tof, 1) for i in range(20)] + [("t-everywhere", tof, 5)]
+    persistent, splits = persistent_anchors(counts, {orbitrap: 12, tof: 5})
+
+    assert set(persistent) == {"o-persistent"}
+    assert persistent["o-persistent"].share == pytest.approx(11 / 12)
+    assert persistent["o-persistent"].split == splits[orbitrap]
+    assert splits[tof] is None
+
+
+def test_an_anchor_is_persistent_only_above_the_split():
+    # Otsu splits these at 0.175, which the bound lifts to 0.25: a share of
+    # exactly 0.25 is not above it.
+    partition = ("mode", "sum_peak_heights")
+    counts = [(f"low{i}", partition, 2) for i in range(10)]
+    counts += [(f"edge{i}", partition, 5) for i in range(10)]
+    persistent, splits = persistent_anchors(counts, {partition: 20})
+    assert splits[partition] == SPLIT_BOUNDS[0]
+    assert persistent == {}
+
+
+def _frame(*peaks):
+    return pd.DataFrame(
+        [
+            {"sample_peak_id": pid, "mz": mz, "intensity": intensity}
+            for pid, mz, intensity in peaks
+        ]
+    )
+
+
+def test_a_faint_persistent_peak_is_admitted_beside_the_floor():
+    frame = _frame(
+        ("bright", 181.07, 9000.0),
+        ("faint-persistent", 150.0, 40.0),
+        ("faint-transient", 160.0, 40.0),
+    )
+    targets, scope, by_persistence = admitted_targets(
+        frame,
+        {"bright", "faint-persistent", "faint-transient"},
+        {"faint-persistent"},
+        peak_intensity_threshold=100.0,
+        max_untargeted_peaks=None,
+        ceiling=5000,
+    )
+
+    assert set(targets["sample_peak_id"]) == {"bright", "faint-persistent"}
+    assert by_persistence == {"faint-persistent"}
+    assert scope["admitted_by_persistence"] == 1
+    # The faint transient peak is no eligible peak, as under the floor today.
+    assert scope["eligible_peaks"] == 2
+    assert scope["searched_peaks"] == 2
+    assert scope["limited"] is False
+
+
+def test_a_persistent_peak_past_the_cap_is_admitted():
+    frame = _frame(("a", 100.0, 900.0), ("b", 110.0, 800.0), ("c", 120.0, 700.0))
+    targets, scope, by_persistence = admitted_targets(
+        frame,
+        {"a", "b", "c"},
+        {"c"},
+        peak_intensity_threshold=0.0,
+        max_untargeted_peaks=1,
+        ceiling=5000,
+    )
+
+    assert set(targets["sample_peak_id"]) == {"a", "c"}
+    assert by_persistence == {"c"}
+    # "b" is eligible and was left by the cap; "c" was eligible already.
+    assert scope["eligible_peaks"] == 3
+    assert scope["searched_peaks"] == 2
+    assert scope["limited"] is True
+
+
+def test_a_persistent_peak_the_height_admits_is_not_admitted_by_persistence():
+    frame = _frame(("a", 100.0, 900.0))
+    _, scope, by_persistence = admitted_targets(
+        frame,
+        {"a"},
+        {"a"},
+        peak_intensity_threshold=0.0,
+        max_untargeted_peaks=None,
+        ceiling=5000,
+    )
+    assert by_persistence == set()
+    assert scope["admitted_by_persistence"] == 0
+
+
+def test_the_ceiling_bounds_both_admissions_the_faint_brightest_first():
+    frame = _frame(
+        ("bright", 100.0, 900.0),
+        ("p1", 110.0, 30.0),
+        ("p2", 120.0, 20.0),
+        ("p3", 130.0, 10.0),
+    )
+    targets, scope, by_persistence = admitted_targets(
+        frame,
+        {"bright", "p1", "p2", "p3"},
+        {"p1", "p2", "p3"},
+        peak_intensity_threshold=100.0,
+        max_untargeted_peaks=None,
+        ceiling=3,
+    )
+    assert set(targets["sample_peak_id"]) == {"bright", "p1", "p2"}
+    assert by_persistence == {"p1", "p2"}
+    assert scope["eligible_peaks"] == 4
+    assert scope["limited"] is True
+
+
+def test_a_peak_that_represents_no_anchor_is_not_admitted_by_persistence():
+    frame = _frame(("a", 100.0, 900.0), ("b", 110.0, 10.0))
+    targets, _, by_persistence = admitted_targets(
+        frame,
+        {"a"},
+        {"b"},
+        peak_intensity_threshold=100.0,
+        max_untargeted_peaks=None,
+        ceiling=5000,
+    )
+    assert set(targets["sample_peak_id"]) == {"a"}
+    assert by_persistence == set()
+
+
+def test_the_record_names_the_reading_elected_on_its_own_peak():
+    occurrence = Occurrence(n_present=11, n_samples=12, split=0.4583333)
+    m0 = Annotation("C5H8O2", "C5H9O2+", "mech-h", "M0", None)
+    line = Annotation("C6H12O6", "C6H13O6+", "mech-h", "iso_child", "bp-owner")
+
+    record = occurrence.record(m0, "run-1")
+    assert record == {
+        "share": 0.9167,
+        "n_present": 11,
+        "n_samples": 12,
+        "split": 0.4583,
+        "formula": "C5H8O2",
+        "ion_formula": "C5H9O2+",
+        "ionization_mechanism_id": "mech-h",
+        "batch_peak_run_id": "run-1",
+    }
+    # An isotope line of another ion, and nothing found, elect no reading of
+    # the anchor's own: the admission is still recorded.
+    for annotation in (line, None):
+        empty = occurrence.record(annotation, "run-1")
+        assert empty["formula"] is None
+        assert empty["ion_formula"] is None
+        assert empty["ionization_mechanism_id"] is None
+        assert empty["share"] == 0.9167
+
+
+def test_the_outcome_says_what_persistence_admitted_and_what_it_holds():
+    counts = {
+        "anchors_searched": 10,
+        "anchors_annotated": 4,
+        "members_propagated": 7,
+        "samples_searched": 2,
+        "anchors_admitted_by_persistence": 3,
+        "anchors_held_by_persistence": 2,
+    }
+    message = search_outcome(counts, "sb-1")["message"]
+    assert "3 batch peaks under the intensity floor or past the peak cap" in message
+    assert "2 of them are held at candidate until an isotope line" in message
+    counts["anchors_held_by_persistence"] = 1
+    assert "1 of them is held at candidate" in search_outcome(counts, "sb-1")["message"]
+    # One admitted, and its reading held.
+    counts["anchors_admitted_by_persistence"] = 1
+    message = search_outcome(counts, "sb-1")["message"]
+    assert "1 batch peak under" in message
+    assert "recurs across the batch; its reading is held at candidate" in message
+    # None held - each lifted, or below candidate on the vote: nothing is said
+    # held.
+    counts["anchors_held_by_persistence"] = 0
+    message = search_outcome(counts, "sb-1")["message"]
+    assert "searched because the peak recurs across the batch." in message
+    assert "held" not in message
+    counts["anchors_admitted_by_persistence"] = 0
+    assert "recurs" not in search_outcome(counts, "sb-1")["message"]
+
+
+@pytest.mark.asyncio
+async def test_the_search_names_its_run_on_the_records_it_writes():
+    seen = {}
+
+    async def search(sample_batch_id, config, **kwargs):
+        seen.update(kwargs)
+        return {"anchors_searched": 0}
+
+    with (
+        patch.object(batch_untargeted, "start_run", AsyncMock(return_value="run-7")),
+        patch.object(batch_untargeted, "complete_run", AsyncMock()),
+        patch.object(batch_untargeted, "run_batch_untargeted_search", search),
+    ):
+        await batch_untargeted.search_batch_untargeted.__wrapped__("sb-1")
+
+    assert seen["batch_peak_run_id"] == "run-7"

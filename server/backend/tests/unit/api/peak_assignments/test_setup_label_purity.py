@@ -58,9 +58,9 @@ async def test_a_run_reads_the_purity_of_its_samples_setup():
 async def test_a_batch_search_reads_each_samples_setup():
     seen = {}
 
-    async def search(sample_item_id, target_peak_ids, config):
+    async def search(sample_item_id, target_peak_ids, config, persistent_peak_ids):
         seen[sample_item_id] = label_purity("^N")
-        return [], 0
+        return [], 0, set()
 
     with (
         patch.object(

@@ -406,6 +406,90 @@ describe('PanePeakAssign batch checks', () => {
   })
 })
 
+// The batch search's persistence admission, served on the detail read for
+// every row on the peak; the batch's reasons only on a row of the reading the
+// search elected.
+describe('PanePeakAssign persistence admission', () => {
+  const ROW = {
+    peak_assignment_id: 'pa-persist',
+    sample_peak_id: 'p-persist',
+    sample_peak_mz: 150.0913,
+    sample_peak_intensity: 40,
+    assigned_formula: 'C9H11NO',
+    tier: 'assigned',
+    role: 'M0',
+    fit_score: 0.9
+  }
+  const record = {
+    share: 0.9167,
+    n_present: 11,
+    n_samples: 12,
+    split: 0.4583,
+    formula: 'C9H11NO',
+    ion_formula: 'C9H12NO+',
+    ionization_mechanism_id: 'mech-h'
+  }
+  const held = [{ rule: 'persistence_only', detail: 'searched because ...', caps: true }]
+  const line = (wrapper) => wrapper.find('[data-testid="batch-persistence"]')
+
+  it('names the share the admission rested on, and that the batch holds the reading', async () => {
+    // A run's own row of the reading, at the run's tier: what the line says
+    // is the batch peak's.
+    focusedAssignment = ROW
+    detailRecord = {
+      provenance: {},
+      batch_persistence: { ...record, tier_reasons: held, consensus_tier: 'candidate' }
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(line(wrapper).text()).toBe(
+      'Searched on persistence: in 11 of 12 spectra (92 %), held at candidate'
+    )
+    expect(line(wrapper).classes()).toContain('held')
+    expect(line(wrapper).attributes('data-tooltip')).toMatch(
+      /above the batch's split at 46 %, not because of its height\./
+    )
+    expect(line(wrapper).attributes('data-tooltip')).toMatch(/is held at candidate until/)
+  })
+
+  it('says the reading is already below candidate where the vote put the batch peak there', async () => {
+    focusedAssignment = { ...ROW, tier: 'below_assignability' }
+    detailRecord = {
+      provenance: {},
+      batch_persistence: { ...record, tier_reasons: held, consensus_tier: 'below_assignability' }
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(line(wrapper).text()).toBe(
+      'Searched on persistence: in 11 of 12 spectra (92 %), already below candidate'
+    )
+    expect(line(wrapper).classes()).toContain('lower')
+    expect(line(wrapper).classes()).not.toContain('held')
+    expect(line(wrapper).attributes('data-tooltip')).toMatch(/would be held at candidate/)
+  })
+
+  it('names the share alone on a row that reads the peak another way', async () => {
+    focusedAssignment = { ...ROW, assigned_formula: 'C10H13N' }
+    detailRecord = {
+      provenance: {},
+      batch_persistence: { ...record, tier_reasons: null, consensus_tier: null }
+    }
+    const wrapper = await mountPane()
+
+    expect(line(wrapper).text()).toBe('Searched on persistence: in 11 of 12 spectra (92 %)')
+    expect(line(wrapper).classes()).not.toContain('held')
+    expect(line(wrapper).classes()).not.toContain('lower')
+  })
+
+  it('shows nothing where the search took the peak on its height', async () => {
+    focusedAssignment = ROW
+    detailRecord = { provenance: {}, batch_persistence: null }
+    const wrapper = await mountPane()
+
+    expect(line(wrapper).exists()).toBe(false)
+  })
+})
+
 describe('PanePeakAssign unassigned card', () => {
   it('names the peak on the fallback card, which has no assignment row at all', async () => {
     const wrapper = await mountPane()

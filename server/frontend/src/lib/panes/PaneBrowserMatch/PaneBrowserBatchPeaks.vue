@@ -57,6 +57,13 @@ import {
 } from '@/lib/batchKnownSpecies'
 import { blendOf, blendSummary, blendTooltip } from '@/lib/batchBlend'
 import {
+  holdingReasons,
+  holdingTooltip,
+  persistenceHold,
+  persistenceSummary,
+  persistenceTooltip
+} from '@/lib/batchPersistence'
+import {
   ENGINE_UNSTATED,
   ENGINE_UNSTATED_META,
   ROLE_BUCKETS,
@@ -1333,6 +1340,21 @@ watch(
                 :aria-label="blendSummary(blendOf(data))"
                 v-tooltip.top="blendTooltip(blendOf(data))"
               />
+              <!-- The batch search took this peak because it recurs across
+                   the batch, not for its height: the share on hover, and
+                   whether the reading it elected is held at candidate, or
+                   already below it on the samples' vote. -->
+              <span
+                v-if="data.persistence"
+                class="pi ph ph-repeat persistence-mark"
+                :class="persistenceHold(data.tier_reasons, data.consensus_tier)"
+                role="img"
+                data-testid="persistence-mark"
+                :aria-label="persistenceSummary(data.persistence)"
+                v-tooltip.top="
+                  persistenceTooltip(data.persistence, data.tier_reasons, data.consensus_tier)
+                "
+              />
               <span
                 v-if="isotopologueCount(data)"
                 class="iso-count"
@@ -1478,6 +1500,21 @@ watch(
             <!-- The role is the chip on an anchor a source role accounts
                  for, as on the sample ledger's reagent and artifact rows. -->
             <BaseTierTag :tier="data.consensus_tier" :role="data.consensus_role" />
+            <!-- What the batch's own rules hold the tier down on, named as a
+                 run's reasons are: a reading the search elected on
+                 persistence alone, held at candidate. -->
+            <span
+              v-if="holdingReasons(data.tier_reasons).length"
+              class="pi ph ph-arrow-down tier-reason-mark"
+              role="img"
+              data-testid="tier-reason-mark"
+              :aria-label="
+                holdingReasons(data.tier_reasons)
+                  .map((reason) => reason.label)
+                  .join(', ')
+              "
+              v-tooltip.top="holdingTooltip(data.tier_reasons, data.consensus_tier)"
+            />
           </template>
           <template #filter="{ filterModel, filterCallback }">
             <Select
@@ -1834,6 +1871,21 @@ watch(
   margin-left: 0.25rem;
   font-size: 0.8rem;
   color: var(--state-warning);
+}
+.persistence-mark {
+  margin-left: 0.25rem;
+  font-size: 0.8rem;
+  opacity: 0.6;
+}
+.persistence-mark.held,
+.persistence-mark.lower {
+  opacity: 1;
+}
+.tier-reason-mark {
+  margin-left: 0.3rem;
+  font-size: 0.75rem;
+  opacity: 0.75;
+  vertical-align: middle;
 }
 .curated,
 .series-mark {

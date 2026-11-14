@@ -1423,6 +1423,36 @@ It writes no per-sample runs: the results appear in the batch ledger and in each
 sample's view, marked as untargeted. An assignment run on a sample still takes
 precedence for that sample.
 
+**A faint peak that recurs is searched too.** The intensity threshold and the peak
+ceiling decide which batch peaks the search takes by height, as a run's untargeted
+stage does. Beside them, the search takes every batch peak whose peak is present in
+more of the batch's spectra than the batch's own split, however faint: noise does not
+come back at one m/z in most of a batch's spectra, and ions do. The split is read off
+the batch. Each batch peak is one trace, and the share of the spectra its peak is in
+makes a distribution with two clear modes: traces in a few spectra and traces in
+nearly all of them. The split is the threshold that separates the two best, by
+Otsu's method [Otsu 1979][ots79], read per ionization mode and instrument type. On
+batches of 87 to 547 samples it falls between 48 and 56 % of the spectra. It is held
+between 25 and 75 %, since the method splits even a batch with one mode. A batch of
+fewer than 10 spectra has no split, and its search takes peaks by height alone.
+
+Persistence says an ion is there, not which formula it is. At a few counts its isotope
+lines are under the peak picker, and nothing in the peak tells the formula the search
+elected from the others the window holds. So a batch peak the search took on
+persistence alone, where the threshold or the ceiling would have left it out, holds
+the reading the search elected at *candidate* (**persistence only**), in the
+batch ledger and in every sample's view of the batch peak. The cap never raises a
+reading: one the samples' vote already puts below candidate stays there, and the
+reason is still named. Something
+besides the peak lifts it: a line of its isotope pattern committed in a sample, the
+same neutral through another channel of the batch, or a homologous series of the
+batch (*Detecting series*, below). A better fit does not. The batch peak's formula
+carries a repeat mark: hover it for the share of the spectra the peak is in, the
+split it cleared and what the reading stands on. A down arrow beside its tier names
+the reason that holds it, and a sample's inspector shows the share under the row.
+With the threshold at 0 and no ceiling set, the defaults, every batch peak is taken
+by height and none on persistence alone.
+
 ### Detecting series
 
 A batch that holds a compound at a confident reading often holds its homologues too: the
@@ -2138,6 +2168,9 @@ engine found, and leave the rest of the table alone.
   Thornton, J. A. *An iodide-adduct high-resolution time-of-flight chemical-ionization mass
   spectrometer: application to atmospheric inorganic and organic compounds.* Environ. Sci.
   Technol. 2014, 48(11):6309–6317. [link](https://doi.org/10.1021/es500362a)
+- <a id="ots79"></a>Otsu, N. *A threshold selection method from gray-level histograms.*
+  IEEE Trans. Syst. Man Cybern. 1979, 9(1):62–66.
+  [link](https://doi.org/10.1109/TSMC.1979.4310076)
 - <a id="ham74"></a>Hampel, F. R. *The influence curve and its role in robust
   estimation.* J. Am. Stat. Assoc. 1974, 69(346):383–393.
   [link](https://doi.org/10.1080/01621459.1974.10482962)
@@ -2411,6 +2444,7 @@ engine found, and leave the rest of the table alone.
 [du19]: #du19
 [eg07]: #eg07
 [ken63]: #ken63
+[ots79]: #ots79
 [hug01]: #hug01
 [sch17]: #sch17
 [sch14]: #sch14
