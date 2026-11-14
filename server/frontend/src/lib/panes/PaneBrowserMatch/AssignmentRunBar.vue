@@ -3,6 +3,7 @@ import { computed } from 'vue'
 
 import Button from 'primevue/button'
 import Select from 'primevue/select'
+import Tag from 'primevue/tag'
 
 import { BaseRunProvenance } from '@/lib/base'
 import { useApp } from '@/stores'
@@ -47,6 +48,15 @@ function runLabel(run) {
 }
 
 const runOptions = computed(() => runs.value.list.map((run) => ({ ...run, _label: runLabel(run) })))
+
+// A run whose rows name peaks the sample no longer has: its peaks were found
+// again after it ran. The runs listing says so (`peaks_current`), so the
+// selector can mark it before it is opened; the ledger's own notice says the
+// same once it is. Null - not completed, no rows, not checked - marks nothing.
+const STALE_RUN_TOOLTIP =
+  'The peaks were found again after this run, so its rows cannot be opened. ' +
+  'Run the assignment again to read the current peaks.'
+const isStale = (run) => run?.peaks_current === false
 
 const selectedRun = computed({
   get: () => runs.value.focused,
@@ -101,6 +111,16 @@ const canAssign = computed(() => runs.value.list.length > 0 || Boolean(runs.valu
         <span v-if="value" class="run-option">
           <span class="run-name">{{ runLabel(value) }}</span>
           <BaseRunProvenance :run="value" compact />
+          <Tag
+            v-if="isStale(value)"
+            value="old peaks"
+            severity="warn"
+            icon="pi ph ph-warning"
+            class="stale-run"
+            data-testid="stale-run"
+            style="font-size: 11px"
+            v-tooltip.top="STALE_RUN_TOOLTIP"
+          />
         </span>
         <span v-else>{{ placeholder }}</span>
       </template>
@@ -108,6 +128,16 @@ const canAssign = computed(() => runs.value.list.length > 0 || Boolean(runs.valu
         <span class="run-option">
           <span class="run-name">{{ option._label }}</span>
           <BaseRunProvenance :run="option" />
+          <Tag
+            v-if="isStale(option)"
+            value="old peaks"
+            severity="warn"
+            icon="pi ph ph-warning"
+            class="stale-run"
+            data-testid="stale-run"
+            style="font-size: 11px"
+            v-tooltip.top="STALE_RUN_TOOLTIP"
+          />
         </span>
       </template>
     </Select>
@@ -169,6 +199,11 @@ const canAssign = computed(() => runs.value.list.length > 0 || Boolean(runs.valu
   align-items: center;
   gap: 0.45rem;
   min-width: 0;
+}
+/* Never squeezed out by the label beside it: the mark is what tells a reader
+   the run cannot be opened against the current peaks. */
+.stale-run {
+  flex: none;
 }
 .run-name {
   overflow: hidden;

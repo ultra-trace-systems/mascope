@@ -126,6 +126,17 @@ class PeakAssignmentRunRecord(BaseModel):
     #: it is listed only with ``include_decoys`` and is never the sample's
     #: result.
     decoy: str | None = None
+    #: Whether the run's rows still name the sample's peaks. Peak detection
+    #: mints a fresh id for every peak, so after the peaks are found again (a
+    #: re-run of peak detection, an operator refit, a restored filestore) a
+    #: run from before names none of them: its rows cannot be opened against
+    #: the peak list, and a reader taking the newest completed run as the
+    #: sample's result should know. Computed when the runs are listed, from one
+    #: row per run, since a run is current or stale as a whole. Null for a run
+    #: that is not completed, a run with no rows, the batch-derived run (its
+    #: rows' peak ids are stored on the batch peaks, not read from the file),
+    #: and when the sample's peak ids could not be read.
+    peaks_current: bool | None = None
     error: str | None = None
     peak_assignment_run_utc_created: datetime | None = None
     peak_assignment_run_utc_completed: datetime | None = None

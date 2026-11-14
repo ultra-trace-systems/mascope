@@ -1,7 +1,7 @@
 """
 Unit tests for the peak read an import validates against.
 
-The integration suite stubs :func:`_load_peak_ids` wholesale - the fixture
+The integration suite stubs the import's :func:`_load_peak_ids` wholesale - the fixture
 samples carry a zarr filename with no file behind it - so nothing there
 exercises the real call into ``extract_peaks``. A signature change would leave
 that whole suite green while every real import failed on its first chunk of
@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from mascope_backend.api.controllers.samples.lib.samples_peaks import extract_peaks
-from mascope_backend.api.new.peak_assignments import import_service
+from mascope_backend.api.new.peak_assignments import import_service, peak_ids
 
 
 @pytest.fixture
@@ -41,7 +41,7 @@ class TestTheRealPeakRead:
     ):
         """The guard the stub cannot give: a signature change fails here.
 
-        Records what `_load_peak_ids` passes, then binds it against the *real*
+        Records what `load_peak_ids` passes, then binds it against the *real*
         `extract_peaks` signature - so a renamed or reordered parameter is a
         failure rather than a green suite and a 500 on every import.
         """
@@ -52,9 +52,9 @@ class TestTheRealPeakRead:
             recorded["kwargs"] = kwargs
             return SimpleNamespace(peak_ids=[1, 2])
 
-        monkeypatch.setattr(import_service, "extract_peaks", _fake)
+        monkeypatch.setattr(peak_ids, "extract_peaks", _fake)
 
-        await import_service._load_peak_ids(sample)
+        await peak_ids.load_peak_ids(sample)
 
         inspect.signature(extract_peaks).bind(*recorded["args"], **recorded["kwargs"])
 
@@ -69,9 +69,9 @@ class TestTheRealPeakRead:
             recorded.update(kwargs)
             return SimpleNamespace(peak_ids=[])
 
-        monkeypatch.setattr(import_service, "extract_peaks", _fake)
+        monkeypatch.setattr(peak_ids, "extract_peaks", _fake)
 
-        await import_service._load_peak_ids(sample)
+        await peak_ids.load_peak_ids(sample)
 
         assert recorded == {"areas": False, "heights": False, "average": False}
 
@@ -79,12 +79,12 @@ class TestTheRealPeakRead:
     async def test_peak_ids_come_back_as_strings(self, monkeypatch, sample):
         """The payload's sample_peak_id is a string; the file's ids may not be."""
         monkeypatch.setattr(
-            import_service,
+            peak_ids,
             "extract_peaks",
             lambda *a, **k: SimpleNamespace(peak_ids=[1, 2, 3]),
         )
 
-        assert await import_service._load_peak_ids(sample) == {"1", "2", "3"}
+        assert await peak_ids.load_peak_ids(sample) == {"1", "2", "3"}
 
 
 class TestThePerRunCache:
