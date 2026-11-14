@@ -106,8 +106,9 @@ carries the formula's series. A formula is read by the ledger run of each
 batch, and runs of different engine versions or settings can read the
 same peak as different formulas: `status().runs` lists the readings the
 batches carry, `run_changes` where they change between batches of one
-polarity (a formula is read in one polarity only), and a rollup never
-mixes two readings in one bin.
+polarity (a formula is read in one polarity only; a polarity-switching
+`+-` batch, as an analysis batch is by default, is followed in both), and
+a rollup never mixes two readings in one bin.
 
 A store lives under `$MASCOPE_VIZ_STORE`, else the user's cache directory
 (`~/.cache/mascope_viz/stores` on Linux), one directory per server,
@@ -178,7 +179,8 @@ What every view does the same way:
   samples the view draws, in the polarity the formulas are read in: a
   change between the other polarity's batches is not flagged.
   A chart prints them; a run change is flagged, never joined silently. A
-  `spectrum` against another period flags a change between the two.
+  `spectrum` against another period flags a change between the two, at
+  the batch where the run changed.
 - **Long series come from the rollups.** `series` at `cadence="1h"`, in
   UTC or a zone a whole number of hours from it, or at `1D` in UTC, bins
   from the store's hourly and daily rollups rather than every sample's

@@ -47,7 +47,7 @@ import re
 import shutil
 import sys
 import time
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Collection, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -442,11 +442,15 @@ class RunChange:
 
     Batches of two polarities can interleave, and a formula key is read in
     one polarity only (its mechanism carries the charge), so the batches are
-    followed per polarity.
+    followed per polarity. A polarity-switching batch (``+-``) reads in
+    both, so it is followed in each: a change from a ``-`` batch to a
+    ``+-`` one is a change of the ``-`` polarity.
 
     :ivar at: The first sample time of the batch that carries the new one.
     :ivar sample_batch_id: That batch.
-    :ivar polarity: The batches' polarity, as the batch listing gives it.
+    :ivar polarity: The polarity followed: ``+`` or ``-``, or the batches'
+        own when it names neither sign. A ``+-`` batch after one of another
+        reading changes both polarities, so it carries one change of each.
     :ivar before: The reading of the ledger batch before it.
     :ivar after: Its own.
     """
@@ -467,28 +471,48 @@ class RunChange:
         }
 
 
-def _run_changes(batches: pd.DataFrame) -> tuple[RunChange, ...]:
+def _streams(polarity: Any) -> tuple[Any, ...]:
+    """The polarities a batch of *polarity* reads in, each followed on its
+    own: a polarity-switching batch (``+-``, as an analysis batch is by
+    default) is in the stream of both, so it is compared with the ``+`` and
+    the ``-`` batches next to it. A polarity of neither sign is a stream of
+    its own."""
+    if isinstance(polarity, str):
+        signs = tuple(sign for sign in ("+", "-") if sign in polarity)
+        if signs:
+            return signs
+    return (polarity,)
+
+
+def _run_changes(
+    batches: pd.DataFrame, streams: Collection[Any] | None = None
+) -> tuple[RunChange, ...]:
     """Where the reading changes from one ledger batch of *batches* to the
-    next of the same polarity, in time order.
+    next of the same polarity, in time order, per polarity
+    (:func:`_streams`).
 
     :param batches: Rows of :attr:`StoreStatus.batches`, oldest first; a
         batch without a ledger reading is passed over.
+    :param streams: The polarities followed; None for every one.
     """
     changes = []
     previous: dict[Any, str] = {}
     for row in batches[batches["reading"].notna()].itertuples():
-        before = previous.get(row.polarity)
-        if before is not None and row.reading != before:
-            changes.append(
-                RunChange(
-                    at=row.first_datetime_utc,
-                    sample_batch_id=row.sample_batch_id,
-                    polarity=row.polarity,
-                    before=before,
-                    after=row.reading,
+        for stream in _streams(row.polarity):
+            if streams is not None and stream not in streams:
+                continue
+            before = previous.get(stream)
+            if before is not None and row.reading != before:
+                changes.append(
+                    RunChange(
+                        at=row.first_datetime_utc,
+                        sample_batch_id=row.sample_batch_id,
+                        polarity=stream,
+                        before=before,
+                        after=row.reading,
+                    )
                 )
-            )
-        previous[row.polarity] = row.reading
+            previous[stream] = row.reading
     return tuple(changes)
 
 

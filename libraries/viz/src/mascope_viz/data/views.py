@@ -63,7 +63,7 @@ import pandas as pd
 from pandas.tseries.frequencies import to_offset
 
 from .scope import INSTRUMENT_TZ, _zone_of
-from .store import BINS, CampaignStore, _run_changes
+from .store import BINS, CampaignStore, _run_changes, _streams
 
 
 #: The key of the samples' TIC.
@@ -495,7 +495,10 @@ def _normaliser(
 
 
 def _run_attrs(
-    store: CampaignStore, reading: Collection[str], drawn: Collection[str]
+    store: CampaignStore,
+    reading: Collection[str],
+    drawn: Collection[str],
+    between: bool = False,
 ) -> dict[str, Any]:
     """Whether the batches a view draws carry more than one ledger reading
     of a polarity a formula is read in, and where it changes between them;
@@ -503,11 +506,15 @@ def _run_attrs(
 
     :param reading: The batches that read a formula key, or the formula
         normalised by, in the view's window: their polarities are the ones
-        followed. A formula is read in one polarity only, so a change in
-        another polarity's batches is none of its keys'.
+        followed (:func:`~.store._streams`, so a ``+-`` batch's are both). A
+        formula is read in one polarity only, so a change in another
+        polarity's batches is none of its keys'.
     :param drawn: The batches of the window's samples, which the view
         keeps by ``t_mid_utc``: a batch whose files started before the
         window is drawn when its samples are.
+    :param between: Also follow the batches between the first drawn and
+        the last, so a change between two windows is put at the batch where
+        the run changed.
     """
     none = {"mixed_runs": False, "run_changes": []}
     if not reading:
@@ -516,9 +523,20 @@ def _run_attrs(
     if batches.empty:
         return none
     ids = batches["sample_batch_id"]
-    polarities = batches.loc[ids.isin(list(reading)), "polarity"]
-    kept = ids.isin(list(drawn)) & batches["polarity"].isin(list(polarities))
-    changes = _run_changes(batches[kept])
+    streams = {
+        stream
+        for polarity in batches.loc[ids.isin(list(reading)), "polarity"]
+        for stream in _streams(polarity)
+    }
+    kept = ids.isin(list(drawn))
+    if between and kept.any():
+        # The batches are oldest first
+        at = np.flatnonzero(kept.to_numpy())
+        position = np.arange(len(batches))
+        kept = pd.Series(
+            (position >= at[0]) & (position <= at[-1]), index=batches.index
+        )
+    changes = _run_changes(batches[kept], streams)
     return {
         "mixed_runs": bool(changes),
         "run_changes": [change.to_dict() for change in changes],
@@ -1747,7 +1765,8 @@ def spectrum(
         0 there) and ``ratio`` (``value`` over ``other_value``, NaN without
         both). ``attrs`` adds ``period`` and ``other``, ISO in UTC; its
         ``mixed_runs`` and ``run_changes`` are over the batches both windows
-        draw, so a change between them is flagged.
+        draw and those between them, so a change between them is flagged
+        at the batch where the run changed.
     """
     normalise = _check_normalise(normalise)
     zone = display_zone(store, tz)
@@ -1830,7 +1849,7 @@ def spectrum(
     frame = frame[seen].sort_values(["mz", "key"], kind="stable").reset_index(drop=True)
     # A comparison of two windows joins what each reads: flag a run change
     # over the batches of both, and between them
-    attrs.update(_run_attrs(store, reading, drawn))
+    attrs.update(_run_attrs(store, reading, drawn, between=True))
     return _stamp(frame, attrs)
 
 

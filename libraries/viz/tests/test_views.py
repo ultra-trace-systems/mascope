@@ -1739,6 +1739,69 @@ def test_a_formulas_run_change_is_flagged(month):
     assert ions.attrs["run_changes"] == []
 
 
+def test_a_spectrum_puts_a_change_between_its_windows_where_the_run_changed(
+    month,
+):
+    """Windows over batches either side of a change, neither next to it,
+    flag the change at the batch where the run changed."""
+    campaign, store = month
+    status = store.status()
+    change = status.run_changes[0]
+    ids = list(status.batches["sample_batch_id"])
+    position = ids.index(change.sample_batch_id)
+    samples = store.table("samples")
+    batch = samples["sample_batch_id"].astype(str)
+    second = pd.Timedelta(seconds=1)
+
+    def over(batch_id):
+        mids = samples.loc[batch == batch_id, "t_mid_utc"]
+        return (mids.min(), mids.max() + second)
+
+    earlier, later = over(ids[position - 1]), over(ids[position + 2])
+    assert later[0] > change.at + second
+    for period, other in ((later, earlier), (earlier, later)):
+        flags = views.spectrum(store, period, other).attrs
+        assert flags["mixed_runs"]
+        assert flags["run_changes"] == [change.to_dict()]
+    # Both windows after the change: nothing between them changed
+    after = views.spectrum(store, later, over(ids[position + 1])).attrs
+    assert not after["mixed_runs"] and after["run_changes"] == []
+
+
+def test_a_polarity_switching_batch_is_followed_in_both_polarities(
+    short_campaign, tmp_path
+):
+    """A ``+-`` batch, as an analysis batch is by default, reads in the
+    ``-`` polarity too: a change from a ``-`` batch to ``+-`` ones is
+    flagged."""
+    client = FakeClient(short_campaign)
+    first, middle, last = client.batch_ids
+    client.runs[first] = f"run-1:{first}"
+    client.runs[middle] = f"run-2:{middle}"
+    client.runs[last] = f"run-2:{last}"
+    client.batch_polarity[middle] = client.batch_polarity[last] = "+-"
+    store = _sync(client, tmp_path)
+    renamed = _renamed(short_campaign)
+    formula = sorted(
+        k
+        for k in short_campaign.truth.cycles
+        if k.startswith("formula:") and k not in renamed
+    )[0]
+    status = store.status()
+
+    assert [(c.sample_batch_id, c.polarity) for c in status.run_changes] == [
+        (middle, "-")
+    ]
+    assert status.mixed_runs
+    for view in (
+        views.series(store, formula),
+        views.series(store, formula, cadence="1h", tz="UTC"),
+        views.series(store, views.TIC, normalise=formula),
+    ):
+        assert view.attrs["mixed_runs"]
+        assert view.attrs["run_changes"] == [status.run_changes[0].to_dict()]
+
+
 def test_a_run_change_of_the_formula_normalised_by_is_flagged(month):
     """Every value is divided by the formula, which a run reads: an ion's
     values over a run change are flagged when they are normalised by one."""
