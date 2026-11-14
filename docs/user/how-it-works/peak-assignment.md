@@ -2012,9 +2012,12 @@ the peak. A batch peak that is parted on either axis is a probable blend.
 A probable blend carries an intersect mark beside its formula in the *Batch peaks* ledger.
 Its tooltip names the two formulas with their ions and how many samples read each, and
 says which holds the bright samples, or the early ones where the order switches once.
-Where it switches more often, the tooltip says the two come in blocks. **Probable blends**, in the ledger's view
-menu, keeps only those batch peaks. The chart names such a trace by both formulas, the
-consensus first, and its hover says the axis.
+Where it switches more often, the tooltip says the two come in blocks.
+
+**Probable blends**, in the ledger's view menu, keeps only those batch peaks. An
+isotopologue line has a vote of its own and can be a blend when its compound's main line
+is not; the filter then keeps the compound with its lines. The chart names such a trace
+by both formulas, the consensus first, and its hover says the axis.
 
 The flag is shown, never weighed: the consensus, its tier and the alternatives stay as the
 samples voted. Every threshold is provisional. Of ten flags read by hand on real batches,

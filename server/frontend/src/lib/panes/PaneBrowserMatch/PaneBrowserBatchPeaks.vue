@@ -420,6 +420,9 @@ function openVerdict(event, row) {
   nextTick(() => menu.show(event))
 }
 
+const familyHoldsBlend = (row) =>
+  blendOf(row) != null ||
+  (childrenByParent.value.get(row.batch_peak_id) ?? []).some((child) => blendOf(child) != null)
 const isotopologueCount = (row) => childrenByParent.value.get(row.batch_peak_id)?.length ?? 0
 
 // Label for an unfolded isotopologue row. A batch peak carries no isotope formula
@@ -568,7 +571,9 @@ const passesFilters = (row) => {
 // lands, which is the only arrangement in which the indented rows can be read
 // at all. The isotopologues ride with their parent rather than being filtered
 // themselves: a family shares one formula and one tier, so a filter that kept
-// the parent kept the family.
+// the parent kept the family. A probable blend is the exception, a reading of
+// each anchor's own vote: an isotopologue can carry one its parent does not,
+// so that filter keeps a parent whose family holds a blend.
 const rows = computed(() => {
   const disagreeing = onlyDisagreements.value && hasEngineTiers.value
   const stripped = onlyStripped.value && hasStrips.value
@@ -580,7 +585,7 @@ const rows = computed(() => {
       passesFilters(row) &&
       (!disagreeing || engineDisagrees(row)) &&
       (!stripped || tookLines(row)) &&
-      (!blended || blendOf(row) != null) &&
+      (!blended || familyHoldsBlend(row)) &&
       (engineBucket == null || row.engineBucket === engineBucket)
   )
   const byColumn = sortField.value ? compareBy(sortField.value, sortOrder.value) : null

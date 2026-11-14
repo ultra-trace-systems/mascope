@@ -1164,6 +1164,22 @@ describe('PaneBrowserBatchPeaks probable blends', () => {
     expect(ids()).toEqual(['bp-b'])
   })
 
+  it('keeps the family of a blended isotopologue whose parent is no blend', async () => {
+    const parent = peak('bp-m0', 'candidate', 0.6, { mz: 199.0976, consensus_formula: 'C10H16O4' })
+    const child = peak('bp-m1', 'candidate', 0.6, {
+      mz: 200.101,
+      consensus_formula: 'C10H16O4',
+      isotopologue_of: 'bp-m0',
+      blend
+    })
+    wrapper = await mountPane({ peaks: [parent, child, OTHER] })
+    wrapper.vm.showIsotopologues = true
+    expect(wrapper.vm.hasBlends).toBe(true)
+    wrapper.vm.onlyBlends = true
+    await wrapper.vm.$nextTick()
+    expect(ids()).toEqual(['bp-m0', 'bp-m1'])
+  })
+
   it('offers no filter, and filters nothing, where no batch peak is a blend', async () => {
     wrapper = await mountPane({ peaks: [{ ...BLENDED, blend: null }, OTHER] })
     expect(wrapper.vm.hasBlends).toBe(false)
