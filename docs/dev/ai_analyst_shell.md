@@ -53,9 +53,11 @@ lands.
 
 ### 1.1 What ships
 
-The AI layer's phases 0 to 3 are done or nearly so
-([AI layer](https://linear.app/ultra-trace/project/ai-layer-d957c301639f),
-P-MAS-12). On `develop`:
+The AI layer's phases 0, 1 and 3 are built and phase 2's scope is decided
+(MAS-135); its skills, MAS-133 and MAS-134, are still open. The AI layer
+project, P-MAS-12, is closed, and those open items are in this note's
+project ([AI analyst shell](https://linear.app/ultra-trace/project/ai-analyst-shell-2b0a6a7e8af8),
+P-MAS-21). On `develop`:
 
 - **`mascope_ai` is on PyPI** (`pip install mascope-ai`, MAS-611) with the
   MCP server `mascope-ai mcp`, the `Frame` handle type, `find` and

@@ -3,8 +3,8 @@
 # Making the SDK peak-assignment aware (read-first)
 
 - **Status:** building
-- **As of:** 2026-11-05
-- **Tracked in:** MAS-71 in [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) for the import contract; the SDK write wrappers (section 8.4 steps 5 and 6) are MAS-330 and MAS-345, the demo bundle MAS-331 and the reference identities in frames MAS-332, in [AI layer](https://linear.app/ultra-trace/project/ai-layer-d957c301639f) milestone 3 (filed 2026-10-22)
+- **As of:** 2026-11-14
+- **Tracked in:** MAS-71 in [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) for the import contract; the SDK write wrappers (section 8.4 steps 5 and 6), MAS-330 and MAS-345, were built in the closed [AI layer](https://linear.app/ultra-trace/project/ai-layer-d957c301639f) project; the demo bundle MAS-331 and the reference identities in frames MAS-332 are in [AI analyst shell](https://linear.app/ultra-trace/project/ai-analyst-shell-2b0a6a7e8af8) milestone 1, "A surface small models can drive"
 - **What:** The SDK's peak-assignment surface; section 8 is the run-import contract.
 
 ## Purpose

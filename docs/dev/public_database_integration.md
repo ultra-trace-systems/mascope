@@ -3,12 +3,12 @@
 # Public Chemistry & Spectral Database Integration: Design & Plan
 
 - **Status:** building
-- **As of:** 2026-10-27
+- **As of:** 2026-11-14
 - **Tracked in:** [MS2 analysis](https://linear.app/ultra-trace/project/ms2-analysis-7fdc525bca51)
   milestone 6, "Spectral library matching", for phase 4 (Linear: MAS-429 the
   `reference_spectrum` table and the library adapters, MAS-360 the ranking); for
-  phase 5, MAS-427 the SDK surface in [AI layer](https://linear.app/ultra-trace/project/ai-layer-d957c301639f)
-  milestone 1 and MAS-428 the refresh cadence and version pinning in
+  phase 5, MAS-427 the SDK surface in [AI analyst shell](https://linear.app/ultra-trace/project/ai-analyst-shell-2b0a6a7e8af8)
+  milestone 1, "A surface small models can drive", and MAS-428 the refresh cadence and version pinning in
   [Ops workflows and dev tooling](https://linear.app/ultra-trace/project/ops-workflows-and-dev-tooling-0dd3555613f9)
 - **Supersedes:** `reference_peak_assignment_convergence.md` (retired 2026-10-22; Phase 3 records it)
 - **What:** Mirroring public compound databases to give assigned formulas an identity.
