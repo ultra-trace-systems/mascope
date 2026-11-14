@@ -32,7 +32,7 @@ import pandas as pd
 import pytest
 from test_engine import _isotope_row  # same directory; pytest puts it on sys.path
 
-from mascope_tools.composition.mass_accuracy import ReagentOffset
+from mascope_tools.composition.mass_accuracy import ReagentOffset, SampleMassAccuracy
 
 
 _MOD = "mascope_backend.api.new.peak_assignments.service"
@@ -252,7 +252,9 @@ def _patches(
         # their rows rather than measure them, so it stands down and every row
         # keeps the finder's own fit. Its own wiring is tested separately.
         "seeded": patch(
-            f"{_MOD}._seeded_fits", new_callable=AsyncMock, return_value={}
+            f"{_MOD}._seeded_rescore",
+            new_callable=AsyncMock,
+            return_value=({}, None),
         ),
         # The file's resolving power lives with its instrument functions in the
         # database; these files have none, as a file never fitted has none.
@@ -2840,7 +2842,20 @@ class TestStageBWinnerConfidence:
 
     CENTRE = ReagentOffset(-0.9, 10, beyond_width=True)
 
-    def _start_with(self, recorder):
+    #: The measurement the seeded re-score scored the winners at, which is not
+    #: Stage A's: fitted on the winners' own seeds.
+    RESCORED = SampleMassAccuracy(
+        mu_ppm=0.2, sigma_ppm=0.7, anchors=12, reagent=CENTRE, anchor_ions=9
+    )
+
+    #: A secondary channel the run opened beside the sample's own adduct.
+    OPENED = SimpleNamespace(
+        ionization_mechanism_id="im-2",
+        ionization_mechanism="[M+Na]+",
+        ionization_mechanism_polarity="+",
+    )
+
+    def _start_with(self, recorder, *, rescored=RESCORED, opened=False):
         peaks = _peaks_df(
             [
                 ("p1", 181.0707, 10000.0),
@@ -2861,8 +2876,11 @@ class TestStageBWinnerConfidence:
                 {
                     ("C14H13N5O2", "im-1"): "ion-a",
                     ("C18H17N3", "im-1"): "ion-b",
+                    # The second entry through the opened channel: an ion on
+                    # the winner's peak, which only that channel makes of it.
+                    ("C18H17N3", "im-2"): "ion-c",
                 },
-                {"ion-a": 0.9, "ion-b": 0.99},
+                {"ion-a": 0.9, "ion-b": 0.99, "ion-c": 0.6},
                 {},
                 pd.DataFrame(
                     [
@@ -2882,10 +2900,32 @@ class TestStageBWinnerConfidence:
                             "match_mz_error": 0.1,
                             "match_abundance_error": 0.05,
                         },
+                        {
+                            "target_ion_id": "ion-c",
+                            "target_ion_formula": "C18H17N3Na+",
+                            "mz": 300.13,
+                            "sample_peak_id": "p3",
+                            "match_mz_error": 0.6,
+                            "match_abundance_error": 0.05,
+                        },
                     ]
                 ),
             ),
         )
+        patches["seeded"] = patch(
+            f"{_MOD}._seeded_rescore",
+            new_callable=AsyncMock,
+            return_value=({}, rescored),
+        )
+        if opened:
+            # The run opens a secondary channel for this sample, which the
+            # search enumerates through beside the sample's own adduct.
+            patches["opened"] = patch(
+                f"{_MOD}._searched_mechanisms",
+                side_effect=lambda mechanisms, _secondary, _profile: (
+                    mechanisms + [self.OPENED]
+                ),
+            )
         # A centre the run did measure, so the pass is seen to take the run's
         # rather than one of its own.
         patches["centre"] = patch(
@@ -2893,16 +2933,16 @@ class TestStageBWinnerConfidence:
         )
         return _start(patches)
 
-    async def _ledger(self, **options):
+    async def _ledger(self, *, rescored=RESCORED, opened=False, **options):
         from mascope_backend.api.new.peak_assignments.config import (
             PeakAssignmentConfig,
         )
 
         recorder = _Recorder()
-        mocks = self._start_with(recorder)
-        await _run(PeakAssignmentConfig(run_untargeted=True, **options))
+        mocks = self._start_with(recorder, rescored=rescored, opened=opened)
+        await _run(PeakAssignmentConfig(**{"run_untargeted": True, **options}))
         rows = {row["sample_peak_id"]: row for row in recorder.rows}
-        scope = recorder.recorded_configs()[-1]["search_scope"]
+        scope = recorder.recorded_configs()[-1].get("search_scope")
         patch.stopall()
         return rows, scope, mocks
 
@@ -2948,15 +2988,54 @@ class TestStageBWinnerConfidence:
         _rows, _scope, mocks = await self._ledger(stage_b_confidence=True)
 
         call = mocks["shortlist"].await_args
-        # Every shortlist formula under the sample's own adducts.
+        # Every shortlist formula under every adduct the run searched.
         assert call.args[1] == {("C14H13N5O2", "im-1"), ("C18H17N3", "im-1")}
-        # At the measurement the run scored everything else at, never one
+        # At the measurement the winners' own fits were scored at, the seeded
+        # re-score's: one width for the winner and its rivals, never one
         # fitted off a frame of mostly wrong formulas.
-        accuracy = mocks["centre"].call_args.args[0]
-        assert call.kwargs["inherited_accuracy"] is accuracy
+        assert call.kwargs["inherited_accuracy"] is self.RESCORED
         assert call.kwargs["reagent_offset"] is self.CENTRE
         rescore = mocks["seeded"].call_args.kwargs
         assert call.kwargs["envelope_tolerance"] is rescore["envelope_tolerance"]
+
+    @pytest.mark.asyncio
+    async def test_a_re_score_that_scored_nothing_leaves_stage_a_s_measurement(
+        self,
+    ):
+        # Then every winner kept the finder's own fit, which the finder scored
+        # at Stage A's measurement.
+        _rows, _scope, mocks = await self._ledger(
+            rescored=None, stage_b_confidence=True
+        )
+
+        accuracy = mocks["centre"].call_args.args[0]
+        assert mocks["shortlist"].await_args.kwargs["inherited_accuracy"] is accuracy
+        assert accuracy is not self.RESCORED
+
+    @pytest.mark.asyncio
+    async def test_the_shortlist_is_tried_through_the_channels_the_run_opened(self):
+        rows, scope, mocks = await self._ledger(opened=True, stage_b_confidence=True)
+
+        assert mocks["shortlist"].await_args.args[1] == {
+            ("C14H13N5O2", "im-1"),
+            ("C14H13N5O2", "im-2"),
+            ("C18H17N3", "im-1"),
+            ("C18H17N3", "im-2"),
+        }
+        # The second entry lands on the winner's peak only through the opened
+        # channel, and is one more candidate for it.
+        assert scope["winner_confidence"]["placed"] == 2
+        assert rows["p3"]["provenance"]["n_candidates"] == 3
+
+    @pytest.mark.asyncio
+    async def test_a_run_with_no_untargeted_stage_measures_nothing(self):
+        _rows, scope, mocks = await self._ledger(
+            stage_b_confidence=True, run_untargeted=False
+        )
+
+        mocks["shortlist"].assert_not_awaited()
+        assert mocks["finalize"].await_args.args[:2] == ("run-1", "completed")
+        assert not scope
 
     @pytest.mark.asyncio
     async def test_the_budget_reaches_the_pass(self):

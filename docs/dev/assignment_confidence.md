@@ -406,11 +406,13 @@ no backend or DB, only `mascope_tools` + tests.
   sets), `alternatives_scoring.measure_winner_confidence` takes the run's committed
   untargeted M0 winners after the judging passes, the most intense first up to
   `stage_b_confidence_peaks` (200) of them, and seeds each one's stored formula-only
-  shortlist (at most `max_alternatives`) under every adduct of the sample in **one**
-  `compute_match_isotopes` pass. A formula counts for the peak only where its ion's
-  monoisotopic line paired to it, by the inspector's own rule (`placements`), and the
-  pass is scored at the run's own mass accuracy rather than one fitted off a frame of
-  mostly wrong formulas. The winner, its recorded rivals (not the `same_ion` readings,
+  shortlist (at most `max_alternatives`) under every adduct the run searched, the
+  secondary channels it opened included, in **one** `compute_match_isotopes` pass. A
+  formula counts for the peak only where its ion's monoisotopic line paired to it, by the
+  inspector's own rule (`placements`). The pass is scored at the measurement the winners'
+  own fits were scored at, the seeded re-score's (`seeded_scoring.scored_accuracy`), so
+  the winner and its rivals are judged at one width, as Stage A judges its candidates
+  inside one frame; never at one fitted off a frame of mostly wrong formulas. The winner, its recorded rivals (not the `same_ion` readings,
   which the finder elects before anything is ranked) and the placed entries go through
   `arbitrate_candidates` as **one candidate per ion on the peak** (`ion_identity`): the
   shortlist lists every composition whose mass fits under every adduct searched, so it
