@@ -153,3 +153,19 @@
           pages for this only if doctor-push.sh has a FILLING_TOKEN monitor;
           its main monitor stays up.
       when: doctor.rc == 3
+
+    # An update leaves the systemd units and the scripts copied to
+    # /usr/local/lib/mascope as the release that installed them wrote them,
+    # and the doctor flags that OUTDATED on its Units row without changing its
+    # exit code. A note, not a fix: `units install` goes through sudo itself,
+    # and needs the --bin the units were first installed with, which the play
+    # cannot know.
+    - name: Note units an older release installed
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} is updated, but its systemd units or the
+          scripts they run are not as this release writes them (the doctor's
+          Units row says OUTDATED). The rollout continues; on the server, run
+          'mascope prod units install' as the deploy account, with the --bin
+          the units were installed with if they were.
+      when: "'OUTDATED' in doctor.stdout"

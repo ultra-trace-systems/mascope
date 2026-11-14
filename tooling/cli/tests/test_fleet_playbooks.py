@@ -97,6 +97,34 @@ def test_a_filling_disk_does_not_halt_the_roll(playbook):
     )
 
 
+def test_the_rollout_notes_units_an_older_release_installed():
+    """
+    update.yml prints a note when the doctor flags OUTDATED units, and the
+    note does not move the gate.
+
+    An update leaves the installed units and their copied scripts as the
+    release that installed them wrote them; the doctor says so on its Units
+    row and still exits 0, so a play that read only the exit code would roll
+    the whole fleet without anyone seeing it.
+    """
+    tasks = yaml.safe_load(UPDATE_PLAYBOOK.read_text(encoding="utf-8"))[0]["tasks"]
+    gate_index = _task_index(tasks, "prod doctor")
+    register = tasks[gate_index]["register"]
+    notes = [
+        task
+        for task in tasks[gate_index + 1 :]
+        if "ansible.builtin.debug" in task and "OUTDATED" in str(task.get("when"))
+    ]
+
+    assert len(notes) == 1, "update.yml must note OUTDATED units after the doctor"
+    note = notes[0]
+    assert note["when"] == f"'OUTDATED' in {register}.stdout"
+    assert "failed_when" not in note
+    assert "units install" in note["ansible.builtin.debug"]["msg"]
+    # The marker the play looks for is the one the doctor's Units row prints.
+    assert "OUTDATED" in doctor._units_line([], ["/etc/systemd/system/x.service"])
+
+
 def test_every_runtime_secret_in_compose_is_generated_by_the_cli():
     """
     A compose secret sourced from `.runtime/secrets/` must be one the CLI knows
