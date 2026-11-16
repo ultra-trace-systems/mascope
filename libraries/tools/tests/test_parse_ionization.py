@@ -168,13 +168,64 @@ def test_the_new_shapes_mass_shift(notation, shift):
 
 
 @pytest.mark.parametrize(
-    "notation", ["[2M+H]+", "[M+2H]2+", "[M+Ca]2+", "[M+H-H2O]+", "[2M]+."]
+    ("notation", "multimer", "charge", "loss"),
+    [
+        ("[2M+H]+", 2, 1, ""),
+        ("[M+2H]2+", 1, 2, ""),
+        ("[M+Ca]2+", 1, 2, ""),
+        ("[M+H-H2O]+", 1, 1, "H2O"),
+        ("[2M+2H-H2O]2+", 2, 2, "H2O"),
+        ("[2M]+.", 2, 1, ""),
+        ("[M-H-H2O]-", 1, -1, "H2O"),
+        ("[M-CO2-H]-", 1, -1, "CO2"),
+        ("[M-2H]2-", 1, -2, ""),
+    ],
 )
-def test_the_finder_refuses_what_it_does_not_search(notation):
-    # Searched as the singly charged monomer it is not, every candidate would
-    # be a formula of the wrong mass.
-    with pytest.raises(CompositionFinderException, match="singly charged"):
-        parse_ionization(notation)
+def test_the_finder_reads_every_shape_at_its_own_mass(notation, multimer, charge, loss):
+    # Read as the singly charged monomer it is not, every candidate would be
+    # a formula of the wrong mass: the m/z of n molecules of mass M is
+    # (n * M + shift) / |z|, and the neutral of an m/z its inverse.
+    mechanism = parse_ionization(notation)
+    assert (mechanism.multimer, mechanism.charge, mechanism.neutral_loss) == (
+        multimer,
+        charge,
+        loss,
+    )
+    assert mechanism.shift == pytest.approx(mass_shift(to_row(notation)), abs=1e-12)
+    neutral = calculate_mass(formula="C9H14O3")
+    mz = (multimer * neutral + mechanism.shift) / abs(charge)
+    assert mechanism.ion_mz(neutral) == pytest.approx(mz, abs=1e-9)
+    assert mechanism.neutral_mass(mz) == pytest.approx(neutral, abs=1e-9)
+    assert mechanism.neutral_tolerance(0.001) == pytest.approx(
+        0.001 * abs(charge) / multimer
+    )
+    assert mechanism.simple is (multimer == 1 and abs(charge) == 1 and not loss)
+
+
+@pytest.mark.parametrize(
+    ("notation", "ion"),
+    [
+        ("[M+H]+", "C9H15O3+"),
+        ("[2M+H]+", "C18H29O6+"),
+        ("[M+2H]2+", "C9H16O3++"),
+        ("[M-2H]2-", "C9H12O3--"),
+        ("[M+H-H2O]+", "C9H13O2+"),
+        ("[2M+Na-H2O]+", "C18H26NaO5+"),
+        ("[M-H-H2O]-", "C9H11O2-"),
+        ("[M-CO2-H]-", "C8H13O-"),
+    ],
+)
+def test_the_ion_is_the_molecules_with_the_species_less_the_loss(notation, ion):
+    # As a target ion is built: the loss comes off the ion the species made,
+    # and the charge is its sign once per charge.
+    assert combine_formula_and_ionization("C9H14O3", parse_ionization(notation)) == ion
+
+
+def test_the_neutral_loss_of_a_labelled_reagent_is_massed_with_its_label():
+    plain = parse_ionization("[M+NO3-H2O]-")
+    labelled = parse_ionization("[M+[15N]O3-H2O]-")
+    assert labelled.neutral_loss == plain.neutral_loss == "H2O"
+    assert labelled.shift - plain.shift == pytest.approx(0.997, abs=1e-3)
 
 
 def test_deprotonation_leaves_the_anion_mass():

@@ -107,6 +107,61 @@ def ionization_composition(formula: str) -> dict[str, int]:
     return dict(parse_composition(formula)) if formula else {}
 
 
+def ion_counts(
+    counts: Mapping[str, int], mechanism: IonizationMechanism | None
+) -> dict[str, int]:
+    """The atoms of the ion a mechanism makes of a neutral.
+
+    ``multimer`` copies of the neutral, the species added or removed, and the
+    neutral loss taken off the ion that leaves, as the target ions are built
+    (``target_ions_compute``): ``[M+H-H2O]+`` needs the water in the
+    protonated molecule. A count goes below zero where the neutral lacks an
+    atom the mechanism takes off; whether that refuses the reading is the
+    caller's call.
+
+    :param counts: The neutral's element counts.
+    :param mechanism: The mechanism; None leaves the counts as they are.
+    :return: The ion's element counts, zeros left out.
+    """
+    if mechanism is None:
+        return {symbol: count for symbol, count in counts.items() if count}
+    combined = {
+        symbol: mechanism.multimer * count for symbol, count in counts.items() if count
+    }
+    sign = 1 if mechanism.addition else -1
+    for symbol, count in ionization_composition(mechanism.formula).items():
+        combined[symbol] = combined.get(symbol, 0) + sign * count
+    for symbol, count in ionization_composition(mechanism.neutral_loss).items():
+        combined[symbol] = combined.get(symbol, 0) - count
+    return {symbol: count for symbol, count in combined.items() if count}
+
+
+def neutral_counts(
+    ion: Mapping[str, int], mechanism: IonizationMechanism
+) -> dict[str, int] | None:
+    """The neutral whose ion through a mechanism holds these atoms: the
+    inverse of :func:`ion_counts`.
+
+    :param ion: The ion's element counts.
+    :param mechanism: The mechanism.
+    :return: The neutral's element counts, zeros left out and a count below
+        zero kept for the caller to refuse; None where the ion is not the
+        mechanism's molecules, the same neutral each, with its species and
+        loss.
+    """
+    moved = ion_counts({}, mechanism)
+    neutral: dict[str, int] = {}
+    for symbol in set(ion) | set(moved):
+        count, remainder = divmod(
+            ion.get(symbol, 0) - moved.get(symbol, 0), mechanism.multimer
+        )
+        if remainder:
+            return None
+        if count:
+            neutral[symbol] = count
+    return neutral
+
+
 def combine_counts_and_ionization(
     counts: Mapping[str, int], ionization_mechanism: IonizationMechanism
 ) -> str:
@@ -116,26 +171,17 @@ def combine_counts_and_ionization(
     that already holds the composition and would otherwise print it only to have
     it parsed straight back. Keys must be in pyteomics notation (``'N[15]'``, not
     ``'[15N]'``), which is what the string path produces; :func:`to_hill_order`
-    normalizes them on the way out either way.
+    normalizes them on the way out either way. The ion is :func:`ion_counts`':
+    the mechanism's molecules, species and neutral loss.
 
     :param counts: The neutral's element counts.
     :param ionization_mechanism: The adduct to add or subtract.
-    :return: The ion formula in Hill notation, with a trailing charge sign.
+    :return: The ion formula in Hill notation, ending in its charge's sign
+        once per charge (``C6H14O6++``), as a target ion's formula does.
     """
-    combined = {symbol: count for symbol, count in counts.items() if count}
-    sign = 1 if ionization_mechanism and ionization_mechanism.addition else -1
-    adduct = (
-        ionization_composition(ionization_mechanism.formula)
-        if ionization_mechanism
-        else {}
-    )
-    for symbol, count in adduct.items():
-        combined[symbol] = combined.get(symbol, 0) + sign * count
-
-    charge_sign = (
-        "+" if ionization_mechanism and ionization_mechanism.charge > 0 else "-"
-    )
-    return to_hill_order(combined) + charge_sign
+    combined = ion_counts(counts, ionization_mechanism)
+    charge = ionization_mechanism.charge_signs if ionization_mechanism else "-"
+    return to_hill_order(combined) + charge
 
 
 def combine_formula_and_ionization(
@@ -519,10 +565,12 @@ def parse_ionization(ionization_string: str) -> IonizationMechanism:
     :mod:`mascope_tools.composition.mechanism_notation`.
 
     Read through the mechanism's row (``to_row``): the species is the
-    formula, its charge the electrons the mass accounts for. The finder
-    searches a singly charged ion of one molecule with no neutral loss, so a
-    multimer (``[2M+H]+``), a charge above one (``[M+2H]2+``) and a neutral
-    loss (``[M+H-H2O]+``) are refused rather than searched as some other ion.
+    formula, its charge the electrons the mass accounts for. A multimer
+    (``[2M+H]+``), a charge above one (``[M+2H]2+``) and a neutral loss
+    (``[M+H-H2O]+``, ``[M-H-H2O]-``) carry their molecule count, charge and
+    loss, from which the mechanism's m/z of a neutral is
+    ``(n * M + shift) / |z|`` (:meth:`IonizationMechanism.ion_mz`), ``shift``
+    being :func:`mass_shift`.
 
     :param ionization_string: String representing the ionization mechanism.
     :type ionization_string: str
@@ -537,12 +585,6 @@ def parse_ionization(ionization_string: str) -> IonizationMechanism:
         raise CompositionFinderException(
             f"Unsupported ionization mechanism: '{ionization_string}'. {error}"
         ) from error
-    if not row.parts.simple:
-        raise CompositionFinderException(
-            f"Unsupported ionization mechanism: '{ionization_string}'. The "
-            "composition finder searches singly charged ions of one molecule "
-            "with no neutral loss."
-        )
 
     if not row.species:
         # Electron transfer: the electron's own mass, attached or removed.
@@ -557,12 +599,20 @@ def parse_ionization(ionization_string: str) -> IonizationMechanism:
         # cation would be, and the ion a removed hydride leaves is the cation.
         mass = composition_mass(composition) - ELECTRON_MASS * row.species_charge
 
+    loss = (
+        parse_composition(_caret_labelled(row.neutral_loss))
+        if row.neutral_loss
+        else None
+    )
     return IonizationMechanism(
         mascope_notation=ionization_string,
         addition=row.operation == "add",
         formula=formula,
         mass=mass,
         charge=row.ion_charge,
+        multimer=row.multimer_n,
+        neutral_loss=to_hill_order(loss) if loss else "",
+        loss_mass=composition_mass(loss) if loss else 0.0,
     )
 
 

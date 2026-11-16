@@ -321,9 +321,9 @@ describe('mechanismRow', () => {
     ['[M]+.', 'remove', '', -1, 1],
     ['[M]-.', 'add', '', -1, -1],
     ['[M-2H]2-', 'remove', '(H)2', 2, -2],
-    // Only a mechanism that adds has a neutral loss: these remove all they name.
-    ['[M-H-H2O]-', 'remove', '(H)H2O', 1, -1],
-    ['[M-CO2-H]-', 'remove', '(CO2)H', 1, -1]
+    // Every removed term is the species with no H among them, or two.
+    ['[M-CO2-H2O]-', 'remove', '(CO2)H2O', 1, -1],
+    ['[M-H-H]-', 'remove', '(H)H', 1, -1]
   ])('derives the ion of %s from its row', (notation, operation, species, speciesCharge, ion) => {
     expect(mechanismRow(notation)).toEqual({
       operation,
@@ -334,6 +334,30 @@ describe('mechanismRow', () => {
       ionCharge: ion,
       polarity: ion > 0 ? '+' : '-'
     })
+  })
+
+  it.each([
+    // A removing mechanism takes off its proton and loses the rest, the H
+    // found by identity: sorted, CO2 comes first.
+    ['[M-H-H2O]-', '[M-H-H2O]-', 'H2O', -1],
+    ['[M-H2O-H]-', '[M-H-H2O]-', 'H2O', -1],
+    ['-(H)H2O+', '[M-H-H2O]-', 'H2O', -1],
+    ['[M-CO2-H]-', '[M-CO2-H]-', 'CO2', -1],
+    ['[M-H-CO2]-', '[M-CO2-H]-', 'CO2', -1],
+    ['-(CO2)H+', '[M-CO2-H]-', 'CO2', -1],
+    ['[M-H-H2O]+', '[M-H-H2O]+', 'H2O', 1]
+  ])('reads %s as a proton removed and %s lost', (typed, stored, loss, ion) => {
+    expect(mechanismRow(typed)).toEqual({
+      operation: 'remove',
+      species: 'H',
+      speciesCharge: -ion,
+      multimerN: 1,
+      neutralLoss: loss,
+      ionCharge: ion,
+      polarity: ion > 0 ? '+' : '-'
+    })
+    expect(standardMechanism(typed)).toBe(stored)
+    expect(describeMechanism(typed)).toBe(`Ion charge ${ion > 0 ? '+' : '-'} · loses ${loss}`)
   })
 
   it('is null for what does not read', () => {

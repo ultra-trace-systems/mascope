@@ -36,7 +36,9 @@ from mascope_tools.composition.scan_presence import (
 )
 from mascope_tools.composition.utils import (
     combine_counts_and_ionization,
+    ion_counts,
     ionization_composition,
+    neutral_counts,
     normalize_formula_with_isotopes,
     parse_composition,
     parse_ionization,
@@ -766,8 +768,9 @@ def mechanism_mass_contribution(notation: str | None) -> float:
 
     :param notation: A mechanism, in either notation (``"[M+NH4]+"``,
         ``"[M-H]-"``).
-    :return: The contribution in Da. 0.0 when the notation is missing or
-        unparseable, which ranks it below every addition and above every
+    :return: The contribution in Da, its neutral loss taken off
+        (:attr:`IonizationMechanism.shift`). 0.0 when the notation is missing
+        or unparseable, which ranks it below every addition and above every
         subtraction rather than letting an unreadable mechanism decide a family.
     """
     if not notation:
@@ -778,7 +781,7 @@ def mechanism_mass_contribution(notation: str | None) -> float:
         # Fail-open: a mechanism this module cannot read is not grounds to drop
         # a candidate the finder already accepted, only grounds not to rank on it.
         return 0.0
-    return mechanism.mass if mechanism.addition else -mechanism.mass
+    return mechanism.shift
 
 
 @lru_cache(maxsize=4096)
@@ -1017,7 +1020,9 @@ def propose_same_ion_readings(
 
     It is arithmetic on one ion, not a search. Readings of the same ion formula
     share its mass and its envelope, so a split needs no window and no score to
-    be a member. A mechanism of the other charge makes no reading. A split that
+    be a member. A mechanism of another charge makes no reading, nor one of
+    several molecules whose ion is not that many copies of one neutral
+    (:func:`utils.neutral_counts`). A split that
     would need a negative count, or the label of a labelled reagent, is one no
     grid holds, and :func:`grid.admits` refuses it: the finder never proposes a
     labelled neutral. Nor is the reagent ion itself a reading of an analyte.
@@ -1035,15 +1040,9 @@ def propose_same_ion_readings(
     mechanisms = {}
     for notation in dict.fromkeys(notations):
         try:
-            mechanism = parse_ionization(notation)
+            mechanisms[notation] = parse_ionization(notation)
         except Exception:  # noqa: BLE001 - a mechanism nobody can parse splits nothing
             continue
-        moiety = ionization_composition(mechanism.formula) if mechanism.formula else {}
-        sign = 1 if mechanism.addition else -1
-        mechanisms[notation] = (
-            mechanism,
-            {symbol: sign * n for symbol, n in moiety.items()},
-        )
 
     splits: list[list[tuple[str, str, str]]] = []
     for formula, notation in readings:
@@ -1053,16 +1052,12 @@ def propose_same_ion_readings(
         except Exception:  # noqa: BLE001 - a formula nobody can parse has no family
             counts = {}
         if counts and notation in mechanisms:
-            own, own_moiety = mechanisms[notation]
-            for other, (mechanism, moiety) in mechanisms.items():
-                if other == notation or (mechanism.charge > 0) != (own.charge > 0):
+            own = mechanisms[notation]
+            ion = ion_counts(counts, own)
+            for other, mechanism in mechanisms.items():
+                if other == notation or mechanism.charge != own.charge:
                     continue
-                split = dict(counts)
-                for symbol, n in own_moiety.items():
-                    split[symbol] = split.get(symbol, 0) + n
-                for symbol, n in moiety.items():
-                    split[symbol] = split.get(symbol, 0) - n
-                split = {symbol: n for symbol, n in split.items() if n}
+                split = neutral_counts(ion, mechanism)
                 if split and admits(config, split):
                     members.append(
                         (
@@ -2388,9 +2383,8 @@ def extract_isotope_labels(
     :return: List of isotope labels.
     :rtype: list[str]
     """
-    if ion_formula.endswith(("+", "-")):
-        # Remove charge character for parsing
-        ion_formula = ion_formula[:-1]
+    # Remove the charge, its sign once per charge, for parsing
+    ion_formula = ion_formula.rstrip("+-")
     try:
         composition = Composition(formula=to_pyteomics(ion_formula))
         elements = list(composition.keys())
@@ -2917,14 +2911,13 @@ def _extract_formulae_and_charges(ions: pl.Series) -> tuple[list[str], list[int]
     :rtype: tuple[list[str], list[int]]
     """
     ions_arr = ions.to_numpy().astype(str)
-    # Get last character for each ion string
-    last_chars = np.array([s[-1] if len(s) >= 1 else "" for s in ions_arr])
-    # Check if last char is + or -
-    is_charged = np.isin(last_chars, ["+", "-"])
-    # Remove last char if charged, else keep as is
-    ion_formulas = [
-        s[:-1] if charged else s for s, charged in zip(ions_arr, is_charged)
-    ]
-    # Assign charge: +1 for '+', -1 for '-', else 1
-    ion_charges = [1 if c == "+" else -1 if c == "-" else 1 for c in last_chars]
+    # An ion's charge is its sign once per charge, at the end ("C6H14O6++");
+    # an ion with none is read as singly charged and positive.
+    ion_formulas = [s.rstrip("+-") for s in ions_arr]
+    ion_charges = []
+    for s, formula in zip(ions_arr, ion_formulas):
+        signs = s[len(formula) :]
+        ion_charges.append(
+            (len(signs) if signs[0] == "+" else -len(signs)) if signs else 1
+        )
     return ion_formulas, ion_charges

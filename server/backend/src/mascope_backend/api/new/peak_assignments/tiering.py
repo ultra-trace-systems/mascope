@@ -253,6 +253,7 @@ from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_CANDIDATE,
 )
 from mascope_tools.composition.arbitration import CANDIDATE_DENSITY
+from mascope_tools.composition.diagnostic_isotopologues import ion_charge
 from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
 from mascope_tools.composition.heuristic_filter import (
     DETECT_SNR_K,
@@ -1122,7 +1123,7 @@ class LineGate:
 
 def _halogens_of(ion: str) -> list[str]:
     """The halogens of :data:`M2_HALOGENS` an ion carries, in its order."""
-    counts = element_counts(ion[:-1]) or {}
+    counts = element_counts(ion.rstrip("+-")) or {}
     return [element for element in M2_HALOGENS if counts.get(element)]
 
 
@@ -1850,19 +1851,23 @@ def predicted_envelope(
     by 6% for C10H16NO3+, and for C2H9N4O2+, two carbons and four nitrogens,
     by over 70% and 20 ppm at a resolving power of 5000.
 
-    :param ion_formula: The ion, charge last (``C6H13O6+``).
+    :param ion_formula: The ion, its charge last (``C6H13O6+``,
+        ``C6H14O6++``).
     :param abundance_floor: How deep to predict, relative to the ion's own line.
     :param resolution: The file's resolving power as a function of m/z, or None,
         which predicts one line per isotopologue.
     :return: The lines' m/z, relative heights and labels, or None for an ion
         with nothing beyond its own line, or none the predictor can read.
     """
-    ion = str(ion_formula or "")
-    if len(ion) < 2 or ion[-1] not in "+-":
+    ion = str(ion_formula or "").strip()
+    charge = ion_charge(ion)
+    if charge is None or len(ion.rstrip("+-")) < 1:
         return None
     try:
+        # Predicted at the ion's own charge, its sign once per charge: the
+        # lines of a doubly charged ion sit half a unit apart.
         mzs, intensities, labels = predict_resolved_isotopes(
-            ion[:-1], 1 if ion[-1] == "+" else -1, abundance_floor, resolution
+            ion.rstrip("+-"), charge, abundance_floor, resolution
         )
     except Exception:  # noqa: BLE001 - an unpredictable ion predicts nothing
         return None

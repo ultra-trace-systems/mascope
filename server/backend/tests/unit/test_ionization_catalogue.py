@@ -135,3 +135,37 @@ def test_a_row_in_either_spelling_under_its_polarity_is_shipped(notation):
 )
 def test_anything_else_is_not(notation, polarity):
     assert not is_shipped_mechanism(notation, polarity)
+
+
+@pytest.mark.parametrize(
+    ("notation", "fixed_id"),
+    [("[M-H-H2O]-", "sysLossHH2ONeg"), ("[M-CO2-H]-", "sysLossCO2HNeg")],
+)
+def test_a_removing_mechanism_s_id_names_its_loss_too(notation, fixed_id):
+    # It reads its proton apart from its loss now, and its id is still made
+    # of every term it removes, as before.
+    from mascope_backend.ionization_catalogue import _fixed_mechanism_id
+    from mascope_tools.composition.mechanism_notation import parse_mechanism
+
+    assert _fixed_mechanism_id(parse_mechanism(notation)) == fixed_id
+
+
+@pytest.mark.parametrize(
+    ("ion", "charge", "mechanisms", "neutral"),
+    [
+        # The loss is given back with the proton.
+        ("C6H9O5", -1, ("[M-H-H2O]-",), "C6H12O6"),
+        ("C6H11O5", 1, ("[M+H-H2O]+",), "C6H12O6"),
+        # A dimer's ion is two of one neutral; an ion that is not passes on.
+        ("C12H25O12", 1, ("[2M+H]+",), "C6H12O6"),
+        ("C13H25O12", 1, ("[2M+H]+", "[M+H]+"), "C13H24O12"),
+        # A dication is read only at its own charge.
+        ("C6H14O6", 2, ("[M+H]+", "[M+2H]2+"), "C6H12O6"),
+    ],
+)
+def test_the_neutral_of_a_reagent_ion_through_any_shape(
+    ion, charge, mechanisms, neutral
+):
+    from mascope_backend.ionization_catalogue import _neutral
+
+    assert _neutral(ion, charge, mechanisms) == neutral

@@ -260,7 +260,10 @@ class IonizationMechanismRead(IonizationMechanismBase):
     )
     neutral_loss: str | None = Field(
         None,
-        description="The neutral the ion loses, a formula: 'H2O' for '[M+H-H2O]+'.",
+        description=(
+            "The neutral the ion loses, a formula: 'H2O' for '[M+H-H2O]+', "
+            "and for '[M-H-H2O]-', whose species is the removed 'H'."
+        ),
     )
 
     @computed_field(

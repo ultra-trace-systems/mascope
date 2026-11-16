@@ -15,11 +15,80 @@ class Atom:
 
 @dataclass(frozen=True)
 class IonizationMechanism:
+    """An ionization mechanism as the composition finder searches through it.
+
+    The ion holds ``multimer`` molecules of mass ``M``, gains or loses the
+    species and loses the neutral, and carries ``charge``: its m/z is
+    ``(multimer * M + shift) / |charge|`` (:meth:`ion_mz`), and the neutral a
+    peak reads as is the inverse (:meth:`neutral_mass`).
+
+    :param mascope_notation: The mechanism as it was given.
+    :param addition: Whether the species is added (True) or removed.
+    :param formula: The species' formula in Hill order; empty for the
+        electron of electron transfer, ``H2`` for the two protons of
+        ``[M+2H]2+``.
+    :param charge: The ion's charge, signed.
+    :param mass: The species' mass less the electrons its charge stands for,
+        unsigned; the electron's own mass for electron transfer.
+    :param multimer: How many molecules the ion holds: 2 for ``[2M+H]+``.
+    :param neutral_loss: The neutral the ion loses, in Hill order; empty for
+        none.
+    :param loss_mass: The neutral loss's mass.
+    """
+
     mascope_notation: str
     addition: bool
     formula: str
     charge: int
     mass: float
+    multimer: int = 1
+    neutral_loss: str = ""
+    loss_mass: float = 0.0
+
+    @property
+    def shift(self) -> float:
+        """What the mechanism adds to the mass of the molecules it ionizes,
+        signed, its neutral loss taken off
+        (:func:`mascope_tools.composition.utils.mass_shift`)."""
+        return (self.mass if self.addition else -self.mass) - self.loss_mass
+
+    @property
+    def simple(self) -> bool:
+        """Whether the ion is one molecule of a single charge that loses
+        nothing: its m/z is the molecule's mass plus :attr:`shift`."""
+        return self.multimer == 1 and abs(self.charge) == 1 and not self.neutral_loss
+
+    def ion_mz(self, neutral_mass: float) -> float:
+        """The m/z of the ion this mechanism makes of a neutral of this mass.
+
+        :param neutral_mass: The molecule's monoisotopic mass.
+        :return: ``(multimer * M + shift) / |charge|``.
+        """
+        return (self.multimer * neutral_mass + self.shift) / abs(self.charge)
+
+    def neutral_mass(self, ion_mz: float) -> float:
+        """The mass of the neutral whose ion through this mechanism is at this
+        m/z: the inverse of :meth:`ion_mz`.
+
+        :param ion_mz: The ion's m/z.
+        :return: ``(|charge| * m/z - shift) / multimer``.
+        """
+        return (abs(self.charge) * ion_mz - self.shift) / self.multimer
+
+    def neutral_tolerance(self, mz_tolerance: float) -> float:
+        """How far a neutral's mass may move while its ion stays within an
+        m/z tolerance: ``|charge| / multimer`` of it.
+
+        :param mz_tolerance: The tolerance in m/z, in Da.
+        :return: The tolerance in neutral mass, in Da.
+        """
+        return mz_tolerance * abs(self.charge) / self.multimer
+
+    @property
+    def charge_signs(self) -> str:
+        """The ion's charge as an ion formula ends in it: its sign once per
+        charge, ``+`` or ``--``."""
+        return ("+" if self.charge > 0 else "-") * abs(self.charge)
 
 
 @dataclass(frozen=True)

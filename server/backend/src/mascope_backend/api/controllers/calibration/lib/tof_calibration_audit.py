@@ -530,18 +530,17 @@ def cho_neutral_masses(dbe_max: int, mz_max: float = _FAMILY_MZ_MAX) -> np.ndarr
 
 
 def mechanism_shifts(mechanism: IonizationMechanism) -> list[float] | None:
-    """The m/z shifts a mechanism adds to a neutral, one per adduct line.
+    """The mass shifts a mechanism adds to its molecules, one per adduct line.
 
-    None for a mechanism that makes no ion of a CHO neutral, and for one whose
-    ion's m/z is not one neutral's mass plus a shift: a multimer (``[2M+H]+``)
-    or a charge above one (``[M+2H]2+``). A neutral loss shifts like any
-    other term.
+    An ion of ``n`` molecules of mass ``M`` and charge ``z`` sits at
+    ``(n * M + shift) / |z|``, so a line's shift is ``|z|`` times its m/z less
+    the molecules' mass: for one molecule of a single charge, the line's m/z
+    less the neutral's. A neutral loss shifts like any other term. None for a
+    mechanism that makes no ion of a CHO neutral.
     """
     try:
         row = to_row(mechanism.ionization_mechanism)
     except MechanismNotationError:
-        return None
-    if row.multimer_n != 1 or abs(row.ion_charge) != 1:
         return None
     neutral = composition_mass(parse_composition(_FAMILY_REFERENCE))
     ions, isotopes = generate_target_ions_from_composition(
@@ -550,7 +549,7 @@ def mechanism_shifts(mechanism: IonizationMechanism) -> list[float] | None:
     if not ions:
         return None
     return sorted(
-        float(isotope.mz) - neutral
+        abs(row.ion_charge) * float(isotope.mz) - row.multimer_n * neutral
         for isotope in isotopes
         if isotope.resolution == "HIGH"
         and isotope.relative_abundance >= _FAMILY_LINE_ABUNDANCE
@@ -560,11 +559,21 @@ def mechanism_shifts(mechanism: IonizationMechanism) -> list[float] | None:
 def family_of(
     mechanism: IonizationMechanism, neutral_masses: np.ndarray
 ) -> Family | None:
-    """The CHO family of one mechanism, or None where it has none."""
+    """The CHO family of one mechanism, or None where it has none: every
+    neutral's ion through it, at each of its lines, ``(n * M + shift) /
+    |z|``."""
     shifts = mechanism_shifts(mechanism)
     if not shifts:
         return None
-    lattice = np.unique(np.concatenate([neutral_masses + shift for shift in shifts]))
+    row = to_row(mechanism.ionization_mechanism)
+    lattice = np.unique(
+        np.concatenate(
+            [
+                (row.multimer_n * neutral_masses + shift) / abs(row.ion_charge)
+                for shift in shifts
+            ]
+        )
+    )
     return Family(
         mechanism=mechanism.ionization_mechanism, lattice=lattice[lattice > 0]
     )

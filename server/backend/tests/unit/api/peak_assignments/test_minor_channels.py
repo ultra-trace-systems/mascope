@@ -1685,13 +1685,14 @@ class TestEachMechanismIsSearchedOnce:
         assert [m.ionization_mechanism_id for m in mechanisms] == ["im-h"]
         assert mechanisms[0] is not self.PROTON
 
-    @pytest.mark.parametrize("notation", ["[2M+H]+", "[M+2H]2+", "[M+H-H2O]+"])
-    def test_a_shape_the_finder_does_not_search_leaves_with_its_id(
-        self, monkeypatch, notation
-    ):
-        # A multimer, a charge above one or a neutral loss reads, but the
-        # finder refuses it: a run leaves it out, once reported, rather than
-        # failing every search of the sample.
+    @pytest.mark.parametrize(
+        "notation",
+        ["[2M+H]+", "[M+2H]2+", "[M+H-H2O]+", "[M-H-H2O]-", "[M-CO2-H]-"],
+    )
+    def test_every_shape_that_reads_stays_with_its_id(self, monkeypatch, notation):
+        # A multimer, a charge above one and a neutral loss are searched each
+        # at its own mass, so a run keeps them, unreported; so do the removing
+        # mechanisms that now read their neutral loss apart.
         warnings = []
         monkeypatch.setattr(service_module.runtime.logger, "warning", warnings.append)
         monkeypatch.setattr(service_module, "_reported_unreadable", set())
@@ -1701,11 +1702,10 @@ class TestEachMechanismIsSearchedOnce:
             ["im-h", "im-shape"], [self.PROTON, shape]
         )
 
-        assert mechanism_ids == ["im-h"]
-        assert [m.ionization_mechanism_id for m in mechanisms] == ["im-h"]
-        assert not _readable(shape)
-        assert len(warnings) == 1
-        assert "does not search yet" in warnings[0]
+        assert mechanism_ids == ["im-h", "im-shape"]
+        assert [m.ionization_mechanism_id for m in mechanisms] == ["im-h", "im-shape"]
+        assert _readable(shape)
+        assert warnings == []
 
 
 #: A charge-transfer source that opened methyl loss and proton transfer for

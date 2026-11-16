@@ -116,9 +116,17 @@ Three more shapes are written in the same notation:
   names `[M+2H]2+`
 - `[M+H-H2O]+` — a neutral loss: a term removed from a mechanism that adds. The
   ion's charge comes with what is added, and what is removed is neutral, so a
-  removed proton is refused there (`[M+H2O-H]-`, `[M+Na-H-H]-`). Only a mechanism
-  that adds has a neutral loss for now: `[M-H-H2O]-` removes H and H2O together,
-  and is searched as it was before
+  removed proton is refused there (`[M+H2O-H]-`, `[M+Na-H-H]-`). A singly charged
+  mechanism that only removes has one too: its one removed H is the proton and the
+  rest is lost, so `[M-H-H2O]-` removes a proton and loses water, and
+  `[M-CO2-H]-` removes a proton and loses CO2. It is saved as it was typed
+  before, its terms in alphabetical order, and is searched at the same mass.
+  Like any loss, it reads only a molecule that holds what it loses, so a formula
+  without oxygen is no longer read through either
+
+Peak assignment and the composition search read every one of these shapes, each
+at its own mass: a dimer's neutral is half of what its adduct leaves, and the lines
+of a doubly charged ion sit half a mass unit apart.
 
 The ion's polarity is the sign at the end, so a mechanism of the wrong polarity
 cannot be saved. Under the field, Mascope shows the ion the typed mechanism makes:

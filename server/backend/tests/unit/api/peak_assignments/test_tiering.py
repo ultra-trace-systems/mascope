@@ -837,6 +837,36 @@ class TestTheNeighboursEnvelope:
         run(outside)
         assert tier_of(outside, "pa-child") == "assigned"
 
+    def test_a_doubly_charged_neighbour_predicts_its_line_half_a_unit_up(self):
+        # C6H14O6++, glucose with two protons, puts its 13C line 0.5017 up at
+        # 6.6% of its own: the peak there is its line, and the peak a whole
+        # unit up is not.
+        owner = row(
+            "pa-owner",
+            PLAIN,
+            mz=91.03897,
+            intensity=1000.0,
+            ion="C6H14O6++",
+            channels=SEEN_TWICE,
+        )
+        half = row("pa-half", PLAIN, mz=91.54065, intensity=40.0, channels=SEEN_TWICE)
+        whole = row("pa-whole", PLAIN, mz=92.04233, intensity=40.0, channels=SEEN_TWICE)
+        rows = [owner, half, whole]
+        run(rows)
+        assert tier_of(rows, "pa-half") == "candidate"
+        assert REASON_ENVELOPE_NEIGHBOUR in rules_on(rows, "pa-half")
+        assert tier_of(rows, "pa-whole") == "assigned"
+        mzs, shares, labels = predicted_envelope("C6H14O6++", 0.01)
+        assert mzs[labels.index("13C")] - mzs[0] == pytest.approx(
+            1.003355 / 2, abs=1e-4
+        )
+
+    def test_the_halogens_of_an_ion_of_any_charge(self):
+        from mascope_backend.api.new.peak_assignments.tiering import _halogens_of
+
+        assert _halogens_of("C2H2Br2--") == ["Br"]
+        assert _halogens_of("C2H3Br2-") == ["Br"]
+
     def test_a_lone_reading_predicts_nothing_for_anyone(self):
         rows = [row("pa-1")]
         run(rows)

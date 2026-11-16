@@ -551,13 +551,14 @@ def _monoisotopic_window(
 
     One window for the grid a search builds and for the rows it reads there:
     a grid narrower than the reading would answer fewer candidates, and say
-    nothing.
+    nothing. The m/z tolerance in neutral mass: twice as wide for a doubly
+    charged ion, half as wide for a dimer.
 
     :return: ``(lowest, highest)`` neutral mass.
     """
-    shift = mechanism.mass if mechanism.addition else -mechanism.mass
-    required_neutral_mass = target_mz - shift
-    return required_neutral_mass - tolerance_da, required_neutral_mass + tolerance_da
+    required_neutral_mass = mechanism.neutral_mass(target_mz)
+    tolerance = mechanism.neutral_tolerance(tolerance_da)
+    return required_neutral_mass - tolerance, required_neutral_mass + tolerance
 
 
 def _monoisotopic_readings(
@@ -569,25 +570,30 @@ def _monoisotopic_readings(
 ) -> tuple[list[Result], range]:
     """The compositions whose ion's monoisotopic line lands on a target.
 
+    A multimer, a charge above one and a neutral loss read the same way: the
+    neutral is ``(|z| * m/z - shift) / n`` (:meth:`IonizationMechanism.
+    neutral_mass`), its ion the mechanism's ``n`` molecules with the species
+    and less the loss. Such an ion is read only of a neutral that holds every
+    atom the mechanism takes off, as its target ions are built; the reagent
+    ion alone, of no molecule, is read only through a mechanism of one
+    molecule with no loss.
+
     :return: The readings, and the grid rows the window held - capped or not,
         every one of them is read at its monoisotopic line.
     """
-    # Ion shift: ion m/z = neutral_mass + ion_shift
-    ion_shift = (
-        ionization_mechanism.mass
-        if ionization_mechanism.addition
-        else -ionization_mechanism.mass
-    )
     # Neutral mass that would give the target m/z with this ionization mechanism
-    required_neutral_mass = target_mz - ion_shift
+    required_neutral_mass = ionization_mechanism.neutral_mass(target_mz)
+    whole = ionization_mechanism.multimer == 1 and not ionization_mechanism.neutral_loss
 
     # --- Ionization peak case: no analyte mass (neutral mass ~ 0) ---
-    if abs(required_neutral_mass) <= mz_tolerance_da:
-        ion_charge = "+" if ionization_mechanism.charge > 0 else "-"
-        ion_formula = ionization_mechanism.formula + ion_charge
+    if whole and abs(required_neutral_mass) <= ionization_mechanism.neutral_tolerance(
+        mz_tolerance_da
+    ):
+        ion_formula = ionization_mechanism.formula + ionization_mechanism.charge_signs
         # Signed, relative to the prediction; for an ionization peak the
-        # prediction is the adduct's own m/z, ion_shift.
-        compositions_error_ppm = (target_mz - ion_shift) / ion_shift * 1e6
+        # prediction is the adduct's own m/z.
+        adduct_mz = ionization_mechanism.ion_mz(0.0)
+        compositions_error_ppm = (target_mz - adduct_mz) / adduct_mz * 1e6
         return [
             Result(
                 formula="()",
@@ -613,16 +619,18 @@ def _monoisotopic_readings(
     )
     errors = [
         (
-            abs(grid.mass[row] + ion_shift - target_mz),
+            abs(ionization_mechanism.ion_mz(grid.mass[row]) - target_mz),
             row,
         )
         for row in rows
+        if ionization_mechanism.simple
+        or _makes_its_ion(grid.pyteomics_composition(row), ionization_mechanism)
     ]
     errors.sort()
     results = []
     for _, row in errors[: config.max_result_rows]:
         neutral_mass = float(grid.mass[row])
-        ion_mz = neutral_mass + ion_shift
+        ion_mz = ionization_mechanism.ion_mz(neutral_mass)
         formula = utils.to_hill_order(grid.composition(row))
         ion_formula = utils.combine_counts_and_ionization(
             grid.pyteomics_composition(row), ionization_mechanism
@@ -646,6 +654,15 @@ def _monoisotopic_readings(
             )
         )
     return results, rows
+
+
+def _makes_its_ion(counts: dict[str, int], mechanism: IonizationMechanism) -> bool:
+    """Whether a neutral holds every atom a mechanism's ion takes off it: the
+    species a mechanism removes and the neutral it loses. The empty neutral
+    makes no multimer and loses nothing, so it never does."""
+    if not counts:
+        return False
+    return all(count >= 0 for count in utils.ion_counts(counts, mechanism).values())
 
 
 def rivals_of_readings(
@@ -1050,12 +1067,18 @@ def _grid_for_band(
         caller carries forward as the first guess for the band after it.
     """
     while True:
+        # One window per mechanism rather than the span between them: a
+        # doubly charged channel reads neutrals twice the band's mass, a dimer
+        # half of it, and the masses between are no channel's.
         grid = build_neutral_grid(
             config,
             *neutral_mass_bounds(
                 [band_start, band_end], mechanisms, config.mass_range_ppm
             ),
             max_rows=max_rows,
+            windows=neutral_mass_windows(
+                [band_start, band_end], mechanisms, config.mass_range_ppm
+            ),
         )
         if grid is not None:
             return grid, band_end, band_end - band_start
@@ -1072,9 +1095,10 @@ def neutral_mass_bounds(
 ) -> tuple[float, float]:
     """The neutral masses any of these targets could be, under any of these ions.
 
-    The range a grid has to span to answer every one of the targets: the lightest
-    neutral the heaviest-adding adduct leaves of the lightest peak, up to the
-    heaviest neutral the heaviest-subtracting adduct leaves of the heaviest peak.
+    The range a grid has to span to answer every one of the targets: from the
+    lightest neutral any mechanism leaves of the lightest peak - the
+    heaviest-adding adduct's, or a dimer's - up to the heaviest any leaves of
+    the heaviest peak (:func:`neutral_mass_windows`).
 
     :param target_mzs: The m/z values to be searched.
     :param mechanisms: The ionization mechanisms they are searched under.
@@ -1082,18 +1106,43 @@ def neutral_mass_bounds(
         tolerance at each end.
     :return: ``(mass_min, mass_max)``; the minimum is never below zero.
     """
-    if not target_mzs or not mechanisms:
+    windows = neutral_mass_windows(target_mzs, mechanisms, mass_range_ppm)
+    if not windows:
         return (0.0, -1.0)
-    shifts = [
-        mechanism.mass if mechanism.addition else -mechanism.mass
-        for mechanism in mechanisms
-    ]
+    return (
+        max(0.0, min(low for low, _ in windows)),
+        max(high for _, high in windows),
+    )
+
+
+def neutral_mass_windows(
+    target_mzs: Sequence[float],
+    mechanisms: Sequence[IonizationMechanism],
+    mass_range_ppm: float,
+) -> list[tuple[float, float]]:
+    """The neutral masses these targets could be under each of these ions.
+
+    One window per mechanism, from the neutral it leaves of the lightest peak
+    to the one it leaves of the heaviest, each widened by the search window
+    in neutral mass (:meth:`IonizationMechanism.neutral_tolerance`).
+
+    :param target_mzs: The m/z values to be searched.
+    :param mechanisms: The ionization mechanisms they are searched under.
+    :param mass_range_ppm: The search window.
+    :return: ``(lowest, highest)`` neutral mass per mechanism, in their order;
+        empty where there are no targets or no mechanisms.
+    """
+    if not target_mzs or not mechanisms:
+        return []
     lowest_mz, highest_mz = min(target_mzs), max(target_mzs)
     tolerance = highest_mz * mass_range_ppm * 1e-6
-    return (
-        max(0.0, lowest_mz - max(shifts) - tolerance),
-        highest_mz - min(shifts) + tolerance,
-    )
+    return [
+        (
+            mechanism.neutral_mass(lowest_mz) - mechanism.neutral_tolerance(tolerance),
+            mechanism.neutral_mass(highest_mz) + mechanism.neutral_tolerance(tolerance),
+        )
+        for mechanism in mechanisms
+    ]
 
 
 def _pattern_is_evidence(candidate: dict) -> bool:
@@ -1326,13 +1375,7 @@ def get_neutral_mass_and_ionization_mech(
 ) -> tuple[float, IonizationMechanism | None]:
     if ion:
         ionization_mech = utils.parse_ionization(ion)
-        if ionization_mech.addition:
-            # If it's an addition, we subtract mass
-            neutral_mass = target_mass - ionization_mech.mass
-        else:
-            # If it's a subtraction, we add mass
-            neutral_mass = target_mass + ionization_mech.mass
-        return neutral_mass, ionization_mech
+        return ionization_mech.neutral_mass(target_mass), ionization_mech
     return target_mass, None
 
 
@@ -1435,9 +1478,11 @@ def replace_atom_with_isotope(ion_formula: str, isotope_label: str) -> str:
     # e.g. "13C+2H" -> ["[13C]", "[2H]"]
     isotope_labels = [f"[{iso_label}]" for iso_label in isotope_label.split("+")]
 
-    # Separate the charge at the end of the formula, if any
-    ion_charge = ion_formula[-1] if ion_formula[-1] in "+-" else ""
-    ion_formula = ion_formula[:-1] if ion_charge else ion_formula
+    # Separate the charge at the end of the formula, if any: its sign once
+    # per charge.
+    bare = ion_formula.rstrip("+-")
+    ion_charge = ion_formula[len(bare) :]
+    ion_formula = bare
     element_counts = Composition(formula=utils.to_pyteomics(ion_formula))
 
     new_formula_parts = []

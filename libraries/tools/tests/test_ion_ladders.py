@@ -233,8 +233,39 @@ class TestCovalentReadings:
     def test_a_channel_of_the_other_polarity_or_an_unreadable_one_reads_nothing(self):
         assert covalent_readings("C6H13O2", 1, ("[M-H]-", "not a mechanism")) == ()
 
-    def test_a_channel_with_a_loss_is_none_a_stage_searches(self):
-        assert covalent_readings("C6H13O2", 1, ("[M+H-H2O]+",)) == ()
+    def test_a_channel_with_a_loss_reads_the_molecule_that_lost_it(self):
+        # The stages search every channel, a neutral loss among them: the ion
+        # is the protonated molecule less its water.
+        assert covalent_readings("C6H13O2", 1, ("[M+H-H2O]+",)) == (
+            ("[M+H-H2O]+", "C6H14O3"),
+        )
+        # And a removing one's: the proton and the water.
+        assert covalent_readings("C6H11O2", -1, ("[M-H-H2O]-",)) == (
+            ("[M-H-H2O]-", "C6H14O3"),
+        )
+
+    def test_a_multimer_reads_its_molecule_once_each_copy_is_one(self):
+        # The protonated ethanol dimer is two ethanols through [2M+H]+; an ion
+        # of an odd count of an atom is no dimer of one molecule.
+        assert covalent_readings("C4H13O2", 1, ("[2M+H]+",)) == (("[2M+H]+", "C2H6O"),)
+        assert covalent_readings("C5H13O2", 1, ("[2M+H]+",)) == ()
+
+    def test_a_molecule_makes_its_dimer_s_ion_through_the_channel(self):
+        from mascope_tools.composition.mechanism_notation import parse_mechanism
+        from mascope_tools.composition.reagents import _through
+
+        ethanol = {"C": 2, "H": 6, "O": 1}
+        assert _through(ethanol, parse_mechanism("[2M+H]+"), to_ion=True) == {
+            "C": 4,
+            "H": 13,
+            "O": 2,
+        }
+
+    def test_a_doubly_charged_channel_reads_only_a_doubly_charged_ion(self):
+        assert covalent_readings("C6H14O6", 2, ("[M+2H]2+",)) == (
+            ("[M+2H]2+", "C6H12O6"),
+        )
+        assert covalent_readings("C6H14O6", 1, ("[M+2H]2+",)) == ()
 
     def test_each_channel_once_in_either_notation(self):
         assert covalent_readings("C6H13O2", 1, ("[M+H]+", "+H+")) == (

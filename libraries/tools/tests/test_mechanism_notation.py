@@ -410,9 +410,11 @@ def test_a_row_derives_the_ions_charge_and_polarity(
         (AdductRow("add", "(H)H", 2), "not written as"),
         # One proton carries one charge.
         (AdductRow("add", "H", 2), "write '\\[M\\+2H\\]2\\+'"),
-        # A mechanism that removes loses no neutral: written out, the loss
-        # reads as part of what is removed.
-        (AdductRow("remove", "H", 1, neutral_loss="H2O"), "not written as"),
+        # A mechanism that removes loses a neutral only beside one removed
+        # proton: written out, any other loss reads as part of what is
+        # removed.
+        (AdductRow("remove", "Na", -1, neutral_loss="H2O"), "not written as"),
+        (AdductRow("remove", "(H)H", 1, neutral_loss="H2O"), "not written as"),
         # The electron is one charge.
         (AdductRow("remove", "", -2), "one electron"),
         (AdductRow("add", "H!", 1), "not a formula"),
@@ -496,15 +498,59 @@ def test_a_removed_proton_is_never_a_neutral_loss(notation):
 
 
 @pytest.mark.parametrize(
-    ("notation", "species"),
-    [("[M-H-H2O]-", "(H)H2O"), ("[M-CO2-H]-", "(CO2)H")],
+    ("typed", "stored", "loss", "legacy"),
+    [
+        ("[M-H-H2O]-", "[M-H-H2O]-", "H2O", "-(H)H2O+"),
+        ("[M-H2O-H]-", "[M-H-H2O]-", "H2O", "-(H)H2O+"),
+        ("-(H)H2O+", "[M-H-H2O]-", "H2O", "-(H)H2O+"),
+        # Sorted, CO2 comes first: the species is the H, not the first term.
+        ("[M-CO2-H]-", "[M-CO2-H]-", "CO2", "-(CO2)H+"),
+        ("[M-H-CO2]-", "[M-CO2-H]-", "CO2", "-(CO2)H+"),
+        ("-(CO2)H+", "[M-CO2-H]-", "CO2", "-(CO2)H+"),
+        # A hydride abstracted, water lost: the cation.
+        ("[M-H-H2O]+", "[M-H-H2O]+", "H2O", "-(H)H2O-"),
+        ("[M-CO2-H-H2O]-", "[M-CO2-H-H2O]-", "(CO2)H2O", "-(CO2)(H)H2O+"),
+    ],
 )
-def test_only_a_mechanism_that_adds_has_a_neutral_loss(notation, species):
-    # What a mechanism removes is all its species; these are read as they
-    # were before neutral losses existed, and keep their legacy spelling.
+def test_a_removing_mechanism_removes_its_proton_and_loses_the_rest(
+    typed, stored, loss, legacy
+):
+    # The species by identity, not position, and the spelling as it was
+    # stored before a removing mechanism had a loss.
+    row = to_row(typed)
+    assert (row.operation, row.species, row.species_charge) == (
+        "remove",
+        "H",
+        -row.ion_charge,
+    )
+    assert row.neutral_loss == loss
+    assert not row.parts.simple
+    assert standard_notation(typed) == stored
+    assert mechanism_key(typed) == stored
+    assert from_row(row) == stored
+    assert row.legacy == legacy
+    assert legacy_notation(stored) == legacy
+    assert to_row(legacy) == row
+    assert mechanism_spellings([stored]) == [stored, legacy]
+
+
+@pytest.mark.parametrize(
+    ("notation", "species"),
+    [
+        # One term, no H, two H or a charge above one: every term is the
+        # species, as before a removing mechanism could lose a neutral.
+        ("[M-H]-", "H"),
+        ("[M-CO2-H2O]-", "(CO2)H2O"),
+        ("[M-H-H]-", "(H)H"),
+        ("-(H)H+", "(H)H"),
+        ("[M-2H]2-", "(H)2"),
+        ("[M-H-H2O]2-", "(H)H2O"),
+    ],
+)
+def test_otherwise_every_removed_term_is_the_species(notation, species):
     row = to_row(notation)
     assert (row.operation, row.species, row.neutral_loss) == ("remove", species, None)
-    assert row.legacy is not None
+    assert from_row(row) == standard_notation(notation)
 
 
 def test_coefficients_still_go_on_the_only_term():

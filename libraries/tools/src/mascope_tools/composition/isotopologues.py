@@ -154,11 +154,12 @@ def _ion_count_ranges(
 ) -> dict[str, tuple[int, int]]:
     """How many atoms of each element an ion this search can build may hold.
 
-    The grid's range for the neutral, moved by what the mechanism adds or
-    removes, and capped by what fits in the ion's mass at all - a box's
-    ``H0-160`` means nothing at m/z 300. Explicitly labelled grid atoms
-    (``[13C]``) are left out: their mass is fixed, so they carry no envelope of
-    their own.
+    The grid's range for the neutral, times the molecules the ion holds,
+    moved by what the mechanism adds, removes and loses, and capped by what
+    fits in the ion's mass at all - a box's ``H0-160`` means nothing at m/z
+    300, and an ion of charge two weighs twice its m/z. Explicitly labelled
+    grid atoms (``[13C]``) are left out: their mass is fixed, so they carry no
+    envelope of their own.
     """
     box: dict[str, tuple[int, int]] = {}
     for atom in utils.parse_atom_count_ranges(config.element_count_ranges):
@@ -166,13 +167,13 @@ def _ion_count_ranges(
             continue
         box[atom.symbol] = (atom.min_count, atom.max_count)
 
-    sign = 1 if mechanism.addition else -1
-    moiety = utils.ionization_composition(mechanism.formula)
+    moved = utils.ion_counts({}, mechanism)
     ranges: dict[str, tuple[int, int]] = {}
-    for symbol in set(box) | set(moiety):
+    for symbol in set(box) | set(moved):
         low, high = box.get(symbol, (0, 0))
-        shift = sign * int(moiety.get(symbol, 0))
-        low, high = max(0, low + shift), max(0, high + shift)
+        shift = int(moved.get(symbol, 0))
+        low = max(0, mechanism.multimer * low + shift)
+        high = max(0, mechanism.multimer * high + shift)
         if symbol in CUSTOM_ELEMENTS:
             atom_mass = CUSTOM_ELEMENTS[symbol].isotopes[-1][0]
         else:
@@ -182,7 +183,10 @@ def _ion_count_ranges(
                 continue
         # Generous by a few mass units, for the lines that sit below the
         # monoisotopic one and so put the ion's own mass above the target's.
-        high = min(high, int(round_down((abs(target_mz) + 5.0) / atom_mass)))
+        high = min(
+            high,
+            int(round_down((abs(mechanism.charge) * abs(target_mz) + 5.0) / atom_mass)),
+        )
         if high >= low:
             ranges[symbol] = (low, high)
     return ranges
@@ -305,13 +309,17 @@ def isotopologue_windows(
     :param offsets: The mechanism's :func:`line_offsets`.
     :param tolerance_da: The search window's half-width.
     :return: ``(lowest, highest)`` neutral mass per offset, in the order of
-        ``offsets``.
+        ``offsets``. An offset is in the ion's mass, so a line of an ion of
+        charge ``z`` sits ``offset / |z|`` from its monoisotopic one in m/z,
+        and the neutral under it is :meth:`IonizationMechanism.neutral_mass`
+        of the m/z the monoisotopic line would have.
     """
-    shift = mechanism.mass if mechanism.addition else -mechanism.mass
+    size = abs(mechanism.charge)
+    tolerance = mechanism.neutral_tolerance(tolerance_da)
     return [
         (
-            target_mz - shift - highest - tolerance_da,
-            target_mz - shift - lowest + tolerance_da,
+            mechanism.neutral_mass(target_mz - highest / size) - tolerance,
+            mechanism.neutral_mass(target_mz - lowest / size) + tolerance,
         )
         for lowest, highest in offsets.values()
     ]
@@ -386,9 +394,6 @@ def isotopologue_readings(
     :return: One :class:`Result` per formula, carrying the m/z of the line it
         is read as, which its mass error is taken against.
     """
-    shift = mechanism.mass if mechanism.addition else -mechanism.mass
-    moiety = utils.ionization_composition(mechanism.formula)
-    sign = 1 if mechanism.addition else -1
     skipped = set(skip_rows)
     symbols = [atom.symbol for atom in grid.atoms]
     # A grid atom carrying a fixed isotope label ("[13C]") has no envelope of
@@ -410,13 +415,13 @@ def isotopologue_readings(
         counts = dict(zip(symbols, grid.counts[row].tolist()))
         if any(counts[symbol] for symbol in fixed):
             continue
-        for symbol, n in moiety.items():
-            counts[symbol] = counts.get(symbol, 0) + sign * n
+        # The ion's atoms: its molecules, the species, less the loss.
+        counts = utils.ion_counts(counts, mechanism)
         if any(n < 0 for n in counts.values()):
-            continue  # a removal the neutral has nothing to give for
+            continue  # a removal or a loss the neutral has nothing to give for
         line_mz = _brightest_on_target(
             _ion_lines(counts, floor),
-            neutral_mass + shift,
+            mechanism.ion_mz(neutral_mass),
             mechanism.charge,
             target_mz,
             tolerance_da,
@@ -446,9 +451,7 @@ def isotopologue_readings(
             )
         )
 
-    readings.extend(
-        _adduct_line_readings(target_mz, tolerance_da, mechanism, moiety, sign, floor)
-    )
+    readings.extend(_adduct_line_readings(target_mz, tolerance_da, mechanism, floor))
     readings.sort(key=lambda pair: pair[0])
     return [result for _, result in readings[:max_rows]]
 
@@ -481,23 +484,30 @@ def _adduct_line_readings(
     target_mz: float,
     tolerance_da: float,
     mechanism: IonizationMechanism,
-    moiety: Mapping[str, int],
-    sign: int,
     floor: float,
 ) -> list[tuple[float, Result]]:
     """A line of the adduct's own ion on the target: the reagent's isotopologue.
 
     The search reads the bare adduct as the empty formula ``()`` where its
     monoisotopic line is the peak; its 81Br or 37Cl line, or a labelled
-    reagent's unlabelled remainder, is the same ion read at another line.
+    reagent's unlabelled remainder, is the same ion read at another line. Only
+    through a mechanism that adds to one molecule and loses nothing: the
+    reagent ion alone holds no molecule to multiply or to lose from.
     """
-    if sign < 0 or not moiety:
+    moiety = utils.ionization_composition(mechanism.formula)
+    if (
+        not mechanism.addition
+        or not moiety
+        or mechanism.multimer != 1
+        or mechanism.neutral_loss
+    ):
         return []
-    if abs(target_mz - mechanism.mass) <= tolerance_da:
+    adduct_mz = mechanism.ion_mz(0.0)
+    if abs(target_mz - adduct_mz) <= tolerance_da:
         return []  # the monoisotopic line is on the target, and read already
     line_mz = _brightest_on_target(
         _ion_lines(moiety, floor),
-        mechanism.mass,
+        adduct_mz,
         mechanism.charge,
         target_mz,
         tolerance_da,
