@@ -284,6 +284,9 @@ class Anchor:
     batch_peak_id: str
     mz: float
     tol_ppm: float
+    #: Minted at a target ion's m/z rather than at the minting peak's own
+    #: (:func:`fold_in_sample`'s ``seed_of``).
+    seeded: bool = False
 
 
 def _peak_mz(peak: Any) -> float:
@@ -353,6 +356,7 @@ def fold_in_sample(
     *,
     new_id: Callable[[], str],
     tol_fn: Callable[[float], float],
+    seed_of: Optional[Callable[[Any], Optional[float]]] = None,
 ) -> list[FoldedPeak]:
     """Fold one sample's peaks into ``anchor_set`` (append-only).
 
@@ -363,8 +367,22 @@ def fold_in_sample(
     other is dropped (two peaks within half-FWHM in one sample are effectively the
     same m/z -- a split/satellite).
 
+    A new anchor sits at the minting peak's m/z, unless ``seed_of`` names a
+    seed for that peak: the m/z of the target ion the sample's run assigned
+    the peak's line to. The anchor is then minted at the seed instead, marked
+    ``seeded``, so the target's trace sits at the ion's m/z rather than where
+    this sample's calibration put it. Only where the evidence allows: the
+    peak has to lie inside the window an anchor at the seed would carry, and
+    no anchor may already hold the seed, as two anchors whose windows hold
+    one m/z would split its trace. Otherwise the anchor sits at the peak, as
+    with no seed. A target no sample's peak was assigned to mints nothing.
+    Either way the minting peak holds the anchor in its own sample: a later
+    peak of the sample that lands in the same window is the contested one,
+    as it would be beside an anchor at the minting peak.
+
     :param new_id: zero-arg factory for a fresh ``batch_peak_id``.
     :param tol_fn: ``mz -> tol_ppm`` for a NEW anchor created at that m/z.
+    :param seed_of: ``peak -> m/z or None``, the seed a peak would mint at.
     :returns: one :class:`FoldedPeak` per anchor that received a member this sample.
     """
     ordered = sorted(peaks, key=_peak_mz)
@@ -373,7 +391,11 @@ def fold_in_sample(
         mz = _peak_mz(p)
         idx = anchor_set.find(mz)
         if idx is None:
-            anchor = anchor_set.add(Anchor(new_id(), mz, tol_fn(mz)))
+            anchor = anchor_set.add(
+                _minted_anchor(anchor_set, p, mz, new_id, tol_fn, seed_of)
+            )
+            # Distance 0 whatever the seed: the peak that minted the anchor
+            # wins its own sample's contest for it.
             claimed[anchor.batch_peak_id] = FoldedPeak(
                 anchor.batch_peak_id, p, True, 0.0
             )
@@ -387,6 +409,24 @@ def fold_in_sample(
                 anchor.batch_peak_id, p, is_new, d
             )
     return list(claimed.values())
+
+
+def _minted_anchor(
+    anchor_set: AnchorSet,
+    peak: Any,
+    mz: float,
+    new_id: Callable[[], str],
+    tol_fn: Callable[[float], float],
+    seed_of: Optional[Callable[[Any], Optional[float]]],
+) -> Anchor:
+    """The anchor a peak at ``mz`` that no anchor holds mints: at its seed
+    where :func:`fold_in_sample`'s rule allows one, otherwise at ``mz``."""
+    seed = seed_of(peak) if seed_of is not None else None
+    if seed is not None:
+        seed_tol = tol_fn(seed)
+        if abs(mz - seed) / seed * 1e6 <= seed_tol and anchor_set.find(seed) is None:
+            return Anchor(new_id(), seed, seed_tol, seeded=True)
+    return Anchor(new_id(), mz, tol_fn(mz))
 
 
 # --- candidates ---------------------------------------------------------------

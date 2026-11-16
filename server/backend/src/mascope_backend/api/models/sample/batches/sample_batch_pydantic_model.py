@@ -106,12 +106,23 @@ class SampleBatchBase(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+_SEED_BATCH_PEAKS = (
+    "Whether the batch ledger places a target's batch peak at the target "
+    "ion's m/z: a new batch peak that a sample's line, assigned to a target "
+    "ion of the batch's collections, starts sits at the ion's m/z rather "
+    "than the line's. A target no sample's line was assigned to gets no "
+    "batch peak. Off by default. Turned on for a batch whose ledger exists, "
+    "it moves no batch peak already there."
+)
+
+
 class SampleBatchCreate(SampleBatchValidator, SampleBatchBase):
     """Model used for sample batch creation requests."""
 
     target_collection_ids: list[str] = Field(
         ..., description="IDs of target collections associated with the sample batch"
     )
+    seed_batch_peaks: bool = Field(False, description=_SEED_BATCH_PEAKS)
 
 
 class SampleBatchRead(SampleBatchBase):
@@ -138,6 +149,7 @@ class SampleBatchRead(SampleBatchBase):
     sample_batch_utc_modified: datetime | None = Field(
         None, description="Timestamp when sample batch was last modified"
     )
+    seed_batch_peaks: bool = Field(False, description=_SEED_BATCH_PEAKS)
 
 
 class SampleBatchListed(SampleBatchRead):
@@ -197,8 +209,21 @@ class SampleBatchUpdate(SampleBatchBaseValidator, BaseModel):
             "the associations stay as they are; an empty list detaches them all."
         ),
     )
+    seed_batch_peaks: bool | None = Field(
+        None,
+        description=_SEED_BATCH_PEAKS + " Absent, it stays as it is; null is refused.",
+    )
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("seed_batch_peaks")
+    @classmethod
+    def validate_seed_batch_peaks(cls, value: bool | None) -> bool:
+        """Refuse an explicit null: the column is NOT NULL, and a field left
+        out never reaches a validator."""
+        if value is None:
+            raise ValueError("seed_batch_peaks cannot be null.")
+        return value
 
 
 class SampleBatchUpdateStatusBody(BaseModel):

@@ -1433,6 +1433,34 @@ never assigned, or to refresh after an import. There is no batch-wide assignment
 the untargeted search runs once per batch peak instead (below), and a species is
 curated once at its batch peak rather than sample by sample.
 
+### Placing a target's batch peak at the target ion's m/z
+
+A batch peak's m/z is frozen when it is made, and the first sample whose peak lands
+there makes it: the batch peak sits where that sample measured the peak, after the
+sample's own mass offset is taken off. For a target ion, the batch knows a better
+place: the ion's own m/z. With seeding on, a sample's peak that makes a new batch peak,
+and that the sample's assignment matched to the monoisotopic line of a target ion of the
+batch's collections, makes it at the ion's m/z instead. It does so only where the peak lies
+inside the window a batch peak at the ion's m/z would have, and where no batch peak
+already holds that m/z; otherwise the batch peak sits at the peak, as without seeding.
+The ion's m/z is the line its instrument is matched at: the exact line on an Orbitrap,
+the merged line on a TOF. Each such target's trace then sits at the ion's own m/z, not
+wherever its first sample put it, and later samples' peaks join it there. A batch peak
+made this way is marked `seeded` in the ledger.
+
+Only evidence makes a seeded batch peak. A target ion that no sample's peak was matched
+to gets none, so a long target list adds no empty rows. A target first matched in a
+late sample still gets its batch peak at the ion's m/z. An isotope line, a reagent line,
+an untargeted reading and an unmatched peak make their batch peaks where they are.
+Once made, a seeded batch peak is like any other: it is removed when its last sample's
+peak leaves it.
+
+Seeding is off by default. It is a setting of the batch, `seed_batch_peaks`, set when
+the batch is created or edited through the API (`PATCH /api/sample/batches/{id}`).
+Turning it on for a batch whose ledger already exists moves no batch peak, because
+batch peaks are never moved once made: only the batch peaks made from then on are
+placed this way, by a new sample or by *Rebuild batch ledger*.
+
 *Search untargeted*, beside *Rebuild batch ledger*, first asks for the search's parameters
 - m/z precision, formula ranges, the peak ceiling, the intensity threshold and the number
 of alternatives kept, the same settings as a per-sample run's untargeted stage, applied

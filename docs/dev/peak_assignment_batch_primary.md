@@ -886,9 +886,32 @@ The hard
 the live path (it is a single point of failure that worsens as the batch grows); the per-sample
 μ replaces it, and VLM stays only as an optional offline refinement.
 
-**Seeding [open, recommended].** Where a target-ion m/z list exists for the batch, seed the
-initial anchors from it, so bins are not hostage to the first sample's calibration and line up
-with existing target identities; data-created anchors fill the rest.
+**Seeding [built, MAS-319, off by default].** Where a target-ion m/z list exists for the batch, seed
+anchors from it, so bins are not hostage to the first sample's calibration and line up with
+existing target identities; data-created anchors fill the rest. As built, the seed is placed on
+evidence, at mint (`batch_peaks.fold_in_sample`'s `seed_of`,
+`batch_peaks_controller.target_ion_seed_mzs`): in a batch whose `seed_batch_peaks` is on, a
+peak that mints a new anchor, and whose row assigns it to a target ion's monoisotopic line
+(role `M0` with a `target_ion_id`), mints the anchor at that ion's monoisotopic m/z, the
+`HIGH` isotope rows on an Orbitrap and the `LOW` ones on a TOF, marked `batch_peak.seeded`.
+Only the ions of the batch's own collections seed. The rule takes the rows the fold is given, so
+a run's rows and the run-less ingest fold's Stage A rows seed alike. The seed is taken only where
+the peak lies inside the window an anchor at the seed carries (the tolerance `tol_fn` gives the
+seed's m/z) and no anchor already holds the seed, as two anchors whose windows hold one m/z
+would split its trace; otherwise the anchor sits at the peak. The minting peak holds the anchor
+in its own sample's contest, as beside an anchor at its own m/z.
+
+An earlier version minted an anchor for every target ion on a partition's first fold, before
+any data said the ion was there. The owner's review turned it down: an absent target's seed
+stayed with no members, and every reader of `batch_peak` met it. The series walk took it as a
+link at the ion's exact m/z, which the real series reaches and a decoy does not, and a peak of
+another ion inside its window took the target's m/z. Seeding at mint makes no memberless
+anchor, so no reader has to learn that empty anchors exist, and a seeded anchor whose last
+member leaves is deleted like any other. Anchors stay frozen: turning the option on for a
+ledger that exists moves no anchor, and seeds only the anchors minted from then on, by a fold
+or a rebuild. An existing anchor is not re-placed at its ion's m/z: that would need a rebuild
+from an empty ledger, which drops the batch's curation. The measurement is in the assignment
+quality plan's status table (step 4.7).
 
 **Backfill.** For batches assigned before this feature, a one-time fold-in walks each sample's
 latest completed run in time order through the same routine. It reports as it goes, on the

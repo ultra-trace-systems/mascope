@@ -41,6 +41,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     MERGED_ISOTOPOLOGUES_KEY,
     PERSISTENCE_KEY,
     ROLE_ISO_CHILD,
+    ROLE_M0,
     ROLE_REAGENT,
     SOURCE_ROLES,
     STAMPED_ISOTOPOLOGUE_OF_KEY,
@@ -84,6 +85,10 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     touch_ledger,
 )
 from mascope_backend.api.new.peak_assignments.cross_channel import neutral_key
+from mascope_backend.api.new.peak_assignments.engine import (
+    is_monoisotopic_formula,
+    labelled_isotopes,
+)
 from mascope_backend.api.new.peak_assignments.listing import reference_listing
 from mascope_backend.db import (
     BatchPeak,
@@ -91,6 +96,11 @@ from mascope_backend.db import (
     PeakAssignment,
     PeakAssignmentRun,
     Sample,
+    SampleBatch,
+    TargetCollectionInSampleBatch,
+    TargetCompoundInTargetCollection,
+    TargetIon,
+    TargetIsotope,
     async_session,
 )
 from mascope_backend.db.id import gen_id
@@ -207,6 +217,98 @@ def _tolerance_fn(resolution_func):
     return tol_fn
 
 
+def _monoisotopic_mz(isotopes: list) -> float:
+    """The m/z of an ion's monoisotopic line among its isotope rows: the row
+    the engine counts every role and label from (``engine.monoisotopic_row``),
+    the lightest where no formula tells the lines apart."""
+    ordered = sorted(isotopes, key=lambda row: row.mz)
+    labels = labelled_isotopes(ordered[0].target_ion_formula)
+    for row in ordered:
+        if is_monoisotopic_formula(row.target_isotope_formula, labels):
+            return float(row.mz)
+    return float(ordered[0].mz)
+
+
+async def target_ion_seed_mzs(
+    session,
+    *,
+    sample_batch_id: str,
+    target_ion_ids: Iterable[str],
+    resolution: str,
+) -> dict[str, float]:
+    """The m/z an anchor is seeded at for each of the given target ions: its
+    monoisotopic line at the isotope resolution the run reads (``HIGH`` for an
+    Orbitrap, ``LOW`` for a TOF, whose merged lines are the ones it matches).
+    Only the ions of the batch's own collections: a target ion of another
+    collection seeds nothing.
+
+    Selected column by column on the fold's own session: it runs inside the
+    fold's critical section, which may open no second session.
+
+    :param session: The fold's session.
+    :param sample_batch_id: The batch whose collections are read.
+    :param target_ion_ids: The ions the sample's run assigned a line to.
+    :param resolution: ``HIGH`` or ``LOW``.
+    :return: The seed m/z by ``target_ion_id``; an ion of no collection of the
+        batch, or with no line at ``resolution``, is absent.
+    """
+    ion_ids = {str(i) for i in target_ion_ids if i}
+    if not ion_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(
+                TargetIsotope.target_ion_id,
+                TargetIsotope.target_isotope_formula,
+                TargetIsotope.mz,
+                TargetIon.target_ion_formula,
+            )
+            .join(TargetIon, TargetIon.target_ion_id == TargetIsotope.target_ion_id)
+            .where(
+                TargetIsotope.target_ion_id.in_(ion_ids),
+                TargetIsotope.resolution == resolution,
+                TargetIon.target_compound_id.in_(
+                    select(TargetCompoundInTargetCollection.target_compound_id)
+                    .join(
+                        TargetCollectionInSampleBatch,
+                        TargetCollectionInSampleBatch.target_collection_id
+                        == TargetCompoundInTargetCollection.target_collection_id,
+                    )
+                    .where(
+                        TargetCollectionInSampleBatch.sample_batch_id == sample_batch_id
+                    )
+                ),
+            )
+        )
+    ).all()
+    by_ion: dict[str, list] = defaultdict(list)
+    for row in rows:
+        by_ion[row.target_ion_id].append(row)
+    return {ion_id: _monoisotopic_mz(isotopes) for ion_id, isotopes in by_ion.items()}
+
+
+def _assigned_target_ion(row) -> str | None:
+    """The target ion whose monoisotopic line a run's row assigned its peak
+    to, or None: an isotopologue's row, a reagent's or an unassigned peak's
+    names no seed, nor does a reference list's row, which carries no ion."""
+    if getattr(row, "role", None) != ROLE_M0:
+        return None
+    return getattr(row, "target_ion_id", None) or None
+
+
+async def _seeds_batch_peaks(session, sample_batch_id: str) -> bool:
+    """Whether the batch mints a target's anchor at the ion's m/z."""
+    return bool(
+        (
+            await session.execute(
+                select(SampleBatch.seed_batch_peaks).where(
+                    SampleBatch.sample_batch_id == sample_batch_id
+                )
+            )
+        ).scalar_one_or_none()
+    )
+
+
 async def fold_sample_into_batch_peaks(
     sample_item_id: str,
     *,
@@ -218,8 +320,10 @@ async def fold_sample_into_batch_peaks(
 
     Append-only: each observed peak joins the nearest frozen anchor within its
     resolution-adaptive tolerance (after a per-sample offset correction) or mints a
-    new anchor; the consensus of every touched batch peak is then recomputed from
-    its members' per-sample assignments. Idempotent -- re-folding a sample replaces
+    new anchor - at the target ion's m/z, where the batch seeds and the row
+    assigns the peak to a target ion's monoisotopic line; the consensus of every
+    touched batch peak is then recomputed from its members' per-sample
+    assignments. Idempotent -- re-folding a sample replaces
     its prior occurrences and re-derives the affected consensus.
 
     :param sample_item_id: The sample to fold.
@@ -349,6 +453,25 @@ async def fold_sample_into_batch_peaks(
             [Anchor(bp.batch_peak_id, bp.mz, bp.mz_tol_ppm) for bp in existing]
         )
 
+        # Seeds, where the batch asks for them: a peak that mints an anchor and
+        # that the rows assign to a target ion's monoisotopic line mints it at
+        # the ion's m/z (batch_peaks.fold_in_sample). Read off the rows, so a
+        # target no sample's peak was assigned to mints nothing.
+        seed_of = None
+        if await _seeds_batch_peaks(session, sample_batch_id):
+            seed_mz_of_ion = await target_ion_seed_mzs(
+                session,
+                sample_batch_id=sample_batch_id,
+                target_ion_ids={_assigned_target_ion(r) for r in rows},
+                resolution=(
+                    "LOW" if intensity_variable == "sum_peak_areas" else "HIGH"
+                ),
+            )
+            if seed_mz_of_ion:
+
+                def seed_of(peak):
+                    return seed_mz_of_ion.get(_assigned_target_ion(peak["row"]))
+
         # Idempotency: drop this sample's prior occurrences (a re-fold), noting the
         # anchors it touched so their consensus is recomputed even if it now leaves
         # them.
@@ -388,7 +511,11 @@ async def fold_sample_into_batch_peaks(
         now = datetime.now(timezone.utc)
 
         folded = fold_in_sample(
-            anchor_set, peaks, new_id=lambda: gen_id(16), tol_fn=tol_fn
+            anchor_set,
+            peaks,
+            new_id=lambda: gen_id(16),
+            tol_fn=tol_fn,
+            seed_of=seed_of,
         )
 
         new_ids = {f.batch_peak_id for f in folded if f.is_new_anchor}
@@ -403,6 +530,7 @@ async def fold_sample_into_batch_peaks(
                 mz=a.mz,
                 mz_tol_ppm=a.tol_ppm,
                 intensity_variable=intensity_variable,
+                seeded=a.seeded,
                 candidates=[],
                 batch_peak_utc_created=now,
                 batch_peak_utc_modified=now,

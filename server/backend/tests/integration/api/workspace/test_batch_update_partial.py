@@ -249,3 +249,72 @@ async def test_update_with_null_description_clears_it(
     batch, _ = await _stored(async_session_factory, ctx["batch_id"])
     assert batch.sample_batch_name == "Partial Update Batch"
     assert batch.sample_batch_description is None
+
+
+@pytest.mark.asyncio
+async def test_the_seeding_option_is_set_read_and_left_alone(
+    editor_client, async_session_factory, batch_with_collections
+):
+    """``seed_batch_peaks`` is off on a batch made without it, turned on by an
+    update naming it, served on the batch, and kept by an update that leaves
+    it out; it flags no rematch, since no match reads it."""
+    ctx = batch_with_collections
+    batch, _ = await _stored(async_session_factory, ctx["batch_id"])
+    assert batch.seed_batch_peaks is False
+
+    resp = await editor_client.patch(
+        f"/api/sample/batches/{ctx['batch_id']}", json={"seed_batch_peaks": True}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["seed_batch_peaks"] is True
+    assert resp.json()["data"]["status"] == "ready"
+    batch, collections = await _stored(async_session_factory, ctx["batch_id"])
+    assert batch.seed_batch_peaks is True
+    assert collections == set(ctx["attached"])
+
+    resp = await editor_client.patch(
+        f"/api/sample/batches/{ctx['batch_id']}",
+        json={"sample_batch_name": "Renamed Batch"},
+    )
+    assert resp.status_code == 200, resp.text
+    batch, _ = await _stored(async_session_factory, ctx["batch_id"])
+    assert batch.seed_batch_peaks is True
+
+
+@pytest.mark.asyncio
+async def test_a_null_seeding_option_is_refused(
+    editor_client, async_session_factory, batch_with_collections
+):
+    ctx = batch_with_collections
+    resp = await editor_client.patch(
+        f"/api/sample/batches/{ctx['batch_id']}", json={"seed_batch_peaks": None}
+    )
+    assert resp.status_code == 422, resp.text
+    batch, _ = await _stored(async_session_factory, ctx["batch_id"])
+    assert batch.seed_batch_peaks is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("given", "expected"), [({}, False), ({"seed_batch_peaks": True}, True)]
+)
+async def test_a_batch_is_created_with_the_seeding_option(
+    editor_client, async_session_factory, alpha_dataset, given, expected
+):
+    """A batch made through the API without the option is off: seeding is
+    opt-in. Made with it on, it is stored and served on."""
+    resp = await editor_client.post(
+        "/api/sample/batches",
+        json={
+            "dataset_id": alpha_dataset,
+            "sample_batch_name": "Seeded Batch",
+            "target_collection_ids": [],
+            **given,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["data"]["seed_batch_peaks"] is expected
+    batch, _ = await _stored(
+        async_session_factory, resp.json()["data"]["sample_batch_id"]
+    )
+    assert batch.seed_batch_peaks is expected

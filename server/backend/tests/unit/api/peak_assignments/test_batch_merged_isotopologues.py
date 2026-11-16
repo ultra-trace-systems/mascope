@@ -724,6 +724,7 @@ class TestTheRecords:
         for bp in (stripped, parent):
             bp.engine_tier = bp.engine_claim = None
             bp.continuity_grade = bp.continuity = None
+            bp.seeded = False
             bp.sample_batch_id = "b"
             bp.best_fit_score = None
             bp.n_present = 6
