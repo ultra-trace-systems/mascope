@@ -109,6 +109,22 @@ ones. A row that keeps its tier names the observation it stands on
 (``second_line``, ``corroborated``, ``series_anchor``, ``on_a_list``), so every
 assigned row says what saw it twice.
 
+``context_prior`` - step 3.6: the run's chemistry context holds the row's
+formula shape only on corroboration. Every atmospheric context carries a sulfur
+prior and an odd-nitrogen prior (``profiles.CONTEXT_PRIORS``; uronium the
+sulfur one alone, since reduced-nitrogen bases are its analytes): a neutral
+carrying sulfur, or two or more nitrogens and fewer than two oxygens per
+nitrogen, that the formula search elected is a candidate at most until a
+second channel, a series of its batch, or a line of the doubted element's own
+heavy isotope (34S, 15N) committed with it saw it (:func:`context_prior_reason`).
+Stricter than ``lone_peak`` on purpose: a 13C line proves the carbon count,
+and the shapes this rule asks about are the ones a mass fit reaches by
+spending the same mass on another element. Measured before the rule, sulfur
+formulas were 5% of the assigned neutrals in the gate's nitrate batches, 2% in
+uronium and 22% on the TOF, with no sulfur source in the chamber; the
+nitrogen-rich C2 family was 21 to 34% of the assigned rows on the certified
+cylinder sets, a nitrogen-free mixture.
+
 ``series_anchor`` - step 4.1: the batch's series detection
 (``batch_series.py``) found the row's formula one repeat unit from a reading
 the batch holds at assigned, in a family whose proposals beat the decoys, and
@@ -214,6 +230,7 @@ from __future__ import annotations
 
 import bisect
 import math
+import re
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -276,13 +293,19 @@ from mascope_tools.composition.heuristic_filter import (
     predict_resolved_isotopes,
 )
 from mascope_tools.composition.implausibility import implausible_signatures
+from mascope_tools.composition.profiles import (
+    PRIOR_ELEMENT,
+    PRIOR_ODD_NITROGEN,
+    PRIOR_SULFUR,
+    ChemistryContext,
+)
 
 
 #: Bumped whenever a rule is added, removed or re-thresholded. Recorded on the
 #: run, because a tier is only comparable across runs together with the rules
 #: that produced it - the same statement the tier BANDS carry, for the same
 #: reason.
-TIERING_RULES_VERSION = 14
+TIERING_RULES_VERSION = 15
 
 #: The row's evidence is under the band its tier would need. Not a rule of
 #: this pass: the band is the floor every rule here lowers from, and naming it
@@ -349,6 +372,10 @@ REASON_PERSISTENCE_ONLY = "persistence_only"
 #: A line of the row's predicted envelope that the detectability gate says the
 #: spectrum should have shown, and that the spectrum does not hold.
 REASON_ABSENT_LINE = "absent_line"
+
+#: Step 3.6: a formula the run's context holds only on corroboration
+#: (:func:`context_prior_reason`).
+REASON_CONTEXT_PRIOR = "context_prior"
 
 #: The provenance block a monoisotopic row carries: the lines of its predicted
 #: envelope the absent-line rule asked about, and what the spectrum held at
@@ -1042,6 +1069,103 @@ def lone_peak_reason(row: dict, lines: Sequence[dict]) -> dict | None:
         f"one peak is all that saw {row.get('assigned_formula')}: {seen}, no "
         "second channel of this run committed the same neutral, no series of "
         "its batch anchors it, and it was not matched from a list",
+        caps=True,
+    )
+
+
+#: One part of an isotopologue's label (``"34S"``, ``"13C2"``): its mass number
+#: and its element. A label is its parts joined by ``+`` (``"13C+34S"``), and a
+#: line merged at the file's resolving power is ``"M+2"``, which names none.
+_LABEL_PART = re.compile(r"^(\d+)([A-Z][a-z]?)\d*$")
+
+#: Each element's lightest isotope, whose mass number never names a line.
+_LIGHTEST = {"S": 32, "N": 14}
+
+#: How each prior is named in a reason.
+_PRIOR_WORDS = {
+    PRIOR_SULFUR: "carries sulfur",
+    PRIOR_ODD_NITROGEN: "carries two or more nitrogens and fewer than two "
+    "oxygens per nitrogen",
+}
+
+
+def names_element(label: str | None, element: str) -> bool:
+    """Whether an isotopologue's label names a heavy isotope of ``element``.
+
+    ``"34S"`` and ``"13C+34S"`` name sulfur; ``"13C"`` does not, and neither
+    does a line merged at the file's resolving power (``"M+2"``), which holds
+    every isotopologue two units up and cannot say which of them it is.
+
+    :param label: The row's ``isotope_label``.
+    :param element: An element symbol.
+    :return: True where a part of the label is a heavy isotope of it.
+    """
+    for part in str(label or "").split("+"):
+        match = _LABEL_PART.match(part.strip())
+        if (
+            match
+            and match.group(2) == element
+            and int(match.group(1)) != _LIGHTEST.get(element)
+        ):
+            return True
+    return False
+
+
+def context_prior_reason(
+    row: dict, lines: Sequence[dict], context: ChemistryContext | None
+) -> dict | None:
+    """The run's context holds this formula's shape only on corroboration.
+
+    Step 3.6 of the assignment plan: every atmospheric context carries a
+    sulfur prior and an odd-nitrogen prior (``profiles.CONTEXT_PRIORS``), and
+    a formula meeting one reaches the top tier only where something beyond its
+    mass fit saw it. Three things are that: a second channel of the run
+    committing the same neutral, a homologous series of the batch, and a line
+    of the doubted element's own heavy isotope committed with the row - 34S for
+    sulfur, 15N for nitrogen. A 13C line is not: it proves the carbon count,
+    which the mass fit had already spent, and is what :func:`lone_peak_reason`
+    takes as a second observation. A list is not asked, for that rule's reason.
+
+    Fails open on a row whose channels were never recorded, as the lone-peak
+    rule does.
+
+    :param row: A committed monoisotopic row.
+    :param lines: Its committed isotopologue rows (:func:`isotope_lines`).
+    :param context: The run's chemistry context; None asks nothing.
+    :return: The reason, or None where the row meets no prior of the context
+        or something corroborates it.
+    """
+    if context is None or row.get("source") != SOURCE_UNTARGETED:
+        return None
+    met = context.priors_met(row.get("assigned_formula"))
+    if not met:
+        return None
+    cross_channel = _provenance(row).get("cross_channel")
+    if not isinstance(cross_channel, dict) or not isinstance(
+        cross_channel.get("channels"), list
+    ):
+        return None
+    if is_corroborated(row) or series_anchor(row) is not None:
+        return None
+    unseen = [
+        prior
+        for prior in met
+        if not any(
+            follows_its_owner(line)
+            and names_element(line.get("isotope_label"), PRIOR_ELEMENT[prior])
+            for line in lines
+        )
+    ]
+    if not unseen:
+        return None
+    shapes = " and ".join(_PRIOR_WORDS[prior] for prior in unseen)
+    own = " or ".join("34S" if prior == PRIOR_SULFUR else "15N" for prior in unseen)
+    return _reason(
+        REASON_CONTEXT_PRIOR,
+        f"{row.get('assigned_formula')} {shapes}, which the {context.label.lower()} "
+        "context holds only on corroboration: no second channel of this run "
+        f"committed the same neutral, no series of its batch anchors it, and no "
+        f"{own} line of its own is committed with it",
         caps=True,
     )
 
@@ -2155,6 +2279,7 @@ def apply_tiering(
     envelope_tolerance: EnvelopeTolerance | None = None,
     artifact_peak_ids: Iterable[str] = (),
     instrument_type: str | None = None,
+    context: ChemistryContext | None = None,
 ) -> dict:
     """Give every committed row its reasons, and cap the rows that earned it.
 
@@ -2185,6 +2310,8 @@ def apply_tiering(
         the absent-line rule reads as no line and no absence.
     :param instrument_type: The run's instrument class; on a ``"tof"`` a
         bromine or chlorine reading must show its own M+2 line.
+    :param context: The run's chemistry context, whose priors the
+        context-prior rule asks (:func:`context_prior_reason`); None asks none.
     :return: What the run should record about this pass: its rule version, what
         each rule capped, and the thresholds it capped on - a tier is only
         comparable across runs together with the rules that produced it.
@@ -2268,6 +2395,7 @@ def apply_tiering(
             polyhalide_cluster_reason(row, notation_by_id),
             density_reason(row),
             lone_peak_reason(row, own_lines),
+            context_prior_reason(row, own_lines, context),
             absent,
             unresolved_peak_reason(
                 row,
@@ -2399,6 +2527,13 @@ def apply_tiering(
         REASON_IN_SOURCE_FRAGMENT: in_source_fragment,
         "density_limit": DENSITY_LIMIT,
         "envelope_height_tolerance": ENVELOPE_HEIGHT_TOLERANCE,
+        # The context whose priors the context-prior rule asked, and which
+        # priors those were: none where the run named no context, or one that
+        # carries none.
+        "context_priors": {
+            "context": None if context is None else context.name,
+            "priors": [] if context is None else list(context.priors),
+        },
         # What the absent-line rule asked at, and what it found: the match
         # window and envelope floor, the threshold and where it came from,
         # the share asked without a signal-to-noise, whether a TOF's halogen
