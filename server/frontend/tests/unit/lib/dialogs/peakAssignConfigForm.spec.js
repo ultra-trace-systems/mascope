@@ -323,6 +323,40 @@ describe('PeakAssignConfigForm chemistry', () => {
     expect(resolvedText(wrapper).text()).toContain("The context is the profile's own.")
   })
 
+  // Step 3.6: on auto the context is the one the samples' batch or dataset
+  // names, and the form says which named it.
+  it.each([
+    ['batch', 'The context is the one the batch names.'],
+    ['dataset', 'The context is the one the dataset names.']
+  ])('says the context on auto is the one the %s names', async (source, said) => {
+    previewAnswer = [
+      resolution({ context: 'chamber', context_label: 'Chamber', context_source: source })
+    ]
+    const wrapper = await mountForm({ sampleItemId: 'si-1' })
+
+    expect(optionTexts(wrapper, 'assign_context')[0]).toBe('Auto (Chamber)')
+    const text = resolvedText(wrapper).text()
+    expect(text).toContain("Read off the sample's ionization mechanisms.")
+    expect(text).toContain(said)
+  })
+
+  it('says nothing of the data where the context is named for the run', async () => {
+    previewAnswer = [
+      resolution({
+        context: 'water',
+        context_label: 'Water',
+        requested_context: 'water',
+        context_source: 'config'
+      })
+    ]
+    const store = usePeakAssignParams()
+    const wrapper = await mountForm({ sampleItemId: 'si-1' })
+    store.params.context = 'none'
+    await flushPromises()
+
+    expect(resolvedText(wrapper).text()).not.toContain('names')
+  })
+
   it('puts a named chemistry back on auto with the other fields', async () => {
     const store = usePeakAssignParams()
     const wrapper = await mountForm()

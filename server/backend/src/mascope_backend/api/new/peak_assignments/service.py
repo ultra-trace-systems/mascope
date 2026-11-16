@@ -190,6 +190,9 @@ from mascope_backend.api.new.peak_assignments.mass_gate import (
     apply_mass_gate,
 )
 from mascope_backend.api.new.peak_assignments.peak_ids import load_peak_ids
+from mascope_backend.api.new.peak_assignments.profile_preview import (
+    named_context_for,
+)
 from mascope_backend.api.new.peak_assignments.profiles import (
     RESOLVED_PROFILE_KEY,
     ResolvedProfile,
@@ -4834,6 +4837,9 @@ async def _assign_sample(
             mechanism_notations=[m.ionization_mechanism for m in mechanisms],
             instrument_type=instrument_type,
             polarity=sample.polarity,
+            # The context the sample's batch or dataset names, which a run on
+            # `auto` takes before the profile's default (step 3.6).
+            named_context=await named_context_for(sample.sample_batch_id),
         )
         # -- Opportunistic channels (:func:`_resolve_secondary_channels`).
         resolved_profile, secondary_mechanisms = await _resolve_secondary_channels(
@@ -5680,6 +5686,7 @@ async def _fold_sample_peaks_without_run(
         mechanism_notations=[m.ionization_mechanism for m in mechanisms],
         instrument_type=instrument_type,
         polarity=sample.polarity,
+        named_context=await named_context_for(sample.sample_batch_id),
     )
     # The channels a run would read: the reagent pre-pass's ladder claim reads
     # them, Stage A reads the reference lists through them, and the passes

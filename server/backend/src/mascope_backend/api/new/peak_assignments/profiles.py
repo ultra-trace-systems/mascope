@@ -34,6 +34,7 @@ from mascope_tools.composition.models import (
     HeuristicFilterConfig,
 )
 from mascope_tools.composition.profiles import (
+    IDENTITY_PROFILE_NAME,
     ChemistryContext,
     ReagentProfile,
     detect_reagent_profile,
@@ -68,6 +69,45 @@ RESOLVED_PROFILE_KEY = "resolved_profile"
 SOURCE_PROFILE = "profile"
 SOURCE_CONFIG = "config"
 
+#: Where a context named on the data came from (step 3.6): the sample's batch,
+#: or its dataset. A run on ``auto`` reads the batch's before the dataset's,
+#: and either before the reagent profile's default.
+SOURCE_BATCH = "batch"
+SOURCE_DATASET = "dataset"
+
+
+@dataclass(frozen=True)
+class NamedContext:
+    """The chemistry context a sample's batch and its dataset name.
+
+    A dataset or a batch names the context its samples were drawn from once
+    (``Dataset.chemistry_context``, ``SampleBatch.chemistry_context``), so a
+    chamber experiment is not resolved as ambient air because nothing told
+    the run otherwise.
+
+    :param batch: The context the sample's batch names, or None.
+    :param dataset: The context the batch's dataset names, or None.
+    """
+
+    batch: str | None = None
+    dataset: str | None = None
+
+    def named(self) -> tuple[str, str] | None:
+        """The context a run on ``auto`` takes, and where it was named.
+
+        :return: ``(name, source)``, the batch's before the dataset's; None
+            where neither names one.
+        """
+        if self.batch:
+            return self.batch, SOURCE_BATCH
+        if self.dataset:
+            return self.dataset, SOURCE_DATASET
+        return None
+
+    def record(self) -> dict:
+        """What the run records of it, whichever it took."""
+        return {SOURCE_BATCH: self.batch, SOURCE_DATASET: self.dataset}
+
 
 @dataclass(frozen=True)
 class ResolvedProfile:
@@ -95,6 +135,12 @@ class ResolvedProfile:
     :param mode_channels: The notations the sample's ionization mode declares
         itself. A secondary channel the mode also declares is searched once,
         through the mode's mechanism, and stays secondary.
+    :param context_source: Where the context came from: :data:`SOURCE_CONFIG`
+        when the run named it, :data:`SOURCE_BATCH` or :data:`SOURCE_DATASET`
+        when the run asked ``auto`` and the data named one, and
+        :data:`SOURCE_PROFILE` when it fell to the reagent profile's default.
+    :param named_context: What the sample's batch and dataset named, whether
+        or not the run took it.
     """
 
     profile: ReagentProfile
@@ -109,6 +155,8 @@ class ResolvedProfile:
     channel_evidence: tuple[ChannelEvidence, ...] = ()
     unavailable_channels: tuple[str, ...] = ()
     mode_channels: tuple[str, ...] = ()
+    context_source: str = SOURCE_PROFILE
+    named_context: NamedContext = NamedContext()
 
     @property
     def minor_channels(self) -> frozenset[str]:
@@ -222,6 +270,10 @@ class ResolvedProfile:
             "context": self.context.name,
             "context_label": self.context.label,
             "requested_context": self.requested_context,
+            # Where the context came from (config, batch, dataset or profile),
+            # and what the sample's batch and dataset named, taken or not.
+            "context_source": self.context_source,
+            "named_context": self.named_context.record(),
             "element_ranges": self.element_ranges,
             "element_ranges_source": self.element_ranges_source,
             "mz_precision_ppm": self.mz_precision_ppm,
@@ -299,6 +351,7 @@ def resolve_profile(
     mechanism_notations: list[str] | tuple[str, ...] = (),
     instrument_type: str | None = None,
     polarity: str | None = None,
+    named_context: NamedContext | None = None,
 ) -> ResolvedProfile:
     """Resolve one run's assignment profile.
 
@@ -316,6 +369,12 @@ def resolve_profile(
         charge-transfer source, which is Orbitrap hardware.
     :param polarity: The sample's polarity: a profile it contradicts is never
         chosen, and it decides alone when no mechanism is diagnostic.
+    :param named_context: The context the sample's batch and dataset name. A
+        run on ``auto`` takes it before the profile's default, the batch's
+        before the dataset's; a run that names a context keeps its own, and
+        the identity profile keeps ``none``, since naming that profile is how
+        a run switches the layer off. A name the library no longer knows is
+        passed over for the profile's default rather than failing the run.
     :raises KeyError: The config names a profile or context that does not exist.
     :return: The resolution, ready to configure the search and be snapshotted.
     """
@@ -329,10 +388,21 @@ def resolve_profile(
     else:
         profile = get_reagent_profile(requested_profile)
 
-    if requested_context.lower() == AUTO:
-        context = get_chemistry_context(profile.default_context)
-    else:
+    named_context = named_context or NamedContext()
+    named = named_context.named()
+    context = None
+    if requested_context.lower() != AUTO:
         context = get_chemistry_context(requested_context)
+        context_source = SOURCE_CONFIG
+    elif named is not None and profile.name != IDENTITY_PROFILE_NAME:
+        name, context_source = named
+        try:
+            context = get_chemistry_context(name)
+        except KeyError:
+            context = None
+    if context is None:
+        context = get_chemistry_context(profile.default_context)
+        context_source = SOURCE_PROFILE
 
     if config.formula_ranges is not None:
         element_ranges = config.formula_ranges
@@ -361,6 +431,8 @@ def resolve_profile(
         mode_channels=tuple(
             mechanism_key(notation) for notation in mechanism_notations
         ),
+        context_source=context_source,
+        named_context=named_context,
     )
 
 
@@ -383,7 +455,9 @@ class SampleChemistry:
 
 
 def preview_resolutions(
-    config: PeakAssignmentConfig, chemistries: list[SampleChemistry]
+    config: PeakAssignmentConfig,
+    chemistries: list[SampleChemistry],
+    named_context: NamedContext | None = None,
 ) -> list[dict]:
     """What a run under this config would search under, one entry per answer.
 
@@ -396,6 +470,8 @@ def preview_resolutions(
 
     :param config: The run configuration whose profile and context to resolve.
     :param chemistries: The samples, grouped by mode and polarity.
+    :param named_context: The context the samples' batch and dataset name; a
+        preview reads one batch, or one sample, so they share it.
     :return: One record per distinct resolution, the most samples first.
     """
     previews: dict[tuple[str, str, str], dict] = {}
@@ -405,6 +481,7 @@ def preview_resolutions(
             chemistry.mechanism_notations,
             instrument_type=chemistry.instrument_type,
             polarity=chemistry.polarity,
+            named_context=named_context,
         )
         key = (
             resolved.profile.name,
@@ -422,6 +499,7 @@ def preview_resolutions(
                 "context": resolved.context.name,
                 "context_label": resolved.context.label,
                 "requested_context": resolved.requested_context,
+                "context_source": resolved.context_source,
                 "element_ranges": resolved.element_ranges,
                 "mz_precision_ppm": resolved.mz_precision_ppm,
                 "polarity": chemistry.polarity,

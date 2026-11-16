@@ -4,9 +4,10 @@ A run resolves its chemistry when it starts (``profiles.resolve_profile``) and
 records the answer on itself. A launcher that offers ``auto`` has to say what
 ``auto`` will mean before anything starts, and a batch launcher has to say it
 for every sample the search may reach. The resolution reads a sample's
-ionization mode, polarity and instrument class and nothing else, so the preview
-asks for those alone: three queries whatever the number of samples, since
-samples sharing all three resolve alike.
+ionization mode, polarity and instrument class, and the context its batch and
+dataset name, so the preview asks for those alone: four queries whatever the
+number of samples, since samples sharing all three resolve alike and one batch
+names one context.
 """
 
 from __future__ import annotations
@@ -16,10 +17,12 @@ from sqlalchemy import func, select
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.profiles import (
+    NamedContext,
     SampleChemistry,
     preview_resolutions,
 )
 from mascope_backend.db import (
+    Dataset,
     IonizationMechanism,
     IonizationMode,
     SampleBatch,
@@ -27,6 +30,33 @@ from mascope_backend.db import (
     SampleItem,
     async_session,
 )
+
+
+async def named_context_for(sample_batch_id: str | None, session=None) -> NamedContext:
+    """The chemistry context a batch and its dataset name (step 3.6).
+
+    One read for both, since a run on ``auto`` takes the batch's before the
+    dataset's and records what each named.
+
+    :param sample_batch_id: The batch a sample belongs to; None names nothing.
+    :param session: An open session to read in; None opens one.
+    :return: What the two name; empty where the batch does not exist.
+    """
+    if sample_batch_id is None:
+        return NamedContext()
+    statement = (
+        select(SampleBatch.chemistry_context, Dataset.chemistry_context)
+        .join(Dataset, Dataset.dataset_id == SampleBatch.dataset_id)
+        .where(SampleBatch.sample_batch_id == sample_batch_id)
+    )
+    if session is None:
+        async with async_session() as own:
+            found = (await own.execute(statement)).first()
+    else:
+        found = (await session.execute(statement)).first()
+    if found is None:
+        return NamedContext()
+    return NamedContext(batch=found[0], dataset=found[1])
 
 
 async def preview_profiles(
@@ -128,6 +158,17 @@ async def preview_profiles(
             if mechanism_ids
             else {}
         )
+        # A sample's batch, or the batch itself: either way one batch, so the
+        # samples share the context the batch and its dataset name.
+        if sample_batch_id is None:
+            sample_batch_id = (
+                await session.execute(
+                    select(SampleItem.sample_batch_id).where(
+                        SampleItem.sample_item_id == sample_item_id
+                    )
+                )
+            ).scalar()
+        named_context = await named_context_for(sample_batch_id, session)
     return preview_resolutions(
         config,
         [
@@ -144,4 +185,5 @@ async def preview_profiles(
             )
             for mode_id, polarity, instrument_type, count in groups
         ],
+        named_context=named_context,
     )

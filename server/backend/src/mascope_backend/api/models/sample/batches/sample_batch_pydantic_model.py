@@ -15,6 +15,16 @@ from mascope_backend.api.models.sample.batches.config import sample_batch_config
 from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
     SampleItemCreate,
 )
+from mascope_backend.api.new.peak_assignments.config import named_chemistry_context
+
+
+#: What the chemistry context field says, on every model that carries it.
+CHEMISTRY_CONTEXT_DESCRIPTION = (
+    "The chemistry context the batch's samples were drawn from, such as "
+    "'chamber' or 'ambient-air': a peak assignment run on 'auto' takes it "
+    "before its dataset's and before its reagent profile's default. Null names "
+    "none."
+)
 
 
 class SampleBatchBaseValidator:
@@ -35,6 +45,15 @@ class SampleBatchBaseValidator:
                 "Sample batch name cannot be empty or contain only whitespace."
             )
         return sample_batch_name
+
+    @field_validator("chemistry_context", check_fields=False)
+    @classmethod
+    def validate_chemistry_context(cls, value: str | None) -> str | None:
+        """Refuse a context nothing would resolve, and store its own name.
+
+        ``auto`` or a blank names none, as null does.
+        """
+        return named_chemistry_context(value)
 
 
 class SampleBatchValidator(SampleBatchBaseValidator):
@@ -102,6 +121,9 @@ class SampleBatchBase(BaseModel):
     polarity: str = Field(
         default=sample_batch_config.ANALYSIS_POLARITY,
         description="Polarity of the sample batch (+, -, or +-)",
+    )
+    chemistry_context: str | None = Field(
+        None, max_length=64, description=CHEMISTRY_CONTEXT_DESCRIPTION
     )
     model_config = ConfigDict(from_attributes=True)
 
@@ -201,6 +223,9 @@ class SampleBatchUpdate(SampleBatchBaseValidator, BaseModel):
     )
     sample_batch_description: str | None = Field(
         None, description="Description of the sample batch"
+    )
+    chemistry_context: str | None = Field(
+        None, max_length=64, description=CHEMISTRY_CONTEXT_DESCRIPTION
     )
     target_collection_ids: list[str] | None = Field(
         None,

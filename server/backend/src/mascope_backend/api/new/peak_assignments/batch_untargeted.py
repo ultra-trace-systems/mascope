@@ -104,6 +104,9 @@ from mascope_backend.api.new.peak_assignments.envelope_fit import (
     recorded_envelope_tolerance,
 )
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
+from mascope_backend.api.new.peak_assignments.profile_preview import (
+    named_context_for,
+)
 from mascope_backend.api.new.peak_assignments.profiles import (
     ResolvedProfile,
     resolve_profile,
@@ -868,6 +871,9 @@ async def _search_sample_peaks(
         mechanism_notations=[m.ionization_mechanism for m in mechanisms],
         instrument_type=get_instrument_type(sample.filename),
         polarity=sample.polarity,
+        # The context the batch or its dataset names, as a run of the sample
+        # reads it (step 3.6).
+        named_context=await named_context_for(sample.sample_batch_id),
     )
     # The opportunistic channels are read off this sample's own spectrum, on the
     # whole frame rather than the searched representatives: the evidence is the

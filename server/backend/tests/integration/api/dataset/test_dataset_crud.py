@@ -853,3 +853,50 @@ async def test_move_dataset_into_workspace_with_same_name_rejected(
             f"/api/workspaces/{test_workspace}/datasets/{dataset_id}"
         )
     ).status_code == 200
+
+
+# ============= Chemistry context =============
+
+
+@pytest.mark.asyncio
+async def test_a_dataset_names_its_chemistry_context(
+    test_workspace, editor_client, dataset_create_data
+):
+    """Step 3.6: a dataset names the context its samples were drawn from once,
+    stored by the context's own name; null or auto names none."""
+    create_response = await editor_client.post(
+        f"/api/workspaces/{test_workspace}/datasets",
+        json={**dataset_create_data, "chemistry_context": "smog-chamber"},
+    )
+    assert create_response.status_code == 201
+    dataset = create_response.json()["data"]
+    assert dataset["chemistry_context"] == "chamber"
+    url = f"/api/workspaces/{test_workspace}/datasets/{dataset['dataset_id']}"
+
+    # A field left out keeps it
+    renamed = await editor_client.patch(url, json={"dataset_description": "x"})
+    assert renamed.json()["data"]["chemistry_context"] == "chamber"
+
+    changed = await editor_client.patch(url, json={"chemistry_context": "Ambient"})
+    assert changed.status_code == 200
+    assert (await editor_client.get(url)).json()["data"][
+        "chemistry_context"
+    ] == "ambient-air"
+
+    for cleared in (None, "auto"):
+        response = await editor_client.patch(url, json={"chemistry_context": cleared})
+        assert response.status_code == 200
+        assert (await editor_client.get(url)).json()["data"][
+            "chemistry_context"
+        ] is None
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_chemistry_context_is_a_client_error(
+    test_workspace, editor_client, dataset_create_data
+):
+    response = await editor_client.post(
+        f"/api/workspaces/{test_workspace}/datasets",
+        json={**dataset_create_data, "chemistry_context": "mars"},
+    )
+    assert response.status_code in (400, 422)

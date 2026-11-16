@@ -432,9 +432,10 @@ class PeakAssignmentConfig(BaseModel):
     context: str = Field(
         DEFAULT_PROFILE,
         description=(
-            "Sampled-matrix preset: 'auto' takes the reagent profile's default, "
-            "'none' applies no matrix prior, or a context name such as "
-            "'ambient-air' or 'uronium'."
+            "Sampled-matrix preset: 'auto' takes the context the sample's batch "
+            "or dataset names, else the reagent profile's default; 'none' "
+            "applies no matrix prior, or a context name such as 'ambient-air' "
+            "or 'uronium'."
         ),
     )
     # Both are None by default, meaning "whatever the profile resolves to". They
@@ -665,3 +666,27 @@ def known_preset_name(value: str | None, field_name: str) -> str:
     except KeyError as unknown:
         raise ValueError(str(unknown)) from unknown
     return name
+
+
+def named_chemistry_context(value: str | None) -> str | None:
+    """The chemistry context a dataset or a batch names, checked and spelled once.
+
+    A dataset or a batch names the context its samples were drawn from, which
+    a run on ``auto`` takes before its reagent profile's default (step 3.6 of
+    the assignment quality plan). Stored by the context's own name, so an
+    alias a request sends (``"ambient"``) and the name (``"ambient-air"``)
+    are one value on the row.
+
+    :param value: The name as sent. Blank, or ``auto``, names no context:
+        ``auto`` is what a run asks when nothing was named, and storing it
+        would say the same thing a second way.
+    :raises ValueError: No context has the name.
+    :return: The context's name, or None for none.
+    """
+    name = (value or "").strip()
+    if not name or name.lower() == DEFAULT_PROFILE:
+        return None
+    try:
+        return get_chemistry_context(name).name
+    except KeyError as unknown:
+        raise ValueError(str(unknown)) from unknown

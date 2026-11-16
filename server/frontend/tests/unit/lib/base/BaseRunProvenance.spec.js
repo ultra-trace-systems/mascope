@@ -340,6 +340,24 @@ describe('BaseRunProvenance: the chemistry', () => {
     )
   })
 
+  // Step 3.6: on Auto the context is the one the sample's batch or dataset
+  // names, where either names one.
+  it.each([
+    ['batch', 'Chemistry context: Chamber, the one the batch names'],
+    ['dataset', 'Chemistry context: Chamber, the one the dataset names'],
+    ['profile', "Chemistry context: Chamber, the profile's own"]
+  ])('says where auto found a context the %s gave', (source, line) => {
+    const chip = mountRecording(
+      withChemistry({
+        ...RESOLVED,
+        context: 'chamber',
+        context_label: 'Chamber',
+        context_source: source
+      })
+    ).findAll('.tag')[1]
+    expect(chip.attributes('data-tooltip').split('\n')).toContain(line)
+  })
+
   it('shows the channels of a run recorded in the legacy notation in the standard one', () => {
     const chip = mountRecording(
       withChemistry({ ...RESOLVED, secondary_channels: ['+CO3-'], unavailable_channels: ['-H+'] })
