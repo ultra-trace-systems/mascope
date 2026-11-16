@@ -4665,6 +4665,157 @@ async def _seeded_rescore(
     )
 
 
+@dataclass(frozen=True)
+class _StageAFirstPass:
+    """Stage A's first pass: the frame scored at the tolerance it was handed and
+    the rows arbitrated on it (:func:`_stage_a_first_pass`).
+
+    :param rows: The assignment rows.
+    :param scored: The gated, fit-scored frame, which the envelope fit reads.
+    :param gated: The frame through the match parameters, before the fit score,
+        which a second pass scores again.
+    :param mass_accuracy: What the frame says of the sample's mass error.
+    :param confidence_calibration: The record of the confidence curve the rows'
+        P(correct) came from; None where Stage A never ran or the instrument
+        has no curve.
+    :param listed_formulas: The neutrals the lists read name, matched or not.
+    :param assignments_of: Arbitrates a scored frame into rows as this pass
+        did; None where the lists predicted nothing.
+    """
+
+    rows: list[dict]
+    scored: pd.DataFrame
+    gated: pd.DataFrame
+    mass_accuracy: SampleMassAccuracy
+    confidence_calibration: dict | None
+    listed_formulas: frozenset[str]
+    assignments_of: Callable[[pd.DataFrame], list[dict]] | None = None
+
+
+async def _stage_a_first_pass(
+    sample,
+    config: PeakAssignmentConfig,
+    match_params,
+    mechanism_ids,
+    mechanisms,
+    peak_assignment_run_id: str,
+    excluded_peak_ids: set[str] | None = None,
+    *,
+    fallback_sigma_ppm: float,
+    known_window: KnownWindow | None,
+    reagent_offset: ReagentOffset | None = None,
+    ionization_setup: dict | None = None,
+    reagent_profile: str | None = None,
+    inherited_accuracy: SampleMassAccuracy | None = None,
+    inherited_envelope: RunEnvelopeFit | None = None,
+) -> _StageAFirstPass:
+    """Stage A's first pass, at today's numbers - or a decoy's control's
+    tolerance - before any envelope tolerance is fitted.
+
+    What :func:`_stage_a_assignments` scores first and fits the run's tolerance
+    on. The parameters are :func:`_stage_a_assignments`'.
+    """
+    mass_accuracy = inherited_accuracy or SampleMassAccuracy(reagent=reagent_offset)
+    gated_df = match_isotope_df = pd.DataFrame()
+    known_isotopes_df = await _fetch_known_isotopes(
+        sample,
+        match_params.isotope_abundance_threshold,
+        mechanism_ids,
+        mechanisms,
+        known_window=known_window,
+    )
+    listed_formulas = listed_formula_identities(known_isotopes_df)
+    if not known_isotopes_df.empty:
+        match_isotope_df = await compute_match_isotopes(
+            filename=sample.filename,
+            target_isotopes_df=known_isotopes_df,
+            polarity=sample.polarity,
+        )
+        if excluded_peak_ids and not match_isotope_df.empty:
+            match_isotope_df = drop_ions_claimed_elsewhere(
+                match_isotope_df, excluded_peak_ids
+            )
+        # Gate raw matches by the sample's match parameters, exactly as the
+        # targeted Match pipeline does: this zeroes the score of peaks whose
+        # m/z error, isotope-ratio error, or intensity falls outside
+        # tolerance. Without it a peak tens of ppm off a target would be
+        # tiered "assigned" here while the Match tab reports no match.
+        if not match_isotope_df.empty:
+            gated_df = apply_match_params(match_isotope_df, match_params)
+            # Deliberately score Stage A with the fit score (score_pattern_v2):
+            # the peak-centric engine's scoring engine is the ion-level fit
+            # quality, not the targeted matcher's per-isotopologue term. Runs
+            # after gating so tolerance/intensity cuts carry into the fit.
+            # The fit counts the ions its lines come from as well as the lines:
+            # a few bright ions with many lines each would otherwise calibrate
+            # the sample on their own mass error (STAGE_A_FIT_MIN_IONS).
+            match_isotope_df = score_ions_by_fit(
+                gated_df,
+                fallback_sigma_ppm=fallback_sigma_ppm,
+                reagent_offset=reagent_offset,
+                min_anchor_ions=STAGE_A_FIT_MIN_IONS,
+                inherited_accuracy=inherited_accuracy,
+                # A decoy reads its control's tolerance from the start; any
+                # other run first today's numbers, since the fit reads the
+                # commits this pass makes.
+                envelope_tolerance=(
+                    None if inherited_envelope is None else inherited_envelope.tolerance
+                ),
+            )
+            # Read off the frame the fit was computed on, so Stage B is judged
+            # at the width Stage A was judged at rather than at one refitted
+            # over a different set of rows.
+            if inherited_accuracy is None:
+                mass_accuracy = sample_mass_accuracy(
+                    match_isotope_df,
+                    reagent=reagent_offset,
+                    min_anchor_ions=STAGE_A_FIT_MIN_IONS,
+                )
+        instrument = get_instrument_type(sample.filename)
+        # Load this instrument's confidence calibration from the D6 store (active DB row,
+        # else the in-code provisional curve, else None -> uncalibrated). Passing it in keeps
+        # the engine DB-free; its corroboration_weights drive the P3 adduct fold-in.
+        calibration = await load_calibration(
+            instrument,
+            SCORE_VERSION,
+            ionization_setup=ionization_setup,
+            reagent_profile=reagent_profile,
+        )
+        confidence_calibration = calibration_meta(
+            calibration, ionization_setup, reagent_profile
+        )
+
+        def assignments_of(scored_df: pd.DataFrame) -> list[dict]:
+            return invert_matches_to_peak_assignments(
+                scored_df,
+                sample_item_id=sample.sample_item_id,
+                peak_assignment_run_id=peak_assignment_run_id,
+                candidate_threshold=config.candidate_threshold,
+                assigned_threshold=config.assigned_threshold,
+                max_alternatives=config.max_alternatives,
+                instrument=instrument,
+                calibration=calibration,
+            )
+
+        return _StageAFirstPass(
+            rows=assignments_of(match_isotope_df),
+            scored=match_isotope_df,
+            gated=gated_df,
+            mass_accuracy=mass_accuracy,
+            confidence_calibration=confidence_calibration,
+            listed_formulas=listed_formulas,
+            assignments_of=assignments_of,
+        )
+    return _StageAFirstPass(
+        rows=[],
+        scored=match_isotope_df,
+        gated=gated_df,
+        mass_accuracy=mass_accuracy,
+        confidence_calibration=None,
+        listed_formulas=listed_formulas,
+    )
+
+
 async def _stage_a_assignments(
     sample,
     config: PeakAssignmentConfig,
@@ -4756,128 +4907,61 @@ async def _stage_a_assignments(
         (:func:`listed_formula_identities`), which corroborate a search row
         through a secondary channel (``engine._apply_minor_channel_policy``).
     """
-    stage_a_assignments: list[dict] = []
-    confidence_calibration: dict | None = None
-    mass_accuracy = inherited_accuracy or SampleMassAccuracy(reagent=reagent_offset)
-    gated_df = match_isotope_df = pd.DataFrame()
-    known_isotopes_df = await _fetch_known_isotopes(
+    first = await _stage_a_first_pass(
         sample,
-        match_params.isotope_abundance_threshold,
+        config,
+        match_params,
         mechanism_ids,
         mechanisms,
+        peak_assignment_run_id,
+        excluded_peak_ids,
+        fallback_sigma_ppm=fallback_sigma_ppm,
         known_window=known_window,
+        reagent_offset=reagent_offset,
+        ionization_setup=ionization_setup,
+        reagent_profile=reagent_profile,
+        inherited_accuracy=inherited_accuracy,
+        inherited_envelope=inherited_envelope,
     )
-    listed_formulas = listed_formula_identities(known_isotopes_df)
-    if not known_isotopes_df.empty:
-        match_isotope_df = await compute_match_isotopes(
-            filename=sample.filename,
-            target_isotopes_df=known_isotopes_df,
-            polarity=sample.polarity,
-        )
-        if excluded_peak_ids and not match_isotope_df.empty:
-            match_isotope_df = drop_ions_claimed_elsewhere(
-                match_isotope_df, excluded_peak_ids
-            )
-        # Gate raw matches by the sample's match parameters, exactly as the
-        # targeted Match pipeline does: this zeroes the score of peaks whose
-        # m/z error, isotope-ratio error, or intensity falls outside
-        # tolerance. Without it a peak tens of ppm off a target would be
-        # tiered "assigned" here while the Match tab reports no match.
-        if not match_isotope_df.empty:
-            gated_df = apply_match_params(match_isotope_df, match_params)
-            # Deliberately score Stage A with the fit score (score_pattern_v2):
-            # the peak-centric engine's scoring engine is the ion-level fit
-            # quality, not the targeted matcher's per-isotopologue term. Runs
-            # after gating so tolerance/intensity cuts carry into the fit.
-            # The fit counts the ions its lines come from as well as the lines:
-            # a few bright ions with many lines each would otherwise calibrate
-            # the sample on their own mass error (STAGE_A_FIT_MIN_IONS).
-            match_isotope_df = score_ions_by_fit(
-                gated_df,
-                fallback_sigma_ppm=fallback_sigma_ppm,
-                reagent_offset=reagent_offset,
-                min_anchor_ions=STAGE_A_FIT_MIN_IONS,
-                inherited_accuracy=inherited_accuracy,
-                # A decoy reads its control's tolerance from the start; any
-                # other run first today's numbers, since the fit reads the
-                # commits this pass makes.
-                envelope_tolerance=(
-                    None if inherited_envelope is None else inherited_envelope.tolerance
-                ),
-            )
-            # Read off the frame the fit was computed on, so Stage B is judged
-            # at the width Stage A was judged at rather than at one refitted
-            # over a different set of rows.
-            if inherited_accuracy is None:
-                mass_accuracy = sample_mass_accuracy(
-                    match_isotope_df,
-                    reagent=reagent_offset,
-                    min_anchor_ions=STAGE_A_FIT_MIN_IONS,
-                )
-        instrument = get_instrument_type(sample.filename)
-        # Load this instrument's confidence calibration from the D6 store (active DB row,
-        # else the in-code provisional curve, else None -> uncalibrated). Passing it in keeps
-        # the engine DB-free; its corroboration_weights drive the P3 adduct fold-in.
-        calibration = await load_calibration(
-            instrument,
-            SCORE_VERSION,
-            ionization_setup=ionization_setup,
-            reagent_profile=reagent_profile,
-        )
-        confidence_calibration = calibration_meta(
-            calibration, ionization_setup, reagent_profile
-        )
-
-        def assignments_of(scored_df: pd.DataFrame) -> list[dict]:
-            return invert_matches_to_peak_assignments(
-                scored_df,
-                sample_item_id=sample.sample_item_id,
-                peak_assignment_run_id=peak_assignment_run_id,
-                candidate_threshold=config.candidate_threshold,
-                assigned_threshold=config.assigned_threshold,
-                max_alternatives=config.max_alternatives,
-                instrument=instrument,
-                calibration=calibration,
-            )
-
-        stage_a_assignments = assignments_of(match_isotope_df)
     if inherited_envelope is not None:
         # A decoy's commits are wrong formulas on a moved axis, and few: it
         # fits no tolerance on them, and was scored at its control's above.
         return (
-            stage_a_assignments,
-            confidence_calibration,
-            mass_accuracy,
+            first.rows,
+            first.confidence_calibration,
+            first.mass_accuracy,
             inherited_envelope,
-            listed_formulas,
+            first.listed_formulas,
         )
     # The tolerance is fitted on what Stage A committed, which a sample with no
     # library match has nothing of: it can still take its siblings' curve.
     envelope = await fit_run_envelope_tolerance(
         sample,
-        match_isotope_df,
-        stage_a_assignments,
-        mass_accuracy=mass_accuracy,
+        first.scored,
+        first.rows,
+        mass_accuracy=first.mass_accuracy,
         fallback_sigma_ppm=fallback_sigma_ppm,
     )
-    if envelope.fit.level != LEVEL_DEFAULT and not gated_df.empty:
+    stage_a_assignments = first.rows
+    if envelope.fit.level != LEVEL_DEFAULT and not first.gated.empty:
         # Scored again from the gated frame at the fitted tolerance, and the
         # peaks arbitrated on that: the same width and offset, since those were
         # read off the frame and the tolerance moves neither.
-        match_isotope_df = score_ions_by_fit(
-            gated_df,
-            fallback_sigma_ppm=fallback_sigma_ppm,
-            reagent_offset=reagent_offset,
-            min_anchor_ions=STAGE_A_FIT_MIN_IONS,
-            envelope_tolerance=envelope.tolerance,
+        stage_a_assignments = first.assignments_of(
+            score_ions_by_fit(
+                first.gated,
+                fallback_sigma_ppm=fallback_sigma_ppm,
+                reagent_offset=reagent_offset,
+                min_anchor_ions=STAGE_A_FIT_MIN_IONS,
+                envelope_tolerance=envelope.tolerance,
+            )
         )
-        stage_a_assignments = assignments_of(match_isotope_df)
     return (
         stage_a_assignments,
-        confidence_calibration,
-        mass_accuracy,
+        first.confidence_calibration,
+        first.mass_accuracy,
         envelope,
-        listed_formulas,
+        first.listed_formulas,
     )
 
 
@@ -5901,60 +5985,14 @@ async def _fold_sample_peaks_without_run(
     config = PeakAssignmentConfig(run_untargeted=False)
     match_params = await default_match_params(sample_item_id)
     peaks_df = load_sample_peaks(sample)
-    mechanism_ids, mechanisms = await fetch_sample_mechanisms(sample)
     # The rows are shaped as ledger rows - the fold reads them as such - and
     # stamped with the derived run's id: the run they will never be.
     run_id = fold_run_id(sample_item_id)
-    # Both pre-passes run here too. The untargeted stage is off on this path,
-    # but they are not part of it: a reagent peak is the source's chemistry and
-    # a sidelobe is the detector's, whichever way the sample was assigned, and
-    # an ingest fold that left either unassigned would disagree with the run
-    # that later replaces it.
-    # The instrument type matters here even though this path never runs the
-    # untargeted stage: it also sets the window the reagent pre-pass claims in,
-    # so leaving it out had the fold claiming at the 10 ppm fallback while a run
-    # on the same sample claimed at an Orbitrap's 3 - exactly the drift between
-    # the two ledgers the shared helper exists to prevent. It is read
-    # defensively because the parse raises for a sample that keeps no data file
-    # and whose name does not say, and standing down is this path's contract.
-    try:
-        instrument_type = get_instrument_type(sample.filename)
-    except ValueError:
-        instrument_type = None
-    resolved_profile = resolve_profile(
-        config,
-        mechanism_notations=[m.ionization_mechanism for m in mechanisms],
-        instrument_type=instrument_type,
-        polarity=sample.polarity,
-        named_context=await named_context_for(sample.sample_batch_id),
-    )
-    # The channels a run would read: the reagent pre-pass's ladder claim reads
-    # them, Stage A reads the reference lists through them, and the passes
-    # below read them.
-    resolved_profile, secondary_mechanisms = await _resolve_secondary_channels(
-        sample, resolved_profile, peaks_df
-    )
-    searched_mechanisms = _searched_mechanisms(
-        mechanisms, secondary_mechanisms, resolved_profile
-    )
-    # Read once, for the two passes here that predict an isotope line: the
-    # reagent pre-pass and the mass gate, as a run reads them.
-    resolution = await _resolution_of(sample)
-    # As a run takes its batch's word (step 4.2h), so the two ledgers agree.
-    reagent, reagent_peak_ids, reagent_offset = _reagent_assignments(
-        peaks_df,
-        resolved_profile,
-        sample_item_id,
-        run_id,
-        resolution=resolution,
-        own_mechanisms=searched_mechanisms,
-        sample_name=sample.sample_item_name,
-        batch_species=await batch_species_for(sample),
-    )
-    artifact, artifact_peak_ids = _artifact_assignments(
-        peaks_df, instrument_type, sample_item_id, run_id, reagent_peak_ids
-    )
-    claimed_peak_ids = reagent_peak_ids | artifact_peak_ids
+    inputs = await _stage_a_inputs(sample, config, peaks_df, run_id)
+    resolved_profile = inputs.resolved_profile
+    searched_mechanisms = inputs.searched_mechanisms
+    reagent, artifact = inputs.reagent, inputs.artifact
+    claimed_peak_ids = inputs.claimed_peak_ids
     # Stage A's rows here are scored at the tolerance it fits, as a run's are,
     # but there is no run to record it on: the sample's later readers read it
     # at today's numbers, and its siblings' pools leave its lines out (#2989).
@@ -5962,13 +6000,13 @@ async def _fold_sample_peaks_without_run(
         sample,
         config,
         match_params,
-        mechanism_ids,
+        inputs.mechanism_ids,
         searched_mechanisms,
         run_id,
         excluded_peak_ids=claimed_peak_ids,
         fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
         known_window=resolved_profile.context.known_window,
-        reagent_offset=reagent_offset,
+        reagent_offset=inputs.reagent_offset,
     )
     _hold_opened_channel_readings(
         stage_a,
@@ -6001,7 +6039,7 @@ async def _fold_sample_peaks_without_run(
         stage_a,
         stage_a_accuracy=mass_accuracy,
         fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
-        lines=SpectrumLines.from_peaks(peaks_df, resolution),
+        lines=SpectrumLines.from_peaks(peaks_df, inputs.resolution),
         reagent_lines=reagent,
         source_line_cap=await _source_line_cap(sample),
     )
@@ -6045,6 +6083,111 @@ async def _fold_sample_peaks_without_run(
         ],
         persisted=False,
         defer_consensus_to=defer_consensus_to,
+    )
+
+
+@dataclass(frozen=True)
+class _StageAInputs:
+    """What Stage A reads of a sample beside its peaks, composed without a run
+    (:func:`_stage_a_inputs`).
+
+    :param mechanism_ids: The mode's mechanism ids, which the target library is
+        read through.
+    :param searched_mechanisms: The mechanisms the reference lists are read
+        through: the mode's own and the secondary channels the sample opens.
+    :param resolved_profile: The sample's resolved chemistry, its channels
+        resolved.
+    :param resolution: The file's resolving power; None where it has none.
+    :param reagent: The reagent pre-pass's rows.
+    :param reagent_offset: Where the pre-pass's lines put the mass axis.
+    :param artifact: The artifact pre-pass's rows.
+    :param claimed_peak_ids: The peaks the two pre-passes claimed, which
+        Stage A is not offered.
+    """
+
+    mechanism_ids: list[str]
+    searched_mechanisms: list[SimpleNamespace]
+    resolved_profile: ResolvedProfile
+    resolution: Callable[[float], float] | None
+    reagent: list[dict]
+    reagent_offset: ReagentOffset | None
+    artifact: list[dict]
+    claimed_peak_ids: set[str]
+
+
+async def _stage_a_inputs(
+    sample, config: PeakAssignmentConfig, peaks_df: pd.DataFrame, run_id: str
+) -> _StageAInputs:
+    """Compose Stage A's inputs for a sample the way a run does, without one.
+
+    The run-less fold reads its sample through it, so it does not drift from
+    what a run of that sample would hand Stage A.
+
+    :param sample: The sample view row.
+    :param config: The configuration the chemistry is resolved under.
+    :param peaks_df: The sample's peaks (:func:`load_sample_peaks`).
+    :param run_id: The id the pre-passes' rows are stamped with.
+    :return: The inputs.
+    """
+    mechanism_ids, mechanisms = await fetch_sample_mechanisms(sample)
+    # Both pre-passes run here too. The untargeted stage is off on this path,
+    # but they are not part of it: a reagent peak is the source's chemistry and
+    # a sidelobe is the detector's, whichever way the sample was assigned, and
+    # an ingest fold that left either unassigned would disagree with the run
+    # that later replaces it.
+    # The instrument type matters here even though this path never runs the
+    # untargeted stage: it also sets the window the reagent pre-pass claims in,
+    # so leaving it out had the fold claiming at the 10 ppm fallback while a run
+    # on the same sample claimed at an Orbitrap's 3 - exactly the drift between
+    # the two ledgers the shared helper exists to prevent. It is read
+    # defensively because the parse raises for a sample that keeps no data file
+    # and whose name does not say, and standing down is this path's contract.
+    try:
+        instrument_type = get_instrument_type(sample.filename)
+    except ValueError:
+        instrument_type = None
+    resolved_profile = resolve_profile(
+        config,
+        mechanism_notations=[m.ionization_mechanism for m in mechanisms],
+        instrument_type=instrument_type,
+        polarity=sample.polarity,
+        named_context=await named_context_for(sample.sample_batch_id),
+    )
+    # The channels a run would read: the reagent pre-pass's ladder claim reads
+    # them, Stage A reads the reference lists through them, and the passes
+    # after it read them.
+    resolved_profile, secondary_mechanisms = await _resolve_secondary_channels(
+        sample, resolved_profile, peaks_df
+    )
+    searched_mechanisms = _searched_mechanisms(
+        mechanisms, secondary_mechanisms, resolved_profile
+    )
+    # Read once, for the passes that predict an isotope line: the reagent
+    # pre-pass, and on the fold the mass gate, as a run reads them.
+    resolution = await _resolution_of(sample)
+    # As a run takes its batch's word (step 4.2h), so the two ledgers agree.
+    reagent, reagent_peak_ids, reagent_offset = _reagent_assignments(
+        peaks_df,
+        resolved_profile,
+        sample.sample_item_id,
+        run_id,
+        resolution=resolution,
+        own_mechanisms=searched_mechanisms,
+        sample_name=sample.sample_item_name,
+        batch_species=await batch_species_for(sample),
+    )
+    artifact, artifact_peak_ids = _artifact_assignments(
+        peaks_df, instrument_type, sample.sample_item_id, run_id, reagent_peak_ids
+    )
+    return _StageAInputs(
+        mechanism_ids=mechanism_ids,
+        searched_mechanisms=searched_mechanisms,
+        resolved_profile=resolved_profile,
+        resolution=resolution,
+        reagent=reagent,
+        reagent_offset=reagent_offset,
+        artifact=artifact,
+        claimed_peak_ids=reagent_peak_ids | artifact_peak_ids,
     )
 
 
