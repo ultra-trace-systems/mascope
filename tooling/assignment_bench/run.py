@@ -523,6 +523,15 @@ def restore(instance, say: Callable[[str], None]) -> bool:
         return False
     record = json.loads(point.read_text(encoding="utf-8"))
     dump = Path(record["dump"])
+    if not dump.exists():
+        # Checked before anything is dropped: without its dump the record
+        # can only empty the database, again on every retry.
+        raise RunError(
+            f"the restore point {point} names a dump that is gone ({dump}); the "
+            "database is left as it is. `bench.py init --rebuild` starts the bench "
+            "over, or delete the record once the migration of "
+            f"{record['ref']} is on develop"
+        )
     say(
         f"putting the database back to {', '.join(record['revisions']) or 'nothing'} "
         f"from the dump taken before {record['ref']} at {record['sha'][:9]} migrated it"
@@ -536,6 +545,24 @@ def restore(instance, say: Callable[[str], None]) -> bool:
         )
     point.unlink()
     dump.unlink(missing_ok=True)
+    return True
+
+
+def discard_restore_point(home, say: Callable[[str], None]) -> bool:
+    """Drop a restore point and its dump without putting it back: for
+    ``init --rebuild``, which replaces the database the dump would be
+    restored over, and the state that describes it.
+
+    :return: Whether there was one.
+    """
+    point = home.restore_point
+    if not point.exists():
+        return False
+    record = json.loads(point.read_text(encoding="utf-8"))
+    dump = Path(record["dump"])
+    dump.unlink(missing_ok=True)
+    point.unlink()
+    say(f"discarded the restore point taken before {record['ref']} migrated ({dump})")
     return True
 
 

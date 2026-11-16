@@ -1182,6 +1182,9 @@ class DevInstance:
 
         container, user, database = self._db()
         _, mount = dirs(transfer=False, mode="dev")
+        if not dump.exists():
+            # Before the drop, as ``mascope dev db restore`` checks.
+            raise BenchError(f"cannot restore {database}: {dump} does not exist")
         try:
             drop_database(container, user, database)
             create_database(container, user, database)
@@ -1516,6 +1519,9 @@ class Bench:
             log(f"--rebuild: dropping env {self.instance.env}'s database and filestore")
             self.instance.stop()
             self.instance.drop()
+            # The dump of a run that never put the database back would
+            # otherwise be restored over the rebuilt database by the next run.
+            bench_run.discard_restore_point(self.home, log)
             for path in (self.home.creds, self.home.env_file):
                 path.unlink(missing_ok=True)
             state = new_state(self.instance.env)

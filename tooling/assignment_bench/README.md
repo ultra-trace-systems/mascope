@@ -282,7 +282,11 @@ named `<database>_<timestamp>_bench-restore-point.dump`, and goes with the
 record. A run stopped before its restore, by a kill or a failed restore,
 leaves the record. The next bench command that migrates (`run`, `reference`,
 `review --record`) puts it back before anything else, and refuses to go on
-while it cannot. Only the database goes back: anything the ref's runs
+while it cannot. A record whose dump is gone is refused before the
+database is touched. To get out of a restore that keeps failing, run `init
+--rebuild`, which drops the database and discards the restore point with
+its dump, or delete `restore.json` once the ref's migration is on develop.
+Only the database goes back: anything the ref's runs
 wrote to the filestore stays there, with no row pointing at it.
 
 ## Asking for a card on a PR
