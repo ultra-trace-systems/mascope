@@ -4732,8 +4732,10 @@ async def _stage_a_first_pass(
             polarity=sample.polarity,
         )
         if excluded_peak_ids and not match_isotope_df.empty:
-            match_isotope_df = drop_ions_claimed_elsewhere(
-                match_isotope_df, excluded_peak_ids
+            # Off the event loop, as the arbitration below: seconds on a large
+            # frame, which held every other request of the server behind it.
+            match_isotope_df = await asyncio.to_thread(
+                drop_ions_claimed_elsewhere, match_isotope_df, excluded_peak_ids
             )
         # Gate raw matches by the sample's match parameters, exactly as the
         # targeted Match pipeline does: this zeroes the score of peaks whose
@@ -4798,7 +4800,9 @@ async def _stage_a_first_pass(
             )
 
         return _StageAFirstPass(
-            rows=assignments_of(match_isotope_df),
+            # Off the event loop: the arbitration takes seconds on a large
+            # frame, which held every other request of the server behind it.
+            rows=await asyncio.to_thread(assignments_of, match_isotope_df),
             scored=match_isotope_df,
             gated=gated_df,
             mass_accuracy=mass_accuracy,
@@ -4947,14 +4951,15 @@ async def _stage_a_assignments(
         # Scored again from the gated frame at the fitted tolerance, and the
         # peaks arbitrated on that: the same width and offset, since those were
         # read off the frame and the tolerance moves neither.
-        stage_a_assignments = first.assignments_of(
+        stage_a_assignments = await asyncio.to_thread(
+            first.assignments_of,
             score_ions_by_fit(
                 first.gated,
                 fallback_sigma_ppm=fallback_sigma_ppm,
                 reagent_offset=reagent_offset,
                 min_anchor_ions=STAGE_A_FIT_MIN_IONS,
                 envelope_tolerance=envelope.tolerance,
-            )
+            ),
         )
     return (
         stage_a_assignments,
