@@ -173,6 +173,7 @@ class TestTheTwin:
             "twin_explained",
             "twin_claimed",
             "ion_has_halogen",
+            "ion_has_silicon",
             "own_nitrogen_line",
             "another_ions_line",
             "halogen_not_read",
@@ -193,6 +194,10 @@ class TestTheTwin:
             claimed = [TWIN]
         elif case == "ion_has_halogen":
             rows = [reading(M0, "C6H5", "C6H5Cl+", mechanism="[M+Cl]+")]
+        elif case == "ion_has_silicon":
+            # A 30Si line sits 0.2 mDa from the 37Cl offset: the incumbent's
+            # own line, left uncommitted, is no chlorine twin.
+            rows = [reading(M0, "C4H4O2Si", "C4H4O2Si+")]
         elif case == "own_nitrogen_line":
             rows.append(reading(M0 + 0.997, "C5H4N2", "C5H4N2+", label="15N"))
         elif case == "another_ions_line":
