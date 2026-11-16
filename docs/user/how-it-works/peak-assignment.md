@@ -609,8 +609,9 @@ that the defaults. Each of the six is measured afresh, the way the run measures 
 lines and under the run's own settings, never read from a run of its own. So the pooled
 measurement is the same whichever files of the batch were run first, or at the same
 time. A blank, or a file with no peak list, takes no place among the six. Measuring them
-adds about a minute to a thin file's run, and the run records which files it pooled, the
-lines each gave and the time they span. On a TOF the run measures one offset and one
+adds about a minute to a thin file's run, though thin files run at the same time share
+the measurements they have in common. The run records which files it pooled, the lines
+each gave and the time they span. On a TOF the run measures one offset and one
 spread of how its lines read against their shares, since a TOF's signal-to-noise column
 is not read that way yet. The run records which of these it used, and a formula measured
 on its own afterwards - *Use this*, the inspector's evidence - is read at the tolerance
