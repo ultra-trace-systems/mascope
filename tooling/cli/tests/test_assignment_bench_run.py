@@ -629,6 +629,24 @@ def test_a_restore_that_misses_the_revisions_keeps_its_record(rig):
     assert rig.home.restore_point.exists() and dump.exists()
 
 
+def test_a_restore_point_whose_dump_is_gone_touches_nothing(rig):
+    said = []
+    dump = rig.home.root / "gone.dump"
+    rig.home.write_private(
+        rig.home.restore_point,
+        json.dumps({"dump": str(dump), "revisions": ["r2"], "ref": "t", "sha": BRANCH}),
+    )
+    rig.instance.db = ["r3"]
+    rig.instance.sha = DEVELOP
+
+    with pytest.raises(brun.RunError, match="names a dump that is gone"):
+        brun.migrate(rig.instance, "develop", DEVELOP, said.append)
+    assert not [c for c in rig.instance.calls if c[0] == "restore"]
+    assert "migrate" not in rig.instance.calls
+    assert rig.instance.db == ["r3"]
+    assert rig.home.restore_point.exists()
+
+
 def test_a_ref_older_than_the_database_is_refused_before_anything_starts(rig):
     rig.instance.db = ["r3"]
 
@@ -2124,6 +2142,8 @@ def test_the_dev_instance_dumps_its_own_database_into_the_dev_backups(
 
 def test_the_dev_instance_restores_into_a_new_empty_database(tmp_path, monkeypatch):
     dev, seen, dump = _dev_pg(tmp_path, monkeypatch)
+    dump.parent.mkdir(parents=True)
+    dump.write_bytes(b"dump")
     dev.restore(dump)
     db = ("pg", "owner", "the_db")
     assert seen == [
@@ -2135,6 +2155,13 @@ def test_the_dev_instance_restores_into_a_new_empty_database(tmp_path, monkeypat
     dev, seen, dump = _dev_pg(tmp_path, monkeypatch, fail="pg_restore")
     with pytest.raises(bench.BenchError, match="cannot restore the_db"):
         dev.restore(dump)
+
+
+def test_the_dev_instance_drops_nothing_for_a_dump_that_is_gone(tmp_path, monkeypatch):
+    dev, seen, dump = _dev_pg(tmp_path, monkeypatch)
+    with pytest.raises(bench.BenchError, match="does not exist"):
+        dev.restore(dump)
+    assert seen == []
 
 
 def test_the_dev_backend_starts_with_the_workers_asked_for(tmp_path, monkeypatch):

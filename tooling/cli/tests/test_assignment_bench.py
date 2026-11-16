@@ -973,6 +973,23 @@ def test_a_rebuild_drops_the_instance_and_builds_it_again(rig, tmp_path):
     assert ("bundle_seed", "9.9.9") in instance.calls
 
 
+def test_a_rebuild_discards_a_restore_point_left_behind(rig, tmp_path):
+    b, instance, api, home = rig
+    path = _two_sets(tmp_path)
+    b.init(path)
+    dump = tmp_path / "bench_restore.dump"
+    dump.write_text("old")
+    home.write_private(
+        home.restore_point,
+        json.dumps({"dump": str(dump), "revisions": ["r2"], "ref": "t", "sha": "b"}),
+    )
+
+    assert b.init(path, rebuild=True) == 0
+
+    assert not home.restore_point.exists()
+    assert not dump.exists()
+
+
 def test_keep_running_leaves_the_backend_up(rig, tmp_path):
     b, instance, api, home = rig
 
