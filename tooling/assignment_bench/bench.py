@@ -184,6 +184,12 @@ class Home:
     def pid(self) -> Path:
         return self.root / "backend.pid"
 
+    @property
+    def restore_point(self) -> Path:
+        """The dump a run of a ref off develop took before it migrated the
+        database, while the database is not yet back from it (``run.py``)."""
+        return self.root / "restore.json"
+
     def make(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         self.root.chmod(0o700)
@@ -869,6 +875,12 @@ class Instance(Protocol):
     def migrate(self) -> None:
         """Migrate the env's database to the checked-out ref's head."""
 
+    def snapshot(self) -> Path:
+        """Dump the env's database; the dump's path."""
+
+    def restore(self, dump: Path) -> None:
+        """Replace the env's database with a dump ``snapshot`` took."""
+
     def remove_worktree(self) -> None:
         """Remove the checked-out build; the env, its slot and its data stay."""
 
@@ -1142,6 +1154,42 @@ class DevInstance:
     def migrate(self) -> None:
         """``mascope dev migrate upgrade`` with the worktree's alembic, on the env."""
         self._cli("dev", "migrate", "upgrade")
+
+    def snapshot(self) -> Path:
+        """A custom-format dump of the env's database, in the dev backups.
+
+        The bench's own, not the one ``mascope dev migrate upgrade`` keeps:
+        that one is skipped with a warning when it fails, and a run must not
+        migrate a database it cannot put back.
+        """
+        from mascope_cli.pg.admin import pg_dump
+        from mascope_cli.pg.utils import dirs
+
+        container, user, database = self._db()
+        target, mount = dirs(transfer=False, mode="dev")
+        try:
+            return pg_dump(
+                container, user, database, target, mount, label="bench-restore-point"
+            )
+        except RuntimeError as error:
+            raise BenchError(f"cannot dump {database}: {error}") from None
+
+    def restore(self, dump: Path) -> None:
+        """Drop the env's database, create it empty and restore ``dump`` into
+        it, as ``mascope dev db restore`` does; nothing may hold it open."""
+        from mascope_cli.pg.admin import create_database, drop_database, pg_restore
+        from mascope_cli.pg.utils import dirs
+
+        container, user, database = self._db()
+        _, mount = dirs(transfer=False, mode="dev")
+        try:
+            drop_database(container, user, database)
+            create_database(container, user, database)
+            pg_restore(container, user, database, dump, mount)
+        except (RuntimeError, FileNotFoundError) as error:
+            raise BenchError(
+                f"cannot restore {database} from {dump}: {error}"
+            ) from None
 
     def remove_worktree(self) -> None:
         wt = self.home.worktree

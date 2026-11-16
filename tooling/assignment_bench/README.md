@@ -161,7 +161,9 @@ box in the caller's own session, one run at a time. In order:
    revision is refused, with the revision named: a later build migrated the
    database, and alembic cannot go back on a ref that lacks it. Otherwise it
    migrates the database to the ref's head with `mascope dev migrate
-   upgrade`, which keeps a dump from before.
+   upgrade`, which keeps a dump from before. For a ref whose head is not on
+   develop, it first takes a dump of its own, the restore point, and fails
+   the run if it cannot ("After a branch with a migration of its own").
 3. **The backend.** It starts the ref's backend and file converter on the
    bench slot, with peak assignment on, and signs in. The backend has
    `--workers N` uvicorn workers (default 4), where the dev defaults have
@@ -213,9 +215,10 @@ box in the caller's own session, one run at a time. In order:
    the hosts. The bench then scrubs every file the comparison wrote again
    with the same list. A card either refuses is reported, by file, and never
    written.
-10. **The cleanup.** It stops the ref's backend and removes its worktree,
-    also when a step fails. The instance stays: its env, slot, database and
-    filestore.
+10. **The cleanup.** It stops the ref's backend, puts the database back
+    from the restore point if step 2 took one, and removes the ref's
+    worktree, also when a step fails. The instance stays: its env, slot,
+    database and filestore.
 
 It exits 0 when the card passes its gate with no sample left out, 1 when
 the gate fails or something was left out or a decoy run failed, and 2 when
@@ -263,10 +266,24 @@ the gate line and the diff line. It names no sample: those are in
 `run.log`. Paste the card or the diff, never `run.log`.
 
 **After a branch with a migration of its own.** Benching such a branch
-moves the bench database to the branch's revision. develop is then refused,
-by the rule above, until that migration is on develop. A branch whose
-migration never lands leaves the bench where only `init --rebuild` brings
-it back (#3171).
+moves the bench database to the branch's revision, which develop does not
+know: develop would be refused by the rule above until that migration
+lands, and for good when a rebase gives it a new revision (#3171). So a run
+of a ref whose head is not on develop dumps the database before it
+migrates, and puts it back from that dump once the ref's backend has
+stopped. The database is then where it was before the run, at develop's
+revision. The ref's own runs go with it, which no later card reads. A
+ref on develop, or one whose database needs no migration, takes no dump.
+
+The restore point is recorded in `restore.json` in the bench's home until
+the database is back at the revisions it was dumped at; the dump itself is
+in the dev backups of the runtime home (`.runtime/database/backups/dev/`),
+named `<database>_<timestamp>_bench-restore-point.dump`, and goes with the
+record. A run stopped before its restore, by a kill or a failed restore,
+leaves the record. The next bench command that migrates (`run`, `reference`,
+`review --record`) puts it back before anything else, and refuses to go on
+while it cannot. Only the database goes back: anything the ref's runs
+wrote to the filestore stays there, with no row pointing at it.
 
 ## Asking for a card on a PR
 

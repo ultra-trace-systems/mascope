@@ -40,6 +40,9 @@ DEVELOP = "d" * 40
 BRANCH = "b" * 40
 PIN_VERSION = "1.0.0+assign0.4"
 
+#: The last calls of a run of the branch, whose migration is put back.
+BRANCH_CLEANUP = ["stop", ("restore", "bench_0.dump"), "remove_worktree"]
+
 
 # ------------------------------------------------------------- the fakes
 
@@ -60,6 +63,8 @@ class FakeInstance:
         }
         self.sha = None
         self.on_develop = {DEVELOP}
+        self.dumps = []
+        self.restore_fails = False
         #: Per (sha, onto), the merge base; develop's head by default.
         self.merge_bases = {}
         #: (ancestor, sha) pairs beside a commit being its own ancestor.
@@ -107,6 +112,19 @@ class FakeInstance:
     def migrate(self):
         self.calls.append("migrate")
         self.db = list(self.revisions[self.sha][0])
+
+    def snapshot(self):
+        self.calls.append("snapshot")
+        dump = self.home.root / f"bench_{len(self.dumps)}.dump"
+        dump.write_text(json.dumps(self.db))
+        self.dumps.append(dump)
+        return dump
+
+    def restore(self, dump):
+        self.calls.append(("restore", dump.name))
+        if self.restore_fails:
+            raise bench.BenchError("cannot restore")
+        self.db = json.loads(dump.read_text())
 
     def start(self, peak_assignment=False, workers=1):
         self.calls.append(("start", peak_assignment))
@@ -454,8 +472,13 @@ def test_a_run_builds_the_ref_runs_every_sample_and_writes_the_card(rig, capsys)
     # stopped and its worktree removed once the card is written.
     assert calls[:3] == ["check_env", "bind", ("checkout", "topic")]
     assert calls.index("migrate") < calls.index(("start", True))
-    assert calls[-2:] == ["stop", "remove_worktree"]
-    assert rig.instance.db == ["r3"]
+    # The ref is not on develop: the database is dumped before its migration
+    # and put back once the backend has stopped, before the worktree goes.
+    assert calls.index("snapshot") == calls.index("migrate") - 1
+    assert calls[-3:] == BRANCH_CLEANUP
+    assert rig.instance.db == ["r2"]
+    assert not rig.home.restore_point.exists()
+    assert not rig.instance.dumps[0].exists()
     assert not rig.home.worktree.exists()
     # Every sample once, with the plan's default config: the engine's own.
     assert sorted((s, c) for s, _, c in rig.server.assigned) == [
@@ -485,7 +508,12 @@ def test_a_run_builds_the_ref_runs_every_sample_and_writes_the_card(rig, capsys)
     ]
     summary = json.loads((out / "run.json").read_text())
     assert summary["sha"] == BRANCH and summary["develop"] == DEVELOP
-    assert summary["migration"] == {"from": ["r2"], "to": ["r3"]}
+    assert summary["migration"] == {
+        "from": ["r2"],
+        "to": ["r3"],
+        "restore_point": True,
+        "restored": True,
+    }
     assert summary["reference"] == {"pin": "v1.0.0", "version": PIN_VERSION}
     assert summary["sets"]["Db"]["read"] == 2 and summary["sets"]["Et"]["read"] == 1
     assert summary["card"]["verdict"] == "pass" and summary["is_baseline"] is False
@@ -507,6 +535,98 @@ def test_a_run_builds_the_ref_runs_every_sample_and_writes_the_card(rig, capsys)
 def test_a_database_already_at_the_ref_s_head_is_not_migrated(rig):
     assert rig.run("develop") == 0
     assert "migrate" not in rig.instance.calls
+
+
+def test_develop_runs_after_a_branch_with_a_migration_of_its_own(rig, capsys):
+    assert rig.run("topic") == 0
+    printed = capsys.readouterr().out
+    assert "topic is not on develop: dumping the database at r2" in printed
+    assert "putting the database back to r2" in printed
+
+    assert rig.run("develop") == 0
+    assert rig.instance.calls[:3] == ["check_env", "bind", ("checkout", "develop")]
+    assert "migrate" not in rig.instance.calls
+    assert rig.instance.db == ["r2"]
+
+
+def test_a_ref_on_develop_migrates_without_a_dump(rig):
+    rig.instance.db = ["r1"]
+
+    assert rig.run("develop") == 0
+    calls = rig.instance.calls
+    assert "migrate" in calls and "snapshot" not in calls
+    assert not [c for c in calls if c[0] == "restore"]
+    assert rig.instance.db == ["r2"]
+    summary = json.loads((rig.card_dir() / "run.json").read_text())
+    assert summary["migration"] == {
+        "from": ["r1"],
+        "to": ["r2"],
+        "restore_point": False,
+    }
+
+
+def test_a_ref_off_develop_that_needs_no_migration_takes_no_dump(rig):
+    rig.instance.shas["topic"] = "c" * 40
+    rig.instance.revisions["c" * 40] = (["r2"], ["r1", "r2"])
+
+    assert rig.run("topic") == 0
+    assert "snapshot" not in rig.instance.calls
+    assert "migrate" not in rig.instance.calls
+
+
+def test_a_database_that_cannot_be_dumped_is_not_migrated(rig):
+    def broken():
+        raise bench.BenchError("cannot dump")
+
+    rig.instance.snapshot = broken
+    with pytest.raises(bench.BenchError, match="cannot dump"):
+        rig.run("topic")
+    assert "migrate" not in rig.instance.calls
+    assert ("start", True) not in rig.instance.calls
+    assert rig.instance.db == ["r2"]
+    assert not rig.home.restore_point.exists()
+
+
+def test_a_failed_restore_is_kept_and_the_next_command_puts_it_back(rig, capsys):
+    rig.instance.restore_fails = True
+
+    assert rig.run("topic") == 0
+    assert "the database could not be put back" in capsys.readouterr().out
+    assert rig.instance.db == ["r3"]
+    assert rig.home.restore_point.exists() and rig.instance.dumps[0].exists()
+    summary = json.loads((rig.card_dir() / "run.json").read_text())
+    assert summary["migration"]["restored"] is False
+    assert (
+        "restore failed: BenchError: cannot restore"
+        in (rig.card_dir() / "run.log").read_text()
+    )
+
+    # develop's run puts it back before it reads the revisions, and is not
+    # refused on the branch's.
+    rig.instance.restore_fails = False
+    assert rig.run("develop") == 0
+    calls = rig.instance.calls
+    assert calls[3] == ("restore", "bench_0.dump")
+    assert "migrate" not in calls
+    assert rig.instance.db == ["r2"]
+    assert not rig.home.restore_point.exists()
+    assert not rig.instance.dumps[0].exists()
+
+
+def test_a_restore_that_misses_the_revisions_keeps_its_record(rig):
+    said = []
+    dump = rig.home.root / "old.dump"
+    dump.write_text(json.dumps(["r9"]))
+    rig.home.write_private(
+        rig.home.restore_point,
+        json.dumps({"dump": str(dump), "revisions": ["r2"], "ref": "t", "sha": BRANCH}),
+    )
+    rig.instance.sha = DEVELOP
+
+    with pytest.raises(brun.RunError, match="restored database is at r9, not at r2"):
+        brun.migrate(rig.instance, "develop", DEVELOP, said.append)
+    assert "migrate" not in rig.instance.calls
+    assert rig.home.restore_point.exists() and dump.exists()
 
 
 def test_a_ref_older_than_the_database_is_refused_before_anything_starts(rig):
@@ -788,7 +908,7 @@ def test_a_set_over_its_budget_is_not_on_the_card(rig, capsys):
     assert (
         "set Db: over its budget of 0 min; not on the card" in capsys.readouterr().out
     )
-    assert rig.instance.calls[-2:] == ["stop", "remove_worktree"]
+    assert rig.instance.calls[-3:] == BRANCH_CLEANUP
 
 
 def test_each_set_has_a_budget_of_its_own(rig):
@@ -888,7 +1008,7 @@ def test_leaving_the_engine_runs_stops_every_job_at_its_next_poll(rig, leave):
         None,
         "mz_shift_ppm=+9",
     }
-    assert rig.instance.calls[-2:] == ["stop", "remove_worktree"]
+    assert rig.instance.calls[-3:] == BRANCH_CLEANUP
 
 
 def test_a_job_that_breaks_behind_a_running_sample_stops_the_run_when_it_breaks(rig):
@@ -908,7 +1028,7 @@ def test_a_job_that_breaks_behind_a_running_sample_stops_the_run_when_it_breaks(
         runner.run("topic", decoys=True, sets=["Db"])
 
     assert rig.clock() < 600
-    assert rig.instance.calls[-2:] == ["stop", "remove_worktree"]
+    assert rig.instance.calls[-3:] == BRANCH_CLEANUP
 
 
 def test_a_sample_still_queued_when_a_job_breaks_launches_no_run(rig):
@@ -1099,7 +1219,7 @@ def test_a_planted_name_never_reaches_the_card(rig, capsys, where, plant, edit):
         assert token not in printed
     assert "the bench's scrub refused the card" in (out / "run.log").read_text()
     # The stack is still taken down.
-    assert rig.instance.calls[-2:] == ["stop", "remove_worktree"]
+    assert rig.instance.calls[-3:] == BRANCH_CLEANUP
 
 
 def test_a_card_the_comparison_refused_is_reported_and_never_written(rig, capsys):
@@ -1130,7 +1250,10 @@ def test_the_backend_stops_and_the_worktree_goes_when_the_comparison_breaks(rig)
     rig.compare = broken
     with pytest.raises(RuntimeError, match="compare broke"):
         rig.run("topic")
-    assert rig.instance.calls[-2:] == ["stop", "remove_worktree"]
+    assert rig.instance.calls[-3:] == BRANCH_CLEANUP
+    # The branch's migration is put back on a failed run too.
+    assert rig.instance.db == ["r2"]
+    assert not rig.home.restore_point.exists()
 
 
 def test_develop_s_head_with_baseline_becomes_the_rolling_baseline(rig, capsys):
@@ -1952,6 +2075,66 @@ def test_the_dev_instance_migrates_with_the_worktree_s_cli(tmp_path, monkeypatch
     monkeypatch.setattr(dev, "_cli", lambda *args, check=True: seen.append(args))
     dev.migrate()
     assert seen == [("dev", "migrate", "upgrade")]
+
+
+def _dev_pg(tmp_path, monkeypatch, fail=None):
+    """A dev instance whose database tools are recorded, ``fail`` raising."""
+    from mascope_cli.pg import admin, utils
+
+    dev = bench.DevInstance(bench.Home(tmp_path / "home"), runtime=tmp_path)
+    monkeypatch.setattr(dev, "_db", lambda: ("pg", "owner", "the_db"))
+    monkeypatch.setattr(
+        utils, "dirs", lambda transfer, mode: (tmp_path / f"backups-{mode}", "/b")
+    )
+    seen = []
+
+    def tool(name, result=None):
+        def call(*args, **kwargs):
+            seen.append((name, args, kwargs))
+            if name == fail:
+                raise RuntimeError(f"{name} broke")
+            return result
+
+        return call
+
+    dump = tmp_path / "backups-dev" / "x.dump"
+    monkeypatch.setattr(admin, "pg_dump", tool("pg_dump", dump))
+    for name in ("drop_database", "create_database", "pg_restore"):
+        monkeypatch.setattr(admin, name, tool(name))
+    return dev, seen, dump
+
+
+def test_the_dev_instance_dumps_its_own_database_into_the_dev_backups(
+    tmp_path, monkeypatch
+):
+    dev, seen, dump = _dev_pg(tmp_path, monkeypatch)
+    assert dev.snapshot() == dump
+    assert seen == [
+        (
+            "pg_dump",
+            ("pg", "owner", "the_db", tmp_path / "backups-dev", "/b"),
+            {"label": "bench-restore-point"},
+        )
+    ]
+
+    dev, _, _ = _dev_pg(tmp_path, monkeypatch, fail="pg_dump")
+    with pytest.raises(bench.BenchError, match="cannot dump the_db"):
+        dev.snapshot()
+
+
+def test_the_dev_instance_restores_into_a_new_empty_database(tmp_path, monkeypatch):
+    dev, seen, dump = _dev_pg(tmp_path, monkeypatch)
+    dev.restore(dump)
+    db = ("pg", "owner", "the_db")
+    assert seen == [
+        ("drop_database", db, {}),
+        ("create_database", db, {}),
+        ("pg_restore", (*db, dump, "/b"), {}),
+    ]
+
+    dev, seen, dump = _dev_pg(tmp_path, monkeypatch, fail="pg_restore")
+    with pytest.raises(bench.BenchError, match="cannot restore the_db"):
+        dev.restore(dump)
 
 
 def test_the_dev_backend_starts_with_the_workers_asked_for(tmp_path, monkeypatch):

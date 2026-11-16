@@ -9,8 +9,9 @@ One run, behind the bench's lock:
 1. It checks the ref out into the bench's worktree (``uv sync --frozen``). It
    migrates the bench database forward with the ref's alembic, and refuses a
    ref that does not know the database's revision: a later build migrated it.
-   It starts the ref's backend on the bench slot with peak assignment on and
-   ``--workers`` uvicorn workers.
+   Before it migrates for a ref whose head is not on develop, it dumps the
+   database, to put it back in step 6. It starts the ref's backend on the
+   bench slot with peak assignment on and ``--workers`` uvicorn workers.
 2. It refuses to read a sample whose reference run is missing, or is not the
    run the pinned reference published (``bench reference``).
 3. It runs the in-app engine on every other sample of the chosen sets with the
@@ -25,7 +26,10 @@ One run, behind the bench's lock:
    and a run of develop's head with ``--baseline`` becomes the next baseline.
 5. It scrubs the card again with the bench's whole deny list, the instance's
    own names and ids included, before anything is written.
-6. It stops the ref's backend and removes its worktree. The instance stays.
+6. It stops the ref's backend, puts the database back from the dump of step
+   1 if it took one, and removes the ref's worktree. The instance stays. A
+   dump not yet put back, by a run that was stopped, is put back by the next
+   command that migrates, before anything else.
 7. With ``--post <pr>`` it posts the card on the PR as one comment, edited in
    place on a re-run (``post.py``): the card, a refused card's refusal, or a
    failed run's error, each scrubbed again. ``--post`` diffs against develop's
@@ -440,13 +444,27 @@ class Outcome:
     detail: str | None = None
 
 
-def migrate(instance, ref: str, sha: str, say: Callable[[str], None]) -> dict:
+def migrate(
+    instance,
+    ref: str,
+    sha: str,
+    say: Callable[[str], None],
+    restore_point: bool = False,
+) -> dict:
     """Move the bench database to the checked-out ref's head, or refuse an
     older ref: one that does not know the database's revision, since a later
     build migrated it and alembic cannot go back on a ref that lacks it.
 
-    :return: ``{"from": [...], "to": [...]}``, the revisions before and after.
+    A restore point an earlier run left is put back first (:func:`restore`).
+    With ``restore_point`` a migration is preceded by a dump of the database,
+    recorded in the bench's home until :func:`restore` puts it back. A run of
+    a ref whose head is not on develop asks for one, so that the revision of
+    a branch's own migration never stays on the bench (#3171).
+
+    :return: ``{"from": [...], "to": [...], "restore_point": bool}``, the
+        revisions before and after, and whether a dump was taken.
     """
+    restore(instance, say)
     current = sorted(instance.db_revisions())
     heads, known = instance.ref_revisions()
     heads = sorted(heads)
@@ -460,7 +478,21 @@ def migrate(instance, ref: str, sha: str, say: Callable[[str], None]) -> dict:
         )
     if current == heads:
         say(f"the database is at the ref's head ({', '.join(heads)})")
-        return {"from": current, "to": heads}
+        return {"from": current, "to": heads, "restore_point": False}
+    if restore_point:
+        say(
+            f"{ref} is not on develop: dumping the database at "
+            f"{', '.join(current) or 'nothing'}, to put it back after the run"
+        )
+        dump = instance.snapshot()
+        instance.home.write_private(
+            instance.home.restore_point,
+            json.dumps(
+                {"dump": str(dump), "revisions": current, "ref": ref, "sha": sha},
+                indent=1,
+            )
+            + "\n",
+        )
     say(
         f"migrating the database from {', '.join(current) or 'nothing'} "
         f"to the ref's head {', '.join(heads)}"
@@ -472,7 +504,39 @@ def migrate(instance, ref: str, sha: str, say: Callable[[str], None]) -> dict:
             f"the migration left the database at {', '.join(after)}, not at "
             f"the ref's head {', '.join(heads)}"
         )
-    return {"from": current, "to": after}
+    return {"from": current, "to": after, "restore_point": restore_point}
+
+
+def restore(instance, say: Callable[[str], None]) -> bool:
+    """Put the database back from the restore point :func:`migrate` took, if
+    one is recorded; nothing may hold the database open.
+
+    The record goes, and its dump with it, only once the database is back at
+    the revisions it was dumped at. Until then every bench command that
+    migrates tries again first, so a run stopped between its migration and
+    its restore leaves nothing a later run of develop is refused on.
+
+    :return: Whether there was one to put back.
+    """
+    point = instance.home.restore_point
+    if not point.exists():
+        return False
+    record = json.loads(point.read_text(encoding="utf-8"))
+    dump = Path(record["dump"])
+    say(
+        f"putting the database back to {', '.join(record['revisions']) or 'nothing'} "
+        f"from the dump taken before {record['ref']} at {record['sha'][:9]} migrated it"
+    )
+    instance.restore(dump)
+    after = sorted(instance.db_revisions())
+    if after != sorted(record["revisions"]):
+        raise RunError(
+            f"the restored database is at {', '.join(after) or 'nothing'}, not at "
+            f"{', '.join(record['revisions']) or 'nothing'}; the restore point is kept"
+        )
+    point.unlink()
+    dump.unlink(missing_ok=True)
+    return True
 
 
 # ---------------------------------------------------------------- comparison
@@ -771,7 +835,13 @@ class BenchRun:
                 if no_diff:
                     say(no_diff)
                     base = None
-            summary["migration"] = migrate(self.instance, ref, sha, say)
+            summary["migration"] = migrate(
+                self.instance,
+                ref,
+                sha,
+                say,
+                restore_point=not self.instance.is_on_develop(sha),
+            )
             base_url = self.instance.start(peak_assignment=True, workers=self.workers)
             self.connect(base_url)
             creds = read_env_file(self.home.env_file)
@@ -796,6 +866,20 @@ class BenchRun:
             )
         finally:
             self.instance.stop()
+            # After the backend, which holds the database open; before the
+            # worktree goes. A restore that fails keeps its record, and the
+            # next bench command that migrates tries it again.
+            try:
+                if restore(self.instance, say) and summary["migration"]:
+                    summary["migration"]["restored"] = True
+            except Exception as error:  # noqa: BLE001
+                if summary["migration"]:
+                    summary["migration"]["restored"] = False
+                runlog.note(f"restore failed: {type(error).__name__}: {error}")
+                say(
+                    "the database could not be put back (run.log says why); the "
+                    "next bench command that migrates tries again"
+                )
             self.instance.remove_worktree()
             say(
                 "the ref's backend is stopped and its worktree removed; the instance stays"
