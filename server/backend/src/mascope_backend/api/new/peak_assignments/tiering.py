@@ -286,13 +286,18 @@ from mascope_tools.composition.heuristic_filter import (
     DETECT_SNR_K,
     REL_DETECT_NO_SNR,
     anchor_on_monoisotopic,
+    context_skeleton_groups,
     element_counts,
     neutral_is_closed_shell,
+    nox_skeletons,
     oxygen_free_cluster,
     polyhalide_cluster,
     predict_resolved_isotopes,
 )
-from mascope_tools.composition.implausibility import implausible_signatures
+from mascope_tools.composition.implausibility import (
+    implausible_signatures,
+    skeleton_spared_signatures,
+)
 from mascope_tools.composition.profiles import (
     PRIOR_ELEMENT,
     PRIOR_ODD_NITROGEN,
@@ -376,6 +381,11 @@ REASON_ABSENT_LINE = "absent_line"
 #: Step 3.6: a formula the run's context holds only on corroboration
 #: (:func:`context_prior_reason`).
 REASON_CONTEXT_PRIOR = "context_prior"
+
+#: Step 3.6: a formula only the carbon skeleton of its organonitrate groups
+#: admits (:func:`nox_skeleton_reason`), and the record a batch search's row
+#: carries of it (:func:`hold_skeleton_readings`).
+REASON_NOX_SKELETON = "nox_skeleton"
 
 #: The provenance block a monoisotopic row carries: the lines of its predicted
 #: envelope the absent-line rule asked about, and what the spectrum held at
@@ -1168,6 +1178,134 @@ def context_prior_reason(
         f"{own} line of its own is committed with it",
         caps=True,
     )
+
+
+def _hill(counts: dict[str, int]) -> str:
+    """A formula's counts in Hill order: carbon, hydrogen, then the rest."""
+    order = ["C", "H"] if counts.get("C") else []
+    order += sorted(element for element in counts if element not in order)
+    return "".join(
+        f"{element}{counts[element] if counts[element] > 1 else ''}"
+        for element in order
+        if counts.get(element)
+    )
+
+
+def skeleton_reading(
+    formula: str | None, context: ChemistryContext | None
+) -> dict | None:
+    """How the carbon skeleton of a formula's organonitrate groups changed it.
+
+    Step 3.6's rider: where a run reads the skeleton
+    (``profiles.nox_skeleton_applies``), the context's windows and the
+    implausibility signatures judge it beside the formula, and a reading
+    either one admits only on the skeleton is one the skeleton changed.
+
+    :param formula: The neutral formula.
+    :param context: The run's chemistry context.
+    :return: ``groups`` (how many groups the windows needed taken off, 0 where
+        the formula passed them as it is), ``skeleton`` (the skeleton they
+        passed, or None), ``spared`` (the signatures only the skeleton
+        spares); None where the skeleton changed nothing.
+    """
+    counts = element_counts(formula or "")
+    if not counts or context is None:
+        return None
+    groups = context_skeleton_groups(counts, context.ratio_windows()) or 0
+    spared = skeleton_spared_signatures(formula)
+    if not groups and not spared:
+        return None
+    skeleton = None
+    if groups:
+        nitrogen = counts.get("N", 0)
+        skeleton = next(
+            _hill(reading)
+            for reading in nox_skeletons(counts)
+            if nitrogen - reading.get("N", 0) == groups
+        )
+    return {"groups": groups, "skeleton": skeleton, "spared": list(spared)}
+
+
+def nox_skeleton_reason(
+    row: dict, context: ChemistryContext | None, nox_skeleton: bool
+) -> dict | None:
+    """The row stands on the carbon skeleton of its organonitrate groups.
+
+    An -ONO2 or -NO2 group adds a nitrogen, two oxygens and one
+    ring-or-double-bond to its skeleton, so a dinitrate, a trinitrate or a
+    nitroaromatic fails windows written for CHO skeletons. Where the run reads
+    the skeleton, such a formula is searched, and a row whose outcome the
+    skeleton changed - the context's windows admit it only on the skeleton, or
+    an implausibility signature is spared only there - is a candidate at most:
+    the reading widens what the run commits, not what it stands behind. On
+    the reference engine's NOx-chemistry nitrate batch, the 59 rows its own
+    skeleton reading admitted were all judged right at that tier.
+
+    Asks only the formula search's rows: a list's row was never filtered on
+    the windows.
+
+    :param row: A committed monoisotopic row.
+    :param context: The run's chemistry context.
+    :param nox_skeleton: Whether the run reads the skeleton.
+    :return: The reason, or None where the run does not read it or it changed
+        nothing about the row.
+    """
+    if not nox_skeleton or row.get("source") != SOURCE_UNTARGETED:
+        return None
+    reading = skeleton_reading(row.get("assigned_formula"), context)
+    if reading is None:
+        return None
+    said = []
+    if reading["groups"]:
+        groups = reading["groups"]
+        said.append(
+            f"passes the {context.label.lower()} context's windows only as the "
+            f"carbon skeleton of its {_count_word(groups)} organonitrate "
+            f"{'group' if groups == 1 else 'groups'}, {reading['skeleton']}"
+        )
+    if reading["spared"]:
+        names = " and ".join(name.replace("_", " ") for name in reading["spared"])
+        said.append(f"is spared the {names} signature only on that skeleton")
+    return _reason(
+        REASON_NOX_SKELETON,
+        f"{row.get('assigned_formula')} {', and '.join(said)}: a reading the "
+        "skeleton admits is a candidate at most",
+        caps=True,
+    )
+
+
+def hold_skeleton_readings(rows: Iterable[dict], context: ChemistryContext) -> int:
+    """Hold a batch search's skeleton readings at candidate, in place.
+
+    A batch search runs no tiering pass, and its rows' tiers are what its
+    members take, so the one rule of this pass its own search makes needed
+    is asked here: a reading only the skeleton admits
+    (:func:`nox_skeleton_reason`) is held at ``candidate``, with its
+    isotopologue rows, and carries :data:`REASON_NOX_SKELETON` in its
+    provenance, as a run's row carries it among its reasons.
+
+    :param rows: The search's rows.
+    :param context: The sample's chemistry context.
+    :return: How many monoisotopic readings it held.
+    """
+    rows = list(rows)
+    held: set[str] = set()
+    for row in rows:
+        if row.get("role") != ROLE_M0 or not row.get("assigned_formula"):
+            continue
+        reason = nox_skeleton_reason(row, context, True)
+        if reason is None:
+            continue
+        _provenance(row)[REASON_NOX_SKELETON] = reason
+        _cap(row)
+        held.add(str(row.get("peak_assignment_id")))
+    for row in rows:
+        if (
+            row.get("role") == ROLE_ISO_CHILD
+            and str(row.get("owner_peak_assignment_id")) in held
+        ):
+            _cap(row)
+    return len(held)
 
 
 def detect_threshold(tolerance: EnvelopeTolerance | None) -> tuple[float, str]:
@@ -2039,7 +2177,7 @@ def envelope_reason(row: dict, on_a_neighbours_line: dict[str, dict]) -> dict | 
     }
 
 
-def implausibility_reasons(row: dict) -> list[dict]:
+def implausibility_reasons(row: dict, nox_skeleton: bool = False) -> list[dict]:
     """The named shapes of a formula that fits a mass and not a chemistry.
 
     A CURATED row is exempt, for the reason the radical rule gives: every
@@ -2052,6 +2190,10 @@ def implausibility_reasons(row: dict) -> list[dict]:
     ion, which took 7 assigned rows the reference confirms none of, and the
     oxygen lattice on peroxyacetyl nitrate, a species these sources are built
     to see.
+
+    With ``nox_skeleton`` (step 3.6) a signature counts only where the carbon
+    skeleton of the formula's organonitrate groups carries it too; one only
+    the skeleton spares is :func:`nox_skeleton_reason`'s to name.
     """
     if row.get("source") == SOURCE_DATABASE:
         return []
@@ -2062,7 +2204,9 @@ def implausibility_reasons(row: dict) -> list[dict]:
             "signature of a formula arrived at by mass rather than by chemistry",
             caps=True,
         )
-        for signature in implausible_signatures(row.get("assigned_formula"))
+        for signature in implausible_signatures(
+            row.get("assigned_formula"), nox_skeleton=nox_skeleton
+        )
     ]
 
 
@@ -2280,6 +2424,7 @@ def apply_tiering(
     artifact_peak_ids: Iterable[str] = (),
     instrument_type: str | None = None,
     context: ChemistryContext | None = None,
+    nox_skeleton: bool = False,
 ) -> dict:
     """Give every committed row its reasons, and cap the rows that earned it.
 
@@ -2312,6 +2457,9 @@ def apply_tiering(
         bromine or chlorine reading must show its own M+2 line.
     :param context: The run's chemistry context, whose priors the
         context-prior rule asks (:func:`context_prior_reason`); None asks none.
+    :param nox_skeleton: Whether the run reads the carbon skeleton of an
+        organonitrate (:func:`nox_skeleton_reason`), which the implausibility
+        signatures then read too.
     :return: What the run should record about this pass: its rule version, what
         each rule capped, and the thresholds it capped on - a tier is only
         comparable across runs together with the rules that produced it.
@@ -2396,6 +2544,7 @@ def apply_tiering(
             density_reason(row),
             lone_peak_reason(row, own_lines),
             context_prior_reason(row, own_lines, context),
+            nox_skeleton_reason(row, context, nox_skeleton),
             absent,
             unresolved_peak_reason(
                 row,
@@ -2407,7 +2556,7 @@ def apply_tiering(
         ):
             if reason:
                 reasons.append(reason)
-        reasons.extend(implausibility_reasons(row))
+        reasons.extend(implausibility_reasons(row, nox_skeleton))
         mine = [
             reason
             for reason in reasons
@@ -2534,6 +2683,9 @@ def apply_tiering(
             "context": None if context is None else context.name,
             "priors": [] if context is None else list(context.priors),
         },
+        # Whether the windows and the signatures read an organonitrate's
+        # carbon skeleton, so rows only it admits were held (step 3.6).
+        "nox_skeleton": nox_skeleton,
         # What the absent-line rule asked at, and what it found: the match
         # window and envelope floor, the threshold and where it came from,
         # the share asked without a signal-to-noise, whether a TOF's halogen

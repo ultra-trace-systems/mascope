@@ -42,6 +42,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     REASON_ENVELOPE_NEIGHBOUR,
     REASON_INHERITED,
     REASON_LONE_PEAK,
+    REASON_NOX_SKELETON,
     REASON_SECOND_LINE,
     REASON_UNRESOLVED_PEAK,
     SEPARATED_THROUGH,
@@ -183,6 +184,7 @@ def judge(
     resolution=None,
     source_line_cap=None,
     context=None,
+    nox_skeleton=False,
 ):
     return judge_commits(
         rows,
@@ -196,6 +198,7 @@ def judge(
         resolution=resolution,
         source_line_cap=source_line_cap,
         context=context,
+        nox_skeleton=nox_skeleton,
     )
 
 
@@ -738,6 +741,15 @@ class TestTheContextReachesTheTieringPass:
     def test_without_a_context_it_keeps_its_tier(self):
         judged = judge(self.sulfur())
         assert by_id(judged.rows)["pa-s"]["tier"] == "assigned"
+
+    def test_a_skeleton_reading_is_held_where_the_run_reads_the_skeleton(self):
+        dinitrate = commit("pa-n", "C5H8N2O8", "C5H8N3O11-", 270.0, 1000.0)
+        rows = anchors() + [dinitrate, seen_again(dinitrate, 450.0)]
+        judged = judge(rows, context=presets.AMBIENT_AIR, nox_skeleton=True)
+        row = by_id(judged.rows)["pa-n"]
+        assert row["tier"] == "candidate"
+        assert REASON_NOX_SKELETON in rules(row)
+        assert judged.tiering["nox_skeleton"] is True
 
 
 class TestTheBandsReachTheReasons:

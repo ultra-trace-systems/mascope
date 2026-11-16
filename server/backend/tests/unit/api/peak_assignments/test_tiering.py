@@ -52,6 +52,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     REASON_MINOR_CHANNEL,
     REASON_NO_CLOSE_RIVAL,
     REASON_NOT_MEASURED,
+    REASON_NOX_SKELETON,
     REASON_ODD_ELECTRON,
     REASON_OFF_CALIBRATION,
     REASON_ON_A_LIST,
@@ -72,6 +73,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     critical_separation,
     envelope_neighbours,
     find_envelope_claims,
+    hold_skeleton_readings,
     names_element,
     predicted_envelope,
     separated,
@@ -657,6 +659,85 @@ class TestTheContextPriors:
     )
     def test_which_labels_name_an_element(self, label, element, named):
         assert names_element(label, element) is named
+
+
+class TestTheOrganonitrateSkeleton:
+    """Step 3.6's rider: a reading only an organonitrate's skeleton admits."""
+
+    #: A C5 dinitrate: O/C 1.6 against ambient air's 1.5, and an oxygen
+    #: lattice as a formula; a C5 diol as its skeleton.
+    DINITRATE = "C5H8N2O8"
+
+    def reason(self, rows: list[dict], row_id: str = "pa-1") -> dict:
+        return next(
+            r for r in reasons_of(rows, row_id) if r["rule"] == REASON_NOX_SKELETON
+        )
+
+    def test_a_reading_only_the_skeleton_admits_is_a_candidate(self):
+        rows = [row("pa-1", self.DINITRATE, channels=SEEN_TWICE)]
+        summary = run(rows, context=presets.AMBIENT_AIR, nox_skeleton=True)
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert summary["capped_by_rule"] == {REASON_NOX_SKELETON: 1}
+        assert summary["nox_skeleton"] is True
+        assert self.reason(rows) == {
+            "rule": REASON_NOX_SKELETON,
+            "detail": (
+                "C5H8N2O8 passes the ambient air context's windows only as the "
+                "carbon skeleton of its two organonitrate groups, C5H10O4, and "
+                "is spared the oxygen lattice signature only on that skeleton: a "
+                "reading the skeleton admits is a candidate at most"
+            ),
+            "caps": True,
+        }
+
+    def test_the_lattice_is_named_by_the_skeleton_rule_not_as_a_signature(self):
+        rows = [row("pa-1", self.DINITRATE, channels=SEEN_TWICE)]
+        run(rows, context=presets.AMBIENT_AIR, nox_skeleton=True)
+        assert "oxygen_lattice" not in rules_on(rows, "pa-1")
+        rows = [row("pa-1", self.DINITRATE, channels=SEEN_TWICE)]
+        run(rows, context=presets.AMBIENT_AIR)
+        assert "oxygen_lattice" in rules_on(rows, "pa-1")
+
+    def test_its_isotopologue_follows_it(self):
+        rows = [
+            row("pa-1", self.DINITRATE, channels=SEEN_TWICE),
+            line_of("pa-1", formula=self.DINITRATE),
+        ]
+        run(rows, context=presets.AMBIENT_AIR, nox_skeleton=True)
+        assert tier_of(rows, "pa-1-13C") == "candidate"
+
+    def test_a_formula_inside_the_windows_is_untouched(self):
+        rows = [row("pa-1", "C10H17NO4", channels=SEEN_TWICE)]
+        run(rows, context=presets.AMBIENT_AIR, nox_skeleton=True)
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert REASON_NOX_SKELETON not in rules_on(rows, "pa-1")
+
+    def test_a_run_that_does_not_read_the_skeleton_asks_nothing(self):
+        rows = [row("pa-1", "C6H5NO3", channels=SEEN_TWICE)]
+        summary = run(rows, context=presets.AMBIENT_AIR)
+        assert REASON_NOX_SKELETON not in rules_on(rows, "pa-1")
+        assert summary["nox_skeleton"] is False
+
+    def test_a_list_match_is_not_asked(self):
+        rows = [
+            row("pa-1", self.DINITRATE, source="database", compound="c-1"),
+        ]
+        run(rows, context=presets.AMBIENT_AIR, nox_skeleton=True)
+        assert REASON_NOX_SKELETON not in rules_on(rows, "pa-1")
+
+    def test_a_batch_searchs_skeleton_reading_is_held_with_its_lines(self):
+        rows = [
+            row("pa-1", self.DINITRATE),
+            line_of("pa-1", formula=self.DINITRATE),
+            row("pa-2", "C10H17NO4", mz=230.0),
+        ]
+        assert hold_skeleton_readings(rows, presets.AMBIENT_AIR) == 1
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert tier_of(rows, "pa-1-13C") == "candidate"
+        assert tier_of(rows, "pa-2") == "assigned"
+        record = rows[0]["provenance"][REASON_NOX_SKELETON]
+        assert record["rule"] == REASON_NOX_SKELETON
+        assert record["caps"] is True
 
 
 class TestOnePeakIsNotEnough:

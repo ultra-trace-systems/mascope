@@ -344,6 +344,39 @@ class TestTheFittedWindow:
         assert self.resolve().snapshot()["fitted_window"] is None
 
 
+class TestTheSkeletonSwitch:
+    """Step 3.6's rider: which runs read an organonitrate's skeleton."""
+
+    NITRATE = ["[M+NO3]-", "[M-H]-"]
+
+    def test_a_nitrate_run_on_an_orbitrap_reads_it_in_its_filter(self):
+        resolved = resolve_profile(
+            PeakAssignmentConfig(), self.NITRATE, instrument_type="orbi", polarity="-"
+        )
+        assert resolved.profile is presets.NO3
+        assert resolved.nox_skeleton is True
+        assert resolved.heuristics_config().context_nox_skeleton is True
+        assert resolved.snapshot()["nox_skeleton"] is True
+
+    @pytest.mark.parametrize(
+        "notations, instrument, context",
+        [
+            (["[M+NO3]-", "[M-H]-"], "tof", "auto"),
+            (BROMIDE, "orbi", "auto"),
+            (["[M+NO3]-", "[M-H]-"], "orbi", "indoor-air"),
+        ],
+    )
+    def test_no_other_run_does(self, notations, instrument, context):
+        resolved = resolve_profile(
+            PeakAssignmentConfig(context=context),
+            notations,
+            instrument_type=instrument,
+            polarity="-",
+        )
+        assert resolved.nox_skeleton is False
+        assert resolved.heuristics_config().context_nox_skeleton is False
+
+
 class TestOverrides:
     def test_the_grid_comes_from_the_profile_when_the_run_names_none(self):
         resolved = resolve_profile(

@@ -588,6 +588,43 @@ def test_the_search_reads_the_partner_gate_over_its_own_rows():
     assert tropylium["provenance"]["partner_gate"]["through"] == "[M-H]+"
 
 
+@pytest.mark.parametrize(
+    "instrument, held", [("orbi", "candidate"), ("tof", "assigned")]
+)
+def test_the_search_holds_a_reading_only_an_organonitrates_skeleton_admits(
+    instrument, held
+):
+    # Step 3.6's rider: a nitrate search on an Orbitrap reads the skeleton, so
+    # it commits the dinitrate its windows refused as a formula, and holds it
+    # at candidate as a run's tiering pass does. A TOF reads no skeleton.
+    config = PeakAssignmentConfig()
+    resolved = resolve_profile(
+        config, ["[M+NO3]-"], instrument_type=instrument, polarity="-"
+    )
+    ids = {"[M+NO3]-": "im-no3"}
+    peaks = pd.DataFrame([{"sample_peak_id": "p1", "mz": 286.0063, "intensity": 1.0e6}])
+    rows = untargeted_matches_to_peak_assignments(
+        pd.DataFrame([_match(286.0063, "C5H8N2O8", "C5H8N3O11-", "[M+NO3]-")]),
+        peaks_df=peaks,
+        sample_item_id="si-1",
+        peak_assignment_run_id="run-1",
+        candidate_threshold=config.candidate_threshold,
+        assigned_threshold=config.assigned_threshold,
+        mechanism_id_by_notation=ids,
+        max_alternatives=5,
+        minor_channels=resolved.minor_channels,
+    )
+    assert rows[0]["tier"] == "assigned"
+    gated = gate_search_rows(
+        rows,
+        resolved_profile=resolved,
+        mechanism_id_by_notation=ids,
+        tier_bands=config.tier_bands(),
+    )
+    assert gated[0]["tier"] == held
+    assert ("nox_skeleton" in gated[0]["provenance"]) is (held == "candidate")
+
+
 class _Searched(Exception):
     """Raised by the fake finder once it has seen what the search hands it."""
 

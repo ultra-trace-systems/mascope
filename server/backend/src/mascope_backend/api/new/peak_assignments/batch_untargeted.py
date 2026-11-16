@@ -128,6 +128,7 @@ from mascope_backend.api.new.peak_assignments.service import (
     sample_reagent_offset,
     sample_recorded_width,
 )
+from mascope_backend.api.new.peak_assignments.tiering import hold_skeleton_readings
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_CANDIDATE,
     TIER_RANK,
@@ -1022,7 +1023,8 @@ def gate_search_rows(
     mechanism_id_by_notation: dict[str, str],
     tier_bands: dict[str, float] | None,
 ) -> list[dict]:
-    """The partner gate over a batch search's own rows, in place.
+    """The partner gate, and the skeleton hold, over a batch search's own rows,
+    in place.
 
     A batch search runs no Stage A, no mass gate and no cross-channel pass:
     its rows are the finder's, judged by the minor-channel policy alone. The
@@ -1048,6 +1050,11 @@ def gate_search_rows(
         partner_gated_channels=resolved_profile.partner_gated_channels,
         tier_bands=tier_bands,
     )
+    # A reading only an organonitrate's carbon skeleton admits is a candidate
+    # at most, as a run's tiering pass holds it (step 3.6): the search read
+    # the skeleton, and the rows' tiers are what the members take.
+    if resolved_profile.nox_skeleton:
+        hold_skeleton_readings(rows, resolved_profile.context)
     return rows
 
 

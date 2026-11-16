@@ -139,6 +139,13 @@ class HeuristicFilterConfig:
     # that names no context filters exactly as it did before contexts existed.
     context_ratio_windows: dict[str, tuple[float, float]] = field(default_factory=dict)
 
+    # Read the context windows on the carbon skeleton of a formula's
+    # organonitrate groups as well as on the formula (step 3.6,
+    # `heuristic_filter.context_skeleton_groups`). A run switch, on only where
+    # nitrate is the reagent on an Orbitrap and the context makes
+    # organonitrates (`profiles.nox_skeleton_applies`).
+    context_nox_skeleton: bool = False
+
 
 @dataclass
 class Result:

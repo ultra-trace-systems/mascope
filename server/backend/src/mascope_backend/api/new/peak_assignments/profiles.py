@@ -42,6 +42,7 @@ from mascope_tools.composition.profiles import (
     fitted_window_ppm,
     get_chemistry_context,
     get_reagent_profile,
+    nox_skeleton_applies,
     resolve_element_ranges,
     resolve_fallback_sigma_ppm,
     resolve_mz_precision_ppm,
@@ -150,6 +151,9 @@ class ResolvedProfile:
     :param fitted_window: Where the sample's fitted width bounded the
         window (:data:`SOURCE_FITTED_WIDTH`): the class's window it bounded,
         and the width, centre and multiple it was bounded at. None otherwise.
+    :param nox_skeleton: Whether the run reads the carbon skeleton of an
+        organonitrate in the context's windows and the implausibility
+        signatures (``profiles.nox_skeleton_applies``, step 3.6).
     """
 
     profile: ReagentProfile
@@ -167,6 +171,7 @@ class ResolvedProfile:
     context_source: str = SOURCE_PROFILE
     named_context: NamedContext = NamedContext()
     fitted_window: dict | None = None
+    nox_skeleton: bool = False
 
     @property
     def minor_channels(self) -> frozenset[str]:
@@ -239,6 +244,7 @@ class ResolvedProfile:
         return HeuristicFilterConfig(
             use_senior=use_senior,
             context_ratio_windows=self.context.ratio_windows(),
+            context_nox_skeleton=self.nox_skeleton,
         )
 
     def search_config(self, notations: list[str]) -> CompositionSearchConfig:
@@ -308,6 +314,9 @@ class ResolvedProfile:
             # The formula shapes the context holds only on corroboration, which
             # the tiering pass asks of the search's rows (step 3.6).
             "context_priors": list(self.context.priors),
+            # Whether the windows and the implausibility signatures read the
+            # carbon skeleton of an organonitrate as well (step 3.6).
+            "nox_skeleton": self.nox_skeleton,
             "secondary_channels": sorted(self.minor_channels),
             "partner_gated_channels": sorted(self.partner_gated_channels),
             "channel_evidence": evidence_records(self.channel_evidence),
@@ -499,6 +508,7 @@ def resolve_profile(
         ),
         context_source=context_source,
         named_context=named_context,
+        nox_skeleton=nox_skeleton_applies(profile, context, instrument_type),
     )
 
 
