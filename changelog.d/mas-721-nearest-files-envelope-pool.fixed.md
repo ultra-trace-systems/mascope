@@ -11,4 +11,5 @@
   batch ledger at ingest pools the same way. The run's record
   (`config.envelope_tolerance.pool`) names the files pooled, the lines each
   gave and the time span they cover. A thin file's run takes about a minute
-  longer for the six reads (`docs/user/how-it-works/peak-assignment.md`).
+  longer for the six reads; thin files run at the same time share the reads
+  they have in common (`docs/user/how-it-works/peak-assignment.md`).

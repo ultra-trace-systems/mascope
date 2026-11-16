@@ -1069,8 +1069,13 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
     run in worker threads, and a process reads one neighbour at a time
     (`NEIGHBOUR_READS_AT_ONCE`): five of those files run at once read 30
     neighbours side by side, finished after 9.5 minutes, and starved the
-    event loop; one at a time they finish in 5. A file that records
-    neither count pools nothing. The testbed copy has no stream rows; of
+    event loop; one at a time they finish in 5. Runs that read the same
+    neighbour under equal configs and match parameters while its read is
+    in flight share that read (MAS-906's option 2): they would compute the
+    same lines from the same data at the same moment, and the thin files of
+    a batch run at once read largely the same neighbours. A read that has
+    ended is never reused, and one no run waits on any more is stopped. A
+    file that records neither count pools nothing. The testbed copy has no stream rows; of
     2,000 of its files' `.props`, the 1,263 that hold an Orbitrap's scan
     trailer carry both counts.
   - **The TOF.** The median and the scaled MAD of a tracking line's

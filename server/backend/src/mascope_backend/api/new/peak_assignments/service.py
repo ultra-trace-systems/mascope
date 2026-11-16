@@ -6249,7 +6249,9 @@ async def _neighbour_envelope_lines(
     lines are predicted at the purity of the neighbour's own setup, as a run of
     it predicts them. It is never its pooled curve, nor anything a run of it
     recorded: the pool is a function of the reading run's inputs and its
-    neighbours' data, whichever of them ran before.
+    neighbours' data, whichever of them ran before. Runs that read the same
+    neighbour under equal configs and match parameters while its read is in
+    flight share that read (:func:`_join_neighbour_read`).
 
     :param neighbour: The neighbour's sample view row.
     :param config: The reading run's configuration.
@@ -6260,6 +6262,91 @@ async def _neighbour_envelope_lines(
     """
     if ineligible_reason(neighbour) is not None:
         return None
+    read = _join_neighbour_read(neighbour, config, match_params)
+    read.waiters += 1
+    try:
+        # Shielded: a run cancelled while it waits leaves the read to the
+        # runs still waiting on it.
+        return await asyncio.shield(read.task)
+    finally:
+        read.waiters -= 1
+        if read.waiters == 0 and not read.task.done():
+            # Every run that asked for it has gone. Out of the table first, so
+            # no run joins a read that is being cancelled.
+            _forget_neighbour_read(read)
+            read.task.cancel()
+
+
+@dataclass(eq=False)
+class _NeighbourRead:
+    """One neighbour read in flight in a process (:func:`_join_neighbour_read`).
+
+    :param sample_item_id: The neighbour read.
+    :param config: The configuration it is read under.
+    :param match_params: The match parameters it is read under.
+    :param task: The read, in its process's slot.
+    :param waiters: The runs waiting on it.
+    """
+
+    sample_item_id: str
+    config: PeakAssignmentConfig
+    match_params: object
+    task: asyncio.Task
+    waiters: int = 0
+
+
+_neighbour_reads_in_flight: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, dict[str, list[_NeighbourRead]]
+] = weakref.WeakKeyDictionary()
+
+
+def _join_neighbour_read(
+    neighbour, config: PeakAssignmentConfig, match_params
+) -> _NeighbourRead:
+    """The read of ``neighbour`` in flight under an equal config and equal match
+    parameters, else a new one.
+
+    Runs reading the same neighbour at the same time share one read: they would
+    compute the same lines from the same data at the same moment. The thin
+    files of a batch run at once read largely the same neighbours, and the
+    reads, one at a time (:data:`NEIGHBOUR_READS_AT_ONCE`), would otherwise
+    queue the same work several times over. A read that has ended is never
+    joined: the next run reads afresh, so no run reads lines older than its
+    own start.
+    """
+    in_flight = _neighbour_reads_in_flight.setdefault(asyncio.get_running_loop(), {})
+    sample_item_id = str(neighbour.sample_item_id)
+    reads = in_flight.setdefault(sample_item_id, [])
+    for read in reads:
+        if read.config == config and read.match_params == match_params:
+            return read
+    read = _NeighbourRead(
+        sample_item_id=sample_item_id,
+        config=config,
+        match_params=match_params,
+        task=asyncio.create_task(
+            _slotted_neighbour_read(neighbour, config, match_params)
+        ),
+    )
+    reads.append(read)
+    read.task.add_done_callback(lambda _task: _forget_neighbour_read(read))
+    return read
+
+
+def _forget_neighbour_read(read: _NeighbourRead) -> None:
+    """Take ``read`` out of its process's reads in flight, if it is still in."""
+    in_flight = _neighbour_reads_in_flight.get(read.task.get_loop(), {})
+    reads = in_flight.get(read.sample_item_id, [])
+    if any(other is read for other in reads):
+        reads[:] = [other for other in reads if other is not read]
+        if not reads:
+            del in_flight[read.sample_item_id]
+
+
+async def _slotted_neighbour_read(
+    neighbour, config: PeakAssignmentConfig, match_params
+) -> EnvelopeLines | None:
+    """:func:`_read_neighbour_lines`, in its process's slot."""
     async with _neighbour_read_slot():
         return await _read_neighbour_lines(neighbour, config, match_params)
 
@@ -6267,7 +6354,7 @@ async def _neighbour_envelope_lines(
 async def _read_neighbour_lines(
     neighbour, config: PeakAssignmentConfig, match_params
 ) -> EnvelopeLines | None:
-    """:func:`_neighbour_envelope_lines`' read, in its process's slot."""
+    """:func:`_neighbour_envelope_lines`' read itself."""
     # The file reads and the line read go off the event loop, as the first
     # pass's arbitration does: a thin run reads six files, and on the loop
     # their work would hold every other request of the server for a minute.
