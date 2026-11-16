@@ -499,8 +499,8 @@ class ProfilePreviewQueryParams(BaseModel):
     context: str = Field(
         DEFAULT_PROFILE,
         description=(
-            "Chemistry context to resolve: 'auto' takes each profile's own, or a "
-            "context name."
+            "Chemistry context to resolve: 'auto' takes the one the samples' "
+            "batch or dataset names, else each profile's own; or a context name."
         ),
     )
 
@@ -527,6 +527,10 @@ class ProfilePreviewRecord(BaseModel):
     context: str
     context_label: str
     requested_context: str
+    #: Where the context came from: ``config`` (the request named it),
+    #: ``batch`` or ``dataset`` (``auto`` took the one the samples' batch or
+    #: its dataset names), or ``profile`` (the reagent profile's default).
+    context_source: str = "profile"
     #: The neutral grid the profile and context give the untargeted stage.
     element_ranges: str
     #: The untargeted stage's m/z window, in ppm, for the samples' instrument

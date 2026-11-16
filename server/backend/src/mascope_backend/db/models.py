@@ -698,6 +698,13 @@ class Dataset(Base):
     related_identifiers: Mapped[Optional[list]] = mapped_column(JSON)
     funding: Mapped[Optional[list]] = mapped_column(JSON)
 
+    # The chemistry context the dataset's samples were drawn from: a shipped
+    # context's name (`mascope_tools.composition.profiles.CHEMISTRY_CONTEXTS`),
+    # which a peak assignment run on `auto` takes before its reagent profile's
+    # default, below a batch's own (step 3.6 of the assignment quality plan).
+    # NULL names none.
+    chemistry_context: Mapped[Optional[str]] = mapped_column(String(64))
+
     # Relationships
     workspace = relationship("Workspace", back_populates="datasets")
     sample_batch = relationship(
@@ -864,6 +871,10 @@ class SampleBatch(Base):
     seed_batch_peaks: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=text("false")
     )
+    # The chemistry context the batch's samples were drawn from, as on its
+    # dataset, and read before the dataset's: a chamber batch in a dataset of
+    # ambient campaigns names its own. NULL names none.
+    chemistry_context: Mapped[Optional[str]] = mapped_column(String(64))
 
     # Relationships
     dataset = relationship("Dataset", back_populates="sample_batch")

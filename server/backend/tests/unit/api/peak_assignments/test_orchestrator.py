@@ -32,6 +32,7 @@ import pandas as pd
 import pytest
 from test_engine import _isotope_row  # same directory; pytest puts it on sys.path
 
+from mascope_backend.api.new.peak_assignments.profiles import NamedContext
 from mascope_tools.composition.mass_accuracy import ReagentOffset, SampleMassAccuracy
 
 
@@ -275,6 +276,13 @@ def _patches(
             "acquisition_settings",
             new_callable=AsyncMock,
             return_value=None,
+        ),
+        # The context the sample's batch and dataset name lives with them in
+        # the database; this sample's name none.
+        "named_context": patch(
+            f"{_MOD}.named_context_for",
+            new_callable=AsyncMock,
+            return_value=NamedContext(),
         ),
         "claim": patch(f"{_MOD}.assignment_claim", _claim_stub()),
         "session": patch(f"{_MOD}.async_session", side_effect=recorder.session_factory),
@@ -661,6 +669,56 @@ class TestTheJudgedLedger:
             "sulfur",
             "odd_nitrogen",
         ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "named, requested, context, source",
+        [
+            # A run on auto takes what the sample's batch names, before its
+            # dataset's and before the profile's default (step 3.6).
+            (
+                NamedContext(batch="chamber", dataset="indoor-air"),
+                "auto",
+                "chamber",
+                "batch",
+            ),
+            (NamedContext(dataset="indoor-air"), "auto", "indoor-air", "dataset"),
+            (NamedContext(), "auto", "none", "profile"),
+            # A run that names a context keeps it.
+            (NamedContext(batch="chamber"), "water", "water", "config"),
+        ],
+    )
+    async def test_a_run_on_auto_takes_the_context_its_data_names(
+        self, named, requested, context, source
+    ):
+        from mascope_backend.api.new.peak_assignments import service
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        judge = service.judge_commits
+        handed = {}
+
+        def recording(rows, **kwargs):
+            handed.update(kwargs)
+            return judge(rows, **kwargs)
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        recorder = _Recorder()
+        started = _start(_patches(recorder, peaks, _stage_a_rows()))
+        started["named_context"].return_value = named
+        patch(f"{_MOD}.judge_commits", side_effect=recording).start()
+
+        await _run(PeakAssignmentConfig(run_untargeted=False, context=requested))
+
+        started["named_context"].assert_awaited_with("sb-1")
+        assert handed["context"].name == context
+        snapshot = recorder.recorded_configs()[-1]["resolved_profile"]
+        assert (snapshot["context"], snapshot["context_source"]) == (context, source)
+        assert snapshot["named_context"] == {
+            "batch": named.batch,
+            "dataset": named.dataset,
+        }
 
     @pytest.mark.asyncio
     async def test_the_tiering_pass_reads_the_runs_tolerance_and_artifacts(self):

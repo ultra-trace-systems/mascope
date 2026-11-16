@@ -9,6 +9,7 @@ import Button from 'primevue/button'
 
 import { useApp } from '@/stores'
 
+import ChemistryContextSelect from './ChemistryContextSelect.vue'
 import DatasetMetadataSection from './DatasetMetadataSection.vue'
 import { metadataForm, metadataInvalid, metadataPayload } from './datasetMetadata.js'
 
@@ -35,6 +36,8 @@ const info = reactive({
   desc: null,
   message: null,
   initial: null,
+  // The chemistry context the dataset names for its samples; null for none.
+  context: null,
   metadata: metadataForm(null)
 })
 
@@ -78,6 +81,7 @@ async function execute() {
         const response = await app.data.dataset.create({
           dataset_name: info.name,
           dataset_description: info.desc,
+          chemistry_context: info.context,
           ...metadataPayload(info.metadata)
         })
         app.data.dataset.focusWhenPresent({
@@ -92,6 +96,7 @@ async function execute() {
           // carrying a name for one, unchanged or not
           ...(systemNamed.value ? {} : { dataset_name: info.name }),
           dataset_description: info.desc,
+          chemistry_context: info.context,
           ...metadataPayload(info.metadata)
         })
         break
@@ -123,6 +128,7 @@ watch(action, init)
 function init() {
   info.name = original.value?.dataset_name
   info.desc = original.value?.dataset_description
+  info.context = original.value?.chemistry_context ?? null
   info.metadata = metadataForm(original.value)
   ;((info.message = null), (info.initial = original.value))
 }
@@ -157,6 +163,7 @@ const invalid = computed(
           <Textarea id="dataset-desc" v-model="info.desc" rows="4" style="width: 100%" />
           <label for="dataset-desc">Description</label>
         </FloatLabel>
+        <ChemistryContextSelect id="dataset-context" v-model="info.context" owner="dataset" />
         <DatasetMetadataSection v-model="info.metadata" />
       </template>
       <template v-else>

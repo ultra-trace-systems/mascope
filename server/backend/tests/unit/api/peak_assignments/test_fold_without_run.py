@@ -17,6 +17,7 @@ import pytest
 from mascope_backend.api.new.peak_assignments.engine import SampleMassAccuracy
 from mascope_backend.api.new.peak_assignments.envelope_fit import RunEnvelopeFit
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
+from mascope_backend.api.new.peak_assignments.profiles import NamedContext
 from mascope_tools.composition.envelope_tolerance import (
     FORM_DEFAULT,
     EnvelopeLines,
@@ -78,7 +79,11 @@ def _patched(
     """Patch everything the fold reads; return the stack and its mocks."""
     stack = ExitStack()
     sample = SimpleNamespace(
-        sample_item_id="si-1", sample_item_name="S1", filename="f.zarr", polarity="+"
+        sample_item_id="si-1",
+        sample_item_name="S1",
+        filename="f.zarr",
+        polarity="+",
+        sample_batch_id="sb-1",
     )
     mocks = {
         # The fold takes the same admission an explicit run does, so both halves
@@ -136,6 +141,15 @@ def _patched(
         ),
         "stage_a": stack.enter_context(
             patch(f"{_SVC}._stage_a_assignments", new_callable=AsyncMock)
+        ),
+        # The context the sample's batch and dataset name lives with them in
+        # the database; none unless a test says.
+        "named_context": stack.enter_context(
+            patch(
+                f"{_SVC}.named_context_for",
+                new_callable=AsyncMock,
+                return_value=NamedContext(),
+            )
         ),
         # The file's resolving power, which the gate reads a line's neighbours
         # in. None unless a test says: the instrument functions live in the
@@ -757,6 +771,23 @@ class TestTheFoldClaimsInTheRunsWindow:
             await fold_sample_peaks_without_run("si-1")
 
         assert seen["instrument_type"] == "orbi"
+
+    @pytest.mark.asyncio
+    async def test_the_context_the_batch_names_reaches_the_profile(self):
+        # Step 3.6: the fold resolves the context a run of the sample would,
+        # the one its batch or dataset names.
+        from mascope_backend.api.new.peak_assignments.service import (
+            fold_sample_peaks_without_run,
+        )
+
+        stack, mocks = _patched()
+        mocks["named_context"].return_value = NamedContext(batch="chamber")
+        with stack:
+            seen = self._resolve_spy(stack, lambda _filename: "orbi")
+            await fold_sample_peaks_without_run("si-1")
+
+        mocks["named_context"].assert_awaited_with("sb-1")
+        assert seen["named_context"] == NamedContext(batch="chamber")
 
     @pytest.mark.asyncio
     async def test_stage_a_is_told_the_class_width_the_fold_resolved(self):

@@ -175,6 +175,17 @@ const chemistryLabel = computed(() => {
 
 const isAuto = (requested) => !requested || requested === 'auto'
 const fromConfig = (source) => (source === 'config' ? ' (set for this run)' : '')
+// Where Auto found its context: the sample's batch or its dataset names one, or
+// the profile's own. A run recorded before either could name one says nothing
+// of it, and its context is the profile's.
+const AUTO_CONTEXT = {
+  batch: ', the one the batch names',
+  dataset: ', the one the dataset names'
+}
+const contextFrom = (record) =>
+  isAuto(record.requested_context)
+    ? (AUTO_CONTEXT[record.context_source] ?? ", the profile's own")
+    : ', named for this run'
 const listed = (value) => (Array.isArray(value) ? value.filter(Boolean) : [])
 // A run recorded before the standard adduct notation lists its channels in the
 // legacy spelling; either is shown in the standard one.
@@ -190,8 +201,7 @@ const chemistryTooltip = computed(() => {
       (isAuto(record.requested_profile)
         ? ", read off the sample's ionization mechanisms"
         : ', named for this run'),
-    `Chemistry context: ${contextName(record)}` +
-      (isAuto(record.requested_context) ? ", the profile's own" : ', named for this run'),
+    `Chemistry context: ${contextName(record)}${contextFrom(record)}`,
     record.element_ranges
       ? `Element grid: ${record.element_ranges}${fromConfig(record.element_ranges_source)}`
       : null,

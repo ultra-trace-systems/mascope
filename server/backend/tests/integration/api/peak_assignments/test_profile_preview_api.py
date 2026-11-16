@@ -301,6 +301,69 @@ async def test_a_named_profile_takes_its_own_context_under_auto(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "batch_context, dataset_context, context, source",
+    [
+        ("chamber", "indoor-air", "chamber", "batch"),
+        (None, "indoor-air", "indoor-air", "dataset"),
+        (None, None, "uronium", "profile"),
+    ],
+)
+async def test_auto_takes_the_context_the_batch_or_its_dataset_names(
+    guest_client,
+    preview_batch,
+    async_session_factory,
+    batch_context,
+    dataset_context,
+    context,
+    source,
+):
+    # Step 3.6: a dataset or a batch names its context once, and a run on auto
+    # takes it before the profile's default, the batch's first.
+    async with async_session_factory() as session:
+        batch = await session.get(SampleBatch, preview_batch["batch"])
+        batch.chemistry_context = batch_context
+        dataset = await session.get(Dataset, batch.dataset_id)
+        dataset.chemistry_context = dataset_context
+        await session.commit()
+
+    response = await guest_client.get(
+        f"/api/peak-assignments/sample/{preview_batch['urea']}/profile-preview"
+    )
+    assert response.status_code == 200
+    preview = _only(response.json())
+    assert (preview["context"], preview["context_source"]) == (context, source)
+
+    response = await guest_client.get(
+        f"/api/peak-assignments/batch/{preview_batch['batch']}/profile-preview"
+    )
+    assert response.status_code == 200
+    assert {
+        (row["context"], row["context_source"])
+        for row in response.json()["data"]
+        if row["profile"] == "UR"
+    } == {(context, source)}
+
+
+@pytest.mark.asyncio
+async def test_a_context_the_request_names_is_kept_over_the_batchs(
+    guest_client, preview_batch, async_session_factory
+):
+    async with async_session_factory() as session:
+        batch = await session.get(SampleBatch, preview_batch["batch"])
+        batch.chemistry_context = "chamber"
+        await session.commit()
+
+    response = await guest_client.get(
+        f"/api/peak-assignments/sample/{preview_batch['urea']}/profile-preview",
+        params={"context": "water"},
+    )
+    assert response.status_code == 200
+    preview = _only(response.json())
+    assert (preview["context"], preview["context_source"]) == ("water", "config")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("params", [{"profile": "XYZ"}, {"context": "moon"}])
 async def test_a_name_the_run_config_refuses_is_refused(
     guest_client, preview_batch, params

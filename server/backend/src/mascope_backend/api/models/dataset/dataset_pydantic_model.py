@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from mascope_backend.api.models.base_pydantic_model import QueryParamsModel
 from mascope_backend.api.models.dataset.config import dataset_config
+from mascope_backend.api.new.peak_assignments.config import named_chemistry_context
 
 
 # The width of `Dataset.dataset_name` (String(256)). Bound here so a name too
@@ -254,8 +255,26 @@ class DatasetMetadataInput(BaseModel):
         return [_required_text(keyword, "Keyword") for keyword in keywords]
 
 
+#: What the chemistry context field says, on every model that carries it.
+CHEMISTRY_CONTEXT_DESCRIPTION = (
+    "The chemistry context the dataset's samples were drawn from, such as "
+    "'chamber' or 'ambient-air': a peak assignment run on 'auto' takes it "
+    "before its reagent profile's default, and a batch's own before it. Null "
+    "names none."
+)
+
+
 class DatasetBaseValidator:
     """Mixin class with common schemas fields validators."""
+
+    @field_validator("chemistry_context", check_fields=False)
+    @classmethod
+    def validate_chemistry_context(cls, value: str | None) -> str | None:
+        """Refuse a context nothing would resolve, and store its own name.
+
+        ``auto`` or a blank names none, as null does.
+        """
+        return named_chemistry_context(value)
 
     @field_validator("dataset_name")
     @classmethod
@@ -351,6 +370,9 @@ class DatasetBase(DatasetMetadataFields):
     icon: DatasetIcon | None = Field(
         None, description="Icon configuration with icon_id and color"
     )
+    chemistry_context: str | None = Field(
+        None, max_length=64, description=CHEMISTRY_CONTEXT_DESCRIPTION
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -405,6 +427,9 @@ class DatasetUpdate(DatasetBaseValidator, DatasetMetadataInput):
     )
     icon: DatasetIcon | None = Field(
         None, description="Icon configuration with icon_id and color"
+    )
+    chemistry_context: str | None = Field(
+        None, max_length=64, description=CHEMISTRY_CONTEXT_DESCRIPTION
     )
 
     model_config = ConfigDict(from_attributes=True)

@@ -21,6 +21,7 @@ import { clone } from '@/lib/utils'
 
 import { useApp } from '@/stores'
 
+import ChemistryContextSelect from '../ChemistryContextSelect.vue'
 import PaneSelectTargets from './PaneSelectTargets.vue'
 
 const app = useApp()
@@ -59,7 +60,8 @@ const initial = reactive({
     name: '',
     desc: '',
     type: '',
-    polarity: ''
+    polarity: '',
+    context: null
   }
 })
 const selected = reactive({
@@ -67,7 +69,9 @@ const selected = reactive({
     name: '',
     desc: '',
     type: '',
-    polarity: ''
+    polarity: '',
+    // The chemistry context the batch names for its samples; null for none.
+    context: null
   },
   targets: [] // multiple target collections
 })
@@ -86,6 +90,7 @@ const updated = computed(() => {
     sample_batch_name: selected.info.name,
     sample_batch_description: selected.info.desc,
     sample_batch_polarity: selected.info.polarity,
+    chemistry_context: selected.info.context,
     dataset_id: app.data.dataset.focusedId,
     target_collection_ids: selected.targets.map((row) => row.target_collection_id)
   }
@@ -109,6 +114,7 @@ const changed = computed(() =>
   ready.value
     ? selected.info.name !== initial.info.name ||
       selected.info.desc !== initial.info.desc ||
+      selected.info.context !== initial.info.context ||
       !equals(selected.targets, initial.targets, 'target_collection_id')
     : false
 )
@@ -141,6 +147,7 @@ async function init(value) {
     selected.info.desc = original.value.sample_batch_description
     selected.info.type = original.value.sample_batch_type
     selected.info.polarity = original.value.polarity
+    selected.info.context = original.value.chemistry_context ?? null
     // init target collections with batch collections
     const batchCollections = (
       await api.http.get(`/sample/batches/${original.value.sample_batch_id}/targets`, {
@@ -159,6 +166,7 @@ async function init(value) {
     selected.info.desc = ''
     selected.info.type = DEFAULT_SAMPLE_BATCH_TYPE // Set default type
     selected.info.polarity = ANALYSIS_POLARITY // Default polarity for ANALYSIS batches
+    selected.info.context = null
     // init target collections with defaults
     selected.targets = []
   }
@@ -220,6 +228,14 @@ async function execute() {
               />
               <label for="batch-desc">Description</label>
             </FloatLabel>
+            <div style="width: 65ch; margin: 0 auto">
+              <ChemistryContextSelect
+                id="batch-context"
+                v-model="selected.info.context"
+                owner="batch"
+                :disabled="action == 'update_targets'"
+              />
+            </div>
           </Panel>
         </TabPanel>
 

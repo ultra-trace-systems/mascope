@@ -13,10 +13,14 @@ from pydantic import ValidationError
 from mascope_backend.api.new.peak_assignments.config import (
     PeakAssignmentConfig,
     PeakAssignmentPresets,
+    named_chemistry_context,
 )
 from mascope_backend.api.new.peak_assignments.profiles import (
+    SOURCE_BATCH,
     SOURCE_CONFIG,
+    SOURCE_DATASET,
     SOURCE_PROFILE,
+    NamedContext,
     SampleChemistry,
     preview_resolutions,
     resolve_profile,
@@ -186,6 +190,103 @@ class TestResolution:
         )
         assert resolved.profile is presets.ESI_NEG
         assert resolved.context is presets.NO_CONTEXT
+
+
+class TestTheContextTheDataNames:
+    """Step 3.6: a dataset or a batch names its context once."""
+
+    def resolve(self, named, config=None, notations=BROMIDE, polarity="-"):
+        return resolve_profile(
+            config or PeakAssignmentConfig(),
+            notations,
+            instrument_type="orbi",
+            polarity=polarity,
+            named_context=named,
+        )
+
+    def test_auto_takes_the_batchs_before_the_datasets(self):
+        resolved = self.resolve(NamedContext(batch="chamber", dataset="indoor-air"))
+        assert resolved.context is presets.CHAMBER
+        assert resolved.context_source == SOURCE_BATCH
+
+    def test_auto_takes_the_datasets_where_the_batch_names_none(self):
+        resolved = self.resolve(NamedContext(dataset="indoor-air"))
+        assert resolved.context is presets.INDOOR_AIR
+        assert resolved.context_source == SOURCE_DATASET
+
+    def test_auto_takes_the_profiles_default_where_neither_names_one(self):
+        resolved = self.resolve(NamedContext())
+        assert resolved.context is presets.AMBIENT_AIR
+        assert resolved.context_source == SOURCE_PROFILE
+
+    def test_a_context_the_run_names_wins(self):
+        resolved = self.resolve(
+            NamedContext(batch="chamber"), PeakAssignmentConfig(context="water")
+        )
+        assert resolved.context is presets.WATER
+        assert resolved.context_source == SOURCE_CONFIG
+
+    def test_the_identity_profile_keeps_no_context(self):
+        # Naming the identity profile is how a run switches the layer off.
+        resolved = self.resolve(
+            NamedContext(batch="chamber"), PeakAssignmentConfig(profile="none")
+        )
+        assert resolved.context is presets.NO_CONTEXT
+        assert resolved.context_source == SOURCE_PROFILE
+
+    def test_a_name_the_library_no_longer_knows_falls_to_the_default(self):
+        resolved = self.resolve(NamedContext(batch="retired-context"))
+        assert resolved.context is presets.AMBIENT_AIR
+        assert resolved.context_source == SOURCE_PROFILE
+
+    def test_the_named_context_narrows_the_grid_it_searches(self):
+        # The chamber caps nitrogen at two; ambient air at three.
+        resolved = self.resolve(NamedContext(batch="chamber"))
+        assert "N0-2" in resolved.element_ranges
+        assert resolved.heuristics_config().context_ratio_windows == (
+            presets.CHAMBER.ratio_windows()
+        )
+
+    def test_the_snapshot_records_where_the_context_came_from(self):
+        snapshot = self.resolve(NamedContext(dataset="chamber")).snapshot()
+        assert snapshot["context"] == "chamber"
+        assert snapshot["context_source"] == SOURCE_DATASET
+        assert snapshot["named_context"] == {"batch": None, "dataset": "chamber"}
+
+    def test_a_run_with_nothing_named_records_so(self):
+        snapshot = self.resolve(None).snapshot()
+        assert snapshot["context_source"] == SOURCE_PROFILE
+        assert snapshot["named_context"] == {"batch": None, "dataset": None}
+
+    def test_the_preview_resolves_it_as_a_run_would(self):
+        [preview] = preview_resolutions(
+            PeakAssignmentConfig(),
+            [SampleChemistry(tuple(BROMIDE), "-", 3, "orbi")],
+            named_context=NamedContext(batch="chamber"),
+        )
+        assert (preview["context"], preview["context_source"]) == (
+            "chamber",
+            SOURCE_BATCH,
+        )
+
+    @pytest.mark.parametrize(
+        "sent, stored",
+        [
+            ("chamber", "chamber"),
+            ("Ambient", "ambient-air"),
+            (" smog-chamber ", "chamber"),
+            ("none", "none"),
+            ("auto", None),
+            ("", None),
+            (None, None),
+        ],
+    )
+    def test_a_named_context_is_stored_by_its_own_name(self, sent, stored):
+        assert named_chemistry_context(sent) == stored
+
+    def test_an_unknown_named_context_is_refused(self):
+        with pytest.raises(ValueError, match="unknown chemistry context"):
+            named_chemistry_context("mars")
 
 
 class TestOverrides:

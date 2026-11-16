@@ -199,13 +199,29 @@ const contextOptions = computed(() => [
 ])
 
 // Where the answer came from, said once beside it.
+// On Auto the context is the one the samples' batch or dataset names, where
+// either names one (step 3.6), and the profile's own otherwise.
+const NAMED_BY = {
+  batch: 'The context is the one the batch names.',
+  dataset: 'The context is the one the dataset names.'
+}
+const contextFrom = computed(() => {
+  if (!contextIsAuto.value) return null
+  const named = NAMED_BY[shared('context_source')?.context_source]
+  if (named) return named
+  return profileIsAuto.value ? null : "The context is the profile's own."
+})
 const resolvedFrom = computed(() => {
+  const said = []
   if (profileIsAuto.value) {
-    return forBatch.value
-      ? "Read off each sample's ionization mechanisms."
-      : "Read off the sample's ionization mechanisms."
+    said.push(
+      forBatch.value
+        ? "Read off each sample's ionization mechanisms."
+        : "Read off the sample's ionization mechanisms."
+    )
   }
-  return contextIsAuto.value ? "The context is the profile's own." : null
+  if (contextFrom.value) said.push(contextFrom.value)
+  return said.length ? said.join(' ') : null
 })
 
 const samplesText = (count) => `${count} sample${count === 1 ? '' : 's'}`
@@ -294,7 +310,8 @@ const chemistryDoc = app.ui.help.docUrl(
           never widens the profile's grid.
           </p>
           <p>
-          <b>Auto</b> takes the context the profile is normally used with.
+          <b>Auto</b> takes the context the sample's batch or dataset names,
+          and otherwise the one the profile is normally used with.
           <b>No context</b> applies no such prior.
           </p>`,
           { layer, doc: chemistryDoc }

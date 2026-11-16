@@ -37,6 +37,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     untargeted_matches_to_peak_assignments,
 )
 from mascope_backend.api.new.peak_assignments.profiles import (
+    NamedContext,
     resolve_profile,
     with_secondary_channels,
 )
@@ -45,7 +46,7 @@ from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_CANDIDATE,
 )
 from mascope_tools.composition.mass_accuracy import PRED_SIGMA_PPM
-from mascope_tools.composition.profiles import INSTRUMENT_FALLBACK_SIGMA_PPM
+from mascope_tools.composition.profiles import CHAMBER, INSTRUMENT_FALLBACK_SIGMA_PPM
 
 
 REAGENT_ROLE_CODE = role_code(ROLE_REAGENT)
@@ -603,6 +604,7 @@ async def test_a_batch_search_is_scored_at_its_samples_own_instrument(
     # derivation, as a run of the sample with a thin library is.
     sample = SimpleNamespace(
         sample_item_id="si-1",
+        sample_batch_id="sb-1",
         sample_item_name="Sample One",
         filename=filename,
         polarity="-",
@@ -651,6 +653,75 @@ async def test_a_batch_search_is_scored_at_its_samples_own_instrument(
     assert seen["scoring"].mz_tolerance_ppm == 15.0
 
 
+@pytest.fixture(autouse=True)
+def nothing_named():
+    """The context a sample's batch and dataset name lives with them in the
+    database; these samples' name none unless a test says."""
+    with patch.object(
+        batch_untargeted,
+        "named_context_for",
+        AsyncMock(return_value=NamedContext()),
+    ) as named:
+        yield named
+
+
+@pytest.mark.asyncio
+async def test_a_batch_search_searches_under_the_context_its_batch_names(
+    nothing_named,
+):
+    # Step 3.6: the batch search resolves the context a run of the sample
+    # would, the one the batch or its dataset names, so its grid and ratio
+    # windows are that context's.
+    nothing_named.return_value = NamedContext(batch="chamber")
+    sample = SimpleNamespace(
+        sample_item_id="si-1",
+        sample_batch_id="sb-1",
+        sample_item_name="Sample One",
+        filename="orbi-sample.raw",
+        polarity="-",
+    )
+    peaks = pd.DataFrame([{"sample_peak_id": "p1", "mz": 160.8413, "intensity": 1.0e6}])
+    mechanism = SimpleNamespace(
+        ionization_mechanism="[M-H]-", ionization_mechanism_id="im-h"
+    )
+    seen = {}
+
+    def finder(frame, search, heuristics, **kwargs):
+        seen["windows"] = heuristics.context_ratio_windows
+        raise _Searched
+
+    with (
+        patch.object(batch_untargeted, "fetch_sample", AsyncMock(return_value=sample)),
+        patch.object(batch_untargeted, "load_sample_peaks", return_value=peaks),
+        patch.object(
+            batch_untargeted,
+            "fetch_sample_mechanisms",
+            AsyncMock(return_value=(["im-h"], [mechanism])),
+        ),
+        patch.object(
+            batch_untargeted, "fetch_mechanisms_by_notation", AsyncMock(return_value=[])
+        ),
+        patch.object(
+            batch_untargeted,
+            "default_match_params",
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    mz_tolerance=15.0, isotope_abundance_threshold=1e-4
+                )
+            ),
+        ),
+        patch.object(batch_untargeted, "_resolution_of", AsyncMock(return_value=None)),
+        patch.object(batch_untargeted, "assign_compositions", finder),
+        pytest.raises(_Searched),
+    ):
+        await batch_untargeted._search_sample_peaks(
+            "si-1", {"p1"}, PeakAssignmentConfig()
+        )
+
+    nothing_named.assert_awaited_with("sb-1")
+    assert seen["windows"] == CHAMBER.ratio_windows()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("counted", [True, False], ids=["counted", "uncounted"])
 async def test_a_batch_search_reads_the_peak_lists_scan_counts(counted):
@@ -658,6 +729,7 @@ async def test_a_batch_search_reads_the_peak_lists_scan_counts(counted):
     # the file keeps the counts.
     sample = SimpleNamespace(
         sample_item_id="si-1",
+        sample_batch_id="sb-1",
         sample_item_name="Sample One",
         filename="orbi-sample.raw",
         polarity="-",
@@ -715,6 +787,7 @@ async def _search_ammonium_reading(*, opened, known):
     """
     sample = SimpleNamespace(
         sample_item_id="si-1",
+        sample_batch_id="sb-1",
         sample_item_name="Sample One",
         filename="orbi-sample.raw",
         polarity="+",

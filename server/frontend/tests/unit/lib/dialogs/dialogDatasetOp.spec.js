@@ -21,6 +21,17 @@ vi.mock('@/stores', () => ({
   })
 }))
 
+// The context selector loads the server's presets through the API; its own
+// spec covers that, and here it only has to hand the dialog a value.
+vi.mock('@/lib/dialogs/ChemistryContextSelect.vue', () => ({
+  default: {
+    name: 'ChemistryContextSelect',
+    props: ['modelValue', 'id', 'owner', 'disabled'],
+    emits: ['update:modelValue'],
+    template: '<div />'
+  }
+}))
+
 import DialogDatasetOp from '@/lib/dialogs/DialogDatasetOp.vue'
 
 // Only the dialog's own logic is under test; PrimeVue's pieces are reduced to
@@ -52,6 +63,7 @@ const DATASET = {
 }
 
 const section = (wrapper) => wrapper.findComponent({ name: 'DatasetMetadataSection' })
+const contextSelect = (wrapper) => wrapper.findComponent({ name: 'ChemistryContextSelect' })
 
 async function openEditDialog() {
   const wrapper = mount(DialogDatasetOp, {
@@ -150,8 +162,44 @@ describe('DialogDatasetOp', () => {
       authors: [{ name: 'Author One', orcid: null, affiliation: 'Lab A' }],
       keywords: ['aerosol', 'CI-MS'],
       related_identifiers: null,
-      funding: null
+      funding: null,
+      chemistry_context: null
     })
+  })
+
+  // Step 3.6: a dataset names the chemistry context its samples were drawn
+  // from, which a peak assignment run on Auto takes.
+  it('shows the context the dataset names and saves a changed one', async () => {
+    dataset.update.mockResolvedValue({ data: DATASET })
+    const wrapper = mount(DialogDatasetOp, {
+      props: { action: null, dataset: { ...DATASET, chemistry_context: 'chamber' } },
+      global: { plugins: [PrimeVue], stubs }
+    })
+    await wrapper.setProps({ action: 'edit' })
+    await flushPromises()
+
+    expect(contextSelect(wrapper).props('modelValue')).toBe('chamber')
+    await contextSelect(wrapper).vm.$emit('update:modelValue', 'indoor-air')
+    await saveButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(dataset.update.mock.calls[0][0].chemistry_context).toBe('indoor-air')
+  })
+
+  it('clears the context when it is set back to none', async () => {
+    dataset.update.mockResolvedValue({ data: DATASET })
+    const wrapper = mount(DialogDatasetOp, {
+      props: { action: null, dataset: { ...DATASET, chemistry_context: 'chamber' } },
+      global: { plugins: [PrimeVue], stubs }
+    })
+    await wrapper.setProps({ action: 'edit' })
+    await flushPromises()
+
+    await contextSelect(wrapper).vm.$emit('update:modelValue', null)
+    await saveButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(dataset.update.mock.calls[0][0]).toHaveProperty('chemistry_context', null)
   })
 
   it('leaves the name out when it saves an acquisition dataset', async () => {
@@ -211,8 +259,32 @@ describe('DialogDatasetOp', () => {
         dataset_name: 'Spring run',
         license: 'CC0-1.0',
         authors: null,
-        funding: [{ funder: 'Funder A', award: null }]
+        funding: [{ funder: 'Funder A', award: null }],
+        chemistry_context: null
       })
     )
+  })
+
+  it('creates a dataset with the context it names', async () => {
+    dataset.create.mockResolvedValue({ data: { dataset_id: 'ds-new' } })
+    const wrapper = mount(DialogDatasetOp, {
+      props: { action: null },
+      global: { plugins: [PrimeVue], stubs }
+    })
+    await wrapper.setProps({ action: 'create' })
+    await flushPromises()
+    expect(contextSelect(wrapper).props('modelValue')).toBe(null)
+    await wrapper
+      .findAllComponents({ name: 'InputText' })[0]
+      .vm.$emit('update:modelValue', 'Chamber run')
+    await contextSelect(wrapper).vm.$emit('update:modelValue', 'chamber')
+
+    const create = wrapper
+      .findAllComponents({ name: 'Button' })
+      .find((c) => c.props('label') === 'Create')
+    await create.trigger('click')
+    await flushPromises()
+
+    expect(dataset.create.mock.calls[0][0].chemistry_context).toBe('chamber')
   })
 })
