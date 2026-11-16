@@ -514,6 +514,9 @@ describe('BatchPeakComputeBar co-variation reading', () => {
     mountBar()
     expect(readButton().attributes('disabled')).toBeUndefined()
     expect(compute.readTooltip).toMatch(/^Read how the channels of every compound/)
+    expect(compute.readTooltip).toMatch(
+      /the batch's reagent ions, or to the samples' total ion current where it has none,/
+    )
     expect(compute.readTooltip).toMatch(/Moves no tier\.$/)
   })
 

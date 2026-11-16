@@ -57,6 +57,12 @@ import {
 } from '@/lib/batchKnownSpecies'
 import { blendOf, blendSummary, blendTooltip } from '@/lib/batchBlend'
 import {
+  flatSeriesKind,
+  flatSeriesOf,
+  flatSeriesSummary,
+  flatSeriesTooltip
+} from '@/lib/batchFlatSeries'
+import {
   holdingReasons,
   holdingTooltip,
   persistenceHold,
@@ -326,6 +332,14 @@ const tookLines = (row) => strippedLinesCount(row.merged_isotopologues) > 0
 // one, as the strips are.
 const hasBlends = computed(() => shown.value.some((bp) => blendOf(bp) != null))
 const onlyBlends = ref(false)
+
+// --- Flat series ------------------------------------------------------------------
+
+// A batch peak whose trace holds a constant ratio to the batch's normaliser:
+// an origin flag, likely background, which moves no tier. Offered only where
+// some batch peak shown carries one, as the blends are.
+const hasFlatSeries = computed(() => shown.value.some((bp) => flatSeriesOf(bp) != null))
+const onlyFlatSeries = ref(false)
 
 // Says which of the two tiers the chip is, and whether it agrees, as the
 // sample ledger's does.
@@ -636,6 +650,7 @@ const rows = computed(() => {
   const disagreeing = onlyDisagreements.value && hasEngineTiers.value
   const stripped = onlyStripped.value && hasStrips.value
   const blended = onlyBlends.value && hasBlends.value
+  const flat = onlyFlatSeries.value && hasFlatSeries.value
   // Set only in the engine-tier view: leaving it clears the chip.
   const engineBucket = engineChip.value
   const visible = parents.value.filter(
@@ -644,6 +659,7 @@ const rows = computed(() => {
       (!disagreeing || engineDisagrees(row)) &&
       (!stripped || tookLines(row)) &&
       (!blended || familyHoldsBlend(row)) &&
+      (!flat || flatSeriesOf(row) != null) &&
       (engineBucket == null || row.engineBucket === engineBucket)
   )
   const byColumn = sortField.value ? compareBy(sortField.value, sortOrder.value) : null
@@ -1102,6 +1118,18 @@ watch(
               those. Its consensus and tier stay as the samples voted.
               </p>
               <p>
+              <b>Read co-variation</b> also reads each compound's trace
+              against the batch's reagent ions, or the samples' total ion
+              current where the batch has none. A trace that holds a constant
+              ratio to them through the batch likely comes from the source or
+              the inlet rather than from what was sampled: it carries a level
+              mark beside its formula, which also names the ion where the
+              source's own list holds it. <b>Flat series</b> keeps only those,
+              so background can be filtered out. The flag says where an ion
+              comes from, not whether its formula is right, and moves no tier.
+              A batch that holds still throughout is not read so.
+              </p>
+              <p>
               After an import that carried the engine's own tiers,
               <b>Engine tier</b> makes the tier chips count and filter by that
               engine's tier, with <b>not stated</b> for the formulas it gave
@@ -1192,6 +1220,16 @@ watch(
             >
               <ToggleSwitch v-model="onlyBlends" inputId="batch-probable-blends" />
               <label for="batch-probable-blends">Probable blends</label>
+            </div>
+            <div
+              v-if="hasFlatSeries"
+              class="unfold-toggle"
+              v-tooltip.top="
+                'Only the batch peaks whose trace holds a constant ratio to the batch\'s reagent ions or total ion current: likely background. No tier moves on it'
+              "
+            >
+              <ToggleSwitch v-model="onlyFlatSeries" inputId="batch-flat-series" />
+              <label for="batch-flat-series">Flat series</label>
             </div>
             <!-- The whole ledger as a CSV: every batch peak with every
                  sample's member, one row per member. A background task; the
@@ -1394,6 +1432,18 @@ watch(
                 data-testid="blend-mark"
                 :aria-label="blendSummary(blendOf(data))"
                 v-tooltip.top="blendTooltip(blendOf(data))"
+              />
+              <!-- The trace holds a constant ratio to the batch's
+                   normaliser: an origin flag, likely background, and on hover
+                   the ion of the source's list where one names it. -->
+              <span
+                v-if="flatSeriesOf(data)"
+                class="pi ph ph-equals flat-series-mark"
+                :class="flatSeriesKind(flatSeriesOf(data))"
+                role="img"
+                data-testid="flat-series-mark"
+                :aria-label="flatSeriesSummary(flatSeriesOf(data))"
+                v-tooltip.top="flatSeriesTooltip(flatSeriesOf(data))"
               />
               <!-- The batch search took this peak because it recurs across
                    the batch, not for its height: the share on hover, and
@@ -2039,6 +2089,16 @@ watch(
 .persistence-mark.held,
 .persistence-mark.lower {
   opacity: 1;
+}
+/* A flat series: likely background, in the muted text colour; an ion the
+   source's list names, at full strength. */
+.flat-series-mark {
+  margin-left: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--p-text-muted-color);
+}
+.flat-series-mark.source {
+  color: var(--p-text-color);
 }
 .tier-reason-mark {
   margin-left: 0.3rem;

@@ -103,15 +103,17 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
   )
 
   // The co-variation reading: how the channels of every compound the batch
-  // sees through two of them follow each other across the batch. It moves no
-  // tier, has no parameters, and waits on its own task as the detection does.
+  // sees through two of them follow each other across the batch, and which
+  // compounds' traces hold a constant ratio to the batch's normaliser (step
+  // 4.2e). It moves no tier, has no parameters, and waits on its own task as
+  // the detection does.
   const reading = ref(false)
   const pendingReadId = ref(null)
   let readTimer = null
   const readTooltip = computed(
     () =>
       blockedReason.value ??
-      'Read how the channels of every compound seen through two of them follow each other across the batch. Moves no tier.'
+      "Read how the channels of every compound seen through two of them follow each other across the batch, and flag the compounds whose traces hold a constant ratio to the batch's reagent ions, or to the samples' total ion current where it has none, as likely background. Moves no tier."
   )
 
   // The isotopologue stamping: the diagnostic isotopologues of every

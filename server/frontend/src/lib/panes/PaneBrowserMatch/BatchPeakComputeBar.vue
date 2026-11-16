@@ -157,9 +157,9 @@ async function launchSearch() {
         "
       />
     </span>
-    <!-- The co-variation of the batch's channels: read off the ledger as it
-         stands, with no parameters, and display-only. Held while the others
-         rewrite the ledger. -->
+    <!-- The co-variation of the batch's channels and the flat series: read
+         off the ledger as it stands, with no parameters, and display-only.
+         Held while the others rewrite the ledger. -->
     <span v-tooltip.left="compute.readTooltip">
       <Button
         label="Read co-variation"
@@ -190,6 +190,16 @@ async function launchSearch() {
             in fewer than ten spectra, or with a channel that hardly moves,
             cannot be read. The reading shows in the Co-variation column and
             in the peak inspector. It moves no tier.
+            </p>
+            <p>
+            The same run reads each compound's trace on its own, against the
+            batch's reagent ions, or the samples' total ion current where the
+            batch has none. A trace that holds a constant ratio to them, its
+            coefficient of variation under 0.25 in half the batch's samples or
+            more, likely comes from the source or the inlet: it is flagged
+            <b>Flat series</b>, with the ion where the source's list names it.
+            The flag moves no tier. A batch that holds still throughout is not
+            read so.
             </p>
           `)
         "
