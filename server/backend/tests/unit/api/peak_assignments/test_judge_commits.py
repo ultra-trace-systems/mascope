@@ -37,6 +37,7 @@ from mascope_backend.api.new.peak_assignments.service import judge_commits
 from mascope_backend.api.new.peak_assignments.tiering import (
     PREDICTED_ENVELOPE,
     REASON_ABSENT_LINE,
+    REASON_CONTEXT_PRIOR,
     REASON_ENVELOPE_CLAIM,
     REASON_ENVELOPE_NEIGHBOUR,
     REASON_INHERITED,
@@ -46,6 +47,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     SEPARATED_THROUGH,
     TIERING_RULES_VERSION,
 )
+from mascope_tools.composition import profiles as presets
 from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
 
 
@@ -180,6 +182,7 @@ def judge(
     reagent_lines: Sequence[dict] = (),
     resolution=None,
     source_line_cap=None,
+    context=None,
 ):
     return judge_commits(
         rows,
@@ -192,6 +195,7 @@ def judge(
         reagent_lines=reagent_lines,
         resolution=resolution,
         source_line_cap=source_line_cap,
+        context=context,
     )
 
 
@@ -700,6 +704,40 @@ class TestTheRunsChannels:
         assert judged_rows["pa-x"]["tier"] == "candidate"
         assert judged_rows["pa-y"]["role"] == "M0"
         assert judged.tiering["held"] == {"neighbour_not_assigned": 1}
+
+
+class TestTheContextReachesTheTieringPass:
+    """Step 3.6: the run's context's priors are asked on the judged ledger."""
+
+    def sulfur(self) -> list[dict]:
+        # A sulfur reading whose 13C line is committed with it: seen twice for
+        # the lone-peak rule, never for the sulfur prior.
+        row = commit("pa-s", "C6H12O6S", "C6H13O6S+", 250.0, 1000.0)
+        line = commit(
+            "pa-s-13C",
+            "C6H12O6S",
+            "C6H13O6S+",
+            251.0,
+            70.0,
+            role="iso_child",
+            owner="pa-s",
+            label="13C",
+        )
+        return anchors() + [row, line]
+
+    def test_a_sulfur_reading_is_held_under_an_atmospheric_context(self):
+        judged = judge(self.sulfur(), context=presets.AMBIENT_AIR)
+        row = by_id(judged.rows)["pa-s"]
+        assert row["tier"] == "candidate"
+        assert REASON_CONTEXT_PRIOR in rules(row)
+        assert judged.tiering["context_priors"] == {
+            "context": "ambient-air",
+            "priors": ["sulfur", "odd_nitrogen"],
+        }
+
+    def test_without_a_context_it_keeps_its_tier(self):
+        judged = judge(self.sulfur())
+        assert by_id(judged.rows)["pa-s"]["tier"] == "assigned"
 
 
 class TestTheBandsReachTheReasons:

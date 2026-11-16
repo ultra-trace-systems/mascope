@@ -279,3 +279,59 @@ class TestRatioWindows:
             P.URONIUM.ratio_windows()["N/C"][1]
             > (P.AMBIENT_AIR.ratio_windows()["N/C"][1])
         )
+
+
+class TestContextPriors:
+    """Step 3.6: the formula shapes an atmosphere holds only on corroboration."""
+
+    @pytest.mark.parametrize("context", [P.AMBIENT_AIR, P.CHAMBER, P.INDOOR_AIR])
+    def test_every_atmospheric_context_carries_both_priors(self, context):
+        assert context.priors == (P.PRIOR_SULFUR, P.PRIOR_ODD_NITROGEN)
+
+    def test_uronium_carries_the_sulfur_prior_alone(self):
+        # Its analytes are the reduced-nitrogen bases the other prior doubts.
+        assert P.URONIUM.priors == (P.PRIOR_SULFUR,)
+
+    @pytest.mark.parametrize(
+        "context", [P.OBJECT_HEADSPACE, P.COMBUSTION, P.WATER, P.FOOD, P.NO_CONTEXT]
+    )
+    def test_a_matrix_with_its_own_sulfur_and_nitrogen_carries_none(self, context):
+        assert context.priors == ()
+        assert context.priors_met("C10H16O4S") == ()
+
+    def test_sulfur_meets_the_sulfur_prior(self):
+        assert P.AMBIENT_AIR.priors_met("C10H16O4S") == (P.PRIOR_SULFUR,)
+
+    @pytest.mark.parametrize("formula", ["C2H4N2", "C2H3N3", "C5H8N2O3", "C4H6N4O7"])
+    def test_two_nitrogens_with_under_two_oxygens_each_meet_the_nitrogen_prior(
+        self, formula
+    ):
+        assert P.AMBIENT_AIR.priors_met(formula) == (P.PRIOR_ODD_NITROGEN,)
+
+    @pytest.mark.parametrize(
+        "formula",
+        [
+            # A dinitrate and a nitroaromatic: two and three oxygens per
+            # nitrogen are an organonitrate's and a nitro group's own counts.
+            "C5H8N2O8",
+            "C6H4N2O4",
+            # One nitrogen is not the shape, however few its oxygens.
+            "C5H5N",
+            "C10H15NO",
+        ],
+    )
+    def test_organonitrates_and_single_nitrogens_meet_no_prior(self, formula):
+        assert P.AMBIENT_AIR.priors_met(formula) == ()
+
+    def test_a_formula_meeting_both_names_both_in_order(self):
+        assert P.AMBIENT_AIR.priors_met("C3H6N2S") == (
+            P.PRIOR_SULFUR,
+            P.PRIOR_ODD_NITROGEN,
+        )
+
+    def test_a_labelled_nitrogen_counts_as_nitrogen(self):
+        assert P.AMBIENT_AIR.priors_met("C2H4N[15N]") == (P.PRIOR_ODD_NITROGEN,)
+
+    def test_an_unreadable_formula_meets_none(self):
+        assert P.AMBIENT_AIR.priors_met("not a formula") == ()
+        assert P.AMBIENT_AIR.priors_met(None) == ()

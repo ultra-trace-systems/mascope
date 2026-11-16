@@ -239,6 +239,9 @@ class ResolvedProfile:
                 key: list(window)
                 for key, window in self.context.ratio_windows().items()
             },
+            # The formula shapes the context holds only on corroboration, which
+            # the tiering pass asks of the search's rows (step 3.6).
+            "context_priors": list(self.context.priors),
             "secondary_channels": sorted(self.minor_channels),
             "partner_gated_channels": sorted(self.partner_gated_channels),
             "channel_evidence": evidence_records(self.channel_evidence),

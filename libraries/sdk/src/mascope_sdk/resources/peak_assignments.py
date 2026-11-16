@@ -601,7 +601,11 @@ class PeakAssignmentsResource(BaseResource):
         cluster around a neutral with no oxygen (rule ``oxygen_free_cluster``),
         a peak whose evidence left rivals standing with nothing else
         corroborating it, a formula the search found on one peak that nothing
-        else in the run saw (rule ``lone_peak``), a line of its own isotope
+        else in the run saw (rule ``lone_peak``), a formula the run's chemistry
+        context holds only on corroboration - sulfur, or two or more nitrogens
+        with fewer than two oxygens per nitrogen, with no second channel, series
+        or line of that element's own heavy isotope seeing it (rule
+        ``context_prior``), a line of its own isotope
         pattern the spectrum should show and does not (rule ``absent_line``),
         a peak the instrument did not separate from a neighbouring one (rule
         ``unresolved_peak``, with the neighbour's ``neighbour_peak_id`` and

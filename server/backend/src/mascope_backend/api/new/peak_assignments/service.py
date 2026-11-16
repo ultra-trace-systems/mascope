@@ -296,7 +296,7 @@ from mascope_tools.composition.mechanism_notation import (
     mechanism_spellings,
     parse_mechanism,
 )
-from mascope_tools.composition.profiles import get_reagent_profile
+from mascope_tools.composition.profiles import ChemistryContext, get_reagent_profile
 from mascope_tools.composition.reagents import (
     REAGENT_LINE_FAMILIES,
     secondary_channels,
@@ -2834,6 +2834,7 @@ def judge_commits(
     instrument_type: str | None = None,
     listed_formulas: frozenset[str] = frozenset(),
     source_line_cap: SourceLineCap | None = None,
+    context: ChemistryContext | None = None,
 ) -> JudgedCommits:
     """Run the mass gate, the partner gate, the cross-channel pass and the
     tiering pass, and read the lines they find in doubt as their neighbours'.
@@ -2886,6 +2887,8 @@ def judge_commits(
         does.
     :param source_line_cap: The calibrant cap the source's lines anchor the
         mass gate under (:func:`_source_line_cap`), or None for none.
+    :param context: The run's chemistry context, whose priors the tiering
+        pass asks (``tiering.context_prior_reason``); None asks none.
     :return: The judged rows and each pass's summary.
     """
     claims: dict[str, EnvelopeClaim] = {}
@@ -2926,6 +2929,7 @@ def judge_commits(
             envelope_tolerance=envelope_tolerance,
             artifact_peak_ids=artifact_peak_ids,
             instrument_type=instrument_type,
+            context=context,
         )
         found, held = find_envelope_claims(
             judged,
@@ -5272,6 +5276,7 @@ async def _assign_sample(
             instrument_type=instrument_type,
             listed_formulas=listed_formulas,
             source_line_cap=source_line_cap,
+            context=resolved_profile.context,
         )
         mass_calibration = judged.mass_calibration
         cross_channel = judged.cross_channel

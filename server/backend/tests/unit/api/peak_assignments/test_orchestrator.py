@@ -629,6 +629,40 @@ class TestTheJudgedLedger:
         assert handed["tier_bands"] == {"assigned": 0.8, "candidate": 0.5}
 
     @pytest.mark.asyncio
+    async def test_the_passes_are_handed_the_runs_context(self):
+        # The tiering pass asks the context's priors (step 3.6), so the context
+        # it reads is the one the run resolved, and the run records which.
+        from mascope_backend.api.new.peak_assignments import service
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        judge = service.judge_commits
+        handed = {}
+
+        def recording(rows, **kwargs):
+            handed.update(kwargs)
+            return judge(rows, **kwargs)
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        recorder = _Recorder()
+        _start(_patches(recorder, peaks, _stage_a_rows()))
+        patch(f"{_MOD}.judge_commits", side_effect=recording).start()
+
+        await _run(PeakAssignmentConfig(run_untargeted=False, context="chamber"))
+
+        assert handed["context"].name == "chamber"
+        config = recorder.recorded_configs()[-1]
+        assert config["tiering"]["context_priors"] == {
+            "context": "chamber",
+            "priors": ["sulfur", "odd_nitrogen"],
+        }
+        assert config["resolved_profile"]["context_priors"] == [
+            "sulfur",
+            "odd_nitrogen",
+        ]
+
+    @pytest.mark.asyncio
     async def test_the_tiering_pass_reads_the_runs_tolerance_and_artifacts(self):
         # The absent-line rule asks a row's lines from the threshold the
         # run's fitted tolerance sets, reads the artifact pre-pass's peaks as

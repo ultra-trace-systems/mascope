@@ -41,6 +41,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Mapping
 
+from mascope_tools.composition.heuristic_filter import element_counts
 from mascope_tools.composition.known_window import KnownWindow
 from mascope_tools.composition.mechanism_notation import mechanism_key
 
@@ -194,6 +195,63 @@ KNOWN_WINDOW_CEILING = KnownWindow(
 )
 
 
+#: The sulfur prior (step 3.6 of the assignment plan): a neutral carrying sulfur
+#: needs corroboration beyond its mass fit to reach the top tier. An atmosphere
+#: holds organosulfur only where it has a sulfur source, and the formula search
+#: has no way to know whether it has one: sulfur formulas were 5% of the
+#: assigned neutrals in the gate's nitrate batches, 2% in uronium and 22% on the
+#: TOF, in an alpha-pinene system with no sulfur source at all. Sulfur's mass
+#: defect lets a C/H/O/S formula absorb what a C/H/O/N one leaves, so the mass
+#: fit alone cannot tell the two apart; the 34S line, 4.2% of M0 per atom, can.
+PRIOR_SULFUR = "sulfur"
+
+#: The odd-nitrogen prior: a neutral with two or more nitrogens and fewer than
+#: two oxygens per nitrogen. An atmosphere's nitrogen reaches its organics as
+#: nitrate and nitro groups, two or three oxygens per nitrogen; a formula with
+#: more nitrogen than that is a reduced-nitrogen compound, which an oxidation
+#: system rarely makes, or a grid's way of spending a mass on N2 against CO or
+#: CH4 (N2 and CO differ by 11 mDa). On the gate's certified cylinder sets, a
+#: nitrogen-free mixture, the nitrogen-rich C2 family was 21 to 34% of the
+#: assigned rows. Organonitrates and nitroaromatics keep their tier: two
+#: oxygens per nitrogen is the nitro group's own count.
+PRIOR_ODD_NITROGEN = "odd_nitrogen"
+
+#: Every prior a context can carry, in the order a formula meeting several is
+#: reported in.
+CONTEXT_PRIORS: tuple[str, ...] = (PRIOR_SULFUR, PRIOR_ODD_NITROGEN)
+
+#: The element whose own isotope line corroborates a formula a prior asks about:
+#: 34S (or 33S) for sulfur, 15N for nitrogen. A 13C line proves the carbon
+#: count, which the mass fit had already spent; only a line of the element the
+#: prior doubts says the element is there.
+PRIOR_ELEMENT: dict[str, str] = {PRIOR_SULFUR: "S", PRIOR_ODD_NITROGEN: "N"}
+
+
+def priors_met(counts: Mapping[str, int], priors: tuple[str, ...]) -> tuple[str, ...]:
+    """Which of a context's priors a neutral's element counts meet.
+
+    Pure arithmetic on counts, so a caller that already parsed the formula
+    asks without parsing it again, and an isotope-labelled atom counts as its
+    element (``element_counts`` folds ``[15N]`` into ``N``).
+
+    :param counts: The neutral's element counts.
+    :param priors: The priors to ask, in :data:`CONTEXT_PRIORS` order.
+    :return: The priors the neutral meets, in the order given; empty for none.
+    """
+    met = []
+    nitrogen = counts.get("N", 0)
+    for prior in priors:
+        if prior == PRIOR_SULFUR and counts.get("S", 0) > 0:
+            met.append(prior)
+        elif (
+            prior == PRIOR_ODD_NITROGEN
+            and nitrogen >= 2
+            and counts.get("O", 0) < 2 * nitrogen
+        ):
+            met.append(prior)
+    return tuple(met)
+
+
 @dataclass(frozen=True)
 class ChemistryContext:
     """The matrix prior: what the sample was drawn from.
@@ -221,6 +279,11 @@ class ChemistryContext:
         Stage A: a source contributes a formula only inside both its own window
         and this one. None sets no ceiling, so each source is bounded by its own
         row alone.
+    :param priors: The formula shapes this matrix holds only on corroboration
+        (:data:`CONTEXT_PRIORS`): a formula the search elects that meets one
+        reaches the top tier only where something beyond its mass fit saw it.
+        Graded rather than gated, like ``min_carbon_for``: the grid keeps the
+        formula, and the tiering pass reads the prior.
     """
 
     name: str
@@ -233,6 +296,23 @@ class ChemistryContext:
     dbe_to_c: tuple[float, float] | None = None
     min_carbon_for: Mapping[str, int] = field(default_factory=dict)
     known_window: KnownWindow | None = KNOWN_WINDOW_CEILING
+    priors: tuple[str, ...] = ()
+
+    def priors_met(self, formula: str | None) -> tuple[str, ...]:
+        """The priors of this context a neutral formula meets.
+
+        Fails open, like every chemistry rule here: a formula that cannot be
+        parsed meets none.
+
+        :param formula: The neutral formula.
+        :return: The priors it meets, in :data:`CONTEXT_PRIORS` order.
+        """
+        if not self.priors:
+            return ()
+        counts = element_counts(formula or "")
+        if not counts:
+            return ()
+        return priors_met(counts, self.priors)
 
     def ratio_windows(self) -> dict[str, tuple[float, float]]:
         """The context's ratio windows keyed for the heuristic filter.
@@ -254,6 +334,12 @@ class ChemistryContext:
 # Ported from peaky's chem/contexts.py, where the windows were fitted on real
 # campaigns. The reasoning behind the individual numbers lives there; what
 # matters here is that a context only ever narrows.
+
+#: The priors every atmospheric context carries: ambient air, a chamber and
+#: indoor air. The other matrices hold sulfur and reduced nitrogen as real
+#: chemistry - food and beverage, water's disinfection by-products, the
+#: N-heterocycles of combustion, an object's own volatiles - and carry none.
+ATMOSPHERIC_PRIORS: tuple[str, ...] = (PRIOR_SULFUR, PRIOR_ODD_NITROGEN)
 
 AMBIENT_AIR = ChemistryContext(
     name="ambient-air",
@@ -283,6 +369,7 @@ AMBIENT_AIR = ChemistryContext(
         "I": 0,
     },
     min_carbon_for={"Br": 5, "Cl": 5, "F": 3},
+    priors=ATMOSPHERIC_PRIORS,
 )
 
 CHAMBER = ChemistryContext(
@@ -298,6 +385,7 @@ CHAMBER = ChemistryContext(
     dbe_to_c=(0.0, 0.7),
     element_caps={"N": 2, "S": 1, "P": 0, "F": 0, "Si": 1, "I": 0},
     min_carbon_for={"Br": 5, "Cl": 5, "F": 3},
+    priors=ATMOSPHERIC_PRIORS,
 )
 
 INDOOR_AIR = ChemistryContext(
@@ -313,6 +401,7 @@ INDOOR_AIR = ChemistryContext(
     dbe_to_c=(0.0, 0.9),
     element_caps={"N": 3, "S": 1, "P": 1, "F": 2, "Si": 6, "Cl": 2, "Br": 1},
     min_carbon_for={"Br": 5, "Cl": 4, "F": 2},
+    priors=ATMOSPHERIC_PRIORS,
 )
 
 OBJECT_HEADSPACE = ChemistryContext(
@@ -391,6 +480,11 @@ URONIUM = ChemistryContext(
         "I": 0,
     },
     min_carbon_for={"Si": 2},
+    # The sulfur prior alone. Urea CIMS samples an atmosphere, whose sulfur
+    # needs a source as anywhere else (2% of the gate's uronium assigned
+    # neutrals carried it), but its analytes ARE the reduced-nitrogen bases the
+    # odd-nitrogen prior doubts: the N/C window above is opened for them.
+    priors=(PRIOR_SULFUR,),
 )
 
 NO_CONTEXT = ChemistryContext(

@@ -41,6 +41,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     REASON_AMBIGUOUS_ADDUCT,
     REASON_AMBIGUOUS_NITROGEN,
     REASON_CANDIDATE_DENSITY,
+    REASON_CONTEXT_PRIOR,
     REASON_CORROBORATED,
     REASON_ENVELOPE_CLAIM,
     REASON_ENVELOPE_NEIGHBOUR,
@@ -71,10 +72,12 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     critical_separation,
     envelope_neighbours,
     find_envelope_claims,
+    names_element,
     predicted_envelope,
     separated,
     separation_reach,
 )
+from mascope_tools.composition import profiles as presets
 from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
 
 
@@ -508,6 +511,152 @@ class TestTheDensityRule:
             r["detail"] for r in entry if r["rule"] == REASON_CANDIDATE_DENSITY
         )
         assert "4" in detail
+
+
+class TestTheContextPriors:
+    """Step 3.6: a shape the context holds only on corroboration."""
+
+    #: Sulfur in an alpha-pinene chamber with no sulfur source.
+    SULFUR = "C10H16O5S"
+    #: The nitrogen-rich C2 family of a nitrogen-free cylinder.
+    NITROGEN = "C2H4N2"
+
+    def reason(self, rows: list[dict], row_id: str = "pa-1") -> dict:
+        return next(
+            r for r in reasons_of(rows, row_id) if r["rule"] == REASON_CONTEXT_PRIOR
+        )
+
+    def test_a_sulfur_formula_seen_twice_by_its_13c_line_is_still_a_candidate(self):
+        # The 13C line is a second observation (decision 25) and keeps the
+        # lone-peak rule quiet; it proves the carbon count, not the sulfur.
+        rows = [row("pa-1", self.SULFUR), line_of("pa-1")]
+        summary = run(rows, context=presets.AMBIENT_AIR)
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert rules_on(rows, "pa-1") >= {REASON_CONTEXT_PRIOR}
+        assert REASON_LONE_PEAK not in rules_on(rows, "pa-1")
+        assert summary["capped_by_rule"] == {REASON_CONTEXT_PRIOR: 1}
+        # Its isotopologue follows it down.
+        assert tier_of(rows, "pa-1-13C") == "candidate"
+
+    def test_the_reason_names_the_shape_and_what_was_not_seen(self):
+        rows = [row("pa-1", self.SULFUR), line_of("pa-1")]
+        run(rows, context=presets.CHAMBER)
+        assert self.reason(rows) == {
+            "rule": REASON_CONTEXT_PRIOR,
+            "detail": (
+                "C10H16O5S carries sulfur, which the chamber context holds only "
+                "on corroboration: no second channel of this run committed the "
+                "same neutral, no series of its batch anchors it, and no 34S "
+                "line of its own is committed with it"
+            ),
+            "caps": True,
+        }
+
+    def test_an_odd_nitrogen_formula_is_held_and_named(self):
+        rows = [row("pa-1", self.NITROGEN), line_of("pa-1")]
+        run(rows, context=presets.AMBIENT_AIR)
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert self.reason(rows)["detail"].startswith(
+            "C2H4N2 carries two or more nitrogens and fewer than two oxygens per "
+            "nitrogen, which the ambient air context"
+        )
+        assert self.reason(rows)["detail"].endswith(
+            "no 15N line of its own is committed with it"
+        )
+
+    @pytest.mark.parametrize("label", ["34S", "13C+34S", "33S"])
+    def test_a_line_of_its_own_sulfur_keeps_it(self, label):
+        rows = [row("pa-1", self.SULFUR), line_of("pa-1", label=label)]
+        run(rows, context=presets.AMBIENT_AIR)
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert REASON_CONTEXT_PRIOR not in rules_on(rows, "pa-1")
+
+    def test_a_15n_line_keeps_an_odd_nitrogen_formula(self):
+        rows = [row("pa-1", self.NITROGEN), line_of("pa-1", label="15N")]
+        run(rows, context=presets.AMBIENT_AIR)
+        assert tier_of(rows, "pa-1") == "assigned"
+
+    def test_a_line_that_does_not_follow_its_owner_corroborates_nothing(self):
+        rows = [
+            row("pa-1", self.SULFUR),
+            line_of("pa-1", label="34S", tracking=TRACKING_UNTRACKED),
+        ]
+        run(rows, context=presets.AMBIENT_AIR)
+        assert REASON_CONTEXT_PRIOR in rules_on(rows, "pa-1")
+
+    def test_a_merged_tof_line_names_no_element(self):
+        # The M+2 peak of a TOF holds 34S, 13C2 and 18O together.
+        rows = [row("pa-1", self.SULFUR), line_of("pa-1", label="M+2")]
+        run(rows, context=presets.AMBIENT_AIR)
+        assert REASON_CONTEXT_PRIOR in rules_on(rows, "pa-1")
+
+    def test_each_prior_needs_its_own_element_line(self):
+        rows = [row("pa-1", "C3H6N2S"), line_of("pa-1", label="34S")]
+        run(rows, context=presets.AMBIENT_AIR)
+        detail = self.reason(rows)["detail"]
+        assert "two or more nitrogens" in detail
+        assert "carries sulfur" not in detail
+        assert "no 15N line" in detail
+
+    def test_a_second_channel_keeps_it(self):
+        rows = [row("pa-1", self.SULFUR, channels=SEEN_TWICE)]
+        run(rows, context=presets.AMBIENT_AIR)
+        assert tier_of(rows, "pa-1") == "assigned"
+
+    def test_a_series_of_the_batch_keeps_it(self):
+        rows = [
+            row("pa-1", self.SULFUR, provenance={SERIES: SERIES_BLOCK}),
+        ]
+        run(rows, context=presets.AMBIENT_AIR)
+        assert tier_of(rows, "pa-1") == "assigned"
+
+    def test_a_list_match_is_not_asked(self):
+        rows = [row("pa-1", self.SULFUR, source="database", compound="dms")]
+        run(rows, context=presets.AMBIENT_AIR)
+        assert REASON_CONTEXT_PRIOR not in rules_on(rows, "pa-1")
+
+    def test_a_context_without_the_prior_asks_nothing(self):
+        rows = [row("pa-1", self.NITROGEN), line_of("pa-1")]
+        run(rows, context=presets.URONIUM)
+        assert tier_of(rows, "pa-1") == "assigned"
+        rows = [row("pa-1", self.SULFUR), line_of("pa-1")]
+        run(rows, context=presets.FOOD)
+        assert tier_of(rows, "pa-1") == "assigned"
+
+    def test_no_context_asks_nothing(self):
+        rows = [row("pa-1", self.SULFUR), line_of("pa-1")]
+        summary = run(rows)
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert summary["context_priors"] == {"context": None, "priors": []}
+
+    def test_a_row_whose_channels_were_never_recorded_is_not_asked(self):
+        rows = [row("pa-1", self.SULFUR), line_of("pa-1")]
+        rows[0]["provenance"]["cross_channel"] = None
+        run(rows, context=presets.AMBIENT_AIR)
+        assert REASON_CONTEXT_PRIOR not in rules_on(rows, "pa-1")
+
+    def test_the_run_records_the_priors_it_asked(self):
+        summary = run([row("pa-1")], context=presets.URONIUM)
+        assert summary["context_priors"] == {
+            "context": "uronium",
+            "priors": ["sulfur"],
+        }
+
+    @pytest.mark.parametrize(
+        "label, element, named",
+        [
+            ("34S", "S", True),
+            ("13C+34S", "S", True),
+            ("13C", "S", False),
+            ("32S", "S", False),
+            ("15N", "N", True),
+            ("13C2", "N", False),
+            ("M+2", "S", False),
+            (None, "S", False),
+        ],
+    )
+    def test_which_labels_name_an_element(self, label, element, named):
+        assert names_element(label, element) is named
 
 
 class TestOnePeakIsNotEnough:
@@ -1368,11 +1517,11 @@ class TestTheRunsRecord:
     def test_the_rule_version_is_recorded(self):
         assert run([row("pa-1")])["version"] == TIERING_RULES_VERSION
 
-    def test_the_rule_set_is_14(self):
+    def test_the_rule_set_is_15(self):
         # The number, not the imported constant: a tier is comparable across
         # runs only under the same rules, so the set moves on purpose and this
         # test moves with it.
-        assert run([row("pa-1")])["version"] == 14
+        assert run([row("pa-1")])["version"] == 15
 
     def test_the_thresholds_are_recorded_with_it(self):
         summary = run([row("pa-1")])
