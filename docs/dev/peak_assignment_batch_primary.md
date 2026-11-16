@@ -622,8 +622,11 @@ share of a late arrival's new anchors still singletons (members are the batch's 
 | testbed TOF, 4 batches of 3-6 | 30-50 % | 24-58 % | | 0-37 % | 91-100 % |
 
 A floor of 5 instead of 2 would hide another 13-15 % of the demo batches' anchors and
-4-17 % on the large testbed batches. On a batch of ten samples or fewer the bin "5 to under
-half" is empty by construction. Most anchors a late arrival mints have no second member
+4-17 % on the large testbed batches. "Half or more" is also at least 5 samples, so the bins
+do not overlap. On a batch of ten samples or fewer the bin "5 to under half" is empty by
+construction, and "half or more" means 5 samples or more: there an anchor of 2-4 members
+counts under 2-4 even when it covers half the batch. The 3-sample TOF batch reads 0 % in
+that column though 58 % of its anchors have 2-3 members. Most anchors a late arrival mints have no second member
 yet; on the large Orbitrap batches that is a handful of anchors, so the share swings widely.
 
 **What the readings say for the two open decisions** (§10, items 4 and 5; the calls stay
