@@ -1269,8 +1269,13 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
   the reference engine's formulas (decision 27). Expected: G9 at or below
   2% and G10 at or above 95% on every gated set, G11 at 0 on set G, G12 at
   0 on every set; on the cylinder sets every certified component at
-  assigned through its right reading and nothing the bottle does not hold
-  at assigned; and a chemist's reading of the fifty brightest assigned
+  assigned through its right reading, and every assigned row the bottle
+  does not hold either named as the source's or the inlet's ion (3.3's
+  list, a list tagged background) or its composition argued from the
+  source chemistry, each that is neither reported as a finding: a source
+  or inlet ion read with its right composition is a right answer at
+  assigned, not a failure of the gate (decision 24's addendum); and a
+  chemist's reading of the fifty brightest assigned
   rows of each chamber set against the known products of alpha-pinene
   oxidation [yu99, gla00, ehn14, bia19] and the source chemistry (the
   references under 3.3), every row either in the literature, argued from
@@ -3673,6 +3678,21 @@ fix; and the per-range publish above.
     toluene less a hydride, since toluene is 3% of the signal and C7H6 a
     trace); and a window that holds no calibrant is not assigned until it
     has one, so K2 waits on step 3.5 rather than on a relaxed rule.
+    *Addendum (2026-11-16, the plan owner on step 4.2e).* Outside the
+    bottle is not wrong. The cylinder says which peaks are the mixture's;
+    it does not say the formula of the rest is wrong. A source or inlet
+    ion read with its right composition is a right answer, at whatever
+    tier its own formula evidence earns, and the gate asks that it be
+    named as the source's or the inlet's, not that it be held below
+    assigned (step 3.7). A tier is confidence in the formula, never a
+    reading of where the ion came from: a rule that moves a tier because
+    a peak looks like background rather than an analyte, such as a flat
+    batch series, reads the wrong question, and in ambient work, where the
+    air is the sample and a real analyte can hold steady for days, it
+    would hold analytes too. Rows the bottle does not hold whose formula
+    is in doubt, such as the nitrogen-rich C2 family of sets K and K3
+    that no literature names, are held by the formula's own evidence
+    (decision 25, step 3.6), not by their origin.
 25. **The assigned tier needs a second observation** (taken 2026-09-25 by
     the plan owner). A row whose evidence is one peak is a candidate at
     most, whatever its fit: a committed isotopologue row, a second channel
