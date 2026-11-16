@@ -184,6 +184,7 @@ from mascope_backend.api.new.peak_assignments.fold_view import (
 )
 from mascope_backend.api.new.peak_assignments.listing import reference_listing
 from mascope_backend.api.new.peak_assignments.mass_gate import (
+    BELOW_ASSIGNABILITY_Z,
     MassCalibration,
     SourceLineCap,
     SpectrumLines,
@@ -197,6 +198,7 @@ from mascope_backend.api.new.peak_assignments.profiles import (
     RESOLVED_PROFILE_KEY,
     ResolvedProfile,
     resolve_profile,
+    with_fitted_window,
     with_secondary_channels,
 )
 from mascope_backend.api.new.peak_assignments.reagent_pass import (
@@ -5026,6 +5028,19 @@ async def _assign_sample(
             instrument_type,
             resolution,
             envelope_tolerance=envelope.tolerance,
+        )
+        # On a TOF the search's window is bounded by the width Stage A fitted
+        # (step 3.6): a candidate further from the sample's centre than the
+        # mass gate's floor is one it would hold below assignability whatever
+        # its fit, so it is no candidate to search for.
+        resolved_profile = with_fitted_window(
+            resolved_profile,
+            sigma_ppm=scoring.sigma_ppm
+            if mass_accuracy.sigma_ppm is not None
+            else None,
+            mu_ppm=scoring.mu_ppm,
+            sigmas=BELOW_ASSIGNABILITY_Z,
+            instrument_type=instrument_type,
         )
         # The measurement the untargeted winners' fits were scored at: the
         # seeded re-score's where it scored any, else Stage A's, which the

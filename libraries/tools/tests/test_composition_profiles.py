@@ -335,3 +335,17 @@ class TestContextPriors:
     def test_an_unreadable_formula_meets_none(self):
         assert P.AMBIENT_AIR.priors_met("not a formula") == ()
         assert P.AMBIENT_AIR.priors_met(None) == ()
+
+
+class TestFittedWindow:
+    """Step 3.6: a TOF's window bounded by the sample's own fitted width."""
+
+    def test_only_a_tof_is_bounded(self):
+        assert P.FITTED_WINDOW_INSTRUMENTS == frozenset({"tof"})
+
+    def test_it_reaches_the_centre_and_then_the_widths(self):
+        assert P.fitted_window_ppm(10.0, 1.0, -1.5, 6.0) == pytest.approx(7.5)
+        assert P.fitted_window_ppm(10.0, 1.0, 1.5, 6.0) == pytest.approx(7.5)
+
+    def test_it_is_never_wider_than_the_class_window(self):
+        assert P.fitted_window_ppm(10.0, 3.0, 0.0, 6.0) == 10.0

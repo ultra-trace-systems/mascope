@@ -182,6 +182,15 @@ const AUTO_CONTEXT = {
   batch: ', the one the batch names',
   dataset: ', the one the dataset names'
 }
+// A TOF's window the sample's own fitted width bounded says so, with the
+// instrument class's window it was bounded from (step 3.6).
+const windowFrom = (record) => {
+  const bounded = record.fitted_window?.class_mz_precision_ppm
+  if (record.mz_precision_source === 'fitted_width' && typeof bounded === 'number') {
+    return ` (bounded by the sample's fitted width, from ${bounded} ppm)`
+  }
+  return fromConfig(record.mz_precision_source)
+}
 const contextFrom = (record) =>
   isAuto(record.requested_context)
     ? (AUTO_CONTEXT[record.context_source] ?? ", the profile's own")
@@ -206,7 +215,7 @@ const chemistryTooltip = computed(() => {
       ? `Element grid: ${record.element_ranges}${fromConfig(record.element_ranges_source)}`
       : null,
     typeof record.mz_precision_ppm === 'number'
-      ? `m/z window: ${record.mz_precision_ppm} ppm${fromConfig(record.mz_precision_source)}`
+      ? `m/z window: ${record.mz_precision_ppm} ppm${windowFrom(record)}`
       : null,
     channels.length ? `Also searched through: ${channels.join(', ')}` : null,
     unconfigured.length

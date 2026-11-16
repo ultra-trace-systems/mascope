@@ -104,12 +104,14 @@ from mascope_backend.api.new.peak_assignments.envelope_fit import (
     recorded_envelope_tolerance,
 )
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
+from mascope_backend.api.new.peak_assignments.mass_gate import BELOW_ASSIGNABILITY_Z
 from mascope_backend.api.new.peak_assignments.profile_preview import (
     named_context_for,
 )
 from mascope_backend.api.new.peak_assignments.profiles import (
     ResolvedProfile,
     resolve_profile,
+    with_fitted_window,
     with_secondary_channels,
 )
 from mascope_backend.api.new.peak_assignments.seeded_scoring import score_seeds
@@ -899,12 +901,6 @@ async def _search_sample_peaks(
     notations, mechanism_id_by_notation = _untargeted_ionization_notations(
         searched_mechanisms
     )
-    runtime.logger.info(
-        f"Untargeted batch search of sample '{sample.sample_item_name}' "
-        f"searches profile '{resolved_profile.profile.name}' / context "
-        f"'{resolved_profile.context.name}': {resolved_profile.element_ranges} "
-        f"at {resolved_profile.mz_precision_ppm} ppm"
-    )
     # The whole spectrum is the frame - isotope patterns are scored against it -
     # while only the representatives are enumerated.
     match_params = await default_match_params(sample_item_id)
@@ -932,12 +928,28 @@ async def _search_sample_peaks(
     reagent_offset = await sample_reagent_offset(
         sample, peaks_df=peaks_df, resolved_profile=resolved_profile
     )
+    instrument_type = get_instrument_type(sample.filename)
     scoring = pattern_scoring_for(
         match_params,
         SampleMassAccuracy(sigma_ppm=width, reagent=reagent_offset),
-        get_instrument_type(sample.filename),
+        instrument_type,
         await _resolution_of(sample),
         envelope_tolerance=envelope_tolerance,
+    )
+    # A TOF's window bounded by that width, as a run's own search bounds it
+    # by the one its Stage A fitted (step 3.6).
+    resolved_profile = with_fitted_window(
+        resolved_profile,
+        sigma_ppm=scoring.sigma_ppm if width is not None else None,
+        mu_ppm=scoring.mu_ppm,
+        sigmas=BELOW_ASSIGNABILITY_Z,
+        instrument_type=instrument_type,
+    )
+    runtime.logger.info(
+        f"Untargeted batch search of sample '{sample.sample_item_name}' "
+        f"searches profile '{resolved_profile.profile.name}' / context "
+        f"'{resolved_profile.context.name}': {resolved_profile.element_ranges} "
+        f"at {resolved_profile.mz_precision_ppm} ppm"
     )
     search_columns = [
         column for column in SEARCH_PEAK_COLUMNS if column in frame.columns

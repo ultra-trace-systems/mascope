@@ -358,6 +358,20 @@ describe('BaseRunProvenance: the chemistry', () => {
     expect(chip.attributes('data-tooltip').split('\n')).toContain(line)
   })
 
+  it("says when a TOF's window was bounded by the sample's fitted width", () => {
+    const chip = mountRecording(
+      withChemistry({
+        ...RESOLVED,
+        mz_precision_ppm: 6.708,
+        mz_precision_source: 'fitted_width',
+        fitted_window: { class_mz_precision_ppm: 10, sigma_ppm: 1.118, mu_ppm: 0, sigmas: 6 }
+      })
+    ).findAll('.tag')[1]
+    expect(chip.attributes('data-tooltip').split('\n')).toContain(
+      "m/z window: 6.708 ppm (bounded by the sample's fitted width, from 10 ppm)"
+    )
+  })
+
   it('shows the channels of a run recorded in the legacy notation in the standard one', () => {
     const chip = mountRecording(
       withChemistry({ ...RESOLVED, secondary_channels: ['+CO3-'], unavailable_channels: ['-H+'] })
