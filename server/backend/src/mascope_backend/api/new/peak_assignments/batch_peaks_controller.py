@@ -34,6 +34,7 @@ from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.new.instrument_configs.lib import read_instrument_functions
 from mascope_backend.api.new.ionization.modes.versions import root_ids
 from mascope_backend.api.new.peak_assignments import batch_peaks
+from mascope_backend.api.new.peak_assignments.batch_blend import BLEND_TIERS
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     DIAGNOSTIC_ISOTOPOLOGUES_KEY,
     HELD_MEMBERS_KEY,
@@ -290,8 +291,14 @@ async def target_ion_seed_mzs(
 def _assigned_target_ion(row) -> str | None:
     """The target ion whose monoisotopic line a run's row assigned its peak
     to, or None: an isotopologue's row, a reagent's or an unassigned peak's
-    names no seed, nor does a reference list's row, which carries no ion."""
+    names no seed, nor does a reference list's row, which carries no ion.
+    Only a row at candidate or better is evidence (the tiers the blend and
+    the consensus read as an identification): a row the run refused, such as
+    one the mass gate capped to below_assignability for sitting off its
+    calibration, mints at its own m/z."""
     if getattr(row, "role", None) != ROLE_M0:
+        return None
+    if getattr(row, "tier", None) not in BLEND_TIERS:
         return None
     return getattr(row, "target_ion_id", None) or None
 
