@@ -2,7 +2,7 @@
 isotope line, or the same compound in another ionization channel - keep their ratio
 within each sample flat across a time-ordered batch, as one species does even while its
 own trace swings. **Stable**: the ratio holds. **Drift**: it drifts while the two
-channels co-vary, so the source's chemistry moved. **Red**: it drifts with nothing
+channels co-vary, so the source's chemistry moved. **Unstable**: it drifts with nothing
 saying the traces co-vary, or it jumps, so two species may share a trace.
 **Inconclusive** and **insufficient**: the ratio could not be read either way. A
 batch peak shows its most alarming pair's grade; click it for the pairs, each with its
