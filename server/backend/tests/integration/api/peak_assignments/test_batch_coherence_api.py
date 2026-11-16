@@ -522,7 +522,14 @@ async def test_the_route_runs_it_as_a_batch_run(
     [run] = [run for run in runs if run.action == ACTION_CO_VARIATION]
     assert run.status == "completed"
     assert run.is_current == 1
-    assert run.config == {"co_varying_r": 0.6, "min_spectra": 10, "flat_spread": 0.02}
+    assert run.config == {
+        "co_varying_r": 0.6,
+        "min_spectra": 10,
+        "flat_spread": 0.02,
+        "flat_cv": 0.25,
+        "flat_min_share": 0.5,
+        "min_varying_share": 0.2,
+    }
     assert run.summary["pairs"] == 5
     assert run.summary["co_varying"] == 1
     anchors = await _anchors(async_session_factory, batch_id)

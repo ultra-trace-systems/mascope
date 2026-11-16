@@ -286,6 +286,16 @@ class PeakAssignmentDetailRecord(PeakAssignmentRecord):
     #: None on any other. None where the search took the peak on its height,
     #: or never searched it.
     batch_persistence: dict | None = None
+    #: *Read co-variation*'s reading of the trace of the batch peak this row's
+    #: peak sits in against its partition's normaliser (step 4.2e,
+    #: ``batch_coherence.flat_series_record``), on a monoisotopic row that
+    #: reads the reading it was read on: the ``verdict`` (``flat``,
+    #: ``varying``, ``untestable`` with its ``reason``), the ``cv`` over the
+    #: normaliser, ``n_present`` of ``n_spectra`` and the ``share``, the
+    #: ``normaliser``, and on a flat reading the ion of the batch's own source
+    #: list its ion is (``source_ion``). An origin flag: no tier reads it.
+    #: None where no reading was read for it.
+    batch_flat_series: dict | None = None
 
 
 class PeakAssignmentsResponse(BaseModel):

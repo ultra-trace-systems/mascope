@@ -55,6 +55,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     co_variation_record_of,
     compute_consensus,
     diagnostic_isotopologues_record_of,
+    flat_series_record_of,
     fold_in_sample,
     held_member_tiers,
     hold_persistence_only,
@@ -836,6 +837,7 @@ async def _recompute_consensus_chunk(
             batch_checks=batch_checks_record_of(bp),
             known_species=known_species_record_of(bp),
             persistence=persistence,
+            flat_series=flat_series_record_of(bp),
         )
         if (
             diagnostic_isotopologues is not None

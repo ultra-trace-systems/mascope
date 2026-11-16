@@ -237,7 +237,15 @@ class BatchPeaksResource(BaseResource):
                  the search elected on persistence alone is capped at candidate,
                  or ``second_line``, ``corroborated`` and ``series_anchor`` for
                  what lifts it); null where none, and absent from a server that
-                 predates them.
+                 predates them;
+                 ``flat_series`` (*Read co-variation*'s reading of the trace
+                 against its partition's normaliser: the ``verdict`` - ``flat``,
+                 ``varying`` or ``untestable`` with its ``reason`` -, the ``cv``
+                 over the ``normaliser`` - ``reagent`` or ``tic`` -,
+                 ``n_present`` of ``n_spectra`` and their ``share``, and on a
+                 flat reading the ion of the batch's own source list its ion
+                 is, ``source_ion``); an origin flag that moves no tier; null
+                 where none, and absent from a server that predates it.
                  ``consensus_tier`` is always this server's: the engine's tier
                  stands beside it.
                  None when the batch has no ledger yet.
@@ -303,8 +311,11 @@ class BatchPeaksResource(BaseResource):
                  batch checks close the row: ``halogen_lock`` and
                  ``halogen_element``, ``label_twin``, ``neutral_pair`` and
                  ``neutral_pair_r``, the verdicts :meth:`list` serves under
-                 ``batch_checks``; null where none, and absent from a server
-                 that predates them. None when the batch has no ledger.
+                 ``batch_checks``, and ``flat_series``, ``flat_series_cv``
+                 and ``flat_series_source_ion``, the flat-series flag's
+                 verdict, cv and source ion; null where none, and absent from
+                 a server that predates them. None when the batch has no
+                 ledger.
         :rtype: pd.DataFrame | None
         """
         path = f"batch-peaks/batch/{sample_batch_id}/members"

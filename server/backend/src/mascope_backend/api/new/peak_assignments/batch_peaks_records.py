@@ -27,6 +27,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     standing_batch_checks_record,
     standing_co_variation_record,
     standing_diagnostic_isotopologues_record,
+    standing_flat_series_record,
     standing_merged_isotopologues_record,
     standing_series_record,
     tier_name,
@@ -119,6 +120,12 @@ def _batch_peak_meta(bp) -> dict:
     in a run's vocabulary (``rule``, ``detail``, ``caps``): the persistence
     rule's cap, or the second observations that lift it
     (``batch_peaks.hold_persistence_only``); None where no rule asked it.
+    ``flat_series`` is *Read co-variation*'s reading of the anchor's trace
+    against its partition's normaliser: the verdict, the cv over the
+    normaliser, the spectra and their share, the normaliser, and on a flat
+    reading the ion of the batch's own source list its ion is
+    (``batch_coherence.flat_series_record``); an origin flag, display-only;
+    None where none was read for the reading the anchor names.
     """
     return {
         "batch_peak_id": bp.batch_peak_id,
@@ -163,6 +170,7 @@ def _batch_peak_meta(bp) -> dict:
         "blend": blend_record_of(bp),
         "persistence": persistence_summary(bp),
         "tier_reasons": tier_reasons_of(bp),
+        "flat_series": standing_flat_series_record(bp),
         "reference_listing": consensus_listing(
             bp.candidates,
             bp.consensus_formula,

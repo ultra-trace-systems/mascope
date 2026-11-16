@@ -1618,6 +1618,70 @@ def persistence_summary(anchor: Any) -> Optional[dict]:
     return {key: value for key, value in record.items() if key != HELD_MEMBERS_KEY}
 
 
+# --- a flat series: a display-only origin flag (step 4.2e) ------------------
+
+#: The anchor's provenance key for what *Read co-variation* found of its trace
+#: against its partition's normaliser (``batch_coherence.flat_series_record``):
+#: the verdict (``flat``, ``varying``, ``untestable`` with its ``reason``),
+#: the trace's ``cv`` over the normaliser, ``n_present`` of the partition's
+#: ``n_spectra`` and their ``share``, the normaliser (``normaliser``,
+#: ``normaliser_cv``, ``normalised``), the partition's ``varying_share``, the
+#: reading it was read on (``formula``, ``ion_formula``,
+#: ``ionization_mechanism_id``), on a flat reading the ion of the batch's own
+#: source list that its ion is (``source_ion``), the bar it was read at
+#: (``flat_cv``, ``min_share``) and the run.
+#:
+#: Display-only, as the co-variation reading is (decision 35, and the plan
+#: owner's call on 4.2e): a flat trace says where an ion comes from, not
+#: whether its formula is right, so no tier, role, member or run reads it.
+FLAT_SERIES_KEY = "flat_series"
+
+
+def flat_series_record_of(anchor: Any) -> Optional[dict]:
+    """The flat-series record an anchor carries under
+    ``provenance.flat_series``, or None. A record names its verdict; anything
+    else under the key is not one."""
+    provenance = _member(anchor, "provenance")
+    if not isinstance(provenance, dict):
+        return None
+    record = provenance.get(FLAT_SERIES_KEY)
+    if isinstance(record, dict) and record.get("verdict"):
+        return record
+    return None
+
+
+def standing_flat_series_record(anchor: Any) -> Optional[dict]:
+    """The anchor's flat-series record, for a reader: while the anchor reads
+    the reading the record was read on."""
+    record = flat_series_record_of(anchor)
+    if record is None or not _reads(
+        record,
+        _member(anchor, "consensus_formula"),
+        _member(anchor, "ionization_mechanism_id"),
+    ):
+        return None
+    return record
+
+
+def row_flat_series(row: dict, anchor: Any) -> Optional[dict]:
+    """The flat-series record of the anchor a sample's row sits in, for the
+    inspector: on a monoisotopic row that reads the reading the record was
+    read on; None otherwise, or where the anchor carries none.
+
+    :param row: The sample's row, with ``role``, ``assigned_formula`` and
+        ``ionization_mechanism_id``.
+    :param anchor: The anchor its peak sits in, or None.
+    """
+    if anchor is None or row.get("role") != ROLE_M0:
+        return None
+    record = standing_flat_series_record(anchor)
+    if record is None or not _reads(
+        record, row.get("assigned_formula"), row.get("ionization_mechanism_id")
+    ):
+        return None
+    return record
+
+
 def resolution_from_tol_ppm(
     tol_ppm: Optional[float], drift_margin_ppm: float = DEFAULT_DRIFT_MARGIN_PPM
 ) -> Optional[float]:
@@ -1722,10 +1786,11 @@ def compute_consensus(
     batch_checks: Optional[dict] = None,
     known_species: Optional[dict] = None,
     persistence: Optional[dict] = None,
+    flat_series: Optional[dict] = None,
 ) -> Consensus:
     """:func:`vote_consensus`, with the anchor's series, co-variation,
-    stamping, strip, batch checks, known-species and persistence records
-    carried along.
+    stamping, strip, batch checks, known-species, persistence and flat-series
+    records carried along.
 
     The series record says a homologous series proposed a formula for this
     anchor. It is about that formula and not about the peak, so it stays in the
@@ -1753,7 +1818,9 @@ def compute_consensus(
     why the batch search took it - so it stays whatever the anchor reads; the
     rule it feeds is applied once the facts it reads off other batch peaks
     are in hand (:func:`hold_persistence_only`), and asks only the reading
-    the search elected.
+    the search elected. A flat-series record is about the reading it was
+    read on and stays while the consensus names it, as a co-variation record
+    does; nothing reads it but a reader.
 
     :param members: The batch peak's occurrences.
     :param batch_peak_id: This batch peak's own id.
@@ -1776,6 +1843,8 @@ def compute_consensus(
         (:func:`known_species_record_of`), or None.
     :param persistence: The persistence record the anchor carries
         (:func:`persistence_record_of`), or None.
+    :param flat_series: The flat-series record the anchor carries
+        (:func:`flat_series_record_of`), or None.
     """
     consensus = vote_consensus(members, batch_peak_id=batch_peak_id, manual=manual)
     if (
@@ -1821,6 +1890,10 @@ def compute_consensus(
         consensus.provenance[KNOWN_SPECIES_KEY] = known_species
     if isinstance(persistence, dict):
         consensus.provenance[PERSISTENCE_KEY] = persistence
+    if isinstance(flat_series, dict) and _reads(
+        flat_series, consensus.consensus_formula, consensus.ionization_mechanism_id
+    ):
+        consensus.provenance[FLAT_SERIES_KEY] = flat_series
     return consensus
 
 

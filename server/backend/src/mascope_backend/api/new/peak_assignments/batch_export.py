@@ -48,6 +48,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     resolve_candidate,
     role_name,
     standing_batch_checks_record,
+    standing_flat_series_record,
     tier_name,
 )
 from mascope_backend.api.new.peak_assignments.tiers import TIER_UNASSIGNED
@@ -106,6 +107,9 @@ COLUMNS = (
     "label_twin",
     "neutral_pair",
     "neutral_pair_r",
+    "flat_series",
+    "flat_series_cv",
+    "flat_series_source_ion",
 )
 
 
@@ -131,6 +135,14 @@ def member_export_row(
     co-variation ``neutral_pair_r``. They are the anchor's, repeated on each of
     its members as the consensus is; None where the anchor carries none.
 
+    ``flat_series``, ``flat_series_cv`` and ``flat_series_source_ion`` are the
+    flatness *Read co-variation* read for the anchor's reading
+    (``batch_coherence.flat_series_record``): the verdict (``flat``,
+    ``varying``, ``untestable``), the trace's cv over the batch's normaliser,
+    and on a flat reading the ion of the batch's own source list its ion is,
+    by its label. An origin flag a reader filters background by; no tier reads
+    it. None where none was read.
+
     :param member: The ``BatchPeakOccurrence``.
     :param anchor: The ``BatchPeak`` it sits in.
     :param sample_item_name: The member's sample, by name.
@@ -141,6 +153,7 @@ def member_export_row(
     lock = checks.get("halogen_lock") or {}
     twin = checks.get("label_twin") or {}
     pair = checks.get("neutral_pair") or {}
+    flat = standing_flat_series_record(anchor) or {}
     return {
         "sample_batch_id": anchor.sample_batch_id,
         "batch_peak_id": anchor.batch_peak_id,
@@ -181,6 +194,9 @@ def member_export_row(
         "label_twin": twin.get("verdict"),
         "neutral_pair": pair.get("verdict"),
         "neutral_pair_r": pair.get("r"),
+        "flat_series": flat.get("verdict"),
+        "flat_series_cv": flat.get("cv"),
+        "flat_series_source_ion": (flat.get("source_ion") or {}).get("label"),
     }
 
 

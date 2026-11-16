@@ -700,6 +700,13 @@ class PeakAssignmentsResource(BaseResource):
                  reading, the ledger's - and ``consensus_tier``, the batch
                  peak's tier, on a monoisotopic row that reads it; None
                  otherwise, and absent from a server that predates it.
+                 ``batch_flat_series``: *Read co-variation*'s reading of that
+                 batch peak's trace against its partition's normaliser (the
+                 ledger's ``flat_series``: ``verdict``, ``cv``, ``share``,
+                 ``normaliser``, ``source_ion``), an origin flag that moves
+                 no tier, on a monoisotopic row that reads the reading it was
+                 read on; None otherwise, and absent from a server that
+                 predates it.
                  Returns None if the response carries no record.
         :rtype: dict | None
         :raises AuthenticationError: If authentication fails.
