@@ -1440,7 +1440,9 @@ there makes it: the batch peak sits where that sample measured the peak, after t
 sample's own mass offset is taken off. For a target ion, the batch knows a better
 place: the ion's own m/z. With seeding on, a sample's peak that makes a new batch peak,
 and that the sample's assignment matched to the monoisotopic line of a target ion of the
-batch's collections, makes it at the ion's m/z instead. It does so only where the peak lies
+batch's collections as a candidate or an assignment, makes it at the ion's m/z instead. A
+match the assignment ranks lower, such as a line too far off the sample's calibration,
+makes its batch peak where the peak is. It does so only where the peak lies
 inside the window a batch peak at the ion's m/z would have, and where no batch peak
 already holds that m/z; otherwise the batch peak sits at the peak, as without seeding.
 The ion's m/z is the line its instrument is matched at: the exact line on an Orbitrap,
@@ -1450,7 +1452,9 @@ made this way is marked `seeded` in the ledger.
 
 Only evidence makes a seeded batch peak. A target ion that no sample's peak was matched
 to gets none, so a long target list adds no empty rows. A target first matched in a
-late sample still gets its batch peak at the ion's m/z. An isotope line, a reagent line,
+late sample still gets its batch peak at the ion's m/z, unless an earlier sample's
+unmatched peak already made a batch peak there: the late match then joins that batch
+peak, which stays where the earlier peak put it. An isotope line, a reagent line,
 an untargeted reading and an unmatched peak make their batch peaks where they are.
 Once made, a seeded batch peak is like any other: it is removed when its last sample's
 peak leaves it.

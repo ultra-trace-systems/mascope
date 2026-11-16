@@ -892,9 +892,12 @@ existing target identities; data-created anchors fill the rest. As built, the se
 evidence, at mint (`batch_peaks.fold_in_sample`'s `seed_of`,
 `batch_peaks_controller.target_ion_seed_mzs`): in a batch whose `seed_batch_peaks` is on, a
 peak that mints a new anchor, and whose row assigns it to a target ion's monoisotopic line
-(role `M0` with a `target_ion_id`), mints the anchor at that ion's monoisotopic m/z, the
+(role `M0` with a `target_ion_id`, at tier `candidate` or `assigned`, the tiers the blend
+and the consensus read as an identification), mints the anchor at that ion's monoisotopic m/z, the
 `HIGH` isotope rows on an Orbitrap and the `LOW` ones on a TOF, marked `batch_peak.seeded`.
-Only the ions of the batch's own collections seed. The rule takes the rows the fold is given, so
+A row the run refused, such as one the mass gate capped to `below_assignability` for sitting
+off its calibration, is no evidence and mints at the peak. Only the ions of the batch's own
+collections seed. The rule takes the rows the fold is given, so
 a run's rows and the run-less ingest fold's Stage A rows seed alike. The seed is taken only where
 the peak lies inside the window an anchor at the seed carries (the tolerance `tol_fn` gives the
 seed's m/z) and no anchor already holds the seed, as two anchors whose windows hold one m/z

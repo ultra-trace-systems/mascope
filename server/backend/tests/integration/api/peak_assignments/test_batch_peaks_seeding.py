@@ -768,6 +768,38 @@ async def test_a_target_ions_line_read_in_another_role_does_not_seed(
     assert _at(anchors, _ppm(GLUCOSE_MZ, 1.5))
 
 
+@pytest.mark.parametrize(
+    "tier, seeds",
+    [
+        ("assigned", True),
+        ("candidate", True),
+        ("below_assignability", False),
+        ("unassigned", False),
+    ],
+)
+async def test_only_a_row_at_candidate_or_better_seeds(
+    async_session_factory, make_batch, tier, seeds
+):
+    """The glucose line's row is evidence only at a tier the run calls an
+    identification. A row the run refused, such as one the mass gate capped
+    to below_assignability, mints its anchor at its own m/z, as an
+    untargeted peak's does."""
+    batch_id, samples, ion_ids = await make_batch(seed=True, collection=True)
+    specs = [
+        (*spec[:6], tier, *spec[7:]) if spec[0] == "A1" else spec
+        for spec in _SPECS["A"]
+    ]
+    await fold_sample_into_batch_peaks(
+        samples["A"], rows=_stage_a_rows(specs, ion_ids), persisted=False
+    )
+    anchors = await _anchors(async_session_factory, batch_id)
+    if seeds:
+        assert [a.mz for a in anchors if a.seeded] == [GLUCOSE_MZ]
+    else:
+        assert not any(a.seeded for a in anchors)
+        assert _at(anchors, _ppm(GLUCOSE_MZ, 1.5))
+
+
 async def test_an_ion_of_another_batchs_collection_does_not_seed(
     async_session_factory, make_batch
 ):
