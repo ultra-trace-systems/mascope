@@ -48,14 +48,14 @@ describe('BatchPeakContinuityPopover', () => {
     const cells = pairs[0].findAll('td').map((td) => td.text())
     expect(cells).toEqual([
       'Other channel 262.0569',
-      'Red',
+      'Unstable',
       '41',
       '0.42',
       '8%',
       'rises 1.05x, rho 0.12'
     ])
     expect(pairs[1].find('td.grade-cell').text()).toBe('Stable')
-    expect(wrapper.find('.grade.red').text()).toBe('Red')
+    expect(wrapper.find('.grade.red').text()).toBe('Unstable')
     expect(wrapper.find('.meaning').text()).toMatch(/^The ratio drifts .*share a trace\.$/)
     expect(wrapper.text()).toMatch(/no tier moves on it/)
     expect(wrapper.find('[data-testid="continuity-warning"]').exists()).toBe(false)

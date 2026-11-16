@@ -1733,15 +1733,17 @@ describe('PaneBrowserBatchPeaks continuity column', () => {
 
   it('draws the three claims as a badge and the two non-readings muted', async () => {
     const cells = await cellsOf('continuityRank', peaks())
-    for (const [id, label] of [
-      ['bp-stable', 'Stable'],
-      ['bp-drift', 'Drift'],
-      ['bp-red', 'Red']
+    // The label is the reader's word; the class is the stored grade, so
+    // red's badge reads Unstable and keeps its `.red` class.
+    for (const [id, label, grade] of [
+      ['bp-stable', 'Stable', 'stable'],
+      ['bp-drift', 'Drift', 'drift'],
+      ['bp-red', 'Unstable', 'red']
     ]) {
       const cell = continuityCell(cells, id)
       expect(cell.text()).toBe(label)
       expect(cell.classes()).toContain('claim')
-      expect(cell.classes()).toContain(label.toLowerCase())
+      expect(cell.classes()).toContain(grade)
     }
     for (const [id, label] of [
       ['bp-inconclusive', 'Inconclusive'],
@@ -1801,7 +1803,7 @@ describe('PaneBrowserBatchPeaks continuity column', () => {
         .find((c) => c.attributes('data-row') === 'bp-m1')
     wrapper.vm.showIsotopologues = true
     await wrapper.vm.$nextTick()
-    expect(childCell().find('[data-testid="continuity"]').text()).toBe('Red')
+    expect(childCell().find('[data-testid="continuity"]').text()).toBe('Unstable')
     // An isotope line with nothing on it gets no dash: its main peak speaks for it.
     const ungradedChild = wrapper
       .findAll('.column-stub')
@@ -1816,7 +1818,7 @@ describe('PaneBrowserBatchPeaks continuity column', () => {
     expect(childCell()).toBeUndefined()
   })
 
-  it('sorts on the order of alarm, red first, an ungraded peak last in both directions', async () => {
+  it('sorts on the order of alarm, unstable first, an ungraded peak last in both directions', async () => {
     wrapper = await mountPane({ peaks: peaks() })
     expect(columnFor('continuityRank').props('sortable')).toBe(true)
     const byId = Object.fromEntries(wrapper.vm.parents.map((row) => [row.batch_peak_id, row]))

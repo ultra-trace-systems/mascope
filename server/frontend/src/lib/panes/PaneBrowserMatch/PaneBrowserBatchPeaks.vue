@@ -362,7 +362,7 @@ const hasBatchChecks = computed(() => shown.value.some((bp) => bp.batch_checks !
 // its pair with the main peak, and shows it on its own row: only while the
 // Isotopologues toggle is on, since folded it has no row.
 const hasContinuity = computed(() => shown.value.some((bp) => bp.continuity != null))
-// stable, drift and red say something of the pair and are drawn as a badge;
+// stable, drift and unstable say something of the pair and are drawn as a badge;
 // inconclusive and insufficient say it could not be read, and read muted.
 const continuityClaims = (row) => CLAIM_GRADES.includes(row.continuity_grade)
 
@@ -421,7 +421,7 @@ const decorated = computed(() => {
       coVariationRank: coVariationRank(batchPeak.co_variation),
       // Facts holding less facts refuting, null where none was read.
       checksRank: checksRank(batchPeak.batch_checks),
-      // The grade's place in the order of alarm, red first; null where the
+      // The grade's place in the order of alarm, unstable first; null where the
       // pass left none, so those sort last in both directions.
       continuityRank: continuityRank(batchPeak),
       verdictRank: verdictRank(batchPeak),
@@ -1907,7 +1907,7 @@ watch(
   font-size: 0.86rem;
   white-space: nowrap;
 }
-/* The continuity grade. A claim - stable, drift, red - is a small outlined
+/* The continuity grade. A claim - stable, drift, unstable - is a small outlined
    badge in a state colour; inconclusive and insufficient, which say the
    ratio could not be read, are muted text, as is a batch whose grades were
    withdrawn. Partial: dashed, the pass left some of the pairs. Stale: the

@@ -31,7 +31,7 @@ const PAIR_ISOTOPOLOGUE = 'isotopologue'
 
 export const GRADE_META = {
   [GRADE_RED]: {
-    label: 'Red',
+    label: 'Unstable',
     meaning:
       'the ratio drifts with nothing saying the two traces co-vary, or it jumps: two species ' +
       'may share a trace'
@@ -117,7 +117,7 @@ export function continuityLabel(row) {
 
 /**
  * What the ledger's column sorts on: the grade's place in the order of alarm,
- * red first, null where there is no grade, so those sort last in both
+ * unstable first, null where there is no grade, so those sort last in both
  * directions.
  */
 export function continuityRank(row) {

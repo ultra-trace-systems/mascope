@@ -38,7 +38,7 @@ const row = (grade, extra = {}) => ({
 describe('batchContinuity labels and rank', () => {
   it('names every grade, and a batch whose grades were withdrawn', () => {
     expect(GRADES.map((grade) => continuityLabel(row(grade)))).toEqual([
-      'Red',
+      'Unstable',
       'Drift',
       'Stable',
       'Inconclusive',
@@ -89,7 +89,7 @@ describe('batchContinuity tooltip and warning', () => {
   it("gives the grade's meaning over its pairs, and that it is shown only", () => {
     const text = continuityTooltip(row('red'))
     expect(text).toMatch(
-      /^Red on its most alarming of 2 graded pairs: .*two species may share a trace\./
+      /^Unstable on its most alarming of 2 graded pairs: .*two species may share a trace\./
     )
     expect(text).toMatch(/never which species, and no tier moves on it\.$/)
     expect(continuityWarning(row('red'))).toBe('')
@@ -99,7 +99,7 @@ describe('batchContinuity tooltip and warning', () => {
     const partial = row('red', {
       continuity: detail({ warnings: ['partial'], n_pairs: 3, grades: { red: 1 } })
     })
-    expect(continuityTooltip(partial)).toMatch(/^Red on its most alarming of 1 graded pair: /)
+    expect(continuityTooltip(partial)).toMatch(/^Unstable on its most alarming of 1 graded pair: /)
   })
 
   it('says a stale grade was graded at another prevalence', () => {
