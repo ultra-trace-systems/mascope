@@ -80,6 +80,20 @@ class TestTheSkeletons:
         # group, and two oxygens per nitrogen is no nitrate.
         assert skeletons("C3H7NO2") == []
 
+    def test_the_nitro_test_reads_the_skeletons_unsaturation(self):
+        # C6H10N2O4 sits at DBE/C 0.5 itself, but two nitro groups would leave
+        # C6H12 at 0.17: no aromatic skeleton, so only the nitrate reading of
+        # one group stands.
+        assert skeletons("C6H10N2O4") == [{"C": 6, "H": 11, "N": 1, "O": 2}]
+
+    def test_a_half_bond_does_not_carry_a_group(self):
+        # A radical at DBE 2.5 carries two groups, not three: a third would
+        # leave the skeleton C3H9O3 at DBE -0.5.
+        assert skeletons("C3H6N3O9") == [
+            {"C": 3, "H": 8, "N": 1, "O": 5},
+            {"C": 3, "H": 7, "N": 2, "O": 7},
+        ]
+
     def test_a_formula_with_no_nitrogen_has_none(self):
         assert skeletons("C10H16O4") == []
 
