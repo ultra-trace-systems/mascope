@@ -107,6 +107,121 @@ def test_fold_in_is_order_independent():
     ]
 
 
+# --- fold-in: a seed at mint -------------------------------------------------
+
+
+def _seed_of(seeds: dict):
+    """``seed_of`` reading a peak's seed off its ``seed`` key, as the
+    controller reads it off the row's target ion."""
+    return lambda peak: seeds.get(peak.get("seed"))
+
+
+def test_a_peak_with_a_seed_mints_its_anchor_at_the_seed():
+    # 181.0707 + 3 ppm: inside the 5 ppm an anchor at the seed carries.
+    aset = AnchorSet()
+    folded = fold_in_sample(
+        aset,
+        [{"mz": 181.0707 * (1 + 3e-6), "seed": "glc"}, {"mz": 250.1}],
+        new_id=_ids(),
+        tol_fn=lambda mz: 5.0,
+        seed_of=_seed_of({"glc": 181.0707}),
+    )
+    assert [(a.batch_peak_id, a.mz, a.tol_ppm, a.seeded) for a in aset.anchors()] == [
+        ("bp0", 181.0707, 5.0, True),
+        ("bp1", 250.1, 5.0, False),
+    ]
+    assert all(f.is_new_anchor for f in folded)
+
+
+def test_the_seeded_anchor_carries_the_tolerance_at_the_seed():
+    aset = AnchorSet()
+    fold_in_sample(
+        aset,
+        [{"mz": 100.0001, "seed": "s"}],
+        new_id=_ids(),
+        tol_fn=lambda mz: mz / 50.0,
+        seed_of=_seed_of({"s": 100.0}),
+    )
+    assert aset.anchors()[0].tol_ppm == 2.0
+
+
+def test_a_seed_outside_the_window_mints_at_the_peak():
+    # 6 ppm off the seed, outside its 5 ppm: the evidence does not reach it.
+    aset = AnchorSet()
+    fold_in_sample(
+        aset,
+        [{"mz": 181.0707 * (1 + 6e-6), "seed": "glc"}],
+        new_id=_ids(),
+        tol_fn=lambda mz: 5.0,
+        seed_of=_seed_of({"glc": 181.0707}),
+    )
+    [anchor] = aset.anchors()
+    assert anchor.mz == pytest.approx(181.0707 * (1 + 6e-6))
+    assert anchor.seeded is False
+
+
+def test_a_seed_an_anchor_already_holds_mints_at_the_peak():
+    # The anchor at seed - 3 ppm holds the seed but not the peak at seed + 3
+    # ppm (6 ppm off it): minting at the seed would put two anchors on one m/z.
+    seed = 200.0
+    aset = AnchorSet([Anchor("old", seed * (1 - 3e-6), 5.0)])
+    fold_in_sample(
+        aset,
+        [{"mz": seed * (1 + 3e-6), "seed": "s"}],
+        new_id=_ids(),
+        tol_fn=lambda mz: 5.0,
+        seed_of=_seed_of({"s": seed}),
+    )
+    minted = next(a for a in aset.anchors() if a.batch_peak_id == "bp0")
+    assert minted.mz == pytest.approx(seed * (1 + 3e-6))
+    assert minted.seeded is False
+
+
+def test_a_peak_an_anchor_holds_joins_it_whatever_its_seed():
+    aset = AnchorSet([Anchor("old", 181.0710, 5.0)])
+    folded = fold_in_sample(
+        aset,
+        [{"mz": 181.0709, "seed": "glc"}],
+        new_id=_ids(),
+        tol_fn=lambda mz: 5.0,
+        seed_of=_seed_of({"glc": 181.0707}),
+    )
+    assert [(f.batch_peak_id, f.is_new_anchor) for f in folded] == [("old", False)]
+    assert [a.mz for a in aset.anchors()] == [181.0710]
+
+
+def test_a_peak_with_no_seed_mints_at_its_own_mz():
+    aset = AnchorSet()
+    fold_in_sample(
+        aset,
+        [{"mz": 181.0709, "seed": "unknown"}],
+        new_id=_ids(),
+        tol_fn=lambda mz: 5.0,
+        seed_of=_seed_of({"glc": 181.0707}),
+    )
+    assert [(a.mz, a.seeded) for a in aset.anchors()] == [(181.0709, False)]
+
+
+def test_the_minting_peak_holds_its_seeded_anchor_in_its_own_sample():
+    # The assigned peak at seed - 4 ppm mints at the seed; a later peak of the
+    # same sample at seed + 1 ppm is nearer the seed, yet the minting peak,
+    # which the anchor rests on, keeps it, as beside an anchor at its own m/z.
+    seed = 181.0707
+    aset = AnchorSet()
+    folded = fold_in_sample(
+        aset,
+        [
+            {"mz": seed * (1 - 4e-6), "seed": "glc", "id": "assigned"},
+            {"mz": seed * (1 + 1e-6), "id": "other"},
+        ],
+        new_id=_ids(),
+        tol_fn=lambda mz: 5.0,
+        seed_of=_seed_of({"glc": seed}),
+    )
+    assert [(f.peak["id"], f.is_new_anchor) for f in folded] == [("assigned", True)]
+    assert [(a.mz, a.seeded) for a in aset.anchors()] == [(seed, True)]
+
+
 def test_same_sample_collision_keeps_one_member_nearest_wins():
     aset = AnchorSet([Anchor("a", 100.0, 10.0)])
     # Two peaks in one sample both within tolerance of anchor a; nearest wins.

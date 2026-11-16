@@ -854,6 +854,16 @@ class SampleBatch(Base):
     source_filter: Mapped[Optional[dict]] = mapped_column(
         JSONB(none_as_null=True), nullable=True
     )
+    # Whether the batch ledger seeds its anchors at the batch's target ions'
+    # m/z: a peak that mints a new anchor, and that the sample's run assigned
+    # to a target ion's monoisotopic line, mints it at the ion's m/z rather
+    # than its own, where the peak lies inside that anchor's window
+    # (``BatchPeak.seeded``). A target no sample's peak was assigned to mints
+    # nothing. Off by default; turned on for a batch whose ledger exists, it
+    # moves no anchor already there.
+    seed_batch_peaks: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
 
     # Relationships
     dataset = relationship("Dataset", back_populates="sample_batch")
@@ -3028,6 +3038,13 @@ class BatchPeak(Base):
     mz: Mapped[float] = mapped_column(Float)
     mz_tol_ppm: Mapped[float] = mapped_column(Float)
     intensity_variable: Mapped[Optional[str]] = mapped_column(String(32))
+    # True for an anchor minted at a target ion's monoisotopic m/z rather than
+    # at the m/z of the peak that minted it: a line the sample's run assigned
+    # to that ion, folded where the batch seeds (``SampleBatch.seed_batch_peaks``).
+    # Frozen like the m/z.
+    seeded: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
     # Evidence-weighted consensus over DETECTED members (see batch_peaks engine).
     consensus_formula: Mapped[Optional[str]] = mapped_column(String(256))
     consensus_ion_formula: Mapped[Optional[str]] = mapped_column(String(4096))
@@ -3641,6 +3658,11 @@ class BatchPeakRunAnchor(Base):
     # NULL for none.
     persistence: Mapped[Optional[dict]] = mapped_column(JSON)
     tier_reasons: Mapped[Optional[list]] = mapped_column(JSON)
+    # Whether the anchor was minted at a target ion's m/z
+    # (``BatchPeak.seeded``).
+    seeded: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
     candidates: Mapped[Optional[list]] = mapped_column(JSON)
     members: Mapped[Optional[dict]] = mapped_column(JSON)
 

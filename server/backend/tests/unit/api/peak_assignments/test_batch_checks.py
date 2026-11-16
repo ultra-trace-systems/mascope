@@ -863,6 +863,7 @@ class TestWhatIsServed:
             candidates=[{"formula": "C2H4O"}],
             engine_tier=None,
             engine_claim=None,
+            seeded=False,
             continuity_grade=None,
             continuity=None,
         ).items():
