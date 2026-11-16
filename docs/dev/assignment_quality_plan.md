@@ -4,7 +4,7 @@
 
 - **Status:** building
 - **As of:** 2026-11-16
-- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73, MAS-408 to MAS-410, MAS-443, MAS-568 to MAS-570, MAS-609, MAS-708, MAS-709, MAS-777, MAS-823 to MAS-841, MAS-860, MAS-870 and MAS-881)
+- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73, MAS-408 to MAS-410, MAS-443, MAS-568 to MAS-570, MAS-609, MAS-708, MAS-709, MAS-777, MAS-823 to MAS-841, MAS-860, MAS-870, MAS-881, MAS-908 and MAS-922)
 - **What:** The step-by-step plan closing the assignment quality gap: stages, gates, decisions and risks.
 
 ## Status
@@ -27,7 +27,8 @@ Milestone 6 (2026-11-11) builds the bench that runs both engines on
 demand on the agent box, where the agents run it themselves
 ([`assignment_bench.md`](assignment_bench.md)). Of milestone 5, the
 reference's 0.10 review, step 5.5 is built (#2377), 5.2 is built and
-waits for its first reading, 5.3 is measured and the rest are planned; a readiness check against the reference's main on
+waits for its first reading, 5.3 is measured, 5.4 is measured and
+closed without a pass (its TOF part is step 5.14) and the rest are planned; a readiness check against the reference's main on
 2026-10-22 (the last section of the review) found nothing new to bin and
 added step 5.9. Step 5.10 comes from the instrument's own centroid flags
 (a census of 2026-10-23), not from the review. Every planned step is an
@@ -120,7 +121,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 5.1 - the reference pinned at a release, a boundary review per peaky release | - |  | planned 2026-10-13; the first review is the section below; readiness check against the reference's main on 2026-10-22: nothing new to bin, 0.10.0 still uncut |
 | 5.2 - decoy arms in the gate: a shifted axis and swapped adducts through the in-app engine | #2981 |  | built: a `decoy` block on the run config (`mz_shift_ppm`, `mz_shift_da`, `swap_adducts`), every stage at the control's calibration and envelope tolerance, the arm on the run row and out of the fold, the listing, the verdicts and the retention quota; `compare_runs.py --decoy` reports the share held below and above m/z 350; read in the next pass, no target until two gates have read them (decision 31); a shifted arm looks for the source's own ions (the channels' carriers, the reagent lines) on the axis as stored, so it opens and claims what its control did (MAS-720, #2980) |
 | 5.3 - measure the minor-line response: isotope lines by height and by area against expected S/N | - |  | measured 2026-10-16 on the pass-9 ledgers; 3.5b's form decided 2026-10-22 (decision 32) |
-| 5.4 - the side lobe's signatures: width-scaled offset and narrowness in the sidelobe flag | - |  | planned; after 3.5b and 3.5; a TOF rider from the readiness check of 2026-10-22 |
+| 5.4 - the side lobe's signatures: width-scaled offset and narrowness in the sidelobe flag | - |  | measured, not built (decision MAS-908, 2026-11-16): on the 88 Orbitrap gate files re-detected on develop, the reference's width-scaled rule takes 2,437 of 59,708 kept peaks, 2,338 of them satellites already; over the ratio test it adds 1,061, and since 5.10 the instrument's Exception flag takes 962 of those; at 5.10's isotopologue tolerance it would add 34 peaks, first side lobes on which the engine committed 8 candidate formulas and no assigned one, so no second pass is built; the TOF rider found the reference's flank peaks in Mascope's lists (sets E, F1, F2, J: 844 in the windows against about 290 by chance, 392 committed), and their fix in the picker is step 5.14; the batch rider: a constant ratio alone does not pick out a lobe; MAS-69 |
 | 5.5 - the TOF signal-to-noise column: verify it tracks height, fix the picker or fall back to counting statistics | #2377 | 2026-10-16 | built: the picker's TOF noise is now the baseline's MAD; measured next on E, F, J |
 | 5.6 - the import contract: a verdict on batch rows, the engine tier where the user looks | - |  | built: `engine_tier` and `engine_claim` on a batch import row, kept on the batch peak where its consensus names the row's identity; an Engine tier column, an Engine disagrees filter and an Engine tier view of the strip, off by default; the mechanism table documented as a catalogue; no run or gate number moves; MAS-71; the member rows, the ledger CSV and a sample shown from the batch ledger carry the verdict too (M0 rows reading the consensus only), MAS-727 |
 | 5.7 - experiment: the file's own locks as calibrants, read against the calibration node's residuals | - |  | planned; after 3.5; feeds 4.3 and the axis-fingerprint project; the labelled sets wait for a release carrying the reference's #77 |
@@ -130,6 +131,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 5.11 - a batch's peak lists in one read, and the SDK snapshot of it | #2764 |  | built: one Parquet read per batch, `load_peaks` takes it and keeps the per-sample reads for older servers, `save_path`; MAS-568 |
 | 5.12 - the per-sample scoring derivation as one library function, and a bulk candidate scorer | #2767 | | built: `pattern_scoring_for_sample` and `score_candidates` in `mascope_tools`, the engine and the finder call them; no score moves beyond rounding; MAS-569 |
 | 5.13 - the current verdicts of a batch or dataset in one read, through the API, the SDK and the export | - |  | built: one row per judged peak, a batch-level verdict marked `borrowed` where it reaches a sample, a sheet of the batch export; MAS-570 |
+| 5.14 - the TOF picker's flank peaks: a fitted peak with no maximum or shoulder of its own is not a peak | - |  | planned 2026-11-16 (decision MAS-908): 5.4's TOF rider as a picker fix, read on E, F and J; MAS-922 |
 | 6.2 - the bench instance, built from a sets manifest | - |  | built: `tooling/assignment_bench/bench.py init <manifest>` binds env `bench` to a free instance slot, starts a ref's backend there, seeds each set's mode and collections through the API and the shipped reference lists, uploads the sets' files by hash and checks every sample resolved its set's mode and has peaks; each sample's id is recorded under its set in the bench's `state.json`, a second `init` changes nothing; `manifests/demo.json` holds the demo bundle's sets Db (bromide, 80 files) and Du (uronium, 81 files), built on the agent box; MAS-837 |
 | 6.3 - the reference at a pin, published into the bench instance | - |  | built: `tooling/assignment_bench/bench.py reference --pin vX.Y.Z` installs peaky at the release tag into the bench's own tool environment, runs `peaky assign` on every sample of every set with the set's profile and window, and publishes each run with the engine badge `peaky` and the installed version string; cached by pin, set, sample and `mascope-tools` version, a second call publishes nothing, a new pin publishes every set again and lists the sets whose reference changed; on the agent box Db and Du carry peaky v0.9.0 (`0.9.0+assign0.6.1`); MAS-838 |
 | 6.5 - bench run: a ref's in-app engine on the bench sets beside the pinned reference, the card and its diff | - |  | built: `tooling/assignment_bench/bench.py run <ref>` builds the ref into the bench's worktree, refuses a ref older than the bench database's alembic revision and otherwise migrates it forward, starts the ref's backend on the bench slot, runs the in-app engine with the engine's defaults on every sample whose reference run is the pin's (`--decoys`: the class's arms against it), within a budget per set, and cards the sets with `compare_runs.py --card --gate`, scrubbed again with every name and id the instance holds; `--baseline` diffs against develop's rolling baseline, which a whole run of develop's head replaces; the backend stops and the worktree goes after every run; one run at a time behind the bench's lock; MAS-840 |
@@ -1476,7 +1478,9 @@ who edits chemistry and stays last.
   anti-correlated with its own parent channel when the source state
   moves. The within-sample ratio series is 4.11's diagnostic, built after
   this step; the sidelobe reading (a constant ratio to a bright parent)
-  is 5.4's, read in the parent's own line width.
+  is 5.4's, read in the parent's own line width. 5.4 measured it and
+  built none: a constant ratio alone does not pick out a lobe (5.4's
+  batch rider, below).
   - **Persistence is admission, not evidence** (peaky #34). A peak
     present in more of the batch's spectra than the batch's own split of
     the occurrence distribution is searched however faint, and an M0
@@ -2910,6 +2914,104 @@ under its milestone 5.
   is a lobe by the raw profile; no isotopologue of a bright line is flagged;
   G6 and G8 unchanged.
 - **Size.** M. After 3.5b and 3.5; before 3.7.
+- **Riders.** The TOF picker's satellites the reference found (the
+  readiness check of 2026-10-22, below): weak peaks about a tenth of a
+  bright line's height, 1 to 1.5 FWHM below it and 0.5 to 1 above, measured
+  on E, F and J. And the batch-side sidelobe reading, moved here from 4.2
+  by decision 35: a weak channel at a constant ratio to a bright parent
+  across the batch's series, read by the signatures above.
+- **Measured (2026-11-16, develop `9a0b9ba8c`; MAS-69).** The step was
+  written before 5.10 put the instrument's Exception flag into the
+  satellite flag, and that flag already takes most of what the signatures
+  were to add.
+  - **How.** The 88 Orbitrap gate files of sets A, B, C, C2, D, G, H, I, K,
+    K2, K3 and L were re-detected with develop's Orbitrap picker, on copies,
+    with the instrument functions the testbed stored; the ratio test, the
+    Exception flag and each peak's resolution were kept apart. The
+    reference's rule was re-implemented from the specification above over
+    the same peak tables, per spectrum, on the kept peaks, a width read as
+    m/z over the recorded resolution (Mascope's area over 1.0645 times the
+    height reads 0.987 of it). The engine's commitments are the testbed's
+    latest in-app run of each sample (engine 0.5.0, before 5.10), joined
+    by m/z (median 0 ppm); committed means an M0 or isotope row at assigned
+    or candidate.
+  - **Which test flags what**, on the 59,708 kept peaks, the reference's
+    rule at its 1 ppm isotopologue exemption. Today's flag is the ratio
+    test or 5.10's Exception flag; the engine's input is what the 0.5.0
+    run read.
+
+    | class | peaks | in the engine's input | committed | of which assigned |
+    |---|---|---|---|---|
+    | width rule and today's flag | 2,338 | 1,402 | 99 | 8 |
+    | width rule only | 99 | 98 | 31 | 0 |
+    | today's flag only, by the ratio test | 1,753 | 380 | 6 | 1 |
+    | today's flag only, by the Exception flag alone | 1,217 | 1,139 | 200 | 48 |
+    | neither | 54,301 | 54,039 | 35,473 | 17,066 |
+
+    Over the ratio test alone the width rule adds 1,061 peaks, the step's
+    case; the Exception flag takes 962 of them. The artifact pass wrote 598
+    rows on these samples: 593 also ratio-flagged, 554 Exception-flagged,
+    331 width-flagged. At 5.10's isotopologue tolerance (half a width, never
+    under 1 ppm) the width-only class is 34 peaks, in B, D, G, H and L: the
+    engine committed a candidate formula on 8, none at assigned, and read 2
+    as 2H lines. At 0.7 of a width it is 29, no isotope row among them.
+  - **Read against the raw profile** (the per-scan profiles, the per-scan
+    centroids with their Exception flag, the averaged profile). The 40
+    width-only peaks that are not Exception-majority are mostly first side
+    lobes at about 1.9 widths, in symmetric pairs the instrument flags on
+    one side or in part of the scans; a few are 2H lines beside a 13C line,
+    blended with that line's positive lobe about 0.6 widths off the exact
+    2H line at the expected height, their centroids unflagged; a few in the
+    negative-lobe window are of a normal width and unflagged, left
+    undecided. The 59 that are Exception-majority (20 read) are lobes, every
+    centroid flagged, in ringing combs or beside lines 66 to 1,340 times
+    brighter, which 5.10's exemption spared on a chance isotopologue
+    coincidence (an 81Br or 37Cl line in a uronium set). The 204 peaks only
+    the ratio test takes, with no width flag and spared by 5.10's
+    exemption (20 read), are lobes of a ringing comb beyond five widths,
+    every centroid flagged: the ratio test is needed there, and a band of
+    1 to 5 widths does not reach them.
+  - **5.10's exemption** spares 626 Exception-majority peaks on these files.
+    At the reference's 1 ppm it would spare 312. The other 314 include 114
+    committed rows and 88 rows the engine read as isotope lines (13C, 2H,
+    18O). That trade-off is 5.10's, not this step's.
+  - **The TOF rider** (sets E, F1, F2, J; the testbed's TOF peak lists,
+    whose positions develop's picker has not moved since the copy). The
+    neighbours at 2 to 40 % of a top-5 % line, in units of its width, 0.75
+    to 1.5 below and 0.5 to 1.25 above, against chance per window read off
+    the bins 2 to 3 widths out:
+
+    | set | below | above | chance per window | median ratio, windows / control |
+    |---|---|---|---|---|
+    | E | 24 | 20 | 8 | 0.13 to 0.22 / 0.07 |
+    | F1 | 141 | 195 | 53 | 0.10 to 0.14 / 0.05 |
+    | F2 | 133 | 117 | 18 | 0.09 to 0.11 / 0.04 |
+    | J | 119 | 95 | 65 | 0.05 / 0.06 |
+
+    844 against about 290 by chance; the engine committed a formula on 392
+    of the 844. Of twelve read on the summed spectrum, ten sit on the flank
+    or tail of one profile peak with no maximum of their own and two on a
+    real shoulder: the picker split one peak. `flag_satellite_peaks` and the
+    artifact pass are FT-only, so neither takes them.
+  - **The batch rider** (each set's gate files as a short series of 5 to 12
+    files; a stable ratio is a robust spread of the log ratio at or under
+    0.25, 4.11's adduct bar). 448 weak-to-bright pairs, 50 times or more
+    apart within 100 ppm, hold a stable ratio. 132 lie within 1 to 5
+    widths: the signatures call 108 of them lobes, 7 are isotope-exempt,
+    and 120 are satellites already. 316 lie beyond 5 widths: 233 are
+    Exception-majority comb lobes, 30 rows the engine read as isotope
+    lines. 100 of the 124 unstable pairs within 1 to 5 widths are called
+    lobes too, so a constant ratio alone does not pick out a lobe.
+- **Not built (decision MAS-908, 2026-11-16).** No second pass in
+  `flag_satellite_peaks`: at 5.10's tolerance it adds about one candidate
+  commit in eleven files, against a second rule set in the picker and a
+  golden refresh, and at the reference's 1 ppm it would flag real 2H lines
+  blended with a lobe. The satellite flag stays the ratio test and 5.10's
+  Exception flag, the artifact pass reads it as before, and 3.4e's rider
+  (an artifact confirms no line and refutes none) reads the same rows. The
+  TOF flank peaks are the larger false-assignment source, and a fix in the
+  picker keeps the real ions a rule by offset and ratio would drop: step
+  5.14 (MAS-922). The batch-side reading builds nothing.
 
 ### 5.5 The TOF signal-to-noise column
 
@@ -3149,6 +3251,9 @@ with the averaged profile kept as measured.
   a new demo bundle.
 - **Size.** L. Beside 5.4 (MAS-69), which reads the same lobes by their
   width-scaled signatures and can take the instrument's flag as one of them.
+  5.4 measured both after this step and built no second pass: the
+  instrument's flag already takes most of what the signatures add (5.4,
+  above).
 
 ### 5.11 A batch's peak lists in one read, and the SDK snapshot of it
 
@@ -3257,6 +3362,39 @@ with the averaged profile kept as measured.
   samples with none of their own, as `borrowed`, and a per-sample verdict
   wins; the export sheet is the read. No gate number moves.
 - **Size.** S to M. Independent (MAS-570).
+
+### 5.14 The TOF picker's flank peaks
+
+Filed 2026-11-16 by decision MAS-908, which closed 5.4 without a pass and
+gave its TOF rider a step of its own (MAS-922).
+
+- **What.** Read, on E, F1, F2 and J, whether each fitted peak in 5.4's TOF
+  windows has a maximum or a shoulder of its own on the summed spectrum.
+  Then fix the TOF picker: a peak the fit adds that has neither, on the
+  flank of a brighter fitted peak, is not a peak, and the window is refitted
+  without it so the parent's height and area take its signal back. A real
+  shoulder and a resolved pair stay.
+- **Why.** 5.4 found the reference's TOF satellites in Mascope's lists:
+  844 weak peaks 0.75 to 1.5 widths below and 0.5 to 1.25 above a bright
+  line, against about 290 by chance, the engine committing a formula on 392.
+  Ten of twelve read sit on one profile peak's flank with no maximum of
+  their own. The likely cause is the fit itself: `fit_n_peaks` seeds each
+  next peak at the residual's maximum outside the half-widths fitted so
+  far, and a line whose shape the file's peak shape misses leaves that
+  maximum on its own flank. A rule by offset and ratio would also drop the
+  third of the windows' count that is chance level and may be real ions;
+  a fix in the picker keeps them.
+- **Where.** `mascope_signal.fitting.fit_n_peaks`,
+  `mascope_signal.peak.TofPeakDetector` (and a word on whether
+  `OrbiZarrPeakDetector`, which inherits the same fit, takes the rule); the
+  library's tests; the how-it-works page on peak detection.
+- **Verify.** On the re-detected TOF sets the windows' counts fall to the
+  control bins' level; every removed peak read by hand (ten a set) is a
+  flank by the summed profile, and none with a maximum of its own is
+  removed. The demo bundle holds no TOF file, so the reproducibility
+  goldens do not move.
+- **Size.** M. Beside 3.4f (a pair the picker reports as one centroid is
+  the picker's matter) and 5.5.
 
 ### Riders written into planned steps
 
@@ -3476,7 +3614,8 @@ with the averaged profile kept as measured.
   from the other engine.
 - Its TOF picker finding: weak satellites beside a bright line at about a
   tenth of its height, 1 to 1.5 FWHM below and 0.5 to 1 above, which its
-  water-ladder decoys had to step around.
+  water-ladder decoys had to step around. Mascope's TOF lists hold them too
+  (5.4's TOF rider, 2026-11-16); step 5.14 fixes the picker.
 
 ### Readiness check against the reference's main (2026-10-22)
 
