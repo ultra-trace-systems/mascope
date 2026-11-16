@@ -171,7 +171,9 @@ every channel a profile can open, hydride abstraction's `[M-H]+` and methyl loss
 `[M-CH3]+` among them (*The chemistry every deployment holds*, below). A reading through
 methyl loss stands, as one through hydride abstraction does, only where the sample commits
 the molecule it proposes through one of the mode's own channels: pinene less a methyl is
-also protonated C9H12. The context is the one the profile is normally used with.
+also protonated C9H12. The context is the one the sample's batch or dataset names, and
+otherwise the one the profile is normally used with (*A context the dataset or batch
+names*, below).
 
 **Formate.** Every negative reagent profile (nitrate, 15N-nitrate, bromide, iodide) can
 open a formate adduct channel, `[M+HCOO]-`, the way it opens carbonate: where the spectrum
@@ -239,6 +241,68 @@ it keeps its tier as before.
 **No profile and No context.** *No profile* switches the layer off: the run searches
 the engine's original wide grid at a fixed 10 ppm window. *No context* applies no
 matrix prior.
+
+**A context the dataset or batch names.** A run on *Auto* reads the profile off the
+sample, but nothing in a sample says whether it was drawn from the open air or a smog
+chamber, so a chamber experiment searched as ambient air. A dataset or a batch can name
+its context once: **Chemistry context** in the dialog that creates or edits it. A run on
+*Auto* then takes the batch's, else the dataset's, else the profile's own. A context
+named for the run wins over all three, and *No profile* keeps no context. The run
+records where its context came from, and the launcher says when the batch or the
+dataset named it.
+
+**Priors of an atmosphere.** Ambient air, chamber and indoor air hold two formula
+shapes only where something besides the mass fit saw them: sulfur, and two or more
+nitrogens with fewer than two oxygens per nitrogen. An atmosphere's organic sulfur needs
+a sulfur source, and its organic nitrogen arrives as nitrate and nitro groups, two or
+three oxygens per nitrogen. A mass fit reaches either shape easily by spending the same
+mass on another element: sulfur formulas were 5 % of the assigned compounds of
+alpha-pinene chamber runs with no sulfur source, and a nitrogen-rich C2 family a fifth to
+a third of a nitrogen-free certified mixture's. Uronium holds the sulfur prior alone,
+since reduced-nitrogen bases are what a urea source detects. How a row meets a prior is
+under *needs corroboration here*, below.
+
+**On a TOF, the window the sample's width allows.** A TOF searches within 10 ppm of a
+peak, ten to fourteen times the scatter of its own mass errors. Where the run measured
+that scatter on the sample's known ions, the window is narrowed to six of its widths
+beyond the sample's own offset: a formula further out is one the run's mass gate would
+hold below assignability whatever its fit (*off calibration*, below). The window never
+widens past 10 ppm, an Orbitrap's 3 ppm is not narrowed, and a window you set for the
+run stands. The run selector's tooltip shows the narrowed window and the 10 ppm it came
+from. A batch's *Search untargeted* narrows it the same way, by the width the sample's
+latest run measured.
+
+**Organonitrates on a nitrate run.** An organonitrate group (-ONO2) or a nitro group
+(-NO2) adds a nitrogen, two oxygens and a double bond to the carbon skeleton it hangs on
+[Perring et al. 2013][per13]. A dinitrate's oxygen-to-carbon ratio and a nitroaromatic's
+double bonds per carbon then sit outside windows written for compounds of carbon,
+hydrogen and oxygen, and a dinitrate's eight oxygens on five carbons look like the oxygen
+lattice of a mass fit. So on a nitrate or 15N-nitrate run on an Orbitrap, in a context
+that makes organonitrates (ambient air, chamber, combustion, water), the context's
+windows and the oxygen lattice also read the formula with up to three groups taken off:
+a nitrate read as its alcohol, a nitro group off an aromatic skeleton as the bare ring.
+A formula passes where either reading does. A row only that reading admits is held at
+*candidate* (*organonitrate skeleton*, below): the reading widens what the run commits,
+not what it stands behind.
+
+**Chlorine and bromine from their twin line.** A chlorine atom puts a second line 1.997
+Da above its own at a third of its height, a bromine atom one at nearly its full height
+[Meija et al. 2016][mei16]. No other element makes that pair, and the formula search
+cannot use it: its grids hold chlorine on few profiles, its ratio rule refuses one
+chlorine atom under twenty carbons, and on a 15N-nitrate run a chlorinated ion has the
+same mass as a nitrate cluster with two more carbons. So a searched peak, unexplained or
+read as a formula with no halogen, whose twin sits unexplained within 2 ppm of that exact
+offset at about one atom's ratio is searched again over carbon, hydrogen, oxygen and one
+atom of that halogen. Its reading replaces the peak's only where it explains the twin as
+its own line, clears the run's candidate bar, passes the context's windows and sits on the
+sample's calibration. The twin is then committed as its isotope line, which is the second
+observation the top tier asks for. A halogen is read where the context allows it
+(ambient air, indoor air and water name both), or where a list the run read holds a
+compound carrying it and the context does not exclude it, as uronium does. A
+bromide source's own bromine is never read this way: a peak with one bromine's twin
+there is an analyte clustered with the reagent, which the search reads through the
+mode's own channel. The replaced reading leads the row's alternatives. A certified cylinder's chlorobenzene is
+read this way on a charge-transfer source, whose grid holds no chlorine.
 
 **In the launchers.** *Assign peaks* and the batch's *Search untargeted* both offer the
 two presets. Each says what *Auto* resolves to: for the sample, or for each group of the
@@ -830,6 +894,19 @@ What caps a row at candidate:
   inside the matching window; a line *in doubt* does. A formula matched from your
   target library or a reference list is not asked: the list is its second
   observation.
+- **needs corroboration here** — the formula meets a prior of the run's chemistry
+  context (*Priors of an atmosphere*, above): it carries sulfur, or two or more
+  nitrogens with fewer than two oxygens per nitrogen. Such a formula stays at
+  *candidate* until a second ionization channel commits the same neutral, a series of
+  the batch names it, or a line of that element's own heavy isotope is committed beside
+  it: 34S for sulfur, 15N for nitrogen. A 13C line is not enough here: it proves how
+  many carbons the ion holds, never whether the sulfur or the nitrogen is there, which
+  is the isotope evidence [Kind & Fiehn 2007][kf07] ask of a heteroatom. A formula
+  matched from a list is not asked.
+- **organonitrate skeleton** — on a run that reads organonitrates' carbon skeletons
+  (*Organonitrates on a nitrate run*, above), the formula passes the context's windows,
+  or escapes the oxygen lattice, only with its groups taken off. The reason names the
+  skeleton. A batch's *Search untargeted* holds such a reading at *candidate* too.
 - **expected line absent** — the formula's isotope pattern predicts a line the
   spectrum should show, and no peak is there. A line is expected where the fit
   score would count it missing (above): where its expected signal-to-noise, the main
@@ -2419,6 +2496,10 @@ engine found, and leave the rest of the table alone.
   elemental compositions: mass accuracy is insufficient even at less than 1 ppm.* BMC
   Bioinformatics 2006, 7:234.
   [link](https://bmcbioinformatics.biomedcentral.com/articles/10.1186/1471-2105-7-234)
+- <a id="per13"></a>Perring, A. E.; Pusede, S. E.; Cohen, R. C. *An observational
+  perspective on the atmospheric impacts of alkyl and multifunctional nitrates on ozone
+  and secondary organic aerosol.* Chem. Rev. 2013, 113(8):5848–5870.
+  [link](https://doi.org/10.1021/cr300520x)
 - <a id="kf07"></a>Kind, T.; Fiehn, O. *Seven Golden Rules for heuristic filtering of
   molecular formulas obtained by accurate mass spectrometry.* BMC Bioinformatics 2007,
   8:105. [link](https://bmcbioinformatics.biomedcentral.com/articles/10.1186/1471-2105-8-105)
@@ -2674,6 +2755,7 @@ engine found, and leave the rest of the table alone.
 
 [kf06]: #kf06
 [kf07]: #kf07
+[per13]: #per13
 [bl07]: #bl07
 [rf69]: #rf69
 [sw02]: #sw02
