@@ -19,11 +19,13 @@ from mascope_backend.api.new.peak_assignments.profiles import (
     SOURCE_BATCH,
     SOURCE_CONFIG,
     SOURCE_DATASET,
+    SOURCE_FITTED_WIDTH,
     SOURCE_PROFILE,
     NamedContext,
     SampleChemistry,
     preview_resolutions,
     resolve_profile,
+    with_fitted_window,
     with_secondary_channels,
 )
 from mascope_backend.api.new.peak_assignments.schemas import ProfilePreviewQueryParams
@@ -287,6 +289,59 @@ class TestTheContextTheDataNames:
     def test_an_unknown_named_context_is_refused(self):
         with pytest.raises(ValueError, match="unknown chemistry context"):
             named_chemistry_context("mars")
+
+
+class TestTheFittedWindow:
+    """Step 3.6: a TOF's untargeted window bounded by the sample's width."""
+
+    def resolve(self, config=None, instrument="tof"):
+        return resolve_profile(
+            config or PeakAssignmentConfig(),
+            BROMIDE,
+            instrument_type=instrument,
+            polarity="-",
+        )
+
+    def bound(self, resolved, sigma=1.0, mu=-1.0, instrument="tof"):
+        return with_fitted_window(
+            resolved, sigma_ppm=sigma, mu_ppm=mu, sigmas=6.0, instrument_type=instrument
+        )
+
+    def test_a_tofs_window_is_bounded_and_says_so(self):
+        bounded = self.bound(self.resolve())
+        assert bounded.mz_precision_ppm == pytest.approx(7.0)
+        assert bounded.mz_precision_source == SOURCE_FITTED_WIDTH
+        assert bounded.search_config(["[M+Br]-"]).mass_range_ppm == pytest.approx(7.0)
+        assert bounded.snapshot()["fitted_window"] == {
+            "class_mz_precision_ppm": 10.0,
+            "sigma_ppm": 1.0,
+            "mu_ppm": -1.0,
+            "sigmas": 6.0,
+        }
+
+    def test_nothing_fitted_leaves_the_class_window(self):
+        resolved = self.resolve()
+        assert self.bound(resolved, sigma=None) is resolved
+
+    def test_a_width_wider_than_the_class_window_leaves_it(self):
+        resolved = self.resolve()
+        assert self.bound(resolved, sigma=2.0) is resolved
+
+    def test_an_orbitrap_is_not_bounded(self):
+        resolved = self.resolve(instrument="orbi")
+        assert self.bound(resolved, sigma=0.1, mu=0.0, instrument="orbi") is resolved
+
+    def test_a_window_the_run_names_stands(self):
+        resolved = self.resolve(PeakAssignmentConfig(mz_precision_ppm=9.0))
+        assert self.bound(resolved) is resolved
+
+    def test_the_identity_profiles_pinned_window_stands(self):
+        resolved = self.resolve(PeakAssignmentConfig(profile="none"))
+        assert self.bound(resolved) is resolved
+        assert resolved.mz_precision_ppm == 10.0
+
+    def test_an_unbounded_run_records_no_bound(self):
+        assert self.resolve().snapshot()["fitted_window"] is None
 
 
 class TestOverrides:

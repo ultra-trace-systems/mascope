@@ -34,10 +34,12 @@ from mascope_tools.composition.models import (
     HeuristicFilterConfig,
 )
 from mascope_tools.composition.profiles import (
+    FITTED_WINDOW_INSTRUMENTS,
     IDENTITY_PROFILE_NAME,
     ChemistryContext,
     ReagentProfile,
     detect_reagent_profile,
+    fitted_window_ppm,
     get_chemistry_context,
     get_reagent_profile,
     resolve_element_ranges,
@@ -68,6 +70,10 @@ RESOLVED_PROFILE_KEY = "resolved_profile"
 #: re-deriving either.
 SOURCE_PROFILE = "profile"
 SOURCE_CONFIG = "config"
+
+#: The window's source where the sample's own fitted width bounded the
+#: instrument class's (step 3.6, :func:`with_fitted_window`).
+SOURCE_FITTED_WIDTH = "fitted_width"
 
 #: Where a context named on the data came from (step 3.6): the sample's batch,
 #: or its dataset. A run on ``auto`` reads the batch's before the dataset's,
@@ -141,6 +147,9 @@ class ResolvedProfile:
         :data:`SOURCE_PROFILE` when it fell to the reagent profile's default.
     :param named_context: What the sample's batch and dataset named, whether
         or not the run took it.
+    :param fitted_window: Where the sample's fitted width bounded the
+        window (:data:`SOURCE_FITTED_WIDTH`): the class's window it bounded,
+        and the width, centre and multiple it was bounded at. None otherwise.
     """
 
     profile: ReagentProfile
@@ -157,6 +166,7 @@ class ResolvedProfile:
     mode_channels: tuple[str, ...] = ()
     context_source: str = SOURCE_PROFILE
     named_context: NamedContext = NamedContext()
+    fitted_window: dict | None = None
 
     @property
     def minor_channels(self) -> frozenset[str]:
@@ -278,6 +288,10 @@ class ResolvedProfile:
             "element_ranges_source": self.element_ranges_source,
             "mz_precision_ppm": self.mz_precision_ppm,
             "mz_precision_source": self.mz_precision_source,
+            # Where the sample's fitted width bounded the class's window: the
+            # class's window, and the width, centre and multiple it was
+            # bounded at. Null where it did not.
+            "fitted_window": self.fitted_window,
             "fallback_sigma_ppm": self.fallback_sigma_ppm,
             # The ceiling Stage A put over every reference source's own window;
             # null where the context sets none. Each source's own window is on
@@ -299,6 +313,58 @@ class ResolvedProfile:
             "channel_evidence": evidence_records(self.channel_evidence),
             "unavailable_channels": list(self.unavailable_channels),
         }
+
+
+def with_fitted_window(
+    resolved: ResolvedProfile,
+    *,
+    sigma_ppm: float | None,
+    mu_ppm: float,
+    sigmas: float,
+    instrument_type: str | None,
+) -> ResolvedProfile:
+    """Bound a TOF's untargeted window by the sample's own fitted width.
+
+    Step 3.6 of the assignment quality plan: on a TOF the 10 ppm class window
+    is ten to fourteen of the sample's own widths, and a candidate that far
+    from the sample's centre is one the run's mass gate would never let
+    stand. Where Stage A fitted the sample's width, the window is
+    ``|mu| + sigmas * sigma`` (``profiles.fitted_window_ppm``), never wider
+    than the class's.
+
+    Only the class's own window is bounded: a window the run config names, or
+    one a profile pins (the identity profile's 10 ppm), is the run's choice and
+    stands.
+
+    :param resolved: The profile resolution.
+    :param sigma_ppm: The width the sample's fit is scored at, where Stage A
+        fitted one; None where it fitted none, which leaves the window alone.
+    :param mu_ppm: The centre the sample is scored at.
+    :param sigmas: How many widths from the centre a right formula may sit.
+    :param instrument_type: The sample's instrument class.
+    :return: The resolution with the bounded window, or ``resolved`` itself.
+    """
+    if (
+        sigma_ppm is None
+        or resolved.mz_precision_source != SOURCE_PROFILE
+        or resolved.profile.mz_precision_ppm is not None
+        or (instrument_type or "").strip().lower() not in FITTED_WINDOW_INSTRUMENTS
+    ):
+        return resolved
+    window = fitted_window_ppm(resolved.mz_precision_ppm, sigma_ppm, mu_ppm, sigmas)
+    if window >= resolved.mz_precision_ppm:
+        return resolved
+    return replace(
+        resolved,
+        mz_precision_ppm=round(window, 3),
+        mz_precision_source=SOURCE_FITTED_WIDTH,
+        fitted_window={
+            "class_mz_precision_ppm": resolved.mz_precision_ppm,
+            "sigma_ppm": round(float(sigma_ppm), 4),
+            "mu_ppm": round(float(mu_ppm), 4),
+            "sigmas": float(sigmas),
+        },
+    )
 
 
 def with_secondary_channels(

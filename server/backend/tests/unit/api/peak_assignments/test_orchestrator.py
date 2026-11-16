@@ -24,6 +24,7 @@ path rather than reaching Socket.IO.
 
 import math
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -2222,6 +2223,75 @@ class TestResolvedProfile:
         assert search_config.mass_range_ppm == 10.0
         assert heuristics.use_senior is True
         assert heuristics.context_ratio_windows == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "instrument, fitted, window, source",
+        [
+            # Step 3.6: a TOF's window bounded by its fitted width, the centre
+            # reached and six widths on: 1.0 + 6 * hypot(1.0, 0.5).
+            ("tof", True, 1.0 + 6 * math.hypot(1.0, 0.5), "fitted_width"),
+            # Nothing fitted, nothing to bound by: the class's 10 ppm.
+            ("tof", False, 10.0, "profile"),
+            # An Orbitrap's window is not bounded.
+            ("orbi", True, 3.0, "profile"),
+        ],
+    )
+    async def test_a_tofs_window_is_bounded_by_its_fitted_width(
+        self, instrument, fitted, window, source, monkeypatch
+    ):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_backend.api.new.peak_assignments.engine import (
+            SampleMassAccuracy,
+        )
+        from mascope_tools.composition.profiles import INSTRUMENT_FALLBACK_SIGMA_PPM
+
+        # A class width narrow enough to bound the window, were a class width
+        # what bounds it: only a width the sample fitted does.
+        monkeypatch.setitem(INSTRUMENT_FALLBACK_SIGMA_PPM, "tof", 0.5)
+
+        peaks = _peaks_df(
+            [
+                ("p1", 181.0707, 10000.0),
+                ("p2", 182.0741, 660.0),
+                ("p3", 300.1234, 500.0),
+            ]
+        )
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+        accuracy = (
+            SampleMassAccuracy(mu_ppm=-1.0, sigma_ppm=1.0, anchors=9, anchor_ions=9)
+            if fitted
+            else SampleMassAccuracy()
+        )
+        _start(
+            {
+                "instrument": patch(
+                    f"{_MOD}.get_instrument_type", return_value=instrument
+                ),
+                "accuracy": patch(
+                    f"{_MOD}.sample_mass_accuracy",
+                    side_effect=lambda df, reagent, **_kwargs: replace(
+                        accuracy, reagent=reagent
+                    ),
+                ),
+            }
+        )
+
+        await _run(PeakAssignmentConfig(profile="BR"))
+
+        search_config = mocks["compositions"].call_args.args[1]
+        assert search_config.mass_range_ppm == pytest.approx(window, abs=1e-3)
+        snapshot = recorder.recorded_configs()[-1]["resolved_profile"]
+        assert snapshot["mz_precision_source"] == source
+        assert snapshot["mz_precision_ppm"] == pytest.approx(window, abs=1e-3)
+        if source == "fitted_width":
+            assert snapshot["fitted_window"]["class_mz_precision_ppm"] == 10.0
+            assert snapshot["fitted_window"]["sigmas"] == 6.0
+        else:
+            assert snapshot["fitted_window"] is None
 
     @pytest.mark.asyncio
     async def test_a_named_profile_configures_the_search(self):

@@ -65,9 +65,43 @@ RATIO_DBE_TO_C = "DBE/C"
 #: committed mass error worse on all three (MAD 1.56 to 2.22, 0.94 to 1.81,
 #: 0.73 to 1.19 ppm) and bought nothing: the multi-scheme TOF spreads 0.7-1.0
 #: ppm, so 20 ppm is twenty sigma there and admits fits that are only noise.
-#: Widening it needs the instrument-scaled fit of step 2.1 behind it, which is
-#: what would let a wide window be scored rather than merely searched.
+#: The 10 ppm is a ceiling, not the window a sample with a measured width
+#: searches: where Stage A fitted the sample's own width, the window is bounded
+#: by it (:func:`fitted_window_ppm`, step 3.6).
 INSTRUMENT_MZ_PRECISION_PPM: dict[str, float] = {"orbi": 3.0, "tof": 10.0}
+
+#: The instrument classes whose untargeted window the sample's own fitted width
+#: bounds (step 3.6 of the assignment plan). A TOF's 10 ppm is ten to fourteen
+#: of its widths, so most of the window is candidate space no right formula
+#: reaches. An Orbitrap's 3 ppm is already about ten of its 0.3 ppm, and a
+#: tighter one there would cut the trend an uncorrected low-mass axis bends by
+#: (``mass_accuracy.fit_mass_trend``), which the scorer reads and the window
+#: does not.
+FITTED_WINDOW_INSTRUMENTS: frozenset[str] = frozenset({"tof"})
+
+
+def fitted_window_ppm(
+    class_window_ppm: float, sigma_ppm: float, mu_ppm: float, sigmas: float
+) -> float:
+    """The untargeted window a sample's fitted width bounds.
+
+    The window is symmetric about the peak and the sample's errors sit about
+    its own centre, so it reaches the centre's distance from zero and then
+    ``sigmas`` widths on: ``|mu| + sigmas * sigma``, never wider than the
+    instrument class's window.
+
+    :param class_window_ppm: The instrument class's window
+        (:data:`INSTRUMENT_MZ_PRECISION_PPM`), the ceiling.
+    :param sigma_ppm: The width the sample's fit is scored at
+        (``mass_accuracy.scoring_sigma_ppm`` of its fitted width).
+    :param mu_ppm: The centre it is scored at.
+    :param sigmas: How many widths from the centre a right formula may sit.
+    :return: The window in ppm.
+    """
+    return min(
+        float(class_window_ppm), abs(float(mu_ppm)) + float(sigmas) * float(sigma_ppm)
+    )
+
 
 #: The window an unrecognised instrument class falls back to.
 DEFAULT_MZ_PRECISION_PPM = 10.0

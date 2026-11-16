@@ -723,6 +723,76 @@ async def test_a_batch_search_searches_under_the_context_its_batch_names(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "width, window", [(1.0, 6 * math.hypot(1.0, PRED_SIGMA_PPM)), (None, 10.0)]
+)
+async def test_a_tof_batch_search_is_bounded_by_its_recorded_width(
+    width, window, monkeypatch
+):
+    # Step 3.6, as a run's own search is bounded by its Stage A's: at the width
+    # the sample's latest run fitted, six widths from its centre; at the class's
+    # 10 ppm where no run fitted one, however narrow the class's own width.
+    monkeypatch.setitem(INSTRUMENT_FALLBACK_SIGMA_PPM, "tof", 0.5)
+    sample = SimpleNamespace(
+        sample_item_id="si-1",
+        sample_batch_id="sb-1",
+        sample_item_name="Sample One",
+        filename="tof-sample.h5",
+        polarity="-",
+    )
+    peaks = pd.DataFrame([{"sample_peak_id": "p1", "mz": 160.8413, "intensity": 1.0e6}])
+    mechanism = SimpleNamespace(
+        ionization_mechanism="[M-H]-", ionization_mechanism_id="im-h"
+    )
+    seen = {}
+
+    def finder(frame, search, heuristics, **kwargs):
+        seen["window"] = search.mass_range_ppm
+        raise _Searched
+
+    with (
+        patch.object(batch_untargeted, "fetch_sample", AsyncMock(return_value=sample)),
+        patch.object(batch_untargeted, "load_sample_peaks", return_value=peaks),
+        patch.object(
+            batch_untargeted,
+            "fetch_sample_mechanisms",
+            AsyncMock(return_value=(["im-h"], [mechanism])),
+        ),
+        patch.object(
+            batch_untargeted, "fetch_mechanisms_by_notation", AsyncMock(return_value=[])
+        ),
+        patch.object(
+            batch_untargeted,
+            "default_match_params",
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    mz_tolerance=15.0, isotope_abundance_threshold=1e-4
+                )
+            ),
+        ),
+        patch.object(batch_untargeted, "_resolution_of", AsyncMock(return_value=None)),
+        patch.object(
+            batch_untargeted, "sample_recorded_width", AsyncMock(return_value=width)
+        ),
+        patch.object(
+            batch_untargeted, "sample_reagent_offset", AsyncMock(return_value=None)
+        ),
+        patch.object(
+            batch_untargeted,
+            "recorded_envelope_tolerance",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(batch_untargeted, "assign_compositions", finder),
+        pytest.raises(_Searched),
+    ):
+        await batch_untargeted._search_sample_peaks(
+            "si-1", {"p1"}, PeakAssignmentConfig()
+        )
+
+    assert seen["window"] == pytest.approx(window, abs=1e-3)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("counted", [True, False], ids=["counted", "uncounted"])
 async def test_a_batch_search_reads_the_peak_lists_scan_counts(counted):
     # As a run's search does: a dim line is read at its mean per scan where
