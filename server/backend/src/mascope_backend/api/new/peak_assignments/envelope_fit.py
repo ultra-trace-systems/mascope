@@ -33,19 +33,28 @@ intensity over the anchor's, the most abundant predicted line's, against its
 share of that line, at an expected S/N of its share times the anchor's S/N.
 
 **The pooled level.** A run is one file. A file too thin for a curve of its own
-takes the curve pooled with the files of its batch that share its acquisition
-settings (:func:`acquisition_settings`: the polarity, the microscan count and the
-resolution, so a 100-microscan file stays apart from its 10-microscan
-siblings), read from the lines each sibling's latest completed run recorded. A
-sibling with no run yet adds nothing, so the first file of a batch to be run
-reads only its own lines; the record names how many files the pool held.
+takes the curve pooled with its :data:`POOL_NEIGHBOURS` nearest files in
+acquisition time (:func:`read_pool`): files of its batch that share its
+acquisition settings (:func:`acquisition_settings`: the polarity, the microscan
+count and the resolution, so a 100-microscan file stays apart from its
+10-microscan siblings), have a peak list and that the engine would run. Each is
+read fresh, by its own Stage A first pass at today's numbers under the reading
+run's config and match parameters, never from a run of its own: the pool is
+then a function of this run's inputs and the neighbours' data, and two runs of
+a batch pool alike whatever order they ran in, at once or one after the other
+(decision 32, as the plan owner amended it on MAS-842). Files near it in time
+share its instrument state better than a batch spanning days does, and a file
+that joins a growing batch later in time moves the pool only of the files near
+the batch's end. The record names the files pooled, the lines each gave and the
+time span the pool covers.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -280,8 +289,8 @@ def envelope_lines(
                 ratio = (observed / anchor_intensity) / share
             elif share * anchor_snr < RESPONSE_SNR_EDGES[0]:
                 # An absent line below the first bin is in no bin's presence,
-                # and the score never charges it: not worth recording for a
-                # sibling to pool. Most predicted 13C lines of a file are such.
+                # and the score never charges it: not worth recording, nor
+                # reading for a pool. Most predicted 13C lines of a file are such.
                 continue
             else:
                 ratio = np.nan
@@ -365,32 +374,196 @@ async def _latest_records(sample_item_ids: Sequence[str] | None, batch_id=None):
         return (await session.execute(query)).all()
 
 
-async def sibling_lines(sample, acquisition: dict) -> list[EnvelopeLines]:
-    """The lines the files beside a sample recorded, for its pooled curve.
+#: The files a thin file's pooled curve reads beside its own, at the most: the
+#: nearest in acquisition time that share its settings (the plan owner's K on
+#: MAS-842). A pool of seven files is the size the curve's minimum was set on
+#: (K3's 34 lines over 7 files, I positive's 30 over 6, C2's 52 over 5). Fixed:
+#: the pool does not widen until the curve's minimum is met.
+POOL_NEIGHBOURS = 6
 
-    Every other sample of its batch whose latest completed in-app run fitted
-    the curve's form under the same acquisition settings, one entry per file,
-    as each recorded its own lines: what a sibling pooled itself is not
-    counted twice.
+#: Reads one neighbour's own lines for a pool: its Stage A first pass at today's
+#: numbers, under the reading run's config and match parameters. None where the
+#: file is not one a pool reads - the engine would not run it, or it has no
+#: peak list - so the next nearest file takes its place.
+NeighbourReader = Callable[[Sample], Awaitable[EnvelopeLines | None]]
+
+
+@dataclass(frozen=True)
+class PooledFile:
+    """One neighbour a pool read.
+
+    :param sample_item_id: The sample.
+    :param acquired: When its file was acquired (``datetime_utc``); None where
+        the file does not say.
+    :param lines: Its own lines, as its Stage A first pass read them.
+    """
+
+    sample_item_id: str
+    acquired: datetime | None
+    lines: EnvelopeLines
+
+    def record(self) -> dict:
+        """What the run records of it."""
+        return {
+            "sample_item_id": self.sample_item_id,
+            "lines": self.lines.lines,
+            "absent": self.lines.absent,
+        }
+
+
+@dataclass(frozen=True)
+class EnvelopePool:
+    """The neighbours a thin file's curve was pooled over (:func:`read_pool`).
+
+    :param files: The neighbours read, nearest first; one that gave no line
+        still took its place.
+    :param span: The earliest and the latest acquisition time among them and
+        the file itself; None where no file of the pool says when it was
+        acquired.
+    :param nearest: The files the pool reads at the most (its K).
+    """
+
+    files: tuple[PooledFile, ...] = ()
+    span: tuple[datetime, datetime] | None = None
+    nearest: int = POOL_NEIGHBOURS
+
+    @property
+    def lines(self) -> list[EnvelopeLines]:
+        """The neighbours' lines, one entry per file, for the fit to pool."""
+        return [pooled.lines for pooled in self.files]
+
+    def record(self) -> dict:
+        """``config.envelope_tolerance.pool``: the files pooled, the lines each
+        gave and the time span the pool covers, so a ledger comparison sees
+        what moved."""
+        span = None
+        if self.span is not None:
+            first, last = self.span
+            span = {
+                "from": first.isoformat(),
+                "to": last.isoformat(),
+                "hours": round((last - first).total_seconds() / 3600.0, 2),
+            }
+        return {
+            "nearest": self.nearest,
+            "files": [pooled.record() for pooled in self.files],
+            "span": span,
+        }
+
+
+def _by_distance_in_time(sample, candidates: Sequence) -> list:
+    """The candidates nearest the sample in acquisition time first, ties - and a
+    file that does not say when it was acquired, after every one that does - by
+    sample id, so the order is the data's alone."""
+    acquired = getattr(sample, "datetime_utc", None)
+
+    def key(candidate):
+        other = getattr(candidate, "datetime_utc", None)
+        distance = (
+            abs((other - acquired).total_seconds())
+            if acquired is not None and other is not None
+            else float("inf")
+        )
+        return (distance, str(candidate.sample_item_id))
+
+    return sorted(candidates, key=key)
+
+
+async def _batch_candidates(sample) -> list:
+    """Every other sample of the sample's batch, nearest it in acquisition time
+    first (:func:`_by_distance_in_time`)."""
+    async with async_session() as session:
+        candidates = (
+            (
+                await session.execute(
+                    select(Sample).where(
+                        Sample.sample_batch_id == sample.sample_batch_id,
+                        Sample.sample_item_id != sample.sample_item_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    return _by_distance_in_time(sample, candidates)
+
+
+def _is_curve_file(candidate) -> bool:
+    try:
+        return form_for(get_instrument_type(candidate.filename)) == FORM_CURVE
+    except ValueError:
+        return False
+
+
+async def read_pool(
+    sample,
+    acquisition: dict,
+    read_neighbour: NeighbourReader,
+    *,
+    nearest: int = POOL_NEIGHBOURS,
+) -> EnvelopePool:
+    """The neighbours a thin file's curve is pooled over, each read fresh.
+
+    The ``nearest`` files of the sample's batch nearest it in acquisition
+    time (``datetime_utc``, ties by sample id) that share its acquisition
+    settings, have a peak list and that the engine would run, each read by
+    ``read_neighbour``: its own Stage A first pass, never a run of its own nor
+    the curve it would pool itself, so the pool cannot feed on itself and does
+    not depend on which of its files ran before it. A blank, which an Orbitrap
+    sequence interleaves, takes no place: the reader refuses it and the next
+    nearest file is read.
 
     :param sample: The sample whose curve is pooled.
     :param acquisition: Its settings (:func:`acquisition_settings`).
-    :return: The siblings' lines; none where the sample is in no batch.
+    :param read_neighbour: Reads a neighbour's own lines, or None where the
+        file is not one a pool reads.
+    :param nearest: The files to read at the most.
+    :return: The pool; empty where the sample is in no batch.
     """
     if not getattr(sample, "sample_batch_id", None):
-        return []
-    pooled = []
-    for sample_item_id, record in await _latest_records(
-        None, batch_id=sample.sample_batch_id
-    ):
-        if sample_item_id == sample.sample_item_id or not isinstance(record, dict):
+        return EnvelopePool(nearest=nearest)
+    pooled: list[PooledFile] = []
+    for candidate in await _batch_candidates(sample):
+        if len(pooled) >= nearest:
+            break
+        if not _is_curve_file(candidate):
             continue
-        if record.get("form") != FORM_CURVE or record.get("acquisition") != acquisition:
+        if await acquisition_settings(candidate) != acquisition:
             continue
-        lines = EnvelopeLines.from_record(record.get("observations"))
-        if lines.expected_snr.size:
-            pooled.append(lines)
-    return pooled
+        lines = await read_neighbour(candidate)
+        if lines is None:
+            continue
+        pooled.append(
+            PooledFile(
+                sample_item_id=str(candidate.sample_item_id),
+                acquired=getattr(candidate, "datetime_utc", None),
+                lines=lines,
+            )
+        )
+    times = [
+        moment
+        for moment in [
+            getattr(sample, "datetime_utc", None),
+            *(pooled_file.acquired for pooled_file in pooled),
+        ]
+        if moment is not None
+    ]
+    pool = EnvelopePool(
+        files=tuple(pooled),
+        span=(min(times), max(times)) if times else None,
+        nearest=nearest,
+    )
+    runtime.logger.info(
+        f"Envelope curve of sample '{sample.sample_item_name}' pooled over "
+        f"{len(pooled)} of its nearest files at its settings "
+        f"({sum(pooled_file.lines.lines for pooled_file in pooled)} lines)"
+        + (
+            f", spanning {pool.record()['span']['hours']} h"
+            if pool.span is not None
+            else ""
+        )
+    )
+    return pool
 
 
 async def recorded_envelope_tolerance(sample_item_id: str) -> EnvelopeTolerance:
@@ -434,17 +607,20 @@ class RunEnvelopeFit:
     """The tolerance a run scores at, with what it records of it.
 
     :param fit: The fit (``envelope_tolerance.EnvelopeFit``).
-    :param acquisition: The settings a pooled curve was matched on, recorded
-        so a sibling run can match this one's lines; None where the file
-        records none, or the form pools nothing.
+    :param acquisition: The settings a pooled curve was matched on; None where
+        the file records none, or the form pools nothing.
     :param inherited: On a decoy run, the record of its control's tolerance,
         which the decoy scores at instead of fitting its own
         (:func:`inherited_envelope_fit`); None on every other run.
+    :param pool: The neighbours a thin file read for its pooled curve
+        (:func:`read_pool`), whether or not they held enough lines; None where
+        no pool was read.
     """
 
     fit: EnvelopeFit
     acquisition: dict | None = None
     inherited: dict | None = None
+    pool: EnvelopePool | None = None
 
     @property
     def tolerance(self) -> EnvelopeTolerance:
@@ -460,6 +636,8 @@ class RunEnvelopeFit:
         record = self.fit.record()
         if self.fit.form == FORM_CURVE:
             record["acquisition"] = self.acquisition
+            if self.pool is not None:
+                record["pool"] = self.pool.record()
         return record
 
 
@@ -470,18 +648,21 @@ async def fit_run_envelope_tolerance(
     *,
     mass_accuracy: SampleMassAccuracy,
     fallback_sigma_ppm: float,
+    read_neighbour: NeighbourReader,
 ) -> RunEnvelopeFit:
     """Fit the tolerance a run scores a line's share at, on Stage A's commits.
 
     The file's own lines first; where they are too few for a curve, those of
-    the files beside it that share its acquisition settings as well
-    (:func:`sibling_lines`); then today's numbers.
+    its nearest files that share its acquisition settings as well, each read
+    fresh (:func:`read_pool`); then today's numbers.
 
     :param sample: The sample the run assigns.
     :param match_isotope_df: Stage A's gated, fit-scored frame.
     :param stage_a_rows: The rows Stage A built from it.
     :param mass_accuracy: What Stage A measured.
     :param fallback_sigma_ppm: The instrument class's width and precision.
+    :param read_neighbour: Reads a neighbour's own lines for the pool, under
+        this run's config and match parameters.
     :return: The fit and what the run records of it.
     """
     try:
@@ -502,11 +683,12 @@ async def fit_run_envelope_tolerance(
     if form != FORM_CURVE:
         return RunEnvelopeFit(fit)
     acquisition = await acquisition_settings(sample)
-    if fit.level != LEVEL_OWN and acquisition is not None:
-        fit = fit_envelope_tolerance(
-            form, lines, await sibling_lines(sample, acquisition)
-        )
-    return RunEnvelopeFit(fit, acquisition)
+    if fit.level == LEVEL_OWN or acquisition is None:
+        return RunEnvelopeFit(fit, acquisition)
+    pool = await read_pool(sample, acquisition, read_neighbour)
+    return RunEnvelopeFit(
+        fit_envelope_tolerance(form, lines, pool.lines), acquisition, pool=pool
+    )
 
 
 def inherited_envelope_fit(record: dict | None) -> RunEnvelopeFit:

@@ -271,7 +271,7 @@ def _patches(
         # What the file was acquired at, which a thin Orbitrap file's pooled
         # curve is matched on, is read off its stream row and its .props:
         # neither exists here, as for a file converted before either kept it,
-        # so no sibling is pooled.
+        # so no neighbour is pooled.
         "acquisition": patch(
             "mascope_backend.api.new.peak_assignments.envelope_fit."
             "acquisition_settings",
@@ -2776,7 +2776,7 @@ class TestTheRunFitsItsEnvelopeTolerance:
         assert m0["fit_score"] > float(today["match_score"].iloc[0]) + 0.2
 
     @pytest.mark.asyncio
-    async def test_a_sample_no_library_matched_can_take_its_siblings_curve(self):
+    async def test_a_sample_no_library_matched_can_take_its_neighbours_curve(self):
         # Stage A committed nothing, so there is nothing of its own to score
         # again; the pooled curve still reaches the search and is recorded.
         import numpy as np
