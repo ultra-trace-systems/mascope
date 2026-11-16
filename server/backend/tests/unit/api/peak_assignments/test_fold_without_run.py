@@ -678,6 +678,63 @@ async def test_the_fold_climbs_the_ladders_through_the_channels_a_run_opens(
 
 
 @pytest.mark.asyncio
+async def test_the_pre_passes_claims_are_folded_and_kept_out_of_stage_a():
+    """The reagent pre-pass claims first and the artifact pass after it, never
+    a peak the first took; both passes' rows reach the ledger, and Stage A is
+    offered neither's peaks, as in a run."""
+    from mascope_backend.api.new.peak_assignments.service import (
+        fold_sample_peaks_without_run,
+    )
+    from mascope_tools.composition.reagents import reagent_library
+
+    ladder = {cluster.label: cluster.mz for cluster in reagent_library("UR")}
+    labels = ("[CH4N2O+H]+", "[(CH4N2O)2+H]+", "[(CH4N2O)3+H]+")
+    stack, mocks = _patched()
+    stack.enter_context(patch(f"{_SVC}.get_instrument_type", return_value="orbi"))
+    mocks["peaks"].return_value = pd.DataFrame(
+        {
+            "sample_peak_id": ["p1", "r1", "r2", "r3", "p-lobe"],
+            "mz": [181.0707] + [ladder[label] for label in labels] + [181.0750],
+            "intensity": [5000.0, 2.0e6, 3.0e6, 1.0e5, 5.0],
+        }
+    )
+    mocks["mechanisms"].return_value = (
+        ["m-h", "m-urea"],
+        [
+            SimpleNamespace(
+                ionization_mechanism_id=mechanism_id,
+                ionization_mechanism=notation,
+                ionization_mechanism_polarity="+",
+            )
+            for mechanism_id, notation in (
+                ("m-h", "[M+H]+"),
+                ("m-urea", "[M+CH4N2O+H]+"),
+            )
+        ],
+    )
+    artifact = stack.enter_context(
+        patch(
+            f"{_SVC}.claim_artifact_peaks",
+            side_effect=lambda df, *_args: df[df["sample_peak_id"] == "p-lobe"],
+        )
+    )
+    with stack:
+        assert await fold_sample_peaks_without_run("si-1") == "batch-1"
+
+    # The artifact pass is told what the reagent pre-pass took.
+    assert artifact.call_args.args[2] == {"r1", "r2", "r3"}
+    folded = {row.sample_peak_id: row for row in mocks["fold"].call_args.kwargs["rows"]}
+    assert {folded[peak].role for peak in ("r1", "r2", "r3")} == {"reagent"}
+    assert folded["p-lobe"].role == "artifact"
+    assert mocks["stage_a"].call_args.kwargs["excluded_peak_ids"] == {
+        "r1",
+        "r2",
+        "r3",
+        "p-lobe",
+    }
+
+
+@pytest.mark.asyncio
 async def test_an_ineligible_sample_is_skipped_and_nothing_is_written():
     """A blank, or a sample whose calibration is unverified, is refused a run;
     it is refused a fold on the same grounds, and nothing reaches the batch."""
