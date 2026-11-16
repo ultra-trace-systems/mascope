@@ -295,6 +295,49 @@ class TestTheFamilyAMatchedReadingWouldHave:
             self.HEURISTICS if heuristics is None else heuristics,
         )
 
+    def test_a_dimer_s_ion_is_a_monomer_s_reading_and_back(self):
+        # C12H25O12+ is two glucoses and a proton, or one C12H24O12 and a
+        # proton: one ion, two splits.
+        notations = ["[2M+H]+", "[M+H]+"]
+        config = CompositionSearchConfig(
+            ionizations=",".join(notations),
+            element_count_ranges="C1-20 H0-40 O0-14",
+            mass_range_ppm=2.0,
+        )
+        (dimer,) = self._propose([("C6H12O6", "[2M+H]+")], notations, config)
+        assert dimer == [
+            {
+                "formula": "C12H24O12",
+                "ion": "C12H25O12+",
+                "ionization_mechanism": "[M+H]+",
+            }
+        ]
+        (monomer,) = self._propose([("C12H24O12", "[M+H]+")], notations, config)
+        assert monomer == [
+            {
+                "formula": "C6H12O6",
+                "ion": "C12H25O12+",
+                "ionization_mechanism": "[2M+H]+",
+            }
+        ]
+        # An ion of an odd count of an atom is no two of one molecule.
+        assert self._propose([("C13H24O12", "[M+H]+")], notations, config) == [[]]
+
+    def test_an_ion_of_another_charge_is_another_ion(self):
+        # Glucose with two protons is not glucose with one, whatever the signs.
+        notations = ["[M+2H]2+", "[M+H]+"]
+        config = CompositionSearchConfig(
+            ionizations=",".join(notations),
+            element_count_ranges="C1-20 H0-40 O0-14",
+            mass_range_ppm=2.0,
+        )
+        assert self._propose([("C6H12O6", "[M+2H]2+")], notations, config) == [[]]
+
+    def test_a_loss_ranks_by_what_the_mechanism_adds_less_what_it_loses(self):
+        assert mechanism_mass_contribution("[M+H-H2O]+") == pytest.approx(
+            parse_ionization("[M+H]+").mass - calculate_mass(formula="H2O")
+        )
+
     @pytest.mark.parametrize(
         "formula, mechanism",
         [("C3H7NO", "[M+H]+"), ("C10H14O7", "[M+CH4N2O+H]+"), ("C6H12O6", "[M+NH4]+")],

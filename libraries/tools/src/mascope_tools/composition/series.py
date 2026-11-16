@@ -228,12 +228,12 @@ def ion_mz(counts: Mapping[str, int], notation: str) -> float:
 
     :param counts: The neutral's element counts.
     :param notation: The mechanism, in either adduct notation.
-    :return: The singly charged ion's m/z.
+    :return: The ion's m/z: its molecules, species and loss over its charge
+        (:meth:`IonizationMechanism.ion_mz`).
     """
     mechanism = _mechanism(notation)
     neutral = composition_mass(parse_composition(_hill(counts)))
-    shift = mechanism.mass if mechanism.addition else -mechanism.mass
-    return (neutral + shift) / abs(mechanism.charge)
+    return mechanism.ion_mz(neutral)
 
 
 #: The swaps a labelled nitrate's 15N makes indistinguishable from an

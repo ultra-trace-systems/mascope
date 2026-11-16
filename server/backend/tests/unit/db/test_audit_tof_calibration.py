@@ -570,13 +570,19 @@ async def test_named_families_replace_the_mode_mechanisms(site, filestore):
     async with async_session() as session:
         mode = await session.get(IonizationMode, site["mode_id"])
     filename = support.write_file(filestore, support.calibrant_peaks())
-    config = _config(site["instrument"], families=("[M+NO3]-", "[M+H]+", "[2M-H]-"))
+    config = _config(
+        site["instrument"], families=("[M+NO3]-", "[M+H]+", "[2M-H]-", "[M-Cl]-")
+    )
 
     prepared = await script.prepare_mode(mode, config, filename)
 
-    # The positive one is of the other polarity; the dimer has no family
-    assert [family.mechanism for family in prepared.families] == ["[M+NO3]-"]
-    assert any("[2M-H]-" in note for note in prepared.notes)
+    # The positive one is of the other polarity; the dimer's ions are a family
+    # of their own; a CHO neutral has no chlorine to lose, so no family.
+    assert [family.mechanism for family in prepared.families] == [
+        "[M+NO3]-",
+        "[2M-H]-",
+    ]
+    assert any("[M-Cl]-" in note for note in prepared.notes)
 
 
 # --- One file ---

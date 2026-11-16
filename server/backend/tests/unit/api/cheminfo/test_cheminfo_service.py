@@ -448,14 +448,16 @@ def test_one_reading_per_ion_keeps_the_closest_and_then_the_line_reading():
 
 
 @pytest.mark.asyncio
-async def test_a_shape_the_finder_does_not_search_is_left_out_of_the_search(
+async def test_a_dimer_is_searched_at_its_own_mass(
     test_ionization_mechanisms: list, async_session_factory
 ):
-    """A dimer among the asked mechanisms leaves the rest searched; alone, it
-    is refused with the reason rather than searched as the monomer."""
+    """A dimer among the asked mechanisms is searched beside the rest: the
+    neutral of its m/z is half of what the bromide leaves, and the m/z the
+    result reports is the dimer's own."""
     from sqlalchemy import delete
 
     from mascope_backend.db import IonizationMechanism
+    from mascope_tools.composition.utils import calculate_mass, parse_ionization
 
     dimer = IonizationMechanism(
         ionization_mechanism_id="unit-dimer-br",
@@ -473,16 +475,17 @@ async def test_a_shape_the_finder_does_not_search_is_left_out_of_the_search(
             formula_ranges="C0-10 H0-20 O0-10",
         )
         assert _rows_of("C3H6O3", both)
-        assert {
-            row["ionization_mechanism"]["ionization_mechanism"] for row in both["data"]
-        } == {"[M+Br]-"}
 
-        with pytest.raises(Exception, match="singly charged ions of one molecule"):
-            await retrieve_compositions_by_mz(
-                mz=168.9506,
-                ionization_mechanism_ids=["unit-dimer-br"],
-                formula_ranges="C0-10 H0-20 O0-10",
-            )
+        dimer_mz = parse_ionization("[2M+Br]-").ion_mz(calculate_mass(formula="C3H6O3"))
+        alone = await retrieve_compositions_by_mz(
+            mz=dimer_mz,
+            ionization_mechanism_ids=["unit-dimer-br"],
+            formula_ranges="C0-10 H0-20 O0-10",
+        )
+        (row,) = _rows_of("C3H6O3", alone)
+        assert row["ionization_mechanism"]["ionization_mechanism"] == "[2M+Br]-"
+        assert row["target_isotope_mz"] == pytest.approx(dimer_mz, abs=1e-6)
+        assert row["target_isotope_mz_error_ppm"] == pytest.approx(0.0, abs=1e-3)
     finally:
         async with async_session_factory() as session:
             await session.execute(

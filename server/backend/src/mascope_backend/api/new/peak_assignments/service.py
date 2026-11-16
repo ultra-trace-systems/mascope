@@ -2225,30 +2225,22 @@ def _readable(mechanism: IonizationMechanism) -> bool:
     and one that reads in neither notation as it is stored: a free-text label
     an older validator let through. The composition finder refuses such a
     row and target-ion generation skips it, so a run leaves it out rather
-    than failing on it, and reports it once. So it does a multimer, a charge
-    above one and a neutral loss (``[2M+H]+``, ``[M+2H]2+``, ``[M+H-H2O]+``):
-    the finder searches singly charged ions of one molecule and refuses the
-    rest, and a run reads no channel its finder cannot.
+    than failing on it, and reports it once. Every row that reads is searched:
+    a multimer, a charge above one and a neutral loss (``[2M+H]+``,
+    ``[M+2H]2+``, ``[M+H-H2O]+``) each at its own mass.
     """
     try:
-        parts = parse_mechanism(mechanism.ionization_mechanism)
+        parse_mechanism(mechanism.ionization_mechanism)
     except MechanismNotationError:
-        reason = (
-            "reads as neither notation, so peak assignment does not search "
-            "it; correct or remove it."
-        )
+        pass
     else:
-        if parts.simple:
-            return True
-        reason = (
-            "is a multimer, a charge above one or a neutral loss, which peak "
-            "assignment does not search yet."
-        )
+        return True
     if mechanism.ionization_mechanism_id not in _reported_unreadable:
         _reported_unreadable.add(mechanism.ionization_mechanism_id)
         runtime.logger.warning(
             f"Ionization mechanism {mechanism.ionization_mechanism!r} "
-            f"({mechanism.ionization_mechanism_id}) {reason}"
+            f"({mechanism.ionization_mechanism_id}) reads as neither notation, "
+            "so peak assignment does not search it; correct or remove it."
         )
     return False
 

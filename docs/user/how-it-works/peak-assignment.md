@@ -52,14 +52,22 @@ Every peak is assigned in a two-stage engine:
   the polarity it is detected in; and it contributes radicals only if it allows them.
   The target library is read through the ionization mechanisms of the sample's mode; a
   reference list also through the channels the run opens for itself (*A list through
-  the channels a run opens*, below). Only mechanisms of one molecule, a single charge
-  and no neutral loss are read: a dimer (`[2M+H]+`), a doubly charged ion
-  (`[M+2H]2+`) or a neutral loss (`[M+H-H2O]+`) on the mode is left out of the run,
-  and the server logs it once.
+  the channels a run opens*, below). Every mechanism of the mode is read, a dimer
+  (`[2M+H]+`), a doubly charged ion (`[M+2H]2+`) and a neutral loss (`[M+H-H2O]+`,
+  `[M-H-H2O]-`) among them; only a stored mechanism that reads as no notation is
+  left out of the run, and the server logs it once.
 - **Stage B — untargeted.** Peaks that Stage A left unexplained are run through a
   bounded composition search that enumerates every elemental formula whose ion lands
   within the mass tolerance — the classic mass-decomposition problem
   ([Böcker & Lipták 2007][bl07]) — and scores each candidate the same way.
+  Through a mechanism that holds `n` molecules and gives the ion a charge `z`, an
+  ion at m/z holds molecules of mass (|z| × m/z − shift) / n, where the shift is
+  what the mechanism adds less what it loses. The ion's formula is the `n`
+  molecules with the species added or removed and the neutral loss taken off
+  after, as target ions are built, so a molecule with no water to lose is never
+  read through `[M+H-H2O]+` or `[M-H-H2O]-`. Its isotope lines are predicted at its own charge:
+  those of a doubly charged ion sit half a mass unit apart, and the mass window is
+  the same ppm of the ion's m/z.
 
 **A list compound meets the search.** When a run searches formulas, every peak Stage A
 assigned is put to Stage B too, with the list's compound as one of its candidates. The

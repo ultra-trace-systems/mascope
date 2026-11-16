@@ -2836,7 +2836,7 @@ def covalent_readings(
     """
     ion = dict(parse_composition(formula))
     readings: dict[str, tuple[str, str]] = {}
-    for notation, parts in _simple_channels(channels):
+    for notation, parts in _searched_channels(channels):
         if parts.charge != charge:
             continue
         counts = _through(ion, parts, to_ion=False)
@@ -2851,30 +2851,47 @@ def covalent_readings(
     return tuple(readings.values())
 
 
-def _simple_channels(channels: Iterable[str]):
-    """The channels a stage searches, parsed: one molecule, one charge, no
-    loss. An unreadable notation is none of them."""
+def _searched_channels(channels: Iterable[str]):
+    """The channels a stage searches, parsed: every one that reads, a
+    multimer, a charge above one and a neutral loss among them. An unreadable
+    notation is none of them."""
     for notation in channels:
         try:
             parts = parse_mechanism(notation)
         except MechanismNotationError:
             continue
-        if parts.simple:
-            yield notation, parts
+        yield notation, parts
 
 
 def _through(counts: Mapping[str, int], parts, *, to_ion: bool) -> dict | None:
     """A composition through a channel: the ion a neutral makes, or the
-    neutral an ion reads as. None where an element would go below zero.
+    neutral an ion reads as. The ion is the channel's molecules with its
+    species and less its loss. None where an element would go below zero, and
+    where an ion is not the channel's molecules, the same neutral each.
 
     Plain counts rather than a composition's arithmetic, which cannot copy a
     labelled reagent's custom element.
     """
-    sign = 1 if parts.addition == to_ion else -1
-    out = dict(counts)
-    for term in parts.formulas:
-        for element, n in parse_composition(term).items():
-            out[element] = out.get(element, 0) + sign * n
+    sign = 1 if parts.addition else -1
+    moved: dict[str, int] = {}
+    for element, n in (parse_composition(parts.moiety) if parts.moiety else {}).items():
+        moved[element] = moved.get(element, 0) + sign * n
+    loss = parse_composition(parts.neutral_loss) if parts.neutral_loss else {}
+    for element, n in loss.items():
+        moved[element] = moved.get(element, 0) - n
+    if to_ion:
+        out = {element: parts.multimer * n for element, n in counts.items()}
+        for element, n in moved.items():
+            out[element] = out.get(element, 0) + n
+    else:
+        out = {}
+        for element in set(counts) | set(moved):
+            count, remainder = divmod(
+                counts.get(element, 0) - moved.get(element, 0), parts.multimer
+            )
+            if remainder:
+                return None
+            out[element] = count
     out = {element: n for element, n in out.items() if n}
     if not out or any(n < 0 for n in out.values()):
         return None
@@ -2903,7 +2920,7 @@ def _shown_elsewhere(
     """
     counts = dict(parse_composition(neutral))
     best: tuple[str, float, float] | None = None
-    for notation, parts in _simple_channels(channels):
+    for notation, parts in _searched_channels(channels):
         if mechanism_key(notation) == mechanism_key(channel):
             continue
         ion = _through(counts, parts, to_ion=True)

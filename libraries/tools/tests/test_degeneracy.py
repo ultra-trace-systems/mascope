@@ -408,12 +408,13 @@ class TestWhenTheBoxWillNotFit:
             assert alone[mz].density == together[mz].density
             assert alone[mz].measured == together[mz].measured
 
-    def test_the_bound_this_uses_is_one_the_union_really_overflows(self):
-        # The guard that makes the two tests above mean something. Under this
-        # row bound a band sized from BOTH channels gives up part-way through
-        # the list - which is the defect - while a band sized from either
-        # channel alone covers every target, which is the fix. Without this the
-        # tests pass on an implementation that never reaches the case.
+    def test_a_band_over_both_channels_fits_where_one_channel_does(self):
+        # Under this row bound a band sized from the SPAN between both
+        # channels' neutral masses gave up part-way through the list, which is
+        # why the measurement walks one channel at a time. A band's grid now
+        # holds each channel's own window and not the masses between them, so
+        # it fits wherever a band over either channel alone does, and both
+        # walks answer every target.
         from dataclasses import replace as replace_config
 
         import numpy as np
@@ -439,7 +440,7 @@ class TestWhenTheBoxWillNotFit:
         union = [
             grid for _mz, grid in grids_for_targets(crowd, wide, both, max_rows=30_000)
         ]
-        assert any(grid is None for grid in union), "the union has to overflow"
+        assert all(grid is not None for grid in union)
 
         for name in notations:
             one = replace_config(wide, ionizations=name)

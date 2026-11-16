@@ -272,7 +272,9 @@ def _fixed_mechanism_id(parts: "MechanismParts") -> str:
     :return: The id, at most the column's 16 characters for every shipped
         mechanism (pinned by the catalogue's tests).
     """
-    moiety = "E" if parts.electron_transfer else "".join(parts.terms)
+    moiety = (
+        "E" if parts.electron_transfer else "".join(parts.removed_terms or parts.terms)
+    )
     moiety = re.sub(r"[^A-Za-z0-9]", "", moiety.replace("^", "Lab"))
     operation = "Add" if parts.addition else "Loss"
     polarity = "Pos" if parts.charge > 0 else "Neg"
@@ -560,9 +562,17 @@ def _neutral(formula: str, charge: int, mechanisms: tuple[str, ...]) -> str:
             sign = -1 if parts.addition else 1
             for element, count in parse_composition(parts.moiety).items():
                 neutral[element] = neutral.get(element, 0) + sign * count
-        if any(count < 0 for count in neutral.values()):
+        if parts.neutral_loss:
+            # What the ion lost, given back: [M-H-H2O]- is M less H and H2O.
+            for element, count in parse_composition(parts.neutral_loss).items():
+                neutral[element] = neutral.get(element, 0) + count
+        if any(count < 0 or count % parts.multimer for count in neutral.values()):
             continue
-        neutral = {element: count for element, count in neutral.items() if count}
+        neutral = {
+            element: count // parts.multimer
+            for element, count in neutral.items()
+            if count
+        }
         if neutral:
             return to_hill_notation(neutral)
         if parts.addition and not parts.electron_transfer:

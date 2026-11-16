@@ -48,13 +48,19 @@ it writes them:
   its formula (``[M+H2]2+``): each is ``[M+2H]2+`` mistyped;
 - a **neutral loss**, ``[M+H-H2O]+``: a term removed from a mechanism that
   adds. The ion's charge is carried by what is added, and what is removed is
-  neutral. Only a mechanism that adds has one: what a mechanism removes is
-  all its species (``[M-H-H2O]-`` removes ``(H)H2O``).
+  neutral. A singly charged mechanism that only removes has one too, read by
+  identity rather than position: its removed ``H`` is the species and the
+  rest is the loss, so ``[M-H-H2O]-`` removes a proton and loses water and
+  ``[M-CO2-H]-`` removes a proton and loses CO2. Such a mechanism is still
+  written as one list of removed terms in alphabetical order, its species
+  among them, and still has its legacy spelling (``-(H)H2O+``). With no
+  ``H`` among its terms, or more than one, all of them are the species.
 
 Anything else that both adds and removes, a removed proton among them
 (``[M+H2O-H]-``), a coefficient anywhere but there and an electron transfer
-that changes more than one charge are refused rather than approximated. Those
-three shapes have no legacy spelling (:attr:`MechanismParts.legacy` is None).
+that changes more than one charge are refused rather than approximated. A
+multimer, a charge above one and the neutral loss of a mechanism that adds
+have no legacy spelling (:attr:`MechanismParts.legacy` is None).
 
 A mechanism is also a **row** (:class:`AdductRow`, :func:`to_row`,
 :func:`from_row`): whether a species is added or removed, its formula, the
@@ -122,8 +128,8 @@ class MechanismParts:
         for the two protons of ``[M+2H]2+``. Empty for electron transfer.
     :param charge: The ion's charge: ``+1`` or ``-1``, ``+2`` for ``[M+2H]2+``.
     :param multimer: How many molecules the ion holds, 2 for ``[2M+H]+``.
-    :param neutral_loss: The neutral a mechanism that adds also removes, its
-        terms in order as the moiety's are: ``"H2O"`` for ``[M+H-H2O]+``.
+    :param neutral_loss: The neutral the ion loses, its terms in order as the
+        moiety's are: ``"H2O"`` for ``[M+H-H2O]+`` and for ``[M-H-H2O]-``.
         Empty for none.
     """
 
@@ -155,9 +161,8 @@ class MechanismParts:
 
     @property
     def simple(self) -> bool:
-        """Whether the legacy notation can say it too: one molecule, a single
-        charge and no neutral loss. The composition finder searches only
-        these."""
+        """Whether the ion is one molecule of a single charge that loses
+        nothing, so its m/z is the molecule's mass plus a shift."""
         return self.multimer == 1 and abs(self.charge) == 1 and not self.neutral_loss
 
     @property
@@ -194,21 +199,40 @@ class MechanismParts:
         charge = (str(size) if size > 1 else "") + self.polarity
         if self.electron_transfer:
             return f"[{molecule}]{charge}."
-        operation = "+" if self.addition else "-"
-        inside = "".join(operation + term for term in self.terms)
-        inside += "".join("-" + term for term in self.loss_terms)
+        if self.addition or not self.neutral_loss:
+            operation = "+" if self.addition else "-"
+            inside = "".join(operation + term for term in self.terms)
+            inside += "".join("-" + term for term in self.loss_terms)
+        else:
+            # One list of removed terms, the species among the loss, as it was
+            # written before a removing mechanism had a loss: [M-CO2-H]-.
+            inside = "".join("-" + term for term in self.removed_terms)
         return f"[{molecule}{inside}]{charge}"
+
+    @property
+    def removed_terms(self) -> tuple[str, ...]:
+        """Every term a mechanism that only removes takes off, its species and
+        its neutral loss together, in alphabetical order: ``CO2`` and ``H``
+        for ``[M-CO2-H]-``. Empty for a mechanism that adds."""
+        if self.addition:
+            return ()
+        return tuple(sorted(self.terms + self.loss_terms))
 
     @property
     def legacy(self) -> str | None:
         """The mechanism in the legacy notation, ``-H+``; None for a multimer,
-        a charge above one or a neutral loss, which it cannot say."""
-        if not self.simple:
+        a charge above one or the neutral loss of a mechanism that adds,
+        which it cannot say. A mechanism that only removes writes its loss
+        among its species, as before it had one: ``-(H)H2O+``."""
+        if self.multimer != 1 or abs(self.charge) != 1:
+            return None
+        if self.addition and self.neutral_loss:
             return None
         if self.electron_transfer:
             return self.polarity
         operation = "+" if self.addition else "-"
-        return operation + self.moiety + ("+" if self.moiety_charge > 0 else "-")
+        moiety = _join_terms(self.removed_terms) if self.neutral_loss else self.moiety
+        return operation + moiety + ("+" if self.moiety_charge > 0 else "-")
 
 
 def _closing_paren(text: str) -> int | None:
@@ -323,11 +347,39 @@ def _parse_legacy(notation: str) -> MechanismParts:
     _check_formula_text(moiety, notation)
     addition = notation[0] == "+"
     moiety_charge = 1 if notation[-1] == "+" else -1
+    terms = list(_ordered_terms(_split_moiety(moiety)))
+    species, lost = (terms, []) if addition else _removed_species(terms, 1)
     return MechanismParts(
         addition=addition,
-        moiety=_join_terms(_ordered_terms(_split_moiety(moiety))),
+        moiety=_join_terms(species),
         charge=moiety_charge if addition else -moiety_charge,
+        neutral_loss=_join_terms(lost) if lost else "",
     )
+
+
+def _removed_species(removed: list[str], size: int) -> tuple[list[str], list[str]]:
+    """What a mechanism that only removes takes off as its species, and what
+    it loses as a neutral.
+
+    By identity rather than position, since the terms are stored sorted: of a
+    singly charged ion, one removed ``H`` among other terms is the species and
+    the rest is the neutral loss (``[M-H-H2O]-`` and ``[M-CO2-H]-`` remove a
+    proton and lose water or CO2). Otherwise every term is the species, as a
+    removing mechanism was read before it could lose a neutral: one term
+    alone, terms with no ``H`` or with more than one, and the terms of an ion
+    of a higher charge.
+
+    :param removed: The removed terms, as written.
+    :param size: The size of the ion's charge.
+    :return: The species' terms and the neutral loss's, the loss's empty
+        where every term is the species.
+    """
+    if size != 1:
+        return removed, []
+    ordered = list(_ordered_terms(removed))
+    if len(ordered) < 2 or ordered.count("H") != 1:
+        return removed, []
+    return ["H"], [term for term in ordered if term != "H"]
 
 
 def _count(text: str | None, notation: str, what: str, single: str) -> int:
@@ -470,8 +522,9 @@ def _parse_standard(notation: str) -> MechanismParts:
     added = [term for operation, term in signed if operation == "+"]
     removed = [term for operation, term in signed if operation == "-"]
     # A mechanism that adds and removes adds what carries the charge and
-    # loses a neutral: [M+H-H2O]+.
-    moiety_terms, lost = (added, removed) if added else (removed, [])
+    # loses a neutral: [M+H-H2O]+. One that only removes takes off its proton
+    # and loses the rest: [M-H-H2O]-.
+    moiety_terms, lost = (added, removed) if added else _removed_species(removed, size)
     for term in moiety_terms + lost:
         _check_formula_text(term, notation)
     for term in lost:
@@ -658,7 +711,8 @@ class AdductRow:
         two protons of ``[M+2H]2+`` or a calcium ion.
     :param multimer_n: How many molecules the ion holds: 2 for ``[2M+H]+``.
     :param neutral_loss: The neutral the ion loses, a formula; None for none.
-        Only a mechanism that adds loses one: ``[M+H-H2O]+``.
+        ``H2O`` for ``[M+H-H2O]+``, and for ``[M-H-H2O]-``, which removes
+        ``H``.
     :param name: What people call it, ``"protonation"``; not part of the
         mechanism.
     """
@@ -738,8 +792,9 @@ def from_row(row: AdductRow) -> str:
 
     The inverse of :func:`to_row`: ``to_row(from_row(row))`` is the row, its
     name aside. A row :func:`to_row` would not write - an unknown operation,
-    no charge, terms out of order, a neutral loss on a mechanism that
-    removes - is refused rather than written as some other mechanism.
+    no charge, terms out of order, a neutral loss on a mechanism that removes
+    anything but one proton - is refused rather than written as some other
+    mechanism.
 
     Examples
     --------

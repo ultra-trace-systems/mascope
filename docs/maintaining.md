@@ -2035,10 +2035,15 @@ UPDATE ionization_mechanism SET ionization_mechanism = '[M+H]+'
 DELETE FROM ionization_mechanism WHERE ionization_mechanism_id = '<id>';
 ```
 
-Deleting a mechanism deletes its target ions with it. A mechanism the
-composition finder does not search (a multimer, a charge above one, a neutral
-loss) is left out of peak assignment and logged once per process at WARNING:
-its target ions are built, but no run reads them yet.
+Deleting a mechanism deletes its target ions with it. Peak assignment and the
+composition search read every mechanism that reads in a notation, a multimer,
+a charge above one and a neutral loss among them. A mechanism that only
+removes and names one H among other terms (`[M-H-H2O]-`, `[M-CO2-H]-`) is read
+as the proton removed and the rest lost: its row holds `species` H and the
+rest as `neutral_loss`, its string and legacy spelling stay as they were, and
+an upgrade from 1.16 writes that row by the migration above. A row written
+earlier by a development build keeps `species` `(H)H2O` until its string is
+set again; both rows give the same mass shift and the same legacy spelling.
 
 ### Reclaiming assignment runs
 

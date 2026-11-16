@@ -498,10 +498,34 @@ def test_a_shift_is_the_mechanism_adduct():
     ]
 
 
-@pytest.mark.parametrize("notation", ["[2M+H]+", "[2M-H]-", "[M+2H]2+", "[M-2H]2-"])
-def test_a_mechanism_of_two_neutrals_or_two_charges_has_no_family(notation):
-    # Its m/z is no neutral's mass plus a shift, so no lattice of shifts holds it.
-    assert audit.mechanism_shifts(_mechanism(notation)) is None
+@pytest.mark.parametrize(
+    ("notation", "shift"),
+    [
+        ("[2M+H]+", 1.00728),
+        ("[2M-H]-", -1.00728),
+        ("[M+2H]2+", 2 * 1.00728),
+        ("[M-2H]2-", -2 * 1.00728),
+    ],
+)
+def test_a_mechanism_of_two_neutrals_or_two_charges_shifts_its_ion_s_mass(
+    notation, shift
+):
+    # Its m/z is (n * M + shift) / |z|: the shift is in the ion's mass.
+    assert audit.mechanism_shifts(_mechanism(notation)) == [
+        pytest.approx(shift, abs=1e-5)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("notation", "multimer", "charge"),
+    [("[2M+H]+", 2, 1), ("[M+2H]2+", 1, 2), ("[2M+2H]2+", 2, 2)],
+)
+def test_the_family_of_a_dimer_or_a_dication_holds_its_ions(notation, multimer, charge):
+    neutrals = audit.cho_neutral_masses(3)
+    family = audit.family_of(_mechanism(notation), neutrals)
+    glucose = composition_mass(parse_composition("C6H12O6"))
+    ion = (multimer * glucose + charge * (1.007276467)) / charge
+    assert np.min(np.abs(family.lattice - ion)) < 1e-6
 
 
 def test_a_neutral_loss_shifts_like_any_other_term():

@@ -23,8 +23,11 @@
  * many times as the charge is folded into the coefficient (`[M+H+H]2+` is
  * `[M+2H]2+`); a species of one charge alone on a higher one (`[M+H]2+`) or
  * repeated in its formula (`[M+H2]2+`) is refused, and so is a removed proton
- * in a mechanism that adds (`[M+H2O-H]-`). Only a mechanism that adds has a
- * neutral loss.
+ * in a mechanism that adds (`[M+H2O-H]-`). A singly charged mechanism that
+ * only removes has a neutral loss too, by identity rather than position: its
+ * one removed `H` is the species and the rest the loss (`[M-H-H2O]-`,
+ * `[M-CO2-H]-`). It is still written as one sorted list of removed terms,
+ * and keeps its legacy spelling (`-(H)H2O+`).
  *
  * A mechanism is also a row (`mechanismRow`): whether its species is added
  * or removed, the species and its charge, how many molecules the ion holds,
@@ -167,13 +170,31 @@ function parseLegacy(notation) {
   if (problem) throw new Error(problem)
   const addition = notation[0] === '+'
   const moietyCharge = notation.at(-1) === '+' ? 1 : -1
+  const terms = orderedTerms(splitMoiety(moiety))
+  const [species, lost] = addition ? [terms, []] : removedSpecies(terms, 1)
   return {
     addition,
-    moiety: joinTerms(orderedTerms(splitMoiety(moiety))),
+    moiety: joinTerms(species),
     charge: addition ? moietyCharge : -moietyCharge,
     multimer: 1,
-    neutralLoss: ''
+    neutralLoss: lost.length ? joinTerms(lost) : ''
   }
+}
+
+/**
+ * What a mechanism that only removes takes off as its species, and what it
+ * loses as a neutral. By identity, since the terms are stored sorted: of a
+ * singly charged ion, one removed `H` among other terms is the species and
+ * the rest the loss (`[M-H-H2O]-`, `[M-CO2-H]-`). Otherwise every term is the
+ * species: one term alone, no `H` or more than one, a charge above one.
+ */
+function removedSpecies(removed, size) {
+  if (size !== 1) return [removed, []]
+  const ordered = orderedTerms(removed)
+  if (ordered.length < 2 || ordered.filter((term) => term === 'H').length !== 1) {
+    return [removed, []]
+  }
+  return [['H'], ordered.filter((term) => term !== 'H')]
 }
 
 /** A molecule count or a charge's size as written: 1 where there is none. */
@@ -261,8 +282,9 @@ function parseStandard(notation) {
   const added = signed.filter((match) => match[1] === '+').map((match) => match[2])
   const removed = signed.filter((match) => match[1] === '-').map((match) => match[2])
   // A mechanism that adds and removes adds what carries the charge and loses
-  // a neutral: [M+H-H2O]+.
-  const [terms, lost] = added.length ? [added, removed] : [removed, []]
+  // a neutral: [M+H-H2O]+. One that only removes takes off its proton and
+  // loses the rest: [M-H-H2O]-.
+  const [terms, lost] = added.length ? [added, removed] : removedSpecies(removed, size)
   for (const term of [...terms, ...lost]) {
     const problem = checkFormulaText(term)
     if (problem) throw new Error(problem)
@@ -354,6 +376,11 @@ function writeStandard(parts) {
   if (!parts.moiety) return `[${molecule}]${charge}.`
   const operation = parts.addition ? '+' : '-'
   const lost = parts.neutralLoss ? splitMoiety(parts.neutralLoss) : []
+  if (!parts.addition && lost.length) {
+    // One list of removed terms, the species among the loss: [M-CO2-H]-.
+    const removed = [...displayTerms(parts), ...lost].sort()
+    return `[${molecule}${removed.map((term) => `-${term}`).join('')}]${charge}`
+  }
   const inside =
     displayTerms(parts)
       .map((term) => operation + term)
