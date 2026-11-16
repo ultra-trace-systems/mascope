@@ -7,19 +7,33 @@ import pytest
 
 from mascope_tools.composition.coherence import (
     CO_VARYING_R,
+    FLAT_CV,
+    FLAT_MIN_SHARE,
     FLAT_SPREAD,
+    FLAT_VERDICTS,
     MIN_COMMON_MODE_TRACES,
     MIN_SPECTRA,
+    MIN_VARYING_SHARE,
+    NORMALISER_REAGENT,
+    NORMALISER_TIC,
     PERSISTENT_SHARE,
     REASON_FEW_SPECTRA,
     REASON_FLAT,
+    REASON_RARE,
+    REASON_STEADY,
     VERDICT_CO_VARYING,
+    VERDICT_FLAT,
     VERDICT_NOT_CO_VARYING,
     VERDICT_UNTESTABLE,
+    VERDICT_VARYING,
     CoVariation,
+    batch_normaliser,
     batch_residuals,
     by_strength,
+    normalised_cv,
     read_co_variation,
+    read_flat_series,
+    read_flatness,
     strongest,
 )
 
@@ -338,3 +352,261 @@ class TestTheReagentNormalisation:
         residuals = batch_residuals(traces, reagent_traces=reagents)
         assert residuals.common_mode[1] == pytest.approx(-math.log10(2.0))
         assert residuals.common_mode[0] == pytest.approx(0.0)
+
+
+# --- a flat series (step 4.2e) --------------------------------------------------
+
+
+def _flat(level=1000.0, samples=SAMPLES):
+    """A trace that holds one height in every spectrum."""
+    return {s: level for s in samples}
+
+
+def _ratio(normaliser, share, samples=SAMPLES):
+    """A trace that holds a constant ratio to ``normaliser``."""
+    return {s: normaliser[s] * share for s in samples}
+
+
+def _diel(n=24, amplitude=0.6, level=3.0):
+    """A trace that rises and falls with the day: a cv far over the bar."""
+    return trace([level + value for value in wave(n, period=12.0, amplitude=amplitude)])
+
+
+def _varying_partition(extra=None):
+    """A partition most of whose traces move, so a flat one means background."""
+    traces = {f"v{i}": _diel() for i in range(4)}
+    traces.update(extra or {})
+    return traces
+
+
+class TestTheFlatThresholds:
+    def test_the_reference_s_line_and_the_floors(self):
+        assert FLAT_CV == 0.25
+        assert FLAT_MIN_SHARE == PERSISTENT_SHARE == 0.5
+        assert MIN_VARYING_SHARE == 0.20
+
+    def test_the_verdicts_flat_first(self):
+        assert FLAT_VERDICTS == (VERDICT_FLAT, VERDICT_VARYING, VERDICT_UNTESTABLE)
+
+
+class TestTheNormaliser:
+    def test_the_reagent_ions_summed_per_spectrum(self):
+        reagents = {
+            "r1": {s: 100.0 for s in SAMPLES},
+            "r2": {s: 50.0 for s in SAMPLES[:12]},
+        }
+        normaliser = batch_normaliser(SAMPLES, reagent_traces=reagents, tic=None)
+        assert normaliser.kind == NORMALISER_REAGENT
+        np.testing.assert_allclose(normaliser.values, [150.0] * 12 + [100.0] * 12)
+        assert normaliser.divisor is normaliser.values
+
+    def test_the_tic_where_no_reagent_ion_is_held(self):
+        tic = {s: 1e6 * (1 + 0.01 * i) for i, s in enumerate(SAMPLES)}
+        normaliser = batch_normaliser(SAMPLES, reagent_traces={}, tic=tic)
+        assert normaliser.kind == NORMALISER_TIC
+        np.testing.assert_allclose(normaliser.values, [tic[s] for s in SAMPLES])
+        assert normaliser.to_json()["normalised"] is True
+
+    def test_the_reagent_ions_before_the_tic(self):
+        normaliser = batch_normaliser(
+            SAMPLES, reagent_traces={"r": _flat(10.0)}, tic=_flat(1e6)
+        )
+        assert normaliser.kind == NORMALISER_REAGENT
+
+    def test_reagent_ions_present_in_no_spectrum_fall_back_to_the_tic(self):
+        normaliser = batch_normaliser(
+            SAMPLES, reagent_traces={"r": {"elsewhere": 5.0}}, tic=_flat(1e6)
+        )
+        assert normaliser.kind == NORMALISER_TIC
+
+    def test_none_where_the_partition_holds_neither(self):
+        normaliser = batch_normaliser(SAMPLES, reagent_traces={}, tic={})
+        assert normaliser.kind is None and normaliser.divisor is None
+        assert normaliser.to_json() == {
+            "normaliser": None,
+            "normaliser_cv": None,
+            "normaliser_rejected": False,
+            "normalised": False,
+        }
+
+    def test_one_that_moves_more_than_a_flat_trace_is_rejected(self):
+        # A normaliser at the bar or over it would put its own swings into
+        # every trace it divides.
+        moving = {s: 10.0 ** (6 + v) for s, v in zip(SAMPLES, wave(amplitude=0.3))}
+        normaliser = batch_normaliser(SAMPLES, reagent_traces={}, tic=moving)
+        assert normaliser.cv >= FLAT_CV
+        assert normaliser.rejected and normaliser.divisor is None
+        assert normaliser.to_json()["normalised"] is False
+        assert normaliser.to_json()["normaliser_rejected"] is True
+
+    def test_one_just_under_the_bar_divides(self):
+        values = np.array([1.0, 1.0 + 2 * 0.2])
+        tic = {"a": 1.0, "b": 1.4}
+        normaliser = batch_normaliser(["a", "b"], tic=tic, flat_cv=0.3)
+        assert normaliser.cv == pytest.approx(np.std(values, ddof=1) / values.mean())
+        assert not normaliser.rejected
+
+    def test_one_exactly_at_the_bar_is_rejected(self):
+        # "0.25 or more": a normaliser whose cv is the bar itself is not
+        # divided by, as a trace at the bar varies.
+        tic = {"a": 1.0, "b": 1.4}
+        cv = batch_normaliser(["a", "b"], tic=tic, flat_cv=1.0).cv
+        at_the_bar = batch_normaliser(["a", "b"], tic=tic, flat_cv=cv)
+        assert at_the_bar.cv == cv
+        assert at_the_bar.rejected and at_the_bar.divisor is None
+        assert not batch_normaliser(["a", "b"], tic=tic, flat_cv=cv + 1e-9).rejected
+
+
+class TestTheNormalisedCv:
+    def test_a_constant_ratio_to_the_normaliser_has_none(self):
+        tic = {s: 1e6 * (1 + 0.02 * i) for i, s in enumerate(SAMPLES)}
+        normaliser = batch_normaliser(SAMPLES, tic=tic)
+        assert not normaliser.rejected
+        cv, n = normalised_cv(_ratio(tic, 1e-3), SAMPLES, normaliser.divisor)
+        assert cv == pytest.approx(0.0, abs=1e-12)
+        assert n == len(SAMPLES)
+        # Undivided, the same trace follows the normaliser's drift.
+        raw, _ = normalised_cv(_ratio(tic, 1e-3), SAMPLES)
+        assert raw == pytest.approx(normaliser.cv) and raw > 0.1
+
+    def test_the_sample_standard_deviation_over_the_mean(self):
+        cv, n = normalised_cv({"a": 1.0, "b": 3.0}, ["a", "b"])
+        assert cv == pytest.approx(math.sqrt(2.0) / 2.0)
+        assert n == 2
+
+    def test_over_the_spectra_the_trace_is_present_in(self):
+        partial = {s: 100.0 for s in SAMPLES[:10]}
+        cv, n = normalised_cv(partial, SAMPLES)
+        assert cv == pytest.approx(0.0) and n == 10
+
+    def test_a_spectrum_without_a_normaliser_drops_out(self):
+        divisor = np.array([1.0] * 23 + [np.nan])
+        cv, n = normalised_cv(_flat(), SAMPLES, divisor)
+        assert n == 23
+
+    def test_under_two_spectra_there_is_none(self):
+        assert normalised_cv({"a": 5.0}, ["a", "b"]) == (None, 1)
+
+
+class TestTheFlatVerdict:
+    def test_flat_under_the_bar_in_enough_of_the_spectra(self):
+        verdict = read_flat_series(0.1, 20, 24)
+        assert verdict.flat and verdict.verdict == VERDICT_FLAT
+        assert verdict.share == pytest.approx(20 / 24)
+        assert verdict.to_json() == {
+            "verdict": VERDICT_FLAT,
+            "cv": 0.1,
+            "n_present": 20,
+            "n_spectra": 24,
+            "share": round(20 / 24, 4),
+            "reason": None,
+        }
+
+    def test_varying_at_the_bar_and_over_it(self):
+        assert read_flat_series(FLAT_CV, 24, 24).verdict == VERDICT_VARYING
+        assert read_flat_series(FLAT_CV - 1e-9, 24, 24).verdict == VERDICT_FLAT
+
+    def test_a_trace_in_under_the_floor_share_is_untestable(self):
+        verdict = read_flat_series(0.05, 11, 24)
+        assert verdict.verdict == VERDICT_UNTESTABLE
+        assert verdict.reason == REASON_RARE
+        assert read_flat_series(0.05, 12, 24).flat
+        # The bar comes first: a rare trace that moves still reads varying.
+        assert read_flat_series(FLAT_CV, 11, 24).verdict == VERDICT_VARYING
+
+    def test_a_trace_on_too_few_spectra_is_untestable(self):
+        verdict = read_flat_series(0.05, MIN_SPECTRA - 1, MIN_SPECTRA - 1)
+        assert verdict.reason == REASON_FEW_SPECTRA
+        assert read_flat_series(0.05, MIN_SPECTRA, MIN_SPECTRA).flat
+        assert read_flat_series(None, 20, 24).reason == REASON_FEW_SPECTRA
+        # The floor comes before the bar: a trace that moves, on too few
+        # spectra, is not read either, rather than read varying.
+        moving = read_flat_series(0.6, MIN_SPECTRA - 1, 200)
+        assert moving.verdict == VERDICT_UNTESTABLE
+        assert moving.reason == REASON_FEW_SPECTRA
+
+    def test_a_steady_partition_reads_no_trace_flat(self):
+        verdict = read_flat_series(0.05, 24, 24, steady=True)
+        assert verdict.verdict == VERDICT_UNTESTABLE
+        assert verdict.reason == REASON_STEADY
+        # A varying trace still varies there.
+        assert read_flat_series(0.5, 24, 24, steady=True).verdict == VERDICT_VARYING
+
+
+class TestAPartitionsFlatness:
+    def test_a_flat_trace_in_a_varying_partition_is_background(self):
+        traces = _varying_partition({"bg": _flat(), "plume": _diel(amplitude=1.0)})
+        flatness = read_flatness(traces, tic=_flat(1e6))
+        assert not flatness.steady
+        assert flatness.series["bg"].flat
+        assert flatness.series["plume"].verdict == VERDICT_VARYING
+        assert flatness.normaliser.kind == NORMALISER_TIC
+        summary = flatness.summary()
+        assert summary["flat"] == 1 and summary["varying"] == 5
+        assert summary["traces_read"] == 6
+        assert summary["varying_share"] == round(5 / 6, 4)
+
+    def test_a_trace_that_follows_the_reagent_signal_is_flat(self):
+        # The reagent ions dim through the batch; a source cluster dims with
+        # them, a constant ratio to the source.
+        reagent = {s: 1e5 * (1 - 0.012 * i) for i, s in enumerate(SAMPLES)}
+        traces = _varying_partition({"cluster": _ratio(reagent, 0.01)})
+        flatness = read_flatness(traces, reagent_traces={"r": reagent})
+        assert flatness.normaliser.kind == NORMALISER_REAGENT
+        assert flatness.series["cluster"].flat
+        assert flatness.series["cluster"].cv == pytest.approx(0.0, abs=1e-9)
+
+    def test_a_partition_that_holds_still_reads_none_flat(self):
+        traces = {f"bg{i}": _flat(100.0 * (i + 1)) for i in range(9)}
+        traces["one"] = _diel()
+        flatness = read_flatness(traces, tic=_flat(1e6))
+        assert flatness.varying_share == pytest.approx(0.1)
+        assert flatness.steady
+        assert flatness.series["bg0"].reason == REASON_STEADY
+
+    def test_the_varying_share_is_read_over_every_trace(self):
+        # Two of ten vary: at the floor, the partition varies.
+        traces = {f"bg{i}": _flat() for i in range(8)}
+        traces.update({"d1": _diel(), "d2": _diel()})
+        flatness = read_flatness(traces, tic=_flat(1e6), read=["bg0"])
+        assert flatness.varying_share == pytest.approx(0.2)
+        assert not flatness.steady
+        assert list(flatness.series) == ["bg0"] and flatness.series["bg0"].flat
+
+    def test_traces_on_too_few_spectra_do_not_count_towards_the_share(self):
+        # A partition that holds still stays steady when a few sporadic
+        # traces, read on under MIN_SPECTRA spectra, swing: only the traces
+        # read on enough spectra say how much of it varies.
+        traces = {f"bg{i}": _flat(100.0 * (i + 1)) for i in range(9)}
+        traces["one"] = _diel()
+        swings = [0.0, 0.6, -0.5, 0.5, -0.4, 0.7]
+        for i in range(5):
+            traces[f"sporadic{i}"] = trace(swings, SAMPLES[i : i + len(swings)])
+        flatness = read_flatness(traces, tic=_flat(1e6))
+        cv, n = normalised_cv(traces["sporadic0"], SAMPLES, flatness.normaliser.divisor)
+        assert 2 <= n < MIN_SPECTRA and cv >= FLAT_CV
+        assert flatness.traces_read == 10
+        assert flatness.varying_share == pytest.approx(0.1)
+        assert flatness.steady
+        assert flatness.series["bg0"].reason == REASON_STEADY
+        assert flatness.series["sporadic0"].reason == REASON_FEW_SPECTRA
+
+    def test_only_the_traces_asked_get_a_verdict(self):
+        traces = _varying_partition({"bg": _flat()})
+        flatness = read_flatness(traces, tic=_flat(1e6), read=["bg", "missing"])
+        assert list(flatness.series) == ["bg"]
+
+    def test_a_rejected_normaliser_leaves_the_traces_undivided(self):
+        moving = {s: 10.0 ** (6 + v) for s, v in zip(SAMPLES, wave(amplitude=0.3))}
+        traces = _varying_partition({"bg": _flat()})
+        flatness = read_flatness(traces, tic=moving)
+        assert flatness.normaliser.rejected
+        # Divided by the moving TIC the flat trace would vary; undivided, flat.
+        assert flatness.series["bg"].flat
+
+    def test_the_share_counts_the_partition_s_spectra(self):
+        half = {s: 100.0 for s in SAMPLES[:11]}
+        traces = _varying_partition({"half": half})
+        flatness = read_flatness(traces, tic=_flat(1e6))
+        assert flatness.series["half"].reason == REASON_RARE
+        assert flatness.series["half"].n_spectra == len(SAMPLES)

@@ -71,7 +71,7 @@ run made (:func:`batch_species_row`).
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 import pandas as pd
@@ -122,6 +122,7 @@ __all__ = [
     "BatchSpecies",
     "FragmentClaims",
     "batch_species_from",
+    "library_ion",
     "batch_species_row",
     "build_reagent_assignments",
     "claim_batch_species",
@@ -469,6 +470,32 @@ def batch_species_from(record: dict, batch_peak_id: str) -> BatchSpecies | None:
             "batch_peak_run_id": record.get("batch_peak_run_id"),
         },
     )
+
+
+def library_ion(
+    ion_formula: str | None, profiles: Iterable[str]
+) -> ReagentCluster | None:
+    """The ion of a profile's source library (step 3.3's list, every family of
+    it) that an ion formula names, or None.
+
+    Read for a batch's flat-series record (step 4.2e), which names the ion
+    and claims nothing: the claim is the known-species step's. Two spellings
+    of one composition name one ion; the profiles are read in order, the
+    first naming the ion winning.
+
+    :param ion_formula: An ion's formula written with its charge (``"NO2+"``).
+    :param profiles: The names of the profiles whose libraries are read: the
+        ones the batch's own runs resolved.
+    """
+    composition, charge = _unsigned(ion_formula)
+    if not composition or not charge:
+        return None
+    key = (neutral_key(composition), charge)
+    for profile in profiles:
+        for cluster in reagent_library_for(profile):
+            if (neutral_key(cluster.formula), cluster.charge) == key:
+                return cluster
+    return None
 
 
 def claim_batch_species(

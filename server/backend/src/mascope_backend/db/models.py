@@ -3663,6 +3663,10 @@ class BatchPeakRunAnchor(Base):
     seeded: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=text("false")
     )
+    # The flat-series reading of the anchor's trace as the run left it
+    # (``batch_peaks.standing_flat_series_record``), an origin flag; NULL for
+    # none.
+    flat_series: Mapped[Optional[dict]] = mapped_column(JSON)
     candidates: Mapped[Optional[list]] = mapped_column(JSON)
     members: Mapped[Optional[dict]] = mapped_column(JSON)
 

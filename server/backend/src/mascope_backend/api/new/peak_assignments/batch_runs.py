@@ -62,6 +62,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     standing_batch_checks_record,
     standing_co_variation_record,
     standing_diagnostic_isotopologues_record,
+    standing_flat_series_record,
     standing_merged_isotopologues_record,
     standing_series_record,
     tier_name,
@@ -214,6 +215,7 @@ def anchor_snapshot_row(run_id: str, anchor: Any, members: Iterable[Any]) -> dic
         "blend": blend_record_of(anchor),
         "persistence": persistence_summary(anchor),
         "tier_reasons": tier_reasons_of(anchor),
+        "flat_series": standing_flat_series_record(anchor),
         "candidates": list(anchor.candidates or []),
         "members": member_arrays(members),
     }
@@ -261,6 +263,7 @@ def snapshot_anchor_meta(row: Any, sample_batch_id: str) -> dict:
         "blend": row.blend,
         "persistence": row.persistence,
         "tier_reasons": row.tier_reasons,
+        "flat_series": row.flat_series,
         "reference_listing": consensus_listing(
             row.candidates,
             row.consensus_formula,
