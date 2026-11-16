@@ -620,6 +620,12 @@ class PeakAssignmentsResource(BaseResource):
         kept its tier ON instead, what saw it a second time first: a second
         channel (``corroborated``), a line of its own isotope pattern
         (``second_line``) or the list it was matched from (``on_a_list``).
+        A search row the run read as a chlorine or bromine formula from its
+        twin line carries ``provenance.halogen_twin``: the ``halogen``, the
+        twin's ``twin_mz``, its ``ratio`` to the row's peak beside one atom's
+        (``one_atom_ratio``), and the halogen-free reading it ``replaced``
+        (null where the search had left the peak unexplained), which also
+        leads its alternatives.
         A row whose evidence is under the top band names that band first (rule
         ``evidence_band``, with the ``band`` its evidence reaches). It is where
         the row stands before any rule, not a rule, so it never ``caps``.

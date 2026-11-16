@@ -182,9 +182,16 @@ from mascope_backend.api.new.peak_assignments.fold_view import (
     member_detail,
     verification_target,
 )
+from mascope_backend.api.new.peak_assignments.halogen_twins import (
+    find_twins,
+    record_twins,
+    reread_twins,
+    twin_halogens,
+)
 from mascope_backend.api.new.peak_assignments.listing import reference_listing
 from mascope_backend.api.new.peak_assignments.mass_gate import (
     BELOW_ASSIGNABILITY_Z,
+    OFF_CALIBRATION_Z,
     MassCalibration,
     SourceLineCap,
     SpectrumLines,
@@ -301,7 +308,11 @@ from mascope_tools.composition.mechanism_notation import (
     mechanism_spellings,
     parse_mechanism,
 )
-from mascope_tools.composition.profiles import ChemistryContext, get_reagent_profile
+from mascope_tools.composition.profiles import (
+    IDENTITY_PROFILE_NAME,
+    ChemistryContext,
+    get_reagent_profile,
+)
 from mascope_tools.composition.reagents import (
     REAGENT_LINE_FAMILIES,
     secondary_channels,
@@ -2818,6 +2829,84 @@ def _finite(value) -> float | None:
     return number if math.isfinite(number) else None
 
 
+async def _reread_halogen_twins(
+    matches: pd.DataFrame,
+    frame: pd.DataFrame,
+    *,
+    resolved_profile: ResolvedProfile,
+    listed_formulas: frozenset[str],
+    searched_mzs,
+    claimed_mzs,
+    search_config,
+    heuristics,
+    scoring,
+    candidate_threshold: float,
+    search_scope: dict,
+    sample_name: str,
+) -> tuple[pd.DataFrame, dict[float, dict]]:
+    """Read the search's halogen twins (``halogen_twins``), and record it.
+
+    Not on the identity profile, which searches as the engine did before
+    profiles existed, nor where neither the context nor the run's lists open a
+    halogen (``halogen_twins.twin_halogens``). The re-read is CPU-bound, as the
+    search is, so it runs on a worker thread.
+
+    :param matches: The search's rows, as the list election left them.
+    :param frame: The frame the search scored over.
+    :param resolved_profile: The run's chemistry.
+    :param listed_formulas: The neutrals the run's lists name.
+    :param searched_mzs: The m/z of the peaks the search enumerated.
+    :param claimed_mzs: The m/z of the peaks earlier passes own.
+    :param search_config: The run's search configuration.
+    :param heuristics: The run's filter configuration.
+    :param scoring: How the run's search scored the sample.
+    :param candidate_threshold: The run's candidate bar.
+    :param search_scope: The run's search record, which gains
+        ``halogen_twins``.
+    :param sample_name: For the log.
+    :return: The rows with the re-read peaks' readings in place, and the
+        records :func:`halogen_twins.record_twins` names on their rows.
+    """
+    halogens = (
+        ()
+        if resolved_profile.profile.name == IDENTITY_PROFILE_NAME
+        else twin_halogens(
+            resolved_profile.context,
+            listed_formulas,
+            reagent_formula=resolved_profile.profile.reagent_formula,
+        )
+    )
+    if not halogens:
+        return matches, {}
+    twins = find_twins(
+        matches,
+        frame,
+        halogens=halogens,
+        searched_mzs=searched_mzs,
+        claimed_mzs=claimed_mzs,
+    )
+    reread = await asyncio.to_thread(
+        reread_twins,
+        matches,
+        frame,
+        twins,
+        search_config=search_config,
+        heuristics=heuristics,
+        scoring=scoring,
+        candidate_threshold=candidate_threshold,
+        sigmas=OFF_CALIBRATION_Z,
+    )
+    search_scope["halogen_twins"] = {"halogens": list(halogens), **reread.summary}
+    if reread.summary["twins"]:
+        runtime.logger.info(
+            f"Sample '{sample_name}' shows {reread.summary['twins']} halogen twins; "
+            f"{reread.summary['reread']} read as their halogen's formula "
+            f"({reread.summary['replaced']} replacing a halogen-free reading, "
+            f"{reread.summary['proposed']} on a peak the search left unexplained)"
+        )
+    return reread.matches, reread.records
+
+
 def judge_commits(
     rows: list[dict],
     *,
@@ -5175,6 +5264,30 @@ async def _assign_sample(
                 )
                 stage_a_assignments = election.stage_a
                 search_scope["list_hits"] = election.summary
+                # -- A chlorine or bromine reading, proposed from its twin line
+                # rather than from an opened grid (step 3.6): a searched peak
+                # whose 37Cl or 81Br twin sits unexplained at the exact offset is
+                # searched again over carbon, hydrogen, oxygen and that halogen,
+                # and the reading replaces the peak's where it passes every gate.
+                matches, twin_records = await _reread_halogen_twins(
+                    election.matches,
+                    search_peaks_df[search_columns],
+                    resolved_profile=resolved_profile,
+                    listed_formulas=listed_formulas,
+                    searched_mzs=remainder_df["mz"],
+                    claimed_mzs=search_peaks_df.loc[
+                        search_peaks_df["sample_peak_id"].isin(
+                            assigned_peak_ids - election.released
+                        ),
+                        "mz",
+                    ],
+                    search_config=search_config,
+                    heuristics=heuristics_config,
+                    scoring=scoring,
+                    candidate_threshold=config.candidate_threshold,
+                    search_scope=search_scope,
+                    sample_name=sample.sample_item_name,
+                )
                 # ...and then every reading the finder committed to is measured
                 # again the way Stage A measures one: as an ion, through one
                 # match pass over the sample, gated by the run's match params.
@@ -5184,7 +5297,7 @@ async def _assign_sample(
                     sample,
                     match_params,
                     untargeted_seeds(
-                        election.matches,
+                        matches,
                         mechanism_id_by_notation,
                         to_custom_element_format,
                     ),
@@ -5197,7 +5310,7 @@ async def _assign_sample(
                 if rescored_accuracy is not None:
                     winner_accuracy = rescored_accuracy
                 stage_b_assignments = untargeted_matches_to_peak_assignments(
-                    election.matches,
+                    matches,
                     peaks_df=search_peaks_df,
                     sample_item_id=sample_item_id,
                     peak_assignment_run_id=run.peak_assignment_run_id,
@@ -5214,6 +5327,7 @@ async def _assign_sample(
                 held = record_displaced_list_readings(
                     stage_b_assignments, election.displaced, config.max_alternatives
                 )
+                record_twins(stage_b_assignments, twin_records, config.max_alternatives)
                 runtime.logger.info(
                     f"Stage B assigned {len(stage_b_assignments)} of "
                     f"{len(remainder_df)} remaining peaks via untargeted search; "

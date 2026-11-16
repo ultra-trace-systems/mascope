@@ -674,6 +674,65 @@ class TestTheJudgedLedger:
         ]
 
     @pytest.mark.asyncio
+    async def test_stage_b_is_built_from_the_rows_the_twin_reread_leaves(self):
+        # Step 3.6: the run hands the election's rows to the halogen-twin
+        # re-read, builds its Stage B rows from what it returns, and names the
+        # twin on the row it re-read.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        peaks = _peaks_df(
+            [
+                ("p1", 181.0707, 10000.0),
+                ("p2", 182.0741, 660.0),
+                ("p3", 112.0074, 5000.0),
+            ]
+        )
+        placeholders = pd.DataFrame(
+            [
+                {"mz": mz, "formula": "---", "ion": "---", "isotope_label": "---"}
+                for mz in (112.0074, 181.0707, 182.0741)
+            ]
+        )
+        reread = pd.DataFrame(
+            [
+                {
+                    "mz": 112.0074,
+                    "formula": "C6H5Cl",
+                    "ion": "C6H5Cl+",
+                    "isotope_label": "M0",
+                    "ionization_mechanism": "[M+H]+",
+                    "isotopic_pattern_score": 0.95,
+                    "mz_error_ppm": 0.1,
+                    "intensity_error": 0.0,
+                }
+            ]
+        )
+        record = {"halogen": "Cl", "twin_mz": 114.0044, "replaced": None}
+        recorder = _Recorder()
+        mocks = _start(
+            _patches(recorder, peaks, _stage_a_rows(), stage_b_matches=placeholders)
+        )
+        handed = AsyncMock(return_value=(reread, {112.0074: record}))
+        patch(f"{_MOD}._reread_halogen_twins", handed).start()
+
+        await _run(PeakAssignmentConfig())
+
+        assert handed.await_args.args[0]["mz"].tolist() == placeholders["mz"].tolist()
+        assert handed.await_args.kwargs["searched_mzs"].tolist() == [112.0074]
+        # Stage A's peaks are another pass's: neither asked nor a twin.
+        assert sorted(handed.await_args.kwargs["claimed_mzs"].tolist()) == [
+            181.0707,
+            182.0741,
+        ]
+        assert handed.await_args.kwargs["resolved_profile"].context is not None
+        row = next(row for row in recorder.rows if row["sample_peak_id"] == "p3")
+        assert row["assigned_formula"] == "C6H5Cl"
+        assert row["provenance"]["halogen_twin"] == record
+        assert mocks["compositions"].called
+
+    @pytest.mark.asyncio
     async def test_a_nitrate_run_hands_the_passes_its_skeleton_reading(self):
         # Step 3.6's rider: a nitrate run on an Orbitrap in ambient air reads
         # an organonitrate's skeleton, so its tiering pass holds what only the
