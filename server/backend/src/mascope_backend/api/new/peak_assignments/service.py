@@ -2840,6 +2840,7 @@ def judge_commits(
     listed_formulas: frozenset[str] = frozenset(),
     source_line_cap: SourceLineCap | None = None,
     context: ChemistryContext | None = None,
+    nox_skeleton: bool = False,
 ) -> JudgedCommits:
     """Run the mass gate, the partner gate, the cross-channel pass and the
     tiering pass, and read the lines they find in doubt as their neighbours'.
@@ -2894,6 +2895,9 @@ def judge_commits(
         mass gate under (:func:`_source_line_cap`), or None for none.
     :param context: The run's chemistry context, whose priors the tiering
         pass asks (``tiering.context_prior_reason``); None asks none.
+    :param nox_skeleton: Whether the run reads the carbon skeleton of an
+        organonitrate, whose readings the tiering pass holds at candidate
+        (``tiering.nox_skeleton_reason``).
     :return: The judged rows and each pass's summary.
     """
     claims: dict[str, EnvelopeClaim] = {}
@@ -2935,6 +2939,7 @@ def judge_commits(
             artifact_peak_ids=artifact_peak_ids,
             instrument_type=instrument_type,
             context=context,
+            nox_skeleton=nox_skeleton,
         )
         found, held = find_envelope_claims(
             judged,
@@ -5298,6 +5303,7 @@ async def _assign_sample(
             listed_formulas=listed_formulas,
             source_line_cap=source_line_cap,
             context=resolved_profile.context,
+            nox_skeleton=resolved_profile.nox_skeleton,
         )
         mass_calibration = judged.mass_calibration
         cross_channel = judged.cross_channel

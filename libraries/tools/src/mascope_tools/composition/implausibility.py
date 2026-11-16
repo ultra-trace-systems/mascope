@@ -81,6 +81,7 @@ from __future__ import annotations
 from mascope_tools.composition.heuristic_filter import (
     effective_counts,
     element_counts,
+    nox_skeletons,
 )
 
 
@@ -167,20 +168,8 @@ _ALLOWED_CARBON_FREE = frozenset(
 )
 
 
-def implausible_signatures(formula: str | None) -> tuple[str, ...]:
-    """Every implausibility signature a neutral formula carries.
-
-    Fails open, like every other chemistry rule here: a formula that cannot be
-    parsed carries no signature, so an unreadable formula is never demoted on a
-    test that could not run.
-
-    :param formula: A neutral formula in Hill order.
-    :return: The signatures it carries, in :data:`SIGNATURES` order; empty when
-        it carries none.
-    """
-    counts = element_counts(formula or "")
-    if not counts:
-        return ()
+def _signatures_of(counts: dict[str, int]) -> tuple[str, ...]:
+    """The signatures one reading of a neutral's counts carries."""
     carbon, _hydrogen, _dbe = effective_counts(counts)
     oxygen = counts.get("O", 0)
     found = []
@@ -193,6 +182,54 @@ def implausible_signatures(formula: str | None) -> tuple[str, ...]:
     if not carbon and _counts_key(counts) not in _ALLOWED_CARBON_FREE:
         found.append(CARBON_FREE)
     return tuple(found)
+
+
+def implausible_signatures(
+    formula: str | None, nox_skeleton: bool = False
+) -> tuple[str, ...]:
+    """Every implausibility signature a neutral formula carries.
+
+    Fails open, like every other chemistry rule here: a formula that cannot be
+    parsed carries no signature, so an unreadable formula is never demoted on a
+    test that could not run.
+
+    :param formula: A neutral formula in Hill order.
+    :param nox_skeleton: Read the carbon skeleton of the formula's
+        organonitrate groups too (step 3.6): a signature counts only where
+        every reading carries it. A dinitrate's eight oxygens on five carbons
+        are an oxygen lattice read as the formula and a C5 diol read as its
+        skeleton. A run switch (``profiles.nox_skeleton_applies``).
+    :return: The signatures it carries, in :data:`SIGNATURES` order; empty when
+        it carries none.
+    """
+    counts = element_counts(formula or "")
+    if not counts:
+        return ()
+    found = _signatures_of(counts)
+    if nox_skeleton and found:
+        for skeleton in nox_skeletons(counts):
+            spared = _signatures_of(skeleton)
+            found = tuple(signature for signature in found if signature in spared)
+    return found
+
+
+def skeleton_spared_signatures(formula: str | None) -> tuple[str, ...]:
+    """The signatures the skeleton reading spares a formula.
+
+    What the formula's own reading carries and :func:`implausible_signatures`
+    with ``nox_skeleton`` does not: the demotes the skeleton reading changed,
+    which leave the row a candidate at most (the tiering's ``nox_skeleton``
+    rule).
+
+    :param formula: A neutral formula in Hill order.
+    :return: The spared signatures, in :data:`SIGNATURES` order.
+    """
+    kept = implausible_signatures(formula, nox_skeleton=True)
+    return tuple(
+        signature
+        for signature in implausible_signatures(formula)
+        if signature not in kept
+    )
 
 
 def implausible_signature(formula: str | None) -> str | None:

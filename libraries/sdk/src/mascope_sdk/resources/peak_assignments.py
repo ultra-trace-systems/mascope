@@ -605,7 +605,9 @@ class PeakAssignmentsResource(BaseResource):
         context holds only on corroboration - sulfur, or two or more nitrogens
         with fewer than two oxygens per nitrogen, with no second channel, series
         or line of that element's own heavy isotope seeing it (rule
-        ``context_prior``), a line of its own isotope
+        ``context_prior``), a formula only the carbon skeleton of its
+        organonitrate groups brings inside the context's windows, on a nitrate
+        run that reads that skeleton (rule ``nox_skeleton``), a line of its own isotope
         pattern the spectrum should show and does not (rule ``absent_line``),
         a peak the instrument did not separate from a neighbouring one (rule
         ``unresolved_peak``, with the neighbour's ``neighbour_peak_id`` and

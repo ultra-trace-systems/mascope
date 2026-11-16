@@ -318,6 +318,9 @@ class ChemistryContext:
         reaches the top tier only where something beyond its mass fit saw it.
         Graded rather than gated, like ``min_carbon_for``: the grid keeps the
         formula, and the tiering pass reads the prior.
+    :param organonitrates: Whether the matrix makes organonitrates: NOx
+        chemistry, whose dinitrates, trinitrates and nitroaromatics the ratio
+        windows misjudge (:func:`nox_skeleton_applies`).
     """
 
     name: str
@@ -331,6 +334,7 @@ class ChemistryContext:
     min_carbon_for: Mapping[str, int] = field(default_factory=dict)
     known_window: KnownWindow | None = KNOWN_WINDOW_CEILING
     priors: tuple[str, ...] = ()
+    organonitrates: bool = False
 
     def priors_met(self, formula: str | None) -> tuple[str, ...]:
         """The priors of this context a neutral formula meets.
@@ -404,6 +408,7 @@ AMBIENT_AIR = ChemistryContext(
     },
     min_carbon_for={"Br": 5, "Cl": 5, "F": 3},
     priors=ATMOSPHERIC_PRIORS,
+    organonitrates=True,
 )
 
 CHAMBER = ChemistryContext(
@@ -420,6 +425,7 @@ CHAMBER = ChemistryContext(
     element_caps={"N": 2, "S": 1, "P": 0, "F": 0, "Si": 1, "I": 0},
     min_carbon_for={"Br": 5, "Cl": 5, "F": 3},
     priors=ATMOSPHERIC_PRIORS,
+    organonitrates=True,
 )
 
 INDOOR_AIR = ChemistryContext(
@@ -462,6 +468,7 @@ COMBUSTION = ChemistryContext(
     n_to_c=(0.0, 0.5),
     dbe_to_c=(0.0, 1.1),
     element_caps={"N": 4, "S": 1, "P": 0, "F": 0},
+    organonitrates=True,
 )
 
 WATER = ChemistryContext(
@@ -476,6 +483,7 @@ WATER = ChemistryContext(
     n_to_c=(0.0, 0.5),
     dbe_to_c=(0.0, 0.9),
     element_caps={"N": 5, "S": 2, "P": 1, "F": 4, "Cl": 6, "Br": 4, "I": 2},
+    organonitrates=True,
 )
 
 FOOD = ChemistryContext(
@@ -865,6 +873,45 @@ _ESI_BY_POLARITY: dict[str, ReagentProfile] = {
 _POLARITY_SIGN: dict[str, str] = {
     key: profile.polarity for key, profile in _ESI_BY_POLARITY.items()
 }
+
+
+#: The reagent profiles whose runs read an organonitrate's carbon skeleton
+#: (step 3.6): a nitrate source charges organonitrates as their nitrate
+#: clusters, so its ledgers hold the dinitrates and nitroaromatics the windows
+#: misjudge. Read on the reference engine's validation, which runs it for the
+#: nitrate reagents alone.
+NOX_SKELETON_PROFILES: frozenset[str] = frozenset({NO3.name, NO3_15N.name})
+
+#: The instrument classes the skeleton reading runs on. An Orbitrap's window
+#: keeps the reading's extra admissions to the formulas that fit its mass; a
+#: TOF's would open them to candidate space the reading was never validated in.
+NOX_SKELETON_INSTRUMENTS: frozenset[str] = frozenset({"orbi"})
+
+
+def nox_skeleton_applies(
+    profile: ReagentProfile, context: ChemistryContext, instrument_type: str | None
+) -> bool:
+    """Whether a run reads the carbon skeleton of an organonitrate.
+
+    An -ONO2 or -NO2 group adds a nitrogen, two oxygens and one
+    ring-or-double-bond, so a dinitrate, a trinitrate or a nitroaromatic sits
+    outside Van Krevelen windows written for CHO skeletons
+    (``heuristic_filter.nox_skeletons``). A run reads the skeleton where its
+    reagent is nitrate (:data:`NOX_SKELETON_PROFILES`), on an Orbitrap
+    (:data:`NOX_SKELETON_INSTRUMENTS`), in a context that makes organonitrates
+    (:attr:`ChemistryContext.organonitrates`); a row the skeleton reading
+    admits, and the formula's own reading does not, is a candidate at most.
+
+    :param profile: The run's reagent profile.
+    :param context: The run's chemistry context.
+    :param instrument_type: The sample's instrument class.
+    :return: True where the run reads the skeleton.
+    """
+    return (
+        profile.name in NOX_SKELETON_PROFILES
+        and context.organonitrates
+        and (instrument_type or "").strip().lower() in NOX_SKELETON_INSTRUMENTS
+    )
 
 
 def get_reagent_profile(name: str) -> ReagentProfile:

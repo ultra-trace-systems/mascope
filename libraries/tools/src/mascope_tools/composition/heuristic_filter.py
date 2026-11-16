@@ -2,6 +2,7 @@
 Based on 7 Golden Rules by https://bmcbioinformatics.biomedcentral.com/articles/10.1186/1471-2105-8-105
 """
 
+import math
 from functools import lru_cache
 from typing import Any, Callable, Sequence
 
@@ -588,31 +589,139 @@ def effective_counts(counts: dict[str, int]) -> tuple[float, float, float]:
     return carbon, hydrogen, dbe
 
 
-def _context_ratios_ok(
+# ---------------------------------------------------------------------------
+# The carbon skeleton of an organonitrate (step 3.6 of the assignment plan).
+#
+# An -ONO2 or -NO2 group adds a nitrogen, two oxygens and one ring-or-double-
+# bond to the carbon skeleton it hangs on, and takes a hydrogen's place. So a
+# dinitrate's O/C and DBE/C sit outside Van Krevelen windows written for CHO
+# skeletons, and a trinitrate or a nitroaromatic further still: the windows
+# judge the groups, not the skeleton. Read with the groups taken off, the
+# skeleton is the alcohol (R-O-NO2 to R-OH, the bridging oxygen kept) or the
+# arene (R-NO2 to R-H) the chemistry made the nitrate of, and that is what the
+# windows were written for.
+#
+# The reading is a run switch, not a property of the formula: it holds where
+# nitrate is the reagent and the matrix makes organonitrates
+# (``profiles.nox_skeleton_applies``), and a row whose outcome it changed is a
+# candidate at most (the tiering's ``nox_skeleton`` rule). Written from the
+# chemistry and the reference engine's published reading of it, not ported.
+# ---------------------------------------------------------------------------
+
+#: At most this many groups are read off a skeleton: a trinitrate
+#: (nitroglycerin, a trinitro-arene) is the chemical ceiling the reading
+#: credits, whatever nitrogen count a grid allows.
+NOX_SKELETON_MAX_GROUPS = 3
+
+#: The skeleton DBE per carbon from which a group may be a nitro group, which
+#: leaves no oxygen on the skeleton: an aromatic skeleton carries nitro groups.
+#: Below it only a nitrate group is read, which keeps its bridging oxygen, so a
+#: k-group reading needs 3k oxygens there and 2k here.
+NITRO_SKELETON_DBE_PER_C = 0.5
+
+
+def nox_skeletons(counts: dict[str, int]) -> list[dict[str, int]]:
+    """The carbon skeletons of a neutral's organonitrate or nitro groups.
+
+    ``k`` groups are taken off for ``k`` from the most the formula can carry
+    down to one: each takes a nitrogen, two oxygens and a ring-or-double-bond,
+    and gives back the hydrogen it replaced. The most a formula carries is
+    bounded by its nitrogens, its whole rings-and-double-bonds, its carbons
+    (each group hangs on one) and :data:`NOX_SKELETON_MAX_GROUPS`. A reading is
+    kept where its stoichiometry is a nitrate one (the skeleton keeps an oxygen
+    per group) or, on an aromatic skeleton, a nitro one.
+
+    :param counts: The neutral's element counts; an isotope-labelled nitrogen
+        counts as nitrogen (:func:`element_counts`), so a labelled nitrate
+        group is a nitrate group.
+    :return: The skeletons' counts, the most groups first; empty where the
+        formula carries none.
+    """
+    carbon, _hydrogen, dbe = effective_counts(counts)
+    nitrogen = counts.get("N", 0)
+    oxygen = counts.get("O", 0)
+    if carbon < 1:
+        return []
+    most = min(nitrogen, math.floor(dbe + 1e-9), int(carbon), NOX_SKELETON_MAX_GROUPS)
+    skeletons = []
+    for groups in range(most, 0, -1):
+        kept = oxygen - 2 * groups
+        if kept < 0:
+            continue
+        if kept < groups and (dbe - groups) / carbon < NITRO_SKELETON_DBE_PER_C:
+            continue
+        skeleton = dict(counts)
+        skeleton["N"] = nitrogen - groups
+        skeleton["O"] = kept
+        skeleton["H"] = counts.get("H", 0) + groups
+        skeletons.append({el: n for el, n in skeleton.items() if n})
+    return skeletons
+
+
+def _inside_windows(
     counts: dict[str, int], windows: dict[str, tuple[float, float]]
+) -> bool:
+    """Whether counts with a carbon backbone sit inside every window."""
+    carbon, hydrogen, dbe = effective_counts(counts)
+    values = {
+        "H/C": hydrogen / carbon,
+        "O/C": counts.get("O", 0) / carbon,
+        "N/C": counts.get("N", 0) / carbon,
+        "DBE/C": dbe / carbon,
+    }
+    for key, (low, high) in windows.items():
+        value = values.get(key)
+        if value is not None and not (low <= value <= high):
+            return False
+    return True
+
+
+def context_skeleton_groups(
+    counts: dict[str, int], windows: dict[str, tuple[float, float]]
+) -> int | None:
+    """How many organonitrate groups the context's windows needed taken off.
+
+    0 where the formula's own reading sits inside the windows, the groups of
+    the first skeleton reading inside them (the most groups first) where it
+    does not, None where no reading is. Above the context's carbon floor only:
+    below it the windows say nothing, and neither does this.
+
+    :param counts: The neutral's element counts.
+    :param windows: The context's ratio windows.
+    :return: The group count, or None.
+    """
+    carbon, _hydrogen, _dbe = effective_counts(counts)
+    if carbon < CONTEXT_RATIO_MIN_CARBON or _inside_windows(counts, windows):
+        return 0
+    nitrogen = counts.get("N", 0)
+    for skeleton in nox_skeletons(counts):
+        if _inside_windows(skeleton, windows):
+            return nitrogen - skeleton.get("N", 0)
+    return None
+
+
+def _context_ratios_ok(
+    counts: dict[str, int],
+    windows: dict[str, tuple[float, float]],
+    nox_skeleton: bool = False,
 ) -> bool:
     """Whether a formula's counts sit inside a context's ratio windows.
 
-    Above the carbon floor the four windows apply on effective counts. Below it
-    the windows are meaningless (see ``CONTEXT_RATIO_MIN_CARBON``) and give way
-    to two valence-level checks that catch the O- and N-stuffed one- and
-    two-carbon formulas a narrow mass window still admits.
+    Above the carbon floor the four windows apply on effective counts, and
+    with ``nox_skeleton`` on the carbon skeleton of the formula's
+    organonitrate groups as well (:func:`context_skeleton_groups`): either
+    reading inside them is enough. Below it the windows are meaningless (see
+    ``CONTEXT_RATIO_MIN_CARBON``) and give way to two valence-level checks
+    that catch the O- and N-stuffed one- and two-carbon formulas a narrow mass
+    window still admits.
     """
-    carbon, hydrogen, dbe = effective_counts(counts)
+    carbon, _hydrogen, _dbe = effective_counts(counts)
     n_o = counts.get("O", 0)
     n_n = counts.get("N", 0)
     if carbon >= CONTEXT_RATIO_MIN_CARBON:
-        values = {
-            "H/C": hydrogen / carbon,
-            "O/C": n_o / carbon,
-            "N/C": n_n / carbon,
-            "DBE/C": dbe / carbon,
-        }
-        for key, (low, high) in windows.items():
-            value = values.get(key)
-            if value is not None and not (low <= value <= high):
-                return False
-        return True
+        if nox_skeleton:
+            return context_skeleton_groups(counts, windows) is not None
+        return _inside_windows(counts, windows)
     if carbon >= 1:
         return n_o <= 2 * carbon + 2 and n_n <= carbon + 1
     # No carbon-equivalent backbone at all. The organic grid floors carbon at 1,
@@ -652,7 +761,9 @@ def rule_context_ratios(
         if counts is None:
             mask.append(True)  # unparseable here -> defer, never reject
             continue
-        mask.append(_context_ratios_ok(counts, windows))
+        mask.append(
+            _context_ratios_ok(counts, windows, heuristics_config.context_nox_skeleton)
+        )
     return pl.Series(mask, dtype=pl.Boolean), log_messages
 
 

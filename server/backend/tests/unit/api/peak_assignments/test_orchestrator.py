@@ -661,6 +661,8 @@ class TestTheJudgedLedger:
         await _run(PeakAssignmentConfig(run_untargeted=False, context="chamber"))
 
         assert handed["context"].name == "chamber"
+        # A '[M+H]+' mode is no nitrate source: no skeleton reading.
+        assert handed["nox_skeleton"] is False
         config = recorder.recorded_configs()[-1]
         assert config["tiering"]["context_priors"] == {
             "context": "chamber",
@@ -670,6 +672,42 @@ class TestTheJudgedLedger:
             "sulfur",
             "odd_nitrogen",
         ]
+
+    @pytest.mark.asyncio
+    async def test_a_nitrate_run_hands_the_passes_its_skeleton_reading(self):
+        # Step 3.6's rider: a nitrate run on an Orbitrap in ambient air reads
+        # an organonitrate's skeleton, so its tiering pass holds what only the
+        # skeleton admits, and its search reads the skeleton in its filter.
+        from mascope_backend.api.new.peak_assignments import service
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        judge = service.judge_commits
+        handed = {}
+
+        def recording(rows, **kwargs):
+            handed.update(kwargs)
+            return judge(rows, **kwargs)
+
+        peaks = _peaks_df(
+            [
+                ("p1", 181.0707, 10000.0),
+                ("p2", 182.0741, 660.0),
+                ("p3", 300.1234, 500.0),
+            ]
+        )
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+        patch(f"{_MOD}.judge_commits", side_effect=recording).start()
+
+        await _run(PeakAssignmentConfig(profile="NO3"))
+
+        assert handed["nox_skeleton"] is True
+        assert mocks["compositions"].call_args.args[2].context_nox_skeleton is True
+        config = recorder.recorded_configs()[-1]
+        assert config["resolved_profile"]["nox_skeleton"] is True
+        assert config["tiering"]["nox_skeleton"] is True
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

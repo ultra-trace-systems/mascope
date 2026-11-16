@@ -21,6 +21,7 @@ const SERVER_RULES = [
   'candidate_density',
   'lone_peak',
   'context_prior',
+  'nox_skeleton',
   // A batch peak's rule (batch_peaks.hold_persistence_only), in the same
   // vocabulary.
   'persistence_only',
