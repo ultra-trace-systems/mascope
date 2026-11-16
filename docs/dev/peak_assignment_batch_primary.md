@@ -611,6 +611,21 @@ load and the ledger route) hides the singletons, and not all of them are noise: 
 batches 51 and 22 of them carry an assigned consensus, 112 and 60 a candidate one. The
 batch ledger in the app asks for `min_n_present=1`, so it shows them.
 
+*Read 2026-11-16.* The anchors per occupancy bin, as a share of the batch's anchors, and the
+share of a late arrival's new anchors still singletons (members are the batch's own samples):
+
+| batches | 1 sample | 2-4 | 5 to under half | half or more | late anchors still singletons |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| demo, 2 batches of 80-81 | 8-9 % | 13-15 % | 21-27 % | 49-58 % | 74-88 % |
+| testbed Orbitrap, 10 batches of 87-547 | 4-15 % | 4-17 % | 23-70 % | 3-62 % | 22-100 % |
+| testbed Orbitrap, 6 batches of 5-6 | 9-56 % | 12-62 % | | 28-68 % | 42-100 % |
+| testbed TOF, 4 batches of 3-6 | 30-50 % | 24-58 % | | 0-37 % | 91-100 % |
+
+A floor of 5 instead of 2 would hide another 13-15 % of the demo batches' anchors and
+4-17 % on the large testbed batches. On a batch of ten samples or fewer the bin "5 to under
+half" is empty by construction. Most anchors a late arrival mints have no second member
+yet; on the large Orbitrap batches that is a handful of anchors, so the share swings widely.
+
 **What the readings say for the two open decisions** (§10, items 4 and 5; the calls stay
 the plan owner's):
 
@@ -625,7 +640,9 @@ the plan owner's):
   80-sample one, rescoring every sample included, so an upper bound for one arrival's own
   anchors. A late Orbitrap arrival mints 0-3 anchors, so searching them at ingest adds
   under a second against the fold's 2 s at 160 samples and 35 s at 5,000. On a small TOF
-  batch an arrival mints hundreds, which would be a minute or more.
+  batch an arrival mints hundreds, which would be a minute or more. Most anchors a late
+  arrival mints are still singletons (74-88 % on the demo batches), which the default
+  floor of 2 leaves off the drawable set.
 
 ---
 
@@ -708,8 +725,9 @@ aggregates" (§12.1). The per-sample
 4. **Singletons on the anchor.** Carrying the first member's ids on the anchor and
    materializing a member row only from the second sample on saves 9 % of member rows here,
    more on noisy TOF data. *Recommend later; measure on a TOF batch first.*
-   *Measured (§7.1): 0.2-0.4 % of member rows on Orbitrap batches of 80 samples or more,
-   9-21 % on small batches of either type; no large TOF batch measured yet.*
+   *Measured (§7.1): 0.0-0.4 % of member rows on Orbitrap batches of 80 samples or more;
+   2-21 % on Orbitrap batches of 5-6 samples and 9-21 % on the TOF batches (3-6 samples);
+   no large TOF batch measured yet.*
 5. **Stage B at ingest for new anchors.** Affordable once per anchor; whether it should run
    unasked is a product call. *Recommend no until the batch-triggered path has been used.*
    *Measured (§7.1): about 0.2 s per anchor searched, under a second per late Orbitrap

@@ -515,34 +515,45 @@ def growth_reading(anchors: list[tuple], n_samples: int, unit: str | None) -> di
 def test_growth_reading_counts():
     """The reading's curve, late rate and occupancy, on an axis made by hand.
 
+    Twelve samples, so the last quarter (samples 10-12) differs from the last
+    half (7-12) and every occupancy bin edge has an anchor on each side of it.
     Hermetic, so it runs with the backend suite and not only on a bench stack.
     """
     anchors = [
-        (1, 4, "assigned"),
-        (1, 1, "assigned"),
-        (2, 3, "candidate"),
+        (1, 12, "assigned"),
+        (1, 6, "assigned"),
+        (1, 5, "candidate"),
+        (2, 4, "candidate"),
         (2, 2, "candidate"),
         (3, 1, "unassigned"),
-        (4, 1, "unassigned"),
+        (5, 1, "assigned"),
+        (10, 1, "unassigned"),
+        (11, 2, "candidate"),
+        (12, 1, "unassigned"),
     ]
-    r = growth_reading(anchors, 4, "sum_peak_areas")
+    r = growth_reading(anchors, 12, "sum_peak_areas")
     assert r["instrument_type"] == "tof"
+    assert r["samples"] == 12
+    assert r["anchors"] == 10
     assert r["curve"] == {
-        "1%": 2,
-        "10%": 2,
-        "25%": 2,
-        "50%": 4,
-        "75%": 5,
-        "100%": 6,
+        "1%": 3,
+        "10%": 3,
+        "25%": 6,
+        "50%": 7,
+        "75%": 7,
+        "100%": 10,
     }
+    # Three anchors minted over the last three samples; over the last six it
+    # would be 0.5.
     assert r["late_new_per_arrival"] == 1.0
-    assert r["late_singleton_share"] == 1.0
-    assert r["singletons"] == 3
-    assert r["members"] == 12
-    assert r["singleton_member_share"] == 0.25
-    assert r["hidden_by_floor_tiers"] == {"assigned": 1, "unassigned": 2}
-    assert r["occupancy"] == {"1": 3, "2-4": 3, "5-<50%": 0, ">=50%": 0}
-    assert growth_reading(anchors, 4, "sum_peak_heights")["instrument_type"] == (
+    assert r["late_singleton_share"] == pytest.approx(2 / 3)
+    assert r["singletons"] == 4
+    assert r["singleton_share"] == 0.4
+    assert r["members"] == 35
+    assert r["singleton_member_share"] == pytest.approx(4 / 35)
+    assert r["hidden_by_floor_tiers"] == {"assigned": 1, "unassigned": 3}
+    assert r["occupancy"] == {"1": 4, "2-4": 3, "5-<50%": 1, ">=50%": 2}
+    assert growth_reading(anchors, 12, "sum_peak_heights")["instrument_type"] == (
         "orbitrap"
     )
 
@@ -574,22 +585,25 @@ def test_anchor_axis_growth(ledger_batches):
         "### Anchor-axis growth (the batches' own samples)",
         "",
         "| batch | type | samples | anchors | 1% | 10% | 25% | 50% | 75% "
-        "| new/arrival, last 25% | singletons (hidden by floor 2) "
-        "| their tiers | singleton member rows |",
+        "| new/arrival, last 25% | of them still singletons "
+        "| singletons (hidden by floor 2) | their tiers | singleton member rows "
+        "| anchors of 1 / 2-4 / 5 to <50% / >=50% samples |",
         "| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: "
-        "| ---: | --- | ---: |",
+        "| ---: | ---: | --- | ---: | --- |",
     ]
     for r in LEDGER_READINGS:
         c = r["curve"]
         tiers = ", ".join(
             f"{t} {n}" for t, n in sorted(r["hidden_by_floor_tiers"].items())
         )
+        occupancy = " / ".join(f"{n:,}" for n in r["occupancy"].values())
         lines.append(
             f"| {r['batch']} | {r['instrument_type']} | {r['samples']} | "
             f"{r['anchors']} | {c['1%']} | {c['10%']} | {c['25%']} | {c['50%']} | "
             f"{c['75%']} | {r['late_new_per_arrival']:.1f} | "
+            f"{r['late_singleton_share']:.0%} | "
             f"{r['singletons']} ({r['singleton_share']:.0%}) | {tiers} | "
-            f"{r['singleton_member_share']:.1%} |"
+            f"{r['singleton_member_share']:.1%} | {occupancy} |"
         )
     _summary("\n".join(lines) + "\n")
 
