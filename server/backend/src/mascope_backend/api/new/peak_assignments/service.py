@@ -18,6 +18,7 @@ import copy
 import math
 import re
 import time
+import weakref
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass, replace
@@ -171,7 +172,9 @@ from mascope_backend.api.new.peak_assignments.envelope_claims import (
     isotopologue_names,
 )
 from mascope_backend.api.new.peak_assignments.envelope_fit import (
+    NeighbourReader,
     RunEnvelopeFit,
+    envelope_lines,
     fit_run_envelope_tolerance,
 )
 from mascope_backend.api.new.peak_assignments.fold_view import (
@@ -294,7 +297,9 @@ from mascope_tools.composition.custom_elements import (
     labelled_purity,
 )
 from mascope_tools.composition.envelope_tolerance import (
+    FORM_CURVE,
     LEVEL_DEFAULT,
+    EnvelopeLines,
     EnvelopeTolerance,
 )
 from mascope_tools.composition.finder import assign_compositions
@@ -4713,7 +4718,10 @@ async def _stage_a_first_pass(
     tolerance - before any envelope tolerance is fitted.
 
     What :func:`_stage_a_assignments` scores first and fits the run's tolerance
-    on. The parameters are :func:`_stage_a_assignments`'.
+    on, and what a thin file's pool reads of each neighbour
+    (:func:`_neighbour_envelope_lines`): the neighbour's own lines, never its
+    pooled curve, so the pool cannot feed on itself. The parameters are
+    :func:`_stage_a_assignments`'.
     """
     mass_accuracy = inherited_accuracy or SampleMassAccuracy(reagent=reagent_offset)
     gated_df = match_isotope_df = pd.DataFrame()
@@ -4733,7 +4741,7 @@ async def _stage_a_first_pass(
         )
         if excluded_peak_ids and not match_isotope_df.empty:
             # Off the event loop, as the arbitration below: seconds on a large
-            # frame, which held every other request of the server behind it.
+            # frame, and a thin file's pool runs it once per neighbour too.
             match_isotope_df = await asyncio.to_thread(
                 drop_ions_claimed_elsewhere, match_isotope_df, excluded_peak_ids
             )
@@ -4801,7 +4809,8 @@ async def _stage_a_first_pass(
 
         return _StageAFirstPass(
             # Off the event loop: the arbitration takes seconds on a large
-            # frame, which held every other request of the server behind it.
+            # frame, and a thin file's pool runs it once per neighbour as well,
+            # which held every other request of the server behind it.
             rows=await asyncio.to_thread(assignments_of, match_isotope_df),
             scored=match_isotope_df,
             gated=gated_df,
@@ -4938,13 +4947,15 @@ async def _stage_a_assignments(
             first.listed_formulas,
         )
     # The tolerance is fitted on what Stage A committed, which a sample with no
-    # library match has nothing of: it can still take its siblings' curve.
+    # library match has nothing of: it can still take its neighbours' curve,
+    # each read under this run's config and match parameters.
     envelope = await fit_run_envelope_tolerance(
         sample,
         first.scored,
         first.rows,
         mass_accuracy=first.mass_accuracy,
         fallback_sigma_ppm=fallback_sigma_ppm,
+        read_neighbour=_neighbour_reader(config, match_params),
     )
     stage_a_assignments = first.rows
     if envelope.fit.level != LEVEL_DEFAULT and not first.gated.empty:
@@ -5999,8 +6010,9 @@ async def _fold_sample_peaks_without_run(
     reagent, artifact = inputs.reagent, inputs.artifact
     claimed_peak_ids = inputs.claimed_peak_ids
     # Stage A's rows here are scored at the tolerance it fits, as a run's are,
-    # but there is no run to record it on: the sample's later readers read it
-    # at today's numbers, and its siblings' pools leave its lines out (#2989).
+    # its pool read under the defaults as a run's is under its config. But
+    # there is no run to record it on: the sample's later readers read it at
+    # today's numbers (#2989).
     stage_a, _, mass_accuracy, _envelope, _listed = await _stage_a_assignments(
         sample,
         config,
@@ -6125,8 +6137,9 @@ async def _stage_a_inputs(
 ) -> _StageAInputs:
     """Compose Stage A's inputs for a sample the way a run does, without one.
 
-    The run-less fold reads its sample through it, so it does not drift from
-    what a run of that sample would hand Stage A.
+    The run-less fold reads its sample through it, and a thin file's pool
+    reads each neighbour through it (:func:`_neighbour_envelope_lines`), so
+    neither drifts from what a run of that sample would hand Stage A.
 
     :param sample: The sample view row.
     :param config: The configuration the chemistry is resolved under.
@@ -6194,6 +6207,112 @@ async def _stage_a_inputs(
         artifact=artifact,
         claimed_peak_ids=reagent_peak_ids | artifact_peak_ids,
     )
+
+
+#: The id a neighbour's first-pass rows are stamped with: they are read for
+#: their lines and never kept.
+_NEIGHBOUR_READ_RUN_ID = "envelope-pool-read"
+
+#: How many neighbour reads one process runs at a time. A read is seconds of
+#: pandas work that holds the interpreter lock, in a worker thread or on the
+#: event loop. Five thin runs at once on the demo bundle's bromide batch read
+#: 30 neighbours side by side, and the server answered no request for eight
+#: minutes; one at a time, the other runs' reads wait without working and the
+#: server keeps answering.
+NEIGHBOUR_READS_AT_ONCE = 1
+
+_neighbour_read_slots: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, asyncio.Semaphore
+] = weakref.WeakKeyDictionary()
+
+
+def _neighbour_read_slot() -> asyncio.Semaphore:
+    """The running loop's semaphore of :data:`NEIGHBOUR_READS_AT_ONCE`, made on
+    first use: an asyncio semaphore belongs to the loop it first waits on."""
+    loop = asyncio.get_running_loop()
+    slot = _neighbour_read_slots.get(loop)
+    if slot is None:
+        slot = _neighbour_read_slots[loop] = asyncio.Semaphore(NEIGHBOUR_READS_AT_ONCE)
+    return slot
+
+
+async def _neighbour_envelope_lines(
+    neighbour, config: PeakAssignmentConfig, match_params
+) -> EnvelopeLines | None:
+    """A neighbour's own lines, for a thin file's pooled curve.
+
+    Its Stage A first pass at today's numbers (:func:`_stage_a_first_pass`),
+    on its own peaks, mechanisms, channels and pre-passes, composed as the
+    run-less fold composes them (:func:`_stage_a_inputs`), and read by
+    ``envelope_fit.envelope_lines``. The config and the match parameters are
+    the reading run's, so every line of one pool is measured alike. Labelled
+    lines are predicted at the purity of the neighbour's own setup, as a run of
+    it predicts them. It is never its pooled curve, nor anything a run of it
+    recorded: the pool is a function of the reading run's inputs and its
+    neighbours' data, whichever of them ran before.
+
+    :param neighbour: The neighbour's sample view row.
+    :param config: The reading run's configuration.
+    :param match_params: The reading run's match parameters.
+    :return: Its lines; None where the engine would not run it (a blank, an
+        unverified calibration) or it has no peak list, so the next nearest
+        file takes its place.
+    """
+    if ineligible_reason(neighbour) is not None:
+        return None
+    async with _neighbour_read_slot():
+        return await _read_neighbour_lines(neighbour, config, match_params)
+
+
+async def _read_neighbour_lines(
+    neighbour, config: PeakAssignmentConfig, match_params
+) -> EnvelopeLines | None:
+    """:func:`_neighbour_envelope_lines`' read, in its process's slot."""
+    # The file reads and the line read go off the event loop, as the first
+    # pass's arbitration does: a thin run reads six files, and on the loop
+    # their work would hold every other request of the server for a minute.
+    try:
+        peaks_df = await asyncio.to_thread(load_sample_peaks, neighbour)
+    except NotFoundException:
+        # Its file is missing or not processed yet: no peak list.
+        return None
+    if peaks_df.empty:
+        return None
+    with labelled_purity(await sample_label_purity(neighbour.sample_item_id)):
+        inputs = await _stage_a_inputs(
+            neighbour, config, peaks_df, _NEIGHBOUR_READ_RUN_ID
+        )
+        fallback_sigma_ppm = inputs.resolved_profile.fallback_sigma_ppm
+        first = await _stage_a_first_pass(
+            neighbour,
+            config,
+            match_params,
+            inputs.mechanism_ids,
+            inputs.searched_mechanisms,
+            _NEIGHBOUR_READ_RUN_ID,
+            excluded_peak_ids=inputs.claimed_peak_ids,
+            fallback_sigma_ppm=fallback_sigma_ppm,
+            known_window=inputs.resolved_profile.context.known_window,
+            reagent_offset=inputs.reagent_offset,
+        )
+    return await asyncio.to_thread(
+        envelope_lines,
+        first.scored,
+        first.rows,
+        mass_accuracy=first.mass_accuracy,
+        fallback_sigma_ppm=fallback_sigma_ppm,
+        form=FORM_CURVE,
+    )
+
+
+def _neighbour_reader(config: PeakAssignmentConfig, match_params) -> NeighbourReader:
+    """Reads a thin file's neighbours under the reading run's config and match
+    parameters (:func:`_neighbour_envelope_lines`)."""
+
+    async def read(neighbour) -> EnvelopeLines | None:
+        return await _neighbour_envelope_lines(neighbour, config, match_params)
+
+    return read
 
 
 async def auto_assign_sample_peaks(

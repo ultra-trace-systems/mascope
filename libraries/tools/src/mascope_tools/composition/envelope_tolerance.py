@@ -32,8 +32,9 @@ So the run fits the tolerance on its own confidently committed envelopes
   its peaks were detected again, so it is not read as a curve.
 
 A file too thin for a curve of its own takes the curve fitted over its lines
-and those of the files beside it that share its acquisition settings, then
-today's numbers (:func:`fit_envelope_tolerance`). Every level is recorded
+and those of its nearest files in acquisition time that share its acquisition
+settings, each read fresh by the caller, then today's numbers
+(:func:`fit_envelope_tolerance`). Every level is recorded
 (:meth:`EnvelopeFit.record`), and the record rebuilds the tolerance
 (:meth:`EnvelopeTolerance.from_record`), so a formula measured outside the run
 is judged where the run judged it.
@@ -100,7 +101,7 @@ FORM_CENTRE_WIDTH = "centre_width"
 FORM_DEFAULT = "default"
 
 #: Where a run's tolerance came from: its own lines, its lines pooled with
-#: those of the files beside it that share its acquisition settings, or today's
+#: those of its nearest files that share its acquisition settings, or today's
 #: numbers because neither held enough.
 LEVEL_OWN = "own"
 LEVEL_POOLED = "pooled"
@@ -263,7 +264,7 @@ class EnvelopeLines:
         )
 
     def record(self) -> dict:
-        """The lines as a record keeps them, for a file beside this one to pool."""
+        """The lines as a record keeps them."""
         return {
             "expected_snr": [round(float(v), _SNR_DIGITS) for v in self.expected_snr],
             "ratio": [
@@ -504,10 +505,9 @@ class EnvelopeFit:
 
         The form and the level; the line counts the fit asks for; the file's
         own lines in the list and absent; for a curve its bins and the
-        detectability threshold, and the file's lines themselves, which a file
-        beside it pools; for a centre and a width both, and the floor the
-        score takes. A reader rebuilds the tolerance from it
-        (:meth:`EnvelopeTolerance.from_record`).
+        detectability threshold, and the file's lines themselves; for a centre
+        and a width both, and the floor the score takes. A reader rebuilds the
+        tolerance from it (:meth:`EnvelopeTolerance.from_record`).
         """
         detect = self.tolerance.detect_snr
         record: dict = {
@@ -552,15 +552,15 @@ def fit_envelope_tolerance(
     holds enough lines.
 
     A curve is fitted on the file's own lines; where they are too few, on them
-    pooled with the lines of the files beside it that share its acquisition
-    settings (``pooled``, which the caller selects); where those are too few as
-    well, today's numbers. A centre and a width are fitted on the run's own
+    pooled with the lines of its nearest files that share its acquisition
+    settings (``pooled``, which the caller selects and reads); where those are
+    too few as well, today's numbers. A centre and a width are fitted on the run's own
     lines or not at all: a TOF's S/N column is not read as a curve until it is
     detected again, and nothing is pooled for it. Any other form is today's.
 
     :param form: The form the run's instrument class takes.
     :param lines: The file's own lines.
-    :param pooled: The lines of the files beside it, one entry per file.
+    :param pooled: The lines of its neighbours, one entry per file.
     :return: The fit, with the level it reached.
     """
     if form == FORM_CURVE:

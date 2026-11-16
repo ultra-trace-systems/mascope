@@ -600,19 +600,23 @@ below its share a 13C line reads in that file, and how often it is there at all
 between that low reading and its full share, and a missing line counts only where that
 file's lines are usually present. When the composition search tries a candidate
 formula, a peak more than 40% off its line's share is taken for another compound's and
-the line counts as missing. On a file with a measured response (its own, or the one
-pooled from its batch), the lower end of that cut moves down to the file's low reading,
+the line counts as missing. On a file with a measured response (its own, or one pooled
+from the files near it), the lower end of that cut moves down to the file's low reading,
 so a faint 13C line is found rather than counted against the formula. Above the share
-the 40% cut stays. A file with too few confirmed lines takes the
-measurement pooled with the other files of its batch acquired at the same settings, and
-failing that the defaults. On a TOF the run measures one offset and one spread of how
-its lines read against their shares, since a TOF's signal-to-noise column is not read
-that way yet. The run records which of these it used, and a formula measured on its own
-afterwards - *Use this*, the inspector's evidence - is read at the tolerance the
-sample's latest run in Mascope recorded. A decoy run (below) is never that run, and its
-lines are pooled for no other file. A sample with no such run, one only folded into
-the batch ledger, is measured at the defaults, though its folded rows were scored at a
-tolerance fitted on the spot.
+the 40% cut stays. A file with too few confirmed lines takes the measurement pooled with
+the six files of its batch acquired nearest it in time at the same settings, and failing
+that the defaults. Each of the six is measured afresh, the way the run measures its own
+lines and under the run's own settings, never read from a run of its own. So the pooled
+measurement is the same whichever files of the batch were run first, or at the same
+time. A blank, or a file with no peak list, takes no place among the six. Measuring them
+adds about a minute to a thin file's run, and the run records which files it pooled, the
+lines each gave and the time they span. On a TOF the run measures one offset and one
+spread of how its lines read against their shares, since a TOF's signal-to-noise column
+is not read that way yet. The run records which of these it used, and a formula measured
+on its own afterwards - *Use this*, the inspector's evidence - is read at the tolerance
+the sample's latest run in Mascope recorded. A decoy run (below) is never that run. A
+sample with no such run, one only folded into the batch ledger, is measured at the
+defaults, though its folded rows were scored at a tolerance fitted on the spot.
 
 An Orbitrap file whose peaks record the scans they are present in (*Scan Presence* on
 [Peak Detection](peak-detection.md)) needs no such measurement for its lines: it

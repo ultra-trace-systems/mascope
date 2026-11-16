@@ -93,7 +93,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 3.4g - the chart draws each peak in the trace's unit, and a lone M0 | #2379 | 2026-10-19 | built: the lone M0 drawn, the envelope in the trace's unit; engine and tiers untouched |
 | 3.4h - the inspector links the other channels, and the listing column folds | #2988 | 2026-11-05 | built: the badge opens the other channels' peaks as links, the listed-as column folds to a mark with a view-menu switch in both ledgers, and rows whose peak the sample no longer has are marked (#2025); no tier moves |
 | 3.5 - calibrants below the brightest lines, an offset term, and the low-mass bend (calibration node) | #2593 (the gate's anchors) |  | in two PRs (decided 2026-10-22). Built: the mass gate's fit takes the reagent pass's monoisotopic lines beside its commits; estimated on the pass-10 ledgers, all seven K3 files fit a calibration. Built (MAS-469, on by default on the Orbitrap, decided 2026-11-13): the node leaves out a calibrant over 28 % of the ion current and reports the offset its calibrants carry; the mass gate leaves such a source line out of its anchors. Refit with the cap: C2's analytes from -0.7 to -0.1 ppm, B toward zero on two files, A 0.01 to 0.03 ppm away, K3 1 ppm away (its axis' offset) |
-| 3.5b - the envelope's tolerance, fitted per run | #2978 |  | built: Stage A fits a response curve per Orbitrap file (pooled with its batch siblings at the same settings, then the defaults) and a centre and width per TOF run; every fit score of the run reads it; pass 11 measures it |
+| 3.5b - the envelope's tolerance, fitted per run | #2978 |  | built: Stage A fits a response curve per Orbitrap file (pooled with its 6 nearest files in time at the same settings, each read fresh, then the defaults; MAS-721) and a centre and width per TOF run; every fit score of the run reads it; pass 11 measures it |
 | 3.5c - the targeted matcher reads an isotope line over the scans that hold its anchor | - |  | built: an Orbitrap line's ratio is read over the scans it shares with its anchor, the count stored and shown in the Match tab; TOF unchanged |
 | 3.5d - the peak store keeps each Orbitrap peak's scan presence count; the scorer reads a line against its presence-corrected share | - |  | built: a raw Orbitrap store keeps `n_scans` and `n_scans_total` per peak, the peaks route, the batch table and the SDK serve them; the fit score reads a counted line at its mean per scan (the censored-normal estimate from its count and S/N); an absent line keeps the curve's threshold (the count's own, a hard gate, is held back for a soft one: #3123); a stage serves no counts until its S/N is its own (#3117); 3.5b's curve is the fallback for a file without counts; the gate's pass measures it |
 | 3.6 - priors and the dataset's context | - |  | built: ambient air, chamber and indoor air carry a sulfur prior and an odd-nitrogen prior (uronium the sulfur one), and a search row meeting one is held at candidate (`context_prior`) until a second channel, a series or its own 34S or 15N line sees it; a dataset or batch names its context (`chemistry_context`), which a run on auto takes, the batch's first; a TOF's untargeted window bounded by the sample's fitted width (the offset plus six widths, at most 10 ppm); chlorine and bromine read from their twin line, the second rider; on nitrate Orbitrap runs in a context that makes organonitrates, the windows and the oxygen lattice read up to three groups' skeletons and a row only that admits is a candidate (`nox_skeleton`), the first rider; tiering rule set 15; MAS-59; the next pass measures it |
@@ -827,11 +827,14 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
     and a C20 ion about 19% for a line the instrument usually does not
     deliver.
   - **Fallback in two steps.** A file with too few committed lines for a
-    curve of its own takes the curve pooled over the run's files that
-    share its acquisition settings (a 100-microscan file stays apart from
-    its 10-microscan siblings), and only then today's numbers. Committed
-    lines are thin on several sets: 34 over 7 files on K3, 30 over 6 on
-    I positive, 52 over 5 on C2.
+    curve of its own takes the curve pooled over the 6 files of its batch
+    nearest it in acquisition time that share its acquisition settings (a
+    100-microscan file stays apart from its 10-microscan siblings), and
+    only then today's numbers. Committed lines are thin on several sets:
+    34 over 7 files on K3, 30 over 6 on I positive, 52 over 5 on C2.
+    (The pool was first the run's files at those settings, read from the
+    lines their latest runs recorded; MAS-842 changed it to the nearest
+    files, read fresh, so run order no longer moves it.)
   - **The TOF: a centre and a width per run**, until 5.5's re-detection
     gives it a usable S/N. The run fits, on the same committed envelopes,
     the relative error of a committed line against its predicted share: a
@@ -1039,15 +1042,37 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
     judged bin falls short, the upper edge of the highest (the open top bin
     gives its lower edge, 100).
   - **The pooled level.** A run is one file. A file whose own lines are too
-    few pools them with the lines its batch siblings' latest completed
-    in-app runs recorded (`config.envelope_tolerance.observations`) under
-    the same acquisition settings: polarity, microscan count and FT
-    resolution, read off the sample's stream where it points at one, else
-    the file's `.props`. A sibling with no run yet adds nothing, so the
-    first file of a batch to be run reads its own lines only; a file that
-    records neither count pools nothing. The testbed copy has no stream
-    rows; of 2,000 of its files' `.props`, the 1,263 that hold an
-    Orbitrap's scan trailer carry both counts.
+    few pools them with the lines of its K = 6 nearest files
+    (`envelope_fit.read_pool`, MAS-721 on decision MAS-842): files of the
+    same batch, nearest in acquisition time (`datetime_utc`, ties by sample
+    id, a file with no time after every one with a time), that share its
+    acquisition settings (polarity, microscan count and FT resolution,
+    read off the sample's stream where it points at one, else the file's
+    `.props`), have a peak list, and that the engine would run
+    (`ineligible_reason` is None), so a blank the sequence interleaves
+    takes no place. Each is read fresh: its own Stage A first pass at
+    today's numbers, on its own peaks, mechanisms, channels and
+    pre-passes, composed as the run-less fold composes a sample, under the
+    reading run's config and match parameters, at the purity of its own
+    setup. Never a sibling's run and never its pooled curve, so the pool is
+    a function of the reading run's inputs and the neighbours' data: two
+    runs of a batch pool alike in any order, one after the other or at
+    once, and the first file of a batch to run pools as well as the last.
+    K is fixed and the curve's minimum stays at 20 lines; the pool does not
+    widen until it is met (if a thin file falls to today's numbers on pass
+    11, K goes to 8). A thin run pays K Stage A first passes, ingest folds
+    included: on the public demo bundle a neighbour read took 4 to 8 s and
+    gave exactly the lines that sample's own run fits on, and a thin fit
+    over six of them 26 to 47 s. The bundle's first three bromide files
+    are thin (4 lines each): each pools 176 lines over 7 files, and its
+    Stage A takes 53 to 62 s. A read's file, arbitration and line reading
+    run in worker threads, and a process reads one neighbour at a time
+    (`NEIGHBOUR_READS_AT_ONCE`): five of those files run at once read 30
+    neighbours side by side, finished after 9.5 minutes, and starved the
+    event loop; one at a time they finish in 5. A file that records
+    neither count pools nothing. The testbed copy has no stream rows; of
+    2,000 of its files' `.props`, the 1,263 that hold an Orbitrap's scan
+    trailer carry both counts.
   - **The TOF.** The median and the scaled MAD of a tracking line's
     relative error, on at least 20 lines; the width floors at 5%, never
     tighter than today; nothing pooled, and the threshold stays at 3.
@@ -1057,15 +1082,18 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
     run's centre. A sample with no such run reads at today's numbers. That
     includes one only folded into the batch ledger (at ingest, or by a
     rebuild): the fold's Stage A fits and scores at a tolerance of its own,
-    but there is no run to record it on, so its readers and its siblings'
-    pools do not see it (#2989).
+    a thin file's pooled over its nearest files as a run's is, but there is
+    no run to record it on, so its readers do not see it (#2989).
   - **The record** (`config.envelope_tolerance`): the form, the level, the
     file's own lines in the list and absent, the threshold; for a curve the
     bins (lines, median and 20th percentile as read and as fitted, the
     lower end scored at, predicted lines), the counts the fit asks for, the
-    settings, the file's own lines for a sibling to pool, and at the pooled
-    level the files and lines pooled; for a TOF the centre, the width and
-    the floor. The score reads the record's own rounded numbers, so
+    settings, the file's own lines, at the pooled level the files and lines
+    pooled, and wherever a pool was read (`pool`, at the pooled level or at
+    today's numbers when it fell short) its K, the files pooled by sample
+    id with the lines each gave in the list and absent, and the time span
+    from the earliest to the latest of them and the file itself; for a TOF
+    the centre, the width and the floor. The score reads the record's own rounded numbers, so
     `EnvelopeTolerance.from_record` rebuilds exactly what the run scored at.
   - **Read on the demo dataset** (Stage A alone, read-only, on two bromide
     and two uronium samples of the public demo bundle 1.3; the gate sets are
@@ -1090,8 +1118,8 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
     curve's threshold (the count's own is mascope#3123). The curve is still
     fitted and recorded on every Orbitrap
     run, on the lines as listed, and scores the lines of a file without
-    counts. Its record pools the same uncorrected readings for siblings that
-    lack counts.
+    counts. A thin file's pool reads its neighbours' lines the same way,
+    as listed.
 
 ### 3.5c The targeted matcher reads an isotope line over the scans that hold its anchor
 
@@ -3997,8 +4025,18 @@ gave its TOF rider a step of its own (MAS-922).
     height** (taken 2026-10-22 by the plan owner, on 5.3's numbers). On a
     fitted file the curve also sets above which expected S/N an absent
     line is charged; a file too thin for its own curve takes the curve of
-    the run's files with its acquisition settings, then today's numbers.
-    The TOF is revisited once E, F and J are re-read (step 3.5b).
+    the K nearest of the files that share its acquisition settings, then
+    today's numbers. The TOF is revisited once E, F and J are re-read
+    (step 3.5b). Amended 2026-11-16 by the plan owner (MAS-842, option 3):
+    the pool was "the files that share its settings", read from their
+    latest runs, which made a thin file's curve depend on which of them
+    ran first; it is now the K = 6 files of its batch nearest it in
+    acquisition time at its settings that have a peak list and that the
+    engine would run, each read fresh by its own Stage A first pass under
+    the reading run's config and match parameters, and the record names
+    the files, the lines each gave and the time span. A whole-batch pool
+    with a stored per-file record (option 2) stays open as a cache for
+    those reads (MAS-725).
 33. **Stage 4 is pulled ahead of the remaining stage 3 steps** (taken
     2026-10-30 by the plan owner, confirmed with peaky's owner in the
     boundary meeting; Linear MAS-609). It is the stage the reference's
