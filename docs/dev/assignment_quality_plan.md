@@ -91,7 +91,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 3.5b - the envelope's tolerance, fitted per run | #2978 |  | built: Stage A fits a response curve per Orbitrap file (pooled with its batch siblings at the same settings, then the defaults) and a centre and width per TOF run; every fit score of the run reads it; pass 11 measures it |
 | 3.5c - the targeted matcher reads an isotope line over the scans that hold its anchor | - |  | built: an Orbitrap line's ratio is read over the scans it shares with its anchor, the count stored and shown in the Match tab; TOF unchanged |
 | 3.5d - the peak store keeps each Orbitrap peak's scan presence count; the scorer reads a line against its presence-corrected share | - |  | built: a raw Orbitrap store keeps `n_scans` and `n_scans_total` per peak, the peaks route, the batch table and the SDK serve them; the fit score reads a counted line at its mean per scan (the censored-normal estimate from its count and S/N); an absent line keeps the curve's threshold (the count's own, a hard gate, is held back for a soft one: #3123); a stage serves no counts until its S/N is its own (#3117); 3.5b's curve is the fallback for a file without counts; the gate's pass measures it |
-| 3.6 - priors and the dataset's context | - |  | planned; two riders from the reference's 0.10 line (the review section) |
+| 3.6 - priors and the dataset's context | - |  | built: ambient air, chamber and indoor air carry a sulfur prior and an odd-nitrogen prior (uronium the sulfur one), and a search row meeting one is held at candidate (`context_prior`) until a second channel, a series or its own 34S or 15N line sees it; a dataset or batch names its context (`chemistry_context`), which a run on auto takes, the batch's first; a TOF's untargeted window bounded by the sample's fitted width (the offset plus six widths, at most 10 ppm); chlorine and bromine read from their twin line, the second rider; on nitrate Orbitrap runs in a context that makes organonitrates, the windows and the oxygen lattice read up to three groups' skeletons and a row only that admits is a candidate (`nox_skeleton`), the first rider; tiering rule set 15; MAS-59; the next pass measures it |
 | 3.7 - stage 3 gate, engine 0.6.0 | - |  | planned; read against the literature and chemical reasoning, not the reference (decision 27) |
 | 4.1 - series detection on the batch ledger | - |  | built: *Detect series* walks CH2, O, H2O, CO, CO2, C2H2O and, from a peak carrying their element, C2H6OSi and CF2 up to three steps from the batch's assigned peaks onto its unassigned and candidate ones within the search's window, commits a unit at 12 proposals and ten times its six decoys' mean (re-derived on the testbed: 3x commits every TOF family), measures each proposal through the propagation chain, records the series with `has_anchor` on the batch peak, and a run counts it as a second observation; tiering rule set 12; MAS-61 |
 | 4.2 - time-series coherence | - |  | built, the co-variation reading (decision 35): *Read co-variation* reads every neutral the batch sees through two channels, per mode and instrument type, as Pearson r of the log traces, reagent-normalised, the common mode (each spectrum's median of the persistent traces) removed; co-varying at r >= 0.6, untestable under 10 shared spectra or a residual spread under 0.02 in log10 (both measured against decoy pairs on the testbed's 20 batch ledgers); recorded on the batch peak, shown in the ledger and the inspector, no tier moves. The nine riders are steps of their own (MAS-777); MAS-62 |
@@ -1265,6 +1265,57 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
 - **Verify.** G9 on every set at or below target with no loss on G2; the
   TOF set's candidate and below-assignability shares fall.
 - **Size.** S-M.
+- **As built (MAS-59).** One PR, five commits, one per item and rider.
+  - **The priors** are context data (`ChemistryContext.priors`,
+    `profiles.CONTEXT_PRIORS`) read by the tiering pass
+    (`tiering.context_prior_reason`, rule set 15): graded, not gated, so the
+    grid keeps the formula and the row says why it stays a candidate. The
+    escapes are a second channel, a series of the batch and the doubted
+    element's own heavy-isotope line committed with the row; a 13C line is
+    not one, since it is what `lone_peak` already takes. "Every atmospheric
+    context" is read as ambient air, chamber and indoor air; uronium takes the
+    sulfur prior alone, since its context opens the reduced-nitrogen bases
+    the odd-nitrogen prior doubts. Object headspace, combustion, water, food
+    and none carry neither.
+  - **The named context** is a column on `dataset` and `sample_batch`
+    (migration 7c1d2e9a4b6f), set in their dialogs and routes. A run on auto
+    takes the batch's, then the dataset's, then the profile's default; the
+    identity profile keeps none, and a name the library no longer knows falls
+    to the default. The run records `context_source` and what each named. The
+    environments of `sample_filters_and_metadata.md` 4.6 (MAS-342) would sit
+    between the batch and the profile when they land.
+  - **The TOF window** is `|mu| + 6 sigma` at the width and centre the search
+    scores at (`profiles.fitted_window_ppm`), six being the mass gate's
+    below-assignability distance, never wider than the class's 10 ppm; only
+    a width the sample fitted bounds it. The batch search bounds it by the
+    width the sample's latest run recorded.
+  - **The skeleton reading** (`heuristic_filter.nox_skeletons`) takes off up
+    to three groups bounded by the formula's nitrogens, whole double bonds
+    and carbons, keeps a nitrate reading where the skeleton holds an oxygen
+    per group and a nitro reading only off a skeleton of DBE/C 0.5 or more.
+    It reads the context windows and the oxygen lattice; a run switches it on
+    for NO3 and NO3_15N on an Orbitrap where the context makes organonitrates
+    (ambient air, chamber, combustion, water). The batch search holds such a
+    reading at candidate as well, since its rows' tiers are what the members
+    take. A one-group reading can keep two amine nitrogens inside the N/C
+    window (C6H11N3O3); the cap and the odd-nitrogen prior both hold it.
+  - **The halogen twin** (`peak_assignments/halogen_twins.py`) asks a peak the
+    search searched, left unexplained or read with no halogen in its ion,
+    whose twin sits unexplained within 2 ppm of the exact 37Cl or 81Br offset
+    at one atom's ratio within a factor of 1.5. The re-read searches carbon,
+    hydrogen, oxygen and one halogen atom with that halogen's raw ratio band
+    opened to Kind and Fiehn's common range, since the default band (Cl/C
+    0.05) refuses every chlorine formula under twenty carbons, chlorobenzene
+    among them. A reading replaces the peak's only where it claims the twin,
+    reaches the candidate bar and sits within three widths of the sample's
+    centre. A halogen is read where the context's cap opens it or a list the
+    run read names it and the context does not close it, never the reagent's
+    own: on the demo's bromide set under a chamber context, the first version
+    read two bromide clusters the chamber windows had refused as covalent
+    bromine through deprotonation. Item 4's "the 37Cl
+    line as the second observation" needs nothing new: the twin is committed
+    as the reading's isotopologue, which `lone_peak` takes. Per-sample runs
+    only; the batch search does not re-read twins.
 
 ### 3.7 Stage 3 gate, engine 0.6.0
 

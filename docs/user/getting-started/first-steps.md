@@ -99,10 +99,14 @@ organised as workspace → dataset → batch → samples — the
    same dialog takes the dataset's licence, authors, keywords, related
    publications and funding; all of them are optional and can be added later
    by editing the dataset, and the batch spreadsheet export lists them on its
-   *Batch* sheet.
+   *Batch* sheet. **Chemistry context** names what the samples were drawn
+   from, such as ambient air or a chamber: peak assignment searches under it
+   ([The chemistry a run searches under](../how-it-works/peak-assignment.md#the-chemistry-a-run-searches-under)).
 2. Click the new dataset to open it, then click **Create batch** (the plus
    button in the *Batches* pane), name it, and click **Save**. A batch holds
-   the samples you will analyse and compare together.
+   the samples you will analyse and compare together. A batch can name a
+   **Chemistry context** of its own, which its runs take before the
+   dataset's.
 3. Click the batch to open it. The *Samples* pane is empty — time to get data
    in.
 
