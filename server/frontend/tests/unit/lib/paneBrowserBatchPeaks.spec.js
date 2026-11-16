@@ -1250,6 +1250,120 @@ describe('PaneBrowserBatchPeaks probable blends', () => {
   })
 })
 
+describe('PaneBrowserBatchPeaks flat series', () => {
+  const record = (verdict, extra = {}) => ({
+    formula: 'C2H3N3',
+    verdict,
+    cv: verdict === 'flat' ? 0.08 : 0.61,
+    n_present: 22,
+    n_spectra: 24,
+    share: 0.9167,
+    normaliser: 'reagent',
+    normalised: true,
+    source_ion: null,
+    ...extra
+  })
+  const FLAT = peak('bp-f', 'assigned', 0.9, {
+    mz: 111.0427,
+    consensus_formula: 'C2H3N3',
+    flat_series: record('flat')
+  })
+  const SOURCE = peak('bp-s', 'assigned', 0.9, {
+    mz: 45.9935,
+    consensus_formula: 'NO2',
+    flat_series: record('flat', {
+      formula: 'NO2',
+      source_ion: { ion_formula: 'NO2-', label: '[NO2]-' }
+    })
+  })
+  const VARYING = peak('bp-v', 'assigned', 0.9, {
+    mz: 185.1,
+    consensus_formula: 'C10H16O3',
+    flat_series: record('varying')
+  })
+  const OTHER = peak('bp-other', 'candidate', 0.5, { mz: 300.2, consensus_formula: 'C12H18O5' })
+  const ids = () => wrapper.vm.rows.map((row) => row.batch_peak_id)
+
+  async function formulaCells(peaks) {
+    const tableRows = ref([])
+    app = makeApp({ peaks })
+    localStorage.clear()
+    setActivePinia(createPinia())
+    wrapper = mount(PaneBrowserBatchPeaks, {
+      global: {
+        stubs: {
+          ...GLOBAL_STUBS,
+          DataTable: {
+            ...DataTableStub,
+            watch: {
+              value: { handler: (value) => (tableRows.value = value), immediate: true }
+            }
+          },
+          Column: {
+            ...ColumnStub,
+            setup: () => ({ rows: tableRows }),
+            template:
+              '<div class="column-stub" :data-field="field">' +
+              '<template v-for="(row, i) in rows" :key="i">' +
+              '<div class="stub-cell" :data-row="row.batch_peak_id">' +
+              '<slot name="body" :data="row" /></div></template></div>'
+          }
+        },
+        directives: {
+          tooltip: {
+            mounted: (el, binding) => el.setAttribute('data-tooltip', binding.value ?? ''),
+            updated: (el, binding) => el.setAttribute('data-tooltip', binding.value ?? '')
+          },
+          help: {}
+        }
+      }
+    })
+    await wrapper.vm.$nextTick()
+    const column = (field) =>
+      Object.fromEntries(
+        wrapper
+          .findAll('.column-stub')
+          .find((col) => col.attributes('data-field') === field)
+          .findAll('.stub-cell')
+          .map((cell) => [cell.attributes('data-row'), cell])
+      )
+    return { formula: column('consensus_formula'), tier: column('consensus_tier') }
+  }
+
+  it('marks a flat batch peak beside its formula, and moves no tier', async () => {
+    const { formula, tier } = await formulaCells([FLAT, SOURCE, VARYING, OTHER])
+    const mark = formula['bp-f'].find('[data-testid="flat-series-mark"]')
+    expect(mark.attributes('aria-label')).toBe('Flat series: cv 0.08 in 92 % of the samples')
+    expect(mark.classes()).not.toContain('source')
+    expect(mark.attributes('data-tooltip')).toMatch(/the tier stands\.$/)
+    const source = formula['bp-s'].find('[data-testid="flat-series-mark"]')
+    expect(source.classes()).toContain('source')
+    expect(source.attributes('data-tooltip')).toMatch(/The source's list names its ion, \[NO2\]-/)
+    // A varying trace, and none read, carry no mark.
+    expect(formula['bp-v'].find('[data-testid="flat-series-mark"]').exists()).toBe(false)
+    expect(formula['bp-other'].find('[data-testid="flat-series-mark"]').exists()).toBe(false)
+    // No reason by the tier: the flag is not one.
+    expect(tier['bp-f'].find('[data-testid="tier-reason-mark"]').exists()).toBe(false)
+  })
+
+  it('keeps only the flat series under the filter', async () => {
+    wrapper = await mountPane({ peaks: [FLAT, VARYING, OTHER] })
+    expect(wrapper.vm.hasFlatSeries).toBe(true)
+    expect(ids()).toEqual(expect.arrayContaining(['bp-f', 'bp-v', 'bp-other']))
+    wrapper.vm.onlyFlatSeries = true
+    await wrapper.vm.$nextTick()
+    expect(ids()).toEqual(['bp-f'])
+  })
+
+  it('offers no filter, and filters nothing, where no batch peak is flat', async () => {
+    wrapper = await mountPane({ peaks: [VARYING, OTHER] })
+    expect(wrapper.vm.hasFlatSeries).toBe(false)
+    wrapper.vm.onlyFlatSeries = true
+    await wrapper.vm.$nextTick()
+    expect(ids()).toHaveLength(2)
+  })
+})
+
 describe('PaneBrowserBatchPeaks merged isotopologue rows', () => {
   const stripped = (parent, extra = {}) => ({
     batch_peak_id: parent,

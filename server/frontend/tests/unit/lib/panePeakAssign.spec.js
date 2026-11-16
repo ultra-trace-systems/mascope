@@ -490,6 +490,85 @@ describe('PanePeakAssign persistence admission', () => {
   })
 })
 
+// The batch's flat-series reading of the trace, served on a row of the
+// reading it was read on, with what the rule did to the batch peak.
+// The batch's flat-series flag on the trace, served on a row of the reading
+// it was read on. It moves no tier.
+describe('PanePeakAssign flat series', () => {
+  const ROW = {
+    peak_assignment_id: 'pa-flat',
+    sample_peak_id: 'p-flat',
+    sample_peak_mz: 112.0505,
+    sample_peak_intensity: 400,
+    assigned_formula: 'C2H3N3',
+    tier: 'assigned',
+    role: 'M0',
+    fit_score: 0.9
+  }
+  const record = {
+    formula: 'C2H3N3',
+    verdict: 'flat',
+    cv: 0.0812,
+    n_present: 22,
+    n_spectra: 24,
+    share: 0.9167,
+    normaliser: 'reagent',
+    normalised: true,
+    source_ion: null
+  }
+  const line = (wrapper) => wrapper.find('[data-testid="batch-flat-series"]')
+
+  it('says the trace is flat, against what, and that the tier stands', async () => {
+    focusedAssignment = ROW
+    detailRecord = { provenance: {}, batch_flat_series: record }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(line(wrapper).text()).toBe('Flat series: cv 0.08 in 92 % of the samples')
+    expect(line(wrapper).classes()).not.toContain('source')
+    expect(line(wrapper).attributes('data-tooltip')).toMatch(
+      /read against the batch's reagent ions, over 22 of the batch's 24 samples/
+    )
+    expect(line(wrapper).attributes('data-tooltip')).toMatch(/the tier stands\.$/)
+  })
+
+  it("names the ion where the source's list holds it", async () => {
+    focusedAssignment = { ...ROW, assigned_formula: 'NO2' }
+    detailRecord = {
+      provenance: {},
+      batch_flat_series: {
+        ...record,
+        formula: 'NO2',
+        source_ion: { ion_formula: 'NO2-', label: '[NO2]-' }
+      }
+    }
+    const wrapper = await mountPane()
+
+    expect(line(wrapper).text()).toBe(
+      'Flat series: cv 0.08 in 92 % of the samples, a [NO2]- ion of the source'
+    )
+    expect(line(wrapper).classes()).toContain('source')
+  })
+
+  it('says a varying trace varies', async () => {
+    focusedAssignment = ROW
+    detailRecord = {
+      provenance: {},
+      batch_flat_series: { ...record, verdict: 'varying', cv: 0.61 }
+    }
+    const wrapper = await mountPane()
+
+    expect(line(wrapper).text()).toBe('Varies across the batch: cv 0.61')
+  })
+
+  it('shows nothing where the batch read no flatness for the row', async () => {
+    focusedAssignment = ROW
+    detailRecord = { provenance: {}, batch_flat_series: null }
+    const wrapper = await mountPane()
+
+    expect(line(wrapper).exists()).toBe(false)
+  })
+})
+
 describe('PanePeakAssign unassigned card', () => {
   it('names the peak on the fallback card, which has no assignment row at all', async () => {
     const wrapper = await mountPane()

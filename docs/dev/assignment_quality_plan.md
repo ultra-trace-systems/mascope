@@ -97,6 +97,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 4.2 - time-series coherence | - |  | built, the co-variation reading (decision 35): *Read co-variation* reads every neutral the batch sees through two channels, per mode and instrument type, as Pearson r of the log traces, reagent-normalised, the common mode (each spectrum's median of the persistent traces) removed; co-varying at r >= 0.6, untestable under 10 shared spectra or a residual spread under 0.02 in log10 (both measured against decoy pairs on the testbed's 20 batch ledgers); recorded on the batch peak, shown in the ledger and the inspector, no tier moves. The nine riders are steps of their own (MAS-777); MAS-62 |
 | 4.2b - persistence is admission, not evidence | - |  | built: *Search untargeted* also takes a batch peak whose peak is in more of its partition's spectra than the partition's Otsu split of the occurrence distribution (one share per batch peak; held in 0.25 to 0.75; none under 10 spectra), however faint; one the intensity floor or the peak cap would have left out carries `provenance.persistence` (share, counts, split, the reading elected), and that reading is held at candidate (`persistence_only`) until a committed line of its isotope pattern in a sample, the neutral through another channel of the partition or a standing series lifts it, never the fit; read on the copy's ledgers of 87 to 547 samples the split falls at 0.48 to 0.56; at the default config (floor 0, no cap) nothing is admitted on persistence alone; MAS-823 |
 | 4.2c - predicted diagnostic isotopologues in the batch fold | - |  | built: *Stamp isotopologues* predicts the 15N, 18O, 34S, 29Si, 30Si, 37Cl and 81Br lines of every committed monoisotopic batch peak at its trace centre (a labelled atom is the label's; a line under half the peak it falls in at the anchor's resolving power is unresolved), finds the batch peak there, and in each sample holding both reads the height ratio inside that sample's fitted envelope tolerance (two widths; a sample whose two widths reach past half the ratio cannot tell); a line holding in 80 % of three or more such samples is stamped in each, `predicted` or `picker`; recorded on both batch peaks and the member rows, no tier moves; MAS-824 |
+| 4.2e - a flat series is background | - |  | built, an origin flag, display-only (decision 36): *Read co-variation* also reads every committed batch peak's trace against its partition's normaliser (the reagent ions' summed signal, else each sample's TIC; one whose own cv is 0.25 or more is not divided by): a cv under 0.25 over the samples it is in, present in half the partition's samples or more and ten or more, in a partition where a fifth of the traces or more vary, is flagged `flat_series`, with the ion where the list of a profile the batch's runs resolved names it; served in the ledger, a run's snapshot, the inspector and the ledger CSV; no tier, role, member or claim moves; read on the copy's ledgers, two steady ledgers flag nothing, the informative ones flag up to 68 % of their assigned rows, K3's cylinder batch 10 of 34 with 1 of its 8 nitrogen-rich rows; K and L hold six files each on the copy, too few to read; MAS-826 |
 | 4.2f - merged isotopologue rows | - |  | built: *Strip isotopologue rows* reads every committed monoisotopic batch peak at the 13C and diagnostic lines of every brighter one below it (four times the partition's mass scatter, at least 1 ppm); a row whose height over the parent's is a median 0.4 to 1.4 times the line's share over three or more samples, fewer than a tenth above 2x, is stripped: its members and the samples' in-app rows become the parent's isotope line (recorded on both), so the consensus folds it under the parent; curated, hand-assigned and own-13C rows are held, imported runs never rewritten; read on the copy's batch ledgers, G6 on the batch ledger falls on A 9 -> 7, B 62 -> 56, D 46 -> 41 and holds on C and C2; MAS-827 |
 | 4.2g - batch isotope checks as positive facts | - |  | built: *Read batch checks* records three display-only facts on a batch peak's reading: the halogen lock (a 37Cl or 81Br line 4.2c stamped, its median offset within the batch's position window; where the window cannot tell 30Si, the 29Si line a silicon reading implies decides), the label twin (a labelled ion's 14N twin at the impurity share the batch's own reagent ions show, the setup's purity where none does, present, absent or untestable where an absent line would be charged) and the uronium neutral pair (4.2's co-variation of [M+H]+ and [M+CH4N2O+H]+); on the copy's batch ledgers D locks bromine on 144 bromide clusters (71 of its 121 assigned), C2's labelled cores read their twins present in 88 of 88 samples at 0.42 of the 98 % share, no unlabelled ion is read, A and B count 99 and 458 uronium pairs; no tier moves; MAS-828 |
 | 4.2h - known species decided once by pooled evidence | - |  | built: *Decide known species* reads each library ion a sample's reagent pass claimed (not a fragment) and each formula a list tags `background`, per mode and instrument type; present where its peak is in two samples or more and half or more, and one sample's own test held (the claim, or the listed formula at candidate or better), absent where none held, unpooled under that; a present species is claimed in every sample its peak is in (members and in-app rows: a library ion as the pre-pass's claim with its lines, a listed compound at candidate), hand, target, another ion's line or claim and a listed reading with lines of its own kept and recorded; where the fold split a trace, one batch peak claims (the one in the most samples whose claim still turns its reading once the samples reading the species on the other are kept) and the other is held; a sample's next run claims a present library ion on the batch's word; co-variation with the core recorded only (decision 35); the copy's ledgers and runs predate the claim registry, so the Verify reading is the planner's pass; MAS-829 |
@@ -1443,10 +1444,11 @@ who edits chemistry and stays last.
     The two are compared on one batch before either is called right.
   - **A flat series is background** (peaky #53). A formula whose batch
     time series holds a constant ratio to the batch's normaliser, varying
-    in fewer files than a floor share, is background rather than an
-    analyte: capped at candidate with the reason, and read as a source ion
-    where 3.3's list names it. The nitrogen-rich C2 family of the cylinder
-    sets, flat in every file, is its first target.
+    in fewer files than a floor share, is likely background rather than an
+    analyte: flagged as such, display-only, with the ion where 3.3's list
+    names it (decision 36, which replaced the cap at candidate this rider
+    first asked for). The nitrogen-rich C2 family of the cylinder sets,
+    flat in every file, was its first target.
 - **Verify.** On the two 400-600-sample testbed batches; compare with
   peaky's pass-7 skips.
 - **Size.** M. Depends on 2.3 and 2.4. Its nine riders are steps of their
@@ -1658,6 +1660,79 @@ who edits chemistry and stays last.
     predicted from the natural nitrogen alone. G6 and G8 are per-sample run
     metrics and do not move; no tier moves. The planner's pass reads the
     stamps on the current gate runs after the merge.
+
+- **As built (the fourth rider, a flat series; step 4.2e, MAS-826).** An
+  origin flag, display-only (decision 36). The pure half is
+  `mascope_tools.composition.coherence`: `batch_normaliser` is a partition's
+  summed reagent signal per spectrum where it holds a reagent ion, else each
+  spectrum's total ion current (`sample_item.tic`), and a normaliser whose
+  own cv is `FLAT_CV` or more is rejected and the traces read undivided (the
+  reference engine's `MAX_NORMALISER_CV`, in its published changelog:
+  dividing by a trace that moves injects its swings). `normalised_cv` is the
+  sample standard deviation over the mean of the trace's linear values over
+  the normaliser, over the spectra it is in; no common mode is removed.
+  `read_flat_series` reads it *flat* under `FLAT_CV` = 0.25 (the reference's
+  line), present in `FLAT_MIN_SHARE` = half the partition's spectra or more
+  (the persistent traces of 4.2's common mode) and in `MIN_SPECTRA` = 10 or
+  more; *varying* at or over the bar; *untestable* otherwise (`few_spectra`,
+  `rare`, `steady_batch`). `read_flatness` reads a partition: under
+  `MIN_VARYING_SHARE` = 0.20 of its read traces varying it holds still and
+  none is read flat (the reference's `MIN_VARYING_FRAC`). The batch half is
+  `batch_coherence.py`'s *Read co-variation*, which reads it beside the
+  co-variation (`read_batch_flatness`): every monoisotopic, unclaimed batch
+  peak's trace counts towards how much of the partition varies, and each that
+  commits a formula at any tier carries `provenance.flat_series` (the
+  verdict, cv, counts, share, the normaliser and its cv, the partition's
+  varying share, the reading it was read on, the bar, the run, and on a flat
+  reading `source_ion`, where `reagent_pass.library_ion` finds its ion in the
+  list of a profile the batch's own runs resolved: each sample's latest
+  completed run, decoy arms left out; a batch folded without runs names
+  none). The consensus keeps the record while it names that reading, as a
+  co-variation record; a new reading replaces every record. The ledger and a
+  run's snapshot serve `flat_series` (one `batch_peak_run_anchor` column, one
+  migration), a sample's detail read `batch_flat_series`, the ledger CSV
+  `flat_series`, `flat_series_cv` and `flat_series_source_ion` on every
+  member. The ledger marks the formula (the mark stronger on a named source
+  ion), a **Flat series** switch keeps those batch peaks, the inspector shows
+  the reading. No tier, role, member, reason or claim moves: the run's
+  outcome says so.
+  - **Read on the copy** (2026-11-16, read only, the branch's
+    `read_batch_flatness` over the 20 batch ledgers of the copy of 2026-10-16;
+    the copy holds reagent anchors on one ledger only, so the others read
+    against the TIC). Two uronium ledgers of a steady flow (423 and 87
+    samples, 16 and 8 % of their traces varying) flag nothing; without the
+    guard 82 and 93 % of their assigned rows read under the bar. The
+    informative ledgers of 88 to 547 samples flag 0 to 68 % of their assigned
+    rows: 38 of 151, 68 of 250, 235 of 621, 368 of 692, set C2's batch 32 of
+    47, one read undivided (its TIC moves at 0.32) 31 of 74, another (TIC at
+    0.50) none of 115. The cylinder batch of set K3 (280 files,
+    reagent-normalised, the normaliser at 0.10, 63 % of the traces varying)
+    flags 10 of its 34 assigned rows. None of the 14 in under half its files
+    is read flat: 4 are in under ten files and not read, the other 10 read
+    varying (0.26 to 1.40); one in every file varies at 2.4. Of its
+    8 nitrogen-rich assigned rows (two nitrogens or more, fewer than two
+    oxygens each) 1 is flagged (cv 0.24 against the reagent ions); the others
+    read 0.26 to 0.68 against them and 0.16 to 0.60 undivided, two in under
+    half the files. The ledgers of K, K2 and L hold their six gate files
+    only, under the ten-spectra floor, and the chamber sets G to J have no
+    ledger on the copy. On the demo's uronium batch (17 of its 81 samples run
+    and folded) 775 of 1,754 readings are flat, 538 of them at assigned: the
+    main channels of the monoterpene oxidation products vary (C10H16O3 at
+    0.46 to 0.71), some other channels of the same compounds read flat, and
+    a plasticiser a contaminants list names reads flat at 0.22.
+  - **The first build capped the reading** at candidate (`flat_series` as a
+    tier reason, the members held as 4.2b holds them) and read a listed ion
+    as the source's, claimed on a sample's next run. Decision 36 replaced
+    both with the flag on the PR's review.
+  - **Not done here.** G9 and G10 are per-sample run metrics and do not see
+    a batch-level reading, and the gate card does not yet read step 3.7's
+    cylinder gate as decision 24's addendum words it, an assigned row the
+    bottle does not hold named as the source's or the inlet's ion rather
+    than charged (#3241).
+    The reading on K, K3 and L and on the chamber sets is the planner's pass
+    on fresh ledgers, or the bench's once a set's batch is folded there; the
+    bar, the guards and the floor share are revisited once a bench reads the
+    flag.
 
 - **As built (the fifth rider, merged isotopologue rows; step 4.2f,
   MAS-827).** The batch-level form of step 2.4e's claims. The pure half is
@@ -2972,7 +3047,7 @@ with the averaged profile kept as measured.
 - Its known-species registry and certified-neutral passes (the note's
   "Not in this plan").
 
-### Decisions proposed to the plan owner (30 taken 2026-10-14, 29 and 31 on 2026-10-23, 32 on 2026-10-22, 33 on 2026-10-30, 34 and 35 on 2026-11-05)
+### Decisions proposed to the plan owner (30 taken 2026-10-14, 29 and 31 on 2026-10-23, 32 on 2026-10-22, 33 on 2026-10-30, 34 and 35 on 2026-11-05, 36 on 2026-11-16)
 
 29. **The reference is pinned at a release, and each peaky minor gets a
     boundary review** (step 5.1). Taken 2026-10-23 by the plan owner
@@ -3043,6 +3118,36 @@ with the averaged profile kept as measured.
     source moved; a jump uncorrelated with either trace, two species),
     never a veto; anti-correlation does not demote; the sidelobe clause
     moves to 5.4. Order: 4.2, then 4.11 on its trace plumbing.
+36. **A flat series is an origin flag, never a tier** (taken 2026-11-16 by
+    the plan owner, on the review of MAS-826's PR). The tier is the
+    confidence in the formula, and a flat trace says where an ion comes
+    from, not whether its composition is right. Folding origin into the
+    tier would make *candidate* mean either weak formula evidence or a
+    well-evidenced background ion, would cap the best-evidenced rows (a
+    source ion is usually bright, with its full isotope pattern and often a
+    second channel; the reference stopped demoting flat rows on 2026-09-26
+    for this), and would fall mostly on bright peaks, counting noise raising
+    a faint trace's cv. In ambient work the air is the sample: a long-lived
+    acid or a regional background compound holds still over a short batch or
+    a spell of steady weather, and what counts as a contaminant depends on
+    the study (a plasticiser is an analyte in indoor air). The step's own
+    reading pointed the same way: a quarter to two thirds of the assigned
+    rows of the informative ledgers flagged, channels of one compound
+    flagged while its main channel varies, one of K3's eight nitrogen-rich
+    rows caught. And flatness is a time-series reading, unmeasured, which
+    decision 35 holds display-only. So: the flat reading is recorded,
+    served (ledger, snapshot, inspector, export) and moves no tier, role,
+    member or claim; a listed ion is named, from the batch's own profiles'
+    lists, and claiming stays the known-species step's (4.2h). 4.2b's
+    `persistence_only` cap stands: it is about the formula's evidence, a
+    faint peak nothing constrains. The pressure for the cap came from the
+    cylinder gate, which the plan owner rewrote the same day (step 3.7, decision
+    24's addendum): a source ion with a correct composition at assigned is a
+    right answer, so an assigned row the bottle does not hold is named as
+    the source's or the inlet's ion, or its composition argued from the
+    source chemistry, rather than held below assigned. The gate card reading
+    it so is #3241. The 0.25 bar, the two guards and the 0.5 floor share
+    stand as the reading's defaults until a bench reads the flag.
 
 ### Worth watching
 

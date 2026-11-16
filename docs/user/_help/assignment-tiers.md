@@ -24,7 +24,10 @@ tier is a vote across the samples it appears in, so its chip names no evidence.
 A batch peak the batch's untargeted search took only because its peak recurs
 across the batch, not for its height, holds the formula it found at
 *candidate* at most (**persistence only**, a down arrow beside the chip) until
-an isotope line, another channel or a series of the batch sees it too.
+an isotope line, another channel or a series of the batch sees it too. A
+**flat series** mark is not a tier: it flags a batch peak whose trace holds a
+constant ratio to the batch's reagent ions or total ion current, which says
+where the ion likely comes from, not whether its formula is right.
 
 A run imported from another engine can also carry that engine's own tier, in an
 **engine tier** column beside Mascope's. Where the two differ, the peak is worth

@@ -34,6 +34,7 @@ import {
   persistenceSummary,
   persistenceTooltip
 } from '@/lib/batchPersistence'
+import { flatSeriesKind, flatSeriesSummary, flatSeriesTooltip } from '@/lib/batchFlatSeries'
 import { ROLE_BUCKETS, bucketRank } from '@/lib/tiers'
 import { EVIDENCE_LEVELS, VERDICT_META, claimCandidates } from '@/lib/verification'
 import { useBatchPeakCuration } from './stores/batchPeakCuration.js'
@@ -570,6 +571,13 @@ const batchPersistenceHold = computed(() =>
 const batchPersistenceNote = computed(() =>
   persistenceHoldNote(batchPersistence.value?.tier_reasons, batchPersistence.value?.consensus_tier)
 )
+
+// --- The batch's flat-series reading ----------------------------------------
+// What "Read co-variation" found of the trace of the batch peak this row's
+// peak is in, against the batch's reagent ions or total ion current, on a row
+// that reads the reading it was read on: varying, or flat - an origin flag,
+// likely background, which moves no tier.
+const batchFlatSeries = computed(() => focusedDetail.value?.batch_flat_series ?? null)
 
 // --- The other channels' peaks ------------------------------------------------
 // The badge names channels, which leaves the reader to find each one's peak in
@@ -1677,6 +1685,18 @@ const demotedCount = computed(() => {
           }}<span v-if="batchPersistenceNote">, {{ batchPersistenceNote }}</span></span
         >
       </div>
+      <!-- What the batch read of the trace: whether it holds a constant
+           ratio to the batch's normaliser. An origin flag; no tier moves. -->
+      <div
+        v-if="batchFlatSeries"
+        class="batch-flat-series"
+        :class="flatSeriesKind(batchFlatSeries)"
+        data-testid="batch-flat-series"
+        v-tooltip.top="flatSeriesTooltip(batchFlatSeries)"
+      >
+        <span class="pi ph ph-equals" />
+        <span>{{ flatSeriesSummary(batchFlatSeries) }}</span>
+      </div>
       <Popover ref="channelsMenu" aria-label="The other channels' peaks">
         <div class="other-readings">
           <div class="alts-label">The same neutral, through the other channels</div>
@@ -2657,6 +2677,18 @@ const demotedCount = computed(() => {
   cursor: default;
 }
 .batch-persistence .pi {
+  flex: none;
+  font-size: 0.8rem;
+}
+.batch-flat-series {
+  align-self: start;
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  font-size: 0.74rem;
+  cursor: default;
+}
+.batch-flat-series .pi {
   flex: none;
   font-size: 0.8rem;
 }

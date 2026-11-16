@@ -1615,8 +1615,55 @@ with r. A batch peak keeps its reading for as long as its consensus names the fo
 and the ionization it was read for; a new sample's vote, a curation or a rebuild that
 moves it takes the reading off, and the next *Read co-variation* replaces every reading.
 It runs as a batch run, whose summary counts each verdict per ionization mode and
-instrument type and names the thresholds; it changes no tier, no member and no
-per-sample run.
+instrument type and names the thresholds; the co-variation changes no tier, no member
+and no per-sample run.
+
+**A flat series flags background.** The same run reads each compound's trace on its own.
+A source ion, an inlet contaminant or a constant reagent cluster is in every sample at
+the share of the source's signal the source gives it, while what was sampled rises and
+falls with it: a plume, the day's cycle, a cylinder opened for an hour. So every batch
+peak that commits a formula is read against the batch's normaliser:
+
+- **The normaliser** is each sample's summed reagent signal, as above, or its total ion
+  current where the batch holds no reagent ion: a urea or labelled-nitrate source whose
+  reagent ions sit below the acquired window is read against the total ion current. A
+  normaliser that itself moves more than a flat trace may, its own coefficient of
+  variation 0.25 or more, would put its swings into every trace it divides, so the
+  traces are then read as they are, and the reading says so.
+- **The trace's coefficient of variation**, the standard deviation over the mean of its
+  height divided by the normaliser, over the samples it is in. No common mode is taken
+  out: what moves every peak is exactly what a constant ratio to the source does not.
+- **Flat** under 0.25, the line peaky, the assignment engine Mascope's is measured
+  against, reads a flat trace by, where the peak is in half the batch's samples or more
+  and in ten or more. A peak in under ten samples is not read, whatever it does. One in
+  ten or more but under half is never read as flat, since a few samples can hold still
+  whatever the peak is: at 0.25 or more it reads as varying, and under 0.25 it is not
+  read.
+- **Only in a batch that varies.** In a batch that holds still - a steady flow, a held
+  chamber, replicate files of one sample - every trace is flat, and flatness tells a
+  background from nothing. Where fewer than a fifth of a batch's traces vary, none is
+  read as flat.
+
+A flat reading is flagged, never weighed. The flag says where an ion likely comes from,
+not whether its composition is right: a source ion is often bright, with its whole
+isotope pattern, and its formula can be the call for the peak. Nor is every flat trace
+a contaminant. In ambient air the air is the sample, and a long-lived acid or a regional
+background compound can hold still over a short batch; what counts as background also
+depends on the study, as a plasticiser does in indoor air. So no tier, role or sample
+moves on it. Where the source's own list of its ions - its reagent ladder, the ions it
+makes of the air, the calibrant beam (*The ions a source makes of itself*, above), read
+for the profile the batch's own runs resolved - names a flat reading's ion, the flag
+names that ion too. The flag claims nothing: a source ion is claimed by each sample's
+reagent pass, and across the batch by *Decide known species* (below).
+
+The batch peak's formula carries a level mark: hover it for the coefficient of
+variation, the share of the samples and the source ion where one is named. The **Flat
+series** switch keeps only those batch peaks, the ledger's CSV carries the flag on every
+member (`flat_series`, `flat_series_cv`, `flat_series_source_ion`), so background can be
+filtered out, and a sample's inspector shows the reading under the row. A new *Read
+co-variation* replaces every flag. The run's summary counts each verdict per ionization
+mode and instrument type, with the normaliser, how much of the batch varies and the
+profiles whose lists were read.
 
 ### Stamping isotopologues
 
