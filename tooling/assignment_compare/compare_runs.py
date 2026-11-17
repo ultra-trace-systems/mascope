@@ -379,6 +379,9 @@ def prepare(ledger: pd.DataFrame, prefix: str, notation_by_id: dict) -> pd.DataF
             f"{prefix}_mass_z": ledger.get("mass_z"),
             f"{prefix}_channels": ledger.get("corroboration_channels"),
             f"{prefix}_listing": ledger.get("reference_listing"),
+            # The identification level the run stated (step 5.8); absent from
+            # a server or a run from before it.
+            f"{prefix}_level": ledger.get("level"),
         }
     )
     return out
@@ -901,6 +904,8 @@ def decoy_rates(control: dict, decoy: dict) -> dict:
     }
     if "new_ion" in decoy:
         rates["new_ion_pct"] = pct(decoy["new_ion"], control["rows"])
+    if "levelled" in decoy:
+        rates["at_4_or_above_pct"] = pct(decoy["at_4_or_above"], decoy["levelled"])
     return rates
 
 
@@ -995,6 +1000,7 @@ def decoy_report(
             decoy_rows = assigned_rows(decoy_ledger)
             decoy = assigned_counts(decoy_rows)
             decoy.update(on_control_reagent(decoy_rows, control_ledger))
+            decoy.update(metrics.level_counts(decoy_ledger))
             if arm == "swap_adducts":
                 decoy.update(ion_split(decoy_rows, control_ledger))
             per_sample.setdefault(sample_id, {})[arm] = {
@@ -1612,6 +1618,9 @@ def _context(name: str, column: dict) -> str:
     if column.get("tiering_rules"):
         rules = ", ".join(str(one) for one in column["tiering_rules"])
         parts.append(f"tiering rule set {rules}")
+    if column.get("level_rules"):
+        levels = ", ".join(str(one) for one in column["level_rules"])
+        parts.append(f"level rules {levels}")
     for arm, count in sorted((column.get("decoys_not_read") or {}).items()):
         parts.append(f"decoy {arm} not read on {count}")
     return f"- {name}: " + "; ".join(parts)
@@ -1840,7 +1849,7 @@ def collect_set(client: MascopeClient, name: str, spec: dict, args) -> dict:
     engine A, or an empty ledger, is skipped and counted.
 
     :return: ``{"samples", "skipped", "frame", "source_ions",
-        "engine_versions", "tiering_rules", "decoy"}``.
+        "engine_versions", "tiering_rules", "level_rules", "decoy"}``.
     """
     mechanisms = client.ionization.list()
     notation_by_id = (
@@ -1858,6 +1867,7 @@ def collect_set(client: MascopeClient, name: str, spec: dict, args) -> dict:
     controls: dict[str, str] = {}
     versions = {"a": set(), "b": set()}
     rules = set()
+    level_rules = set()
     for sample_id in samples:
         runs = client.peak_assignments.list_runs(sample_id)
         run_a = latest_completed_run(runs, args.engine_a)
@@ -1904,6 +1914,13 @@ def collect_set(client: MascopeClient, name: str, spec: dict, args) -> dict:
         tiering = (config.get("tiering") or {}).get("version")
         if tiering is not None:
             rules.add(int(tiering))
+        # The identification level's rule set (step 5.8), recorded beside the
+        # tier's; a run from before the level records none.
+        level = ((config.get("tiering") or {}).get("identification_level") or {}).get(
+            "level_rules_version"
+        )
+        if level is not None:
+            level_rules.add(int(level))
         print(
             f"set {name}: {sample_id} {len(joined)} peaks, "
             f"{'with' if ledger_b is not None else 'without'} a reference run, "
@@ -1922,6 +1939,7 @@ def collect_set(client: MascopeClient, name: str, spec: dict, args) -> dict:
         "source_ions": source_ions,
         "engine_versions": {side: sorted(v) for side, v in versions.items()},
         "tiering_rules": sorted(rules),
+        "level_rules": sorted(level_rules),
         "decoy": decoy,
     }
 
@@ -1967,6 +1985,7 @@ def build_card(collected: dict[str, dict], manifest: dict, args) -> dict:
             "instrument": manifest["sets"][name]["instrument"],
             "engine_versions": one["engine_versions"],
             "tiering_rules": one["tiering_rules"],
+            "level_rules": one.get("level_rules", []),
             "decoys_not_read": _not_read_arms(one["decoy"]),
             "readings": (
                 metrics.card_readings(
@@ -1990,6 +2009,7 @@ def build_card(collected: dict[str, dict], manifest: dict, args) -> dict:
             for side in ("a", "b")
         },
         "tiering_rules": sorted({v for one in read for v in one["tiering_rules"]}),
+        "level_rules": sorted({v for one in read for v in one.get("level_rules", [])}),
         "decoys_not_read": {},
         "readings": metrics.card_readings(
             pooled_frame,
