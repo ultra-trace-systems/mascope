@@ -129,7 +129,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 5.5 - the TOF signal-to-noise column: verify it tracks height, fix the picker or fall back to counting statistics | #2377 | 2026-10-16 | built: the picker's TOF noise is now the baseline's MAD; measured next on E, F, J |
 | 5.6 - the import contract: a verdict on batch rows, the engine tier where the user looks | - |  | built: `engine_tier` and `engine_claim` on a batch import row, kept on the batch peak where its consensus names the row's identity; an Engine tier column, an Engine disagrees filter and an Engine tier view of the strip, off by default; the mechanism table documented as a catalogue; no run or gate number moves; MAS-71; the member rows, the ledger CSV and a sample shown from the batch ledger carry the verdict too (M0 rows reading the consensus only), MAS-727 |
 | 5.7 - experiment: the file's own locks as calibrants, read against the calibration node's residuals | - |  | planned; after 3.5; feeds 4.3 and the axis-fingerprint project; the labelled sets wait for a release carrying the reference's #77 |
-| 5.8 - the identification level: the scale, the row contract, and the formula levels 5a, 5b, 4a and 4b | - |  | planned 2026-10-14 (decision 30), re-cut 2026-11-17 on the shared scale (decision 38, MAS-938); reads facts already built; MAS-73; the scale is defined in `assignment_confidence.md` ("P4 design: the identification level") |
+| 5.8 - the identification level: the scale, the row contract, and the formula levels 5a, 5b, 4a and 4b | - |  | planned 2026-10-14 (decision 30), re-cut 2026-11-17 on the shared scale (decision 38, MAS-938); reads facts already built, so no longer after 3.7 (decided 2026-11-17); MAS-73; the scale is defined in `assignment_confidence.md` ("P4 design: the identification level") |
 | 5.8b - level 3 from the run's context and channel: 3c, 3b by ionization, 3a on two routes, 2b on a one-structure formula | - |  | planned 2026-11-17 (decision 38); after 5.8; MAS-939 |
 | 5.8c - the batch's level and its isotope checks: a halogen lock, stamped lines and the label twin on 5a and 4b | - |  | planned 2026-11-17 (decision 38); after 5.8b; MAS-940 |
 | 5.8d - the co-variation lifts: 3d on a series, 3a on an anchored homologue, the uronium pair, a TOF second channel | - |  | planned 2026-11-17 (decision 38); after 5.8c and 4.13 (decision 35); MAS-941 |
@@ -3207,11 +3207,12 @@ the same air (5.8g). No step moves a tier.
   move; the level readings are new readings.
 - **Size.** L. MAS-73.
 - **Order.** The brief of 2026-10-14 waited for the stage-3 gate (3.7),
-  because the reasons it reads were still moving. *Call for the plan
-  owner:* whether it still waits. Recommended: no. Every fact the formula
-  levels read is built, the level moves no tier, a fact that changes later
-  bumps the mapping's version rather than reopening the step, and the 3.7
-  gate is read better with the level on its card.
+  because the reasons it reads were still moving. *Decided 2026-11-17 by
+  the plan owner:* it no longer waits (MAS-73's block on MAS-60 lifted).
+  Every fact the formula levels read is built, the level moves no tier, a
+  fact that changes later bumps the mapping's version rather than
+  reopening the step, and the 3.7 gate is read better with the level on
+  its card.
 
 ### 5.8b Level 3 from the run's context and channel
 
@@ -3906,14 +3907,16 @@ gave its TOF rider a step of its own (MAS-922).
     level moves no tier. Step 5.8 is re-cut by the kind of evidence the
     scale names: the formula levels (5.8), the run's context and channel
     (5.8b), the batch's isotope checks (5.8c), its co-variation (5.8d),
-    MS/MS (5.8e), review (5.8f) and a second instrument (5.8g). The calls it leaves are in those steps: whether a
-    tier rule follows where tier and level cross, 4.15's default, and
-    whether 5.8 still waits for the 3.7 gate (5.8); the one-structure mark
-    and the class table's author (5.8b); what MS/MS may state without a
-    person (5.8e); a reference standard with no independent line (5.8f).
-    The claims note's rule that a list raises nothing is narrowed to lists
+    MS/MS (5.8e), review (5.8f) and a second instrument (5.8g). The calls
+    it leaves are in those steps: whether a tier rule follows where tier
+    and level cross and 4.15's default (5.8); the one-structure mark and
+    the class table's author (5.8b); what MS/MS may state without a person
+    (5.8e); a reference standard with no independent line (5.8f). The
+    claims note's rule that a list raises nothing is narrowed to lists
     outside the run's context
     ([`identification_claims.md`](identification_claims.md) section 3).
+    Taken with it the same day: 5.8 no longer waits for the 3.7 gate,
+    since every fact it reads is built and the level moves no tier.
 
 ### Worth watching
 
