@@ -11,8 +11,10 @@ as a file the node has not fitted yet reads.
 
 import json
 import os
+from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 import mascope_file.name as m_name
@@ -203,3 +205,121 @@ def snapshot(root) -> dict:
             stat = os.stat(full)
             found[os.path.relpath(full, root)] = (stat.st_size, stat.st_mtime_ns)
     return found
+
+
+# --- Real specimens ---
+
+#: The derived fixtures of real TOF files, one per reagent class (MAS-191):
+#: what the node reads near each calibrant, and the fit it made.
+SPECIMEN_DIR = (
+    Path(__file__).resolve().parents[6] / "libraries" / "tofwerk" / "tests" / "data"
+)
+SPECIMENS = ("bromide", "nitrate")
+
+
+def specimen(kind: str) -> dict:
+    """The fixture of one reagent class (``SPECIMEN_DIR``'s README)."""
+    with open(SPECIMEN_DIR / f"tof_specimen_{kind}.json") as fixture:
+        return json.load(fixture)
+
+
+def specimen_isotopes(found: dict) -> pd.DataFrame:
+    """The specimen's calibrants, as an audit set holds them.
+
+    Its ions are told apart by their formula, which is what the database's
+    ids stand for.
+    """
+    return pd.DataFrame(
+        [
+            {
+                "target_isotope_id": f"{line['isotope']} {line['mz']:.6f}",
+                "target_ion_id": line["ion"],
+                "mz": line["mz"],
+                "relative_abundance": line["relative_abundance"],
+                "resolution": "LOW",
+                "target_isotope_formula": line["isotope"],
+                "target_ion_formula": line["ion"],
+                "ion_label": f"{line['ion']} {line['mz']:.4f}",
+            }
+            for line in found["calibrants"]
+        ]
+    )
+
+
+def specimen_params(found: dict) -> CalibrationFitParams:
+    """The node's TOF parameters for the specimen's polarity: its defaults,
+    which the specimen was fitted with."""
+    return CalibrationFitParams(
+        calibration_collection_id="collection",
+        ionization_mechanism_ids=[RADICAL_ANION.ionization_mechanism_id],
+        polarity=found["polarity"],
+        **TofCalibrationParams().model_dump(),
+    )
+
+
+def specimen_resolution(found: dict):
+    """The resolving power the instrument function gave each of its peaks."""
+    mz = np.array([peak["mz"] for peak in found["peaks"]])
+    power = np.array([peak["resolution"] for peak in found["peaks"]])
+
+    def resolution(at):
+        return np.interp(np.asarray(at, dtype=np.float64), mz, power)
+
+    return resolution
+
+
+def write_specimen(root, found: dict, filename: str = FILENAME) -> str:
+    """Write a TOF sample file whose store holds the specimen's peaks.
+
+    The peaks keep their TOF index and their m/z on the acquisition axis,
+    which the file carries as its record, so the node reads the file as it
+    did before its first fit. A peak's area is the same in every scan: its
+    mean over the scans, which is what the node ranks candidates by.
+
+    :return: The file's name
+    """
+    path = os.path.join(root, *_relative_path(filename))
+    os.makedirs(path, exist_ok=True)
+    peaks = found["peaks"]
+    area = np.array([peak["area"] for peak in peaks], dtype=np.float64)
+    times = np.arange(N_SCANS, dtype=np.float64)
+    data_vars = {
+        "peak_areas": (("mz", "time"), area[:, None] * np.ones(N_SCANS)),
+        "peak_heights": (
+            ("mz", "time"),
+            np.array([p["sum_height"] for p in peaks])[:, None]
+            * np.ones(N_SCANS)
+            / N_SCANS,
+        ),
+        "sum_peak_areas": ("mz", np.array([p["sum_area"] for p in peaks])),
+        "sum_peak_heights": ("mz", np.array([p["sum_height"] for p in peaks])),
+        "signal_to_noise": ("mz", np.array([p["snr"] for p in peaks])),
+        "polarity": ("mz", np.array([p["polarity"] for p in peaks])),
+        "is_weak": ("mz", np.array([p["weak"] for p in peaks])),
+        "is_satellite": ("mz", np.array([p["satellite"] for p in peaks])),
+        "is_timeseries_computed": ("mz", np.ones(len(peaks), dtype=bool)),
+        "peak_id": ("mz", np.array([f"p{i}" for i in range(len(peaks))])),
+        "sparsity": ("mz", np.zeros(len(peaks))),
+    }
+    coords = {
+        "mz": np.array([peak["mz"] for peak in peaks]),
+        "tof": ("mz", np.array([peak["tof"] for peak in peaks])),
+        "time": times,
+    }
+    xr.Dataset(data_vars, coords=coords).to_zarr(
+        os.path.join(path, "peak_timeseries.zarr"), mode="w", consolidated=True
+    )
+    xr.Dataset(
+        {"signal": (("mz", "time"), np.ones((8, N_SCANS)))},
+        coords={"mz": np.linspace(10.0, 600.0, 8), "time": times},
+    ).to_zarr(os.path.join(path, "signal.zarr"), mode="w", consolidated=True)
+    with open(os.path.join(path, ".props"), "w") as props:
+        json.dump(
+            {
+                "instrument_type": "tof",
+                "polarity": found["polarity"],
+                "mz_calibration": found["axis"],
+            },
+            props,
+        )
+    return filename
