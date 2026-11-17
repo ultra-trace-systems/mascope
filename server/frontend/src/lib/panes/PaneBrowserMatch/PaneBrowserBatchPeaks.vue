@@ -15,6 +15,7 @@ import { FilterMatchMode, FilterOperator, FilterService } from '@primevue/core/a
 
 import {
   BaseCopyableField,
+  BaseLevelTag,
   BaseProvisionalMark,
   BaseTabbedPanel,
   BaseTierTag,
@@ -89,6 +90,13 @@ import {
   engineBucketOf,
   tierRank
 } from '@/lib/tiers'
+import {
+  LEVEL_FILTER_OPTIONS,
+  isLevel,
+  levelMeta,
+  levelRank,
+  memberLevelTooltip
+} from '@/lib/levels'
 import { VERDICT_META } from '@/lib/verification'
 import { prettyTrim } from '@/lib/utils'
 import { useApp } from '@/stores'
@@ -187,6 +195,10 @@ const filters = ref({
     constraints: [{ value: null, matchMode: FilterMatchMode.CONTAINS }]
   },
   consensus_tier: {
+    operator: FilterOperator.AND,
+    constraints: [{ value: null, matchMode: FilterMatchMode.EQUALS }]
+  },
+  member_level: {
     operator: FilterOperator.AND,
     constraints: [{ value: null, matchMode: FilterMatchMode.EQUALS }]
   }
@@ -353,6 +365,52 @@ const engineTierTooltip = (row) => {
         `members' measurements says ${row.consensus_tier}${said}`
 }
 
+// --- The identification level -----------------------------------------------------
+
+// The level most of a batch peak's members' runs stated for its consensus
+// formula (`member_level`, a tie reading as the weaker level), with how the
+// members split (`member_levels`). It is the members' level: the batch states
+// none of its own, and the chip's hover says so. Shown beside the tier and
+// never in its place, and offered only where some batch peak shown carries
+// one, as the engine's tier is: an earlier run's snapshot and a ledger built
+// before the level carry none.
+const hasMemberLevels = computed(() => shown.value.some((bp) => isLevel(bp.member_level)))
+
+// A level filter is no filter while its column is absent - left on, it would
+// empty the table for a reason nothing on screen shows - and it is dropped
+// when the column goes.
+watch(hasMemberLevels, (has) => {
+  if (!has) filters.value.member_level.constraints[0].value = null
+})
+
+// The level an importing engine stated for the identity, beside the members'
+// as its tier is beside the consensus tier; offered only where some batch peak
+// shown carries one.
+const hasEngineLevels = computed(() => shown.value.some((bp) => isLevel(bp.engine_level)))
+
+// Says whose level the chip is, and whether it agrees with the members'.
+const engineLevelTooltip = (row) => {
+  const said = row.engine_claim ? ` - "${row.engine_claim}"` : ''
+  const meaning = levelMeta(row.engine_level)?.description
+  const against = !isLevel(row.member_level)
+    ? "The members' runs stated no level for it"
+    : row.engine_level === row.member_level
+      ? "It agrees with the level the members' runs stated"
+      : `The members' runs stated ${row.member_level}`
+  // The engine's two lines about its level, as it wrote them.
+  const why = row.engine_evidence ? `Why: ${row.engine_evidence}` : null
+  const lift = row.engine_lift ? `Would lift it: ${row.engine_lift}` : null
+  return [
+    `The importing engine's own level: ${row.engine_level}${said}`,
+    meaning,
+    why,
+    lift,
+    against
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
 // --- The co-variation reading ---------------------------------------------------
 
 // How a species' trace follows the same compound through the mode's other
@@ -433,6 +491,10 @@ const decorated = computed(() => {
       // Null rather than a rank where no engine stated one, so the column
       // sorts those last in both directions.
       engineTierRank: batchPeak.engine_tier != null ? tierRank(batchPeak.engine_tier) : null,
+      // The scale's rank of the members' level and of the engine's, null where
+      // there is none, so the columns sort those last in both directions.
+      memberLevelRank: isLevel(batchPeak.member_level) ? levelRank(batchPeak.member_level) : null,
+      engineLevelRank: isLevel(batchPeak.engine_level) ? levelRank(batchPeak.engine_level) : null,
       // The strongest partner's r, null where none was read, so those sort last.
       coVariationRank: coVariationRank(batchPeak.co_variation),
       // Facts holding less facts refuting, null where none was read.
@@ -620,6 +682,9 @@ const byConfidence = (a, b) =>
  */
 const passesFilters = (row) => {
   for (const [field, meta] of Object.entries(filters.value)) {
+    // The level's menu filters only while its column is shown (see
+    // hasMemberLevels).
+    if (field === 'member_level' && !hasMemberLevels.value) continue
     const constraints = (meta.constraints ?? [meta]).filter(
       (constraint) => constraint.value !== null
     )
@@ -916,6 +981,13 @@ const HEADER_TOOLTIPS = {
   engineTier:
     'The tier the engine that imported this identity stated for it, beside the consensus ' +
     'this server measured from the members. Nothing sorts, folds or rolls up on it',
+  level:
+    "Identification level the members' runs stated for the consensus formula, by majority, " +
+    'a tie reading as the weaker level: what may be stated of it, from 5 (a measured mass) ' +
+    'to 1 (a confirmed structure). The batch states none of its own, and no tier moves on it',
+  engineLevel:
+    'The identification level the engine that imported this identity stated for it, beside ' +
+    "the level the members' runs stated. No tier moves on it",
   coVariation:
     "How this species' intensity follows the same compound through the mode's other " +
     'channels across the batch: Pearson r of the log intensities, reagent-normalised, with ' +
@@ -962,6 +1034,10 @@ watch(
         samples it appears in, and the highest intensity it reaches in any of
         them. Isotopologue peaks are folded under their main peak; the
         view-options button on the tier row unfolds them.
+        </p>
+        <p>
+        Where the members' runs state one, the <b>Level</b> column gives the
+        identification level most of them stated for the consensus formula.
         </p>
         <p>
         The rows selected here are what the Assignments chart plots &mdash;
@@ -1674,6 +1750,77 @@ watch(
           </template>
         </Column>
 
+        <!-- The identification level the members' runs stated, beside the
+             tiers and never in their place. `field` stays the level so the
+             filter menu keeps its constraint, as the tier column's does;
+             `sortField` is the scale's rank. A batch peak with no level shows
+             the dash an empty cell does, an isotopologue row nothing. -->
+        <Column
+          v-if="hasMemberLevels"
+          field="member_level"
+          sortField="memberLevelRank"
+          sortable
+          style="min-width: 6rem"
+          :filterMatchModeOptions="[{ label: 'Equals', value: 'equals' }]"
+          :maxConstraints="1"
+          :showAddButton="false"
+          :showOperator="false"
+        >
+          <template #header>
+            <span
+              v-tooltip.top="HEADER_TOOLTIPS.level"
+              v-help.top="{
+                title: 'Identification level',
+                helpKey: 'assignment-level',
+                doc: app.ui.help.docUrl('how-it-works/peak-assignment/#identification-level')
+              }"
+              >Level</span
+            >
+          </template>
+          <template #body="{ data }">
+            <BaseLevelTag
+              v-if="isLevel(data.member_level)"
+              :level="data.member_level"
+              :tooltip="memberLevelTooltip(data.member_level, data.member_levels)"
+            />
+            <span v-else-if="!data.parentId" class="no-level">&mdash;</span>
+          </template>
+          <template #filter="{ filterModel, filterCallback }">
+            <Select
+              v-model="filterModel.value"
+              @change="filterCallback()"
+              :options="LEVEL_FILTER_OPTIONS"
+              optionLabel="label"
+              optionValue="value"
+              placeholder="Any level"
+              size="small"
+              :showClear="true"
+            >
+              <template #option="{ option }">
+                <span class="level-option"
+                  ><b>{{ option.label }}</b> {{ option.name }}</span
+                >
+              </template>
+            </Select>
+          </template>
+        </Column>
+
+        <!-- The importing engine's own level, beside the members' as its tier
+             is beside the consensus. -->
+        <Column v-if="hasEngineLevels" field="engineLevelRank" sortable style="min-width: 7rem">
+          <template #header>
+            <span v-tooltip.top="HEADER_TOOLTIPS.engineLevel">Engine level</span>
+          </template>
+          <template #body="{ data }">
+            <BaseLevelTag
+              v-if="isLevel(data.engine_level) && !data.parentId"
+              :level="data.engine_level"
+              :tooltip="engineLevelTooltip(data)"
+            />
+            <span v-else-if="!data.parentId" class="no-engine-tier">&mdash;</span>
+          </template>
+        </Column>
+
         <!-- The co-variation reading: the strongest partner channel's r, or
              that the pair could not be read. A reading aid alone - the tier
              column is what the table sorts, filters and folds on. -->
@@ -2225,8 +2372,16 @@ watch(
   font-style: italic;
   opacity: 0.7;
 }
-.no-engine-tier {
+/* A batch peak with no engine tier or level, or no level from its members:
+   recessive, as an empty cell is in every column of the ledger. */
+.no-engine-tier,
+.no-level {
   opacity: 0.4;
+}
+/* A level filter's option: the level, then its name, the levels aligned. */
+.level-option b {
+  display: inline-block;
+  min-width: 1.6rem;
 }
 /* The source's and the instrument's peaks, in the colour their chips wear, and
    set off from the tiers: what follows is not a confidence. */

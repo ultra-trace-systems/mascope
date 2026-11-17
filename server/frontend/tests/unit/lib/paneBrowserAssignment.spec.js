@@ -13,6 +13,7 @@ import { useAssignmentLauncher } from '@/lib/panes/PaneBrowserMatch/stores'
 import { usePeakAssignParams } from '@/lib/peakAssignParams'
 import { isIsotopeLine } from '@/lib/isotopeLines'
 import { TIERING_PROVISIONAL, tierRank } from '@/lib/tiers'
+import { LEVELS } from '@/lib/levels'
 
 // The per-sample launcher's job after the assign endpoint became synchronous:
 // a run that is refused (409) or a sample that cannot be assigned (422) arrives
@@ -157,6 +158,14 @@ vi.mock('@/lib/base', async () => ({
   BaseTierTag: {
     props: ['tier', 'evidence', 'role', 'source', 'tooltip'],
     template: '<span class="tier-tag-stub" :data-evidence="String(evidence)" />'
+  },
+  // Says what it was handed, so the level column's tests can read it off; the
+  // chip has a spec of its own (base/BaseLevelTag.spec.js).
+  BaseLevelTag: {
+    props: ['level', 'evidence', 'lift', 'role', 'tooltip'],
+    template:
+      '<span class="level-tag-stub" :data-level="level" :data-evidence="evidence" ' +
+      ':data-lift="lift" :data-role="role" />'
   },
   BaseVerdictBadge: true,
   // Real: the tier column's header renders it, and the provisional-tiers tests
@@ -2148,6 +2157,228 @@ describe('PaneBrowserAssignment engine tier column', () => {
     expect(wrapper.vm.engineTierTooltip({ tier: 'assigned', engine_tier: 'assigned' })).toContain(
       'agrees'
     )
+  })
+})
+
+// The identification level, in a column of its own beside the tier: what a
+// reader may state of the row. Sorted on the scale's rank, filtered by its
+// column's menu, and offered only where the run states levels at all.
+describe('PaneBrowserAssignment identification level column', () => {
+  beforeEach(() => {
+    runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
+  })
+  afterEach(() => vi.clearAllMocks())
+
+  /** A family whose rows carry `level`, the isotopologues their M0's. */
+  const leveled = (spec, level, extra = {}) => {
+    const fam = family(spec)
+    Object.assign(fam.parent, { level, ...extra })
+    for (const kid of fam.kids) kid.level = level
+    return fam
+  }
+  const seedLevels = () =>
+    seed(
+      leveled({ id: 'a', mz: 100.1, intensity: 10, formula: 'C6H6', fit: 0.9 }, '5a', {
+        level_evidence: 'rivals not measured',
+        level_lift: 'measure the shortlist'
+      }),
+      leveled({ id: 'b', mz: 200.1, intensity: 20, formula: 'C7H8', fit: 0.8 }, '4a'),
+      leveled({ id: 'c', mz: 300.1, intensity: 30, formula: 'C8H10', fit: 0.7 }, null),
+      leveled({ id: 'd', mz: 400.1, intensity: 40, formula: 'C9H12', fit: 0.6 }, '4b')
+    )
+
+  // Renders each column's header, cells and filter slot, recording the props
+  // the pane handed it - the sort field the header click orders by and the one
+  // rule its filter menu allows.
+  const SelectStub = {
+    name: 'Select',
+    props: ['modelValue', 'options', 'optionLabel', 'optionValue', 'placeholder'],
+    template: '<div class="select-stub" />'
+  }
+  async function renderedTable({ directives = { tooltip: {}, help: {} } } = {}) {
+    const tableRows = ref([])
+    const wrapper = mount(PaneBrowserAssignment, {
+      global: {
+        directives,
+        stubs: {
+          ...GLOBAL_STUBS,
+          Select: SelectStub,
+          DataTable: {
+            ...GLOBAL_STUBS.DataTable,
+            watch: {
+              value: { handler: (value) => (tableRows.value = value), immediate: true }
+            }
+          },
+          Column: {
+            name: 'Column',
+            props: {
+              field: String,
+              sortField: String,
+              sortable: Boolean,
+              header: String,
+              maxConstraints: Number,
+              showAddButton: { type: Boolean, default: null }
+            },
+            setup: () => ({ rows: tableRows, model: { value: null } }),
+            template:
+              '<div class="stub-col" :data-field="field">' +
+              '<div class="stub-head">{{ header }}<slot name="header" /></div>' +
+              '<div class="stub-filter"><slot name="filter" :filterModel="model" ' +
+              ':filterCallback="() => {}" /></div>' +
+              '<template v-for="(row, i) in rows" :key="i">' +
+              '<div class="stub-cell" :data-row="row.peak_assignment_id">' +
+              '<slot name="body" :data="row" /></div></template></div>'
+          }
+        }
+      }
+    })
+    await wrapper.vm.$nextTick()
+    return wrapper
+  }
+  const levelColumn = (wrapper) =>
+    wrapper.findAllComponents({ name: 'Column' }).find((col) => col.props('field') === 'level')
+  const cell = (wrapper, id) => levelColumn(wrapper).find(`.stub-cell[data-row="${id}"]`)
+
+  it('is absent from a run whose rows carry no level', async () => {
+    seed(family({ id: 'a', mz: 100, intensity: 10, formula: 'C6H6' }))
+    const wrapper = await renderedTable()
+
+    expect(wrapper.vm.hasLevels).toBe(false)
+    expect(levelColumn(wrapper)).toBeUndefined()
+  })
+
+  it("appears once any row carries one, sorted on the scale's rank, one filter rule", async () => {
+    seedLevels()
+    const wrapper = await renderedTable()
+    const column = levelColumn(wrapper)
+
+    expect(column).toBeDefined()
+    expect(column.props('sortField')).toBe('levelRank')
+    expect(column.props('sortable')).toBe(true)
+    expect(column.props('maxConstraints')).toBe(1)
+    expect(column.props('showAddButton')).toBe(false)
+    // Its menu is keyed on the field, where PrimeVue reads the constraint.
+    expect(Object.keys(wrapper.vm.filters)).toContain(column.props('field'))
+  })
+
+  it('shows the chip with what earned the level and what would lift it, a dash where none', async () => {
+    seedLevels()
+    const wrapper = await renderedTable()
+
+    const chip = cell(wrapper, 'a').find('.level-tag-stub')
+    expect(chip.attributes('data-level')).toBe('5a')
+    expect(chip.attributes('data-evidence')).toBe('rivals not measured')
+    expect(chip.attributes('data-lift')).toBe('measure the shortlist')
+    expect(cell(wrapper, 'b').find('.level-tag-stub').attributes('data-level')).toBe('4a')
+    expect(cell(wrapper, 'c').find('.level-tag-stub').exists()).toBe(false)
+    expect(cell(wrapper, 'c').find('.no-level').text()).toBe('—')
+  })
+
+  it("shows an isotopologue's level as its M0's, marked by its role", async () => {
+    seed(
+      leveled(
+        {
+          id: 'a',
+          mz: 100.1,
+          intensity: 10,
+          formula: 'C6H6',
+          children: [{ sample_peak_mz: 101.1, sample_peak_intensity: 1 }]
+        },
+        '4a'
+      )
+    )
+    const wrapper = await renderedTable()
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+
+    const chip = cell(wrapper, 'a-c0').find('.level-tag-stub')
+    expect(chip.attributes('data-level')).toBe('4a')
+    expect(chip.attributes('data-role')).toBe('iso_child')
+  })
+
+  it('ranks a row by the scale, a row with no level null', async () => {
+    seedLevels()
+    const wrapper = await mountPane()
+    const rank = Object.fromEntries(wrapper.vm.rows.map((row) => [row.peak_assignment_id, row]))
+
+    expect(rank.a.levelRank).toBe(LEVELS.indexOf('5a'))
+    expect(rank.b.levelRank).toBe(LEVELS.indexOf('4a'))
+    expect(rank.c.levelRank).toBeNull()
+  })
+
+  it('sorts on the scale, a row with no level last in both directions', async () => {
+    seedLevels()
+    const wrapper = await mountPane()
+
+    wrapper.vm.sortField = 'levelRank'
+    wrapper.vm.sortOrder = 1
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['b', 'd', 'a', 'c'])
+
+    wrapper.vm.sortOrder = -1
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['a', 'd', 'b', 'c'])
+  })
+
+  it('leaves the resting sort on the tier', async () => {
+    seedLevels()
+    const wrapper = await mountPane()
+
+    expect(wrapper.vm.sortField).toBe('tierRank')
+  })
+
+  it('narrows the rows to the level its menu picks, and back', async () => {
+    seedLevels()
+    const wrapper = await mountPane()
+
+    wrapper.vm.filters.level.constraints[0].value = '4a'
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['b'])
+
+    wrapper.vm.filters.level.constraints[0].value = null
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toHaveLength(4)
+  })
+
+  // Left on with no column to show it, the filter would empty the table for a
+  // reason nothing on screen says.
+  it('filters nothing where no row carries a level', async () => {
+    seed(
+      family({ id: 'a', mz: 100, intensity: 10, formula: 'C6H6' }),
+      family({ id: 'b', mz: 200, intensity: 20, formula: 'C7H8' })
+    )
+    const wrapper = await mountPane()
+
+    wrapper.vm.filters.level.constraints[0].value = '4a'
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['a', 'b'])
+  })
+
+  it('offers every level in its menu, in the order of the scale', async () => {
+    seedLevels()
+    const wrapper = await renderedTable()
+    const select = levelColumn(wrapper).findComponent({ name: 'Select' })
+
+    expect(select.props('options').map((option) => option.label)).toEqual(LEVELS)
+    expect(select.props('optionValue')).toBe('value')
+  })
+
+  it('says what the column is on hover, and opens the level help', async () => {
+    seedLevels()
+    const record = (name) => (el, binding) =>
+      el.setAttribute(name, (name === 'data-help' ? binding.value?.helpKey : binding.value) ?? '')
+    const wrapper = await renderedTable({
+      directives: {
+        tooltip: { mounted: record('data-tooltip') },
+        help: { mounted: record('data-help') }
+      }
+    })
+    const header = levelColumn(wrapper).find('.stub-head span')
+
+    expect(header.text()).toBe('level')
+    expect(header.attributes('data-tooltip')).toMatch(/^Identification level/)
+    expect(header.attributes('data-tooltip')).toContain('no tier moves on it')
+    expect(header.attributes('data-help')).toBe('assignment-level')
   })
 })
 

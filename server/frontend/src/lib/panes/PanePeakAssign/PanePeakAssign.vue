@@ -7,7 +7,13 @@ import Popover from 'primevue/popover'
 import RadioButton from 'primevue/radiobutton'
 
 import { useApp } from '@/stores'
-import { BaseClaimStructure, BaseProvisionalMark, BaseTierTag, BaseVerdictBadge } from '@/lib/base'
+import {
+  BaseClaimStructure,
+  BaseLevelTag,
+  BaseProvisionalMark,
+  BaseTierTag,
+  BaseVerdictBadge
+} from '@/lib/base'
 import { num } from '@/lib/formatters'
 import { formatIsotopeFormula, formatIsotopeLabel, neutralKey } from '@/lib/chem'
 import { isIsotopeLine } from '@/lib/isotopeLines'
@@ -42,6 +48,14 @@ import {
   sampleStampTooltip
 } from '@/lib/batchIsotopologues'
 import { ROLE_BUCKETS, bucketRank } from '@/lib/tiers'
+import {
+  heldByNote,
+  isLevel,
+  isOpenRival,
+  levelMeta,
+  rivalTestLabel,
+  unlistedRivalsLine
+} from '@/lib/levels'
 import { EVIDENCE_LEVELS, VERDICT_META, claimCandidates } from '@/lib/verification'
 import { useBatchPeakCuration } from './stores/batchPeakCuration.js'
 import {
@@ -960,6 +974,49 @@ const ownerReasons = computed(() => {
   const detail = app.data.peakAssignment.peak.detailOf(owner.peak_assignment_id)
   return tierReasonsOf(detail?.provenance ?? owner.provenance)
 })
+
+// --- Identification level -------------------------------------------------------
+// What a reader may state of the row, in the scale peaky and this server share
+// (lib/levels.js): the level, the line naming what earned it, what would raise
+// it, and the rivals it was read against, each with the test that excluded it
+// or none. Shown beside the tier, never instead of it: the level moves no tier.
+//
+// The level and its two lines are on the slim ledger row, so they show before
+// the detail lands; the rivals are only in the detail's provenance. A row with
+// no level - one that commits no formula, an imported row, a run from before
+// the level - shows nothing. Nor does a derived row, whose provenance is its
+// anchor's consensus record: no run read a level for this sample's peak.
+//
+// An isotopologue carries its M0's level and no rivals of its own (its record
+// names the M0 it inherits from); the card says whose level it is.
+const identificationLevel = computed(() => {
+  const row = focusedAssignment.value
+  if (!row || derivedRun.value) return null
+  const record = provenance.value?.identification_level ?? null
+  const level = row.level ?? focusedDetail.value?.level ?? record?.level ?? null
+  if (!isLevel(level)) return null
+  const rivals = Array.isArray(record?.rivals) ? record.rivals : []
+  return {
+    level,
+    name: levelMeta(level).name,
+    evidence: row.level_evidence ?? focusedDetail.value?.level_evidence ?? record?.evidence ?? null,
+    lift: row.level_lift ?? focusedDetail.value?.level_lift ?? record?.lift ?? null,
+    inherited: row.role === 'iso_child' || record?.inherited_from != null,
+    rivals,
+    unlisted: unlistedRivalsLine(record?.rivals_unlisted, rivals.length)
+  }
+})
+// What a rival's line says on hover: the ion it would be, where the record names
+// one, and whether a test excluded it.
+const rivalTooltip = (rival) =>
+  [
+    rival.ion_formula ? `Ion: ${rival.ion_formula}` : null,
+    isOpenRival(rival)
+      ? 'Open: no test of the run excluded this rival'
+      : 'Excluded by a test of the run'
+  ]
+    .filter(Boolean)
+    .join('\n')
 
 // A peak the instrument did not separate from a neighbouring one names that
 // neighbour beside the reason, as a link that focuses it. A neighbour the
@@ -1899,6 +1956,85 @@ const demotedCount = computed(() => {
             </span>
           </li>
         </ul>
+      </div>
+      <!-- What a reader may state of the row, beside the tier and never in its
+           place: the level, what earned it, what would raise it, and the
+           rivals it was read against. An excluded rival names the test that
+           excluded it; an open one - no test did - wears the warning colour,
+           since it is what holds the level at a mass. -->
+      <div
+        v-if="identificationLevel"
+        class="identification-level"
+        data-testid="identification-level"
+        v-help.right="{
+          title: 'Identification level',
+          helpKey: 'assignment-level',
+          doc: app.ui.help.docUrl('how-it-works/peak-assignment/#identification-level')
+        }"
+      >
+        <div class="alts-label">Identification level</div>
+        <div class="level-head">
+          <BaseLevelTag :level="identificationLevel.level" :role="focusedAssignment.role" />
+          <span class="level-name">{{ identificationLevel.name }}</span>
+        </div>
+        <div v-if="identificationLevel.evidence" class="level-line" data-testid="level-evidence">
+          <span class="level-key">why</span>
+          <span class="level-value">{{ identificationLevel.evidence }}</span>
+        </div>
+        <div v-if="identificationLevel.lift" class="level-line" data-testid="level-lift">
+          <span class="level-key">would lift it</span>
+          <span class="level-value">{{ identificationLevel.lift }}</span>
+        </div>
+        <div
+          v-if="identificationLevel.inherited"
+          class="level-line level-inherited"
+          data-testid="level-inherited"
+        >
+          An isotopologue: this is the level of its M0
+        </div>
+        <div
+          v-if="identificationLevel.rivals.length || identificationLevel.unlisted"
+          class="level-key rivals-label"
+        >
+          rivals
+        </div>
+        <ul v-if="identificationLevel.rivals.length" class="rivals">
+          <li
+            v-for="(rival, i) in identificationLevel.rivals"
+            :key="`rival-${i}`"
+            :class="['rival', { open: isOpenRival(rival) }]"
+            data-testid="level-rival"
+            v-tooltip.left="rivalTooltip(rival)"
+          >
+            <span
+              :class="[
+                'pi',
+                'ph',
+                isOpenRival(rival) ? 'ph-circle-dashed' : 'ph-x-circle',
+                'rival-icon'
+              ]"
+            />
+            <span class="rival-body">
+              <span class="rival-head">
+                <span class="rival-formula">{{
+                  rival.formula || rival.ion_formula || 'unnamed rival'
+                }}</span>
+                <span class="rival-test">{{ rivalTestLabel(rival.test) }}</span>
+                <span v-if="heldByNote(rival.held_by)" class="rival-held">{{
+                  heldByNote(rival.held_by)
+                }}</span>
+              </span>
+              <span v-if="rival.detail" class="rival-detail">{{ rival.detail }}</span>
+            </span>
+          </li>
+        </ul>
+        <div
+          v-if="identificationLevel.unlisted"
+          class="level-line rivals-unlisted"
+          data-testid="rivals-unlisted"
+        >
+          {{ identificationLevel.unlisted }}
+        </div>
       </div>
       <!-- For a lone M0 as much as for a full pattern: this table is where the
            focused peak's m/z is read, and it should be read in the same place
@@ -2925,6 +3061,96 @@ button.reason-neighbour:focus-visible {
    wears: the reasons below say whether the cap applied. */
 .ev .v.far {
   color: var(--state-warning);
+}
+/* The identification level: the chip and its meaning, the two lines the run
+   wrote, then the rivals in the reasons' own voice. */
+.identification-level {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.level-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+}
+.level-name {
+  opacity: 0.75;
+}
+.level-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.level-key {
+  flex: none;
+  font-weight: 600;
+}
+.level-inherited,
+.rivals-unlisted {
+  opacity: 0.7;
+}
+.rivals-label {
+  margin-top: 0.15rem;
+  font-size: 0.8rem;
+}
+.rivals {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.rival {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  cursor: default;
+}
+.rival-icon {
+  margin-top: 0.15rem;
+  font-size: 0.8rem;
+  opacity: 0.55;
+}
+.rival-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.rival-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+.rival-formula {
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.rival-test {
+  opacity: 0.75;
+}
+/* A rival no test excluded is what holds the level at a mass: its mark and its
+   test read in the warning colour, where the excluded ones stay muted. */
+.rival.open .rival-icon,
+.rival.open .rival-test {
+  color: var(--state-warning);
+  opacity: 1;
+  font-weight: 600;
+}
+.rival-held {
+  font-style: italic;
+  opacity: 0.7;
+}
+.rival-detail {
+  opacity: 0.75;
+  overflow-wrap: anywhere;
 }
 /* The same ion's other readings: a list in the reasons' own voice, the
    formula in the alternatives' type. */

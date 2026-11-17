@@ -8,11 +8,14 @@ import Column from 'primevue/column'
 import Message from 'primevue/message'
 import Popover from 'primevue/popover'
 import ProgressSpinner from 'primevue/progressspinner'
+import Select from 'primevue/select'
 import ToggleSwitch from 'primevue/toggleswitch'
+import { FilterMatchMode, FilterOperator } from '@primevue/core/api'
 
 import { getApiErrorMessage, isRefusedRequest } from '@/api/utils'
 import {
   BaseCopyableField,
+  BaseLevelTag,
   BaseLoadError,
   BaseProvisionalMark,
   BaseTabbedPanel,
@@ -42,6 +45,7 @@ import {
   engineBucketOf,
   tierRank
 } from '@/lib/tiers'
+import { LEVEL_FILTER_OPTIONS, isLevel, levelRank } from '@/lib/levels'
 import { prettyTrim } from '@/lib/utils'
 import { queueReason, queueRows, queueTooltip } from '@/lib/verificationQueue'
 import { scrollVirtualRowIntoView } from '@/lib/virtualScroll'
@@ -118,6 +122,39 @@ const tierChips = computed(() => {
     { key: 'artifact', label: 'artifact', count: counts.artifact }
   ]
 })
+
+// --- Identification level -----------------------------------------------------
+
+// What a reader may state of each row, in the scale peaky and this server share
+// (lib/levels.js), shown in a column of its own beside the tier and never in
+// its place. Offered only where some row of the run carries one, as the engine
+// tier is: a run from before the level, an imported run and a ledger the batch
+// serves carry none, and a column of dashes would read as rows judged and found
+// wanting.
+const hasLevels = computed(() => assignments.value.list.some((row) => isLevel(row.level)))
+
+// The level column's filter menu, one EQUALS rule, as the batch ledger's tier
+// column has: PrimeVue writes the menu into `filters`, and `rows` applies it,
+// since the table is `lazy`. A level filter is no filter while the column is
+// absent - left on, it would empty the table for a reason nothing on screen
+// shows - and it is dropped when the column goes.
+const filters = ref({
+  level: {
+    operator: FilterOperator.AND,
+    constraints: [{ value: null, matchMode: FilterMatchMode.EQUALS }]
+  }
+})
+const levelFilter = computed(() =>
+  hasLevels.value ? (filters.value.level?.constraints?.[0]?.value ?? null) : null
+)
+watch(hasLevels, (has) => {
+  if (!has) filters.value.level.constraints[0].value = null
+})
+
+// Says what the column is on hover; help mode and the docs carry the scale.
+const LEVEL_HEADER_TOOLTIP =
+  'Identification level: what a reader may state of the row, from 5 (a measured mass) ' +
+  'to 1 (a confirmed structure). Shown beside the tier; no tier moves on it'
 
 // Map ionization_mechanism_id -> readable notation (e.g. "[M+H]+", "[M+Br]-"), for
 // the ledger's ionization column. The assignment carries only the id.
@@ -563,6 +600,7 @@ const rows = computed(() => {
   const ledger = assignments.value.list.filter((row) => !isIsotopeLine(row))
   const parents = (queueMode.value ? queueRows(ledger, queue.value?.list) : ledger)
     .filter((row) => activeTiers.size === 0 || activeTiers.has(bucketOf(row)))
+    .filter((row) => levelFilter.value == null || row.level === levelFilter.value)
     .filter(
       (row) =>
         queueMode.value ||
@@ -580,6 +618,10 @@ const rows = computed(() => {
         // tierRank(null) would answer with the 'unassigned' rank and put every
         // in-app row at one end of a column it has no opinion in.
         engineTierRank: row.engine_tier != null ? tierRank(row.engine_tier) : null,
+        // Null rather than a rank where the row carries no level, so the level
+        // column sorts those last in both directions: no level is not a
+        // position on the scale.
+        levelRank: isLevel(row.level) ? levelRank(row.level) : null,
         listing,
         target: targetOf(row.reference_listing, listing),
         // The ledger-measured channel count first: it reaches every committed
@@ -832,7 +874,10 @@ const breadcrumb = computed(() => {
         <p>
         Every peak in the selected sample with its committed assignment from the
         selected run: formula, ionization and confidence tier. The tiering is
-        still being developed, and the tier column says so.
+        still being developed, and the tier column says so. Where the run
+        states them, the <b>level</b> column gives each row's identification
+        level: what may be stated of it, from a measured mass (5) to a
+        confirmed structure (1).
         </p>
         <p>
         Click a row to focus the peak in the spectrum and inspector. Use the
@@ -1132,6 +1177,8 @@ const breadcrumb = computed(() => {
         removableSort
         v-model:sortField="sortField"
         v-model:sortOrder="sortOrder"
+        v-model:filters="filters"
+        filterDisplay="menu"
         selectionMode="single"
         :metaKeySelection="false"
         v-model:selection="selectedRow"
@@ -1377,6 +1424,65 @@ const breadcrumb = computed(() => {
             <span v-else class="no-engine-tier">&mdash;</span>
           </template>
         </Column>
+        <!-- The identification level, beside the tiers and never in their
+             place: what a reader may state of the row, a measured mass (5) to
+             a confirmed structure (1). The chip's hover gives what earned it
+             and what would lift it. `field` stays the level so the filter
+             menu keeps its constraint; `sortField` is the scale's rank, as the
+             batch ledger's tier column sorts on its rank. An isotopologue
+             shows its M0's level, which it carries; a row with none shows the
+             dash an empty cell does. -->
+        <Column
+          v-if="hasLevels"
+          field="level"
+          sortField="levelRank"
+          sortable
+          style="min-width: 5rem"
+          :filterMatchModeOptions="[{ label: 'Equals', value: 'equals' }]"
+          :maxConstraints="1"
+          :showAddButton="false"
+          :showOperator="false"
+        >
+          <template #header>
+            <span
+              v-tooltip.top="LEVEL_HEADER_TOOLTIP"
+              v-help.top="{
+                title: 'Identification level',
+                helpKey: 'assignment-level',
+                doc: app.ui.help.docUrl('how-it-works/peak-assignment/#identification-level')
+              }"
+              >level</span
+            >
+          </template>
+          <template #body="{ data }">
+            <BaseLevelTag
+              v-if="isLevel(data.level)"
+              :level="data.level"
+              :evidence="data.level_evidence"
+              :lift="data.level_lift"
+              :role="data.role"
+            />
+            <span v-else-if="!data.isChild" class="no-level">&mdash;</span>
+          </template>
+          <template #filter="{ filterModel, filterCallback }">
+            <Select
+              v-model="filterModel.value"
+              @change="filterCallback()"
+              :options="LEVEL_FILTER_OPTIONS"
+              optionLabel="label"
+              optionValue="value"
+              placeholder="Any level"
+              size="small"
+              :showClear="true"
+            >
+              <template #option="{ option }">
+                <span class="level-option"
+                  ><b>{{ option.label }}</b> {{ option.name }}</span
+                >
+              </template>
+            </Select>
+          </template>
+        </Column>
         <!-- Why the queue asks for the row: near a tier edge, a spot check, or
              a verdict a later run read differently. Only in the queue. -->
         <Column v-if="queueMode" field="queueRank" style="min-width: 3rem">
@@ -1462,10 +1568,18 @@ const breadcrumb = computed(() => {
    majority of the column on most runs - an engine typically tiers only the
    peaks it committed a formula to - and a column of full-strength dashes would
    read as missing data rather than as "no opinion here". A row no list names
-   is the same case in the listing column. */
+   is the same case in the listing column, and a row with no identification
+   level in the level column. */
 .no-engine-tier,
-.no-listing {
+.no-listing,
+.no-level {
   opacity: 0.4;
+}
+
+/* A level filter's option: the level, then its name, the levels aligned. */
+.level-option b {
+  display: inline-block;
+  min-width: 1.6rem;
 }
 
 /* The listing: one line, the name first and cut short rather than wrapped, so

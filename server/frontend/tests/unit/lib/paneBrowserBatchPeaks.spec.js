@@ -5,6 +5,7 @@ import { createPinia, setActivePinia } from 'pinia'
 
 import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger'
 import { TIERING_PROVISIONAL } from '@/lib/tiers'
+import { LEVELS } from '@/lib/levels'
 
 // The tier strip and the tier column's sort: both read the confidence order out
 // of @/lib/tiers, and both used to be wrong in the same direction (alphabetical,
@@ -38,6 +39,13 @@ vi.mock('@/lib/base', async () => ({
   BaseCopyableField: {
     props: ['field', 'tooltip'],
     template: '<span class="copyable" :data-tooltip="tooltip">{{ field }}<slot /></span>'
+  },
+  // Rendered, so a test that renders the cells can read the level and the hover
+  // text the pane handed the chip; the chip has a spec of its own.
+  BaseLevelTag: {
+    name: 'BaseLevelTag',
+    props: ['level', 'tooltip'],
+    template: '<span class="level-tag" :data-level="level" :data-tooltip="tooltip" />'
   },
   BaseVerdictBadge: true,
   // Real: the tier header's provisional mark is read off what it draws.
@@ -2880,6 +2888,191 @@ describe('PaneBrowserBatchPeaks engine tier', () => {
     await toggle('batch-engine-tier-view').trigger('click')
 
     expect(ids()).toHaveLength(4)
+  })
+})
+
+// The identification level the members' runs stated for the consensus
+// formula, in a column of its own beside the tier, and the importing engine's
+// beside it as its tier is. The batch states no level of its own, and the
+// chip's hover says so.
+describe('PaneBrowserBatchPeaks identification level', () => {
+  const peaks = () => [
+    peak('bp-1', 'assigned', 0.9, {
+      mz: 100.1,
+      member_level: '4a',
+      member_levels: { '4a': 3, '5a': 2 },
+      engine_level: '4a'
+    }),
+    peak('bp-2', 'candidate', 0.5, {
+      mz: 200.1,
+      member_level: '5a',
+      member_levels: { '5a': 2 },
+      engine_level: '4b'
+    }),
+    // A batch peak from a ledger built before the level, or a snapshot's.
+    peak('bp-3', 'assigned', 0.8, { mz: 300.1, member_level: null, member_levels: null }),
+    peak('bp-4', 'candidate', 0.4, {
+      mz: 400.1,
+      member_level: '5b',
+      member_levels: { '5b': 2 }
+    })
+  ]
+  const withoutLevels = () =>
+    peaks().map(({ member_level, member_levels, engine_level, ...bp }) => bp)
+  const ids = () => wrapper.vm.rows.map((row) => row.batch_peak_id)
+
+  it('is absent from a ledger whose members stated no level', async () => {
+    wrapper = await mountPane({ peaks: withoutLevels() })
+
+    expect(wrapper.vm.hasMemberLevels).toBe(false)
+    expect(columnFor('member_level')).toBeUndefined()
+    expect(columnFor('engineLevelRank')).toBeUndefined()
+  })
+
+  it("appears where any member level is shown, sorted on the scale's rank, one filter rule", async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+    const column = columnFor('member_level')
+
+    expect(column).toBeDefined()
+    expect(column.props('sortField')).toBe('memberLevelRank')
+    expect(column.props('sortable')).toBe(true)
+    expect(column.props('maxConstraints')).toBe(1)
+    expect(column.props('showAddButton')).toBe(false)
+    expect(Object.keys(wrapper.vm.filters)).toContain('member_level')
+  })
+
+  it("shows the members' level, how they split, and that it is not the batch's own", async () => {
+    const cells = await cellsOf('member_level', peaks())
+
+    const chip = cells['bp-1'].find('.level-tag')
+    expect(chip.attributes('data-level')).toBe('4a')
+    const tooltip = chip.attributes('data-tooltip')
+    expect(tooltip).toContain("Stated by the members' runs: 3 members at 4a, 2 at 5a")
+    expect(tooltip).toContain('not one the batch states of its own')
+    expect(cells['bp-3'].find('.level-tag').exists()).toBe(false)
+    expect(cells['bp-3'].find('.no-level').text()).toBe('—')
+  })
+
+  it('ranks each batch peak by the scale, one with no level null', async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+    const byId = Object.fromEntries(wrapper.vm.rows.map((row) => [row.batch_peak_id, row]))
+
+    expect(byId['bp-1'].memberLevelRank).toBe(LEVELS.indexOf('4a'))
+    expect(byId['bp-4'].memberLevelRank).toBe(LEVELS.indexOf('5b'))
+    expect(byId['bp-3'].memberLevelRank).toBeNull()
+  })
+
+  it('sorts on the scale, a batch peak with no level last in both directions', async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+
+    wrapper.vm.sortField = 'memberLevelRank'
+    wrapper.vm.sortOrder = 1
+    await wrapper.vm.$nextTick()
+    expect(ids()).toEqual(['bp-1', 'bp-2', 'bp-4', 'bp-3'])
+
+    wrapper.vm.sortOrder = -1
+    await wrapper.vm.$nextTick()
+    expect(ids()).toEqual(['bp-4', 'bp-2', 'bp-1', 'bp-3'])
+  })
+
+  it("narrows the rows to the members' level its menu picks", async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+
+    wrapper.vm.filters.member_level.constraints[0].value = '5a'
+    await wrapper.vm.$nextTick()
+    expect(ids()).toEqual(['bp-2'])
+
+    wrapper.vm.filters.member_level.constraints[0].value = null
+    await wrapper.vm.$nextTick()
+    expect(ids()).toHaveLength(4)
+  })
+
+  // Left on with no column to show it, the filter would empty the table for a
+  // reason nothing on screen says.
+  it('filters nothing where no batch peak shown carries a level', async () => {
+    wrapper = await mountPane({ peaks: withoutLevels() })
+
+    wrapper.vm.filters.member_level.constraints[0].value = '4a'
+    await wrapper.vm.$nextTick()
+    expect(ids()).toHaveLength(4)
+  })
+
+  it("shows the importing engine's level in a column of its own, beside the members'", async () => {
+    const cells = await cellsOf('engineLevelRank', peaks())
+
+    expect(cells['bp-1'].find('.level-tag').attributes('data-level')).toBe('4a')
+    expect(cells['bp-2'].find('.level-tag').attributes('data-level')).toBe('4b')
+    expect(cells['bp-4'].find('.level-tag').exists()).toBe(false)
+    expect(cells['bp-4'].find('.no-engine-tier').exists()).toBe(true)
+    const byId = Object.fromEntries(wrapper.vm.rows.map((row) => [row.batch_peak_id, row]))
+    expect(byId['bp-2'].engineLevelRank).toBe(LEVELS.indexOf('4b'))
+    expect(byId['bp-4'].engineLevelRank).toBeNull()
+  })
+
+  it("is offered only where some batch peak carries the engine's level", async () => {
+    wrapper = await mountPane({ peaks: peaks().map(({ engine_level, ...bp }) => bp) })
+
+    expect(columnFor('member_level')).toBeDefined()
+    expect(columnFor('engineLevelRank')).toBeUndefined()
+  })
+
+  it("names the engine's level, and whether the members' runs agree", async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+    const [agrees, differs, none] = [peaks()[0], peaks()[1], { ...peaks()[2], engine_level: '5a' }]
+
+    expect(wrapper.vm.engineLevelTooltip(agrees)).toContain(
+      "It agrees with the level the members' runs stated"
+    )
+    const text = wrapper.vm.engineLevelTooltip(differs)
+    expect(text).toContain("The importing engine's own level: 4b")
+    expect(text).toContain("The members' runs stated 5a")
+    expect(wrapper.vm.engineLevelTooltip(none)).toContain(
+      "The members' runs stated no level for it"
+    )
+  })
+
+  it("shows the engine's two lines about its level as it wrote them", async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+    const said = { ...peaks()[1], engine_evidence: 'its why', engine_lift: 'its lift' }
+
+    const text = wrapper.vm.engineLevelTooltip(said)
+
+    expect(text).toContain('Why: its why')
+    expect(text).toContain('Would lift it: its lift')
+    expect(wrapper.vm.engineLevelTooltip(peaks()[1])).not.toContain('Why:')
+  })
+
+  it('explains both headers on hover, and opens the level help on Level', async () => {
+    app = makeApp({ peaks: peaks() })
+    localStorage.clear()
+    setActivePinia(createPinia())
+    const record = (name) => (el, binding) =>
+      el.setAttribute(name, (name === 'data-help' ? binding.value?.helpKey : binding.value) ?? '')
+    wrapper = mount(PaneBrowserBatchPeaks, {
+      global: {
+        stubs: {
+          ...GLOBAL_STUBS,
+          Column: {
+            ...ColumnStub,
+            template: '<div class="column-stub"><slot name="header" /></div>'
+          }
+        },
+        directives: {
+          tooltip: { mounted: record('data-tooltip') },
+          help: { mounted: record('data-help') }
+        }
+      }
+    })
+    await wrapper.vm.$nextTick()
+
+    const headers = Object.fromEntries(
+      wrapper.findAll('.column-stub [data-tooltip]').map((span) => [span.text(), span])
+    )
+    expect(headers.Level.attributes('data-tooltip')).toMatch(/^Identification level/)
+    expect(headers.Level.attributes('data-tooltip')).toContain("members' runs")
+    expect(headers.Level.attributes('data-tooltip')).toContain('no tier moves on it')
+    expect(headers.Level.attributes('data-help')).toBe('assignment-level')
+    expect(headers['Engine level'].attributes('data-tooltip')).toContain('imported')
   })
 })
 
