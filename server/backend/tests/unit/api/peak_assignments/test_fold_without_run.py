@@ -996,8 +996,36 @@ async def test_the_folds_mass_gate_reads_the_sources_lines_by_the_calibrant_cap(
             patch(f"{_SVC}._source_line_cap", new_callable=AsyncMock, return_value=cap)
         )
         gate = stack.enter_context(
-            patch(f"{_SVC}.apply_mass_gate", wraps=service.apply_mass_gate)
+            patch(f"{_SVC}.measure_mass_gate", wraps=service.measure_mass_gate)
         )
         await fold_sample_peaks_without_run("si-1")
 
     assert gate.call_args.kwargs["source_line_cap"] is cap
+
+
+@pytest.mark.asyncio
+async def test_the_folds_partner_gate_is_told_what_the_lists_name():
+    """As a run's is: the neutrals the lists Stage A read name reach the
+    partner gate, which records a swapped-in reading's corroboration by them
+    (``service._read_other_readings``)."""
+    from mascope_backend.api.new.peak_assignments import service
+    from mascope_backend.api.new.peak_assignments.service import (
+        fold_sample_peaks_without_run,
+    )
+
+    listed = frozenset({"C6H12O6"})
+    stack, mocks = _patched()
+    mocks["stage_a"].return_value = (
+        [_stage_a_row("si-1", fold_run_id("si-1"))],
+        None,
+        SampleMassAccuracy(),
+        NO_ENVELOPE_FIT,
+        listed,
+    )
+    with stack:
+        gate = stack.enter_context(
+            patch(f"{_SVC}.apply_partner_gates", wraps=service.apply_partner_gates)
+        )
+        assert await fold_sample_peaks_without_run("si-1") == "batch-1"
+
+    assert gate.call_args.kwargs["listed_formulas"] == listed

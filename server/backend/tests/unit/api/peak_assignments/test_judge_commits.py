@@ -1,11 +1,15 @@
 """The passes that judge a sample's commits, run again after lines are claimed.
 
-``judge_commits`` runs the mass gate, the cross-channel pass and the tiering
-pass, reads the rows the tiering pass finds on an assigned neighbour's line as
-that neighbour's isotopologues, and runs all three again over the ledger the
-claims leave. These pin what the second reading changes that a single one would
-get wrong: the calibration without the claimed row as an anchor, a row flagged
-only by a row the claim took, and a chain of claims.
+``judge_commits`` makes the reading changes first - the claimed lines, and the
+partner gate between the mass gate's measurement and the cross-channel pass's
+record - then applies the caps, the mass gate's, the cross-channel pass's and
+the tiering pass's rules, which only lower a tier, reads the rows the tiering
+pass finds on an assigned neighbour's line as that neighbour's isotopologues,
+and runs the round again over the ledger the claims leave. These pin what the
+second reading changes that a single one would get wrong: the calibration
+without the claimed row as an anchor, a row flagged only by a row the claim
+took, and a chain of claims; and that the caps only lower a tier, in whatever
+order they run.
 
 The envelopes are stated rather than predicted, so each test's geometry is
 exactly what it says.
@@ -14,6 +18,7 @@ exactly what it says.
 from __future__ import annotations
 
 import copy
+import itertools
 from collections.abc import Sequence
 
 import numpy as np
@@ -22,16 +27,25 @@ import pytest
 from mascope_backend.api.new.peak_assignments import service
 from mascope_backend.api.new.peak_assignments import tiering as tiering_module
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+from mascope_backend.api.new.peak_assignments.cross_channel import (
+    REASON_AMBIGUOUS_NITROGEN,
+    cap_cross_channel,
+    read_cross_channel,
+)
 from mascope_backend.api.new.peak_assignments.engine import (
     PARTNER_GATE_KEY,
     SampleMassAccuracy,
+    apply_partner_gates,
 )
 from mascope_backend.api.new.peak_assignments.envelope_claims import ENVELOPE_CLAIM
 from mascope_backend.api.new.peak_assignments.mass_gate import (
+    REASON_OFF_CALIBRATION,
     TRACKING_TRACKS,
     SourceLineCap,
     SpectrumLines,
     apply_mass_gate,
+    cap_mass_gate,
+    measure_mass_gate,
 )
 from mascope_backend.api.new.peak_assignments.service import judge_commits
 from mascope_backend.api.new.peak_assignments.tiering import (
@@ -47,7 +61,9 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     REASON_UNRESOLVED_PEAK,
     SEPARATED_THROUGH,
     TIERING_RULES_VERSION,
+    apply_tiering,
 )
+from mascope_backend.api.new.peak_assignments.tiers import TIER_RANK
 from mascope_tools.composition import profiles as presets
 from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
 
@@ -83,6 +99,59 @@ def stated_envelopes(monkeypatch):
         return np.array(mzs), np.array(heights), list(labels)
 
     monkeypatch.setattr(tiering_module, "predict_resolved_isotopes", predict)
+
+
+def tiers(rows: list[dict]) -> dict[str, str]:
+    return {row["peak_assignment_id"]: row["tier"] for row in rows}
+
+
+def raised(before: dict[int, str], rows: list[dict]) -> list[tuple[str, str, str]]:
+    """The rows whose tier is above the one ``before`` recorded for them."""
+    return [
+        (row["peak_assignment_id"], before[id(row)], row["tier"])
+        for row in rows
+        if id(row) in before
+        and TIER_RANK.get(row["tier"], -1) > TIER_RANK.get(before[id(row)], -1)
+    ]
+
+
+@pytest.fixture(autouse=True)
+def caps_only_lower(monkeypatch):
+    """Every judging round here asserts that no cap raises a tier: none of the
+    three, and nothing between the first of them and the claims they leave."""
+    started: dict[int, str] = {}
+
+    def checked(name: str):
+        cap = getattr(service, name)
+
+        def wrapper(rows, *args, **kwargs):
+            before = {id(row): row["tier"] for row in rows}
+            result = cap(rows, *args, **kwargs)
+            assert not raised(before, rows), f"{name} raised {raised(before, rows)}"
+            return result
+
+        monkeypatch.setattr(service, name, wrapper)
+
+    for name in ("cap_mass_gate", "cap_cross_channel", "apply_tiering"):
+        checked(name)
+
+    record = service.read_cross_channel
+
+    def recording(rows, **kwargs):
+        result = record(rows, **kwargs)
+        started.clear()
+        started.update({id(row): row["tier"] for row in rows})
+        return result
+
+    find = service.find_envelope_claims
+
+    def finding(rows, **kwargs):
+        assert started, "the caps ran before the cross-channel pass read the ledger"
+        assert not raised(started, rows), f"the caps raised {raised(started, rows)}"
+        return find(rows, **kwargs)
+
+    monkeypatch.setattr(service, "read_cross_channel", recording)
+    monkeypatch.setattr(service, "find_envelope_claims", finding)
 
 
 def commit(
@@ -823,8 +892,14 @@ class TestThePartnerGateReadsTheJudgedLedger:
         # assignability, and the formate reading that stood on it reads as
         # the acid.
         partner = commit("pa-p", "C10H18O5", "C10H17O5-", 217.1081, 800.0, ppm=5.0)
-        rows = by_id(self._judge(anchors() + [partner, self._formate()]).rows)
+        judged = self._judge(anchors() + [partner, self._formate()])
+        rows = by_id(judged.rows)
         assert rows["pa-p"]["tier"] == "below_assignability"
+        # The run's record counts what the gate's cap lowered.
+        assert (
+            judged.mass_calibration["capped"],
+            judged.mass_calibration["below_assignability"],
+        ) == (1, 1)
         assert rows["pa-f"]["assigned_formula"] == "C11H20O7"
         assert rows["pa-f"]["ionization_mechanism_id"] == "im-1"
         assert rows["pa-f"]["provenance"]["partner_gate"]["partner"] is False
@@ -1136,6 +1211,8 @@ class TestTheDeclaredChannelOnTheJudgedLedger:
             "ratio": 0.05,
         }
         assert judged.cross_channel["shown_rival"] == 1
+        # The run's record counts what the pass's cap lowered.
+        assert judged.cross_channel["capped"] == 1
 
 
 def test_the_run_records_the_partner_gates_summary_beside_the_cross_channel_one():
@@ -1156,3 +1233,248 @@ def test_the_run_records_the_partner_gates_summary_beside_the_cross_channel_one(
     assert stored[PARTNER_GATE_KEY] == judged.partner_gate
     assert stored[PARTNER_GATE_KEY]["margin"] == 10.0
     assert PARTNER_GATE_KEY not in service._stored_run_config(PeakAssignmentConfig())
+
+
+#: The three caps of a judging round, in the order ``judge_commits`` applies
+#: them.
+CAPS = ("mass gate", "cross-channel", "tier rules")
+BANDS = {"assigned": 0.75, "candidate": 0.45}
+
+
+def caps_in_order(
+    rows: list[dict],
+    order: Sequence[str],
+    notation_by_id: dict[str, str],
+    *,
+    minor: frozenset[str] = frozenset(),
+    gated: frozenset[str] = frozenset(),
+) -> dict[str, str]:
+    """One round over ``rows`` with the caps in ``order``: the reading changes
+    and what the caps read of them as ``judge_commits`` makes them, then each
+    cap, asserting it raises no tier.
+
+    :return: The tiers the round leaves.
+    """
+    judged = copy.deepcopy(rows)
+    mass_gate = measure_mass_gate(
+        judged, stage_a_accuracy=SampleMassAccuracy(), fallback_sigma_ppm=0.3
+    )
+    apply_partner_gates(
+        judged,
+        notation_by_id=notation_by_id,
+        minor_channels=minor,
+        partner_gated_channels=gated,
+        tier_bands=BANDS,
+    )
+    cross_channel = read_cross_channel(
+        judged, notation_by_id=notation_by_id, minor_channels=minor
+    )
+    caps = {
+        "mass gate": lambda: cap_mass_gate(judged, mass_gate),
+        "cross-channel": lambda: cap_cross_channel(judged, cross_channel),
+        "tier rules": lambda: apply_tiering(
+            judged,
+            mz_tolerance_ppm=5.0,
+            abundance_floor=0.01,
+            notation_by_id=notation_by_id,
+            tier_bands=BANDS,
+        ),
+    }
+    for name in order:
+        before = {id(row): row["tier"] for row in judged}
+        caps[name]()
+        assert not raised(before, judged), f"{name} raised {raised(before, judged)}"
+    return tiers(judged)
+
+
+def where_every_cap_bites() -> tuple[list[dict], dict[str, str]]:
+    """A ledger each cap lowers rows of, where one cap's work is another's
+    question: the ledger, its channels, and the tiers a round leaves."""
+    owner_row = commit("pa-x", "C6H12O6", "C6H13O6+", 200.0, 1000.0, ppm=5.0)
+    on_line = on_its_line()
+    nitrogen = commit("pa-n", "C4H8O3", "C4H12NO3+", 122.08, 800.0, mechanism="im-nh4")
+    nitrogen["alternatives"] = [
+        {
+            "assigned_formula": "C4H11NO3",
+            "ionization_mechanism_id": "im-1",
+            "same_ion": True,
+            "plausibility": 1.0,
+        }
+    ]
+    rows = anchors() + [
+        # Five widths and more off the run's centre: the mass gate takes the
+        # owner below assignability, so its envelope predicts no line that can
+        # take a tier, whichever cap runs first.
+        owner_row,
+        # On the owner's 201 line, and seen through a second channel, so the
+        # neighbour's line is all that could hold it at candidate.
+        on_line,
+        seen_again(on_line, 450.0),
+        # One peak, one channel: the lone-peak rule, which reads the channels
+        # the cross-channel pass recorded, holds it at candidate.
+        commit("pa-l", "C5H8O2", "C5H9O2+", 101.06, 500.0),
+        # An ammonium reading whose protonated alternative nothing settles:
+        # the cross-channel pass holds it, and its isotopologue, at candidate.
+        nitrogen,
+        commit(
+            "pa-n-13c",
+            "C4H8O3",
+            "C4H12NO3+",
+            123.08,
+            40.0,
+            role="iso_child",
+            owner="pa-n",
+            label="13C",
+            mechanism="im-nh4",
+        ),
+        # Off calibration by less, with a line that does not follow it: the
+        # mass gate holds both at candidate, and the tiering pass reads the
+        # line as no second observation.
+        commit("pa-m", "C3H6O3", "C3H7O3+", 91.04, 600.0, ppm=2.5),
+        commit(
+            "pa-m-13c",
+            "C3H6O3",
+            "C3H7O3+",
+            92.04,
+            30.0,
+            role="iso_child",
+            owner="pa-m",
+            label="13C",
+            ppm=-3.0,
+        ),
+    ]
+    return rows, {
+        "pa-x": "below_assignability",
+        "pa-y": "assigned",
+        "pa-l": "candidate",
+        "pa-n": "candidate",
+        "pa-n-13c": "candidate",
+        "pa-m": "candidate",
+        "pa-m-13c": "candidate",
+    }
+
+
+def where_the_gate_swaps() -> tuple[list[dict], dict[str, str]]:
+    """A formate ledger the partner gate changes the readings of first: one
+    reading lifted on a partner, one swapped for want of one."""
+    lifted = commit("pa-f", "C10H18O5", "C10H19O7-", 263.1136, 1000.0, ppm=2.5)
+    lifted["ionization_mechanism_id"] = "im-formate"
+    lifted["tier"] = "candidate"
+    lifted["alternatives"] = [
+        {
+            "assigned_formula": "C11H20O7",
+            "ionization_mechanism_id": "im-1",
+            "same_ion": True,
+            "plausibility": 1.0,
+        }
+    ]
+    lifted["provenance"]["minor_channel"] = {"corroborated_by": None, "capped": True}
+    swapped = commit("pa-g", "C9H16O5", "C9H17O7-", 249.0980, 900.0)
+    swapped["ionization_mechanism_id"] = "im-formate"
+    swapped["alternatives"] = [
+        {
+            "assigned_formula": "C10H18O7",
+            "ionization_mechanism_id": "im-1",
+            "same_ion": True,
+            "plausibility": 1.0,
+        }
+    ]
+    swapped["provenance"]["minor_channel"] = {
+        "corroborated_by": "second_channel",
+        "capped": False,
+    }
+    rows = anchors() + [
+        # pa-f's partner, on calibration: the gate lifts the policy's cap, and
+        # the mass gate's cap holds the lifted reading at candidate.
+        commit("pa-p", "C10H18O5", "C10H17O5-", 217.1081, 800.0),
+        lifted,
+        # pa-g's would-be partner, which the mass gate's ceiling sends below
+        # assignability: no partner, so pa-g is read as the acid.
+        commit("pa-q", "C9H16O5", "C9H15O5-", 203.0925, 700.0, ppm=5.0),
+        swapped,
+    ]
+    return rows, {
+        "pa-p": "assigned",
+        "pa-f": "candidate",
+        "pa-q": "below_assignability",
+        "pa-g": "candidate",
+    }
+
+
+class TestTheCapsInEveryOrder:
+    """The caps only lower a tier and read the readings and records the round
+    made before them, never a tier another cap lowered: in every order they
+    leave every row on the same tier, the one ``judge_commits`` leaves it on."""
+
+    @pytest.mark.parametrize(
+        ("ledger", "notation_by_id", "opened"),
+        [
+            (
+                where_every_cap_bites,
+                {"im-1": "[M+H]+", "im-2": "[M+Na]+", "im-nh4": "[M+NH4]+"},
+                frozenset(),
+            ),
+            (
+                where_the_gate_swaps,
+                {"im-1": "[M-H]-", "im-formate": "[M+HCOO]-"},
+                frozenset({"[M+HCOO]-"}),
+            ),
+        ],
+        ids=["every cap", "the gate's readings"],
+    )
+    def test_every_order_leaves_the_same_tiers(self, ledger, notation_by_id, opened):
+        rows, expected = ledger()
+
+        by_order = {
+            order: caps_in_order(
+                rows, order, notation_by_id, minor=opened, gated=opened
+            )
+            for order in itertools.permutations(CAPS)
+        }
+
+        assert len(by_order) == 6
+        first = by_order[CAPS]
+        assert {
+            order: found for order, found in by_order.items() if found != first
+        } == {}
+        assert {row_id: first[row_id] for row_id in expected} == expected
+        judged = judge_ledger(rows, notation_by_id, minor=opened, gated=opened)
+        assert judged.tiering["claimed"] == 0
+        assert tiers(judged.rows) == first
+
+    def test_a_row_two_caps_lower_names_the_mass_gate_s(self):
+        # Off calibration by less than the gate's hold, and an ammonium reading
+        # whose protonated alternative nothing settles: the mass gate and the
+        # cross-channel pass each hold it at candidate. The order decides only
+        # which of them it names, and the round applies the mass gate's first,
+        # so that is the one its reasons give and its summary counts.
+        nitrogen = commit(
+            "pa-n", "C4H8O3", "C4H12NO3+", 122.08, 800.0, mechanism="im-nh4", ppm=2.5
+        )
+        nitrogen["alternatives"] = [
+            {
+                "assigned_formula": "C4H11NO3",
+                "ionization_mechanism_id": "im-1",
+                "same_ion": True,
+                "plausibility": 1.0,
+            }
+        ]
+
+        judged = judge_ledger(
+            anchors() + [nitrogen],
+            {"im-1": "[M+H]+", "im-2": "[M+Na]+", "im-nh4": "[M+NH4]+"},
+        )
+
+        row = by_id(judged.rows)["pa-n"]
+        assert row["tier"] == "candidate"
+        assert row["provenance"]["mass_gate"]["capped"] == "candidate"
+        assert row["provenance"]["cross_channel"].get("capped") is None
+        assert rules(row) == [
+            REASON_OFF_CALIBRATION,
+            REASON_AMBIGUOUS_NITROGEN,
+            REASON_LONE_PEAK,
+        ]
+        assert (judged.mass_calibration["capped"], judged.cross_channel["capped"]) == (
+            1,
+            0,
+        )

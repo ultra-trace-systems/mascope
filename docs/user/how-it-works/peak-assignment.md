@@ -170,10 +170,10 @@ times as strongly is the better one, not a certain one. A reading through one of
 mode's own channels is never outweighed this way and keeps its formula; a rival the
 sample shows is weighed against it by the same margin, read from the other side: the
 rival has to be shown ten times as strongly to hold it at *candidate* (*ambiguous
-nitrogen* and *ambiguous adduct*, below). The rule is
-read after the run's mass gate, so a partner is a reading that gate left committed and a
-reading it lifts stays under that gate's ceiling, and a batch search reads it over its own
-rows. On any other instrument electron transfer names an
+nitrogen* and *ambiguous adduct*, below). The rule reads the run's mass gate, so a partner
+is a reading that gate leaves committed, and the gate holds a reading the rule lifts or
+swaps in under the same ceiling as every other reading of its peak. A batch search reads
+the rule over its own rows. On any other instrument electron transfer names an
 ambient-ion mode as readily, and such a mode keeps the ESI profile of its polarity; so does
 a mode with only protonation or deprotonation and no reagent. A secondary channel is
 searched only where the deployment holds its mechanism, so Mascope ships the mechanism of

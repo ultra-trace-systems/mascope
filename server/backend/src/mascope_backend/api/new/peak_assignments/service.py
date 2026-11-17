@@ -118,6 +118,8 @@ from mascope_backend.api.new.peak_assignments.config import (
 )
 from mascope_backend.api.new.peak_assignments.cross_channel import (
     apply_cross_channel,
+    cap_cross_channel,
+    read_cross_channel,
 )
 from mascope_backend.api.new.peak_assignments.decoy import (
     DECOY_ARM_KEY,
@@ -200,7 +202,8 @@ from mascope_backend.api.new.peak_assignments.mass_gate import (
     MassCalibration,
     SourceLineCap,
     SpectrumLines,
-    apply_mass_gate,
+    cap_mass_gate,
+    measure_mass_gate,
 )
 from mascope_backend.api.new.peak_assignments.peak_ids import load_peak_ids
 from mascope_backend.api.new.peak_assignments.profile_preview import (
@@ -2516,8 +2519,10 @@ def _read_other_readings(
     searched_mechanisms: list[SimpleNamespace],
     resolved_profile: ResolvedProfile,
     tier_bands: dict[str, float] | None = None,
+    listed_formulas: frozenset[str] = frozenset(),
 ) -> dict:
-    """Read every channel: the partner gate, then the cross-channel pass.
+    """Read every channel: the partner gate, then the mass gate's cap and the
+    cross-channel pass.
 
     The run-less ingest fold's reading of what a run's :func:`judge_commits`
     reads, so a reference-list row capped for another reading of its ion in a
@@ -2527,11 +2532,19 @@ def _read_other_readings(
     cross-channel pass could not ask a list's formula what it asks the search's
     without the family written first.
 
+    The rows come measured and not capped (``mass_gate.measure_mass_gate``),
+    as a round of :func:`judge_commits` hands them on: the partner gate, which
+    changes readings, reads its partners under the ceilings the measurement
+    recorded, and the caps come after it.
+
     :param stage_a_assignments: Stage A's rows, modified in place.
     :param stage_b_assignments: The untargeted stage's rows; none on the fold.
     :param searched_mechanisms: :func:`_searched_mechanisms`.
     :param resolved_profile: The sample's resolved chemistry.
     :param tier_bands: The run's evidence bands, for the partner gate.
+    :param listed_formulas: The neutrals the sample's lists name
+        (``engine.listed_formula_identities``), which the partner gate records
+        as a swapped-in reading's corroboration, as it does in a run.
     :return: The cross-channel pass's summary.
     """
     notation_by_id = _notation_by_id(searched_mechanisms)
@@ -2542,7 +2555,9 @@ def _read_other_readings(
         minor_channels=resolved_profile.minor_channels,
         partner_gated_channels=resolved_profile.partner_gated_channels,
         tier_bands=tier_bands,
+        listed_formulas=listed_formulas,
     )
+    cap_mass_gate(rows)
     return apply_cross_channel(
         rows,
         notation_by_id=notation_by_id,
@@ -3041,21 +3056,49 @@ def judge_commits(
     context: ChemistryContext | None = None,
     nox_skeleton: bool = False,
 ) -> JudgedCommits:
-    """Run the mass gate, the partner gate, the cross-channel pass and the
-    tiering pass, and read the lines they find in doubt as their neighbours'.
+    """Judge a sample's commits: the reading changes first, then the caps,
+    which only lower a tier, and the lines the caps leave in doubt read as
+    their neighbours'.
 
-    The three passes read the finished ledger, and a claim changes it: a
-    monoisotopic row becomes an isotopologue, so it no longer anchors the run's
-    calibration or draws the line its centre follows, no longer counts as a
-    channel for its neutral, and no longer predicts lines of its own. So a round
-    that finds claims is not kept. The claims are applied to the rows as the
-    stages built them and every pass runs again, until a round finds nothing new
-    (:data:`MAX_CLAIM_ROUNDS`). The rows passed in are not modified.
+    Each round works on a fresh copy of the rows as the stages built them:
+
+    1. **Reading changes.** The lines earlier rounds claimed are read as their
+       owners' isotopologues (``envelope_claims.apply_claims``), each at
+       candidate, or lower where the round that found it held the row lower,
+       by its evidence or by a cap (``envelope_claims.claimed_tier``). The mass
+       gate measures the run (``mass_gate.measure_mass_gate``): its
+       calibration, and the ceiling each line holds every reading of it under,
+       lowering nothing. The partner gate (``engine.apply_partner_gates``)
+       reads its partners under those ceilings and settles each gated ion's
+       reading, at the tier that reading's own evidence earns; a swap keeps
+       the ion, its line and its mass error, so it moves nothing the mass gate
+       measured. The cross-channel pass then records what the settled readings
+       say of each other (``cross_channel.read_cross_channel``), which the
+       tiering pass reads.
+    2. **Caps**: the mass gate's (``mass_gate.cap_mass_gate``), the
+       cross-channel pass's (``cross_channel.cap_cross_channel``) and the
+       tiering pass's rules (``tiering.apply_tiering``). Each only lowers a
+       tier, and decides on the readings and records step 1 left: a bar on
+       another row's tier is read under the mass gate's ceiling
+       (``engine.tier_under_ceiling``), and that gate is the only cap that
+       takes a row under candidate. So their order decides which of them a
+       row names, never which tier it ends on.
+    3. **Claims.** The rows on an assigned neighbour's line that the caps left
+       in doubt are read as that line (``tiering.find_envelope_claims``). A
+       claim changes the ledger: a monoisotopic row becomes an isotopologue,
+       so it no longer anchors the run's calibration or draws the line its
+       centre follows, no longer counts as a channel for its neutral, and no
+       longer predicts lines of its own. So a round that finds a new claim is
+       not kept: the claims join the earlier ones, and the round runs again
+       from the stages' rows, until the reading changes reach a fixed point,
+       a round that finds nothing new (:data:`MAX_CLAIM_ROUNDS`).
+
+    The rows passed in are not modified.
 
     :param rows: Both stages' committed rows, as built.
-    :param stage_a_accuracy: What Stage A measured (``apply_mass_gate``).
+    :param stage_a_accuracy: What Stage A measured (``measure_mass_gate``).
     :param fallback_sigma_ppm: The instrument class's width and precision.
-    :param notation_by_id: The searched mechanisms (``apply_cross_channel``).
+    :param notation_by_id: The searched mechanisms (``read_cross_channel``).
     :param mz_tolerance_ppm: The run's match window.
     :param abundance_floor: The run's envelope floor.
     :param max_alternatives: Cap on stored alternatives per row.
@@ -3067,8 +3110,9 @@ def judge_commits(
         cross-channel pass does not let a second channel settle against.
     :param partner_gated_channels: Those of them held to a partner
         (``engine.apply_partner_gates``), read over both stages' rows after
-        the mass gate, so a partner is a reading it left committed, and
-        before the cross-channel pass, so a reading set aside is no rival.
+        the mass gate's measurement, so a partner is a reading its ceiling
+        leaves committed, and before every cap, so a reading set aside is no
+        rival in the cross-channel pass.
     :param reagent_lines: The reagent pre-pass's rows, whose monoisotopic lines
         anchor the mass gate's calibration beside the commits
         (``mass_gate.fit_run_mass_accuracy``). Read only, and the same in every
@@ -3078,7 +3122,7 @@ def judge_commits(
         line per peak the file resolves; None where the run could read none.
     :param inherited_calibration: The calibration the mass gate judges every
         round against instead of fitting one: a decoy run's control's. None
-        fits each round's own (``mass_gate.apply_mass_gate``).
+        fits each round's own (``mass_gate.measure_mass_gate``).
     :param envelope_tolerance: The tolerance the run scored a line's share at,
         whose detectability threshold the tiering pass asks a row's lines from
         (``tiering.detect_threshold``); None for the fit's default.
@@ -3103,10 +3147,11 @@ def judge_commits(
     claim_round = 0
     while True:
         claim_round += 1
+        # -- Reading changes, and what the caps read of them.
         judged = apply_claims(
             copy.deepcopy(rows), claims.values(), max_alternatives=max_alternatives
         )
-        mass_calibration = apply_mass_gate(
+        mass_calibration = measure_mass_gate(
             judged,
             stage_a_accuracy=stage_a_accuracy,
             fallback_sigma_ppm=fallback_sigma_ppm,
@@ -3123,9 +3168,13 @@ def judge_commits(
             tier_bands=tier_bands,
             listed_formulas=listed_formulas,
         )
-        cross_channel = apply_cross_channel(
+        cross_channel = read_cross_channel(
             judged, notation_by_id=notation_by_id, minor_channels=minor_channels
         )
+        # -- The caps, which only lower a tier, in the order that decides
+        # which of them a row names.
+        cap_mass_gate(judged, mass_calibration)
+        cap_cross_channel(judged, cross_channel)
         tiering = apply_tiering(
             judged,
             mz_tolerance_ppm=mz_tolerance_ppm,
@@ -5572,25 +5621,34 @@ async def _assign_sample(
         )
         # -- The passes that judge the finished ledger, on the committed rows of
         # both stages together, and before the unassigned placeholders are
-        # built, which commit nothing and have nothing to measure:
+        # built, which commit nothing and have nothing to measure
+        # (`judge_commits`). The reading changes come first: a line an earlier
+        # round found on an assigned neighbour's envelope is read as that
+        # neighbour's, and the partner gate settles which molecule each ion
+        # read through a gated channel is, against the molecules the sample
+        # shows through the mode's own channels. Then the caps:
         # - the run's own mass calibration and the gate on it, since the
         #   corroboration it reads is a property of the whole ledger - which
         #   reading kept an isotopologue, and which peak a curated identity
         #   claimed - with the source's own lines the reagent pre-pass claimed
-        #   among its anchors;
+        #   among its anchors. It measures before the partner gate, which reads
+        #   its partners under its ceilings, and caps after it;
         # - what the sample's other channels say about each committed neutral,
         #   and which readings of one ion nothing measured tells apart;
         # - why every committed row holds the tier it holds, which reads what
         #   the two above recorded, the finished ledger's own envelopes, and
-        #   which lines of each envelope the sample's peaks hold.
-        # All three only ever demote, so their order decides which pass is named
-        # and never which tier a row ends on. A line one of them finds on an
-        # assigned neighbour's envelope is read as that neighbour's, and then
-        # all three run again over the ledger that leaves (`judge_commits`).
+        #   which lines of each envelope the sample's peaks hold;
         # - and before all three, the homologous series the batch's series
         #   detection found for any of these readings, a second observation
         #   of it the tiering pass counts (step 4.1). Not on a decoy arm: the
         #   batch ledger is the control's chemistry, not the arm's.
+        # The three caps only ever lower a tier, and decide on the readings
+        # and what was recorded of them, so their order decides which cap a
+        # row names and never which tier it ends on. A line the tiering pass
+        # finds on an assigned neighbour's envelope is read as that
+        # neighbour's, never above the tier the run held the row at when it
+        # found it, and the whole round runs again over the ledger that
+        # leaves.
         series_anchored = (
             0
             if decoy_plan is not None
@@ -6013,7 +6071,7 @@ async def _fold_sample_peaks_without_run(
     # its pool read under the defaults as a run's is under its config. But
     # there is no run to record it on: the sample's later readers read it at
     # today's numbers (#2989).
-    stage_a, _, mass_accuracy, _envelope, _listed = await _stage_a_assignments(
+    stage_a, _, mass_accuracy, _envelope, listed = await _stage_a_assignments(
         sample,
         config,
         match_params,
@@ -6050,9 +6108,10 @@ async def _fold_sample_peaks_without_run(
     # The run's gate over this path's commits, so that a reference mirror's
     # row off calibration is capped here as a run would cap it, and an
     # isotopologue that does not track its parent is held as a run holds it.
-    # The source's lines anchor its calibration as they anchor a run's.
+    # The source's lines anchor its calibration as they anchor a run's. It
+    # measures here, and caps after the partner gate below, as in a run.
     # Nothing records the summary: there is no run to put it on.
-    apply_mass_gate(
+    measure_mass_gate(
         stage_a,
         stage_a_accuracy=mass_accuracy,
         fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
@@ -6069,6 +6128,7 @@ async def _fold_sample_peaks_without_run(
         searched_mechanisms=searched_mechanisms,
         resolved_profile=resolved_profile,
         tier_bands=config.tier_bands(),
+        listed_formulas=listed,
     )
     assigned = (
         claimed_peak_ids

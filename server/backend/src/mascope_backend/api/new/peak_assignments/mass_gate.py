@@ -961,10 +961,48 @@ def apply_mass_gate(
 ) -> dict:
     """Record every commit's ``mass_z`` and cap the outliers no envelope confirms.
 
-    Modifies the rows in place, and runs after both stages and both pre-passes
-    have built them: the corroboration it reads is a property of the whole
-    ledger (which M0 kept an isotopologue, which peak Stage A claimed), so no
-    stage can answer it alone.
+    :func:`measure_mass_gate` and then :func:`cap_mass_gate`, for a ledger no
+    pass changes the readings of in between. The parameters are
+    :func:`measure_mass_gate`'s.
+
+    :return: A JSON-serializable summary for the run's config.
+    """
+    summary = measure_mass_gate(
+        assignments,
+        stage_a_accuracy=stage_a_accuracy,
+        fallback_sigma_ppm=fallback_sigma_ppm,
+        lines=lines,
+        reagent_lines=reagent_lines,
+        calibration=calibration,
+        source_line_cap=source_line_cap,
+    )
+    return cap_mass_gate(assignments, summary)
+
+
+def measure_mass_gate(
+    assignments: list[dict],
+    *,
+    stage_a_accuracy: SampleMassAccuracy | None = None,
+    fallback_sigma_ppm: float,
+    lines: SpectrumLines | None = None,
+    reagent_lines: Sequence[dict] = (),
+    calibration: MassCalibration | None = None,
+    source_line_cap: SourceLineCap | None = None,
+) -> dict:
+    """Fit the run's calibration, and record every commit's ``mass_z`` and the
+    strongest tier it may hold on it, lowering none (:func:`cap_mass_gate`).
+
+    Modifies the rows' provenance in place, and runs after both stages and both
+    pre-passes have built them: the corroboration it reads is a property of the
+    whole ledger (which M0 kept an isotopologue, which peak Stage A claimed), so
+    no stage can answer it alone.
+
+    It reads no tier, and no formula beyond whether a row commits one: the
+    rows' mass errors, which rows are whose isotopologues, which a claim read
+    as a line and which the target library matched. So a pass that only
+    changes which molecule a row's ion is read as (the partner gate) changes
+    nothing it measured, and can run after it and read its ceilings, before
+    any cap is applied.
 
     Nothing is capped for its distance when the run measured no calibration - a
     sample with too few corroborated commits and source lines to fit an offset
@@ -975,8 +1013,10 @@ def apply_mass_gate(
     and needs no calibration.
 
     Every judged row's record names the strongest tier it may hold here
-    (``ceiling``) and why, whether or not this gate is what lowers it there
-    (``capped``): a later pass that lifts a tier reads the ceiling.
+    (``ceiling``) and why; :func:`cap_mass_gate` lowers the row to it and
+    records that it did (``capped``). A pass that reads another row's tier as
+    a bar reads it under this ceiling (``engine.tier_under_ceiling``), so the
+    bar holds whether or not the cap has run yet.
 
     :param assignments: Every row built for this sample, modified in place.
     :param stage_a_accuracy: What Stage A measured, for the run's record. It is
@@ -1002,7 +1042,8 @@ def apply_mass_gate(
         decoy's commits are wrong formulas on a moved axis, and fitted over
         them the gate would centre on the shift, or measure nothing and stand
         down. None fits the run's own, as every other run does.
-    :return: A JSON-serializable summary for the run's config.
+    :return: A JSON-serializable summary for the run's config, whose counts
+        of capped rows :func:`cap_mass_gate` fills in.
     """
     # The width the untargeted search actually scored a mass error at, rebuilt
     # from the same two numbers `pattern_scoring_for` builds it from, so the
@@ -1077,31 +1118,60 @@ def apply_mass_gate(
         provenance = row.setdefault("provenance", {})
         if z is not None:
             provenance["mass_z"] = round(z, 2)
-        capped, reason = _cap_of(corroborated, followed, z)
-        if capped is not None:
+        ceiling, reason = _cap_of(corroborated, followed, z)
+        if ceiling is not None:
             # The strongest tier the row may hold here, and why, recorded
-            # whether or not this gate is what lowers the row to it: a pass
-            # that later lifts a tier (the partner gate) holds the row under
-            # the same ceiling.
-            gate["ceiling"] = capped
+            # whether or not the cap is what lowers the row to it.
+            gate["ceiling"] = ceiling
             gate["reason"] = reason
-        # Only ever downwards. A row the bands already put below the cap is not
-        # lifted onto it, and the gate's word for such a row is its ceiling
-        # alone: it did not decide that tier and must not appear to have.
-        if capped is not None and TIER_RANK[row["tier"]] > TIER_RANK[capped]:
-            row["tier"] = capped
-            gate["capped"] = capped
-            if reason == REASON_OFF_CALIBRATION:
-                summary["capped"] += 1
-                summary["capped_curated"] += corroborated == CORROBORATED_CURATED
-                if capped == TIER_BELOW_ASSIGNABILITY:
-                    summary["below_assignability"] += 1
-            elif reason == REASON_ISOTOPOLOGUE_IN_DOUBT:
-                summary["capped_in_doubt"] += 1
-            else:
-                summary["capped_untracked"] += 1
         provenance["mass_gate"] = gate
     return summary
+
+
+def cap_mass_gate(assignments: list[dict], summary: dict | None = None) -> dict:
+    """Hold every judged row under the ceiling :func:`measure_mass_gate`
+    recorded for it, in place.
+
+    Only ever downwards. A row the bands already put below its ceiling is not
+    lifted onto it, and the gate's word for such a row is its ceiling alone: it
+    did not decide that tier and must not appear to have. A row it lowers
+    records that it did (``capped``). It reads nothing but each row's own
+    record, so it gives a row the same tier before or after the other caps.
+
+    :param assignments: The rows :func:`measure_mass_gate` judged, modified in
+        place.
+    :param summary: Its summary, whose counts of capped rows this fills in;
+        None counts nothing.
+    :return: The summary.
+    """
+    summary = summary if summary is not None else {}
+    for row in assignments:
+        gate = (row.get("provenance") or {}).get("mass_gate")
+        if not isinstance(gate, dict):
+            continue
+        ceiling = gate.get("ceiling")
+        if ceiling not in TIER_RANK or TIER_RANK[row["tier"]] <= TIER_RANK[ceiling]:
+            continue
+        row["tier"] = ceiling
+        gate["capped"] = ceiling
+        reason = gate.get("reason")
+        if reason == REASON_OFF_CALIBRATION:
+            _count(summary, "capped")
+            _count(
+                summary,
+                "capped_curated",
+                gate.get("corroborated_by") == CORROBORATED_CURATED,
+            )
+            _count(summary, "below_assignability", ceiling == TIER_BELOW_ASSIGNABILITY)
+        elif reason == REASON_ISOTOPOLOGUE_IN_DOUBT:
+            _count(summary, "capped_in_doubt")
+        else:
+            _count(summary, "capped_untracked")
+    return summary
+
+
+def _count(summary: dict, key: str, by: bool = True) -> None:
+    summary[key] = summary.get(key, 0) + int(by)
 
 
 def _cap_of(

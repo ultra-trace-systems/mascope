@@ -20,11 +20,15 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
     SETTLED_BY_SECOND_CHANNEL,
     SETTLED_BY_TARGET_LIBRARY,
     apply_cross_channel,
+    brightest_by_channel,
+    cap_cross_channel,
     channels_by_neutral,
     donates_nitrogen,
     neutral_key,
     nitrogen_donating_channels,
+    partner_heights,
     partner_tier,
+    read_cross_channel,
     same_ion_readings,
 )
 from mascope_backend.api.new.peak_assignments.cross_channel import (
@@ -1498,6 +1502,67 @@ def test_channels_by_neutral_reads_only_committed_monoisotopic_rows():
     assert channels_by_neutral(rows, dict(POSITIVE)) == {
         neutral_key("C6H12O6"): {"[M+H]+": "assigned"}
     }
+
+
+def off_calibration(committed: dict, ceiling: str = "below_assignability") -> dict:
+    """A row the mass gate measured off calibration, its cap not yet applied."""
+    committed["provenance"] = {
+        "mass_gate": {
+            "corroborated_by": None,
+            "ceiling": ceiling,
+            "reason": "off_calibration",
+        }
+    }
+    return committed
+
+
+class TestBeforeTheMassGatesCap:
+    """A run reads the ledger here before it applies the mass gate's cap
+    (``service.judge_commits``). Every tier is read under that gate's ceiling,
+    so what is recorded is what would be after the cap, and nothing is capped
+    until :func:`cap_cross_channel`."""
+
+    def test_a_neutral_s_best_tier_is_read_under_the_ceiling(self):
+        rows = [
+            off_calibration(row("a", "C6H12O6", PROTON)),
+            row("b", "C6H12O6", AMMONIUM, tier="candidate"),
+        ]
+        assert channels_by_neutral(rows, dict(POSITIVE)) == {
+            neutral_key("C6H12O6"): {
+                "[M+H]+": "below_assignability",
+                "[M+NH4]+": "candidate",
+            }
+        }
+
+    @pytest.mark.parametrize(
+        ("ceiling", "shown"), [("below_assignability", False), ("candidate", True)]
+    )
+    def test_a_row_its_ceiling_sends_below_assignability_shows_nothing(
+        self, ceiling, shown
+    ):
+        rows = [off_calibration(row("a", "C6H12O6", PROTON), ceiling)]
+        neutral = neutral_key("C6H12O6")
+        assert (
+            neutral in partner_heights(rows, dict(POSITIVE), frozenset({"[M+NH4]+"}))
+        ) is shown
+        assert (neutral in brightest_by_channel(rows, dict(POSITIVE))) is shown
+
+    def test_the_record_lowers_nothing_and_the_cap_lowers_it(self):
+        rows = [
+            ammoniated("a", "C6H12O6", "C6H15NO6"),
+            row("b", "C6H12O6", AMMONIUM, role="iso_child", owner="a"),
+        ]
+        summary = read_cross_channel(rows, notation_by_id=dict(POSITIVE))
+        assert summary["ambiguous_nitrogen"] == 1
+        assert [r["tier"] for r in rows] == ["assigned", "assigned"]
+        assert "capped" not in rows[0]["provenance"]["cross_channel"]
+        assert summary["capped"] == 0
+
+        cap_cross_channel(rows, summary)
+
+        assert [r["tier"] for r in rows] == ["candidate", "candidate"]
+        assert rows[0]["provenance"]["cross_channel"]["capped"] == "candidate"
+        assert (summary["capped"], summary["capped_isotopologues"]) == (1, 1)
 
 
 #: Neutrals a bromide sample shows through both its channels, by the log of
