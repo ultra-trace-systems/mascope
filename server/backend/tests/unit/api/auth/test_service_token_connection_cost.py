@@ -195,6 +195,24 @@ class TestAdmissionControlAssumption:
         assert "db_semaphore" in inspect.getsource(db.get_async_session)
         assert "db_semaphore" not in inspect.getsource(db.async_session)
 
+    @pytest.mark.asyncio
+    async def test_the_sign_in_session_holds_its_permit_for_the_endpoint_only(
+        self, launch_probe
+    ):
+        # Where the permit is held says nothing about how long. A launch route
+        # hands a run of minutes to a background task, and a request-scoped
+        # session kept its permit until that run ended: a few launches then
+        # held every permit of the worker, and every signed-in request on it
+        # waited (#3240). The user manager is how every signed-in request
+        # reaches the session.
+        from mascope_backend.api.new.users.user_manager.dependencies import (
+            get_user_manager,
+        )
+
+        held = await launch_probe(get_user_manager)
+
+        assert held == {"endpoint": True, "task": False}
+
     def test_the_permit_count_cannot_exceed_the_overflow(self):
         # Sizing admissions above max_overflow deadlocks a worker: every
         # holder takes its own connection, then blocks on the nested checkout

@@ -103,17 +103,26 @@ class HashedDatabaseStrategy(DatabaseStrategy[User, int, AccessToken]):
         return token
 
 
-async def get_access_token_db(session: AsyncSession = Depends(get_async_session)):
+async def get_access_token_db(
+    session: AsyncSession = Depends(get_async_session, scope="function"),
+) -> HashedAccessTokenDatabase:
     """
     Provides a database adapter for access tokens, allowing retrieval, creation, and deletion
     of access tokens associated with users.
 
     This adapter is used by the authentication strategy for managing API key-based authentication.
 
+    The session is function-scoped and this dependency returns rather than
+    yields, as ``get_user_db`` does and for its reason: the session gives back
+    its admission permit when the endpoint returns, not after the request's
+    background tasks. Both declare the session with the same scope, so a
+    request resolves it once and the two adapters share it; a different scope
+    on either would be a second session and a second permit.
+
     :param session: SQLAlchemy async session, injected via dependency.
     :return: Access token database adapter for interacting with AccessToken table.
     """
-    yield HashedAccessTokenDatabase(session, AccessToken)
+    return HashedAccessTokenDatabase(session, AccessToken)
 
 
 # Database strategy for access token authentication (access token stored in DB)
