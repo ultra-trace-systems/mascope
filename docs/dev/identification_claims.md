@@ -1,13 +1,14 @@
 # Identification claims: identifiers, candidates and levels
 
 - **Status:** building
-- **As of:** 2026-11-11
+- **As of:** 2026-11-17
 - **Tracked in:** [FAIR data roadmap](https://linear.app/ultra-trace/project/fair-data-roadmap-0484070a43ea)
   (Linear: MAS-357 the structure lookup, MAS-363 the exports, MAS-361 the
   decision on the classic sheet; MAS-31 is the level's FAIR export),
   [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c)
   (MAS-358 the target as a candidate, MAS-359 the claim, MAS-362 the decision
-  on the targeted path; MAS-73 carries the engine's level) and
+  on the targeted path; MAS-73 and MAS-939 to MAS-944 carry the level, MAS-943
+  the claim's letter and scope) and
   [MS2 analysis](https://linear.app/ultra-trace/project/ms2-analysis-7fdc525bca51)
   milestone 6, "Spectral library matching" (MAS-360 the MS/MS ranking, after
   MAS-429 the reference spectra); filed 2026-10-22
@@ -129,29 +130,46 @@ from the facts the engine records (a second channel, a second line, a list, the
 mass gate, candidate density), stored in provenance with the facts that earned
 it, versioned, shown in the inspector and the ledgers, and carried in the
 exports and the import contract. MAS-31 is its FAIR mirror: the level belongs
-in the batch export and the deposit package. Everything the engine records is
-evidence about a formula, so that level reaches 4 at best. Levels 1 to 3 are
-statements about a structure, and nothing in the system can make one today.
+in the batch export and the deposit package.
+
+Since 2026-11-17 the level speaks the scale peaky and Mascope share (the
+quality plan's decision 38; defined in
+[`assignment_confidence.md`](assignment_confidence.md), "P4 design: the
+identification level"): Schymanski's numbers, a letter for the kind of
+evidence (5a, 5b, 4a, 4b, 3a to 3d, 2a, 2b, 1), and on every row the level,
+a one-line evidence string and what would lift it. Most of what the engine
+records is evidence about a formula, so from that alone the level reaches 4:
+4a where the molecule-reagent split is pinned, 4b where it is open. With the
+run's own context it reaches 3, the scale's ceiling without MS/MS: a list
+whose tags match the run's context names candidates (3c), the channel names a
+class (3b), a series member anchored at 3 (3d) (steps 5.8b and 5.8d). Levels
+1 and 2 name a structure on a standard, MS/MS or a separation (5.8e, 5.8f).
 
 ## 3. The three layers
 
 | Layer | What it is | Who writes it | What it carries | Level it can reach |
 |---|---|---|---|---|
-| **1 Composition** | a neutral formula and an ionization mechanism, with the isotopologue role | the engine (peak-centric), the matcher (targeted) | formula, ion formula, mechanism, tier, fit score, plausibility, P(correct), tie flag | 5, or 4 when the formula is unequivocal |
+| **1 Composition** | a neutral formula and an ionization mechanism, with the isotopologue role | the engine (peak-centric), the matcher (targeted) | formula, ion formula, mechanism, tier, fit score, plausibility, P(correct), tie flag | 5 or 4 (5a, 5b, 4a, 4b); 3 with the run's own context (3a to 3d) |
 | **2 Candidates** | the compounds that share the formula | reference lists at ingest; the user, on a target compound | InChIKey, InChI, SMILES, CAS, name, source, licence, list tags | none: a candidate is not a claim |
-| **3 Claim** | one candidate stated for one peak or anchor, with evidence | a person, through a verdict; later an MS/MS library match | the claimed InChIKey and name, the level, the evidence level, a note, who, when | 1 to 3 with a structure; 4 without |
+| **3 Claim** | one candidate stated for one peak or anchor, with evidence | a person, through a verdict; later an MS/MS library match | the claimed InChIKey and name, the level, the evidence level, a note, who, when | 1 to 3 with a structure; 4, or 3b for a class, without |
 
 Four rules hold the layers apart:
 
 1. **An identifier is never a claim.** On a target compound it says what the
    target stands for; on a reference row, what a list calls the formula. Both
    are layer 2, and both are shown as candidates, never as the answer.
-2. **Layer 1 alone never exceeds 4.** A target match raises nothing. A
-   reference listing raises nothing. Suspect screening on exact mass and
-   isotope pattern is level 4 or 5 in Schymanski's own scheme, whatever the
-   list calls the hit.
+2. **Layer 1 names a structure only tentatively, and only from the run's own
+   context.** A target match raises nothing. A reference listing raises
+   nothing, unless it is a context list whose tags match the run's resolved
+   context: then an established neutral formula (4a) reads 3c, "consistent
+   with" the compounds the list names. Suspect screening against a structure
+   database on exact mass and isotope pattern stays 4 or 5, whatever the list
+   calls the hit. Narrowed on 2026-11-17 (decision 38) from "layer 1 alone
+   never exceeds 4", which was written against the database hit and holds for
+   it.
 3. **A claim names a structure or it does not.** Without one it confirms the
-   formula reading and stays at 4. With one it is 1 to 3 by its evidence.
+   formula reading (4a or 4b) or a class (3b, one MS/MS loss). With one it is
+   1 to 3 by its evidence.
 4. **The level a reader states** is the live claim's where there is one, else
    the engine's (MAS-73), else the formula floor.
 
@@ -237,10 +255,12 @@ in `context`, as an imported run names its engine today.
 
 ### 5.3 The engine's level and the floor
 
-The engine's level is MAS-73's and stays formula-level: 4 when the row is
-assigned and its formula is unequivocal (`is_tie` false, plus whatever the
-tier reasons add under MAS-73's mapping), else 5. The classic matcher has no
-tier and no tie flag; its rows have no level today.
+The engine's level is the quality plan's step 5.8 and its sub-steps: 5b, 5a,
+4b or 4a from the shortlist's rivals and the molecule-reagent split, 3 from
+the run's context and channel (5.8b) and the batch (5.8c, 5.8d), never 1. It is
+read from evidence and not from the tier, so an assigned row can read 5a
+where a rival is left open. The classic matcher has no tier and no tie flag;
+its rows have no level today.
 
 **Call for the plan owner:** whether the classic path derives a level of its
 own (5, or 4 where the isotope pattern matched) for the *Match compounds*
@@ -266,6 +286,25 @@ row's candidates, the target's declaration first, then a single reference
 identity, so the requirement costs one look rather than a paste. Rows recorded
 before the columns exist keep their evidence level and read as level 4, with
 no structure.
+
+**Version 2 (planned: the quality plan's step 5.8f, decision 38).** The claim
+records the scale's letter beside its number, and version 1's two coarse rows
+split by what the evidence shows:
+
+| `evidence_level` | what the person states | `level` |
+|---|---|---|
+| `reference_standard` | the structure; a standard on the same instrument with the same reagent chemistry; one independent line (MS/MS, a separation, another instrument) | 1; without the independent line, 5.8f's call (recommended 2b) |
+| `msms` | a library spectrum match, with the structure | 2a |
+| `msms` | two or more fragments that fit one structure, rivals excluded, with the structure | 2b |
+| `msms` | one loss: a class, no structure | 3b |
+| `orthogonal` | a separation that leaves one structure, with it | 2b |
+| `orthogonal` | other evidence for a class or a candidate | 3, the letter its evidence names |
+| `pattern` | the formula, the split pinned or open | 4a or 4b |
+| `visual` | - | the engine's |
+
+A level-1 claim is scoped: on a sample to that sample, on a batch peak to a
+time window, outside which the batch peak reads the engine's level. A claim
+made under version 1 keeps its level and its version.
 
 ### 5.5 MS/MS as evidence
 

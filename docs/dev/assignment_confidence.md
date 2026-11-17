@@ -1,8 +1,8 @@
 # Peak Assignment & Identification Confidence — Study, Design and Plan
 
 - **Status:** building
-- **As of:** 2026-11-13
-- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear; MAS-73 carries the identification level; MAS-324 to MAS-327 the open P2 to P4 steps)
+- **As of:** 2026-11-17
+- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear; MAS-73 and MAS-939 to MAS-944 carry the identification level, decision 38 is MAS-938; MAS-324 to MAS-327 the open P2 to P4 steps)
 - **What:** The layered science of going from a peak to a confident identification: plausibility, arbitration, calibration, tiers.
 
 *A science-based, layered architecture for going from a peak to a confident chemical
@@ -638,6 +638,137 @@ build is four steps, each blocked by the one before: (a) the separation method a
 tables with the import; (b) the elution apex reading in the peak store; (c) the term in
 arbitration with its provenance and the inspector's line; (d) the measurement above, which sets
 the weights. Until then retention time stays in the quality plan's *Not in this plan* list.
+
+### P4 design: the identification level
+
+*The scale peaky and Mascope share, described by peaky's owner in November 2026 and adopted by
+the quality plan's decision 38; built in its steps 5.8 to 5.8g. This section is the one
+definition: the plan, the claims note and the surfaces point here.*
+
+**1. The scale.** The numbers keep Schymanski's meaning (2014). The letters name the kind of
+evidence that earned the number, not a rank inside it: 3c is not weaker than 3a, it rests on
+something else.
+
+| Level | Meaning | Established by | Sub-levels | A reader may say |
+|---|---|---|---|---|
+| 1 | Confirmed structure | An authentic standard on this instrument with the same reagent chemistry (same mass, ionization and fragments), plus one independent line: MS/MS, a separation or another instrument. Assigned in review only. | - | "It is pinonic acid." |
+| 2 | Probable structure | Two or more diagnostic fragments that fit one structure, or a library spectrum match; rivals excluded. | 2a library spectrum match; 2b diagnostic evidence: fragments, a separation, or a formula with one plausible structure (TFA, HSO4-) | "Almost certainly pinonic acid." |
+| 3 | Tentative candidate | An established formula plus a context list, ionization behaviour or one MS/MS loss. The ceiling without MS/MS. | 3a data and list agree; 3b one functional group; 3c context list; 3d homologue series | "Consistent with pinonic acid", or "an organic acid of this formula". |
+| 4 | Molecular formula | Every competing formula in the mass window excluded by mass and isotopes. | 4a neutral formula, the molecule-reagent split pinned; 4b ion formula, the split open | "C10H16O3, isomer unknown." |
+| 5 | Exact mass | A measured mass; the look-alikes not excluded. | 5a rivals remain, listed; 5b the reading refuted by its isotopes, chemically implausible, or untestable | "A peak at m/z 183.1027." |
+
+Colour follows the number wherever a level is drawn: grey for 5 (a mass), yellow for 4 (a
+formula), green from 3 up (the first claim about structure), always with the level's text
+beside it.
+
+**2. The row contract.** Every committed row carries three things, in its provenance and on
+every surface that shows the row:
+
+- `level`, the number and its letter (`4a`);
+- `evidence`, one line naming what earned it ("13C line fits ten carbons; two rivals out by
+  mass, one by its 13C line; one split");
+- `lift`, what would raise it, written from the tests the row is missing ("a context list
+  for the run's chemistry; MS/MS").
+
+Beside them: the facts themselves, each named with the record it was read from; the rivals,
+each with the test that excluded it or the word *open*; and `level_mapping_version`. An
+isotopologue row shows its parent's level; an artifact row carries none. An imported run's
+row carries the same three in the same vocabulary (the import contract, quality plan step
+5.6), so the reference's level is read beside Mascope's rather than translated.
+
+**3. Who may state which level.**
+
+- **The engine** states 5, 4 and 3 from what a run and its batch record (steps 5.8 to 5.8d),
+  and 2b only where a cited list marks the formula as having one plausible structure (5.8b,
+  a call for the plan owner).
+- **MS/MS evidence** states 4a (the adduct releases its reagent cleanly), 3b (one named loss),
+  2b (two or more fragments that fit one structure) and 2a (a library spectrum), from the MS2
+  project's per-row evidence, once that evidence is measured (5.8e).
+- **A person**, and only a person, states 1: a claim on the verification tables
+  ([`identification_claims.md`](identification_claims.md) section 5), scoped to the sample or
+  the time window its evidence covers, pointing to that evidence (5.8f). A person may also
+  state 2 or 3 with the evidence that earns it.
+- **The level a reader is shown** is the live claim's where there is one, else the engine's
+  (the claims note's rule 4). A standard that disagrees is a result too: the claim is
+  rejected and the row reads the engine's level again.
+
+**4. From Mascope's facts to a level.** Each sub-level, the facts that earn it, and the step
+that builds it. Nothing here is a new measurement: each fact is recorded today by the step
+named, and the level is a reading of them.
+
+- **5b, refuted or untestable** (5.8). Refuted by its isotopes: a line of its predicted
+  envelope the spectrum should hold and does not (`absent_line`, quality plan 3.4e), or a line
+  the reading cannot make standing where a rival's would (a stamped 37Cl or 81Br line under a
+  halogen-free reading, 4.2c and 4.2g). Implausible: plausibility under its floor (P1).
+  Untestable: the peak is not separated from a neighbour (`unresolved_peak`, 3.4f), so
+  neither its mass nor its height was measured.
+- **5a, rivals remain** (5.8). The shortlist of formulas that fit the peak's mass through the
+  run's channels (`other_candidates`, measured by 4.15) holds a rival no test excluded; the row
+  lists each. A row whose shortlist was not measured reads 5a with "rivals not measured" as its
+  evidence and "measure the shortlist" as its lift: the level does not assume an exclusion it
+  did not see.
+- **4, every rival excluded** (5.8). Each rival on the shortlist is out on a named test:
+  mass (its measured evidence under the winner's by more than the tie margin, the mass term
+  separating them at the run's fitted width; 2.2, 5.9), isotopes (a tracking line the rival
+  cannot make, its own predicted line absent where the detectability threshold says it would
+  show, the carbon count a 13C line gives, a halogen lock), or the molecule seen through a
+  second channel that commits the winner's neutral and not the rival's (2.3; on a TOF only
+  with co-variation, point 5). A rival held back only by a prior (3.6) or by plausibility is
+  not excluded; it stays listed. `no_close_rival` is a different statement - that the peak's
+  evidence separated the winner, not that each rival failed a test - so the mapping reads the
+  shortlist, not that reason.
+- **4b, ion formula, split open** (5.8). The ion's formula holds, but the ion reads as more
+  than one molecule-reagent split under the run's channels and nothing settled which: the
+  same-ion readings the finder and the cross-channel pass record (`ambiguous_adduct`,
+  `ambiguous_nitrogen`, a mirror row's other readings of 2.5c). The nitrate cluster against an
+  N-bearing `[M-H]-`, and urea on uronium, are the common cases.
+- **4a, neutral formula, split pinned** (5.8 in a sample, 5.8c and 5.8d from the batch, 5.8e from
+  MS/MS). One plausible decomposition (the ion carries no atom a reagent could have brought);
+  a labelled reagent, whose label tells the reagent's atoms from the molecule's (a 15N
+  profile, with 4.2g's label twin reading the label present); a second ionization route that
+  commits the same neutral (`same_ion_settled`; on uronium, 4.2g's neutral pair once
+  co-variation is weighed); or MS/MS in which the adduct releases its reagent cleanly.
+- **3c, context list** (5.8b). On a 4a row, a curated, cited list whose tags match the run's
+  resolved context (3.6: the context the dataset or batch names; the list tags of 2.5a and
+  2.5b) holds a compound of the row's neutral formula; the row names the compounds. A list
+  outside the run's context raises nothing, and neither does a structure database or a
+  target's declaration: those are candidates
+  ([`identification_claims.md`](identification_claims.md) section 4), not context.
+- **3b, one functional group** (5.8b from ionization, 5.8e from MS/MS). On a 4a row, one
+  constraint on the structure: a class, not a name. From ionization, through a table each
+  profile carries: deprotonation by a nitrate reagent says an acidic hydrogen, protonation on
+  uronium a basic site. From MS/MS, one named loss: CO2 a carboxylic acid, H2O2 a
+  hydroperoxide, NH3 an amide or amine.
+- **3a, data and list agree** (5.8b, 5.8d). A 3c row that also has two routes (a second
+  channel committing its neutral) or an anchored homologue (a series member whose anchor
+  holds 3a or 3b). The strongest automated level.
+- **3d, homologue** (5.8d). A member of a series at exact spacing (4.1's CH2, O, CF2 and the
+  other units) whose other members hold 3a or 3b and co-vary with it (4.2), the co-variation
+  read once decision 35 lets it count (after 4.13).
+- **2a, 2b, 1** as point 3: MS/MS (5.8e), a one-structure list mark (5.8b), a person's claim
+  (5.8f).
+
+**5. The instrument class.** On a TOF most rows stay at 5a, and that is the honest reading,
+not a defect of the mapping: a window of several ppm holds several formulas and the 13C line
+merges with its neighbours, so no carbon count is read. Only a heavy-isotope twin (37Cl, 81Br,
+4.2g's halogen lock) excludes a rival by isotopes there. A second reagent lifts a TOF row only
+where the two channels co-vary, to rule out chance pairings; so does a homologous series at
+exact spacing that co-varies, and the same air measured on an Orbitrap, whose formula at 4
+corroborates the TOF row (5.8g). On an Orbitrap a rival left by resolution is decided by its
+13C line where that line is testable; under the file's detectability threshold (3.5b's curve)
+a dim line excludes nothing, the row stays 5a, and its lift says "more signal".
+
+**6. The level and the tier.** They read different tests: the tier, the fit against its bands
+and a second observation; the level, which rivals each test excluded and what context adds.
+Neither is derived from the other, and the level moves no tier, role, member or claim. The
+quality plan's gate reads them crossed per set (assigned rows at 5; rows under assigned at 4
+or above) and reads the decoy arms' rows at 4 or above; whether a tier rule follows from the
+crossing is a call for the plan owner on those readings (step 5.8).
+
+**7. Versioning.** The mapping is versioned (`level_mapping_version` on each run's provenance)
+and bumped when a fact it reads or a rule in it changes, as the tier rule set is. A claim's
+level is fixed when the claim is made, with the version it was made under (the claims note,
+section 5.2).
 
 ## 5. References
 

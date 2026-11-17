@@ -481,6 +481,16 @@ rate is low enough (decision 5; MAS-393 takes it on the measurement). Raising
 a row's evidence towards the assigned band is a second decision, after a
 second measurement over tied rows a person has verified.
 
+**The shared scale (2026-11-17).** Since the quality plan's decision 38 the
+level has letters, and MS/MS reaches four of them: a cluster that releases its
+reagent cleanly pins the molecule-reagent split (4a), one named loss gives a
+class (3b), two or more fragments that fit one structure give 2b, and a
+library spectrum 2a (the plan's step 5.8e, MAS-942, after MAS-391 and MAS-393). One
+word clashes: *diagnostic* here means read by this formula and by no rival
+formula in the window, which is formula evidence; the scale's diagnostic
+fragments tell isomers of one formula apart, and only those earn 2b. The two
+get distinct names before 5.8e is built.
+
 **The contract.** `ms2_support` is one shape for both engines: it enters the
 run-import contract ([sdk_peak_assignment.md, section 8](sdk_peak_assignment.md))
 so a peaky run lands with its support, and the ledger export, the batch
