@@ -37,6 +37,8 @@ def _load():
 
 bench = _load()
 mf = bench.bench_manifest
+#: The card's rule for an authors' list's entry, which ``init`` reads by.
+truth_key = bench.bench_run._compare_module().truth_key
 
 
 # --------------------------------------------------------------- fixtures
@@ -709,15 +711,13 @@ def test_a_set_names_its_authors_list_by_its_path_and_hash(tmp_path):
     m = mf.load(_with_truth(tmp_path, truth))
 
     assert m.sets["Nc"].truth == mf.Truth("truth/Nc.json", truth["sha256"])
-    # Read as written, spaces dropped; the card compares by element counts.
-    assert mf.read_truth(m) == {
-        "Nc": {
-            "sha256": truth["sha256"],
-            "formulas": ["C10H15NO8", "C10H16O3", "NO8C10H15"],
-        }
+    # Keyed by element counts as the card keys it: two spellings of one
+    # neutral are one formula.
+    assert mf.read_truth(m, truth_key) == {
+        "Nc": {"sha256": truth["sha256"], "formulas": ["C10H15N1O8", "C10H16O3"]}
     }
     # A set without one reads none; the list's hash is part of the digest.
-    assert mf.read_truth(mf.load(_two_sets(tmp_path))) == {}
+    assert mf.read_truth(mf.load(_two_sets(tmp_path)), truth_key) == {}
     other = copy.deepcopy(m.source)
     other["sets"]["Nc"]["truth"]["sha256"] = "b" * 64
     assert mf.parse(other).digest != m.digest
@@ -757,19 +757,22 @@ def test_an_authors_list_that_is_not_one_stops_before_anything(tmp_path):
 
     # Parsed from an object, the manifest has no folder to read it from.
     with pytest.raises(mf.ManifestError, match="load the manifest from its file"):
-        mf.read_truth(mf.parse(m.source))
+        mf.read_truth(mf.parse(m.source), truth_key)
     # A list whose content moved on since the manifest named it.
     (folder / "truth" / "Nc.json").write_text(json.dumps(["C10H16O3", "C5H8O4"]))
     with pytest.raises(mf.ManifestError, match="hashes to something other"):
-        mf.read_truth(m)
+        mf.read_truth(m, truth_key)
     (folder / "truth" / "Nc.json").unlink()
     with pytest.raises(mf.ManifestError, match=r"truth/Nc.json is not in"):
-        mf.read_truth(m)
+        mf.read_truth(m, truth_key)
 
-    # An ion, a charge or an adduct is not a neutral formula; the entry is
+    # An ion, a charge or an adduct is not a neutral formula, nor is one
+    # whose counts are all zero, which the card would refuse; the entry is
     # named by its place, never by its text.
     for bad, where in (
         (["C10H16O3", "C10H15NO8NO3-"], "[1]"),
+        (["C10H16O3", "S0"], "[1]"),
+        (["C0H0N0O0"], "[0]"),
         (["[13C]C9H16O3"], "[0]"),
         (["C10H16O3", 42], "[1]"),
         ({"formulas": ["C10H16O3"]}, "not a list"),
@@ -780,7 +783,7 @@ def test_an_authors_list_that_is_not_one_stops_before_anything(tmp_path):
         data["sets"]["Nc"]["truth"] = entry
         path.write_text(json.dumps(data))
         with pytest.raises(mf.ManifestError) as raised:
-            mf.read_truth(mf.load(path))
+            mf.read_truth(mf.load(path), truth_key)
         assert where in str(raised.value)
         assert "NO3-" not in str(raised.value)
 
@@ -1292,7 +1295,9 @@ def test_a_private_manifest_builds_from_files_in_its_folder(rig, tmp_path):
 
 def test_init_keeps_an_authors_list_in_the_state_and_never_seeds_it(rig, tmp_path):
     b, instance, api, home = rig
-    formulas = ["C10H15NO8", "C7H9NO5"]
+    # An ion table can name one neutral under several ions.
+    formulas = ["C10H15NO8", "C7H9NO5", "NO8C10H15"]
+    keyed = ["C10H15N1O8", "C7H9N1O5"]
     path = _with_truth(
         tmp_path, _truth(tmp_path, "Nc", formulas), collections=["Terpenes"]
     )
@@ -1302,13 +1307,14 @@ def test_init_keeps_an_authors_list_in_the_state_and_never_seeds_it(rig, tmp_pat
     state = json.loads(home.state.read_text())
     assert state["sets"]["Nc"]["truth"] == {
         "sha256": _sha(json.dumps(formulas)),
-        "formulas": formulas,
+        "formulas": keyed,
     }
     # The engine reads a batch's target collections as known targets: the
     # list reaches no collection, no compound and no upload of the instance.
     sent = json.dumps(api.calls) + json.dumps(api.uploads)
-    assert not any(formula in sent for formula in formulas)
+    assert not any(formula in sent for formula in formulas + keyed)
     assert "Nc.json" not in sent
+    # Status counts the formulas the card reads, not the entries.
     out = io.StringIO()
     b.status(out)
     assert "authors' list of 2 formulas" in out.getvalue()
@@ -1321,7 +1327,11 @@ def test_init_keeps_an_authors_list_in_the_state_and_never_seeds_it(rig, tmp_pat
     assert b.init(path) == 0
     assert instance.calls == []
     state = json.loads(home.state.read_text())
-    assert state["sets"]["Nc"]["truth"]["formulas"] == formulas + ["C5H8O4"]
+    assert state["sets"]["Nc"]["truth"]["formulas"] == [
+        "C10H15N1O8",
+        "C5H8O4",
+        "C7H9N1O5",
+    ]
 
     # And one the manifest no longer names leaves the state.
     del data["sets"]["Nc"]["truth"]
@@ -1337,6 +1347,14 @@ def test_a_list_that_is_not_one_stops_init_before_the_instance(rig, tmp_path):
     (path.parent / "truth" / "Nc.json").write_text(json.dumps(["C10H15NO8NO3-"]))
 
     with pytest.raises(mf.ManifestError, match="hashes to something other"):
+        b.init(path)
+    assert instance.calls == [] and not home.state.exists()
+
+    # One the card would refuse stops init too, before the engines run.
+    data = json.loads(path.read_text())
+    data["sets"]["Nc"]["truth"] = _truth(tmp_path, "Nc", ["C10H16O3", "S0"])
+    path.write_text(json.dumps(data))
+    with pytest.raises(mf.ManifestError, match=r"Nc.json\[1\] is not a neutral"):
         b.init(path)
     assert instance.calls == [] and not home.state.exists()
 

@@ -673,10 +673,11 @@ def test_both_engines_are_read_against_the_list_by_distinct_formulas():
     frame = pd.concat(
         [
             _frame(mine, theirs),
-            # A second sample assigns C7H10O4 again: one formula, counted once.
+            # A second sample, where each engine assigns a formula again: one
+            # formula, counted once. The reference's C10H16O3 is p1's alone.
             _frame(
                 [_row("q1", assigned_formula="C7H10O4")],
-                [_row("q1", assigned_formula="C10H16O3", engine_tier="assigned")],
+                [_row("q1", assigned_formula="C6H8O5", engine_tier="assigned")],
                 sample="s2",
             ),
         ],
@@ -1492,7 +1493,11 @@ def test_a_set_no_sample_was_read_on_stays_on_the_card_and_fails_the_gate(
     served, tmp_path, capsys
 ):
     manifest = json.loads(served.read_text())
-    manifest["sets"]["D"] = {"workspace": "Chamber study", "samples": ["s3"]}
+    manifest["sets"]["D"] = {
+        "workspace": "Chamber study",
+        "samples": ["s3"],
+        "truth": ["C6H10O4", "C7H10O4"],
+    }
     manifest["sets"]["A"]["samples"].append("s4")
     served.write_text(json.dumps(manifest))
     _Client.runs["s3"] = [_run("rb3", "peaky", "0.8.0", "2026-11-01T10:00:00Z")]
@@ -1509,6 +1514,11 @@ def test_a_set_no_sample_was_read_on_stays_on_the_card_and_fails_the_gate(
     assert d["readings"]["samples"]["value"] == 0
     assert d["readings"]["samples_skipped"]["value"] == 1
     assert d["readings"]["G9"]["value"] is None
+    # Its list keeps its size; nothing is read against it, and the pooled
+    # column, with no other set's list, reads none.
+    assert d["readings"]["list_formulas"]["value"] == 2
+    assert d["readings"]["list_found"] == {"value": None, "n": None}
+    assert "list_formulas" not in card["columns"]["pooled"]["readings"]
     # A read one sample and skipped the one whose ledger is empty.
     assert card["columns"]["A"]["readings"]["samples"]["value"] == 1
     assert card["columns"]["A"]["readings"]["samples_skipped"]["value"] == 1
@@ -1919,6 +1929,11 @@ def test_the_card_reads_both_engines_against_each_set_s_authors_list(
         text = (out / name).read_text()
         assert compare_runs.TRUTH_NOTE in text
         assert "authors' list: its formulas assigned |" in text
+    # A share prints as one, to a tenth.
+    assert (
+        "| authors' list: its formulas assigned | 50 | 100 | 66.7 | - |"
+        in (out / "card.md").read_text().splitlines()
+    )
     # The formulas themselves are never on the card.
     assert "C6H10O4" not in (out / "card.json").read_text()
 

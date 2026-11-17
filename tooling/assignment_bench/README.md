@@ -80,7 +80,7 @@ uv run python tooling/assignment_bench/bench.py status
   section below has the detail.
 - **`status`** prints the env and slot, the build the last `init` started,
   every set with its sample counts, the builds that ingested it and the
-  size of its authors' list where it has one, the
+  distinct formulas of its authors' list where it has one, the
   reference pin with peaky's version string and the `mascope-tools` it
   scored with, develop's baseline card, and the last five cards with their
   ref, commit and verdict. It needs no runtime home.
@@ -454,10 +454,12 @@ tiers.
   JSON list of the neutral formulas its authors assigned
   (`["C10H15NO8", "C10H16O3", ...]`), at `P` in the manifest's folder.
   `init` checks its hash as it does a folder file's, so a list that changes
-  is a manifest that changes. It refuses a list that is empty or holds
-  anything but neutral formulas of element symbols and counts, naming the
-  entry's place and never its text. It keeps the list in `state.json`, and
-  `run` hands it to the card, which reads both engines against it
+  is a manifest that changes. It reads each entry by the card's own rule
+  (`truth_key` in `compare_runs.py`, by element counts) and refuses a list
+  that is empty or holds anything that rule refuses, a formula of zero
+  counts included, naming the entry's place and never its text. It keeps
+  the list's distinct formulas in `state.json`, and `run` hands them to the
+  card, which reads both engines against them
   (`tooling/assignment_compare/README.md`, "An authors' list"). The list is
   never seeded into the instance: the in-app engine reads a batch's own
   target collections as known targets, so a list attached there would hand
