@@ -458,29 +458,84 @@ async def test_the_queue_is_read_by_members_only(
 async def test_a_refit_weighs_the_labels_and_reports_the_weights(
     async_session_factory, queue_data, monkeypatch
 ):
-    """Forty labels on the tof class, a quarter of them reference standards:
+    """Sixty labels on the tof class, a quarter of them reference standards:
     the refit is weighed by evidence level, reports the ECE before and after,
-    and hands the store a curve that records the weights."""
+    and hands the store a curve that records the weights.
+
+    The labels are this test's alone. The class pool is the whole database's,
+    so the labels the fixture and other tests of the session leave on the tof
+    class would reach the fit, and the pool comes back in no set order, which
+    decides the held-out half. Either made the ECE gate depend on what ran
+    before (#3251): about one order in seven of these sixty labels loses the gate.
+    The test's labels go on a run of their own, the pool read is narrowed to
+    that run and put in evidence order, one that wins, and stray labels planted
+    on the class before the refit show the narrowing holds.
+    """
     rng = np.random.default_rng(3)
     levels = ["reference_standard", "msms", "pattern", "visual"]
+    now = datetime.now(timezone.utc)
+    fit_run = gen_id()
     async with async_session_factory() as session:
+        session.add(
+            PeakAssignmentRun(
+                peak_assignment_run_id=fit_run,
+                sample_item_id=queue_data["sample"],
+                engine="mascope",
+                engine_version="0.7.0-test",
+                status="completed",
+                # No profile: the curve is fit across profiles, as on a
+                # deployment whose labels span several.
+                config={},
+                tier_bands=BANDS,
+                peak_assignment_run_utc_created=now - timedelta(days=4),
+                peak_assignment_run_utc_completed=now - timedelta(days=4),
+            )
+        )
+        await session.flush()
         for i in range(60):
             evidence = float((i + 0.5) / 60)
             session.add(
                 AssignmentVerification(
                     assignment_verification_id=gen_id(32),
                     sample_item_id=queue_data["sample"],
-                    peak_assignment_run_id=queue_data["earlier"],
+                    peak_assignment_run_id=fit_run,
                     sample_peak_id=f"sp-fit-{i}",
                     assigned_formula="C6H12O6",
                     verdict="confirmed" if rng.uniform() < evidence else "rejected",
                     evidence_level=levels[i % 4],
                     evidence=evidence,
-                    verified_utc=datetime.now(timezone.utc),
+                    verified_utc=now,
+                )
+            )
+        # Labels another test could have left on the tof class: every one
+        # contradicts its evidence, so a fit that read them would lose the gate.
+        for i in range(30):
+            evidence = float((i + 0.5) / 30)
+            session.add(
+                AssignmentVerification(
+                    assignment_verification_id=gen_id(32),
+                    sample_item_id=queue_data["sample"],
+                    peak_assignment_run_id=queue_data["earlier"],
+                    sample_peak_id=f"sp-stray-{i}",
+                    assigned_formula="C6H12O6",
+                    verdict="rejected" if evidence > 0.5 else "confirmed",
+                    evidence_level="reference_standard",
+                    evidence=evidence,
+                    verified_utc=now,
                 )
             )
         await session.commit()
 
+    live_label_rows = service._live_label_rows
+
+    async def this_tests_labels(session):
+        rows = await live_label_rows(session)
+        return sorted(
+            (row for row in rows if row.run_id == fit_run),
+            key=lambda row: row.evidence,
+        )
+
+    monkeypatch.setattr(service, "_live_label_rows", this_tests_labels)
     saved = AsyncMock()
     monkeypatch.setattr(service, "save_calibration", saved)
     monkeypatch.setattr(
@@ -488,6 +543,7 @@ async def test_a_refit_weighs_the_labels_and_reports_the_weights(
     )
     result = await service.recalibrate_instrument("tof")
 
+    assert result["n_pos"] + result["n_neg"] == 60, result["message"]
     assert result["recalibrated"] is True, result["message"]
     assert result["label_weights"] == dict(EVIDENCE_LEVEL_WEIGHTS)
     assert result["before_ece"] is not None and result["after_ece"] is not None
