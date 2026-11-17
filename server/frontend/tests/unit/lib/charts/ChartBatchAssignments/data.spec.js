@@ -126,6 +126,19 @@ describe('chart.batch.assignments data store (selection-driven)', () => {
     expect(tic.name).toBe('TIC')
   })
 
+  it("names the tier in words on hover, not as the API's key", async () => {
+    const series = { sample_item_ids: ['s1'], intensities: [5], tiers: ['below_assignability'] }
+    api.http.post.mockResolvedValue([
+      peakRecord('bp1', series, { consensus_tier: 'below_assignability' })
+    ])
+    mockApp.data.batchPeak.selectedIds = ['bp1']
+    await flushAsync()
+
+    const [peak] = store.traces
+    expect(peak.hovertemplate).toContain('Tier: below assignability · 1 samples')
+    expect(peak.hovertemplate).not.toContain('below_assignability')
+  })
+
   it('names a probable blend by both formulas and says so on hover', async () => {
     const series = { sample_item_ids: ['s1'], intensities: [5], tiers: ['assigned'] }
     api.http.post.mockResolvedValue([

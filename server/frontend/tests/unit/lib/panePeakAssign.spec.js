@@ -3860,7 +3860,7 @@ describe('PanePeakAssign ionization and reference lists', () => {
     focusedAssignment = { ...DMF, isotope_label: 'M0' }
     const wrapper = await mountPane()
 
-    expect(wrapper.find('.insp-sub').text()).toMatch(/^C3H8NO\+\s*·\s*M0\s*·\s*database$/)
+    expect(wrapper.find('.insp-sub').text()).toMatch(/^C3H8NO\+\s*·\s*M0\s*·\s*list match$/)
     expect(wrapper.findAll('.evidence .ev .k').map((key) => key.text())).not.toContain('isotope')
   })
 
@@ -4246,6 +4246,8 @@ describe('PanePeakAssign hover text', () => {
       'The isotope line of the ion this peak is; M0 is the monoisotopic line',
       'Found by the formula search'
     ])
+    // The source is named in words, not as the API's value ('untargeted').
+    expect(parts.at(-1).text()).toMatch(/formula search$/)
   })
 
   it('says what fit, m/z error and abundance error measure', async () => {
@@ -4449,6 +4451,6 @@ describe('PanePeakAssign a peak the source made', () => {
     const wrapper = await mountPane()
 
     expect(wrapper.find('.insp-formula').text()).toBe('C3H7NO')
-    expect(wrapper.findAll('.insp-sub').at(-1).text()).toMatch(/^C3H8NO\+\s*·\s*database$/)
+    expect(wrapper.findAll('.insp-sub').at(-1).text()).toMatch(/^C3H8NO\+\s*·\s*list match$/)
   })
 })

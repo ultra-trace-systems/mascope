@@ -56,6 +56,7 @@ import {
   rivalTestLabel,
   unlistedRivalsLine
 } from '@/lib/levels'
+import { sourceLabel, sourceLine } from '@/lib/assignmentSources'
 import { EVIDENCE_LEVELS, VERDICT_META, claimCandidates } from '@/lib/verification'
 import { useBatchPeakCuration } from './stores/batchPeakCuration.js'
 import {
@@ -777,7 +778,7 @@ const altTooltip = (alt, index) => {
   // Named only when the measurement supplied it: an entry that arrived with an
   // adduct already shows it as its ion formula in the row above.
   if (altAdduct(alt)) lines.push(`adduct: ${altAdduct(alt)}`)
-  if (alt.source) lines.push(`source: ${alt.source}`)
+  if (alt.source) lines.push(`source: ${sourceLabel(alt.source)}`)
   const listing = listingOf(alt)
   if (listing) lines.push(listingTooltip(listing))
   // Why this one carries no usable "use this". Said here as well as on the
@@ -1061,20 +1062,10 @@ const EVIDENCE_TOOLTIPS = Object.freeze({
   confidence: "This formula's share of the evidence among all candidates for the peak"
 })
 
-// What the line under the formula says on hover, part by part.
-const SOURCE_TOOLTIPS = Object.freeze({
-  database: 'Matched from a target or reference list',
-  untargeted: 'Found by the formula search',
-  manual: 'Assigned by hand',
-  reagent: 'An ion the ionization source made, not a compound of the sample',
-  artifact: 'A side lobe of an intense neighbouring peak'
-})
-const sourceTooltip = (source) =>
-  Object.prototype.hasOwnProperty.call(SOURCE_TOOLTIPS, source) ? SOURCE_TOOLTIPS[source] : null
-
 // The line under the headline: the ion (unless it is the headline), the isotope
 // line the peak is, and where the row came from, each saying what it is on
-// hover.
+// hover. The source is named in words (assignmentSources.js), not as the API's
+// value.
 const subParts = computed(() => {
   const row = focusedAssignment.value
   if (!row) return []
@@ -1091,7 +1082,12 @@ const subParts = computed(() => {
         }
       : null,
     row.source
-      ? { key: 'source', text: row.source, tooltip: sourceTooltip(row.source), class: 'src' }
+      ? {
+          key: 'source',
+          text: sourceLabel(row.source),
+          tooltip: sourceLine(row.source),
+          class: 'src'
+        }
       : null
   ].filter(Boolean)
 })

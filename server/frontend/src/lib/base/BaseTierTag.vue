@@ -4,6 +4,7 @@ import { computed } from 'vue'
 import Tag from 'primevue/tag'
 
 import { FALLBACK_TIER, tierMeta } from '@/lib/tiers'
+import { sourceLine as lineOfSource } from '@/lib/assignmentSources'
 
 // Confidence-tier chip for a peak assignment. Replaces BaseMatchTag's 0/1/2
 // match_category with the four peak-centric tiers, with a role marker
@@ -110,12 +111,11 @@ const isManual = computed(() => props.source === 'manual')
 // the raw prop, so the mark can never contradict the label beside it.
 const isDemoted = computed(() => isManual.value && meta.value.key === FALLBACK_TIER)
 
-// How a stage's source reads on hover. A source this list does not name - a
-// reagent or an artifact row, which its role chip already names - says nothing.
-const SOURCE_LINES = Object.freeze({
-  database: 'Matched from a target or reference list',
-  untargeted: 'Found by the formula search'
-})
+// How a stage's source reads on hover, in the words every surface shares
+// (assignmentSources.js). Only the two engine stages get a line here: a reagent
+// or an artifact row's role chip already names it, and a manual row gets a
+// sentence of its own below.
+const STAGE_SOURCES = Object.freeze(['database', 'untargeted'])
 
 // The hover line for the row's source. A demoted row gets a sentence and a mark
 // of its own rather than neither: what happened to it is the least guessable
@@ -129,9 +129,7 @@ const sourceLine = computed(() => {
   if (isManual.value) {
     return 'Assigned by hand; the next assignment run supersedes this'
   }
-  return Object.prototype.hasOwnProperty.call(SOURCE_LINES, props.source)
-    ? SOURCE_LINES[props.source]
-    : null
+  return STAGE_SOURCES.includes(props.source) ? lineOfSource(props.source) : null
 })
 
 const autoTooltip = computed(() => {

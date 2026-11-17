@@ -104,6 +104,11 @@ describe('BatchPeakRunSelect', () => {
     expect(wrapper.findAll('.option')[0].text()).toBe('#4 · Rebuild · running…')
   })
 
+  it('names a failed run in words', () => {
+    const wrapper = mountSelect([run('r4', 'rebuild', { status: 'failed' }), ...RUNS])
+    expect(wrapper.findAll('.option')[0].text()).toBe('#4 · Rebuild · failed')
+  })
+
   it('focuses the run the user picks', async () => {
     const wrapper = mountSelect(RUNS)
     await wrapper.findAll('.option')[2].trigger('click')

@@ -44,7 +44,10 @@ export const useBatchChartSelection = defineStore('browser.match.batchChartSelec
     }
     const record = store.list.find((bp) => bp.batch_peak_id === row.batch_peak_id)
     if (!record) {
-      notify('The batch ledger has not loaded this species yet; open the Batch peaks tab first.')
+      notify(
+        'The Batch peaks ledger has not loaded this species yet. Open it first: ' +
+          "click the batch name in this ledger's header."
+      )
       return false
     }
     if (!store.inPartition(record)) {

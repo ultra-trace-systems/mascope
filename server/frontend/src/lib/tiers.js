@@ -19,11 +19,15 @@
 // how a histogram stops summing to the number of rows.
 export const FALLBACK_TIER = 'unassigned'
 
-// `description` is the tier's meaning in one line, as its chip says it on hover.
+// `label` is what the chip says, `name` the tier's full name where a word is
+// shown on its own (a filter menu, a chart's hover), and `description` the
+// tier's meaning in one line, as its chip says it on hover. The key is the API's
+// value and is never shown.
 const TIER_DEFINITIONS = [
   {
     key: 'assigned',
     label: 'assigned',
+    name: 'assigned',
     description: 'Assigned: strong evidence for this formula',
     severity: 'success',
     icon: 'ph ph-seal-check'
@@ -31,6 +35,7 @@ const TIER_DEFINITIONS = [
   {
     key: 'candidate',
     label: 'candidate',
+    name: 'candidate',
     description: 'Candidate: a plausible formula with weaker support',
     severity: 'warn',
     icon: 'ph ph-circle-half'
@@ -40,6 +45,7 @@ const TIER_DEFINITIONS = [
     // tooltip and the filter menu say.
     key: 'below_assignability',
     label: 'below',
+    name: 'below assignability',
     description: 'Below assignability: a formula was found, but the evidence is too weak to trust',
     severity: 'secondary',
     icon: 'ph ph-minus-circle'
@@ -47,6 +53,7 @@ const TIER_DEFINITIONS = [
   {
     key: FALLBACK_TIER,
     label: 'unassigned',
+    name: 'unassigned',
     description: 'Unassigned: no composition explained the peak',
     severity: 'secondary',
     icon: 'ph ph-circle-dashed'
@@ -76,7 +83,7 @@ export const TIERS = TIER_DEFINITIONS.map(({ key }) => key)
 /** Tier -> sort rank; ascending rank is descending confidence. */
 export const TIER_RANK = Object.fromEntries(TIER_DEFINITIONS.map(({ key }, index) => [key, index]))
 
-/** Tier -> chip label, PrimeVue Tag severity, phosphor icon. */
+/** Tier -> chip label, full name, PrimeVue Tag severity, phosphor icon. */
 export const TIER_META = Object.fromEntries(TIER_DEFINITIONS.map((tier) => [tier.key, tier]))
 
 /**
@@ -177,7 +184,7 @@ export const bucketRank = (tier, role) =>
  * Chip presentation for a tier.
  *
  * @param {string} tier the tier as stored on the record
- * @returns {{key: string, label: string, severity: string, icon: string}}
+ * @returns {{key: string, label: string, name: string, severity: string, icon: string}}
  */
 export const tierMeta = (tier) => TIER_META[tierBucket(tier)]
 
