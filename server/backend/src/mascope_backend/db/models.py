@@ -2643,9 +2643,9 @@ class PeakAssignmentRun(Base):
     engine_version: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(20), server_default=text("'pending'"))
     config: Mapped[Optional[dict]] = mapped_column(JSON)
-    # The assigned/candidate fit-score thresholds this run tiered with. Its
-    # own column, not a key in the opaque config, because every row's tier is
-    # validated against it. NULL for runs predating the column; an in-app run
+    # The assigned/candidate evidence (fit x plausibility) thresholds this run
+    # tiered with. Its own column, not a key in the opaque config, because every
+    # row's tier is validated against it. NULL for runs predating the column; an in-app run
     # stamps the thresholds from its config.
     tier_bands: Mapped[Optional[dict]] = mapped_column(JSON)
     # The producing engine's calibration state, disclosed at import time. An
@@ -2858,12 +2858,15 @@ class PeakAssignment(Base):
     sample_peak_id, with mz/intensity/tof denormalized as in MatchIsotope).
     The assignment may reference a known target (target_compound_id /
     target_ion_id set, source='database') or a discovered composition
-    (source='untargeted'). Every peak of the sample gets exactly one row per
+    (source='untargeted'); a person's override is source='manual', and a peak
+    the reagent or artifact pre-pass claimed is source='reagent' or
+    'artifact'. Every peak of the sample gets exactly one row per
     run - the single-owner-per-peak invariant is enforced by the unique
     constraint on (peak_assignment_run_id, sample_peak_id).
 
     role values: 'M0', 'iso_child', 'reagent', 'artifact', 'unassigned'.
-    source values: 'database', 'untargeted' (NULL when unassigned).
+    source values: 'database', 'untargeted', 'manual', 'reagent', 'artifact'
+    (NULL when nothing explained the peak).
     tier values: 'assigned', 'candidate', 'below_assignability', 'unassigned'.
     """
 

@@ -98,7 +98,7 @@ owns: it mints `peak_assignment_id`, `peak_assignment_run_id` and
 | `role` | `M0`, `iso_child`, `reagent`, `artifact` or `unassigned` |
 | `assigned_formula`, `ion_formula`, `isotope_label`, `isotope_formula` | What the engine assigned |
 | `ionization_mechanism_id` | Optional: an engine names adducts by notation. A supplied id must exist on this server and carry the sample's polarity (422 otherwise); it need not belong to the sample's ionization mode. The mechanism table is a catalogue of what the server can name, not a list of channels to search (below) |
-| `source` | `database`, `untargeted` or `manual` |
+| `source` | `database`, `untargeted`, `manual`, `reagent` or `artifact`: the stage that decided the row (the target library, the formula search), a person, or the pass that claimed the peak as the ionization source's own ion or as an instrument side lobe |
 | `fit_score`, `mz_error_ppm`, `abundance_error` | The engine's measurement. `fit_score` is stored and served exactly as supplied |
 | `tier` | Optional, and better omitted (below) |
 | `engine_tier` | Optional: the tier the engine itself concluded, where its own rules put the peak somewhere the bands would not. Stored as supplied, checked only against the tier vocabulary, and read by nothing that ranks |

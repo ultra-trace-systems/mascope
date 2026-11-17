@@ -402,13 +402,16 @@ class PeakAssignmentsResource(BaseResource):
         :param source: Filter by assignment source: ``database`` (Stage A, the
                        curated target library) | ``untargeted`` (Stage B, the
                        composition search) | ``manual`` (a person assigned this
-                       row by hand, in the app's peak inspector). Peaks nothing
-                       explained carry no source at all, so the three values
+                       row by hand, in the app's peak inspector) | ``reagent``
+                       (the reagent pre-pass claimed the peak as the ionization
+                       source's own ion) | ``artifact`` (the artifact pre-pass
+                       claimed it as an instrument side lobe). Peaks nothing
+                       explained carry no source at all, so the five values
                        plus null cover the run. Note that ``manual`` is not a
-                       subset of the other two: a curated row *leaves*
+                       subset of the two stages: a curated row *leaves*
                        ``database``/``untargeted``, so partitioning a run into
                        those two frames alone silently drops every hand-assigned
-                       peak.
+                       peak, and every reagent and artifact peak with it.
         :type source: str, optional
         :param level: Filter by identification level, in the scale the
                       engines share: ``5a`` | ``5b`` | ``4a`` | ``4b`` | ...

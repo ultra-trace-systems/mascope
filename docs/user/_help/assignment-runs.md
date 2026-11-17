@@ -7,6 +7,13 @@ A run also carries **who produced it**, shown as a chip beside its number:
 
 - **Mascope** &mdash; computed by this deployment's own engine, which declines
   to assign a sample whose m/z calibration is present but unverified.
+- **Copy** &mdash; a run an earlier version of Mascope copied from another
+  sample of the batch: the formulas are that sample's, and the fit, the m/z
+  error and the tier were measured again against this one. Hovering the chip
+  names the sample it was copied from. No new copies are made.
+- **Batch ledger** &mdash; the sample has no run of its own: its peaks were
+  folded into the batch peaks and are read back from there. Assign the sample
+  for a ledger of its own.
 - **any other name** &mdash; a run computed elsewhere and published into this
   sample's history through the API, with the engine's version beside it. These
   are first-class: the ledger, the inspector and the batch overview read them

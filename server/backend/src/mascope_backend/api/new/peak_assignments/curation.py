@@ -250,7 +250,7 @@ def _push_alternative(existing: list | None, entry: dict | None) -> list | None:
 
 
 def _run_bands(run: PeakAssignmentRun) -> tuple[float, float]:
-    """The assigned/candidate fit-score thresholds this run tiered with.
+    """The assigned/candidate evidence thresholds this run tiered with.
 
     Read from ``tier_bands`` (through :func:`normalize_tier_bands`, since a row
     written before the rename names its upper band ``identified``), falling
@@ -714,7 +714,7 @@ async def _restore(
       usually the owner's own and already loaded in this session, so the common
       case costs nothing.
 
-    :param bands: ``(assigned, candidate)`` fit-score thresholds of the run.
+    :param bands: ``(assigned, candidate)`` evidence thresholds of the run.
     :return: True when the row was put back; False when the archived state
         cannot go in the columns at all, in which case the row is untouched.
     """
@@ -830,7 +830,7 @@ async def _restore_demoted(
     :param assigned: The formula being committed, and
     :param mechanism_id: the mechanism it is committed under. Together they are
         the compound an entry has to have been archived under to be restored.
-    :param bands: The run's fit-score thresholds, for re-tiering a restored row.
+    :param bands: The run's evidence thresholds, for re-tiering a restored row.
     :return: ``(restored rows, skipped ids, unrestorable ids, the entries that
         stay archived)``.
     """
