@@ -124,6 +124,45 @@ def test_a_shifted_arm_is_read_against_the_run_it_names_as_its_control():
     assert "new_ion" not in arm["decoy"]
 
 
+def test_an_arm_counts_its_committed_rows_at_level_4_or_above():
+    # Step 5.8: of the arm's three monoisotopic rows that state a level, one
+    # states a formula; a row with none, and an isotopologue, count nowhere.
+    decoy = pd.DataFrame(
+        [
+            {**_row("p1", 181.0716, 4000.0), "level": "4a"},
+            {**_row("p2", 203.0518, 3000.0, tier="candidate"), "level": "5a"},
+            {**_row("p3", 250.1023, 2000.0, tier="candidate"), "level": "5b"},
+            {**_row("p4", 401.2036, 1000.0), "level": None},
+            {**_row("p5", 182.0750, 300.0, role="iso_child"), "level": "4a"},
+        ]
+    )
+    runs = {
+        "s1": [_run("arm", decoy="mz_shift_ppm=+9", control="control"), _run("control")]
+    }
+
+    _, result = _report(runs, {"control": CONTROL, "arm": decoy})
+
+    arm = result["per_sample"]["s1"]["mz_shift_ppm=+9"]
+    assert (arm["decoy"]["levelled"], arm["decoy"]["at_4_or_above"]) == (3, 1)
+    assert arm["at_4_or_above_pct"] == pytest.approx(33.3)
+    assert result["pooled"]["mz_shift_ppm=+9"]["at_4_or_above_pct"] == pytest.approx(
+        33.3
+    )
+
+
+def test_an_arm_from_before_the_level_reads_none_at_4():
+    decoy = pd.DataFrame([_row("p1", 181.0716, 4000.0)])
+    runs = {
+        "s1": [_run("arm", decoy="mz_shift_ppm=+9", control="control"), _run("control")]
+    }
+
+    _, result = _report(runs, {"control": CONTROL, "arm": decoy})
+
+    arm = result["per_sample"]["s1"]["mz_shift_ppm=+9"]
+    assert arm["decoy"]["levelled"] == 0
+    assert arm["at_4_or_above_pct"] is None
+
+
 def test_the_adduct_arm_counts_a_new_ion_apart_from_a_resplit_one():
     # p1: the same ion the control reads, as another neutral - a re-split.
     # p2: another ion on a peak the control read. p6: a peak it left alone,

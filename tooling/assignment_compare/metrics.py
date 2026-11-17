@@ -592,6 +592,71 @@ def g14_unseparated(frame: pd.DataFrame) -> dict:
     return _recorded_count(frame, "a_unseparated", _true)
 
 
+# --- The identification level (step 5.8) -------------------------------------------
+
+
+#: The levels a sample's run states (step 5.8), each read as a share on the card.
+CARD_LEVELS = ("4a", "4b", "5a", "5b")
+
+
+def _a_levelled_main(frame: pd.DataFrame) -> pd.DataFrame:
+    """Engine A's committed monoisotopic rows that state a level: none on a
+    run from before the level, or a ledger of an engine that states none."""
+    if "a_level" not in frame.columns:
+        return frame.iloc[:0]
+    main = _a_main(frame)
+    return main[main["a_level"].notna()]
+
+
+def level_share(frame: pd.DataFrame, level: str) -> dict:
+    """The share of the committed monoisotopic rows that state ``level``.
+
+    Over the rows that state one, so a set whose runs predate the level is
+    not read rather than read as none at it.
+    """
+    rows = _a_levelled_main(frame)
+    if rows.empty:
+        return reading()
+    return _share(rows["a_level"] == level)
+
+
+def _number(level) -> int | None:
+    """A level's number, its first character; None for none, which a frame
+    holds as NaN and so reads as neither 5 nor 4 or above."""
+    text = str(level or "")
+    return int(text[0]) if text[:1].isdigit() else None
+
+
+def level_crossing(frame: pd.DataFrame, *, assigned: bool) -> dict:
+    """Where the tier and the level cross (step 5.8, MAS-945).
+
+    :param assigned: True for the share of the assigned rows that state a
+        level 5, a mass; False for the share of the rows under assigned that
+        state 4 or above, a formula. Each over the rows of that tier that
+        state a level.
+    """
+    rows = _a_levelled_main(frame)
+    if rows.empty:
+        return reading()
+    numbers = rows["a_level"].map(_number)
+    if assigned:
+        held = rows["a_tier"] == ASSIGNED
+        return _share(numbers[held] == 5)
+    under = rows["a_tier"] != ASSIGNED
+    return _share(numbers[under] <= 4)
+
+
+def level_counts(ledger: pd.DataFrame) -> dict:
+    """What a decoy arm's count reads of a ledger's levels: its committed
+    monoisotopic rows that state a level, and those at 4 or above."""
+    if "level" not in ledger.columns:
+        return {"levelled": 0, "at_4_or_above": 0}
+    role = ledger["role"].fillna("unassigned")
+    rows = ledger[(role == ROLE_MAIN) & ledger["level"].notna()]
+    numbers = rows["level"].map(_number)
+    return {"levelled": int(len(rows)), "at_4_or_above": int((numbers <= 4).sum())}
+
+
 # --- What the detail read gives each row -----------------------------------------
 
 
@@ -723,6 +788,12 @@ def decoy_arm_readings(arm_total: Mapping) -> dict[str, dict]:
     out["on_control_reagent"] = reading(
         decoy.get("on_control_reagent", 0), decoy.get("rows")
     )
+    # Step 5.8: the share of the arm's committed rows that state a formula,
+    # level 4 or above, expected near none on a shifted arm.
+    if "at_4_or_above_pct" in arm_total:
+        out["at_4_or_above"] = reading(
+            arm_total["at_4_or_above_pct"], decoy.get("levelled")
+        )
     return out
 
 
@@ -852,6 +923,12 @@ METRICS = (
     ("G12", "G12 lone peaks", "count"),
     ("G13", "G13 absent lines", "count"),
     ("G14", "G14 unseparated peaks", "count"),
+    ("level_4a", "level 4a: committed readings, the neutral formula", "%"),
+    ("level_4b", "level 4b: committed readings, the ion's formula", "%"),
+    ("level_5a", "level 5a: committed readings, rivals remain", "%"),
+    ("level_5b", "level 5b: committed readings, refuted or untestable", "%"),
+    ("level_assigned_at_5", "assigned readings at level 5", "%"),
+    ("level_under_assigned_at_4", "readings under assigned at level 4 or above", "%"),
 )
 
 #: The rows of a set that carries an authors' list (:func:`truth_readings`),
@@ -911,6 +988,7 @@ DECOY_LABELS = {
     "held_intensity": "held intensity",
     "new_ion": "new ions",
     "on_control_reagent": "rows on the control's reagent peaks",
+    "at_4_or_above": "committed rows at level 4 or above",
 }
 
 
@@ -997,6 +1075,9 @@ def card_readings(
         "G12": g12_lone_peaks(frame),
         "G13": g13_absent_lines(frame),
         "G14": g14_unseparated(frame),
+        **{f"level_{level}": level_share(frame, level) for level in CARD_LEVELS},
+        "level_assigned_at_5": level_crossing(frame, assigned=True),
+        "level_under_assigned_at_4": level_crossing(frame, assigned=False),
     }
     if truth:
         out.update(truth_readings(truth))

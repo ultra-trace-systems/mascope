@@ -506,6 +506,65 @@ def test_g12_counts_assigned_search_rows_nothing_else_saw():
     assert _value(metrics.g12_lone_peaks(_frame(rows))) == (1, 4)
 
 
+def test_the_level_shares_and_where_tier_and_level_cross():
+    # Step 5.8: five committed readings state a level, a sixth does not.
+    frame = _frame(
+        [
+            _row("p1", level="4a"),
+            _row("p2", level="5a"),
+            _row("p8", level="4a"),
+            _row("p3", tier="candidate", level="4a"),
+            _row("p4", tier="candidate", level="5b"),
+            _row("p5"),
+            _row("p6", role="iso_child", level="4a"),
+            _unassigned("p7"),
+        ]
+    )
+
+    readings = metrics.card_readings(frame)
+
+    assert _value(readings["level_4a"]) == (60.0, 5)
+    assert _value(readings["level_4b"]) == (0.0, 5)
+    assert _value(readings["level_5a"]) == (20.0, 5)
+    assert _value(readings["level_5b"]) == (20.0, 5)
+    # Of the three assigned rows that state one, one is at 5; of the two under
+    # assigned, one is at 4 or above.
+    assert _value(readings["level_assigned_at_5"]) == (33.3, 3)
+    assert _value(readings["level_under_assigned_at_4"]) == (50.0, 2)
+
+
+def test_a_run_from_before_the_level_reads_no_level():
+    readings = metrics.card_readings(_frame([_row("p1"), _row("p2")]))
+
+    for key in ("level_4a", "level_5a", "level_assigned_at_5"):
+        assert _value(readings[key]) == (None, None)
+
+
+def test_a_level_the_scale_does_not_name_crosses_nothing():
+    frame = _frame([_row("p1", level="9z"), _row("p2", tier="candidate", level="?")])
+
+    readings = metrics.card_readings(frame)
+
+    assert _value(readings["level_assigned_at_5"]) == (0.0, 1)
+    assert _value(readings["level_under_assigned_at_4"]) == (0.0, 1)
+
+
+def test_an_arm_reads_its_committed_rows_at_level_4_or_above():
+    total = {
+        "samples": 1,
+        "control": {"rows": 10},
+        "decoy": {"rows": 2, "levelled": 8, "at_4_or_above": 1},
+        "at_4_or_above_pct": compare_runs.pct(1, 8),
+    }
+
+    readings = metrics.card_readings(
+        _frame([_row("p1")]), decoy_arms={"mz_shift_ppm=+9": total}
+    )
+
+    assert _value(readings["decoy mz_shift_ppm=+9 at_4_or_above"]) == (12.5, 8)
+    assert metrics.DECOY_LABELS["at_4_or_above"]
+
+
 def test_g13_and_g14_read_the_rows_records_and_none_without_them():
     rows = [_row("p1"), _row("p2"), _row("p3"), _row("p4", tier="candidate")]
     provenance = {
@@ -1286,7 +1345,7 @@ def _run(run_id, engine, version, created, config=None, decoy=None, status="comp
 def served(monkeypatch, tmp_path):
     config = {
         "resolved_profile": {"profile": "NO3", "mz_precision_ppm": 3.0},
-        "tiering": {"version": 13},
+        "tiering": {"version": 13, "identification_level": {"level_rules_version": 1}},
         "search_scope": {"searched_peaks": 10, "limited": True},
         "peak_intensity_threshold": 60.0,
     }
@@ -1389,6 +1448,10 @@ def test_the_command_writes_a_card_per_set_and_one_pooled(served, tmp_path, caps
     assert a["readings"]["G10"] == {"value": 100.0, "n": 1}
     assert a["engine_versions"] == {"a": ["0.6.0"], "b": ["0.8.0"]}
     assert a["tiering_rules"] == [13]
+    # The level's rule set is named beside the tier's (step 5.8).
+    assert a["level_rules"] == [1]
+    assert card["columns"]["pooled"]["level_rules"] == [1]
+    assert "tiering rule set 13; level rules 1" in (out / "card.md").read_text()
     # C2H4N2O is implausible on A; C4H8O3S only on G, which holds no sulfur.
     assert [(m["set"], m["metric"], m["value"]) for m in card["gate"]["missed"]] == [
         ("A", "G5", 1),
