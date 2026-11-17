@@ -26,6 +26,7 @@ import '@uppy/drop-target/css/style.min.css'
 import {
   DialogSampleOp,
   DialogBatchImport,
+  DialogCalibrationTrend,
   DialogChooseChemistry,
   DialogFileUpload,
   DialogIonizationOp
@@ -101,7 +102,24 @@ const dialog = reactive({
   sample: null,
   batchImport: false,
   mechanism: null,
-  chemistry: false
+  chemistry: false,
+  trend: false
+})
+
+// The calibration trend is a TOF instrument's: its records list the lines
+// each fit was made on. Offered for the instrument focused, if it is one.
+const trendInstrument = computed(() => {
+  const name = app.data.instrument.focused?.instrument
+  return name && app.data.instrument.typeOf(name) === 'tof' ? name : null
+})
+// The polarity it opens on: the one the list is filtered to, else that of the
+// instrument's latest file listed, else negative.
+const trendPolarity = computed(() => {
+  if (['+', '-'].includes(app.data.acquisition.polarity)) return app.data.acquisition.polarity
+  const latest = (app.data.acquisition.list ?? []).find(
+    (row) => row.instrument === trendInstrument.value && ['+', '-'].includes(row.polarity)
+  )
+  return latest?.polarity ?? '-'
 })
 
 // The selected files as the list has them now: a status update replaces a
@@ -399,6 +417,23 @@ const currentPageReportTemplate =
           "
         />
         <InstrumentSelector />
+        <span
+          v-tooltip.top="
+            trendInstrument
+              ? 'Calibration trend'
+              : 'Select a TOF instrument to see its calibration trend'
+          "
+        >
+          <Button
+            label="Calibration trend"
+            class="hiddenlabel"
+            icon="pi pi-chart-line"
+            text
+            size="small"
+            :disabled="!trendInstrument"
+            @click="dialog.trend = true"
+          />
+        </span>
       </div>
       <Select
         inputId="time"
@@ -689,6 +724,11 @@ const currentPageReportTemplate =
       />
       <DialogFileUpload :files="app.uppy.invalidFiles" @upload="app.uppy.addFromDialog($event)" />
       <DialogIonizationOp v-model:visible="dialog.mechanism" />
+      <DialogCalibrationTrend
+        v-model:visible="dialog.trend"
+        :instrument="trendInstrument"
+        :polarity="trendPolarity"
+      />
       <DialogChooseChemistry
         v-model:visible="dialog.chemistry"
         :files="chemistryFiles"

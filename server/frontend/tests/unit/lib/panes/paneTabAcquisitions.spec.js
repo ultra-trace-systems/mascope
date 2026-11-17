@@ -67,7 +67,9 @@ const passthrough = (name) => ({
     disabled: null,
     value: null,
     files: null,
-    resume: { type: Boolean, default: false }
+    resume: { type: Boolean, default: false },
+    instrument: null,
+    polarity: null
   },
   emits: ['update:modelValue', 'update:visible', 'update:action', 'click', 'configure', 'submit'],
   // The empty slot the way DataTable renders it: only with nothing to list.
@@ -92,7 +94,8 @@ const stubs = Object.fromEntries(
     'DialogBatchImport',
     'DialogFileUpload',
     'DialogIonizationOp',
-    'DialogChooseChemistry'
+    'DialogChooseChemistry',
+    'DialogCalibrationTrend'
   ].map((name) => [name, passthrough(name)])
 )
 
@@ -135,7 +138,17 @@ function makeApp() {
         setWatching: vi.fn()
       },
       batch: { focused: { sample_batch_id: 'sb-1' } },
-      instrument: { focused: null, list: [] }
+      instrument: {
+        focused: null,
+        list: [
+          { instrument: 'Orbi-Lab1', type: 'orbi' },
+          { instrument: 'Tof-Lab2', type: 'tof' }
+        ],
+        // The store's: the class its files recorded, by name.
+        typeOf(name) {
+          return this.list.find((i) => i.instrument === name)?.type ?? null
+        }
+      }
     },
     ui: { darkmode: { active: false } },
     uppy: {
@@ -554,6 +567,65 @@ describe('PaneTabAcquisitions', () => {
       expect(mocks.app.data.acquisition.processingStatus).toBeNull()
       expect(mocks.app.data.acquisition.time.mode).toBe('All time')
       expect(mocks.app.data.acquisition.resetFilters).not.toHaveBeenCalled()
+    })
+  })
+
+  // A TOF instrument's records list the lines each fit was made on, which
+  // the calibration trend reads: it is offered for the instrument focused,
+  // when that is a TOF one.
+  describe('the calibration trend', () => {
+    const trendButton = (wrapper) =>
+      wrapper
+        .findAllComponents({ name: 'Button' })
+        .find((b) => b.props('label') === 'Calibration trend')
+    const trendDialog = (wrapper) => wrapper.findComponent({ name: 'DialogCalibrationTrend' })
+
+    it('is offered for a TOF instrument and opens its trend', async () => {
+      mocks.app.data.instrument.focused = { instrument: 'Tof-Lab2' }
+      const wrapper = mountPane()
+
+      expect(trendButton(wrapper).props('disabled')).toBe(false)
+      expect(trendDialog(wrapper).props('visible')).toBe(false)
+      await trendButton(wrapper).vm.$emit('click')
+
+      expect(trendDialog(wrapper).props('visible')).toBe(true)
+      expect(trendDialog(wrapper).props('instrument')).toBe('Tof-Lab2')
+    })
+
+    it('is not offered for an Orbitrap, nor with no instrument focused', () => {
+      mocks.app.data.instrument.focused = { instrument: 'Orbi-Lab1' }
+      expect(trendButton(mountPane()).props('disabled')).toBe(true)
+
+      mocks.app.data.instrument.focused = null
+      const wrapper = mountPane()
+      expect(trendButton(wrapper).props('disabled')).toBe(true)
+      expect(trendDialog(wrapper).props('instrument')).toBeNull()
+    })
+
+    it("opens on the polarity of the instrument's latest file listed", () => {
+      mocks.app.data.acquisition.list = [
+        { ...file('c', 'Orbi-Lab1'), polarity: '-' },
+        { ...file('d', 'Tof-Lab2'), polarity: '+' },
+        { ...file('e', 'Tof-Lab2'), polarity: '-' }
+      ]
+      mocks.app.data.instrument.focused = { instrument: 'Tof-Lab2' }
+
+      expect(trendDialog(mountPane()).props('polarity')).toBe('+')
+    })
+
+    it('opens on the polarity the list is filtered to', () => {
+      mocks.app.data.acquisition.list = [{ ...file('d', 'Tof-Lab2'), polarity: '+' }]
+      mocks.app.data.acquisition.polarity = '-'
+      mocks.app.data.instrument.focused = { instrument: 'Tof-Lab2' }
+
+      expect(trendDialog(mountPane()).props('polarity')).toBe('-')
+    })
+
+    it('opens on the negative polarity when no file says otherwise', () => {
+      mocks.app.data.acquisition.list = [{ ...file('d', 'Tof-Lab2'), polarity: '+-' }]
+      mocks.app.data.instrument.focused = { instrument: 'Tof-Lab2' }
+
+      expect(trendDialog(mountPane()).props('polarity')).toBe('-')
     })
   })
 })
