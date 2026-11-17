@@ -1036,8 +1036,9 @@ SET_NAME = re.compile(r"^[A-Z][0-9a-z]?[+-]?$")
 INSTRUMENTS = ("orbitrap", "tof")
 #: The card's column over every set at once. Lower case, so no set is called so.
 POOLED = "pooled"
-#: How many detail reads run at once. Each committed row's provenance is one
-#: read, and a dense set holds thousands of them.
+#: How many detail reads run at once, where the ledger does not serve the
+#: rule records (:func:`read_rule_records`). Each committed row's provenance is
+#: one read, and a dense set holds thousands of them.
 DETAIL_WORKERS = 8
 #: Shipped beside this script: the log's stage targets.
 DEFAULT_THRESHOLDS = Path(__file__).resolve().parent / "thresholds.json"
@@ -1685,6 +1686,56 @@ def read_provenance(client: MascopeClient, sample_id: str, ids: list[str]) -> di
         return dict(pool.map(one, ids))
 
 
+#: The columns of the frame :func:`read_rule_records` returns.
+RULE_RECORD_COLUMNS = [
+    "a_assignment_id",
+    "a_reasons",
+    "a_mass_gate_corroborated",
+    "a_absent_lines",
+    "a_unseparated",
+    "a_detail_failed",
+]
+
+
+def read_rule_records(
+    client: MascopeClient, sample_id: str, ledger: pd.DataFrame
+) -> tuple[pd.DataFrame, bool]:
+    """What each committed row of a ledger recorded of its tier reasons, mass
+    gate, predicted envelope and separation.
+
+    Read off the ledger itself where the server flattens the four records onto
+    it (:data:`metrics.LEDGER_RULE_RECORDS`); no row's read can fail there, so
+    every row is read. A server from before those columns serves none, and
+    then each row's provenance is read through the detail route
+    (:func:`read_provenance`), with its failure semantics.
+
+    :return: The frame of :data:`RULE_RECORD_COLUMNS`, one row per committed
+        row, and whether it was read off the ledger.
+    """
+    ids = committed_ids(ledger)
+    if all(column in ledger.columns for column in metrics.LEDGER_RULE_RECORDS):
+        committed = ledger[ledger["peak_assignment_id"].astype(str).isin(ids)]
+        records = [
+            {
+                "a_assignment_id": str(row["peak_assignment_id"]),
+                **metrics.ledger_columns(row),
+                "a_detail_failed": False,
+            }
+            for row in committed.to_dict("records")
+        ]
+        return pd.DataFrame(records, columns=RULE_RECORD_COLUMNS), True
+    provenance = read_provenance(client, sample_id, ids)
+    records = [
+        {
+            "a_assignment_id": row_id,
+            **metrics.provenance_columns(record),
+            "a_detail_failed": record is None,
+        }
+        for row_id, record in provenance.items()
+    ]
+    return pd.DataFrame(records, columns=RULE_RECORD_COLUMNS), False
+
+
 def committed_ids(ledger: pd.DataFrame) -> list[str]:
     """The rows whose provenance the card reads: every committed one, a
     monoisotopic or isotopologue row with a formula."""
@@ -1755,25 +1806,7 @@ def collect_set(client: MascopeClient, name: str, spec: dict, args) -> dict:
             if ledger_b is not None
             else absent_side("b"),
         )
-        provenance = read_provenance(client, sample_id, committed_ids(ledger_a))
-        read = pd.DataFrame(
-            [
-                {
-                    "a_assignment_id": row_id,
-                    **metrics.provenance_columns(record),
-                    "a_detail_failed": record is None,
-                }
-                for row_id, record in provenance.items()
-            ],
-            columns=[
-                "a_assignment_id",
-                "a_reasons",
-                "a_mass_gate_corroborated",
-                "a_absent_lines",
-                "a_unseparated",
-                "a_detail_failed",
-            ],
-        )
+        read, off_ledger = read_rule_records(client, sample_id, ledger_a)
         joined["a_assignment_id"] = joined["a_assignment_id"].astype(object)
         joined = joined.merge(
             read.astype({"a_assignment_id": object}),
@@ -1799,8 +1832,12 @@ def collect_set(client: MascopeClient, name: str, spec: dict, args) -> dict:
         print(
             f"set {name}: {sample_id} {len(joined)} peaks, "
             f"{'with' if ledger_b is not None else 'without'} a reference run, "
-            f"{sum(one is not None for one in provenance.values())} of "
-            f"{len(provenance)} rows' provenance read"
+            + (
+                f"{len(read)} rows' records read off the ledger"
+                if off_ledger
+                else f"{len(read) - int(read['a_detail_failed'].sum())} of "
+                f"{len(read)} rows' provenance read"
+            )
         )
     decoy = decoy_report(client, samples, controls=controls) if args.decoy else None
     return {

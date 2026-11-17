@@ -301,6 +301,80 @@ async def test_the_run_calibration_is_folded_back_into_the_row(
 
 
 @pytest.mark.asyncio
+async def test_the_rows_rule_records_are_served_on_the_ledger(
+    guest_client, pa_test_data, async_session_factory
+):
+    """What the gate card reads of every committed row - the tier reasons'
+    rules, the mass gate's corroboration, the absent envelope lines and the
+    unseparated peak - comes off the paged ledger, not one detail read a row
+    (#3134); the detail row carries the same values beside its provenance."""
+    run_id = pa_test_data["completed_run_id"]
+    sample_id = pa_test_data["sample_item_id"]
+    row_id = gen_id(32)
+    provenance = {
+        "evidence": 0.6,
+        "tier_reasons": [
+            {"rule": "evidence_band", "detail": "under the band", "caps": False},
+            {"rule": "absent_line", "detail": "its M+2 is missing", "caps": True},
+        ],
+        "mass_gate": {"corroborated_by": None, "capped": False},
+        "predicted_envelope": {
+            "lines": [
+                {"line": "M+1", "state": "found"},
+                {"line": "M+2", "state": "absent"},
+            ]
+        },
+        "peak_separation": {"separated": False},
+        "cross_channel": {"channels": ["dep"], "separated_through": []},
+    }
+    async with async_session_factory() as session:
+        session.add(
+            PeakAssignment(
+                peak_assignment_id=row_id,
+                peak_assignment_run_id=run_id,
+                sample_item_id=sample_id,
+                sample_peak_id="peak-rules",
+                sample_peak_mz=444.4,
+                sample_peak_intensity=10.0,
+                role="M0",
+                assigned_formula="C9H8O4",
+                source="untargeted",
+                fit_score=0.6,
+                tier="candidate",
+                provenance=provenance,
+            )
+        )
+        await session.commit()
+    expected = {
+        "tier_reason_rules": ["evidence_band", "absent_line"],
+        "mass_gate_corroborated": False,
+        "envelope_absent_lines": 1,
+        "peak_unseparated": True,
+    }
+    try:
+        listing = await guest_client.get(f"/api/peak-assignments/sample/{sample_id}")
+        assert listing.status_code == 200
+        by_peak = {row["sample_peak_id"]: row for row in listing.json()["data"]}
+        assert {key: by_peak["peak-rules"][key] for key in expected} == expected
+        # A row with no such records says so: null, not missing and not 0.
+        assert {key: by_peak["peak-3"][key] for key in expected} == dict.fromkeys(
+            expected
+        )
+
+        detail = await guest_client.get(
+            f"/api/peak-assignments/sample/{sample_id}/assignment/{row_id}"
+        )
+        (record,) = detail.json()["data"]
+        assert {key: record[key] for key in expected} == expected
+    finally:
+        async with async_session_factory() as session:
+            row = await session.get(PeakAssignment, row_id)
+            if row is not None:
+                await session.delete(row)
+            await session.commit()
+
+
+@pytest.mark.asyncio
 async def test_formula_only_alternatives_are_stored_packed_and_served_whole(
     guest_client, pa_test_data, async_session_factory
 ):

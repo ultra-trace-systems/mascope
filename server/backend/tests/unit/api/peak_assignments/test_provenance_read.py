@@ -11,6 +11,9 @@ These pin both, including the rows that never had the pair and the rows written
 before the move that still carry their own.
 """
 
+import importlib.util
+from pathlib import Path
+
 import pytest
 
 from mascope_backend.api.new.peak_assignments.service import (
@@ -187,3 +190,131 @@ def test_the_detail_fold_and_the_ledger_scalars_agree(provenance):
     detail_curve = folded.get("calibration") if isinstance(folded, dict) else None
     ledger = _provenance_scalars(dict(provenance), _CURVE)
     assert (detail_curve or {}).get("provisional") == ledger["p_correct_provisional"]
+
+
+class TestTheRuleRecordsOnTheLedger:
+    """What the gate card reads of every committed row, flattened (#3134).
+
+    Each is None where the row holds no such record, so a run that predates
+    the record reads as not measured rather than as nothing found.
+    """
+
+    def test_the_reasons_rules_in_order(self):
+        row = {
+            "tier_reasons": [
+                {"rule": "evidence_band", "detail": "x", "caps": False},
+                {"rule": "lone_peak", "detail": "y", "caps": True},
+            ]
+        }
+        assert _provenance_scalars(row)["tier_reason_rules"] == [
+            "evidence_band",
+            "lone_peak",
+        ]
+
+    def test_a_reason_naming_no_rule_is_left_out(self):
+        # The column is a list of names; a None in it would fail the row's
+        # validation and with it the whole page.
+        row = {"tier_reasons": [{"detail": "x"}, "text", {"rule": "lone_peak"}]}
+        assert _provenance_scalars(row)["tier_reason_rules"] == ["lone_peak"]
+
+    def test_no_reasons_is_none(self):
+        assert _provenance_scalars({})["tier_reason_rules"] is None
+        assert _provenance_scalars({"tier_reasons": []})["tier_reason_rules"] is None
+
+    def test_the_mass_gate_corroboration(self):
+        def read(gate):
+            return _provenance_scalars({"mass_gate": gate})["mass_gate_corroborated"]
+
+        assert read({"corroborated_by": "list"}) is True
+        assert read({"corroborated_by": ["second_channel"]}) is True
+        assert read({"corroborated_by": None, "capped": True}) is False
+        assert _provenance_scalars({})["mass_gate_corroborated"] is None
+
+    def test_the_absent_lines_are_counted(self):
+        envelope = {
+            "lines": [
+                {"state": "absent"},
+                {"state": "found"},
+                {"state": "untestable"},
+                {"state": "absent"},
+            ]
+        }
+        scalars = _provenance_scalars({"predicted_envelope": envelope})
+        assert scalars["envelope_absent_lines"] == 2
+        # Asked and nothing missing is 0; never asked is None.
+        assert (
+            _provenance_scalars({"predicted_envelope": {"lines": []}})[
+                "envelope_absent_lines"
+            ]
+            == 0
+        )
+        assert _provenance_scalars({})["envelope_absent_lines"] is None
+
+    def test_an_unseparated_peak_with_no_separated_partner(self):
+        def read(provenance):
+            return _provenance_scalars(provenance)["peak_unseparated"]
+
+        unseparated = {"peak_separation": {"separated": False}}
+        assert read(unseparated) is True
+        assert read({**unseparated, "cross_channel": {"separated_through": []}}) is True
+        # A partner channel committing the neutral on a separated peak clears it.
+        assert (
+            read({**unseparated, "cross_channel": {"separated_through": ["[M+Br]-"]}})
+            is False
+        )
+        assert read({"peak_separation": {"separated": True}}) is False
+        assert read({}) is None
+
+
+def _card_metrics():
+    """The gate card's metrics module (``tooling/assignment_compare``), loaded
+    from the checkout: it is a script folder, not a package."""
+    root = next(
+        parent
+        for parent in Path(__file__).resolve().parents
+        if (parent / "tooling" / "assignment_compare" / "metrics.py").is_file()
+    )
+    path = root / "tooling" / "assignment_compare" / "metrics.py"
+    spec = importlib.util.spec_from_file_location("card_metrics", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+#: Provenance shapes for the card's agreement test below.
+_RULE_SHAPES = {
+    "an empty blob": {},
+    "reasons, a corroborated gate, an envelope, a separated peak": {
+        "tier_reasons": [{"rule": "corroborated", "detail": "", "caps": False}],
+        "mass_gate": {"corroborated_by": "list"},
+        "predicted_envelope": {"lines": [{"state": "found"}]},
+        "peak_separation": {"separated": True},
+    },
+    "an uncorroborated gate, two absent lines, an unseparated peak": {
+        "tier_reasons": [{"rule": "absent_line", "detail": "", "caps": True}],
+        "mass_gate": {"corroborated_by": None},
+        "predicted_envelope": {
+            "lines": [{"state": "absent"}, {"state": "absent"}, {"state": "found"}]
+        },
+        "peak_separation": {"separated": False},
+        "cross_channel": {"channels": ["a", "b"]},
+    },
+    "an unseparated peak a partner channel clears": {
+        "tier_reasons": [],
+        "peak_separation": {"separated": False},
+        "cross_channel": {"separated_through": ["b"]},
+    },
+    "an envelope with no lines": {"predicted_envelope": {}},
+}
+
+
+@pytest.mark.parametrize("provenance", _RULE_SHAPES.values(), ids=list(_RULE_SHAPES))
+def test_the_card_reads_off_the_ledger_what_it_read_off_the_detail(provenance):
+    """The gate card read these four from each row's detail provenance; it now
+    reads them off the ledger where the server serves them. Both reads must
+    give the card the same columns, or a card's readings would move with the
+    server it ran against rather than with the engine."""
+    metrics = _card_metrics()
+    assert metrics.ledger_columns(
+        _provenance_scalars(dict(provenance))
+    ) == metrics.provenance_columns(dict(provenance))

@@ -15,10 +15,13 @@ B's, the reference's, in the ``b_*`` ones. The card adds:
 - ``a_unsearched``: the peaks engine A's untargeted stage was never offered
   (``compare_runs.unsearched_peaks``), for G5.
 - ``sulfur_free``: whether the set's chemistry holds no sulfur, for G9.
-- What the detail read of engine A's committed rows said
-  (:func:`provenance_columns`): ``a_reasons``, ``a_mass_gate_corroborated``,
-  ``a_absent_lines`` and ``a_unseparated``, for the reason coverage, G7, G13
-  and G14; and ``a_detail_failed``, the rows whose read failed.
+- What engine A's committed rows recorded of their tier reasons, mass gate,
+  predicted envelope and separation, read off the ledger
+  (:func:`ledger_columns`) or, from a server whose ledger predates those
+  columns, through the detail read (:func:`provenance_columns`):
+  ``a_reasons``, ``a_mass_gate_corroborated``, ``a_absent_lines`` and
+  ``a_unseparated``, for the reason coverage, G7, G13 and G14; and
+  ``a_detail_failed``, the rows whose detail read failed.
 
 A metric returns a reading, ``{"value": ..., "n": ...}``: the number the card
 prints and the count it is a share of (or counted over). The value is None
@@ -640,6 +643,46 @@ def provenance_columns(provenance: Mapping | None) -> dict:
             if isinstance(separation, Mapping)
             else None
         ),
+    }
+
+
+#: The ledger's columns :func:`ledger_columns` reads: what the server flattens
+#: off each row's provenance for the four columns :func:`provenance_columns`
+#: derives from the detail read. A server from before them serves none.
+LEDGER_RULE_RECORDS = (
+    "tier_reason_rules",
+    "mass_gate_corroborated",
+    "envelope_absent_lines",
+    "peak_unseparated",
+)
+
+
+def _missing(value) -> bool:
+    """Whether a ledger cell holds no value: None, or NaN a frame put there."""
+    return value is None or (isinstance(value, float) and np.isnan(value))
+
+
+def ledger_columns(row: Mapping) -> dict:
+    """The card's columns from one committed ledger row's flattened records.
+
+    The same four values :func:`provenance_columns` derives from the row's
+    provenance, read off the columns the server flattens from it
+    (:data:`LEDGER_RULE_RECORDS`), so a run is one paged read rather than one
+    detail read per row. A row with no record reads as one with an empty
+    provenance would: no tier reason, no corroboration, and None for the two
+    records G13 and G14 count only where they exist.
+
+    :param row: One ledger row, a mapping of its columns.
+    """
+    rules = row.get("tier_reason_rules")
+    corroborated = row.get("mass_gate_corroborated")
+    absent = row.get("envelope_absent_lines")
+    unseparated = row.get("peak_unseparated")
+    return {
+        "a_reasons": isinstance(rules, (list, tuple, np.ndarray)) and len(rules) > 0,
+        "a_mass_gate_corroborated": _true(corroborated),
+        "a_absent_lines": None if _missing(absent) else int(absent),
+        "a_unseparated": None if _missing(unseparated) else _true(unseparated),
     }
 
 

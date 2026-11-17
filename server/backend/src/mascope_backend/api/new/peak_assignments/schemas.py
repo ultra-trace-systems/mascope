@@ -234,6 +234,25 @@ class PeakAssignmentRecord(BaseModel):
     #: derived from the batch ledger carries the listing its member's registry
     #: entry recorded.
     reference_listing: dict | None = None
+    #: The ``rule`` of each of the row's tier reasons (provenance.tier_reasons),
+    #: in order; None where it records none. The reasons' details are in the
+    #: detail read. This and the next three are what the gate card reads of
+    #: every committed row (``service._rule_records``), flattened so a whole
+    #: run is one paged read rather than one detail read per row.
+    tier_reason_rules: list[str] | None = None
+    #: Whether the mass gate names a corroboration for the row
+    #: (provenance.mass_gate.corroborated_by); None where the row has no mass
+    #: gate record.
+    mass_gate_corroborated: bool | None = None
+    #: How many lines of the row's predicted envelope the spectrum should have
+    #: shown and does not hold (provenance.predicted_envelope, state
+    #: ``absent``); None where the row has no predicted envelope.
+    envelope_absent_lines: int | None = None
+    #: Whether the instrument did not separate the row's peak from a
+    #: neighbour (provenance.peak_separation) and no other channel commits its
+    #: neutral on a separated peak (provenance.cross_channel.separated_through);
+    #: None where the run did not read the peak's width.
+    peak_unseparated: bool | None = None
     #: The batch peak this row's peak is a member of: carried by a row derived
     #: from the batch ledger (``fold_view``), looked up on read for a run's own
     #: row; None when the peak is not in the ledger. What the sample ledger

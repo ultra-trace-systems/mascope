@@ -1195,6 +1195,10 @@ class TestAnExportedLedger:
         rows["known_compounds"] = [[{"name": "x"}], None, None, None, None]
         rows["known_compounds_total"] = [1, 0, 0, 0, 0]
         rows["reference_listing"] = None
+        rows["tier_reason_rules"] = [["evidence_band"], None, None, None, None]
+        rows["mass_gate_corroborated"] = [True, None, None, None, None]
+        rows["envelope_absent_lines"] = [0, None, None, None, None]
+        rows["peak_unseparated"] = [False, None, None, None, None]
         for column, values in changes.items():
             rows[column] = values
         return rows
