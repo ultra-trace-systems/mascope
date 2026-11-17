@@ -12,6 +12,7 @@ from mascope_tools.composition.series import (
     MIN_LINKS,
     ORGANIC_UNITS,
     SERIES_UNITS,
+    LadderEvidence,
     Proposal,
     SeriesEvidence,
     SeriesSource,
@@ -20,6 +21,9 @@ from mascope_tools.composition.series import (
     committed_proposals,
     has_label_alias,
     ion_mz,
+    ladder_evidence,
+    ladders_of,
+    link_ladder,
     series_evidence,
     step_formula,
     walk_series,
@@ -550,3 +554,129 @@ class TestTheCommittedProposals:
         forward = committed_proposals([evidence_for(CH2, a), evidence_for(OXYGEN, b)])
         backward = committed_proposals([evidence_for(OXYGEN, b), evidence_for(CH2, a)])
         assert forward["t"][0].formula == backward["t"][0].formula == wins
+
+
+#: The protonated cyclic siloxane D3, the foot of a column-bleed ladder.
+D3_MZ = mz_of("C6H18O3Si3", "[M+H]+")
+
+
+def rungs(prefix: str, n: int, *, unit: SeriesUnit = SILOXANE, foot: float = D3_MZ):
+    """``n`` unassigned targets one ``unit`` apart from ``foot``."""
+    return [SeriesTarget(f"{prefix}{k}", foot + k * unit.mass) for k in range(n)]
+
+
+class TestTheLadders:
+    def test_targets_one_unit_apart_link_by_mass_alone(self):
+        links = link_ladder(rungs("d", 4), SILOXANE, tolerance_ppm=3.0)
+        assert [(link.lower, link.upper) for link in links.values()] == [
+            ("d0", "d1"),
+            ("d1", "d2"),
+            ("d2", "d3"),
+        ]
+        assert all(link.ppm == pytest.approx(0.0, abs=1e-6) for link in links.values())
+        assert D3_MZ + 3 * SILOXANE.mass == pytest.approx(
+            mz_of("C12H36O6Si6", "[M+H]+")
+        )
+
+    def test_a_reading_neither_helps_nor_hinders(self):
+        # A candidate reading another formula is linked as an unassigned one is:
+        # no formula takes the step.
+        plain = rungs("d", 3)
+        read = [SeriesTarget(t.key, t.mz, "C10H22N4O2") for t in plain]
+        assert link_ladder(read, SILOXANE, tolerance_ppm=3.0) == link_ladder(
+            plain, SILOXANE, tolerance_ppm=3.0
+        )
+
+    def test_a_target_off_the_window_is_not_linked(self):
+        off = rungs("d", 3)
+        off[2] = SeriesTarget("d2", off[2].mz * (1 + 4e-6))
+        assert set(link_ladder(off, SILOXANE, tolerance_ppm=3.0)) == {"d1"}
+        assert set(link_ladder(off, SILOXANE, tolerance_ppm=5.0)) == {"d1", "d2"}
+
+    def test_the_heavier_one_is_linked_from_the_nearer(self):
+        near = SeriesTarget("near", D3_MZ)
+        far = SeriesTarget("far", D3_MZ * (1 + 1e-6))
+        upper = SeriesTarget("up", D3_MZ + SILOXANE.mass)
+        for order in ([near, far, upper], [upper, far, near]):
+            links = link_ladder(order, SILOXANE, tolerance_ppm=3.0)
+            assert [(link.lower, link.upper) for link in links.values()] == [
+                ("near", "up")
+            ]
+
+    def test_two_equally_near_go_to_the_lighter_key(self):
+        targets = [
+            SeriesTarget("b", D3_MZ),
+            SeriesTarget("a", D3_MZ),
+            SeriesTarget("up", D3_MZ + SILOXANE.mass),
+        ]
+        assert link_ladder(targets, SILOXANE, tolerance_ppm=3.0)["up"].lower == "a"
+
+    def test_each_unit_steps_by_its_own_mass(self):
+        pfca = rungs("p", 3, unit=CF2, foot=mz_of("C4HF7O2", "[M-H]-"))
+        assert len(link_ladder(pfca, CF2, tolerance_ppm=3.0)) == 2
+        assert link_ladder(pfca, SILOXANE, tolerance_ppm=3.0) == {}
+
+    def test_the_links_make_chains_lightest_first(self):
+        foot = mz_of("C10H30O5Si5", "[M+NH4]+")
+        targets = rungs("d", 3) + rungs("n", 2, foot=foot)
+        links = link_ladder(targets, SILOXANE, tolerance_ppm=3.0)
+        ladders = ladders_of(links, {t.key: t.mz for t in targets})
+        assert [ladder.keys for ladder in ladders] == [("d0", "d1", "d2"), ("n0", "n1")]
+        assert ladders[1].mzs == (foot, foot + SILOXANE.mass)
+
+    def test_a_lone_target_is_in_no_ladder(self):
+        targets = rungs("d", 2) + [SeriesTarget("alone", 300.0)]
+        links = link_ladder(targets, SILOXANE, tolerance_ppm=3.0)
+        ladders = ladders_of(links, {t.key: t.mz for t in targets})
+        assert [ladder.keys for ladder in ladders] == [("d0", "d1")]
+
+    def test_a_ladder_beats_its_decoys_at_the_walk_s_floors(self):
+        targets = rungs("d", MIN_LINKS + 1)
+        evidence = ladder_evidence(targets, SILOXANE, tolerance_ppm=3.0)
+        assert isinstance(evidence, LadderEvidence)
+        assert (evidence.unit, evidence.family) == ("C2H6OSi", "siloxane")
+        assert (evidence.n_links, evidence.decoy_links) == (MIN_LINKS, (0,) * 6)
+        assert evidence.significant
+        assert (len(evidence.ladders), evidence.n_members) == (1, MIN_LINKS + 1)
+        short = ladder_evidence(targets[:-1], SILOXANE, tolerance_ppm=3.0)
+        assert not short.significant
+
+    def test_each_decoy_links_the_same_targets(self):
+        targets = rungs("d", 2) + [
+            SeriesTarget("x", 300.0),
+            SeriesTarget("y", 300.0 + SILOXANE.mass + DECOY_OFFSETS_DA[1]),
+        ]
+        evidence = ladder_evidence(targets, SILOXANE, tolerance_ppm=3.0)
+        assert evidence.n_links == 1
+        assert evidence.decoy_links == (0, 1, 0, 0, 0, 0)
+
+    def test_the_floors_can_be_set(self):
+        evidence = ladder_evidence(
+            rungs("d", 3), SILOXANE, tolerance_ppm=3.0, min_links=2
+        )
+        assert evidence.significant
+
+    def test_no_targets_link_nothing(self):
+        evidence = ladder_evidence([], CF2, tolerance_ppm=3.0)
+        assert (evidence.n_links, evidence.ladders, evidence.significant) == (
+            0,
+            (),
+            False,
+        )
+
+    def test_the_record_a_run_keeps(self):
+        evidence = ladder_evidence(
+            rungs("d", MIN_LINKS + 1), SILOXANE, tolerance_ppm=3.0
+        )
+        assert evidence.to_json() == {
+            "unit": "C2H6OSi",
+            "family": "siloxane",
+            "n_links": MIN_LINKS,
+            "decoy_links": [0] * 6,
+            "decoy_mean": 0.0,
+            "enrichment": "inf",
+            "fdr": 0.0,
+            "significant": True,
+            "n_ladders": 1,
+            "n_members": MIN_LINKS + 1,
+        }

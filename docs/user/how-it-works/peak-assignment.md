@@ -1675,6 +1675,23 @@ runs. When the chemistry of an ionization mode cannot be resolved, for example b
 sample's file has moved, that mode is not walked, the run says so, and its batch peaks
 keep the series an earlier detection found.
 
+A ladder of column bleed or of perfluorinated acids often has no member the batch
+assigns: where the formula search holds no silicon or fluorine, nothing carrying either is
+assigned, and the siloxane and CF2 steps start only from a compound that does. So
+*Detect series* also looks for those two ladders by mass alone, as the reference engine
+looks for its contaminant families among the peaks nothing explains. Among the batch
+peaks nothing assigned, or held only at *candidate*, that no kept proposal took, it links
+each peak to the one a siloxane unit (74.0188) or a CF2 (49.9968) heavier, as an ion of
+one molecule with one charge, in the formula search's window. An error in the
+calibration moves both peaks alike and cancels in the difference. The links are counted
+against the same six decoy masses and kept on the same terms as the steps, at least 12
+links and ten times the decoys' mean, even in an ionization mode where the batch assigns
+nothing at all. A kept ladder says the batch holds that unit's chain, not what its end
+groups are, so it proposes no formula, measures nothing and marks no row. The run's
+summary lists each ladder's batch peaks and their m/z, and the message at the end of the
+run names the ladders found. Searching those peaks again with silicon or fluorine added
+to the formula search is not done yet.
+
 ### Reading co-variation
 
 --8<-- "_help/batch-co-variation.md"

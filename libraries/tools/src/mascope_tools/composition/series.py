@@ -34,8 +34,9 @@ A step is a formula, so it must be one: no count goes below zero and the result
 keeps a carbon, as every grid the engine searches does. A contaminant unit
 steps only from a formula that carries its element (:attr:`SeriesUnit.requires`):
 a siloxane ladder runs between siloxanes, and a silicon atom stepped onto an
-oxidised terpene is a mass coincidence rather than a series. Every unit is a
-closed-shell neutral, so a step keeps a molecule a molecule.
+oxidised terpene is a mass coincidence rather than a series (a ladder no such
+formula anchors is linked by mass alone instead, under *The ladders*). Every
+unit is a closed-shell neutral, so a step keeps a molecule a molecule.
 
 The decoys
 ----------
@@ -59,6 +60,24 @@ step 4.1, gives the measurement).
 A proposal is not an assignment. It is a formula to measure: the batch scores
 it against every sample's own peaks before anything is written, and a member
 whose envelope the measurement does not reach stays as it was.
+
+The ladders
+-----------
+
+The walk steps a contaminant unit only from a formula carrying its element,
+and a batch whose formula grid holds no silicon or fluorine assigns no siloxane
+or perfluorinated compound to step from. So a ladder of column bleed or of
+perfluorinated acids that nothing anchors is never walked. Each contaminant
+unit is therefore also linked by mass alone among the targets themselves
+(:func:`link_ladder`), as the reference engine detects its families among the
+peaks nothing explains: a target links to the target one unit heavier, where
+the unit's mass puts the ion of one molecule with one charge, within the same
+window. Both masses are measured, but a calibration error moves the two alike
+and cancels in their difference. The links are counted against the same decoy
+offsets at the same floors as a walk's proposals (:func:`ladder_evidence`),
+and a committed unit's links make its ladders (:class:`Ladder`), each a chain
+of targets one unit apart. A ladder names the unit, not a formula: nothing
+says what the chain's end groups are, so it proposes none.
 """
 
 from __future__ import annotations
@@ -620,3 +639,155 @@ def committed_proposals(
         best = min(proposals, key=lambda p: (p.depth, abs(p.ppm), p.unit))
         chosen[target] = (best, tuple(sorted({p.unit for p in proposals})))
     return chosen
+
+
+# --- the ladders, by mass alone -------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Link:
+    """Two targets one unit apart by mass alone.
+
+    :param lower: The lighter target's key.
+    :param upper: The heavier target's key.
+    :param ppm: The heavier target's m/z less the lighter's plus the step, in
+        ppm of the latter.
+    """
+
+    lower: str
+    upper: str
+    ppm: float
+
+
+def link_ladder(
+    targets: Iterable[SeriesTarget],
+    unit: SeriesUnit,
+    *,
+    tolerance_ppm: float,
+    offset_da: float = 0.0,
+) -> dict[str, Link]:
+    """Link every target to the target one unit heavier, by mass alone.
+
+    No formula takes the step: the lighter target's m/z plus the unit's mass is
+    where the heavier one sits, as the ion of one molecule with one charge, and
+    the nearest target within the window there is linked. Where two targets
+    link to one, the nearer link keeps it, then the lighter key, so a target
+    links at most once each way and the links make chains, whatever order the
+    targets came in.
+
+    :param targets: The targets.
+    :param unit: The unit.
+    :param tolerance_ppm: The window, in ppm of the m/z the step predicts.
+    :param offset_da: A decoy shift added to the unit's mass, 0 for the unit
+        itself.
+    :return: The heavier target's key -> its link.
+    """
+    ordered = sorted(targets, key=lambda target: (target.mz, target.key))
+    mzs = [target.mz for target in ordered]
+    keys = [target.key for target in ordered]
+    step = unit.mass + offset_da
+    best: dict[str, tuple[tuple[float, str], Link]] = {}
+    for target in ordered:
+        hit = _nearest(mzs, keys, target.mz + step, tolerance_ppm)
+        if hit is None:
+            continue
+        upper, ppm = hit
+        rank = (abs(ppm), target.key)
+        if upper not in best or rank < best[upper][0]:
+            best[upper] = (rank, Link(target.key, upper, ppm))
+    return {upper: link for upper, (_, link) in sorted(best.items())}
+
+
+@dataclass(frozen=True)
+class Ladder:
+    """A chain of targets one unit apart by mass alone.
+
+    :param keys: Its targets' keys, lightest first.
+    :param mzs: Their m/z, in the same order.
+    """
+
+    keys: tuple[str, ...]
+    mzs: tuple[float, ...]
+
+
+def ladders_of(
+    links: Mapping[str, Link], mz_of: Mapping[str, float]
+) -> tuple[Ladder, ...]:
+    """The chains a unit's links make, lightest first.
+
+    :param links: The links (:func:`link_ladder`).
+    :param mz_of: Target key -> its m/z.
+    :return: Every chain, from the target no link reaches up to the one that
+        links to nothing.
+    """
+    up = {link.lower: link.upper for link in links.values()}
+    ladders = []
+    for foot in up:
+        if foot in links:
+            continue
+        keys = [foot]
+        while keys[-1] in up:
+            keys.append(up[keys[-1]])
+        ladders.append(Ladder(tuple(keys), tuple(mz_of[key] for key in keys)))
+    return tuple(sorted(ladders, key=lambda ladder: (ladder.mzs[0], ladder.keys[0])))
+
+
+@dataclass(frozen=True)
+class LadderEvidence(SeriesEvidence):
+    """What one unit's links reached by mass alone, against its decoys'.
+
+    A link counts where a walk's proposal does, against the same floors
+    (:class:`SeriesEvidence`): ``n_links`` is the links, ``decoy_links`` each
+    decoy's links.
+
+    :param ladders: The chains the unit's links make (:func:`ladders_of`).
+    """
+
+    ladders: tuple[Ladder, ...] = field(default=(), compare=False)
+
+    @property
+    def n_members(self) -> int:
+        """How many targets the ladders hold."""
+        return sum(len(ladder.keys) for ladder in self.ladders)
+
+    def to_json(self) -> dict:
+        """The record a batch run keeps of the unit's links."""
+        record = super().to_json()
+        record["n_ladders"] = len(self.ladders)
+        record["n_members"] = self.n_members
+        return record
+
+
+def ladder_evidence(
+    targets: Sequence[SeriesTarget],
+    unit: SeriesUnit,
+    *,
+    tolerance_ppm: float,
+    decoy_offsets_da: Sequence[float] = DECOY_OFFSETS_DA,
+    min_links: int = MIN_LINKS,
+    min_enrichment: float = MIN_ENRICHMENT,
+) -> LadderEvidence:
+    """Link a unit and each of its decoys by mass alone over the same targets.
+
+    :param targets: The targets.
+    :param unit: The unit.
+    :param tolerance_ppm: The window.
+    :param decoy_offsets_da: The decoy shifts.
+    :param min_links: The link floor.
+    :param min_enrichment: The enrichment floor.
+    :return: The unit's evidence, its ladders included.
+    """
+
+    def link(offset: float) -> dict[str, Link]:
+        return link_ladder(targets, unit, tolerance_ppm=tolerance_ppm, offset_da=offset)
+
+    links = link(0.0)
+    return LadderEvidence(
+        unit=unit.formula,
+        family=unit.family,
+        n_links=len(links),
+        decoy_links=tuple(len(link(offset)) for offset in decoy_offsets_da),
+        min_links=min_links,
+        min_enrichment=min_enrichment,
+        ladders=ladders_of(links, {target.key: target.mz for target in targets}),
+    )

@@ -14,7 +14,8 @@ second run on the unchanged ledger finds them again and so does one after a
 run that stopped partway, no reader serves a record its anchor does not read
 yet, an earlier run's records come off unless their mode could not be walked,
 the run is recorded as a batch run, and a run of a sample reads the records
-back.
+back. A second batch assigns nothing and holds two CF2 ladders: the run lists
+them by mass alone and writes nothing on its batch peaks.
 See ``batch_series.py``.
 """
 
@@ -70,7 +71,7 @@ from mascope_backend.db import (
     SampleItem,
 )
 from mascope_backend.db.id import gen_id
-from mascope_tools.composition.series import ion_mz
+from mascope_tools.composition.series import CONTAMINANT_UNITS, ion_mz
 from mascope_tools.composition.utils import parse_formula_tokens
 
 
@@ -141,11 +142,9 @@ def _rows(sample_item_id, readings):
     return rows
 
 
-@pytest_asyncio.fixture
-async def series_batch(async_session_factory, pa_test_data):
-    """A batch of two samples whose six assigned compounds have their CH2
-    homologues in the ledger. In S1 the rival candidate is measured well, in S2
-    poorly."""
+async def _new_batch(async_session_factory, pa_test_data, label="series"):
+    """An empty batch of two negative-mode samples, S1 and S2, in the test
+    dataset; the mechanism the suite reads is registered."""
     now = datetime.now(timezone.utc)
     batch_id = gen_id()
     samples = {}
@@ -178,7 +177,7 @@ async def series_batch(async_session_factory, pa_test_data):
             session.add(
                 SampleFile(
                     sample_file_id=sample_file_id,
-                    filename=f"orbi-series-{name}-{sample_file_id}.zarr",
+                    filename=f"orbi-{label}-{name}-{sample_file_id}.zarr",
                     instrument="orbi-test",
                     datetime=datetime(2026, 11, 7, 12, 0, 0),
                     datetime_utc=now,
@@ -200,6 +199,15 @@ async def series_batch(async_session_factory, pa_test_data):
             )
             samples[name] = sample_item_id
         await session.commit()
+    return batch_id, samples
+
+
+@pytest_asyncio.fixture
+async def series_batch(async_session_factory, pa_test_data):
+    """A batch of two samples whose six assigned compounds have their CH2
+    homologues in the ledger. In S1 the rival candidate is measured well, in S2
+    poorly."""
+    batch_id, samples = await _new_batch(async_session_factory, pa_test_data)
     for name, fit in (("S1", 0.95), ("S2", 0.40)):
         readings = _peaks()
         below = _step(SOURCES[0], -1)
@@ -750,3 +758,115 @@ async def test_the_route_refuses_while_another_run_rewrites_the_ledger(
     )
     assert response.status_code == 409, response.text
     assert launched == []
+
+
+#: Two CF2 ladders no sample assigns a peak of: perfluoroalkyl anions from C2F5-
+#: and the perfluorinated acids' deprotonated ions from trifluoroacetate, seven
+#: rungs each, so twelve links between them - the fewest a family needs.
+CF2 = next(unit for unit in CONTAMINANT_UNITS if unit.formula == "CF2")
+LADDER_FEET = {"acid": 112.98563, "alkyl": 118.99257}
+
+
+def _ladder_peaks():
+    """Peak id -> its m/z, lightest ladder first."""
+    return {
+        f"{name}-{k}": foot + k * CF2.mass
+        for name, foot in LADDER_FEET.items()
+        for k in range(7)
+    }
+
+
+def _unassigned_rows(sample_item_id, mz_by_peak):
+    return [
+        SimpleNamespace(
+            peak_assignment_id=gen_id(32),
+            peak_assignment_run_id=fold_run_id(sample_item_id),
+            sample_item_id=sample_item_id,
+            sample_peak_id=peak_id,
+            sample_peak_mz=mz,
+            sample_peak_intensity=5000.0,
+            role="unassigned",
+            assigned_formula=None,
+            ion_formula=None,
+            ionization_mechanism_id=None,
+            source=None,
+            tier="unassigned",
+            fit_score=None,
+            mz_error_ppm=None,
+            owner_peak_assignment_id=None,
+            provenance=None,
+        )
+        for peak_id, mz in mz_by_peak.items()
+    ]
+
+
+@pytest_asyncio.fixture
+async def ladder_batch(async_session_factory, pa_test_data):
+    """A batch of two samples that assigns nothing, its peaks two CF2 ladders."""
+    batch_id, samples = await _new_batch(
+        async_session_factory, pa_test_data, label="ladder"
+    )
+    for sample_item_id in samples.values():
+        rows = _unassigned_rows(sample_item_id, _ladder_peaks())
+        assert (
+            await fold_sample_into_batch_peaks(
+                sample_item_id, rows=rows, persisted=False
+            )
+            == batch_id
+        )
+    return {"batch_id": batch_id, "samples": samples}
+
+
+async def test_a_ladder_nothing_anchors_is_listed_on_the_run_and_written_nowhere(
+    async_session_factory, ladder_batch, stubbed
+):
+    batch_id = ladder_batch["batch_id"]
+    counts = await run_batch_series_detection(
+        batch_id, PeakAssignmentConfig(), batch_peak_run_id="run-ladder"
+    )
+
+    # Nothing assigned to walk from, and the mode linked all the same.
+    assert (counts["modes_walked"], counts["modes_anchored"]) == (1, 0)
+    assert (counts["families_committed"], counts["anchors_proposed"]) == (0, 0)
+    assert counts["ladders_committed"] == 1
+    assert counts["ladder_families"] == ["fluorinated"]
+    assert (counts["ladder_members"], counts["ladder_fdr"]) == (14, 0.0)
+    [mode] = counts["units"]
+    assert mode["units"] == []
+    by_unit = {unit["unit"]: unit for unit in mode["ladders"]}
+    assert (by_unit["CF2"]["n_links"], by_unit["CF2"]["significant"]) == (12, True)
+    assert (by_unit["C2H6OSi"]["significant"], by_unit["C2H6OSi"]["ladders"]) == (
+        False,
+        [],
+    )
+
+    async with async_session_factory() as session:
+        anchors = (
+            (
+                await session.execute(
+                    select(BatchPeak).where(BatchPeak.sample_batch_id == batch_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    by_mz = {round(anchor.mz, 4): anchor for anchor in anchors}
+    peaks = _ladder_peaks()
+    assert [ladder["batch_peak_ids"] for ladder in by_unit["CF2"]["ladders"]] == [
+        [by_mz[round(peaks[f"{name}-{k}"], 4)].batch_peak_id for k in range(7)]
+        for name in LADDER_FEET
+    ]
+    assert by_unit["CF2"]["ladders"][0]["mz"][0] == round(LADDER_FEET["acid"], 6)
+
+    # A ladder proposes no formula: nothing is measured and no batch peak
+    # carries a record or a reading.
+    assert stubbed == []
+    assert counts["members_assigned"] == 0
+    assert all(SERIES_KEY not in (anchor.provenance or {}) for anchor in anchors)
+    assert all(anchor.consensus_formula is None for anchor in anchors)
+    outcome = series_outcome(counts, batch_id)
+    assert outcome["status"] == "success"
+    assert outcome["message"].startswith(
+        "No series was walked from an assigned batch peak: the batch has none "
+        "to walk from. By mass alone, the fluorinated ladder beat the decoys"
+    )

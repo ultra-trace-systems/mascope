@@ -98,7 +98,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 3.5d - the peak store keeps each Orbitrap peak's scan presence count; the scorer reads a line against its presence-corrected share | - |  | built: a raw Orbitrap store keeps `n_scans` and `n_scans_total` per peak, the peaks route, the batch table and the SDK serve them; the fit score reads a counted line at its mean per scan (the censored-normal estimate from its count and S/N); an absent line keeps the curve's threshold (the count's own, a hard gate, is held back for a soft one: #3123); a stage serves no counts until its S/N is its own (#3117); 3.5b's curve is the fallback for a file without counts; the gate's pass measures it |
 | 3.6 - priors and the dataset's context | - |  | built: ambient air, chamber and indoor air carry a sulfur prior and an odd-nitrogen prior (uronium the sulfur one), and a search row meeting one is held at candidate (`context_prior`) until a second channel, a series or its own 34S or 15N line sees it; a dataset or batch names its context (`chemistry_context`), which a run on auto takes, the batch's first; a TOF's untargeted window bounded by the sample's fitted width (the offset plus six widths, at most 10 ppm); chlorine and bromine read from their twin line, the second rider; on nitrate Orbitrap runs in a context that makes organonitrates, the windows and the oxygen lattice read up to three groups' skeletons and a row only that admits is a candidate (`nox_skeleton`), the first rider; tiering rule set 15; MAS-59; the next pass measures it |
 | 3.7 - stage 3 gate, engine 0.6.0 | - |  | planned; read against the literature and chemical reasoning, not the reference (decision 27) |
-| 4.1 - series detection on the batch ledger | - |  | built: *Detect series* walks CH2, O, H2O, CO, CO2, C2H2O and, from a peak carrying their element, C2H6OSi and CF2 up to three steps from the batch's assigned peaks onto its unassigned and candidate ones within the search's window, commits a unit at 12 proposals and ten times its six decoys' mean (re-derived on the testbed: 3x commits every TOF family), measures each proposal through the propagation chain, records the series with `has_anchor` on the batch peak, and a run counts it as a second observation; tiering rule set 12; MAS-61 |
+| 4.1 - series detection on the batch ledger | - |  | built: *Detect series* walks CH2, O, H2O, CO, CO2, C2H2O and, from a peak carrying their element, C2H6OSi and CF2 up to three steps from the batch's assigned peaks onto its unassigned and candidate ones within the search's window, commits a unit at 12 proposals and ten times its six decoys' mean (re-derived on the testbed: 3x commits every TOF family), measures each proposal through the propagation chain, records the series with `has_anchor` on the batch peak, and a run counts it as a second observation; tiering rule set 12; MAS-61. C2H6OSi and CF2 are also linked by mass alone among the unassigned and candidate peaks nothing anchors, against the same decoys and floors, and a committed ladder is listed on the run with no formula; MAS-763 |
 | 4.2 - time-series coherence | - |  | built, the co-variation reading (decision 35): *Read co-variation* reads every neutral the batch sees through two channels, per mode and instrument type, as Pearson r of the log traces, reagent-normalised, the common mode (each spectrum's median of the persistent traces) removed; co-varying at r >= 0.6, untestable under 10 shared spectra or a residual spread under 0.02 in log10 (both measured against decoy pairs on the testbed's 20 batch ledgers); recorded on the batch peak, shown in the ledger and the inspector, no tier moves. The nine riders are steps of their own (MAS-777); MAS-62 |
 | 4.2b - persistence is admission, not evidence | - |  | built: *Search untargeted* also takes a batch peak whose peak is in more of its partition's spectra than the partition's Otsu split of the occurrence distribution (one share per batch peak; held in 0.25 to 0.75; none under 10 spectra), however faint; one the intensity floor or the peak cap would have left out carries `provenance.persistence` (share, counts, split, the reading elected), and that reading is held at candidate (`persistence_only`) until a committed line of its isotope pattern in a sample, the neutral through another channel of the partition or a standing series lifts it, never the fit; read on the copy's ledgers of 87 to 547 samples the split falls at 0.48 to 0.56; at the default config (floor 0, no cap) nothing is admitted on persistence alone; MAS-823 |
 | 4.2c - predicted diagnostic isotopologues in the batch fold | - |  | built: *Stamp isotopologues* predicts the 15N, 18O, 34S, 29Si, 30Si, 37Cl and 81Br lines of every committed monoisotopic batch peak at its trace centre (a labelled atom is the label's; a line under half the peak it falls in at the anchor's resolving power is unresolved), finds the batch peak there, and in each sample holding both reads the height ratio inside that sample's fitted envelope tolerance (two widths; a sample whose two widths reach past half the ratio cannot tell); a line holding in 80 % of three or more such samples is stamped in each, `predicted` or `picker`; recorded on both batch peaks and the member rows, no tier moves; MAS-824 |
@@ -1448,6 +1448,28 @@ who edits chemistry and stays last.
   - **The reference's rider.** On a labelled-nitrate source a formula
     holding C8S or C2F3 is not proposed: its 15N alias makes the same ion
     within 0.3 mDa and takes the same steps (the reference's changelog).
+  - **The ladders nothing anchors** (MAS-763, GitHub #3043). The walk steps
+    C2H6OSi and CF2 only from a formula carrying Si or F, and a grid without
+    either assigns nothing to step from. So each contaminant unit is also
+    linked by mass alone, per mode, among the batch peaks the walk may reach
+    that no committed proposal took and the batch does not assign: the
+    unassigned ones and those held at candidate. That is how the
+    reference's published docs (`docs/GKA.md`, "Automatic detection") say it
+    finds its families. A batch peak links to the one at its m/z plus the
+    unit's mass, the ion of one molecule with one charge, within the same
+    window; a calibration error moves both peaks alike and cancels in the
+    difference. A peak links at most once each way (the nearer link, then
+    the lighter id), so the links make chains. The links are counted
+    against the same six decoys at the same floors (12 and 10x), in a mode
+    with no assigned batch peak too. A committed unit's chains are its
+    ladders, which name the unit, not a formula: no end group is known. So a
+    ladder is measured on no member and recorded on no batch peak. The run's
+    summary lists, per mode beside the walk's units, every contaminant unit's
+    links against its decoys and a committed one's ladders (batch peaks and
+    m/z), with the count, families, members and pooled FDR of the committed
+    ones, and the outcome message names them. The thresholds were measured
+    on the anchored walk, not on these links. The testbed has not been read
+    for them, and no committed ladder has been seen on it yet.
   - **The measurement behind the thresholds**, on the testbed's 20 batch
     ledgers (16 Orbitrap, 4 TOF; 2026-11-07). Walked one step at shifts
     from -100 to +100 mDa in 0.5 mDa steps, the reached count over the 16
@@ -1471,9 +1493,9 @@ who edits chemistry and stays last.
   - **Not done here.** The Verify line's comparison with the reference's
     `residual:series` rows reads its run folders and is the planner's pass
     after the merge. The walk does not open the family's element budget
-    for a targeted re-search (`chemistry_profiles.md`, 4.6), and a
-    contaminant ladder no assigned peak anchors is not detected among the
-    unassigned peaks alone. A candidate anchor the series confirms keeps
+    for a targeted re-search (`chemistry_profiles.md`, 4.6; MAS-764,
+    GitHub #3044), so a ladder linked by mass alone is reported and not
+    yet searched with Si or F. A candidate anchor the series confirms keeps
     its tier until its samples are assigned again, which is when the
     tiering pass reads the series.
 
