@@ -71,7 +71,7 @@ def _docker_exec(
     container: str,
     cmd: list[str],
     stdin_input: str = None,
-    timeout: int = 600,
+    timeout: int | None = 600,
 ) -> subprocess.CompletedProcess:
     """
     Execute a command inside a running Docker container.
@@ -84,8 +84,10 @@ def _docker_exec(
     :type stdin_input: str | None
     :param timeout: Maximum seconds to wait for the command. Default: 600
                     (10 min). Pass a larger value for dump/restore of large
-                    databases on slow disks.
-    :type timeout: int
+                    databases on slow disks, or `None` for no limit. On a
+                    timeout only the `docker exec` client is killed: Docker
+                    leaves the command running inside the container.
+    :type timeout: int | None
     :return: CompletedProcess with stdout, stderr, returncode.
     :raises subprocess.TimeoutExpired: If the command exceeds `timeout`.
     """
@@ -309,6 +311,8 @@ def pg_restore(
     database: str,
     dump_file: Path,
     mount: str,
+    jobs: int = 1,
+    timeout: int | None = None,
 ) -> None:
     """
     Restore a PostgreSQL database from a custom-format dump.
@@ -326,6 +330,14 @@ def pg_restore(
     path. Before invoking pg_restore, waits up to 60s for the file to become
     visible inside the container view.
 
+    The restore has no time limit by default: it is the operation the operator
+    is waiting for, and a limit would only turn a slow restore of a large
+    database into a failed one. When it does end early - on `timeout`, or on
+    Ctrl-C - killing the `docker exec` client is not enough, because Docker
+    leaves `pg_restore` running inside the container. Its connections to
+    `database` are terminated first, so it stops, and the error then says the
+    database is incomplete.
+
     :param container: PostgreSQL container name (e.g. `mascope_prod_postgres`).
     :type container: str
     :param user: PostgreSQL user with write access to `database`.
@@ -338,8 +350,18 @@ def pg_restore(
     :param mount: Mount point inside the container corresponding to the directory
                   containing `dump_file` on the host (e.g. `/backups` or `/transfer`).
     :type mount: str
+    :param jobs: Number of parallel jobs (`pg_restore --jobs`). Loads the data
+                 and builds the indexes in parallel; needs a seekable archive,
+                 which `pg_dump` writes with `--file`. Default: 1.
+    :type jobs: int
+    :param timeout: Maximum seconds to allow pg_restore to run, or `None` (the
+                    default) for no limit.
+    :type timeout: int | None
     :raises FileNotFoundError: If `dump_file` does not exist on the host.
-    :raises RuntimeError: If pg_restore exits non-zero.
+    :raises RuntimeError: If pg_restore exits non-zero, exceeds `timeout` or is
+                          interrupted. In the last two cases the restore
+                          inside the container has been stopped and
+                          `database` is incomplete.
     :rtype: None
     """
     if not dump_file.exists():
@@ -354,26 +376,96 @@ def pg_restore(
             f"Verify that the transfer directory is correctly bind-mounted as '{mount}'."
         )
 
-    result = _docker_exec(
-        container,
-        [
-            "pg_restore",
-            "--username",
-            user,
-            "--dbname",
-            database,
-            "--no-owner",  # strip ownership — portability across envs
-            "--no-acl",  # strip GRANT/REVOKE — same reason
-            "--exit-on-error",  # fail fast: partial restores are worse than no restore
-            "--no-password",
-            container_path,
-        ],
-    )
+    restore_args = [
+        "pg_restore",
+        "--username",
+        user,
+        "--dbname",
+        database,
+        "--no-owner",  # strip ownership — portability across envs
+        "--no-acl",  # strip GRANT/REVOKE — same reason
+        "--exit-on-error",  # fail fast: partial restores are worse than no restore
+        "--no-password",
+    ]
+    if jobs > 1:
+        restore_args += ["--jobs", str(jobs)]
+    restore_args.append(container_path)
+
+    try:
+        result = _docker_exec(container, restore_args, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        _stop_restore(container, user, database)
+        raise RuntimeError(
+            f"pg_restore into '{database}' exceeded the {timeout}s timeout and "
+            f"was stopped. '{database}' is incomplete: restore it again."
+        ) from e
+    except KeyboardInterrupt as e:
+        _stop_restore(container, user, database)
+        raise RuntimeError(
+            f"pg_restore into '{database}' was interrupted and stopped. "
+            f"'{database}' is incomplete: restore it again."
+        ) from e
 
     if result.returncode != 0:
         raise RuntimeError(
             f"pg_restore failed for database '{database}' from '{dump_file.name}'.\n"
             f"stderr: {result.stderr.strip()}"
+        )
+
+
+def _stop_restore(container: str, user: str, database: str) -> None:
+    """
+    Stop a `pg_restore` that its `docker exec` client has left running.
+
+    Docker does not stop a process started with `docker exec` when the client
+    goes away, so after a timeout or a Ctrl-C `pg_restore` would go on
+    loading into `database` with nobody reading its exit status. Terminating
+    its connections ends it: `--exit-on-error` makes it exit on the lost
+    connection, and parallel workers end with their leader. Matched by the
+    `application_name` pg_restore connects with, so nothing else connected
+    to the database is touched.
+
+    :param container: PostgreSQL container name.
+    :type container: str
+    :param user: PostgreSQL user that ran the restore.
+    :type user: str
+    :param database: Database the restore was loading into.
+    :type database: str
+    :raises RuntimeError: If the connections could not be terminated: the
+                          restore may then still be running in the container.
+    :rtype: None
+    """
+    terminate_sql = (
+        "SELECT pg_terminate_backend(pid) "
+        "FROM pg_stat_activity "
+        f"WHERE datname = '{database}' AND application_name = 'pg_restore' "
+        "AND pid <> pg_backend_pid();"
+    )
+    try:
+        result = _docker_exec(
+            container,
+            [
+                "psql",
+                "--username",
+                user,
+                "--dbname",
+                "postgres",
+                "--no-password",
+                "--command",
+                terminate_sql,
+            ],
+            timeout=60,
+        )
+        failure = result.stderr.strip() if result.returncode != 0 else None
+    except subprocess.TimeoutExpired:
+        failure = "timed out after 60s"
+    if failure is not None:
+        raise RuntimeError(
+            f"pg_restore into '{database}' ended early, and stopping it in "
+            f"'{container}' failed: it may still be running there. "
+            f"'{database}' is incomplete. Terminate its connections "
+            f"(application_name 'pg_restore') before restoring again.\n"
+            f"stderr: {failure}"
         )
 
 

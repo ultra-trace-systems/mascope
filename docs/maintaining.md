@@ -910,6 +910,18 @@ restic restore latest --target /tmp/mascope-restore
 # recovered filestore back to the MASCOPE_FILESTORE path.
 ```
 
+A restore has no time limit and runs for as long as it takes; a database of
+tens of GB takes well over ten minutes. Run it in `tmux` or `screen`, so a
+dropped SSH session does not cut it short. `--jobs N` (`-j N`) runs
+`pg_restore` with `N` parallel jobs, which loads the data and builds the
+indexes in parallel; keep `N` at or below the server's CPU core count.
+
+Interrupting a restore with Ctrl-C stops `pg_restore` inside the Postgres
+container too, and the command says so. After an interrupted or a failed
+restore the target database is incomplete: restore it again before starting
+the stack. The read-only
+role's grants are issued only after a restore that finished.
+
 Do a **restore drill** (restore latest snapshot to a scratch directory and
 `pg_restore --list` the dump) after first setup and then periodically — an
 untested backup is not a backup.
