@@ -366,15 +366,16 @@ class TestWhenTheBoxWillNotFit:
         assert readings[100.0].density == 0
 
     @staticmethod
-    def a_row_bound_the_union_overflows(monkeypatch, max_rows: int = 30_000):
-        """Shrink the enumerator's row bound so the defect is reachable.
+    def a_shrunk_row_bound(monkeypatch, max_rows: int = 30_000):
+        """Shrink the enumerator's row bound to one a test's box comes near.
 
         The bound is two million rows, and a band halves down to a dalton, so
-        with the real bound the union of two channels only overflows on a
-        spectrum and a box wider than a test should build. Shrunk, a band over
-        the union of two channels' windows overflows where a band over ONE
-        channel's window still fits - which is exactly the geometry the fix is
-        about, at a size a test can hold.
+        with the real bound no box a test should build comes near it. Under
+        this one a band sized from the span between two channels' neutral
+        masses overflowed part-way through the list, the defect the per-channel
+        walk was written for. A band's grid now holds each channel's own
+        window instead (the guard test below), so the tests that shrink it pin
+        that the walk still answers every peak under a bound this tight.
         """
         from mascope_tools.composition import degeneracy as module
 
@@ -390,11 +391,10 @@ class TestWhenTheBoxWillNotFit:
     def test_a_peak_s_answer_does_not_depend_on_who_it_was_asked_with(
         self, monkeypatch
     ):
-        # The banded walk sizes its bands from the whole list. Sized once from
-        # every mechanism at once, the first overflow stops it banding for good,
-        # and every heavier peak of a long list then gets a different answer
-        # from the one it gets alone.
-        self.a_row_bound_the_union_overflows(monkeypatch)
+        # The banded walk sizes its bands from the whole list, and the first
+        # overflow stops it banding for good: every heavier peak of a long list
+        # would then get a different answer from the one it gets alone.
+        self.a_shrunk_row_bound(monkeypatch)
         wide = config(
             ionizations="[M+H]+, [M+NH4]+",
             element_count_ranges="C1-20 H0-36 N0-3 O0-12 S0-1 F0-17",
@@ -453,10 +453,10 @@ class TestWhenTheBoxWillNotFit:
             assert all(grid is not None for grid in per_channel)
 
     def test_and_the_peaks_are_answered_rather_than_abandoned(self, monkeypatch):
-        # The half of the fix the equality above cannot see: under the same
-        # shrunk bound a band over ONE channel still fits, so the peaks get
-        # counts instead of the silent nothing the union walk left them.
-        self.a_row_bound_the_union_overflows(monkeypatch)
+        # The half the equality above cannot see: under the same shrunk bound
+        # the peaks get counts, not the silent nothing an overflowing walk left
+        # them.
+        self.a_shrunk_row_bound(monkeypatch)
         wide = config(
             ionizations="[M+H]+, [M+NH4]+",
             element_count_ranges="C1-20 H0-36 N0-3 O0-12 S0-1 F0-17",
