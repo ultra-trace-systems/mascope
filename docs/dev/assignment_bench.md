@@ -4,7 +4,7 @@
 
 - **Status:** building
 - **As of:** 2026-11-17
-- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, milestone 6: MAS-64, MAS-835 to MAS-841, MAS-849)
+- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, milestone 6: MAS-64, MAS-835 to MAS-841, MAS-849, MAS-955)
 - **What:** One command on the agent box that runs a branch's in-app assignment engine beside peaky at a pinned release on fixed sample sets, prints the plan's metrics as a card, and posts it on the PR; a worker runs it in its own session.
 
 ## 1. Why
@@ -307,6 +307,7 @@ replaced by the refusal. The nightly baseline is the user units
 | 6.6 | MAS-841 | `--post`: the PR comment, and the nightly baseline (built: `tooling/assignment_bench/post.py`, `tooling/systemd/bench-baseline.*`) |
 | 6.7 | MAS-839 | the agents' skills run the bench and read the card (the ops repository, OPS-91) |
 | 6.8 | MAS-849 | more sets after the demo set: from the fleet corpus and the gate sets (the owner's picks) |
+| 6.9 | MAS-955 | the authors' lists on the card: both engines read against a research set's published peak list (built: `tooling/assignment_compare/metrics.py`, `truth` in the manifest) |
 
 6.4 started on 2026-11-11 against the testbed's existing runs; 6.2 starts
 on the demo manifest, 6.3 waits for 6.2, 6.5 for all three, 6.6 for 6.5,
