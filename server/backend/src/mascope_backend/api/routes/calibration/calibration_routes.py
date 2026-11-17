@@ -1,4 +1,7 @@
+import re
+
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
+from fastapi.responses import Response
 
 from mascope_backend.api.controllers.calibration.calibration_controller import (
     calibration_mz_apply,
@@ -7,6 +10,10 @@ from mascope_backend.api.controllers.calibration.calibration_controller import (
     calibration_mz_fit,
     get_default_calibration_params,
     get_mz_calibration,
+)
+from mascope_backend.api.controllers.calibration.calibration_trend import (
+    export_calibration_trend,
+    get_calibration_trend,
 )
 from mascope_backend.api.controllers.sample.files.sample_files_controller import (
     get_sample_files,
@@ -24,6 +31,7 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
 )
 from mascope_backend.api.models.calibration.calibration_pydantic_model import (
     CalibrationMzApplyBody,
+    CalibrationTrendQueryParams,
     GetMzCalibrationQueryParams,
     MzCalibrationParams,
 )
@@ -32,10 +40,12 @@ from mascope_backend.api.new.workspaces.dependencies import (
     access_granted,
     check_batch_access,
     check_filename_file_instrument_access,
+    check_instrument_workspace_access,
     check_sample_access,
     check_sample_batch_file_instrument_access,
     check_sample_item_file_instrument_access,
     check_sample_or_file_instrument_access,
+    workspace_scope_for_user,
 )
 from mascope_backend.db.id import gen_id
 
@@ -74,6 +84,76 @@ async def get_mz_calibration_route(
     :rtype: dict
     """
     return await get_mz_calibration(**query_params.model_dump())
+
+
+@calibration_router.get("/trend")
+@api_route()
+async def get_calibration_trend_route(
+    query_params: CalibrationTrendQueryParams = Query(),
+    user=Depends(current_active_user),
+):
+    """The calibration trend of one polarity of a TOF instrument.
+
+    What its files' calibration records say, file after file in the order
+    they were acquired: each calibrant line's residual under the fit, kept or
+    left out; the fit's mean residual; how many lines it kept and chose from;
+    the signed offset of the axis it read its peaks on; and when the
+    calibrant collection changed. A record written before the calibrant lines
+    were kept gives its counts and mean errors only. Files with no fit, still
+    on the acquisition's axis, are left out; files whose calibration failed
+    are listed with their status. A window of more files than the trend
+    serves one by one is served in bins per hour or day, the quartiles of
+    each measure over the bin's files.
+
+    For a guest of the instrument's acquisition workspace. A collection is
+    named only where the asker can read it.
+
+    :param query_params: The instrument, the polarity and the window.
+    :param user: The current authenticated user.
+    :return: The trend (``get_calibration_trend``).
+    """
+    await check_instrument_workspace_access(query_params.instrument, user, "guest")
+    return await get_calibration_trend(
+        **query_params.model_dump(), scope=await workspace_scope_for_user(user)
+    )
+
+
+#: What a file name keeps of an instrument's name: the rest becomes ``_``.
+_UNSAFE_IN_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+@calibration_router.get("/trend/export")
+@api_route()
+async def export_calibration_trend_route(
+    query_params: CalibrationTrendQueryParams = Query(),
+    user=Depends(current_active_user),
+):
+    """The calibration trend of one polarity of a TOF instrument, as CSV.
+
+    One row per calibrant line of each file, oldest file first: the file's
+    acquisition time, id, name, status and collection version, the fit's
+    counts and errors, and the line's ion, exact and observed m/z, offset
+    before the fit, residual, S/N and whether the fit kept it. A file whose
+    record lists no lines has one row. The files are those of
+    ``GET /api/calibration/trend`` for the same query, one by one also where
+    the trend bins them, up to the latest 20,000; and so is who may read them.
+
+    :param query_params: The instrument, the polarity and the window.
+    :param user: The current authenticated user.
+    :return: The CSV file, named for the instrument and the polarity.
+    """
+    await check_instrument_workspace_access(query_params.instrument, user, "guest")
+    text = await export_calibration_trend(
+        **query_params.model_dump(), scope=await workspace_scope_for_user(user)
+    )
+    instrument = _UNSAFE_IN_FILENAME.sub("_", query_params.instrument).strip("_.")
+    sign = "pos" if query_params.polarity == "+" else "neg"
+    filename = f"calibration-trend-{instrument or 'instrument'}-{sign}.csv"
+    return Response(
+        content=text,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @calibration_router.get("/default_params")
