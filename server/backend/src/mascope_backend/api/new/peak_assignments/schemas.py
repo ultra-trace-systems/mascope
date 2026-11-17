@@ -315,6 +315,26 @@ class PeakAssignmentDetailRecord(PeakAssignmentRecord):
     #: list its ion is (``source_ion``). An origin flag: no tier reads it.
     #: None where no reading was read for it.
     batch_flat_series: dict | None = None
+    #: The batch's isotopologue stamp (step 4.2c, ``batch_isotopologues``) on
+    #: the batch peak member this row's peak is, in this sample: the parent
+    #: batch peak (``batch_peak_id``) whose isotope line the batch reads the
+    #: peak as, with the parent's ``formula``, ``ion_formula`` and
+    #: ``ionization_mechanism_id``, the isotope (``label``), the predicted
+    #: ``ratio``, the track's reading (``judged``, ``holds``, ``share``,
+    #: ``verdict``), ``n_predicted`` and ``n_picker``, this sample's
+    #: ``stamp_source`` (``predicted`` or ``picker``), and the parent's peak
+    #: in this sample (``parent_sample_peak_id``). Served on any row, as the
+    #: stamp is about the peak, not about what the row reads it as. None
+    #: where the peak carries no stamp in this sample. Display-only: no tier
+    #: reads it.
+    batch_stamped_isotopologue_of: dict | None = None
+    #: The batch's diagnostic isotopologues record of the batch peak this
+    #: row's peak sits in (the ledger's ``diagnostic_isotopologues``): each
+    #: isotope line predicted for its formula, whether a batch peak stands at
+    #: it, and whether it was stamped. On a monoisotopic row that reads the
+    #: formula and mechanism the record was predicted for; None otherwise.
+    #: Display-only: no tier reads it.
+    batch_diagnostic_isotopologues: dict | None = None
 
 
 class PeakAssignmentsResponse(BaseModel):

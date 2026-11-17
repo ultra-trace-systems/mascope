@@ -758,6 +758,19 @@ class PeakAssignmentsResource(BaseResource):
                  no tier, on a monoisotopic row that reads the reading it was
                  read on; None otherwise, and absent from a server that
                  predates it.
+                 ``batch_stamped_isotopologue_of``: the batch's *Stamp
+                 isotopologues* stamp on the row's peak in this sample - the
+                 parent batch peak (``batch_peak_id``, ``formula``), the
+                 isotope (``label``), the track's ``share``, this sample's
+                 ``stamp_source`` (``predicted`` or ``picker``) and the
+                 parent's peak here (``parent_sample_peak_id``) - on any row;
+                 None where the peak carries no stamp there, and absent from
+                 a server that predates it.
+                 ``batch_diagnostic_isotopologues``: the parent's own record
+                 (the ledger's ``diagnostic_isotopologues``: each isotope line
+                 predicted, found and stamped), on a monoisotopic row that
+                 reads its formula and mechanism; None otherwise, and absent
+                 from a server that predates it.
                  Returns None if the response carries no record.
         :rtype: dict | None
         :raises AuthenticationError: If authentication fails.

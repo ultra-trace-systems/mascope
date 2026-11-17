@@ -921,6 +921,49 @@ def member_stamp(anchor: Any, sample_item_id: Any) -> Optional[dict]:
     }
 
 
+def row_stamped_isotopologue_of(row: dict, anchor: Any) -> Optional[dict]:
+    """The batch's stamp on the member a sample's row's peak is, for the
+    inspector; None where the anchor carries no stamp in the row's sample.
+
+    The stamp is about the peak, not about what the row reads it as: a row
+    that assigned the peak a formula of its own is the case the inspector
+    shows it for, so every role is served. It is the line's record without
+    the other samples' stamps (:func:`stamped_isotopologue_of_summary`) and
+    with this sample's ``stamp_source`` (:func:`member_stamp`).
+
+    :param row: The sample's row, with ``sample_item_id``.
+    :param anchor: The anchor its peak sits in, or None.
+    """
+    if anchor is None:
+        return None
+    stamp = member_stamp(anchor, row.get("sample_item_id"))
+    if stamp is None:
+        return None
+    return {
+        **stamped_isotopologue_of_summary(anchor),
+        "stamp_source": stamp["stamp_source"],
+    }
+
+
+def row_diagnostic_isotopologues(row: dict, anchor: Any) -> Optional[dict]:
+    """The diagnostic isotopologues record of the anchor a sample's row sits
+    in, for the inspector: on a monoisotopic row that reads the formula and
+    mechanism the record was predicted for; None otherwise.
+
+    :param row: The sample's row, with ``role``, ``assigned_formula`` and
+        ``ionization_mechanism_id``.
+    :param anchor: The anchor its peak sits in, or None.
+    """
+    if anchor is None or row.get("role") != ROLE_M0:
+        return None
+    record = standing_diagnostic_isotopologues_record(anchor)
+    if record is None or not _reads(
+        record, row.get("assigned_formula"), row.get("ionization_mechanism_id")
+    ):
+        return None
+    return record
+
+
 def stamped_lines(record: Optional[dict]) -> set[str]:
     """The batch peaks a parent's diagnostic isotopologues record stamped."""
     if not isinstance(record, dict):
