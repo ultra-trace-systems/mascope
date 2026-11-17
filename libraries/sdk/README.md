@@ -594,6 +594,15 @@ Key `get()` columns: `sample_peak_mz`, `sample_peak_intensity`, `role` (`M0` |
 `manual`), `fit_score`, `evidence`, `mz_error_ppm`, `tier`, `p_correct`, and
 `target_compound_id`/`target_ion_id` for database-sourced assignments.
 
+What the tiering rules recorded of each row is on the ledger too, so a reader
+of a whole run needs no `detail()` read per row: `tier_reason_rules` (the rule
+of each tier reason), `mass_gate_corroborated` (whether the mass gate names a
+corroboration), `envelope_absent_lines` (how many lines of the predicted
+envelope the spectrum misses) and `peak_unseparated` (whether the peak is not
+separated from a neighbour and no other channel commits its neutral on a
+separated peak). Each is null where the row holds no such record. The details
+behind them stay in `detail()`'s `provenance`.
+
 ### Hand-curated rows (`source: manual`)
 
 A person can overrule the engine on a single row from the app's peak

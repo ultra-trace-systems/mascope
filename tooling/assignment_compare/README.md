@@ -162,18 +162,23 @@ the gate (`no sample read on D`): the bench could not read it, which is not a
 pass.
 
 The tier reasons, the mass gate's record, the predicted envelope (3.4e) and
-the peak's separation (3.4f) are in each row's provenance, which only the
-per-assignment detail read serves, so the card reads it for every committed
-row of the first engine: one request a row, about 65 ms on the testbed, which
-answers them one at a time. A six-sample sparse Orbitrap set (about 2,300
-rows) takes under three minutes, a dense one (about 11,000) thirteen. A run
-older than a record reads `-` on its metric (G13 before tiering rule set 11,
-G14 before 13), not 0. A detail read that fails, on an error answer or on no
-answer once the client's retries are spent, leaves its row unread and is
-counted on the `detail_failed` row. The reason coverage, G13 and G14 leave
-such a row out, so where a set has one and they meet their target, the gate
-marks them *not read*: the row left out could hold the miss. G7 counts it as
-uncorroborated, so its pass stands.
+the peak's separation (3.4f) are in each row's provenance. The ledger serves
+what the card reads of them on every row (`tier_reason_rules`,
+`mass_gate_corroborated`, `envelope_absent_lines`, `peak_unseparated`), so a
+run is one paged read. A run older than a record reads `-` on its metric (G13
+before tiering rule set 11, G14 before 13), not 0.
+
+A server whose ledger predates those columns serves none of them, and the card
+then reads each committed row of the first engine through the per-assignment
+detail read: one request a row, about 65 ms on the testbed, which answers them
+one at a time. A six-sample sparse Orbitrap set (about 2,300 rows) takes under
+three minutes that way, a dense one (about 11,000) thirteen. A detail read that
+fails, on an error answer or on no answer once the client's retries are spent,
+leaves its row unread and is counted on the `detail_failed` row. The reason
+coverage, G13 and G14 leave such a row out, so where a set has one and they
+meet their target, the gate marks them *not read*: the row left out could hold
+the miss. G7 counts it as uncorroborated, so its pass stands. Off the ledger
+no row's read can fail, and `detail_failed` reads 0.
 
 ### What the card writes
 

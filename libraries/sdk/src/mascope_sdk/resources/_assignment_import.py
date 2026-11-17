@@ -94,6 +94,10 @@ READ_ONLY_COLUMNS = frozenset(
         "candidate_density",
         "mass_z",
         "reference_listing",
+        "tier_reason_rules",
+        "mass_gate_corroborated",
+        "envelope_absent_lines",
+        "peak_unseparated",
     }
 )
 

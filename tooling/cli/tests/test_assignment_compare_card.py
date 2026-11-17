@@ -1634,3 +1634,119 @@ def test_a_card_reads_no_arm_made_against_another_run_than_the_one_it_reads(
     a = json.loads((out / "card.json").read_text())["columns"]["A"]
     assert a["decoys_not_read"] == {"mz_shift_ppm=+9": 1}
     assert "decoy mz_shift_ppm=+9 held" not in a["readings"]
+
+
+def _with_rule_records(rows, records):
+    """Ledger rows as a server that flattens the rule records serves them."""
+    for row in rows:
+        row.update(
+            dict.fromkeys(metrics.LEDGER_RULE_RECORDS),
+            **records.get(row["peak_assignment_id"], {}),
+        )
+    return rows
+
+
+def test_the_card_reads_the_rule_records_off_the_ledger(
+    served, tmp_path, capsys, monkeypatch
+):
+    """A server that flattens the rows' rule records onto the ledger is read in
+    one paged read: no detail read at all, and no row left unread (#3134)."""
+
+    def no_detail(self, sample_id, row_id):
+        raise AssertionError(f"detail read of {row_id}")
+
+    monkeypatch.setattr(_Client, "detail", no_detail)
+    _with_rule_records(
+        _Client.ledgers["ra1"],
+        {
+            "pa-p1": {
+                "tier_reason_rules": ["corroborated"],
+                "mass_gate_corroborated": True,
+                "envelope_absent_lines": 0,
+                "peak_unseparated": False,
+            },
+            # Read, p2 carries no reason, misses a line and is unseparated.
+            "pa-p2": {"envelope_absent_lines": 2, "peak_unseparated": True},
+            "pa-p1i": {"tier_reason_rules": ["isotopologue"]},
+        },
+    )
+    _with_rule_records(
+        _Client.ledgers["ra2"],
+        {
+            "pa-q1": {"tier_reason_rules": ["on_a_list"]},
+            "pa-q2": {"tier_reason_rules": ["second_line"]},
+        },
+    )
+    out = tmp_path / "card"
+    compare_runs.main(["--sets", str(served), "--card", str(out), "--gate"])
+    card = json.loads((out / "card.json").read_text())
+    a = card["columns"]["A"]["readings"]
+    assert a["reasons"] == {"value": 66.7, "n": 3}
+    assert a["detail_failed"] == {"value": 0, "n": 3}
+    # p1 and p2 recorded an envelope and a separation; p2 is the hit of each.
+    assert a["G13"] == {"value": 1, "n": 2}
+    assert a["G14"] == {"value": 1, "n": 2}
+    assert card["gate"]["marks"]["A"]["reasons"] == "miss"
+    assert card["columns"]["G"]["readings"]["reasons"] == {"value": 100.0, "n": 2}
+    # G's rows carry no envelope or separation: not read, not 0.
+    assert card["columns"]["G"]["readings"]["G13"]["value"] is None
+    assert "3 rows' records read off the ledger" in capsys.readouterr().out
+
+
+def test_a_ledger_with_every_record_is_read_with_no_row_failed(served):
+    ledger = pd.DataFrame(
+        _with_rule_records(
+            [_row("p1"), _row("p2"), _unassigned("p3")],
+            {"pa-p1": {"tier_reason_rules": ["corroborated"]}},
+        )
+    )
+    read, off_ledger = compare_runs.read_rule_records(_Client("w"), "s1", ledger)
+    assert off_ledger
+    assert read["a_assignment_id"].tolist() == ["pa-p1", "pa-p2"]
+    assert read["a_reasons"].tolist() == [True, False]
+    assert read["a_detail_failed"].tolist() == [False, False]
+
+
+def test_a_ledger_with_only_some_records_falls_back_to_the_detail_read(served):
+    ledger = pd.DataFrame(
+        _with_rule_records(
+            [_row("p1"), _row("p2")], {"pa-p1": {"tier_reason_rules": ["corroborated"]}}
+        )
+    ).drop(columns=["peak_unseparated"])
+    _Client.details["pa-p2"] = {"tier_reasons": []}
+    read, off_ledger = compare_runs.read_rule_records(_Client("w"), "s1", ledger)
+    assert not off_ledger
+    assert read["a_reasons"].tolist() == [True, False]
+
+
+def test_the_ledger_columns_read_a_frames_missing_values_as_no_record():
+    """A frame stores a null count as NaN and a null flag as None or NaN; both
+    are a row with no record, as the detail read gives one."""
+    frame = pd.DataFrame(
+        {
+            "tier_reason_rules": [["a"], None, []],
+            "mass_gate_corroborated": [True, None, False],
+            "envelope_absent_lines": [1, None, 0],
+            "peak_unseparated": [False, np.nan, True],
+        }
+    )
+    assert [metrics.ledger_columns(row) for row in frame.to_dict("records")] == [
+        {
+            "a_reasons": True,
+            "a_mass_gate_corroborated": True,
+            "a_absent_lines": 1,
+            "a_unseparated": False,
+        },
+        {
+            "a_reasons": False,
+            "a_mass_gate_corroborated": False,
+            "a_absent_lines": None,
+            "a_unseparated": None,
+        },
+        {
+            "a_reasons": False,
+            "a_mass_gate_corroborated": False,
+            "a_absent_lines": 0,
+            "a_unseparated": True,
+        },
+    ]

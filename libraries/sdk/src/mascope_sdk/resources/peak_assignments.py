@@ -361,7 +361,9 @@ class PeakAssignmentsResource(BaseResource):
         flattened provenance scalars (``evidence``, ``p_correct``,
         ``p_correct_provisional``, ``corroboration_adducts``,
         ``corroboration_channels``, ``candidate_density``, ``mass_z``,
-        ``reference_listing``). The
+        ``reference_listing``, and the four rule records ``tier_reason_rules``,
+        ``mass_gate_corroborated``, ``envelope_absent_lines`` and
+        ``peak_unseparated``). The
         inspector-detail JSON (``alternatives``, ``provenance``) of a single
         assignment is served by :meth:`detail`.
 
@@ -475,6 +477,26 @@ class PeakAssignmentsResource(BaseResource):
                    neither names. The full list is
                    ``provenance.reference_identities`` in :meth:`detail`,
                    whose ``reference_listing`` carries the same ``target``.
+                 - ``tier_reason_rules``: the ``rule`` of each of the row's
+                   tier reasons, in order (``provenance.tier_reasons`` in
+                   :meth:`detail` has their details); null where it records
+                   none.
+                 - ``mass_gate_corroborated``: whether the mass gate names a
+                   corroboration for the row
+                   (``provenance.mass_gate.corroborated_by``); null where the
+                   row has no mass gate record.
+                 - ``envelope_absent_lines``: how many lines of the row's
+                   predicted envelope the spectrum should have shown and does
+                   not hold (``provenance.predicted_envelope``); null where
+                   the row has none.
+                 - ``peak_unseparated``: whether the instrument did not
+                   separate the row's peak from a neighbour
+                   (``provenance.peak_separation``) and no other channel
+                   commits its neutral on a separated peak
+                   (``provenance.cross_channel.separated_through``); null
+                   where the run did not read the peak's width. These four
+                   let a reader of a whole run, such as the gate card, skip
+                   one :meth:`detail` read per row.
                  - ``target_compound_id``, ``target_ion_id`` (set for
                    database-sourced assignments)
                  - ``owner_peak_assignment_id`` (for isotope children, the

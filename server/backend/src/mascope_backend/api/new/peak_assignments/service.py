@@ -217,6 +217,10 @@ from mascope_backend.api.new.peak_assignments.target_listing import (
     with_target_listings,
 )
 from mascope_backend.api.new.peak_assignments.tiering import (
+    LINE_ABSENT,
+    PEAK_SEPARATION,
+    PREDICTED_ENVELOPE,
+    SEPARATED_THROUGH,
     apply_tiering,
     find_envelope_claims,
 )
@@ -657,6 +661,10 @@ def _provenance_scalars(
     calibrated row's ``p_correct`` was read off, recorded once per run rather
     than in every row. Which curve applies to this row is
     :func:`_row_calibration`'s to say, so the ledger and the detail agree.
+
+    The last four (:func:`_rule_records`) are here because the gate card reads
+    them for every committed row of a run, and a whole ledger's worth of
+    detail reads took it about an hour over the gate sets.
     """
     provenance = provenance or {}
     calibration = _row_calibration(provenance, run_calibration) or {}
@@ -671,6 +679,74 @@ def _provenance_scalars(
         "candidate_density": provenance.get(CANDIDATE_DENSITY),
         "mass_z": provenance.get("mass_z"),
         "reference_listing": reference_listing(provenance.get("reference_identities")),
+        **_rule_records(provenance),
+    }
+
+
+def _rule_records(provenance: dict) -> dict:
+    """What the tiering rules recorded of a row, as the ledger serves it.
+
+    The gate card (``tooling/assignment_compare``) reads four things of every
+    committed row of a run, each from a provenance block only the detail read
+    serves: whether the row carries a tier reason, whether the mass gate names
+    a corroboration (G7), how many asked lines of its predicted envelope are
+    absent (G13) and whether its peak is unseparated with no separated partner
+    channel (G14). One detail read per row is about 60 ms, and a dense set
+    holds thousands of committed rows, so the card read each value off the
+    paged ledger instead once the ledger served them. They are small derived
+    values, not the blocks: ``predicted_envelope`` alone is a list of lines
+    per row, and the blocks were most of a row's bytes.
+
+    Each is None where the row holds no such record, so "not measured" stays
+    apart from "measured and found nothing", as every other scalar here does.
+
+    - ``tier_reason_rules``: the ``rule`` of each of ``tier_reasons``, in
+      order; None where the row records none. The details stay in the
+      detail read.
+    - ``mass_gate_corroborated``: whether ``mass_gate.corroborated_by`` names a
+      corroboration; None where the row has no ``mass_gate`` record.
+    - ``envelope_absent_lines``: how many lines of ``predicted_envelope`` are
+      ``absent``; None where the row has no predicted envelope.
+    - ``peak_unseparated``: whether ``peak_separation`` says the instrument
+      did not separate the peak and ``cross_channel.separated_through`` names
+      no channel that commits the neutral on a separated peak; None where the
+      run did not read the peak's width.
+
+    :param provenance: The row's stored provenance.
+    :return: The four values, by their ledger names.
+    """
+    reasons = provenance.get("tier_reasons")
+    gate = provenance.get("mass_gate")
+    envelope = provenance.get(PREDICTED_ENVELOPE)
+    separation = provenance.get(PEAK_SEPARATION)
+    through = (provenance.get("cross_channel") or {}).get(SEPARATED_THROUGH)
+    return {
+        "tier_reason_rules": (
+            [
+                str(reason.get("rule"))
+                for reason in reasons
+                if isinstance(reason, dict) and reason.get("rule")
+            ]
+            if isinstance(reasons, list) and reasons
+            else None
+        ),
+        "mass_gate_corroborated": (
+            bool(gate.get("corroborated_by")) if isinstance(gate, dict) else None
+        ),
+        "envelope_absent_lines": (
+            sum(
+                1
+                for line in envelope.get("lines") or []
+                if isinstance(line, dict) and line.get("state") == LINE_ABSENT
+            )
+            if isinstance(envelope, dict)
+            else None
+        ),
+        "peak_unseparated": (
+            separation.get("separated") is False and not through
+            if isinstance(separation, dict)
+            else None
+        ),
     }
 
 
