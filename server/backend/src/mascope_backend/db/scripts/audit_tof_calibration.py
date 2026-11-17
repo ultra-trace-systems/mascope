@@ -18,8 +18,10 @@ per day), and for each ionization mode they were acquired in, it:
    calibration collection and every named set, in every model asked for;
 3. checks that the refit under the mode's collection, with the tolerance and
    refine window the record was fitted with, in the model the node then
-   fitted (mode 0 alone up to its version 1, its own choice since), lands on
-   the stored fit to 0.01 ppm, on every file the node fitted;
+   fitted (mode 0 alone up to its version 1, its own choice since) and
+   matching as it then matched (within the refine window up to its version 2,
+   by the search for the axis the calibrants agree on since), lands on the
+   stored fit to 0.01 ppm, on every file the node fitted;
 4. evaluates every fit, and the stored record, on every ion any set or
    cluster series matched in the file, and on the file's strong peaks against
    the CHO family of each of the mode's mechanisms.
@@ -168,6 +170,11 @@ NODE = "node"
 #: a record from before the key was, too). A later one chooses between mode
 #: 0 and mode 2, and its records are reproduced by that choice.
 _MODE0_ONLY_NODE_VERSION = 1
+#: The last node version that matched each calibrant within the refine
+#: window of where the file's axis put it (a record from before the key was,
+#: too). A later one searches for the axis the calibrants agree on, and its
+#: records are reproduced by that search.
+_WINDOWED_NODE_VERSION = 2
 
 #: The refit under the mode's collection must land within this of the stored
 #: fit, over the span of its calibrants, to count as the node's.
@@ -792,18 +799,19 @@ async def audit_file(row: FileRow, mode_audit: ModeAudit, config: Config) -> Fil
         )
         isotopes = mode_audit.sets[COLLECTION]
         # The node that made the record fitted mode 0 alone up to version 1,
-        # and chose between mode 0 and mode 2 since
-        model = (
-            0
-            if (quality.get("node_version") or _MODE0_ONLY_NODE_VERSION)
-            <= _MODE0_ONLY_NODE_VERSION
-            else None
-        )
+        # and chose between mode 0 and mode 2 since; it matched within the
+        # refine window up to version 2, and searched for the axis since
+        node_version = quality.get("node_version") or _MODE0_ONLY_NODE_VERSION
+        model = 0 if node_version <= _MODE0_ONLY_NODE_VERSION else None
+        windowed = node_version <= _WINDOWED_NODE_VERSION
         # The usual record was fitted with the mode's own settings: then the
-        # collection's refit in that model above is this refit already
-        result = refits.get(f"{COLLECTION}/{model_name(model)}")
+        # collection's refit in that model above is this refit already, if
+        # it matched as the record's node did
+        result = None if windowed else refits.get(f"{COLLECTION}/{model_name(model)}")
         if result is None or params != mode_audit.params:
-            result = await _refit(stored, params, isotopes, resolution, model=model)
+            result = await _refit(
+                stored, params, isotopes, resolution, model=model, windowed=windowed
+            )
         reproduction = reproduce(result, record, isotopes, params)
 
     peaks = stored.peaks
@@ -831,6 +839,7 @@ async def _refit(
     isotopes: pd.DataFrame,
     resolution,
     model: int | None = 0,
+    windowed: bool = False,
 ) -> audit.Refit:
     """One refit, or a failed fit with the reason when the refit raises.
 
@@ -838,7 +847,9 @@ async def _refit(
     fits, or the comparison would drop exactly the files a set does worst on.
     """
     try:
-        return await audit.refit(stored, params, isotopes, resolution, model=model)
+        return await audit.refit(
+            stored, params, isotopes, resolution, model=model, windowed=windowed
+        )
     except Exception as error:  # noqa: BLE001 - recorded as this fit's failure
         runtime.logger.opt(exception=True).debug(f"Refit of {stored.filename} raised")
         return audit.Refit(

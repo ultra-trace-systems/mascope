@@ -36,6 +36,15 @@ TRUE_FIT = {"mode": 0, "par": [10850.0, -18500.0]}
 #: The axis the file carries: the true one read 6 ppm low.
 STORED_FIT = {"mode": 0, "par": [10850.0 * (1 + 3e-6), -18500.0]}
 
+
+def axis_off(ppm: float) -> dict:
+    """The true axis read ``ppm`` off at every m/z, as a drifted acquisition
+    axis reads: a mode-0 m/z goes with ``1 / p1 ** 2``, so a p1 smaller by
+    half of ``ppm`` reads every peak ``ppm`` high."""
+    p1, p2 = TRUE_FIT["par"]
+    return {"mode": 0, "par": [p1 / np.sqrt(1 + ppm * 1e-6), p2]}
+
+
 RADICAL_ANION = IonizationMechanism(
     ionization_mechanism_id="radical-",
     ionization_mechanism="[M]-.",
@@ -85,6 +94,7 @@ def write_file(
     sparsity: bool = True,
     record: dict | None = None,
     filename: str = FILENAME,
+    stored: dict = STORED_FIT,
 ) -> str:
     """Write a TOF sample file whose store holds these peaks.
 
@@ -95,8 +105,9 @@ def write_file(
         ``satellite``, ``computed`` (whether the store holds its timeseries).
     :param sparsity: Whether the store has the ``sparsity`` variable, which
         stores written before it existed lack
-    :param record: The stored calibration record; :data:`STORED_FIT`
+    :param record: The stored calibration record; ``stored`` when None
     :param filename: The file's name, which places it in the filestore
+    :param stored: The axis the store's m/z are read on (:func:`axis_off`)
     :return: The file's name
     """
     path = os.path.join(root, *_relative_path(filename))
@@ -105,7 +116,7 @@ def write_file(
     tof = np.array(
         [tof_of(peak["mz"] * (1 + peak.get("ppm", 0.0) * 1e-6)) for peak in peaks]
     )
-    mz = np.asarray(tof_to_mass(tof, STORED_FIT["mode"], STORED_FIT["par"]))
+    mz = np.asarray(tof_to_mass(tof, stored["mode"], stored["par"]))
     area = np.array([peak.get("area", 100.0) for peak in peaks])
     computed = np.array([peak.get("computed", True) for peak in peaks])
     times = np.arange(N_SCANS, dtype=np.float64)
@@ -136,7 +147,7 @@ def write_file(
             {
                 "instrument_type": "tof",
                 "polarity": "-",
-                "mz_calibration": record if record is not None else STORED_FIT,
+                "mz_calibration": record if record is not None else stored,
             },
             props,
         )

@@ -261,8 +261,9 @@ async def test_an_ion_is_held_out_with_both_its_lines(filestore):
 
 @pytest.mark.asyncio
 async def test_the_calibrants_are_those_mode_0_selects(filestore):
-    """HSO4-.H2SO4 at 195 Th 40 ppm off: mode 0's residual rule drops it, and
-    mode 2 is fitted and compared on the six lines it kept."""
+    """HSO4-.H2SO4 at 195 Th 40 ppm off: the search finds no peak of it on
+    the axis the other six lines agree on under mode 0, and mode 2 is fitted
+    and compared on those six."""
     filename = _write(filestore, SEVEN, support.bent_axis(BENT), off={195: 40.0})
 
     handler = await _fit(filename, SEVEN)
@@ -270,9 +271,7 @@ async def test_the_calibrants_are_those_mode_0_selects(filestore):
     assert handler.fit_result["mode"] == 2
     assert [round(row["mz"]) for row in _rows(handler)] == [62, 79, 81, 97, 125, 188]
     points = handler.fitted_on["points"]
-    assert [point["retained"] for point in points] == [True] * 6 + [False]
-    # The line left out, read under the mode-2 fit the record carries
-    assert points[-1]["residual_ppm"] > 30.0
+    assert [point["retained"] for point in points] == [True] * 6
     np.testing.assert_allclose(
         handler.fit_result["par"],
         mz_calibrate(
@@ -398,8 +397,8 @@ def test_a_mode_2_axis_starts_after_its_offset(par, whole):
 
 @pytest.mark.asyncio
 async def test_mode_2_alone_selects_under_mode_2(filestore):
-    """Five lines on a bent axis, one 40 ppm off: mode 2 alone drops it by
-    its own residuals and keeps the four, which it fits exactly."""
+    """Five lines on a bent axis, one 40 ppm off: the search leaves it out,
+    and mode 2 alone keeps the four, which it fits exactly."""
     axis = support.bent_axis(BENT)
     filename = _write(filestore, FIVE, axis, off={125: 40.0})
 
@@ -414,11 +413,10 @@ async def test_mode_2_alone_selects_under_mode_2(filestore):
 
 @pytest.mark.asyncio
 async def test_mode_2_alone_never_keeps_an_exact_three_point_fit(filestore):
-    """Four lines, one 40 ppm off. Mode 2 fits any three exactly, so every
-    three-line subset would agree with itself perfectly and leave out a
-    line that disagrees: the search would keep one of them. A mode-2 fit
-    takes four calibrants at least, so the search stops there and fits
-    nothing, where mode 0 keeps the three that agree."""
+    """Four lines, one 40 ppm off: the search finds the other three. Mode 2
+    fits any three exactly, so they would agree with each other perfectly
+    whatever peaks they sat on. A mode-2 fit takes four calibrants at least,
+    so it fits nothing, where mode 0 keeps the three that agree."""
     filename = _write(filestore, FOUR, support.bent_axis(BENT), off={81: 40.0})
 
     alone = await _fit(filename, FOUR, model=2)
@@ -427,10 +425,7 @@ async def test_mode_2_alone_never_keeps_an_exact_three_point_fit(filestore):
         exact = await _fit(filename, FOUR, model=2)
 
     assert alone.fit_result is None
-    assert alone.warning == (
-        "Not enough calibration peaks after residual filtering. At least 4 "
-        "peaks are required for a reliable calibration fit."
-    )
+    assert alone.warning == "Not enough calibration peaks"
     assert node.fit_result["mode"] == 0
     assert [round(row["mz"]) for row in _rows(node)] == [62, 79, 125]
     assert node.fitted_on["model"]["compared"] is None

@@ -10,7 +10,10 @@ General calibration workflow:
 - Load peak time series for the remaining candidates, reduce them to scan
    timestamps, and extract instrument-specific peak intensities.
 - Match each target isotope to the most intense sample peak within the refine
-   window and calculate match statistics.
+   window and calculate match statistics. A TOF file's calibrants are found
+   by a consensus in TOF space instead: the axis on which the most calibrant
+   ions find a peak, wherever the file's own axis puts them
+   (``tof_calibrant_search``).
 - Keep only calibration candidates that satisfy abundance, intensity, m/z error,
    and match-score thresholds.
 - Leave out the calibrants brighter than the cap, by their share of the ion
@@ -60,6 +63,9 @@ import mascope_file.name as m_name
 import mascope_signal.compute as m_compute
 import mascope_signal.mz_factor as m_factor
 import mascope_signal.stitch as m_stitch
+from mascope_backend.api.controllers.calibration.lib import (
+    tof_calibrant_search,
+)
 from mascope_backend.api.controllers.samples.lib.samples_segments import (
     segment_label,
 )
@@ -118,8 +124,11 @@ LARGE_SAMPLE_SIZE_THRESHOLD = 5
 #: (``quality.node_version``), so a file one version fitted can be told from
 #: a file another did, and a change to any of the three is a new version.
 #: Version 1 fitted mode 0 alone; version 2 fits mode 2 beside it and keeps
-#: the one that predicts the calibrants better (:data:`TOF_MODE2_MIN_GAIN_PPM`).
-TOF_CALIBRATION_NODE_VERSION = 2
+#: the one that predicts the calibrants better (:data:`TOF_MODE2_MIN_GAIN_PPM`);
+#: version 3 finds the calibrants on the axis most of them agree on rather
+#: than within the refine window of the file's own axis
+#: (``tof_calibrant_search``).
+TOF_CALIBRATION_NODE_VERSION = 3
 
 #: The TOF models the node fits, by Tofwerk mode, as a TOF fit's record names
 #: its model (``quality.model``). ``tof_to_mass`` evaluates more of them.
@@ -355,7 +364,7 @@ class BaseCalibrationHandler:
         :type stream: str | None
         """
         peaks = await self._load_and_filter_peaks(
-            target_mzs=target_isotopes_df.mz,
+            target_mzs=self._search_targets(target_isotopes_df),
             stream=stream,
         )
         # A row of one stream is fitted on what the stream read, which is
@@ -396,11 +405,7 @@ class BaseCalibrationHandler:
             }
 
         averaged_peaks_dict = await asyncio.to_thread(_averaged_peaks_dict)
-        match_df = match_df.apply(
-            self._match_max_in_range,
-            args=(averaged_peaks_dict,),
-            axis=1,
-        ).reset_index(drop=True)
+        match_df = self._match_isotopes(match_df, averaged_peaks_dict)
 
         matched_mask = ~match_df["sample_peak_mz"].isna()
         if matched_mask.any():
@@ -433,11 +438,40 @@ class BaseCalibrationHandler:
         good_matches_df = match_df[
             (match_df.relative_abundance >= self.params.isotope_abundance_min)
             & (match_df.sample_peak_intensity >= self.params.peak_intensity_min)
-            & (abs(match_df.match_mz_error) <= self.params.refine_window)
+            & (abs(match_df.match_mz_error) <= self._search_window_ppm)
             & (match_df.match_score >= self.params.match_score_min)
         ]
 
         return match_df, good_matches_df
+
+    @property
+    def _search_window_ppm(self) -> float:
+        """How far from where the file's axis puts a line a peak is looked for.
+
+        The refine window here; the TOF node searches wider
+        (:class:`TofCalibrationHandler`).
+        """
+        return self.params.refine_window
+
+    def _search_targets(self, target_isotopes_df: pd.DataFrame) -> pd.Series:
+        """The exact m/z the candidate peaks are looked for near: every
+        isotope's."""
+        return target_isotopes_df.mz
+
+    def _match_isotopes(self, match_df: pd.DataFrame, peaks: dict) -> pd.DataFrame:
+        """Match each isotope to the most intense peak within the refine
+        window of where the file's axis puts it (:meth:`_match_max_in_range`).
+
+        :param match_df: The isotopes, with empty match columns.
+        :param peaks: The candidate peaks' ``mz``, ``tof``, ``snr`` and
+            ``intensity``, as arrays.
+        :return: The isotopes, with the match columns of each matched one set.
+        """
+        return match_df.apply(
+            self._match_max_in_range,
+            args=(peaks,),
+            axis=1,
+        ).reset_index(drop=True)
 
     @staticmethod
     def _one_reading_per_peak(match_df: pd.DataFrame) -> pd.DataFrame:
@@ -649,10 +683,12 @@ class BaseCalibrationHandler:
         peak_mzs: np.ndarray,
         target_mzs: np.ndarray,
     ) -> np.ndarray:
-        """Filter m/z values to retain only those within the refine window of any target m/z."""
+        """Filter m/z values to retain only those within the search window of
+        any target m/z: the refine window, or the TOF node's wider one
+        (:attr:`_search_window_ppm`)."""
         mz_mask = np.any(
             np.abs(peak_mzs[:, None] - target_mzs[None, :])
-            <= self.params.refine_window * 1e-6 * target_mzs[None, :],
+            <= self._search_window_ppm * 1e-6 * target_mzs[None, :],
             axis=1,
         )
         return peak_mzs[mz_mask]
@@ -1080,6 +1116,141 @@ class TofCalibrationHandler(BaseCalibrationHandler):
         #: Each model's error at the calibrants it was not fitted on, for the
         #: record (:meth:`_choose_model`); None where none were compared.
         self.model_comparison: list[dict] | None = None
+        #: How the calibrants were searched for, for the record: the search
+        #: window, and how many lines and ions the winning axis found
+        #: (:meth:`_match_isotopes`); None until a search ran.
+        self.search: dict | None = None
+
+    @property
+    def _search_window_ppm(self) -> float:
+        """The TOF node looks for a calibrant this far from where the file's
+        axis puts it: :data:`calibration_config.TOF_SEARCH_WINDOW_PPM`, not the
+        refine window. Which of the peaks there is the calibrant, the
+        consensus decides (:meth:`_match_isotopes`)."""
+        return calibration_config.TOF_SEARCH_WINDOW_PPM
+
+    def _search_targets(self, target_isotopes_df: pd.DataFrame) -> pd.Series:
+        """The lines the fit can be made on, those at the abundance floor or
+        above: a minor line's wide window would only bring more peaks to
+        read, for a line the fit never takes."""
+        return target_isotopes_df.mz[
+            target_isotopes_df.relative_abundance >= self.params.isotope_abundance_min
+        ]
+
+    def _match_isotopes(self, match_df: pd.DataFrame, peaks: dict) -> pd.DataFrame:
+        """Match each line on the axis the most calibrant ions agree on.
+
+        Each line at the abundance floor or above has as candidates the
+        :data:`calibration_config.TOF_SEARCH_CANDIDATES` most intense peaks
+        within the search window of where the file's axis puts it. The
+        consensus (``tof_calibrant_search``) finds the mode-0 axis on which
+        the most ions have a candidate within the residual tolerance, and each
+        line takes its most intense candidate within the tolerance of that
+        axis. A line with none, a line below the floor, and every line when
+        there is no axis to be found (one ion, or none), is left unmatched,
+        which ends in "Not enough calibration peaks" when too few are left.
+
+        The peak keeps its m/z on the file's axis, so ``match_mz_error`` and
+        the record's pre-fit error still say how far that axis is off, and the
+        acquisition-drift warning still reads it.
+
+        :param match_df: The isotopes, with empty match columns.
+        :param peaks: The candidate peaks' ``mz``, ``tof``, ``snr`` and
+            ``intensity``, as arrays.
+        :return: The isotopes, with the match columns of each matched one set.
+        """
+        match_df = match_df.reset_index(drop=True)
+        window = self._search_window_ppm
+        self.search = {"window_ppm": _finite_or_none(window), "n_lines": 0, "n_ions": 0}
+        offered = (
+            match_df.relative_abundance >= self.params.isotope_abundance_min
+        ).to_numpy()
+        peak_mz = np.asarray(peaks["mz"], dtype=np.float64)
+        peak_tof = np.asarray(peaks["tof"], dtype=np.float64)
+        if not offered.any() or np.unique(peak_mz).size < 2:
+            return match_df
+
+        candidates, lines = self._search_candidates(match_df[offered], peaks, window)
+        reference_p1 = float(np.polyfit(np.sqrt(peak_mz), peak_tof, 1)[0])
+        tolerance = float(self.params.mz_error_tolerance)
+        consensus = tof_calibrant_search.search(
+            candidates,
+            reference_p1=reference_p1,
+            tolerance_ppm=tolerance,
+            tight_ppm=tolerance * calibration_config.TOF_SEARCH_TIGHT_SHARE,
+            p1_prior=calibration_config.TOF_SEARCH_P1_PRIOR,
+        )
+        if consensus is None:
+            return match_df
+        self.search.update(n_lines=consensus.n_lines, n_ions=consensus.n_ions)
+
+        peak_of_line = dict(zip(lines, consensus.peak.tolist()))
+        peak_of_row = np.where(
+            offered,
+            match_df.mz.round(6).map(peak_of_line).fillna(-1).to_numpy(),
+            -1,
+        ).astype(int)
+        hit = peak_of_row >= 0
+        taken = peak_of_row[hit]
+        for column, values in (
+            ("sample_peak_mz", peak_mz),
+            ("sample_peak_tof", peak_tof),
+            ("sample_peak_snr", np.asarray(peaks["snr"], dtype=np.float64)),
+            ("sample_peak_intensity", np.asarray(peaks["intensity"], np.float64)),
+        ):
+            match_df.loc[hit, column] = values[taken]
+        return match_df
+
+    def _search_candidates(
+        self, isotopes: pd.DataFrame, peaks: dict, window: float
+    ) -> tuple[tof_calibrant_search.Candidates, list[float]]:
+        """Each line's candidates: its most intense peaks within the window.
+
+        A line is an exact m/z: two isotope rows of one m/z, an ion reached
+        through two mechanisms, are one line, of the first of their ions.
+        Two ions of one formula offer the same lines, so they count as one.
+        Candidates of equal intensity are ranked by their distance from the
+        line, then by m/z.
+
+        :param isotopes: The isotopes at the abundance floor or above.
+        :return: The candidates, and each line's exact m/z rounded to 6
+            decimals, in the candidates' order.
+        """
+        by_line = (
+            pd.DataFrame(
+                {
+                    "line": isotopes.mz.round(6),
+                    "key": isotopes.target_ion_id.astype(str),
+                }
+            )
+            .sort_values(["line", "key"])
+            .drop_duplicates("line")
+        )
+        lines = by_line.line.tolist()
+        ion = pd.factorize(by_line.key, sort=True)[0]
+
+        peak_mz = np.asarray(peaks["mz"], dtype=np.float64)
+        intensity = np.nan_to_num(
+            np.asarray(peaks["intensity"], dtype=np.float64), nan=0.0
+        )
+        size = calibration_config.TOF_SEARCH_CANDIDATES
+        chosen = np.full((len(lines), size), -1, dtype=int)
+        for row, line in enumerate(lines):
+            distance = np.abs(peak_mz - line)
+            near = np.flatnonzero(distance <= window * 1e-6 * line)
+            ranked = near[np.lexsort((peak_mz[near], distance[near], -intensity[near]))]
+            chosen[row, : min(size, ranked.size)] = ranked[:size]
+        held = chosen >= 0
+        take = np.where(held, chosen, 0)
+        tof = np.asarray(peaks["tof"], dtype=np.float64)
+        candidates = tof_calibrant_search.Candidates(
+            exact_mz=np.asarray(lines, dtype=np.float64),
+            ion=np.asarray(ion, dtype=int),
+            tof=np.where(held, tof[take], np.nan),
+            intensity=np.where(held, intensity[take], np.nan),
+            peak=chosen,
+        )
+        return candidates, lines
 
     @property
     def _selection_mode(self) -> int:
@@ -1352,10 +1523,11 @@ class TofCalibrationHandler(BaseCalibrationHandler):
           residual under the fit in ppm, its peak's S/N, and whether the fit
           kept it. The residual is the one the calibration audit reads
           (``tof_calibration_audit.ppm_error``): the fit's m/z at the peak's
-          TOF index against the exact m/z. A line the match filters turned
-          down - below the abundance or the intensity floor, outside the
-          refine window, below the match score - never reached the fit and
-          is not listed, and neither is the second reading of a peak.
+          TOF index against the exact m/z. A line the search found no peak
+          for within the tolerance of its axis, or the match filters turned
+          down - below the abundance or the intensity floor, below the match
+          score - never reached the fit and is not listed, and neither is
+          the second reading of a peak.
         - ``span``: the exact m/z of the lowest and the highest line kept.
         - ``n_lines``: how many distinct lines the collection offered above
           the abundance floor, matched or not, which the quality bar holds
@@ -1369,6 +1541,11 @@ class TofCalibrationHandler(BaseCalibrationHandler):
           on (:meth:`_choose_model`), None where the fit kept too few
           calibrants to compare them; and the gain mode 2 needed to be kept,
           :data:`TOF_MODE2_MIN_GAIN_PPM`.
+        - ``search``: how the calibrants were found (:meth:`_match_isotopes`):
+          the search window around where the file's axis put each line, in
+          ppm (``window_ppm``), and how many lines, and of how many ions, the
+          axis the search chose found a peak for within the tolerance
+          (``n_lines``, ``n_ions``).
         - ``node_version``: :data:`TOF_CALIBRATION_NODE_VERSION`.
 
         :param isotopes: The isotopes the collection offered the fit.
@@ -1421,6 +1598,7 @@ class TofCalibrationHandler(BaseCalibrationHandler):
                 "compared": self.model_comparison,
                 "min_gain_ppm": TOF_MODE2_MIN_GAIN_PPM,
             },
+            "search": self.search,
             "node_version": TOF_CALIBRATION_NODE_VERSION,
         }
 

@@ -703,7 +703,53 @@ async def test_a_node_fit_is_reproduced_with_the_record_own_refine_window(filest
     file = await _audit(filestore, peaks, record)
 
     assert file.reproduction["reproduced"]
-    assert len(file.retained["collection/mode0"]) == 4
+    # The audit's own refit searches for the axis the calibrants agree on,
+    # where the stronger peak is no candidate, and keeps the calibrant's own
+    assert len(file.retained["collection/mode0"]) == 5
+
+
+@pytest.mark.asyncio
+async def test_a_record_is_reproduced_by_the_matching_its_node_did(filestore):
+    """A stronger peak 50 ppm from a calibrant read 3 ppm off. Matched within
+    the 100 ppm refine window, as up to node version 2, it takes the match
+    and the fit drops it; the search of version 3 keeps the calibrant's own.
+    The two fits differ, and each record is reproduced by its own node's
+    matching, not by the other's."""
+    peaks = support.calibrant_peaks(off={125: 3.0})
+    peaks.append({"mz": 124.984 * (1 + 50e-6), "area": 1000.0})
+    support.write_file(filestore, peaks)
+    stored = audit.read_stored_peaks(support.FILENAME)
+    records = {}
+    for version, windowed in ((2, True), (3, False)):
+        made = await audit.refit(
+            stored,
+            support.params(),
+            support.isotopes(),
+            support.resolution,
+            model=None,
+            windowed=windowed,
+        )
+        records[version] = {
+            **made.fit,
+            "quality": {
+                "n_points": len(made.retained),
+                "mz_error_tolerance": 15.0,
+                "refine_window": 100.0,
+                "node_version": version,
+            },
+        }
+    assert [records[v]["quality"]["n_points"] for v in (2, 3)] == [4, 5]
+
+    for version in (2, 3):
+        file = await _audit(filestore, peaks, records[version])
+        assert file.reproduction["reproduced"], version
+        # Said to be the other node's, it is not
+        other = {
+            **records[version],
+            "quality": {**records[version]["quality"], "node_version": 5 - version},
+        }
+        file = await _audit(filestore, peaks, other)
+        assert not file.reproduction["reproduced"], version
 
 
 @pytest.mark.asyncio
@@ -736,16 +782,16 @@ async def test_a_record_with_no_settings_is_reproduced_at_the_defaults(filestore
     assert file.reproduction["reproduced"]
 
 
-async def _counted_refits(filestore, peaks, record, mode_audit=None):
+async def _counted_refits(filestore, peaks, record, mode_audit=None, config=None):
     calls = []
     real = audit.refit
 
     async def counted(*args, **kwargs):
-        calls.append(args[1])
+        calls.append((args[1], kwargs.get("windowed", False)))
         return await real(*args, **kwargs)
 
     with patch.object(audit, "refit", counted):
-        file = await _audit(filestore, peaks, record, mode_audit)
+        file = await _audit(filestore, peaks, record, mode_audit, config)
     return file, calls
 
 
@@ -753,17 +799,35 @@ async def _counted_refits(filestore, peaks, record, mode_audit=None):
 async def test_a_record_fitted_with_the_mode_settings_is_not_refitted_twice(
     filestore,
 ):
+    """A record of the searching node fitted with the mode's settings is
+    reproduced by the audit's own refit. One of a node that matched within
+    the refine window is refitted that way, whatever its settings."""
     peaks = support.calibrant_peaks()
     record = await _node_record(filestore, peaks)
+    record["quality"]["node_version"] = 3
+    # The node's own choice of model, which a record since version 2 is
+    # reproduced in
+    config = _config("AuditTof", models=(None,))
 
-    file, calls = await _counted_refits(filestore, peaks, record)
+    file, calls = await _counted_refits(filestore, peaks, record, config=config)
 
     assert file.reproduction["reproduced"]
     assert len(calls) == 1
 
     record["quality"]["refine_window"] = 30.0
-    file, calls = await _counted_refits(filestore, peaks, record)
-    assert [call.refine_window for call in calls] == [100, 30]
+    file, calls = await _counted_refits(filestore, peaks, record, config=config)
+    assert [(call.refine_window, windowed) for call, windowed in calls] == [
+        (100, False),
+        (30, False),
+    ]
+
+    record["quality"].update(refine_window=100.0, node_version=2)
+    file, calls = await _counted_refits(filestore, peaks, record, config=config)
+    assert file.reproduction["reproduced"]
+    assert [(call.refine_window, windowed) for call, windowed in calls] == [
+        (100, False),
+        (100, True),
+    ]
 
 
 #: Seven lines of six ions on a bent axis, which the node fits in mode 2.
@@ -801,7 +865,9 @@ async def test_a_record_is_reproduced_in_the_model_its_node_fitted(
 ):
     """A node since version 2 chooses between mode 0 and mode 2, one before
     fitted mode 0 alone: the same bent file was fitted in mode 2 by the one
-    and in mode 0 by the other, and each record is reproduced as made."""
+    and in mode 0 by the other, and each record is reproduced as made, and
+    matched as made: within the refine window, as every node up to version
+    2 matched."""
     peaks, record = await _bent_record(filestore, model, node_version)
     assert record["mode"] == (2 if model is None else 0)
     mode_audit = _mode_audit(sets={"collection": support.isotopes(SEVEN)})
@@ -809,7 +875,7 @@ async def test_a_record_is_reproduced_in_the_model_its_node_fitted(
     real = audit.refit
 
     async def counted(*args, **kwargs):
-        models.append(kwargs.get("model", 0))
+        models.append((kwargs.get("model", 0), kwargs.get("windowed", False)))
         return await real(*args, **kwargs)
 
     with patch.object(audit, "refit", counted):
@@ -817,9 +883,9 @@ async def test_a_record_is_reproduced_in_the_model_its_node_fitted(
 
     assert file.reproduction["reproduced"]
     assert file.reproduction["difference_ppm"] <= script.REPRODUCED_PPM
-    # The collection's refit in mode 0, then the reproduction's own where
-    # the record's model is not that one
-    assert models == ([0] if refit_model == 0 else [0, None])
+    # The collection's refit in mode 0, then the reproduction's own, in the
+    # record's model and matched within the window
+    assert models == [(0, False), (refit_model, True)]
 
 
 @pytest.mark.asyncio
@@ -836,9 +902,9 @@ async def test_a_mode_0_record_of_a_choosing_node_is_not_mode_2s(filestore):
 
 @pytest.mark.asyncio
 async def test_a_node_record_is_reproduced_by_the_refit_already_made(filestore):
-    """Asked for the node's own choice, the audit reproduces a version-2
-    record by that refit instead of fitting the file again."""
-    peaks, record = await _bent_record(filestore, None, 2)
+    """Asked for the node's own choice, the audit reproduces a record of the
+    searching node by that refit instead of fitting the file again."""
+    peaks, record = await _bent_record(filestore, None, 3)
     mode_audit = _mode_audit(sets={"collection": support.isotopes(SEVEN)})
     calls = []
     real = audit.refit

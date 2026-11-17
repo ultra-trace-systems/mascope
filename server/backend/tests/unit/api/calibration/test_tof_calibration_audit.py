@@ -66,10 +66,16 @@ async def _audit_fit(filename, isotopes, params, model=0):
 # --- The refit is the node's fit ---
 
 
+#: The lines scattered about the true axis so that the search's axis holds
+#: all five within 15 ppm and the fit to all five leaves NO3- outside it.
+SCATTERED = {62: -12.0, 79: 8.0, 81: 8.0, 188: -8.0}
+
+
 @pytest.mark.asyncio
 async def test_a_refit_of_five_lines_is_the_node_fit(filestore):
-    """Five lines, one of them 40 ppm off: the exact subset search drops it."""
-    filename = support.write_file(filestore, support.calibrant_peaks(off={188: 40.0}))
+    """Five lines the search holds, scattered so that the fit to all five
+    leaves NO3- outside the tolerance: the exact subset search drops it."""
+    filename = support.write_file(filestore, support.calibrant_peaks(off=SCATTERED))
     isotopes = support.isotopes()
     params = support.params()
 
@@ -79,9 +85,26 @@ async def test_a_refit_of_five_lines_is_the_node_fit(filestore):
     assert node.fit_result is not None
     assert refit.fit["par"] == node.fit_result["par"]
     # The subset search ran: the bad line is out of both
+    assert len(refit.readings) == 5
     assert len(refit.retained) == 4
-    assert not any(label.startswith("H2N3O9-") for label in refit.retained)
-    # And the fit landed on the axis the peaks were placed by
+    assert not any(label.startswith("NO3-") for label in refit.retained)
+
+
+@pytest.mark.asyncio
+async def test_a_line_the_search_does_not_find_is_out_of_both(filestore):
+    """Five lines, the trimer 40 ppm off the axis the others agree on: the
+    search finds no peak of it, node and audit alike, and the fit lands on
+    the axis the peaks were placed by."""
+    filename = support.write_file(filestore, support.calibrant_peaks(off={188: 40.0}))
+    isotopes = support.isotopes()
+    params = support.params()
+
+    node = await _node_fit(filename, isotopes, params)
+    refit = await _audit_fit(filename, isotopes, params)
+
+    assert refit.fit["par"] == node.fit_result["par"]
+    assert len(refit.readings) == 4
+    assert not any(label.startswith("H2N3O9-") for label in refit.readings.ion_label)
     good = refit.readings[refit.readings.ion_label.isin(refit.retained)]
     assert np.all(
         np.abs(audit.ppm_error(good.sample_peak_tof, good.mz, refit.fit)) < 1e-6
@@ -90,10 +113,12 @@ async def test_a_refit_of_five_lines_is_the_node_fit(filestore):
 
 @pytest.mark.asyncio
 async def test_a_refit_of_more_than_five_lines_is_the_node_fit(filestore):
-    """Seven lines, one 40 ppm off: the one-pass 15 ppm rule drops it."""
+    """Seven lines the search holds, scattered: the one-pass 15 ppm rule
+    drops NO3-."""
     formulas = support.CALIBRANTS + support.MORE_CALIBRANTS
     filename = support.write_file(
-        filestore, support.calibrant_peaks(formulas, off={125: 40.0})
+        filestore,
+        support.calibrant_peaks(formulas, off={**SCATTERED, 62: -14.0, 195: -8.0}),
     )
     isotopes = support.isotopes(formulas)
     params = support.params()
@@ -107,23 +132,43 @@ async def test_a_refit_of_more_than_five_lines_is_the_node_fit(filestore):
 
 
 @pytest.mark.asyncio
-async def test_the_strongest_peak_in_the_window_is_the_match_in_both(filestore):
-    """A stronger peak 50 ppm from a calibrant takes the match, node and audit
-    alike, and the fit then rejects it."""
+async def test_a_calibrant_keeps_its_own_peak_beside_a_stronger_one(filestore):
+    """A peak twenty times stronger 50 ppm from NO3-.HNO3: outside the 15
+    ppm tolerance of the axis the lines agree on, so the line keeps its own
+    peak, node and audit alike. Matched within the 100 ppm refine window,
+    as the audit reproduces a version-2 fit, the stronger takes the match,
+    and the fit then rejects it."""
     peaks = support.calibrant_peaks()
-    peaks.append({"mz": 124.984 * (1 + 50e-6), "area": 1000.0})
+    peaks.append({"mz": 124.984 * (1 + 50e-6), "area": 2000.0})
     filename = support.write_file(filestore, peaks)
     isotopes = support.isotopes()
     params = support.params()
 
     node = await _node_fit(filename, isotopes, params)
     refit = await _audit_fit(filename, isotopes, params)
+    windowed = await audit.refit(
+        audit.read_stored_peaks(filename),
+        params,
+        isotopes,
+        support.resolution,
+        windowed=True,
+    )
 
     assert refit.fit["par"] == node.fit_result["par"]
-    matched = refit.readings.set_index(refit.readings.ion_label.str.split().str[0])
+    assert len(refit.retained) == 5
+    read = {
+        label.split()[0]: mz
+        for label, mz in zip(refit.readings.ion_label, refit.readings.sample_peak_tof)
+    }
+    # Its own peak, not the stronger one 2.7 samples further
+    assert read["HN2O6-"] == pytest.approx(support.tof_of(124.984), abs=0.01)
+    matched = windowed.readings.set_index(
+        windowed.readings.ion_label.str.split().str[0]
+    )
     assert matched.loc["HN2O6-", "sample_peak_mz"] == pytest.approx(
         124.984 * (1 + 50e-6), rel=1e-5
     )
+    assert len(windowed.retained) == 4
 
 
 @pytest.mark.asyncio
@@ -181,7 +226,9 @@ async def test_a_candidate_with_no_stored_timeseries_is_ranked_by_its_sum(
     filestore,
 ):
     """The node would compute and store its timeseries; the audit ranks it by
-    the stored sum, and counts it."""
+    the stored sum, and counts it. Matched within the refine window, the
+    stronger peak beside a calibrant takes the match, so its sum is what
+    decides."""
     peaks = support.calibrant_peaks()
     decoy = 124.984 * (1 + 50e-6)
     peaks.append({"mz": decoy, "area": 1000.0, "computed": False})
@@ -189,7 +236,7 @@ async def test_a_candidate_with_no_stored_timeseries_is_ranked_by_its_sum(
     stored = audit.read_stored_peaks(filename)
 
     refit = await audit.refit(
-        stored, support.params(), support.isotopes(), support.resolution
+        stored, support.params(), support.isotopes(), support.resolution, windowed=True
     )
 
     matched = refit.readings.set_index(refit.readings.ion_label.str.split().str[0])
@@ -292,7 +339,10 @@ async def test_a_refit_fits_the_model_it_is_asked_for(filestore):
 
 @pytest.mark.asyncio
 async def test_matching_alone_finds_the_series_by_the_node_rule(filestore):
-    """A series member is matched like a calibrant: strongest in the window."""
+    """A series member is matched as the node matched calibrants up to
+    version 2: the strongest peak in the refine window of where the file's
+    axis puts it. The node's search would find no axis here, with one
+    member of the two found."""
     peaks = support.calibrant_peaks()
     peaks.append({"mz": 96.9601, "area": 50.0})
     filename = support.write_file(filestore, peaks)
