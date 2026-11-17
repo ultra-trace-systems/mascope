@@ -621,6 +621,132 @@ def test_a_column_no_sample_was_read_on_reads_nothing_but_its_skips():
     } == {None}
 
 
+# --- An authors' list -----------------------------------------------------------
+
+
+def _keys(*formulas):
+    return frozenset(compare_runs.truth_key(f) for f in formulas)
+
+
+def test_a_list_s_formulas_are_keyed_by_element_counts_as_the_ledgers_are():
+    # Hill order, another order, a count of one written out, a zero count and
+    # spaces: one formula, keyed as the ledgers' formulas are.
+    spellings = ("C10H15NO8", "NO8C10H15", "C10H15N1O8", "C10H15NO8S0", "C10 H15 N O8")
+    assert {compare_runs.truth_key(f) for f in spellings} == {
+        compare_runs.canonical("C10H15NO8")
+    }
+    for bad in ("C10H15NO8-", "[C10H15NO8+NO3]-", "[13C]C9H16O3", "c10h16o3", "S0"):
+        assert compare_runs.truth_key(bad) is None
+    for bad in ("", None, 42):
+        assert compare_runs.truth_key(bad) is None
+
+
+def test_a_list_is_its_distinct_formulas_and_refuses_anything_else():
+    assert compare_runs.truth_formulas(["C10H16O3", "O3C10H16", "C7H9NO5"], "t") == (
+        sorted({compare_runs.canonical("C10H16O3"), compare_runs.canonical("C7H9NO5")})
+    )
+    for bad in ([], "C10H16O3", {"C10H16O3": 1}):
+        with pytest.raises(SystemExit, match="a list of neutral formulas"):
+            compare_runs.truth_formulas(bad, "t")
+    # An entry that is not one is named by its place, never by its text.
+    with pytest.raises(SystemExit) as raised:
+        compare_runs.truth_formulas(["C10H16O3", "HNO3NO3-"], "t")
+    assert "t[1]" in str(raised.value) and "NO3-" not in str(raised.value)
+
+
+def test_both_engines_are_read_against_the_list_by_distinct_formulas():
+    mine = [
+        _row("p1", assigned_formula="C10H16O3"),
+        _row("p2", assigned_formula="C7H10O4"),
+        _row("p3", assigned_formula="C5H8O4", tier="candidate"),
+        # Off the list: an assigned formula the authors did not publish.
+        _row("p4", assigned_formula="C9H14O4"),
+        # An isotopologue row is no monoisotopic formula.
+        _row("p5", role="iso_child", assigned_formula="C8H12O4"),
+    ]
+    theirs = [
+        # The reference's own tier, in any case, not the tier the store gave it.
+        _row("p1", assigned_formula="H16C10O3", engine_tier="Assigned"),
+        _row("p2", assigned_formula="C7H10O4", engine_tier="candidate"),
+        _row("p6", mz=200.0, assigned_formula="C6H8O5", engine_tier="assigned"),
+    ]
+    frame = pd.concat(
+        [
+            _frame(mine, theirs),
+            # A second sample assigns C7H10O4 again: one formula, counted once.
+            _frame(
+                [_row("q1", assigned_formula="C7H10O4")],
+                [_row("q1", assigned_formula="C10H16O3", engine_tier="assigned")],
+                sample="s2",
+            ),
+        ],
+        ignore_index=True,
+    )
+    truth = _keys("C10H16O3", "C7H10O4", "C5H8O4", "C8H12O4")
+
+    readings = metrics.truth_readings([(frame, truth)])
+
+    assert _value(readings["list_formulas"]) == (4, None)
+    # Engine A assigns C10H16O3, C7H10O4 and C9H14O4; C5H8O4 at candidate.
+    assert _value(readings["list_held"]) == (66.7, 3)
+    assert _value(readings["list_found"]) == (50.0, 4)
+    assert _value(readings["list_found_candidate"]) == (75.0, 4)
+    # The reference assigns C10H16O3 and C6H8O5; C7H10O4 at its candidate.
+    assert _value(readings["ref_list_held"]) == (50.0, 2)
+    assert _value(readings["ref_list_found"]) == (25.0, 4)
+    assert _value(readings["ref_list_found_candidate"]) == (50.0, 4)
+
+
+def test_the_pooled_column_adds_each_set_s_counts_against_its_own_list():
+    one = _frame(
+        [_row("p1", assigned_formula="C10H16O3")],
+        [_row("p1", assigned_formula="C10H16O3", engine_tier="assigned")],
+    )
+    two = _frame(
+        [
+            _row("q1", assigned_formula="C5H8O4"),
+            _row("q2", assigned_formula="C10H16O3"),
+        ],
+        sample="s2",
+    )
+
+    readings = metrics.truth_readings(
+        [(one, _keys("C10H16O3", "C7H10O4")), (two, _keys("C5H8O4"))]
+    )
+
+    assert _value(readings["list_formulas"]) == (3, None)
+    # The second set's C10H16O3 is on the first set's list, not on its own.
+    assert _value(readings["list_held"]) == (66.7, 3)
+    assert _value(readings["list_found"]) == (66.7, 3)
+    # Only the first set carries a reference run: the reference is read
+    # against its list alone, and with no such set not at all.
+    assert _value(readings["ref_list_found"]) == (50.0, 2)
+    alone = metrics.truth_readings([(two, _keys("C5H8O4"))])
+    assert _value(alone["ref_list_held"]) == (None, None)
+    assert _value(alone["list_found"]) == (100.0, 1)
+
+
+def test_a_list_s_rows_follow_the_table_and_an_unread_column_keeps_its_size():
+    frame = _frame([_row("p1")], [_row("p1")])
+    readings = metrics.card_readings(frame, truth=[(frame, _keys("C6H10O4"))])
+    assert list(readings) == [key for key, _, _ in metrics.METRICS] + [
+        key for key, _, _ in metrics.TRUTH_METRICS
+    ]
+    assert readings["list_found"] == {"value": 100.0, "n": 1}
+
+    unread = metrics.unread_readings(2, _keys("C6H10O4", "C7H10O4"))
+    assert unread["list_formulas"] == {"value": 2, "n": None}
+    assert unread["list_found"] == {"value": None, "n": None}
+    assert "list_formulas" not in metrics.unread_readings(2)
+
+
+def test_a_list_s_words_are_the_card_s_own():
+    for text in [compare_runs.TRUTH_NOTE] + [
+        label for _, label, _ in metrics.TRUTH_METRICS
+    ]:
+        assert compare_runs._words(text) == []
+
+
 # --- The gate ------------------------------------------------------------------
 
 
@@ -1750,3 +1876,77 @@ def test_the_ledger_columns_read_a_frames_missing_values_as_no_record():
             "a_unseparated": True,
         },
     ]
+
+
+def test_the_card_reads_both_engines_against_each_set_s_authors_list(
+    served, tmp_path, capsys
+):
+    sets = json.loads(served.read_text())
+    (tmp_path / "truth").mkdir()
+    (tmp_path / "truth" / "A.json").write_text(json.dumps(["C6H10O4", "O4H8C5"]))
+    sets["sets"]["A"]["truth"] = {"file": "truth/A.json"}
+    sets["sets"]["G"]["truth"] = ["C4 H8 O3 S"]
+    served.write_text(json.dumps(sets))
+    out = tmp_path / "card"
+
+    assert compare_runs.main(["--sets", str(served), "--card", str(out), "--gate"]) == 1
+
+    card = json.loads((out / "card.json").read_text())
+    a, g, pooled = (card["columns"][n]["readings"] for n in ("A", "G", "pooled"))
+    # A assigns C6H10O4 and C2H4N2O; the reference C6H10O4, twice.
+    assert a["list_formulas"]["value"] == 2
+    assert a["list_held"] == {"value": 50.0, "n": 2}
+    assert a["list_found"] == {"value": 50.0, "n": 2}
+    assert a["ref_list_held"] == {"value": 100.0, "n": 1}
+    assert a["ref_list_found"] == {"value": 50.0, "n": 2}
+    # G has no reference run: its engine is read, the reference is not.
+    assert g["list_found"] == {"value": 100.0, "n": 1}
+    assert g["ref_list_found"] == {"value": None, "n": None}
+    # Pooled, each set against its own list, the counts added.
+    assert pooled["list_formulas"]["value"] == 3
+    assert pooled["list_held"] == {"value": 50.0, "n": 4}
+    assert pooled["list_found"] == {"value": 66.7, "n": 3}
+    assert pooled["ref_list_found"] == {"value": 50.0, "n": 2}
+    # Readings, never gated: no mark, and the gate's verdict as without them.
+    marked = {key for marks in card["gate"]["marks"].values() for key in marks}
+    assert not marked & {key for key, _, _ in metrics.TRUTH_METRICS}
+    assert [(m["set"], m["metric"]) for m in card["gate"]["missed"]] == [
+        ("A", "G5"),
+        ("A", "G9"),
+        ("G", "G9"),
+    ]
+    for name in ("card.md", "card_A.md"):
+        text = (out / name).read_text()
+        assert compare_runs.TRUTH_NOTE in text
+        assert "authors' list: its formulas assigned |" in text
+    # The formulas themselves are never on the card.
+    assert "C6H10O4" not in (out / "card.json").read_text()
+
+
+def test_a_card_without_a_list_says_nothing_of_one(served, tmp_path):
+    out = tmp_path / "card"
+    compare_runs.main(["--sets", str(served), "--card", str(out)])
+    assert compare_runs.TRUTH_NOTE not in (out / "card.md").read_text()
+    card = json.loads((out / "card.json").read_text())
+    assert "list_formulas" not in card["columns"]["pooled"]["readings"]
+
+
+@pytest.mark.parametrize(
+    "truth, message",
+    [
+        ({"file": "truth/none.json"}, "its file was not read"),
+        ({"path": "truth/A.json"}, "a list of formulas, or"),
+        (["C6H10O4", "C6H9O4-"], r"truth\[1\]: not a neutral formula"),
+        ([], "a list of neutral formulas"),
+    ],
+)
+def test_a_list_that_is_not_one_stops_the_card_before_anything_is_read(
+    served, tmp_path, truth, message
+):
+    sets = json.loads(served.read_text())
+    sets["sets"]["A"]["truth"] = truth
+    served.write_text(json.dumps(sets))
+    _Client.runs = {}
+    with pytest.raises(SystemExit, match=message):
+        compare_runs.main(["--sets", str(served), "--card", str(tmp_path / "card")])
+    assert not (tmp_path / "card").exists()

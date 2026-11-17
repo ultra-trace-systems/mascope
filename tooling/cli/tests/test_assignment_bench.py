@@ -2,7 +2,7 @@
 
 The manifest parser and its three file forms (a demo bundle sample, a corpus
 object read from a fake ``corpus checkout``, a file in the manifest's own
-folder, checked by its hash), the bundle seed read from a
+folder, checked by its hash) and a set's authors' list, the bundle seed read from a
 ``pg_dump``'s COPY blocks and loaded through the API, and ``init`` over a fake
 instance and a fake API: what a first build records, that a second one over
 the same manifest starts nothing and changes nothing, what it does when the
@@ -677,6 +677,114 @@ def test_folder_files_resolve_beside_the_manifest_and_are_hashed(tmp_path):
         mf.resolve(m, _bundle(tmp_path))
 
 
+def _truth(tmp_path, name, formulas):
+    """An authors' list in the private folder, and the manifest's entry for it."""
+    folder = tmp_path / "private" / "truth"
+    folder.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(formulas)
+    (folder / f"{name}.json").write_text(text)
+    return {"file": f"truth/{name}.json", "sha256": _sha(text)}
+
+
+def _with_truth(tmp_path, truth, **extra):
+    """A private manifest of one TOF set that names ``truth``."""
+    return _folder(
+        tmp_path,
+        ["T9_neg_Br_x.h5"],
+        lambda f: {
+            "Nc": _set(
+                "Bromide",
+                [f["T9_neg_Br_x.h5"]],
+                seed={"file": "seed.json"},
+                instrument_class="tof",
+                truth=truth,
+                **extra,
+            )
+        },
+    )
+
+
+def test_a_set_names_its_authors_list_by_its_path_and_hash(tmp_path):
+    truth = _truth(tmp_path, "Nc", ["C10H15NO8", "C10 H16 O3", "NO8C10H15"])
+    m = mf.load(_with_truth(tmp_path, truth))
+
+    assert m.sets["Nc"].truth == mf.Truth("truth/Nc.json", truth["sha256"])
+    # Read as written, spaces dropped; the card compares by element counts.
+    assert mf.read_truth(m) == {
+        "Nc": {
+            "sha256": truth["sha256"],
+            "formulas": ["C10H15NO8", "C10H16O3", "NO8C10H15"],
+        }
+    }
+    # A set without one reads none; the list's hash is part of the digest.
+    assert mf.read_truth(mf.load(_two_sets(tmp_path))) == {}
+    other = copy.deepcopy(m.source)
+    other["sets"]["Nc"]["truth"]["sha256"] = "b" * 64
+    assert mf.parse(other).digest != m.digest
+
+
+@pytest.mark.parametrize(
+    "truth, message",
+    [
+        ({"file": "../t.json", "sha256": "a" * 64}, "inside the manifest's"),
+        ({"file": "truth\\t.json", "sha256": "a" * 64}, "forward slashes"),
+        ({"file": "t.json"}, "an authors' list is"),
+        (["C10H16O3"], "an authors' list is"),
+        ({"file": "t.json", "sha256": "A" * 64}, "64 lower-case hex"),
+    ],
+)
+def test_an_authors_list_is_a_file_in_the_folder_with_its_hash(truth, message):
+    data = {
+        "schema": mf.SCHEMA,
+        "name": "t",
+        "sets": {
+            "Nc": _set(
+                "Bromide",
+                [{"bundle": "9.9.9", "name": "I_neg_Br_a.raw"}],
+                truth=truth,
+            )
+        },
+    }
+    with pytest.raises(mf.ManifestError, match=message):
+        mf.parse(data)
+
+
+def test_an_authors_list_that_is_not_one_stops_before_anything(tmp_path):
+    truth = _truth(tmp_path, "Nc", ["C10H16O3"])
+    path = _with_truth(tmp_path, truth)
+    m = mf.load(path)
+    folder = path.parent
+
+    # Parsed from an object, the manifest has no folder to read it from.
+    with pytest.raises(mf.ManifestError, match="load the manifest from its file"):
+        mf.read_truth(mf.parse(m.source))
+    # A list whose content moved on since the manifest named it.
+    (folder / "truth" / "Nc.json").write_text(json.dumps(["C10H16O3", "C5H8O4"]))
+    with pytest.raises(mf.ManifestError, match="hashes to something other"):
+        mf.read_truth(m)
+    (folder / "truth" / "Nc.json").unlink()
+    with pytest.raises(mf.ManifestError, match=r"truth/Nc.json is not in"):
+        mf.read_truth(m)
+
+    # An ion, a charge or an adduct is not a neutral formula; the entry is
+    # named by its place, never by its text.
+    for bad, where in (
+        (["C10H16O3", "C10H15NO8NO3-"], "[1]"),
+        (["[13C]C9H16O3"], "[0]"),
+        (["C10H16O3", 42], "[1]"),
+        ({"formulas": ["C10H16O3"]}, "not a list"),
+        ([], "not a list"),
+    ):
+        entry = _truth(tmp_path, "Nc", bad)
+        data = json.loads(path.read_text())
+        data["sets"]["Nc"]["truth"] = entry
+        path.write_text(json.dumps(data))
+        with pytest.raises(mf.ManifestError) as raised:
+            mf.read_truth(mf.load(path))
+        assert where in str(raised.value)
+        assert "NO3-" not in str(raised.value)
+
+
 # -------------------------------------------------------------------- seed
 
 
@@ -1180,6 +1288,57 @@ def test_a_private_manifest_builds_from_files_in_its_folder(rig, tmp_path):
     assert list(state["sets"]["Nc"]["samples"]) == [f"sha256:{_sha('T9_neg_Br_x.h5')}"]
     instance.calls.clear()
     assert b.init(path) == 0 and instance.calls == []
+
+
+def test_init_keeps_an_authors_list_in_the_state_and_never_seeds_it(rig, tmp_path):
+    b, instance, api, home = rig
+    formulas = ["C10H15NO8", "C7H9NO5"]
+    path = _with_truth(
+        tmp_path, _truth(tmp_path, "Nc", formulas), collections=["Terpenes"]
+    )
+
+    assert b.init(path) == 0
+
+    state = json.loads(home.state.read_text())
+    assert state["sets"]["Nc"]["truth"] == {
+        "sha256": _sha(json.dumps(formulas)),
+        "formulas": formulas,
+    }
+    # The engine reads a batch's target collections as known targets: the
+    # list reaches no collection, no compound and no upload of the instance.
+    sent = json.dumps(api.calls) + json.dumps(api.uploads)
+    assert not any(formula in sent for formula in formulas)
+    assert "Nc.json" not in sent
+    out = io.StringIO()
+    b.status(out)
+    assert "authors' list of 2 formulas" in out.getvalue()
+
+    # A list that changes is a manifest that changes: recorded, nothing started.
+    instance.calls.clear()
+    data = json.loads(path.read_text())
+    data["sets"]["Nc"]["truth"] = _truth(tmp_path, "Nc", formulas + ["C5H8O4"])
+    path.write_text(json.dumps(data))
+    assert b.init(path) == 0
+    assert instance.calls == []
+    state = json.loads(home.state.read_text())
+    assert state["sets"]["Nc"]["truth"]["formulas"] == formulas + ["C5H8O4"]
+
+    # And one the manifest no longer names leaves the state.
+    del data["sets"]["Nc"]["truth"]
+    path.write_text(json.dumps(data))
+    assert b.init(path) == 0
+    assert "truth" not in json.loads(home.state.read_text())["sets"]["Nc"]
+
+
+def test_a_list_that_is_not_one_stops_init_before_the_instance(rig, tmp_path):
+    b, instance, api, home = rig
+    truth = _truth(tmp_path, "Nc", ["C10H16O3"])
+    path = _with_truth(tmp_path, truth)
+    (path.parent / "truth" / "Nc.json").write_text(json.dumps(["C10H15NO8NO3-"]))
+
+    with pytest.raises(mf.ManifestError, match="hashes to something other"):
+        b.init(path)
+    assert instance.calls == [] and not home.state.exists()
 
 
 def test_status_lists_the_env_and_the_sets(rig, tmp_path):

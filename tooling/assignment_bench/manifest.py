@@ -39,6 +39,14 @@ manifest kept beside the bench, never in the repository: the corpus's names
 and hashes are customer-derived, and a file in the folder is one the
 repository does not publish.
 
+A set may name an authors' list, ``"truth": {"file": P, "sha256": H}``: a
+JSON list of the neutral formulas a study's authors published for the set's
+data, at ``P`` in the manifest's folder, checked by its hash as a folder file
+is. ``read_truth`` reads it; ``bench.py`` keeps it in the bench's state and
+hands it to the card, which reads both engines against it. It is never
+seeded into the instance: the engine reads a batch's own target collections
+as known targets, so a list loaded there would hand it the answers.
+
 This module only reads: it parses a manifest and resolves its files to paths.
 ``bench.py`` builds the instance from it.
 """
@@ -72,7 +80,13 @@ _SET_KEYS = {
     "collections",
     "reference_lists",
     "files",
+    "truth",
 }
+
+#: A neutral formula as an authors' list writes one: element symbols and their
+#: counts, in any order, with no charge, isotope or adduct. Spaces are dropped
+#: before it is matched (``C10 H16 O3``).
+NEUTRAL_FORMULA = re.compile(r"^(?:[A-Z][a-z]?\d*)+$")
 
 
 class ManifestError(ValueError):
@@ -145,6 +159,14 @@ class Seed:
 
 
 @dataclass(frozen=True)
+class Truth:
+    """A set's authors' list: a file in the manifest's folder, and its hash."""
+
+    file: str
+    sha256: str
+
+
+@dataclass(frozen=True)
 class Window:
     """The reference engine's mass windows for a set, in ppm."""
 
@@ -168,6 +190,8 @@ class BenchSet:
     reference_lists: str | tuple[str, ...] = ()
     #: ``None`` runs the reference at its own defaults.
     reference_window_ppm: Window | None = None
+    #: The authors' list the card reads the set against; never seeded.
+    truth: Truth | None = None
 
 
 @dataclass(frozen=True)
@@ -297,6 +321,20 @@ def _window(value, where: str) -> Window | None:
     return Window(float(trust), float(search))
 
 
+def _truth(value, where: str) -> Truth | None:
+    if value is None:
+        return None
+    _need(
+        isinstance(value, dict) and set(value) == {"file", "sha256"},
+        where,
+        "an authors' list is {'file': path, 'sha256': hash}",
+    )
+    return Truth(
+        _in_folder(value["file"], f"{where}.file"),
+        _sha256(value["sha256"], f"{where}.sha256"),
+    )
+
+
 def _set(name: str, value, where: str) -> BenchSet:
     _need(
         bool(SET_NAME.match(name)),
@@ -335,6 +373,7 @@ def _set(name: str, value, where: str) -> BenchSet:
         reference_window_ppm=_window(
             value.get("reference_window_ppm"), f"{where}.reference_window_ppm"
         ),
+        truth=_truth(value.get("truth"), f"{where}.truth"),
     )
 
 
@@ -490,6 +529,64 @@ def resolve(
         raise ManifestError(
             f"{len(changed)} file(s) hash to something other than the manifest "
             "says:\n  " + "\n  ".join(changed)
+        )
+    return out
+
+
+def read_truth(manifest: Manifest) -> dict[str, dict]:
+    """Every set's authors' list, read from the manifest's folder.
+
+    :return: Set name -> ``{"sha256": H, "formulas": [...]}``, the formulas as
+        the file writes them, spaces dropped, for each set that names a list.
+    :raises ManifestError: Listing every list that is missing, whose content
+        is not the one the manifest names, or that is not a non-empty list of
+        neutral formulas. An entry is named by its place, never its text.
+    """
+    out: dict[str, dict] = {}
+    problems: list[str] = []
+    for s in manifest.sets.values():
+        if s.truth is None:
+            continue
+        if manifest.folder is None:
+            raise ManifestError(
+                f"set {s.name} names an authors' list in the manifest's folder: "
+                "load the manifest from its file"
+            )
+        path = manifest.folder / s.truth.file
+        if not path.is_file():
+            problems.append(f"set {s.name}: {s.truth.file} is not in {manifest.folder}")
+            continue
+        if file_sha256(path) != s.truth.sha256:
+            problems.append(
+                f"set {s.name}: {s.truth.file} hashes to something other than "
+                "the manifest says"
+            )
+            continue
+        try:
+            values = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            problems.append(f"set {s.name}: {s.truth.file}: {error}")
+            continue
+        if not isinstance(values, list) or not values:
+            problems.append(
+                f"set {s.name}: {s.truth.file} is not a list of neutral formulas"
+            )
+            continue
+        formulas = []
+        for i, value in enumerate(values):
+            text = re.sub(r"\s+", "", value) if isinstance(value, str) else ""
+            if not NEUTRAL_FORMULA.match(text):
+                problems.append(
+                    f"set {s.name}: {s.truth.file}[{i}] is not a neutral formula "
+                    "of element symbols and counts"
+                )
+                break
+            formulas.append(text)
+        else:
+            out[s.name] = {"sha256": s.truth.sha256, "formulas": formulas}
+    if problems:
+        raise ManifestError(
+            f"{len(problems)} authors' list(s) not read:\n  " + "\n  ".join(problems)
         )
     return out
 

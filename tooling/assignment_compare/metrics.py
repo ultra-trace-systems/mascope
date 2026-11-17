@@ -33,7 +33,8 @@ the card prints as such rather than as a zero.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 
 import numpy as np
 import pandas as pd
@@ -720,6 +721,94 @@ def decoy_arm_readings(arm_total: Mapping) -> dict[str, dict]:
     return out
 
 
+# --- An authors' list --------------------------------------------------------------
+
+
+def _main_formulas(frame: pd.DataFrame, prefix: str, tiers: Iterable[str]) -> set:
+    """The distinct neutral formulas an engine commits as monoisotopic rows at
+    ``tiers``: engine A's tier, the reference's own (``b_engine_tier``, as G2
+    reads it)."""
+    tier = (
+        _column(frame, "b_engine_tier").astype(str).str.lower()
+        if prefix == "b"
+        else frame["a_tier"]
+    )
+    formula = frame[f"{prefix}_formula"]
+    mine = (frame[f"{prefix}_role"] == ROLE_MAIN) & tier.isin(list(tiers))
+    return set(formula[mine & formula.notna()])
+
+
+def truth_readings(
+    sets: Iterable[tuple[pd.DataFrame, AbstractSet[str]]],
+) -> dict[str, dict]:
+    """Both engines read against an authors' published list of the set's
+    neutral formulas.
+
+    A set's list (its ``truth``) holds the formulas a study's authors assigned
+    on the data, written as ``compare_runs.canonical`` writes the ledgers'
+    formulas, element counts in a fixed order, so two spellings of one
+    formula are one. Per engine three readings, over distinct formulas pooled
+    over the set's samples: the share of its assigned monoisotopic formulas
+    that the list holds, the share of the list it assigns, and the share of
+    the list it commits at assigned or candidate. Engine A's tier is its own;
+    the reference's is its own too (``b_engine_tier``), read on the samples
+    that carry a reference run. With several sets, as in the pooled column,
+    each set is read against its own list and the counts are added.
+
+    A list is not exhaustive: the authors assigned what their study needed,
+    so a formula off the list is not wrong, and a share of the list is not a
+    recall. These are readings, never targets.
+
+    :param sets: Per set, its frame and its list, which is never empty.
+    """
+    sets = list(sets)
+    listed = sum(len(truth) for _, truth in sets)
+    counts = {
+        key: [0, 0]
+        for key in (
+            "list_held",
+            "list_found",
+            "list_found_candidate",
+            "ref_list_held",
+            "ref_list_found",
+            "ref_list_found_candidate",
+        )
+    }
+    referenced = False
+    for frame, truth in sets:
+        sides = [("list", frame)]
+        ref = with_reference(frame)
+        if not ref.empty:
+            referenced = True
+            sides.append(("ref_list", ref))
+        for name, rows in sides:
+            prefix = "b" if name == "ref_list" else "a"
+            assigned = _main_formulas(rows, prefix, [ASSIGNED])
+            committed = _main_formulas(rows, prefix, [ASSIGNED, CANDIDATE])
+            for key, hit, n in (
+                ("held", len(assigned & truth), len(assigned)),
+                ("found", len(truth & assigned), len(truth)),
+                ("found_candidate", len(truth & committed), len(truth)),
+            ):
+                counts[f"{name}_{key}"][0] += hit
+                counts[f"{name}_{key}"][1] += n
+    out = {"list_formulas": reading(listed)}
+    for key, (hit, n) in counts.items():
+        if key.startswith("ref_") and not referenced:
+            out[key] = reading()
+        else:
+            out[key] = reading(pct(hit, n), n)
+    return out
+
+
+def unread_truth_readings(truth: AbstractSet[str]) -> dict[str, dict]:
+    """The list's readings on a column on which no sample was read: its size,
+    and nothing else."""
+    out = {key: reading() for key, _, _ in TRUTH_METRICS}
+    out["list_formulas"] = reading(len(truth))
+    return out
+
+
 # --- Every metric of the card ------------------------------------------------------
 
 
@@ -758,6 +847,31 @@ METRICS = (
     ("G12", "G12 lone peaks", "count"),
     ("G13", "G13 absent lines", "count"),
     ("G14", "G14 unseparated peaks", "count"),
+)
+
+#: The rows of a set that carries an authors' list (:func:`truth_readings`),
+#: after :data:`METRICS` and before the decoy arms. No target names them: a
+#: list is not exhaustive, so they are readings.
+TRUTH_METRICS = (
+    ("list_formulas", "authors' list: its formulas", "count"),
+    ("list_held", "authors' list: assigned formulas it holds", "%"),
+    ("list_found", "authors' list: its formulas assigned", "%"),
+    (
+        "list_found_candidate",
+        "authors' list: its formulas at assigned or candidate",
+        "%",
+    ),
+    (
+        "ref_list_held",
+        "authors' list: reference Assigned formulas it holds",
+        "%",
+    ),
+    ("ref_list_found", "authors' list: its formulas the reference assigns", "%"),
+    (
+        "ref_list_found_candidate",
+        "authors' list: its formulas at the reference's Assigned or Candidate",
+        "%",
+    ),
 )
 
 #: The readings that read the reference run: a set with none is not marked on
@@ -800,12 +914,17 @@ def decoy_key(arm: str, name: str) -> str:
     return f"decoy {arm} {name}"
 
 
-def unread_readings(skipped: int) -> dict[str, dict]:
+def unread_readings(
+    skipped: int, truth: AbstractSet[str] | None = None
+) -> dict[str, dict]:
     """The readings of a column on which no sample was read: none but the
-    samples it read, none, and the ones it skipped."""
+    samples it read, none, and the ones it skipped, and its authors' list's
+    size where it has one."""
     out = {key: reading() for key, _, _ in METRICS}
     out["samples"] = reading(0)
     out["samples_skipped"] = reading(skipped)
+    if truth:
+        out.update(unread_truth_readings(truth))
     return out
 
 
@@ -815,8 +934,10 @@ def card_readings(
     skipped: int = 0,
     source_ions: Mapping[str, tuple[Iterable[float], float]] | None = None,
     decoy_arms: Mapping[str, Mapping] | None = None,
+    truth: Sequence[tuple[pd.DataFrame, AbstractSet[str]]] | None = None,
 ) -> dict[str, dict]:
-    """Every reading of one card column, in :data:`METRICS` order, then the arms.
+    """Every reading of one card column, in :data:`METRICS` order, then the
+    authors' lists' readings where the column has any, then the arms.
 
     :param frame: The column's frame (one set, or every set pooled).
     :param skipped: How many of the column's samples were not read: no
@@ -824,6 +945,9 @@ def card_readings(
     :param source_ions: Per sample, its profile's source ions and match window
         (:func:`g10_source_ions_named`).
     :param decoy_arms: The arms' totals over the column, by arm.
+    :param truth: Per set of the column that carries an authors' list, its
+        frame and its list (:func:`truth_readings`): one pair on a set's
+        column, one per such set on the pooled one.
     """
     samples = frame["sample_item_id"].nunique() if len(frame) else 0
     reference = (
@@ -869,6 +993,8 @@ def card_readings(
         "G13": g13_absent_lines(frame),
         "G14": g14_unseparated(frame),
     }
+    if truth:
+        out.update(truth_readings(truth))
     for arm, total in sorted((decoy_arms or {}).items()):
         for name, one in decoy_arm_readings(total).items():
             out[decoy_key(arm, name)] = one
