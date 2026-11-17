@@ -1469,10 +1469,17 @@ who edits chemistry and stays last.
     on the anchored walk, not on these links. A read-only probe of the
     testbed's batch ledgers, linking with the isotope lines in and the peaks
     below assignability out, found every siloxane commit resting on its own
-    isotope lines: the two rules above come from it. The reading with both
-    rules is still owed. The same probe found the link counts on the four
-    TOF modes, 3 to 8 mDa off either unit, running 25 to 60% above the six
-    decoys' mean, so a TOF ladder's FDR would read low.
+    isotope lines: the two rules above come from it. Read again with both
+    rules (2026-11-17, at the class windows: 3 ppm Orbitrap, 10 ppm TOF),
+    the siloxane ladder commits in 2 of the 16 Orbitrap modes, at 22 links
+    with no decoy link and at 12 with one, and CF2 in 2, at 31 links (11x
+    the decoys' mean) and 285 (36x). None of the 545 committed members sits
+    one isotope spacing above a brighter batch peak; two of the 172 CF2
+    chains sit one spacing above another chain but are brighter than it, so
+    neither is a line of the other. No TOF mode commits. Each mode's own
+    resolved window was not read. The same probe found the link counts on
+    the four TOF modes, 3 to 8 mDa off either unit, running 25 to 60% above
+    the six decoys' mean, so a TOF ladder's FDR would read low.
   - **The measurement behind the thresholds**, on the testbed's 20 batch
     ledgers (16 Orbitrap, 4 TOF; 2026-11-07). Walked one step at shifts
     from -100 to +100 mDa in 0.5 mDa steps, the reached count over the 16
