@@ -7,8 +7,12 @@ holds one. Where the neighbour is a formula the run holds at ``assigned``, the
 line is read as that formula's isotopologue instead, at ``candidate``: whatever
 made the run commit it as a compound of its own is what puts the reading in
 doubt, and under doubt the run says candidate (decision 18 of the assignment
-quality plan). Where the neighbour is itself at candidate, the row stays what it
-was and its reason says so.
+quality plan). A row the run held lower keeps that tier, whether its own
+reading's evidence held it there or a cap did, such as the mass gate's on a peak
+off the run's calibration: the claim changes what the row is read as, and like
+every pass that judges a run's commits it never raises a tier. Where the
+neighbour is itself at candidate, the row stays what it was and its reason says
+so.
 
 This module does the row surgery: what a claimed row becomes, and what happens
 to the isotopologues it carried as a compound of its own. Which rows are claimed
@@ -31,7 +35,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     fit_isotope_formula,
     reading_as_alternative,
 )
-from mascope_backend.api.new.peak_assignments.tiers import TIER_CANDIDATE
+from mascope_backend.api.new.peak_assignments.tiers import TIER_CANDIDATE, TIER_RANK
 from mascope_tools.composition.finder import replace_atom_with_isotope
 
 
@@ -51,6 +55,9 @@ class ClaimedLine:
     :param share: The line's predicted height, relative to the owner's own line.
     :param tracking: How the peak's mass error follows the owner's
         (``mass_gate.tracking_of``): it tracks, or it is in doubt.
+    :param held_tier: The tier the round that found the claim left the row at,
+        after every cap: the line is read no higher (:func:`claimed_tier`).
+        None for a claim no round judged.
     """
 
     row_id: str
@@ -58,6 +65,7 @@ class ClaimedLine:
     line_mz: float
     share: float
     tracking: str
+    held_tier: str | None = None
 
 
 @dataclass(frozen=True)
@@ -201,6 +209,9 @@ def _read_as_line(
             # them lower, so a reading the run showed at candidate can read
             # assigned here.
             "tier": row.get("tier"),
+            # The tier the run held the reading at when the claim found it,
+            # after every cap, which the line is read no higher than.
+            "held_tier": line.held_tier,
             "evidence": previous.get("evidence"),
         },
     }
@@ -227,7 +238,7 @@ def _read_as_line(
             if observed_share is None or line.share <= 0
             else observed_share / line.share - 1.0
         ),
-        tier=TIER_CANDIDATE,
+        tier=claimed_tier(row.get("tier"), line.held_tier),
         target_compound_id=owner.get("target_compound_id"),
         target_ion_id=owner.get("target_ion_id"),
         owner_peak_assignment_id=owner.get("peak_assignment_id"),
@@ -242,6 +253,19 @@ def _read_as_line(
         }
         | {ENVELOPE_CLAIM: claim},
     )
+
+
+def claimed_tier(*tiers: str | None) -> str:
+    """The tier a line a claim reads takes: ``candidate``, or the row's own
+    where that is lower.
+
+    :param tiers: The row's tiers: as its stage built it, before the claim, and
+        as the round that found the claim held it (``ClaimedLine.held_tier``).
+    :return: The lowest of those and ``candidate``; a tier this module does not
+        rank, or None, lowers nothing.
+    """
+    ranked = [tier for tier in tiers if tier in TIER_RANK]
+    return min([TIER_CANDIDATE, *ranked], key=TIER_RANK.__getitem__)
 
 
 def _float(value) -> float | None:

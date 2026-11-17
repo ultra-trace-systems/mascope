@@ -81,10 +81,14 @@ def elsewhere(row_id: str = "pa-line", **fields) -> dict:
     }
 
 
-def claim_of(row_id: str = "pa-line", **fields) -> EnvelopeClaim:
+def claim_of(
+    row_id: str = "pa-line", held_tier: str | None = None, **fields
+) -> EnvelopeClaim:
     return EnvelopeClaim(
         owner_id="pa-owner",
-        line=ClaimedLine(row_id, "13C", C13_MZ, C13_SHARE, TRACKING_IN_DOUBT),
+        line=ClaimedLine(
+            row_id, "13C", C13_MZ, C13_SHARE, TRACKING_IN_DOUBT, held_tier
+        ),
         **fields,
     )
 
@@ -95,7 +99,7 @@ def by_id(rows: list[dict]) -> dict[str, dict]:
 
 class TestAClaimedRow:
     def test_it_becomes_the_owner_s_isotopologue_at_candidate(self):
-        rows = [owner(), elsewhere()]
+        rows = [owner(), elsewhere(tier="assigned")]
 
         kept = apply_claims(rows, [claim_of()], max_alternatives=5)
 
@@ -114,6 +118,35 @@ class TestAClaimedRow:
         # The peak itself is untouched.
         assert line["sample_peak_id"] == "peak-pa-line"
         assert line["sample_peak_mz"] == pytest.approx(C13_MZ * (1 + 0.4e-6))
+
+    @pytest.mark.parametrize(
+        ("own", "held", "claimed"),
+        [
+            ("assigned", None, "candidate"),
+            ("candidate", None, "candidate"),
+            ("below_assignability", None, "below_assignability"),
+            ("assigned", "candidate", "candidate"),
+            # The run's mass gate held the reading below assignability.
+            ("assigned", "below_assignability", "below_assignability"),
+            ("below_assignability", "candidate", "below_assignability"),
+            ("assigned", "not a tier", "candidate"),
+        ],
+    )
+    def test_it_never_takes_a_tier_above_its_own(self, own, held, claimed):
+        # A claim changes what the row is read as, and the passes that judge a
+        # run's commits only ever lower a tier: a row its evidence or a cap of
+        # the run held below assignability is not lifted to candidate by being
+        # read as a line.
+        kept = apply_claims(
+            [owner(), elsewhere(tier=own)],
+            [claim_of(held_tier=held)],
+            max_alternatives=5,
+        )
+
+        line = by_id(kept)["pa-line"]
+        assert line["tier"] == claimed
+        displaced = line["provenance"][ENVELOPE_CLAIM]["displaced"]
+        assert (displaced["tier"], displaced["held_tier"]) == (own, held)
 
     def test_an_untargeted_owner_s_line_is_named_by_its_substitution(self):
         rows = [owner(), elsewhere()]
@@ -210,7 +243,9 @@ class TestAClaimedRow:
     def test_its_provenance_is_the_claim_and_the_owner_s_measurement(self):
         rows = [owner(), elsewhere()]
 
-        apply_claims(rows, [claim_of()], max_alternatives=5)
+        apply_claims(
+            rows, [claim_of(held_tier="below_assignability")], max_alternatives=5
+        )
 
         provenance = by_id(rows)["pa-line"]["provenance"]
         assert provenance == {
@@ -229,6 +264,7 @@ class TestAClaimedRow:
                     "isotope_label": "M0",
                     "source": "untargeted",
                     "tier": "below_assignability",
+                    "held_tier": "below_assignability",
                     "evidence": 0.37,
                 },
             },
@@ -290,27 +326,42 @@ class TestTheClaimedRowsOwnLines:
             ),
         ]
 
-    def test_a_line_the_owner_predicts_goes_with_the_claim(self):
+    @pytest.mark.parametrize(
+        ("own", "held", "claimed"),
+        [
+            ("assigned", None, "candidate"),
+            ("below_assignability", None, "below_assignability"),
+            ("assigned", "below_assignability", "below_assignability"),
+        ],
+    )
+    def test_a_line_the_owner_predicts_goes_with_the_claim(self, own, held, claimed):
+        # The claimed row's own line is read no higher than the run held it,
+        # whatever the run held the claimed row at.
         claim = claim_of(
             carried=(
-                ClaimedLine("pa-line-18o", "18O", O18_MZ, O18_SHARE, TRACKING_TRACKS),
+                ClaimedLine(
+                    "pa-line-18o", "18O", O18_MZ, O18_SHARE, TRACKING_TRACKS, held
+                ),
             ),
             released=("pa-line-lost",),
         )
+        family = self.family()
+        family[2]["tier"] = own
 
-        kept = apply_claims(self.family(), [claim], max_alternatives=5)
+        kept = apply_claims(family, [claim], max_alternatives=5)
 
         carried = by_id(kept)["pa-line-18o"]
         assert carried["owner_peak_assignment_id"] == "pa-owner"
         assert carried["assigned_formula"] == "C6H12O6"
         assert carried["isotope_label"] == "18O"
-        assert carried["tier"] == "candidate"
+        assert carried["tier"] == claimed
         assert carried["mz_error_ppm"] == pytest.approx(0.0, abs=1e-6)
         block = carried["provenance"][ENVELOPE_CLAIM]
         assert block["carried_with"] == "pa-line"
         assert block["tracking"] == TRACKING_TRACKS
         assert block["displaced"]["assigned_formula"] == "C7H11NO4"
         assert block["displaced"]["isotope_label"] == "13C"
+        assert block["displaced"]["held_tier"] == held
         assert (
             "carried_with" not in by_id(kept)["pa-line"]["provenance"][ENVELOPE_CLAIM]
         )

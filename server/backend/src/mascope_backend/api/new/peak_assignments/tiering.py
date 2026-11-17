@@ -89,8 +89,10 @@ together (:func:`predicted_envelope`).
 
 ``envelope_claim`` - where that neighbour is held at ``assigned``, the peak is
 read as its line (:func:`find_envelope_claims`, :mod:`envelope_claims`): an
-isotopologue of the neighbour at ``candidate``, with the reading it displaced
-first among its alternatives. Not where the row is a compound of the target
+isotopologue of the neighbour at ``candidate``, or at the tier the run held the
+row at where that is lower, by its evidence or by a cap such as the mass gate's,
+with the reading it displaced first among its alternatives. Not where the row is
+a compound of the target
 library, where a second channel committed its neutral, where the neighbour
 already holds a line there, or where the peak's mass error does not follow the
 neighbour's even allowing for what the line can deliver; the row then stays as
@@ -266,6 +268,7 @@ from mascope_backend.api.new.peak_assignments.envelope_claims import (
     ENVELOPE_CLAIM,
     ClaimedLine,
     EnvelopeClaim,
+    claimed_tier,
 )
 from mascope_backend.api.new.peak_assignments.mass_gate import (
     REASON_ISOTOPOLOGUE_IN_DOUBT,
@@ -2742,11 +2745,16 @@ def claim_reason(row: dict, claim: dict) -> dict:
             and isinstance(observed, (int, float))
             else ""
         )
+        held = claimed_tier(displaced.get("tier"), displaced.get("held_tier"))
         detail = (
             f"this peak is the {line} line of {row.get('assigned_formula')}, which "
             f"the run holds at assigned{heights}; it was committed as {formula} "
             "first, which is what puts the line in doubt, so it is read as that "
-            "isotopologue at candidate"
+            + (
+                "isotopologue at candidate"
+                if held == TIER_CANDIDATE
+                else "isotopologue, below assignability as that reading was"
+            )
         )
     return _reason(REASON_ENVELOPE_CLAIM, detail, caps=True)
 
@@ -2926,6 +2934,9 @@ def _as_line(
                 UNREAD_LINE if lines is None else lines.of(owner.get("sample_peak_id"))
             ),
         ),
+        # Asked after every cap of the round, so this is the tier the run held
+        # the row at: a claim reads the line no higher.
+        held_tier=row.get("tier"),
     )
 
 
