@@ -66,6 +66,8 @@ _MATCHED = {
     "sample_peak_intensity_relative": 0.8,
     "ratio_scan_count": 7.0,
     "signal_to_noise": 42.0,
+    "n_scans": 18.0,
+    "n_scans_total": 24.0,
     "sample_peak_mz": 79.05424,
     "sample_peak_tof": 12.3,
     "match_score": 0.97,

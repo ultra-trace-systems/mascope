@@ -2578,6 +2578,14 @@ class MatchIsotope(Base):
     # mean over mean (TOF files, a line without its anchor's series, and every
     # row stored before the column existed).
     ratio_scan_count: Mapped[Optional[int]] = mapped_column(Integer)
+    # The matched peak's scan presence counts, as its peak store keeps them:
+    # how many of the scans averaged into an Orbitrap peak hold it, and how
+    # many those are. The v2 fit score reads a dim line at its mean per scan
+    # from them. NULL where the store keeps no counts (TOF files, stores
+    # detected before them), for a line without a peak, and on every row
+    # stored before the columns existed; such a row scores as without them.
+    n_scans: Mapped[Optional[int]] = mapped_column(Integer)
+    n_scans_total: Mapped[Optional[int]] = mapped_column(Integer)
     match_isotope_utc_created: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True)
     )

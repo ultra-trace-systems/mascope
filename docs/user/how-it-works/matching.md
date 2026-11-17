@@ -192,6 +192,14 @@ ranking (ROC-AUC) and calibration over v1. The fit score is the scoring engine o
 are in the developer reference, `libraries/tools/docs/fit_score.md`. The legacy v1
 score is retained for the targeted path and documented above for reference.
 
+On a raw Orbitrap file the fit score reads a dim line at its mean per scan, from how many
+of the scans averaged into its peak hold it and how many those are
+([scan presence](peak-detection.md#scan-presence-orbitrap)). Both counts are stored with
+each line of a match, so an ion scored from its stored match, as the batch and sample
+views do, scores as it did when it was computed from the file. A match stored before the
+counts were kept has none, and scores as a file without counts does until it is matched
+again.
+
 ## References
 
 - Eiler, J., Cesar, J., Chimiak, L., Dallas, B., Grice, K., Griep-Raming, J., Juchelka, D., Kitchen, N., Lloyd, M., Makarov, A., Robins, R., Schwieters, J. (2017). Analysis of molecular isotopic structures at high precision and accuracy by Orbitrap mass spectrometry. *International Journal of Mass Spectrometry* 422, 126-142. [doi:10.1016/j.ijms.2017.10.002](https://doi.org/10.1016/j.ijms.2017.10.002)
