@@ -240,10 +240,10 @@ What that means on each rung:
 
 | Rung | The web UI on the instrument PC |
 |---|---|
-| (a) firewall rule, (b) customer's proxy, (c) connector, forward form | Works, if the browser uses the proxy. Browsers take the Windows proxy setting, PAC scripts included, unlike the agent. Allow `challenges.cloudflare.com` beside the instance's name when the instance has Turnstile on, or leave Turnstile off for that instance. A plain `CONNECT` tunnel carries the WebSocket as it is. A TLS-inspecting proxy that does not pass WebSocket upgrades lets the page load and the app never start, so exempt the instance's name from inspection. |
+| (a) firewall rule, (b) customer's proxy, (c) connector, forward form | Works. On (a) the browser goes direct, and the firewall rule admits the names below. On (b) and (c) it works if the browser uses the proxy; browsers take the Windows proxy setting, PAC scripts included, unlike the agent. Allow `challenges.cloudflare.com` beside the instance's name when the instance has Turnstile on, or leave Turnstile off for that instance. A plain `CONNECT` tunnel carries the WebSocket as it is. A TLS-inspecting proxy that does not pass WebSocket upgrades lets the page load and the app never start, so exempt the instance's name from inspection. |
 | (c) connector, reverse form | Does not work. The form admits the agent's routes only. Opening it to the whole site, `/socket.io/` upgrades included, would still fail: the browser's requests carry the connector's name as `Origin` while the connector sends the instance's `Host` upstream, so the origin guard (`own_request_origins` in `server/backend/src/mascope_backend/origins.py`) refuses every state-changing request. The Turnstile widget is also registered for the instance's hostname. The reverse form serves the agent only. |
 | (d) drop folder | No browser access from the instrument PC; people use Mascope from another PC. |
-| Managed on-premises, isolated appliance (section 6) | The browser reaches the server over the LAN, and nothing else is needed. An on-premises server leaves Turnstile off, unless its users' browsers can reach `challenges.cloudflare.com`. |
+| Managed on-premises, isolated appliance (section 6) | The browser reaches the server over the LAN. With Turnstile off, nothing else is needed. With it on, the server checks each token with Cloudflare's siteverify on `challenges.cloudflare.com`, and refuses the sign-in when it cannot (`api/new/auth/turnstile.py`). So both the server and its users' browsers must reach that host. A managed server needs it on its egress allow-list. An isolated appliance never has it, so Turnstile stays off there. |
 
 ### 4.7 Remote support on the instrument PC, on request
 
@@ -411,10 +411,10 @@ per site with its inventory entry; both settings stay valid.
 | Managed on-premises | the customer's server | the server, over the LAN | a server in the IT zone and the hosting.md allow-list | about a cloud server's |
 | Isolated appliance | the customer's server | the server, over the LAN | nothing outbound | a carrier per release; the isolated plan |
 
-In every row but two, a browser on the instrument PC reaches Mascope by the
-agent's path, and TeamViewer by a path of its own (4.6, 4.7). The exceptions
-are the connector's reverse form and the drop folder, which give the browser
-no path at all.
+In every row, a browser on the instrument PC reaches Mascope by the agent's
+path, and TeamViewer by a path of its own (4.6, 4.7). The exceptions are two
+forms of the connector row, the reverse form and the drop folder, which give
+the browser no path at all.
 
 Prices are a business decision outside this note. The point of the table is
 that each offering's cost follows from its last column, so the costly one is
