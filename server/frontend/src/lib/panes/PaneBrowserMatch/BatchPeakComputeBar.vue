@@ -155,6 +155,14 @@ async function launchSearch() {
             measured in every sample its batch peak is in, and the row says
             which series it belongs to. It writes no per-sample runs.
             </p>
+            <p>
+            A siloxane or CF2 ladder nothing assigned anchors is also looked
+            for by mass alone, among the batch peaks nothing assigns: each one
+            linked to the peak one unit heavier, less the peaks that sit one
+            isotope spacing above a brighter one. Its links face the same
+            decoys. A ladder that beats them is listed in the run's summary
+            with no formula proposed, and no row is changed.
+            </p>
           `)
         "
       />

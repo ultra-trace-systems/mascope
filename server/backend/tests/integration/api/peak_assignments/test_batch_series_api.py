@@ -14,8 +14,9 @@ second run on the unchanged ledger finds them again and so does one after a
 run that stopped partway, no reader serves a record its anchor does not read
 yet, an earlier run's records come off unless their mode could not be walked,
 the run is recorded as a batch run, and a run of a sample reads the records
-back. A second batch assigns nothing and holds two CF2 ladders: the run lists
-them by mass alone and writes nothing on its batch peaks.
+back. A second batch assigns nothing and holds two CF2 ladders and their 13C
+lines: the run lists the ladders by mass alone, leaves the lines out and
+writes nothing on its batch peaks.
 See ``batch_series.py``.
 """
 
@@ -71,7 +72,11 @@ from mascope_backend.db import (
     SampleItem,
 )
 from mascope_backend.db.id import gen_id
-from mascope_tools.composition.series import CONTAMINANT_UNITS, ion_mz
+from mascope_tools.composition.series import (
+    CONTAMINANT_UNITS,
+    ISOTOPE_SPACINGS_DA,
+    ion_mz,
+)
 from mascope_tools.composition.utils import parse_formula_tokens
 
 
@@ -762,9 +767,12 @@ async def test_the_route_refuses_while_another_run_rewrites_the_ledger(
 
 #: Two CF2 ladders no sample assigns a peak of: perfluoroalkyl anions from C2F5-
 #: and the perfluorinated acids' deprotonated ions from trifluoroacetate, seven
-#: rungs each, so twelve links between them - the fewest a family needs.
+#: rungs each, so twelve links between them - the fewest a family needs. Each
+#: rung's 13C line, a tenth as bright, is a batch peak too; linked, the lines
+#: would make two ladders more.
 CF2 = next(unit for unit in CONTAMINANT_UNITS if unit.formula == "CF2")
 LADDER_FEET = {"acid": 112.98563, "alkyl": 118.99257}
+C13 = ISOTOPE_SPACINGS_DA[0]
 
 
 def _ladder_peaks():
@@ -776,7 +784,12 @@ def _ladder_peaks():
     }
 
 
-def _unassigned_rows(sample_item_id, mz_by_peak):
+def _ladder_lines():
+    """Line id -> its m/z: each rung's 13C line."""
+    return {f"{peak}-13c": mz + C13 for peak, mz in _ladder_peaks().items()}
+
+
+def _unassigned_rows(sample_item_id, mz_by_peak, intensity=5000.0):
     return [
         SimpleNamespace(
             peak_assignment_id=gen_id(32),
@@ -784,7 +797,7 @@ def _unassigned_rows(sample_item_id, mz_by_peak):
             sample_item_id=sample_item_id,
             sample_peak_id=peak_id,
             sample_peak_mz=mz,
-            sample_peak_intensity=5000.0,
+            sample_peak_intensity=intensity,
             role="unassigned",
             assigned_formula=None,
             ion_formula=None,
@@ -807,7 +820,9 @@ async def ladder_batch(async_session_factory, pa_test_data):
         async_session_factory, pa_test_data, label="ladder"
     )
     for sample_item_id in samples.values():
-        rows = _unassigned_rows(sample_item_id, _ladder_peaks())
+        rows = _unassigned_rows(sample_item_id, _ladder_peaks()) + _unassigned_rows(
+            sample_item_id, _ladder_lines(), intensity=500.0
+        )
         assert (
             await fold_sample_into_batch_peaks(
                 sample_item_id, rows=rows, persisted=False
@@ -857,6 +872,10 @@ async def test_a_ladder_nothing_anchors_is_listed_on_the_run_and_written_nowhere
         for name in LADDER_FEET
     ]
     assert by_unit["CF2"]["ladders"][0]["mz"][0] == round(LADDER_FEET["acid"], 6)
+    # The rungs' 13C lines are batch peaks nothing reads, read as lines by
+    # their brightest member and linked into no ladder.
+    lines = {round(mz, 4) for mz in _ladder_lines().values()}
+    assert lines <= set(by_mz)
 
     # A ladder proposes no formula: nothing is measured and no batch peak
     # carries a record or a reading.
@@ -868,5 +887,6 @@ async def test_a_ladder_nothing_anchors_is_listed_on_the_run_and_written_nowhere
     assert outcome["status"] == "success"
     assert outcome["message"].startswith(
         "No series was walked from an assigned batch peak: the batch has none "
-        "to walk from. By mass alone, the fluorinated ladder beat the decoys"
+        "to walk from, or no batch peak unassigned or at candidate to step "
+        "onto. By mass alone, the fluorinated ladder beat the decoys"
     )

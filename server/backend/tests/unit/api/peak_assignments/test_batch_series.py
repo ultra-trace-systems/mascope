@@ -38,6 +38,7 @@ from mascope_backend.api.new.peak_assignments.service import stamp_series
 from mascope_tools.composition.series import (
     CONTAMINANT_UNITS,
     DECOY_OFFSETS_DA,
+    ISOTOPE_SPACINGS_DA,
     MIN_LINKS,
     SeriesEvidence,
     ion_mz,
@@ -65,6 +66,7 @@ def anchor(key, *, tier="unassigned", formula=None, mz=None, **extra):
         consensus_role=None,
         isotopologue_of=None,
         provenance=None,
+        max_intensity=None,
     )
     fields.update(extra)
     return SimpleNamespace(**fields)
@@ -179,6 +181,37 @@ class TestTheWalksAnchors:
             NOTATIONS,
         )
         assert (modes["mode-1"].sources, modes["mode-1"].targets) == ([], [])
+
+    def test_a_reading_below_assignability_is_kept_for_the_ladders(self):
+        pinned = {"manual": {"formula": "C9H12O5"}}
+        modes = series_anchors(
+            [
+                anchor("low", tier="below_assignability", formula="C9H12O5", mz=201.0),
+                anchor("pin", tier="below_assignability", provenance=pinned),
+                anchor("line", tier="below_assignability", isotopologue_of="low"),
+            ],
+            NOTATIONS,
+        )
+        assert [(t.key, t.mz, t.formula) for t in modes["mode-1"].below] == [
+            ("low", 201.0, None)
+        ]
+
+    def test_every_anchor_of_a_mode_is_kept_with_its_height(self):
+        modes = series_anchors(
+            [
+                anchor("src", tier="assigned", formula="C8H10O5", max_intensity=9.0),
+                anchor("claimed", consensus_role="reagent", mz=62.0, max_intensity=5.0),
+                anchor("line", isotopologue_of="src", mz=201.0),
+                anchor("other", ionization_mode_id="mode-2", max_intensity=1.0),
+            ],
+            NOTATIONS,
+        )
+        assert [(p.key, p.mz, p.intensity) for p in modes["mode-1"].peaks] == [
+            ("src", at("C8H10O5"), 9.0),
+            ("claimed", 62.0, 5.0),
+            ("line", 201.0, None),
+        ]
+        assert [p.key for p in modes["mode-2"].peaks] == ["other"]
 
     def test_each_mode_is_walked_on_its_own(self):
         modes = series_anchors(
@@ -348,6 +381,7 @@ class TestThePlan:
 
 
 SILOXANE = next(unit for unit in CONTAMINANT_UNITS if unit.family == "siloxane")
+C13, _, SI29, SI30 = ISOTOPE_SPACINGS_DA
 
 #: The protonated cyclic siloxane D3, the foot of a column-bleed ladder.
 D3_MZ = ion_mz(parse_formula_tokens("C6H18O3Si3"), "[M+H]+")
@@ -408,6 +442,94 @@ class TestTheLadders:
 
     def test_a_mode_without_its_chemistry_is_not_linked(self):
         assert plan(rungs(MIN_LINKS + 1), chemistry={}).ladders == {}
+
+    def test_peaks_below_assignability_are_linked_and_not_walked(self):
+        low = rungs(MIN_LINKS + 1, tier="below_assignability", formula="C9H12O5")
+        result = plan(low)
+        assert result.evidence == {}
+        assert siloxane(result).significant
+        assert [ladder.keys for ladder in siloxane(result).ladders] == [
+            tuple(f"si-{k}" for k in range(MIN_LINKS + 1))
+        ]
+        # Beside the assigned anchors, the walk still reaches none of them.
+        walked = plan(ladder_batch() + low)
+        assert not any(key.startswith("si-") for key in walked.records)
+        assert siloxane(walked).significant
+
+    def test_a_ladder_s_isotope_lines_are_not_linked(self):
+        # Five rungs make four links. Their 13C, 29Si and 30Si lines, unread
+        # and fainter, would make three ladders more, of four links each.
+        mono = rungs(5, max_intensity=1000.0)
+        lines = [
+            anchor(f"{name}-{k}", mz=rung.mz + spacing, max_intensity=100.0)
+            for name, spacing in (("c13", C13), ("si29", SI29), ("si30", SI30))
+            for k, rung in enumerate(mono)
+        ]
+        result = plan(mono + lines, min_links=4)
+        assert siloxane(result).n_links == 4
+        assert [ladder.keys for ladder in siloxane(result).ladders] == [
+            tuple(f"si-{k}" for k in range(5))
+        ]
+        # With no heights to compare, nothing is read as a line.
+        flat = [anchor(a.batch_peak_id, mz=a.mz) for a in mono + lines]
+        assert siloxane(plan(flat, min_links=4)).n_links == 16
+
+    def test_a_line_of_an_anchor_the_ladders_leave_out_is_left_out_too(self):
+        # The 13C lines of a ladder whose rungs a pre-pass claimed.
+        claimed = rungs(MIN_LINKS + 1, consensus_role="reagent", max_intensity=10.0)
+        lines = [
+            anchor(f"c13-{k}", mz=rung.mz + C13, max_intensity=1.0)
+            for k, rung in enumerate(claimed)
+        ]
+        assert siloxane(plan(claimed + lines)).n_links == 0
+        unlit = [anchor(a.batch_peak_id, mz=a.mz) for a in lines]
+        assert siloxane(plan(claimed + unlit)).n_links == MIN_LINKS
+
+    def test_the_ladders_window_is_the_mode_s(self):
+        # A rung 4 ppm off the step: out of a 3 ppm window, in a 5 ppm one.
+        [foot] = rungs(1)
+        off = anchor("off", mz=(D3_MZ + SILOXANE.mass) * (1 + 4e-6))
+        wide = {"mode-1": ModeChemistry(tolerance_ppm=5.0, labelled=False, profile="")}
+        assert siloxane(plan([foot, off])).n_links == 0
+        assert siloxane(plan([foot, off], chemistry=wide)).n_links == 1
+
+    def test_the_isotope_lines_window_is_the_mode_s(self):
+        # Two rungs' fainter peaks 4 ppm off their 13C lines: no lines in a
+        # 3 ppm window, so they link too; lines in a 5 ppm one.
+        bright = rungs(2, max_intensity=1000.0)
+        faint = [
+            anchor(f"c13-{k}", mz=(rung.mz + C13) * (1 + 4e-6), max_intensity=10.0)
+            for k, rung in enumerate(bright)
+        ]
+        wide = {"mode-1": ModeChemistry(tolerance_ppm=5.0, labelled=False, profile="")}
+        assert siloxane(plan(bright + faint)).n_links == 2
+        assert siloxane(plan(bright + faint, chemistry=wide)).n_links == 1
+
+    def test_the_ladders_take_the_plan_s_link_floor(self):
+        assert not siloxane(plan(rungs(3))).significant
+        assert siloxane(plan(rungs(3), min_links=2)).significant
+
+    def test_the_ladders_take_the_plan_s_enrichment_floor(self):
+        # One link over a decoy mean of 1/6: an enrichment of 6.
+        pair = [
+            anchor("x", mz=400.0),
+            anchor("y", mz=400.0 + SILOXANE.mass + DECOY_OFFSETS_DA[0]),
+        ]
+        anchors = rungs(2) + pair
+        assert siloxane(plan(anchors, min_links=1)).enrichment == pytest.approx(6.0)
+        assert not siloxane(plan(anchors, min_links=1)).significant
+        assert siloxane(plan(anchors, min_links=1, min_enrichment=6.0)).significant
+
+    def test_the_modes_are_listed_in_the_order_they_were_walked(self):
+        # A mode only linked, then one walked from an assigned anchor.
+        anchored = [
+            SimpleNamespace(**{**vars(a), "ionization_mode_id": "mode-2"})
+            for a in ladder_batch()
+        ]
+        both = {**CHEMISTRY, "mode-2": CHEMISTRY["mode-1"]}
+        result = plan(rungs(3) + anchored, chemistry=both)
+        assert list(result.evidence) == ["mode-2"]
+        assert result.modes_walked == ["mode-1", "mode-2"]
 
     def test_the_summary_lists_a_committed_unit_s_ladders(self):
         summary = ladder_summary(siloxane(plan(rungs(MIN_LINKS + 1))))
@@ -498,7 +620,7 @@ class TestTheOutcome:
         assert outcome["status"] == "partial"
         assert outcome["message"] == (
             "No series was walked: the batch has no batch peak left unassigned, "
-            "or held only at candidate, to reach."
+            "or held only at candidate or below assignability, to reach."
         )
 
     def test_a_ladder_is_named_after_the_families(self):
@@ -535,7 +657,8 @@ class TestTheOutcome:
         assert outcome["status"] == "success"
         assert outcome["message"] == (
             "No series was walked from an assigned batch peak: the batch has none "
-            "to walk from. By mass alone, the siloxane and fluorinated ladders "
+            "to walk from, or no batch peak unassigned or at candidate to step "
+            "onto. By mass alone, the siloxane and fluorinated ladders "
             "beat the decoys among the batch peaks nothing assigns: 20 batch "
             "peaks one unit apart, listed in the run's summary with no formula "
             "proposed."
@@ -547,7 +670,8 @@ class TestTheOutcome:
         )
         assert outcome["message"] == (
             "No series was walked from an assigned batch peak: the batch has none "
-            "to walk from. Nor did a siloxane or CF2 ladder beat the decoys by "
+            "to walk from, or no batch peak unassigned or at candidate to step "
+            "onto. Nor did a siloxane or CF2 ladder beat the decoys by "
             "mass alone among its batch peaks."
         )
 
