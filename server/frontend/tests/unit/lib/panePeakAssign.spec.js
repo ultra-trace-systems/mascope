@@ -643,6 +643,7 @@ describe('PanePeakAssign isotopologue stamping', () => {
       batch_diagnostic_isotopologues: {
         formula: 'C2H4O2',
         n_predicted: 2,
+        n_found: 1,
         n_stamped: 1,
         predicted: [
           { label: '81Br', stamped: true, judged: 6, holds: 6, share: 1, verdict: 'stamped' },
@@ -658,6 +659,23 @@ describe('PanePeakAssign isotopologue stamping', () => {
       /81Br: stamped, held in 6 of 6 samples .*18O: predicted, no batch peak at its mass\./
     )
     expect(stampLine(wrapper).exists()).toBe(false)
+  })
+
+  it('shows no count where the batch found none of the predicted lines', async () => {
+    focusedAssignment = { ...ROW, assigned_formula: 'C2H4O2' }
+    detailRecord = {
+      provenance: {},
+      batch_diagnostic_isotopologues: {
+        formula: 'C2H4O2',
+        n_predicted: 3,
+        n_found: 0,
+        n_stamped: 0,
+        predicted: [{ label: '81Br', stamped: false, reason: 'not_found', verdict: 'untestable' }]
+      }
+    }
+    const wrapper = await mountPane()
+
+    expect(recordLine(wrapper).exists()).toBe(false)
   })
 
   it('shows neither where the batch stamped nothing about the row', async () => {

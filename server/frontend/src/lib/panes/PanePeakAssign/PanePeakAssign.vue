@@ -600,9 +600,12 @@ const batchStampParent = computed(() => {
 function focusStampParent() {
   if (batchStampParent.value) app.data.peak.focus(batchStampParent.value)
 }
-const batchIsotopologues = computed(
-  () => focusedDetail.value?.batch_diagnostic_isotopologues ?? null
-)
+// A record is kept for every parent with a predicted line, found or not; like
+// the ledger's mark, the line shows only where the batch found one of them.
+const batchIsotopologues = computed(() => {
+  const record = focusedDetail.value?.batch_diagnostic_isotopologues
+  return record?.n_found ? record : null
+})
 
 // --- The other channels' peaks ------------------------------------------------
 // The badge names channels, which leaves the reader to find each one's peak in
