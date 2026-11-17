@@ -140,7 +140,9 @@ repository:
     "A": {"workspace": "<workspace>", "samples": ["<id>", "..."]},
     "E": {"workspace": "<workspace>", "batch": "<batch>", "dataset": "<dataset>",
           "instrument": "tof"},
-    "G": {"workspace": "<workspace>", "samples": ["..."], "sulfur_free": true}
+    "G": {"workspace": "<workspace>", "samples": ["..."], "sulfur_free": true},
+    "N": {"workspace": "<workspace>", "samples": ["..."], "instrument": "tof",
+          "truth": {"file": "truth/N.json"}}
   },
   "deny": ["<an instrument's name>", "<a site's name>"]
 }
@@ -159,7 +161,9 @@ every reference metric. A sample with no completed run of the first engine, or
 an empty ledger, is skipped and counted on the card's `samples_skipped` row. A
 set on which no sample is read keeps its column, every reading `-`, and fails
 the gate (`no sample read on D`): the bench could not read it, which is not a
-pass.
+pass. `truth` is the set's authors' list (below): the neutral formulas
+themselves, or `{"file": P}`, a JSON list of them at `P` relative to the
+manifest's folder.
 
 The tier reasons, the mass gate's record, the predicted envelope (3.4e) and
 the peak's separation (3.4f) are in each row's provenance. The ledger serves
@@ -207,6 +211,35 @@ A card reads a sample's arm only where its control is the run the card
 reads of that sample. An arm refused before it ran makes no run, so the
 newest arm the store keeps can be one an earlier build made against its own
 control: that arm is counted among the decoy arms not read.
+
+### An authors' list (`truth`)
+
+A set drawn from a published or shared study can come with the peak list its
+authors assigned. Its neutral formulas, the set's `truth`, are read against
+both engines, and the set's column gains seven rows after G14, none gated:
+
+| key | reading |
+|---|---|
+| `list_formulas` | the list's distinct formulas |
+| `list_held` | of the first engine's assigned monoisotopic formulas, the share the list holds |
+| `list_found` | of the list's formulas, the share the first engine assigns |
+| `list_found_candidate` | the same, at assigned or candidate |
+| `ref_list_held`, `ref_list_found`, `ref_list_found_candidate` | the same three for the reference, at its own tier (`engine_tier`, as G2 reads it), on the samples that carry its run |
+
+Formulas are compared by their element counts, as the join compares the two
+engines' (Hill order, `NO8C10H15` and `C10 H15 N O8` are one formula), and
+counted distinct over the set's samples: a formula two samples assign is one.
+A list's entry must be a neutral formula of element symbols and counts, with
+no charge, isotope or adduct; the manifest is refused otherwise, naming the
+entry's place in the list and never its text. The pooled column reads each set
+against its own list and adds the counts. The card names no formula.
+
+The lists are not exhaustive: the authors assigned what their study needed,
+so a formula off the list is not wrong, and the share of the list an engine
+finds is not a recall. These are readings: no target names them, and the card
+says so above its table. The list is read by this tool alone and never loaded
+into the instance: the in-app engine reads a batch's own target collections
+as known targets, so a list attached there would hand it the answers.
 
 `--baseline` diffs the card against a previous `card.json` (or a set's), in
 the columns both hold: every reading whose value or count differs, or that
