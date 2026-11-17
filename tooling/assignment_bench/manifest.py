@@ -25,14 +25,19 @@ the reference engine runs at::
       }
     }
 
-A file is named in one of two forms. ``{"bundle": V, "name": N}`` is the
+A file is named in one of three forms. ``{"bundle": V, "name": N}`` is the
 sample file ``N`` of the published demo bundle ``V``, read from the CLI's
 bundle cache (``mascope demo fetch``). ``{"sha256": H}`` is the fleet
 regression corpus object ``H``, read from a ``corpus checkout`` whose
-``manifest.json`` gives its name. A seed is ``{"bundle": V}``, the bundle's
-own ``seed/`` dump, or ``{"corpus": "seed.json"}``, the checkout's seed. The
-corpus forms belong in a private manifest kept beside the bench, never in
-the repository: the corpus's names and hashes are customer-derived.
+``manifest.json`` gives its name. ``{"path": P, "sha256": H}`` is a file
+kept in the manifest's own folder, at ``P`` relative to it, uploaded under
+its base name; ``resolve`` checks its hash. A seed is ``{"bundle": V}``, the
+bundle's own ``seed/`` dump, ``{"corpus": "seed.json"}``, the checkout's
+seed, or ``{"file": "seed.json"}``, a seed of the corpus seed's shape in the
+manifest's folder. The corpus forms and the folder forms belong in a private
+manifest kept beside the bench, never in the repository: the corpus's names
+and hashes are customer-derived, and a file in the folder is one the
+repository does not publish.
 
 This module only reads: it parses a manifest and resolves its files to paths.
 ``bench.py`` builds the instance from it.
@@ -43,8 +48,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass, field, replace
+from pathlib import Path, PurePosixPath
 from typing import Callable
 
 
@@ -97,7 +102,24 @@ class CorpusFile:
         return f"sha256:{self.sha256}"
 
 
-FileRef = BundleFile | CorpusFile
+@dataclass(frozen=True)
+class FolderFile:
+    """A file in the manifest's own folder, at a path relative to it.
+
+    Its key is its hash, as a corpus object's is: the hash is what the
+    instance finds the sample file by, so one file named in both forms is one
+    file.
+    """
+
+    path: str
+    sha256: str
+
+    @property
+    def key(self) -> str:
+        return f"sha256:{self.sha256}"
+
+
+FileRef = BundleFile | CorpusFile | FolderFile
 
 
 @dataclass(frozen=True)
@@ -105,15 +127,21 @@ class Seed:
     """Where a set's mode and collections are seeded from.
 
     ``bundle`` names a demo bundle whose ``seed/`` dump holds them;
-    ``corpus`` a seed file inside the corpus checkout. Exactly one is set.
+    ``corpus`` a seed file inside the corpus checkout; ``file`` a seed file
+    in the manifest's folder. Exactly one is set.
     """
 
     bundle: str | None = None
     corpus: str | None = None
+    file: str | None = None
 
     @property
     def key(self) -> str:
-        return f"bundle:{self.bundle}" if self.bundle else f"corpus:{self.corpus}"
+        if self.bundle:
+            return f"bundle:{self.bundle}"
+        if self.corpus:
+            return f"corpus:{self.corpus}"
+        return f"file:{self.file}"
 
 
 @dataclass(frozen=True)
@@ -152,6 +180,9 @@ class Manifest:
     description: str = ""
     corpus_checkout: str | None = None
     source: dict = field(default_factory=dict, compare=False, repr=False)
+    #: The folder the manifest was read from, which its folder files and
+    #: folder seed are relative to; None for one parsed from a JSON object.
+    folder: Path | None = field(default=None, compare=False)
 
     def files(self) -> list[tuple[str, FileRef]]:
         """Every file with its set's name, in manifest order."""
@@ -188,6 +219,27 @@ def _strings(value, where: str) -> tuple[str, ...]:
     return out
 
 
+def _sha256(value, where: str) -> str:
+    sha = _string(value, where)
+    _need(bool(SHA256.match(sha)), where, "sha256 must be 64 lower-case hex digits")
+    return sha
+
+
+def _in_folder(value, where: str) -> str:
+    """A path relative to the manifest's folder that stays inside it."""
+    path = _string(value, where)
+    parts = PurePosixPath(path).parts
+    _need(
+        "\\" not in path
+        and ":" not in path
+        and not PurePosixPath(path).is_absolute()
+        and ".." not in parts,
+        where,
+        "a path inside the manifest's folder, with forward slashes",
+    )
+    return path
+
+
 def _file(value, where: str) -> FileRef:
     _need(isinstance(value, dict), where, "must be an object")
     keys = set(value)
@@ -196,23 +248,33 @@ def _file(value, where: str) -> FileRef:
         _need("/" not in name and "\\" not in name, where, "a name, not a path")
         return BundleFile(_string(value["bundle"], f"{where}.bundle"), name)
     if keys == {"sha256"}:
-        sha = _string(value["sha256"], f"{where}.sha256")
-        _need(bool(SHA256.match(sha)), where, "sha256 must be 64 lower-case hex digits")
-        return CorpusFile(sha)
+        return CorpusFile(_sha256(value["sha256"], f"{where}.sha256"))
+    if keys == {"path", "sha256"}:
+        return FolderFile(
+            _in_folder(value["path"], f"{where}.path"),
+            _sha256(value["sha256"], f"{where}.sha256"),
+        )
     raise ManifestError(
-        f"{where}: a file is {{'bundle', 'name'}} or {{'sha256'}}, not {sorted(keys)}"
+        f"{where}: a file is {{'bundle', 'name'}}, {{'sha256'}} or "
+        f"{{'path', 'sha256'}}, not {sorted(keys)}"
     )
 
 
 def _seed(value, where: str) -> Seed:
-    _need(isinstance(value, dict) and len(value) == 1, where, "one of bundle, corpus")
+    _need(
+        isinstance(value, dict) and len(value) == 1,
+        where,
+        "one of bundle, corpus, file",
+    )
     ((kind, ref),) = value.items()
     if kind == "bundle":
         return Seed(bundle=_string(ref, f"{where}.bundle"))
     if kind == "corpus":
         return Seed(corpus=_string(ref, f"{where}.corpus"))
+    if kind == "file":
+        return Seed(file=_in_folder(ref, f"{where}.file"))
     raise ManifestError(
-        f"{where}: a seed is {{'bundle'}} or {{'corpus'}}, not {kind!r}"
+        f"{where}: a seed is {{'bundle'}}, {{'corpus'}} or {{'file'}}, not {kind!r}"
     )
 
 
@@ -327,7 +389,7 @@ def load(path: Path | str) -> Manifest:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise ManifestError(f"{path}: {error}") from None
-    return parse(data, where=str(path))
+    return replace(parse(data, where=str(path)), folder=path.resolve().parent)
 
 
 # --- resolving files ---
@@ -363,9 +425,11 @@ def resolve(
     :param bundle_dir: The cached bundle directory of a version (its
         ``manifest.json`` lists the raw files with their hashes).
     :param checkout: A ``corpus checkout``, for the corpus files.
-    :raises ManifestError: listing every file that was not found.
+    :raises ManifestError: listing every file that was not found, or every
+        folder file whose content is not the one the manifest names.
     """
     missing: list[str] = []
+    changed: list[str] = []
     bundles: dict[str, dict[str, str]] = {}
     index: dict[str, Path] | None = None
     out: dict[str, ResolvedFile] = {}
@@ -385,6 +449,24 @@ def resolve(
                 )
                 continue
             out[ref.key] = ResolvedFile(ref, path, ref.name, sha)
+        elif isinstance(ref, FolderFile):
+            if manifest.folder is None:
+                raise ManifestError(
+                    f"set {set_name} names files in the manifest's folder: "
+                    "load the manifest from its file"
+                )
+            path = manifest.folder / ref.path
+            if not path.is_file():
+                missing.append(
+                    f"set {set_name}: {ref.path} is not in {manifest.folder}"
+                )
+                continue
+            # Nothing else vouches for a file in a folder, as the bundle's
+            # listing and the corpus store's write-once objects do.
+            if file_sha256(path) != ref.sha256:
+                changed.append(f"set {set_name}: {ref.path}")
+                continue
+            out[ref.key] = ResolvedFile(ref, path, path.name, ref.sha256)
         else:
             if checkout is None:
                 raise ManifestError(
@@ -404,4 +486,18 @@ def resolve(
         raise ManifestError(
             f"{len(missing)} file(s) not found:\n  " + "\n  ".join(missing)
         )
+    if changed:
+        raise ManifestError(
+            f"{len(changed)} file(s) hash to something other than the manifest "
+            "says:\n  " + "\n  ".join(changed)
+        )
     return out
+
+
+def file_sha256(path: Path) -> str:
+    """A file's SHA-256, as lower-case hex."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 22), b""):
+            digest.update(block)
+    return digest.hexdigest()

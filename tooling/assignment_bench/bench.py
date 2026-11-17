@@ -1631,6 +1631,12 @@ class Bench:
                 continue
             if seed_ref.bundle:
                 full = self.instance.bundle_seed(seed_ref.bundle)
+            elif seed_ref.file:
+                if m.folder is None:
+                    raise BenchError(f"seed {key} needs the manifest's folder")
+                full = json.loads(
+                    (m.folder / seed_ref.file).read_text(encoding="utf-8")
+                )
             else:
                 if checkout is None:
                     raise BenchError(f"seed {key} needs a corpus checkout")
