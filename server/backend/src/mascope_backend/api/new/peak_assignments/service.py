@@ -88,8 +88,10 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     resolve_candidate,
     row_batch_checks,
     row_co_variation,
+    row_diagnostic_isotopologues,
     row_flat_series,
     row_persistence,
+    row_stamped_isotopologue_of,
     standing_series_record,
 )
 from mascope_backend.api.new.peak_assignments.calibration_store import (
@@ -1040,6 +1042,31 @@ async def _batch_peak_of(
     ).scalar_one_or_none()
 
 
+async def _with_isotopologue_records(
+    session, row: dict, anchor: BatchPeak | None
+) -> None:
+    """Put the batch's isotopologue stamping records on a sample's detail row.
+
+    ``batch_stamped_isotopologue_of``: the stamp on the member the row's peak
+    is, with the parent's peak in this sample (``parent_sample_peak_id``) so
+    the inspector can focus it; None where the peak carries no stamp there.
+    ``batch_diagnostic_isotopologues``: the parent's own record, on a
+    monoisotopic row that reads it (:func:`row_diagnostic_isotopologues`).
+    """
+    stamp = row_stamped_isotopologue_of(row, anchor)
+    if stamp is not None:
+        stamp["parent_sample_peak_id"] = (
+            await session.execute(
+                select(BatchPeakOccurrence.sample_peak_id).where(
+                    BatchPeakOccurrence.batch_peak_id == stamp["batch_peak_id"],
+                    BatchPeakOccurrence.sample_item_id == row.get("sample_item_id"),
+                )
+            )
+        ).scalar_one_or_none()
+    row["batch_stamped_isotopologue_of"] = stamp
+    row["batch_diagnostic_isotopologues"] = row_diagnostic_isotopologues(row, anchor)
+
+
 @api_controller()
 async def get_peak_assignment_detail(
     sample_item_id: str,
@@ -1074,6 +1101,7 @@ async def get_peak_assignment_detail(
             derived["batch_checks"] = row_batch_checks(derived, found[1])
             derived["batch_persistence"] = row_persistence(derived, found[1])
             derived["batch_flat_series"] = row_flat_series(derived, found[1])
+            await _with_isotopologue_records(session, derived, found[1])
         else:
             derived = None
             assignment = await session.get(PeakAssignment, peak_assignment_id)
@@ -1090,6 +1118,7 @@ async def get_peak_assignment_detail(
             record["batch_checks"] = row_batch_checks(record, anchor)
             record["batch_persistence"] = row_persistence(record, anchor)
             record["batch_flat_series"] = row_flat_series(record, anchor)
+            await _with_isotopologue_records(session, record, anchor)
             run = await session.get(
                 PeakAssignmentRun, assignment.peak_assignment_run_id
             )

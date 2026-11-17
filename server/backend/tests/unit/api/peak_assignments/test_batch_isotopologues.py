@@ -39,6 +39,8 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     member_stamp,
     resolution_adaptive_tol_ppm,
     resolution_from_tol_ppm,
+    row_diagnostic_isotopologues,
+    row_stamped_isotopologue_of,
     stamped_isotopologue_of_record,
     stamped_isotopologue_of_summary,
     stamped_lines,
@@ -677,6 +679,74 @@ def test_the_summary_leaves_the_stamps_to_the_members():
     assert "stamps" not in summary
     assert summary["batch_peak_id"] == "p"
     assert summary["share"] == 1.0
+
+
+@pytest.mark.parametrize(
+    "sample, role, source",
+    [
+        ("s0", "M0", STAMP_PICKER),
+        ("s1", "unassigned", STAMP_PREDICTED),
+        ("s1", "iso_child", STAMP_PREDICTED),
+        ("s9", "M0", None),
+    ],
+)
+def test_a_samples_row_carries_its_members_stamp_whatever_it_reads(
+    sample, role, source
+):
+    """The stamp is about the peak: a row that assigned it a formula of its
+    own, or none, shows it alike, in the samples it was stamped in only."""
+    anchor = {"provenance": {STAMPED_ISOTOPOLOGUE_OF_KEY: _LINE_RECORD}}
+    row = {"sample_item_id": sample, "role": role, "assigned_formula": "Z"}
+    served = row_stamped_isotopologue_of(row, anchor)
+    if source is None:
+        assert served is None
+        return
+    assert served == {
+        "batch_peak_id": "p",
+        "formula": "A",
+        "label": "81Br",
+        "share": 1.0,
+        "stamp_source": source,
+    }
+    assert row_stamped_isotopologue_of(row, None) is None
+
+
+@pytest.mark.parametrize(
+    "role, formula, mechanism, served",
+    [
+        ("M0", "A", "m", True),
+        ("iso_child", "A", "m", False),
+        ("M0", "B", "m", False),
+        ("M0", "A", "n", False),
+    ],
+)
+def test_a_monoisotopic_row_reading_the_parent_carries_its_record(
+    role, formula, mechanism, served
+):
+    anchor = {
+        "provenance": {DIAGNOSTIC_ISOTOPOLOGUES_KEY: _PARENT_RECORD},
+        "consensus_formula": "A",
+        "ionization_mechanism_id": "m",
+    }
+    row = {
+        "role": role,
+        "assigned_formula": formula,
+        "ionization_mechanism_id": mechanism,
+    }
+    assert row_diagnostic_isotopologues(row, anchor) == (
+        _PARENT_RECORD if served else None
+    )
+    assert row_diagnostic_isotopologues(row, None) is None
+
+
+def test_no_record_on_a_row_once_the_parent_reads_otherwise():
+    anchor = {
+        "provenance": {DIAGNOSTIC_ISOTOPOLOGUES_KEY: _PARENT_RECORD},
+        "consensus_formula": "B",
+        "ionization_mechanism_id": "m",
+    }
+    row = {"role": "M0", "assigned_formula": "A", "ionization_mechanism_id": "m"}
+    assert row_diagnostic_isotopologues(row, anchor) is None
 
 
 @pytest.mark.parametrize("resolution", [3000.0, 60000.0, 240000.0])

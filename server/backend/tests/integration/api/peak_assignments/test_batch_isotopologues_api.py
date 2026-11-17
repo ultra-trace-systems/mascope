@@ -43,7 +43,10 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     complete_run,
     start_run,
 )
-from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
+from mascope_backend.api.new.peak_assignments.fold_view import (
+    fold_assignment_id,
+    fold_run_id,
+)
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakRun,
@@ -581,6 +584,76 @@ async def test_the_ledger_and_the_member_rows_serve_it_and_an_earlier_run_keeps_
     assert other[ids["x"]]["stamped_isotopologue_of"] == ids["p2"]
     assert other[ids["y"]]["stamped_isotopologue_of"] is None
     assert other[ids["p"]]["stamp_source"] is None
+
+
+async def test_the_inspector_serves_a_samples_stamp_and_the_parents_record(
+    guest_client, async_session_factory, isotopologue_batch
+):
+    """The assignment detail carries the stamp of the member the row's peak
+    is, on a run's row and on a row derived from the ledger, with the
+    parent's peak in that sample; and the parent's record on a monoisotopic
+    row reading it."""
+    batch_id, samples = isotopologue_batch["batch_id"], isotopologue_batch["samples"]
+    await run_batch_isotopologues(batch_id, batch_peak_run_id="run-stamp")
+    anchors = await _anchors(async_session_factory, batch_id)
+    ids = {key: anchor.batch_peak_id for key, anchor in anchors.items()}
+
+    async def detail(name, peak_assignment_id):
+        response = await guest_client.get(
+            f"/api/peak-assignments/sample/{samples[name]}/assignment/"
+            f"{peak_assignment_id}"
+        )
+        assert response.status_code == 200, response.text
+        [row] = response.json()["data"]
+        return row
+
+    async with async_session_factory() as session:
+        run_rows = {
+            peak_id: assignment_id
+            for peak_id, assignment_id in (
+                await session.execute(
+                    select(
+                        PeakAssignment.sample_peak_id,
+                        PeakAssignment.peak_assignment_id,
+                    ).where(PeakAssignment.sample_item_id == samples[RUN_SAMPLE])
+                )
+            ).all()
+        }
+
+    # The run's own row: a peak it left unassigned, which the batch stamped.
+    own = await detail(RUN_SAMPLE, run_rows["line"])
+    stamp = own["batch_stamped_isotopologue_of"]
+    assert stamp["batch_peak_id"] == ids["p"]
+    assert stamp["label"] == "81Br"
+    assert stamp["formula"] == "C2H4O2"
+    assert stamp["stamp_source"] == STAMP_PREDICTED
+    assert stamp["share"] == 1.0
+    assert stamp["parent_sample_peak_id"] == "p"
+    assert "stamps" not in stamp
+    assert own["batch_diagnostic_isotopologues"] is None
+
+    # A row derived from the ledger: a peak the sample assigned a formula of
+    # its own, which the batch reads as another compound's isotope line.
+    derived = await detail("S04", fold_assignment_id(ids["x"]))
+    assert derived["assigned_formula"] == "C5H8O3"
+    assert derived["batch_stamped_isotopologue_of"]["batch_peak_id"] == ids["p2"]
+    assert derived["batch_stamped_isotopologue_of"]["parent_sample_peak_id"] == "p2"
+    picked = await detail(PICKER_SAMPLES[0], fold_assignment_id(ids["line"]))
+    assert picked["batch_stamped_isotopologue_of"]["stamp_source"] == STAMP_PICKER
+
+    # The parent's record, on its monoisotopic rows; no stamp on them.
+    parent = await detail(RUN_SAMPLE, run_rows["p"])
+    record = parent["batch_diagnostic_isotopologues"]
+    assert record == _parent(anchors["p"])
+    assert parent["batch_stamped_isotopologue_of"] is None
+    derived_parent = await detail("S04", fold_assignment_id(ids["p2"]))
+    assert derived_parent["batch_diagnostic_isotopologues"] == _parent(anchors["p2"])
+    # A line whose ratio did not hold is stamped for no one; it is a parent of
+    # its own, whose record says it stamped nothing.
+    third = await detail("S04", fold_assignment_id(ids["y"]))
+    assert third["batch_stamped_isotopologue_of"] is None
+    assert third["batch_diagnostic_isotopologues"] == _parent(anchors["y"])
+    assert third["batch_diagnostic_isotopologues"]["n_stamped"] == 0
 
 
 async def test_the_route_runs_it_as_a_batch_run(
