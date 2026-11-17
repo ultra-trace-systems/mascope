@@ -1,0 +1,255 @@
+{
+ "reagent": "bromide",
+ "polarity": "-",
+ "axis": {
+  "mode": 0,
+  "par": [
+   10866.490214115976,
+   -34362.85775362934
+  ]
+ },
+ "params": {
+  "refine_window": 100.0,
+  "mz_error_tolerance": 15.0
+ },
+ "calibrants": [
+  {
+   "ion": "Br-",
+   "isotope": "Br-",
+   "mz": 78.91888667990906,
+   "relative_abundance": 0.5068988961766118
+  },
+  {
+   "ion": "Br-",
+   "isotope": "[81Br]-",
+   "mz": 80.91683867990906,
+   "relative_abundance": 0.49310110382338823
+  },
+  {
+   "ion": "Br2-",
+   "isotope": "Br2-",
+   "mz": 157.83722477990906,
+   "relative_abundance": 0.2569464909450674
+  },
+  {
+   "ion": "Br2-",
+   "isotope": "[81Br]Br-",
+   "mz": 159.83517677990906,
+   "relative_abundance": 0.4999048104630887
+  },
+  {
+   "ion": "Br2-",
+   "isotope": "[81Br]2-",
+   "mz": 161.83312877990906,
+   "relative_abundance": 0.2431486985918439
+  },
+  {
+   "ion": "Br3-",
+   "isotope": "Br3-",
+   "mz": 236.75556287990906,
+   "relative_abundance": 0.13024589263650843
+  },
+  {
+   "ion": "Br3-",
+   "isotope": "[81Br]Br2-",
+   "mz": 238.75351487990906,
+   "relative_abundance": 0.3801017949256769
+  },
+  {
+   "ion": "Br3-",
+   "isotope": "[81Br]2Br-",
+   "mz": 240.75146687990906,
+   "relative_abundance": 0.369755420768956
+  },
+  {
+   "ion": "Br3-",
+   "isotope": "[81Br]3-",
+   "mz": 242.74941887990906,
+   "relative_abundance": 0.11989689166885854
+  }
+ ],
+ "peaks": [
+  {
+   "tof": 62170.90246779025,
+   "mz": 78.91868864961884,
+   "area": 1541.2957664630096,
+   "timeseries_stored": true,
+   "sum_area": 55486.64759266835,
+   "sum_height": 35232.91015625,
+   "snr": 3489.521728515625,
+   "polarity": "-",
+   "weak": false,
+   "satellite": false,
+   "resolution": 8286.558168516793
+  },
+  {
+   "tof": 63385.16517273604,
+   "mz": 80.91655370450677,
+   "area": 1498.074976320545,
+   "timeseries_stored": true,
+   "sum_area": 53930.699147539606,
+   "sum_height": 33900.2109375,
+   "snr": 3902.47998046875,
+   "polarity": "-",
+   "weak": false,
+   "satellite": false,
+   "resolution": 8307.603275207512
+  },
+  {
+   "tof": 102156.07029631296,
+   "mz": 157.83639484269239,
+   "area": 17.24960507736924,
+   "timeseries_stored": true,
+   "sum_area": 620.9857827852926,
+   "sum_height": 293.8610534667969,
+   "snr": 1248.1072998046875,
+   "polarity": "-",
+   "weak": false,
+   "satellite": false,
+   "resolution": 8734.641725155272
+  },
+  {
+   "tof": 103017.42663968785,
+   "mz": 159.83439286231285,
+   "area": 33.28371970881606,
+   "timeseries_stored": true,
+   "sum_area": 1198.2139095173784,
+   "sum_height": 563.6767578125,
+   "snr": 2048.67138671875,
+   "polarity": "-",
+   "weak": false,
+   "satellite": false,
+   "resolution": 8740.549906332848
+  },
+  {
+   "tof": 103873.3484335192,
+   "mz": 161.8322328284111,
+   "area": 16.10185484371881,
+   "timeseries_stored": true,
+   "sum_area": 579.6667743738772,
+   "sum_height": 270.9732666015625,
+   "snr": 970.363525390625,
+   "polarity": "-",
+   "weak": false,
+   "satellite": false,
+   "resolution": 8746.319454643444
+  },
+  {
+   "tof": 132837.9388231197,
+   "mz": 236.75442121174945,
+   "area": 156.2871225643464,
+   "timeseries_stored": true,
+   "sum_area": 5626.33641231647,
+   "sum_height": 2214.078369140625,
+   "snr": 2857.6875,
+   "polarity": "-",
+   "weak": false,
+   "satellite": false,
+   "resolution": 8894.971021079691
+  },
+  {
+   "tof": 133541.93930443507,
+   "mz": 238.75233179217864,
+   "area": 462.9170558053235,
+   "timeseries_stored": true,
+   "sum_area": 16665.014008991646,
+   "sum_height": 6533.07861328125,
+   "snr": 3842.68505859375,
+   "polarity": "-",
+   "weak": false,
+   "satellite": false,
+   "resolution": 8897.70443326752
+  },
+  {
+   "tof": 134243.0128354895,
+   "mz": 240.7502781345719,
+   "area": 449.42918475470475,
+   "timeseries_stored": true,
+   "sum_area": 16179.450651169369,
+   "sum_height": 6316.8857421875,
+   "snr": 3154.256591796875,
+   "polarity": "-",
+   "weak": false,
+   "satellite": false,
+   "resolution": 8900.394164607833
+  },
+  {
+   "tof": 134941.21063011873,
+   "mz": 242.74830283165258,
+   "area": 142.12561419939757,
+   "timeseries_stored": true,
+   "sum_area": 5116.522111178314,
+   "sum_height": 1991.8326416015625,
+   "snr": 2273.58349609375,
+   "polarity": "-",
+   "weak": false,
+   "satellite": false,
+   "resolution": 8903.041309834032
+  }
+ ],
+ "fit": {
+  "mode": 0,
+  "par": [
+   10866.44791217437,
+   -34362.648216133835
+  ],
+  "points": [
+   {
+    "ion": "Br-",
+    "target_mz": 78.91888667990906,
+    "tof": 62170.90246779025,
+    "observed_mz": 78.91868689046565,
+    "residual_ppm": 0.9352513761404997,
+    "retained": true
+   },
+   {
+    "ion": "Br-",
+    "target_mz": 80.91683867990906,
+    "tof": 63385.16517273604,
+    "observed_mz": 80.91655611025787,
+    "residual_ppm": -0.0233653378399345,
+    "retained": true
+   },
+   {
+    "ion": "Br2-",
+    "target_mz": 157.83722477990906,
+    "tof": 102156.07029631296,
+    "observed_mz": 157.8363904577571,
+    "residual_ppm": -0.5421461103589781,
+    "retained": true
+   },
+   {
+    "ion": "Br2-",
+    "target_mz": 159.83517677990906,
+    "tof": 103017.42663968785,
+    "observed_mz": 159.834394061776,
+    "residual_ppm": -0.16925073593698653,
+    "retained": true
+   },
+   {
+    "ion": "Br2-",
+    "target_mz": 161.83312877990906,
+    "tof": 103873.3484335192,
+    "observed_mz": 161.832234349494,
+    "residual_ppm": -0.7820961698630425,
+    "retained": true
+   },
+   {
+    "ion": "Br3-",
+    "target_mz": 238.75351487990906,
+    "tof": 133541.93930443507,
+    "observed_mz": 238.75233017921335,
+    "residual_ppm": 0.3345845118915508,
+    "retained": true
+   },
+   {
+    "ion": "Br3-",
+    "target_mz": 240.75146687990906,
+    "tof": 134243.0128354895,
+    "observed_mz": 240.75028076532803,
+    "residual_ppm": 0.3625858380015986,
+    "retained": true
+   }
+  ]
+ }
+}

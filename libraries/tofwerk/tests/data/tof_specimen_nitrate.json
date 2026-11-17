@@ -1,0 +1,381 @@
+{
+ "reagent": "nitrate",
+ "polarity": "-",
+ "axis": {
+  "mode": 0,
+  "par": [
+   2832.477624403464,
+   -8957.365802439183
+  ]
+ },
+ "params": {
+  "refine_window": 100.0,
+  "mz_error_tolerance": 15.0
+ },
+ "calibrants": [
+  {
+   "ion": "NO3-",
+   "isotope": "NO3-",
+   "mz": 61.988366444709065,
+   "relative_abundance": 0.9891050905311541
+  },
+  {
+   "ion": "NO3-",
+   "isotope": "NO3-",
+   "mz": 61.988366444709065,
+   "relative_abundance": 0.9891050905311541
+  },
+  {
+   "ion": "NO3-",
+   "isotope": "[15N]O3-",
+   "mz": 62.98540133990906,
+   "relative_abundance": 0.0036154738335208094
+  },
+  {
+   "ion": "NO3-",
+   "isotope": "[15N]O3-",
+   "mz": 62.98540133990906,
+   "relative_abundance": 0.0036154738335208094
+  },
+  {
+   "ion": "NO3-",
+   "isotope": "[17O]NO2-",
+   "mz": 62.99258358210906,
+   "relative_abundance": 0.001133299222308563
+  },
+  {
+   "ion": "NO3-",
+   "isotope": "[17O]NO2-",
+   "mz": 62.99258358210906,
+   "relative_abundance": 0.001133299222308563
+  },
+  {
+   "ion": "NO3-",
+   "isotope": "[18O]NO2-",
+   "mz": 63.99261143820907,
+   "relative_abundance": 0.00610196856861886
+  },
+  {
+   "ion": "NO3-",
+   "isotope": "[18O]NO2-",
+   "mz": 63.99261143820907,
+   "relative_abundance": 0.00610196856861886
+  },
+  {
+   "ion": "NO3-",
+   "isotope": "[15N][18O]O2-",
+   "mz": 64.98964633340907,
+   "relative_abundance": 2.2304513346464307e-05
+  },
+  {
+   "ion": "NO3-",
+   "isotope": "[15N][18O]O2-",
+   "mz": 64.98964633340907,
+   "relative_abundance": 2.2304513346464307e-05
+  },
+  {
+   "ion": "NO3-",
+   "isotope": "[18O]2NO-",
+   "mz": 65.99685643170906,
+   "relative_abundance": 1.2548050006300025e-05
+  },
+  {
+   "ion": "NO3-",
+   "isotope": "[18O]2NO-",
+   "mz": 65.99685643170906,
+   "relative_abundance": 1.2548050006300025e-05
+  },
+  {
+   "ion": "HN2O6-",
+   "isotope": "HN2O6-",
+   "mz": 124.98400934177906,
+   "relative_abundance": 0.9782156778406714
+  },
+  {
+   "ion": "HN2O6-",
+   "isotope": "HN2O6-",
+   "mz": 124.98400934177906,
+   "relative_abundance": 0.9782156778406714
+  },
+  {
+   "ion": "HN2O6-",
+   "isotope": "[15N]HNO6-",
+   "mz": 125.98104423697906,
+   "relative_abundance": 0.007151339570749833
+  },
+  {
+   "ion": "HN2O6-",
+   "isotope": "[15N]HNO6-",
+   "mz": 125.98104423697906,
+   "relative_abundance": 0.007151339570749833
+  },
+  {
+   "ion": "HN2O6-",
+   "isotope": "[17O]HN2O5-/[2H]N2O6-",
+   "mz": 125.9883254887434,
+   "relative_abundance": 0.0023548469233812407
+  },
+  {
+   "ion": "HN2O6-",
+   "isotope": "[17O]HN2O5-/[2H]N2O6-",
+   "mz": 125.9883254887434,
+   "relative_abundance": 0.0023548469233812407
+  },
+  {
+   "ion": "HN2O6-",
+   "isotope": "[15N]2HO6-/[15N][17O]HNO5-/[18O]HN2O5-",
+   "mz": 126.9882392895175,
+   "relative_abundance": 0.012099037513087529
+  },
+  {
+   "ion": "HN2O6-",
+   "isotope": "[15N]2HO6-/[15N][17O]HNO5-/[18O]HN2O5-",
+   "mz": 126.9882392895175,
+   "relative_abundance": 0.012099037513087529
+  },
+  {
+   "ion": "HN2O6-",
+   "isotope": "[15N][18O]HNO5-",
+   "mz": 127.98528923047907,
+   "relative_abundance": 8.823581983751068e-05
+  },
+  {
+   "ion": "HN2O6-",
+   "isotope": "[15N][18O]HNO5-",
+   "mz": 127.98528923047907,
+   "relative_abundance": 8.823581983751068e-05
+  },
+  {
+   "ion": "HN2O6-",
+   "isotope": "[17O][18O]HN2O4-",
+   "mz": 127.99247147267906,
+   "relative_abundance": 2.3048520195445113e-05
+  },
+  {
+   "ion": "HN2O6-",
+   "isotope": "[17O][18O]HN2O4-",
+   "mz": 127.99247147267906,
+   "relative_abundance": 2.3048520195445113e-05
+  },
+  {
+   "ion": "HN2O6-",
+   "isotope": "[18O]2HN2O4-",
+   "mz": 128.99249932877908,
+   "relative_abundance": 6.204952011671402e-05
+  },
+  {
+   "ion": "HN2O6-",
+   "isotope": "[18O]2HN2O4-",
+   "mz": 128.99249932877908,
+   "relative_abundance": 6.204952011671402e-05
+  },
+  {
+   "ion": "H2N3O9-",
+   "isotope": "H2N3O9-",
+   "mz": 187.97965223884907,
+   "relative_abundance": 0.9674461506000548
+  },
+  {
+   "ion": "H2N3O9-",
+   "isotope": "[15N]H2N2O9-/[17O]H2N3O8-/[2H]HN3O9-",
+   "mz": 188.97852023460746,
+   "relative_abundance": 0.014158272211112488
+  },
+  {
+   "ion": "H2N3O9-",
+   "isotope": "[15N]2H2NO9-/[15N][17O]H2N2O8-/[18O]H2N3O8-",
+   "mz": 189.98386921699753,
+   "relative_abundance": 0.0179802971762701
+  },
+  {
+   "ion": "H2N3O9-",
+   "isotope": "[15N][18O]H2N2O8-/[17O][18O]H2N3O7-",
+   "mz": 190.9824972280351,
+   "relative_abundance": 0.0002510523499620867
+  },
+  {
+   "ion": "H2N3O9-",
+   "isotope": "[18O]2H2N3O7-",
+   "mz": 191.98814222584906,
+   "relative_abundance": 0.00014727934726870717
+  }
+ ],
+ "peaks": [
+  {
+   "tof": 13342.594063841492,
+   "mz": 61.98337034961335,
+   "area": 7983.111560201447,
+   "timeseries_stored": true,
+   "sum_area": 39915.557801007235,
+   "sum_height": 16643.5859375,
+   "snr": 7692.337890625,
+   "polarity": "-",
+   "weak": false,
+   "satellite": false,
+   "resolution": 3125.5219951501854
+  },
+  {
+   "tof": 13521.45306745027,
+   "mz": 62.98164507642111,
+   "area": 37.562972900844294,
+   "timeseries_stored": true,
+   "sum_area": 187.81486450422148,
+   "sum_height": 78.29875946044922,
+   "snr": 106.98336791992188,
+   "polarity": "-",
+   "weak": false,
+   "satellite": false,
+   "resolution": 3141.72412407023
+  },
+  {
+   "tof": 13700.329857807958,
+   "mz": 63.98799504551703,
+   "area": 54.95975584718799,
+   "timeseries_stored": true,
+   "sum_area": 274.79877923593995,
+   "sum_height": 113.8661117553711,
+   "snr": 270.46112060546875,
+   "polarity": "-",
+   "weak": false,
+   "satellite": false,
+   "resolution": 3157.708556278519
+  },
+  {
+   "tof": 22707.530474855055,
+   "mz": 124.97500534665488,
+   "area": 6082.186208541985,
+   "timeseries_stored": true,
+   "sum_area": 30410.931042709926,
+   "sum_height": 10751.740234375,
+   "snr": 6823.6064453125,
+   "polarity": "-",
+   "weak": false,
+   "satellite": false,
+   "resolution": 3738.6353661598996
+  },
+  {
+   "tof": 22833.901205865583,
+   "mz": 125.9745157809388,
+   "area": 61.348874702450914,
+   "timeseries_stored": true,
+   "sum_area": 306.7443735122546,
+   "sum_height": 107.90634155273438,
+   "snr": 274.8612976074219,
+   "polarity": "-",
+   "weak": false,
+   "satellite": false,
+   "resolution": 3744.3698443837766
+  },
+  {
+   "tof": 22960.374333240496,
+   "mz": 126.97882192406713,
+   "area": 78.80869254179437,
+   "timeseries_stored": true,
+   "sum_area": 394.04346270897184,
+   "sum_height": 138.2222900390625,
+   "snr": 343.5330810546875,
+   "polarity": "-",
+   "weak": false,
+   "satellite": false,
+   "resolution": 3750.058235735513
+  },
+  {
+   "tof": 23086.05182694406,
+   "mz": 127.98075993306487,
+   "area": 1.646881122439218,
+   "timeseries_stored": false,
+   "sum_area": 8.23440561219609,
+   "sum_height": 2.8676223754882812,
+   "snr": 7.578811168670654,
+   "polarity": "-",
+   "weak": false,
+   "satellite": false,
+   "resolution": 3755.661097015915
+  },
+  {
+   "tof": 29876.194304120727,
+   "mz": 187.96692553677047,
+   "area": 228.45126035685274,
+   "timeseries_stored": true,
+   "sum_area": 1142.2563017842638,
+   "sum_height": 351.36663818359375,
+   "snr": 1806.363525390625,
+   "polarity": "-",
+   "weak": false,
+   "satellite": false,
+   "resolution": 3997.200445583472
+  },
+  {
+   "tof": 29978.673342458267,
+   "mz": 188.9602975650789,
+   "area": 3.767562716985266,
+   "timeseries_stored": true,
+   "sum_area": 18.837813584926334,
+   "sum_height": 5.7855939865112305,
+   "snr": 46.429927825927734,
+   "polarity": "-",
+   "weak": false,
+   "satellite": false,
+   "resolution": 4000.085843752485
+  },
+  {
+   "tof": 30082.61485269067,
+   "mz": 189.9705202358944,
+   "area": 3.889301935720632,
+   "timeseries_stored": true,
+   "sum_area": 19.44650967860316,
+   "sum_height": 5.958784103393555,
+   "snr": 47.819793701171875,
+   "polarity": "-",
+   "weak": false,
+   "satellite": false,
+   "resolution": 4002.9934467869098
+  },
+  {
+   "tof": 30290.649250706563,
+   "mz": 192.00052636691765,
+   "area": 0.42918034288255213,
+   "timeseries_stored": true,
+   "sum_area": 2.145901714412761,
+   "sum_height": 0.6550008058547974,
+   "snr": 5.256442070007324,
+   "polarity": "-",
+   "weak": false,
+   "satellite": false,
+   "resolution": 4008.756117730808
+  }
+ ],
+ "fit": {
+  "mode": 0,
+  "par": [
+   2832.406276504667,
+   -8957.704599324803
+  ],
+  "points": [
+   {
+    "ion": "NO3-",
+    "target_mz": 61.988366444709065,
+    "tof": 13342.594063841492,
+    "observed_mz": 61.98337002188513,
+    "residual_ppm": 0.16371680106915398,
+    "retained": true
+   },
+   {
+    "ion": "HN2O6-",
+    "target_mz": 124.98400934177906,
+    "tof": 22707.530474855055,
+    "observed_mz": 124.97500641994462,
+    "residual_ppm": -0.2659197976149541,
+    "retained": true
+   },
+   {
+    "ion": "H2N3O9-",
+    "target_mz": 187.97965223884907,
+    "tof": 29876.194304120727,
+    "observed_mz": 187.96692479120884,
+    "residual_ppm": 0.12281748994877985,
+    "retained": true
+   }
+  ]
+ }
+}
