@@ -1512,9 +1512,10 @@ class Bench:
         if checkout is None and m.corpus_checkout:
             checkout = Path(m.corpus_checkout).expanduser()
         files = bench_manifest.resolve(m, self.bundle_dir, checkout)
-        # Read before anything starts, so a list that is not one stops init
-        # here; kept in the state alone, never seeded into the instance.
-        truth = bench_manifest.read_truth(m)
+        # Read before anything starts, by the card's own rule for an entry,
+        # so a list the card would refuse stops init here; kept in the state
+        # alone, never seeded into the instance.
+        truth = bench_manifest.read_truth(m, bench_run._compare_module().truth_key)
         self.home.make()
         state = load_state(self.home, self.instance.env)
         if rebuild:

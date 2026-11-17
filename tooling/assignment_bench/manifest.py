@@ -42,10 +42,11 @@ repository does not publish.
 A set may name an authors' list, ``"truth": {"file": P, "sha256": H}``: a
 JSON list of the neutral formulas a study's authors published for the set's
 data, at ``P`` in the manifest's folder, checked by its hash as a folder file
-is. ``read_truth`` reads it; ``bench.py`` keeps it in the bench's state and
-hands it to the card, which reads both engines against it. It is never
-seeded into the instance: the engine reads a batch's own target collections
-as known targets, so a list loaded there would hand it the answers.
+is. ``read_truth`` reads it by the card's own rule for an entry;
+``bench.py`` keeps its distinct formulas in the bench's state and hands
+them to the card, which reads both engines against them. It is never seeded
+into the instance: the engine reads a batch's own target collections as
+known targets, so a list loaded there would hand it the answers.
 
 This module only reads: it parses a manifest and resolves its files to paths.
 ``bench.py`` builds the instance from it.
@@ -82,11 +83,6 @@ _SET_KEYS = {
     "files",
     "truth",
 }
-
-#: A neutral formula as an authors' list writes one: element symbols and their
-#: counts, in any order, with no charge, isotope or adduct. Spaces are dropped
-#: before it is matched (``C10 H16 O3``).
-NEUTRAL_FORMULA = re.compile(r"^(?:[A-Z][a-z]?\d*)+$")
 
 
 class ManifestError(ValueError):
@@ -533,11 +529,17 @@ def resolve(
     return out
 
 
-def read_truth(manifest: Manifest) -> dict[str, dict]:
+def read_truth(
+    manifest: Manifest, key: Callable[[object], str | None]
+) -> dict[str, dict]:
     """Every set's authors' list, read from the manifest's folder.
 
-    :return: Set name -> ``{"sha256": H, "formulas": [...]}``, the formulas as
-        the file writes them, spaces dropped, for each set that names a list.
+    :param key: The card's rule for an entry (``compare_runs.truth_key``):
+        its key by element counts, or None for anything but a neutral
+        formula. Taken from the card, so a list ``init`` keeps is one the
+        card reads, and two spellings of one neutral count once.
+    :return: Set name -> ``{"sha256": H, "formulas": [...]}``, the list's
+        distinct keys, sorted, for each set that names a list.
     :raises ManifestError: Listing every list that is missing, whose content
         is not the one the manifest names, or that is not a non-empty list of
         neutral formulas. An entry is named by its place, never its text.
@@ -572,18 +574,18 @@ def read_truth(manifest: Manifest) -> dict[str, dict]:
                 f"set {s.name}: {s.truth.file} is not a list of neutral formulas"
             )
             continue
-        formulas = []
+        formulas = set()
         for i, value in enumerate(values):
-            text = re.sub(r"\s+", "", value) if isinstance(value, str) else ""
-            if not NEUTRAL_FORMULA.match(text):
+            formula = key(value)
+            if formula is None:
                 problems.append(
                     f"set {s.name}: {s.truth.file}[{i}] is not a neutral formula "
                     "of element symbols and counts"
                 )
                 break
-            formulas.append(text)
+            formulas.add(formula)
         else:
-            out[s.name] = {"sha256": s.truth.sha256, "formulas": formulas}
+            out[s.name] = {"sha256": s.truth.sha256, "formulas": sorted(formulas)}
     if problems:
         raise ManifestError(
             f"{len(problems)} authors' list(s) not read:\n  " + "\n  ".join(problems)
