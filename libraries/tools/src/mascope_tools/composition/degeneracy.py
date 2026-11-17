@@ -187,13 +187,15 @@ def measure_degeneracy(
     # counting a true 0.0 ppm competitor twice as far inside.
     shifted = targets / (1.0 + mu_ppm * 1e-6)
 
-    # ONE CHANNEL AT A TIME. The banded walk sizes its bands from the range ALL
-    # the mechanisms open around a target, and a bromide channel beside a
-    # deprotonation opens eighty daltons of neutral mass around one peak - wide
-    # enough over a relaxed box to overflow the row bound, after which the walk
-    # stops banding and every heavier peak is searched with no grid at all. Per
-    # channel each band is the search window wide, so it fits, and a peak's
-    # answer stops depending on which other peaks were asked with it.
+    # ONE CHANNEL AT A TIME. A band's grid holds one window of neutral mass per
+    # mechanism (`neutral_mass_windows`), not the span between them, so walking
+    # every channel at once no longer opens the eighty daltons between a
+    # bromide adduct and a deprotonation. It still puts every channel's window
+    # into one grid, which reaches the row bound sooner than any one channel's
+    # does, and once even the narrowest band overflows the walk stops banding
+    # and every heavier peak is reported unmeasured. Per channel a grid holds
+    # the one window its channel searches, so the measurement gives up only
+    # where a single channel's own window cannot be enumerated.
     found: dict[float, list[dict]] = {mz: [] for mz in map(float, targets)}
     censored_at: dict[float, bool] = dict.fromkeys(found, False)
     measured_at: dict[float, bool] = dict.fromkeys(found, True)
