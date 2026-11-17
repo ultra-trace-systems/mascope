@@ -15,6 +15,7 @@ import pandas as pd
 import pytest
 
 from mascope_tools.composition.finder import (
+    _ion_charge,
     assign_compositions,
     find_compositions,
     grids_for_targets,
@@ -164,6 +165,11 @@ def test_a_doubly_charged_envelope_is_claimed_at_half_a_unit():
     # The 13C line of a doubly charged ion is half a neutron's mass up.
     assert carbon13 - monoisotopic == pytest.approx(1.003355 / 2, abs=1e-4)
     assert rows["ion"].iloc[0] == "C6H14O6++"
+    # In mass, a whole neutron's: the 13C line's neutral is 13C glucose.
+    assert rows["neutral_mass"].iloc[0] == pytest.approx(GLUCOSE_MASS, abs=1e-6)
+    assert rows["neutral_mass"].iloc[1] == pytest.approx(
+        GLUCOSE_MASS + 1.003355, abs=1e-4
+    )
 
 
 def test_a_dimer_envelope_is_claimed_as_its_molecule():
@@ -172,6 +178,19 @@ def test_a_dimer_envelope_is_claimed_as_its_molecule():
     rows = matches[matches["formula"] == GLUCOSE].sort_values("mz")
     assert list(rows["isotope_label"])[:2] == ["M0", "13C"]
     assert rows["ion"].iloc[0] == "C12H25O12+"
+    # The 13C line's heavy atom is in one of the two molecules: its neutral is
+    # that 13C glucose, the gap taken whole rather than shared out.
+    assert rows["neutral_mass"].iloc[0] == pytest.approx(GLUCOSE_MASS, abs=1e-6)
+    assert rows["neutral_mass"].iloc[1] == pytest.approx(
+        GLUCOSE_MASS + 1.003355, abs=1e-4
+    )
+
+
+def test_an_unreadable_mechanism_keeps_the_m_z_gap():
+    assert _ion_charge("not a mechanism") == 1
+    assert _ion_charge(None) == 1
+    assert _ion_charge("[M+2H]2+") == 2
+    assert _ion_charge("[M-2H]2-") == 2
 
 
 def test_a_line_of_a_doubly_charged_ion_reads_as_that_line():

@@ -1278,6 +1278,21 @@ def _held_against(
     )
 
 
+def _ion_charge(notation: str | None) -> int:
+    """The size of the charge a candidate's mechanism gives its ion.
+
+    :param notation: The candidate's mechanism.
+    :return: ``|z|``; 1 for a notation that cannot be read, which is every
+        mechanism the finder read before it searched charges above one.
+    """
+    if not notation:
+        return 1
+    try:
+        return abs(utils.parse_ionization(notation).charge) or 1
+    except Exception:  # noqa: BLE001 - an unreadable mechanism keeps the m/z gap
+        return 1
+
+
 def process_isotopes(
     main_candidate: dict, all_matched_isotopes: list, assigned_mzs: set
 ) -> tuple:
@@ -1323,6 +1338,13 @@ def process_isotopes(
         results_per_peak.append(main_candidate)
         assigned_mzs.add(base_mass)
 
+        # A line's heavy atoms sit in the neutral, and the ion's mass gap is
+        # the m/z gap times its charge: the 13C line of a 2+ ion is half a unit
+        # up in m/z and a whole unit up in mass. Through a multimer the row's
+        # neutral is one molecule of the ion and takes the gap whole, so the
+        # line's neutral is the molecule holding its heavy atoms, as the 13C
+        # line of [2M+H]+ is one 13C molecule beside a plain one.
+        charge = _ion_charge(main_candidate.get("ionization_mechanism"))
         # Extract and process higher isotopes
         for idx in range(1, len(isotope_mzs)):
             iso_mz = isotope_mzs[idx]
@@ -1353,7 +1375,7 @@ def process_isotopes(
             iso_result["predicted_intensity"] = isotope_pred_ints[idx]
             iso_result["mz_error_ppm"] = isotope_mz_errors[idx]
             iso_result["intensity_error"] = isotope_intensity_errors[idx]
-            iso_result["neutral_mass"] = iso_result["neutral_mass"] + (
+            iso_result["neutral_mass"] = iso_result["neutral_mass"] + charge * (
                 iso_mz - base_mass
             )
             results_per_peak.append(iso_result)
