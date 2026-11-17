@@ -22,6 +22,7 @@ from mascope_tools.composition.heuristic_filter import (
     elect_same_ion_families,
     match_isotopic_pattern,
     mechanism_mass_contribution,
+    mechanism_multimer,
     neutral_is_closed_shell,
     predict_isotopes,
     propose_same_ion_readings,
@@ -224,6 +225,69 @@ class TestTheFamilyElection:
             ]
         )
         assert len(elected) == 2
+
+
+class TestTheFewerMolecules:
+    """The third key: a monomer and a multimer reading of one ion.
+
+    ``[M+H]+`` on glucose and ``[2M+H]+`` on lactic acid's formula make one ion,
+    C6H13O6+, through one moiety, so the mass the mechanism carries ties them.
+    The reading of one molecule is elected, whichever formula spells first.
+    """
+
+    def test_one_moiety_ties_on_the_mass(self):
+        assert mechanism_mass_contribution("[2M+H]+") == pytest.approx(
+            mechanism_mass_contribution("[M+H]+")
+        )
+        assert mechanism_multimer("[M+H]+") == 1
+        assert mechanism_multimer("[2M+H]+") == 2
+
+    def test_an_unreadable_mechanism_counts_as_one_molecule(self):
+        assert mechanism_multimer(None) == 1
+        assert mechanism_multimer("not a mechanism") == 1
+
+    @pytest.mark.parametrize(
+        "monomer, multimer, ion",
+        [
+            # "C3" sorts before "C6": the spelling alone would elect the dimer.
+            ("C6H12O6", "C3H6O3", "C6H13O6+"),
+            # "C12" sorts before "C6": the spelling alone would get it right.
+            ("C12H24O12", "C6H12O6", "C12H25O12+"),
+        ],
+    )
+    def test_the_monomer_reading_is_elected_either_order(self, monomer, multimer, ion):
+        one = _candidate(monomer, "[M+H]+", ion)
+        two = _candidate(multimer, "[2M+H]+", ion)
+        for order in ((one, two), (two, one)):
+            [winner] = elect_same_ion_families(list(order))
+            assert winner["formula"] == monomer
+            assert winner["ionization_mechanism"] == "[M+H]+"
+            (displaced,) = winner[SAME_ION_ALTERNATIVES]
+            assert displaced["formula"] == multimer
+            assert displaced["ionization_mechanism"] == "[2M+H]+"
+
+    @pytest.mark.parametrize(
+        "ionizations",
+        ["[M+H]+,[2M+H]+", "[2M+H]+,[M+H]+"],
+        ids=["monomer first", "dimer first"],
+    )
+    def test_the_finder_commits_protonated_glucose_as_glucose(self, ionizations):
+        mz = parse_ionization("[M+H]+").ion_mz(calculate_mass(formula="C6H12O6"))
+        config = CompositionSearchConfig(
+            ionizations=ionizations,
+            element_count_ranges="C0-20 H0-40 O0-12",
+            mass_range_ppm=3.0,
+        )
+        peaks = pd.DataFrame({"mz": [mz, mz + 1.00336], "intensity": [1.0e6, 6.6e4]})
+        matches, _ = assign_compositions(peaks, config)
+        m0 = matches[matches["isotope_label"] == "M0"].iloc[0]
+
+        assert m0["formula"] == "C6H12O6"
+        assert m0["ionization_mechanism"] == "[M+H]+"
+        assert [
+            (reading["formula"], reading["ionization_mechanism"])
+            for reading in m0[SAME_ION_ALTERNATIVES]
+        ] == [("C3H6O3", "[2M+H]+")]
 
 
 class TestTheFinderCommitsTheElectedReading:
