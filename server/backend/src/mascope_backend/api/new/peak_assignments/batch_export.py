@@ -51,9 +51,19 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     standing_flat_series_record,
     tier_name,
 )
+from mascope_backend.api.new.peak_assignments.identification_level import (
+    IDENTIFICATION_LEVEL,
+    level_fields,
+)
 from mascope_backend.api.new.peak_assignments.tiers import TIER_UNASSIGNED
 from mascope_backend.api.new.temp.storage import download_name, user_temp_path
-from mascope_backend.db import BatchPeak, BatchPeakOccurrence, SampleItem, async_session
+from mascope_backend.db import (
+    BatchPeak,
+    BatchPeakOccurrence,
+    PeakAssignment,
+    SampleItem,
+    async_session,
+)
 from mascope_backend.runtime import runtime
 
 
@@ -80,6 +90,9 @@ COLUMNS = (
     "consensus_tier",
     "engine_tier",
     "engine_claim",
+    "engine_level",
+    "engine_evidence",
+    "engine_lift",
     "support_fraction",
     "n_present",
     "is_ambiguous",
@@ -99,6 +112,9 @@ COLUMNS = (
     "role",
     "fit_score",
     "p_correct",
+    "level",
+    "level_evidence",
+    "level_lift",
     "owner_batch_peak_id",
     "stamped_isotopologue_of",
     "stamp_source",
@@ -114,9 +130,19 @@ COLUMNS = (
 
 
 def member_export_row(
-    member: Any, anchor: Any, sample_item_name: Optional[str]
+    member: Any,
+    anchor: Any,
+    sample_item_name: Optional[str],
+    run_row: Any = None,
 ) -> dict:
     """One flat row: the anchor's consensus beside the member's own reading.
+
+    ``level``, ``level_evidence`` and ``level_lift`` are the identification
+    level the member's sample's run stated of the row the member was folded
+    from (``identification_level``), where that row commits the formula the
+    member reads; None otherwise, as on a member a batch operation re-pointed
+    to another reading. ``engine_level`` is the anchor's, an importing
+    engine's own level beside its ``engine_tier``.
 
     ``stamped_isotopologue_of`` and ``stamp_source`` say, where the batch's
     isotopologue stamping stamped the member, the parent batch peak it is a
@@ -146,8 +172,18 @@ def member_export_row(
     :param member: The ``BatchPeakOccurrence``.
     :param anchor: The ``BatchPeak`` it sits in.
     :param sample_item_name: The member's sample, by name.
+    :param run_row: The run row the member was folded from, as
+        :func:`_members_query` reads it (``assigned_formula``, ``level``,
+        ``level_block``), or None.
     """
     identity = resolve_candidate(anchor.candidates, member.candidate)
+    level = (
+        level_fields(run_row.level, {IDENTIFICATION_LEVEL: run_row.level_block})
+        if run_row is not None
+        and run_row.assigned_formula is not None
+        and run_row.assigned_formula == identity.get("formula")
+        else level_fields(None, None)
+    )
     stamp = member_stamp(anchor, member.sample_item_id) or {}
     checks = standing_batch_checks_record(anchor) or {}
     lock = checks.get("halogen_lock") or {}
@@ -167,6 +203,9 @@ def member_export_row(
         "consensus_tier": anchor.consensus_tier,
         "engine_tier": anchor.engine_tier,
         "engine_claim": anchor.engine_claim,
+        "engine_level": anchor.engine_level,
+        "engine_evidence": anchor.engine_evidence,
+        "engine_lift": anchor.engine_lift,
         "support_fraction": anchor.support_fraction,
         "n_present": anchor.n_present,
         "is_ambiguous": bool(anchor.is_ambiguous),
@@ -186,6 +225,7 @@ def member_export_row(
         "role": role_name(member.role) or ROLE_UNASSIGNED,
         "fit_score": member.fit_score,
         "p_correct": member.p_correct,
+        **level,
         "owner_batch_peak_id": member.owner_batch_peak_id,
         "stamped_isotopologue_of": stamp.get("batch_peak_id"),
         "stamp_source": stamp.get("stamp_source"),
@@ -202,12 +242,31 @@ def member_export_row(
 
 def _members_query(sample_batch_id: str, sample_item_id: Optional[str]):
     """Members of a batch with their anchor and sample name, in anchor m/z
-    order and then by sample - the order a reader expects a ledger in."""
+    order and then by sample - the order a reader expects a ledger in - and
+    the run row each was folded from: its formula and its level, with the
+    level's record read out of its provenance alone."""
+    run_row = select(
+        PeakAssignment.peak_assignment_id,
+        PeakAssignment.assigned_formula,
+        PeakAssignment.level,
+        PeakAssignment.provenance[IDENTIFICATION_LEVEL].label("level_block"),
+    ).subquery()
     query = (
-        select(BatchPeakOccurrence, BatchPeak, SampleItem.sample_item_name)
+        select(
+            BatchPeakOccurrence,
+            BatchPeak,
+            SampleItem.sample_item_name,
+            run_row.c.assigned_formula,
+            run_row.c.level,
+            run_row.c.level_block,
+        )
         .join(BatchPeak, BatchPeak.batch_peak_id == BatchPeakOccurrence.batch_peak_id)
         .join(
             SampleItem, SampleItem.sample_item_id == BatchPeakOccurrence.sample_item_id
+        )
+        .outerjoin(
+            run_row,
+            run_row.c.peak_assignment_id == BatchPeakOccurrence.peak_assignment_id,
         )
         .where(BatchPeak.sample_batch_id == sample_batch_id)
     )
@@ -261,7 +320,9 @@ async def get_batch_peak_members(
                 .limit(limit)
             )
         ).all()
-        data = [member_export_row(m, bp, name) for m, bp, name in rows]
+        data = [
+            member_export_row(row[0], row[1], row.sample_item_name, row) for row in rows
+        ]
     return {
         "status": "success",
         "message": (
@@ -300,7 +361,10 @@ async def write_batch_ledger_csv(sample_batch_id: str, user_id: int) -> tuple[st
                 break
             frames.append(
                 pd.DataFrame(
-                    [member_export_row(m, bp, name) for m, bp, name in rows],
+                    [
+                        member_export_row(row[0], row[1], row.sample_item_name, row)
+                        for row in rows
+                    ],
                     columns=list(COLUMNS),
                 )
             )

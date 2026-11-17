@@ -191,12 +191,18 @@ class EngineVerdict:
     ionization_mechanism_id: Optional[str]
     engine_tier: Optional[str]
     engine_claim: Optional[str]
+    #: The identification level the engine stated, in the shared scale, and
+    #: its two lines about it, as it wrote them.
+    engine_level: Optional[str] = None
+    engine_evidence: Optional[str] = None
+    engine_lift: Optional[str] = None
 
 
 def verdict_on_anchor(
     anchor: Any, verdict: Optional[EngineVerdict]
-) -> tuple[Optional[str], Optional[str]]:
-    """The engine tier and claim an anchor carries after the import.
+) -> tuple[Optional[str], ...]:
+    """The engine tier, claim, level and its two lines an anchor carries after
+    the import.
 
     Pure. The verdict where the anchor's consensus names the verdict's
     identity - its neutral formula through its mechanism, the identity the
@@ -207,15 +213,22 @@ def verdict_on_anchor(
     :param anchor: The anchor as recomputed (``consensus_formula``,
         ``ionization_mechanism_id``).
     :param verdict: The verdict of the row that landed on it, or None.
-    :return: ``(engine_tier, engine_claim)``.
+    :return: ``(engine_tier, engine_claim, engine_level, engine_evidence,
+        engine_lift)``.
     """
     if (
         verdict is None
         or anchor.consensus_formula != verdict.formula
         or anchor.ionization_mechanism_id != verdict.ionization_mechanism_id
     ):
-        return None, None
-    return verdict.engine_tier, verdict.engine_claim
+        return None, None, None, None, None
+    return (
+        verdict.engine_tier,
+        verdict.engine_claim,
+        verdict.engine_level,
+        verdict.engine_evidence,
+        verdict.engine_lift,
+    )
 
 
 async def write_engine_verdicts(
@@ -253,12 +266,17 @@ async def write_engine_verdicts(
                 .all()
             )
             for anchor in anchors:
-                tier, claim = verdict_on_anchor(anchor, verdicts[anchor.batch_peak_id])
-                if tier is None and claim is None:
+                written = verdict_on_anchor(anchor, verdicts[anchor.batch_peak_id])
+                if all(value is None for value in written):
                     withheld += 1
                     continue
-                anchor.engine_tier = tier
-                anchor.engine_claim = claim
+                (
+                    anchor.engine_tier,
+                    anchor.engine_claim,
+                    anchor.engine_level,
+                    anchor.engine_evidence,
+                    anchor.engine_lift,
+                ) = written
                 shown += 1
         await touch_ledger(session, sample_batch_id)
         await session.commit()
@@ -418,12 +436,24 @@ async def run_batch_import(
         )
         engine_tier = getattr(row, "engine_tier", None)
         engine_claim = getattr(row, "engine_claim", None)
-        if engine_tier is not None or engine_claim:
+        engine_level = getattr(row, "engine_level", None)
+        engine_evidence = getattr(row, "engine_evidence", None) or None
+        engine_lift = getattr(row, "engine_lift", None) or None
+        if (
+            engine_tier is not None
+            or engine_claim
+            or engine_level is not None
+            or engine_evidence
+            or engine_lift
+        ):
             verdicts[anchor_id] = EngineVerdict(
                 formula=row.formula,
                 ionization_mechanism_id=row.ionization_mechanism_id,
                 engine_tier=engine_tier,
                 engine_claim=engine_claim or None,
+                engine_level=engine_level,
+                engine_evidence=engine_evidence,
+                engine_lift=engine_lift,
             )
     counts: dict[str, Any] = {
         "rows": len(rows),

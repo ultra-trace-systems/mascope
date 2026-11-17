@@ -370,6 +370,26 @@ class TestPeakAssignmentContract:
         assert run["status"] == "completed"
         assert run["peak_assignment_run_id"] in set(df["peak_assignment_run_id"])
 
+    def test_every_committed_row_says_its_identification_level(self, mascope):
+        _skip_unless_param(mascope.peak_assignments.get, "level")
+        sample_id = _sample_with_completed_run(mascope)
+        df = mascope.peak_assignments.get(sample_id)
+        if "level" not in df.columns or df["level"].isna().all():
+            pytest.skip("the demo's run predates the identification level")
+
+        committed = df[df["assigned_formula"].notna()]
+        # Every committed row of a run made since the level carries one, with
+        # its two lines; the scale is the shared one.
+        assert committed["level"].notna().all()
+        assert committed["level_evidence"].notna().all()
+        assert committed["level_lift"].notna().all()
+        assert set(committed["level"]) <= {
+            "1", "2a", "2b", "3a", "3b", "3c", "3d", "4a", "4b", "5a", "5b"
+        }  # fmt: skip
+        level = committed["level"].iloc[0]
+        filtered = mascope.peak_assignments.get(sample_id, level=level)
+        assert set(filtered["level"]) == {level}
+
     def test_detail_serves_the_inspector_json(self, mascope):
         sample_id = _sample_with_completed_run(mascope)
         df = mascope.peak_assignments.get(sample_id)
@@ -2222,7 +2242,13 @@ class TestBatchLedgerContract:
             # The anchor's imported engine verdict, empty where none was given.
             "engine_tier",
             "engine_claim",
+            "engine_level",
+            # The identification level the member's own run stated.
+            "level",
+            "level_evidence",
+            "level_lift",
         } <= set(members.columns)
+        assert {"engine_level", "member_level", "member_levels"} <= set(listed.columns)
         # Every member belongs to a listed batch peak and an assigned sample.
         assert set(members["batch_peak_id"]) <= set(listed["batch_peak_id"])
         assert set(members["sample_item_id"]) <= set(ledgers)

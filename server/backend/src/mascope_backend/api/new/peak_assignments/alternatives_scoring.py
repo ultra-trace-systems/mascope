@@ -29,13 +29,13 @@ What the inspector gets back is a measurement, not a record: its endpoint
 writes nothing, and the scores are never stored onto the run's rows. A run is
 the append-only account of what the engine did, and these numbers are not
 something it did. A run that measured its own shortlists stores the share they
-make, not the fits either: the alternatives stay formula-only. Committing
+make and, in the winner's provenance, what each formula measured at, for the
+identification level to read: the alternatives stay formula-only. Committing
 one of these candidates is therefore a ``set_assignment`` - the same action the
 re-search hand button uses, which records in provenance that the numbers came
 from a composition search rather than from the run's own arbitration.
 """
 
-import re
 import time
 
 import pandas as pd
@@ -45,10 +45,12 @@ from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.new.match.params import default_match_params
 from mascope_backend.api.new.peak_assignments.engine import (
+    MEASURED_SHORTLIST,
     ROLE_M0,
     SOURCE_UNTARGETED,
     evidence_for,
     formula_identity,
+    ion_identity,
     monoisotopic_row,
 )
 from mascope_backend.api.new.peak_assignments.fold_view import is_fold_id
@@ -401,33 +403,6 @@ def recorded_rivals(row: dict) -> list[tuple[str, float, str | None]]:
     return rivals
 
 
-def ion_identity(ion_formula: str | None) -> tuple[str, str] | None:
-    """An ion's identity, however its neutral and adduct were split.
-
-    ``C10H18O3`` read through ``[M+Br]-`` and ``C10H19BrO3`` read through
-    ``[M-H]-`` are one ion, ``C10H18BrO3-``: the same mass and the same
-    envelope, so the spectrum cannot tell them apart and one of them is no
-    rival of the other. Read as a composition and a charge, so two spellings
-    of one ion agree.
-
-    :param ion_formula: An ion formula with its charge, such as ``C6H11O2-``.
-        Its charge is the signs it ends in, as the engine writes it.
-    :return: ``(composition, charge)``, or None where there is no ion named.
-    """
-    if not ion_formula or not isinstance(ion_formula, str):
-        return None
-    text = ion_formula.strip()
-    match = _CHARGE.search(text)
-    charge = match.group(0) if match else ""
-    return formula_identity(text[: match.start()] if match else text), charge
-
-
-#: The charge an ion formula ends in: its signs, one per charge (``-``,
-#: ``++``), never a count, which would read as the last element's
-#: (``target_ions_compute.charge_string``).
-_CHARGE = re.compile(r"[+-]+$")
-
-
 def winner_arbitration(
     row: dict, measured: list[tuple[str, float, str | None]]
 ) -> dict:
@@ -531,8 +506,10 @@ async def measure_winner_confidence(
     A winner whose shortlist the budget did not reach records nothing: a share
     taken of part of the field would read as a share of all of it. A winner
     with no shortlist records its share among the rivals its row already
-    measured, which costs nothing. Only provenance is written; the tier, the
-    fit and the alternatives stay what the run decided.
+    measured, which costs nothing. Each measured winner also records what each
+    formula measured at (:data:`MEASURED_SHORTLIST`), so the identification
+    level can name the test each rival failed or passed. Only provenance is
+    written; the tier, the fit and the alternatives stay what the run decided.
 
     :param sample: The sample being assigned.
     :param rows: The run's committed rows; winners' provenance is updated in
@@ -587,6 +564,7 @@ async def measure_winner_confidence(
         if id(row) in unreached:
             continue
         measured: list[tuple[str, float, str | None]] = []
+        record: list[dict] = []
         for formula in shortlists[id(row)]:
             _generated, candidates = placements(
                 formula,
@@ -599,10 +577,28 @@ async def measure_winner_confidence(
             if candidates:
                 best = candidates[0]
                 measured.append((formula, best["fit_score"], best["ion_formula"]))
+                record.append(
+                    {
+                        "formula": formula,
+                        "ion_formula": best["ion_formula"],
+                        "fit_score": round(float(best["fit_score"]), 4),
+                        "mz_error_ppm": (
+                            None
+                            if best["mz_error_ppm"] is None
+                            else round(float(best["mz_error_ppm"]), 4)
+                        ),
+                    }
+                )
+            else:
+                record.append({"formula": formula, "placed": False})
         placed += len(measured)
         arbitration = winner_arbitration(row, measured)
         ties += arbitration["is_tie"]
-        row["provenance"] = {**(row.get("provenance") or {}), **arbitration}
+        row["provenance"] = {
+            **(row.get("provenance") or {}),
+            **arbitration,
+            MEASURED_SHORTLIST: record,
+        }
 
     return {
         "peak_budget": peak_budget,

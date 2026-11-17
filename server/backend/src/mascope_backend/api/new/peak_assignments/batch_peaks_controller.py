@@ -1196,7 +1196,13 @@ def _apply_consensus(bp: BatchPeak, consensus: Consensus, now: datetime) -> bool
     if not changed:
         return False
     if {"consensus_formula", "ionization_mechanism_id"} & changed.keys():
-        changed.update(engine_tier=None, engine_claim=None)
+        changed.update(
+            engine_tier=None,
+            engine_claim=None,
+            engine_level=None,
+            engine_evidence=None,
+            engine_lift=None,
+        )
     for column, value in changed.items():
         setattr(bp, column, value)
     bp.batch_peak_utc_modified = now
@@ -1661,9 +1667,18 @@ def clear_engine_verdicts_statement(sample_batch_id: str):
         .where(
             BatchPeak.sample_batch_id == sample_batch_id,
             (BatchPeak.engine_tier.is_not(None))
-            | (BatchPeak.engine_claim.is_not(None)),
+            | (BatchPeak.engine_claim.is_not(None))
+            | (BatchPeak.engine_level.is_not(None))
+            | (BatchPeak.engine_evidence.is_not(None))
+            | (BatchPeak.engine_lift.is_not(None)),
         )
-        .values(engine_tier=None, engine_claim=None)
+        .values(
+            engine_tier=None,
+            engine_claim=None,
+            engine_level=None,
+            engine_evidence=None,
+            engine_lift=None,
+        )
     )
 
 

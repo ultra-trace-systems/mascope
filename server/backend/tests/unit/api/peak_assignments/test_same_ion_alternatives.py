@@ -10,6 +10,7 @@ because the ion is the same one.
 import pandas as pd
 
 from mascope_backend.api.new.peak_assignments.engine import (
+    RIVALS_PAST_CAP,
     record_mirror_same_ion_readings,
     untargeted_matches_to_peak_assignments,
 )
@@ -289,6 +290,19 @@ class TestAReferenceMirrorsRow:
             "C3H4O",
             "C2H3N3",
         ]
+
+    def test_a_scored_rival_the_cap_cuts_is_counted(self):
+        # The family goes first, so the cap now cuts a rival the row stored:
+        # one the identification level cannot see tested.
+        rivals = [
+            {"assigned_formula": "C2H3N3", "ionization_mechanism_id": "im-h"},
+            {"assigned_formula": "C4H11N", "ionization_mechanism_id": "im-h"},
+        ]
+        rows = [_stage_a(alternatives=list(rivals))]
+
+        _record(rows, max_alternatives=2)
+
+        assert rows[0]["provenance"][RIVALS_PAST_CAP] == 1
 
     def test_a_rival_that_restates_a_reading_is_that_reading(self):
         # The known set can hold acrolein as a compound of its own, matched to

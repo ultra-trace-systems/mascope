@@ -465,6 +465,58 @@ async def test_isotopologues_of_the_replaced_formula_are_demoted(
 
 
 @pytest.mark.asyncio
+async def test_a_curated_row_states_the_level_a_hand_assignment_can(
+    editor_client, curated_run, async_session_factory
+):
+    """Step 5.8: no shortlist of the run was competed against a formula a
+    person chose, so the curated row reads 5a with its rivals not measured,
+    and an isotopologue it strips states no level any more."""
+    async with async_session_factory() as session:
+        child = await session.get(PeakAssignment, curated_run["child_id"])
+        child.level = "4a"
+        await session.commit()
+
+    await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={"action": "promote_alternative", "alternative_index": 0},
+    )
+
+    m0 = await _row(async_session_factory, curated_run["m0_id"])
+    assert m0.level == "5a"
+    assert m0.provenance["identification_level"]["evidence"] == "rivals not measured"
+    assert m0.provenance["identification_level"]["lift"] == "measure the shortlist"
+    child = await _row(async_session_factory, curated_run["child_id"])
+    assert child.level is None
+
+
+@pytest.mark.asyncio
+async def test_a_family_left_standing_shows_the_curated_rows_level(
+    editor_client, curated_run, async_session_factory
+):
+    """A re-commit of the same compound keeps its isotopologues, which show the
+    level of the row they are lines of: the hand row's now."""
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={
+            "action": "set_assignment",
+            "assigned_formula": "C6H12O6",
+            "ionization_mechanism_id": curated_run["mechanism_id"],
+            "fit_score": 0.91,
+        },
+    )
+    assert response.status_code == 200
+
+    m0 = await _row(async_session_factory, curated_run["m0_id"])
+    child = await _row(async_session_factory, curated_run["child_id"])
+    assert child.role == "iso_child"
+    assert child.level == m0.level == "5a"
+    assert (
+        child.provenance["identification_level"]["inherited_from"]
+        == (curated_run["m0_id"])
+    )
+
+
+@pytest.mark.asyncio
 async def test_a_stale_index_is_refused_rather_than_committed(
     editor_client, curated_run, async_session_factory
 ):
@@ -659,17 +711,25 @@ async def test_promoting_the_previous_compound_back_restores_the_family(
     # And it reads as the engine's row again rather than a person's edit: the
     # demotion's manual block goes, the provenance it had comes back.
     assert child.source == "database"
+    m0 = await _row(async_session_factory, curated_run["m0_id"])
+    # It shows the level of the row it is a line of: the curated one's now.
     assert child.provenance == {
         "plausibility": 0.9,
         "evidence": 0.79,
         "score_version": "v2-test",
+        "identification_level": {
+            "level": m0.level,
+            "evidence": m0.provenance["identification_level"]["evidence"],
+            "lift": m0.provenance["identification_level"]["lift"],
+            "inherited_from": curated_run["m0_id"],
+        },
     }
+    assert child.level == m0.level
     # The snapshot the demotion pushed onto its alternatives is popped back
     # off, so a demote/restore round trip does not grow the list every time.
     assert child.alternatives is None
     # The owner stops offering a restore that has already happened, and says
     # what it did.
-    m0 = await _row(async_session_factory, curated_run["m0_id"])
     assert "demoted" not in m0.provenance["manual"]
     assert m0.provenance["manual"]["restored"] == [curated_run["child_id"]]
 

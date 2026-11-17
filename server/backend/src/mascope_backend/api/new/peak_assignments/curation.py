@@ -86,6 +86,11 @@ from mascope_backend.api.new.peak_assignments.fold_view import (
     DerivedAssignmentReadOnlyException,
     is_fold_id,
 )
+from mascope_backend.api.new.peak_assignments.identification_level import (
+    IDENTIFICATION_LEVEL,
+    hand_level,
+    inherited_level,
+)
 from mascope_backend.api.new.peak_assignments.mass_gate import SpectrumLines
 from mascope_backend.api.new.peak_assignments.schemas import (
     PromoteAlternativeBody,
@@ -658,6 +663,9 @@ def _demote(
     # Archived with the formula it judged (see `_previous_winner`); a verdict
     # about a displaced winner is not a verdict about an unassigned peak.
     child.engine_tier = None
+    # An unassigned peak commits no formula, so it states no level; its old
+    # one is in the archived provenance.
+    child.level = None
     child.source = SOURCE_MANUAL
     child.assigned_formula = None
     child.ion_formula = None
@@ -1320,6 +1328,31 @@ async def curate_assignment(
         # a family for the composition it replaced, not for this one, so there
         # is no owner here that was ever competed for.
         assignment.owner_peak_assignment_id = None
+        # Its identification level is what the mapping can state of a formula
+        # a person chose: refuted where a line it predicts is absent, else
+        # rivals not measured, since no shortlist of the run was competed
+        # against it. The isotopologues put back with it show its level, and so
+        # do the ones a re-commit of the same compound left standing.
+        level = hand_level(
+            {
+                "role": assignment.role,
+                "source": assignment.source,
+                "assigned_formula": assignment.assigned_formula,
+                "provenance": assignment.provenance,
+            }
+        )
+        assignment.provenance = {
+            **(assignment.provenance or {}),
+            IDENTIFICATION_LEVEL: level,
+        }
+        assignment.level = level["level"]
+        for child in [*restored, *(family if same_compound else [])]:
+            inherited = inherited_level(level, assignment.peak_assignment_id)
+            child.provenance = {
+                **(child.provenance or {}),
+                IDENTIFICATION_LEVEL: inherited,
+            }
+            child.level = inherited["level"]
 
         # Read out before the commit expires these instances. A refresh per row
         # would be the alternative, and an expired attribute read on an async

@@ -674,6 +674,71 @@ class TestTheJudgedLedger:
         ]
 
     @pytest.mark.asyncio
+    async def test_every_committed_row_is_given_its_identification_level(self):
+        # Step 5.8: the level is read off the finished ledger, with what the
+        # run read of it - its spectrum, the gate its lines were asked at, its
+        # channels, instrument, context and artifacts - and recorded with the
+        # tiering record; the column goes in beside the tier.
+        from mascope_backend.api.new.peak_assignments import service
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_backend.api.new.peak_assignments.identification_level import (
+            LEVEL_RULES_VERSION,
+        )
+        from mascope_backend.api.new.peak_assignments.mass_gate import SpectrumLines
+
+        levels, judge = service.apply_levels, service.judge_commits
+        handed, judged = {}, {}
+
+        def recording(rows, **kwargs):
+            handed.update(kwargs)
+            return levels(rows, **kwargs)
+
+        def judging(rows, **kwargs):
+            judged.update(kwargs)
+            return judge(rows, **kwargs)
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        recorder = _Recorder()
+        _start(_patches(recorder, peaks, _stage_a_rows()))
+        patch(f"{_MOD}.apply_levels", side_effect=recording).start()
+        patch(f"{_MOD}.judge_commits", side_effect=judging).start()
+        # A file whose resolving power the run read, so the one the level pass
+        # is handed can be told from none.
+        patch(
+            f"{_MOD}._resolution_of",
+            new_callable=AsyncMock,
+            return_value=lambda mz: 120000.0,
+        ).start()
+
+        await _run(PeakAssignmentConfig(run_untargeted=False, context="chamber"))
+
+        # The spectrum and the resolving power the tiering pass read.
+        assert isinstance(handed["lines"], SpectrumLines)
+        assert handed["lines"] is judged["lines"]
+        assert handed["resolution"] is judged["resolution"]
+        assert handed["resolution"] is not None
+        assert handed["tiering"]["absent_line"]["spectrum"] is True
+        assert handed["context"].name == "chamber"
+        assert handed["notation_by_id"]
+        assert handed["instrument_type"] == "orbi"
+        by_peak = {row["sample_peak_id"]: row for row in recorder.rows}
+        m0, child = by_peak["p1"], by_peak["p2"]
+        assert m0["level"] in ("4a", "4b", "5a", "5b")
+        assert m0["provenance"]["identification_level"]["level"] == m0["level"]
+        assert child["level"] == m0["level"]
+        assert (
+            child["provenance"]["identification_level"]["inherited_from"]
+            == (m0["peak_assignment_id"])
+        )
+        config = recorder.recorded_configs()[-1]
+        assert config["tiering"]["identification_level"]["level_rules_version"] == (
+            LEVEL_RULES_VERSION
+        )
+        assert config["tiering"]["identification_level"]["levels"] == {m0["level"]: 1}
+
+    @pytest.mark.asyncio
     async def test_stage_b_is_built_from_the_rows_the_twin_reread_leaves(self):
         # Step 3.6: the run hands the election's rows to the halogen-twin
         # re-read, builds its Stage B rows from what it returns, and names the

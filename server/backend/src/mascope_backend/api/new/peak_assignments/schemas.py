@@ -61,6 +61,14 @@ AssignmentRole = Literal["M0", "iso_child", "reagent", "artifact", "unassigned"]
 # ...or the artifact pre-pass, which says the same about the instrument: the
 # peak is ringing around a very intense neighbour rather than a species.
 AssignmentSource = Literal["database", "untargeted", "manual", "reagent", "artifact"]
+# The identification level's scale, shared with the reference engine (decision
+# 38 of the assignment quality plan; ``identification_level.LEVELS``):
+# Schymanski's numbers with a letter for the kind of evidence. Typed so a level
+# outside the scale - on the ledger's filter or on an import - is a 422 naming
+# the accepted values.
+IdentificationLevel = Literal[
+    "1", "2a", "2b", "3a", "3b", "3c", "3d", "4a", "4b", "5a", "5b"
+]
 
 # A run holds one row per detected peak, so an unbounded read serializes tens
 # of megabytes through Pydantic on the event loop. Clients page instead; the
@@ -258,6 +266,19 @@ class PeakAssignmentRecord(BaseModel):
     #: row; None when the peak is not in the ledger. What the sample ledger
     #: plots in the batch chart.
     batch_peak_id: str | None = None
+    #: The row's identification level in the shared scale (``4a``, ``5a``,
+    #: ...): what a reader may state of the row, from the facts the run
+    #: recorded (``identification_level``). Every committed row of a run made
+    #: since the level carries one, an isotopologue its monoisotopic row's;
+    #: None on a row that commits no formula, an imported row, a row derived
+    #: from the batch ledger and a row from before the level. Moves no tier.
+    level: str | None = None
+    #: One line naming what earned the level
+    #: (provenance.identification_level.evidence).
+    level_evidence: str | None = None
+    #: What would raise the level, written from the tests the row is missing
+    #: (provenance.identification_level.lift).
+    level_lift: str | None = None
 
 
 class PeakAssignmentDetailRecord(PeakAssignmentRecord):
@@ -511,6 +532,13 @@ class PeakAssignmentQueryParams(BaseModel):
     role: AssignmentRole | None = Field(None, description="Filter by peak role.")
     source: AssignmentSource | None = Field(
         None, description="Filter by assignment source."
+    )
+    level: IdentificationLevel | None = Field(
+        None,
+        description=(
+            "Filter by identification level (`4a`, `5a`, ...). Only rows of an "
+            "in-app run made since the level carry one."
+        ),
     )
     limit: int = Field(
         DEFAULT_PAGE_LIMIT,
@@ -1431,6 +1459,35 @@ class BatchImportRow(BaseModel):
             "Optional: the engine's own words about the identity - its "
             "evidence level, the rule that decided it - kept verbatim beside "
             "`engine_tier` for a reader. Free text; nothing reads it."
+        ),
+    )
+    engine_level: IdentificationLevel | None = Field(
+        None,
+        description=(
+            "Optional: the identification level THIS ENGINE stated for the "
+            "identity, in the scale both engines share: Schymanski's numbers "
+            "with a letter for the kind of evidence (`5a`, `5b`, `4a`, `4b`, "
+            "`3a` to `3d`, `2a`, `2b`, `1`); anything else is refused. Stored "
+            "on the batch peak the row lands on beside `engine_tier` and "
+            "`engine_claim`, so the reference's level reads beside the levels "
+            "Mascope's runs stated rather than translated. Read by no roll-up "
+            "and no fold."
+        ),
+    )
+    engine_evidence: str | None = Field(
+        None,
+        max_length=1024,
+        description=(
+            "Optional: the engine's one line naming what earned `engine_level`, "
+            "kept and shown as the engine wrote it."
+        ),
+    )
+    engine_lift: str | None = Field(
+        None,
+        max_length=1024,
+        description=(
+            "Optional: what the engine says would raise `engine_level`, kept and "
+            "shown as the engine wrote it."
         ),
     )
 

@@ -48,6 +48,7 @@ from IsoSpecPy import PeriodicTbl
 from mascope_backend.api.new.peak_assignments.engine import (
     UNTARGETED_IONIZATION,
     UNTARGETED_NO_MATCH,
+    cap_alternatives,
 )
 from mascope_tools.composition.finder import assign_compositions
 from mascope_tools.composition.heuristic_filter import (
@@ -573,8 +574,10 @@ def record_twins(
                 "source": row.get("source"),
                 "halogen_twin_replaced": True,
             }
-            row["alternatives"] = [alternative, *(row.get("alternatives") or [])][
-                : max(max_alternatives, 1)
-            ]
+            row["alternatives"] = cap_alternatives(
+                row,
+                [alternative, *(row.get("alternatives") or [])],
+                max(max_alternatives, 1),
+            )
         named += 1
     return named

@@ -148,9 +148,16 @@ class BatchPeaksResource(BaseResource):
                  ``target`` the target compound a member was matched to, as
                  :meth:`~mascope_sdk.resources.peak_assignments.PeakAssignmentsResource.get`
                  gives it; null where neither names it),
-                 ``engine_tier`` and ``engine_claim`` (what an importing
-                 engine said of the consensus identity; null on every batch
-                 peak no import gave a verdict for), ``series`` (the
+                 ``engine_tier``, ``engine_claim`` and ``engine_level`` (what
+                 an importing engine said of the consensus identity, its
+                 identification level included; null on every batch peak no
+                 import gave a verdict for), ``member_level`` and
+                 ``member_levels`` (the identification levels the members'
+                 own runs stated for the consensus formula: the level most of
+                 them carry, a tie read as the weaker, and the count per
+                 level; null where no such member states one, on an earlier
+                 run's ledger, and absent from a server that predates them),
+                 ``series`` (the
                  homologous series a *Detect series* run found for the
                  consensus formula: ``unit``, ``step``, ``depth``,
                  ``root_formula`` and ``root_batch_peak_id`` of the assigned
@@ -300,16 +307,23 @@ class BatchPeaksResource(BaseResource):
                  ``consensus_ion_formula``, ``consensus_role``,
                  ``consensus_ionization_mechanism_id``,
                  ``consensus_tier``, ``engine_tier``, ``engine_claim``,
-                 ``support_fraction``, ``n_present``, ``is_ambiguous``,
-                 ``max_intensity``, ``isotopologue_of``, ``curated``.
-                 ``engine_tier`` and ``engine_claim`` are an importing
-                 engine's own verdict on the batch peak, as :meth:`list`
-                 serves them, and empty where no import gave one. Member
-                 columns: ``sample_item_id``,
+                 ``engine_level``, ``support_fraction``, ``n_present``,
+                 ``is_ambiguous``, ``max_intensity``, ``isotopologue_of``,
+                 ``curated``. ``engine_tier``, ``engine_claim`` and
+                 ``engine_level`` are an importing engine's own verdict on the
+                 batch peak, as :meth:`list` serves them, and empty where no
+                 import gave one. Member columns: ``sample_item_id``,
                  ``sample_item_name``, ``sample_peak_id``, ``mz``,
                  ``intensity``, ``assigned_formula``, ``ion_formula``,
                  ``ionization_mechanism_id``, ``source``, ``tier``, ``role``,
-                 ``fit_score``, ``p_correct``, ``owner_batch_peak_id``, and
+                 ``fit_score``, ``p_correct``, ``level``, ``level_evidence``
+                 and ``level_lift`` (the identification level the member's
+                 run stated of the row it was folded from, with its two
+                 lines, as
+                 :meth:`~mascope_sdk.resources.peak_assignments.PeakAssignmentsResource.get`
+                 serves them; null where that row commits another formula
+                 than the member reads, and absent from a server that
+                 predates them), ``owner_batch_peak_id``, and
                  ``stamped_isotopologue_of`` and ``stamp_source``: where a
                  *Stamp isotopologues* run stamped the member as a diagnostic
                  isotopologue (15N, 18O, 34S, 29Si, 30Si, 37Cl or 81Br) of
@@ -656,10 +670,13 @@ class BatchPeaksResource(BaseResource):
         ``engine_tier`` (``assigned`` | ``candidate`` | ``below_assignability``
         | ``unassigned``, the vocabulary of the per-sample import) and
         ``engine_claim`` (free text, up to 1024 characters: an evidence level,
-        the rule that decided). Both are kept on the batch peak the row landed
+        the rule that decided) and ``engine_level`` (the identification level
+        the engine stated, in the scale the engines share: ``5a``, ``5b``,
+        ``4a``, ``4b``, ``3a`` to ``3d``, ``2a``, ``2b`` or ``1``; anything
+        else is refused). They are kept on the batch peak the row landed
         on, beside the consensus tier the server derives, wherever the
         consensus then names the row's identity; :meth:`list` reads them back
-        and filters on them. The consensus tier stays the server's, and an
+        and filters on the tier. The consensus tier stays the server's, and an
         earlier import's verdicts come off the ledger when this one lands. The
         summary counts the verdicts shown (``engine_verdicts``) and those whose
         batch peak's consensus names another identity
@@ -705,6 +722,9 @@ class BatchPeaksResource(BaseResource):
                     "ionization_mechanism_id",
                     "engine_tier",
                     "engine_claim",
+                    "engine_level",
+                    "engine_evidence",
+                    "engine_lift",
                 )
                 if c in rows.columns
             ]
