@@ -72,6 +72,7 @@ from typing import Iterable, Mapping, Sequence
 from mascope_tools.composition.models import IonizationMechanism
 from mascope_tools.composition.utils import (
     composition_mass,
+    ion_counts,
     parse_composition,
     parse_formula_tokens,
     parse_ionization,
@@ -221,6 +222,21 @@ def step_formula(
 @lru_cache(maxsize=256)
 def _mechanism(notation: str) -> IonizationMechanism:
     return parse_ionization(notation)
+
+
+def _makes_its_ion(counts: Mapping[str, int], mechanism: IonizationMechanism) -> bool:
+    """Whether a stepped neutral still holds what a mechanism takes off it.
+
+    A step can take away the atoms a loss mechanism loses: C6H12O one oxygen
+    down is C6H12, which ``[M+H-H2O]+`` cannot ionize, and its ion would be
+    spelled as C6H12O's at another m/z. The finder reads no such neutral
+    through such a mechanism, so the walk proposes none. A simple mechanism
+    (one molecule, one charge, no loss) is not checked, as the finder does
+    not check it: ``[M-H]-`` reads what it read before.
+    """
+    if mechanism.simple:
+        return True
+    return all(count >= 0 for count in ion_counts(counts, mechanism).values())
 
 
 def ion_mz(counts: Mapping[str, int], notation: str) -> float:
@@ -403,6 +419,8 @@ def walk_series(
             for n in (1, -1):
                 stepped = step_formula(counts, unit, n)
                 if stepped is None or (labelled and has_label_alias(stepped)):
+                    continue
+                if not _makes_its_ion(stepped, parsed):
                     continue
                 stepped_mz = exact + n * ion_step
                 hit = _nearest(mzs, keys, stepped_mz, tolerance_ppm)

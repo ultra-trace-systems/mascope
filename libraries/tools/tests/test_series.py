@@ -31,6 +31,8 @@ CH2 = next(unit for unit in SERIES_UNITS if unit.formula == "CH2")
 OXYGEN = next(unit for unit in SERIES_UNITS if unit.formula == "O")
 SILOXANE = next(unit for unit in SERIES_UNITS if unit.formula == "C2H6OSi")
 CF2 = next(unit for unit in SERIES_UNITS if unit.formula == "CF2")
+WATER = next(unit for unit in SERIES_UNITS if unit.formula == "H2O")
+CARBON_DIOXIDE = next(unit for unit in SERIES_UNITS if unit.formula == "CO2")
 
 #: An oxidised compound read through deprotonation, and its exact ion m/z.
 ANCHOR = SeriesSource("a", "C8H10O5", "[M-H]-")
@@ -293,6 +295,59 @@ class TestTheWalk:
             [source], [shifted], CH2, tolerance_ppm=3.0, offset_da=offset
         )
         assert proposals["b"].formula == "C7H14O6"
+
+    @pytest.mark.parametrize(
+        "source, notation, unit, stepped",
+        [
+            ("C6H12O", "[M+H-H2O]+", OXYGEN, "C6H12"),
+            ("C5H10O2", "[M+H-H2O]+", CARBON_DIOXIDE, "C4H10"),
+            ("C7H6O2", "[M-CO2-H]-", CARBON_DIOXIDE, "C6H6"),
+        ],
+        ids=["water loss, one O down", "water loss, CO2 down", "CO2 loss"],
+    )
+    def test_a_step_that_takes_away_what_the_ion_loses_proposes_nothing(
+        self, source, notation, unit, stepped
+    ):
+        # One step down the neutral no longer holds the oxygen the mechanism
+        # loses, so it cannot make this ion: C6H12 has no water to lose, and
+        # its "ion" would be spelled C6H11+, which is C6H12O's at another m/z.
+        # The finder reads no such neutral through a loss, and the walk
+        # proposes none.
+        walked = SeriesSource("a", source, notation)
+        down = SeriesTarget("down", ion_mz(parse_formula_tokens(stepped), notation))
+        assert walk_series([walked], [down], unit, tolerance_ppm=3.0) == {}
+
+    def test_a_step_that_keeps_what_the_ion_loses_is_proposed(self):
+        # The same walk one oxygen up, and from one oxygen higher down to the
+        # source: both neutrals still hold the water the ion loses.
+        notation = "[M+H-H2O]+"
+        up = SeriesTarget("up", ion_mz(parse_formula_tokens("C6H12O2"), notation))
+        assert {
+            key: proposal.formula
+            for key, proposal in walk_series(
+                [SeriesSource("a", "C6H12O", notation)], [up], OXYGEN, tolerance_ppm=3.0
+            ).items()
+        } == {"up": "C6H12O2"}
+        down = SeriesTarget("down", ion_mz(parse_formula_tokens("C6H12O"), notation))
+        assert {
+            key: proposal.formula
+            for key, proposal in walk_series(
+                [SeriesSource("a", "C6H12O2", notation)],
+                [down],
+                OXYGEN,
+                tolerance_ppm=3.0,
+            ).items()
+        } == {"down": "C6H12O"}
+
+    def test_a_simple_mechanism_steps_as_it_did(self):
+        # [M-H]- is one molecule, one charge, no loss: the finder does not ask
+        # whether a neutral holds the H it takes off, and neither does the
+        # walk, so a simple mechanism proposes what it proposed before.
+        source = SeriesSource("a", "C2H2O4", "[M-H]-")
+        proposals = walk_series(
+            [source], [target("b", "C2O3")], WATER, tolerance_ppm=3.0
+        )
+        assert proposals["b"].formula == "C2O3"
 
     def test_a_mechanism_it_cannot_mass_steps_nowhere(self):
         source = SeriesSource("a", "C8H10O5", "not a mechanism")
