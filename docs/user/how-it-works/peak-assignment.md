@@ -67,7 +67,9 @@ Every peak is assigned in a two-stage engine:
   after, as target ions are built, so a molecule with no water to lose is never
   read through `[M+H-H2O]+` or `[M-H-H2O]-`. Its isotope lines are predicted at its own charge:
   those of a doubly charged ion sit half a mass unit apart, and the mass window is
-  the same ppm of the ion's m/z.
+  the same ppm of the ion's m/z. Where a dimer and one molecule make the same ion,
+  as two C3H6O3 and C6H12O6 do with a proton, the run reads the one molecule and
+  keeps the dimer as another reading of the ion.
 
 **A list compound meets the search.** When a run searches formulas, every peak Stage A
 assigned is put to Stage B too, with the list's compound as one of its candidates. The

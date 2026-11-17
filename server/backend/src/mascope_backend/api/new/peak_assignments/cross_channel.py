@@ -34,8 +34,9 @@ them, and the engine does not pretend otherwise: the finder collapses the two
 into one hypothesis before anything is ranked
 (``heuristic_filter.elect_same_ion_families``, step 1.3) and elects a reading by
 a stated policy - a closed-shell neutral first, then the mechanism carrying the
-most mass - so the ammoniated reading of M beats the protonated reading of
-M+NH3, and the nitrate cluster beats the deprotonated nitrate ester. The
+most mass, then the fewest molecules - so the ammoniated reading of M beats the
+protonated reading of M+NH3, the nitrate cluster beats the deprotonated nitrate
+ester, and protonated glucose beats the protonated dimer of C3H6O3. The
 readings it displaces stay on the row as ``same_ion`` alternatives, carrying the
 winner's own fit and mass error, because they are the same measurement split
 differently rather than weaker hypotheses.

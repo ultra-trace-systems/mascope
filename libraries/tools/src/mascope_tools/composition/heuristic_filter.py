@@ -784,6 +784,28 @@ def mechanism_mass_contribution(notation: str | None) -> float:
     return mechanism.shift
 
 
+@lru_cache(maxsize=512)
+def mechanism_multimer(notation: str | None) -> int:
+    """How many molecules of the neutral the ion a mechanism makes holds.
+
+    2 for ``[2M+H]+``, 1 for ``[M+H]+``. A monomer and a dimer reading of one
+    ion carry the same moiety, so :func:`mechanism_mass_contribution` ties them,
+    and this is what :func:`elect_same_ion_families` breaks the tie on.
+
+    :param notation: A mechanism, in either notation.
+    :return: The molecule count, 1 when the notation is missing or unparseable,
+        so an unreadable mechanism ranks as one molecule rather than deciding a
+        family.
+    """
+    if not notation:
+        return 1
+    try:
+        return parse_ionization(notation).multimer
+    except Exception:
+        # Fail-open, as mechanism_mass_contribution is.
+        return 1
+
+
 @lru_cache(maxsize=4096)
 def neutral_is_closed_shell(formula: str) -> bool:
     """Whether a neutral formula is an even-electron molecule.
@@ -957,7 +979,11 @@ def elect_same_ion_families(
     """Collapse candidates that make the same ion into one ranked hypothesis.
 
     The reading elected is the one whose neutral is a closed-shell molecule and,
-    among those, whose mechanism carries the most mass.
+    among those, whose mechanism carries the most mass. A monomer and a multimer
+    reading of one ion (``[M+H]+`` on C6H12O6, ``[2M+H]+`` on C3H6O3) carry the
+    same moiety, so the mass ties them, and the reading of fewer molecules is
+    elected: a multimer's own monomer ion is normally in the spectrum beside it,
+    and the multimer reading is the one that needs that second ion to be seen.
 
     :param candidates: Scored or unscored candidate dicts, each carrying ``ion``
         and ``ionization_mechanism``.
@@ -975,15 +1001,17 @@ def elect_same_ion_families(
         if len(members) == 1:
             elected.append(members[0])
             continue
-        # Closed-shell neutral first, then the most massive mechanism; the
-        # formula only breaks the impossible case of two mechanisms of identical
-        # mass, so the order is total and never falls through to enumeration
-        # order.
+        # Closed-shell neutral first, then the most massive mechanism, then the
+        # fewest molecules: one moiety makes [M+H]+ and [2M+H]+ readings of one
+        # ion, and only the molecule count tells them apart. The formula breaks
+        # what is left, two different moieties of identical mass, so the order
+        # is total and never falls through to enumeration order.
         ranked = sorted(
             members,
             key=lambda c: (
                 not neutral_is_closed_shell(str(c.get("formula") or "")),
                 -mechanism_mass_contribution(c.get("ionization_mechanism")),
+                mechanism_multimer(c.get("ionization_mechanism")),
                 str(c.get("formula") or ""),
             ),
         )
