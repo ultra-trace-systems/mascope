@@ -11,7 +11,8 @@ Design constraints:
   overridden via `mount` for alternative directories (e.g. `/transfer`
   for cross-server sync staging)
 - All functions raise RuntimeError on failure with stderr included — callers decide
-  whether to abort or warn.
+  whether to abort or warn. A Ctrl-C is not a failure to decide on: `pg_restore`
+  stops what it left in the container, logs it and lets the interrupt through.
 - No application runtime context is accepted as parameters — callers resolve
   container names, paths, and credentials from config before calling.
 """
@@ -22,6 +23,8 @@ import subprocess
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+
+from mascope_cli.runtime import runtime
 
 
 #: How a maintenance script declares that it only reads: this exact line, at
@@ -358,10 +361,13 @@ def pg_restore(
                     default) for no limit.
     :type timeout: int | None
     :raises FileNotFoundError: If `dump_file` does not exist on the host.
-    :raises RuntimeError: If pg_restore exits non-zero, exceeds `timeout` or is
-                          interrupted. In the last two cases the restore
-                          inside the container has been stopped and
-                          `database` is incomplete.
+    :raises RuntimeError: If pg_restore exits non-zero or exceeds `timeout`.
+                          After a timeout the restore inside the container
+                          has been stopped and `database` is incomplete.
+    :raises KeyboardInterrupt: Re-raised on Ctrl-C, after the restore inside
+                               the container has been stopped (or the stop
+                               failed) and an error saying `database` is
+                               incomplete has been logged.
     :rtype: None
     """
     if not dump_file.exists():
@@ -399,12 +405,21 @@ def pg_restore(
             f"pg_restore into '{database}' exceeded the {timeout}s timeout and "
             f"was stopped. '{database}' is incomplete: restore it again."
         ) from e
-    except KeyboardInterrupt as e:
-        _stop_restore(container, user, database)
-        raise RuntimeError(
-            f"pg_restore into '{database}' was interrupted and stopped. "
-            f"'{database}' is incomplete: restore it again."
-        ) from e
+    except KeyboardInterrupt:
+        # The interrupt goes on up, so the command ends as the operator asked:
+        # turned into a RuntimeError, it would be caught by callers that go on
+        # to their next stage (`env sync` would start the filestore sync).
+        # Click reports only "Aborted!", so what was left is said here.
+        try:
+            _stop_restore(container, user, database)
+        except RuntimeError as stop_failed:
+            runtime.logger.error(str(stop_failed))
+        else:
+            runtime.logger.error(
+                f"pg_restore into '{database}' was interrupted and stopped. "
+                f"'{database}' is incomplete: restore it again."
+            )
+        raise
 
     if result.returncode != 0:
         raise RuntimeError(
