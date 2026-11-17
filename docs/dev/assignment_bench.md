@@ -207,9 +207,9 @@ As built (6.5, `tooling/assignment_bench/run.py`): `bench run <ref>` checks
 the ref out into the bench's worktree with `uv sync --frozen`, refuses it
 when it does not know the bench database's alembic revision, and otherwise
 migrates the database to the ref's head. It starts the ref's backend on the
-bench slot with peak assignment on and four uvicorn workers, written into
-the env's own config layer, since an engine run and the card's detail reads
-are CPU-bound in their worker. It leaves out a sample whose newest
+bench slot with peak assignment on and eight uvicorn workers (four until
+MAS-934), written into the env's own config layer, since an engine run is
+CPU-bound in its worker. It leaves out a sample whose newest
 reference run is not the one `bench reference` published at the pin, and
 runs the in-app engine on every other sample with no run config, the
 engine's own defaults; `--decoys` adds the arms of the set's class (9 ppm
@@ -384,10 +384,15 @@ to run the commands against any instance and how to ask for a card.
   fire with nobody signed in, as the testbed's service does. `journalctl
   --user -u bench-baseline` has each night's console, and `bench.py
   baseline` the card it made.
-- **The cost.** On the agent box, with the backend's four workers and four
-  samples at once, the engine takes about 26 minutes over the two demo sets
-  and the card about 67, since it reads each committed row's provenance
-  with a request of its own (#3134): about an hour and a half a run. The
+- **The cost.** On the agent box, with the backend's eight workers and
+  eight samples at once, the engine takes about 17 minutes over the two
+  demo sets and the card about 4, since it reads each committed row's rule
+  records off its sample's ledger (MAS-847): about 21 minutes a run, at a
+  load average of about 7 to 8 during the engine. Four workers and four
+  samples at once took 27 minutes in the engine and 32 a run, at a load
+  average of about 3.5 (MAS-934, the two cards identical). A ref from
+  before the ledger's rule-record columns makes the card read each row's
+  provenance with a request of its own (#3134), about 67 minutes more. The
   decoy arms add three engine runs per Orbitrap sample. The default budget
   is 120 minutes a set, for its runs; the card has none, and is stopped
   only when it writes nothing for 30 minutes.
