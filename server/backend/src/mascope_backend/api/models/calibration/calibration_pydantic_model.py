@@ -1,6 +1,10 @@
+from datetime import datetime as dt
+from typing import Literal
+
 import numpy as np
 from pydantic import BaseModel, Field, model_validator
 
+from mascope_backend.api.lib.datetimes import as_utc
 from mascope_backend.api.models.base_pydantic_model import QueryParamsModel
 from mascope_backend.api.models.calibration.config import (
     calibrants_over_cap,
@@ -31,6 +35,41 @@ class GetMzCalibrationQueryParams(QueryParamsModel):
                 "Specify only one: either a sample item ID "
                 "or an instrument name, not both."
             )
+        return self
+
+
+class CalibrationTrendQueryParams(QueryParamsModel):
+    instrument: str = Field(
+        ...,
+        description="The TOF instrument, by its name as its files spell it.",
+    )
+    polarity: Literal["+", "-"] = Field(
+        ..., description="The polarity whose files are read: + or -."
+    )
+    datetime_min: dt | None = Field(
+        None,
+        description=(
+            "Earliest acquisition time read, inclusive; 90 days before the "
+            "latest when left out. A time without an offset is read as UTC."
+        ),
+    )
+    datetime_max: dt | None = Field(
+        None,
+        description=(
+            "Latest acquisition time read, inclusive; now when left out. A "
+            "time without an offset is read as UTC."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def check_window(self) -> "CalibrationTrendQueryParams":
+        """The window must not end before it starts."""
+        if (
+            self.datetime_min is not None
+            and self.datetime_max is not None
+            and as_utc(self.datetime_min) > as_utc(self.datetime_max)
+        ):
+            raise ValueError("datetime_min is after datetime_max.")
         return self
 
 
