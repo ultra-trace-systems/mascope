@@ -72,10 +72,10 @@ here is the File Agent library (`agents/file`) and the SDK calls it makes
 | Every request goes through the module-level `requests` functions, which open a default `Session`: `trust_env` is on and no call passes `proxies=`. `HTTPS_PROXY` and `NO_PROXY` are read, and on Windows, when no variable is set, the proxy in the Internet Settings of the account the process runs as. | `mascope_sdk/_agents.py`, `mascope_sdk/_http.py`, `mascope_file_agent/capabilities.py`, `status.py`, `wizard.py` | A static proxy works with no agent change. A proxy set only by an auto-configuration script (PAC, WPAD) does not: `requests` does not evaluate those. |
 | TLS is verified against the `certifi` bundle that `requests` ships. Verification is a boolean (`VERIFY_TLS` in `mascope_sdk/_agents.py`, `verify_tls` in the agent's configuration); the Windows certificate store is not read. `REQUESTS_CA_BUNDLE` in the process environment replaces the bundle. | `requests.adapters.HTTPAdapter.cert_verify`, `requests.sessions.Session.merge_environment_settings` | Anything that terminates TLS in front of the agent - a TLS-inspecting corporate proxy, the connector's reverse form (4.3) - needs a publicly trusted certificate, or `REQUESTS_CA_BUNDLE` set for the agent's process. An internal CA installed in Windows is not enough. |
 | The resumable upload takes only the upload id from the creation response's `Location` and addresses the chunks through its own configured host. | `api_post_file_tus` in `mascope_sdk/_agents.py` | A reverse proxy does not have to rewrite `Location`. |
-| Pairing is a device-code flow: `POST /api/auth/pairing/start` returns a code, the agent polls `/api/auth/pairing/poll`, and a person approves the code in the web app from any browser. | `start_pairing`, `run_pairing`, `_await_approval` in `mascope_file_agent/wizard.py`; `api/new/auth/pairing/routes.py` | No URL comes back to rewrite, and the instrument PC needs no browser session with the server. |
+| Pairing is a device-code flow: `POST /api/auth/pairing/start` returns a code, the agent polls `/api/auth/pairing/poll`, and a person approves the code in the web app from any browser. | `start_pairing`, `run_pairing`, `_await_approval` in `mascope_file_agent/wizard.py`; `api/new/auth/pairing/routes.py` | No URL comes back to rewrite, and pairing needs no browser on the instrument PC. People who use the web UI there are another client with needs of its own (4.6). |
 | The origin guard on state-changing requests acts only on a request that carries `Origin` or `Referer`. | the origin middleware in `app/fast.py`, `origins.py` | `requests` sends neither, so agent writes pass whatever `Host` a proxy forwards. |
-| The acquisition record rides in the `Upload-Metadata` header of the creation request: up to 16 KB of JSON, about 22 KB encoded. | `api_post_file_tus`; `large_client_header_buffers 4 32k` in `server/frontend/nginx.conf` | A reverse proxy left at nginx's default 8 KB header line refuses uploads that carry a large record. |
-| Chunks are 50 MB, halved down to 5 MB when connections fail; a chunk's read timeout is 600 s. | `TUS_CHUNK_SIZE`, `TUS_MIN_CHUNK_SIZE`, `_transfer_chunks` in `mascope_sdk/_agents.py` | A reverse proxy needs a body limit of at least 50 MB (the shipped nginx allows 100 MB on the tus location) and a read timeout to match. |
+| The acquisition record rides in the `Upload-Metadata` header of the creation request: up to 16 KB of JSON, about 22 KB encoded. | `api_post_file_tus`; `large_client_header_buffers 4 32k` in `server/frontend/nginx.conf`; the `ValidationError` branch of `FileUploader.upload_sample_file` | A reverse proxy left at nginx's default 8 KB header line refuses the creation request with a 400. The agent then sends the file again without its record, so the upload goes through and the record is lost, with only a warning in the agent's log. The risk is records lost quietly, not uploads refused. |
+| Chunks are 50 MB, halved down to 5 MB when connections fail; a chunk's read timeout is 600 s. | `TUS_CHUNK_SIZE`, `TUS_MIN_CHUNK_SIZE`, `_transfer_chunks` in `mascope_sdk/_agents.py` | A reverse proxy needs a body limit of at least 50 MB (the shipped nginx allows 100 MB on the tus location) and a read timeout of at least the agent's 600 s per chunk. The shipped nginx has 3600 s on the tus location, because finalizing a large upload takes time. |
 | The watcher uses watchdog's native `Observer`, with no polling fallback. | `FileSystemWatcher` in `mascope_file_agent/watcher.py` | On Linux that is inotify, which sees files written through a Samba server on the same host but not files another machine writes to a share mounted from elsewhere. |
 | A file counts as complete when its size holds over a 1 s look and `os.rename(f, f)` succeeds; the uploader then waits until the file's `st_atime` is `timeout` seconds old (default 3). | `FileSystemWatcher._wait_until_complete`, `FileUploader.seconds_since_last_access`, `DEFAULT_SETTINGS` in `config.py` | On Windows the rename fails while a writer holds the file open, which is the real "still being written" signal. On Linux it always succeeds, and the default `relatime` mount option does not move `st_atime` on writes. On a Linux host only the writer's own protocol says a file is whole. |
 | The record beside a file, `<file>.mascope.json`, is read when the file is uploaded, and a record never triggers an upload of its own. | `UploadProvenance._record`, `acquisition.read_sidecar`; the handler's `ignore_patterns` in `watcher.py` | A record that lands after the upload has started is not sent. |
@@ -87,15 +87,23 @@ here is the File Agent library (`agents/file`) and the SDK calls it makes
 A ladder, cheapest first. Each rung keeps the previous one's agent behaviour
 and adds isolation.
 
-### 4.1 (a) A firewall rule to one name
+The agent is not the only thing on the instrument PC that may reach out.
+People may use the Mascope web UI there, and the site may want remote support
+on the PC on request. Each needs more than the agent's one connection: 4.6
+says what a browser needs on each rung, and 4.7 what TeamViewer needs. Where
+this section says "the instance's name and nothing else", it means for the
+agent; those two add named destinations of their own.
+
+### 4.1 (a) A firewall rule by name
 
 The instrument PC keeps its network, and the customer's firewall lets it reach
-the Mascope instance's name on 443 and nothing else. Nothing to build. The
-rule has to be by name, not address: the fleet's servers admit 443 from
-Cloudflare's ranges only (the `firewall` role in `tooling/fleet`), so the
-instance's public addresses are Cloudflare's, and an address rule for it is a
-rule for every site Cloudflare fronts. That needs a firewall that filters on SNI or DNS, which
-many sites have.
+the Mascope instance's name on 443 - plus the names of 4.6 and 4.7 where those
+are wanted - and nothing else. Nothing to build. The rule has to be by name, not
+address: the fleet's servers admit 443 from Cloudflare's ranges only (the
+`firewall` role in `tooling/fleet`), so the instance's public addresses are
+Cloudflare's, and an address rule for it is a rule for every site Cloudflare
+fronts. That needs a firewall that filters on SNI or DNS, which many sites
+have.
 
 ### 4.2 (b) The customer's proxy
 
@@ -106,7 +114,8 @@ conditions: a static setting, not a PAC script, and a proxy that does not
 inspect TLS for that name (or `REQUESTS_CA_BUNDLE` naming a bundle with the
 proxy's CA). The instrument PC then needs no internet DNS either: with a proxy,
 the proxy resolves the target name. TLS stays end to end and the agent
-verifies the instance's real certificate.
+verifies the instance's real certificate. A browser on the PC takes the same
+Windows proxy setting (4.6).
 
 External dependency: whether the OrbionICS process sees the setting - inherits
 a machine-wide variable, or runs as an account with the Windows proxy set.
@@ -118,11 +127,13 @@ DMZ (section 5). The instrument PC reaches only the connector; the connector
 alone reaches out, to named hosts. It forwards in one of two forms.
 
 **Forward proxy, the default.** The connector runs a forward proxy that admits
-`CONNECT` to the instance's name on 443 and nothing else. On the instrument PC
-this is rung (b) with the connector as the proxy, so the agent needs no change.
-TLS is end to end: the connector holds no certificate and no token, sees only
-names and byte counts, and has nothing worth stealing. Nothing has to be
-rewritten.
+`CONNECT` to a short list of names and nothing else. The list is the
+instance's name on 443, plus, where the site wants them, the sign-in check's
+host for a browser on the PC (4.6) and TeamViewer's servers for remote support
+(4.7). On the instrument PC this is rung (b) with the connector as the proxy,
+so the agent needs no change. TLS is end to end: the connector holds no
+certificate and no token, sees only names and byte counts, and has nothing
+worth stealing. Nothing has to be rewritten.
 
 Some IT departments count a `CONNECT` tunnel as internet access by another
 name, because the instrument PC still holds a TLS session with a host outside.
@@ -143,12 +154,16 @@ uses once it is built. From section 3, it must:
   credential is then a secret on a customer-site host and should be scoped to
   that one record;
 - send `Host` and SNI for the instance's name upstream;
-- allow 32 KB header lines, a body of at least 50 MB and a 600 s read timeout,
-  as the shipped `nginx.conf` does.
+- allow 32 KB header lines and a body of at least 50 MB, as the shipped
+  `nginx.conf` does, and a read timeout of at least the agent's 600 s per
+  chunk (the shipped `nginx.conf` has 3600 s on the tus location).
 
 It does not have to rewrite `Location`, pairing responses or origins. The cost
 of this form: the connector sees tokens and data in the clear, which makes it a
 host worth attacking, where the forward form is not.
+
+The reverse form serves the agent only. The web UI does not work through it
+on the instrument PC (4.6), and TeamViewer cannot use it (4.7).
 
 Neither form changes outage behaviour: the files wait on the instrument PC,
 within the limits of section 3's last rows.
@@ -187,6 +202,10 @@ rules that section 3 dictates:
 External dependency: OrbionICS needs a mode that writes to a share instead of
 uploading, in the order above.
 
+The drop folder gives the instrument PC no path to Mascope at all, so nobody
+uses the web UI there; people use Mascope from another PC (4.6). Remote
+support needs the forward proxy beside the share (4.7).
+
 ### 4.5 One-way links: out of scope
 
 A data diode cannot carry the agent's protocol, which needs answers: the
@@ -194,6 +213,69 @@ upload's `HEAD` for the server's offset, the creation response's `Location`,
 the pairing poll, token renewal. A one-way site needs a fire-and-forget
 transport and a receiver on the far side, which is a product of its own.
 Design it only when a customer requires it.
+
+### 4.6 The Mascope web UI on the instrument PC
+
+People often use Mascope in a browser on the instrument PC itself. A browser
+is a second client, and it needs more than the agent does:
+
+- **The whole site**, not the handful of routes the agent uses (4.3).
+- **A WebSocket.** The app opens socket.io with `transports: ['websocket']`
+  and no polling fallback (`server/frontend/src/api/socket.js`). Its API
+  module waits at load for the socket's first connection (`export const api =
+  await initApi()` in `api/client.js`), so without the socket the app does not
+  start. Once it runs, it blocks itself behind "No connection to the server"
+  whenever the socket drops (`App.vue`). The spectrum and time-series plots
+  receive their data over the socket (`lib/charts/ChartMatchSpectra/data.js`,
+  `lib/charts/ChartMatchTimeseries/data.js`).
+- **The sign-in check, where the instance turns it on.** With
+  `MASCOPE_TURNSTILE_SITE_KEY` set (`docs/maintaining.md`, "Turning Turnstile
+  on"), the sign-in form loads Cloudflare's script and its frame from
+  `challenges.cloudflare.com` (`server/frontend/src/lib/turnstile.js`; the
+  Content-Security-Policy in `nginx.conf` admits that host). **Login** stays
+  greyed out until the check returns a token (`lib/panes/PaneLogin.vue`). The
+  agent never meets the check: pairing, uploads and token calls skip it.
+
+What that means on each rung:
+
+| Rung | The web UI on the instrument PC |
+|---|---|
+| (a) firewall rule, (b) customer's proxy, (c) connector, forward form | Works, if the browser uses the proxy. Browsers take the Windows proxy setting, PAC scripts included, unlike the agent. Allow `challenges.cloudflare.com` beside the instance's name when the instance has Turnstile on, or leave Turnstile off for that instance. A plain `CONNECT` tunnel carries the WebSocket as it is. A TLS-inspecting proxy that does not pass WebSocket upgrades lets the page load and the app never start, so exempt the instance's name from inspection. |
+| (c) connector, reverse form | Does not work. The form admits the agent's routes only. Opening it to the whole site, `/socket.io/` upgrades included, would still fail: the browser's requests carry the connector's name as `Origin` while the connector sends the instance's `Host` upstream, so the origin guard (`own_request_origins` in `server/backend/src/mascope_backend/origins.py`) refuses every state-changing request. The Turnstile widget is also registered for the instance's hostname. The reverse form serves the agent only. |
+| (d) drop folder | No browser access from the instrument PC; people use Mascope from another PC. |
+| Managed on-premises, isolated appliance (section 6) | The browser reaches the server over the LAN, and nothing else is needed. An on-premises server leaves Turnstile off, unless its users' browsers can reach `challenges.cloudflare.com`. |
+
+### 4.7 Remote support on the instrument PC, on request
+
+Sites often want remote support on the instrument PC, through TeamViewer,
+started when someone asks for it. This note gives that a network path. What
+is done in a session, supporting the instrument software, stays outside it
+(section 10).
+
+TeamViewer makes outbound connections only and needs no inbound port:
+TCP/UDP 5938 first, TCP 443 when 5938 is blocked, and TCP 80 as a last resort,
+to TeamViewer's servers under `teamviewer.com`
+([Ports and URLs used by TeamViewer](https://www.teamviewer.com/en/global/support/knowledge-base/teamviewer-remote/troubleshooting/ports-used-by-teamviewer/)).
+The full Windows client takes an HTTP proxy, in its options or with the
+`--ProxyIP` parameter
+([Command line parameters](https://www.teamviewer.com/en/global/support/knowledge-base/teamviewer-remote/for-developers/command-line-parameters/)).
+That it works through the connector's proxy is still to be tested (phase A).
+
+- **(a), (b) and managed on-premises:** through the customer's firewall or
+  proxy, which admits TeamViewer's names.
+- **(c) forward form:** the connector's proxy admits TeamViewer's names on 443
+  as a second named destination, with 5938 only where the customer also opens
+  it. The proxy log records every session.
+- **Reverse form and drop folder:** neither gives the PC a proxy, so the
+  connector runs the forward proxy beside them, for TeamViewer's names alone.
+- **Isolated appliance:** only through a path the customer opens for the
+  session. Remote desktop through the instrument PC is today's path there
+  ([isolated_deployment_plan.md](isolated_deployment_plan.md) section 1).
+
+"On request" means two things. Someone at the PC starts or accepts each
+session, and no unattended access is configured on it. And the customer's
+firewall can keep the connector's TeamViewer egress closed between sessions,
+opening it when a session is wanted.
 
 ## 5. The connector
 
@@ -219,10 +301,14 @@ proxy forms it holds no customer data.
 - **A `connectors` inventory group** beside `fleet` in `tooling/fleet`, with
   its own play. `sshd_hardening` and `unattended_upgrades` apply as they are
   (the connector has egress for its mirrors). `firewall` needs a connector
-  variant: default deny in, allow out and SSH on `tailscale0` as now, but not
-  the Cloudflare 443 rule or the container NAT block, and instead the
-  forwarding port (or 445 for the drop folder) from the instrument PCs'
-  addresses, as a per-host variable. `docker_daemon`, `deploy_env` and
+  variant. It keeps default deny in, allow out and SSH on `tailscale0` as now.
+  It leaves out the Cloudflare 443 rule and the container NAT block. It leaves
+  forwarding at ufw's `DROP`, where the role sets `DEFAULT_FORWARD_POLICY` to
+  `ACCEPT` for Docker: the connector runs no containers, and section 10
+  promises it gives the instrument PC no route. (Tailscale's own forwarding
+  rules still carry the subnet route of section 7 under that policy.) And it
+  adds the forwarding port, or 445 for the drop folder, from the instrument
+  PCs' addresses, as a per-host variable. `docker_daemon`, `deploy_env` and
   `postgres_readonly` do not apply, and neither does `update.yml`: there is no
   Mascope stack. A new `connector` role installs the proxy and, for the drop
   folder, Samba and the agent at a pinned version.
@@ -240,12 +326,16 @@ proxy forms it holds no customer data.
 | Direction | From | To | What for |
 |---|---|---|---|
 | In | the instrument PCs' addresses | the connector, one port | the proxy port (forward form), 443 (reverse form) or 445 (drop folder) |
-| Out | the connector | the Mascope instance's name, 443 | the uploads |
+| Out | the connector | the Mascope instance's name, 443 | the uploads, and the web UI where people use it on the instrument PC (4.6) |
+| Out, optional | the connector | `challenges.cloudflare.com`, 443 | the sign-in check, for a browser on the instrument PC when the instance has Turnstile on (4.6) |
+| Out, on request | the connector | TeamViewer's servers under `teamviewer.com`, 443; 5938 only if the customer opens it | remote support sessions on the instrument PC, opened per session by the customer's firewall if it wants (4.7) |
 | Out | the connector | Tailscale's coordination server and relays, which Tailscale's documentation lists; it relays over 443 when UDP is blocked | administration |
 | Out | the connector | the Ubuntu mirrors or the customer's own; an NTP source | patching and time |
 | Out, optional | the connector | GitHub's release download host | installers, if they come from GitHub (5.4) |
 
-The instrument PC has no default route and no internet DNS.
+The instrument PC has no default route and no internet DNS. Its agent, its
+browser and TeamViewer reach outside only through the connector's proxy, and
+only to the names above.
 
 ### 5.4 Installers for PCs that cannot reach GitHub
 
@@ -273,18 +363,23 @@ would - the customer's IT zone or DMZ - with the egress allow-list in
 server itself. It is then an ordinary fleet host: `update.yml`, unattended
 upgrades, monitoring and error reporting work as they do for a cloud server.
 The instrument PC reaches it over the LAN and never the internet, which
-hosting.md already says the agent is indifferent to. The `firewall` role needs
-443 from the LAN instead of from Cloudflare, the same variable
-[isolated_deployment_plan.md](isolated_deployment_plan.md) section 4.1 asks
-for. Data stays on site, and maintenance costs about what a cloud server's
-does.
+hosting.md already says the agent is indifferent to; so does a browser there
+(4.6). TeamViewer, if the site wants it, goes through the customer's firewall
+or proxy (4.7). The `firewall` role needs a per-host source for 443, the LAN,
+in place of the Cloudflare rule.
+[isolated_deployment_plan.md](isolated_deployment_plan.md) section 4.1 needs
+the same. It says the role should skip the Cloudflare rule for isolated
+hosts, and the only variable it names is the SSH source. Data stays on site,
+and maintenance costs about what a cloud server's does.
 
 ### 6.2 The isolated appliance
 
 No route at all, for the server or anything else at the site:
 [isolated_deployment_plan.md](isolated_deployment_plan.md), with its signed
 bundles, inbox, support bundle and host-hygiene checklist. Every release needs
-a carrier and every diagnosis a session or a bundle. It is the expensive
+a carrier and every diagnosis a session or a bundle. A browser on the
+instrument PC reaches the server over the LAN (4.6). Remote support goes only
+through a path the customer opens for the session (4.7). It is the expensive
 offering and should be priced as one.
 
 ## 7. Where this meets the isolated deployment plan
@@ -311,10 +406,15 @@ per site with its inventory entry; both settings stay valid.
 
 | Offering | Where the data lives | What the instrument PC reaches | What the customer provides | Maintenance |
 |---|---|---|---|---|
-| Cloud | Ultra Trace's hosting | the instance, by 4.1 or 4.2 | outbound 443 to one name | the fleet's |
+| Cloud | Ultra Trace's hosting | the instance, by 4.1 or 4.2 | outbound 443 to the instance's name, plus the names of 4.6 and 4.7 where wanted | the fleet's |
 | Cloud + Connector | Ultra Trace's hosting | the connector only | a small VM and the rules of 5.3 | the fleet's, plus one small host per site |
 | Managed on-premises | the customer's server | the server, over the LAN | a server in the IT zone and the hosting.md allow-list | about a cloud server's |
 | Isolated appliance | the customer's server | the server, over the LAN | nothing outbound | a carrier per release; the isolated plan |
+
+In every row but two, a browser on the instrument PC reaches Mascope by the
+agent's path, and TeamViewer by a path of its own (4.6, 4.7). The exceptions
+are the connector's reverse form and the drop folder, which give the browser
+no path at all.
 
 Prices are a business decision outside this note. The point of the table is
 that each offering's cost follows from its last column, so the costly one is
@@ -327,11 +427,14 @@ prospect: a section in `docs/hosting.md`, "Keeping the instrument PC offline",
 and a paragraph in the instrument guide (`docs/user/instruments/index.md`) on
 proxies - a static setting through `HTTPS_PROXY` or the account's Windows
 proxy, no PAC, and TLS inspection exempted for the instance's name or
-`REQUESTS_CA_BUNDLE` set. Test the agent through a `CONNECT` proxy on the LAN
-test host with the PC's own route closed. Ask the OrbionICS questions of
+`REQUESTS_CA_BUNDLE` set. The same pages say what a browser on the PC needs
+(4.6) and what TeamViewer needs (4.7). Test the agent through a `CONNECT`
+proxy on the LAN test host with the PC's own route closed, and on Windows a
+browser and TeamViewer through the same proxy. Ask the OrbionICS questions of
 section 11. (MAS-957, MAS-958, MAS-959.)
 
-**Phase B - the connector, forward form.** The `connector` role, the
+**Phase B - the connector, forward form.** The `connector` role, its proxy's
+list of names (the instance's, and the names of 4.6 and 4.7 per site), the
 `connectors` group and play, the firewall variant, the Tailscale tag and ACL,
 the push monitor, and a runbook chapter in `docs/maintaining.md`. Pilot at one
 site. (MAS-960, MAS-961, MAS-962, MAS-965, MAS-970.)
@@ -361,7 +464,8 @@ isolated plan's phases. (MAS-973.)
 - The connector holding data beyond the drop folder's retention. It is not a
   cache of the instance.
 - Running Mascope's stack on the connector. That is managed on-premises (6.1).
-- Remote access to the instrument PC. Supporting the instrument software is a
+- Supporting the instrument software itself. Section 4.7 gives remote support
+  on the instrument PC a network path; what is done in a session is a
   separate matter, as the isolated plan also says.
 
 ## 11. Open questions
@@ -387,7 +491,12 @@ isolated plan's phases. (MAS-973.)
   reading the operating system's store, would make the reverse form and
   TLS-inspecting proxies work without an environment variable. It also bears
   on the internal-CA option in `docs/hosting.md`, whose "install the CA on
-  client machines once" reaches browsers but not the agent.
+  client machines once" reaches browsers but not the agent (GitHub #3286).
+- **Remote support on the instrument PC** (4.7): whether a site's IT accepts
+  TeamViewer through the connector, opened per session; whether supporting
+  OrbionICS needs unattended access rather than a session someone at the PC
+  accepts; and whether TeamViewer works through the connector's proxy on 443
+  as its documentation says (phase A's test).
 - **The connector's form:** a customer VM or a host Ultra Trace ships, and who
   patches the hypervisor under it.
 - **Tailscale on a customer-site host:** the same acceptance question the
