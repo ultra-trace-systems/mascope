@@ -332,6 +332,90 @@ class TestAClaimIsJudgedAgain:
         # What it was given is left as the stages built it.
         assert rows == before
 
+    def test_a_line_below_assignability_stays_below_assignability(self):
+        # The run held the row on the owner's line below assignability, its
+        # evidence under the candidate band. Read as the owner's 13C line it
+        # keeps that tier: a claim changes what a row is read as, and the
+        # judging passes only ever lower a tier.
+        row = on_its_line()
+        row["tier"] = "below_assignability"
+        row["provenance"]["evidence"] = 0.3
+
+        judged = judge(anchors() + [*owner(), row])
+
+        line = by_id(judged.rows)["pa-y"]
+        assert (line["role"], line["owner_peak_assignment_id"]) == ("iso_child", "pa-x")
+        assert line["tier"] == "below_assignability"
+        assert line["provenance"][ENVELOPE_CLAIM]["displaced"]["tier"] == (
+            "below_assignability"
+        )
+        reason = next(
+            reason
+            for reason in line["provenance"]["tier_reasons"]
+            if reason["rule"] == REASON_ENVELOPE_CLAIM
+        )
+        assert reason["detail"].endswith(
+            "it was committed as C7H11NO4 first, which is what puts the line in "
+            "doubt, so it is read as that isotopologue, below assignability as "
+            "that reading was"
+        )
+        assert judged.tiering["claimed"] == 1
+
+    def test_a_line_the_mass_gate_held_below_assignability_stays_there(self):
+        # Built at assigned, but five widths off a run the anchors centre
+        # within 0.1 ppm: the first round's mass gate holds it below
+        # assignability. Read as the owner's 13C line, its mass error follows
+        # the owner's, so the second round's gate sets it no ceiling; the line
+        # is read no higher than the round that found the claim held the row.
+        # Its own line is held at candidate in that round, and keeps that.
+        rows = anchors() + [
+            *owner(),
+            on_its_line(ppm=5.0),
+            commit(
+                "pa-y-13c",
+                "C7H11NO4",
+                "C7H12NO4+",
+                202.0,
+                12.0,
+                role="iso_child",
+                owner="pa-y",
+                label="13C",
+            ),
+        ]
+
+        judged = judge(rows)
+
+        line = by_id(judged.rows)["pa-y"]
+        assert (line["role"], line["owner_peak_assignment_id"]) == ("iso_child", "pa-x")
+        assert line["tier"] == "below_assignability"
+        assert line["provenance"]["mass_gate"] == {
+            "corroborated_by": None,
+            "tracking": TRACKING_TRACKS,
+        }
+        displaced = line["provenance"][ENVELOPE_CLAIM]["displaced"]
+        assert (displaced["tier"], displaced["held_tier"]) == (
+            "assigned",
+            "below_assignability",
+        )
+        reason = next(
+            reason
+            for reason in line["provenance"]["tier_reasons"]
+            if reason["rule"] == REASON_ENVELOPE_CLAIM
+        )
+        assert reason["detail"].endswith(
+            "so it is read as that isotopologue, below assignability as that "
+            "reading was"
+        )
+        carried = by_id(judged.rows)["pa-y-13c"]
+        assert (carried["owner_peak_assignment_id"], carried["tier"]) == (
+            "pa-x",
+            "candidate",
+        )
+        assert carried["provenance"][ENVELOPE_CLAIM]["displaced"]["held_tier"] == (
+            "candidate"
+        )
+        assert (judged.tiering["claimed"], judged.tiering["claim_rounds"]) == (1, 2)
+
     def test_both_passes_read_the_owner_s_lines_at_the_files_resolution(self):
         # A row 2.5 times the owner's 13C line is taller than that line can
         # make it, and its own line 3% of the owner taller than the owner's

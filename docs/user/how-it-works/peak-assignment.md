@@ -848,8 +848,10 @@ confidence, since that is how the field communicates identification certainty.
 
 The evidence sets the highest tier a row can reach. A second pass then asks each committed
 row the questions the evidence cannot answer, and it can only lower a tier, never raise
-one; the one thing it does besides is to read a peak as another compound's isotope line,
-which replaces the row's reading rather than raising it (below). The peak inspector lists
+one. So the order its checks run in decides which of them a row names, never the tier the
+row ends on. The one thing it does besides is to read a peak as another compound's isotope
+line, which replaces the row's reading rather than raising it: the line is *candidate* at
+most (below). The peak inspector lists
 its answers under **Why this tier**: every committed row carries at least one, naming
 either what capped it at *candidate* or what it kept its tier on. The sentence under each
 is the run's own, about that row.
@@ -991,7 +993,10 @@ What caps a row at candidate:
   combined height.
 - **read as a neighbour's line** — where that neighbour is held at *assigned*, the peak
   is read as its isotopologue instead, at *candidate*: the run first committed it as a
-  compound of its own, which is exactly the doubt. The formula it held before is the
+  compound of its own, which is exactly the doubt. A peak the run held below
+  assignability stays there, since this reading never raises a tier: whether its own
+  evidence held it there or a cap did, such as *off calibration* on a peak far off the
+  run's calibration. The formula it held before is the
   first of its close alternatives, so assigning it by hand puts it back. The peak stays
   what it was, with the reason saying why, where the neighbour is at *candidate*, where
   the peak is a compound of your own target library, where another ionization channel

@@ -2233,6 +2233,9 @@ class TestReadingALineAsTheNeighbours:
                     line_mz=pytest.approx(line_mz),
                     share=pytest.approx(share, abs=1e-6),
                     tracking=TRACKING_TRACKS,
+                    # The tier the pass left the row at, which the line is read
+                    # no higher than.
+                    held_tier="candidate",
                 ),
             )
         ]
@@ -2240,6 +2243,31 @@ class TestReadingALineAsTheNeighbours:
         # Finding it changes nothing on the rows: applying it is the service's.
         assert tier_of(rows, "pa-child") == "candidate"
         assert rows[1]["role"] == "M0"
+
+    def test_a_claim_records_the_tier_a_cap_held_the_row_at(self):
+        # The run's mass gate held the row below assignability before this
+        # pass; the claim reads the line no higher, so it records that tier,
+        # and its isotopologue's.
+        o18_mz, _ = predicted_line("18O")
+        rows = [
+            claiming_owner(),
+            on_the_line("pa-child", tier="below_assignability"),
+            row(
+                "pa-child-18o",
+                ELSEWHERE,
+                role="iso_child",
+                owner="pa-child",
+                mz=o18_mz,
+                intensity=10.0,
+                ppm=0.0,
+                tier="below_assignability",
+            ),
+        ]
+
+        (claim,), _ = claims_in(rows)
+
+        assert claim.line.held_tier == "below_assignability"
+        assert [line.held_tier for line in claim.carried] == ["below_assignability"]
 
     def test_under_a_neighbour_at_candidate_it_stays_and_says_why(self):
         rows = [claiming_owner(tier="candidate"), on_the_line("pa-child")]
@@ -2387,6 +2415,7 @@ class TestReadingALineAsTheNeighbours:
                 line_mz=pytest.approx(o18_mz),
                 share=pytest.approx(o18_share, abs=1e-6),
                 tracking=TRACKING_TRACKS,
+                held_tier="candidate",
             ),
         )
         assert claim.released == ("pa-child-lost",)
@@ -2575,6 +2604,7 @@ class TestALineIsAPeakTheFileResolves:
                 line_mz=pytest.approx(merged_mz),
                 share=pytest.approx(merged_share, abs=1e-6),
                 tracking=TRACKING_TRACKS,
+                held_tier="candidate",
             ),
         )
         assert resolved.released == ()
