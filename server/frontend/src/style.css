@@ -46,6 +46,24 @@
     --state-info: #16b0c4;
   }
 
+  /* The identification level's three bands: a mass (5), a formula (4) and a
+     claim about structure (3 to 1). Hues no state token uses: a level chip
+     sits beside a tier chip, and drawn in the success and warning hues it
+     would read as a second tier and show a formula as a warning
+     (docs/dev/frontend_design_system.md, "States"). Each is 7:1 or better as
+     text on its own ground. */
+  :root {
+    --level-mass: #4b5563;
+    --level-formula: #2557a7;
+    --level-structure: #8a2f6b;
+  }
+
+  :root.darkmode {
+    --level-mass: #a3acb9;
+    --level-formula: #7fa7ec;
+    --level-structure: #e08abf;
+  }
+
   * {
     --p-listbox-background: var(--p-panel-background);
     /* form input */

@@ -1,0 +1,89 @@
+import { describe, it, expect } from 'vitest'
+import { mount } from '@vue/test-utils'
+
+import BaseLevelTag from '@/lib/base/BaseLevelTag.vue'
+import { LEVEL_META } from '@/lib/levels'
+
+// The identification-level chip every level surface renders: the inspector,
+// the sample ledger and the batch ledger. It writes the level inside its
+// colour, so the colour is never alone, and it draws nothing for a row with no
+// level - such a row was never judged, and a grey chip would read as 5b.
+
+const mountTag = (props) =>
+  mount(BaseLevelTag, {
+    props,
+    global: {
+      // Writes the hover text onto the element, so a test reads what it says.
+      directives: {
+        tooltip: { mounted: (el, binding) => el.setAttribute('data-tooltip', binding.value ?? '') }
+      }
+    }
+  })
+
+describe('BaseLevelTag', () => {
+  it('writes the level inside its colour', () => {
+    const tag = mountTag({ level: '4a' }).find('.level')
+
+    expect(tag.text()).toBe('4a')
+    expect(tag.attributes('style')).toContain('--level-color: var(--level-formula)')
+  })
+
+  // The number decides the colour, in the level's own tokens; the letter is a
+  // kind of evidence.
+  it('colours by the number: a mass, a formula, a claim about structure', () => {
+    const token = (level) => mountTag({ level }).find('.level').attributes('style')
+
+    expect(token('5a')).toContain('var(--level-mass)')
+    expect(token('5b')).toContain('var(--level-mass)')
+    expect(token('4a')).toContain('var(--level-formula)')
+    expect(token('4b')).toContain('var(--level-formula)')
+    expect(token('3c')).toContain('var(--level-structure)')
+    expect(token('2a')).toContain('var(--level-structure)')
+    expect(token('1')).toContain('var(--level-structure)')
+  })
+
+  it('marks the chip with its number, the letters of one number alike', () => {
+    expect(mountTag({ level: '4a' }).find('.level').classes()).toEqual(
+      expect.arrayContaining(['level', 'level-4'])
+    )
+    expect(mountTag({ level: '4b' }).find('.level').classes()).toContain('level-4')
+  })
+
+  it('draws nothing for a row with no level, or one the scale does not name', () => {
+    for (const level of [null, undefined, '', '6', 'constructor']) {
+      const wrapper = mountTag({ level })
+      expect(wrapper.find('.level').exists(), String(level)).toBe(false)
+      expect(wrapper.find('.level-tag').exists(), String(level)).toBe(false)
+    }
+  })
+
+  it('says on hover what the level means, what earned it and what would lift it', () => {
+    const wrapper = mountTag({
+      level: '5a',
+      evidence: 'rivals not measured',
+      lift: 'measure the shortlist'
+    })
+
+    expect(wrapper.find('.level-tag').attributes('data-tooltip')).toBe(
+      [
+        LEVEL_META['5a'].description,
+        'Why: rivals not measured',
+        'Would lift it: measure the shortlist'
+      ].join('\n')
+    )
+  })
+
+  it("says an isotopologue's level is its M0's", () => {
+    const wrapper = mountTag({ level: '4a', role: 'iso_child' })
+
+    expect(wrapper.find('.level-tag').attributes('data-tooltip')).toContain(
+      'An isotopologue: it holds the level of its M0'
+    )
+  })
+
+  it('yields to an explicit tooltip', () => {
+    const wrapper = mountTag({ level: '4a', evidence: 'x', tooltip: 'say this instead' })
+
+    expect(wrapper.find('.level-tag').attributes('data-tooltip')).toBe('say this instead')
+  })
+})

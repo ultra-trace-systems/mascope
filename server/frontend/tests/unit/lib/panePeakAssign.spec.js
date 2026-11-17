@@ -157,6 +157,12 @@ vi.mock('@/lib/base', async () => ({
       '<div class="claim-structure" :data-candidates="JSON.stringify(candidates)" :data-evidence="evidence" :data-initial="initial?.claimed_inchikey ?? \'\'" />'
   },
   BaseTierTag: { props: ['tier'], template: '<span class="tier-tag" />' },
+  // Says which level it was handed, so the level row's tests can read it off;
+  // the chip itself has a spec of its own (base/BaseLevelTag.spec.js).
+  BaseLevelTag: {
+    props: ['level', 'role', 'evidence', 'lift', 'tooltip'],
+    template: '<span class="level-tag" :data-level="level" :data-role="role" />'
+  },
   BaseVerdictBadge: { props: ['record', 'compact'], template: '<span class="verdict-badge" />' },
   // Real: the tier row's provisional mark is read off what it draws.
   BaseProvisionalMark: (await vi.importActual('@/lib/base/BaseProvisionalMark.vue')).default
@@ -1747,6 +1753,212 @@ describe('PanePeakAssign tier reasons', () => {
 
       expect(neighbourLink(wrapper).exists()).toBe(false)
     })
+  })
+})
+
+// What a reader may state of the row, beside its tier: the level, the line
+// naming what earned it, what would lift it, and the rivals it was read
+// against. The level and its lines ride on the slim ledger row; the rivals
+// are in the detail's provenance alone.
+describe('PanePeakAssign identification level', () => {
+  const M0 = {
+    peak_assignment_id: 'pa-1',
+    sample_item_id: 'si-1',
+    sample_peak_id: 'p-1',
+    sample_peak_mz: 200.12345,
+    sample_peak_intensity: 12345,
+    assigned_formula: 'C10H12O2',
+    tier: 'assigned',
+    role: 'M0',
+    fit_score: 0.9,
+    level: '4a',
+    level_evidence: 'two rivals out: one by mass, one by isotopes; the split is pinned',
+    level_lift: 'a library spectrum match'
+  }
+  const BY_MASS = {
+    formula: 'C9H8O3',
+    ion_formula: 'C9H7O3-',
+    record: 'alternatives',
+    fit: 0.42,
+    test: 'mass',
+    detail: "its fit at the run's width is 0.42 against the reading's 0.91"
+  }
+  const BY_ISOTOPES = {
+    formula: 'C8H6O4',
+    ion_formula: 'C8H5O4-',
+    record: 'alternatives',
+    test: 'isotopes',
+    detail: "the reading's [13C] line is committed and tracks it"
+  }
+  const OPEN = {
+    formula: 'C11H16O',
+    ion_formula: 'C11H15O-',
+    record: 'grid_rivals',
+    fit: 0.88,
+    test: 'open',
+    detail: "its fit at the run's width, 0.88, is within the tie margin",
+    held_by: ['plausibility']
+  }
+  const levelRecord = (extra = {}) => ({
+    level: '4a',
+    evidence: M0.level_evidence,
+    lift: M0.level_lift,
+    level_mapping_version: 1,
+    facts: [],
+    rivals: [BY_MASS, BY_ISOTOPES],
+    ...extra
+  })
+
+  const section = (wrapper) => wrapper.find('[data-testid="identification-level"]')
+  const rivals = (wrapper) => wrapper.findAll('[data-testid="level-rival"]')
+
+  it('shows the chip, what earned the level and what would lift it, before the detail lands', async () => {
+    focusedAssignment = M0
+    const wrapper = await mountPane()
+
+    expect(section(wrapper).find('.level-tag').attributes('data-level')).toBe('4a')
+    expect(section(wrapper).text()).toContain('neutral formula')
+    const evidence = wrapper.find('[data-testid="level-evidence"]')
+    expect(evidence.find('.level-key').text()).toBe('why')
+    expect(evidence.find('.level-value').text()).toBe(M0.level_evidence)
+    const lift = wrapper.find('[data-testid="level-lift"]')
+    expect(lift.find('.level-key').text()).toBe('would lift it')
+    expect(lift.find('.level-value').text()).toBe(M0.level_lift)
+    // The rivals are the detail's; none are drawn from the slim row.
+    expect(rivals(wrapper)).toHaveLength(0)
+    expect(section(wrapper).find('.rivals-label').exists()).toBe(false)
+  })
+
+  it('names each rival and the test that put it out, with the sentence the server wrote', async () => {
+    focusedAssignment = M0
+    detailRecord = { provenance: { identification_level: levelRecord() } }
+    const wrapper = await mountPane()
+
+    expect(rivals(wrapper).map((row) => row.find('.rival-formula').text())).toEqual([
+      'C9H8O3',
+      'C8H6O4'
+    ])
+    expect(rivals(wrapper).map((row) => row.find('.rival-test').text())).toEqual([
+      'out by mass',
+      'out by isotopes'
+    ])
+    expect(rivals(wrapper)[0].find('.rival-detail').text()).toBe(BY_MASS.detail)
+    for (const row of rivals(wrapper)) expect(row.classes()).not.toContain('open')
+    expect(section(wrapper).find('.rivals-label').text()).toBe('rivals')
+  })
+
+  it('sets an open rival apart, and says what held it back without excluding it', async () => {
+    focusedAssignment = { ...M0, level: '5a', level_evidence: 'one rival open' }
+    detailRecord = {
+      provenance: {
+        identification_level: levelRecord({
+          level: '5a',
+          rivals: [OPEN, { ...BY_MASS, formula: 'C10H14O', test: 'second_channel' }]
+        })
+      }
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    const [open, out] = rivals(wrapper)
+    expect(open.classes()).toContain('open')
+    expect(open.find('.rival-test').text()).toBe('open')
+    expect(open.find('.rival-held').text()).toBe('held back by its plausibility, not excluded')
+    expect(open.attributes('data-tooltip')).toContain('no test of the run excluded this rival')
+    expect(open.attributes('data-tooltip')).toContain('C11H15O-')
+    expect(out.classes()).not.toContain('open')
+    expect(out.find('.rival-test').text()).toBe('out by a second channel')
+    expect(out.find('.rival-held').exists()).toBe(false)
+  })
+
+  it('counts the rivals the row knows of but does not list', async () => {
+    focusedAssignment = M0
+    detailRecord = { provenance: { identification_level: levelRecord({ rivals_unlisted: 3 }) } }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('[data-testid="rivals-unlisted"]').text()).toBe('3 more rivals not listed')
+  })
+
+  it('says nothing of unlisted rivals where there are none', async () => {
+    focusedAssignment = M0
+    detailRecord = { provenance: { identification_level: levelRecord() } }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('[data-testid="rivals-unlisted"]').exists()).toBe(false)
+  })
+
+  it("says an isotopologue's level is its M0's, and lists no rivals of its own", async () => {
+    focusedAssignment = isotopologue(M0)
+    detailRecord = {
+      provenance: {
+        identification_level: {
+          level: '4a',
+          evidence: M0.level_evidence,
+          lift: M0.level_lift,
+          inherited_from: 'pa-1',
+          level_mapping_version: 1
+        }
+      }
+    }
+    const wrapper = await mountPane()
+
+    expect(section(wrapper).find('.level-tag').attributes('data-level')).toBe('4a')
+    expect(wrapper.find('[data-testid="level-inherited"]').text()).toBe(
+      'An isotopologue: this is the level of its M0'
+    )
+    expect(rivals(wrapper)).toHaveLength(0)
+  })
+
+  it('leaves an M0 unmarked as inherited', async () => {
+    focusedAssignment = M0
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('[data-testid="level-inherited"]').exists()).toBe(false)
+  })
+
+  it('reads the level off the detail where the slim row does not carry it', async () => {
+    const { level, level_evidence, level_lift, ...slim } = M0
+    focusedAssignment = slim
+    detailRecord = { provenance: { identification_level: levelRecord() } }
+    const wrapper = await mountPane()
+
+    expect(section(wrapper).find('.level-tag').attributes('data-level')).toBe(level)
+    expect(wrapper.find('[data-testid="level-evidence"]').text()).toContain(level_evidence)
+    expect(wrapper.find('[data-testid="level-lift"]').text()).toContain(level_lift)
+  })
+
+  // A reagent's ion, an imported row, a run from before the level: none was
+  // read, and a heading over nothing would say one had been.
+  it('shows nothing on a row with no level', async () => {
+    focusedAssignment = { ...M0, level: null, level_evidence: null, level_lift: null }
+    detailRecord = { provenance: { tier_reasons: [] } }
+    const wrapper = await mountPane()
+
+    expect(section(wrapper).exists()).toBe(false)
+  })
+
+  it('shows nothing for a level the scale does not name', async () => {
+    focusedAssignment = { ...M0, level: '6' }
+    const wrapper = await mountPane()
+
+    expect(section(wrapper).exists()).toBe(false)
+  })
+
+  // A derived row's provenance is its anchor's consensus record: no run read a
+  // level for this sample's peak.
+  it('shows nothing on a row served from the batch ledger', async () => {
+    runRecord = { engine: 'batch' }
+    focusedAssignment = { ...M0, batch_peak_id: 'bp-1' }
+    detailRecord = { provenance: { identification_level: levelRecord() } }
+    const wrapper = await mountPane()
+
+    expect(section(wrapper).exists()).toBe(false)
+  })
+
+  it('opens the identification level help', async () => {
+    focusedAssignment = M0
+    const wrapper = await mountPane({ recordHelp: true })
+
+    expect(section(wrapper).attributes('data-help')).toBe('assignment-level')
   })
 })
 
