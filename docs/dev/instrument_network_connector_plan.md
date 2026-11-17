@@ -3,9 +3,10 @@
 - **Status:** design
 - **As of:** 2026-11-17
 - **Tracked in:** [Isolated deployments](https://linear.app/ultra-trace/project/isolated-deployments-7585d72b2a80)
-  (Linear, P-MAS-10, beside `isolated_deployment_plan.md`, since 2026-11-17;
-  no issues yet: the phases of section 9 are filed once the plan is signed
-  off)
+  (Linear, P-MAS-10, beside `isolated_deployment_plan.md`; filed 2026-11-17:
+  phases A to E are milestones "Connector A" to "Connector E", MAS-957 to
+  MAS-972, with the decisions MAS-964 and MAS-969; phase F is MAS-973 in the
+  isolated plan's held milestone)
 - **What:** Keeping the instrument PC off the internet while Mascope stays in
   the cloud, through a small connector host at the site, and which deployment
   answers which customer objection.
@@ -24,10 +25,10 @@ into a managed and an isolated form, (7) where this meets
 [isolated_deployment_plan.md](isolated_deployment_plan.md), (8) the four
 offerings that follow, and (9) the build phases.
 
-> **Status (2026-11-17): proposal, nothing built.** Sections 4.1 and 4.2 need
-> no code, only documentation and a test; the connector of section 5 is fleet
-> configuration plus one role; the drop folder of 4.4 needs agent changes
-> first.
+> **Status (2026-11-17): proposal, nothing built; the phases are filed.**
+> Sections 4.1 and 4.2 need no code, only documentation and a test; the
+> connector of section 5 is fleet configuration plus one role; the drop
+> folder of 4.4 needs agent changes first.
 
 ## 1. The setting
 
@@ -328,26 +329,29 @@ proxies - a static setting through `HTTPS_PROXY` or the account's Windows
 proxy, no PAC, and TLS inspection exempted for the instance's name or
 `REQUESTS_CA_BUNDLE` set. Test the agent through a `CONNECT` proxy on the LAN
 test host with the PC's own route closed. Ask the OrbionICS questions of
-section 11.
+section 11. (MAS-957, MAS-958, MAS-959.)
 
 **Phase B - the connector, forward form.** The `connector` role, the
 `connectors` group and play, the firewall variant, the Tailscale tag and ACL,
 the push monitor, and a runbook chapter in `docs/maintaining.md`. Pilot at one
-site.
+site. (MAS-960, MAS-961, MAS-962, MAS-965, MAS-970.)
 
 **Phase C - the agent survives outages.** Retry connection failures without a
 count (keeping the count for refusals), and catch up at start on files not yet
 uploaded. This matters for every deployment, not only connector sites; how the
-agent knows what it has uploaded is an open question (section 11).
+agent knows what it has uploaded is the decision MAS-964. (MAS-963,
+MAS-968.)
 
 **Phase D - the drop folder.** Samba shares and agent services in the
 `connector` role, the `uploaded/` retention, and the write protocol of 4.4 in
-the instrument guide. Needs phase C and the OrbionICS write mode.
+the instrument guide. Needs phase C and the OrbionICS write mode. (MAS-966,
+MAS-967, MAS-972.)
 
-**Phase E - the reverse form**, only when a site asks for it.
+**Phase E - the reverse form**, only when a site asks for it. (MAS-971; the
+decision MAS-969 bears on it.)
 
 **Phase F - the gateway role for isolated sites** (section 7), filed with the
-isolated plan's phases.
+isolated plan's phases. (MAS-973.)
 
 ## 10. Deliberately not in scope
 
@@ -367,23 +371,23 @@ isolated plan's phases.
 - **Whether customer IT accepts a `CONNECT` tunnel**, or wants the session
   terminated (the reverse form) or no HTTP at all (the drop folder). The pilot
   will tell how often each comes up.
-- **OrbionICS (external, to confirm):** whether its process picks up a proxy
-  setting; whether it makes outbound calls of its own - its updates,
+- **OrbionICS (external, to confirm; MAS-959):** whether its process picks up
+  a proxy setting; whether it makes outbound calls of its own - its updates,
   licensing, the instrument vendor's software - that a connector would have to
   admit or the site decide on; whether it can write record-then-rename to a
   share instead of uploading; and under which service name the drop folder's
   uploads should appear, given that the connector's agent pairs as
   `file-agent` where a control program pairs as `instrument-agent`.
-- **How the agent knows what it has uploaded**, for phase C's restart
-  catch-up: a local ledger; the `uploaded/` move, which fits the drop folder
-  but not the instrument PC, whose acquisition folder belongs to the
-  instrument software; or asking the server by the file's hash, which the
-  agent already sends with each upload (`sha256` in `api_post_file_tus`).
-- **The agent's trust store.** A CA-bundle setting, or reading the operating
-  system's store, would make the reverse form and TLS-inspecting proxies work
-  without an environment variable. It also bears on the internal-CA option in
-  `docs/hosting.md`, whose "install the CA on client machines once" reaches
-  browsers but not the agent.
+- **How the agent knows what it has uploaded** (the decision MAS-964), for
+  phase C's restart catch-up: a local ledger; the `uploaded/` move, which fits
+  the drop folder but not the instrument PC, whose acquisition folder belongs
+  to the instrument software; or asking the server by the file's hash, which
+  the agent already sends with each upload (`sha256` in `api_post_file_tus`).
+- **The agent's trust store** (the decision MAS-969). A CA-bundle setting, or
+  reading the operating system's store, would make the reverse form and
+  TLS-inspecting proxies work without an environment variable. It also bears
+  on the internal-CA option in `docs/hosting.md`, whose "install the CA on
+  client machines once" reaches browsers but not the agent.
 - **The connector's form:** a customer VM or a host Ultra Trace ships, and who
   patches the hypervisor under it.
 - **Tailscale on a customer-site host:** the same acceptance question the
