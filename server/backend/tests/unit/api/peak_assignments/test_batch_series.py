@@ -456,6 +456,29 @@ class TestTheLadders:
         assert not any(key.startswith("si-") for key in walked.records)
         assert siloxane(walked).significant
 
+    def test_a_source_with_only_peaks_below_assignability_is_linked_not_walked(self):
+        # The walk would step onto nothing, so the mode is not walked from it.
+        source = anchor("src", tier="assigned", formula=SOURCES[0])
+        low = rungs(MIN_LINKS + 1, tier="below_assignability", formula="C9H12O5")
+        result = plan([source, *low])
+        assert result.evidence == {}
+        assert result.modes_walked == ["mode-1"]
+        assert siloxane(result).significant
+        counts = {
+            "modes_walked": len(result.modes_walked),
+            "modes_anchored": len(result.evidence),
+            "families_committed": 0,
+            "anchors_proposed": 0,
+            "anchors_in_series": 0,
+            "members_assigned": 0,
+            **ladder_counts(result.ladders),
+        }
+        assert series_outcome(counts, "b1")["message"].startswith(
+            "No series was walked from an assigned batch peak: the batch has none "
+            "to walk from, or no batch peak unassigned or at candidate to step "
+            "onto. By mass alone, the siloxane ladder beat the decoys"
+        )
+
     def test_a_ladder_s_isotope_lines_are_not_linked(self):
         # Five rungs make four links. Their 13C, 29Si and 30Si lines, unread
         # and fainter, would make three ladders more, of four links each.
