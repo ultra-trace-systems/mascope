@@ -400,6 +400,18 @@ def restore(
             help="Read dump from transfer directory instead of backups.",
         ),
     ] = False,
+    jobs: Annotated[
+        int,
+        typer.Option(
+            "--jobs",
+            "-j",
+            min=1,
+            help=(
+                "Parallel pg_restore jobs. Loads the data and builds the "
+                "indexes in parallel, which shortens a large restore."
+            ),
+        ),
+    ] = 1,
     yes: Annotated[
         bool,
         typer.Option("--yes", "-y", help="Confirm destructive operation. Required."),
@@ -418,6 +430,7 @@ def restore(
         mascope prod db restore --env tof1 --yes
         mascope prod db restore mascope_tof1_20250101_040000.dump --yes
         mascope prod db restore --transfer --env tof1 --yes
+        mascope prod db restore --env tof1 --jobs 4 --yes
     """
     if not check_prerequisites(_MODE):
         return
@@ -468,7 +481,7 @@ def restore(
             raise RuntimeError("Failed to recreate database after drop")
 
         runtime.logger.info(f"Restoring from '{resolved.name}'...")
-        pg_restore(container, db_cfg.user, database, resolved, mount)
+        pg_restore(container, db_cfg.user, database, resolved, mount, jobs=jobs)
 
     except (RuntimeError, FileNotFoundError) as e:
         runtime.logger.error(str(e))

@@ -197,7 +197,7 @@ def prod_stack(monkeypatch, tmp_path):
         "_create_database_if_missing",
         lambda *a: events.append("create database") or True,
     )
-    monkeypatch.setattr(prod_db, "pg_restore", lambda *a: events.append("restore"))
+    monkeypatch.setattr(prod_db, "pg_restore", lambda *a, **k: events.append("restore"))
     (tmp_path / "site.dump").write_bytes(b"")
     fake = FakeDocker(events=events)
     monkeypatch.setattr(admin.subprocess, "run", fake)
