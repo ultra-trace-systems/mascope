@@ -569,6 +569,107 @@ describe('PanePeakAssign flat series', () => {
   })
 })
 
+// The batch's isotopologue stamp on this sample's peak, and the parent's own
+// record on its monoisotopic row: one line each, under the channel badge.
+describe('PanePeakAssign isotopologue stamping', () => {
+  const PARENT_PEAK = { peak_id: 'p-parent', mz: 138.94, height: 1e5, area: 1 }
+  const ROW = {
+    peak_assignment_id: 'pa-x',
+    sample_peak_id: 'p-1',
+    sample_peak_mz: 140.93795,
+    sample_peak_intensity: 9.7e4,
+    assigned_formula: 'C5H8O3',
+    tier: 'assigned',
+    role: 'M0',
+    fit_score: 0.9
+  }
+  const STAMP = {
+    batch_peak_id: 'bp-parent',
+    formula: 'C2H4O2',
+    label: '81Br',
+    ratio: 0.9728,
+    judged: 6,
+    holds: 6,
+    share: 1,
+    n_predicted: 4,
+    n_picker: 2,
+    stamp_source: 'predicted',
+    parent_sample_peak_id: 'p-parent'
+  }
+  const stampLine = (wrapper) => wrapper.find('[data-testid="batch-stamp"]')
+  const recordLine = (wrapper) => wrapper.find('[data-testid="batch-isotopologues"]')
+
+  it('names the parent and links its peak in this sample', async () => {
+    peakList = [PEAK, PARENT_PEAK]
+    focusedAssignment = ROW
+    detailRecord = { provenance: {}, batch_stamped_isotopologue_of: STAMP }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    const line = stampLine(wrapper)
+    expect(line.text()).toBe('Stamped by the batch as the 81Br isotopologue of C2H4O2 (predicted)')
+    expect(line.element.tagName).toBe('BUTTON')
+    expect(line.attributes('data-tooltip')).toMatch(/Click to focus its main peak\.$/)
+    await line.trigger('click')
+    expect(peakFocus).toHaveBeenCalledWith(PARENT_PEAK)
+  })
+
+  it("is no link where the sample's peak list lacks the parent's peak", async () => {
+    focusedAssignment = ROW
+    detailRecord = {
+      provenance: {},
+      batch_stamped_isotopologue_of: { ...STAMP, stamp_source: 'picker' }
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    const line = stampLine(wrapper)
+    expect(line.element.tagName).toBe('DIV')
+    expect(line.text()).toMatch(/\(found by the peak picker\)$/)
+    expect(line.classes()).toContain('picker')
+    expect(line.attributes('data-tooltip')).not.toMatch(/Click/)
+  })
+
+  it('shows the stamp on an unassigned row too', async () => {
+    focusedAssignment = { ...ROW, assigned_formula: null, role: 'unassigned', tier: 'unassigned' }
+    detailRecord = { provenance: {}, batch_stamped_isotopologue_of: STAMP }
+    const wrapper = await mountPane()
+
+    expect(stampLine(wrapper).exists()).toBe(true)
+  })
+
+  it("lists the parent's isotope lines on its own row", async () => {
+    focusedAssignment = { ...ROW, assigned_formula: 'C2H4O2' }
+    detailRecord = {
+      provenance: {},
+      batch_diagnostic_isotopologues: {
+        formula: 'C2H4O2',
+        n_predicted: 2,
+        n_stamped: 1,
+        predicted: [
+          { label: '81Br', stamped: true, judged: 6, holds: 6, share: 1, verdict: 'stamped' },
+          { label: '18O', stamped: false, reason: 'not_found', verdict: 'untestable' }
+        ]
+      }
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(recordLine(wrapper).text()).toBe('1 of 2 isotope lines stamped by the batch')
+    expect(recordLine(wrapper).classes()).toContain('stamped')
+    expect(recordLine(wrapper).attributes('data-tooltip')).toMatch(
+      /81Br: stamped, held in 6 of 6 samples .*18O: predicted, no batch peak at its mass\./
+    )
+    expect(stampLine(wrapper).exists()).toBe(false)
+  })
+
+  it('shows neither where the batch stamped nothing about the row', async () => {
+    focusedAssignment = ROW
+    detailRecord = { provenance: {} }
+    const wrapper = await mountPane()
+
+    expect(stampLine(wrapper).exists()).toBe(false)
+    expect(recordLine(wrapper).exists()).toBe(false)
+  })
+})
+
 describe('PanePeakAssign unassigned card', () => {
   it('names the peak on the fallback card, which has no assignment row at all', async () => {
     const wrapper = await mountPane()

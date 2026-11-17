@@ -6,6 +6,9 @@ import {
   stampParentId,
   isotopologuesSummary,
   isotopologuesTooltip,
+  sampleIsotopologuesSummary,
+  sampleStampSummary,
+  sampleStampTooltip,
   stampTooltip
 } from '@/lib/batchIsotopologues'
 
@@ -90,5 +93,36 @@ describe('batchIsotopologues', () => {
       predicted: [{ label: '34S', stamped: false, verdict: 'untestable', reason: 'few_spectra' }]
     }
     expect(isotopologuesTooltip(record)).toMatch(/34S: found, in too few samples that can tell\./)
+  })
+
+  it("says on a sample's row whose isotope line the batch reads its peak as", () => {
+    const predicted = { ...STAMP, stamp_source: 'predicted' }
+    expect(sampleStampSummary(predicted)).toBe(
+      'Stamped by the batch as the 81Br isotopologue of C2H4O2 (predicted)'
+    )
+    expect(sampleStampSummary({ ...STAMP, stamp_source: 'picker' })).toBe(
+      'Stamped by the batch as the 81Br isotopologue of C2H4O2 (found by the peak picker)'
+    )
+    expect(sampleStampSummary({ ...predicted, formula: null })).toBe(
+      'Stamped by the batch as the 81Br isotopologue of another batch peak (predicted)'
+    )
+    expect(sampleStampSummary(null)).toBe('')
+  })
+
+  it("explains this sample's stamp before the batch's reading", () => {
+    const text = sampleStampTooltip({ ...STAMP, stamp_source: 'predicted' })
+    expect(text).toMatch(/^In this sample the stamping predicted the line/)
+    expect(text).toContain(stampTooltip(STAMP))
+    expect(text).not.toMatch(/Click/)
+    expect(sampleStampTooltip({ ...STAMP, stamp_source: 'picker' })).toMatch(
+      /^In this sample the run's own isotope match had read the peak as its line/
+    )
+    expect(sampleStampTooltip(STAMP, { linked: true })).toMatch(/Click to focus its main peak\.$/)
+    expect(sampleStampTooltip(null)).toBe('')
+  })
+
+  it("counts the parent's stamped lines on its sample row", () => {
+    expect(sampleIsotopologuesSummary(PARENT)).toBe('1 of 5 isotope lines stamped by the batch')
+    expect(sampleIsotopologuesSummary(null)).toBe('')
   })
 })
