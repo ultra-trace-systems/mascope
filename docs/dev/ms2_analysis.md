@@ -3,7 +3,7 @@
 # MS2 analysis: fragmentation spectra as a stored, assigned and served object
 
 - **Status:** design
-- **As of:** 2026-10-26
+- **As of:** 2026-11-17
 - **Tracked in:** [MS2 analysis](https://linear.app/ultra-trace/project/ms2-analysis-7fdc525bca51)
   (Linear, MAS-380 to MAS-407)
 - **What:** Fragmentation spectra as a stored, assigned and served object: the MS2 store, the fragment composition core shared with peaky, MS2 evidence on ledger rows, the MS2 tab, energy-resolved analysis.
@@ -217,8 +217,10 @@ because "in mass spectrometry an identification is read as MS2 or
 reference-standard evidence"
 ([tiers.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/tiers.py)).
 The identification claims design maps `msms` evidence to Schymanski level 2
-for a *structure* and leaves the engine's own level at 4 at best
-([identification_claims.md, section 5.4](identification_claims.md)); its
+for a *structure* ([identification_claims.md, section 5.4](identification_claims.md)).
+It left the engine's own level at 4 at best; since the quality plan's
+decision 38 (2026-11-17) the engine states 4a or 3b from MS/MS, and 2a and 2b
+stay a person's claims (section 2.6, "The shared scale"). The claims design's
 MS/MS path is a library spectral match (phase 4 of
 [public_database_integration.md](public_database_integration.md)), tracked in
 this project's milestone 6, "Spectral library matching" (MAS-429 the reference
@@ -472,9 +474,11 @@ anything acts on them.
 **What it may move.** Nothing, at first: the record is written, shown in the
 inspector and the exports, and measured. The identification claims note's
 level mapping ([identification_claims.md, section 5.4](identification_claims.md))
-makes the boundary clear: `msms` evidence is a level-2 statement about a
-*structure*, and MS2 support here names no structure, so it never writes a
-claim. What it can do is make a *formula* less equivocal: a `supported`
+makes the boundary clear: `msms` evidence on a claim is a statement about a
+*structure* (2a, 2b) or, since decision 38, a class (3b), and MS2 support
+here names neither, so it never writes a claim. What it can do is make a
+*formula* less equivocal (and, since decision 38, pin a split or name a class
+at the engine's own level, "The shared scale" below): a `supported`
 verdict on a tied row is the fact that un-ties it (the engine's level 5
 becomes 4, "unequivocal formula") once the harness says the false-support
 rate is low enough (decision 5; MAS-393 takes it on the measurement). Raising
@@ -836,7 +840,8 @@ issues that close them; the PRs say `Fixes #N` and `Fixes MAS-N`.
 - Schymanski, E. L. et al. (2014). Identifying small molecules via high
   resolution mass spectrometry: communicating confidence. *Environmental
   Science & Technology*, 48(4), 2097-2098. The level language the
-  identification claims note uses; MS2 support here reaches level 4 at most.
+  identification claims note uses; from MS2 support here the engine states
+  4a or 3b at most, 2a and 2b staying a person's claims (section 2.6).
 - Senior, J. K. (1951). Partitions and their representative graphs.
   *American Journal of Mathematics*, 73(3), 663-689. The rules a formula and
   an unnamed loss remainder must satisfy.

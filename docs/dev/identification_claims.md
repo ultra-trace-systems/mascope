@@ -140,16 +140,19 @@ evidence (5a, 5b, 4a, 4b, 3a to 3d, 2a, 2b, 1), and on every row the level,
 a one-line evidence string and what would lift it. Most of what the engine
 records is evidence about a formula, so from that alone the level reaches 4:
 4a where the molecule-reagent split is pinned, 4b where it is open. With the
-run's own context it reaches 3, the scale's ceiling without MS/MS: a list
-whose tags match the run's context names candidates (3c), the channel names a
-class (3b), a series member anchored at 3 (3d) (steps 5.8b and 5.8d). Levels
-1 and 2 name a structure on a standard, MS/MS or a separation (5.8e, 5.8f).
+run's own context it reaches 3, the scale's ceiling without MS/MS for a
+formula with more than one plausible structure: a list whose tags match the
+run's context names candidates (3c), the channel names a class (3b), a series
+member anchored at 3 (3d) (steps 5.8b and 5.8d). A formula a cited list marks
+as having one plausible structure (TFA, HSO4-) reads 2b, that structure named
+(5.8b). Otherwise levels 1 and 2 name a structure on a standard, MS/MS or a
+separation (5.8e, 5.8f).
 
 ## 3. The three layers
 
 | Layer | What it is | Who writes it | What it carries | Level it can reach |
 |---|---|---|---|---|
-| **1 Composition** | a neutral formula and an ionization mechanism, with the isotopologue role | the engine (peak-centric), the matcher (targeted) | formula, ion formula, mechanism, tier, fit score, plausibility, P(correct), tie flag | 5 or 4 (5a, 5b, 4a, 4b); 3 with the run's own context (3a to 3d) |
+| **1 Composition** | a neutral formula and an ionization mechanism, with the isotopologue role | the engine (peak-centric), the matcher (targeted) | formula, ion formula, mechanism, tier, fit score, plausibility, P(correct), tie flag | 5 or 4 (5a, 5b, 4a, 4b); 3 with the run's own context (3a to 3d); 2b on a formula a cited list marks as having one plausible structure |
 | **2 Candidates** | the compounds that share the formula | reference lists at ingest; the user, on a target compound | InChIKey, InChI, SMILES, CAS, name, source, licence, list tags | none: a candidate is not a claim |
 | **3 Claim** | one candidate stated for one peak or anchor, with evidence | a person, through a verdict; later an MS/MS library match | the claimed InChIKey and name, the level, the evidence level, a note, who, when | 1 to 3 with a structure; 4, or 3b for a class, without |
 
@@ -158,11 +161,15 @@ Four rules hold the layers apart:
 1. **An identifier is never a claim.** On a target compound it says what the
    target stands for; on a reference row, what a list calls the formula. Both
    are layer 2, and both are shown as candidates, never as the answer.
-2. **Layer 1 names a structure only tentatively, and only from the run's own
-   context.** A target match raises nothing. A reference listing raises
-   nothing, unless it is a context list whose tags match the run's resolved
-   context: then an established neutral formula (4a) reads 3c, "consistent
-   with" the compounds the list names. Suspect screening against a structure
+2. **Layer 1 names a structure tentatively from the run's own context, or
+   from a cited one-structure mark, and from nothing else.** A target match
+   raises nothing. A reference listing raises nothing, unless it is a
+   context list whose tags match the run's resolved context: then an
+   established neutral formula (4a) reads 3c, "consistent with" the
+   compounds the list names. A cited list's mark that a formula has only one
+   plausible structure (TFA, HSO4-) is chemistry data rather than a listing
+   (step 5.8b): on a 4a row it names that structure at 2b. Suspect screening
+   against a structure
    database on exact mass and isotope pattern stays 4 or 5, whatever the list
    calls the hit. Narrowed on 2026-11-17 (decision 38) from "layer 1 alone
    never exceeds 4", which was written against the database hit and holds for
@@ -242,7 +249,12 @@ moment it is made, with the mapping version in `context`.
 
 Constraints, in the schema and the pydantic layer: `level` 1 to 3 requires
 `claimed_inchikey`; `claimed_inchikey` requires `verdict = 'confirmed'`; the
-InChIKey has MAS-28's shape. When the InChIKey resolves to a candidate of the
+InChIKey has MAS-28's shape. Version 2 of the mapping (5.4) narrows the
+first: a class claim (3b) names a class, not a structure, and records it in
+`claimed_name` with no InChIKey, so only 1, 2 and a level-3 claim naming a
+candidate require one; step 5.8f changes the CHECK
+`structure_level_names_structure`, `claims.claim_level` and
+`claims.claim_problem` with the mapping. When the InChIKey resolves to a candidate of the
 row (a reference identity or the target's declaration) its formula agreement
 is already known; a free InChIKey no candidate carries is accepted with its
 name and shown as *unlisted*.
@@ -257,8 +269,9 @@ in `context`, as an imported run names its engine today.
 
 The engine's level is the quality plan's step 5.8 and its sub-steps: 5b, 5a,
 4b or 4a from the shortlist's rivals and the molecule-reagent split, 3 from
-the run's context and channel (5.8b) and the batch (5.8c, 5.8d), never 1. It is
-read from evidence and not from the tier, so an assigned row can read 5a
+the run's context and channel (5.8b) and the batch (5.8c, 5.8d), 2b where a
+cited list marks the formula as having one plausible structure (5.8b), never
+1. It is read from evidence and not from the tier, so an assigned row can read 5a
 where a rival is left open. The classic matcher has no tier and no tie flag;
 its rows have no level today.
 
@@ -302,6 +315,9 @@ split by what the evidence shows:
 | `pattern` | the formula, the split pinned or open | 4a or 4b |
 | `visual` | - | the engine's |
 
+A class claim, 3b from one loss or from orthogonal class evidence, names a
+class and no structure: it records the class in `claimed_name` with no
+InChIKey, the one claim at 1 to 3 without one (section 5.2).
 A level-1 claim is scoped: on a sample to that sample, on a batch peak to a
 time window, outside which the batch peak reads the engine's level. A claim
 made under version 1 keeps its level and its version.
@@ -313,17 +329,18 @@ spectral-similarity scorer over the extracted MS/MS centroids) is where
 formula narrows to structure by machine. Its natural output under this note is
 a ranking of the row's candidates: the reference identities and the target's
 declaration whose InChIKey the library holds spectra for, each with a
-similarity. A match above a threshold is a level-2 claim with `msms`
-evidence, `verified_by` null and the scorer named in `context`; a person
+similarity. A match above a threshold is offered as a 2a claim with `msms`
+evidence and the scorer named in `context`, pre-filled for a person, who
 confirms or rejects it as any verdict.
 
-**Call for the plan owner:** whether the scorer may write a level-2 claim on
-its own, or only rank the candidates and leave the claim to a person. The
-recommendation is rank-only until the scorer has been measured on the decoy
-harness the confidence design uses for every layer
+**Decided 2026-11-17 by the plan owner** (the quality plan's decision 38,
+step 5.8e): the scorer ranks the candidates and leaves the claim to a person.
+Its match is offered as a pre-filled 2a claim a person confirms or rejects,
+and whether it may write a claim on its own is decided once it has been
+measured on the decoy harness the confidence design uses for every layer
 ([`assignment_confidence.md`](assignment_confidence.md) section 3, principle
-3), then promote. Without MS/MS the candidates stay unordered beyond "the run
-matched this one".
+3). Without MS/MS the candidates stay unordered beyond "the run matched this
+one".
 
 ### 5.6 The targeted path
 

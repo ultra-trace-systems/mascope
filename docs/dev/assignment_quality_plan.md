@@ -133,8 +133,8 @@ table below names each step's PR, its merge date and one line on its state.
 | 5.7 - experiment: the file's own locks as calibrants, read against the calibration node's residuals | - |  | planned; after 3.5; feeds 4.3 and the axis-fingerprint project; the labelled sets wait for a release carrying the reference's #77 |
 | 5.8 - the identification level: the scale, the row contract, and the formula levels 5a, 5b, 4a and 4b | - |  | planned 2026-10-14 (decision 30), re-cut 2026-11-17 on the shared scale (decision 38, MAS-938); reads facts already built, so no longer after 3.7 (decided 2026-11-17); MAS-73; the scale is defined in `assignment_confidence.md` ("P4 design: the identification level") |
 | 5.8b - level 3 from the run's context and channel: 3c, 3b by ionization, 3a on two routes, 2b on a one-structure formula | - |  | planned 2026-11-17 (decision 38); after 5.8; MAS-939 |
-| 5.8c - the batch's level and its isotope checks: a halogen lock, stamped lines and the label twin on 5a and 4b | - |  | planned 2026-11-17 (decision 38); after 5.8b; MAS-940 |
-| 5.8d - the co-variation lifts: 3d on a series, 3a on an anchored homologue, the uronium pair, a TOF second channel | - |  | planned 2026-11-17 (decision 38); after 5.8c and 4.13 (decision 35); MAS-941 |
+| 5.8c - the batch's level and its isotope checks: a halogen lock, stamped lines and the label twin on 5a and 4b, 5b on a stamped halogen line | - |  | planned 2026-11-17 (decision 38); after 5.8b; MAS-940 |
+| 5.8d - the co-variation lifts: 4 and 3d through a series, 3a on an anchored homologue, the uronium pair, a TOF second channel | - |  | planned 2026-11-17 (decision 38); after 5.8c and the null model decision 35 waits on, which 4.13 left open and which has no step yet (#3237, MAS-903); MAS-941 |
 | 5.8e - MS/MS levels: 4a on a reagent release, 3b on one loss, 2b on fragments, 2a on a library spectrum | - |  | planned 2026-11-17 (decision 38); after 5.8f and the MS2 project's per-row evidence and its decision on what it may move (MAS-391, MAS-393); MAS-942 |
 | 5.8f - level 1 in review: the claim's letter, its scope and its evidence | - |  | planned 2026-11-17 (decision 38); after 5.8; extends the claims built in MAS-359; MAS-943 |
 | 5.8g - the same air on two instruments: an Orbitrap formula lifts a co-timed TOF row | - |  | planned 2026-11-17 (decision 38); after 5.8d; MAS-944 |
@@ -3256,16 +3256,23 @@ the same air (5.8g). No step moves a tier.
   same-ion records (`ambiguous_adduct`, `ambiguous_nitrogen`,
   `same_ion_settled`, 2.5c's mirror readings), the labelled profile and the
   second channel (2.3). A rival held back only by a prior (3.6) or by
-  plausibility is not out; it stays listed. The row carries `level`,
-  `evidence` and `lift`, the facts each named with its record, the rivals
-  each with its test or *open*, and `level_mapping_version`. The inspector
-  shows a chip (number and letter in the scale's colour: grey for 5, yellow
-  for 4, green from 3) with the evidence and lift lines and the rivals; both
-  ledgers gain a *Level* column and filter; the ledger export, the batch
-  export and the SDK frames carry the three fields; the import contract
-  takes an optional `engine_level` beside 5.6's `engine_claim`, checked
-  against the scale's vocabulary, so a reference run's level reads beside
-  Mascope's. The how-it-works page and the tiers help gain the scale.
+  plausibility is not out; it stays listed. Where a row
+  earns two letters of one number, the order in the confidence note's
+  point 4 picks the one it shows and the evidence line names the others.
+  The row carries `level`, `evidence` and `lift`, the facts each named with
+  its record, and the rivals each with its test or *open*; the run records
+  the rules' version as `level_rules_version`, as it records the tier's
+  (not `level_mapping_version`, which is the claims' mapping's). The
+  inspector shows a chip (number and letter in the level's own tokens, one
+  per band of the scale and apart from the tier's state hues; the
+  confidence note's point 1) with the evidence and lift lines and the
+  rivals; both ledgers gain a *Level* column and filter; the ledger export,
+  the batch export and the SDK frames carry the three fields; the import
+  contract takes an optional `engine_level`, `engine_evidence` and
+  `engine_lift` beside 5.6's `engine_claim`, the level checked against the
+  scale's vocabulary, so a reference run's level reads beside Mascope's;
+  the bench card reads the level for the readings under Verify. The
+  how-it-works page and the tiers help gain the scale.
 - **Why.** Decision 30 made a community-standard level the target and kept
   the reference's scale out while it moved; decision 38 (2026-11-17) takes
   the scale's concepts as settled, so the level speaks the shared vocabulary
@@ -3293,11 +3300,21 @@ the same air (5.8g). No step moves a tier.
   version, the evidence and lift strings), the run's provenance and the
   detail read, `PanePeakAssign.vue`, `PaneBrowserAssignment.vue`,
   `PaneBrowserBatchPeaks.vue`, `batch_export.py`, the import validation and
-  schemas (`engine_level`), the SDK's peak-assignment frames and
-  `sdk_peak_assignment.md`, the how-it-works page, the tiers help;
-  `test_tiering.py` (each formula sub-level from its facts, a rival held by
-  a prior still listed, a row without a shortlist at 5a, an unresolved peak
-  at 5b, a labelled ion at 4a, an N-bearing nitrate ion at 4b, the version
+  schemas (`engine_level`, `engine_evidence`, `engine_lift`), the SDK's
+  peak-assignment frames and `sdk_peak_assignment.md`, the level tokens in
+  `style.css` and `frontend_design_system.md` ("States"), the how-it-works
+  page, the tiers help; the bench card, whose metrics are fixed functions
+  over a fixed set of records: the level read off the ledger beside
+  `LEDGER_RULE_RECORDS` and off the detail read in `provenance_columns`,
+  functions in `tooling/assignment_compare/metrics.py` for the readings
+  under Verify (the share at each level, the level crossed with the tier, a
+  decoy arm's rows at 4 or above), the card's header naming
+  `level_rules_version` as it names the tiering rule set, and
+  `test_assignment_compare_card.py`; `test_tiering.py` (each formula
+  sub-level from its facts, a rival held by a prior still listed, a row
+  without a shortlist at 5a, an unresolved peak at 5b, a reading that earns
+  5b and 5a shown at 5b with its rivals named, a labelled ion at 4a, an
+  N-free nitrate ion at 4a, an N-bearing nitrate ion at 4b, the version
   pinned).
 - **Verify.** Every committed row carries a level, an evidence line and a
   lift. Readings per set on the bench's card: the share of committed rows
@@ -3337,13 +3354,17 @@ the same air (5.8g). No step moves a tier.
   - **2b, one plausible structure:** a formula a cited list marks as having
     one plausible structure (TFA, HSO4-).
 - **Why.** The scale's level 3 is reachable without MS/MS, from context and
-  ionization; it is the ceiling of the automated levels short of MS/MS
-  (decision 38). The claims note's rule that a list raises nothing
+  ionization; it is the ceiling of the automated levels short of MS/MS for
+  a formula with more than one plausible structure, while a formula a cited
+  list marks as having one reads 2b (decision 38). The claims note's rule
+  that a list raises nothing
   ([`identification_claims.md`](identification_claims.md) section 3, rule
   2) is narrowed to what it was written against: a list outside the run's
   context, a structure database such as CompTox and a target's declaration
   stay candidates, and a context list matched by the run's own metadata
-  names a tentative candidate. Every input is recorded today: the list hit
+  names a tentative candidate; a cited list's one-structure mark is
+  chemistry data rather than a hit, and names its structure at 2b. Every
+  input is recorded today: the list hit
   and its tags (2.5a, 2.5b, 2.5f), the run's context (3.6), the mechanism
   key, the second channel (2.3).
 - **Decided 2026-11-17 by the plan owner.** The one-structure mark is an
@@ -3359,7 +3380,9 @@ the same air (5.8g). No step moves a tier.
   evidence line naming the list and its tags; `test_tiering.py` (a context
   list at 3c, the same list under another context at 4a, a CompTox-only
   listing at 4a, a nitrate `[M-H]-` row at 3b, a 3c row with a second
-  channel at 3a, a 4b row never at 3).
+  channel at 3a, a nitrate `[M-H]-` row on a context list at 3c with "an
+  acid" in its evidence line (the confidence note's point 4, the order), a
+  4b row never at 3).
 - **Verify.** On the chamber sets with their context named (G, H) the rows
   at 3c are the context list's compounds at 4a, each naming its list and
   tags; with the context unset none reaches 3c; on fixture entries a
@@ -3382,6 +3405,12 @@ the same air (5.8g). No step moves a tier.
     make them;
   - the label twin read present (4.2g) pins a labelled ion's split: 4b to
     4a.
+
+  And one refutation: a 37Cl or 81Br line 4.2c stamped as the batch peak's
+  isotopologue, under a reading that holds no such halogen where a rival's
+  would make it, refutes the reading: 5b, the line and the rival named.
+  This and the halogen lock are batch facts, recorded after a sample's run
+  has stated its level, so they are this step's and not 5.8's.
 - **Why.** The batch is where a TOF row leaves 5a, since only a heavy twin
   or co-variation puts a rival out there; it is where the reference's
   merged ledger earns its levels, the reason decision 33 pulled stage 4
@@ -3391,7 +3420,8 @@ the same air (5.8g). No step moves a tier.
   beside `batch_checks`), the level module reading `provenance.batch_checks`
   and the stamping record; the batch ledger's *Level* column and the
   per-sample overlay; the batch export; tests on each lift, on a lock whose
-  stamping record no longer stands (no lift), and on the per-sample overlay.
+  stamping record no longer stands (no lift), on a stamped halogen line
+  under a halogen-free reading (5b), and on the per-sample overlay.
 - **Verify.** On D the bromide clusters 4.2g locked read 4 or above; on C2
   the labelled ions whose twin is present read 4a; on E, F and J each row
   that leaves 5a names its test. No tier moves.
@@ -3402,14 +3432,21 @@ the same air (5.8g). No step moves a tier.
 
 - **What.** The lifts that read the batch's time series, once decision 35
   lets co-variation count:
-  - 3d: a series member (4.1) whose other members hold 3a or 3b and co-vary
-    with it; a 3c member anchored so reads 3a;
+  - 4 through a series: a member at exact spacing (4.1) from an anchor
+    whose formula holds at 4, co-varying with it, takes the anchor's
+    formula plus its units, since each of its rivals would need an anchor
+    the anchor's own tests excluded; its letter follows the split as on any
+    row. This is how a series lifts a TOF row out of 5a;
+  - 3d: on a 4a row, a series member whose other members hold 3a or 3b and
+    co-vary with it; a 3c member anchored so reads 3a;
   - the uronium neutral pair (4.2g), `[M+H]+` and `[M+CH4N2O+H]+`
     co-varying, pins the urea split: 4b to 4a;
   - on a TOF, a second channel puts a rival out only where the two
     channels co-vary, to rule out a chance pairing.
 
-  Each reads 4.2's co-variation record at the bar 4.13's null model sets.
+  Each reads 4.2's co-variation record at the bar a null model sets. 4.13
+  measured the continuity pass and left that model open; it has no step
+  yet (#3237, MAS-903, in Triage), and this step is blocked by that issue.
   Until this step is built the lift line names the reading and says it is
   not yet weighed ("co-varies with its series; not yet weighed").
 - **Why.** The scale asks co-variation of a homologue and of a second
@@ -3420,13 +3457,15 @@ the same air (5.8g). No step moves a tier.
   bar too.
 - **Where.** The level module reading `provenance.series` and the
   co-variation record; the batch level of 5.8c; tests on each lift and on a
-  pair under the bar (no lift).
+  pair under the bar (no lift), a series member carried to 4 by an anchor
+  at 4, and one whose anchor reads 5a (no lift).
 - **Verify.** On A and B the uronium pairs over the bar read 4a, those
   under it 4b with the pair named in the lift; the series members at 3d
   each name their anchor and r; on E, F and J each TOF row a second channel
   lifts names the channel and r. No tier moves.
 - **Bench.** Every set; the tiers must not move.
-- **Size.** M. After 5.8c and 4.13 (MAS-347). MAS-941.
+- **Size.** M. After 5.8c and the null model (MAS-903, which asks for its
+  step). MAS-941.
 
 ### 5.8e MS/MS levels
 
@@ -3470,6 +3509,13 @@ the same air (5.8g). No step moves a tier.
 - **What.** The claims MAS-359 built (`level` 1 to 5 on both verification
   tables, the evidence-to-level mapping at version 1) take the scale:
   - the claim records its letter beside its number;
+  - a class claim names no structure: a 3b claim records its class ("a
+    carboxylic acid") in `claimed_name` with no InChIKey, so the rule that
+    a level 1 to 3 names a structure narrows to 1, 2 and a level 3 that
+    names a candidate, in the CHECK `structure_level_names_structure`, in
+    `claims.claim_level` and in `claims.claim_problem` (whose rules that an
+    `msms` or `orthogonal` confirmation names a structure, and that a name
+    goes with an InChIKey, take the same exception);
   - the mapping moves to version 2 ([`identification_claims.md`](identification_claims.md)
     section 5.4): a reference standard states 1 only on the same instrument
     and reagent chemistry with one independent line named (MS/MS, a
@@ -3492,16 +3538,19 @@ the same air (5.8g). No step moves a tier.
 - **Decided 2026-11-17 by the plan owner.** A reference standard with no
   independent line is stated at 2b, with "an independent line" as its
   lift.
-- **Where.** `claims.py` (the mapping at version 2), the two verification
-  tables (the letter and the window, one migration), their schemas and
+- **Where.** `claims.py` (the mapping at version 2; `claim_level` and
+  `claim_problem` taking the class claim), the two verification tables (the
+  letter, the window and the CHECK `structure_level_names_structure`
+  narrowed, one migration), their schemas and
   services, the capture popovers (the independent line, the split, the
   window), the badge, the SDK readers, `identification_claims.md` section
   5, `verification_calibration_loop.md` section 4.6; tests.
 - **Verify.** A reference-standard claim with no independent line reads
-  2b, its lift "an independent line"; a lone-loss MS/MS claim reads 3b; a level-1 batch claim
-  reads 1 inside its window and the engine's level outside it; claims made
-  under version 1 keep their level and their version; the calibration
-  pool's count is unchanged.
+  2b, its lift "an independent line"; a lone-loss MS/MS claim reads 3b and
+  records its class with no InChIKey, while a level-2 claim with none is
+  still refused; a level-1 batch claim reads 1 inside its window and the
+  engine's level outside it; claims made under version 1 keep their level
+  and their version; the calibration pool's count is unchanged.
 - **Size.** M. After 5.8; beside 5.8b, on another footprint. MAS-943.
 
 ### 5.8g The same air on two instruments
@@ -3889,8 +3938,12 @@ gave its TOF rider a step of its own (MAS-922).
     moves** (taken 2026-10-14 by the plan owner). The level is derived from
     the facts the engine records, after the stage-3 gate (step 5.8); an
     imported run shows its engine's tier and claim beside it (5.6); the
-    derived tier stays what the fold and the UI read. Its second half, the
-    reference's scale kept out while it moves, is revised by decision 38.
+    derived tier stays what the fold and the UI read. Revised by decision
+    38 on 2026-11-17 in three of its parts: the level speaks the shared
+    scale's vocabulary rather than one of Mascope's own, that scale is no
+    longer kept out while its details move, and step 5.8 no longer waits
+    for the stage-3 gate. The derivation from Mascope's own facts and the
+    tier's role stand.
 31. **The decoy arms join the gate without a target** until two gates have
     read them; then a target is set from those readings, not from the
     reference's numbers. Taken 2026-10-23 by the plan owner as proposed
