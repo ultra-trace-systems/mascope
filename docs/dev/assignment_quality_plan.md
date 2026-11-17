@@ -2966,13 +2966,23 @@ under its milestone 5.
     undecided. The 59 that are Exception-majority (20 read) are lobes, every
     centroid flagged, in ringing combs or beside lines 66 to 1,340 times
     brighter, which 5.10's exemption spared on a chance isotopologue
-    coincidence (an 81Br or 37Cl line in a uronium set). The 204 peaks only
-    the ratio test takes, with no width flag and spared by 5.10's
-    exemption (20 read), are lobes of a ringing comb beyond five widths,
-    every centroid flagged: the ratio test is needed there, and a band of
-    1 to 5 widths does not reach them.
-  - **5.10's exemption** spares 626 Exception-majority peaks on these files.
-    At the reference's 1 ppm it would spare 312. The other 314 include 114
+    coincidence (an 81Br or 37Cl line in a uronium set).
+  - **Only the ratio test** takes 204 peaks at 5.10's tolerance, with no
+    Exception flag after 5.10 and no width flag. At the 1 ppm of the table
+    they are 139: the width rule then flags 65 of the 78 in its band.
+    126 lie outside the band. 123 have a line 50 times brighter only
+    beyond five widths (a median 18 out, inside the ratio test's 100 ppm),
+    one sits 0.6 widths from its line, and two have a base only 26 to 27
+    times brighter. 78 sit in the band: the width rule's own exemptions
+    spare 72 (71 isotopologue, 1 fine structure), and 6 carry no
+    signature. 134 of the 204 are Exception-majority peaks 5.10's
+    exemption spared; 47 have no flagged centroid at all, 32 of them in K3.
+    The 20 read are lobes: the 12 outside the band in ringing combs, 8 of
+    them with every centroid flagged, and the 8 in it beside a bright line,
+    every centroid flagged. The ratio test is needed there: the band does
+    not reach 126 of them, and its exemptions spare 72 more.
+  - **5.10's exemption** spares 630 Exception-majority peaks on these files.
+    At the reference's 1 ppm it would spare 312. The other 318 include 116
     committed rows and 88 rows the engine read as isotope lines (13C, 2H,
     18O). That trade-off is 5.10's, not this step's.
   - **The TOF rider** (sets E, F1, F2, J; the testbed's TOF peak lists,
