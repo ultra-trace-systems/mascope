@@ -293,7 +293,7 @@ split by what the evidence shows:
 
 | `evidence_level` | what the person states | `level` |
 |---|---|---|
-| `reference_standard` | the structure; a standard on the same instrument with the same reagent chemistry; one independent line (MS/MS, a separation, another instrument) | 1; without the independent line, 5.8f's call (recommended 2b) |
+| `reference_standard` | the structure; a standard on the same instrument with the same reagent chemistry; one independent line (MS/MS, a separation, another instrument) | 1; without the independent line, 2b, its lift "an independent line" |
 | `msms` | a library spectrum match, with the structure | 2a |
 | `msms` | two or more fragments that fit one structure, rivals excluded, with the structure | 2b |
 | `msms` | one loss: a class, no structure | 3b |
