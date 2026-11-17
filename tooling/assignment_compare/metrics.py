@@ -23,6 +23,11 @@ B's, the reference's, in the ``b_*`` ones. The card adds:
   ``a_unseparated``, for the reason coverage, G7, G13 and G14; and
   ``a_detail_failed``, the rows whose detail read failed.
 
+A set that carries an authors' list, the neutral formulas a study's authors
+published for its data, also reads both engines against it
+(:func:`truth_readings`): readings no target names, since a list is not
+exhaustive.
+
 A metric returns a reading, ``{"value": ..., "n": ...}``: the number the card
 prints and the count it is a share of (or counted over). The value is None
 where the metric cannot be read on the frame - no reference run for a metric

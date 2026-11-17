@@ -79,7 +79,8 @@ uv run python tooling/assignment_bench/bench.py status
   a person to fill with verdicts; **`review --record`** posts them. Its
   section below has the detail.
 - **`status`** prints the env and slot, the build the last `init` started,
-  every set with its sample counts and the builds that ingested it, the
+  every set with its sample counts, the builds that ingested it and the
+  size of its authors' list where it has one, the
   reference pin with peaky's version string and the `mascope-tools` it
   scored with, develop's baseline card, and the last five cards with their
   ref, commit and verdict. It needs no runtime home.
@@ -206,7 +207,10 @@ box in the caller's own session, one run at a time. In order:
    committed row's provenance one request at a time (#3134), so it takes
    longer than the runs ("What it costs", below). It has no budget, since
    its time grows with the rows it reads; it writes a line per sample, and
-   one that writes nothing for 30 minutes is taken for hung and stopped.
+   one that writes nothing for 30 minutes is taken for hung and stopped. A
+   set whose manifest names an authors' list (`truth`, "The manifest") is
+   read against it too: its column gains the list's readings for both
+   engines, which no target gates.
 9. **The scrub.** The comparison is given a deny list: every name and id
    the instance holds (its workspaces, datasets, batches, samples, files,
    modes and collections, and its instruments by name, by the names its
@@ -445,6 +449,19 @@ tiers.
 - **`reference_window_ppm`** is `null` for the reference engine's own
   defaults. Otherwise it is `{"trust": ppm, "search": ppm}`, as the TOF sets
   ran at 8 and 25 ppm.
+- **`truth`**, which a set may leave out, is the authors' list of a set
+  drawn from a published or shared study: `{"file": P, "sha256": H}`, a
+  JSON list of the neutral formulas its authors assigned
+  (`["C10H15NO8", "C10H16O3", ...]`), at `P` in the manifest's folder.
+  `init` checks its hash as it does a folder file's, so a list that changes
+  is a manifest that changes. It refuses a list that is empty or holds
+  anything but neutral formulas of element symbols and counts, naming the
+  entry's place and never its text. It keeps the list in `state.json`, and
+  `run` hands it to the card, which reads both engines against it
+  (`tooling/assignment_compare/README.md`, "An authors' list"). The list is
+  never seeded into the instance: the in-app engine reads a batch's own
+  target collections as known targets, so a list attached there would hand
+  it the answers.
 
 `manifests/demo.json` is the public manifest. It holds the demo bundle's
 MS1 acquisitions at the CLI's default bundle version, one set per

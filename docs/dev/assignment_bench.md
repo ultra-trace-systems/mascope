@@ -3,7 +3,7 @@
 # The assignment bench: both engines on demand, on the agent box
 
 - **Status:** building
-- **As of:** 2026-11-13
+- **As of:** 2026-11-17
 - **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, milestone 6: MAS-64, MAS-835 to MAS-841, MAS-849)
 - **What:** One command on the agent box that runs a branch's in-app assignment engine beside peaky at a pinned release on fixed sample sets, prints the plan's metrics as a card, and posts it on the PR; a worker runs it in its own session.
 
@@ -127,8 +127,10 @@ file by its path in that folder and its hash, and seeds their mode from a
 seed file of the corpus seed's shape in the same folder. `init` checks each
 file's hash before it uploads it. The first such picks (2026-11-17, the plan
 owner's, under 6.8) are three nitrate TOF sets and one nitrate Orbitrap
-set, 24 samples. The authors' peak lists are not loaded into the bench:
-reading the engines against them is a metric the card does not have yet.
+set, 24 samples. The authors' peak lists are not loaded into the bench's
+instance, since the engine reads a batch's own target collections as known
+targets and a list attached there would hand it the answers; the card reads
+both engines against them instead (section 6).
 
 The manifest (step 6.2) names, per set: its letter, its files, its
 ionization mode and profile, the target collections and reference lists to
@@ -230,6 +232,27 @@ only. The backend is stopped and the worktree removed after every run,
 including a failed one, so `bench reference` now checks its own build out
 before it starts a backend.
 
+The authors' lists. A set drawn from a published or shared study comes
+with the peak list its authors assigned. On 2026-11-17 a one-off script
+read the in-app engine's assigned tier, run blind, against such lists: on
+Orbitrap data the lists held 36 of its 38 formulas on one dataset, 6 of 6
+on another and about 46% on a third whose list has only 345 ions; on TOF
+data 21 of 71, and the engine's coverage of the lists was low. The card now
+takes that reading as code, for both engines. A set's manifest names its list as `truth`, a JSON list
+of neutral formulas in the private folder named by its path and hash, so a
+list that changes is a manifest that changes. `init` reads it into the
+bench's state and nowhere else: it is never seeded into the instance. `run`
+hands it to the comparison, and the set's column gains, per engine, the
+share of its assigned monoisotopic formulas the list holds, the share of
+the list it assigns, and the share it commits at assigned or candidate,
+with the list's size. The reference is read at its own tier, as G2 reads
+it. Formulas are compared by element counts (the sources write them in
+different orders) and counted distinct over the set's samples, the pooled
+column adding each set's counts against its own list. The lists are not
+exhaustive: the authors assigned what their study needed, so a formula off
+the list is not wrong, and a share of the list is not a recall. They are
+readings, gated by no target, and the card says so above its table.
+
 A branch with a migration of its own moves the bench database to its
 revision, and develop is then refused until that migration is on develop;
 one that never lands leaves the bench where only `init --rebuild` brings it
@@ -294,8 +317,9 @@ when it exists.
 
 ## 9. What the bench is not
 
-- Not a truth. Agreement with the reference and the plan's intrinsic
-  metrics are readings; the truth corpus's precision and recall join the
+- Not a truth. Agreement with the reference, with an authors' list and
+  the plan's intrinsic metrics are readings; an authors' list is what a
+  study needed, not every compound in its spectra; the truth corpus's precision and recall join the
   card when the baseline exists and are read then, once, over everything
   merged before (decision 34).
 - Not a port of peaky's scorecard. The decoy arms are Mascope's own since
