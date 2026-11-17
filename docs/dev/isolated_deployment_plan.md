@@ -49,6 +49,16 @@ be refused by the same IT department that asked for isolation. What they will
 accept is outbound-only, off by default, turned on by them, logged on both
 sides - and, for the routine work, no session at all.
 
+This setting has the instrument PC online and the server offline. Some sites
+want the instrument PC offline too, because their IT treats it as plant
+equipment. There, every path below that runs through the instrument PC - the
+subnet router of section 4, the File Agent carrier of section 5.5 and the
+relay of section 6 - runs through a connector instead: a small host at the
+site that has an outbound path and holds no data.
+[instrument_network_connector_plan.md](instrument_network_connector_plan.md)
+describes the connector, and its section 7 how it takes this plan's gateway
+role.
+
 ## 2. What a deployment reaches out to today
 
 Everything a self-hosted server contacts, and what happens when it cannot.
@@ -98,6 +108,13 @@ The rest of this document is for the sites that say no to this.
 The instrument PC is the only machine at the site with an outbound path, and it
 already sits on the server's network. Use it as a gateway *for administrators*,
 never as a gateway for the server.
+
+Where the customer keeps the instrument PC offline as well, it cannot be this
+gateway, and a connector takes its place
+([instrument_network_connector_plan.md](instrument_network_connector_plan.md),
+section 7). Everything below then applies with the connector, a Linux host, in
+the instrument PC's place, except what 4.1 and 4.2 say about the Windows
+client and the desktop shortcuts.
 
 ### 4.1 The mechanism: a subnet router on the instrument PC
 
