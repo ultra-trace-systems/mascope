@@ -78,6 +78,12 @@ offsets at the same floors as a walk's proposals (:func:`ladder_evidence`),
 and a committed unit's links make its ladders (:class:`Ladder`), each a chain
 of targets one unit apart. A ladder names the unit, not a formula: nothing
 says what the chain's end groups are, so it proposes none.
+
+A rung nothing reads claims none of its isotope lines either, and the 13C
+lines of a ladder's rungs make a ladder of their own one unit apart, as do
+its 29Si and 30Si lines. So a caller leaves out of the targets every peak that
+sits one isotope spacing above a brighter one (:func:`isotope_lines`); counted
+in, a ladder's lines would beat the decoys where its rungs alone do not.
 """
 
 from __future__ import annotations
@@ -87,6 +93,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from functools import cached_property, lru_cache
 from typing import Iterable, Mapping, Sequence
+
+from pyteomics.mass import calculate_mass
 
 from mascope_tools.composition.models import IonizationMechanism
 from mascope_tools.composition.utils import (
@@ -791,3 +799,74 @@ def ladder_evidence(
         min_enrichment=min_enrichment,
         ladders=ladders_of(links, {target.key: target.mz for target in targets}),
     )
+
+
+#: How far above an ion its isotope lines sit, in Da, with one charge: one
+#: 13C, two, one 29Si and one 30Si, the lines bright enough to be batch peaks
+#: of a siloxane or a fluorinated ion (fluorine has one isotope). A line of two
+#: isotopes, 29Si and 13C, sits one spacing above the line of either.
+ISOTOPE_SPACINGS_DA: tuple[float, ...] = tuple(
+    calculate_mass(formula=heavy) - calculate_mass(formula=light)
+    for heavy, light in (
+        ("C[13]", "C"),
+        ("C[13]2", "C2"),
+        ("Si[29]", "Si"),
+        ("Si[30]", "Si"),
+    )
+)
+
+
+@dataclass(frozen=True)
+class MeasuredPeak:
+    """A peak as :func:`isotope_lines` reads it.
+
+    :param key: Its id.
+    :param mz: Its m/z.
+    :param intensity: Its height, or None where it has none to compare.
+    """
+
+    key: str
+    mz: float
+    intensity: float | None = None
+
+
+def isotope_lines(
+    peaks: Iterable[MeasuredPeak],
+    *,
+    tolerance_ppm: float,
+    spacings_da: Sequence[float] = ISOTOPE_SPACINGS_DA,
+) -> frozenset[str]:
+    """The peaks that sit one isotope spacing above a brighter peak.
+
+    A rung nothing reads claims none of its isotope lines, and each line sits
+    one unit below the next rung's same line. Linked as they are, a ladder's
+    lines would make ladders of their own and count against the decoys as
+    further molecules. So a peak fainter than another, within the window of
+    that peak's m/z plus one of ``spacings_da``, is read as its line and left
+    out of the ladders. No formula is read, so no ratio is checked: a peak
+    that happens to sit one spacing above a brighter one is left out too,
+    which can cost a ladder a link but never makes one.
+
+    :param peaks: Every peak of the mode, the lines' parents among them.
+    :param tolerance_ppm: The window, in ppm of the m/z a spacing predicts.
+    :param spacings_da: The spacings.
+    :return: The keys of the peaks that are a brighter peak's line.
+    """
+    ordered = sorted(
+        (peak for peak in peaks if peak.intensity is not None),
+        key=lambda peak: (peak.mz, peak.key),
+    )
+    mzs = [peak.mz for peak in ordered]
+    lines: set[str] = set()
+    for parent in ordered:
+        for spacing in spacings_da:
+            mz = parent.mz + spacing
+            half = mz * tolerance_ppm * 1e-6
+            lo = bisect.bisect_left(mzs, mz - half)
+            hi = bisect.bisect_right(mzs, mz + half)
+            lines.update(
+                ordered[index].key
+                for index in range(lo, hi)
+                if ordered[index].intensity < parent.intensity
+            )
+    return frozenset(lines)

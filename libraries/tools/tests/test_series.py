@@ -7,12 +7,14 @@ import pytest
 from mascope_tools.composition.series import (
     CONTAMINANT_UNITS,
     DECOY_OFFSETS_DA,
+    ISOTOPE_SPACINGS_DA,
     MAX_DEPTH,
     MIN_ENRICHMENT,
     MIN_LINKS,
     ORGANIC_UNITS,
     SERIES_UNITS,
     LadderEvidence,
+    MeasuredPeak,
     Proposal,
     SeriesEvidence,
     SeriesSource,
@@ -21,6 +23,7 @@ from mascope_tools.composition.series import (
     committed_proposals,
     has_label_alias,
     ion_mz,
+    isotope_lines,
     ladder_evidence,
     ladders_of,
     link_ladder,
@@ -680,3 +683,76 @@ class TestTheLadders:
             "n_ladders": 1,
             "n_members": MIN_LINKS + 1,
         }
+
+
+#: The spacings in the order :data:`ISOTOPE_SPACINGS_DA` lists them.
+C13, C13_2, SI29, SI30 = ISOTOPE_SPACINGS_DA
+
+
+class TestTheIsotopeLines:
+    def test_the_spacings_are_the_isotopes(self):
+        assert (C13, C13_2, SI29, SI30) == pytest.approx(
+            (1.0033548, 2.0067097, 0.9995682, 1.9968436), abs=1e-6
+        )
+
+    @pytest.mark.parametrize("spacing", [C13, C13_2, SI29, SI30])
+    def test_a_fainter_peak_one_spacing_above_another_is_its_line(self, spacing):
+        peaks = [
+            MeasuredPeak("mono", D3_MZ, 1000.0),
+            MeasuredPeak("line", D3_MZ + spacing, 100.0),
+        ]
+        assert isotope_lines(peaks, tolerance_ppm=3.0) == {"line"}
+
+    def test_a_brighter_or_as_bright_peak_is_no_line(self):
+        for height in (1000.0, 2000.0):
+            peaks = [
+                MeasuredPeak("mono", D3_MZ, 1000.0),
+                MeasuredPeak("up", D3_MZ + C13, height),
+            ]
+            assert isotope_lines(peaks, tolerance_ppm=3.0) == frozenset()
+
+    def test_a_peak_with_no_height_is_neither_a_line_nor_a_parent(self):
+        unknown = MeasuredPeak("mono", D3_MZ, None)
+        line = MeasuredPeak("line", D3_MZ + C13, 100.0)
+        assert isotope_lines([unknown, line], tolerance_ppm=3.0) == frozenset()
+        bright = MeasuredPeak("mono", D3_MZ, 1000.0)
+        faint = MeasuredPeak("line", D3_MZ + C13, None)
+        assert isotope_lines([bright, faint], tolerance_ppm=3.0) == frozenset()
+
+    def test_the_window_is_the_one_given(self):
+        off = (D3_MZ + C13) * (1 + 4e-6)
+        peaks = [MeasuredPeak("mono", D3_MZ, 1000.0), MeasuredPeak("line", off, 1.0)]
+        assert isotope_lines(peaks, tolerance_ppm=3.0) == frozenset()
+        assert isotope_lines(peaks, tolerance_ppm=5.0) == {"line"}
+
+    def test_a_line_of_a_line_is_one_too(self):
+        # The 29Si+13C line sits 2.0029 above its monoisotopic peak, near no
+        # spacing of its own, but one 13C above the brighter 29Si line.
+        peaks = [
+            MeasuredPeak("mono", D3_MZ, 1000.0),
+            MeasuredPeak("si29", D3_MZ + SI29, 150.0),
+            MeasuredPeak("si29c13", D3_MZ + SI29 + C13, 10.0),
+        ]
+        assert isotope_lines(peaks, tolerance_ppm=3.0) == {"si29", "si29c13"}
+
+    def test_a_ladder_s_lines_are_what_its_rungs_leave_out(self):
+        # Five rungs make four links, short of the floor. Their 13C, 29Si and
+        # 30Si lines make three ladders more of four links each, which would
+        # carry the unit over it.
+        rungs_ = rungs("r", 5)
+        peaks = [MeasuredPeak(t.key, t.mz, 1000.0) for t in rungs_]
+        for name, spacing in (("c", C13), ("s", SI29), ("t", SI30)):
+            peaks += [
+                MeasuredPeak(f"{name}{k}", t.mz + spacing, 100.0)
+                for k, t in enumerate(rungs_)
+            ]
+        every = [SeriesTarget(p.key, p.mz) for p in peaks]
+        counted = ladder_evidence(every, SILOXANE, tolerance_ppm=3.0)
+        assert (counted.n_links, len(counted.ladders)) == (16, 4)
+        lines = isotope_lines(peaks, tolerance_ppm=3.0)
+        free = [t for t in every if t.key not in lines]
+        evidence = ladder_evidence(free, SILOXANE, tolerance_ppm=3.0)
+        assert evidence.n_links == 4
+        assert [ladder.keys for ladder in evidence.ladders] == [
+            tuple(f"r{k}" for k in range(5))
+        ]

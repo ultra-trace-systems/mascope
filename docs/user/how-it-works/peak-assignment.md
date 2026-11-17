@@ -1679,11 +1679,15 @@ A ladder of column bleed or of perfluorinated acids often has no member the batc
 assigns: where the formula search holds no silicon or fluorine, nothing carrying either is
 assigned, and the siloxane and CF2 steps start only from a compound that does. So
 *Detect series* also looks for those two ladders by mass alone, as the reference engine
-looks for its contaminant families among the peaks nothing explains. Among the batch
-peaks nothing assigned, or held only at *candidate*, that no kept proposal took, it links
-each peak to the one a siloxane unit (74.0188) or a CF2 (49.9968) heavier, as an ion of
-one molecule with one charge, in the formula search's window. An error in the
-calibration moves both peaks alike and cancels in the difference. The links are counted
+looks for its contaminant families among the peaks nothing explains: the batch peaks
+nothing assigned, or held only at *candidate* or *below assignability*, that no kept
+proposal took. It links each of them to the one a siloxane unit (74.0188) or a CF2
+(49.9968) heavier, as an ion of one molecule with one charge, in the formula search's
+window. An error in the calibration moves both peaks alike and cancels in the
+difference. A peak that sits one isotope spacing (one or two 13C, one 29Si or one 30Si)
+above a brighter batch peak is left out: nothing reads the rungs, so nothing claims
+their isotope lines, and a ladder's lines would make ladders of their own, one unit
+apart, and count as further molecules. The links are counted
 against the same six decoy masses and kept on the same terms as the steps, at least 12
 links and ten times the decoys' mean, even in an ionization mode where the batch assigns
 nothing at all. A kept ladder says the batch holds that unit's chain, not what its end

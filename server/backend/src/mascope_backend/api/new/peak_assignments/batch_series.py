@@ -37,7 +37,9 @@ per-sample run.
 A contaminant ladder no assigned anchor carries the element of (a siloxane, a
 perfluorinated acid) is never walked: a contaminant unit steps only from a
 formula holding its element. So each contaminant unit is also linked by mass
-alone among the anchors the walk may reach and no committed proposal took
+alone among the anchors nothing explains - the ones the walk may reach and no
+committed proposal took, and the ones held below assignability - less the
+isotope lines of brighter anchors
 (``mascope_tools.composition.series.ladder_evidence``), against the same
 decoys and floors, in a mode with no assigned anchor too. A committed ladder
 names its unit and its anchors, not a formula, so it is measured on no member
@@ -86,6 +88,7 @@ from mascope_backend.api.new.peak_assignments.profiles import resolve_profile
 from mascope_backend.api.new.peak_assignments.service import fetch_sample_mechanisms
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
+    TIER_BELOW_ASSIGNABILITY,
     TIER_CANDIDATE,
     TIER_UNASSIGNED,
 )
@@ -107,11 +110,13 @@ from mascope_tools.composition.series import (
     MIN_LINKS,
     SERIES_UNITS,
     LadderEvidence,
+    MeasuredPeak,
     Proposal,
     SeriesEvidence,
     SeriesSource,
     SeriesTarget,
     committed_proposals,
+    isotope_lines,
     ladder_evidence,
     series_evidence,
 )
@@ -149,12 +154,19 @@ class ModeAnchors:
         for every target that reads one.
     :ivar series_members: The targets the batch assigns: members of a series,
         which the ladders leave out, as their readings explain them.
+    :ivar below: The anchors held below assignability: a formula was tried
+        and none reached candidate. The walk does not reach them; the ladders
+        link them, as nothing explains them.
+    :ivar peaks: Every anchor of the mode, claimed ones included, with its
+        brightest member: what the ladders' isotope lines are read against.
     """
 
     sources: list[SeriesSource] = field(default_factory=list)
     targets: list[SeriesTarget] = field(default_factory=list)
     formula_of: dict[str, str] = field(default_factory=dict)
     series_members: set[str] = field(default_factory=set)
+    below: list[SeriesTarget] = field(default_factory=list)
+    peaks: list[MeasuredPeak] = field(default_factory=list)
 
 
 def _series_member(anchor: Any) -> bool:
@@ -185,13 +197,22 @@ def series_anchors(
     target, the walk reaches it again and its record is renewed beside the
     reading it already holds. A pinned one is a source like any assigned pin.
 
+    An anchor held below assignability is neither, and is kept apart for the
+    ladders (:attr:`ModeAnchors.below`). Each mode also keeps every anchor of
+    its own, claimed ones included, with its brightest member
+    (:attr:`ModeAnchors.peaks`).
+
     :param anchors: The batch's anchors (``BatchPeak`` rows or anything with
         their attributes).
     :param notation_by_id: Mechanism id -> its notation.
     :return: Mode id -> its anchors.
     """
     modes: dict[Optional[str], ModeAnchors] = defaultdict(ModeAnchors)
+    peaks: dict[Optional[str], list[MeasuredPeak]] = defaultdict(list)
     for anchor in anchors:
+        peaks[anchor.ionization_mode_id].append(
+            MeasuredPeak(anchor.batch_peak_id, anchor.mz, anchor.max_intensity)
+        )
         if anchor.consensus_role or anchor.isotopologue_of:
             continue
         if not _monoisotopic(anchor.consensus_ion_formula):
@@ -217,6 +238,10 @@ def series_anchors(
             mode.formula_of[anchor.batch_peak_id] = formula
             if tier == TIER_ASSIGNED:
                 mode.series_members.add(anchor.batch_peak_id)
+        elif tier == TIER_BELOW_ASSIGNABILITY:
+            mode.below.append(SeriesTarget(anchor.batch_peak_id, anchor.mz, None))
+    for mode_id, mode in modes.items():
+        mode.peaks = peaks[mode_id]
     return dict(modes)
 
 
@@ -286,8 +311,9 @@ class SeriesPlan:
     @property
     def modes_walked(self) -> list[Optional[str]]:
         """Every mode walked from an assigned anchor or linked by mass alone,
-        in the order they were walked."""
-        return list(dict.fromkeys([*self.evidence, *self.ladders]))
+        in the order they were walked: :func:`plan_series` links every mode it
+        walks, so :attr:`ladders` holds them all in that order."""
+        return list(dict.fromkeys([*self.ladders, *self.evidence]))
 
 
 @dataclass(frozen=True)
@@ -317,11 +343,16 @@ def plan_series(
     """Walk every unit in every mode, keep the committed families' proposals,
     and link the contaminant units by mass alone among what is left.
 
-    The ladders link the targets no committed proposal took and the batch does
-    not assign (:attr:`ModeAnchors.series_members`): the unassigned anchors and
-    those held at candidate, which is where a contaminant read on a grid
-    without its element ends up. A mode with no assigned anchor to walk from is
-    still linked.
+    The ladders link the anchors nothing explains: the targets no committed
+    proposal took and the batch does not assign
+    (:attr:`ModeAnchors.series_members`), and the anchors held below
+    assignability (:attr:`ModeAnchors.below`). That is the unassigned anchors
+    and those held at candidate or below assignability, which is where a
+    contaminant read on a grid without its element ends up. An anchor one
+    isotope spacing above a brighter one of the mode is left out
+    (``mascope_tools.composition.series.isotope_lines``): a rung nothing reads
+    claims none of its lines, and they would link into ladders of their own. A
+    mode with no assigned anchor to walk from is still linked.
 
     :param modes: The anchors, per mode (:func:`series_anchors`).
     :param chemistry: Each mode's walk settings; a mode with none is not
@@ -337,9 +368,9 @@ def plan_series(
     plan = SeriesPlan()
     for mode_id, anchors in modes.items():
         settings = chemistry.get(mode_id)
-        if settings is None or not anchors.targets:
+        if settings is None or not (anchors.targets or anchors.below):
             continue
-        if anchors.sources:
+        if anchors.sources and anchors.targets:
             _walk_mode(
                 plan,
                 mode_id,
@@ -350,11 +381,13 @@ def plan_series(
                 min_links=min_links,
                 min_enrichment=min_enrichment,
             )
+        lines = isotope_lines(anchors.peaks, tolerance_ppm=settings.tolerance_ppm)
         free = [
             target
-            for target in anchors.targets
+            for target in [*anchors.targets, *anchors.below]
             if target.key not in plan.records
             and target.key not in anchors.series_members
+            and target.key not in lines
         ]
         plan.ladders[mode_id] = [
             ladder_evidence(
@@ -851,7 +884,8 @@ def series_outcome(counts: dict, sample_batch_id: str) -> dict:
                 if unresolved
                 else (
                     "No series was walked: the batch has no batch peak left "
-                    "unassigned, or held only at candidate, to reach."
+                    "unassigned, or held only at candidate or below "
+                    "assignability, to reach."
                 )
             ),
             "data": counts,
@@ -881,7 +915,8 @@ def series_outcome(counts: dict, sample_batch_id: str) -> dict:
         if anchored
         else (
             "No series was walked from an assigned batch peak: the batch has "
-            "none to walk from."
+            "none to walk from, or no batch peak unassigned or at candidate to "
+            "step onto."
         )
     )
     return {
