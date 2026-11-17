@@ -1,7 +1,7 @@
 # TOF mass calibration
 
 - **Status:** building
-- **As of:** 2026-11-06
+- **As of:** 2026-11-17
 - **Tracked in:** [TOF mass calibration](https://linear.app/ultra-trace/project/tof-mass-calibration-8271ef05d142) (Linear, MAS-171 to MAS-197)
 - **What:** TOF mass calibration across the analysed range: measure, fix calibrants, model, re-calibrate.
 
@@ -723,10 +723,17 @@ Code, shipped in releases.
 - **A calibration trend per instrument**: calibrant residuals and the raw-axis offset over time,
   so a calibrant that starts to read off, or a chemistry change that moves a neighbour onto it,
   shows (MAS-190). On TOF H, 246 and 248 Th moved by 14 and 35 ppm in one week.
-- **Regression coverage**: de-identified TOF specimens in the fleet regression corpus, one per
-  reagent class in use (propylamine +, nitrate −, bromide −), and a test that the node's fit equals
-  an independent refit of its matched points to 0.01 ppm. Nothing in CI fits a TOF calibration on
-  real data today: the demo dataset and the reproducibility goldens are Orbitrap (MAS-191).
+- **Regression coverage** (MAS-191): one real TOF specimen per reagent class in use, as small
+  derived fixtures committed to the repository (`libraries/tofwerk/tests/data/`, whose README says
+  what they hold). Each holds every peak within 200 ppm of a calibrant line, matched or not, the
+  file's axis, the calibrants, and the fit the node made at ingest. The full specimens, every peak
+  of each file, are kept in the fleet regression corpus (`runs/2026-11-17_mas191-tof-specimens/`).
+  The tests: a refit of the kept lines with `mz_calibrate` gives the node's parameters and every
+  residual; the node's `TofCalibrationHandler` fits each specimen as it did at ingest, to 0.01 ppm;
+  and the calibration audit's refit equals the node's to 0.01 ppm. Real calibrants sit well inside
+  every threshold, so the loss, the residual tolerance, the refine window and the S/N floor are each
+  pinned on a specimen with one thing changed. Nitrate (−) and bromide (−) are in; propylamine (+)
+  waits for a positive-mode TOF file in the corpus (MAS-936).
 
 ### 4 · Re-calibrate existing data
 
