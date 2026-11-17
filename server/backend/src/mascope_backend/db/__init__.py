@@ -179,20 +179,34 @@ async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
     Dependency-injected session for FastAPI route handlers.
 
     This function yields a session that is automatically managed by FastAPI's
-    dependency injection system.
-    It ensures that the session is opened at the start of the request and closed
-    when the request finishes.
+    dependency injection system. The session holds one ``db_semaphore``
+    permit from the moment it is opened until it is closed, and how long
+    that is depends on the scope it is declared with:
 
-    Key points:
-    - Automatically manages session lifecycle (opened and closed at the correct time).
-    - Integrates with FastAPI `Depends()` to inject the session into routes.
-    - Useful for request-response workflows where session lifecycle should be automated.
+    - ``Depends(get_async_session, scope="function")`` closes it when the
+      endpoint returns and its response has been built, before the response
+      is sent and before the request's background tasks run.
+    - ``Depends(get_async_session)``, request scope, closes it only after
+      the response is sent and every background task has run (FastAPI
+      0.118 and later). A route that hands a long run to
+      ``background_tasks.add_task`` would hold the permit for the whole run,
+      and once a worker's permits are all held that way, every signed-in
+      request on it waits (#3240).
+
+    Every request reaches it through sign-in: ``get_user_db`` and
+    ``get_access_token_db`` declare it function-scoped and share the one
+    session. A new caller declares it function-scoped too, and returns
+    rather than yields if it wraps it in a dependency of its own: FastAPI
+    refuses a request-scoped ``yield`` dependency that depends on a
+    function-scoped one.
 
     Example usage in a FastAPI route:
         from fastapi import Depends
 
         @app.get("/items")
-        async def get_items(session: AsyncSession = Depends(get_async_session)):
+        async def get_items(
+            session: AsyncSession = Depends(get_async_session, scope="function"),
+        ):
             # Perform operations within the session
 
     :yield: Yields an active SQLAlchemy session for database interactions.

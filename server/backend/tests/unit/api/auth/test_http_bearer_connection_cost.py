@@ -204,6 +204,51 @@ class TestRevocationStaysImmediateHere:
         )
 
 
+class TestThePermitEndsWithTheEndpoint:
+    """How long a bearer request holds the session the strategy reads through.
+
+    The strategy reads the token row through the injected session, and that
+    session holds one of the worker's ``db_semaphore`` permits. Held until the
+    request's background tasks end, as a request-scoped session is, a launched
+    run kept it for the whole run (#3240).
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_strategy_gives_its_permit_back_before_the_task_runs(
+        self, launch_probe
+    ):
+        from mascope_backend.api.new.auth.strategies import get_database_strategy
+
+        held = await launch_probe(get_database_strategy)
+
+        assert held == {"endpoint": True, "task": False}
+
+    @pytest.mark.asyncio
+    async def test_the_strategy_and_the_user_manager_share_one_session(
+        self, launch_probe
+    ):
+        # fastapi-users resolves both for every signed-in request. Declared
+        # with different scopes they would be two sessions, and on a worker
+        # with one permit left the second would wait for the first forever:
+        # the probe's timeout ends the post instead.
+        from fastapi import Depends
+
+        from mascope_backend.api.new.auth.strategies import get_database_strategy
+        from mascope_backend.api.new.users.user_manager.dependencies import (
+            get_user_manager,
+        )
+
+        async def signed_in(
+            _manager=Depends(get_user_manager),
+            _strategy=Depends(get_database_strategy),
+        ):
+            return None
+
+        held = await launch_probe(signed_in)
+
+        assert held == {"endpoint": True, "task": False}
+
+
 class _SessionCtx:
     """An ``async_session()`` stand-in yielding a prepared session double."""
 
