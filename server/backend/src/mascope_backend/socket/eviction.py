@@ -437,8 +437,40 @@ async def _retry_kept() -> None:
             f"reach [Worker {os.getpid()}]"
         )
         for key in list(_retries):
-            if (retry := _retries.pop(key, None)) is not None:
+            if (retry := _retries.get(key)) is not None:
                 await retry()
+                # Kept until it has run, so one cancelled halfway is counted
+                # as dropped; one that kept itself again is a new call.
+                if _retries.get(key) is retry:
+                    del _retries[key]
+
+
+def sign_out_retries_kept() -> int:
+    """How many evictions and sign-outs this process keeps to try again."""
+    return len(_retries)
+
+
+async def settle_sign_out_retries(timeout: float) -> int:
+    """
+    Give the kept sign-outs up to ``timeout`` seconds to go through, then stop
+    trying them, as a process that is about to end must.
+
+    A worker's kept sign-outs run for as long as it does. A maintenance script
+    ends as soon as it is done, and its event loop with it, so what it kept
+    would be cancelled with the loop and never said: it waits here instead,
+    while Redis is still connected, and what is left is dropped and said by
+    :func:`stop_sign_out_retries`.
+
+    :param timeout: How long to wait for Redis to answer and the retries to
+        run, in seconds.
+    :return: How many were dropped; 0 when every kept one went through.
+    """
+    task = _retry_task
+    if _retries and task is not None and _retrying():
+        await asyncio.wait({task}, timeout=timeout)
+    dropped = len(_retries)
+    await stop_sign_out_retries()
+    return dropped
 
 
 async def stop_sign_out_retries() -> None:

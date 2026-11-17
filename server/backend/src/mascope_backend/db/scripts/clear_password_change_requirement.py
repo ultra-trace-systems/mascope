@@ -89,19 +89,22 @@ async def run_clear() -> None:
 
     result = await clear_password_change_requirement(emails)
     data = result["data"]
-    await notify_open_sessions(data["user_ids"])
+    notified = await notify_open_sessions(data["user_ids"])
 
     runtime.logger.info("=" * 80)
     runtime.logger.info("PASSWORD CHANGE REQUIREMENT WITHDRAWN")
     runtime.logger.info(f"Accounts released: {data['cleared_count']}")
-    runtime.logger.info(
-        "Open sessions leave the password screen at once, unless Redis could "
-        "not be reached (reported above); then they leave it when reloaded."
-    )
+    if notified:
+        runtime.logger.info("Open sessions leave the password screen at once.")
+    else:
+        runtime.logger.warning(
+            "Redis could not be reached for every open session (reported "
+            "above): those leave the password screen when reloaded."
+        )
     runtime.logger.info("=" * 80)
 
 
-async def notify_open_sessions(user_ids: list[int]) -> None:
+async def notify_open_sessions(user_ids: list[int]) -> bool:
     """
     Tell the open tabs of the accounts just released, as arming them did.
 
@@ -110,6 +113,7 @@ async def notify_open_sessions(user_ids: list[int]) -> None:
     evicted them from.
 
     :param user_ids: The accounts released.
+    :return: Whether every open session was reached.
     """
     # Imported here, not at the top: importing the socket package builds the
     # Socket.IO server from the Redis configuration, and the CLI imports this
@@ -118,7 +122,7 @@ async def notify_open_sessions(user_ids: list[int]) -> None:
         notify_password_change_from_script,
     )
 
-    await notify_password_change_from_script(user_ids, required=False)
+    return await notify_password_change_from_script(user_ids, required=False)
 
 
 def main() -> None:
