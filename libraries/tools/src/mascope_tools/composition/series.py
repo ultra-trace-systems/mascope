@@ -369,7 +369,8 @@ def walk_series(
         sit in.
     :param offset_da: A decoy shift added to the unit's mass, 0 for the unit
         itself. The formula arithmetic is the unit's whatever the shift: a
-        decoy walk takes exactly the steps the real one could.
+        decoy walk takes exactly the steps the real one could. The shift is per
+        molecule, as the unit is, so a dimer's ion moves by twice it.
     :param max_depth: The most units a proposal may sit from its root.
     :param labelled: Whether the source is a labelled nitrate, on which a
         reading with a same-ion alias (:func:`has_label_alias`) is not proposed.
@@ -395,12 +396,15 @@ def walk_series(
     for depth in range(1, max_depth + 1):
         reached: dict[str, tuple[tuple, Proposal, dict]] = {}
         for key, counts, mechanism, exact, root in frontier:
-            charge = abs(_mechanism(mechanism).charge)
+            # Every molecule of the ion takes the step, and the charge divides
+            # it: a [2M+H]+ ion moves by two units, a [M+2H]2+ one by half.
+            parsed = _mechanism(mechanism)
+            ion_step = parsed.multimer * step_mass / abs(parsed.charge)
             for n in (1, -1):
                 stepped = step_formula(counts, unit, n)
                 if stepped is None or (labelled and has_label_alias(stepped)):
                     continue
-                stepped_mz = exact + n * step_mass / charge
+                stepped_mz = exact + n * ion_step
                 hit = _nearest(mzs, keys, stepped_mz, tolerance_ppm)
                 if hit is None or hit[0] in proposals:
                     continue
