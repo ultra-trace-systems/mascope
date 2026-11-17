@@ -34,6 +34,16 @@ same reading (``service.stamp_series``), and the tiering pass counts it as a
 second observation (``tiering.series_anchor``). Nothing here writes a
 per-sample run.
 
+A contaminant ladder no assigned anchor carries the element of (a siloxane, a
+perfluorinated acid) is never walked: a contaminant unit steps only from a
+formula holding its element. So each contaminant unit is also linked by mass
+alone among the anchors the walk may reach and no committed proposal took
+(``mascope_tools.composition.series.ladder_evidence``), against the same
+decoys and floors, in a mode with no assigned anchor too. A committed ladder
+names its unit and its anchors, not a formula, so it is measured on no member
+and recorded on no anchor: the run's summary lists it, per mode, beside the
+walk's units.
+
 Design: ``docs/dev/assignment_quality_plan.md``, step 4.1.
 """
 
@@ -92,14 +102,17 @@ from mascope_backend.socket.notifications import (
 )
 from mascope_file.name import get_instrument_type
 from mascope_tools.composition.series import (
+    CONTAMINANT_UNITS,
     MIN_ENRICHMENT,
     MIN_LINKS,
     SERIES_UNITS,
+    LadderEvidence,
     Proposal,
     SeriesEvidence,
     SeriesSource,
     SeriesTarget,
     committed_proposals,
+    ladder_evidence,
     series_evidence,
 )
 from mascope_tools.composition.utils import (
@@ -134,11 +147,14 @@ class ModeAnchors:
     :ivar targets: The anchors it may reach.
     :ivar formula_of: Anchor id -> its consensus formula, for the sources and
         for every target that reads one.
+    :ivar series_members: The targets the batch assigns: members of a series,
+        which the ladders leave out, as their readings explain them.
     """
 
     sources: list[SeriesSource] = field(default_factory=list)
     targets: list[SeriesTarget] = field(default_factory=list)
     formula_of: dict[str, str] = field(default_factory=dict)
+    series_members: set[str] = field(default_factory=set)
 
 
 def _series_member(anchor: Any) -> bool:
@@ -199,6 +215,8 @@ def series_anchors(
         elif tier in (TIER_CANDIDATE, TIER_ASSIGNED) and formula:
             mode.targets.append(SeriesTarget(anchor.batch_peak_id, anchor.mz, formula))
             mode.formula_of[anchor.batch_peak_id] = formula
+            if tier == TIER_ASSIGNED:
+                mode.series_members.add(anchor.batch_peak_id)
     return dict(modes)
 
 
@@ -254,12 +272,22 @@ class SeriesPlan:
     :ivar corroborated: The committed targets already reading the proposed
         formula - held at candidate on it, or a member an earlier detection
         measured - which carry the record and are not measured.
+    :ivar ladders: Mode id -> every contaminant unit's links by mass alone
+        there (:func:`plan_series`), which nothing measures or records on an
+        anchor.
     """
 
     evidence: dict[Optional[str], list[SeriesEvidence]] = field(default_factory=dict)
     records: dict[str, dict] = field(default_factory=dict)
     annotations: dict[str, Annotation] = field(default_factory=dict)
     corroborated: set[str] = field(default_factory=set)
+    ladders: dict[Optional[str], list[LadderEvidence]] = field(default_factory=dict)
+
+    @property
+    def modes_walked(self) -> list[Optional[str]]:
+        """Every mode walked from an assigned anchor or linked by mass alone,
+        in the order they were walked."""
+        return list(dict.fromkeys([*self.evidence, *self.ladders]))
 
 
 @dataclass(frozen=True)
@@ -286,7 +314,14 @@ def plan_series(
     min_links: int = MIN_LINKS,
     min_enrichment: float = MIN_ENRICHMENT,
 ) -> SeriesPlan:
-    """Walk every unit in every mode, keep the committed families' proposals.
+    """Walk every unit in every mode, keep the committed families' proposals,
+    and link the contaminant units by mass alone among what is left.
+
+    The ladders link the targets no committed proposal took and the batch does
+    not assign (:attr:`ModeAnchors.series_members`): the unassigned anchors and
+    those held at candidate, which is where a contaminant read on a grid
+    without its element ends up. A mode with no assigned anchor to walk from is
+    still linked.
 
     :param modes: The anchors, per mode (:func:`series_anchors`).
     :param chemistry: Each mode's walk settings; a mode with none is not
@@ -294,51 +329,93 @@ def plan_series(
     :param mechanism_id_by_notation: The notation -> mechanism id the
         sources' notations came from, for the proposals' mechanism ids.
     :param batch_peak_run_id: The run doing it, for the records.
-    :param min_links: The proposals a family needs (:data:`MIN_LINKS`).
+    :param min_links: The proposals, or links, a family needs
+        (:data:`MIN_LINKS`).
     :param min_enrichment: Its floor over the decoys (:data:`MIN_ENRICHMENT`).
     :return: The plan.
     """
     plan = SeriesPlan()
     for mode_id, anchors in modes.items():
         settings = chemistry.get(mode_id)
-        if settings is None or not anchors.sources or not anchors.targets:
+        if settings is None or not anchors.targets:
             continue
-        evidence = [
-            series_evidence(
-                anchors.sources,
-                anchors.targets,
-                unit,
-                tolerance_ppm=settings.tolerance_ppm,
-                labelled=settings.labelled,
+        if anchors.sources:
+            _walk_mode(
+                plan,
+                mode_id,
+                anchors,
+                settings,
+                mechanism_id_by_notation=mechanism_id_by_notation,
+                batch_peak_run_id=batch_peak_run_id,
                 min_links=min_links,
                 min_enrichment=min_enrichment,
             )
-            for unit in SERIES_UNITS
+        free = [
+            target
+            for target in anchors.targets
+            if target.key not in plan.records
+            and target.key not in anchors.series_members
         ]
-        plan.evidence[mode_id] = evidence
-        targets = {target.key: target for target in anchors.targets}
-        for key, (proposal, units) in sorted(committed_proposals(evidence).items()):
-            mechanism_id = mechanism_id_by_notation.get(proposal.mechanism)
-            if mechanism_id is None:
-                continue
-            plan.records[key] = series_record(
-                proposal,
-                units,
-                ionization_mechanism_id=mechanism_id,
-                root_formula=anchors.formula_of[proposal.root],
-                batch_peak_run_id=batch_peak_run_id,
+        plan.ladders[mode_id] = [
+            ladder_evidence(
+                free,
+                unit,
+                tolerance_ppm=settings.tolerance_ppm,
+                min_links=min_links,
+                min_enrichment=min_enrichment,
             )
-            if targets[key].formula == proposal.formula:
-                plan.corroborated.add(key)
-                continue
-            plan.annotations[key] = Annotation(
-                formula=proposal.formula,
-                ion_formula=ion_formula_of(proposal.formula, proposal.mechanism),
-                ionization_mechanism_id=mechanism_id,
-                role=ROLE_M0,
-                owner_batch_peak_id=None,
-            )
+            for unit in CONTAMINANT_UNITS
+        ]
     return plan
+
+
+def _walk_mode(
+    plan: SeriesPlan,
+    mode_id: Optional[str],
+    anchors: ModeAnchors,
+    settings: ModeChemistry,
+    *,
+    mechanism_id_by_notation: dict[str, str],
+    batch_peak_run_id: Optional[str],
+    min_links: int,
+    min_enrichment: float,
+) -> None:
+    """Walk every unit from one mode's assigned anchors into ``plan``."""
+    evidence = [
+        series_evidence(
+            anchors.sources,
+            anchors.targets,
+            unit,
+            tolerance_ppm=settings.tolerance_ppm,
+            labelled=settings.labelled,
+            min_links=min_links,
+            min_enrichment=min_enrichment,
+        )
+        for unit in SERIES_UNITS
+    ]
+    plan.evidence[mode_id] = evidence
+    targets = {target.key: target for target in anchors.targets}
+    for key, (proposal, units) in sorted(committed_proposals(evidence).items()):
+        mechanism_id = mechanism_id_by_notation.get(proposal.mechanism)
+        if mechanism_id is None:
+            continue
+        plan.records[key] = series_record(
+            proposal,
+            units,
+            ionization_mechanism_id=mechanism_id,
+            root_formula=anchors.formula_of[proposal.root],
+            batch_peak_run_id=batch_peak_run_id,
+        )
+        if targets[key].formula == proposal.formula:
+            plan.corroborated.add(key)
+            continue
+        plan.annotations[key] = Annotation(
+            formula=proposal.formula,
+            ion_formula=ion_formula_of(proposal.formula, proposal.mechanism),
+            ionization_mechanism_id=mechanism_id,
+            role=ROLE_M0,
+            owner_batch_peak_id=None,
+        )
 
 
 def batch_fdr(evidence: dict[Optional[str], list[SeriesEvidence]]) -> Optional[float]:
@@ -524,22 +601,59 @@ def _progress(
     )
 
 
+def ladder_summary(evidence: LadderEvidence) -> dict:
+    """The run's record of one contaminant unit's links by mass alone: its
+    counts against the decoys and, where it beat them, every ladder, its batch
+    peaks and their m/z lightest first."""
+    record = evidence.to_json()
+    record["ladders"] = (
+        [
+            {
+                "batch_peak_ids": list(ladder.keys),
+                "mz": [round(mz, 6) for mz in ladder.mzs],
+            }
+            for ladder in evidence.ladders
+        ]
+        if evidence.significant
+        else []
+    )
+    return record
+
+
 def _evidence_summary(
-    evidence: dict[Optional[str], list[SeriesEvidence]],
-    chemistry: dict[Optional[str], ModeChemistry],
+    plan: SeriesPlan, chemistry: dict[Optional[str], ModeChemistry]
 ) -> list[dict]:
-    """The run's record of every mode's walk: its settings and every unit's
-    evidence, the decoy counts included, so a reader can recompute the FDR."""
+    """The run's record of every mode's walk: its settings, every unit's
+    evidence and every contaminant unit's links by mass alone, the decoy counts
+    included, so a reader can recompute the FDR. ``units`` is empty in a mode
+    with no assigned anchor to walk from."""
     return [
         {
             "ionization_mode_id": mode_id,
             "profile": chemistry[mode_id].profile,
             "tolerance_ppm": chemistry[mode_id].tolerance_ppm,
             "labelled": chemistry[mode_id].labelled,
-            "units": [unit.to_json() for unit in units],
+            "units": [unit.to_json() for unit in plan.evidence.get(mode_id, [])],
+            "ladders": [ladder_summary(unit) for unit in plan.ladders.get(mode_id, [])],
         }
-        for mode_id, units in evidence.items()
+        for mode_id in plan.modes_walked
     ]
+
+
+def ladder_counts(ladders: dict[Optional[str], list[LadderEvidence]]) -> dict:
+    """What the run's counts say of the ladders: how many units beat their
+    decoys, their families, the batch peaks their ladders hold and the FDR
+    over them, pooled as :func:`batch_fdr` pools the walk's."""
+    committed = [e for units in ladders.values() for e in units if e.significant]
+    families = {e.family for e in committed}
+    return {
+        "ladders_committed": len(committed),
+        "ladder_families": [
+            unit.family for unit in CONTAMINANT_UNITS if unit.family in families
+        ],
+        "ladder_members": sum(e.n_members for e in committed),
+        "ladder_fdr": batch_fdr(ladders),
+    }
 
 
 async def run_batch_series_detection(
@@ -580,10 +694,12 @@ async def run_batch_series_detection(
         batch_peak_run_id=batch_peak_run_id,
     )
     counts = {
-        "units": _evidence_summary(plan.evidence, chemistry),
+        "units": _evidence_summary(plan, chemistry),
         "fdr": batch_fdr(plan.evidence),
-        "modes_walked": len(plan.evidence),
+        "modes_walked": len(plan.modes_walked),
+        "modes_anchored": len(plan.evidence),
         "modes_skipped": len(skipped_modes),
+        **ladder_counts(plan.ladders),
         "families_committed": sum(
             e.significant for units in plan.evidence.values() for e in units
         ),
@@ -691,6 +807,38 @@ def _unresolved_modes(n_modes: int) -> str:
     )
 
 
+def _rate(fdr: Optional[float]) -> str:
+    """The false discovery rate as the outcome words it, or nothing."""
+    return (
+        f" (false discovery rate on the decoys {100 * fdr:.1f}%)"
+        if fdr is not None
+        else ""
+    )
+
+
+def _ladders_found(counts: dict, anchored: bool) -> str:
+    """What the outcome says of the ladders linked by mass alone."""
+    if not counts.get("ladders_committed"):
+        return (
+            ""
+            if anchored
+            else (
+                " Nor did a siloxane or CF2 ladder beat the decoys by mass alone "
+                "among its batch peaks."
+            )
+        )
+    families = counts.get("ladder_families") or ["contaminant"]
+    many = len(families) > 1
+    members = counts.get("ladder_members", 0)
+    return (
+        f" By mass alone, the {' and '.join(families)} ladder{'s' if many else ''} "
+        f"beat the decoys among the batch peaks nothing assigns"
+        f"{_rate(counts.get('ladder_fdr'))}: {members} batch peak"
+        f"{'s' if members != 1 else ''} one unit apart, listed in the run's "
+        "summary with no formula proposed."
+    )
+
+
 def series_outcome(counts: dict, sample_batch_id: str) -> dict:
     """The controller result the background-task decorator reports from."""
     notification_data = {"sample_batch_id": sample_batch_id}
@@ -702,20 +850,15 @@ def series_outcome(counts: dict, sample_batch_id: str) -> dict:
                 f"No series was walked. {_unresolved_modes(unresolved)}"
                 if unresolved
                 else (
-                    "No series was walked: the batch has no batch peak assigned "
-                    "to walk from, or none left unassigned to reach."
+                    "No series was walked: the batch has no batch peak left "
+                    "unassigned, or held only at candidate, to reach."
                 )
             ),
             "data": counts,
             "_notification_data": notification_data,
         }
+    anchored = bool(counts.get("modes_anchored", counts["modes_walked"]))
     families = counts["families_committed"]
-    fdr = counts.get("fdr")
-    rate = (
-        f" (false discovery rate on the decoys {100 * fdr:.1f}%)"
-        if fdr is not None
-        else ""
-    )
     failed = counts.get("samples_failed", 0)
     skipped = (
         f" {failed} sample{'s' if failed != 1 else ''} could not be read and "
@@ -725,17 +868,25 @@ def series_outcome(counts: dict, sample_batch_id: str) -> dict:
     )
     if unresolved:
         skipped += f" {_unresolved_modes(unresolved)}"
+    found = (
+        (
+            f"{families} series famil{'ies' if families != 1 else 'y'} beat the "
+            f"decoys{_rate(counts.get('fdr'))}: {counts['anchors_proposed']} "
+            f"batch peak{'s' if counts['anchors_proposed'] != 1 else ''} "
+            f"proposed, {counts['anchors_in_series']} now read as a member of a "
+            f"series, and {counts['members_assigned']} member peak"
+            f"{'s' if counts['members_assigned'] != 1 else ''} measured against "
+            "its formula."
+        )
+        if anchored
+        else (
+            "No series was walked from an assigned batch peak: the batch has "
+            "none to walk from."
+        )
+    )
     return {
         "status": "partial" if failed or unresolved else "success",
-        "message": (
-            f"{families} series famil{'ies' if families != 1 else 'y'} beat the "
-            f"decoys{rate}: {counts['anchors_proposed']} batch peak"
-            f"{'s' if counts['anchors_proposed'] != 1 else ''} proposed, "
-            f"{counts['anchors_in_series']} now read as a member of a series, "
-            f"and {counts['members_assigned']} member peak"
-            f"{'s' if counts['members_assigned'] != 1 else ''} measured against "
-            f"its formula.{skipped}"
-        ),
+        "message": f"{found}{_ladders_found(counts, anchored)}{skipped}",
         "data": counts,
         "_notification_data": notification_data,
     }

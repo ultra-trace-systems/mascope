@@ -19,6 +19,8 @@ from mascope_backend.api.new.peak_assignments.batch_series import (
     ModeChemistry,
     batch_fdr,
     ion_formula_of,
+    ladder_counts,
+    ladder_summary,
     plan_series,
     series_anchors,
     series_outcome,
@@ -34,6 +36,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
 )
 from mascope_backend.api.new.peak_assignments.service import stamp_series
 from mascope_tools.composition.series import (
+    CONTAMINANT_UNITS,
     DECOY_OFFSETS_DA,
     MIN_LINKS,
     SeriesEvidence,
@@ -344,6 +347,97 @@ class TestThePlan:
         assert not plan(sulfur, chemistry=labelled).records
 
 
+SILOXANE = next(unit for unit in CONTAMINANT_UNITS if unit.family == "siloxane")
+
+#: The protonated cyclic siloxane D3, the foot of a column-bleed ladder.
+D3_MZ = ion_mz(parse_formula_tokens("C6H18O3Si3"), "[M+H]+")
+
+
+def rungs(n, *, prefix="si-", foot=D3_MZ, **fields):
+    """``n`` batch peaks one siloxane unit apart, unassigned unless told."""
+    return [
+        anchor(f"{prefix}{k}", mz=foot + k * SILOXANE.mass, **fields) for k in range(n)
+    ]
+
+
+def siloxane(result, mode="mode-1"):
+    return next(e for e in result.ladders[mode] if e.family == "siloxane")
+
+
+class TestTheLadders:
+    def test_a_ladder_no_assigned_peak_anchors_is_linked_by_mass(self):
+        result = plan(rungs(MIN_LINKS + 1))
+        assert result.evidence == {}
+        assert result.modes_walked == ["mode-1"]
+        ladder = siloxane(result)
+        assert (ladder.n_links, ladder.significant) == (MIN_LINKS, True)
+        assert [step.keys for step in ladder.ladders] == [
+            tuple(f"si-{k}" for k in range(MIN_LINKS + 1))
+        ]
+        assert [e.unit for e in result.ladders["mode-1"]] == ["C2H6OSi", "CF2"]
+
+    def test_a_ladder_is_measured_on_no_member_and_recorded_on_no_anchor(self):
+        result = plan(ladder_batch() + rungs(MIN_LINKS + 1, foot=150.0))
+        assert siloxane(result).significant
+        assert len(result.records) == MIN_LINKS
+        assert not any(key.startswith("si-") for key in result.records)
+        assert not any(key.startswith("si-") for key in result.annotations)
+
+    def test_candidates_reading_another_formula_are_linked_too(self):
+        held = rungs(MIN_LINKS + 1, tier="candidate", formula="C10H22N4O2")
+        assert siloxane(plan(held)).significant
+
+    def test_a_target_a_committed_proposal_took_is_not_linked(self):
+        # One batch peak a siloxane unit above the CH2 family's first homologue.
+        above = anchor("si", mz=at(_up(SOURCES[0])) + SILOXANE.mass)
+        committed = plan(ladder_batch() + [above])
+        assert "up-0" in committed.records
+        assert siloxane(committed).n_links == 0
+        # Short of the floor, the family commits nothing and the peak is free.
+        short = plan(ladder_batch()[:-1] + [above])
+        assert short.records == {}
+        assert siloxane(short).n_links == 1
+
+    def test_an_assigned_member_of_a_series_is_not_linked(self):
+        series = {SERIES_KEY: {"formula": "C9H12O5", "has_anchor": True}}
+        above = anchor("si", mz=at("C9H12O5") + SILOXANE.mass)
+        member = anchor("m", tier="assigned", formula="C9H12O5", provenance=series)
+        held = anchor("m", tier="candidate", formula="C9H12O5")
+        assert siloxane(plan([member, above])).n_links == 0
+        assert siloxane(plan([held, above])).n_links == 1
+
+    def test_a_mode_without_its_chemistry_is_not_linked(self):
+        assert plan(rungs(MIN_LINKS + 1), chemistry={}).ladders == {}
+
+    def test_the_summary_lists_a_committed_unit_s_ladders(self):
+        summary = ladder_summary(siloxane(plan(rungs(MIN_LINKS + 1))))
+        assert summary["unit"] == "C2H6OSi"
+        assert (summary["significant"], summary["n_members"]) == (True, MIN_LINKS + 1)
+        [ladder] = summary["ladders"]
+        assert ladder["batch_peak_ids"] == [f"si-{k}" for k in range(MIN_LINKS + 1)]
+        assert ladder["mz"][0] == round(D3_MZ, 6)
+
+    def test_the_summary_lists_no_ladder_of_a_unit_short_of_its_floor(self):
+        summary = ladder_summary(siloxane(plan(rungs(3))))
+        assert (summary["n_links"], summary["n_ladders"]) == (2, 1)
+        assert summary["ladders"] == []
+
+    def test_the_counts_pool_the_committed_units(self):
+        result = plan(rungs(MIN_LINKS + 1))
+        assert ladder_counts(result.ladders) == {
+            "ladders_committed": 1,
+            "ladder_families": ["siloxane"],
+            "ladder_members": MIN_LINKS + 1,
+            "ladder_fdr": 0.0,
+        }
+        assert ladder_counts({}) == {
+            "ladders_committed": 0,
+            "ladder_families": [],
+            "ladder_members": 0,
+            "ladder_fdr": None,
+        }
+
+
 class TestTheBatchsRate:
     def evidence(self, n, decoys, significant=True):
         return SeriesEvidence(
@@ -402,7 +496,60 @@ class TestTheOutcome:
     def test_nothing_walked_says_why(self):
         outcome = series_outcome(self.counts(modes_walked=0), "b1")
         assert outcome["status"] == "partial"
-        assert "no batch peak assigned to walk from" in outcome["message"]
+        assert outcome["message"] == (
+            "No series was walked: the batch has no batch peak left unassigned, "
+            "or held only at candidate, to reach."
+        )
+
+    def test_a_ladder_is_named_after_the_families(self):
+        outcome = series_outcome(
+            self.counts(
+                ladders_committed=1,
+                ladder_families=["siloxane"],
+                ladder_members=9,
+                ladder_fdr=0.02,
+            ),
+            "b1",
+        )
+        assert outcome["status"] == "success"
+        assert outcome["message"].endswith(
+            "against its formula. By mass alone, the siloxane ladder beat the "
+            "decoys among the batch peaks nothing assigns (false discovery rate "
+            "on the decoys 2.0%): 9 batch peaks one unit apart, listed in the "
+            "run's summary with no formula proposed."
+        )
+
+    def test_two_ladders_and_nothing_assigned_to_walk_from(self):
+        outcome = series_outcome(
+            self.counts(
+                modes_anchored=0,
+                families_committed=0,
+                fdr=None,
+                ladders_committed=2,
+                ladder_families=["siloxane", "fluorinated"],
+                ladder_members=20,
+                ladder_fdr=None,
+            ),
+            "b1",
+        )
+        assert outcome["status"] == "success"
+        assert outcome["message"] == (
+            "No series was walked from an assigned batch peak: the batch has none "
+            "to walk from. By mass alone, the siloxane and fluorinated ladders "
+            "beat the decoys among the batch peaks nothing assigns: 20 batch "
+            "peaks one unit apart, listed in the run's summary with no formula "
+            "proposed."
+        )
+
+    def test_nothing_to_walk_from_and_no_ladder(self):
+        outcome = series_outcome(
+            self.counts(modes_anchored=0, ladders_committed=0), "b1"
+        )
+        assert outcome["message"] == (
+            "No series was walked from an assigned batch peak: the batch has none "
+            "to walk from. Nor did a siloxane or CF2 ladder beat the decoys by "
+            "mass alone among its batch peaks."
+        )
 
     def test_no_mode_resolved_says_so(self):
         outcome = series_outcome(self.counts(modes_walked=0, modes_skipped=1), "b1")
