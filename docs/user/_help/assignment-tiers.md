@@ -13,6 +13,11 @@ molecule does not reach the top tier on the match alone.
   evidence is too weak to trust.
 - **unassigned** &mdash; no composition explained the peak.
 
+Beside the tier, a peak carries its **identification level**: what you may
+state of it, in the scale the field uses (Schymanski et al. 2014),
+from 5 (a measured mass) to 1 (a confirmed structure). Mascope states 5b, 5a,
+4b and 4a from what the run measured; the level never changes the tier.
+
 The tiering is **provisional**, and the tier column and the inspector's tier row
 say so: its rules are still being developed, and a peak's tier can change between
 engine versions, so read a tier as the engine's current reading of the evidence

@@ -831,9 +831,10 @@ inspector as the pure measurement, beside the evidence — so the two stay visib
 *batch peak*'s consensus tier is a weighted vote over what the batch's samples each
 concluded about the peak, not a threshold on any single number.
 
-The long-term goal is to report a community-standard **identification level** ([Schymanski
-et al. 2014][sch14]; MSI reporting standards, [Sumner et al. 2007][sum07]) alongside the
-confidence, since that is how the field communicates identification certainty.
+Beside the tier, each row carries a community-standard **identification level**
+([Schymanski et al. 2014][sch14]; MSI reporting standards, [Sumner et al. 2007][sum07]),
+since that is how the field communicates identification certainty: *Identification level*,
+below.
 
 > **Note.** The fit score is a pure measurement and stays one. Chemistry, spectral context
 > and calibration are *layers on top* of it and are never folded back into the score —
@@ -1213,6 +1214,116 @@ A reason can name a rule that lowered nothing: a row its evidence already put be
 *candidate* keeps that tier, and the rule still says what it found. The run records the
 rule set's version and thresholds with its configuration, because a tier can only be
 compared between two runs together with the rules that produced it.
+
+## Identification level
+
+--8<-- "_help/assignment-level.md"
+
+The tier and the level answer different questions. The tier says how well the evidence
+supports the formula the run committed. The level says what a reader may state of the
+peak: whether every other formula that fits its mass was put out by a test, and whether
+the molecule behind the ion is known. They can disagree. A row can hold *assigned* while
+a rival whose 13C line is too dim to test leaves it at 5a, and a row the tiering holds at
+*candidate* can read 4a. Neither is derived from the other.
+
+The scale is the one Mascope and its reference engine share. The numbers keep the meaning
+[Schymanski et al. (2014)][sch14] gave them, and the letter names the kind of evidence,
+not a rank inside the number: 3c is not weaker than 3a, it rests on something else.
+
+| Level | Meaning | Mascope states it from |
+|---|---|---|
+| 5b | A measured mass, the reading refuted or untestable | an absent isotope line, a formula no molecule has, an unseparated peak |
+| 5a | A measured mass, rivals listed | a rival on the shortlist no test excluded |
+| 4b | The ion's formula, the molecule-adduct split open | every rival excluded; another reading of the ion unsettled |
+| 4a | The neutral formula, the split pinned | every rival excluded; the split settled |
+| 3a to 3d | A tentative candidate: data and list agree, one functional group, a context list, a homologue series | coming: context, ionization, co-variation |
+| 2a, 2b | A probable structure: a library spectrum, diagnostic evidence | coming: MS/MS |
+| 1 | A confirmed structure | a person, in review, only |
+
+**How a level is read.** Each committed row is asked, in order:
+
+```mermaid
+flowchart TD
+  A[Committed row] --> B{"Refuted or untestable?"}
+  B -- yes --> L5b[5b]
+  B -- no --> C{Shortlist measured?}
+  C -- no --> L5a1["5a: rivals not measured"]
+  C -- yes --> D{"Every rival out on a test?"}
+  D -- no --> L5a2["5a: rivals listed"]
+  D -- yes --> E{Split settled?}
+  E -- no --> L4b[4b]
+  E -- yes --> L4a[4a]
+```
+
+- **Refuted or untestable.** A line of the formula's own isotope pattern that the spectrum
+  should show is absent (the *expected line absent* reason above); the formula fails the
+  structural rule no molecule breaks, its plausibility under the floor of the
+  [Seven Golden Rules][kf07] layer; or the instrument did not separate the peak from a
+  neighbour, so neither its mass nor its height was measured.
+- **The shortlist.** The other formulas that fit the peak's mass through the run's
+  channels. A peak the target library or a reference list matched carries the list's
+  candidates the run competed for it, each with its fit, and the formula search's rivals
+  it could not separate; a run that does not search, or a peak the search could not read,
+  competed it against the lists' formulas alone, so it reads 5a with *rivals not
+  measured*. A peak the formula search elected carries its shortlist measured only where
+  the run measured its winners' shortlists, which is a run option that is off by
+  default; until then such a peak reads 5a with *rivals not measured* too, since the
+  level does not assume an exclusion it did not see.
+  Nor does it assume one of a rival the run stored no entry for: a run keeps at most
+  *Max alternatives* per peak, and the rivals past it count as untested.
+- **A rival is out** on a named test: by **mass** (its fit at the run's width, mass and
+  isotope pattern together, below the committed formula's by more than the tie margin of
+  the arbitration, or no adduct of the run puts it on the peak at all); by **isotopes** (a
+  line of the formula's own pattern is committed and tracks it, and names an element the
+  rival does not have, such as a 34S line against a sulfur-free rival, or a line the
+  rival's own pattern predicts is absent where the detection threshold says it would
+  show); or by a **second channel** (another ionization channel commits the formula's
+  molecule on a separated peak, and no channel commits the rival's). A rival kept down
+  only by its chemical plausibility, or by a prior of the chemistry context, is not out:
+  it stays listed as *open*, with what held it back.
+- **The split.** An ion can read as more than one molecule with more than one adduct:
+  a nitrate cluster as the deprotonated nitrate ester, an ammonium adduct as the
+  protonated amide. Where the run found another reading of the ion and nothing settled
+  which, the level is 4b. It is 4a where a second channel, the stronger partner, the
+  target library or the other reading being a radical settled it, where the reagent is
+  labelled so its atoms are told from the molecule's, where a second channel commits the
+  molecule on a separated peak (not on a TOF, as for a rival), or where the ion has one
+  plausible decomposition: its formula cannot hold the
+  unit another channel of the run adds (no nitrogen under nitrate, whose cluster brings
+  one; no bromine under bromide; fewer than two nitrogens under uronium, whose urea brings
+  two). Otherwise the split is open and the level is 4b. A row that earns two letters of
+  one number shows one, 5b before 5a, and names the other in its evidence.
+
+**On a TOF** most rows read 5b. On three published TOF nitrate datasets Mascope is
+benchmarked on, 68 to 85 % of the committed rows read 5b, 13 to 27 % read 5a, and
+under 7 % read 4. What puts most of them at 5b is an absent isotope line, nearly
+always the 13C line: 50 to 81 % of the committed rows. An unseparated peak comes next,
+at 13 to 47 %, and a row can carry both. No row there reads 5b as implausible. Most of
+these rows also earn 5a, and their evidence line says so. Whether the absent-line rule
+reads a TOF's lines too strictly is open
+([#3301](https://github.com/ultra-trace-systems/mascope/issues/3301)). A second channel
+excludes no rival on a TOF and pins no split, until two channels can be shown to move
+together across a batch. **On an Orbitrap** a rival left by the resolution is decided
+by its isotope lines where they are testable; where they are under the file's detection
+threshold the row stays 5a, and its lift says *more signal*.
+
+**Where it shows.** The peak inspector's **Identification level** section shows the
+level as a chip, with **why** it holds it, what **would lift it** and the **rivals**, each
+with its test or *open*. The sample ledger has a **level** column, with a filter in its
+header. The *Batch peaks* ledger's **Level** column shows the level most of a batch
+peak's members' runs stated for its formula (a tie reads as the weaker level) until the
+batch states one of its own, and a batch import from another engine that carried its
+own levels adds an **Engine level** column beside it. Both columns show only once a row
+of the ledger carries a level. An isotope line shows its
+main peak's level; a reagent or artifact peak, an unassigned peak, a run imported from
+another engine and a run made before the level show none. A peak you assign by hand
+reads 5a with its rivals not measured, or 5b where its lines refute it.
+
+The ledger export (`level`, `level_evidence`, `level_lift` on each member row, beside the
+batch peak's `engine_level`), the SDK's ledger frames and the API carry the same three
+fields. The run records the version of the rules that read its facts into a level with its
+configuration, because a level, like a tier, is only comparable between two runs
+together with the rules that stated it.
 
 ## Assigning a peak yourself
 

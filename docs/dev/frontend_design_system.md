@@ -136,9 +136,17 @@ swatch on both grounds says it cannot carry the role. The identification level
 these, `--level-mass`, `--level-formula` and `--level-structure`, one per band
 of its scale, in hues no state token uses: a level chip sits beside a tier
 chip, and drawn in the success and warning hues it would read as a second tier
-and show a formula as a warning. They are chosen on swatches on both grounds
-when the chip is built. Two of the guide's state
-pairs miss AA on the app's grounds (info on light at 4.2:1, error on dark at
+and show a formula as a warning. Chosen with the chip (MAS-73), each 7:1 or
+better as text on its own ground, the chip drawing its text and border in the
+token and a 12 % tint of it as its ground:
+
+| Token | Light | Dark | Band |
+|---|---|---|---|
+| `--level-mass` | `#4b5563` | `#a3acb9` | 5, a measured mass (slate) |
+| `--level-formula` | `#2557a7` | `#7fa7ec` | 4, a formula (blue) |
+| `--level-structure` | `#8a2f6b` | `#e08abf` | 3 to 1, a claim about structure (plum) |
+
+Two of the guide's state pairs miss AA on the app's grounds (info on light at 4.2:1, error on dark at
 4.4:1); they are kept as the guide's values and the shortfall is fed back to
 the guide rather than fixed by hand here.
 
