@@ -50,13 +50,35 @@ class MatchIsotopeBase(BaseModel):
         ),
     )
 
-    @field_validator("signal_to_noise", "ratio_scan_count", mode="before")
+    n_scans: Optional[int] = Field(
+        None,
+        description=(
+            "On an Orbitrap, how many of the scans averaged into the matched "
+            "peak hold it. None where the peak's store keeps no counts (TOF "
+            "files, stores detected before them) and for a line without a peak"
+        ),
+    )
+    n_scans_total: Optional[int] = Field(
+        None,
+        description=(
+            "On an Orbitrap, how many scans the matched peak is averaged over. "
+            "None where n_scans is"
+        ),
+    )
+
+    @field_validator(
+        "signal_to_noise",
+        "ratio_scan_count",
+        "n_scans",
+        "n_scans_total",
+        mode="before",
+    )
     @classmethod
     def _nan_to_none(cls, value: object) -> object:
         """Coerce NaN to None: the compute frame carries NaN for "no SNR for
-        this row" and "not read scan by scan", but the persisted (and JSON)
-        representation of that is NULL/None - NaN is not JSON and must not
-        reach the database."""
+        this row", "not read scan by scan" and "no scan counts", but the
+        persisted (and JSON) representation of that is NULL/None - NaN is not
+        JSON and must not reach the database."""
         if isinstance(value, float) and math.isnan(value):
             return None
         return value

@@ -20,6 +20,7 @@ rules under test are:
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
 import pytest
 import pytest_asyncio
@@ -31,10 +32,23 @@ from mascope_backend.api.controllers.match.aggregate.match_aggregate_controller 
 from mascope_backend.api.controllers.match.aggregate.sample.match_aggregate_sample_controller import (
     aggregate_sample_match_ion,
 )
+from mascope_backend.api.controllers.match.isotopes.match_isotopes_controller import (
+    create_match_isotopes,
+)
+from mascope_backend.api.controllers.match.lib.match_aggregate import (
+    aggregate_match_ions_light,
+)
+from mascope_backend.api.controllers.match.lib.match_compute import (
+    select_match_isotopes_to_persist,
+)
 from mascope_backend.api.controllers.target.lib.fetch.target_isotopes_fetch import (
     fetch_existing_main_isotope_references,
     fetch_sample_unmatched_target_isotopes,
 )
+from mascope_backend.api.models.match.isotopes.match_isotopes_pydantic_model import (
+    MatchIsotopeBase,
+)
+from mascope_backend.api.new.match.params.lib import apply_match_params
 from mascope_backend.api.new.match.records.isotope.service import (
     get_match_isotope_records,
 )
@@ -571,3 +585,134 @@ class TestStoredSignalToNoise:
         assert snr[match_chain.iso1b] == 30.0
         assert snr[match_chain.iso1a] is None
         assert not [r for r in records if "non-finite" in r["message"]]
+
+
+async def _computed_ion1_frame(match_chain) -> pd.DataFrame:
+    """Ion 1 as the targeted matcher's frame holds it on a counted Orbitrap file.
+
+    The main line is in every one of 24 scans; the minor line is in 18 of
+    them, so its stored height is diluted by the quarter it missed. Both lines
+    sit inside the mass and ratio tolerances, so both score above zero and are
+    stored. The counts are what ``compute_match_isotopes`` carries from the
+    peak store (``PEAK_SCORE_VARIABLES``).
+    """
+    targets = await fetch_sample_unmatched_target_isotopes(
+        match_chain.sample, MATCH_PARAMS
+    )
+    targets = targets[targets["target_ion_id"] == match_chain.ion1]
+    lines = {
+        # sample_peak_mz, intensity, relative, abundance error, mz error (ppm),
+        # match_score, signal_to_noise, n_scans, n_scans_total, ratio scans
+        match_chain.iso1a: (181.07009, 1000.0, 1.0, 0.0, 0.5, 0.98, 60.0, 24, 24, 24),
+        match_chain.iso1b: (182.07018, 90.0, 0.09, 0.1, 1.0, 0.85, 4.0, 18, 24, 18),
+    }
+    columns = [
+        "sample_peak_mz",
+        "sample_peak_intensity",
+        "sample_peak_intensity_relative",
+        "match_abundance_error",
+        "match_mz_error",
+        "match_score",
+        "signal_to_noise",
+        "n_scans",
+        "n_scans_total",
+        "ratio_scan_count",
+    ]
+    values = pd.DataFrame(
+        [lines[isotope] for isotope in targets["target_isotope_id"]],
+        columns=columns,
+        index=targets.index,
+        dtype=float,
+    )
+    return pd.concat([targets, values], axis=1).assign(
+        match_isotope_id=[gen_id(32) for _ in range(len(targets))],
+        sample_peak_id=[gen_id(20) for _ in range(len(targets))],
+        sample_peak_tof=np.nan,
+        is_satellite=False,
+        sample_item_id=match_chain.item,
+    )
+
+
+def _instant_ion_score(frame: pd.DataFrame) -> float:
+    """The ion's score as the instant compound match reads a computed frame."""
+    (score,) = aggregate_match_ions_light(apply_match_params(frame, MATCH_PARAMS))[
+        "match_score"
+    ]
+    return float(score)
+
+
+class TestStoredScanCounts:
+    """The matched peak's scan counts are stored, and the stored ion scores
+    as the computed one does.
+
+    The v2 fit score reads a counted Orbitrap line at its mean per scan. The
+    paths that score a computed frame (Stage A, the instant compound match)
+    have the counts from the peak store; the aggregations score the stored
+    rows, which must carry them for the two to agree.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_counted_ion_scores_the_same_from_its_stored_rows(
+        self, match_chain, monkeypatch
+    ):
+        monkeypatch.setenv("MASCOPE_MATCH_SCORE_VERSION", "2")
+        computed = await _computed_ion1_frame(match_chain)
+        uncounted = computed.assign(n_scans=np.nan, n_scans_total=np.nan)
+        # The minor line's missed scans move the fit, so a stored row without
+        # the counts would show as a different score.
+        assert abs(_instant_ion_score(computed) - _instant_ion_score(uncounted)) > 1e-3
+
+        # Stored the way compute_and_create_sample_match_isotope_data stores it
+        persist = select_match_isotopes_to_persist(computed)
+        assert len(persist) == 2
+        await create_match_isotopes(
+            [MatchIsotopeBase(**row) for row in persist.to_dict(orient="records")]
+        )
+        result = await aggregate_sample_match_ion(
+            sample_item_id=match_chain.item,
+            target_ion_id=match_chain.ion1,
+            target_collection_id=match_chain.collection,
+            match_params=MATCH_PARAMS,
+        )
+
+        (ion,) = result["data"]["match_ions"]
+        assert ion["match"]["match_score"] == pytest.approx(
+            _instant_ion_score(computed), abs=1e-9
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_counts_are_stored_and_reach_the_batch_frame(self, match_chain):
+        computed = await _computed_ion1_frame(match_chain)
+        persist = select_match_isotopes_to_persist(computed)
+        await create_match_isotopes(
+            [MatchIsotopeBase(**row) for row in persist.to_dict(orient="records")]
+        )
+
+        df = await aggregate_match_isotope_filtered_data(
+            sample_batch_id=match_chain.batch, match_params=MATCH_PARAMS
+        )
+
+        counts = df.set_index("target_isotope_id")[["n_scans", "n_scans_total"]]
+        assert counts.loc[match_chain.iso1a].tolist() == [24, 24]
+        assert counts.loc[match_chain.iso1b].tolist() == [18, 24]
+        # Ion 2 has no stored row: rebuilt unmatched, no peak and no counts
+        assert counts.loc[[match_chain.iso2a, match_chain.iso2b]].isna().all().all()
+
+    @pytest.mark.asyncio
+    async def test_a_row_stored_without_counts_reads_none(
+        self, match_chain, async_session_factory
+    ):
+        # Every row stored before the columns, and every TOF row, holds NULL
+        line = make_match_isotope_row(match_chain.item, match_chain.iso1b, 0.9)
+        async with async_session_factory() as session:
+            session.add(line)
+            await session.commit()
+
+        df = await aggregate_match_isotope_filtered_data(
+            sample_item_id=match_chain.item,
+            target_ion_id=match_chain.ion1,
+            match_params=MATCH_PARAMS,
+        )
+
+        assert df["n_scans"].isna().all()
+        assert df["n_scans_total"].isna().all()

@@ -18,6 +18,7 @@ every ion present in the input frame has at least one row in the output.
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from mascope_backend.api.controllers.match.lib.match_compute import (
     select_match_isotopes_to_persist,
@@ -181,3 +182,14 @@ class TestMatchIsotopeBaseSignalToNoise:
     def test_ratio_scan_count_nan_is_persisted_as_none(self):
         model = MatchIsotopeBase(**{**self.BASE_ROW, "ratio_scan_count": np.nan})
         assert model.model_dump()["ratio_scan_count"] is None
+
+    @pytest.mark.parametrize("column", ["n_scans", "n_scans_total"])
+    def test_scan_counts_are_persisted_as_integers(self, column):
+        # The compute frame holds the peak store's counts as float columns
+        model = MatchIsotopeBase(**{**self.BASE_ROW, column: 18.0})
+        assert model.model_dump()[column] == 18
+
+    @pytest.mark.parametrize("column", ["n_scans", "n_scans_total"])
+    def test_scan_counts_nan_are_persisted_as_none(self, column):
+        model = MatchIsotopeBase(**{**self.BASE_ROW, column: np.nan})
+        assert model.model_dump()[column] is None

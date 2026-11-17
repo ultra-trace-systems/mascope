@@ -37,6 +37,8 @@ MATCH_ISOTOPE_VALUE_COLUMNS = [
     "sample_peak_intensity_relative",
     "ratio_scan_count",
     "signal_to_noise",
+    "n_scans",
+    "n_scans_total",
     "sample_peak_mz",
     "sample_peak_tof",
     "match_score",
