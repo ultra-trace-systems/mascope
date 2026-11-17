@@ -1141,11 +1141,16 @@ def test_a_private_manifest_builds_from_a_corpus_checkout(rig, tmp_path):
     assert b.init(path) == 0 and instance.calls == []
 
 
+def state_modes(home):
+    """The modes the bench's state says it seeded, with the seed each came from."""
+    return json.loads(home.state.read_text())["seeded"]["modes"]
+
+
 def test_a_private_manifest_builds_from_files_in_its_folder(rig, tmp_path):
     b, instance, api, home = rig
     path = _folder(
         tmp_path,
-        ["T9_neg_Br_x.h5", "T9_pos_Ur_y.raw"],
+        ["T9_neg_Br_x.h5"],
         lambda f: {
             "Nc": _set(
                 "Bromide",
@@ -1154,17 +1159,20 @@ def test_a_private_manifest_builds_from_files_in_its_folder(rig, tmp_path):
                 instrument_class="tof",
                 collections=["Terpenes"],
             ),
-            # A bundle set beside them, as the demo sets sit beside the private ones.
-            "Xb": _set("Uronium", [f["T9_pos_Ur_y.raw"]], seed={"file": "seed.json"}),
+            # A bundle set beside it, as the demo sets sit beside the private ones.
+            "Xu": _set("Uronium", [{"bundle": "9.9.9", "name": "I_pos_Ur_a.raw"}]),
         },
     )
 
     assert b.init(path) == 0
 
-    assert sorted(api.uploads) == ["T9_neg_Br_x.h5", "T9_pos_Ur_y.raw"]
-    assert not any(
-        isinstance(c, tuple) and c[0] == "bundle_seed" for c in instance.calls
-    )
+    assert sorted(api.uploads) == ["I_pos_Ur_a.raw", "T9_neg_Br_x.h5"]
+    # Each set's mode from its own seed: the bundle's dump, and the folder's file.
+    seeded_from_bundle = [
+        c for c in instance.calls if isinstance(c, tuple) and c[0] == "bundle_seed"
+    ]
+    assert seeded_from_bundle == [("bundle_seed", "9.9.9")]
+    assert state_modes(home) == {"Bromide": "file:seed.json", "Uronium": "bundle:9.9.9"}
     assert {m["ionization_mode_name"] for m in api.modes} == {"Bromide", "Uronium"}
     assert "Terpenes" in {c["target_collection_name"] for c in api.collections}
     state = json.loads(home.state.read_text())
