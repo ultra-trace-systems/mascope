@@ -591,8 +591,9 @@ full = mascope.peak_assignments.detail(
 Key `get()` columns: `sample_peak_mz`, `sample_peak_intensity`, `role` (`M0` |
 `iso_child` | `reagent` | `artifact` | `unassigned`), `assigned_formula`,
 `ion_formula`, `isotope_formula`, `source` (`database` | `untargeted` |
-`manual`), `fit_score`, `evidence`, `mz_error_ppm`, `tier`, `p_correct`, and
-`target_compound_id`/`target_ion_id` for database-sourced assignments.
+`manual` | `reagent` | `artifact`), `fit_score`, `evidence`, `mz_error_ppm`,
+`tier`, `p_correct`, and `target_compound_id`/`target_ion_id` for
+database-sourced assignments.
 
 What the tiering rules recorded of each row is on the ledger too, so a reader
 of a whole run needs no `detail()` read per row: `tier_reason_rules` (the rule

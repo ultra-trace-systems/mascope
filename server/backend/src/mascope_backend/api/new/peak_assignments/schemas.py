@@ -93,10 +93,11 @@ class PeakAssignmentRunRecord(BaseModel):
     engine_version: str
     status: str
     config: dict | None = None
-    #: The assigned/candidate fit-score thresholds this run tiered with.
-    #: Served because 'assigned' means nothing comparable across engines
-    #: until the bands that produced it are visible: the server validates every
-    #: imported row against these, and a reader needs the same yardstick.
+    #: The assigned/candidate evidence (fit x plausibility) thresholds this run
+    #: tiered with. Served because 'assigned' means nothing comparable across
+    #: engines until the bands that produced it are visible: the server
+    #: validates every imported row against these, and a reader needs the same
+    #: yardstick.
     #: Null only for runs predating the column.
     tier_bands: dict | None = None
     #: What the producing engine calibrated against, as it disclosed at import.
@@ -650,12 +651,15 @@ class AssignSampleResponse(BaseModel):
 
 
 class TierBands(BaseModel):
-    """The fit-score thresholds a run tiered its rows with.
+    """The evidence thresholds a run tiered its rows with.
 
-    Lifted out of the opaque run `config` into a first-class field because the
-    server validates every imported row's tier against it: the two engines share
-    a fit-score *scale*, but the *bands* are run configuration, so 'assigned'
-    means nothing comparable until the bands that produced it are on the record.
+    Evidence is fit x chemical plausibility (`tier_for_evidence`), the number a
+    tier is read off; the fit itself is stored beside it as the pure
+    measurement. Lifted out of the opaque run `config` into a first-class field
+    because the server validates every imported row's tier against it: the two
+    engines share the evidence *scale*, but the *bands* are run configuration,
+    so 'assigned' means nothing comparable until the bands that produced it are
+    on the record.
 
     The upper band is keyed 'assigned' and accepts the legacy 'identified' for
     the same reason the tier itself does: an engine built against the older spec
@@ -670,10 +674,16 @@ class TierBands(BaseModel):
         ge=0.0,
         le=1.0,
         validation_alias=AliasChoices("assigned", "identified"),
-        description="Fit score at or above which a row is 'assigned'.",
+        description=(
+            "Evidence (fit x plausibility) at or above which a row is 'assigned'."
+        ),
     )
     candidate: float = Field(
-        ge=0.0, le=1.0, description="Fit score at or above which a row is 'candidate'."
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Evidence (fit x plausibility) at or above which a row is 'candidate'."
+        ),
     )
 
     @model_validator(mode="after")

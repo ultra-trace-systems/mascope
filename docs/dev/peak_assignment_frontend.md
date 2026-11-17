@@ -44,9 +44,13 @@ through their exposed `resize()`, since it changes their width and not the `heig
 - **left — inspector** ([`PanePeakAssign.vue`](../../server/frontend/src/lib/panes/PanePeakAssign/PanePeakAssign.vue)):
   a compact committed-assignment card for the focused peak — formula and its ionization,
   `BaseTierTag`, the ion formula · isotope · source line, evidence grid
-  (fit, m/z error, abundance error), chemical **plausibility**, arbitration **confidence** + tie flag,
-  and calibrated **P(correct)** (shown only for database-stage winners with `provenance.calibrated`;
-  renders null as "uncalibrated", flags a provisional curve). Below: the isotopologue **family** table
+  (fit, m/z error, abundance error), chemical **plausibility**, arbitration **confidence** + tie flag.
+  The calibrated **P(correct)** row is **hidden since 2026-09-26** while its curve is provisional
+  (step 3.4d of the quality plan, as built in
+  [`assignment_quality_plan_log.md`](assignment_quality_plan_log.md); the how-it-works page's
+  *Calibrated confidence*): the API and the SDK still serve `p_correct`, the card does not show it.
+  Before that it showed only for database-stage winners with `provenance.calibrated`, rendered null as
+  "uncalibrated" and flagged a provisional curve. Below: the isotopologue **family** table
   (M0 + children, theoretical rel. abundance, poor-match flag) and **close alternatives** (each with
   fit / m/z error / plausibility inline + on hover). No panel header; no "Verify fit" button. An
   Unassigned peak shows a minimal card with a Re-search button.
@@ -68,9 +72,10 @@ through their exposed `resize()`, since it changes their width and not the `heig
 **The ledger** is the Match browser's **"Assignments"** tab
 ([`PaneBrowserAssignment.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/PaneBrowserAssignment.vue)):
 a clickable tier-histogram filter strip and a virtual-scrolled table (m/z · intensity · formula `+N` ·
-ionization · tier · **P(correct)** · verdict). Its other two view options — an **"Isotopologues" toggle** that
-unfolds each compound's `iso_child` isotopologues as indented rows (children inherit the parent's tier
-rank so the stable sort keeps families grouped; rows stay fixed-height so virtual scrolling holds), and
+ionization · tier · verdict; the **P(correct)** column is hidden since 2026-09-26, as the inspector's
+row is). Its other two view options — an **"Isotopologues" toggle** that unfolds each compound's
+`iso_child` isotopologues as indented rows (children inherit the parent's tier rank so the stable sort
+keeps families grouped; rows stay fixed-height so virtual scrolling holds), and
 a **verdict filter** — are behind a cog at the end of that same strip, so everything that narrows the
 table is on one row. A `Popover` rather than a `Menu`, so the switch keeps its `<label for>` (its only
 accessible name); the verdict filter is a chip strip rather than a `Select`, because PrimeVue's `Select`
@@ -105,7 +110,7 @@ right. Which action that is swaps on the same `sample.focused` the ledgers thems
 two are never both on screen: for a focused sample the **run selector** (which **auto-selects the latest
 completed run**, on load and on sample switch) beside the **Assign peaks** button
 ([`AssignmentRunBar.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/AssignmentRunBar.vue)),
-and at batch level **Compute batch peaks**
+and at batch level **Rebuild batch ledger**
 ([`BatchPeakComputeBar.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/BatchPeakComputeBar.vue)).
 Both render *inside* the flag-gated bar rather than beside it, so the `peakAssignmentEnabled`
 gate and the column's height arithmetic (`.browser-switch > :not(.switch-bar)` takes what is left)
@@ -113,7 +118,7 @@ keep covering them without a second rule each. The bar shows *Assign peaks* in e
 ledger's empty state does not, so there is never a second copy of it a row below; the dialog it opens,
 the run configuration and any refusal stay with the ledger, sharing only an open/closed flag
 ([`stores/assignmentLauncher.js`](../../server/frontend/src/lib/panes/PaneBrowserMatch/stores/assignmentLauncher.js)).
-*Compute batch peaks* shares more, because it launches directly instead of opening a dialog: its
+*Rebuild batch ledger* shares more, because it launches directly instead of opening a dialog: its
 disabled reason, its loading state and the refusal it can return live in
 ([`stores/batchPeakCompute.js`](../../server/frontend/src/lib/panes/PaneBrowserMatch/stores/batchPeakCompute.js)),
 which the batch ledger reads to render that refusal below the table it is about. Registering the
@@ -190,8 +195,9 @@ alternative in the inspector (`promote_alternative`, by index, guarded with the 
 showing) and the **hand button** on a re-search hit (`set_assignment`, for the usual case of an
 `unassigned` placeholder row with no runner-ups). The row is edited **in place** — same
 `peak_assignment_id`, same peak — with the displaced winner pushed to the head of `alternatives`, so
-promoting it back is the undo. `source` becomes `"manual"` (a third value in the shared
-`AssignmentSource` literal, so overrides are filterable and survive an import), `BaseTierTag` marks it
+promoting it back is the undo. `source` becomes `"manual"` (one of the five values of the shared
+`AssignmentSource` literal, beside the two stages' `database` and `untargeted` and the pre-passes'
+`reagent` and `artifact`, so overrides are filterable and survive an import), `BaseTierTag` marks it
 on every surface, and `provenance.manual` records the user, the time, the action and the whole previous
 winner. **Two marks, not one**, because `source: "manual"` covers both halves of an override — the row a
 person chose a formula for and the isotopologues the same act stripped. The chip renders the **hand**
@@ -276,14 +282,16 @@ formula it judged and a curated row comes back with no current verdict. An overr
 edits and a later run supersedes it; the durable record of the judgement is still a verdict the user
 records with the evidence level they have.
 
-**Confidence.** fit, plausibility and calibrated P(correct) are surfaced (the four quantities and what
+**Confidence.** fit, plausibility and the evidence they make are surfaced (the four quantities and what
 each means: [`assignment_confidence.md`](assignment_confidence.md) and the help card
-[`assignment-evidence.md`](../user/_help/assignment-evidence.md)). Untargeted winners
+[`assignment-evidence.md`](../user/_help/assignment-evidence.md)); calibrated P(correct) is not, since
+2026-09-26, while its curve is provisional (the API still serves it; see the inspector above). Untargeted winners
 carry `plausibility` too; alternatives carry `plausibility` (database ones also fit + m/z error). Adduct
 **corroboration** exists on the record (`provenance.corroboration` / `n_adducts`, folded into
 `p_correct` by the backend) and is surfaced as a **"Supported by N adducts" badge** — a teal pill in the
-inspector (adduct list on hover) and a compact link-icon + count beside `P(correct)` in the ledger, shown
-only when `n_adducts > 1`. (The demo dataset has no multi-adduct co-occurrence, so it stays hidden there.)
+inspector (adduct list on hover) and a compact link-icon + count beside the ionization in the ledger (it
+sat beside the `P(correct)` column until that column was hidden), shown only when `n_adducts > 1`. (The
+demo dataset has no multi-adduct co-occurrence, so it stays hidden there.)
 The backend writes it onto **M0 winners only, by construction** — an isotopologue is the same ion measured at
 another isotope, not a second sighting of the compound — so an `iso_child` row's own count is always null.
 The evidence is about the formula the family shares, so the frontend resolves an isotopologue's badge from its
@@ -294,9 +302,10 @@ this column already spends opacity on "no calibrated value here", and a borrowed
 absent. Only the count carries across — the corroborating adducts are named in the M0's `provenance`, and
 detail is fetched for the focused assignment alone. The inherited tooltip is also careful that the **boost
 lives in the M0's `p_correct`, never in a child's**: `_fold_adduct_corroboration` rewrites M0 winners
-only, so a child must not claim the probability beside it already accounts for the other adducts. The
-M0's own badge now also resolves from the flattened `corroboration_adducts` before its detail arrives, so
-it no longer pops in a moment late.
+only, so a child must not claim the probability beside it already accounts for the other adducts. With
+P(correct) hidden, neither tooltip names the probability any more. The M0's own badge now also resolves
+from the flattened `corroboration_adducts` before its detail arrives, so it no longer pops in a moment
+late.
 
 One asymmetry to know before reading `n_adducts` as "how many adducts is this compound seen via": the
 engine's tier gate filters which channels *contribute* to the co-occurrence set, not which rows
@@ -342,8 +351,9 @@ not taken further.
 fit × chemical plausibility) — settled, at both engine stages and every other site that derives a tier;
 the chip's number moved with it. What is still open is the step past it: binding the tier to a
 calibrated `p_correct` needs universal calibration coverage (untargeted + all instruments) —
-backend/science, still deferred, and evidence-tiering is a step toward it rather than its arrival. Both
-`tier` and `P(correct)` are now shown side-by-side so the discrepancy is inspectable.
+backend/science, still deferred, and evidence-tiering is a step toward it rather than its arrival.
+`tier` and `P(correct)` were shown side by side so the discrepancy was inspectable; since 2026-09-26
+the app hides P(correct) while its curve is provisional, and the API still serves both.
 
 **Launching a run.** One launcher, the per-sample dialog in the Assignments browser
 ([`PeakAssignConfigForm.vue`](../../server/frontend/src/lib/dialogs/PeakAssignConfigForm.vue)),
