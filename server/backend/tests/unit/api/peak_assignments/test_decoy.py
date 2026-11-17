@@ -63,6 +63,7 @@ from mascope_backend.api.new.peak_assignments.envelope_fit import (
 from mascope_backend.api.new.peak_assignments.mass_gate import (
     MassCalibration,
     apply_mass_gate,
+    measure_mass_gate,
 )
 from mascope_backend.api.new.peak_assignments.profiles import RESOLVED_PROFILE_KEY
 from mascope_backend.api.new.peak_assignments.service import (
@@ -595,7 +596,9 @@ class TestADecoyRun:
             "fold_sample_into_batch_peaks",
             new_callable=AsyncMock,
         ).start()
-        mocks["gate"] = patch(f"{_MOD}.apply_mass_gate", wraps=apply_mass_gate).start()
+        mocks["gate"] = patch(
+            f"{_MOD}.measure_mass_gate", wraps=measure_mass_gate
+        ).start()
         return mocks
 
     @pytest.mark.asyncio

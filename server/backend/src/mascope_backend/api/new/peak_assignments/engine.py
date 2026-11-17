@@ -593,6 +593,31 @@ def tier_for_evidence(
     return TIER_BELOW_ASSIGNABILITY
 
 
+def tier_under_ceiling(row: dict) -> str | None:
+    """A row's tier under the ceiling the mass gate measured for its line.
+
+    What the mass gate's cap leaves the row at (``mass_gate.cap_mass_gate``),
+    whether or not the cap has run yet. A pass that reads another row's tier
+    as a bar - is it a partner, does its envelope predict lines that can take
+    a tier - reads it here, so the bar is the same before and after the cap.
+    The gate's is the one cap that can take a row under ``candidate``; every
+    other cap stops there, so no bar at ``candidate`` reads another cap's work.
+
+    :param row: A ledger row.
+    :return: Its tier, or the ceiling where that is lower.
+    """
+    tier = row.get("tier")
+    gate = (row.get("provenance") or {}).get("mass_gate")
+    ceiling = gate.get("ceiling") if isinstance(gate, dict) else None
+    if (
+        tier in TIER_RANK
+        and ceiling in TIER_RANK
+        and TIER_RANK[ceiling] < TIER_RANK[tier]
+    ):
+        return ceiling
+    return tier
+
+
 def evidence_for(fit_score: float | None, formula: str | None) -> float | None:
     """Evidence for a committed formula: ``fit x plausibility``.
 
@@ -2715,10 +2740,12 @@ def apply_partner_gates(
     partner is as often a reference list's row as the search's: on the
     chamber dataset most C10 products are Stage A matches, and a gate that
     read the search's rows alone left 142 of 240 pseudo-acids standing. It
-    runs after the mass gate, so that a partner is a reading that gate left
-    committed, and before the cross-channel pass, so that a reading it sets
-    aside is no rival there. A batch search, which judges its rows by neither
-    pass, reads it over its own rows (``batch_untargeted.gate_search_rows``).
+    changes readings, so it runs before every cap: after the mass gate has
+    measured the run, so that a partner is a reading that gate's ceiling
+    leaves committed (:func:`tier_under_ceiling`), and before the
+    cross-channel pass reads the ledger, so that a reading it sets aside is no
+    rival there. A batch search, which judges its rows by neither pass, reads
+    it over its own rows (``batch_untargeted.gate_search_rows``).
 
     A partner is a monoisotopic row committed at candidate or better through
     one of the mode's own channels whose neutral is the reading's, compared as
@@ -2726,8 +2753,15 @@ def apply_partner_gates(
     partners a formate reading of ``C2H4O2``. How strongly the sample shows a
     neutral is the height of its brightest partner's peak. The tier is the
     bar a partner clears, not a measure of it: a partner's tier here is read
-    before the passes that can still cap it, and a contest the tier decided
+    before the caps that can still lower it, and a contest the tier decided
     would corroborate the very partner it chose.
+
+    A reading the gate gives a row, by a swap, a lifted cap or a cap put back,
+    takes the tier its own evidence earns, under the minor-channel policy's
+    cap where that holds, as a stage would have built it. The gate applies no
+    other cap: the mass gate's ceiling is the ion's line's, which every reading
+    of it shares, and that gate's cap holds the row under it after the gate,
+    as the cross-channel pass and the tiering pass judge it after the gate.
 
     For a monoisotopic row whose reading is through a partner-gated channel:
 
@@ -2736,15 +2770,12 @@ def apply_partner_gates(
       is lifted here and the row says the second channel corroborated it;
     - otherwise the mode's own reading of the ion, where the family holds one
       whose neutral is a molecule, becomes the row's, keeping the fit and mass
-      error that are the ion's, with its tier read off its own plausibility
-      under the ceiling the mass gate recorded for the ion's line, which
-      every reading of the ion shares (a lifted cap is held the same way,
-      and the row then says the mass gate holds it); failing that, the
-      opportunistic reading whose neutral the sample shows most strongly;
-      failing that, the row stays as it is and the policy's cap holds -
-      re-imposed where the partner that once lifted it is gone, read off the
-      tier the row's evidence earns and held under the mass gate's ceiling
-      as the policy's own cap was, not as the lifted reading was.
+      error that are the ion's, with its tier read off its own plausibility;
+      failing that, the opportunistic reading whose neutral the sample shows
+      most strongly; failing that, the row stays as it is and the policy's
+      cap holds - re-imposed where the partner that once lifted it is gone,
+      read off the tier the row's evidence earns, not off the tier a lifted
+      reading held.
 
     A reference list's row through a gated channel, which Stage A reads through
     the channels the run opened, is held to the same bar and never moved: the
@@ -2813,9 +2844,10 @@ def apply_partner_gates(
     :return: A JSON-serializable summary of the ledger the gate left: rows
         standing on a partner, of them the caps lifted and the swaps undone,
         rows swapped to another reading, rows left to the cap, of them the
-        caps re-imposed, rows held under the mass gate's ceiling, readings
-        set aside, rows that weighed another partnered reading and of them
-        the ones the contest moved, the readings outweighed and those within
+        caps re-imposed, rows given a tier the mass gate's ceiling holds
+        lower (which that gate's cap holds there), readings set aside, rows
+        that weighed another partnered reading and of them the ones the
+        contest moved, the readings outweighed and those within
         the margin, the list rows kept on the list's reading where the walk
         or the contest would have moved them, the margin itself, the rounds
         the walk took, and whether a round changed nothing before the cap.
@@ -2856,6 +2888,8 @@ def apply_partner_gates(
     candidate_threshold = bands.get(TIER_CANDIDATE)
     assigned_threshold = bands.get(TIER_ASSIGNED)
 
+    # The rows whose reading the gate gave a tier the mass gate's ceiling
+    # holds lower: its cap, after the gate, holds them there.
     held: set[str] = set()
 
     def earned(evidence: float) -> str | None:
@@ -2868,36 +2902,18 @@ def apply_partner_gates(
             assigned_threshold=assigned_threshold,
         )
 
-    def under_ceiling(tier: str, provenance: dict) -> str:
-        """``tier`` under the mass gate's ceiling, the row saying where it binds.
-
-        The mass gate judged the ion's line, which every reading of it
-        shares. Where its ceiling binds, the row's tier is that gate's word.
-        """
-        mass_gate = provenance.get("mass_gate") or {}
-        ceiling = mass_gate.get("ceiling") or mass_gate.get("capped")
-        if ceiling in TIER_RANK and TIER_RANK[ceiling] < TIER_RANK[tier]:
-            mass_gate["capped"] = ceiling
-            return ceiling
-        return tier
-
-    def tier_of(evidence: float, row: dict, provenance: dict) -> str | None:
-        """The tier the evidence earns, under the mass gate's ceiling."""
+    def tier_of(evidence: float, row: dict) -> str | None:
+        """The tier the evidence earns, noting where the mass gate's ceiling
+        is lower: the gate's cap holds the row there, not this gate."""
         tier = earned(evidence)
         if tier is None:
             return None
-        ceiling = under_ceiling(tier, provenance)
-        if ceiling != tier:
-            held.add(str(row.get("peak_assignment_id")))
-        return ceiling
-
-    def unhold(row: dict, provenance: dict) -> None:
-        """Forget what the ceiling said of the row's last tier, which the tier
-        read next answers again."""
-        mass_gate = provenance.get("mass_gate")
-        if isinstance(mass_gate, dict) and "ceiling" in mass_gate:
-            mass_gate.pop("capped", None)
-        held.discard(str(row.get("peak_assignment_id")))
+        row_id = str(row.get("peak_assignment_id"))
+        if tier_under_ceiling({**row, "tier": tier}) != tier:
+            held.add(row_id)
+        else:
+            held.discard(row_id)
+        return tier
 
     def partner_key(row: dict) -> str | None:
         """The neutral a row commits through a mode channel, or None."""
@@ -2905,7 +2921,7 @@ def apply_partner_gates(
             row.get("role") == ROLE_M0
             and row.get("ionization_mechanism_id") not in minor_ids
             and row.get("assigned_formula")
-            and row.get("tier") in (TIER_ASSIGNED, TIER_CANDIDATE)
+            and tier_under_ceiling(row) in (TIER_ASSIGNED, TIER_CANDIDATE)
         ):
             return formula_identity(str(row["assigned_formula"]))
         return None
@@ -3014,11 +3030,9 @@ def apply_partner_gates(
         evidence = round(fit * plausibility, 4)
         row["assigned_formula"] = chosen["assigned_formula"]
         row["ionization_mechanism_id"] = chosen["ionization_mechanism_id"]
-        # Whether the mass gate's ceiling holds the row down is the new
-        # reading's question: the one it replaces may have been held where
-        # this one is not.
-        unhold(row, provenance)
-        restored = tier_of(evidence, row, provenance)
+        # A new reading, at the tier its own evidence earns, as a stage would
+        # have built it: the caps after the gate judge it from there.
+        restored = tier_of(evidence, row)
         if restored is not None:
             row["tier"] = restored
         provenance["plausibility"] = plausibility
@@ -3106,7 +3120,7 @@ def apply_partner_gates(
                     if verdict.get("capped"):
                         verdict["capped"] = False
                         restored = tier_of(
-                            float(provenance.get("evidence") or 0.0), row, provenance
+                            float(provenance.get("evidence") or 0.0), row
                         )
                         if restored is not None:
                             row["tier"] = restored
@@ -3146,10 +3160,11 @@ def apply_partner_gates(
                 ):
                     # The partner the policy or an earlier round read is gone:
                     # the policy's cap again, read off the tier the evidence
-                    # earns rather than one a ceiling held a lifted reading at,
-                    # and under that ceiling as the policy's own cap was.
+                    # earns, as the policy reads it. The mass gate's cap, after
+                    # the gate, holds it under that gate's ceiling, as it holds
+                    # every reading.
                     verdict["corroborated_by"] = None
-                    unhold(row, provenance)
+                    held.discard(str(row.get("peak_assignment_id")))
                     evidence = _float_or_none(provenance.get("evidence"))
                     tier = None if evidence is None else earned(evidence)
                     if tier is None:
@@ -3158,7 +3173,7 @@ def apply_partner_gates(
                     if verdict["capped"]:
                         tier = TIER_CANDIDATE
                     if tier in TIER_RANK:
-                        row["tier"] = under_ceiling(tier, provenance)
+                        row["tier"] = tier
                     record["recapped"] = True
                 if record != gate:
                     provenance["partner_gate"] = record

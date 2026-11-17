@@ -164,6 +164,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     is_target_library_row,
     outweighs,
     partner_ratio,
+    tier_under_ceiling,
 )
 from mascope_backend.api.new.peak_assignments.mass_gate import is_committed
 from mascope_backend.api.new.peak_assignments.tiers import (
@@ -617,7 +618,9 @@ def channels_by_neutral(
     partner lookup reads. Built in one pass over the ledger, it answers "what
     else saw this neutral, and how confidently" with a dict read; asking the
     ledger itself per row made the pass quadratic and doubled the run time on
-    the dense sets (one TOF set 236 -> 452 s over its six samples).
+    the dense sets (one TOF set 236 -> 452 s over its six samples). A row's
+    tier is read under the mass gate's ceiling
+    (``engine.tier_under_ceiling``), the tier that gate's cap leaves it at.
 
     :param assignments: Every row built for this sample.
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
@@ -632,7 +635,7 @@ def channels_by_neutral(
         if not notation:
             continue
         by_channel = seen.setdefault(neutral_key(row.get("assigned_formula")), {})
-        tier = row.get("tier")
+        tier = tier_under_ceiling(row)
         tier = tier if tier in TIER_RANK else None
         if notation not in by_channel or _outranks(tier, by_channel[notation]):
             by_channel[notation] = tier
@@ -685,10 +688,11 @@ def partner_heights(
 
     Per neutral, the peak height of every monoisotopic row that commits it at
     candidate or better through one of the mode's own channels: the partner
-    gate's own bar for a partner (``engine.apply_partner_gates``). A reading of
-    one of these names a molecule the sample itself bears out, which no prior
-    sets aside; an opportunistic channel shows nothing on its own. The bar is
-    one that the passes after the gate cannot take a row back under.
+    gate's own bar for a partner (``engine.apply_partner_gates``), read under
+    the mass gate's ceiling as the gate reads it. A reading of one of these
+    names a molecule the sample itself bears out, which no prior sets aside;
+    an opportunistic channel shows nothing on its own. The bar is one that no
+    cap but the mass gate's can take a row back under, and that one is read.
 
     :param assignments: Every row built for this sample.
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
@@ -702,7 +706,7 @@ def partner_heights(
         if (
             not is_committed(row)
             or row.get("role") != ROLE_M0
-            or row.get("tier") not in (TIER_ASSIGNED, TIER_CANDIDATE)
+            or tier_under_ceiling(row) not in (TIER_ASSIGNED, TIER_CANDIDATE)
         ):
             continue
         notation = notation_by_id.get(str(row.get("ionization_mechanism_id")))
@@ -734,7 +738,7 @@ def brightest_by_channel(
         if (
             not is_committed(row)
             or row.get("role") != ROLE_M0
-            or row.get("tier") not in (TIER_ASSIGNED, TIER_CANDIDATE)
+            or tier_under_ceiling(row) not in (TIER_ASSIGNED, TIER_CANDIDATE)
         ):
             continue
         notation = notation_by_id.get(str(row.get("ionization_mechanism_id")))
@@ -873,14 +877,40 @@ def apply_cross_channel(
 ) -> dict:
     """Record each commit's channels, and cap the readings nothing settled.
 
-    Modifies the rows in place, after both stages have built them: which
-    channels a neutral was seen through is a property of the whole ledger.
+    :func:`read_cross_channel` and then :func:`cap_cross_channel`. The
+    parameters are :func:`read_cross_channel`'s.
+
+    :return: A JSON-serializable summary for the run's config.
+    """
+    return cap_cross_channel(
+        assignments,
+        read_cross_channel(
+            assignments, notation_by_id=notation_by_id, minor_channels=minor_channels
+        ),
+    )
+
+
+def read_cross_channel(
+    assignments: list[dict],
+    *,
+    notation_by_id: dict[str, str],
+    minor_channels: frozenset[str] = frozenset(),
+) -> dict:
+    """Record each commit's channels, and the readings nothing settled,
+    lowering no tier (:func:`cap_cross_channel`).
+
+    Modifies the rows' provenance in place, after both stages have built them:
+    which channels a neutral was seen through is a property of the whole
+    ledger. Every tier it reads is read under the mass gate's ceiling
+    (``engine.tier_under_ceiling``), so what it records is the same before
+    and after that gate's cap.
 
     Every committed monoisotopic row whose ion reads another way records what
     that leaves it (:func:`same_ion_question`): the rival molecule where nothing
-    settled it, capped at ``candidate``, or what settled it. The rival is
-    recorded whether or not the cap lowered the tier - a row its evidence
-    already put below says so too - and only the cap counts as ``capped``.
+    settled it, which :func:`cap_cross_channel` caps at ``candidate``, or what
+    settled it. The rival is recorded whether or not the cap lowers the tier -
+    a row its evidence already put below says so too - and only the cap counts
+    as ``capped``.
 
     :param assignments: Every row built for this sample, modified in place.
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
@@ -889,7 +919,8 @@ def apply_cross_channel(
         (:func:`partner_heights`), and a row read through one is the mode's own
         reading of its ion, which a rival the sample shows has to outweigh by
         the margin; none by default, where every channel is the mode's own.
-    :return: A JSON-serializable summary for the run's config.
+    :return: A JSON-serializable summary for the run's config, whose counts
+        of capped rows :func:`cap_cross_channel` fills in.
     """
     channels_searched = sorted(set(notation_by_id.values()))
     donors = nitrogen_donating_channels(channels_searched)
@@ -953,9 +984,6 @@ def apply_cross_channel(
         IN_SOURCE_FRAGMENTS: fragments_summary,
     }
 
-    # Owner id -> the reason its cap carried, and whether its rival is one the
-    # sample shows, which its isotopologues carry too.
-    capped_owners: dict[str, tuple[str, bool]] = {}
     for row in assignments:
         if not is_committed(row) or row.get("role") != ROLE_M0:
             continue
@@ -994,17 +1022,54 @@ def apply_cross_channel(
                 record[SAME_ION_SETTLED] = found
                 summary["settled"][found["by"]] += 1
             else:
-                mirror = is_reference_mirror_row(row)
-                shown = bool(found.get("shown"))
                 record[reason] = found
                 summary[reason] += 1
-                summary[f"{reason}_mirror"] += mirror
-                summary["shown_rival"] += shown
-                if _cap(row, record, reason):
-                    summary["capped"] += 1
-                    summary["capped_mirror"] += mirror
-                    capped_owners[str(row["peak_assignment_id"])] = (reason, shown)
+                summary[f"{reason}_mirror"] += is_reference_mirror_row(row)
+                summary["shown_rival"] += bool(found.get("shown"))
         row.setdefault("provenance", {})["cross_channel"] = record
+    return summary
+
+
+def cap_cross_channel(assignments: list[dict], summary: dict | None = None) -> dict:
+    """Cap at ``candidate`` every reading :func:`read_cross_channel` found
+    nothing settled, and its isotopologues with it, in place.
+
+    Only ever downwards, and it reads nothing but the rows' own records and
+    tiers. An isotopologue whose owner another cap already took is left to the
+    tiering pass, which holds it with its owner on the record this pass's
+    reading left, so the caps leave the same tiers in any order.
+
+    :param assignments: The rows :func:`read_cross_channel` recorded,
+        modified in place.
+    :param summary: Its summary, whose counts of capped rows this fills in;
+        None counts nothing.
+    :return: The summary.
+    """
+    summary = summary if summary is not None else {}
+    for key in ("capped", "capped_mirror", "capped_isotopologues"):
+        summary.setdefault(key, 0)
+    # Owner id -> the reason its cap carried, and whether its rival is one the
+    # sample shows, which its isotopologues carry too.
+    capped_owners: dict[str, tuple[str, bool]] = {}
+    for row in assignments:
+        if not is_committed(row) or row.get("role") != ROLE_M0:
+            continue
+        record = (row.get("provenance") or {}).get("cross_channel")
+        if not isinstance(record, dict):
+            continue
+        reason = next(
+            (key for key in AMBIGUITY_REASONS if isinstance(record.get(key), dict)),
+            None,
+        )
+        if reason is None:
+            continue
+        if _cap(row, record, reason):
+            summary["capped"] += 1
+            summary["capped_mirror"] += is_reference_mirror_row(row)
+            capped_owners[str(row["peak_assignment_id"])] = (
+                reason,
+                bool(record[reason].get("shown")),
+            )
 
     # An isotopologue is its parent's ion on a second line of one envelope, so it
     # carries the parent's neutral and the parent's doubt. Counted apart because

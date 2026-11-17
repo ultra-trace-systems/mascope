@@ -260,6 +260,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     SOURCE_DATABASE,
     SOURCE_UNTARGETED,
     is_target_library_row,
+    tier_under_ceiling,
 )
 from mascope_backend.api.new.peak_assignments.envelope_claims import (
     ENVELOPE_CLAIM,
@@ -2069,8 +2070,10 @@ def envelope_neighbours(
         # one whose envelope the run itself does not believe. Measured on the
         # gate before this condition, those owners took 52 of the rule's 218
         # rows and were wrong on 4 of them, the rule's worst precision by owner
-        # tier (assigned owners: 1 of 76).
-        if owner.get("tier") not in (TIER_ASSIGNED, TIER_CANDIDATE):
+        # tier (assigned owners: 1 of 76). Read under the mass gate's ceiling,
+        # the one cap that can take an owner under candidate, so the rule reads
+        # the owner the same before and after that gate's cap.
+        if tier_under_ceiling(owner) not in (TIER_ASSIGNED, TIER_CANDIDATE):
             continue
         owner_intensity = float(owner.get("sample_peak_intensity") or 0.0)
         if owner_intensity <= 0:
