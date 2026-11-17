@@ -167,9 +167,8 @@ box in the caller's own session, one run at a time. In order:
    the run if it cannot ("After a branch with a migration of its own").
 3. **The backend.** It starts the ref's backend and file converter on the
    bench slot, with peak assignment on, and signs in. The backend has
-   `--workers N` uvicorn workers (default 4), where the dev defaults have
-   one: an engine run and the card's detail reads are CPU-bound in their
-   worker. The bench writes the count into the env's own config layer,
+   `--workers N` uvicorn workers (default 8), where the dev defaults have
+   one: an engine run is CPU-bound in its worker. The bench writes the count into the env's own config layer,
    `dev.mascope.toml` in the env's folder, which every ref reads over its
    dev defaults, and removes that file again for one worker. A file there
    that the bench did not write is left as it is.
@@ -180,7 +179,7 @@ box in the caller's own session, one run at a time. In order:
    intrinsic metrics alone.
 5. **The engine.** It runs the in-app engine on every other sample, as an
    assign request with no config: the engine's own defaults, as the gate's
-   runs had. `--jobs N` samples run at once (default 4). With `--decoys` each
+   runs had. `--jobs N` samples run at once (default 8). With `--decoys` each
    sample's decoy arms follow its run, made against it as their control
    (step 5.2): 9 ppm either way and the swapped adducts on an Orbitrap set,
    0.35 Da and the swapped adducts on a TOF set. An arm the server refuses,
@@ -203,14 +202,15 @@ box in the caller's own session, one run at a time. In order:
    arms ran, reads the sets and writes one card per set and one pooled
    (`tooling/assignment_compare/README.md`). It is the comparison tool of
    the checkout `bench.py` runs from, not the ref's. A branch that changed
-   the metrics would otherwise judge itself by them. It reads every
-   committed row's provenance one request at a time (#3134), so it takes
-   longer than the runs ("What it costs", below). It has no budget, since
-   its time grows with the rows it reads; it writes a line per sample, and
-   one that writes nothing for 30 minutes is taken for hung and stopped. A
-   set whose manifest names an authors' list (`truth`, "The manifest") is
-   read against it too: its column gains the list's readings for both
-   engines, which no target gates.
+   the metrics would otherwise judge itself by them. It reads each
+   committed row's rule records off its sample's ledger; only a ref from
+   before those columns makes it read each row's provenance with a request
+   of its own (#3134), which takes far longer ("What it costs", below). It
+   has no budget, since its time grows with the rows it reads; it writes a
+   line per sample, and one that writes nothing for 30 minutes is taken for
+   hung and stopped. A set whose manifest names an authors' list (`truth`,
+   "The manifest") is read against it too: its column gains the list's
+   readings for both engines, which no target gates.
 9. **The scrub.** The comparison is given a deny list: every name and id
    the instance holds (its workspaces, datasets, batches, samples, files,
    modes and collections, and its instruments by name, by the names its
@@ -247,12 +247,15 @@ nothing left out. The baseline records the sets the card read.
 command holds it, and says so; `--no-wait` refuses instead. `init` and
 `reference` take the same lock.
 
-**What it costs.** On the agent box, with four workers and four samples at
-once, the engine took 12 minutes on Db and 14 on Du, and the card 67
-minutes over both: about an hour and a half a run. One worker took 26 and
-31 minutes for the runs, and its card had read 126 of the 161 samples
-after 2 hours 47 minutes. The decoy arms run three more engine runs per
-Orbitrap sample.
+**What it costs.** On the agent box, with eight workers and eight samples
+at once, the engine took 8 minutes on Db and 9 on Du, the card 4 minutes
+over both, and a run about 21 minutes from start to end, at a load average
+of about 7 to 8 during the engine (MAS-934). Four workers and four samples
+at once took 14 minutes on each set and a run 32 minutes, at a load
+average of about 3.5. One worker took 26 and 31 minutes for the runs. A
+ref from before the ledger's rule-record columns makes the card read each
+row's detail, which took 67 minutes. The decoy arms run three more engine
+runs per Orbitrap sample.
 
 **What a run writes**, in `cards/<ref>/<timestamp>/` of the bench's home
 (`origin/develop` is `origin-develop`):
@@ -307,8 +310,9 @@ There is no queue and no trigger to set: the command runs in the caller's
 own session, and posts as the caller's own `gh` identity (on the agent box,
 the builder App for an implementer and the reviewer App for a reviewer). One
 run at a time: a second caller waits on the bench's lock and says so
-(`--no-wait` refuses instead). A run takes about an hour and a half; `--sets`
-shortens it to the sets named, `--decoys` adds the arms.
+(`--no-wait` refuses instead). A run takes about 20 minutes over the demo
+sets, more with private sets beside them; `--sets` shortens it to the sets
+named, `--decoys` adds the arms.
 
 In order:
 

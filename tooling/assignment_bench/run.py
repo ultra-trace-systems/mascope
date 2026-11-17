@@ -96,13 +96,17 @@ TERMINAL = {"completed", "failed", "cancelled"}
 DECOY_REFUSAL = "no decoy:"
 
 #: Samples run at once, minutes a set may take, seconds between two looks.
-JOBS = 4
+#: Eight took the engine over Db and Du from 27 minutes at four to 17 on the
+#: agent box, the card unchanged, at a load average of about 7 to 8 (MAS-934).
+JOBS = 8
 BUDGET_MIN = 120.0
 POLL_S = 10.0
 
 #: The ref's backend's uvicorn workers: one per sample run at once, since an
-#: engine run and the card's detail reads are CPU-bound in their worker.
-WORKERS = 4
+#: engine run is CPU-bound in its worker. The card reads the rows' rule
+#: records off each sample's ledger, so it makes no detail reads on a ref that
+#: serves them (MAS-847); only an older ref's card falls back to them.
+WORKERS = 8
 
 #: Minutes the comparison may go without writing a line before it is taken
 #: for hung and stopped. It writes one per sample it reads; its whole run
