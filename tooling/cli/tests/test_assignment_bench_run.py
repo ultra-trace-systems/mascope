@@ -2212,3 +2212,18 @@ def test_a_sample_whose_runs_cannot_be_read_after_it_ran_is_failed(rig):
     assert rig.compare.calls[0]["manifest"]["sets"]["Db"]["samples"] == ["S1"]
     summary = json.loads((rig.card_dir() / "run.json").read_text())
     assert summary["sets"]["Db"]["left_out"] == {"failed": 1}
+
+
+def test_a_set_with_an_authors_list_hands_it_to_the_card(rig):
+    formulas = ["C10H15NO8", "C7H9NO5"]
+    state = rig.state()
+    state["sets"]["Et"]["truth"] = {"sha256": "a" * 64, "formulas": formulas}
+    bench.save_state(rig.home, state)
+
+    assert rig.run("topic") == 0
+
+    sets = rig.compare.calls[0]["manifest"]["sets"]
+    assert sets["Et"]["truth"] == formulas
+    assert "truth" not in sets["Db"]
+    # The list stays in the private work folder, with the samples' ids.
+    assert not any(f in (rig.card_dir() / "run.json").read_text() for f in formulas)

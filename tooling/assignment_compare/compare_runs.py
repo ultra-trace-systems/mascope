@@ -88,6 +88,46 @@ def canonical(formula) -> str | None:
     return "".join(f"{element}{counts[element]}" for element in sorted(counts))
 
 
+#: A neutral formula as an authors' list may write it: element symbols and
+#: their counts, in any order, with no charge, isotope or adduct.
+_NEUTRAL = re.compile(r"^(?:[A-Z][a-z]?\d*)+$")
+
+
+def truth_key(formula) -> str | None:
+    """An authors' list's formula as :func:`canonical` writes a ledger's: its
+    element counts in a fixed order, a zero count dropped. None for anything
+    but a neutral formula of element symbols and counts."""
+    if not isinstance(formula, str):
+        return None
+    text = re.sub(r"\s+", "", formula)
+    if not _NEUTRAL.match(text):
+        return None
+    counts = {e: n for e, n in element_counts(text).items() if n}
+    if not counts:
+        return None
+    return "".join(f"{element}{counts[element]}" for element in sorted(counts))
+
+
+def truth_formulas(values, where: str) -> list[str]:
+    """An authors' list as the card reads it: its distinct formulas by
+    :func:`truth_key`, sorted.
+
+    :raises SystemExit: On a list that is empty or holds anything but neutral
+        formulas, naming the first such entry by its place, never its text.
+    """
+    if not isinstance(values, list) or not values:
+        sys.exit(f"{where}: an authors' list is a list of neutral formulas")
+    keys = set()
+    for i, value in enumerate(values):
+        key = truth_key(value)
+        if key is None:
+            sys.exit(
+                f"{where}[{i}]: not a neutral formula of element symbols and counts"
+            )
+        keys.add(key)
+    return sorted(keys)
+
+
 def ring_double_bond_equivalents(counts: dict[str, int]) -> float | None:
     if not counts or counts.get("C", 0) == 0:
         return None
@@ -1057,13 +1097,19 @@ def load_sets(path: str | Path) -> dict:
 
     ``{"sets": {"A": {"workspace": ..., "samples": [...]}, "E": {"workspace":
     ..., "batch": ..., "dataset": ..., "instrument": "tof", "sulfur_free":
-    true}}, "deny": [...]}``: per set its workspace, its samples or a batch (and
-    dataset) whose samples it reads, its instrument class (``orbitrap``, the
-    default, or ``tof``) and whether its chemistry holds no sulfur (G9); and
-    any further names the card must not hold.
+    true, "truth": [...]}}, "deny": [...]}``: per set its workspace, its
+    samples or a batch (and dataset) whose samples it reads, its instrument
+    class (``orbitrap``, the default, or ``tof``) and whether its chemistry
+    holds no sulfur (G9); and any further names the card must not hold.
 
-    :raises SystemExit: On a set named other than by a letter, or one the
-        manifest does not say how to read.
+    A set may carry an authors' list of its neutral formulas (``truth``),
+    which the card reads both engines against (:func:`metrics.truth_readings`):
+    the formulas themselves, or ``{"file": P}``, a JSON list of them at ``P``
+    relative to the manifest's folder. It is read here and nowhere else: it
+    never reaches the instance.
+
+    :raises SystemExit: On a set named other than by a letter, one the
+        manifest does not say how to read, or a list that is not one.
     """
     manifest = json.loads(Path(path).read_text(encoding="utf-8"))
     sets = manifest.get("sets")
@@ -1084,8 +1130,33 @@ def load_sets(path: str | Path) -> dict:
         if spec["instrument"] not in INSTRUMENTS:
             sys.exit(f"{path}: set {name} has instrument {spec['instrument']!r}")
         spec.setdefault("sulfur_free", False)
+        if spec.get("truth") is not None:
+            where = f"{path}: set {name}: truth"
+            spec["truth"] = truth_formulas(
+                _truth_values(spec["truth"], Path(path).parent, where), where
+            )
     return manifest
 
+
+def _truth_values(truth, folder: Path, where: str):
+    """A set's ``truth`` as the formulas it names: given inline, or read from
+    the file it names."""
+    if isinstance(truth, dict):
+        if set(truth) != {"file"} or not isinstance(truth["file"], str):
+            sys.exit(f"{where}: a list of formulas, or {{'file': path}}")
+        try:
+            return json.loads((folder / truth["file"]).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            sys.exit(f"{where}: its file was not read: {error}")
+    return truth
+
+
+#: What a card with an authors' list says of it, under the sets' lines.
+TRUTH_NOTE = (
+    "Authors' lists: each engine's monoisotopic formulas read against the "
+    "neutral formulas a study's authors published, compared by element counts. "
+    "A list is not exhaustive, so these are readings, never gated."
+)
 
 #: Every word the card prints of its own. A word of a name that is one of these
 #: tells a reader nothing when the card prints it, so the scrub does not refuse
@@ -1094,8 +1165,9 @@ def load_sets(path: str | Path) -> dict:
 #: (:func:`card_vocabulary`).
 CARD_WORDS = frozenset(
     word.lower()
-    for text in [label for _, label, _ in metrics.METRICS]
+    for text in [label for _, label, _ in metrics.METRICS + metrics.TRUTH_METRICS]
     + list(metrics.DECOY_LABELS.values())
+    + [TRUTH_NOTE]
     + [
         "gate card against sets set pooled metric value target a reading of",
         "stage pass fail missed met not read gated with reference run engine",
@@ -1406,12 +1478,13 @@ def unit_of(key: str) -> str:
     """A reading's unit: ``%``, ``count`` or ``ppm``."""
     if key.startswith("decoy "):
         return "count" if key.endswith(" on_control_reagent") else "%"
-    return {key: unit for key, _, unit in metrics.METRICS}.get(key, "count")
+    rows = metrics.METRICS + metrics.TRUTH_METRICS
+    return {key: unit for key, _, unit in rows}.get(key, "count")
 
 
 def label_of(key: str) -> str:
     """A reading's label, as the card's row names it."""
-    labels = {key: label for key, label, _ in metrics.METRICS}
+    labels = {key: label for key, label, _ in metrics.METRICS + metrics.TRUTH_METRICS}
     if key in labels:
         return labels[key]
     if key.startswith("decoy "):
@@ -1564,6 +1637,8 @@ def card_markdown(card: dict, names: list[str] | None = None) -> str:
     lines = [title, ""]
     lines += [_context(name, card["columns"][name]) for name in names]
     lines.append("")
+    if any("list_formulas" in card["columns"][name]["readings"] for name in names):
+        lines += [TRUTH_NOTE, ""]
     if gate:
         lines += [gate_line(gate), ""]
     keys: list[str] = []
@@ -1881,6 +1956,11 @@ def build_card(collected: dict[str, dict], manifest: dict, args) -> dict:
     not read but the samples it skipped, so the card and the gate name it.
     """
     columns = {}
+    truth = {
+        name: frozenset(spec["truth"])
+        for name, spec in manifest["sets"].items()
+        if spec.get("truth")
+    }
     for name, one in collected.items():
         frame = one["frame"]
         columns[name] = {
@@ -1894,9 +1974,10 @@ def build_card(collected: dict[str, dict], manifest: dict, args) -> dict:
                     skipped=one["skipped"],
                     source_ions=one["source_ions"],
                     decoy_arms=(one["decoy"] or {}).get("pooled"),
+                    truth=[(frame, truth[name])] if name in truth else None,
                 )
                 if frame is not None
-                else metrics.unread_readings(one["skipped"])
+                else metrics.unread_readings(one["skipped"], truth.get(name))
             ),
         }
     read = [one for one in collected.values() if one["frame"] is not None]
@@ -1917,6 +1998,12 @@ def build_card(collected: dict[str, dict], manifest: dict, args) -> dict:
             decoy_arms=pooled_arms([one["decoy"] for one in read if one["decoy"]])
             if args.decoy
             else None,
+            truth=[
+                (one["frame"], truth[name])
+                for name, one in collected.items()
+                if name in truth and one["frame"] is not None
+            ]
+            or None,
         ),
     }
     return {

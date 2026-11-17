@@ -1282,6 +1282,11 @@ class BenchRun:
                 "samples": list(p.samples),
                 "instrument": p.instrument,
             }
+            # The set's authors' list, which `init` kept from the manifest's
+            # folder: the card reads both engines against it.
+            truth = (state["sets"].get(name) or {}).get("truth")
+            if truth:
+                manifest["sets"][name]["truth"] = list(truth["formulas"])
         sets_file = work / "sets.json"
         sets_file.write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8")
         deny_file = work / "deny.txt"

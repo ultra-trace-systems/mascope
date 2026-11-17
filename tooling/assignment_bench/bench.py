@@ -1512,6 +1512,9 @@ class Bench:
         if checkout is None and m.corpus_checkout:
             checkout = Path(m.corpus_checkout).expanduser()
         files = bench_manifest.resolve(m, self.bundle_dir, checkout)
+        # Read before anything starts, so a list that is not one stops init
+        # here; kept in the state alone, never seeded into the instance.
+        truth = bench_manifest.read_truth(m)
         self.home.make()
         state = load_state(self.home, self.instance.env)
         if rebuild:
@@ -1543,7 +1546,7 @@ class Bench:
             # The same files and seeds, read another way (a profile, a
             # window, a label): recorded, with nothing to start.
             self._record_manifest(m, manifest_path, state)
-            self._describe_sets(m, state)
+            self._describe_sets(m, state, truth)
             save_state(self.home, state)
             log(
                 f"manifest {m.name!r} ({m.digest[:12]}) changed only how its sets are "
@@ -1572,7 +1575,7 @@ class Bench:
         try:
             api = self.connect(base)
             problems = self._seed(api, m, todo, state, checkout)
-            problems += self._ingest(api, m, files, todo, state, sha)
+            problems += self._ingest(api, m, files, todo, state, sha, truth)
         finally:
             if not keep_running:
                 self.instance.stop()
@@ -1596,8 +1599,13 @@ class Bench:
             "from": str(Path(manifest_path).resolve()),
         }
 
-    def _describe_sets(self, m: Manifest, state: dict) -> None:
-        """Each set's label, profile, class and window, as the manifest says."""
+    def _describe_sets(
+        self, m: Manifest, state: dict, truth: dict[str, dict] | None = None
+    ) -> None:
+        """Each set's label, profile, class and window, as the manifest says,
+        and its authors' list (``bench_manifest.read_truth``) where it names
+        one, which ``bench run`` hands to the card."""
+        truth = truth or {}
         for s in m.sets.values():
             entry = state["sets"].setdefault(
                 s.name,
@@ -1613,6 +1621,10 @@ class Bench:
                     ),
                 }
             )
+            if s.name in truth:
+                entry["truth"] = truth[s.name]
+            else:
+                entry.pop("truth", None)
 
     def _seed(
         self, api: Api, m: Manifest, todo: Plan, state: dict, checkout: Path | None
@@ -1665,6 +1677,7 @@ class Bench:
         todo: Plan,
         state: dict,
         sha: str,
+        truth: dict[str, dict] | None = None,
     ) -> list[str]:
         """Upload, wait, check; each record names the build that ingested it."""
         held = self.instance.samples()
@@ -1702,7 +1715,7 @@ class Bench:
             problems += [
                 f"set {set_name}: {files[key].name}: {p}" for p in record["problems"]
             ]
-        self._describe_sets(m, state)
+        self._describe_sets(m, state, truth)
         return problems
 
     def _upload(self, api: Api, uploads: list[ResolvedFile]) -> list[str]:
@@ -1859,10 +1872,16 @@ class Bench:
             builds = sorted(
                 {str(r.get("build") or build.get("sha"))[:9] for r in records}
             )
+            truth = s.get("truth")
             print(
                 f"  {name:<4} {s.get('instrument_class', '?'):<8} {s.get('profile', '?'):<6} "
                 f"{ok}/{len(records)} files ready, {items} samples, mode {s['mode']!r}, "
-                f"window {window_text}, built at {', '.join(builds) or '-'}",
+                f"window {window_text}, built at {', '.join(builds) or '-'}"
+                + (
+                    f", authors' list of {len(truth['formulas'])} formulas"
+                    if truth
+                    else ""
+                ),
                 file=out,
             )
         for line in bench_reference.status_lines(state.get("reference")):
