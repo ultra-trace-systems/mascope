@@ -117,6 +117,19 @@ object hash. The gate sets stay the plan owner's gate on the testbed until
 one parallel pass shows the bench's sets read the same way; then the card
 is the plan's measurement.
 
+Data that is not the fleet's stays out of the corpus store. Published or
+shared research datasets, with the peak lists their authors assigned, give
+the bench chemistries and TOF instruments the demo lacks. The corpus store
+is the wrong home for them: every corpus replay reads the whole store, and
+such a set's ionization mode would also route the fleet's files. They sit
+in a folder on the agent box with the private manifest, which names each
+file by its path in that folder and its hash, and seeds their mode from a
+seed file of the corpus seed's shape in the same folder. `init` checks each
+file's hash before it uploads it. The first such picks (2026-11-17, the plan
+owner's, under 6.8) are three nitrate TOF sets and one nitrate Orbitrap
+set, 24 samples. The authors' peak lists are not loaded into the bench:
+reading the engines against them is a metric the card does not have yet.
+
 The manifest (step 6.2) names, per set: its letter, its files, its
 ionization mode and profile, the target collections and reference lists to
 seed, the instrument class, and the window the reference is run at (the

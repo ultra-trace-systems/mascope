@@ -1,7 +1,8 @@
 """The assignment bench's ``init`` and ``status`` (``tooling/assignment_bench``).
 
-The manifest parser and its two file forms (a demo bundle sample, a corpus
-object read from a fake ``corpus checkout``), the bundle seed read from a
+The manifest parser and its three file forms (a demo bundle sample, a corpus
+object read from a fake ``corpus checkout``, a file in the manifest's own
+folder, checked by its hash), the bundle seed read from a
 ``pg_dump``'s COPY blocks and loaded through the API, and ``init`` over a fake
 instance and a fake API: what a first build records, that a second one over
 the same manifest starts nothing and changes nothing, what it does when the
@@ -571,6 +572,111 @@ def test_corpus_objects_resolve_through_a_checkout_under_their_names(tmp_path):
         mf.resolve(m, _bundle(tmp_path), root)
 
 
+def _folder(tmp_path, names, sets_of):
+    """A private manifest in a folder of its own, its files and seed beside it."""
+    root = tmp_path / "private"
+    (root / "raw").mkdir(parents=True)
+    for name in names:
+        (root / "raw" / name).write_text(name)
+    (root / "seed.json").write_text(json.dumps(SEED))
+    path = root / "manifest.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": mf.SCHEMA,
+                "name": "private",
+                "sets": sets_of(
+                    {n: {"path": f"raw/{n}", "sha256": _sha(n)} for n in names}
+                ),
+            }
+        )
+    )
+    return path
+
+
+def test_a_manifest_takes_files_and_a_seed_from_its_own_folder(tmp_path):
+    path = _folder(
+        tmp_path,
+        ["T9_neg_Br_x.h5"],
+        lambda f: {
+            "Nc": _set(
+                "Bromide",
+                [f["T9_neg_Br_x.h5"]],
+                seed={"file": "seed.json"},
+                instrument_class="tof",
+            )
+        },
+    )
+
+    m = mf.load(path)
+
+    assert m.sets["Nc"].files == (
+        mf.FolderFile("raw/T9_neg_Br_x.h5", _sha("T9_neg_Br_x.h5")),
+    )
+    assert m.sets["Nc"].seed == mf.Seed(file="seed.json")
+    assert m.folder == path.parent.resolve()
+    # The key is the hash, as a corpus object's: one file, however it is named.
+    assert m.sets["Nc"].files[0].key == f"sha256:{_sha('T9_neg_Br_x.h5')}"
+
+
+@pytest.mark.parametrize(
+    "file, message",
+    [
+        ({"path": "../elsewhere/a.h5", "sha256": "a" * 64}, "inside the manifest's"),
+        ({"path": "/abs/a.h5", "sha256": "a" * 64}, "inside the manifest's"),
+        ({"path": "raw\\a.h5", "sha256": "a" * 64}, "forward slashes"),
+        ({"path": "C:/a.h5", "sha256": "a" * 64}, "inside the manifest's"),
+        ({"path": "raw/a.h5", "sha256": "A" * 64}, "64 lower-case hex"),
+        ({"path": "raw/a.h5"}, "a file is"),
+    ],
+)
+def test_a_folder_file_must_stay_in_the_folder(file, message):
+    data = {
+        "schema": mf.SCHEMA,
+        "name": "t",
+        "sets": {"Nc": _set("Bromide", [file], seed={"file": "seed.json"})},
+    }
+    with pytest.raises(mf.ManifestError, match=message):
+        mf.parse(data)
+    data["sets"]["Nc"].update(
+        files=[{"bundle": "9.9.9", "name": "I_neg_Br_a.raw"}], seed={"file": "../s"}
+    )
+    with pytest.raises(mf.ManifestError, match="inside the manifest's"):
+        mf.parse(data)
+
+
+def test_folder_files_resolve_beside_the_manifest_and_are_hashed(tmp_path):
+    names = ["T9_neg_Br_x.h5", "T9_neg_Br_y.h5"]
+    path = _folder(
+        tmp_path,
+        names,
+        lambda f: {"Nc": _set("Bromide", list(f.values()), seed={"file": "seed.json"})},
+    )
+    m = mf.load(path)
+
+    files = mf.resolve(m, _bundle(tmp_path))
+
+    got = files[f"sha256:{_sha('T9_neg_Br_y.h5')}"]
+    assert (got.path, got.name, got.sha256) == (
+        path.parent.resolve() / "raw" / "T9_neg_Br_y.h5",
+        "T9_neg_Br_y.h5",
+        _sha("T9_neg_Br_y.h5"),
+    )
+    # Parsed from an object, the manifest has no folder to read them from.
+    with pytest.raises(mf.ManifestError, match="load the manifest from its file"):
+        mf.resolve(mf.parse(m.source), _bundle(tmp_path))
+    # A file whose content moved on since the manifest named it is refused.
+    (path.parent / "raw" / "T9_neg_Br_x.h5").write_text("something else")
+    with pytest.raises(
+        mf.ManifestError,
+        match=r"1 file\(s\) hash to something other.*\n  set Nc: raw/T9",
+    ):
+        mf.resolve(m, _bundle(tmp_path))
+    (path.parent / "raw" / "T9_neg_Br_x.h5").unlink()
+    with pytest.raises(mf.ManifestError, match=r"1 file\(s\) not found"):
+        mf.resolve(m, _bundle(tmp_path))
+
+
 # -------------------------------------------------------------------- seed
 
 
@@ -1031,6 +1137,39 @@ def test_a_private_manifest_builds_from_a_corpus_checkout(rig, tmp_path):
     state = json.loads(home.state.read_text())
     assert state["seeded"]["collections"]["corpus:seed.json#Terpenes"]
     assert list(state["sets"]["E"]["samples"]) == [f"sha256:{_sha('S9_neg_Br_x.raw')}"]
+    instance.calls.clear()
+    assert b.init(path) == 0 and instance.calls == []
+
+
+def test_a_private_manifest_builds_from_files_in_its_folder(rig, tmp_path):
+    b, instance, api, home = rig
+    path = _folder(
+        tmp_path,
+        ["T9_neg_Br_x.h5", "T9_pos_Ur_y.raw"],
+        lambda f: {
+            "Nc": _set(
+                "Bromide",
+                [f["T9_neg_Br_x.h5"]],
+                seed={"file": "seed.json"},
+                instrument_class="tof",
+                collections=["Terpenes"],
+            ),
+            # A bundle set beside them, as the demo sets sit beside the private ones.
+            "Xb": _set("Uronium", [f["T9_pos_Ur_y.raw"]], seed={"file": "seed.json"}),
+        },
+    )
+
+    assert b.init(path) == 0
+
+    assert sorted(api.uploads) == ["T9_neg_Br_x.h5", "T9_pos_Ur_y.raw"]
+    assert not any(
+        isinstance(c, tuple) and c[0] == "bundle_seed" for c in instance.calls
+    )
+    assert {m["ionization_mode_name"] for m in api.modes} == {"Bromide", "Uronium"}
+    assert "Terpenes" in {c["target_collection_name"] for c in api.collections}
+    state = json.loads(home.state.read_text())
+    assert state["seeded"]["collections"]["file:seed.json#Terpenes"]
+    assert list(state["sets"]["Nc"]["samples"]) == [f"sha256:{_sha('T9_neg_Br_x.h5')}"]
     instance.calls.clear()
     assert b.init(path) == 0 and instance.calls == []
 

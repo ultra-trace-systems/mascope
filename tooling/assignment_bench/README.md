@@ -423,15 +423,20 @@ tiers.
 - **A set** is named as the gate card names one
   (`tooling/assignment_compare`): an upper-case letter, then at most one
   digit or lower-case letter, then at most a sign (`D`, `C2`, `Db`, `I+`).
-- **`files`** names each file in one of two forms:
+- **`files`** names each file in one of three forms:
   - `{"bundle": V, "name": N}` is sample file `N` of the published demo
     bundle `V`, from the CLI's bundle cache (`mascope demo fetch`).
   - `{"sha256": H}` is fleet regression corpus object `H`. It is read from
     a `corpus checkout`, whose `manifest.json` gives the file's name.
+  - `{"path": P, "sha256": H}` is a file in the manifest's own folder, at
+    `P` relative to it, with forward slashes and never outside it. It is
+    uploaded under its base name. `init` hashes it and refuses it when it
+    is not `H`, since nothing else vouches for a file in a folder.
 - **`mode`** is the ionization mode every sample of the set must resolve
   to. **`seed`** says where the mode is loaded from: `{"bundle": V}` is the
-  bundle's own `seed/` dump, and `{"corpus": "seed.json"}` is the
-  checkout's seed. **`collections`** names further target collections to
+  bundle's own `seed/` dump, `{"corpus": "seed.json"}` is the checkout's
+  seed, and `{"file": "seed.json"}` is a seed of the same shape in the
+  manifest's folder. **`collections`** names further target collections to
   load from the same seed.
 - **`reference_lists`** is `"default"` (every shipped list that loads by
   default) or a list of list ids (`mascope reference seed --list`).
@@ -451,6 +456,15 @@ it; the CLI suite's `test_assignment_bench.py` fails until it does.
 **A manifest that names corpus objects is private.** The corpus is
 customer-derived, so such a manifest lives beside the bench, never in the
 repository.
+
+**So is a manifest that names files in its folder.** The folder holds data
+that is not the fleet's, such as published or shared research datasets,
+which the corpus store does not take: every corpus replay reads the whole
+store, and such a set's ionization mode would also route the fleet's files.
+The folder holds the files, their seed and the manifest, on the box the
+bench lives on. Build from the manifest in that folder: the copy `init`
+keeps in the bench's home is a record of what was built, and its paths do
+not resolve there.
 
 ## The bench's home
 
