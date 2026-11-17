@@ -863,6 +863,9 @@ class TestWhatIsServed:
             candidates=[{"formula": "C2H4O"}],
             engine_tier=None,
             engine_claim=None,
+            engine_level=None,
+            engine_evidence=None,
+            engine_lift=None,
             seeded=False,
             continuity_grade=None,
             continuity=None,
@@ -908,6 +911,9 @@ class TestWhatIsServed:
             max_intensity=1.0,
             engine_tier=None,
             engine_claim=None,
+            engine_level=None,
+            engine_evidence=None,
+            engine_lift=None,
         ).items():
             setattr(h, key, value)
         member = SimpleNamespace(

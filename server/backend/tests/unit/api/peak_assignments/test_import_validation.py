@@ -493,6 +493,9 @@ class TestServerOwnedProvenanceIsDropped:
             "p_correct": 0.99,
             "calibration": {"provisional": False},
             "corroboration": {"n_adducts": 7},
+            # The in-app engine's identification level, whose lines the
+            # ledger serves beside the row's level (step 5.8).
+            "identification_level": {"level": "4a", "evidence": "e", "lift": "l"},
             # Sent under the names the ledger *renders*, too, in case a future
             # read reaches for them directly rather than through the nests.
             "p_correct_provisional": False,

@@ -122,6 +122,10 @@ from mascope_backend.api.new.peak_assignments.engine import (
     SOURCE_REAGENT,
     reading_as_alternative,
 )
+from mascope_backend.api.new.peak_assignments.identification_level import (
+    IDENTIFICATION_LEVEL,
+    hand_level,
+)
 from mascope_backend.api.new.peak_assignments.reagent_pass import (
     REASON_BATCH_KNOWN_SPECIES,
     REASON_BATCH_WATER_LADDER,
@@ -1248,7 +1252,10 @@ def listed_species_row(
     candidate and it carries no fit: the batch's files say the compound is
     there, and this file's own lines did not commit it. The reading the row
     carried goes first among its alternatives, and the decision is the row's
-    tier reason. The row is left as it is; the caller writes the values.
+    tier reason. Its identification level is what the mapping can state of a
+    formula no stage of its run elected (``identification_level.hand_level``):
+    no shortlist of the run was competed against it. The row is left as it
+    is; the caller writes the values.
 
     :param row: The sample's row on the compound's peak.
     :param exemplar: A row of another sample that committed the compound.
@@ -1256,8 +1263,8 @@ def listed_species_row(
     :param record: What the batch decided (:func:`row_record`).
 
     A row that already reads the compound's own formula, below candidate, is
-    only lifted: it keeps its reading, its fit and its lines, and takes the
-    tier and the reason.
+    only lifted: it keeps its reading, its fit, its lines and its level, and
+    takes the tier and the reason.
     """
     if row.get("role") == ROLE_M0 and row.get("assigned_formula") == species.formula:
         provenance = dict(row.get("provenance") or {})
@@ -1297,7 +1304,7 @@ def listed_species_row(
         },
     }
     provenance["tier_reasons"] = [_tier_reason(lifted=False)]
-    return {
+    values = {
         "role": ROLE_M0,
         "assigned_formula": species.formula,
         "ion_formula": species.ion_formula,
@@ -1315,6 +1322,10 @@ def listed_species_row(
         "alternatives": alternatives[:MAX_ALTERNATIVES_CEILING] or None,
         "provenance": provenance,
     }
+    level = hand_level(values)
+    provenance[IDENTIFICATION_LEVEL] = level
+    values["level"] = level["level"]
+    return values
 
 
 # --- the run --------------------------------------------------------------------

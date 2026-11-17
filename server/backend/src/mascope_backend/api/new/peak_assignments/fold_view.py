@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from fastapi import status
-from sqlalchemy import and_, case, func, select
+from sqlalchemy import and_, case, false, func, select
 
 from mascope_backend.api.lib.exceptions.api_exceptions import CodedHTTPException
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
@@ -455,6 +455,7 @@ async def derived_ledger(
     tier_disagrees: Optional[bool] = None,
     role: Any = None,
     source: Any = None,
+    level: Any = None,
     limit: int,
     offset: int,
 ) -> Optional[dict]:
@@ -467,7 +468,9 @@ async def derived_ledger(
     neither answer, as on a run-backed read: absence is not agreement. The
     source is on the identity the member's registry entry names, which is
     where ``member_row`` reads it from and where the export writes it, so a
-    row that shows one has to be findable by it.
+    row that shows one has to be findable by it. A derived row states no
+    identification level, which a run states of its own rows, so a filter on
+    one matches none of them.
 
     :param session: An open session.
     :param sample: The sample view row.
@@ -503,6 +506,8 @@ async def derived_ledger(
             BatchPeak.candidates[BatchPeakOccurrence.candidate]["source"].as_string()
             == _plain(source)
         )
+    if level:
+        conditions.append(false())
     if engine_tier or tier_disagrees is not None:
         conditions.append(_engine_verdict_shown())
     if engine_tier:

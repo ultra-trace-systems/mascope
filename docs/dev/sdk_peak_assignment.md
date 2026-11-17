@@ -256,6 +256,13 @@ two objects it reaches into - `calibration` (for `.provisional`) and
 and `corroboration_adducts` are *not* reserved, because nothing reads them out
 of the blob; sending them is harmless and they are simply never looked at.
 
+A fourth, `identification_level`, is reserved for the same reason (step 5.8 of
+the assignment quality plan): the ledger serves its `evidence` and `lift` as the
+row's `level_evidence` and `level_lift`, the in-app engine's statement of what a
+reader may say of the row. An imported row's `level` column stays null, and an
+engine that states a level of its own sends it on the batch import's
+`engine_level` (below), where it is read beside Mascope's rather than as it.
+
 Two further keys are **overwritten rather than stripped**, and they are the two
 factors of one product. `_provenance_scalars` reads `evidence`: it is the number
 the ledger shows beside the tier chip, and the tier was validated against the
@@ -1235,6 +1242,19 @@ document cites it.
    from the first SDK release after 2026.11.4, and a server older than this
    change ignores them (the row model ignores unknown fields), so an engine
    that needs the verdict kept checks the server's release, not the SDK's.
+
+   **The engine's identification level** (step 5.8, MAS-73). A batch row also
+   takes `engine_level`, the level the engine stated in the scale both engines
+   share (decision 38 of the plan; `assignment_confidence.md`, "P4 design: the
+   identification level"): `5a`, `5b`, `4a`, `4b`, `3a` to `3d`, `2a`, `2b` or
+   `1`, and anything else is a 422 naming the accepted values, with its two
+   lines, `engine_evidence` and `engine_lift` (free text, 1024 characters,
+   shown as the engine wrote them). They go with
+   `engine_tier` and `engine_claim` - written, withheld and cleared by the same
+   rules, stored on `batch_peak` and `batch_peak_run_anchor`, and
+   served on the ledger read and as an anchor column of the member rows - so a
+   reference row and a Mascope row read in one vocabulary rather than
+   translated. Nothing ranks or filters on it server-side.
 2. **Ionization mechanisms: how far client-side resolution goes.** *Resolved:
    keep the floor.* `import_run` resolves an adduct by exact-string match
    against `mascope.ionization.list()` and sends `ionization_mechanism_id` null
@@ -1345,6 +1365,18 @@ a batch's assignment reaches any other format in one line. `load_assignments` an
 `peak_assignments.get` are unchanged and still read a sample's run where one exists;
 a sample served from the batch ledger reads through the same route as a run with
 engine `batch`.
+
+**The identification level** (step 5.8 of the assignment quality plan, MAS-73).
+Every committed row of an in-app run carries `level` (a column of
+`peak_assignment` beside `tier`), and the per-sample ledger serves its two
+lines, `level_evidence` and `level_lift`, beside it; `peak_assignments.get`
+filters on it with `level=`, and `detail` serves the facts and the rivals
+behind it under `provenance.identification_level`. The member rows add the
+three for the row each member was folded from, where that row commits the
+formula the member reads, and the ledger read adds, per batch peak,
+`member_level` and `member_levels`: the levels its members' runs stated for the
+consensus formula (the batch's own level is step 5.8c's). An imported row, a
+row derived from the batch ledger and a run made before the level carry none.
 
 ## 10. Summary
 

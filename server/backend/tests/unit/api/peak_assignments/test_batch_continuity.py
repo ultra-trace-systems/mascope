@@ -105,6 +105,9 @@ def anchor(key, formula="C6H12O6", mechanism="m-h", **extra):
         support_fraction=1.0,
         engine_tier=None,
         engine_claim=None,
+        engine_level=None,
+        engine_evidence=None,
+        engine_lift=None,
         candidates=[
             {"formula": formula, "ionization_mechanism_id": mechanism},
             {"formula": "C9H9NO", "ionization_mechanism_id": mechanism},

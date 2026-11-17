@@ -157,9 +157,13 @@ def test_an_importing_engines_verdict_comes_off_when_the_identity_moves():
     names another, a verdict left standing would be about nothing shown."""
     anchor = _anchor_holding(_consensus())
     anchor.engine_tier, anchor.engine_claim = "candidate", "level 3"
+    anchor.engine_level = "4b"
+    anchor.engine_evidence, anchor.engine_lift = "why", "lift"
 
     assert _apply_consensus(anchor, _consensus(consensus_formula="C7H14O7"), _NOW)
     assert (anchor.engine_tier, anchor.engine_claim) == (None, None)
+    assert anchor.engine_level is None
+    assert (anchor.engine_evidence, anchor.engine_lift) == (None, None)
 
 
 def test_a_new_channel_for_the_same_formula_is_another_identity_too():

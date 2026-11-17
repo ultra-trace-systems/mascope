@@ -911,7 +911,8 @@ class TestRecords:
             provenance={WATER_LADDER_KEY: record},
         )
         assert reading_of(bp) == READS_REAGENT
-        bp.engine_tier = bp.engine_claim = None
+        bp.engine_tier = bp.engine_claim = bp.engine_level = None
+        bp.engine_evidence = bp.engine_lift = None
         bp.continuity_grade = bp.continuity = None
         bp.seeded = False
         bp.sample_batch_id = "b"
@@ -1162,6 +1163,20 @@ class TestRow:
             ROW, BROMIDE.rung(6), {}, exact_mz=1.0, owner_peak_assignment_id="pa-m0"
         )
         assert values["owner_peak_assignment_id"] is None
+
+    def test_a_rung_states_no_level(self):
+        """A reagent row commits no formula; the level its reading carried
+        must not stay on it (the caller writes every key it is given)."""
+        row = {**ROW, "level": "4a", "provenance": {"identification_level": {}}}
+        rung = BROMIDE.rung(6)
+        values = water_rung_row(row, rung, {}, exact_mz=BROMIDE.line_mz(6, M0))
+        assert values["level"] is None
+        assert "identification_level" not in values["provenance"]
+        line = {**row, "role": "iso_child", "isotope_label": "81Br"}
+        values = water_rung_row(
+            line, rung, {}, exact_mz=BROMIDE.line_mz(6, M0), keep_line=True
+        )
+        assert values["level"] is None
 
     def test_a_library_rung_keeps_its_works(self):
         values = water_rung_row(ROW, BROMIDE.rung(1), {}, exact_mz=96.93)

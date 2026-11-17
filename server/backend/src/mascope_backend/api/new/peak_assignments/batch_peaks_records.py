@@ -10,7 +10,9 @@ another sample. See ``docs/dev/peak_assignment_batch_primary.md`` (sections 6 an
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from collections import defaultdict
+
+from sqlalchemy import func, select
 
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
@@ -41,6 +43,10 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     snapshot_rows,
     snapshot_series,
 )
+from mascope_backend.api.new.peak_assignments.identification_level import (
+    LEVELS,
+    members_level,
+)
 from mascope_backend.api.new.peak_assignments.listing import (
     consensus_listing,
     consensus_target_id,
@@ -52,6 +58,7 @@ from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
     BatchPeakRun,
+    PeakAssignment,
     async_session,
 )
 
@@ -76,8 +83,9 @@ def _batch_peak_meta(bp) -> dict:
     instrument type). ``reference_listing`` is what a list calls the consensus
     formula, read off the registry entries the members brought
     (:func:`~mascope_backend.api.new.peak_assignments.listing.consensus_listing`).
-    ``engine_tier`` and ``engine_claim`` are what an importing engine said of
-    the consensus identity (``batch_import``), None on every other anchor.
+    ``engine_tier``, ``engine_claim`` and ``engine_level`` are what an
+    importing engine said of the consensus identity (``batch_import``), None
+    on every other anchor.
     ``seeded`` says the anchor was minted at a target ion's m/z rather than at
     the peak that minted it (``batch_peaks.fold_in_sample``).
     ``series`` is the homologous series the batch's series detection found
@@ -161,6 +169,9 @@ def _batch_peak_meta(bp) -> dict:
         "seeded": bool(bp.seeded),
         "engine_tier": bp.engine_tier,
         "engine_claim": bp.engine_claim,
+        "engine_level": bp.engine_level,
+        "engine_evidence": bp.engine_evidence,
+        "engine_lift": bp.engine_lift,
         "series": standing_series_record(bp),
         "co_variation": standing_co_variation_record(bp),
         "continuity_grade": bp.continuity_grade,
@@ -184,6 +195,65 @@ def _batch_peak_meta(bp) -> dict:
             bp.ionization_mechanism_id,
         ),
     }
+
+
+async def _with_member_levels(
+    session, data: list[dict], sample_batch_id: str
+) -> list[dict]:
+    """Put on each anchor the identification levels its members' runs stated.
+
+    The batch states no level of its own yet (step 5.8c of the assignment
+    quality plan); what it has are its members' readings, each with the level
+    its sample's run stated (``PeakAssignment.level``). A member counts where
+    its run's row commits the consensus formula: a member a batch operation
+    re-pointed to another reading, or one that dissents, carries a level about
+    another formula. One grouped read over the batch's members, on the level
+    column rather than the rows' provenance.
+
+    :param session: An open async session.
+    :param data: The served records, one per live anchor, modified in place:
+        ``member_levels`` (level -> members, in the scale's order) and
+        ``member_level`` (:func:`identification_level.members_level`), each
+        None where no such member states one.
+    :param sample_batch_id: The batch.
+    :return: ``data``.
+    """
+    counts: dict[str, dict[str, int]] = defaultdict(dict)
+    rows = (
+        await session.execute(
+            select(
+                BatchPeakOccurrence.batch_peak_id,
+                PeakAssignment.level,
+                func.count(),
+            )
+            .join(
+                BatchPeak,
+                BatchPeak.batch_peak_id == BatchPeakOccurrence.batch_peak_id,
+            )
+            .join(
+                PeakAssignment,
+                PeakAssignment.peak_assignment_id
+                == BatchPeakOccurrence.peak_assignment_id,
+            )
+            .where(
+                BatchPeak.sample_batch_id == sample_batch_id,
+                PeakAssignment.level.is_not(None),
+                PeakAssignment.assigned_formula == BatchPeak.consensus_formula,
+            )
+            .group_by(BatchPeakOccurrence.batch_peak_id, PeakAssignment.level)
+        )
+    ).all()
+    for batch_peak_id, level, count in rows:
+        counts[batch_peak_id][level] = int(count)
+    for record in data:
+        found = counts.get(record["batch_peak_id"])
+        record["member_levels"] = (
+            {level: found[level] for level in LEVELS if level in found}
+            if found
+            else None
+        )
+        record["member_level"] = members_level(found)
+    return data
 
 
 async def _with_consensus_targets(session, data: list[dict], rows) -> list[dict]:
@@ -367,8 +437,9 @@ async def get_batch_peak_ledger(
 
     One row per batch peak with its consensus (m/z, formula, tier, prevalence,
     brightest member, isotopologue parent) but WITHOUT the per-sample series, so
-    a 1000+ row ledger stays cheap (it never touches the occurrence table). The
-    chart fetches series only for the rows the user selects.
+    a 1000+ row ledger stays cheap: it reads the occurrence table once, grouped,
+    for the members' levels. The chart fetches series only for the rows the
+    user selects.
 
     ``isotopologue_of`` is one hop: it names the batch peak whose family this one
     belongs to as its own members observed it. An isotopologue whose parent is
@@ -378,6 +449,11 @@ async def get_batch_peak_ledger(
 
     ``engine_tier`` and ``tier_disagrees`` filter on an importing engine's own
     tier as the sample ledger's read does (:func:`batch_runs.engine_tier_filters`).
+
+    ``member_level`` and ``member_levels`` are the identification levels the
+    anchor's members' runs stated for its consensus formula
+    (:func:`_with_member_levels`): the one grouped read over the members this
+    feed makes, on a column. None on an earlier run's snapshot.
     """
     async with async_session() as session:
         # An earlier run's ledger comes off its snapshot, in the same shape.
@@ -393,6 +469,11 @@ async def get_batch_peak_ledger(
             )
             data = [snapshot_anchor_meta(row, sample_batch_id) for row in rows]
             await _with_consensus_targets(session, data, rows)
+            # A snapshot keeps no link from its members to the rows of their
+            # runs, so it serves no member levels: they are the live ledger's.
+            for record in data:
+                record["member_levels"] = None
+                record["member_level"] = None
             return {
                 "status": "success",
                 "message": (
@@ -413,6 +494,7 @@ async def get_batch_peak_ledger(
         bp_rows = (await session.execute(query.order_by(BatchPeak.mz))).scalars().all()
         data = [_batch_peak_meta(bp) for bp in bp_rows]
         await _with_consensus_targets(session, data, bp_rows)
+        await _with_member_levels(session, data, sample_batch_id)
 
     return {
         "status": "success",

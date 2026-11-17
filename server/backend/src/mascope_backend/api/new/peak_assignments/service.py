@@ -196,6 +196,14 @@ from mascope_backend.api.new.peak_assignments.halogen_twins import (
     reread_twins,
     twin_halogens,
 )
+from mascope_backend.api.new.peak_assignments.identification_level import (
+    IDENTIFICATION_LEVEL,
+    LEVEL_SUMMARY,
+    apply_levels,
+    inherited_level,
+    is_level,
+    level_lines,
+)
 from mascope_backend.api.new.peak_assignments.listing import reference_listing
 from mascope_backend.api.new.peak_assignments.mass_gate import (
     BELOW_ASSIGNABILITY_Z,
@@ -689,9 +697,15 @@ def _provenance_scalars(
     than in every row. Which curve applies to this row is
     :func:`_row_calibration`'s to say, so the ledger and the detail agree.
 
-    The last four (:func:`_rule_records`) are here because the gate card reads
-    them for every committed row of a run, and a whole ledger's worth of
-    detail reads took it about an hour over the gate sets.
+    The four rule records (:func:`_rule_records`) are here because the gate
+    card reads them for every committed row of a run, and a whole ledger's
+    worth of detail reads took it about an hour over the gate sets.
+
+    ``level_evidence`` and ``level_lift`` are the two lines beside the row's
+    identification level, which is the row's own ``level`` column
+    (:func:`~mascope_backend.api.new.peak_assignments.identification_level.level_lines`):
+    what a reader may state of the row is a column, filtered and exported as
+    the tier is, and the facts and rivals behind it stay inspector detail.
     """
     provenance = provenance or {}
     calibration = _row_calibration(provenance, run_calibration) or {}
@@ -707,6 +721,7 @@ def _provenance_scalars(
         "mass_z": provenance.get("mass_z"),
         "reference_listing": reference_listing(provenance.get("reference_identities")),
         **_rule_records(provenance),
+        **level_lines(provenance),
     }
 
 
@@ -859,6 +874,7 @@ async def get_peak_assignments(
     tier_disagrees: bool | None = None,
     role: str | None = None,
     source: str | None = None,
+    level: str | None = None,
     limit: int = DEFAULT_PAGE_LIMIT,
     offset: int = 0,
 ) -> dict:
@@ -891,6 +907,9 @@ async def get_peak_assignments(
         answer
     :param role: Optional filter by peak role
     :param source: Optional filter by assignment source (database/untargeted)
+    :param level: Optional filter by identification level (``4a``, ``5a``,
+        ...); a row derived from the batch ledger carries none and matches no
+        level
     :param limit: Maximum rows to return in this page
     :param offset: Rows to skip, for paging
     :return: Dictionary with status, message, total, and slim assignment rows.
@@ -905,6 +924,7 @@ async def get_peak_assignments(
         tier_disagrees=tier_disagrees,
         role=role,
         source=source,
+        level=level,
         limit=limit,
         offset=offset,
     )
@@ -959,6 +979,8 @@ async def get_peak_assignments(
             filters.append(PeakAssignment.role == role)
         if source:
             filters.append(PeakAssignment.source == source)
+        if level:
+            filters.append(PeakAssignment.level == level)
 
         total = (
             await session.execute(
@@ -2840,7 +2862,10 @@ def read_as_batch_isotopologue(row: dict, owner: dict, line: BatchLine) -> dict:
     owner's fit, with the reading it displaced first among its alternatives,
     where "use this" puts it back. The tier is the owner's, as a line the
     stages commit carries its owner's: the batch read the share over its
-    spectra, which is no doubt a single file could raise. The row is left as
+    spectra, which is no doubt a single file could raise. So is its
+    identification level, as an isotopologue row shows its owner's
+    (``identification_level.inherited_level``); an owner that states none, a
+    row from before the level, leaves the line with none. The row is left as
     it is; the caller writes the values, onto a dict or a stored row.
 
     :param row: The sample's row on the line's peak.
@@ -2888,6 +2913,12 @@ def read_as_batch_isotopologue(row: dict, owner: dict, line: BatchLine) -> dict:
     if row.get("assigned_formula"):
         # A peak the run left unassigned had no reading to put back.
         alternatives = [displaced, *alternatives]
+    owner_level = owner_provenance.get(IDENTIFICATION_LEVEL)
+    level = (
+        inherited_level(owner_level, str(owner.get("peak_assignment_id") or ""))
+        if isinstance(owner_level, dict) and is_level(owner_level.get("level"))
+        else None
+    )
     return {
         "role": ROLE_ISO_CHILD,
         "assigned_formula": owner.get("assigned_formula"),
@@ -2910,12 +2941,14 @@ def read_as_batch_isotopologue(row: dict, owner: dict, line: BatchLine) -> dict:
         "target_ion_id": owner.get("target_ion_id"),
         "owner_peak_assignment_id": owner.get("peak_assignment_id"),
         "alternatives": alternatives[:MAX_ALTERNATIVES_CEILING] or None,
+        "level": None if level is None else level["level"],
         "provenance": {
             key: owner_provenance[key]
             for key in ("plausibility", "evidence", "score_version")
             if key in owner_provenance
         }
-        | {BATCH_ISOTOPOLOGUE: record},
+        | {BATCH_ISOTOPOLOGUE: record}
+        | ({} if level is None else {IDENTIFICATION_LEVEL: level}),
     }
 
 
@@ -5823,6 +5856,32 @@ async def _assign_sample(
                 f"formulas placed on their peak, {winner_confidence['ties']} "
                 f"winners tied ({winner_confidence['seconds']:.1f} s)"
             )
+        # -- What a reader may state of each committed row: its identification
+        # level (step 5.8), read off the finished ledger and the shortlists
+        # measured above, beside the tier and moving none. Recorded with the
+        # tiering record, whose absent-line gate the rivals' lines are asked at.
+        tiering[LEVEL_SUMMARY] = apply_levels(
+            committed_rows,
+            notation_by_id=_notation_by_id(searched_mechanisms),
+            instrument_type=instrument_type,
+            context=resolved_profile.context,
+            lines=lines,
+            tiering=tiering,
+            resolution=resolution,
+        )
+        runtime.logger.info(
+            f"Sample '{sample.sample_item_name}' identification levels on rule set "
+            f"{tiering[LEVEL_SUMMARY]['level_rules_version']}: "
+            + (
+                ", ".join(
+                    f"{count} at {level}"
+                    for level, count in tiering[LEVEL_SUMMARY]["levels"].items()
+                )
+                or "no committed reading"
+            )
+            + f" ({tiering[LEVEL_SUMMARY]['rivals_not_measured']} with no measured "
+            "shortlist)"
+        )
         await _record_resolved_profile(
             run.peak_assignment_run_id,
             config,

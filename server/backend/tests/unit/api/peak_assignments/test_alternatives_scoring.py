@@ -40,6 +40,7 @@ from mascope_backend.api.new.peak_assignments.config import (
     MAX_UNTARGETED_PEAKS_CEILING,
     PeakAssignmentConfig,
 )
+from mascope_backend.api.new.peak_assignments.engine import MEASURED_SHORTLIST
 from mascope_tools.composition.arbitration import arbitrate_candidates
 from mascope_tools.composition.heuristic_filter import formula_plausibility
 
@@ -663,7 +664,7 @@ class TestTheRunMeasuresItsWinners:
     """`measure_winner_confidence` over a faked seeded chain."""
 
     @pytest.mark.asyncio
-    async def test_records_the_share_and_the_tie_and_nothing_else(self):
+    async def test_records_the_share_the_tie_and_each_measurement_only(self):
         alternatives = [{"assigned_formula": "C4H8N2O3"}]
         row = _winner("p1", 10.0, alternatives)
 
@@ -680,6 +681,16 @@ class TestTheRunMeasuresItsWinners:
             "confidence": pytest.approx(0.9 / 1.78, abs=1e-4),
             "n_candidates": 2,
             "is_tie": True,
+            # What the formula measured at, for the identification level to
+            # name the test it passed or failed.
+            MEASURED_SHORTLIST: [
+                {
+                    "formula": "C4H8N2O3",
+                    "ion_formula": "ion-h-ion",
+                    "fit_score": 0.88,
+                    "mz_error_ppm": 0.5,
+                }
+            ],
         }
         # Reported, not acted on: the row commits what the run decided.
         assert row["tier"] == "assigned"
@@ -687,6 +698,38 @@ class TestTheRunMeasuresItsWinners:
         assert row["alternatives"] == [{"assigned_formula": "C4H8N2O3"}]
         assert summary["placed"] == 1
         assert summary["ties"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_formula_no_adduct_places_is_recorded_unplaced(self):
+        row = _winner("p1", 10.0, [{"assigned_formula": "C6H14N"}])
+
+        await _measure(
+            [row],
+            ion_by_seed={("C6H14N", "im-h"): "ion-b"},
+            fit_by_ion={"ion-b": 0.95},
+            scored_rows=[_scored_row("ion-b", 200.0, "p-elsewhere")],
+        )
+
+        assert row["provenance"][MEASURED_SHORTLIST] == [
+            {"formula": "C6H14N", "placed": False}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_winner_past_the_budget_records_no_measurement(self):
+        # Its absence is what says the shortlist was not measured.
+        bright = _winner("p1", 10.0, [{"assigned_formula": "C4H8N2O3"}])
+        dim = _winner("p2", 1.0, [{"assigned_formula": "C4H8N2O3"}])
+
+        await _measure(
+            [bright, dim],
+            ion_by_seed={("C4H8N2O3", "im-h"): "ion-h"},
+            fit_by_ion={"ion-h": 0.88},
+            scored_rows=[_scored_row("ion-h", 200.0, "p1")],
+            peak_budget=1,
+        )
+
+        assert MEASURED_SHORTLIST in bright["provenance"]
+        assert MEASURED_SHORTLIST not in dim["provenance"]
 
     @pytest.mark.asyncio
     async def test_a_formula_no_adduct_puts_on_the_peak_is_no_candidate(self):

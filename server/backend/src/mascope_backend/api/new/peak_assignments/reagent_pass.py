@@ -622,6 +622,9 @@ def batch_species_row(
             row.get("owner_peak_assignment_id") if isotopologue else None
         ),
         "alternatives": alternatives[:MAX_ALTERNATIVES_CEILING] or None,
+        # A reagent row commits no formula, so it states no identification
+        # level, whatever level the reading it displaced stated.
+        "level": None,
         "provenance": {"reagent": record},
     }
 
@@ -728,6 +731,8 @@ def water_rung_row(
         "target_ion_id": None,
         "owner_peak_assignment_id": owner,
         "alternatives": alternatives[:MAX_ALTERNATIVES_CEILING] or None,
+        # No formula, no level (:func:`batch_species_row`).
+        "level": None,
         "provenance": {"reagent": reagent},
     }
 

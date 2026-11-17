@@ -13,6 +13,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from mascope_backend.api.new.peak_assignments.engine import RIVALS_PAST_CAP
 from mascope_backend.api.new.peak_assignments.halogen_twins import (
     ONE_ATOM_RATIO,
     TWIN_HALOGEN_RATIO_BAND,
@@ -358,6 +359,32 @@ class TestTheRecord:
         assert rows[0]["alternatives"][0]["halogen_twin_replaced"] is True
         assert rows[0]["alternatives"][1] == {"assigned_formula": "C5H5NO"}
         assert "halogen_twin" not in rows[1]["provenance"]
+
+
+class TestTheCap:
+    def test_a_rival_the_replaced_reading_pushes_past_the_cap_is_counted(self):
+        rows = [
+            {
+                "role": "M0",
+                "sample_peak_mz": M0,
+                "assigned_formula": "C5H4ClN",
+                "source": "untargeted",
+                "alternatives": [{"assigned_formula": "C5H5NO"}],
+                "provenance": {},
+            }
+        ]
+        record = {
+            "halogen": "Cl",
+            "twin_mz": TWIN,
+            "replaced": {"formula": "C5H4N2", "ion": "C5H4N2+"},
+        }
+
+        record_twins(rows, {M0: record}, max_alternatives=1)
+
+        assert [alt["assigned_formula"] for alt in rows[0]["alternatives"]] == [
+            "C5H4N2"
+        ]
+        assert rows[0]["provenance"][RIVALS_PAST_CAP] == 1
 
 
 class TestTheRunsReread:

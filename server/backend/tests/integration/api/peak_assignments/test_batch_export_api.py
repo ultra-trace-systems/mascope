@@ -376,3 +376,165 @@ async def test_the_export_route_launches_for_a_guest(guest_client, ledger, monke
     assert response.headers.get("process-id")
     assert len(launched) == 1
     assert launched[0]["sample_batch_id"] == ledger["batch_id"]
+
+
+async def _state_levels(session_factory, ledger, *, s2_formula="C6H12O6"):
+    """Give each sample's glucose row the level its run stated: 4a on S1, 5a
+    on S2, as a run since the identification level writes them; and S2's
+    row optionally re-read as another formula, as a member a batch
+    operation re-pointed is."""
+    async with session_factory() as session:
+        for sample, level in ((ledger["s1"], "4a"), (ledger["s2"], "5a")):
+            await session.execute(
+                update(PeakAssignment)
+                .where(
+                    PeakAssignment.sample_item_id == sample,
+                    PeakAssignment.assigned_formula == "C6H12O6",
+                )
+                .values(
+                    level=level,
+                    assigned_formula=(
+                        s2_formula if sample == ledger["s2"] else "C6H12O6"
+                    ),
+                    provenance={
+                        "identification_level": {
+                            "level": level,
+                            "evidence": f"evidence of {level}",
+                            "lift": f"lift of {level}",
+                        }
+                    },
+                )
+            )
+        await session.commit()
+
+
+async def test_the_members_route_carries_each_members_level(
+    guest_client, async_session_factory, ledger
+):
+    await _state_levels(async_session_factory, ledger)
+
+    response = await guest_client.get(
+        f"/api/batch-peaks/batch/{ledger['batch_id']}/members"
+    )
+
+    assert response.status_code == 200, response.text
+    by_sample = {
+        (r["sample_item_id"], r["sample_peak_id"]): (
+            r["level"],
+            r["level_evidence"],
+            r["level_lift"],
+        )
+        for r in response.json()["data"]
+    }
+    assert by_sample == {
+        (ledger["s1"], "p1"): ("4a", "evidence of 4a", "lift of 4a"),
+        (ledger["s2"], "p1"): ("5a", "evidence of 5a", "lift of 5a"),
+        (ledger["s1"], "p3"): (None, None, None),
+    }
+
+
+async def test_a_members_level_about_another_formula_is_not_served(
+    guest_client, async_session_factory, ledger
+):
+    # The run's row now commits another formula than the member reads: its
+    # level is about that formula, so the member shows none.
+    await _state_levels(async_session_factory, ledger, s2_formula="C6H12O5")
+
+    rows = (
+        await guest_client.get(f"/api/batch-peaks/batch/{ledger['batch_id']}/members")
+    ).json()["data"]
+
+    s2 = next(r for r in rows if r["sample_item_id"] == ledger["s2"])
+    assert (s2["level"], s2["level_evidence"], s2["level_lift"]) == (None, None, None)
+
+
+async def test_the_export_writes_each_members_level(
+    async_session_factory, ledger, test_users
+):
+    await _state_levels(async_session_factory, ledger)
+    user_id = test_users["editor"].id
+
+    name, _ = await write_batch_ledger_csv(ledger["batch_id"], user_id)
+
+    path = user_temp_path(user_id, name, create=False)
+    try:
+        frame = pd.read_csv(path, sep=";")
+        levels = dict(
+            zip(
+                frame["sample_item_id"] + "/" + frame["sample_peak_id"],
+                frame["level"].fillna(""),
+            )
+        )
+        assert levels == {
+            f"{ledger['s1']}/p1": "4a",
+            f"{ledger['s2']}/p1": "5a",
+            f"{ledger['s1']}/p3": "",
+        }
+        assert set(frame["level_lift"].dropna()) == {"lift of 4a", "lift of 5a"}
+    finally:
+        os.remove(path)
+
+
+async def test_the_ledger_serves_the_levels_its_members_stated(
+    guest_client, async_session_factory, ledger
+):
+    await _state_levels(async_session_factory, ledger)
+
+    rows = (
+        await guest_client.get(f"/api/batch-peaks/batch/{ledger['batch_id']}")
+    ).json()["data"]
+
+    [glucose] = [r for r in rows if r["consensus_formula"] == "C6H12O6"]
+    assert glucose["member_levels"] == {"4a": 1, "5a": 1}
+    # A tie reads as the weaker level: never more than the members stated.
+    assert glucose["member_level"] == "5a"
+
+
+async def test_the_ledger_counts_only_members_whose_run_commits_its_formula(
+    guest_client, async_session_factory, ledger
+):
+    await _state_levels(async_session_factory, ledger, s2_formula="C6H12O5")
+
+    rows = (
+        await guest_client.get(f"/api/batch-peaks/batch/{ledger['batch_id']}")
+    ).json()["data"]
+
+    [glucose] = [r for r in rows if r["consensus_formula"] == "C6H12O6"]
+    assert glucose["member_levels"] == {"4a": 1}
+    assert glucose["member_level"] == "4a"
+
+
+async def test_a_ledger_without_levels_serves_none(guest_client, ledger):
+    rows = (
+        await guest_client.get(f"/api/batch-peaks/batch/{ledger['batch_id']}")
+    ).json()["data"]
+
+    assert all(r["member_level"] is None and r["member_levels"] is None for r in rows)
+
+
+async def test_the_members_route_carries_an_imports_level(
+    guest_client, async_session_factory, ledger
+):
+    async with async_session_factory() as session:
+        await session.execute(
+            update(BatchPeak)
+            .where(
+                BatchPeak.sample_batch_id == ledger["batch_id"],
+                BatchPeak.consensus_formula == "C6H12O6",
+            )
+            .values(engine_tier="candidate", engine_level="4b", engine_evidence="why")
+        )
+        await session.commit()
+
+    members = (
+        await guest_client.get(f"/api/batch-peaks/batch/{ledger['batch_id']}/members")
+    ).json()["data"]
+    listed = (
+        await guest_client.get(f"/api/batch-peaks/batch/{ledger['batch_id']}")
+    ).json()["data"]
+
+    assert [r["engine_level"] for r in members] == ["4b", "4b", None]
+    assert [r["engine_evidence"] for r in members] == ["why", "why", None]
+    assert {r["consensus_formula"]: r["engine_level"] for r in listed} == {
+        "C6H12O6": "4b"
+    }

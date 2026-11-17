@@ -12,6 +12,7 @@ persistence.
 """
 
 import math
+import re
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -1135,6 +1136,101 @@ def formula_identity(formula: str | None) -> str:
     return to_hill_order(counts)
 
 
+#: The charge an ion formula ends in: its signs, one per charge (``-``,
+#: ``++``), never a count, which would read as the last element's
+#: (``target_ions_compute.charge_string``).
+_CHARGE = re.compile(r"[+-]+$")
+
+
+def ion_identity(ion_formula: str | None) -> tuple[str, str] | None:
+    """An ion's identity, however its neutral and adduct were split.
+
+    ``C10H18O3`` read through ``[M+Br]-`` and ``C10H19BrO3`` read through
+    ``[M-H]-`` are one ion, ``C10H18BrO3-``: the same mass and the same
+    envelope, so the spectrum cannot tell them apart and one of them is no
+    rival of the other. Read as a composition and a charge, so two spellings
+    of one ion agree.
+
+    :param ion_formula: An ion formula with its charge, such as ``C6H11O2-``.
+        Its charge is the signs it ends in, as the engine writes it.
+    :return: ``(composition, charge)``, or None where there is no ion named.
+    """
+    if not ion_formula or not isinstance(ion_formula, str):
+        return None
+    text = ion_formula.strip()
+    match = _CHARGE.search(text)
+    charge = match.group(0) if match else ""
+    return formula_identity(text[: match.start()] if match else text), charge
+
+
+#: The provenance key a row carries where the cap on its stored
+#: ``alternatives`` (``max_alternatives``) left a rival out: how many distinct
+#: rival formulas the run competed or proposed for the peak and stores no
+#: entry of. A reading of the row's own ion (``same_ion``) is no rival and is
+#: not counted. Absent where the cap cut no rival. The identification level
+#: (``identification_level``) reads it: a rival the row does not store is one
+#: no test can be shown to have excluded.
+RIVALS_PAST_CAP = "rivals_past_cap"
+
+
+#: The provenance key an untargeted winner carries where the run measured its
+#: formula-only shortlist (step 4.15,
+#: ``alternatives_scoring.measure_winner_confidence``): each formula, with the
+#: ion, fit and mass error of the adduct that placed it on the peak best, or
+#: ``placed: False`` where no adduct of the run places it there. An empty list
+#: on a winner whose shortlist held no such formula. Absent on a winner the
+#: pass did not reach, so its presence is what says the shortlist was
+#: measured; the identification level reads it (``identification_level``).
+MEASURED_SHORTLIST = "measured_shortlist"
+
+
+def cap_alternatives(
+    row: dict, entries: list, max_alternatives: int | None
+) -> list | None:
+    """Store a row's alternatives under the cap, counting the rivals it cuts.
+
+    Every place that writes a row's ``alternatives`` cuts the list at the run's
+    ``max_alternatives``; this does the cut and adds the distinct rival
+    formulas it left out to :data:`RIVALS_PAST_CAP`, so the row can say that
+    its shortlist is not all stored. A formula is a rival when it is not the
+    row's own, is not a reading of the row's own ion (``same_ion``) and has no
+    entry left in the stored list.
+
+    :param row: The row, whose provenance is updated in place.
+    :param entries: The alternatives in the order they rank.
+    :param max_alternatives: The run's cap; 0 or None stores none.
+    :return: The entries kept, or None where none is.
+    """
+    cap = max(int(max_alternatives or 0), 0)
+    kept = list(entries[:cap])
+    listed = {
+        formula_identity(entry.get("assigned_formula"))
+        for entry in kept
+        if isinstance(entry, dict)
+    }
+    own = formula_identity(row.get("assigned_formula"))
+    cut = (
+        {
+            formula_identity(entry.get("assigned_formula"))
+            for entry in entries[cap:]
+            if isinstance(entry, dict)
+            and entry.get("assigned_formula")
+            and not entry.get("same_ion")
+        }
+        - listed
+        - {own}
+    )
+    if cut:
+        provenance = row.get("provenance")
+        if not isinstance(provenance, dict):
+            provenance = {}
+            row["provenance"] = provenance
+        provenance[RIVALS_PAST_CAP] = int(provenance.get(RIVALS_PAST_CAP) or 0) + len(
+            cut
+        )
+    return kept or None
+
+
 def _restates_winner(contenders: "pd.DataFrame", winner) -> "pd.Series":
     """Mask of contender rows that restate the winner's own hypothesis.
 
@@ -1367,11 +1463,33 @@ def invert_matches_to_peak_assignments(
         # reaches the inspector, and it does not burn one of the `max_alternatives`
         # slots that a genuinely different formula could have had.
         contenders = group.iloc[1:]
+        rivals = contenders[~_restates_winner(contenders, winner)]
         runners = (
-            contenders[~_restates_winner(contenders, winner)].iloc[:max_alternatives]
-            if max_alternatives
-            else contenders.iloc[:0]
+            rivals.iloc[:max_alternatives] if max_alternatives else rivals.iloc[:0]
         )
+        # The rival formulas the cap leaves unstored, which the row counts
+        # (`RIVALS_PAST_CAP`): a rival it does not store is one no reader can
+        # see tested. The winner's own formula through another mechanism is no
+        # rival, and neither is a reading of the winner's own ion, as
+        # `cap_alternatives` leaves out `same_ion` entries.
+        past_cap: set[str] = set()
+        if len(rivals) > len(runners):
+            winner_ion = ion_identity(_str_or_none(winner.get("target_ion_formula")))
+            ions = (
+                rivals["target_ion_formula"]
+                if "target_ion_formula" in rivals.columns
+                else [None] * len(rivals)
+            )
+            past_cap = (
+                {
+                    str(key)
+                    for key, ion in zip(rivals["_formula_key"], ions, strict=True)
+                    if winner_ion is None
+                    or ion_identity(_str_or_none(ion)) != winner_ion
+                }
+                - set(runners["_formula_key"])
+                - {str(winner["_formula_key"])}
+            )
 
         # Arbitration confidence and the tie flag come from the shared
         # `arbitrate_candidates`, not an inline copy - one implementation, so a fix
@@ -1518,6 +1636,7 @@ def invert_matches_to_peak_assignments(
                 "plausibility": round(float(winner["_plaus"]), 4),
                 "evidence": evidence,
                 "is_tie": is_tie,
+                **({RIVALS_PAST_CAP: len(past_cap)} if past_cap else {}),
                 # The fit-score generation this evidence is on. Snapshotted here because
                 # a verification label is only interpretable against the scoring that
                 # produced it (see AssignmentVerification.score_version).
@@ -1718,7 +1837,7 @@ def record_mirror_same_ion_readings(
                     "source": SOURCE_DATABASE,
                 }
             )
-        row["alternatives"] = (readings + rivals)[: max_alternatives or 0] or None
+        row["alternatives"] = cap_alternatives(row, readings + rivals, max_alternatives)
         carrying += 1
     return carrying
 
@@ -2061,10 +2180,14 @@ def record_displaced_list_readings(
                 else {}
             ),
         }
-        assignment["alternatives"] = [
-            reading_as_alternative(row, DISPLACED_BY_RIVAL),
-            *(assignment.get("alternatives") or []),
-        ][: max_alternatives or 0] or None
+        assignment["alternatives"] = cap_alternatives(
+            assignment,
+            [
+                reading_as_alternative(row, DISPLACED_BY_RIVAL),
+                *(assignment.get("alternatives") or []),
+            ],
+            max_alternatives,
+        )
         holding += 1
     return holding
 
@@ -2518,7 +2641,11 @@ def untargeted_matches_to_peak_assignments(
                 for alt in other_candidates.split(",")
                 if alt.strip() and alt.strip() not in named
             )
-        alternatives = alternatives[: max_alternatives or 0] or None
+        # Cut at the cap, counting the rival formulas it leaves unstored: the
+        # finder's shortlist runs to dozens on a dense peak, and a rival the row
+        # does not store is one no reader can see tested.
+        cut = {"assigned_formula": format_formula(formula), "provenance": {}}
+        alternatives = cap_alternatives(cut, alternatives, max_alternatives)
 
         # Chemical plausibility (Seven Golden Rules) is stage-agnostic and the headline
         # provenance metric, so the untargeted winner reports it on the same footing as a
@@ -2548,6 +2675,7 @@ def untargeted_matches_to_peak_assignments(
             # with the v2 fit and the re-score below measured it with the same
             # one, so there is no second number to name (decision 12).
             "score_version": SCORE_VERSION,
+            **cut["provenance"],
         }
         # What the finder's detectability gate judged this reading's absent
         # lines against. Recorded because it is the difference between a fit

@@ -138,6 +138,9 @@ VERDICT = EngineVerdict(
     ionization_mechanism_id="mech-h",
     engine_tier="candidate",
     engine_claim="level 3",
+    engine_level="3c",
+    engine_evidence="a context list names it",
+    engine_lift="MS/MS",
 )
 
 
@@ -146,19 +149,25 @@ def recomputed(formula="C6H12O6", mechanism="mech-h"):
 
 
 def test_the_verdict_goes_on_an_anchor_whose_consensus_names_its_identity():
-    assert verdict_on_anchor(recomputed(), VERDICT) == ("candidate", "level 3")
+    assert verdict_on_anchor(recomputed(), VERDICT) == (
+        "candidate",
+        "level 3",
+        "3c",
+        "a context list names it",
+        "MS/MS",
+    )
 
 
 def test_no_verdict_beside_a_formula_the_engine_did_not_give_it_for():
     # The measurement did not carry the members over: the consensus is another
     # formula, or none.
-    assert verdict_on_anchor(recomputed(formula="C7H14O7"), VERDICT) == (None, None)
-    assert verdict_on_anchor(recomputed(formula=None), VERDICT) == (None, None)
+    assert verdict_on_anchor(recomputed(formula="C7H14O7"), VERDICT) == (None,) * 5
+    assert verdict_on_anchor(recomputed(formula=None), VERDICT) == (None,) * 5
 
 
 def test_no_verdict_beside_the_formula_through_another_channel():
-    assert verdict_on_anchor(recomputed(mechanism="mech-na"), VERDICT) == (None, None)
+    assert verdict_on_anchor(recomputed(mechanism="mech-na"), VERDICT) == (None,) * 5
 
 
 def test_an_anchor_no_verdict_was_sent_for_carries_none():
-    assert verdict_on_anchor(recomputed(), None) == (None, None)
+    assert verdict_on_anchor(recomputed(), None) == (None,) * 5

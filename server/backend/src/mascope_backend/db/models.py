@@ -2942,6 +2942,14 @@ class PeakAssignment(Base):
     # which is the in-app case (its tier IS `tier`) and the usual case for the
     # rows an external engine leaves untiered.
     engine_tier: Mapped[Optional[str]] = mapped_column(String(24))
+    # The row's identification level in the shared scale (``4a``, ``5a``, ...;
+    # ``identification_level.LEVELS``), as the in-app engine stated it: a
+    # column beside the tier so the ledger filters on it and the batch ledger
+    # counts its members' levels without reading provenance, where the level's
+    # evidence, lift, facts and rivals are (``provenance.identification_level``).
+    # NULL on a row that commits no formula, on an imported row and on a row
+    # from before the level. Moves no tier and is read by no roll-up.
+    level: Mapped[Optional[str]] = mapped_column(String(4))
     # The three below are indexed only where set - see __table_args__.
     target_compound_id: Mapped[Optional[str]] = mapped_column(
         String(16),
@@ -3120,8 +3128,15 @@ class BatchPeak(Base):
     # batch import alone (``batch_import.write_engine_verdicts``), cleared when
     # the consensus identity moves (``_apply_consensus``) and by a rebuild.
     # Read by no roll-up and no fold: ``consensus_tier`` stays the tier.
+    # ``engine_level`` is its identification level in the shared scale
+    # (``identification_level.LEVELS``), and ``engine_evidence`` and
+    # ``engine_lift`` the engine's two lines about it, written and cleared
+    # with the two.
     engine_tier: Mapped[Optional[str]] = mapped_column(String(24))
     engine_claim: Mapped[Optional[str]] = mapped_column(String(1024))
+    engine_level: Mapped[Optional[str]] = mapped_column(String(4))
+    engine_evidence: Mapped[Optional[str]] = mapped_column(String(1024))
+    engine_lift: Mapped[Optional[str]] = mapped_column(String(1024))
     # The ratio-stability grade of the anchor's pairs - its isotope lines and
     # the neutral's other channels - as the batch's continuity pass left it
     # (``continuity.py``): one of ``batch_peaks.CONTINUITY_GRADES``, NULL for
@@ -3637,6 +3652,9 @@ class BatchPeakRunAnchor(Base):
     curated: Mapped[int] = mapped_column(Integer, server_default=text("'0'"))
     engine_tier: Mapped[Optional[str]] = mapped_column(String(24))
     engine_claim: Mapped[Optional[str]] = mapped_column(String(1024))
+    engine_level: Mapped[Optional[str]] = mapped_column(String(4))
+    engine_evidence: Mapped[Optional[str]] = mapped_column(String(1024))
+    engine_lift: Mapped[Optional[str]] = mapped_column(String(1024))
     # The homologous series the anchor was in as the run left it
     # (``batch_peaks.series_record_of``), NULL for none.
     series: Mapped[Optional[dict]] = mapped_column(JSON)

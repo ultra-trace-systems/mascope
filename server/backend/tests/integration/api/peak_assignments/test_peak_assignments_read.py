@@ -375,6 +375,86 @@ async def test_the_rows_rule_records_are_served_on_the_ledger(
 
 
 @pytest.mark.asyncio
+async def test_the_rows_identification_level_is_served_and_filtered(
+    guest_client, pa_test_data, async_session_factory
+):
+    """Step 5.8: a row's level is a column beside its tier, its two lines come
+    off its provenance, and the ledger filters on it; the facts and the
+    rivals stay inspector detail."""
+    run_id = pa_test_data["completed_run_id"]
+    sample_id = pa_test_data["sample_item_id"]
+    row_id = gen_id(32)
+    block = {
+        "level": "5a",
+        "evidence": "one rival left open: C7H16O5",
+        "lift": "exclude C7H16O5: an isotope line",
+        "rivals": [{"formula": "C7H16O5", "test": "open", "detail": "tied"}],
+        "facts": [{"fact": "shortlist", "record": "alternatives"}],
+    }
+    async with async_session_factory() as session:
+        session.add(
+            PeakAssignment(
+                peak_assignment_id=row_id,
+                peak_assignment_run_id=run_id,
+                sample_item_id=sample_id,
+                sample_peak_id="peak-level",
+                sample_peak_mz=333.3,
+                sample_peak_intensity=10.0,
+                role="M0",
+                assigned_formula="C9H8O4",
+                source="database",
+                fit_score=0.9,
+                tier="assigned",
+                level="5a",
+                provenance={"identification_level": block},
+            )
+        )
+        await session.commit()
+    try:
+        listing = await guest_client.get(f"/api/peak-assignments/sample/{sample_id}")
+        by_peak = {row["sample_peak_id"]: row for row in listing.json()["data"]}
+        assert {
+            key: by_peak["peak-level"][key]
+            for key in ("level", "level_evidence", "level_lift")
+        } == {
+            "level": "5a",
+            "level_evidence": "one rival left open: C7H16O5",
+            "level_lift": "exclude C7H16O5: an isotope line",
+        }
+        # A row with no level says none; the rivals are not in the slim row.
+        assert by_peak["peak-1"]["level"] is None
+        assert by_peak["peak-1"]["level_evidence"] is None
+        assert "rivals" not in by_peak["peak-level"]
+
+        filtered = await guest_client.get(
+            f"/api/peak-assignments/sample/{sample_id}", params={"level": "5a"}
+        )
+        assert filtered.status_code == 200
+        assert [row["sample_peak_id"] for row in filtered.json()["data"]] == [
+            "peak-level"
+        ]
+        # A level outside the scale is a 422 naming the accepted ones.
+        refused = await guest_client.get(
+            f"/api/peak-assignments/sample/{sample_id}", params={"level": "4c"}
+        )
+        assert refused.status_code == 422
+
+        detail = await guest_client.get(
+            f"/api/peak-assignments/sample/{sample_id}/assignment/{row_id}"
+        )
+        (record,) = detail.json()["data"]
+        assert record["level"] == "5a"
+        assert record["level_lift"] == "exclude C7H16O5: an isotope line"
+        assert record["provenance"]["identification_level"] == block
+    finally:
+        async with async_session_factory() as session:
+            row = await session.get(PeakAssignment, row_id)
+            if row is not None:
+                await session.delete(row)
+            await session.commit()
+
+
+@pytest.mark.asyncio
 async def test_formula_only_alternatives_are_stored_packed_and_served_whole(
     guest_client, pa_test_data, async_session_factory
 ):

@@ -347,6 +347,7 @@ class PeakAssignmentsResource(BaseResource):
         tier_disagrees: bool | None = None,
         role: str | None = None,
         source: str | None = None,
+        level: str | None = None,
     ) -> pd.DataFrame | None:
         """Get the peaks-with-assignments ledger of a sample, one row per peak.
 
@@ -361,9 +362,10 @@ class PeakAssignmentsResource(BaseResource):
         flattened provenance scalars (``evidence``, ``p_correct``,
         ``p_correct_provisional``, ``corroboration_adducts``,
         ``corroboration_channels``, ``candidate_density``, ``mass_z``,
-        ``reference_listing``, and the four rule records ``tier_reason_rules``,
+        ``reference_listing``, the four rule records ``tier_reason_rules``,
         ``mass_gate_corroborated``, ``envelope_absent_lines`` and
-        ``peak_unseparated``). The
+        ``peak_unseparated``, and the identification level's
+        ``level_evidence`` and ``level_lift`` beside its ``level``). The
         inspector-detail JSON (``alternatives``, ``provenance``) of a single
         assignment is served by :meth:`detail`.
 
@@ -408,6 +410,12 @@ class PeakAssignmentsResource(BaseResource):
                        those two frames alone silently drops every hand-assigned
                        peak.
         :type source: str, optional
+        :param level: Filter by identification level, in the scale the
+                      engines share: ``5a`` | ``5b`` | ``4a`` | ``4b`` | ...
+                      (``1``, ``2a``, ``2b``, ``3a`` to ``3d``). Only the rows
+                      of an in-app run made since the level carry one, so this
+                      matches nothing on an imported or an older run.
+        :type level: str, optional
         :return: A DataFrame with one row per observed peak, containing:
 
                  - ``peak_assignment_id``, ``peak_assignment_run_id``
@@ -497,6 +505,22 @@ class PeakAssignmentsResource(BaseResource):
                    where the run did not read the peak's width. These four
                    let a reader of a whole run, such as the gate card, skip
                    one :meth:`detail` read per row.
+                 - ``level``: the row's identification level in the scale the
+                   in-app engine and the reference engine share
+                   (Schymanski et al. 2014): the number, and a letter for the
+                   kind of evidence that earned it - ``5b`` a mass whose
+                   reading its isotopes refute, its chemistry rules out or
+                   the instrument could not test, ``5a`` a mass with rivals
+                   no test excluded, ``4b`` the ion's formula with the
+                   molecule-reagent split open, ``4a`` the neutral formula.
+                   An isotopologue carries its monoisotopic row's level. It
+                   moves no tier. Null on a row that commits no formula, an
+                   imported row and a run made before the level.
+                 - ``level_evidence``: one line naming what earned the level.
+                 - ``level_lift``: what would raise it, from the tests the row
+                   is missing. The facts and the rivals behind all three,
+                   each rival with the test that excluded it or ``open``, are
+                   ``provenance.identification_level`` in :meth:`detail`.
                  - ``target_compound_id``, ``target_ion_id`` (set for
                    database-sourced assignments)
                  - ``owner_peak_assignment_id`` (for isotope children, the
@@ -574,6 +598,7 @@ class PeakAssignmentsResource(BaseResource):
             ("tier_disagrees", tier_disagrees),
             ("role", role),
             ("source", source),
+            ("level", level),
         ):
             if value is not None:
                 # Lower-cased rather than left to `str(True)`: the server parses

@@ -328,6 +328,12 @@ async def test_the_derived_ledger_pages_and_filters(
     by_engine_tier = await _ledger(guest_client, s1, engine_tier="assigned")
     assert (by_engine_tier["total"], by_engine_tier["data"]) == (0, [])
 
+    # A derived row states no identification level, which only a run states
+    # of its own rows: a filter on one matches none of them.
+    by_level = await _ledger(guest_client, s1, level="4a")
+    assert (by_level["total"], by_level["data"]) == (0, [])
+    assert {row["level"] for row in page["data"]} == {None}
+
     explicit = await _ledger(guest_client, s1, peak_assignment_run_id=fold_run_id(s1))
     assert explicit["total"] == 3
 

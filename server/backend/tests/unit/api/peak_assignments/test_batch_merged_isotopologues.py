@@ -722,7 +722,8 @@ class TestTheRecords:
             provenance={MERGED_ISOTOPOLOGUES_KEY: parent_record},
         )
         for bp in (stripped, parent):
-            bp.engine_tier = bp.engine_claim = None
+            bp.engine_tier = bp.engine_claim = bp.engine_level = None
+            bp.engine_evidence = bp.engine_lift = None
             bp.continuity_grade = bp.continuity = None
             bp.seeded = False
             bp.sample_batch_id = "b"
@@ -1002,6 +1003,51 @@ class TestTheSamplesRow:
         owner["provenance"] = provenance
         again = service.with_batch_isotopologue_line(owner, row, self.LINE)
         assert len(again[service.BATCH_ISOTOPOLOGUES]) == 1
+
+    def test_the_row_shows_its_owners_level(self):
+        row, owner = self._rows()
+        row["level"] = "4a"
+        row["provenance"]["identification_level"] = {"level": "4a"}
+        owner["level"] = "5a"
+        owner["provenance"]["identification_level"] = {
+            "level": "5a",
+            "evidence": "one rival left open: C9H12N2O2",
+            "lift": "measure it",
+            "rivals": [],
+        }
+        values = service.read_as_batch_isotopologue(row, owner, self.LINE)
+        assert values["level"] == "5a"
+        assert values["provenance"]["identification_level"] == {
+            "level": "5a",
+            "evidence": "one rival left open: C9H12N2O2",
+            "lift": "measure it",
+            "inherited_from": "row-p",
+        }
+
+    def test_an_owner_with_no_level_leaves_the_line_none(self):
+        row, owner = self._rows()
+        row["level"] = "4a"
+        row["provenance"]["identification_level"] = {"level": "4a"}
+        values = service.read_as_batch_isotopologue(row, owner, self.LINE)
+        assert values["level"] is None
+        assert "identification_level" not in values["provenance"]
+
+    @pytest.mark.parametrize("owner_level", [None, "4c", "", 4])
+    def test_an_owner_level_outside_the_scale_leaves_the_line_none(self, owner_level):
+        # The owner has a level block, but its level is no level of the
+        # scale: the line takes neither the value nor the block.
+        row, owner = self._rows()
+        row["level"] = "4a"
+        row["provenance"]["identification_level"] = {"level": "4a"}
+        owner["level"] = owner_level
+        owner["provenance"]["identification_level"] = {
+            "level": owner_level,
+            "evidence": "one rival left open: C9H12N2O2",
+            "lift": "measure it",
+        }
+        values = service.read_as_batch_isotopologue(row, owner, self.LINE)
+        assert values["level"] is None
+        assert "identification_level" not in values["provenance"]
 
     def test_the_row_takes_its_owners_mechanism(self):
         row, owner = self._rows()

@@ -73,6 +73,9 @@ from mascope_backend.api.new.peak_assignments.engine import (
     DISPLACED_BY_CLAIM,
     REFERENCE_IDENTITIES_COL,
 )
+from mascope_backend.api.new.peak_assignments.identification_level import (
+    IDENTIFICATION_LEVEL,
+)
 from mascope_backend.api.new.peak_assignments.reagent_pass import (
     REASON_BATCH_KNOWN_SPECIES,
     BatchSpecies,
@@ -1254,7 +1257,8 @@ class TestTheConsensusAndTheLedger:
             role="reagent",
             provenance={KNOWN_SPECIES_KEY: record},
         )
-        bp.engine_tier = bp.engine_claim = None
+        bp.engine_tier = bp.engine_claim = bp.engine_level = None
+        bp.engine_evidence = bp.engine_lift = None
         bp.continuity_grade = bp.continuity = None
         bp.seeded = False
         bp.sample_batch_id = "b"
@@ -1404,6 +1408,26 @@ class TestTheRowRewrite:
         assert displaced[DISPLACED_BY_CLAIM] is True
         assert earlier == {"assigned_formula": "C4H12N4O3"}
 
+    def test_a_library_ions_row_states_no_level(self):
+        """A reagent row commits no formula; the level its reading carried
+        must not stay on it (the caller writes every key it is given)."""
+        row = dict(
+            sample_peak_mz=TRIMER_MZ,
+            role="M0",
+            assigned_formula="C3H12N6O3",
+            ion_formula=TRIMER,
+            tier="assigned",
+            level="4a",
+            provenance={IDENTIFICATION_LEVEL: {"level": "4a"}},
+        )
+        values = batch_species_row(row, self._species(), exact_mz=TRIMER_MZ)
+
+        assert values["level"] is None
+        assert IDENTIFICATION_LEVEL not in values["provenance"]
+        line = dict(row, role="iso_child", isotope_label="13C")
+        line.update(owner_peak_assignment_id="pa-1")
+        assert batch_species_row(line, self._species())["level"] is None
+
     def test_an_unread_peak_brings_no_alternative(self):
         values = batch_species_row(
             dict(sample_peak_mz=TRIMER_MZ, role="unassigned"), self._species()
@@ -1471,6 +1495,30 @@ class TestTheRowRewrite:
         assert "evidence" not in provenance
         [displaced] = values["alternatives"]
         assert displaced["assigned_formula"] == "C9H24N2O4Si3"
+
+    def test_a_listed_rewrite_states_the_level_of_a_formula_no_stage_elected(self):
+        """The old reading's level goes with it: no shortlist of the run was
+        competed against the listed formula, so it reads 5a, rivals not
+        measured, as a hand row does."""
+        row = dict(
+            sample_peak_mz=D4_MZ,
+            role="M0",
+            assigned_formula="C9H24N2O4Si3",
+            ion_formula=D4_ION,
+            ionization_mechanism_id=MECH,
+            source="untargeted",
+            tier="candidate",
+            level="4a",
+            provenance={IDENTIFICATION_LEVEL: {"level": "4a", "evidence": "old"}},
+        )
+        exemplar = dict(sample_peak_mz=D4_MZ, mz_error_ppm=0.0, source="database")
+        values = listed_species_row(row, exemplar, LISTED, self._record())
+
+        assert values["level"] == "5a"
+        block = values["provenance"][IDENTIFICATION_LEVEL]
+        assert block["level"] == "5a"
+        assert block["evidence"] == "rivals not measured"
+        assert block["lift"] == "measure the shortlist"
 
 
 class TestTheListedLift:

@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 import pytest_asyncio
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from mascope_backend.api.new.peak_assignments import (
@@ -716,6 +717,104 @@ async def test_an_imports_verdicts_stay_readable_in_its_run_snapshot(
     assert not await _ledger(batch_id, batch_peak_run_id=run_id, tier_disagrees=False)
 
 
+async def test_the_engines_level_lands_clears_and_stays_in_its_snapshot(
+    folded_batch, two_identity_scorer
+):
+    """Step 5.8: the engine's identification level rides with its tier and
+    claim - on the anchor its row landed on, off when the next import lands,
+    and kept in the run's snapshot as that run left it."""
+    batch_id = folded_batch["batch_id"]
+    run_id = await start_run(
+        batch_id, ACTION_IMPORT, engine="peaky", engine_version="0.10.0"
+    )
+    await perform_batch_import(
+        batch_id,
+        run_id,
+        "peaky",
+        5.0,
+        [
+            BatchImportRow(
+                mz=181.0707,
+                formula="C6H12O6",
+                ionization_mechanism_id="mech-h",
+                engine_level="4b",
+                engine_evidence="the engine's why",
+                engine_lift="the engine's lift",
+            )
+        ],
+        POLARITY,
+    )
+    # A level alone is a verdict, as a claim alone is; its two lines go with it.
+    landed = await _ledger(batch_id)
+    assert (landed[181]["engine_level"], landed[181]["engine_tier"]) == ("4b", None)
+    assert (landed[181]["engine_evidence"], landed[181]["engine_lift"]) == (
+        "the engine's why",
+        "the engine's lift",
+    )
+    assert landed[250]["engine_level"] is None
+
+    next_id = await start_run(batch_id, ACTION_IMPORT, engine="other-engine")
+    await perform_batch_import(
+        batch_id,
+        next_id,
+        "other-engine",
+        5.0,
+        _verdict_rows((181.0707, "C6H12O6", None, None)),
+        POLARITY,
+    )
+
+    assert (await _ledger(batch_id))[181]["engine_level"] is None
+    then = (await _ledger(batch_id, batch_peak_run_id=run_id))[181]
+    assert then["engine_level"] == "4b"
+    assert then["engine_lift"] == "the engine's lift"
+    # A snapshot keeps no link from its members to their runs' rows, so it
+    # serves no member levels.
+    assert (then["member_level"], then["member_levels"]) == (None, None)
+
+
+async def test_the_engines_lines_alone_are_a_verdict_and_clear(
+    folded_batch, two_identity_scorer
+):
+    """A row with only the engine's evidence or lift lands as a verdict, as a
+    claim alone does, and an import that lands nothing takes it off again."""
+    batch_id = folded_batch["batch_id"]
+    for lines in ({"engine_evidence": "the engine's why"}, {"engine_lift": "MS/MS"}):
+        counts = await run_batch_import(
+            batch_id,
+            "peaky",
+            5.0,
+            [
+                BatchImportRow(
+                    mz=181.0707,
+                    formula="C6H12O6",
+                    ionization_mechanism_id="mech-h",
+                    **lines,
+                )
+            ],
+            POLARITY,
+        )
+        assert counts["engine_verdicts"] == 1
+        [(key, value)] = lines.items()
+        landed = (await _ledger(batch_id))[181]
+        assert (landed[key], landed["engine_level"]) == (value, None)
+
+        nothing = await run_batch_import(
+            batch_id,
+            "peaky",
+            5.0,
+            _verdict_rows((400.0, "C20H30O2", "assigned", None)),
+            POLARITY,
+        )
+        assert nothing["anchors_matched"] == 0
+        assert (await _ledger(batch_id))[181][key] is None
+
+
+async def test_an_engine_level_outside_the_scale_is_refused():
+    with pytest.raises(ValidationError):
+        BatchImportRow(mz=181.0707, formula="C6H12O6", engine_level="4c")
+    assert BatchImportRow(mz=1.0, formula="C", engine_level="5a").engine_level == "5a"
+
+
 async def test_a_rebuild_takes_every_verdict_off(folded_batch, two_identity_scorer):
     batch_id = folded_batch["batch_id"]
     await run_batch_import(
@@ -730,6 +829,31 @@ async def test_a_rebuild_takes_every_verdict_off(folded_batch, two_identity_scor
     await rebuild_batch_ledger(batch_id)
 
     assert {row["engine_tier"] for row in (await _ledger(batch_id)).values()} == {None}
+
+
+async def test_a_rebuild_takes_the_engines_level_off_too(
+    folded_batch, two_identity_scorer
+):
+    batch_id = folded_batch["batch_id"]
+    await run_batch_import(
+        batch_id,
+        "peaky",
+        5.0,
+        [
+            BatchImportRow(
+                mz=181.0707,
+                formula="C6H12O6",
+                ionization_mechanism_id="mech-h",
+                engine_level="4a",
+            )
+        ],
+        POLARITY,
+    )
+    assert (await _ledger(batch_id))[181]["engine_level"] == "4a"
+
+    await rebuild_batch_ledger(batch_id)
+
+    assert {row["engine_level"] for row in (await _ledger(batch_id)).values()} == {None}
 
 
 async def test_the_ledger_route_filters_on_the_engines_tier(

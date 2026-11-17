@@ -13,6 +13,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     LIST_PRIOR_WEIGHT,
     LIST_READING,
     REFERENCE_IDENTITIES_COL,
+    RIVALS_PAST_CAP,
     list_readings,
     reading_as_alternative,
     record_displaced_list_readings,
@@ -456,6 +457,21 @@ class TestTheRowThatTookThePeak:
             "C6H12O6",
             "C8H20O4",
         ]
+
+    def test_a_search_rival_the_cap_cuts_is_counted(self):
+        took = _search_assignment(
+            "p1",
+            alternatives=[
+                {"assigned_formula": "C8H20O4"},
+                {"assigned_formula": "C9H8O3"},
+            ],
+        )
+
+        record_displaced_list_readings(
+            [took], {"p1": (_list_hit("a", "p1"), _weighing(181.0707))}, 2
+        )
+
+        assert took["provenance"][RIVALS_PAST_CAP] == 1
 
     def test_a_run_that_keeps_no_alternatives_keeps_none(self):
         took = _search_assignment("p1")

@@ -36,7 +36,16 @@ from mascope_backend.api.new.peak_assignments.engine import (
 # calibration at all. Dropped rather than rejected: they are plausible keys in
 # an external engine's own provenance, so a payload carrying them is not
 # malformed, it is just not authoritative about them.
-SERVER_OWNED_PROVENANCE_KEYS = ("p_correct", "calibration", "corroboration")
+SERVER_OWNED_PROVENANCE_KEYS = (
+    "p_correct",
+    "calibration",
+    "corroboration",
+    # The identification level the in-app engine states of its own rows
+    # (``identification_level``): the ledger serves its lines beside the
+    # row's ``level``, so an imported blob carrying the key would put words
+    # on the row this server never stated.
+    "identification_level",
+)
 
 
 def normalize_engine(

@@ -16,6 +16,7 @@ import pytest
 from mascope_backend.api.controllers.match.lib.match_score_v2 import ion_score_v2
 from mascope_backend.api.new.peak_assignments.engine import (
     ISOTOPE_FORMULA_LENGTH,
+    RIVALS_PAST_CAP,
     ROLE_ISO_CHILD,
     ROLE_M0,
     ROLE_UNASSIGNED,
@@ -27,6 +28,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     TIER_UNASSIGNED,
     ReagentOffset,
     build_unassigned_assignments,
+    cap_alternatives,
     evidence_for,
     fit_isotope_formula,
     formula_identity,
@@ -2608,3 +2610,164 @@ class TestTheCandidateDensityOnAStageARow:
         # The rival has no evidence at all, so nothing ties the commit.
         assert main["provenance"]["candidate_density"] == 1
         assert main["provenance"]["n_candidates"] == 2
+
+
+class TestTheRivalsACapLeavesOut:
+    """A row counts the rival formulas the cap on its stored alternatives cut
+    (``RIVALS_PAST_CAP``), which the identification level reads: a rival the
+    row does not store is one no test can be shown to have excluded."""
+
+    def test_the_count_is_of_distinct_rival_formulas_left_unstored(self):
+        row = {"assigned_formula": "C6H12O6", "provenance": {}}
+        entries = [
+            {"assigned_formula": "C7H16O5"},
+            {"assigned_formula": "C8H8O4"},
+            # Cut, but still listed through another entry: not unstored.
+            {"assigned_formula": "C7H16O5", "ionization_mechanism_id": "im-nh4"},
+            # The row's own formula, and a reading of its own ion: no rivals.
+            {"assigned_formula": "H12C6O6"},
+            {"assigned_formula": "C5H8O5", "same_ion": True},
+            {"assigned_formula": "C9H10O3"},
+            {"assigned_formula": "C9H10O3"},
+        ]
+
+        kept = cap_alternatives(row, entries, 2)
+
+        assert kept == entries[:2]
+        assert row["provenance"][RIVALS_PAST_CAP] == 1
+
+    def test_the_count_accumulates_over_the_cuts_a_row_meets(self):
+        row = {"assigned_formula": "C6H12O6", "provenance": {RIVALS_PAST_CAP: 2}}
+
+        cap_alternatives(row, [{"assigned_formula": "C7H16O5"}], 0)
+
+        assert row["provenance"][RIVALS_PAST_CAP] == 3
+
+    def test_a_cap_that_cuts_no_rival_writes_nothing(self):
+        row = {"assigned_formula": "C6H12O6"}
+
+        kept = cap_alternatives(row, [{"assigned_formula": "C7H16O5"}], 5)
+
+        assert kept == [{"assigned_formula": "C7H16O5"}]
+        assert "provenance" not in row
+        assert cap_alternatives(row, [], 5) is None
+
+    def test_a_stage_a_row_counts_the_contenders_past_its_cap(self):
+        contenders = [
+            ("C6H12O6", "C6H13O6+"),
+            ("C7H14O6", "C7H15O6+"),
+            ("C8H16O6", "C8H17O6+"),
+            ("C9H18O6", "C9H19O6+"),
+        ]
+        rows = [
+            _isotope_row(
+                target_isotope_id=f"iso{i}",
+                target_ion_id=f"ion{i}",
+                target_compound_id=f"cmp{i}",
+                compound_formula=compound_formula,
+                ion_formula=ion_formula,
+                mz=181.0707,
+                relative_abundance=1.0,
+                sample_peak_id="p1",
+                match_score=0.9 - i * 0.05,
+            )
+            for i, (compound_formula, ion_formula) in enumerate(contenders)
+        ]
+
+        [capped] = invert_matches_to_peak_assignments(
+            pd.DataFrame(rows),
+            "sample1",
+            "run1",
+            CANDIDATE,
+            ASSIGNED,
+            max_alternatives=2,
+        )
+        [whole] = invert_matches_to_peak_assignments(
+            pd.DataFrame(rows),
+            "sample1",
+            "run1",
+            CANDIDATE,
+            ASSIGNED,
+            max_alternatives=5,
+        )
+
+        assert capped["provenance"][RIVALS_PAST_CAP] == 1
+        assert RIVALS_PAST_CAP not in whole["provenance"]
+
+    def test_a_stage_a_row_counts_no_reading_of_its_own_formula_or_ion(self):
+        # Past the cap of one: the winner's own formula through another
+        # mechanism, another formula read as the winner's own ion, and one
+        # rival. Only the rival is counted, as `shortlist()` would list only it.
+        contenders = [
+            ("C6H12O6", "C6H13O6+", "[M+H]+", 0.9),
+            ("C7H14O6", "C7H15O6+", "[M+H]+", 0.85),
+            ("C6H12O6", "C6H16NO6+", "[M+NH4]+", 0.8),
+            ("C6H9O5", "C6H13O6+", "[M+NH4]+", 0.75),
+            ("C8H16O6", "C8H17O6+", "[M+H]+", 0.7),
+        ]
+        rows = [
+            _isotope_row(
+                target_isotope_id=f"iso{i}",
+                target_ion_id=f"ion{i}",
+                target_compound_id=f"cmp{i}",
+                compound_formula=compound_formula,
+                ion_formula=ion_formula,
+                mz=181.0707,
+                relative_abundance=1.0,
+                sample_peak_id="p1",
+                match_score=score,
+                ionization=ionization,
+            )
+            for i, (compound_formula, ion_formula, ionization, score) in enumerate(
+                contenders
+            )
+        ]
+
+        [capped] = invert_matches_to_peak_assignments(
+            pd.DataFrame(rows),
+            "sample1",
+            "run1",
+            CANDIDATE,
+            ASSIGNED,
+            max_alternatives=1,
+        )
+
+        assert capped["assigned_formula"] == "C6H12O6"
+        assert [a["assigned_formula"] for a in capped["alternatives"]] == ["C7H14O6"]
+        assert capped["provenance"][RIVALS_PAST_CAP] == 1
+
+    def test_a_stage_b_row_counts_the_shortlist_past_its_cap(self):
+        row = {
+            "mz": 100.1,
+            "formula": "C5H10O2",
+            "ion": "C5H11O2+",
+            "isotope_label": "M0",
+            "ionization_mechanism": "[M+H]+",
+            "mz_error_ppm": 2.0,
+            "intensity_error": 0.1,
+            "other_candidates": "C4H8N2O, C6H14N, C3H6O3",
+            "neutral_mass": 102.068,
+            "unsaturation": 1.0,
+        }
+        peaks = pd.DataFrame(
+            {"sample_peak_id": ["pA"], "mz": [100.1], "intensity": [5000.0]}
+        )
+
+        [capped] = untargeted_matches_to_peak_assignments(
+            pd.DataFrame([row]),
+            peaks,
+            "sample1",
+            "run1",
+            CANDIDATE,
+            ASSIGNED,
+            max_alternatives=1,
+        )
+        [whole] = untargeted_matches_to_peak_assignments(
+            pd.DataFrame([row]), peaks, "sample1", "run1", CANDIDATE, ASSIGNED
+        )
+
+        assert [alt["assigned_formula"] for alt in capped["alternatives"]] == [
+            "C4H8N2O"
+        ]
+        assert capped["provenance"][RIVALS_PAST_CAP] == 2
+        assert RIVALS_PAST_CAP not in whole["provenance"]
