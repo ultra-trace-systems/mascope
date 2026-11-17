@@ -90,3 +90,38 @@ export function isotopologuesTooltip(record) {
     'Shown for reading only: no tier moves on it.'
   ].join(' ')
 }
+
+/** Where one sample's stamp came from, in a word for the inspector's line. */
+const SAMPLE_SOURCE_WORD = { predicted: 'predicted', picker: 'found by the peak picker' }
+
+/**
+ * The inspector's line for a sample's peak the batch stamped: whose isotope
+ * line the batch reads it as, and where this sample's stamp came from. The
+ * record is the detail read's `batch_stamped_isotopologue_of`.
+ */
+export function sampleStampSummary(record) {
+  if (!record) return ''
+  const source = SAMPLE_SOURCE_WORD[record.stamp_source]
+  return (
+    `Stamped by the batch as the ${record.label} isotopologue of ` +
+    `${record.formula ?? 'another batch peak'}${source ? ` (${source})` : ''}`
+  )
+}
+
+/** The account behind it: this sample's stamp, then the batch's reading. */
+export function sampleStampTooltip(record, { linked = false } = {}) {
+  if (!record) return ''
+  const here =
+    record.stamp_source === 'picker'
+      ? "In this sample the run's own isotope match had read the peak as its line, and the stamping confirmed it."
+      : "In this sample the stamping predicted the line where the run's own match did not read it so."
+  return [here, stampTooltip(record), ...(linked ? ['Click to focus its main peak.'] : [])].join(
+    ' '
+  )
+}
+
+/** The inspector's line for the parent's own record: how many lines stamped. */
+export function sampleIsotopologuesSummary(record) {
+  if (!record) return ''
+  return `${isotopologuesSummary(record)} by the batch`
+}

@@ -35,6 +35,12 @@ import {
   persistenceTooltip
 } from '@/lib/batchPersistence'
 import { flatSeriesKind, flatSeriesSummary, flatSeriesTooltip } from '@/lib/batchFlatSeries'
+import {
+  isotopologuesTooltip,
+  sampleIsotopologuesSummary,
+  sampleStampSummary,
+  sampleStampTooltip
+} from '@/lib/batchIsotopologues'
 import { ROLE_BUCKETS, bucketRank } from '@/lib/tiers'
 import { EVIDENCE_LEVELS, VERDICT_META, claimCandidates } from '@/lib/verification'
 import { useBatchPeakCuration } from './stores/batchPeakCuration.js'
@@ -578,6 +584,25 @@ const batchPersistenceNote = computed(() =>
 // that reads the reading it was read on: varying, or flat - an origin flag,
 // likely background, which moves no tier.
 const batchFlatSeries = computed(() => focusedDetail.value?.batch_flat_series ?? null)
+
+// --- The batch's isotopologue stamping ---------------------------------------
+// What "Stamp isotopologues" says of this row's peak in this sample: the batch
+// read it as another batch peak's isotope line there, whatever the row reads
+// it as. The line links the parent's peak in this sample, as the channel badge
+// links the other channels' peaks. And on a monoisotopic row that reads the
+// parent's formula, the parent's own record: each isotope line predicted,
+// found and stamped. Display-only, as the lines say.
+const batchStamp = computed(() => focusedDetail.value?.batch_stamped_isotopologue_of ?? null)
+const batchStampParent = computed(() => {
+  const id = batchStamp.value?.parent_sample_peak_id
+  return id != null ? peakOf({ sample_peak_id: id }) : null
+})
+function focusStampParent() {
+  if (batchStampParent.value) app.data.peak.focus(batchStampParent.value)
+}
+const batchIsotopologues = computed(
+  () => focusedDetail.value?.batch_diagnostic_isotopologues ?? null
+)
 
 // --- The other channels' peaks ------------------------------------------------
 // The badge names channels, which leaves the reader to find each one's peak in
@@ -1641,6 +1666,43 @@ const demotedCount = computed(() => {
         <span class="pi ph ph-link-simple" />
         {{ corroborationLabel }}
       </div>
+      <!-- The batch's stamp on this peak: another batch peak's isotope line,
+           whatever the row reads it as. A link to that peak where this
+           sample holds it; shown, never weighed. -->
+      <button
+        v-if="batchStamp && batchStampParent"
+        type="button"
+        class="batch-stamp opens"
+        :class="batchStamp.stamp_source"
+        data-testid="batch-stamp"
+        v-tooltip.top="sampleStampTooltip(batchStamp, { linked: true })"
+        @click="focusStampParent"
+      >
+        <span class="pi ph ph-stamp" />
+        <span>{{ sampleStampSummary(batchStamp) }}</span>
+      </button>
+      <div
+        v-else-if="batchStamp"
+        class="batch-stamp"
+        :class="batchStamp.stamp_source"
+        data-testid="batch-stamp"
+        v-tooltip.top="sampleStampTooltip(batchStamp)"
+      >
+        <span class="pi ph ph-stamp" />
+        <span>{{ sampleStampSummary(batchStamp) }}</span>
+      </div>
+      <!-- The isotope lines the batch predicted for this reading: how many it
+           stamped, and each one predicted, found and stamped on hover. -->
+      <div
+        v-if="batchIsotopologues"
+        class="batch-isotopologues"
+        :class="{ stamped: batchIsotopologues.n_stamped > 0 }"
+        data-testid="batch-isotopologues"
+        v-tooltip.top="isotopologuesTooltip(batchIsotopologues)"
+      >
+        <span class="pi ph ph-stamp" />
+        <span>{{ sampleIsotopologuesSummary(batchIsotopologues) }}</span>
+      </div>
       <!-- The batch's reading of how this compound's channels follow each
            other across the batch: shown, never weighed. -->
       <div
@@ -2691,6 +2753,39 @@ const demotedCount = computed(() => {
 .batch-flat-series .pi {
   flex: none;
   font-size: 0.8rem;
+}
+/* The batch's isotopologue stamp and the parent's record: plain lines, as
+   the batch's other readings; the stamp opens its parent where it can. */
+.batch-stamp,
+.batch-isotopologues {
+  align-self: start;
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  font-size: 0.74rem;
+  cursor: default;
+  text-align: left;
+}
+.batch-stamp .pi,
+.batch-isotopologues .pi {
+  flex: none;
+  font-size: 0.8rem;
+}
+.batch-stamp.opens {
+  font: inherit;
+  font-size: 0.74rem;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+.batch-stamp.opens:hover,
+.batch-stamp.opens:focus-visible {
+  text-decoration: underline;
+}
+.batch-isotopologues:not(.stamped) {
+  opacity: 0.7;
 }
 /* Where the ledger holds the other channels' rows the badge opens them. */
 .corroboration.opens {

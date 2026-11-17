@@ -1845,7 +1845,20 @@ line's as `stamped_isotopologue_of`. A parent keeps its record for as long as it
 consensus names the formula and ionization the isotope lines were predicted for. A vote,
 a curation or a rebuild that moves the parent's reading takes its stamps off its lines,
 and the next *Stamp isotopologues* replaces every stamp. A parent whose reading moves
-while the stamping runs gets no record, and its lines no stamp. It runs as a batch run,
+while the stamping runs gets no record, and its lines no stamp.
+
+A sample's own view shows the stamp too. Select a peak the batch stamped in that sample,
+and the peak inspector says so in one line under the channel badge: *Stamped by the
+batch as the 81Br isotopologue of C2H4O2 (predicted)*, or *(found by the peak picker)*
+where the sample's own run had read the peak as that line. It shows whatever the row
+reads the peak as, its own formula or none. Click the line to select the parent's peak
+in the sample. On the parent's monoisotopic row, while the row reads the formula and
+ionization the lines were predicted for, a line counts its stamped isotope lines, and
+lists each one on hover as the ledger's stamp mark does. The assignment detail route and
+the SDK's `peak_assignments.detail` carry both, as `batch_stamped_isotopologue_of`
+and `batch_diagnostic_isotopologues`. Neither moves the row's tier.
+
+It runs as a batch run,
 whose summary counts the isotope lines predicted, found and stamped per ionization mode
 and instrument type, the parents that moved while it ran, and names the thresholds. It
 changes no tier, no member and no per-sample run.
