@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import Select from 'primevue/select'
 
 import { BaseRunProvenance } from '@/lib/base'
+import { runStatusLabel } from '@/lib/runStatus'
 import { useApp } from '@/stores'
 
 /**
@@ -43,7 +44,7 @@ function runLabel(run) {
   const action = ACTION_LABELS[run.action] ?? run.action
   const state = run.current
     ? 'current'
-    : `${run.status}${IN_FLIGHT_STATUSES.includes(run.status) ? '…' : ''}`
+    : `${runStatusLabel(run.status)}${IN_FLIGHT_STATUSES.includes(run.status) ? '…' : ''}`
   return `${ordinal}${action} · ${state}`
 }
 

@@ -924,6 +924,13 @@ const CHIP_BUCKETS = computed(() =>
   readsEngineTiers.value ? [...TIERS, ENGINE_UNSTATED, ...ROLE_BUCKETS] : BUCKETS
 )
 const BUCKET_LABELS = { ...TIER_META, [ENGINE_UNSTATED]: ENGINE_UNSTATED_META }
+// The tier column's filter menu names each bucket in full, as the chips' hover
+// does, rather than listing the API's keys (`below_assignability`). A role's
+// key is the word its chip shows.
+const BUCKET_OPTIONS = BUCKETS.map((bucket) => ({
+  value: bucket,
+  label: TIER_META[bucket]?.name ?? bucket
+}))
 const chipBucketOf = (row) => (readsEngineTiers.value ? row.engineBucket : row.bucket)
 const tierCounts = computed(() => {
   const counts = Object.fromEntries(CHIP_BUCKETS.value.map((bucket) => [bucket, 0]))
@@ -1043,9 +1050,9 @@ watch(
         The rows selected here are what the Assignments chart plots &mdash;
         Ctrl+A selects all filtered rows, up to the
         ${MAX_SELECTED_BATCH_PEAKS} the chart draws at once. Filter first to
-        choose which ones, and <b>Compute batch peaks</b> in the bar above to
-        rebuild them. Focus a sample to switch to its per-sample assignment
-        ledger.
+        choose which ones. <b>Rebuild batch ledger</b> in the bar above
+        rebuilds the rows. Focus a sample to switch to its per-sample
+        assignment ledger.
         </p>`,
         { doc: app.ui.help.docUrl('how-it-works/peak-assignment/#batch-peaks') }
       )
@@ -1725,7 +1732,9 @@ watch(
             <Select
               v-model="filterModel.value"
               @change="filterCallback()"
-              :options="BUCKETS"
+              :options="BUCKET_OPTIONS"
+              optionLabel="label"
+              optionValue="value"
               placeholder="Any tier"
               size="small"
               :showClear="true"

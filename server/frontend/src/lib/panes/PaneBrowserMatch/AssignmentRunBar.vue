@@ -6,6 +6,7 @@ import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 
 import { BaseRunProvenance } from '@/lib/base'
+import { runStatusLabel } from '@/lib/runStatus'
 import { useApp } from '@/stores'
 
 import { useAssignmentLauncher } from './stores'
@@ -30,9 +31,10 @@ const launcher = useAssignmentLauncher()
 
 const runs = computed(() => app.data.peakAssignment.run)
 
-// One dropdown option per run, labelled with its ordinal and status. The
-// ellipsis marks only runs still in flight - failed/cancelled runs are done,
-// just not completed (mirrors the backend's non-terminal statuses).
+// One dropdown option per run, labelled with its ordinal and its status in
+// words (runStatus.js) rather than the API's value. The ellipsis marks only
+// runs still in flight - failed/cancelled runs are done, just not completed
+// (mirrors the backend's non-terminal statuses).
 const IN_FLIGHT_STATUSES = ['pending', 'running', 'importing']
 
 // Label a run from the run itself rather than from a property carried on the
@@ -44,7 +46,7 @@ function runLabel(run) {
   const list = runs.value.list
   const index = list.findIndex((r) => r.peak_assignment_run_id === run.peak_assignment_run_id)
   const ordinal = index === -1 ? '' : `#${list.length - index} · `
-  return `${ordinal}${run.status}${IN_FLIGHT_STATUSES.includes(run.status) ? '…' : ''}`
+  return `${ordinal}${runStatusLabel(run.status)}${IN_FLIGHT_STATUSES.includes(run.status) ? '…' : ''}`
 }
 
 const runOptions = computed(() => runs.value.list.map((run) => ({ ...run, _label: runLabel(run) })))

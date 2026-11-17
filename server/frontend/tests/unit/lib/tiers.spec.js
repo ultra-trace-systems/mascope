@@ -45,10 +45,23 @@ describe('TIERS', () => {
       expect(TIER_META[tier]).toMatchObject({
         key: tier,
         label: expect.any(String),
+        name: expect.any(String),
         severity: expect.any(String),
         icon: expect.any(String)
       })
     }
+  })
+
+  // A filter menu or a chart hover shows the name on its own, where the API's
+  // key (below_assignability) used to be printed as it came.
+  it('names every tier in words, the short chip label in full', () => {
+    expect(TIERS.map((tier) => TIER_META[tier].name)).toEqual([
+      'assigned',
+      'candidate',
+      'below assignability',
+      'unassigned'
+    ])
+    expect(TIER_META.below_assignability.label).toBe('below')
   })
 })
 

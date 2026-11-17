@@ -9,6 +9,7 @@ import TabMenu from 'primevue/tabmenu'
 
 import { num } from '@/lib/formatters'
 import { BaseLoadError, BaseTierTag } from '@/lib/base'
+import { sourceLine } from '@/lib/assignmentSources'
 import { peakAssignmentEnabled } from '@/lib/features'
 import { segmentDetail, segmentName } from '@/lib/segments'
 import { useApp } from '@/stores'
@@ -101,8 +102,9 @@ onBeforeUnmount(() => {
         <h1>Peak Browser</h1>
 
         <p>
-        Every detected peak in the selected sample and its committed assignment - formula,
-        confidence tier and fit score - from the latest assignment run. Click a peak to inspect it.
+        Every detected peak in the selected sample and its committed assignment - formula and
+        confidence tier, with the evidence the tier was read off on hover - from the latest
+        assignment run. Click a peak to inspect it.
         </p>
       `
           : `
@@ -254,7 +256,7 @@ onBeforeUnmount(() => {
                 v-if="sourceIcon(assignmentFor(data).source)"
                 :class="sourceIcon(assignmentFor(data).source)"
                 class="source-icon"
-                v-tooltip.top="assignmentFor(data).source"
+                v-tooltip.top="sourceLine(assignmentFor(data).source)"
               />
               {{ assignmentFor(data).assigned_formula }}
             </span>

@@ -172,6 +172,16 @@ describe('AssignmentRunBar run provenance', () => {
     expect(runSelect(wrapper).find('.select-option').text()).toContain('importing…')
   })
 
+  // 'pending' is the API's word for a run no task has taken up yet.
+  it('names a run waiting for its task as queued, not by its status value', async () => {
+    runList = [{ ...IN_APP, status: 'pending' }]
+    const wrapper = await mountBar()
+    const option = runSelect(wrapper).find('.select-option').text()
+
+    expect(option).toContain('queued…')
+    expect(option).not.toContain('pending')
+  })
+
   it('reports the choice back to the run store', async () => {
     runList = [IMPORTED, IN_APP]
     const wrapper = await mountBar()
