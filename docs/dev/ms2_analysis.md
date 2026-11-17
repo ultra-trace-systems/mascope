@@ -485,7 +485,9 @@ second measurement over tied rows a person has verified.
 level has letters, and MS/MS reaches four of them: a cluster that releases its
 reagent cleanly pins the molecule-reagent split (4a), one named loss gives a
 class (3b), two or more fragments that fit one structure give 2b, and a
-library spectrum 2a (the plan's step 5.8e, MAS-942, after MAS-391 and MAS-393). One
+library spectrum 2a (the plan's step 5.8e, MAS-942, after MAS-391 and MAS-393).
+The engine states 4a and 3b; 2b and 2a name a structure and are offered to a
+person as pre-filled claims until a harness measures their false rate. One
 word clashes: *diagnostic* here means read by this formula and by no rival
 formula in the window, which is formula evidence; the scale's diagnostic
 fragments tell isomers of one formula apart, and only those earn 2b. The two

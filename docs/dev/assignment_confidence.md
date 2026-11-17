@@ -679,11 +679,13 @@ row carries the same three in the same vocabulary (the import contract, quality 
 **3. Who may state which level.**
 
 - **The engine** states 5, 4 and 3 from what a run and its batch record (steps 5.8 to 5.8d),
-  and 2b only where a cited list marks the formula as having one plausible structure (5.8b,
-  a call for the plan owner).
-- **MS/MS evidence** states 4a (the adduct releases its reagent cleanly), 3b (one named loss),
-  2b (two or more fragments that fit one structure) and 2a (a library spectrum), from the MS2
-  project's per-row evidence, once that evidence is measured (5.8e).
+  and 2b only where a cited list marks the formula as having one plausible structure (5.8b;
+  the marks are authored by peaky's owner as cited chemistry data, PKY-39).
+- **MS/MS evidence** lets the engine state 4a (the adduct releases its reagent cleanly) and 3b
+  (one named loss), from the MS2 project's per-row evidence once its decision lets a supported
+  verdict move anything (5.8e). 2b (two or more fragments that fit one structure) and 2a (a
+  library spectrum) name a structure, so they are offered to a person as a pre-filled claim
+  until a harness has measured their false rate on decoys.
 - **A person**, and only a person, states 1: a claim on the verification tables
   ([`identification_claims.md`](identification_claims.md) section 5), scoped to the sample or
   the time window its evidence covers, pointing to that evidence (5.8f). A person may also
@@ -736,7 +738,7 @@ named, and the level is a reading of them.
   ([`identification_claims.md`](identification_claims.md) section 4), not context.
 - **3b, one functional group** (5.8b from ionization, 5.8e from MS/MS). On a 4a row, one
   constraint on the structure: a class, not a name. From ionization, through a table each
-  profile carries: deprotonation by a nitrate reagent says an acidic hydrogen, protonation on
+  profile carries, authored by peaky's owner with every entry cited (PKY-39): deprotonation by a nitrate reagent says an acidic hydrogen, protonation on
   uronium a basic site. From MS/MS, one named loss: CO2 a carboxylic acid, H2O2 a
   hydroperoxide, NH3 an amide or amine.
 - **3a, data and list agree** (5.8b, 5.8d). A 3c row that also has two routes (a second
@@ -763,7 +765,7 @@ and a second observation; the level, which rivals each test excluded and what co
 Neither is derived from the other, and the level moves no tier, role, member or claim. The
 quality plan's gate reads them crossed per set (assigned rows at 5; rows under assigned at 4
 or above) and reads the decoy arms' rows at 4 or above; whether a tier rule follows from the
-crossing is a call for the plan owner on those readings (step 5.8).
+crossing is decided at the stage-4 gate on those readings (MAS-945).
 
 **7. Versioning.** The mapping is versioned (`level_mapping_version` on each run's provenance)
 and bumped when a fact it reads or a rule in it changes, as the tier rule set is. A claim's

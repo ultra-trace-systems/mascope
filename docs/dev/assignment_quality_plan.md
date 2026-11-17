@@ -4,7 +4,7 @@
 
 - **Status:** building
 - **As of:** 2026-11-17
-- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73, MAS-408 to MAS-410, MAS-443, MAS-568 to MAS-570, MAS-609, MAS-708, MAS-709, MAS-777, MAS-823 to MAS-841, MAS-860, MAS-870, MAS-881, MAS-908, MAS-922 and MAS-938 to MAS-944)
+- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73, MAS-408 to MAS-410, MAS-443, MAS-568 to MAS-570, MAS-609, MAS-708, MAS-709, MAS-777, MAS-823 to MAS-841, MAS-860, MAS-870, MAS-881, MAS-908, MAS-922 and MAS-938 to MAS-946)
 - **What:** The step-by-step plan closing the assignment quality gap: stages, gates, decisions and risks.
 
 ## Status
@@ -120,6 +120,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 4.12 - the continuity column and badge in the batch ledger, and the per-sample overlay | - |  | built: a *Continuity* column after *Samples* in the *Batch peaks* ledger, offered once the pass graded the batch: stable, drift and unstable (stored `red`) as a badge, inconclusive and insufficient muted, *Not graded* where the batch is not time-ordered, dashed where partial, a clock where stale; its own sort (unstable first, ungraded last) in the pane's projection; the pairs with their ratio, spread and drift in a popover; an isotope line's own grade on its row while unfolded; the help card; the per-sample overlay and its effective-verdict filter had shipped with the anchor verdicts; display-only; MAS-346 |
 | 4.13 - the continuity pass at ceiling scale, and its fold trigger | - |  | measured 2026-11-14: 43 s and 1.4 GB at 99,688 batch peaks and 4.8 M members (the demo ledger in 34 copies), 6.2 s at 11,728, 3.7 s at most on the testbed's batches, against a fold of 1.5 to 8.7 s; budget for a fold-triggered pass 10 s and 500 MB at ceiling, so `CONTINUITY_ON_FOLD` stays off (manual and rebuild) until the pass meets it (#3234); at ceiling the 20,000-pair cut leaves 56,920 batch peaks partial; on the testbed no gate constant moves, but 37 of 38 isotope drift reds and 51 of 68 channel ones follow the parent's level, not time (#3233); MAS-347 |
 | 4.15 - Stage B winner confidence | - |  | built, off by default: `stage_b_confidence` on the run config measures the formula-only shortlist of the untargeted stage's committed winners, the most intense first up to `stage_b_confidence_peaks` (200), in one seeded pass through every channel the run searched, scored at the width the winners were re-scored at, and stores each winner's `confidence`, `n_candidates` and `is_tie` in provenance as Stage A does, one candidate per ion on the peak (two splits of one ion are one hypothesis, the winner's own ion no rival) (`alternatives_scoring.measure_winner_confidence`, the inspector's placement rule); a winner past the budget records none; `search_scope.winner_confidence` records the counts and the seconds; `p_correct` stays null on Stage B rows (the scale now matches, the curve's population and the batch consensus that reads it do not); no tier moves; the runtime on the gate sets is the bench's to record; MAS-325 |
+| 4.15b - Stage B winner confidence on by default with no budget, on the bench's runtime reading | - |  | planned 2026-11-17 (decision 38: the identification level states 4 only where every rival was measured); MAS-946 |
 | 4.16 - intensity consistency and in-source fragment corroboration | - |  | built, display-only: each sample reads a neutral's ratio between two channels against the same pair's over its other neutrals (`intensity_consistency`, consistent / loose / outlying) and pairs neutrals one in-source loss apart through one channel, the lighter on the shorter peak (`in_source_fragment_of`, a reason that caps nothing on the lighter row); measured on the anchor-swap benchmark with an intensity-matched null and two controls, neither enters P(correct): the consistent band is 0.79 to 0.92 on every adduct pair, and a loss reads mostly the lattice of related formulas (the same neutral gained, and the series units, read alike), its named pair beating its mirror by 5 to 12% but for HNO3 (1.9x), with no fragment's intensity signature; kept display-only with the loss table whole (decision 37); tiering rule set 14; no tier moves; MAS-326 |
 | 4.18 - bound the harm of a mismatched chemistry context, graded or gate | - |  | measured (2026-11-13, demo sets Db and Du, standing in for the gate sets, `tooling/score_eval/arbitration_eval.py`, pools merged by ion as Stage B elects them): the matched context lifts contested top-1 0.724 -> 0.989 and true winners kept at 5 % FDR 13,870 -> 15,962 against `none`, removing no true reading; the two defaults swapped stay above `none` (0.979, 15,830) at the cost of 80 glycerol readings; the worst context, combustion, removes 1,619 and leaves the uronium set no cut at 5 % FDR. Every removed truth was a ratio window's, never a cap's. 596 uronium anchors whose seeded reading loses its own ion's election are counted apart (#3191). Decision 11.4 of `chemistry_profiles.md` decided: a default must leave its own sets and every other bench set at or above `none` (BR and UR pass). The windows become a graded, floored factor (#3188); the identity context is pinned byte for byte (`TestTheIdentityContext`); MAS-328 |
 | 4.19 - the active-learning verification queue, with the three calibration-label calls | - |  | built: `GET /peak-assignments/sample/{id}/verification-queue` ranks the run's unjudged rows within 0.1 evidence of a band edge by closeness and by the labels the instrument class and reagent profile hold within 0.05, with seeded spot checks every fifth place and stale verdicts (a later run reassigned or rescored the judged peak) first; the ledger's *to verify* chip and column; no `p_correct` or evidence in the queue; the refit weighs labels by evidence level (reference standard and MS/MS 1, orthogonal 0.6, pattern 0.4, visual and unstated 0.25) and records the weights on the curve (`label_weights`); per instrument and profile, down-weight, keep the snapshot and mark it stale (section 7 of `verification_calibration_loop.md`); moves no metric; MAS-329 |
@@ -134,7 +135,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 5.8b - level 3 from the run's context and channel: 3c, 3b by ionization, 3a on two routes, 2b on a one-structure formula | - |  | planned 2026-11-17 (decision 38); after 5.8; MAS-939 |
 | 5.8c - the batch's level and its isotope checks: a halogen lock, stamped lines and the label twin on 5a and 4b | - |  | planned 2026-11-17 (decision 38); after 5.8b; MAS-940 |
 | 5.8d - the co-variation lifts: 3d on a series, 3a on an anchored homologue, the uronium pair, a TOF second channel | - |  | planned 2026-11-17 (decision 38); after 5.8c and 4.13 (decision 35); MAS-941 |
-| 5.8e - MS/MS levels: 4a on a reagent release, 3b on one loss, 2b on fragments, 2a on a library spectrum | - |  | planned 2026-11-17 (decision 38); after the MS2 project's per-row evidence and its decision on what it may move (MAS-391, MAS-393); MAS-942 |
+| 5.8e - MS/MS levels: 4a on a reagent release, 3b on one loss, 2b on fragments, 2a on a library spectrum | - |  | planned 2026-11-17 (decision 38); after 5.8f and the MS2 project's per-row evidence and its decision on what it may move (MAS-391, MAS-393); MAS-942 |
 | 5.8f - level 1 in review: the claim's letter, its scope and its evidence | - |  | planned 2026-11-17 (decision 38); after 5.8; extends the claims built in MAS-359; MAS-943 |
 | 5.8g - the same air on two instruments: an Orbitrap formula lifts a co-timed TOF row | - |  | planned 2026-11-17 (decision 38); after 5.8d; MAS-944 |
 | 5.9 - the width a run scored at, served on the run and sample records | #2784 | | built: `sigma_ppm`, `sigma_source`, `mu_ppm`, `mu_source` on the run record and in `list_runs` (an import discloses them in `scoring_width`); `line_width` on the sample record; no run or gate number moves; MAS-410 |
@@ -3277,18 +3278,17 @@ the same air (5.8g). No step moves a tier.
   They will cross: an assigned row whose rival is a 13C line too dim to
   test reads 5a. The level does not bend to the tier, as the brief of
   2026-10-14 had it ("never contradicts the tier"), and the tier does not
-  yet bend to the level. *Call for the plan owner:* whether a tier rule
-  follows from the crossing. Recommended: read it first, per set, as the
-  gate's readings below, with the decoy arms beside it, and decide at the
-  stage-4 gate.
+  yet bend to the level. *Decided 2026-11-17 by the plan owner:* no tier
+  rule now; the crossing is read first, per set, as the gate's readings
+  below, with the decoy arms beside it, and whether a tier rule follows is
+  decided at the stage-4 gate (MAS-945).
 - **The shortlist's reach.** Level 4 needs every rival measured. Stage A
   rows carry theirs; Stage B winners carry one only where 4.15 ran, which
   is off by default and stops at the 200 most intense. A row with no
   measured shortlist reads 5a with "rivals not measured" as its evidence
-  and "measure the shortlist" as its lift. *Call for the plan owner:* 4.15
-  on by default with no budget for runs that state a level, once the
-  bench has read its runtime. Recommended: yes, on that reading; until
-  then the honest 5a.
+  and "measure the shortlist" as its lift. *Decided 2026-11-17 by the
+  plan owner:* 4.15 on by default with no budget, once the bench has read
+  its runtime (4.15b, MAS-946); until then the honest 5a.
 - **Where.** `tiering.py` (a level module beside the tier: the mapping, its
   version, the evidence and lift strings), the run's provenance and the
   detail read, `PanePeakAssign.vue`, `PaneBrowserAssignment.vue`,
@@ -3346,12 +3346,13 @@ the same air (5.8g). No step moves a tier.
   names a tentative candidate. Every input is recorded today: the list hit
   and its tags (2.5a, 2.5b, 2.5f), the run's context (3.6), the mechanism
   key, the second channel (2.3).
-- **Calls for the plan owner.** The one-structure mark: a list attribute,
-  or no 2b without MS/MS. Recommended: an attribute of a cited list,
-  authored as chemistry data by peaky's owner (the boundary note's PKY-35),
-  shown with its citation, read only on a 4a row. And the class table's
-  author: recommended the same, on the profile presets (the boundary
-  note's row A9), every entry cited.
+- **Decided 2026-11-17 by the plan owner.** The one-structure mark is an
+  attribute of a cited list, authored as chemistry data by peaky's owner
+  (the boundary note's PKY-35), shown with its citation, read only on a 4a
+  row; the class table is authored the same way, on the profile presets
+  (the boundary note's row A9), every entry cited. This step defines the
+  two formats, reads them and tests them on fixture entries; the entries
+  and their readings on the sets are PKY-39's, which this step blocks.
 - **Where.** The level module; the profile presets in
   `mascope_tools.composition.profiles` (the class per mechanism); the list
   format and its user guide (the one-structure mark); the inspector's
@@ -3361,9 +3362,11 @@ the same air (5.8g). No step moves a tier.
   channel at 3a, a 4b row never at 3).
 - **Verify.** On the chamber sets with their context named (G, H) the rows
   at 3c are the context list's compounds at 4a, each naming its list and
-  tags; with the context unset none reaches 3c; the nitrate `[M-H]-` rows
-  at 4a read 3b; on the cylinder sets with the certified list as the run's
-  context, every certified component reads 3c or 3a. No tier moves.
+  tags; with the context unset none reaches 3c; on fixture entries a
+  nitrate `[M-H]-` row at 4a reads 3b and a one-structure formula at 4a
+  reads 2b (the sets' readings are PKY-39's); on the cylinder sets with
+  the certified list as the run's context, every certified component
+  reads 3c or 3a. No tier moves.
 - **Bench.** Every set; the tiers must not move; the level readings move.
 - **Size.** M. After 5.8, on its module. MAS-939.
 
@@ -3432,9 +3435,11 @@ the same air (5.8g). No step moves a tier.
   reagent cleanly pins the split (4a); one named loss gives a class (3b,
   through a loss table: CO2 a carboxylic acid, H2O2 a hydroperoxide, NH3 an
   amide or amine); two or more fragments that fit one of the formula's
-  candidates and no other, the rivals argued out, give 2b with that
-  structure named; a library spectrum match of a candidate (MAS-360) gives
-  2a. Losing the reagent ion alone is formula evidence, never level 2.
+  candidates and no other, the rivals argued out, give a 2b claim with
+  that structure named; a library spectrum match of a candidate (MAS-360)
+  gives a 2a claim. The 2b and 2a claims are offered to a person,
+  pre-filled (5.8f), not stated by the engine. Losing the reagent ion
+  alone is formula evidence, never level 2.
 - **Why.** Level 2 is the first that names a structure from data, and
   MS/MS is what tells isomers of one formula apart.
 - **Two words to keep apart.** The MS2 note calls a product *diagnostic*
@@ -3443,20 +3448,22 @@ the same air (5.8g). No step moves a tier.
   diagnostic fragments tell isomers of one formula apart. The first is
   formula evidence (5 to 4, MAS-393's question); only the second earns 2b.
   They get two names before this step is built.
-- **Call for the plan owner.** What MS/MS may state without a person: 2a
-  and 2b name a structure, and the claims note (section 5.5) recommends
-  that a scorer rank candidates and leave the claim to a person until a
-  harness has measured it. Recommended: the engine states 4a and 3b from
-  MS/MS once MAS-393 lets a supported verdict move anything; 2a and 2b are
-  offered to a person as a pre-filled claim (5.8f) until a harness
-  measures their false rate on decoys.
+- **Decided 2026-11-17 by the plan owner: what MS/MS may state without a
+  person.** 2a and 2b name a structure, and the claims note (section 5.5)
+  has a scorer rank candidates and leave the claim to a person until a
+  harness has measured it. So the engine states 4a and 3b from MS/MS once
+  MAS-393 lets a supported verdict move anything; 2a and 2b are offered to
+  a person as a pre-filled claim (5.8f) until a harness measures their
+  false rate on decoys, and promoting them to the engine is a later
+  decision on that reading.
 - **Where.** The level module; the MS2 note's section 2.6 and its loss
   table; the claim capture (5.8f); tests on the MS2 fixtures.
 - **Verify.** On the MS2 fixtures: a cluster that releases its reagent
   reads 4a; a lone CO2 loss reads 3b, "a carboxylic acid"; two fragments
   that fit one isomer offer a 2b claim with that structure named; a
   reagent loss alone stays at 4.
-- **Size.** M. Blocked by MAS-391 and MAS-393; its 2a half by MAS-360. MAS-942.
+- **Size.** M. After 5.8f, whose capture offers the claims; blocked by
+  MAS-391 and MAS-393; its 2a half by MAS-360. MAS-942.
 
 ### 5.8f Level 1 in review: the claim's letter, scope and evidence
 
@@ -3482,16 +3489,16 @@ the same air (5.8g). No step moves a tier.
   window and pointing to its evidence, because next week the same mass may
   be another isomer. Version 1 took a reference standard alone to 1 and any
   MS/MS to 2, which the scale does not.
-- **Call for the plan owner.** A reference standard with no independent
-  line: refused at 1, or stated at 2b. Recommended: stated at 2b, with "an
-  independent line" as its lift.
+- **Decided 2026-11-17 by the plan owner.** A reference standard with no
+  independent line is stated at 2b, with "an independent line" as its
+  lift.
 - **Where.** `claims.py` (the mapping at version 2), the two verification
   tables (the letter and the window, one migration), their schemas and
   services, the capture popovers (the independent line, the split, the
   window), the badge, the SDK readers, `identification_claims.md` section
   5, `verification_calibration_loop.md` section 4.6; tests.
-- **Verify.** A reference-standard claim with no independent line reads as
-  the call decides; a lone-loss MS/MS claim reads 3b; a level-1 batch claim
+- **Verify.** A reference-standard claim with no independent line reads
+  2b, its lift "an independent line"; a lone-loss MS/MS claim reads 3b; a level-1 batch claim
   reads 1 inside its window and the engine's level outside it; claims made
   under version 1 keep their level and their version; the calibration
   pool's count is unchanged.
@@ -4014,10 +4021,14 @@ gave its TOF rider a step of its own (MAS-922).
     scale names: the formula levels (5.8), the run's context and channel
     (5.8b), the batch's isotope checks (5.8c), its co-variation (5.8d),
     MS/MS (5.8e), review (5.8f) and a second instrument (5.8g). The calls
-    it leaves are in those steps: whether a tier rule follows where tier
-    and level cross and 4.15's default (5.8); the one-structure mark and
-    the class table's author (5.8b); what MS/MS may state without a person
-    (5.8e); a reference standard with no independent line (5.8f). The
+    it left in those steps were taken the same day, as recommended: no
+    tier rule where tier and level cross until the stage-4 gate reads the
+    crossing (MAS-945); 4.15 on by default with no budget once the bench
+    has read its runtime (4.15b, MAS-946); the one-structure mark and the
+    class table authored by peaky's owner as cited chemistry data (PKY-39);
+    from MS/MS the engine states 4a and 3b, while 2a and 2b are offered to
+    a person as pre-filled claims until a harness measures them (5.8e); a
+    reference standard with no independent line states 2b (5.8f). The
     claims note's rule that a list raises nothing is narrowed to lists
     outside the run's context
     ([`identification_claims.md`](identification_claims.md) section 3).
