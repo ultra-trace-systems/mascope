@@ -3,7 +3,7 @@
 # Frontend design system
 
 - **Status:** building
-- **As of:** 2026-11-05
+- **As of:** 2026-11-17
 - **Tracked in:** [Dashboard UX improvements](https://linear.app/ultra-trace/project/dashboard-ux-improvements-435aa9db35a9)
   (Linear: MAS-160 the type scale and density, MAS-156 the dialog grammar,
   MAS-153 the chip legend, MAS-712 and MAS-713 the sidebar and main area that
@@ -131,7 +131,13 @@ matches read as alarms (QW6, MAS-153); and the reagent and artifact role in
 `BaseTierTag` is a hard-coded purple `#8a5ed0` that appears in no palette,
 which becomes a `--role-reagent` token beside the state tokens, taking the
 guide's Series 3 purple `#8266EA`, the approved colour nearest to it, unless a
-swatch on both grounds says it cannot carry the role. Two of the guide's state
+swatch on both grounds says it cannot carry the role. The identification level
+(the assignment quality plan's step 5.8) takes three tokens of its own beside
+these, `--level-mass`, `--level-formula` and `--level-structure`, one per band
+of its scale, in hues no state token uses: a level chip sits beside a tier
+chip, and drawn in the success and warning hues it would read as a second tier
+and show a formula as a warning. They are chosen on swatches on both grounds
+when the chip is built. Two of the guide's state
 pairs miss AA on the app's grounds (info on light at 4.2:1, error on dark at
 4.4:1); they are kept as the guide's values and the shortfall is fed back to
 the guide rather than fixed by hand here.
