@@ -44,7 +44,20 @@ from mascope_backend.api.models.calibration.calibration_pydantic_model import (
 NODE = "mascope_backend.api.controllers.calibration.lib.calibration_mz_fit"
 
 #: The keys a TOF fit adds to its quality block.
-NEW_KEYS = {"points", "span", "n_lines", "collection", "model", "node_version"}
+NEW_KEYS = {
+    "points",
+    "span",
+    "n_lines",
+    "collection",
+    "model",
+    "search",
+    "node_version",
+}
+
+#: The lines scattered about the true axis so that the search's axis holds
+#: all five within 15 ppm, and the fit to all five leaves NO3- outside it:
+#: the subset search leaves NO3- out, 26 ppm off the fit to the other four.
+SCATTERED = {62: -12.0, 79: 8.0, 81: 8.0, 188: -8.0}
 
 #: Each line's S/N, by its exact m/z rounded to whole Th: every peak its own.
 SNR = {62: 310.0, 79: 95.0, 81: 90.0, 97: 140.0, 125: 64.0, 188: 21.0, 195: 33.0}
@@ -101,9 +114,10 @@ async def _node_fit(filename, isotopes, params=None) -> TofCalibrationHandler:
 
 @pytest.mark.asyncio
 async def test_every_line_the_fit_chose_from_is_a_point_kept_or_left_out(filestore):
-    """Five lines, the trimer 40 ppm off: the subset search leaves it out,
-    and the record still lists it, with the residual that says why."""
-    filename = _write(filestore, off={188: 40.0})
+    """Five lines the search's axis holds within 15 ppm: the subset search
+    leaves NO3- out, and the record still lists it, with the residual that
+    says why."""
+    filename = _write(filestore, off=SCATTERED)
     isotopes = support.isotopes()
 
     handler = await _node_fit(filename, isotopes)
@@ -116,7 +130,7 @@ async def test_every_line_the_fit_chose_from_is_a_point_kept_or_left_out(filesto
         "HN2O6-",
         "H2N3O9-",
     ]
-    assert [point["retained"] for point in points] == [True, True, True, True, False]
+    assert [point["retained"] for point in points] == [False, True, True, True, True]
     # By exact m/z, each at the peak it was matched to
     exact = sorted(isotopes[isotopes.relative_abundance >= 0.15].mz)
     assert [point["target_mz"] for point in points] == exact
@@ -126,11 +140,30 @@ async def test_every_line_the_fit_chose_from_is_a_point_kept_or_left_out(filesto
     # The line left out sits outside the 15 ppm tolerance of the fit to the
     # others, every kept one well inside it
     residuals = [point["residual_ppm"] for point in points]
-    assert residuals[-1] > 30.0
-    assert max(abs(residual) for residual in residuals[:-1]) < 1.0
+    assert residuals[0] < -20.0
+    assert max(abs(residual) for residual in residuals[1:]) < 1.0
     # And the kept ones are the fit's own rows, residual for residual
     *rows, _summary = handler.stats
-    assert sorted(row["calibration_mz_error"] for row in rows) == sorted(residuals[:-1])
+    assert sorted(row["calibration_mz_error"] for row in rows) == sorted(residuals[1:])
+
+
+@pytest.mark.asyncio
+async def test_a_line_off_the_axis_the_others_agree_on_is_no_point(filestore):
+    """The trimer 40 ppm off the axis the other four lines agree on: the
+    search finds no peak of it within 15 ppm of that axis, so it never
+    reaches the fit, and the record does not list it."""
+    filename = _write(filestore, off={188: 40.0})
+
+    handler = await _node_fit(filename, support.isotopes())
+
+    points = handler.fitted_on["points"]
+    assert [round(point["target_mz"]) for point in points] == [62, 79, 81, 125]
+    assert all(point["retained"] for point in points)
+    assert handler.fitted_on["search"] == {
+        "window_ppm": 500.0,
+        "n_lines": 4,
+        "n_ions": 3,
+    }
 
 
 @pytest.mark.asyncio
@@ -138,7 +171,7 @@ async def test_the_residuals_are_the_audits(filestore):
     """The audit reads a line's error under a fit as the fit's m/z at the
     peak's TOF index against the exact m/z; the record's residuals are those,
     for the lines the fit left out as well as the ones it kept."""
-    filename = _write(filestore, off={188: 40.0, 79: 3.0})
+    filename = _write(filestore, off=SCATTERED)
     isotopes = support.isotopes()
     params = support.params()
 
@@ -163,7 +196,9 @@ async def test_a_large_pool_marks_the_lines_its_residual_rule_dropped(filestore)
     """Seven lines take the one-pass residual rule instead of the subset
     search: the line it drops is listed, left out."""
     filename = _write(
-        filestore, support.CALIBRANTS + support.MORE_CALIBRANTS, off={195: 45.0}
+        filestore,
+        support.CALIBRANTS + support.MORE_CALIBRANTS,
+        off={**SCATTERED, 62: -14.0, 195: -8.0},
     )
     isotopes = support.isotopes(support.CALIBRANTS + support.MORE_CALIBRANTS)
 
@@ -172,14 +207,14 @@ async def test_a_large_pool_marks_the_lines_its_residual_rule_dropped(filestore)
 
     assert len(points) == 7
     assert [round(point["target_mz"]) for point in points if not point["retained"]] == [
-        195
+        62
     ]
 
 
 @pytest.mark.asyncio
 async def test_the_span_is_that_of_the_lines_kept(filestore):
-    """The trimer at 188 Th was matched and left out: the fit covers the
-    lines from NO3- to NO3-.HNO3, and the span says so."""
+    """The trimer at 188 Th was not found on the axis the others agree on:
+    the fit covers the lines from NO3- to NO3-.HNO3, and the span says so."""
     filename = _write(filestore, off={188: 40.0})
     isotopes = support.isotopes()
 
@@ -193,7 +228,7 @@ async def test_the_span_is_that_of_the_lines_kept(filestore):
 async def test_the_span_starts_at_the_lowest_line_kept(filestore):
     """NO3- at 62 Th was matched and left out: the span starts at the Br-
     line above it, not at the lowest line the fit chose from."""
-    filename = _write(filestore, off={62: 40.0})
+    filename = _write(filestore, off=SCATTERED)
     isotopes = support.isotopes()
 
     handler = await _node_fit(filename, isotopes)
@@ -224,8 +259,13 @@ async def test_the_record_names_the_collection_the_model_and_the_node(filestore)
     # Four ions: the two models were compared, and mode 2 gained nothing on
     # a square-root axis
     assert [entry["mode"] for entry in model["compared"]] == [0, 2]
+    assert handler.fitted_on["search"] == {
+        "window_ppm": 500.0,
+        "n_lines": 5,
+        "n_ions": 4,
+    }
     assert handler.fitted_on["node_version"] == TOF_CALIBRATION_NODE_VERSION
-    assert TOF_CALIBRATION_NODE_VERSION == 2
+    assert TOF_CALIBRATION_NODE_VERSION == 3
 
 
 @pytest.mark.asyncio
@@ -372,7 +412,7 @@ async def _fit_answer(filename, isotopes) -> tuple[dict, TofCalibrationHandler]:
 async def test_the_fits_record_carries_them_under_its_seal(filestore):
     """The keys go into the quality block the fit is sealed over, so an
     apply can trust them: one edited point, and the seal no longer holds."""
-    filename = _write(filestore, off={188: 40.0})
+    filename = _write(filestore, off=SCATTERED)
 
     fit, handler = await _fit_answer(filename, support.isotopes())
 
@@ -385,7 +425,7 @@ async def test_the_fits_record_carries_them_under_its_seal(filestore):
     sent_back = json.loads(json.dumps(fit))
     with patch.object(calibration_controller, "derive_token_secret", lambda _: "key"):
         assert calibration_controller.fit_seal_valid(sent_back, filename)
-        sent_back["quality"]["points"][-1]["retained"] = True
+        sent_back["quality"]["points"][0]["retained"] = True
         assert not calibration_controller.fit_seal_valid(sent_back, filename)
 
 
@@ -551,27 +591,72 @@ def _crowded_file(filestore, axis_off_ppm: float) -> str:
 
 
 @pytest.mark.asyncio
-async def test_an_axis_off_past_the_refine_window_fitted_on_neighbours_fails(
+async def test_an_axis_off_past_the_refine_window_fits_the_lines_not_their_neighbours(
     filestore,
 ):
-    """The acquisition axis reads 170 ppm off, past the 100 ppm refine
-    window: no line's own peak is near where the axis puts it, three sample
-    ions each find their neighbour, and the three fit each other. The fit
-    is kept on 3 of the collection's 9 lines, and does not verify."""
+    """GitHub #2776's case. The acquisition axis reads 170 ppm off, past the
+    100 ppm refine window: no line's own peak is near where the axis puts
+    it, while three sample ions each have a neighbour there, and the three
+    neighbours agree with each other. Matched within the window, the node
+    fitted the three neighbours. The search finds the axis all nine lines
+    agree on instead: the fit keeps every line and verifies, and the record
+    still says how far the acquisition axis read off."""
     filename = _crowded_file(filestore, axis_off_ppm=-170.0)
     isotopes = support.isotopes(support.CALIBRANTS + SAMPLE_IONS)
 
     fit, _ = await _fit_answer(filename, isotopes)
 
     quality = fit["quality"]
-    assert quality["n_points"] == 3
-    assert quality["n_lines"] == 9
-    # Every other criterion of the bar is met: the three agree
-    assert abs(quality["post_fit_mz_error_ppm"]) < 1.0
-    assert [issue["code"] for issue in fit["quality_issues"]] == ["lines"]
+    lines = sorted(isotopes[isotopes.relative_abundance >= 0.15].mz)
+    assert [point["target_mz"] for point in quality["points"]] == lines
+    assert all(point["retained"] for point in quality["points"])
+    assert (quality["n_points"], quality["n_lines"]) == (9, 9)
+    assert quality["search"] == {
+        "window_ppm": 500.0,
+        "n_lines": 9,
+        "n_ions": 8,
+    }
+    # On each line's own peak, every one of them on the fitted axis
+    assert max(abs(point["residual_ppm"]) for point in quality["points"]) < 1e-6
+    # Measured on the axis the file carried: the peaks sit 170 ppm low on
+    # the true axis, which the file reads 6 ppm low again
+    assert quality["pre_fit_mz_error_ppm"] == pytest.approx(176.0, abs=0.5)
+    assert fit["quality_issues"] == []
     stored = await _apply(filename, json.loads(json.dumps(fit)))
-    assert stored["verified"] is False
-    assert [issue["code"] for issue in stored["quality_issues"]] == ["lines"]
+    assert stored["verified"] is True
+    # And it is reported as drift of the acquisition axis
+    assert stored["acquisition_drift"] is True
+    assert stored["acquisition_drift_ppm"] == pytest.approx(176.0, abs=0.5)
+
+
+@pytest.mark.parametrize("off", [300.0, -300.0])
+@pytest.mark.asyncio
+async def test_an_axis_300_ppm_off_fits_the_true_lines(filestore, off):
+    """The file's axis reads every line 300 ppm off, three times the refine
+    window: matched within it, no line had a peak, and the file was left
+    with "Not enough calibration peaks". The search finds the lines, the fit
+    lands on the axis the peaks were placed by, and the record measures the
+    pre-fit error and the drift against the axis the file carried."""
+    filename = support.write_file(
+        filestore,
+        [{**peak, "snr": SNR[round(peak["mz"])]} for peak in support.calibrant_peaks()],
+        stored=support.axis_off(off),
+    )
+    isotopes = support.isotopes()
+
+    fit, handler = await _fit_answer(filename, isotopes)
+
+    quality = fit["quality"]
+    points = quality["points"]
+    assert [round(point["target_mz"]) for point in points] == [62, 79, 81, 125, 188]
+    assert max(abs(point["residual_ppm"]) for point in points) < 1e-6
+    np.testing.assert_allclose(fit["par"], support.TRUE_FIT["par"], rtol=1e-9)
+    assert quality["pre_fit_mz_error_ppm"] == pytest.approx(abs(off), rel=1e-3)
+    assert quality["search"] == {"window_ppm": 500.0, "n_lines": 5, "n_ions": 4}
+    assert fit["quality_issues"] == []
+    stored = await _apply(filename, json.loads(json.dumps(fit)))
+    assert stored["acquisition_drift"] is True
+    assert abs(stored["acquisition_drift_ppm"]) == pytest.approx(abs(off), rel=1e-3)
 
 
 @pytest.mark.asyncio

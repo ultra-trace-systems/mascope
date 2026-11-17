@@ -21,7 +21,12 @@ and the database swapped for reads that write nothing:
 
 Matching, the overlap filter, the one-reading-per-peak rule, the 15 ppm
 residual selection, the exact subset search for five matches or fewer and the
-fit itself are the handler's, unchanged.
+fit itself are the handler's, unchanged. So is the search that finds the
+calibrants on the axis most of them agree on (``tof_calibrant_search``). The
+node matched each calibrant within the refine window of where the file's axis
+put it up to its version 2, and the audit can match that way too
+(``windowed``): to reproduce a fit such a node made, and to read a cluster
+series where the file's axis puts each member.
 
 A TOF fit is absolute (the m/z of a peak is ``tof_to_mass`` of its stored TOF
 index), so any fit can be evaluated on any file's peaks after the fact: an
@@ -42,6 +47,7 @@ import mascope_file.io as m_io
 import mascope_signal.compute as m_compute
 from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
     TOF_MODEL_EQUATIONS,
+    BaseCalibrationHandler,
     TofCalibrationHandler,
 )
 from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
@@ -175,6 +181,10 @@ class AuditCalibrationHandler(TofCalibrationHandler):
         them, plus an ``ion_label`` column that names each line in a report
     :param resolution_function: The instrument's, for the overlap filter
     :param model: One of :data:`MODELS`
+    :param windowed: Match each isotope to the most intense peak within the
+        refine window of where the file's axis puts it, as the node did up to
+        its version 2, instead of searching
+        for the axis the calibrants agree on.
     """
 
     def __init__(
@@ -184,11 +194,13 @@ class AuditCalibrationHandler(TofCalibrationHandler):
         isotopes: pd.DataFrame,
         resolution_function: Callable,
         model: int | None = 0,
+        windowed: bool = False,
     ):
         super().__init__(stored.filename, params, notification=None, model=model)
         self._stored = stored
         self._isotopes = isotopes
         self._resolution_function = resolution_function
+        self._windowed = windowed
         #: Every reading that passed the node's match filters, retained by
         #: the fit or not: what presence and held-out accuracy are read from.
         self.good_matches: pd.DataFrame | None = None
@@ -207,6 +219,22 @@ class AuditCalibrationHandler(TofCalibrationHandler):
 
     def _total_ion_current(self) -> float:
         return float("nan")
+
+    @property
+    def _search_window_ppm(self) -> float:
+        if self._windowed:
+            return BaseCalibrationHandler._search_window_ppm.fget(self)
+        return super()._search_window_ppm
+
+    def _search_targets(self, target_isotopes_df: pd.DataFrame) -> pd.Series:
+        if self._windowed:
+            return BaseCalibrationHandler._search_targets(self, target_isotopes_df)
+        return super()._search_targets(target_isotopes_df)
+
+    def _match_isotopes(self, match_df: pd.DataFrame, peaks: dict) -> pd.DataFrame:
+        if self._windowed:
+            return BaseCalibrationHandler._match_isotopes(self, match_df, peaks)
+        return super()._match_isotopes(match_df, peaks)
 
     def _peaks_to_match(self, stream: str | None = None):
         return self._stored.peaks
@@ -282,14 +310,17 @@ async def refit(
     isotopes: pd.DataFrame,
     resolution_function: Callable,
     model: int | None = 0,
+    windowed: bool = False,
 ) -> Refit:
     """Fit one file under one calibrant set and model, as the node would.
 
     :param model: One of :data:`MODELS`: a Tofwerk mode alone, or None for
         the node's own choice.
+    :param windowed: Match as the node did up to its version 2
+        (:class:`AuditCalibrationHandler`).
     """
     handler = AuditCalibrationHandler(
-        stored, params, isotopes, resolution_function, model=model
+        stored, params, isotopes, resolution_function, model=model, windowed=windowed
     )
     await handler.fit()
     good = handler.good_matches
@@ -318,14 +349,20 @@ async def match_only(
     isotopes: pd.DataFrame,
     resolution_function: Callable,
 ) -> pd.DataFrame:
-    """Match ions as the node matches calibrants, without fitting.
+    """Match ions where the file's axis puts them, without fitting.
 
-    How the cluster series are found: by the node's rule, so that a series
-    member and a calibrant are read alike.
+    How the cluster series are found: each member takes the most intense peak
+    within the refine window of where the file's axis puts it, as the node
+    matched its calibrants up to version 2. The node's own search would keep
+    only the members within the residual tolerance of the axis most of them
+    agree on, and a member's error under that axis is what a series is read
+    for.
     """
     if isotopes.empty or stored.peaks.mz.size == 0:
         return pd.DataFrame(columns=_READING_COLUMNS)
-    handler = AuditCalibrationHandler(stored, params, isotopes, resolution_function)
+    handler = AuditCalibrationHandler(
+        stored, params, isotopes, resolution_function, windowed=True
+    )
     _, good = await handler._match_calibration_compounds(isotopes)
     if good.empty:
         return pd.DataFrame(columns=_READING_COLUMNS)

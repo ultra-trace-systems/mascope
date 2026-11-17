@@ -15,10 +15,12 @@ this note is its record.*
 **Status.** Milestone 0 (measure) is done: the assessment that started the project, the audit
 tool and the fleet baseline (section 2). Of the calibrant sets (milestone 1), TOF H's has been
 corrected, and TOF M's and site B's were measured and kept. Of the node's changes (milestone 2),
-the record that says what a fit was made on is in (MAS-182); the rest are still to come. How the
-existing data is re-calibrated is decided (MAS-192, section 6), and which stored files a refit
-can read is counted (MAS-193, section 6). Sites are named by letter and instruments by neutral
-labels (TOF H, TOF M, B1–B3) throughout, as everywhere in this repository.
+the record that says what a fit was made on (MAS-182), the three-parameter model (MAS-183) and the
+search that finds the calibrants however far the acquisition axis drifts (MAS-951) are in; the
+rest are still to come. How the existing data is re-calibrated is decided (MAS-192, section 6),
+and which stored files a refit can read is counted (MAS-193, section 6). Sites are named by letter
+and instruments by neutral labels (TOF H, TOF M, B1–B3) throughout, as everywhere in this
+repository.
 
 ## 1. The problem
 
@@ -487,13 +489,58 @@ the constants are in
 
 ### Matching
 
-The matching steps and their constants - the 0.15 abundance floor, S/N >= 10, the 100 ppm
-refine window, the FWHM overlap drop, one reading per peak, three points at least - are in
-[calibration.md](../user/how-it-works/calibration.md#candidate-selection-and-matching) since
-2026-10-22. In the code: `DEFAULT_ISOTOPE_ABUNDANCE_MIN`; `load_peak_data` and `drop_bad_peaks`
-(weak and satellite peaks out); `TOF_SNR_THRESHOLD`; `TOF_DEFAULT_REFINE_WINDOW`;
+The matching steps and their constants - the 0.15 abundance floor, S/N >= 10, the 500 ppm
+search window, the FWHM overlap drop, eight candidates a line, the consensus in TOF space, one
+reading per peak, three points at least - are in
+[calibration.md](../user/how-it-works/calibration.md#how-a-tof-files-calibrants-are-found).
+In the code: `DEFAULT_ISOTOPE_ABUNDANCE_MIN`; `load_peak_data` and `drop_bad_peaks` (weak and
+satellite peaks out); `TOF_SNR_THRESHOLD`; `TOF_SEARCH_WINDOW_PPM` and `TOF_SEARCH_CANDIDATES`;
 `_remove_overlapping_mzs` (the Orbitrap's local-dominance guard is off for TOF);
-`_match_max_in_range` and `_one_reading_per_peak`.
+`TofCalibrationHandler._match_isotopes` and `tof_calibrant_search`; `_one_reading_per_peak`.
+
+Up to node version 2, each line took the most intense peak within the 100 ppm refine window of
+where the file's axis put it (`_match_max_in_range`, still the Orbitrap's). The acquisition axis
+drifts further than that: TOF H on nitrate ran 14 to 137 ppm off over a week (MAS-948), and a raw
+axis past the window lost its lines and fitted neighbours that agreed (#2776, which the 40 % line
+share of the quality bar catches but cannot recover). Since version 3 (MAS-951) the node does not
+trust the acquisition axis to find the calibrants:
+
+- **Candidates.** The eight most intense peaks within 500 ppm of where the file's axis puts each
+  line at the abundance floor or above, after the S/N and overlap filters. 500 ppm is twice the
+  largest drift seen on the fleet (about 245 ppm on one TOF, MAS-640). A wider window reaches more
+  axes that weak peaks agree on by chance, and a collection of many ions offers more of them: on the
+  corpus's densest TOF file (2,558 peaks of S/N 10 or more; 13 lines of six ions, bromide and
+  nitrate) the right axis holds three ions, NO3- and both lines of Br- and one of Br3- within 3 ppm.
+  At 2,000 ppm, the window MAS-951's feasibility check used, an axis 1,200 ppm off held five ions
+  within 15 ppm, one weak line each; at 1,000 ppm one held four. At 500 ppm the right axis wins,
+  and with its peaks taken away the best other holds two. Each fitted corpus file, its axis read 150
+  ppm either way or 300 ppm high, still fits as it did. On those files every line the node keeps is
+  the most intense peak within 2,000 ppm, and that window holds 1 to 5 peaks of S/N 10 or more, so
+  eight is room, not a cut. A file whose axis is further off than 500 ppm finds no lines and ends in
+  "Not enough calibration peaks", which the drift warning of the files before it will have flagged.
+- **Hypotheses.** Every two candidates of two ions give a mode-0 axis; one whose p1 is more than
+  1 % from the file's own (`TOF_SEARCH_P1_PRIOR`, fitted through the candidates' stored m/z) is
+  dropped. Each is refitted once by least squares to the lines it holds within the residual
+  tolerance.
+- **Score.** Ions with a candidate within the tolerance, then ions within a third of it
+  (`TOF_SEARCH_TIGHT_SHARE`, 5 ppm), then the summed intensity of the lines held, then the smaller
+  mean residual.
+- **Matches.** Each line takes its most intense candidate within the tolerance of the winner; the
+  selection, the model choice and the quality bar are unchanged. One ion, or no hypothesis, ends in
+  "Not enough calibration peaks".
+- **No reagent rule.** A hypothesis need not hold the reagent ion: the collection marks none, and a
+  reagent line further than the tolerance from the axis the other ions agree on would be dropped by
+  the residual rule anyway. In the feasibility check behind MAS-951, one TOF H file's winning axis
+  held five lines of the upper set and left NO2- and NO3- out; that is the axis the most lines agree
+  on, which a reagent rule would have traded for one holding fewer.
+- **The overlap drop sees the whole window.** A neighbour 100 ppm to one FWHM from a calibrant used
+  to fall outside the refine window, out of the overlap drop's sight; it now drops the line, as the
+  drop means to.
+
+The pre-fit error (`pre_fit_mz_error_ppm`) and the acquisition-drift warning are still measured
+against the file's own axis. The calibration audit subclasses the handler and searches the same
+way; it matches within the refine window where it reproduces a record of node version 2 or older,
+and for the cluster series, whose error under each fit is what it reads them for.
 
 A peak that sits beside an unresolved neighbour, or a ¹³C line closer than the overlap test
 catches, is matched like any other: nothing at this stage tells a clean calibrant from a
@@ -566,7 +613,10 @@ kept or left out, with its ion, residual and S/N (`points`); the m/z span of the
 (`span`); the collection's id and a hash of its isotopes (`collection`); the `model`; and the
 `node_version` ([calibration.md](../user/how-it-works/calibration.md#what-a-tof-record-says)).
 Since MAS-183 the `model` also lists each model's held-out error (`compared`, null on fewer than
-four ions) and the gain mode 2 needs (`min_gain_ppm`), and the node is version 2.
+four ions) and the gain mode 2 needs (`min_gain_ppm`), and the node is version 2. Since MAS-951 the
+block also has `search`: the search window (`window_ppm`) and how many lines and ions the winning
+axis held (`n_lines`, `n_ions`), and the node is version 3. `refine_window` is still recorded, and
+no longer limits a TOF search.
 A record fitted before then keeps only the counts and means. Two other kinds of record
 exist: the converter's `{"mode": 0, "par": [...]}` with the acquisition software's coefficients,
 stamped `status: "unfitted"` since 2026-09-18 and recognised without the stamp before that
@@ -709,6 +759,12 @@ Code, shipped in releases.
   beside them (MAS-185).
 - **Ion-level calibrant entries.** A calibrant entry can name the one ion it calibrates on, so a
   compound no longer brings an ion for every mechanism of the mode (MAS-186).
+- **Drift-tolerant calibrant matching.** Find the calibrants by a consensus in TOF space - the
+  mode-0 axis through two candidates of two ions on which the most ions find a peak within the
+  residual tolerance - among the strongest peaks within a 500 ppm search window, instead of within
+  the 100 ppm refine window of where the acquisition axis puts each line. The record keeps the
+  pre-fit error and the drift warning against the acquisition axis, and adds the search
+  (section 3, "Matching"; MAS-951).
 - **Calibration transfer**, if the decision on modes without calibrants picks it: a file whose mode
   has no calibrants takes the parameters of the nearest fitted files of the same instrument and
   polarity, interpolated in time within a window, recorded as `status: transferred` with its

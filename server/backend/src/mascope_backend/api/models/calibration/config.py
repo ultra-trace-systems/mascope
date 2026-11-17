@@ -138,6 +138,37 @@ class CalibrationConfig(BaseModel):
     TOF_DEFAULT_REFINE_WINDOW: int = 100
     TOF_SNR_THRESHOLD: float = 10.0
 
+    # The TOF node's search for its calibrants (``tof_calibrant_search``).
+    # It does not look for a calibrant where the file's own axis puts it,
+    # within the refine window, but for the axis on which the most calibrant
+    # ions find a peak: the acquisition software's axis has been seen 14 to
+    # about 245 ppm off on the fleet's TOFs, past the 100 ppm refine window,
+    # and a fit on whatever then sat in the window was a fit on neighbours.
+    #
+    # Each line's candidates are the TOF_SEARCH_CANDIDATES most intense
+    # peaks within TOF_SEARCH_WINDOW_PPM of where the file's axis puts it.
+    # 500 ppm is twice the largest drift seen. A wider window reaches more
+    # axes that weak peaks agree on by chance: on the regression corpus's
+    # densest TOF file, a bromide and nitrate collection of 13 lines of six
+    # ions, an axis 1,200 ppm off held five ions within 15 ppm at 2,000 ppm,
+    # and one held four at 1,000 ppm, beating the right axis's three; at 500
+    # ppm the right axis wins, and with its peaks taken away the best other
+    # holds two. On the corpus's fitted TOF files a line's window held 1 to 5
+    # peaks of S/N 10 or more, and the peak the node kept was always the most
+    # intense of them: eight candidates is room, not a cut.
+    TOF_SEARCH_WINDOW_PPM: float = 500.0
+    TOF_SEARCH_CANDIDATES: int = 8
+    # An axis through two candidates is a hypothesis only while its slope
+    # p1 lies within this share of the file's own: a drift of 300 ppm moves
+    # p1 by 0.015 %, and two candidates of nearby lines can make an axis of
+    # any slope.
+    TOF_SEARCH_P1_PRIOR: float = 0.01
+    # Axes that find a peak for as many ions within the residual tolerance
+    # are told apart by how many ions find one within this share of it, 5
+    # ppm at the default 15: as close as real calibrants sit to a good fit,
+    # where peaks that line up by chance spread over the whole tolerance.
+    TOF_SEARCH_TIGHT_SHARE: float = 1 / 3
+
     # Orbi calibration parameters. The refine window must be wide enough to
     # contain the true calibrant centroid under a realistic instrument-side
     # calibration offset (offsets beyond 10 ppm occur in practice); when the

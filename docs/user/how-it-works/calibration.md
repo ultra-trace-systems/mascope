@@ -24,14 +24,44 @@ Fourier-transform centroiding of short transients produces weak sidelobe ("satel
 To avoid isobaric interference, adjacent candidate peaks are checked for Full-Width at Half-Maximum (FWHM) overlap.
 Each peak is given an expected width envelope, and any overlapping pairs are discarded to keep only clean calibration points.
 
-On a TOF file the numbers are these.
+On a TOF file the numbers are these, and the calibrants are found another way.
 A calibrant's isotopes are kept when their relative abundance is at least 0.15.
-Peaks of the mode's polarity with a signal-to-noise ratio of at least 10 are candidates, and the refinement window is 100 ppm around each calibrant.
+Peaks of the mode's polarity with a signal-to-noise ratio of at least 10 are candidates within 500 ppm of where the file's own axis puts each line: the search window.
 A peak that overlaps a neighbour within one FWHM by the instrument's resolution function is dropped, and so is the neighbour; the local-dominance guard is an Orbitrap rule and is off for TOF.
-Each calibrant then takes the strongest remaining peak in its window, by time-averaged peak area.
+Each line keeps its eight strongest remaining peaks in the window, by time-averaged peak area, and the search below decides which of them is the calibrant.
 A fit needs at least three matched points; fewer leaves the file with the warning *Not enough calibration peaks*.
 The three-parameter model below is tried only where the points kept come from four ions or more.
 The residual rule that keeps or drops a point in the fit below is 15 ppm, and a fit whose mean post-fit residual exceeds 15 ppm, or whose points all come from one ion, warns *Calibration inaccurate*.
+
+### How a TOF file's calibrants are found
+
+A TOF fit is absolute: it fits each calibrant peak's time-of-flight index to the calibrant's exact mass (the model below).
+The axis the acquisition software wrote is used for one thing only, finding the calibrants, and on the TOFs Mascope has measured it reads 14 to 245 ppm off.
+Looked for within a 100 ppm window of where that axis puts them, as up to version 2 of the calibration step, the calibrants go unmatched once the axis is further off than the window, and peaks beside them that happen to agree are fitted instead.
+So a TOF file's calibrants are found by the axis on which most of them agree, wherever the file's own axis puts them.
+This is a random sample consensus ([Fischler and Bolles, 1981](https://doi.org/10.1145/358669.358692)), exhaustive rather than random, since a collection offers a handful of lines and a few candidates each:
+
+```mermaid
+flowchart TD
+  A["Each line: its 8 strongest peaks within 500 ppm"] --> B[Every two peaks of two ions: the axis through both]
+  B --> C{"Slope within 1 % of the file's own?"}
+  C -- no --> X[Dropped]
+  C -- yes --> D[Refit it to the lines within 15 ppm]
+  D --> E[Score it]
+  E --> F[The best axis]
+  F --> G["Each line: its strongest peak within 15 ppm of it"]
+  G --> H[The fit, as for any file]
+```
+
+- Every two candidates of two different ions make a hypothesis: the square-root axis through both. A hypothesis whose slope $p_0$ is more than 1 % from the slope of the file's own axis is dropped: a drift of 300 ppm moves the slope by 0.015 %, and two candidates of nearby lines can make an axis of any slope.
+- Each hypothesis is refitted by least squares to the lines it puts a candidate within the 15 ppm residual tolerance of, since the axis through two candidates is only as good as those two.
+- The hypotheses are ranked by how many calibrant ions have a candidate within 15 ppm of them. Among those that hold as many, the one that holds the most ions within 5 ppm, a third of the tolerance, wins: real calibrants sit that close to a good fit, while peaks that line up by chance spread over the whole tolerance. After that, the brighter lines win, then the smaller mean error.
+- Each line then takes its strongest candidate within 15 ppm of the winning axis. A line with none is left out, and a collection of one ion finds no axis at all: both end in *Not enough calibration peaks* when too few lines are left. The fit, its residual rule and the verification below then run as for any file.
+- The winning axis need not hold the reagent ion. The collection marks no ion as the reagent, and agreement is the evidence: four or five ions within 15 ppm of one axis do not line up by chance. A reagent line further than the tolerance from the axis the others agree on would be dropped by the fit's residual rule anyway.
+- The pre-fit error the record keeps, and the acquisition-drift warning over 50 ppm, are still measured against the file's own axis, so an operator still sees the acquisition calibration drift.
+- The automatic pipeline retries a fit that warns at twice the tolerance, up to six times; the search then counts the lines within the wider tolerance.
+- The search window is twice the largest drift measured on a TOF. A wider one would reach axes that weak peaks agree on by chance: on a dense spectrum with a collection of many ions, a window of 2,000 ppm found five ions agreeing on an axis 1,200 ppm off, where the right axis held three. A file whose axis is further off than 500 ppm finds no calibrants and ends in *Not enough calibration peaks*.
+- On a TOF file, the calibration dialog's **Refine window** does not limit the search: the search window does, and it is not a setting.
 
 ## Quality Assessment and Scoring
 
@@ -194,12 +224,13 @@ flowchart TD
 
 Beside its parameters and the counts and mean errors of its quality block, a TOF fit's calibration record says what the fit was made on:
 
-- **Points**: every calibrant line the fit chose from, the ones it left out included. Each has its ion, its exact and observed m/z, its residual under the fit in ppm, the signal-to-noise ratio of its peak, and whether the fit kept it. The residual is the fit's m/z at the peak's time-of-flight index against the exact m/z, as the TOF calibration audit reads it. A line the matching turned down never reached the fit and is not listed.
+- **Points**: every calibrant line the fit chose from, the ones it left out included. Each has its ion, its exact and observed m/z, its residual under the fit in ppm, the signal-to-noise ratio of its peak, and whether the fit kept it. The residual is the fit's m/z at the peak's time-of-flight index against the exact m/z, as the TOF calibration audit reads it. A line the search found no peak for within 15 ppm of its axis, or the matching turned down, never reached the fit and is not listed.
 - **Span**: the exact m/z of the lowest and the highest line kept. Peaks outside it are on an extrapolated axis.
 - **Lines**: how many distinct lines the collection offered above the abundance floor, matched or not. A line two ions share counts once.
 - **Collection**: the calibration collection, and a hash of the isotopes it offered under the mode's ionization mechanisms: their formulas, exact m/z and abundances. Editing the collection's compounds changes the hash, so files fitted on different versions of one collection can be told apart. The hash is the same on every server.
 - **Model**: the model kept, by Tofwerk's number: 0 for the square-root model, 2 for the three-parameter one. Its equation is in Tofwerk's names, `i = p1*sqrt(m) + p2` or `i = p1*m^p3 + p2`: `i` is the time-of-flight index, `p1` and `p2` are $p_0$ and $p_1$ above, and `p3` is $p_2$. Beside it, `compared` lists each model's mean held-out error in ppm, and `min_gain_ppm` the 0.5 ppm the three-parameter model has to gain. `compared` is empty (`null`) when the calibrants came from fewer than four ions, and a model whose fits failed has no error in it.
-- **Node version**: the version of the calibration step that made the fit. Version 1 fitted the square-root model alone; version 2 also tries the three-parameter one.
+- **Search**: how the calibrants were found: the search window in ppm (`window_ppm`), and how many lines, of how many ions, the winning axis held within the tolerance (`n_lines`, `n_ions`). The record keeps the refinement window it was given as well, which no longer limits a TOF search.
+- **Node version**: the version of the calibration step that made the fit. Version 1 fitted the square-root model alone; version 2 also tries the three-parameter one; version 3 finds the calibrants by the search above, where versions 1 and 2 matched each within the refinement window of where the file's axis put it.
 
 The calibration dialog lists the points of the fit it previews, a line the fit left out in muted text, and the badge of a calibrated TOF sample names the span.
 A sample list (`GET /api/samples`) leaves the points out of each sample's record, so a large batch's list stays small; the rest of the record is there. `GET /api/calibration/mz_calibration` answers one sample's whole record, points included.
@@ -281,9 +312,10 @@ A single point (or two isotopes of one ion) cannot, so it is trusted only while 
 The correction is measured from the axis the instrument wrote, so recalibrating a file an earlier fit moved does not hide it.
 
 A TOF fit must also keep at least 40% of the lines its calibration collection offers.
-When the axis the instrument wrote is further off than the refine window, a calibrant's own peak is not where matching looks for it.
-A line of a sample ion among dense peaks then finds a neighbouring peak instead, and three such neighbours fit the model with a small error.
+Up to version 2 of the calibration step, when the axis the instrument wrote was further off than the refine window, a calibrant's own peak was not where matching looked for it.
+A line of a sample ion among dense peaks then found a neighbouring peak instead, and three such neighbours fitted the model with a small error.
 Kept on a few of many lines, such a fit can sit hundreds of ppm from the right axis.
+The search of version 3 finds the calibrants wherever that axis puts them, and the check still holds a fit to a share of its collection's lines.
 Most right fits keep most of their collection's lines: on production TOFs, three in four keep 60% or more.
 So a right fit on few of a long collection's lines can also be flagged.
 A collection of 7 lines or fewer is never caught by this check, since a TOF fit needs 3 points.

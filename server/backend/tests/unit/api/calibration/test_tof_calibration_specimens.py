@@ -11,9 +11,11 @@ Two checks per specimen. The node fits it as it did then: the same lines
 kept and the same axis, to 0.01 ppm. And the calibration audit's refit,
 which the plan measures every TOF against, is the node's fit to 0.01 ppm on
 real data too, not only on the synthetic files of
-``test_tof_calibration_audit.py``. A change to the matching window, the S/N
-floor, the selection rule or the fit's loss moves the first; re-baseline the
-specimens (the fixtures' README) only when such a change is meant.
+``test_tof_calibration_audit.py``. A change to the search for the calibrants,
+the S/N floor, the selection rule or the fit's loss moves the first;
+re-baseline the specimens (the fixtures' README) only when such a change is
+meant. The search that replaced the refine window (node version 3) fits both
+as they were fitted at ingest.
 """
 
 import copy
@@ -146,7 +148,7 @@ async def test_the_audit_refit_of_a_specimen_is_the_node_fit(filestore, kind):
 # --- The node's rules, on a specimen with one thing changed ---
 #
 # Real calibrants all sit well inside every threshold, so on the specimens
-# as they are, the residual tolerance, the refine window and the S/N floor
+# as they are, the residual tolerance, the search window and the S/N floor
 # could move a long way before a fit changed. Each test below changes one
 # thing on the bromide specimen, so that the rule decides and a change to
 # it shows.
@@ -193,14 +195,15 @@ def _points(handler) -> dict[float, dict]:
 
 
 @pytest.mark.asyncio
-async def test_the_residual_tolerance_keeps_a_line_at_nine_ppm_and_drops_one_at_seventeen(
+async def test_the_residual_tolerance_takes_a_line_at_nine_ppm_and_not_one_at_twenty_six(
     filestore,
 ):
-    """Two lines misread, by 12 and by 24 ppm. The first ends 9 ppm off the
-    fit and is kept. The second sits about 17.5 ppm off the fit of all seven
-    lines, so the tolerance of 15 ppm leaves it out, and it ends 24 ppm off
-    the fit of the rest. A tolerance of 8 ppm would drop the first line too;
-    one of 18 ppm or more would keep the second."""
+    """Two lines misread, by 12 and by 24 ppm. The first sits 9 ppm off the
+    axis the other lines agree on: the search takes it, and the fit keeps
+    it. The second sits 26 ppm off it, outside the tolerance of 15 ppm: the
+    search takes no peak for it, and the record does not list it. A
+    tolerance of 9 ppm would leave out the first line too; one of 18 ppm
+    lets an axis through the second win."""
     found = support.specimen("bromide")
     found = _misread(found, 157.837, 12.0)
     found = _misread(found, 238.754, 24.0)
@@ -209,39 +212,72 @@ async def test_the_residual_tolerance_keeps_a_line_at_nine_ppm_and_drops_one_at_
     node = await _node_fit(filename, found)
 
     points = _points(node)
-    assert not points[238.75]["retained"]
-    assert points[238.75]["residual_ppm"] == pytest.approx(24.3, abs=0.2)
+    assert 238.75 not in points
     assert points[157.84]["retained"]
     assert points[157.84]["residual_ppm"] == pytest.approx(8.9, abs=0.2)
-    assert sum(point["retained"] for point in points.values()) == 6
+    assert len(points) == 6
+    assert all(point["retained"] for point in points.values())
 
 
 @pytest.mark.asyncio
-async def test_the_refine_window_reaches_a_hundred_ppm_and_no_further(filestore):
-    """Two lines changed on the axis the node reads. One, Br3- at 240.8 Th,
-    is read 95 ppm off: inside the 100 ppm window, it is matched, and the
-    fit leaves it out. Beside the other, Br- at 80.9 Th, sits a peak ten
-    times brighter 106 ppm off: outside the window, it is not matched, and
-    the line keeps its own peak. A window under 95 ppm loses the first line;
-    one that reaches the neighbour takes it in, and the overlap filter then
-    drops both, closer than a peak's width as they are."""
-    found = support.specimen("bromide")
-    own = _line(found, 80.917)["mz"]
-    # The fit's ppm, which the node reads 5 and 3.5 ppm lower before it
-    found = _misread(found, 240.751, 100.0)
-    found = _neighbour(found, 80.917, 110.0, brighter=10.0)
+async def test_the_search_window_reaches_five_hundred_ppm(filestore):
+    """The specimen read on an axis 450 ppm off the one it carried, as an
+    acquisition axis that far off would read it: the search still finds
+    every line, and the fit is the one made at ingest. Matched within the
+    100 ppm refine window, as up to node version 2, no line had a peak."""
+    found = copy.deepcopy(support.specimen("bromide"))
+    p1, p2 = found["axis"]["par"]
+    found["axis"]["par"] = [p1 / np.sqrt(1 + 450e-6), p2]
+    for peak in found["peaks"]:
+        peak["mz"] = float(
+            tof_to_mass(np.array([peak["tof"]]), 0, found["axis"]["par"])[0]
+        )
     filename = support.write_specimen(filestore, found)
 
     node = await _node_fit(filename, found)
+    windowed = await audit.refit(
+        audit.read_stored_peaks(filename),
+        support.specimen_params(found),
+        support.specimen_isotopes(found),
+        support.specimen_resolution(found),
+        windowed=True,
+    )
+
+    assert _kept(node) == sorted(
+        round(p["target_mz"], 6) for p in found["fit"]["points"] if p["retained"]
+    )
+    assert (
+        audit.axis_difference_ppm(node.fit_result, found["fit"], _tof_span(found))
+        < SAME_AXIS_PPM
+    )
+    assert windowed.fit is None
+    assert windowed.readings.empty
+
+
+@pytest.mark.asyncio
+async def test_a_neighbour_within_a_peak_width_drops_the_line(filestore):
+    """Beside Br- at 80.9 Th sits a peak ten times brighter, 106 ppm off on
+    the axis the node reads: closer than a bromide peak is wide (about 115
+    ppm). The search window takes it in, and the overlap filter drops both,
+    so Br- is read on its line at 78.9 Th alone. The 100 ppm refine window
+    of node version 2 stopped short of it and kept the line's own peak."""
+    found = _neighbour(support.specimen("bromide"), 80.917, 110.0, brighter=10.0)
+    filename = support.write_specimen(filestore, found)
+
+    node = await _node_fit(filename, found)
+    windowed = await audit.refit(
+        audit.read_stored_peaks(filename),
+        support.specimen_params(found),
+        support.specimen_isotopes(found),
+        support.specimen_resolution(found),
+        windowed=True,
+    )
 
     points = _points(node)
-    assert points[240.75]["observed_mz"] == pytest.approx(
-        240.751 * (1 + 95e-6), rel=2e-6
-    )
-    assert not points[240.75]["retained"]
-    assert points[80.92]["observed_mz"] == pytest.approx(own, rel=1e-9)
-    assert points[80.92]["retained"]
-    assert len(points) == len(found["fit"]["points"])
+    assert 80.92 not in points
+    assert len(points) == len(found["fit"]["points"]) - 1
+    assert all(point["retained"] for point in points.values())
+    assert any(label.startswith("Br- 80.9") for label in windowed.retained)
 
 
 @pytest.mark.asyncio
@@ -268,44 +304,78 @@ def _read_ppm(point: dict) -> float:
 
 
 @pytest.mark.asyncio
-async def test_a_line_takes_the_strongest_peak_in_its_window(filestore):
-    """Two peaks inside Br- 80.9 Th's window, 140 ppm apart: further apart
-    than a bromide peak is wide (about 115 ppm), so the overlap filter keeps
-    both, and the line takes the stronger. Its own peak read 80 ppm low with
-    one ten times brighter at +60 ppm: the line takes the neighbour. Its own
-    peak read 60 ppm low with one a fifth as bright at +70 ppm: it keeps its
-    own. Either way the fit then leaves the line out. Taking the weaker peak
-    swaps both readings."""
-    brighter = _misread(support.specimen("bromide"), 80.917, -80.0)
-    brighter = _neighbour(brighter, 80.917, 60.0, brighter=10.0)
-    fainter = _misread(support.specimen("bromide"), 80.917, -60.0)
-    fainter = _neighbour(fainter, 80.917, 70.0, brighter=0.2)
+async def test_a_line_off_the_axis_takes_no_peak_however_bright(filestore):
+    """Br- 80.9 Th's own peak read 80 ppm low, with one ten times brighter
+    60 ppm high: 140 ppm apart, further than a bromide peak is wide (about
+    115 ppm), so the overlap filter keeps both. Neither is within 15 ppm of
+    the axis the other lines agree on, and the line takes no peak. Matched
+    within the 100 ppm refine window, as up to node version 2, it took the
+    brighter, and the fit then left it out."""
+    found = _misread(support.specimen("bromide"), 80.917, -80.0)
+    found = _neighbour(found, 80.917, 60.0, brighter=10.0)
+    filename = support.write_specimen(filestore, found)
 
-    for found, read in ((brighter, 58.5), (fainter, -61.5)):
-        node = await _node_fit(support.write_specimen(filestore, found), found)
-        point = _points(node)[80.92]
-        assert _read_ppm(point) == pytest.approx(read, abs=0.5)
-        assert not point["retained"]
+    node = await _node_fit(filename, found)
+    windowed = await audit.refit(
+        audit.read_stored_peaks(filename),
+        support.specimen_params(found),
+        support.specimen_isotopes(found),
+        support.specimen_resolution(found),
+        windowed=True,
+    )
+
+    points = _points(node)
+    assert 80.92 not in points
+    assert len(points) == 6
+    assert all(point["retained"] for point in points.values())
+    reading = windowed.readings.set_index(windowed.readings.mz.round(2))
+    read = (reading.loc[80.92, "sample_peak_mz"] / reading.loc[80.92, "mz"] - 1) * 1e6
+    assert read == pytest.approx(58.5, abs=0.5)
+    assert not any(label.startswith("Br- 80.9") for label in windowed.retained)
 
 
 @pytest.mark.asyncio
 async def test_seven_matches_take_the_one_pass_rule_not_the_subset_search(
     filestore,
 ):
-    """Br- 78.9 Th read 60 ppm low, nothing else changed. Seven matches are
-    more than five, so the node keeps the lines within the tolerance of one
-    fit of all seven: the misread line pulls that fit far enough that Br- 80.9
-    Th falls outside it too, and five lines are kept. The subset search, which
-    takes five matches or fewer, would keep six, all but the misread line
-    (#3281)."""
+    """Br- 78.9 Th read 60 ppm low, matched within the refine window as the
+    audit reproduces a version-2 fit. Seven matches are more than five, so
+    the fit keeps the lines within the tolerance of one fit of all seven:
+    the misread line pulls that fit far enough that Br- 80.9 Th falls
+    outside it too, and five lines are kept. The subset search, which takes
+    five matches or fewer, would keep six, all but the misread line
+    (#3281). The node's own search does not match the misread line at all,
+    and keeps the other six."""
     found = _misread(support.specimen("bromide"), 78.919, -60.0)
     filename = support.write_specimen(filestore, found)
 
+    windowed = await audit.refit(
+        audit.read_stored_peaks(filename),
+        support.specimen_params(found),
+        support.specimen_isotopes(found),
+        support.specimen_resolution(found),
+        windowed=True,
+    )
     node = await _node_fit(filename, found)
 
+    assert len(windowed.readings) == 7
+    assert sorted(round(label_mz, 2) for label_mz in windowed.readings.mz) == sorted(
+        _points_of(found)
+    )
+    kept = {round(float(label.split()[1]), 2) for label in windowed.retained}
+    assert 78.92 not in kept
+    assert 80.92 not in kept
+    assert len(kept) == 5
     points = _points(node)
-    assert len(points) == 7
-    assert _read_ppm(points[78.92]) == pytest.approx(-62.0, abs=0.5)
-    assert not points[78.92]["retained"]
-    assert not points[80.92]["retained"]
-    assert sum(point["retained"] for point in points.values()) == 5
+    assert 78.92 not in points
+    assert len(points) == 6
+    assert all(point["retained"] for point in points.values())
+
+
+def _points_of(found: dict) -> list[float]:
+    """The specimen's lines at the abundance floor or above, rounded."""
+    return [
+        round(line["mz"], 2)
+        for line in found["calibrants"]
+        if line["relative_abundance"] >= 0.15
+    ]

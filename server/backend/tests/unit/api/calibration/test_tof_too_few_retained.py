@@ -6,20 +6,21 @@ lines within the tolerance of a fit to them all. When the lines scatter, that
 can be a single one, and the two-parameter mode-0 fit refuses a single point
 with a ValueError: the sample's calibration failed as a server error instead
 of the "not enough calibration peaks" warning the pipeline retries and reports.
-"""
 
-from unittest.mock import AsyncMock, patch
+The node's own search hands the residual rule only lines that agree with one
+axis, so it no longer meets such a scatter; the match within the refine
+window, which the audit reproduces version-2 fits with, still does, through
+the same handler.
+"""
 
 import pytest
 import tof_audit_support as support
 
 import mascope_file.name as m_name
-from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
-    TofCalibrationHandler,
+from mascope_backend.api.controllers.calibration.lib import (
+    tof_calibration_audit as audit,
 )
 
-
-NODE = "mascope_backend.api.controllers.calibration.lib.calibration_mz_fit"
 
 #: Seven lines, which take the set past five matches. One sits on the true
 #: axis and the rest scatter well inside the refine window but far outside
@@ -43,20 +44,15 @@ async def test_a_single_retained_line_is_a_warning_not_an_error(filestore):
         filestore, support.calibrant_peaks(formulas, off=SCATTER)
     )
     isotopes = support.isotopes(formulas)
-    handler = TofCalibrationHandler(filename, support.params())
+    handler = audit.AuditCalibrationHandler(
+        audit.read_stored_peaks(filename),
+        support.params(),
+        isotopes,
+        support.resolution,
+        windowed=True,
+    )
 
-    with (
-        patch.object(
-            TofCalibrationHandler,
-            "_resolve_calibration_isotopes",
-            AsyncMock(return_value=isotopes.drop(columns="ion_label")),
-        ),
-        patch(
-            f"{NODE}.read_instrument_functions",
-            AsyncMock(return_value=({}, support.resolution)),
-        ),
-    ):
-        await handler.fit()
+    await handler.fit()
 
     # The filter kept the on-axis line alone
     assert [round(row["mz"]) for row in handler.stats] == [125]
