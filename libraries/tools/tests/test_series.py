@@ -137,6 +137,9 @@ class TestTheIonsMass:
             ("C11H20O3", "[M+CH4N2O+H]+", 261.1808837),
             ("C8H8", "[M]+.", 104.0620517),
             ("C6H12O6", "+H+", 181.0706646),
+            # Two glucoses and a proton; glucose and two protons over two.
+            ("C6H12O6", "[2M+H]+", 361.1340527),
+            ("C6H12O6", "[M+2H]2+", 91.0389705),
         ],
     )
     def test_the_exact_m_z(self, formula, notation, mz):
@@ -257,6 +260,39 @@ class TestTheWalk:
         # The formula arithmetic is the unit's: a decoy takes the steps the
         # real walk could, on a mass chemistry does not sit at.
         assert proposals["b"].formula == "C9H12O5"
+
+    @pytest.mark.parametrize(
+        "notation, ion_step",
+        [("[M+H]+", 1.0), ("[2M+H]+", 2.0), ("[M+2H]2+", 0.5)],
+        ids=["monomer", "dimer", "doubly charged"],
+    )
+    def test_every_molecule_of_the_ion_takes_the_step(self, notation, ion_step):
+        # Through [2M+H]+ both glucoses gain the CH2, so the ion moves by two
+        # units; one unit up is a mixed C6/C7 dimer, which is no C7H14O6.
+        source = SeriesSource("a", "C6H12O6", notation)
+        homologue = ion_mz(parse_formula_tokens("C7H14O6"), notation)
+        start = ion_mz(parse_formula_tokens("C6H12O6"), notation)
+        assert homologue - start == pytest.approx(ion_step * CH2.mass, abs=1e-6)
+        one_unit = SeriesTarget("one unit", start + CH2.mass)
+        hit = SeriesTarget("b", homologue)
+        proposals = walk_series(
+            [source], [one_unit, hit], CH2, tolerance_ppm=3.0, max_depth=1
+        )
+        assert set(proposals) == {"b"}
+        assert proposals["b"].formula == "C7H14O6"
+        assert proposals["b"].mechanism == notation
+        assert proposals["b"].exact_mz == pytest.approx(homologue, abs=1e-7)
+
+    def test_a_dimer_s_decoy_shift_is_per_molecule_too(self):
+        offset = 0.0305
+        source = SeriesSource("a", "C6H12O6", "[2M+H]+")
+        shifted = SeriesTarget(
+            "b", ion_mz(parse_formula_tokens("C7H14O6"), "[2M+H]+") + 2 * offset
+        )
+        proposals = walk_series(
+            [source], [shifted], CH2, tolerance_ppm=3.0, offset_da=offset
+        )
+        assert proposals["b"].formula == "C7H14O6"
 
     def test_a_mechanism_it_cannot_mass_steps_nowhere(self):
         source = SeriesSource("a", "C8H10O5", "not a mechanism")
