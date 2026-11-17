@@ -251,7 +251,10 @@ different orders) and counted distinct over the set's samples, the pooled
 column adding each set's counts against its own list. The lists are not
 exhaustive: the authors assigned what their study needed, so a formula off
 the list is not wrong, and a share of the list is not a recall. They are
-readings, gated by no target, and the card says so above its table.
+readings, gated by no target, and the card says so above its table. Unlike
+the truth corpus's hold-outs, the lists stay readable to the agents' account:
+they are published, nothing is gated on them, and `bench run` reads them in
+the agent's own session (the plan owner's call, 2026-11-17).
 
 A branch with a migration of its own moves the bench database to its
 revision, and develop is then refused until that migration is on develop;
