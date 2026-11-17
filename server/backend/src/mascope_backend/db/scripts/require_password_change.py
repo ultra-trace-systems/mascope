@@ -142,16 +142,19 @@ async def run_require_password_change() -> None:
     runtime.logger.info("Requiring a password change...")
     result = await require_password_change_for_all_users()
     data = result["data"]
-    await notify_open_sessions(data["user_ids"])
+    notified = await notify_open_sessions(data["user_ids"])
 
     runtime.logger.info("=" * 80)
     runtime.logger.info("PASSWORD CHANGE REQUIRED")
     runtime.logger.info(f"Accounts affected: {data['flagged_count']}")
-    runtime.logger.info(
-        "Open sessions are moved to the password screen at once, unless Redis "
-        "could not be reached (reported above); then they move when their next "
-        "request is refused."
-    )
+    if notified:
+        runtime.logger.info("Open sessions are moved to the password screen at once.")
+    else:
+        runtime.logger.warning(
+            "Redis could not be reached for every open session (reported "
+            "above): those move to the password screen when their next request "
+            "is refused, and their sockets keep their rooms until then."
+        )
     runtime.logger.info(
         "Each user's API access tokens (SDK, notebooks) are revoked once they "
         "change their password, and must be regenerated. Instrument agents "
@@ -163,7 +166,7 @@ async def run_require_password_change() -> None:
     runtime.logger.info("=" * 80)
 
 
-async def notify_open_sessions(user_ids: list[int]) -> None:
+async def notify_open_sessions(user_ids: list[int]) -> bool:
     """
     Evict and notify the open sockets of the accounts just armed, as the
     owner's route does.
@@ -174,6 +177,7 @@ async def notify_open_sessions(user_ids: list[int]) -> None:
     refused.
 
     :param user_ids: The accounts the sweep armed.
+    :return: Whether every open session was reached.
     """
     # Imported here, not at the top: importing the socket package builds the
     # Socket.IO server from the Redis configuration, and the CLI imports this
@@ -182,7 +186,7 @@ async def notify_open_sessions(user_ids: list[int]) -> None:
         notify_password_change_from_script,
     )
 
-    await notify_password_change_from_script(user_ids, required=True)
+    return await notify_password_change_from_script(user_ids, required=True)
 
 
 def main() -> None:

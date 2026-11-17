@@ -1402,7 +1402,11 @@ mascope prod db script run require_password_change
 
 The script reaches open tabs through Redis, as the app's own workers do. If it
 cannot reach Redis it says so, and open sessions move to the password screen when
-their next request is refused.
+their next request is refused. If Redis stops answering while the script runs,
+the script tries those tabs again for up to 30 seconds (three retry intervals),
+then ends with an error, "Dropped N eviction(s) that found Redis out of reach",
+and a closing warning in place of "moved to the password screen at once": those
+tabs move when their next request is refused.
 
 Maintenance scripts like this one ship in the backend image, and
 `mascope prod db script` lists and runs them inside the backend container -
@@ -1422,8 +1426,10 @@ mascope prod db script run clear_password_change_requirement
 ```
 
 Anyone held at the password screen leaves it at once, as they were moved to it.
-If the script cannot reach Redis it says so, and they leave the screen when they
-reload the page.
+If the script cannot reach Redis, or Redis stops answering while it runs and
+does not answer again within 30 seconds, it says so, and they leave the screen
+when they reload the page. Its closing line then is a warning, not "leave the password
+screen at once".
 
 Set `MASCOPE_CLEAR_PASSWORD_CHANGE_EMAILS` to a comma-separated list to release
 only some accounts. Note that the pre-script database dump is a whole-database

@@ -38,7 +38,7 @@ from mascope_backend.db.scripts import (
     clear_password_change_requirement as clear_script,
 )
 from mascope_backend.db.scripts import require_password_change as sweep_script
-from mascope_backend.socket import eviction
+from mascope_backend.socket import eviction, password_change
 from mascope_backend.socket.auth.exceptions import SocketUnauthenticatedError
 from mascope_backend.socket.auth.service import authenticate_socket_connection
 from mascope_backend.socket.events.handlers.default.connection import (
@@ -1135,6 +1135,175 @@ async def test_a_worker_stopping_says_what_it_drops(person, sio, live_rate_limit
     assert dropped["level"].name == "WARNING"
     assert eviction._retries == {}
     assert not eviction._retrying()
+
+
+@pytest.mark.asyncio
+async def test_a_retry_cut_off_by_the_stop_is_said_dropped(person, sio, quick_retries):
+    """
+    One being tried when the worker or the script stops is lost all the same:
+    it used to leave the kept set as it started, and went unsaid.
+    """
+    refused = RedisConnectionError("Connection refused.")
+    hang = asyncio.Event()
+
+    async def sids(user_id):
+        if not tried:
+            tried.append(user_id)
+            raise refused
+        tried.append(user_id)
+        await hang.wait()
+        return set()
+
+    tried: list[int] = []
+    with patch("mascope_backend.socket.eviction.get_user_socket_sids", sids):
+        await evict_ended_sessions(person.id)
+
+        async def retrying() -> bool:
+            return len(tried) == 2
+
+        await _until(retrying)
+        with captured_logs(level="DEBUG") as records:
+            await stop_sign_out_retries()
+
+    assert [r for r in records if r["message"].startswith("Dropped 1 sign-out")]
+    assert eviction._retries == {}
+
+
+# --- A maintenance script whose evictions find Redis out of reach ---
+
+
+@pytest.fixture
+def script_window(monkeypatch):
+    """Scripts wait up to 200 retry intervals: two seconds with quick retries."""
+    monkeypatch.setattr(password_change, "SCRIPT_RETRY_ROUNDS", 200)
+
+
+def _settled_before(disconnect: AsyncMock) -> list[bool]:
+    """Whether nothing was kept, nor tried, each time Redis was disconnected."""
+    settled: list[bool] = []
+    disconnect.side_effect = lambda: settled.append(
+        not eviction._retries and not eviction._retrying()
+    )
+    return settled
+
+
+def _messages(records, level: str) -> list[str]:
+    return [r["message"] for r in records if r["level"].name == level]
+
+
+@pytest.mark.asyncio
+async def test_the_script_waits_for_an_eviction_redis_missed(
+    person, sio, script_redis, quick_retries, script_window
+):
+    """It used to disconnect at once, and the kept eviction died with its loop."""
+    _, disconnect = script_redis
+    settled = _settled_before(disconnect)
+    await _open_socket("sid-a", person, datetime.now(timezone.utc) - LONG_AGO)
+    read = eviction.get_user_socket_sids
+    asked: list[int] = []
+
+    async def miss_person_once(user_id):
+        # The sweep arms every account the database holds; only this one's
+        # first read misses.
+        if user_id == person.id:
+            asked.append(user_id)
+            if len(asked) == 1:
+                raise RedisConnectionError("Connection refused.")
+        return await read(user_id)
+
+    with (
+        patch("mascope_backend.socket.eviction.get_user_socket_sids", miss_person_once),
+        captured_logs(level="DEBUG") as records,
+    ):
+        await sweep_script.run_require_password_change()
+
+    assert len(asked) == 2
+    await _assert_evicted(sio, "sid-a", person)
+    assert settled == [True]
+    infos = _messages(records, "INFO")
+    assert "Evictions that went through on a retry: 1 of 1" in infos
+    assert "Open sessions are moved to the password screen at once." in infos
+    assert not _messages(records, "ERROR")
+
+
+@pytest.mark.parametrize("script", ["require", "clear"])
+@pytest.mark.asyncio
+async def test_the_script_says_what_it_drops(
+    script,
+    person,
+    sio,
+    script_redis,
+    live_rate_limiter,
+    async_session_factory,
+    quick_retries,
+):
+    """
+    Redis answered the script's connect, then went: the operator is told the
+    sockets keep their rooms, not that the open sessions moved at once.
+    """
+    _, disconnect = script_redis
+    settled = _settled_before(disconnect)
+    await _open_socket("sid-a", person, datetime.now(timezone.utc) - LONG_AGO)
+    if script == "clear":
+        await _hold(async_session_factory, person)
+    run = (
+        sweep_script.run_require_password_change
+        if script == "require"
+        else clear_script.run_clear
+    )
+
+    live_rate_limiter.out_of_reach = True
+    kept: list[tuple] = []
+    settle = eviction.settle_sign_out_retries
+
+    async def settle_seen(timeout):
+        kept.extend(eviction._retries)
+        return await settle(timeout)
+
+    with (
+        patch.object(password_change, "settle_sign_out_retries", settle_seen),
+        captured_logs(level="DEBUG") as records,
+    ):
+        await run()
+
+    sio.leave_room.assert_not_awaited()
+    assert settled == [True]
+    # The sweep arms every account the database holds, each one kept.
+    eviction_keys = [k for k in kept if k[0] == "evict"]
+    dropped = len(eviction_keys)
+    assert ("evict", person.id) in eviction_keys
+    errors = _messages(records, "ERROR")
+    assert any(m.startswith(f"Dropped {dropped} eviction(s)") for m in errors)
+    warnings = _messages(records, "WARNING")
+    # The monitoring line a worker's shutdown writes, too.
+    assert any(m.startswith(f"Dropped {dropped} sign-out(s)") for m in warnings)
+    assert any(m.startswith("Redis could not be reached for every") for m in warnings)
+    assert not [m for m in _messages(records, "INFO") if "at once" in m]
+
+
+@pytest.mark.asyncio
+async def test_notifying_from_a_script_reports_a_dropped_eviction(
+    person, sio, script_redis, live_rate_limiter, quick_retries
+):
+    live_rate_limiter.out_of_reach = True
+
+    assert not await password_change.notify_password_change_from_script(
+        [person.id], required=True
+    )
+    assert eviction._retries == {}
+
+
+@pytest.mark.asyncio
+async def test_notifying_from_a_script_reports_a_retried_eviction_as_done(
+    person, sio, script_redis, quick_retries, script_window
+):
+    sids = AsyncMock(side_effect=[RedisConnectionError("Connection refused."), set()])
+
+    with patch("mascope_backend.socket.eviction.get_user_socket_sids", sids):
+        assert await password_change.notify_password_change_from_script(
+            [person.id], required=True
+        )
+    assert sids.await_count == 2
 
 
 # --- The signed-in room the room-less broadcasts go to ---
