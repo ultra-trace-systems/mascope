@@ -2704,6 +2704,124 @@ Everything is set through the environment:
 The TOF mass calibration plan ([tof_calibration.md](dev/tof_calibration.md))
 is where the audit's readings go and what they decide.
 
+### Re-calibrating a TOF instrument's stored files
+
+`recalibrate_tof` refits the TOF files already on a server with the
+calibration node as it is now, applies each fit, and rebuilds the matches the
+applies clear: the re-calibration step of the TOF mass calibration plan
+([tof_calibration.md](dev/tof_calibration.md), section 6). A TOF fit is
+absolute - an apply recomputes every m/z axis of a file from its stored TOF
+index - so no file is detected or converted again. It works on one instrument
+at a time, and an operator runs it on the plan owner's word, in three steps.
+
+**1. Read what it would do.** The default, which writes nothing:
+
+```sh
+TOF_RECAL_INSTRUMENT=<name> mascope prod db script run recalibrate_tof
+TOF_RECAL_INSTRUMENT=<name> TOF_RECAL_JSON=1 \
+    mascope prod db script run recalibrate_tof > dry-run.txt
+```
+
+For every file it says whether a run would apply an `ok` or a `poor` fit, keep
+the file's `ok` record, or fail, and how far the fit would move the file's m/z
+axis in each mass band; the summary gives each band's median over the files.
+That is what the customer note before a run quotes. The dry run refits as the
+[audit](#auditing-a-tof-instruments-mass-calibration) does, with the audit's
+read-only handler, so the two report the same fit for a file, but it also goes
+through the wider tolerances ingest retries with when a fit warns. Like the
+audit it never computes a peak timeseries a store lacks; the run does, as
+ingest would, so on the odd file the run keeps other calibrants than the dry
+run reported. The ledger has what the run did.
+
+**2. Run it**, inside `tmux` or `screen`: thousands of files take hours.
+
+```sh
+TOF_RECAL_INSTRUMENT=<name> TOF_RECAL_ACTION=run \
+    mascope prod db script run recalibrate_tof
+```
+
+- **What it applies.** What ingest would: the node's fit, through the same
+  widening tolerance, judged by the same quality bar under the server's
+  `calibration_quality_gate`, with a failed fit leaving the same marker on a
+  file still on the converter's calibration. One thing differs: a fit below
+  the bar never replaces a record that cleared it (`status: ok`). That file
+  keeps its record, and the ledger lists it as `kept`.
+- **Which files.** The instrument's TOF files that ingest calibrates, newest
+  first: those whose one acquisition sample is in a mode with a calibration
+  collection. A file whose record this version of the node fitted from the
+  collection as it is now is already on target, and is skipped. Files in a
+  mode without calibrants are counted and left for calibration transfer. A
+  blank, a file with more than one sample to calibrate, and a file without the
+  stores a refit reads are listed, not refitted.
+- **Pacing.** 25 files a batch, a minute between batches, and a hold before
+  each file and each rematch while the live ingest has more than 20 files in
+  progress: the pace the composite cut's re-processing kept beside a site's
+  ingest, at 2.5 to 3 s a file. After each batch it matches the acquisition
+  samples of the batch's files, as ingest does where a file's record is
+  verified, and rematches every other batch its applies set to `rematch`. It
+  runs no peak assignment and leaves every assignment run as it is; the ledger
+  lists those on the files it applied, and the summary counts them.
+- **Stopping.** Create a file `STOP` in the ledger's directory (below): the
+  run ends before its next file, once what it applied is matched. Remove the
+  file and run it again to go on; it skips what is done. Ctrl+C ends it at
+  once, and the next run first matches what was left unmatched. A file the
+  ledger has an outcome for - kept, failed, not refit-ready, rolled back - is
+  not offered again under the same target; `TOF_RECAL_RETRY=1` offers it
+  again. An error that is not the file's own, such as a database fault, is
+  tried again by the next run.
+- **What to watch.** The batch lines in the log; the summary's count of the
+  batches it touched that are still at `rematch`, which should be none when
+  it ends (one a person holds open is retried by the next run); and the live
+  ingest, whose files keep ending `done`. Error tracking sees only the
+  acquisition-drift warning a drifting instrument raises anyway, at most once
+  a day per instrument, and nothing per file.
+
+**3. Roll back** a batch or a file, if a run did harm:
+
+```sh
+TOF_RECAL_INSTRUMENT=<name> TOF_RECAL_ACTION=rollback TOF_RECAL_ROLLBACK=batch:3 \
+    mascope prod db script run recalibrate_tof
+TOF_RECAL_INSTRUMENT=<name> TOF_RECAL_ACTION=rollback \
+    TOF_RECAL_ROLLBACK=file:<sample file id>,file:<sample file id> \
+    mascope prod db script run recalibrate_tof
+```
+
+A rollback puts back the file's database record and range, and its `.props`
+record and range, as the ledger recorded them before the apply, and every m/z
+axis of the file bit for bit; then it matches the file again, as after an
+apply. It refuses a file whose record changed since the run applied it, by a
+manual recalibration for instance, and says so. A peak timeseries the fit
+computed for a peak whose store lacked it stays: it is the peak's on any
+calibration.
+
+**The ledger** is `tof_recalibration/<instrument>/ledger.jsonl` in the
+filestore, where the site's backup keeps it: keep it for good. It holds one
+JSON event per line, appended and synced to disk as it happens. Per file it
+has the records before and after, the parameters, the node version, the
+residual of each calibrant, the axis change per band, the batches the apply
+set to `rematch` and the assignment runs on the file, a few kB a file. Where
+the old record does not give the file's axes back by itself - the converter's
+record counts samples from the start of the raw file's axis, and its peaks sit
+where detection found them - what it cannot give back is kept beside the
+ledger in `axes/`, about 10 kB a file. A run and a rollback take the
+pre-script database dump the runner makes for any script that writes.
+
+Everything is set through the environment:
+
+| Variable | Meaning |
+|---|---|
+| `TOF_RECAL_INSTRUMENT` | The instrument, as files name it. Required |
+| `TOF_RECAL_ACTION` | `dry-run` (the default), `run` or `rollback` |
+| `TOF_RECAL_FROM` / `TOF_RECAL_TO` | Acquisition dates, inclusive, `YYYY-MM-DD` (UTC). Default: every file |
+| `TOF_RECAL_MODE` | Only the files of the ionization mode of this name |
+| `TOF_RECAL_BATCH` / `TOF_RECAL_GAP` / `TOF_RECAL_BACKLOG` | Files a batch (25), seconds between batches (60), and the live ingest's files in progress above which the run holds (20) |
+| `TOF_RECAL_LIMIT` | At most this many files a run; `0` (the default) for all |
+| `TOF_RECAL_RETRY=1` | Offer again the files the ledger has an outcome for |
+| `TOF_RECAL_ROLLBACK` | For a rollback: `batch:<n>` or `file:<sample file id>`, comma-separated. The log names each batch's number |
+| `TOF_RECAL_BANDS` | Mass band edges in Th; default `40,100,150,200,300,500` |
+| `TOF_RECAL_LEDGER` | Another directory for the ledger |
+| `TOF_RECAL_JSON=1` | Also print the whole report, every file of a dry run included, as one JSON document on the last line |
+
 ### Instruments without a model
 
 Each instrument is a row of its own, with its class, vendor, model and the
