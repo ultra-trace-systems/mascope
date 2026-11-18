@@ -620,6 +620,35 @@ def level_share(frame: pd.DataFrame, level: str) -> dict:
     return _share(rows["a_level"] == level)
 
 
+#: What puts a row at 5b, each read off the records G13 and G14 read
+#: (``identification_level._refuted`` reads the tier reasons those records
+#: raise): an absent line (3.4e), an unseparated peak (3.4f), or neither of
+#: them, which leaves the plausibility floor.
+LEVEL_5B_FACTS = ("absent", "unseparated", "neither")
+
+
+def level_5b_fact(frame: pd.DataFrame, fact: str) -> dict:
+    """The share of the committed monoisotopic rows at 5b that carry ``fact``.
+
+    A row can carry an absent line and an unseparated peak both, so the first
+    two shares can sum past 100; ``neither`` holds the rows that carry
+    neither, so it and the other two cover every 5b row.
+
+    :param fact: One of :data:`LEVEL_5B_FACTS`.
+    """
+    rows = _a_levelled_main(frame)
+    if rows.empty:
+        return reading()
+    rows = rows[rows["a_level"] == "5b"]
+    absent = _column(rows, "a_absent_lines").map(lambda n: not _missing(n) and n > 0)
+    unseparated = _column(rows, "a_unseparated").map(_true)
+    if fact == "absent":
+        return _share(absent)
+    if fact == "unseparated":
+        return _share(unseparated)
+    return _share(~(absent | unseparated))
+
+
 def _number(level) -> int | None:
     """A level's number, its first character; None for none, which a frame
     holds as NaN and so reads as neither 5 nor 4 or above."""
@@ -927,6 +956,9 @@ METRICS = (
     ("level_4b", "level 4b: committed readings, the ion's formula", "%"),
     ("level_5a", "level 5a: committed readings, rivals remain", "%"),
     ("level_5b", "level 5b: committed readings, refuted or untestable", "%"),
+    ("level_5b_absent", "  5b: of them, an absent line", "%"),
+    ("level_5b_unseparated", "  5b: of them, an unseparated peak", "%"),
+    ("level_5b_neither", "  5b: of them, neither: under the plausibility floor", "%"),
     ("level_assigned_at_5", "assigned readings at level 5", "%"),
     ("level_under_assigned_at_4", "readings under assigned at level 4 or above", "%"),
 )
@@ -1076,6 +1108,7 @@ def card_readings(
         "G13": g13_absent_lines(frame),
         "G14": g14_unseparated(frame),
         **{f"level_{level}": level_share(frame, level) for level in CARD_LEVELS},
+        **{f"level_5b_{fact}": level_5b_fact(frame, fact) for fact in LEVEL_5B_FACTS},
         "level_assigned_at_5": level_crossing(frame, assigned=True),
         "level_under_assigned_at_4": level_crossing(frame, assigned=False),
     }
