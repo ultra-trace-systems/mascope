@@ -2954,8 +2954,8 @@ def apply_partner_gates(
     measured the run, so that a partner is a reading that gate's ceiling
     leaves committed (:func:`tier_under_ceiling`), and before the
     cross-channel pass reads the ledger, so that a reading it sets aside is no
-    rival there. A batch search, which judges its rows by neither pass, reads
-    it over its own rows (``batch_untargeted.gate_search_rows``).
+    rival there. A batch search reads it so too, in its judge stage, over the
+    rows it read in a sample (``service.Judging``).
 
     A partner is a monoisotopic row committed at candidate or better through
     one of the mode's own channels whose neutral is the reading's, compared as

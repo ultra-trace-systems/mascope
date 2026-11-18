@@ -6,8 +6,9 @@ outcome says. See ``batch_untargeted.py``.
 """
 
 import math
+from contextlib import ExitStack
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import DEFAULT, AsyncMock, patch
 
 import pandas as pd
 import pytest
@@ -21,28 +22,23 @@ from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     Occurrence,
     admitted_targets,
     choose_representatives,
-    gate_search_rows,
     group_by_sample,
     merge_search_rows,
     occurrence_split,
     owner_anchor_of,
     persistent_anchors,
-    search_config,
     search_outcome,
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_ARTIFACT,
     ROLE_REAGENT,
-    untargeted_matches_to_peak_assignments,
 )
 from mascope_backend.api.new.peak_assignments.profiles import (
     NamedContext,
     resolve_profile,
-    with_secondary_channels,
 )
 from mascope_backend.api.new.peak_assignments.tiers import (
-    TIER_ASSIGNED,
     TIER_CANDIDATE,
 )
 from mascope_tools.composition.mass_accuracy import PRED_SIGMA_PPM
@@ -53,13 +49,14 @@ REAGENT_ROLE_CODE = role_code(ROLE_REAGENT)
 ARTIFACT_ROLE_CODE = role_code(ROLE_ARTIFACT)
 
 
-def _member(anchor, sample, peak, intensity, role=None):
+def _member(anchor, sample, peak, intensity, role=None, candidate=None):
     return SimpleNamespace(
         batch_peak_id=anchor,
         sample_item_id=sample,
         sample_peak_id=peak,
         intensity=intensity,
         role=role,
+        candidate=candidate,
     )
 
 
@@ -116,6 +113,24 @@ def test_a_mixed_anchor_is_searched_on_a_real_peak():
     ]
 
     assert choose_representatives(members)["bp-1"].sample_item_id == "s2"
+
+
+def test_a_member_that_reads_a_formula_is_no_representative():
+    """An anchor most of whose members the reagent pre-pass claimed stays
+    unassigned however its other members read. Its brightest real member
+    reads a formula its sample's ledger already holds, which the search would
+    not search, as a run never searches its Stage A's peaks: the anchor is
+    searched on the brightest member that reads nothing."""
+    members = [
+        _member("bp-1", "s1", "p1", 9e6, role=REAGENT_ROLE_CODE),
+        _member("bp-1", "s2", "p1", 9e6, role=REAGENT_ROLE_CODE),
+        _member("bp-1", "s3", "p1", 5e5, candidate=0),
+        _member("bp-1", "s4", "p1", 2e5),
+    ]
+
+    assert choose_representatives(members)["bp-1"].sample_item_id == "s4"
+    # With none that reads nothing, the anchor is not searched.
+    assert choose_representatives(members[:3]) == {}
 
 
 def test_representatives_group_into_one_search_per_sample():
@@ -416,19 +431,6 @@ def test_a_row_on_a_claimed_member_is_no_reading():
     assert [r.row["peak_assignment_id"] for r in merge.readings["A"]] == ["x-m0"]
 
 
-def test_the_search_config_is_the_orchestrators():
-    # Both paths configure the finder from one resolved profile, which is what
-    # makes a batch search comparable with a per-sample run.
-    resolved = resolve_profile(
-        PeakAssignmentConfig(), ["[M+Br]-"], instrument_type="orbi", polarity="-"
-    )
-    built = search_config(resolved, ["H+", "Na+"])
-    assert built.ionizations == "H+,Na+"
-    assert built.mass_range_ppm == resolved.mz_precision_ppm
-    assert built.element_count_ranges == resolved.element_ranges
-    assert built.use_unsaturation is True
-
-
 def test_the_outcome_says_when_there_was_nothing_to_search():
     outcome = search_outcome(
         {
@@ -533,100 +535,415 @@ def _match(mz, formula, ion, mechanism, family=()):
     }
 
 
-def test_the_search_reads_the_partner_gate_over_its_own_rows():
-    # A batch search runs no Stage A and none of the judging passes, so the
-    # one rule its rows can apply for themselves is the partner gate: the
-    # tropylium ion reads as toluene less a hydride here as in a run of the
-    # sample, not as the protonated C7H6 the election prefers.
-    config = PeakAssignmentConfig()
-    resolved = resolve_profile(config, ["[M]+."], instrument_type="orbi", polarity="+")
-    resolved = with_secondary_channels(
-        resolved,
-        [91.0542, 92.0621, 202.0777],
-        [1.0e6, 3.0e6, 5.0e6],
-        ["[M+H]+", "[M-H]+"],
+class _Searched(Exception):
+    """Raised by the fake finder once it has seen what the search hands it."""
+
+
+_SVC = "mascope_backend.api.new.peak_assignments.service"
+_PIPE = "mascope_backend.api.new.peak_assignments.pipeline"
+_BU = "mascope_backend.api.new.peak_assignments.batch_untargeted"
+
+
+def _sample(filename="orbi-sample.raw", polarity="-"):
+    return SimpleNamespace(
+        sample_item_id="si-1",
+        sample_batch_id="sb-1",
+        sample_item_name="Sample One",
+        filename=filename,
+        polarity=polarity,
     )
-    assert {"[M+H]+", "[M-H]+"} <= resolved.partner_gated_channels
-    ids = {"[M]+.": "im-ct", "[M+H]+": "im-h", "[M-H]+": "im-hydride"}
-    peaks = pd.DataFrame(
+
+
+def _mechanism(notation, mechanism_id):
+    return SimpleNamespace(
+        ionization_mechanism=notation,
+        ionization_mechanism_id=mechanism_id,
+        ionization_mechanism_polarity=notation[-1],
+    )
+
+
+def _searching(
+    sample,
+    peaks,
+    mechanisms,
+    *,
+    finder,
+    secondary=(),
+    width=None,
+    known=None,
+    explained=frozenset(),
+    resolution=None,
+):
+    """Stand in for what a batch search of one sample reads: its sample row,
+    peaks and mechanisms, its file's resolving power and its recorded
+    measurement (none unless a test says), the batch's records of it (none),
+    its known set and its finder. Everything between them is the stage list's
+    own.
+
+    :return: The stack of stand-ins, and the ones a test reads back.
+    """
+    stack = ExitStack()
+
+    def stand_in(target, value=DEFAULT, **kwargs):
+        return stack.enter_context(patch(target, value, **kwargs))
+
+    mocks = {
+        "fetch": stand_in(f"{_BU}.fetch_sample", AsyncMock(return_value=sample)),
+        "explained": stand_in(
+            f"{_BU}._explained_peaks", AsyncMock(return_value=frozenset(explained))
+        ),
+        "peaks": stand_in(f"{_SVC}.load_sample_peaks", return_value=peaks),
+        "mechanisms": stand_in(
+            f"{_SVC}.fetch_sample_mechanisms",
+            AsyncMock(
+                return_value=(
+                    [m.ionization_mechanism_id for m in mechanisms],
+                    mechanisms,
+                )
+            ),
+        ),
+        "secondary": stand_in(
+            f"{_SVC}.fetch_mechanisms_by_notation",
+            AsyncMock(return_value=list(secondary)),
+        ),
+        "params": stand_in(
+            f"{_PIPE}.default_match_params",
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    mz_tolerance=15.0, isotope_abundance_threshold=1e-4
+                )
+            ),
+        ),
+        "setup": stand_in(f"{_PIPE}.sample_setup", AsyncMock(return_value=None)),
+        "purity": stand_in(
+            f"{_PIPE}.sample_label_purity", AsyncMock(return_value=None)
+        ),
+        "species": stand_in(f"{_PIPE}.batch_species_for", AsyncMock(return_value=[])),
+        "series": stand_in(f"{_SVC}.batch_series_by_peak", AsyncMock(return_value={})),
+        "resolution": stand_in(
+            f"{_SVC}._resolution_of", AsyncMock(return_value=resolution)
+        ),
+        "cap": stand_in(f"{_SVC}._source_line_cap", AsyncMock(return_value=None)),
+        "width": stand_in(
+            f"{_SVC}.sample_recorded_width", AsyncMock(return_value=width)
+        ),
+        "tolerance": stand_in(
+            f"{_PIPE}.recorded_envelope_tolerance", AsyncMock(return_value=None)
+        ),
+        "latest": stand_in(
+            f"{_SVC}._latest_in_app_run", AsyncMock(return_value=(None, None))
+        ),
+        "known": stand_in(
+            f"{_SVC}._fetch_known_isotopes",
+            AsyncMock(return_value=pd.DataFrame() if known is None else known),
+        ),
+        "seeded": stand_in(
+            f"{_SVC}._seeded_rescore", AsyncMock(return_value=({}, None))
+        ),
+        "finder": stand_in(f"{_PIPE}.assign_compositions", finder),
+    }
+    return stack, mocks
+
+
+def _peaks(specs):
+    return pd.DataFrame(
         [
-            {"sample_peak_id": "p1", "mz": 91.0542, "intensity": 1.0e6},
-            {"sample_peak_id": "p2", "mz": 92.0621, "intensity": 3.0e6},
+            {"sample_peak_id": pid, "mz": mz, "intensity": intensity}
+            for pid, mz, intensity in specs
         ]
     )
-    rows = untargeted_matches_to_peak_assignments(
-        pd.DataFrame(
-            [
-                _match(
-                    91.0542,
-                    "C7H6",
-                    "C7H7+",
-                    "[M+H]+",
-                    family=[("C7H8", "C7H7+", "[M-H]+")],
-                ),
-                _match(92.0621, "C7H8", "C7H8+", "[M]+."),
-            ]
-        ),
-        peaks_df=peaks,
-        sample_item_id="si-1",
-        peak_assignment_run_id="run-1",
-        candidate_threshold=config.candidate_threshold,
-        assigned_threshold=config.assigned_threshold,
-        mechanism_id_by_notation=ids,
-        max_alternatives=5,
-        minor_channels=resolved.minor_channels,
+
+
+@pytest.mark.asyncio
+async def test_a_batch_search_runs_every_stage_of_the_list():
+    # The batch search of one sample is the stage list's BATCH_SEARCH path:
+    # the run's stages, with the search on the representatives proposed and
+    # the sample's recorded measurement.
+    from mascope_backend.api.new.peak_assignments import pipeline
+
+    passes = []
+    run_stages = pipeline.run_stages
+
+    async def recording(ctx):
+        passes.append(ctx)
+        return await run_stages(ctx)
+
+    stack, mocks = _searching(
+        _sample(),
+        _peaks([("p1", 160.8413, 1.0e6)]),
+        [_mechanism("[M-H]-", "im-h")],
+        finder=lambda *args, **kwargs: (pd.DataFrame(), None),
+        explained={"p0"},
     )
-    gated = gate_search_rows(
-        rows,
-        resolved_profile=resolved,
-        mechanism_id_by_notation=ids,
-        tier_bands=config.tier_bands(),
+    with stack, patch(f"{_BU}.run_stages", side_effect=recording):
+        rows, unsearched, admitted = await batch_untargeted._search_sample(
+            "si-1", {"p1"}, PeakAssignmentConfig()
+        )
+
+    (ctx,) = passes
+    assert ctx.path is pipeline.BATCH_SEARCH
+    assert ctx.path.measurement is pipeline.Measurement.RECORDED
+    assert ctx.ran == list(pipeline.STAGES)
+    assert ctx.targets == {"p1"} and ctx.explained_peak_ids == {"p0"}
+    assert (rows, unsearched, admitted) == ([], 0, set())
+
+
+@pytest.mark.asyncio
+async def test_a_batch_search_reads_its_lists_at_the_files_resolution():
+    # The stage list reads the file's R(m/z) once, and the lists the search
+    # reads for the neutrals they name are resolved at that reading, as a
+    # run's Stage A resolves its known set at it (MAS-977).
+    def orbitrap(mz):
+        return 100_000.0
+
+    stack, mocks = _searching(
+        _sample(),
+        _peaks([("p1", 160.8413, 1.0e6)]),
+        [_mechanism("[M-H]-", "im-h")],
+        finder=lambda *args, **kwargs: (pd.DataFrame(), None),
+        resolution=orbitrap,
     )
-    tropylium = next(row for row in gated if row["sample_peak_id"] == "p1")
+    with stack:
+        await batch_untargeted._search_sample("si-1", {"p1"}, PeakAssignmentConfig())
+
+    mocks["resolution"].assert_awaited_once()
+    mocks["known"].assert_awaited_once()
+    assert mocks["known"].await_args.kwargs["resolution"] is orbitrap
+
+
+def test_the_batch_search_s_explained_peaks_are_its_frame():
+    # What a run's Stage A and pre-passes are to its search: a peak the batch
+    # ledger explains is no target and no twin, and the search writes no row
+    # on it. Pinned through the twin re-read below; this is its query's shape.
+    assert batch_untargeted.CLAIMED_ROLE_CODES == frozenset(
+        {role_code(ROLE_REAGENT), role_code(ROLE_ARTIFACT)}
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_search_s_partner_gate_turns_tropylium_as_a_run_s_does():
+    # The judging a run's rows get, the partner gate first: the tropylium ion
+    # reads as toluene less a hydride here as in a run of the sample, not as
+    # the protonated C7H6 the election prefers; and the lists it names reach
+    # the gate, as they reach a run's.
+    peaks = _peaks(
+        [
+            ("p1", 91.0542, 1.0e6),
+            ("p2", 92.0621, 3.0e6),
+            ("p3", 202.0777, 5.0e6),
+        ]
+    )
+    mode = [_mechanism("[M]+.", "im-ct")]
+    secondary = [_mechanism("[M+H]+", "im-h"), _mechanism("[M-H]+", "im-hydride")]
+
+    def finder(*args, **kwargs):
+        return (
+            pd.DataFrame(
+                [
+                    _match(
+                        91.0542,
+                        "C7H6",
+                        "C7H7+",
+                        "[M+H]+",
+                        family=[("C7H8", "C7H7+", "[M-H]+")],
+                    ),
+                    _match(92.0621, "C7H8", "C7H8+", "[M]+."),
+                ]
+            ),
+            None,
+        )
+
+    stack, mocks = _searching(
+        _sample(polarity="+"), peaks, mode, finder=finder, secondary=secondary
+    )
+    gate = stack.enter_context(
+        patch(f"{_SVC}.apply_partner_gates", wraps=batch_untargeted_partner_gates())
+    )
+    with stack:
+        rows, _, _ = await batch_untargeted._search_sample(
+            "si-1", {"p1", "p2"}, PeakAssignmentConfig()
+        )
+
+    tropylium = next(row for row in rows if row["sample_peak_id"] == "p1")
     assert tropylium["assigned_formula"] == "C7H8"
     assert tropylium["ionization_mechanism_id"] == "im-hydride"
     assert tropylium["provenance"]["partner_gate"]["through"] == "[M-H]+"
+    assert "listed_formulas" in gate.call_args.kwargs
 
 
-@pytest.mark.parametrize(
-    "instrument, held", [("orbi", "candidate"), ("tof", "assigned")]
-)
-def test_the_search_holds_a_reading_only_an_organonitrates_skeleton_admits(
-    instrument, held
+def batch_untargeted_partner_gates():
+    from mascope_backend.api.new.peak_assignments import service
+
+    return service.apply_partner_gates
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("instrument", ["orbi", "tof"])
+async def test_the_search_holds_a_reading_only_an_organonitrates_skeleton_admits(
+    instrument,
 ):
-    # Step 3.6's rider: a nitrate search on an Orbitrap reads the skeleton, so
-    # it commits the dinitrate its windows refused as a formula, and holds it
-    # at candidate as a run's tiering pass does. A TOF reads no skeleton.
-    config = PeakAssignmentConfig()
-    resolved = resolve_profile(
-        config, ["[M+NO3]-"], instrument_type=instrument, polarity="-"
+    # Step 3.6's rider, asked by the tiering pass as a run asks it: a nitrate
+    # search on an Orbitrap reads the skeleton, so it commits the dinitrate its
+    # windows refused as a formula, and holds it at candidate for it. A TOF
+    # reads no skeleton.
+    filename = "orbi-sample.raw" if instrument == "orbi" else "tof-sample.h5"
+
+    def finder(*args, **kwargs):
+        return (
+            pd.DataFrame([_match(286.0063, "C5H8N2O8", "C5H8N3O11-", "[M+NO3]-")]),
+            None,
+        )
+
+    stack, _ = _searching(
+        _sample(filename=filename),
+        _peaks([("p1", 286.0063, 1.0e6)]),
+        [_mechanism("[M+NO3]-", "im-no3")],
+        finder=finder,
     )
-    ids = {"[M+NO3]-": "im-no3"}
-    peaks = pd.DataFrame([{"sample_peak_id": "p1", "mz": 286.0063, "intensity": 1.0e6}])
-    rows = untargeted_matches_to_peak_assignments(
-        pd.DataFrame([_match(286.0063, "C5H8N2O8", "C5H8N3O11-", "[M+NO3]-")]),
-        peaks_df=peaks,
-        sample_item_id="si-1",
-        peak_assignment_run_id="run-1",
-        candidate_threshold=config.candidate_threshold,
-        assigned_threshold=config.assigned_threshold,
-        mechanism_id_by_notation=ids,
-        max_alternatives=5,
-        minor_channels=resolved.minor_channels,
-    )
-    assert rows[0]["tier"] == "assigned"
-    gated = gate_search_rows(
-        rows,
-        resolved_profile=resolved,
-        mechanism_id_by_notation=ids,
-        tier_bands=config.tier_bands(),
-    )
-    assert gated[0]["tier"] == held
-    assert ("nox_skeleton" in gated[0]["provenance"]) is (held == "candidate")
+    with stack:
+        rows, _, _ = await batch_untargeted._search_sample(
+            "si-1", {"p1"}, PeakAssignmentConfig()
+        )
+
+    (row,) = rows
+    rules = {reason["rule"] for reason in row["provenance"]["tier_reasons"]}
+    assert ("nox_skeleton" in rules) is (instrument == "orbi")
+    if instrument == "orbi":
+        assert row["tier"] == TIER_CANDIDATE
 
 
-class _Searched(Exception):
-    """Raised by the fake finder once it has seen what the search hands it."""
+@pytest.mark.asyncio
+async def test_a_searched_member_reads_the_tier_a_run_of_its_sample_gives():
+    # MAS-858: a reading the batch search makes is judged by the run's rules,
+    # not banded by its evidence alone. A reading that stands on its one peak,
+    # no line of its envelope in the ledger beside it, is held at candidate by
+    # the lone-peak rule, as a run of the sample holds it, though its evidence
+    # bands it assigned.
+    def finder(*args, **kwargs):
+        return (
+            pd.DataFrame([_match(160.8413, "Br2", "Br2H-", "[M-H]-")]),
+            None,
+        )
+
+    stack, _ = _searching(
+        _sample(),
+        _peaks([("p1", 160.8413, 1.0e6)]),
+        [_mechanism("[M-H]-", "im-h")],
+        finder=finder,
+    )
+    with stack:
+        rows, _, _ = await batch_untargeted._search_sample(
+            "si-1", {"p1"}, PeakAssignmentConfig()
+        )
+
+    (row,) = rows
+    capping = [
+        reason["rule"] for reason in row["provenance"]["tier_reasons"] if reason["caps"]
+    ]
+    assert row["tier"] == TIER_CANDIDATE
+    assert capping == ["lone_peak"]
+    assert row["provenance"]["evidence"] >= PeakAssignmentConfig().assigned_threshold
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recorded", [True, False], ids=["recorded", "none"])
+async def test_the_search_s_mass_gate_judges_at_the_samples_recorded_calibration(
+    recorded,
+):
+    # The measurement model a batch search reads is the one the sample's
+    # latest run recorded: a reading 5 ppm off that run's calibration, whose
+    # gate is 0.1 ppm wide, is held below assignability as that run's gate
+    # holds it. With no run to read one from, the gate fits on what the search
+    # committed - one uncorroborated reading, too few - and stands down.
+    from mascope_backend.api.new.peak_assignments.engine import MASS_CALIBRATION_KEY
+    from mascope_backend.api.new.peak_assignments.mass_gate import MassCalibration
+
+    reading = _match(160.8413, "Br2", "Br2H-", "[M-H]-")
+    reading["mz_error_ppm"] = 5.0
+
+    def finder(*args, **kwargs):
+        return pd.DataFrame([reading]), None
+
+    stack, mocks = _searching(
+        _sample(),
+        _peaks([("p1", 160.8413, 1.0e6)]),
+        [_mechanism("[M-H]-", "im-h")],
+        finder=finder,
+    )
+    if recorded:
+        mocks["latest"].return_value = (
+            "run-1",
+            {
+                MASS_CALIBRATION_KEY: MassCalibration(
+                    mu_ppm=0.0, sigma_ppm=0.1, anchors=40, gate_sigma_ppm=0.1
+                ).snapshot()
+            },
+        )
+    with stack:
+        rows, _, _ = await batch_untargeted._search_sample(
+            "si-1", {"p1"}, PeakAssignmentConfig()
+        )
+
+    (row,) = rows
+    gate = row["provenance"]["mass_gate"]
+    if recorded:
+        assert row["tier"] == "below_assignability"
+        assert gate["capped"] == "below_assignability"
+    else:
+        assert "capped" not in gate
+        assert row["tier"] == TIER_CANDIDATE
+
+
+@pytest.mark.asyncio
+async def test_a_representative_the_claim_stage_takes_is_no_target():
+    # The batch search runs the claim stage a run runs: a representative its
+    # sample's artifact pre-pass claims is taken out of what the search
+    # enumerates, as a run's search never searches a peak that stage took. The
+    # other representative is searched.
+    searched = []
+
+    def finder(*args, **kwargs):
+        searched.append(sorted(kwargs["targets"]))
+        return pd.DataFrame(), None
+
+    stack, _ = _searching(
+        _sample(),
+        _peaks([("p1", 160.8413, 1.0e6), ("p2", 200.0, 1.0e6)]),
+        [_mechanism("[M-H]-", "im-h")],
+        finder=finder,
+    )
+    with stack, patch(f"{_SVC}._artifact_assignments", return_value=([], {"p1"})):
+        await batch_untargeted._search_sample(
+            "si-1", {"p1", "p2"}, PeakAssignmentConfig()
+        )
+
+    assert searched == [[200.0]]
+
+
+@pytest.mark.asyncio
+async def test_a_representative_the_batch_ledger_explains_is_no_target():
+    # A peak the sample's ledger already reads is not searched, as a run's
+    # search never searches its Stage A's: the representative chosen before
+    # the ledger came to read it is taken out of what the search enumerates.
+    searched = []
+
+    def finder(*args, **kwargs):
+        searched.append(sorted(kwargs["targets"]))
+        return pd.DataFrame(), None
+
+    stack, _ = _searching(
+        _sample(),
+        _peaks([("p1", 160.8413, 1.0e6), ("p2", 200.0, 1.0e6)]),
+        [_mechanism("[M-H]-", "im-h")],
+        finder=finder,
+        explained={"p1"},
+    )
+    with stack:
+        await batch_untargeted._search_sample(
+            "si-1", {"p1", "p2"}, PeakAssignmentConfig()
+        )
+
+    assert searched == [[200.0]]
 
 
 @pytest.mark.asyncio
@@ -639,50 +956,20 @@ async def test_a_batch_search_is_scored_at_its_samples_own_instrument(
     # No Stage A runs on this path, so nothing measured the sample's width: it
     # is scored at its own instrument class's, through the library's
     # derivation, as a run of the sample with a thin library is.
-    sample = SimpleNamespace(
-        sample_item_id="si-1",
-        sample_batch_id="sb-1",
-        sample_item_name="Sample One",
-        filename=filename,
-        polarity="-",
-    )
-    peaks = pd.DataFrame([{"sample_peak_id": "p1", "mz": 160.8413, "intensity": 1.0e6}])
-    mechanism = SimpleNamespace(
-        ionization_mechanism="[M-H]-", ionization_mechanism_id="im-h"
-    )
     seen = {}
 
     def finder(*args, **kwargs):
         seen["scoring"] = kwargs["scoring"]
         raise _Searched
 
-    with (
-        patch.object(batch_untargeted, "fetch_sample", AsyncMock(return_value=sample)),
-        patch.object(batch_untargeted, "load_sample_peaks", return_value=peaks),
-        patch.object(
-            batch_untargeted,
-            "fetch_sample_mechanisms",
-            AsyncMock(return_value=(["im-h"], [mechanism])),
-        ),
-        patch.object(
-            batch_untargeted, "fetch_mechanisms_by_notation", AsyncMock(return_value=[])
-        ),
-        patch.object(
-            batch_untargeted,
-            "default_match_params",
-            AsyncMock(
-                return_value=SimpleNamespace(
-                    mz_tolerance=15.0, isotope_abundance_threshold=1e-4
-                )
-            ),
-        ),
-        patch.object(batch_untargeted, "_resolution_of", AsyncMock(return_value=None)),
-        patch.object(batch_untargeted, "assign_compositions", finder),
-        pytest.raises(_Searched),
-    ):
-        await batch_untargeted._search_sample_peaks(
-            "si-1", {"p1"}, PeakAssignmentConfig()
-        )
+    stack, _ = _searching(
+        _sample(filename=filename),
+        _peaks([("p1", 160.8413, 1.0e6)]),
+        [_mechanism("[M-H]-", "im-h")],
+        finder=finder,
+    )
+    with stack, pytest.raises(_Searched):
+        await batch_untargeted._search_sample("si-1", {"p1"}, PeakAssignmentConfig())
 
     assert seen["scoring"].sigma_ppm == pytest.approx(
         math.hypot(INSTRUMENT_FALLBACK_SIGMA_PPM[instrument], PRED_SIGMA_PPM)
@@ -694,10 +981,8 @@ async def test_a_batch_search_is_scored_at_its_samples_own_instrument(
 def nothing_named():
     """The context a sample's batch and dataset name lives with them in the
     database; these samples' name none unless a test says."""
-    with patch.object(
-        batch_untargeted,
-        "named_context_for",
-        AsyncMock(return_value=NamedContext()),
+    with patch(
+        f"{_PIPE}.named_context_for", AsyncMock(return_value=NamedContext())
     ) as named:
         yield named
 
@@ -710,50 +995,20 @@ async def test_a_batch_search_searches_under_the_context_its_batch_names(
     # would, the one the batch or its dataset names, so its grid and ratio
     # windows are that context's.
     nothing_named.return_value = NamedContext(batch="chamber")
-    sample = SimpleNamespace(
-        sample_item_id="si-1",
-        sample_batch_id="sb-1",
-        sample_item_name="Sample One",
-        filename="orbi-sample.raw",
-        polarity="-",
-    )
-    peaks = pd.DataFrame([{"sample_peak_id": "p1", "mz": 160.8413, "intensity": 1.0e6}])
-    mechanism = SimpleNamespace(
-        ionization_mechanism="[M-H]-", ionization_mechanism_id="im-h"
-    )
     seen = {}
 
     def finder(frame, search, heuristics, **kwargs):
         seen["windows"] = heuristics.context_ratio_windows
         raise _Searched
 
-    with (
-        patch.object(batch_untargeted, "fetch_sample", AsyncMock(return_value=sample)),
-        patch.object(batch_untargeted, "load_sample_peaks", return_value=peaks),
-        patch.object(
-            batch_untargeted,
-            "fetch_sample_mechanisms",
-            AsyncMock(return_value=(["im-h"], [mechanism])),
-        ),
-        patch.object(
-            batch_untargeted, "fetch_mechanisms_by_notation", AsyncMock(return_value=[])
-        ),
-        patch.object(
-            batch_untargeted,
-            "default_match_params",
-            AsyncMock(
-                return_value=SimpleNamespace(
-                    mz_tolerance=15.0, isotope_abundance_threshold=1e-4
-                )
-            ),
-        ),
-        patch.object(batch_untargeted, "_resolution_of", AsyncMock(return_value=None)),
-        patch.object(batch_untargeted, "assign_compositions", finder),
-        pytest.raises(_Searched),
-    ):
-        await batch_untargeted._search_sample_peaks(
-            "si-1", {"p1"}, PeakAssignmentConfig()
-        )
+    stack, _ = _searching(
+        _sample(),
+        _peaks([("p1", 160.8413, 1.0e6)]),
+        [_mechanism("[M-H]-", "im-h")],
+        finder=finder,
+    )
+    with stack, pytest.raises(_Searched):
+        await batch_untargeted._search_sample("si-1", {"p1"}, PeakAssignmentConfig())
 
     nothing_named.assert_awaited_with("sb-1")
     assert seen["windows"] == CHAMBER.ratio_windows()
@@ -770,61 +1025,21 @@ async def test_a_tof_batch_search_is_bounded_by_its_recorded_width(
     # the sample's latest run fitted, six widths from its centre; at the class's
     # 10 ppm where no run fitted one, however narrow the class's own width.
     monkeypatch.setitem(INSTRUMENT_FALLBACK_SIGMA_PPM, "tof", 0.5)
-    sample = SimpleNamespace(
-        sample_item_id="si-1",
-        sample_batch_id="sb-1",
-        sample_item_name="Sample One",
-        filename="tof-sample.h5",
-        polarity="-",
-    )
-    peaks = pd.DataFrame([{"sample_peak_id": "p1", "mz": 160.8413, "intensity": 1.0e6}])
-    mechanism = SimpleNamespace(
-        ionization_mechanism="[M-H]-", ionization_mechanism_id="im-h"
-    )
     seen = {}
 
     def finder(frame, search, heuristics, **kwargs):
         seen["window"] = search.mass_range_ppm
         raise _Searched
 
-    with (
-        patch.object(batch_untargeted, "fetch_sample", AsyncMock(return_value=sample)),
-        patch.object(batch_untargeted, "load_sample_peaks", return_value=peaks),
-        patch.object(
-            batch_untargeted,
-            "fetch_sample_mechanisms",
-            AsyncMock(return_value=(["im-h"], [mechanism])),
-        ),
-        patch.object(
-            batch_untargeted, "fetch_mechanisms_by_notation", AsyncMock(return_value=[])
-        ),
-        patch.object(
-            batch_untargeted,
-            "default_match_params",
-            AsyncMock(
-                return_value=SimpleNamespace(
-                    mz_tolerance=15.0, isotope_abundance_threshold=1e-4
-                )
-            ),
-        ),
-        patch.object(batch_untargeted, "_resolution_of", AsyncMock(return_value=None)),
-        patch.object(
-            batch_untargeted, "sample_recorded_width", AsyncMock(return_value=width)
-        ),
-        patch.object(
-            batch_untargeted, "sample_reagent_offset", AsyncMock(return_value=None)
-        ),
-        patch.object(
-            batch_untargeted,
-            "recorded_envelope_tolerance",
-            AsyncMock(return_value=None),
-        ),
-        patch.object(batch_untargeted, "assign_compositions", finder),
-        pytest.raises(_Searched),
-    ):
-        await batch_untargeted._search_sample_peaks(
-            "si-1", {"p1"}, PeakAssignmentConfig()
-        )
+    stack, _ = _searching(
+        _sample(filename="tof-sample.h5"),
+        _peaks([("p1", 160.8413, 1.0e6)]),
+        [_mechanism("[M-H]-", "im-h")],
+        finder=finder,
+        width=width,
+    )
+    with stack, pytest.raises(_Searched):
+        await batch_untargeted._search_sample("si-1", {"p1"}, PeakAssignmentConfig())
 
     assert seen["window"] == pytest.approx(window, abs=1e-3)
 
@@ -834,53 +1049,21 @@ async def test_a_tof_batch_search_is_bounded_by_its_recorded_width(
 async def test_a_batch_search_reads_the_peak_lists_scan_counts(counted):
     # As a run's search does: a dim line is read at its mean per scan where
     # the file keeps the counts.
-    sample = SimpleNamespace(
-        sample_item_id="si-1",
-        sample_batch_id="sb-1",
-        sample_item_name="Sample One",
-        filename="orbi-sample.raw",
-        polarity="-",
-    )
-    peaks = pd.DataFrame([{"sample_peak_id": "p1", "mz": 160.8413, "intensity": 1.0e6}])
+    peaks = _peaks([("p1", 160.8413, 1.0e6)])
     if counted:
         peaks["n_scans"] = 3.0
         peaks["n_scans_total"] = 4.0
-    mechanism = SimpleNamespace(
-        ionization_mechanism="[M-H]-", ionization_mechanism_id="im-h"
-    )
     seen = {}
 
     def finder(frame, *args, **kwargs):
         seen["columns"] = set(frame.columns)
         raise _Searched
 
-    with (
-        patch.object(batch_untargeted, "fetch_sample", AsyncMock(return_value=sample)),
-        patch.object(batch_untargeted, "load_sample_peaks", return_value=peaks),
-        patch.object(
-            batch_untargeted,
-            "fetch_sample_mechanisms",
-            AsyncMock(return_value=(["im-h"], [mechanism])),
-        ),
-        patch.object(
-            batch_untargeted, "fetch_mechanisms_by_notation", AsyncMock(return_value=[])
-        ),
-        patch.object(
-            batch_untargeted,
-            "default_match_params",
-            AsyncMock(
-                return_value=SimpleNamespace(
-                    mz_tolerance=15.0, isotope_abundance_threshold=1e-4
-                )
-            ),
-        ),
-        patch.object(batch_untargeted, "_resolution_of", AsyncMock(return_value=None)),
-        patch.object(batch_untargeted, "assign_compositions", finder),
-        pytest.raises(_Searched),
-    ):
-        await batch_untargeted._search_sample_peaks(
-            "si-1", {"p1"}, PeakAssignmentConfig()
-        )
+    stack, _ = _searching(
+        _sample(), peaks, [_mechanism("[M-H]-", "im-h")], finder=finder
+    )
+    with stack, pytest.raises(_Searched):
+        await batch_untargeted._search_sample("si-1", {"p1"}, PeakAssignmentConfig())
 
     assert ({"n_scans", "n_scans_total"} <= seen["columns"]) is counted
 
@@ -892,92 +1075,39 @@ async def _search_ammonium_reading(*, opened, known):
 
     :return: The search's rows and the fake known-set read.
     """
-    sample = SimpleNamespace(
-        sample_item_id="si-1",
-        sample_batch_id="sb-1",
-        sample_item_name="Sample One",
-        filename="orbi-sample.raw",
-        polarity="+",
-    )
     # 138.0986 is the carrier that opens the ammonium channel on a uronium
     # source (`with_secondary_channels`); 188.1281 is C9H14O3 + NH4+.
     specs = [("p0", 100.0, 1.0e6), ("p2", 188.1281, 1.0e5)]
     if opened:
         specs.append(("p1", 138.0986, 1.0e4))
-    peaks = pd.DataFrame(
-        [
-            {"sample_peak_id": pid, "mz": mz, "intensity": intensity}
-            for pid, mz, intensity in specs
-        ]
-    )
-    mode = [
-        SimpleNamespace(
-            ionization_mechanism=notation,
-            ionization_mechanism_id=mechanism_id,
-            ionization_mechanism_polarity="+",
-        )
-        for notation, mechanism_id in (
-            ("[M+H]+", "im-h"),
-            ("[M+CH4N2O+H]+", "im-urea"),
-        )
-    ]
-    ammonium = SimpleNamespace(
-        ionization_mechanism="[M+NH4]+",
-        ionization_mechanism_id="im-nh4",
-        ionization_mechanism_polarity="+",
-    )
+    mode = [_mechanism("[M+H]+", "im-h"), _mechanism("[M+CH4N2O+H]+", "im-urea")]
     reading = _match(188.1281, "C9H14O3", "C9H18NO3+", "[M+NH4]+")
-    known_isotopes = AsyncMock(return_value=known)
 
     def finder(*args, **kwargs):
         return pd.DataFrame([reading]), None
 
-    with (
-        patch.object(batch_untargeted, "fetch_sample", AsyncMock(return_value=sample)),
-        patch.object(batch_untargeted, "load_sample_peaks", return_value=peaks),
-        patch.object(
-            batch_untargeted,
-            "fetch_sample_mechanisms",
-            AsyncMock(return_value=(["im-h", "im-urea"], mode)),
-        ),
-        patch.object(
-            batch_untargeted,
-            "fetch_mechanisms_by_notation",
-            AsyncMock(return_value=[ammonium]),
-        ),
-        patch.object(
-            batch_untargeted,
-            "default_match_params",
-            AsyncMock(
-                return_value=SimpleNamespace(
-                    mz_tolerance=15.0, isotope_abundance_threshold=1e-4
-                )
-            ),
-        ),
-        patch.object(batch_untargeted, "_resolution_of", AsyncMock(return_value=None)),
-        patch.object(
-            batch_untargeted,
-            "recorded_envelope_tolerance",
-            AsyncMock(return_value=None),
-        ),
-        patch.object(
-            batch_untargeted, "sample_reagent_offset", AsyncMock(return_value=None)
-        ),
-        patch.object(batch_untargeted, "_seeded_fits", AsyncMock(return_value={})),
-        patch.object(batch_untargeted, "_fetch_known_isotopes", known_isotopes),
-        patch.object(batch_untargeted, "assign_compositions", finder),
-    ):
-        rows, _, _ = await batch_untargeted._search_sample_peaks(
+    stack, mocks = _searching(
+        _sample(polarity="+"),
+        _peaks(specs),
+        mode,
+        finder=finder,
+        secondary=[_mechanism("[M+NH4]+", "im-nh4")],
+        known=known,
+    )
+    with stack:
+        rows, _, _ = await batch_untargeted._search_sample(
             "si-1", {"p2"}, PeakAssignmentConfig()
         )
-    return rows, known_isotopes
+    return rows, mocks["known"]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("listed", [True, False], ids=["listed", "unlisted"])
-async def test_a_list_naming_the_neutral_lifts_a_batch_searchs_cap(listed):
+async def test_a_list_naming_the_neutral_corroborates_a_batch_searchs_reading(
+    listed,
+):
     # Step 3.4 as a run of the sample reads it: a reading through a secondary
-    # channel reaches assigned when a list the sample is read against names
+    # channel is corroborated where a list the sample is read against names
     # its neutral, though no Stage A ran here to read the list.
     known = pd.DataFrame(
         {"target_compound_formula": ["O3C9H14" if listed else "C9H16O3"]}
@@ -990,10 +1120,9 @@ async def test_a_list_naming_the_neutral_lifts_a_batch_searchs_cap(listed):
         "list" if listed else None
     )
     assert row["provenance"]["minor_channel"]["capped"] is not listed
-    assert row["tier"] == (TIER_ASSIGNED if listed else TIER_CANDIDATE)
     # Read as a run reads it: the target library through the mode's own
     # mechanisms, the reference lists through every searched one, under the
-    # context's ceiling.
+    # context's ceiling, at the file's resolving power (none read here).
     (call,) = known_isotopes.await_args_list
     sample, threshold, mechanism_ids, mechanisms = call.args
     assert sample.sample_item_id == "si-1"
@@ -1010,18 +1139,100 @@ async def test_a_list_naming_the_neutral_lifts_a_batch_searchs_cap(listed):
             ["[M+H]+", "[M+CH4N2O+H]+"],
             instrument_type="orbi",
             polarity="+",
-        ).context.known_window
+        ).context.known_window,
+        "resolution": None,
     }
 
 
 @pytest.mark.asyncio
-async def test_a_batch_search_with_no_secondary_channel_reads_no_list():
-    # Only a secondary channel's readings consult the lists, so a sample whose
-    # spectrum opens none pays for no read of them.
+async def test_a_batch_search_reads_its_lists_whatever_channel_it_opens():
+    # As a run's Stage A reads them: the lists tell the partner gate what they
+    # name and can open a halogen to the twin re-read, whether or not the
+    # spectrum opens a secondary channel.
     _, known_isotopes = await _search_ammonium_reading(
         opened=False, known=pd.DataFrame()
     )
-    known_isotopes.assert_not_awaited()
+    known_isotopes.assert_awaited_once()
+
+
+class TestTheBatchSearchReadsHalogenTwins:
+    """MAS-911: the halogen-twin re-read follows the batch search inside its
+    propose stage, with a twin unexplained in the batch's own frame."""
+
+    @staticmethod
+    def _chlorobenzene():
+        from test_halogen_twins import CHLOROBENZENE, M0, TOLUENE
+
+        lines = sorted(CHLOROBENZENE + TOLUENE)
+        peaks = pd.DataFrame(
+            [
+                {"sample_peak_id": f"p{index}", "mz": mz, "intensity": height}
+                for index, (mz, height) in enumerate(lines)
+            ]
+        )
+        target = peaks.loc[(peaks["mz"] - M0).abs().idxmin(), "sample_peak_id"]
+        return peaks, target, M0
+
+    async def _search(self, peaks, target, *, config=None, explained=frozenset()):
+        from test_halogen_twins import matches
+
+        def finder(frame, *args, **kwargs):
+            return matches(frame), None
+
+        stack, mocks = _searching(
+            _sample(polarity="+"),
+            peaks,
+            [_mechanism("[M]+.", "im-ct")],
+            finder=finder,
+            explained=explained,
+        )
+        with stack:
+            rows, _, _ = await batch_untargeted._search_sample(
+                "si-1", {target}, config or PeakAssignmentConfig()
+            )
+        return rows
+
+    @pytest.mark.asyncio
+    async def test_a_chlorine_twin_left_unexplained_is_read_again(self):
+        peaks, target, m0 = self._chlorobenzene()
+
+        rows = await self._search(peaks, target)
+
+        (row,) = [row for row in rows if row["sample_peak_id"] == target]
+        assert row["sample_peak_mz"] == pytest.approx(m0)
+        assert row["assigned_formula"] == "C6H5Cl"
+        assert row["provenance"]["halogen_twin"]["halogen"] == "Cl"
+
+    @pytest.mark.asyncio
+    async def test_a_twin_the_batch_ledger_explains_is_no_twin(self):
+        # The 37Cl line's peak reads a formula in the batch ledger already:
+        # in the batch's frame it is explained, as a run's Stage A row is.
+        from test_halogen_twins import TWIN
+
+        peaks, target, _ = self._chlorobenzene()
+        twin = peaks.loc[(peaks["mz"] - TWIN).abs().idxmin(), "sample_peak_id"]
+
+        rows = await self._search(peaks, target, explained={twin})
+
+        assert not any(row.get("assigned_formula") == "C6H5Cl" for row in rows)
+
+    @pytest.mark.asyncio
+    async def test_a_bromide_sample_reads_no_bromine_twin(self, monkeypatch):
+        from mascope_backend.api.new.peak_assignments import service
+
+        seen = {}
+        real = service.twin_halogens
+
+        def spy(*args, **kwargs):
+            seen["halogens"] = real(*args, **kwargs)
+            return seen["halogens"]
+
+        monkeypatch.setattr(service, "twin_halogens", spy)
+        peaks, target, _ = self._chlorobenzene()
+
+        await self._search(peaks, target, config=PeakAssignmentConfig(profile="BR"))
+
+        assert seen["halogens"] == ("Cl",)
 
 
 # --- persistence: the second admission (step 4.2b) --------------------------------

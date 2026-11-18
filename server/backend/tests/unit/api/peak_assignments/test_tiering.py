@@ -73,7 +73,6 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     critical_separation,
     envelope_neighbours,
     find_envelope_claims,
-    hold_skeleton_readings,
     names_element,
     predicted_envelope,
     separated,
@@ -724,20 +723,6 @@ class TestTheOrganonitrateSkeleton:
         ]
         run(rows, context=presets.AMBIENT_AIR, nox_skeleton=True)
         assert REASON_NOX_SKELETON not in rules_on(rows, "pa-1")
-
-    def test_a_batch_searchs_skeleton_reading_is_held_with_its_lines(self):
-        rows = [
-            row("pa-1", self.DINITRATE),
-            line_of("pa-1", formula=self.DINITRATE),
-            row("pa-2", "C10H17NO4", mz=230.0),
-        ]
-        assert hold_skeleton_readings(rows, presets.AMBIENT_AIR) == 1
-        assert tier_of(rows, "pa-1") == "candidate"
-        assert tier_of(rows, "pa-1-13C") == "candidate"
-        assert tier_of(rows, "pa-2") == "assigned"
-        record = rows[0]["provenance"][REASON_NOX_SKELETON]
-        assert record["rule"] == REASON_NOX_SKELETON
-        assert record["caps"] is True
 
 
 class TestOnePeakIsNotEnough:

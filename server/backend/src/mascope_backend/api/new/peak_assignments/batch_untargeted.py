@@ -45,19 +45,16 @@ section 5.3.
 
 from __future__ import annotations
 
-import asyncio
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.lib.api_features import api_controller_background_task
-from mascope_backend.api.new.cheminfo.utils import to_custom_element_format
-from mascope_backend.api.new.ionization.modes.versions import sample_label_purity
 from mascope_backend.api.new.match.params import default_match_params
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     PERSISTENCE_KEY,
@@ -82,7 +79,6 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     touch_ledger,
 )
 from mascope_backend.api.new.peak_assignments.config import (
-    MAX_UNTARGETED_PEAKS_CEILING,
     PeakAssignmentConfig,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
@@ -90,45 +86,18 @@ from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_M0,
     ROLE_REAGENT,
     SOURCE_UNTARGETED,
-    SampleMassAccuracy,
-    apply_partner_gates,
     evidence_for,
-    listed_formula_identities,
-    pattern_scoring_for,
     tier_for_evidence,
-    untargeted_matches_to_peak_assignments,
-    untargeted_seeds,
     untargeted_targets,
 )
-from mascope_backend.api.new.peak_assignments.envelope_fit import (
-    recorded_envelope_tolerance,
-)
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
-from mascope_backend.api.new.peak_assignments.mass_gate import BELOW_ASSIGNABILITY_Z
-from mascope_backend.api.new.peak_assignments.profile_preview import (
-    named_context_for,
-)
-from mascope_backend.api.new.peak_assignments.profiles import (
-    ResolvedProfile,
-    resolve_profile,
-    with_fitted_window,
-    with_secondary_channels,
+from mascope_backend.api.new.peak_assignments.pipeline import (
+    BATCH_SEARCH,
+    RunContext,
+    keep_search_rows,
+    run_stages,
 )
 from mascope_backend.api.new.peak_assignments.seeded_scoring import score_seeds
-from mascope_backend.api.new.peak_assignments.service import (
-    SEARCH_PEAK_COLUMNS,
-    _fetch_known_isotopes,
-    _resolution_of,
-    _searched_mechanisms,
-    _seeded_fits,
-    _untargeted_ionization_notations,
-    fetch_mechanisms_by_notation,
-    fetch_sample_mechanisms,
-    load_sample_peaks,
-    sample_reagent_offset,
-    sample_recorded_width,
-)
-from mascope_backend.api.new.peak_assignments.tiering import hold_skeleton_readings
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_CANDIDATE,
     TIER_RANK,
@@ -140,10 +109,6 @@ from mascope_backend.socket.notifications import (
     UserNotification,
     send_progress_user_notification,
 )
-from mascope_file.name import get_instrument_type
-from mascope_tools.composition.custom_elements import labelled_purity
-from mascope_tools.composition.finder import assign_compositions
-from mascope_tools.composition.reagents import secondary_channels
 
 
 #: The notification channel the search reports on, start to finish.
@@ -366,13 +331,23 @@ def choose_representatives(members: Iterable[Any]) -> dict[str, Any]:
     with no representative and is never searched; a mixed anchor is still
     searched, on a member that is a real peak.
 
+    Nor is a member that already reads a formula. An anchor most of whose
+    members a pre-pass claimed stays unassigned however its other members read
+    (``batch_peaks._source_consensus``), and a peak its sample's ledger
+    explains is never searched, as a run never searches its Stage A's peaks
+    (:attr:`pipeline.RunContext.explained_peak_ids`). The anchor is searched on
+    the brightest member that reads nothing.
+
     :param members: Occurrence rows (or anything carrying ``batch_peak_id``,
-        ``sample_item_id``, ``sample_peak_id``, ``intensity`` and ``role``).
+        ``sample_item_id``, ``sample_peak_id``, ``intensity``, ``role`` and
+        ``candidate``).
     :return: anchor id -> the member chosen for it.
     """
     best: dict[str, Any] = {}
     for member in members:
         if getattr(member, "role", None) in CLAIMED_ROLE_CODES:
+            continue
+        if getattr(member, "candidate", None) is not None:
             continue
         current = best.get(member.batch_peak_id)
         if current is None or (member.intensity or 0.0) > (current.intensity or 0.0):
@@ -406,17 +381,6 @@ def owner_anchor_of(
         return None
     owner_member = members_by_peak.get(owner_row["sample_peak_id"])
     return owner_member.batch_peak_id if owner_member is not None else None
-
-
-def search_config(resolved_profile: ResolvedProfile, notations: list[str]):
-    """The finder's configuration for this search - the orchestrator's, verbatim.
-
-    Kept as a named function even though it now forwards: what makes the batch
-    search comparable with a per-sample run is that both are configured from one
-    resolution, and a helper that says so is easier to keep honest than a call
-    site that happens to match.
-    """
-    return resolved_profile.search_config(notations)
 
 
 @dataclass
@@ -790,33 +754,24 @@ async def _search_sample(
     config: PeakAssignmentConfig,
     persistent_peak_ids: frozenset[str] = frozenset(),
 ) -> tuple[list[dict], int, set[str]]:
-    """:func:`_search_sample_peaks` at the labelled-reagent purity the sample's
-    ionization setup carries, as a run of it reads (``custom_elements.labelled_purity``).
-    """
-    with labelled_purity(await sample_label_purity(sample_item_id)):
-        return await _search_sample_peaks(
-            sample_item_id, target_peak_ids, config, persistent_peak_ids
-        )
+    """The search over one sample's representative peaks, in the context of its
+    whole spectrum: the stage list's BATCH_SEARCH path (``pipeline.py``).
 
-
-async def _search_sample_peaks(
-    sample_item_id: str,
-    target_peak_ids: set[str],
-    config: PeakAssignmentConfig,
-    persistent_peak_ids: frozenset[str] = frozenset(),
-) -> tuple[list[dict], int, set[str]]:
-    """Stage B over one sample's representative peaks, in the context of its
-    whole spectrum.
-
-    The spectrum is the sample's peaks at or above the run's intensity floor,
-    and the persistent anchors' representatives under it: a peak the search
-    enumerates is one of the peaks it reads (:func:`admitted_targets`).
+    The run's stages, every one of them, with the search on the representatives
+    proposed and the sample's recorded measurement: its chemistry resolved and
+    its source's peaks claimed as a run's are, the search and the halogen-twin
+    re-read after it, the seeded re-score, and the judging a run's rows get
+    (the mass gate at the sample's recorded calibration, the partner gate told
+    what the lists name, the cross-channel pass, the tiering rules and the
+    claims), then the identification level. What the judging weighs a reading
+    against is what the search read in this sample: the batch ledger holds
+    the sample's other readings.
 
     :param persistent_peak_ids: The representatives whose anchors are
         persistent, which the search takes however faint.
-    :return: The engine's assignment rows for the peaks it explained - the
-        representatives and any isotopologue peaks it paired to them, shaped as
-        ledger rows that will never be written - the number of this sample's
+    :return: The judged rows on the peaks it explained - the representatives
+        and any isotopologue peaks it paired to them, shaped as ledger rows
+        that will never be written - the number of this sample's
         representatives the cap left unsearched, and the representatives
         persistence alone admitted. A batch run has one config for many
         samples and no per-sample run row to stamp, so the count is carried
@@ -825,237 +780,55 @@ async def _search_sample_peaks(
         indistinguishable.
     """
     sample = await fetch_sample(sample_item_id)
-    peaks_df = load_sample_peaks(sample)
-    frame = (
-        peaks_df[
-            (peaks_df["intensity"] > 0)
-            & (
-                (peaks_df["intensity"] >= config.peak_intensity_threshold)
-                | peaks_df["sample_peak_id"].isin(persistent_peak_ids)
-            )
-        ]
-        .sort_values("mz")
-        .reset_index(drop=True)
-    )
-    targets, search_scope, by_persistence = admitted_targets(
-        frame,
-        target_peak_ids,
-        set(persistent_peak_ids),
-        peak_intensity_threshold=config.peak_intensity_threshold,
-        max_untargeted_peaks=config.max_untargeted_peaks,
-        ceiling=MAX_UNTARGETED_PEAKS_CEILING,
-    )
-    unsearched = search_scope["eligible_peaks"] - search_scope["searched_peaks"]
-    if targets.empty:
-        return [], unsearched, by_persistence
-    if search_scope["limited"]:
-        runtime.logger.info(
-            f"Batch untargeted search on sample '{sample.sample_item_name}' "
-            f"searches {search_scope['searched_peaks']} of "
-            f"{search_scope['eligible_peaks']} representative peaks"
+    ctx = await run_stages(
+        RunContext(
+            path=BATCH_SEARCH,
+            sample=sample,
+            config=config,
+            run_id=fold_run_id(sample_item_id),
+            keep=keep_search_rows,
+            targets=frozenset(target_peak_ids),
+            persistent_peak_ids=frozenset(persistent_peak_ids),
+            explained_peak_ids=await _explained_peaks(sample),
         )
-    mechanism_ids, mechanisms = await fetch_sample_mechanisms(sample)
-    # The mode's own mechanisms decide whether there is anything to search at
-    # all. An opportunistic channel is an addition to a sample's chemistry, not
-    # a substitute for it: a mode that declares nothing is a mode nobody has
-    # configured, and searching it through a channel the source happens to show
-    # would be assigning a sample whose ionization is unknown.
-    primary_notations, _ = _untargeted_ionization_notations(mechanisms)
-    if not primary_notations:
-        runtime.logger.info(
-            f"Untargeted batch search skips sample '{sample.sample_item_name}': "
-            "no polarity-compatible ionization mechanisms."
-        )
-        return [], unsearched, set()
-    # Resolved per sample, not per batch: a batch can hold more than one
-    # ionization mode, and the chemistry belongs to the sample that was measured.
-    resolved_profile = resolve_profile(
-        config,
-        mechanism_notations=[m.ionization_mechanism for m in mechanisms],
-        instrument_type=get_instrument_type(sample.filename),
-        polarity=sample.polarity,
-        # The context the batch or its dataset names, as a run of the sample
-        # reads it (step 3.6).
-        named_context=await named_context_for(sample.sample_batch_id),
     )
-    # The opportunistic channels are read off this sample's own spectrum, on the
-    # whole frame rather than the searched representatives: the evidence is the
-    # source's cluster ions, which are bright and belong to no anchor.
-    secondary_mechanisms = await fetch_mechanisms_by_notation(
-        [
-            channel.notation
-            for channel in secondary_channels(resolved_profile.profile.name)
-        ],
-        sample.polarity,
-    )
-    resolved_profile = with_secondary_channels(
-        resolved_profile,
-        frame["mz"].to_numpy(),
-        frame["intensity"].to_numpy(),
-        [m.ionization_mechanism for m in secondary_mechanisms],
-    )
-    # The per-sample run's own rule, so a secondary channel the mode declares
-    # is searched once here too.
-    searched_mechanisms = _searched_mechanisms(
-        mechanisms, secondary_mechanisms, resolved_profile
-    )
-    notations, mechanism_id_by_notation = _untargeted_ionization_notations(
-        searched_mechanisms
-    )
-    # The whole spectrum is the frame - isotope patterns are scored against it -
-    # while only the representatives are enumerated.
-    match_params = await default_match_params(sample_item_id)
-    # No Stage A ran on this path, so nothing here has fitted this sample's
-    # mass width. A run's own search ranks at the width its Stage A fitted, so
-    # the search ranks at the one the sample's latest run fitted, and at the
-    # instrument class's only where no run fitted one (`pattern_scoring_for`).
-    # Its commits are re-scored below as a run's are, at a width of their own
-    # where they are ions enough to fit one and at the class's where not: the
-    # recorded width ranks them, and tiers only a row whose ion the re-score
-    # could not measure, which keeps the search's own fit, as in a run.
-    width = await sample_recorded_width(sample_item_id)
-    # Nor has it committed any envelopes to fit a line's tolerance on: a line
-    # is read at the one the sample's latest run fitted, as the seeded
-    # re-score below reads it, so the search ranks a reading at the tolerance
-    # its row is tiered at.
-    envelope_tolerance = await recorded_envelope_tolerance(sample_item_id)
-    # Nor has it fitted an offset. The centre is the one a run of the sample
-    # scored at, or the lines this search's profile claims off the whole peak
-    # list where no run recorded one, taken only beyond the width
-    # (`SampleMassAccuracy.scoring_mu_ppm`). The search ranks its candidates
-    # there, as a run's own search ranks at the run's centre, and the seeded
-    # re-score below measures its commits there where they are too few ions
-    # to fit a centre of their own.
-    reagent_offset = await sample_reagent_offset(
-        sample, peaks_df=peaks_df, resolved_profile=resolved_profile
-    )
-    instrument_type = get_instrument_type(sample.filename)
-    scoring = pattern_scoring_for(
-        match_params,
-        SampleMassAccuracy(sigma_ppm=width, reagent=reagent_offset),
-        instrument_type,
-        await _resolution_of(sample),
-        envelope_tolerance=envelope_tolerance,
-    )
-    # A TOF's window bounded by that width, as a run's own search bounds it
-    # by the one its Stage A fitted (step 3.6).
-    resolved_profile = with_fitted_window(
-        resolved_profile,
-        sigma_ppm=scoring.sigma_ppm if width is not None else None,
-        mu_ppm=scoring.mu_ppm,
-        sigmas=BELOW_ASSIGNABILITY_Z,
-        instrument_type=instrument_type,
-    )
-    runtime.logger.info(
-        f"Untargeted batch search of sample '{sample.sample_item_name}' "
-        f"searches profile '{resolved_profile.profile.name}' / context "
-        f"'{resolved_profile.context.name}': {resolved_profile.element_ranges} "
-        f"at {resolved_profile.mz_precision_ppm} ppm"
-    )
-    search_columns = [
-        column for column in SEARCH_PEAK_COLUMNS if column in frame.columns
-    ]
-    matches_df, _ = await asyncio.to_thread(
-        assign_compositions,
-        frame[search_columns],
-        search_config(resolved_profile, notations),
-        resolved_profile.heuristics_config(),
-        targets=targets["mz"].tolist(),
-        scoring=scoring,
-    )
-    fit_by_seed = await _seeded_fits(
-        sample,
-        match_params,
-        untargeted_seeds(
-            matches_df, mechanism_id_by_notation, to_custom_element_format
-        ),
-        # The centre the search ranked them at, for commits too few to fit one.
-        reagent_offset=reagent_offset,
-        envelope_tolerance=envelope_tolerance,
-    )
-    # The neutrals the lists a run of the sample reads name, which corroborate
-    # a reading through a secondary channel there. No Stage A ran on this
-    # path, so the known set is read for its formulas alone, never matched
-    # against the frame: through the mode's mechanisms for the target
-    # library, through every searched one for the reference lists, as a run
-    # reads them. Only a secondary channel's readings consult it.
-    listed_formulas: frozenset[str] = frozenset()
-    if resolved_profile.minor_channels:
-        listed_formulas = listed_formula_identities(
-            await _fetch_known_isotopes(
-                sample,
-                match_params.isotope_abundance_threshold,
-                mechanism_ids,
-                searched_mechanisms,
-                known_window=resolved_profile.context.known_window,
-            )
-        )
-    rows = untargeted_matches_to_peak_assignments(
-        matches_df,
-        peaks_df=frame,
-        sample_item_id=sample_item_id,
-        peak_assignment_run_id=fold_run_id(sample_item_id),
-        candidate_threshold=config.candidate_threshold,
-        assigned_threshold=config.assigned_threshold,
-        mechanism_id_by_notation=mechanism_id_by_notation,
-        formula_formatter=to_custom_element_format,
-        max_alternatives=config.max_alternatives,
-        minor_channels=resolved_profile.minor_channels,
-        fit_by_seed=fit_by_seed,
-        listed_formulas=listed_formulas,
-    )
-    return (
-        gate_search_rows(
-            rows,
-            resolved_profile=resolved_profile,
-            mechanism_id_by_notation=mechanism_id_by_notation,
-            tier_bands=config.tier_bands(),
-        ),
-        unsearched,
-        by_persistence,
-    )
+    return ctx.result
 
 
-def gate_search_rows(
-    rows: list[dict],
-    *,
-    resolved_profile: ResolvedProfile,
-    mechanism_id_by_notation: dict[str, str],
-    tier_bands: dict[str, float] | None,
-) -> list[dict]:
-    """The partner gate, and the skeleton hold, over a batch search's own rows,
-    in place.
+async def _explained_peaks(sample) -> frozenset[str]:
+    """The peaks of a sample its batch ledger already explains: a member that
+    reads a formula, and one a pre-pass claimed.
 
-    A batch search runs no Stage A, no mass gate and no cross-channel pass:
-    its rows are the finder's, judged by the minor-channel policy alone. The
-    partner gate is the one judgement a sample's own rows can make for
-    themselves, and without it a batch run keeps the election a run of the
-    same sample turns back - tropylium as protonated C7H6 here, toluene less
-    a hydride there (``engine.apply_partner_gates``).
+    What a run's Stage A and pre-passes are to its search, the batch ledger is
+    to the batch search: a peak it explains is neither a halogen twin's peak
+    nor its twin, and the search writes no row onto it.
 
-    :param rows: The search's rows, as the engine built them.
-    :param resolved_profile: The sample's resolved chemistry.
-    :param mechanism_id_by_notation: The searched mechanisms.
-    :param tier_bands: The batch's evidence bands, for a swapped reading's
-        tier.
-    :return: The same rows.
+    :param sample: The sample view row.
+    :return: Their sample peak ids.
     """
-    apply_partner_gates(
-        rows,
-        notation_by_id={
-            mechanism_id: notation
-            for notation, mechanism_id in mechanism_id_by_notation.items()
-        },
-        minor_channels=resolved_profile.minor_channels,
-        partner_gated_channels=resolved_profile.partner_gated_channels,
-        tier_bands=tier_bands,
-    )
-    # A reading only an organonitrate's carbon skeleton admits is a candidate
-    # at most, as a run's tiering pass holds it (step 3.6): the search read
-    # the skeleton, and the rows' tiers are what the members take.
-    if resolved_profile.nox_skeleton:
-        hold_skeleton_readings(rows, resolved_profile.context)
-    return rows
+    async with async_session() as session:
+        peaks = (
+            (
+                await session.execute(
+                    select(BatchPeakOccurrence.sample_peak_id)
+                    .join(
+                        BatchPeak,
+                        BatchPeak.batch_peak_id == BatchPeakOccurrence.batch_peak_id,
+                    )
+                    .where(
+                        BatchPeak.sample_batch_id == sample.sample_batch_id,
+                        BatchPeakOccurrence.sample_item_id == sample.sample_item_id,
+                        or_(
+                            BatchPeakOccurrence.candidate.is_not(None),
+                            BatchPeakOccurrence.role.in_(sorted(CLAIMED_ROLE_CODES)),
+                        ),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    return frozenset(str(peak) for peak in peaks)
 
 
 async def _apply_search_rows(
