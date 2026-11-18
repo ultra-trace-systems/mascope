@@ -535,7 +535,9 @@ counsel (section 11). Either way, expect the customer's IT to refuse it.
 - A local partner for hands-on work.
 
 That is the isolated appliance of 6.2, with one change: the isolated plan's
-subnet router (its sections 4.1 and 4.2) stays off.
+subnet router (its sections 4.1 and 4.2) stays off. The one exception is a
+tunnel over the customer's licensed line whose use counsel has cleared
+(above).
 
 - A tunnel to our hosts is a cross-border channel whether it is up for a
   window or all the time, so the customer's switch does not settle the rules'
@@ -543,7 +545,8 @@ subnet router (its sections 4.1 and 4.2) stays off.
 - A Chinese site's sessions are therefore the attended remote-desktop
   sessions above, started and ended by someone at the PC.
 - Its gateway (section 7), whichever machine plays that role, carries no
-  tunnel of ours and relays nothing outside those sessions.
+  tunnel of ours, outside that exception, and relays nothing outside those
+  sessions.
 - Remote desktop is the customer using a commercial service, where a tunnel
   is a channel into their network. Whether the rules see that difference is
   part of the same question for counsel.
@@ -694,8 +697,9 @@ In mainland China, managed on-premises does not fit (6.3).
   they wait on the meteorological-data question. Cloud + Connector also
   waits on the tunnel question. A connector's administration (5.2) is
   Tailscale to our admin devices, a standing tunnel across the border
-  (6.3.2). So without a partner, a connector needs the customer's licensed
-  line or windows the customer opens, as a partner's does.
+  (6.3.2). So without a partner, a connector's administration needs the
+  customer's licensed line, cleared by counsel (6.3.1), or the customer
+  administers the connector.
 - **With a local partner running a Mascope region inside China:** the first
   two rows come back for Chinese customers, with the region in the
   instance's place.
