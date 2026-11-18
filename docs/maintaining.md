@@ -1651,6 +1651,12 @@ refuses the sign-in without it. Only the password step is checked: the
 two-factor code, SDK and agent calls with a token, pairing and uploads never
 see it. It is off unless the site turns it on.
 
+The server itself must reach `challenges.cloudflare.com`. The backend checks
+each token there with Cloudflare's siteverify, and when it gets no answer it
+refuses every password sign-in with a 503. Users' browsers load the check
+from the same host. A server behind an egress allow-list needs that host on
+the list ([hosting.md](hosting.md#isolated-and-restricted-sites)).
+
 A sign-in the check refuses still counts against the address's 10 attempts,
 but not against the account's 15: someone who solves no check cannot lock an
 account out by sending its address with no token. Wrong passwords sent with a

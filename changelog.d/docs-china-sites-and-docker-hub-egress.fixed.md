@@ -5,5 +5,6 @@
   fail at the pull. The list now gives Docker Hub's registry, token and
   layer-download hosts, with a pointer to Docker's own list, since the
   download host has moved before. It also names `challenges.cloudflare.com`
-  for a server with Turnstile on: the backend checks every password sign-in
-  there and refuses the sign-in when it cannot reach it.
+  for a server with Turnstile on, and the runbook's "Turning Turnstile on"
+  now says the server must reach it: the backend checks every password
+  sign-in there and refuses the sign-in when it cannot reach it.
