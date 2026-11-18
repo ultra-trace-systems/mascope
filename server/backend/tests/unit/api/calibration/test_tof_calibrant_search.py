@@ -128,6 +128,26 @@ def test_ions_count_before_intensity():
     np.testing.assert_array_equal(found.peak, candidates.peak[:, 0])
 
 
+def test_lines_of_one_ion_count_once():
+    """Two ions offer two lines each, as Br- does at 79 and 81 Th. The true
+    axis, faint, holds three ions on one line each; another 400 ppm off, a
+    hundred times brighter, holds both lines of the two ions: four lines but
+    two ions. The three ions win; counted by lines, the four would."""
+    ions = [0, 1, 1, 2, 2]
+    offsets = [[0.0], [0.0, 400.0], [400.0], [0.0, 400.0], [400.0]]
+    intensities = [[1.0], [1.0, 100.0], [100.0], [1.0, 100.0], [100.0]]
+    candidates = _candidates(LINES, ions, offsets, intensities)
+
+    found = _search(candidates)
+
+    assert (found.n_ions, found.n_lines) == (3, 3)
+    assert found.p1 == pytest.approx(P1, rel=1e-12)
+    true_peaks = candidates.peak[[0, 1, 3], 0]
+    np.testing.assert_array_equal(
+        found.peak, [true_peaks[0], true_peaks[1], -1, true_peaks[2], -1]
+    )
+
+
 def test_ions_held_tight_count_before_intensity():
     """The true axis holds four ions, all on it; another 400 ppm off holds
     four too, but scattered by 10 ppm, and a hundred times brighter. At the
