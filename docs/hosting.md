@@ -259,6 +259,7 @@ it is installed:
 |---|---|
 | `api.github.com`, `github.com` | Release discovery and the release manifest (`mascope prod update --check`, the [unattended updater](maintaining.md#unattended-updates-the-timer)), and the tag fetch that aligns the checkout with the release |
 | `ghcr.io`, `pkg-containers.githubusercontent.com` | The release images (`mascope prod docker pull`) |
+| `registry-1.docker.io`, `auth.docker.io`, `production.cloudfront.docker.com` | The Postgres and Redis images (`postgres:16-alpine`, `redis:7-alpine`), from Docker Hub. `mascope prod update` pulls every image the compose file names, so without these names the update stops at the pull, before anything running is touched. The third name is where Docker Hub sent layer downloads in November 2026. It has changed before, so check [Docker's allow-list](https://docs.docker.com/desktop/setup/allow-list/) when writing the rule |
 | `pypi.org`, `files.pythonhosted.org` | The CLI reinstall at each release |
 | The Ubuntu archive and security mirrors, or the customer's own mirror | OS patching |
 | An NTP source | Time |

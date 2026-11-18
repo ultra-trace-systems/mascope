@@ -69,7 +69,7 @@ hygiene that any isolated Linux box has to solve.
 |---|---|---|---|
 | Release discovery | `auto_update.latest_release_tag` (`tooling/cli/src/mascope_cli/cmd/prod/auto_update.py`) | `api.github.com`, unauthenticated | Returns `None`; `_auto` logs "Could not determine the latest release" and exits 2. `mascope-update.service` accepts only exit 0 and 30, so an isolated server with the timer enabled has a **failed unit every night**, and one without it has nothing at all. |
 | Release manifest | `auto_update.download_manifest` | the release asset `mascope-manifest.json` | Falls back to reading the Alembic head out of the target image - which also needs the image. |
-| Images | `docker compose pull` in `prod update`; `preflight.pull_image` during `--check`/`--auto` classification | `ghcr.io` and its blob host | The pull fails. The manual path aborts before touching the running stack, which is the right failure but still no update. |
+| Images | `docker compose pull` in `prod update`; `preflight.pull_image` during `--check`/`--auto` classification | `ghcr.io` and its blob host for the release images; Docker Hub for Postgres and Redis, which `docker compose pull` also pulls (the preflight pulls only the release images) | The pull fails. The manual path aborts before touching the running stack, which is the right failure but still no update. |
 | Checkout alignment | `_align_checkout` (`cmd/prod/main.py`) | `git fetch origin tag vX.Y.Z` from `github.com` | Warns; the checkout stays on the old tag, so a reboot would redeploy the old release and `prod doctor` reports DRIFT. |
 | CLI reinstall | `uv tool install ... .` (`tooling/ubuntu.sh`, `docs/hosting.md`, `docs/maintaining.md`) | PyPI, for the CLI's dependencies | Fails. The CLI then trails the checkout - the drift `cli_drift.py` exists to detect, and which took a server down once when a release added a compose secret. |
 | Provisioning | `tooling/ubuntu.sh install` | apt mirrors, the Docker apt repository, the NodeSource script, `packages.microsoft.com`, the snap store for uv, restic from apt | A first install needs internet. Nothing after it does, except the rows above. |
@@ -84,8 +84,8 @@ hygiene that any isolated Linux box has to solve.
 
 One non-shortcut worth ruling out explicitly: pointing `MASCOPE_UPDATE_REPO`
 at a customer-side mirror does not help. Discovery is the unauthenticated
-GitHub releases API (`update.env.example` says so), and the images come from
-GHCR regardless of the repository setting.
+GitHub releases API (`update.env.example` says so), and the release images
+come from GHCR regardless of the repository setting.
 
 ## 3. Option 0: an egress allow-list, not isolation
 
