@@ -3645,3 +3645,82 @@ async def test_the_mass_gate_reads_the_sources_lines_by_the_calibrant_cap():
 
     read.assert_awaited_once()
     assert judged.call_args.kwargs["source_line_cap"] is cap
+
+
+class TestTheIngestFoldTiersAsARunDoes:
+    """The run-less ingest fold is the stage list's INGEST_FOLD path: a run's
+    stages with the known set alone proposed, kept as the batch ledger's
+    members. So a fold and a run of the same sample without the search give
+    every Stage A row the same tier, the tiering rules' caps included."""
+
+    @pytest.mark.asyncio
+    async def test_a_fold_and_a_run_of_one_sample_tier_every_stage_a_row_alike(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_backend.api.new.peak_assignments.service import (
+            fold_sample_peaks_without_run,
+        )
+
+        # Beside the two-line ion, a bright one whose 13C line the spectrum
+        # does not hold: the absent-line rule holds it at candidate in a run.
+        rows = _stage_a_rows() + [
+            _isotope_row(
+                target_isotope_id="ti-3",
+                target_ion_id="ion-2",
+                target_compound_id="tc-2",
+                compound_formula="C10H16O",
+                ion_formula="C10H17O+",
+                mz=153.1274,
+                relative_abundance=1.0,
+                sample_peak_id="p3",
+                sample_peak_intensity=50000.0,
+            )
+        ]
+        peaks = _peaks_df(
+            [
+                ("p1", 181.0707, 10000.0),
+                ("p2", 182.0741, 660.0),
+                ("p3", 153.1274, 50000.0),
+            ]
+        )
+        recorder = _Recorder()
+        _start(_patches(recorder, peaks, rows))
+        fold = patch(
+            "mascope_backend.api.new.peak_assignments.batch_peaks_controller."
+            "fold_sample_into_batch_peaks",
+            new_callable=AsyncMock,
+            return_value="sb-1",
+        ).start()
+        patch(
+            f"{_MOD}.in_flight_run_id", new_callable=AsyncMock, return_value=None
+        ).start()
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+        assert await fold_sample_peaks_without_run("si-1") == "sb-1"
+
+        def tiers(rows):
+            return {
+                row["sample_peak_id"]: (
+                    row["role"],
+                    row["tier"],
+                    [
+                        reason["rule"]
+                        for reason in (row.get("provenance") or {}).get(
+                            "tier_reasons", []
+                        )
+                        if reason.get("caps")
+                    ],
+                )
+                for row in rows
+                if row["source"] == "database"
+            }
+
+        (folded,) = [
+            call.kwargs["rows"] for call in fold.call_args_list if "rows" in call.kwargs
+        ]
+        run = tiers(recorder.rows)
+        assert run == tiers([vars(row) for row in folded])
+        # The rule bites on the bright ion, in both.
+        assert run["p3"][1:] == ("candidate", ["absent_line"])
+        assert run["p1"][1] == "assigned"

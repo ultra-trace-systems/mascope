@@ -2,8 +2,9 @@
 
 ``envelope_fit.read_pool`` picks the neighbours; the service reads each one
 (``service._neighbour_envelope_lines``): its own Stage A first pass at today's
-numbers, on its own peaks, mechanisms, channels and pre-passes, composed as the
-run-less fold composes a sample (``service._stage_a_inputs``), under the reading
+numbers, on its own peaks, mechanisms, channels and pre-passes, composed by the
+stage list's resolve and claim stages as the run-less fold composes a sample
+(``pipeline.resolve``, ``pipeline.claim``), under the reading
 run's config and match parameters, at the purity of its own setup. Never its
 pooled curve nor a run of its own, so the pool is a function of the reading
 run's inputs and the neighbours' data (decision 32, amended on MAS-842). The
@@ -21,7 +22,7 @@ import pytest
 
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.new.match.params.lib import instrument_default_match_params
-from mascope_backend.api.new.peak_assignments import envelope_fit, service
+from mascope_backend.api.new.peak_assignments import envelope_fit, pipeline, service
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import SampleMassAccuracy
 from mascope_backend.api.new.peak_assignments.envelope_fit import RunEnvelopeFit
@@ -34,6 +35,7 @@ from mascope_tools.composition.envelope_tolerance import (
 
 
 _SVC = "mascope_backend.api.new.peak_assignments.service"
+_PIPE = "mascope_backend.api.new.peak_assignments.pipeline"
 
 #: The neighbour's own setup carries a labelled reagent at this purity.
 NEIGHBOUR_PURITY = 0.973
@@ -60,26 +62,24 @@ PEAKS = pd.DataFrame(
 )
 
 
-def _inputs(purity_seen: list) -> AsyncMock:
-    """``_stage_a_inputs``, stood in for: the neighbour's own inputs."""
+def _inputs(purity_seen: list) -> tuple[AsyncMock, AsyncMock]:
+    """The stage list's resolve and claim stages, stood in for: the
+    neighbour's own inputs."""
 
-    async def compose(sample, config, peaks_df, run_id):
+    async def resolve(ctx):
         purity_seen.append(custom_elements._LABEL_PURITY.get())
-        return service._StageAInputs(
-            mechanism_ids=["m-own"],
-            searched_mechanisms=[SimpleNamespace(ionization_mechanism_id="m-own")],
-            resolved_profile=SimpleNamespace(
-                fallback_sigma_ppm=0.61,
-                context=SimpleNamespace(known_window="the neighbour's window"),
-            ),
-            resolution=None,
-            reagent=[],
-            reagent_offset="the neighbour's reagent offset",
-            artifact=[],
-            claimed_peak_ids={"p-reagent"},
+        ctx.mechanism_ids = ["m-own"]
+        ctx.searched_mechanisms = [SimpleNamespace(ionization_mechanism_id="m-own")]
+        ctx.resolved_profile = SimpleNamespace(
+            fallback_sigma_ppm=0.61,
+            context=SimpleNamespace(known_window="the neighbour's window"),
         )
 
-    return AsyncMock(side_effect=compose)
+    async def claim(ctx):
+        ctx.reagent_offset = "the neighbour's reagent offset"
+        ctx.reagent_peak_ids = {"p-reagent"}
+
+    return AsyncMock(side_effect=resolve), AsyncMock(side_effect=claim)
 
 
 def _first_pass(purity_seen: list) -> AsyncMock:
@@ -105,6 +105,7 @@ class TestANeighbourIsReadByItsOwnFirstPass:
         config = PeakAssignmentConfig(run_untargeted=False)
         match_params = SimpleNamespace(isotope_abundance_threshold=0.01)
         purity_seen: list = []
+        resolve, claim = _inputs(purity_seen)
         lines = EnvelopeLines(np.full(5, 15.0), np.full(5, 0.8))
         neighbour = _neighbour()
         threads: dict = {}
@@ -124,7 +125,8 @@ class TestANeighbourIsReadByItsOwnFirstPass:
                 f"{_SVC}.sample_label_purity",
                 AsyncMock(return_value=NEIGHBOUR_PURITY),
             ) as purity,
-            patch(f"{_SVC}._stage_a_inputs", _inputs(purity_seen)) as inputs,
+            patch(f"{_PIPE}.resolve", resolve) as inputs,
+            patch(f"{_PIPE}.claim", claim) as claimed,
             patch(f"{_SVC}._stage_a_first_pass", _first_pass(purity_seen)) as first,
             patch(
                 f"{_SVC}.envelope_lines",
@@ -142,9 +144,18 @@ class TestANeighbourIsReadByItsOwnFirstPass:
         assert set(threads) == {"peaks", "lines"}
         assert all(t is not threading.main_thread() for t in threads.values())
         load.assert_called_once_with(neighbour)
-        # Its own inputs, composed from its own peaks under the run's config.
-        composed = inputs.await_args.args
-        assert composed[:3] == (neighbour, config, PEAKS)
+        # Its own inputs, composed from its own peaks under the run's config
+        # and match parameters, the fold's first two stages.
+        (composed,) = inputs.await_args.args
+        assert (
+            composed.sample,
+            composed.config,
+            composed.peaks_df,
+            composed.match_params,
+        ) == (neighbour, config, PEAKS, match_params)
+        assert composed.path is pipeline.INGEST_FOLD
+        assert not composed.strict_instrument
+        claimed.assert_awaited_once_with(composed)
         # Its first pass: the run's config and match parameters, its own
         # mechanisms, pre-passes, window, width and offset.
         args, kwargs = first.await_args
@@ -155,7 +166,7 @@ class TestANeighbourIsReadByItsOwnFirstPass:
             ["m-own"],
             [SimpleNamespace(ionization_mechanism_id="m-own")],
         )
-        assert args[5] == composed[3]
+        assert args[5] == composed.run_id
         assert kwargs == {
             "excluded_peak_ids": {"p-reagent"},
             "fallback_sigma_ppm": 0.61,
@@ -210,7 +221,7 @@ class TestANeighbourIsReadByItsOwnFirstPass:
 
         with (
             patch(f"{_SVC}.load_sample_peaks", side_effect=load),
-            patch(f"{_SVC}._stage_a_inputs", new_callable=AsyncMock) as inputs,
+            patch(f"{_PIPE}.resolve", new_callable=AsyncMock) as inputs,
         ):
             got = await service._neighbour_envelope_lines(
                 _neighbour(), PeakAssignmentConfig(), SimpleNamespace()
