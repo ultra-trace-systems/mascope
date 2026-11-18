@@ -490,12 +490,13 @@ the constants are in
 ### Matching
 
 The matching steps and their constants - the 0.15 abundance floor, S/N >= 10, the 500 ppm
-search window, the FWHM overlap drop, eight candidates a line, the consensus in TOF space, one
+search window, the FWHM overlap drop within 100 ppm, eight candidates a line, the consensus in TOF space, one
 reading per peak, three points at least - are in
 [calibration.md](../user/how-it-works/calibration.md#how-a-tof-files-calibrants-are-found).
 In the code: `DEFAULT_ISOTOPE_ABUNDANCE_MIN`; `load_peak_data` and `drop_bad_peaks` (weak and
 satellite peaks out); `TOF_SNR_THRESHOLD`; `TOF_SEARCH_WINDOW_PPM` and `TOF_SEARCH_CANDIDATES`;
-`_remove_overlapping_mzs` (the Orbitrap's local-dominance guard is off for TOF);
+`_remove_overlapping_mzs` and `TOF_OVERLAP_REACH_PPM` (the Orbitrap's local-dominance guard is
+off for TOF);
 `TofCalibrationHandler._match_isotopes` and `tof_calibrant_search`; `_one_reading_per_peak`.
 
 Up to node version 2, each line took the most intense peak within the 100 ppm refine window of
@@ -533,9 +534,13 @@ trust the acquisition axis to find the calibrants:
   the residual rule anyway. In the feasibility check behind MAS-951, one TOF H file's winning axis
   held five lines of the upper set and left NO2- and NO3- out; that is the axis the most lines agree
   on, which a reagent rule would have traded for one holding fewer.
-- **The overlap drop sees the whole window.** A neighbour 100 ppm to one FWHM from a calibrant used
-  to fall outside the refine window, out of the overlap drop's sight; it now drops the line, as the
-  drop means to.
+- **The overlap drop looks 100 ppm.** It drops two peaks closer than one FWHM, which on a TOF is
+  110 to about 430 ppm. Up to version 2 it only saw the peaks inside the 100 ppm refine window, so a
+  neighbour further off never cost a calibrant. Over the 500 ppm search window it would have: on the
+  corpus the propylamine TOF H file lost its 287 Th line to a neighbour 273 ppm off, and on TOF H's
+  first November nitrate day the search kept TFA in 22 fits of 67 where the window had kept it in
+  33. So on a TOF it looks for the neighbour no further than 100 ppm (`TOF_OVERLAP_REACH_PPM`),
+  as far as it ever did; the audit's version-2 reproduction looks a whole FWHM, as that node did.
 
 The pre-fit error (`pre_fit_mz_error_ppm`) and the acquisition-drift warning are still measured
 against the file's own axis. The calibration audit subclasses the handler and searches the same

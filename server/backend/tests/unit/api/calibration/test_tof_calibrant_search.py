@@ -250,7 +250,9 @@ def filestore(tmp_path, monkeypatch):
     return tmp_path
 
 
-async def _node_fit(filename, isotopes) -> TofCalibrationHandler:
+async def _node_fit(
+    filename, isotopes, resolution=support.resolution
+) -> TofCalibrationHandler:
     handler = TofCalibrationHandler(filename, support.params())
     with (
         patch.object(
@@ -260,7 +262,7 @@ async def _node_fit(filename, isotopes) -> TofCalibrationHandler:
         ),
         patch(
             f"{NODE}.read_instrument_functions",
-            AsyncMock(return_value=({}, support.resolution)),
+            AsyncMock(return_value=({}, resolution)),
         ),
     ):
         await handler.fit()
@@ -319,6 +321,57 @@ async def test_a_line_has_eight_candidates(filestore, n_brighter, kept):
 
     assert (125 in _kept(handler)) is kept
     assert {62, 79, 81, 188} <= set(_kept(handler))
+
+
+def _broad(mz):
+    """A resolving power of 3,000, a TOF's: one FWHM is 333 ppm, three times
+    the overlap filter's reach."""
+    return np.full_like(np.asarray(mz, dtype=np.float64), 3000.0)
+
+
+def _beside(apart_ppm: float) -> list[dict]:
+    """The calibrant lines, NO3-.HNO3's with a peak as strong this far off."""
+    return support.calibrant_peaks() + [{"mz": 124.984 * (1 + apart_ppm * 1e-6)}]
+
+
+@pytest.mark.parametrize("apart_ppm, kept", [(200.0, True), (60.0, False)])
+@pytest.mark.asyncio
+async def test_a_neighbour_overlaps_a_calibrant_within_a_hundred_ppm(
+    filestore, apart_ppm, kept
+):
+    """Peaks 333 ppm wide: a neighbour 200 ppm from NO3-.HNO3 is within one
+    width of it and inside its search window, but further than the overlap
+    filter looks, and the line is fitted, as when the refine window kept the
+    neighbour out of sight. One 60 ppm off overlaps it, and both go."""
+    filename = support.write_file(filestore, _beside(apart_ppm))
+
+    handler = await _node_fit(filename, support.isotopes(), resolution=_broad)
+
+    assert (125 in _kept(handler)) is kept
+    assert {62, 79, 81, 188} <= set(_kept(handler))
+
+
+@pytest.mark.asyncio
+async def test_a_version_2_refit_looks_a_peak_width_for_a_neighbour(filestore):
+    """The file's axis reads 75 ppm high and a neighbour sits 150 ppm below
+    NO3-.HNO3: both inside its refine window, 333 ppm wide. The audit
+    reproducing a version-2 fit drops both, as that node did; searching, it
+    looks no further than 100 ppm and keeps the line."""
+    filename = support.write_file(
+        filestore, _beside(-150.0), stored=support.axis_off(75.0)
+    )
+    stored = audit.read_stored_peaks(filename)
+    params = support.params()
+    isotopes = support.isotopes()
+
+    searched = await audit.refit(stored, params, isotopes, _broad)
+    windowed = await audit.refit(stored, params, isotopes, _broad, windowed=True)
+
+    def lines(refit):
+        return {round(mz) for mz in refit.readings.mz}
+
+    assert lines(searched) == {62, 79, 81, 125, 188}
+    assert lines(windowed) == {62, 79, 81, 188}
 
 
 @pytest.mark.asyncio

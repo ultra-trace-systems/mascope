@@ -158,6 +158,17 @@ class CalibrationConfig(BaseModel):
     # intense of them: eight candidates is room, not a cut.
     TOF_SEARCH_WINDOW_PPM: float = 500.0
     TOF_SEARCH_CANDIDATES: int = 8
+    # The overlap filter drops two peaks closer than one peak width, and on a
+    # TOF it looks no further than this for the neighbour. A TOF peak is 110
+    # to about 430 ppm wide on the fleet (resolving power 2,300 to 9,000);
+    # up to node version 2 the filter only ever saw the peaks within the 100
+    # ppm refine window of a line, so a neighbour further off never cost a
+    # calibrant. Seen across the 500 ppm search window, one up to a peak
+    # width off would: on the corpus a propylamine file lost its 287 Th line
+    # to a neighbour 273 ppm off, and on the drifting TOF's first November
+    # nitrate day the search kept TFA in 22 fits of 67, where matching within
+    # the refine window had kept it in 33.
+    TOF_OVERLAP_REACH_PPM: float = 100.0
     # An axis through two candidates is a hypothesis only while its slope
     # p1 lies within this share of the file's own: a drift of 300 ppm moves
     # p1 by 0.015 %, and two candidates of nearby lines can make an axis of

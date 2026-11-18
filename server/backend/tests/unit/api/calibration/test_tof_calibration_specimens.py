@@ -254,14 +254,19 @@ async def test_the_search_window_reaches_five_hundred_ppm(filestore):
     assert windowed.readings.empty
 
 
+@pytest.mark.parametrize("off_ppm, kept", [(110.0, True), (60.0, False)])
 @pytest.mark.asyncio
-async def test_a_neighbour_within_a_peak_width_drops_the_line(filestore):
-    """Beside Br- at 80.9 Th sits a peak ten times brighter, 106 ppm off on
-    the axis the node reads: closer than a bromide peak is wide (about 115
-    ppm). The search window takes it in, and the overlap filter drops both,
-    so Br- is read on its line at 78.9 Th alone. The 100 ppm refine window
-    of node version 2 stopped short of it and kept the line's own peak."""
-    found = _neighbour(support.specimen("bromide"), 80.917, 110.0, brighter=10.0)
+async def test_a_neighbour_within_a_hundred_ppm_drops_the_line(
+    filestore, off_ppm, kept
+):
+    """Beside Br- at 80.9 Th sits a peak ten times brighter, closer than a
+    bromide peak is wide (about 115 ppm). At 110 ppm, 106 on the axis the
+    node reads, the search window takes it in, but the overlap filter looks
+    no further than 100 ppm, and Br- 80.9 keeps its own peak, as when the 100
+    ppm refine window of node version 2 stopped short of the neighbour. At
+    60 ppm the filter drops both, and Br- is read on its line at 78.9 Th
+    alone; so did version 2, which had both in its window."""
+    found = _neighbour(support.specimen("bromide"), 80.917, off_ppm, brighter=10.0)
     filename = support.write_specimen(filestore, found)
 
     node = await _node_fit(filename, found)
@@ -274,10 +279,15 @@ async def test_a_neighbour_within_a_peak_width_drops_the_line(filestore):
     )
 
     points = _points(node)
-    assert 80.92 not in points
-    assert len(points) == len(found["fit"]["points"]) - 1
+    assert (80.92 in points) is kept
+    assert len(points) == len(found["fit"]["points"]) - (0 if kept else 1)
     assert all(point["retained"] for point in points.values())
-    assert any(label.startswith("Br- 80.9") for label in windowed.retained)
+    assert any(label.startswith("Br- 80.9") for label in windowed.retained) is kept
+    if kept:
+        # Its own peak, not the brighter neighbour
+        assert points[80.92]["observed_mz"] == pytest.approx(
+            _line(found, 80.917)["mz"], rel=1e-9
+        )
 
 
 @pytest.mark.asyncio
