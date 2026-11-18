@@ -23,7 +23,12 @@ Derived rows are a lossy view of a run: no mass or abundance error, no isotope
 label, no target ids, no evidence (the source is the registry entry's, where
 the member that brought the identity recorded one). Those are per-sample numbers a
 run computes and a member does not carry; the design note leaves them to an
-on-demand re-score.
+on-demand re-score. The target a member of the batch matched the identity to is
+the registry entry's (``batch_peaks.candidate_index``), shared by every member
+of that identity and never cleared, so it is no claim about one row and stays
+out of ``target_compound_id``: the ledger and detail reads only put what that
+compound declares on ``reference_listing`` (:func:`member_target_id`), as the
+batch ledger does for its consensus.
 
 The engine tier is the anchor's: an import's verdict (``engine_tier``) is kept
 on the batch peak, about the identity its consensus names. A member shows it
@@ -59,6 +64,9 @@ from mascope_backend.api.new.peak_assignments.config import (
 from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_UNASSIGNED,
     evidence_for,
+)
+from mascope_backend.api.new.peak_assignments.target_listing import (
+    with_target_listings,
 )
 from mascope_backend.api.new.peak_assignments.tiers import TIER_UNASSIGNED
 from mascope_backend.db import BatchPeak, BatchPeakOccurrence
@@ -218,6 +226,26 @@ def member_row(member: Any, anchor: Any) -> dict:
         "reference_listing": identity.get("listing"),
         "batch_peak_id": member.batch_peak_id,
     }
+
+
+def member_target_id(member: Any, anchor: Any) -> str | None:
+    """The target compound a member of the batch matched this member's
+    identity to, as the registry entry recorded it, or None.
+
+    Only for the display (``reference_listing.target``, through
+    :func:`~mascope_backend.api.new.peak_assignments.target_listing.with_target_listings`'s
+    ``target_of``): the entry is every member's of that identity, a later
+    member's target is added to an entry an earlier one made without, and a
+    deleted compound is not cleared from it, so the row's own
+    ``target_compound_id`` stays None. A compound that is gone names no
+    listing, since ``target_candidates`` finds none for it.
+
+    :param member: The sample's ``BatchPeakOccurrence``.
+    :param anchor: The ``BatchPeak`` the member sits in.
+    :return: The compound id, or None.
+    """
+    identity = resolve_candidate(anchor.candidates, member.candidate)
+    return identity.get("target_compound_id") or None
 
 
 def member_detail(member: Any, anchor: Any) -> dict:
@@ -522,6 +550,14 @@ async def derived_ledger(
         )
     ).all()
     rows = [member_row(member, anchor) for member, anchor in members]
+    # What the target the batch matched each identity to declares, without
+    # naming it as the row's own target (member_target_id). Keyed by the row
+    # object: nothing on a derived row is unique to it.
+    target_of = {
+        id(row): member_target_id(member, anchor)
+        for row, (member, anchor) in zip(rows, members, strict=True)
+    }
+    await with_target_listings(session, rows, lambda row: target_of.get(id(row)))
 
     return {
         "status": "success",

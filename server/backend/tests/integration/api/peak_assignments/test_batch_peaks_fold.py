@@ -37,8 +37,16 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     complete_run,
     start_run,
 )
+from mascope_backend.api.new.peak_assignments.fold_view import (
+    fold_assignment_id,
+    fold_run_id,
+)
 from mascope_backend.api.new.peak_assignments.sample_status import (
     get_batch_sample_assignment_status,
+)
+from mascope_backend.api.new.peak_assignments.service import (
+    get_peak_assignment_detail,
+    get_peak_assignments,
 )
 from mascope_backend.db import (
     BatchPeak,
@@ -1105,6 +1113,123 @@ async def test_a_target_match_names_its_compound_on_the_registry_and_the_ledger(
         )
         (earlier_charted,) = earlier_series["data"]
         assert earlier_charted["reference_listing"]["target"] == target
+    finally:
+        async with async_session_factory() as s:
+            await s.execute(
+                update(PeakAssignment)
+                .where(PeakAssignment.target_compound_id == compound_id)
+                .values(target_compound_id=None)
+            )
+            await s.execute(
+                delete(TargetCompound).where(
+                    TargetCompound.target_compound_id == compound_id
+                )
+            )
+            await s.commit()
+
+
+async def test_a_sample_read_off_the_batch_ledger_shows_the_target_its_identity_has(
+    async_session_factory, seeded
+):
+    """A sample whose run is gone reads its rows off the batch ledger. A row
+    whose identity a member of the batch matched to a target shows what that
+    compound declares under ``reference_listing``, in the ledger and in the
+    inspector detail, but never names it as its own ``target_compound_id``:
+    the registry entry is shared by every member of the identity. So a member
+    folded before the target match (A1) shows the target too, and still names
+    none; a member of no target shows none; and once the compound is deleted,
+    the entry's stale id shows nothing."""
+    batch, samples = seeded
+    compound_id = gen_id(16)
+    async with async_session_factory() as s:
+        s.add(
+            TargetCompound(
+                target_compound_id=compound_id,
+                target_compound_name="glucose",
+                target_compound_formula="C6H12O6",
+                inchikey="WQZGKKKJIJFFOK-GASJEMHNSA-N",
+            )
+        )
+        await s.flush()
+        row = (
+            await s.execute(
+                select(PeakAssignment).where(
+                    PeakAssignment.sample_item_id == samples["B"],
+                    PeakAssignment.sample_peak_id == "B1",
+                )
+            )
+        ).scalar_one()
+        row.target_compound_id = compound_id
+        await s.commit()
+    try:
+        # A first, its A1 row of no target, so B1's target is added to the
+        # entry A made.
+        await fold_sample_into_batch_peaks(samples["A"])
+        await fold_sample_into_batch_peaks(samples["B"])
+        async with async_session_factory() as s:
+            await s.execute(
+                delete(PeakAssignmentRun).where(
+                    PeakAssignmentRun.sample_item_id.in_([samples["A"], samples["B"]])
+                )
+            )
+            await s.commit()
+        shared = next(
+            p
+            for p in await _batch_peaks(async_session_factory, batch)
+            if p.n_present == 2
+        )
+        target = {
+            "label": "target",
+            "name": "glucose",
+            "inchikey": "WQZGKKKJIJFFOK-GASJEMHNSA-N",
+            "listed": False,
+        }
+
+        async def derived(sample, peak):
+            rows = {
+                r["sample_peak_id"]: r
+                for r in (await get_peak_assignments(samples[sample]))["data"]
+            }
+            assert rows[peak]["peak_assignment_run_id"] == fold_run_id(samples[sample])
+            (detail,) = (
+                await get_peak_assignment_detail(
+                    samples[sample], fold_assignment_id(shared.batch_peak_id)
+                )
+            )["data"]
+            return rows, detail
+
+        rows, detail = await derived("B", "B1")
+        assert rows["B1"]["reference_listing"]["target"] == target
+        assert detail["reference_listing"]["target"] == target
+        assert rows["B1"]["target_compound_id"] is None
+        assert detail["target_compound_id"] is None
+        # B2 came from no target and shows none.
+        assert rows["B2"]["reference_listing"] is None
+        # A1 was never matched to the target: it shows the identity's target,
+        # and names it as its own no more than B1 does.
+        rows, detail = await derived("A", "A1")
+        assert rows["A1"]["reference_listing"]["target"] == target
+        assert detail["reference_listing"]["target"] == target
+        assert rows["A1"]["target_compound_id"] is None
+        assert detail["target_compound_id"] is None
+
+        # The compound deleted, the registry keeps its id; nothing shows it.
+        async with async_session_factory() as s:
+            await s.execute(
+                update(PeakAssignment)
+                .where(PeakAssignment.target_compound_id == compound_id)
+                .values(target_compound_id=None)
+            )
+            await s.execute(
+                delete(TargetCompound).where(
+                    TargetCompound.target_compound_id == compound_id
+                )
+            )
+            await s.commit()
+        rows, detail = await derived("B", "B1")
+        assert rows["B1"]["reference_listing"] is None
+        assert detail["reference_listing"] is None
+        assert rows["B1"]["target_compound_id"] is None
     finally:
         async with async_session_factory() as s:
             await s.execute(

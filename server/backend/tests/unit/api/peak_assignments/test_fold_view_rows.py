@@ -22,6 +22,7 @@ from mascope_backend.api.new.peak_assignments.fold_view import (
     is_fold_id,
     member_detail,
     member_row,
+    member_target_id,
     verification_target,
 )
 
@@ -315,3 +316,21 @@ def test_the_source_is_the_registry_entrys_where_one_was_recorded():
     ]
     assert member_row(_member(candidate=0), anchor)["source"] == "untargeted"
     assert member_row(_member(candidate=1), anchor)["source"] is None
+
+
+def test_the_target_shown_is_the_registry_entrys_and_never_the_rows_own():
+    """A member of the batch that matched the identity to a target recorded
+    the compound on the registry entry; a derived row of that identity shows
+    it (member_target_id feeds the listing) but never claims it as its own
+    ``target_compound_id``, since the entry is shared by every member. An entry
+    recorded without one names none - an empty id included."""
+    anchor = _anchor()
+    anchor.candidates = [
+        {**_REGISTRY[0], "target_compound_id": "tc-1"},
+        {**_REGISTRY[1], "target_compound_id": ""},
+    ]
+    assert member_target_id(_member(candidate=0), anchor) == "tc-1"
+    assert member_target_id(_member(candidate=1), anchor) is None
+    assert member_target_id(_member(), _anchor()) is None
+    assert member_target_id(_member(candidate=None), anchor) is None
+    assert member_row(_member(candidate=0), anchor)["target_compound_id"] is None
