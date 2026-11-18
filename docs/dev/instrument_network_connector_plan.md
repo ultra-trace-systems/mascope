@@ -1,7 +1,7 @@
 # Keeping the instrument PC off the internet: the connector, and which deployment answers which objection
 
 - **Status:** design
-- **As of:** 2026-11-17
+- **As of:** 2026-11-18
 - **Tracked in:** [Isolated deployments](https://linear.app/ultra-trace/project/isolated-deployments-7585d72b2a80)
   (Linear, P-MAS-10, beside `isolated_deployment_plan.md`; filed 2026-11-17:
   phases A to E are milestones "Connector A" to "Connector E", MAS-957 to
@@ -21,7 +21,8 @@ This document records (1) the setting, (2) the two questions a "no cloud"
 objection mixes, (3) what the File Agent does on the network today, verified
 against the code, (4) the ladder of answers that keep the instrument PC
 offline with Mascope in the cloud, (5) the connector, (6) on-premises split
-into a managed and an isolated form, (7) where this meets
+into a managed and an isolated form, and why a site in mainland China takes
+the isolated one, (7) where this meets
 [isolated_deployment_plan.md](isolated_deployment_plan.md), (8) the four
 offerings that follow, and (9) the build phases.
 
@@ -382,6 +383,95 @@ instrument PC reaches the server over the LAN (4.6). Remote support goes only
 through a path the customer opens for the session (4.7). It is the expensive
 offering and should be priced as one.
 
+### 6.3 A site in mainland China
+
+Managed on-premises, as 6.1 draws it, does not fit a site in mainland China.
+Both of its outbound paths fail there: the updates for technical reasons, the
+tunnel because of the rules.
+
+**Updates.** A managed server pulls from the hosts on
+[hosting.md's allow-list](../hosting.md#isolated-and-restricted-sites).
+From the mainland:
+
+- Docker Hub, where the Postgres and Redis images come from, is slow to the
+  point of timing out. Most domestic mirrors of it closed in June 2024
+  ([a December 2025 survey](https://eastondev.com/blog/en/posts/dev/20251217-docker-mirror-guide-2025/)).
+- GitHub and `ghcr.io`, for release discovery and the release images, are
+  not blocked, but how reliably they cross the border has not been measured.
+- PyPI and the Ubuntu archive work through domestic mirrors.
+
+So a Chinese site updates by the isolated plan's signed bundle
+([isolated_deployment_plan.md](isolated_deployment_plan.md) section 5), which
+already carries the third-party images. It therefore waits on the bundle
+phases: MAS-303, and the issues it files. The alternative is to mirror our
+images into a registry inside China, run by a Chinese cloud provider. That
+adds an account there and a publishing step to every release.
+
+**The tunnel, technically.** Tailscale often connects:
+
+- Its control plane is on TCP 443.
+- Its relays include a Hong Kong region (`hkg` in the
+  [default DERP map](https://login.tailscale.com/derpmap/default)).
+- It relays over TCP 443 when UDP is blocked.
+
+How well it connects depends on the carrier, the province and the time of
+day, and nothing guarantees it
+([SSD Nodes, 2026](https://www.ssdnodes.com/learn/lang/zh-hans/does-tailscale-work-in-china)).
+A self-hosted relay or Headscale mends the layer that fails; neither changes
+the border. The isolated plan's alternatives in its section 4.3, Cloudflare
+Tunnel and a reverse SSH tunnel, cross the same border.
+
+**The tunnel, by the rules.** This is the real blocker.
+
+- The Ministry of Industry and Information Technology's notice of January
+  2017 bars anyone from setting up or renting cross-border dedicated lines or
+  other channels, VPNs included, without the telecom authorities' approval
+  ([translation](https://www.chinalawtranslate.com/%e5%b7%a5%e4%b8%9a%e5%92%8c%e4%bf%a1%e6%81%af%e5%8c%96%e9%83%a8%e5%85%b3%e4%ba%8e%e6%b8%85%e7%90%86%e8%a7%84%e8%8c%83%e4%ba%92%e8%81%94%e7%bd%91%e7%bd%91%e7%bb%9c%e6%8e%a5%e5%85%a5%e6%9c%8d%e5%8a%a1/?lang=en)).
+- The ministry later said that foreign and multinational firms needing such
+  links should rent them from operators with international gateways
+  ([Yicai Global, July 2017](https://www.yicaiglobal.com/news/new-vpn-regulation-will-not-affect-lawful-users-miit-says)).
+
+A standing tunnel from the customer's server to Ultra Trace's hosts is a
+self-built cross-border channel of exactly that kind. Expect the customer's
+IT to refuse it.
+
+**Atmospheric data.**
+
+- The Measures for the Administration of Foreign-related Meteorological
+  Observation and Data
+  ([InforMEA](https://informea.org/en/content/legislation/measures-administration-foreign-related-meteorological-observation-and-data))
+  require a permit for a foreign-related observation station, and govern
+  meteorological data provided to foreign parties.
+- In October 2023 the Ministry of State Security reported that it had
+  checked more than 3,000 foreign-related stations. It found several hundred
+  sending data abroad in real time without approval
+  ([CNA](https://www.cna.com.tw/news/acn/202310310031.aspx)).
+- Whether an Orbion measuring atmospheric composition falls within the
+  measures is unconfirmed (section 11). The question bears hardest on the
+  cloud offerings, which send every measurement abroad as it is made.
+- The Cyberspace Administration of China's cross-border data provisions of
+  March 2024 exempt data from academic cooperation from their assessment and
+  contract requirements. The exemption holds only when the data contains no
+  personal information and no important data
+  ([Hunton](https://www.hunton.com/privacy-and-cybersecurity-law-blog/2024/03/27/new-era-of-regulation-for-cross-border-transfers-in-china/)).
+
+**What fits:**
+
+- The server on site, with no standing tunnel, updated by bundle.
+- Support through attended sessions that the customer opens. TeamViewer is
+  reported to work across the border, though slowly. Sunlogin and ToDesk are
+  common locally but are reported to need their paid overseas tiers to cross
+  well. Neither report has been tested.
+- The isolated plan's support bundle (its section 6), for diagnosis without
+  a session.
+- A standing tunnel only over a cross-border line the customer already rents
+  from a licensed operator, and only with their written approval.
+- A local partner for hands-on work.
+
+That is the isolated appliance of 6.2. Its gateway (section 7), whichever
+machine plays that role, crosses the border only in sessions the customer
+opens.
+
 ## 7. Where this meets the isolated deployment plan
 
 The isolated plan's setting (its section 1) has the server offline and the
@@ -415,6 +505,10 @@ In every row, a browser on the instrument PC reaches Mascope by the agent's
 path, and TeamViewer by a path of its own (4.6, 4.7). The exceptions are two
 forms of the connector row, the reverse form and the drop folder, which give
 the browser no path at all.
+
+In mainland China, managed on-premises does not fit, and the cloud rows wait
+on the meteorological-data question. As things stand, the isolated appliance
+with attended support is the row that fits (6.3).
 
 Prices are a business decision outside this note. The point of the table is
 that each offering's cost follows from its last column, so the costly one is
@@ -497,6 +591,17 @@ isolated plan's phases. (MAS-973.)
   OrbionICS needs unattended access rather than a session someone at the PC
   accepts; and whether TeamViewer works through the connector's proxy on 443
   as its documentation says (phase A's test).
+- **A site in mainland China** (6.3), for the customer and Chinese counsel:
+  - whether an Orbion measuring atmospheric composition is a foreign-related
+    meteorological observation station in the measures' sense, and so
+    whether its data may reach Ultra Trace's hosting at all;
+  - whether its data counts as important data under the Cyberspace
+    Administration's provisions;
+  - whether the customer already rents a cross-border line from a licensed
+    operator.
+
+  For us: which remote-support tool crosses the border well enough, tested
+  at the site.
 - **The connector's form:** a customer VM or a host Ultra Trace ships, and who
   patches the hypervisor under it.
 - **Tailscale on a customer-site host:** the same acceptance question the
