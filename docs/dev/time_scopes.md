@@ -233,15 +233,19 @@ and the rule has three parts:
    batch peak's *consensus* formula and adduct, and they move on a new
    sample's vote, a curation, an import, an untargeted or series pass, a
    known-species, water-ladder or merged-isotopologue pass, or a re-fold.
-   Every one of those paths, the fold and the deferred backfill included,
-   ends in `_recompute_consensus`, which calls `_apply_consensus` and learns
-   from its return whether `consensus_formula` or `ionization_mechanism_id`
-   moved, inside the caller's transaction. That is where the hook sits:
-   `_recompute_consensus` collects the anchors whose formula or mechanism
-   changed and recomputes the rollups of each one's old and new keys over
-   the whole batch, and the catalog's two rows follow. Hooking the fold
-   alone would miss curation and the batch passes, and a six-month chart
-   would drift from the ledger with nothing to show it.
+   Those paths reach the consensus by two routes: the fold and the
+   known-species, water-ladder and merged-isotopologue passes call
+   `_recompute_consensus`; curation, import, the untargeted and series passes
+   and the deferred backfill call `recompute_batch_consensus`. Neither calls
+   the other, and both chunk their anchors through
+   `_recompute_consensus_chunk`, which is the one function that calls
+   `_apply_consensus` and learns from its return whether `consensus_formula`
+   or `ionization_mechanism_id` moved, inside the caller's transaction. That
+   is where the hook sits: the chunk collects the anchors whose formula or
+   mechanism changed and recomputes the rollups of each one's old and new
+   keys over the whole batch, and the catalog's two rows follow. Hooking the
+   fold alone, or either of the two callers above it, would miss a path, and
+   a six-month chart would drift from the ledger with nothing to show it.
 3. **A ledger rebuild or a run change recomputes the batch.** A one-off
    backfill walks every acquisition batch through the same code.
 
