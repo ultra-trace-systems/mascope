@@ -2489,13 +2489,13 @@ mascope prod db script run rebuild_stale_peak_stores
   it has, as *Detect peaks* does. No sample is deleted or made anew, in any
   workspace, so a file copied into a workspace's batch, which a
   re-processing refuses, is rebuilt like any other. No calibration is refit.
-- Before the store is written, every batch holding one of the file's samples
-  is set to **rematch** (one already waiting on **recalibrate** keeps it, as
-  its recalibration rematches it too), every match of those samples is
-  removed and the batch's aligned peaks are dropped: the new peak list has
-  new peak ids.
-  Each sample's TIC is read again from the file, and a file with an MS2 store
-  has it written again with its group inventory. The peak store is written
+- Once the file's peaks are detected, and before the store is written, each
+  sample's TIC is read again from the file, and a file with an MS2 store has
+  it written again with its group inventory. Then every batch holding one of
+  the file's samples is set to **rematch** (one already waiting on
+  **recalibrate** keeps it, as its recalibration rematches it too), every
+  match of those samples is removed and the batch's aligned peaks are
+  dropped: the new peak list has new peak ids. The peak store is written
   last, so a run that stops partway leaves the file stale for the next run.
 - **Rematch those batches afterwards**: their status icon, **Refresh
   matches**, or a dataset's rematch, which takes each of its batches in
@@ -2505,7 +2505,7 @@ mascope prod db script run rebuild_stale_peak_stores
   `REBUILD_LIMIT=<n>` caps how many one run rebuilds; run it again
   until it reports nothing to rebuild. A file whose rebuild fails, or whose
   rebuilt store still disagrees with its file, is named at the end and tried
-  again by the next run, its batches set to **rematch** again.
+  again by the next run.
 - **A file that fails does not count against the cap.** A capped run goes on
   to older stale files until it has rebuilt `<n>`, so files that keep
   failing at the top of the list never hold back the rest. A capped run says
@@ -2514,10 +2514,16 @@ mascope prod db script run rebuild_stale_peak_stores
   rebuild that failed names its cause, such as a missing instrument
   configuration. A store still stale after its rebuild needs looking into:
   detecting it again does not change it.
-- **The cap counts rebuilt files, not the files a run touches.** A file that
-  fails has its batches set to **rematch** and its samples' matches removed
-  before its rebuild fails. A run whose files keep failing resets every one
-  it reaches, capped or not.
+- **A file whose detection fails keeps its batches and its matches.** One
+  with no instrument configuration, or whose peaks cannot be detected, fails
+  before anything of it is reset, so a run that fails on it again changes
+  nothing of it. One that fails in reading its TIC or MS2 store again keeps
+  them too, as those reads come before the reset; its TIC or its MS2 store
+  may already have been written again. A file that fails in setting its
+  batches to **rematch**, in removing its matches or in writing its store
+  may have been reset first. A store that is written but still stale has had
+  its batches set to **rematch** and its matches removed, on every run that
+  rebuilds it.
 - The `pg_dump` taken before it covers the batch statuses, the matches and
   the TICs. The stores are in the filestore.
 - *Detect peaks* on one file does the same for that file alone, and

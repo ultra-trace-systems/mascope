@@ -33,17 +33,20 @@ file that needs it:
   peaks* runs it). Every sample of the file keeps its definition, in every
   batch and every workspace: nothing is deleted or made anew, and no
   calibration is refit.
-- **Before the store is written**, every batch holding one of the file's
-  samples is set to ``rematch`` - one already waiting on ``recalibrate``
-  keeps it, as its recalibration rematches it too - every match of those
-  samples is removed and the batch's aligned-peak cache is dropped: the new
-  peak list has new peak
-  ids, which nothing made on the old one finds. Each sample's TIC is read
-  again from the file, as a new sample's is (``fix_sample_item_tic``), and a
-  file with an MS2 store has it written again with its group inventory, as a
-  re-processing writes them: both hold the scans the reader selects. The peak
-  store is written last, so a run that stops partway leaves the file stale,
-  and the next run does all of it again.
+- **Once the peaks are detected, before the store is written** (the
+  ``before_write`` of ``compute_peaks``), each sample's TIC is read again
+  from the file, as a new sample's is (``fix_sample_item_tic``), and a file
+  with an MS2 store has it written again with its group inventory, as a
+  re-processing writes them: both hold the scans the reader selects. Then
+  every batch holding one of the file's samples is set to ``rematch`` - one
+  already waiting on ``recalibrate`` keeps it, as its recalibration
+  rematches it too - every match of those samples is removed and the batch's
+  aligned-peak cache is dropped: the new peak list has new peak ids, which
+  nothing made on the old one finds. The peak store is written last, so a
+  run that stops partway leaves the file stale, and the next run does all of
+  it again. A file whose instrument configuration cannot be read, or whose
+  detection fails, fails before any of this: its batches and matches are
+  left as they were, however many runs fail on it.
 - **Once the run is done**, rematch the batches it set to ``rematch``: their
   status icon, **Refresh matches**, or a dataset's rematch, which takes every
   batch of the dataset in turn.
@@ -63,12 +66,9 @@ many files one run rebuilds. A file whose rebuild fails, or whose rebuilt
 store still disagrees with its file, is counted and named, and read again by
 the next run. It does not count against the cap: a capped run goes on to
 older stale files until it has rebuilt as many as the cap, so files that keep
-failing at the top of the list do not hold every later run back. The cap
-counts rebuilt files only: a file that fails has had its batches set to
-``rematch`` and its samples' matches removed before its rebuild failed, so a
-run whose files keep failing resets every one of them it reaches, capped or
-not. A capped run says to run again only when it stopped before the oldest
-file; one that reached it says so, and names what it could not rebuild.
+failing at the top of the list do not hold every later run back. A capped
+run says to run again only when it stopped before the oldest file; one that
+reached it says so, and names what it could not rebuild.
 
 ``DRY_RUN=1`` reads the same files and writes nothing: each file whose store
 is stale, the scans it holds against those its file reads, and how many
@@ -372,8 +372,12 @@ class Steps:
     refresh_tic: Callable[[str, str], Awaitable[int]] | None = None
     #: Writes a file's MS2 store and its inventory again, where it has one.
     refresh_ms2: Callable[[str, str], Awaitable[bool]] | None = None
-    #: Detects a file's peaks again and writes its store.
-    rebuild: Callable[[str], Awaitable[None]] | None = None
+    #: Detects a file's peaks again and writes its store, by file name,
+    #: awaiting the second argument between the two: the steps above, which
+    #: are for a file whose peaks could be detected.
+    rebuild: Callable[[str, Callable[[], Awaitable[None]]], Awaitable[None]] | None = (
+        None
+    )
     #: The check, asked again once the store is written.
     check_one: Callable[[str], Checked] | None = None
 
@@ -444,20 +448,30 @@ async def rebuild_all(
             f"{len(samples)} sample(s), {len(batches)} batch(es)"
         )
         if not dry_run:
-            try:
+
+            async def reset(
+                file_id=candidate["sample_file_id"],
+                filename=filename,
+                samples=samples,
+                batches=batches,
+            ) -> None:
+                # Once the peaks are detected, before the store is written:
+                # a file whose detection fails keeps its batches and its
+                # matches. The resets come last, after the steps that read
+                # the file again and can fail on it too.
+                if steps.refresh_tic is not None:
+                    counts["tic_items"] += await steps.refresh_tic(file_id, filename)
+                if steps.refresh_ms2 is not None and await steps.refresh_ms2(
+                    file_id, filename
+                ):
+                    counts["ms2_stores"] += 1
                 if batches and steps.queue_rematch is not None:
                     await steps.queue_rematch(batches)
                 if samples and steps.remove_matches is not None:
                     await steps.remove_matches(samples)
-                if steps.refresh_tic is not None:
-                    counts["tic_items"] += await steps.refresh_tic(
-                        candidate["sample_file_id"], filename
-                    )
-                if steps.refresh_ms2 is not None and await steps.refresh_ms2(
-                    candidate["sample_file_id"], filename
-                ):
-                    counts["ms2_stores"] += 1
-                await steps.rebuild(filename)
+
+            try:
+                await steps.rebuild(filename, reset)
             except Exception as exc:  # noqa: BLE001 - one file, never the run
                 counts["failed"] += 1
                 outcome.failed.append(filename)
@@ -509,10 +523,8 @@ async def find_and_rebuild(
     list, and counting it against the cap would have every later run stop
     on it before reaching anything older.
 
-    So the cap counts rebuilt files only, not the files a run touches: a
-    file that fails has had its batches set to ``rematch`` and its samples'
-    matches removed first, and a run whose files keep failing resets every
-    one it reaches.
+    A file whose detection fails has had nothing reset (:func:`rebuild_all`),
+    so a file that keeps failing costs a later run its detection alone.
 
     :param uncounted: Rebuild the stores that keep no scan counts too
         (:func:`survey`).
@@ -658,16 +670,44 @@ async def _refresh_ms2(sample_file_id: str, filename: str) -> bool:
     return True
 
 
-async def _rebuild(filename: str) -> None:
+async def _rebuild(filename: str, before_write: Callable[[], Awaitable[None]]) -> None:
     """Detect a file's peaks again and write its store, as *Detect peaks*
-    does: by the decision its props record, on the calibration it has."""
+    does: by the decision its props record, on the calibration it has.
+
+    :param before_write: Awaited once the peaks are detected, before the
+        store is written; not at all when the file's instrument
+        configuration cannot be read or its detection fails.
+    """
     from mascope_backend.api.new.instrument_configs.lib import (
         read_instrument_functions,
     )
-    from mascope_signal.peak import compute_peaks
 
     instrument_functions = await read_instrument_functions(filename=filename)
-    await asyncio.to_thread(compute_peaks, filename, instrument_functions)
+    await _detect_and_write(filename, instrument_functions, before_write)
+
+
+async def _detect_and_write(
+    filename: str,
+    instrument_functions: tuple,
+    before_write: Callable[[], Awaitable[None]],
+) -> None:
+    """Detect a file's peaks in a thread of its own, await ``before_write``
+    on this loop once they are detected, and write the store.
+
+    The detection holds the file's detection lock from reading its recorded
+    decision to the store's last write (``mascope_signal.peak.compute_peaks``),
+    so ``before_write`` runs inside it, on this loop, while the thread waits.
+    """
+    from mascope_signal.peak import compute_peaks
+
+    loop = asyncio.get_running_loop()
+
+    def in_loop() -> None:
+        asyncio.run_coroutine_threadsafe(before_write(), loop).result()
+
+    await asyncio.to_thread(
+        compute_peaks, filename, instrument_functions, before_write=in_loop
+    )
 
 
 def _limit() -> int | None:
