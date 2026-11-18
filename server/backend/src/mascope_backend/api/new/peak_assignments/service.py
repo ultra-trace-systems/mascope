@@ -2320,6 +2320,39 @@ async def fetch_sample_mechanisms(
     return _without_unreadable(mechanism_ids, mechanisms)
 
 
+async def recorded_searched_mechanisms(
+    sample, run_config: dict | None
+) -> list[SimpleNamespace]:
+    """The mechanisms a run of the sample searched, read off its record: the
+    mode's own, and the secondary channels the run opened
+    (``resolved_profile.secondary_channels``) that the mode does not declare,
+    as :func:`_searched_mechanisms` composes them for the run itself.
+
+    What a reader of a run's row proposes a formula through: the untargeted
+    search proposed the row's shortlist through every channel it searched, so
+    a shortlist formula that fits the peak only through an opened channel is
+    placed there (``alternatives_scoring.score_row_alternatives``).
+
+    :param sample: The sample view row.
+    :param run_config: The row's run's stored config; None, or one recording
+        no resolution, reads the mode's own mechanisms alone.
+    :return: The mechanisms, the mode's first.
+    """
+    _, mechanisms = await fetch_sample_mechanisms(sample)
+    snapshot = (run_config or {}).get(RESOLVED_PROFILE_KEY)
+    opened = snapshot.get("secondary_channels") if isinstance(snapshot, dict) else None
+    if not mechanisms or not opened:
+        return mechanisms
+    own = {mechanism_key(m.ionization_mechanism) for m in mechanisms}
+    return mechanisms + [
+        mechanism
+        for mechanism in await fetch_mechanisms_by_notation(
+            list(opened), sample.polarity
+        )
+        if mechanism_key(mechanism.ionization_mechanism) not in own
+    ]
+
+
 def _without_unreadable(
     mechanism_ids: list[str], mechanisms: list
 ) -> tuple[list[str], list[SimpleNamespace]]:
