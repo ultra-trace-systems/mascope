@@ -21,8 +21,8 @@ This document records (1) the setting, (2) the two questions a "no cloud"
 objection mixes, (3) what the File Agent does on the network today, verified
 against the code, (4) the ladder of answers that keep the instrument PC
 offline with Mascope in the cloud, (5) the connector, (6) on-premises split
-into a managed and an isolated form, and why a site in mainland China takes
-the isolated one, (7) where this meets
+into a managed and an isolated form, and the two routes for a site in
+mainland China, (7) where this meets
 [isolated_deployment_plan.md](isolated_deployment_plan.md), (8) the four
 offerings that follow, and (9) the build phases.
 
@@ -387,7 +387,12 @@ offering and should be priced as one.
 
 Managed on-premises, as 6.1 draws it, does not fit a site in mainland China.
 Both of its outbound paths fail there: the updates for technical reasons, the
-tunnel because of the rules.
+tunnel because of the rules. Two routes fit instead. Without a partner, the
+server sits at the site as an isolated appliance (6.3.1). With a local
+partner, a Mascope region inside China serves every Chinese customer
+(6.3.2).
+
+#### 6.3.1 Without a partner: the isolated appliance
 
 **Updates.** A managed server pulls from the hosts on
 [hosting.md's allow-list](../hosting.md#isolated-and-restricted-sites).
@@ -472,6 +477,97 @@ That is the isolated appliance of 6.2. Its gateway (section 7), whichever
 machine plays that role, crosses the border only in sessions the customer
 opens.
 
+#### 6.3.2 With a local partner: a Mascope region in China
+
+**The setting.** A Chinese partner rents servers from a Chinese cloud provider
+and runs Mascope there with us. The acquisition PCs upload inside China, and
+one region serves every Chinese customer.
+
+**What it fixes:**
+
+- The data path no longer crosses the border, so most of 6.3.1's concerns
+  about measurements going abroad fall away. Maintenance access is the
+  exception (below).
+- Cloud and Cloud + Connector (section 8) work for Chinese sites, with the
+  region in the instance's place. A connector's own administration (5.2) is
+  Tailscale to our admin devices, which is a standing tunnel across the
+  border. So in China, either the partner administers the connectors, or
+  ours goes through the same two routes as the region's maintenance.
+- Updates come from a registry in the same cloud, filled once per release,
+  instead of being fought for at each site.
+- The partner can give first-line support on the acquisition PCs with the
+  domestic tools, Sunlogin or ToDesk, which work inside China.
+
+**What our updater cannot do yet: take a mirror.**
+
+- Release discovery calls `api.github.com` (`cmd/prod/auto_update.py`).
+- The release images are fixed `ghcr.io` names, in `docker-compose.yaml` and
+  in `cmd/prod/main.py`. `MASCOPE_UPDATE_REPO` changes only which GitHub
+  repository is asked (isolated plan section 2).
+- The Docker daemon's `registry-mirrors` setting covers Docker Hub alone
+  ([Docker](https://docs.docker.com/docker-hub/image-library/mirror/)). It
+  helps with Postgres and Redis, not with the release images.
+
+A partner region therefore needs one of two things: the isolated plan's
+signed bundles (its section 5), or a change that turns the release source
+and the image registry into settings. Section 11 records the choice.
+
+**What the partner takes on:**
+
+- Operator of record: a Chinese company, with a China-region cloud account.
+- An ICP filing for the hostname. Every website on mainland servers needs
+  one, and only a Chinese entity can file. One guide plans six to eight
+  weeks for it
+  ([AppInChina](https://appinchina.co/blog/the-complete-guide-to-chinas-icp-filing/)).
+- Probably a commercial ICP licence as well, since the service is paid
+  ([China Briefing](https://www.china-briefing.com/news/china-internet-business-licenses-foreign-companies/)).
+- Possibly a filing under the Multi-Level Protection Scheme (MLPS). The same
+  source says licence applications are often returned without one.
+- A contract that says what we may access.
+
+**Our scheduled maintenance** goes by one of two routes:
+
+- **A licensed cross-border link.** Alibaba Cloud sells cross-border CEN and
+  Express Connect jointly with China Unicom. Zhejiang Unicom runs the
+  circuits. China Unicom checks the buyer's identity under MIIT rules through
+  its online application, and the subscription is paid to China Unicom
+  ([CEN](https://help.aliyun.com/en/cen/support/faq-about-cross-border-network-communication),
+  [Express Connect](https://help.aliyun.com/en/express-connect/support/faq-about-cross-border-service)).
+  This is the licensed-operator route that the 2017 notice points to, so as
+  far as the network rules go, a standing tunnel over it is allowed. It is
+  the most robust route, at a monthly fee.
+- **Windows the partner opens.** At the agreed time the partner admits our
+  jump host or starts the tunnel, we do the work, and they close it again.
+  The session is logged. SSH from abroad to a Chinese cloud server usually
+  works but can be throttled, so a window needs time to spare. There is no
+  standing tunnel.
+
+**The catch: our access counts as data export.** The CAC's guidelines of
+31 August 2022 for the outbound-transfer security assessment treat an
+overseas party's right to access, retrieve, download or export data stored
+in China as an outbound transfer
+([Han Kun](https://www.hankunlaw.com/en/portal/article/index/cid/8/id/9655.html)).
+An admin login on the server can read the database. So maintenance is
+designed not to need the data:
+
+- Our role updates the software and checks its health. It does not read
+  measurements, and the logs and the contract back that up.
+- Monitoring and error reporting stay in China, or send only counts abroad.
+  An error event to our GlitchTip carries no cookies, auth headers or
+  request bodies (`send_default_pii=False` and
+  `max_request_body_size="never"` in
+  `libraries/runtime/src/mascope_runtime/logging.py`). It does carry the
+  request URL, log lines and stack traces, which can name samples and files,
+  so sending one abroad would count as export too.
+- When a task needs the data, the partner runs the commands while we guide
+  them.
+
+**Pricing:**
+
+- A partner region is priced like the cloud, plus the partner's fee and the
+  cross-border link. Its setup cost is shared across the Chinese customers.
+- A Chinese site without a partner is priced as the isolated appliance.
+
 ## 7. Where this meets the isolated deployment plan
 
 The isolated plan's setting (its section 1) has the server offline and the
@@ -506,9 +602,14 @@ path, and TeamViewer by a path of its own (4.6, 4.7). The exceptions are two
 forms of the connector row, the reverse form and the drop folder, which give
 the browser no path at all.
 
-In mainland China, managed on-premises does not fit, and the cloud rows wait
-on the meteorological-data question. As things stand, the isolated appliance
-with attended support is the row that fits (6.3).
+In mainland China, managed on-premises does not fit (6.3).
+
+- **Without a partner:** the isolated appliance with attended support is
+  the row that fits. The cloud rows would send every measurement abroad, so
+  they wait on the meteorological-data question.
+- **With a local partner running a Mascope region inside China:** the first
+  two rows come back for Chinese customers, with the region in the
+  instance's place.
 
 Prices are a business decision outside this note. The point of the table is
 that each offering's cost follows from its last column, so the costly one is
@@ -600,8 +701,19 @@ isolated plan's phases. (MAS-973.)
   - whether the customer already rents a cross-border line from a licensed
     operator.
 
-  For us: which remote-support tool crosses the border well enough, tested
-  at the site.
+  For a partner region (6.3.2), also for counsel:
+  - whether our maintenance access counts as a transfer of important data;
+  - whether the service needs only the ICP filing, or the commercial licence
+    too;
+  - which MLPS level applies;
+  - whether the meteorological measures still apply when the data stays in
+    China under a Chinese operator.
+
+  For us:
+  - which remote-support tool crosses the border well enough, tested at the
+    site;
+  - whether a partner region updates by the isolated plan's bundles or by a
+    configurable release source and image registry.
 - **The connector's form:** a customer VM or a host Ultra Trace ships, and who
   patches the hypervisor under it.
 - **Tailscale on a customer-site host:** the same acceptance question the
