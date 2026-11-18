@@ -630,7 +630,9 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
   rows at candidate than at half, each naming its reason and linking its
   neighbour.
 - **The reading**, read-only over the testbed's newest stored ledger of each
-  gate sample (rule set 11) and the sample's own peaks:
+  gate sample (rule sets 6 and 9) and the sample's own peaks. The
+  denominators below are the tiers those ledgers' rules gave, not rule set
+  13's:
   - Assigned monoisotopic rows the rule caps: E 9 of 111 (8%), F's bromide
     half 79 of 363 (22%), F's nitrate half 351 of 733 (48%), J 40 of 368
     (11%); on the Orbitrap sets A 0 of 883, B 5 of 4,021, C 0 of 364 and D 0
