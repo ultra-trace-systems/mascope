@@ -10,6 +10,7 @@ axes are real stores on disk: what a rollback has to give back bit for bit.
 
 import json
 import os
+from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,6 +28,9 @@ from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
 )
 from mascope_backend.api.controllers.sample.files.process.service import (
     CalibrationOutcome,
+)
+from mascope_backend.api.models.calibration.calibration_pydantic_model import (
+    CalibrationFitParams,
 )
 from mascope_backend.db.scripts import recalibrate_tof as script
 from mascope_tofwerk.calibration import tof_to_mass
@@ -302,12 +306,45 @@ def test_an_apply_no_outcome_followed_is_open(tmp_path):
         {"event": "apply", "sample_file_id": "cut", "before": {"record": 1}},
         {"event": "error", "sample_file_id": "cut", "apply_incomplete": True},
         {"event": "apply", "sample_file_id": "stopped"},
+        # A later run's fault, kept or failed fit says nothing of the apply
+        {"event": "apply", "sample_file_id": "later"},
+        {"event": "error", "sample_file_id": "later", "error": "database down"},
+        {"event": "kept", "sample_file_id": "later"},
+        {"event": "failed", "sample_file_id": "later"},
+        {"event": "apply", "sample_file_id": "back"},
+        {"event": "restored", "sample_file_id": "back", "apply_seq": 10},
+        {"event": "apply", "sample_file_id": "over"},
+        {"event": "superseded", "sample_file_id": "over", "apply_seq": 12},
+        {"event": "apply", "sample_file_id": "undone"},
+        {"event": "rollback", "sample_file_id": "undone", "apply_seq": 14},
     )
 
     assert ledger.open_apply("done") is None
     assert ledger.open_apply("cut")["before"] == {"record": 1}
     assert ledger.open_apply("stopped")["seq"] == 5
+    assert ledger.open_apply("later")["seq"] == 6
     assert ledger.open_apply("never") is None
+    for closed in ("back", "over", "undone"):
+        assert ledger.open_apply(closed) is None
+    assert {
+        file_id: event["seq"] for file_id, event in ledger.open_applies().items()
+    } == {"cut": 3, "stopped": 5, "later": 6}
+
+
+def test_a_file_with_an_open_apply_is_never_settled(tmp_path):
+    ledger = _ledger(
+        tmp_path,
+        {"event": "apply", "sample_file_id": "a", "mode_id": "m", "target": TARGET},
+        {"event": "kept", "sample_file_id": "a", "mode_id": "m", "target": TARGET},
+        {"event": "apply", "sample_file_id": "b", "mode_id": "m", "target": TARGET},
+        {"event": "failed", "sample_file_id": "b", "mode_id": "m", "target": TARGET},
+        {"event": "apply", "sample_file_id": "c", "mode_id": "m", "target": TARGET},
+        {"event": "kept", "sample_file_id": "c", "mode_id": "m", "target": TARGET},
+        {"event": "restored", "sample_file_id": "c", "apply_seq": 5},
+    )
+
+    # c's apply was put back, so its kept fit stands
+    assert ledger.settled({"m": TARGET}.get) == {"c"}
 
 
 def test_a_rollback_takes_each_file_last_completed_apply(tmp_path):
@@ -342,10 +379,12 @@ def test_what_is_left_to_match_and_the_batches_touched(tmp_path):
         {"event": "apply", "sample_file_id": "c", "batches": ["b2"]},
         {"event": "applied", "sample_file_id": "c"},
         {"event": "rollback", "sample_file_id": "d", "batches": ["b3"]},
+        {"event": "restored", "sample_file_id": "e", "batches": ["b4"]},
     )
 
+    # A put-back apply never landed, so its matches were not removed
     assert [e["sample_file_id"] for e in ledger.unmatched()] == ["c", "d"]
-    assert ledger.touched_batches() == {"b1", "b2", "b3"}
+    assert ledger.touched_batches() == {"b1", "b2", "b3", "b4"}
 
 
 def test_a_stop_file_asks_the_run_to_stop(tmp_path):
@@ -494,6 +533,138 @@ async def test_a_props_key_the_file_lacked_is_taken_out_again(filestore):
     assert m_io.read_props(FILENAME) == props
 
 
+#: The record of a file whose axes it does not give from any offset: every
+#: axis is kept beside the ledger
+NO_OFFSET = {"mode": 0, "par": [10851.0, -18000.0]}
+
+
+def _write_unfitting(root) -> None:
+    write_file(root, APPLIED)
+    path = _path(root) / ".props"
+    props = json.loads(path.read_text())
+    props["mz_calibration"] = NO_OFFSET
+    path.write_text(json.dumps(props))
+
+
+def _add_cache(root, name="sum_signal_00000000abcd", size=None) -> None:
+    """A cached sum signal on the file's axis as it is now, as a time window
+    of the file leaves one."""
+    axis = xr.open_zarr(_path(root) / "sum_signal.zarr")["mz"].values
+    if size is not None:
+        axis = axis[:size]
+    xr.Dataset({name: ("mz", np.ones(axis.size))}, coords={"mz": axis}).to_zarr(
+        _path(root) / f"{name}.zarr", mode="w", consolidated=True
+    )
+
+
+async def _apply_then_plan(filestore, ledger_dir):
+    """The file's plan and kept arrays, as the ledger keeps them, and an
+    apply of another fit after."""
+    props = script._props_before(FILENAME)
+    plan, kept = script.restore_plan(FILENAME, props["mz_calibration"])
+    await TofCalibrationHandler(FILENAME).apply(
+        {"mode": 0, "par": [10850.0 * (1 + 2e-5), -18500.0], "quality": {}}
+    )
+    return {"props": props}, plan, kept
+
+
+@pytest.mark.parametrize("offset", [True, False], ids=["offset", "no offset"])
+@pytest.mark.asyncio
+async def test_a_cache_made_after_the_apply_goes_back_to_the_files_old_axis(
+    filestore, tmp_path, offset
+):
+    if offset:
+        write_file(filestore, CONVERTER, offset=CUT, peaks_on_axis=True)
+    else:
+        _write_unfitting(filestore)
+    original = everything(filestore)
+    before, plan, kept = await _apply_then_plan(filestore, tmp_path)
+    assert (plan["offset"] is not None) == offset
+    _add_cache(filestore)
+
+    await script.RestoreHandler(FILENAME, before, plan, kept).apply({})
+
+    after = everything(filestore)
+    cache = after.pop("sum_signal_00000000abcd.zarr:mz")
+    assert_same(original, after)
+    assert np.array_equal(cache, original["sum_signal.zarr:mz"])
+
+
+@pytest.mark.parametrize(
+    "size", [N_SAMPLES - 10, 3], ids=["part of the axis", "as many as the peaks"]
+)
+@pytest.mark.asyncio
+async def test_a_store_no_axis_can_be_decided_for_leaves_the_file_as_it_is(
+    filestore, tmp_path, size
+):
+    _write_unfitting(filestore)
+    before, plan, kept = await _apply_then_plan(filestore, tmp_path)
+    # A cache no kept axis is the size of: the peaks' m/z are no axis
+    _add_cache(filestore, size=size)
+    applied = everything(filestore)
+
+    with pytest.raises(script.CannotRestore, match="sum_signal_00000000abcd"):
+        await script.RestoreHandler(FILENAME, before, plan, kept).apply({})
+
+    assert_same(applied, everything(filestore))
+
+
+@pytest.mark.asyncio
+async def test_a_new_store_is_not_given_one_of_two_kept_axes_that_disagree(
+    filestore, tmp_path
+):
+    _write_unfitting(filestore)
+    _add_cache(filestore, "sum_signal_000000000001")
+    before, plan, kept = await _apply_then_plan(filestore, tmp_path)
+    kept["sum_signal_000000000001"] = kept["sum_signal"] * np.float32(1.5)
+    _add_cache(filestore)
+
+    with pytest.raises(script.CannotRestore, match="sum_signal_00000000abcd"):
+        script.restore_axes(FILENAME, before, plan, kept)
+
+
+@pytest.mark.parametrize(
+    ("one", "other", "same"),
+    [
+        ({"mode": 0, "par": [1.0]}, {"mode": 0, "par": [1.0], "status": "ok"}, True),
+        ({"mode": 0, "par": [1.0]}, {"mode": 0, "par": [1.5]}, False),
+        ({"mode": 0, "par": [1.0]}, {"mode": 2, "par": [1.0]}, False),
+        # A failure marker the node made where there was no record
+        (None, {"status": "failed", "verified": False}, True),
+        (None, {"mode": 0, "par": [1.0]}, False),
+        # A refit to the parameters the file had, stamped by the target
+        (
+            {"mode": 0, "par": [1.0], "quality": {**TARGET, "n_points": 5}},
+            {"mode": 0, "par": [1.0], "quality": {**TARGET, "collection": "old"}},
+            False,
+        ),
+        (
+            {"mode": 0, "par": [1.0], "quality": TARGET},
+            {"mode": 0, "par": [1.0], "quality": {**TARGET, "node_version": 1}},
+            False,
+        ),
+        # The ledger's compact record of an applied one
+        (
+            {"mode": 0, "par": [1.0], "status": "ok", "quality": TARGET},
+            script._compact({"mode": 0, "par": [1.0], "quality": TARGET}),
+            True,
+        ),
+    ],
+)
+def test_two_records_are_the_same_fit_by_their_parameters_and_stamp(one, other, same):
+    assert script._same_fit(one, other) is same
+    assert script._same_fit(other, one) is same
+
+
+def test_peaks_stored_after_the_apply_with_no_offset_cannot_be_restored(filestore):
+    _write_unfitting(filestore)
+    plan, kept = script.restore_plan(FILENAME, NO_OFFSET)
+    del kept["peak_timeseries"]
+
+    with pytest.raises(script.CannotRestore, match="peaks"):
+        script.restore_axes(FILENAME, {"props": {}}, plan, kept)
+
+
 # --- The axis change per band ---
 
 
@@ -558,41 +729,73 @@ def _target() -> script.ModeTarget:
 FIT_OK = {"mode": 0, "par": list(APPLIED["par"]), "quality": {"n_points": 5}}
 
 
-def _node(fit, stored, outcome=None, issues=()):
+def _row(record, range_=(10.0, 300.0)):
+    """A sample file's row as ``_file_state`` reads it."""
+    return SimpleNamespace(mz_calibration=record, range=list(range_))
+
+
+def _node(fit, stored, outcome=None, issues=(), turn=None, batches=None):
     """``calibrate_with_retry`` as it runs: the fit offered to the hook, the
-    record the database then holds, and the outcome."""
-    seen = {}
+    record the database then holds, and the outcome.
+
+    :param fit: A fit, or a list of them: one per attempt, as when an apply
+        fails with a status the node retries on
+    :param stored: The record the database holds after the node
+    :param issues: The quality issues of every fit, or a function of a fit's
+        quality that answers them
+    :param turn: The file's row when its turn comes
+    :param batches: ``_other_batches`` as it answers
+    """
+    seen = {"offered": []}
+    fits = fit if isinstance(fit, list) else [fit]
 
     async def calibrate(sample, sample_file_id, process_id, before_apply):
         seen["sample"], seen["process_id"] = sample, process_id
-        if fit is None:
+        if fits[0] is None:
             return outcome or CalibrationOutcome(verified=False, reason="no peaks")
-        seen["applied"] = await before_apply(fit)
-        if not seen["applied"]:
-            return CalibrationOutcome(verified=False, withheld=True)
+        for attempt in fits:
+            seen["applied"] = await before_apply(attempt)
+            seen["offered"].append(seen["applied"])
+            if not seen["applied"]:
+                return CalibrationOutcome(
+                    verified=False, reason="withheld", withheld=True
+                )
         return outcome or CalibrationOutcome(verified=True)
+
+    rows = [turn, _row(stored)]
+
+    async def file_state(sample_file_id):
+        return rows.pop(0) if len(rows) > 1 else rows[0]
 
     return (
         patch.object(script, "calibrate_with_retry", calibrate),
         patch.object(
             script,
             "calibration_quality_issues",
-            lambda quality, filename: [{"code": code} for code in issues],
+            lambda quality, filename: [
+                {"code": code}
+                for code in (issues(quality) if callable(issues) else issues)
+            ],
         ),
+        patch.object(script, "_file_state", file_state),
         patch.object(
             script,
-            "_file_state",
-            AsyncMock(return_value=SimpleNamespace(mz_calibration=stored)),
+            "_other_batches",
+            batches or AsyncMock(return_value={"b9": "rematch"}),
         ),
-        patch.object(script, "_other_batches", AsyncMock(return_value=["b9"])),
         patch.object(script, "_assignment_runs", AsyncMock(return_value=["run1"])),
         seen,
     )
 
 
-async def _run_file(tmp_path, candidate, fit, stored, **node):
-    ledger = script.Ledger(str(tmp_path / "ledger"), writable=True)
-    *patches, seen = _node(fit, stored, **node)
+_TURN = object()
+
+
+async def _run_file(tmp_path, candidate, fit, stored, turn=_TURN, ledger=None, **node):
+    ledger = ledger or script.Ledger(str(tmp_path / "ledger"), writable=True)
+    if turn is _TURN:
+        turn = _row(candidate.record, candidate.range)
+    *patches, seen = _node(fit, stored, turn=turn, **node)
     with patches[0], patches[1], patches[2], patches[3], patches[4]:
         outcome = await script.run_file(
             candidate, _target(), ledger, 7, script.audit.DEFAULT_BAND_EDGES
@@ -685,35 +888,84 @@ async def test_a_converter_file_keeps_its_peaks_beside_the_ledger(filestore, tmp
         assert kept.files == ["peak_timeseries"]
 
 
+#: A second attempt's fit, when the node retried after an apply that failed
+FIT_AGAIN = {"mode": 0, "par": [10850.0 * (1 - 1e-6), -18500.0 - CUT], "quality": {}}
+
+
 @pytest.mark.asyncio
 async def test_a_retried_apply_keeps_what_the_file_had_before_the_first(
     filestore, tmp_path
 ):
-    write_file(filestore, APPLIED)
-    ledger = _ledger(
-        tmp_path / "ledger",
-        {
-            "event": "apply",
-            "sample_file_id": "f1",
-            "before": {"record": "first", "range": None, "props": {}},
-            "restore": {"offset": None, "kept": ["sum_signal"], "snapshot": "x"},
-        },
-        {"event": "error", "sample_file_id": "f1", "apply_incomplete": True},
+    write_file(filestore, CONVERTER, offset=CUT, peaks_on_axis=True)
+    old = {**CONVERTER, "status": "unfitted"}
+    stored = {**FIT_AGAIN, "status": "ok", "verified": True}
+    batches = AsyncMock(
+        side_effect=[{"b1": "recalibrate", "b2": "ready"}, {"b1": "processing"}]
     )
-    stored = {**FIT_OK, "status": "ok", "verified": True}
-    *patches, _ = _node(FIT_OK, stored)
-    with patches[0], patches[1], patches[2], patches[3], patches[4]:
-        await script.run_file(
-            _candidate({**APPLIED, "verified": True}),
-            _target(),
-            ledger,
-            8,
-            script.audit.DEFAULT_BAND_EDGES,
+
+    outcome, ledger, seen = await _run_file(
+        tmp_path, _candidate(old), [FIT_OK, FIT_AGAIN], stored, batches=batches
+    )
+
+    first, second, applied = ledger.events
+    assert seen["offered"] == [True, True]
+    assert outcome.kind == "ok"
+    assert (first["event"], second["event"], applied["event"]) == (
+        "apply",
+        "apply",
+        "applied",
+    )
+    # The first attempt's apply may have written the axes: the second keeps
+    # what the file had before the first, and the batch it held still waits
+    # on its recalibration
+    assert second["before"] == first["before"]
+    assert second["restore"] == first["restore"]
+    assert second["recalibrate"] == ["b1"]
+    assert applied["apply_seq"] == second["seq"]
+    assert ledger.open_apply("f1") is None
+
+
+def _second_attempt(quality):
+    if quality.get("poor"):
+        return ["residual"]
+    if quality.get("unreadable"):
+        raise OSError("disk full")
+    return []
+
+
+@pytest.mark.parametrize(
+    ("second", "events", "error"),
+    [
+        ({"poor": True}, ["apply", "kept", "error"], "withheld"),
+        ({"unreadable": True}, ["apply", "error"], "OSError: disk full"),
+    ],
+    ids=["kept", "the runner failing"],
+)
+@pytest.mark.asyncio
+async def test_an_attempt_after_an_apply_that_did_not_land_puts_the_file_back(
+    filestore, tmp_path, second, events, error
+):
+    write_file(filestore, APPLIED)
+    old = {"mode": 0, "par": [10849.0, -18000.0], "status": "ok", "verified": True}
+    close = AsyncMock(return_value="restored")
+
+    with patch.object(script, "close_open_apply", close):
+        outcome, ledger, seen = await _run_file(
+            tmp_path,
+            _candidate(old),
+            [FIT_OK, {**FIT_AGAIN, "quality": second}],
+            old,
+            issues=_second_attempt,
+            outcome=CalibrationOutcome(verified=False, reason="lock", fault=True),
         )
 
-    apply = ledger.events[2]
-    assert apply["before"]["record"] == "first"
-    assert apply["restore"]["snapshot"] == "x"
+    assert seen["offered"] == [True, False]
+    assert [e["event"] for e in ledger.events] == events
+    assert ledger.events[-1]["apply_incomplete"] is True
+    assert ledger.events[-1]["error"] == error
+    assert outcome.kind == "error"
+    close.assert_awaited_once()
+    assert close.await_args.args[0]["seq"] == 1
 
 
 @pytest.mark.asyncio
@@ -749,23 +1001,165 @@ async def test_a_fault_is_an_error_the_next_run_tries_again(filestore, tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_an_apply_that_did_not_land_is_an_open_error(filestore, tmp_path):
+async def test_an_apply_that_did_not_land_is_put_back_at_once(filestore, tmp_path):
     write_file(filestore, APPLIED)
     # The record the apply failed to replace: other parameters than the fit's
     old = {"mode": 0, "par": [10849.0, -18000.0], "verified": True}
+    close = AsyncMock(return_value="restored")
 
-    outcome, ledger, _ = await _run_file(
-        tmp_path,
-        _candidate(old),
-        FIT_OK,
-        old,
-        outcome=CalibrationOutcome(verified=False, reason="lock", fault=True),
-    )
+    with patch.object(script, "close_open_apply", close):
+        outcome, ledger, _ = await _run_file(
+            tmp_path,
+            _candidate(old),
+            FIT_OK,
+            old,
+            outcome=CalibrationOutcome(verified=False, reason="lock", fault=True),
+        )
 
     assert outcome.kind == "error"
     assert [e["event"] for e in ledger.events] == ["apply", "error"]
     assert ledger.events[1]["apply_incomplete"] is True
+    assert ledger.events[1]["error"] == "lock"
+    close.assert_awaited_once()
+    assert close.await_args.args[0] is ledger.events[0]
+
+
+@pytest.mark.asyncio
+async def test_an_apply_that_did_not_land_is_told_by_its_stamp_too(filestore, tmp_path):
+    """A refit from the same peaks and calibrants gives the parameters the
+    file had: only the stamp of what it was fitted from is new."""
+    write_file(filestore, APPLIED)
+    old = {**APPLIED, "status": "ok", "verified": True}
+    old["quality"] = {**TARGET, "collection": {"id": "c1", "isotopes_sha256": "old"}}
+    refit = {**APPLIED, "quality": {**TARGET, "n_points": 5}}
+    close = AsyncMock(return_value="restored")
+
+    with patch.object(script, "close_open_apply", close):
+        outcome, ledger, _ = await _run_file(
+            tmp_path,
+            _candidate(old),
+            refit,
+            old,
+            outcome=CalibrationOutcome(verified=False, reason="lock", fault=True),
+        )
+
+    assert outcome.kind == "error"
+    assert [e["event"] for e in ledger.events] == ["apply", "error"]
+    close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_an_apply_that_cannot_be_put_back_is_left_to_the_next_run(
+    filestore, tmp_path
+):
+    write_file(filestore, APPLIED)
+    old = {"mode": 0, "par": [10849.0, -18000.0], "verified": True}
+    close = AsyncMock(side_effect=OSError("disk full"))
+
+    with patch.object(script, "close_open_apply", close):
+        outcome, ledger, _ = await _run_file(
+            tmp_path,
+            _candidate(old),
+            FIT_OK,
+            old,
+            outcome=CalibrationOutcome(verified=False, reason="lock", fault=True),
+        )
+
+    assert outcome.kind == "error"
+    assert [e["event"] for e in ledger.events] == ["apply", "error", "error"]
+    assert ledger.events[2]["open_apply"] == 1
     assert ledger.open_apply("f1")["seq"] == 1
+
+
+@pytest.mark.parametrize("fails", ["restore_plan", "write_snapshot", "_other_batches"])
+@pytest.mark.asyncio
+async def test_the_runner_failing_before_an_apply_is_its_own_error(
+    filestore, tmp_path, fails
+):
+    """Not the file's calibration failing: the node never hears of it, so it
+    logs no error and leaves no failure marker over the converter's record."""
+    write_file(filestore, CONVERTER, offset=CUT, peaks_on_axis=True)
+    old = {**CONVERTER, "status": "unfitted"}
+
+    failing = AsyncMock(side_effect=OSError("disk full"))
+    with patch.object(script, fails, side_effect=OSError("disk full")):
+        outcome, ledger, seen = await _run_file(
+            tmp_path,
+            _candidate(old),
+            FIT_OK,
+            old,
+            batches=failing if fails == "_other_batches" else None,
+        )
+
+    # The fit is withheld, so the node applies and records nothing
+    assert seen["applied"] is False
+    assert outcome.kind == "error"
+    (event,) = ledger.events
+    assert event["event"] == "error"
+    assert event["error"] == "OSError: disk full"
+    assert "apply_incomplete" not in event
+    # Tried again by the next run
+    assert ledger.settled({"m1": TARGET}.get) == set()
+    assert ledger.open_apply("f1") is None
+
+
+@pytest.mark.asyncio
+async def test_the_file_is_read_again_at_its_turn(filestore, tmp_path):
+    write_file(filestore, APPLIED)
+    # Chosen on its converter record; calibrated by a person since
+    chosen = _candidate({**CONVERTER, "status": "unfitted"}, range=[1.0, 2.0])
+    now = {**APPLIED, "status": "ok", "verified": True, "quality": {}}
+
+    outcome, ledger, _ = await _run_file(
+        tmp_path,
+        chosen,
+        FIT_OK,
+        now,
+        turn=_row(now, (11.0, 299.0)),
+        issues=("residual",),
+    )
+
+    # The ok rule judges what the file holds now
+    assert outcome.kind == "kept"
+    assert ledger.events[0]["old"]["status"] == "ok"
+
+    stored = {**FIT_OK, "status": "ok", "verified": True}
+    outcome, ledger, _ = await _run_file(
+        tmp_path / "again",
+        chosen,
+        FIT_OK,
+        stored,
+        turn=_row(now, (11.0, 299.0)),
+    )
+
+    # And the ledger records it as what the file had before
+    assert outcome.kind == "ok"
+    assert ledger.events[0]["before"]["record"] == now
+    assert ledger.events[0]["before"]["range"] == [11.0, 299.0]
+
+
+@pytest.mark.asyncio
+async def test_a_file_put_on_target_since_it_was_chosen_is_left(tmp_path):
+    on_target = {"status": "ok", "verified": True, "quality": TARGET}
+
+    outcome, ledger, seen = await _run_file(
+        tmp_path, _candidate(None), FIT_OK, on_target, turn=_row(on_target)
+    )
+
+    assert outcome.kind == "on target already"
+    assert "sample" not in seen
+    assert ledger.events == []
+
+
+@pytest.mark.asyncio
+async def test_a_file_gone_since_it_was_chosen_is_left(tmp_path):
+    outcome, ledger, seen = await _run_file(
+        tmp_path, _candidate(None), FIT_OK, None, turn=None
+    )
+
+    assert outcome.kind == "gone"
+    assert "sample" not in seen
+    assert ledger.events == []
 
 
 # --- Which files a run takes ---
@@ -805,7 +1199,13 @@ def _samples(*collections):
 
 
 async def _runner(
-    tmp_path, candidates, config=None, ledger_events=(), stop_after=0, not_ready=None
+    tmp_path,
+    candidates,
+    config=None,
+    ledger_events=(),
+    stop_after=0,
+    not_ready=None,
+    reconciled=None,
 ):
     config = config or _run_config(tmp_path)
     if ledger_events:
@@ -819,7 +1219,9 @@ async def _runner(
         return script.Outcome("ok")
 
     settle = AsyncMock(return_value={"files": 0, "left_at_rematch": []})
+    reconcile = AsyncMock(return_value=reconciled or script.Counter())
     with (
+        patch.object(script, "reconcile", reconcile),
         patch.object(script, "select_candidates", AsyncMock(return_value=candidates)),
         patch.object(script, "_targets", AsyncMock(return_value={"m1": _target()})),
         patch.object(script, "_run_one", run_one),
@@ -830,6 +1232,7 @@ async def _runner(
         ),
     ):
         report = await script.run_runner(config)
+    settle.reconcile = reconcile
     return report, done, settle
 
 
@@ -875,6 +1278,71 @@ async def test_a_restarted_run_takes_up_where_the_ledger_left_off(tmp_path):
     assert [name for name, _ in done] == ["b", "c"]
     assert {batch for _, batch in done} == {5}
     assert report.counts["in the ledger already"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_run_first_closes_what_an_earlier_run_left_open(tmp_path):
+    candidates = [_candidate(sample_file_id=name) for name in ("a", "b")]
+    events = [{"event": "apply", "sample_file_id": "b", "mode_id": "m1"}]
+
+    report, done, settle = await _runner(
+        tmp_path,
+        candidates,
+        ledger_events=events,
+        reconciled=script.Counter({"left open": 1}),
+    )
+
+    settle.reconcile.assert_awaited_once()
+    assert report.reconciled == {"left open": 1}
+    assert report.as_dict()["reconciled"] == {"left open": 1}
+    # One it could not close is not run over
+    assert done == [("a", 1)]
+    assert report.counts["an apply left open"] == 1
+
+
+@pytest.mark.asyncio
+async def test_reconciling_comes_before_the_first_settle(tmp_path):
+    calls = []
+    reconcile = AsyncMock(side_effect=lambda ledger: calls.append("reconcile") or {})
+    settle = AsyncMock(
+        side_effect=lambda config, ledger: calls.append("settle") or {"files": 0}
+    )
+    with (
+        patch.object(script, "reconcile", reconcile),
+        patch.object(script, "settle", settle),
+        patch.object(script, "select_candidates", AsyncMock(return_value=[])),
+        patch.object(script, "_targets", AsyncMock(return_value={})),
+    ):
+        await script.run_runner(_run_config(tmp_path))
+
+    assert calls == ["reconcile", "settle"]
+
+
+@pytest.mark.asyncio
+async def test_a_rollback_first_closes_what_a_run_left_open(tmp_path):
+    _ledger(
+        tmp_path / "ledger",
+        {"event": "apply", "sample_file_id": "a", "batch": 1},
+    )
+
+    async def reconcile(ledger):
+        # The apply had landed: closed as applied
+        ledger.write({"event": "applied", "sample_file_id": "a", "apply_seq": 1})
+        return script.Counter({"applied": 1})
+
+    rollback = AsyncMock(return_value=script.Outcome("rolled_back"))
+    with (
+        patch.object(script, "reconcile", reconcile),
+        patch.object(script, "rollback_file", rollback),
+        patch.object(script, "settle", AsyncMock(return_value={})),
+    ):
+        report = await script.run_rollback(
+            _run_config(tmp_path, action=script.ROLLBACK, rollback=("batch:1",))
+        )
+
+    assert [c.args[0]["seq"] for c in rollback.await_args_list] == [1]
+    assert report.reconciled == {"applied": 1}
+    assert report.counts == {"rolled_back": 1}
 
 
 @pytest.mark.asyncio
@@ -964,6 +1432,175 @@ def test_what_a_refit_reads(filestore):
     assert script._refit_ready(FILENAME) == "no peak store"
     (_path(filestore) / ".props").unlink()
     assert script._refit_ready(FILENAME) == "no .props"
+
+
+# --- The dry run ---
+
+
+def _dry_target():
+    return script.ModeTarget(
+        mode=SimpleNamespace(
+            ionization_mode_id="m1",
+            ionization_mode_name="Nitrate",
+            ionization_mode_polarity="-",
+        ),
+        params=CalibrationFitParams(refine_window=20, mz_error_tolerance=15.0),
+        isotopes="the collection's isotopes",
+        target=TARGET,
+    )
+
+
+def _audit(answers: list[str]):
+    """The audit's handler, answering each attempt in turn: ``ok``, ``warn``
+    (a fit with a warning) or ``error`` (no fit)."""
+    seen = []
+
+    def handler(stored, params, isotopes, resolution, model):
+        made = SimpleNamespace(
+            fit_result=None,
+            warning=None,
+            error=None,
+            stats={"n": 5},
+            fitted_on={"n_points": 4},
+        )
+
+        async def fit():
+            seen.append((params.mz_error_tolerance, params.refine_window, model))
+            answer = answers[len(seen) - 1]
+            if answer != "error":
+                made.fit_result = {"mode": 0, "par": [1.0, float(len(seen))], "x": 0}
+            if answer == "warn":
+                made.warning = "few calibrants"
+            if answer == "error":
+                made.error = "no calibrants"
+
+        made.fit = fit
+        return made
+
+    return handler, seen
+
+
+def _dry_patches(handler):
+    stack = ExitStack()
+    stack.enter_context(
+        patch.object(script.audit, "read_stored_peaks", lambda filename: "peaks")
+    )
+    stack.enter_context(
+        patch.object(
+            script,
+            "read_instrument_functions",
+            AsyncMock(return_value=(None, "resolution")),
+        )
+    )
+    stack.enter_context(patch.object(script.audit, "AuditCalibrationHandler", handler))
+    stack.enter_context(
+        patch.object(
+            script,
+            "fit_quality",
+            lambda stats, params: {"tolerance": params.mz_error_tolerance},
+        )
+    )
+    stack.enter_context(
+        patch.object(script, "calibration_quality_issues", lambda q, f: [])
+    )
+    return stack
+
+
+@pytest.mark.asyncio
+async def test_a_dry_fit_widens_as_ingest_does_until_a_fit_has_no_warning():
+    handler, seen = _audit(["warn", "error", "ok"])
+    target = _dry_target()
+    with _dry_patches(handler):
+        result = await script.dry_fit(_candidate(), target)
+
+    # 15, 30, 60 ppm, the refine window kept wider; the node's own model
+    assert seen == [(15.0, 20, None), (30.0, 31, None), (60.0, 61, None)]
+    assert result.attempts == 3
+    assert result.fit == {"mode": 0, "par": [1.0, 3.0]}
+    assert result.quality == {"tolerance": 60.0, "n_points": 4}
+    assert (result.issues, result.reason) == ([], None)
+    # The mode's parameters are the next file's too: left as they were
+    assert target.params.mz_error_tolerance == 15.0
+
+
+@pytest.mark.asyncio
+async def test_a_dry_fit_that_never_comes_clean_would_fail():
+    handler, seen = _audit(["error"] * (script.CALIBRATION_ITERATIONS - 1) + ["warn"])
+    with _dry_patches(handler):
+        result = await script.dry_fit(_candidate(), _dry_target())
+
+    assert len(seen) == script.CALIBRATION_ITERATIONS
+    assert seen[-1][0] == 15.0 * 2 ** (script.CALIBRATION_ITERATIONS - 1)
+    assert result.fit is None
+    assert (result.reason, result.attempts) == (
+        "few calibrants",
+        script.CALIBRATION_ITERATIONS,
+    )
+
+
+def _dry(fit=True, issues=()):
+    if not fit:
+        return script.DryFit(None, None, [], "no calibrants", 7)
+    return script.DryFit(
+        fit={"mode": 0, "par": list(APPLIED["par"])},
+        quality={},
+        issues=[{"code": code} for code in issues],
+        reason=None,
+        attempts=2,
+    )
+
+
+OK_RECORD = {**APPLIED, "status": "ok", "verified": True}
+
+
+@pytest.mark.parametrize(
+    ("old", "dry", "outcome"),
+    [
+        (OK_RECORD, _dry(issues=("residual",)), "would keep its ok record"),
+        (OK_RECORD, _dry(), "would apply ok"),
+        ({**CONVERTER, "status": "unfitted"}, _dry(issues=("residual",)), None),
+        (OK_RECORD, _dry(fit=False), "would fail"),
+    ],
+    ids=["keep", "apply ok", "apply poor", "fail"],
+)
+@pytest.mark.asyncio
+async def test_what_a_dry_run_says_of_a_file(filestore, tmp_path, old, dry, outcome):
+    outcome = outcome or "would apply poor"
+    write_file(filestore, APPLIED)
+    report = script.Report(action=script.DRY_RUN, instrument="TOF H")
+    with (
+        patch.object(script, "dry_fit", AsyncMock(return_value=dry)),
+        patch.object(script, "_assignment_runs", AsyncMock(return_value=["r1", "r2"])),
+    ):
+        result = await script._dry_one(
+            _candidate(old), _target(), _run_config(tmp_path), report
+        )
+
+    (entry,) = report.files
+    assert result.kind == entry["outcome"] == outcome
+    applies = outcome.startswith("would apply")
+    # Only a fit it would apply moves the axis, and meets the assignment runs
+    assert bool(entry.get("bands")) == applies
+    assert bool(report.bands) == applies
+    assert report.assignment_runs == (2 if applies else 0)
+    if outcome == "would keep its ok record":
+        assert entry["issues"] == ["residual"]
+    if outcome == "would fail":
+        assert entry["reason"] == "no calibrants"
+    else:
+        assert entry["new"] == dry.fit and entry["attempts"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_file_a_dry_run_cannot_read_is_an_error(tmp_path):
+    report = script.Report(action=script.DRY_RUN, instrument="TOF H")
+    with patch.object(script, "dry_fit", AsyncMock(side_effect=OSError("gone"))):
+        result = await script._dry_one(
+            _candidate(), _target(), _run_config(tmp_path), report
+        )
+
+    assert result.kind == "error"
+    assert report.files[0]["error"] == "OSError"
 
 
 # --- Pacing ---
@@ -1072,6 +1709,188 @@ async def test_a_batch_still_at_rematch_is_reported(tmp_path):
 # --- Rollback ---
 
 
+class _Row(SimpleNamespace):
+    """A sample file's row, as the controllers fetch and save it."""
+
+    def to_dict(self):
+        return {
+            "filename": self.filename,
+            "instrument": "TOF H",
+            "datetime": datetime(2026, 10, 20, 12),
+            "datetime_utc": datetime(2026, 10, 20, 12, tzinfo=UTC),
+            "length": 60.0,
+            "range": self.range,
+            "mz_calibration": self.mz_calibration,
+        }
+
+
+def _controllers(row, batches):
+    """The controllers a rollback and a put-back call, answered: the file's
+    row, its samples s1 and s2, and its batches as ``(id, type, status)``."""
+    affected = SimpleNamespace(
+        affected_samples=[SimpleNamespace(sample_item_id=i) for i in ("s1", "s2")],
+        affected_sample_batches=[
+            SimpleNamespace(sample_batch_id=i, sample_batch_type=kind, status=status)
+            for i, kind, status in batches
+        ],
+    )
+    mocks = {
+        "fetch_sample_file": AsyncMock(return_value=row),
+        "_file_state": AsyncMock(return_value=row),
+        "fetch_affected_sample_data": AsyncMock(return_value=affected),
+        "update_sample_batch_status": AsyncMock(),
+        "update_sample_file": AsyncMock(),
+        "match_remove_sample": AsyncMock(),
+    }
+    stack = ExitStack()
+    for name, mock in mocks.items():
+        stack.enter_context(patch.object(script, name, mock))
+    return stack, mocks
+
+
+def _statuses(mocks) -> list[tuple]:
+    return [
+        (
+            call.kwargs["status"],
+            call.kwargs["sample_batch_ids"],
+            call.kwargs.get("never_lower", False),
+        )
+        for call in mocks["update_sample_batch_status"].await_args_list
+    ]
+
+
+def _saved(mocks):
+    (call,) = mocks["update_sample_file"].await_args_list
+    return call.args[1]
+
+
+def _removed(mocks) -> list[tuple]:
+    return [
+        (call.kwargs["sample_item_id"], call.kwargs["full_remove"])
+        for call in mocks["match_remove_sample"].await_args_list
+    ]
+
+
+#: The record the converter left, and the fit a run applied over it
+OLD = {**CONVERTER, "status": "unfitted"}
+NEW_FIT = {"mode": 0, "par": [10850.0 * (1 + 2e-5), -18500.0 - CUT]}
+
+
+async def _apply_event(
+    filestore, ledger, converter=True, record=None, **update
+) -> tuple[dict, dict]:
+    """The ledger's apply event for a file, as a run writes it, then the
+    apply's writes to the file's axes and ``.props``.
+
+    :param converter: A file on the converter's record, whose peaks the
+        ledger keeps; else one on an applied fit, which keeps nothing
+    :param record: The database record before, if not the file's own
+    :return: The event, and every axis and the ``.props`` of the file before
+    """
+    if converter:
+        write_file(filestore, CONVERTER, offset=CUT, peaks_on_axis=True)
+    else:
+        write_file(filestore, APPLIED)
+    original = everything(filestore)
+    props = script._props_before(FILENAME)
+    plan, kept = script.restore_plan(FILENAME, props["mz_calibration"])
+    if kept:
+        plan["snapshot"] = script._snapshot_path(ledger, "f1")
+        script.write_snapshot(ledger.directory, plan["snapshot"], kept)
+    assert bool(kept) == converter
+    if record is None:
+        record = OLD if converter else {**APPLIED, "status": "ok", "verified": True}
+    event = ledger.write(
+        {
+            "event": "apply",
+            "sample_file_id": "f1",
+            "batch": 3,
+            "mode_id": "m1",
+            "target": TARGET,
+            "before": {"record": record, "range": [10.0, 300.0], "props": props},
+            "restore": plan,
+            "new": script._compact({**NEW_FIT, "status": "ok"}),
+            "batches": ["b1", "b2"],
+            "recalibrate": [],
+            **update,
+        }
+    )
+    await TofCalibrationHandler(FILENAME).apply({**NEW_FIT, "quality": {}})
+    return event, original
+
+
+@pytest.mark.parametrize("converter", [True, False], ids=["converter", "applied"])
+@pytest.mark.asyncio
+async def test_a_rollback_writes_back_the_record_and_rebuilds_the_matches(
+    filestore, tmp_path, converter
+):
+    ledger = script.Ledger(str(tmp_path / "ledger"), writable=True)
+    event, original = await _apply_event(filestore, ledger, converter=converter)
+    row = _Row(
+        sample_file_id="f1",
+        filename=FILENAME,
+        mz_calibration={**NEW_FIT, "status": "ok", "verified": True},
+        range=[10.1, 300.2],
+    )
+    stack, mocks = _controllers(
+        row,
+        [
+            ("a1", "ACQUISITION", "ready"),
+            ("b1", "ANALYSIS", "ready"),
+            ("b2", "ANALYSIS", "recalibrate"),
+        ],
+    )
+    with stack:
+        outcome = await script.rollback_file(event, ledger)
+
+    assert outcome.kind == "rolled_back"
+    assert_same(original, everything(filestore))
+    saved = _saved(mocks)
+    assert saved.mz_calibration == event["before"]["record"]
+    assert saved.range == [10.0, 300.0]
+    # Every sample loses the matches made on the axis taken back
+    assert _removed(mocks) == [("s1", True), ("s2", True)]
+    # Held while it writes; a pending recalibration kept; never lowered
+    assert _statuses(mocks) == [
+        ("processing", ["b1", "b2"], False),
+        ("recalibrate", ["b2"], False),
+        ("rematch", ["b1", "b2"], True),
+    ]
+    rollback = ledger.events[-1]
+    assert rollback["event"] == "rollback"
+    assert (rollback["apply_seq"], rollback["of_batch"]) == (event["seq"], 3)
+    assert rollback["batches"] == ["b1", "b2"]
+    assert [e["sample_file_id"] for e in ledger.unmatched()] == ["f1"]
+
+
+@pytest.mark.asyncio
+async def test_a_rollback_that_cannot_give_the_axes_back_touches_nothing(
+    filestore, tmp_path
+):
+    ledger = script.Ledger(str(tmp_path / "ledger"), writable=True)
+    event, _ = await _apply_event(filestore, ledger)
+    row = _Row(
+        sample_file_id="f1",
+        filename=FILENAME,
+        mz_calibration={**NEW_FIT, "status": "ok"},
+        range=[10.1, 300.2],
+    )
+    stack, mocks = _controllers(row, [("b1", "ANALYSIS", "ready")])
+    with (
+        stack,
+        patch.object(
+            script, "restore_axes", side_effect=script.CannotRestore("no axis")
+        ),
+    ):
+        outcome = await script.rollback_file(event, ledger)
+
+    assert outcome.kind == "refused"
+    assert ledger.events[-1]["event"] == "rollback_refused"
+    assert ledger.events[-1]["reason"] == "no axis"
+    assert mocks["update_sample_batch_status"].await_count == 0
+    assert mocks["update_sample_file"].await_count == 0
+
+
 @pytest.mark.asyncio
 async def test_a_record_changed_since_the_apply_is_not_rolled_back(tmp_path):
     ledger = _ledger(
@@ -1086,6 +1905,193 @@ async def test_a_record_changed_since_the_apply_is_not_rolled_back(tmp_path):
 
     assert outcome.kind == "refused"
     assert ledger.events[-1]["event"] == "rollback_refused"
+
+
+# --- An apply a run left open ---
+
+
+@pytest.mark.asyncio
+async def test_an_apply_that_landed_before_the_run_was_cut_off_is_finished(
+    filestore, tmp_path
+):
+    ledger = script.Ledger(str(tmp_path / "ledger"), writable=True)
+    event, _ = await _apply_event(filestore, ledger, recalibrate=["b2"])
+    row = _Row(
+        sample_file_id="f1",
+        filename=FILENAME,
+        mz_calibration={**NEW_FIT, "status": "ok", "verified": True},
+        range=[10.1, 300.2],
+    )
+    # Cut off during the match removal: its batches still at processing
+    stack, mocks = _controllers(
+        row,
+        [
+            ("a1", "ACQUISITION", "ready"),
+            ("b1", "ANALYSIS", "processing"),
+            ("b2", "ANALYSIS", "processing"),
+        ],
+    )
+    with stack:
+        closed = await script.close_open_apply(event, ledger)
+
+    assert closed == "applied"
+    applied = ledger.events[-1]
+    assert applied["event"] == "applied" and applied["reconciled"] is True
+    assert (applied["apply_seq"], applied["status"]) == (event["seq"], "ok")
+    # What the apply left undone after its record is done
+    assert _removed(mocks) == [("s1", True), ("s2", True)]
+    assert _statuses(mocks) == [
+        ("recalibrate", ["b2"], False),
+        ("rematch", ["b1", "b2"], True),
+    ]
+    assert mocks["update_sample_file"].await_count == 0
+    # Matched by the next settle, undone by a rollback, settled for the run
+    assert ledger.open_apply("f1") is None
+    assert [e["sample_file_id"] for e in ledger.unmatched()] == ["f1"]
+    assert script.rollback_events(ledger, ("file:f1",)) == [event]
+    assert ledger.settled({"m1": TARGET}.get) == {"f1"}
+
+
+@pytest.mark.asyncio
+async def test_an_apply_that_did_not_land_is_put_back_and_offered_again(
+    filestore, tmp_path
+):
+    ledger = script.Ledger(str(tmp_path / "ledger"), writable=True)
+    event, original = await _apply_event(filestore, ledger, recalibrate=["b2"])
+    # The node's failure marker over the converter's record, which keeps
+    # its parameters
+    marker = {**CONVERTER, "status": "failed", "verified": False, "error": "x"}
+    row = _Row(
+        sample_file_id="f1", filename=FILENAME, mz_calibration=marker, range=[1, 2]
+    )
+    # Both held at processing by the apply; b2 waited on a recalibration
+    stack, mocks = _controllers(
+        row, [("b1", "ANALYSIS", "processing"), ("b2", "ANALYSIS", "processing")]
+    )
+    with stack:
+        closed = await script.close_open_apply(event, ledger)
+
+    assert closed == "restored"
+    assert_same(original, everything(filestore))
+    saved = _saved(mocks)
+    assert (saved.mz_calibration, saved.range) == (OLD, [10.0, 300.0])
+    # The matches are on the axes put back: kept
+    assert _removed(mocks) == []
+    assert _statuses(mocks) == [
+        ("processing", ["b1", "b2"], False),
+        ("recalibrate", ["b2"], False),
+        ("rematch", ["b1", "b2"], True),
+    ]
+    restored = ledger.events[-1]
+    assert (restored["event"], restored["apply_seq"]) == ("restored", event["seq"])
+    assert ledger.open_apply("f1") is None
+    assert ledger.unmatched() == []
+    assert ledger.settled({"m1": TARGET}.get) == set()
+    assert "b1" in ledger.touched_batches()
+
+
+@pytest.mark.asyncio
+async def test_a_refit_to_the_old_parameters_that_did_not_land_is_put_back(
+    filestore, tmp_path
+):
+    ledger = script.Ledger(str(tmp_path / "ledger"), writable=True)
+    old = {**APPLIED, "status": "ok", "verified": True}
+    old["quality"] = {**TARGET, "collection": {"id": "c1", "isotopes_sha256": "old"}}
+    # The refit's parameters are the old ones; only its stamp is the target's
+    refit = script._compact({**APPLIED, "status": "ok", "quality": TARGET})
+    event, original = await _apply_event(
+        filestore, ledger, converter=False, record=old, new=refit
+    )
+    row = _Row(sample_file_id="f1", filename=FILENAME, mz_calibration=old, range=[])
+    stack, mocks = _controllers(row, [("b1", "ANALYSIS", "processing")])
+    with stack:
+        closed = await script.close_open_apply(event, ledger)
+
+    assert closed == "restored"
+    assert_same(original, everything(filestore))
+    assert _saved(mocks).mz_calibration == old
+
+
+@pytest.mark.parametrize(
+    ("row", "reason"),
+    [
+        (
+            _Row(
+                sample_file_id="f1",
+                filename=FILENAME,
+                mz_calibration={"mode": 2, "par": [1, 2, 0.5], "status": "ok"},
+                range=[1, 2],
+            ),
+            "another apply replaced the record since",
+        ),
+        (None, "the file is gone"),
+    ],
+    ids=["applied over", "gone"],
+)
+@pytest.mark.asyncio
+async def test_an_apply_another_rewrote_over_is_superseded(
+    filestore, tmp_path, row, reason
+):
+    ledger = script.Ledger(str(tmp_path / "ledger"), writable=True)
+    event, _ = await _apply_event(filestore, ledger)
+    stack, mocks = _controllers(row, [("b1", "ANALYSIS", "ready")])
+    with stack:
+        closed = await script.close_open_apply(event, ledger)
+
+    assert closed == "superseded"
+    assert ledger.events[-1]["reason"] == reason
+    assert ledger.open_apply("f1") is None
+    assert mocks["update_sample_batch_status"].await_count == 0
+    assert mocks["update_sample_file"].await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_an_apply_whose_axes_cannot_be_put_back_is_left_open(filestore, tmp_path):
+    ledger = script.Ledger(str(tmp_path / "ledger"), writable=True)
+    event, _ = await _apply_event(filestore, ledger)
+    row = _Row(sample_file_id="f1", filename=FILENAME, mz_calibration=OLD, range=[])
+    stack, mocks = _controllers(row, [("b1", "ANALYSIS", "processing")])
+    with (
+        stack,
+        patch.object(
+            script, "restore_axes", side_effect=script.CannotRestore("no axis")
+        ),
+    ):
+        closed = await script.close_open_apply(event, ledger)
+
+    assert closed == "left open"
+    assert ledger.events[-1]["event"] == "restore_refused"
+    assert ledger.open_apply("f1")["seq"] == event["seq"]
+    assert mocks["update_sample_batch_status"].await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_reconciling_closes_each_open_apply_and_goes_on_past_a_failure(
+    tmp_path,
+):
+    ledger = _ledger(
+        tmp_path,
+        {"event": "apply", "sample_file_id": "a"},
+        {"event": "apply", "sample_file_id": "b"},
+        {"event": "applied", "sample_file_id": "b", "apply_seq": 2},
+        {"event": "apply", "sample_file_id": "c"},
+    )
+
+    async def close(event, ledger):
+        if event["sample_file_id"] == "a":
+            raise OSError("database down")
+        return "restored"
+
+    with patch.object(script, "close_open_apply", side_effect=close) as closing:
+        counts = await script.reconcile(ledger)
+
+    assert [c.args[0]["sample_file_id"] for c in closing.await_args_list] == [
+        "a",
+        "c",
+    ]
+    assert counts == {"left open": 1, "restored": 1}
+    assert ledger.events[-1]["open_apply"] == 1
+    assert ledger.events[-1]["error"] == "OSError: database down"
 
 
 @pytest.mark.parametrize("action", [script.DRY_RUN, script.ROLLBACK])
