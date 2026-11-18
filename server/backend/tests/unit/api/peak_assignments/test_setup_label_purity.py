@@ -87,22 +87,30 @@ async def test_every_stage_reads_the_purity_of_its_samples_setup(path):
 
 @pytest.mark.asyncio
 async def test_a_batch_search_reads_each_samples_setup():
+    # Each sample's search runs the stage list under its own setup's purity.
     seen = {}
 
-    async def search(sample_item_id, target_peak_ids, config, persistent_peak_ids):
-        seen[sample_item_id] = label_purity("^N")
-        return [], 0, set()
+    async def stage(ctx):
+        seen[ctx.sample.sample_item_id] = label_purity("^N")
+        ctx.judged = SimpleNamespace(rows=[])
+
+    def sample(item):
+        return SimpleNamespace(sample_item_id=item, sample_batch_id="sb-1")
 
     with (
         patch.object(
-            batch_untargeted,
+            pipeline,
             "sample_label_purity",
             AsyncMock(side_effect=lambda item: {"a": 0.9, "b": None}[item]),
         ),
-        patch.object(batch_untargeted, "_search_sample_peaks", search),
+        patch.object(batch_untargeted, "fetch_sample", AsyncMock(side_effect=sample)),
+        patch.object(
+            batch_untargeted, "_explained_peaks", AsyncMock(return_value=frozenset())
+        ),
+        patch.dict(pipeline.STAGE_FUNCTIONS, dict.fromkeys(pipeline.STAGES, stage)),
     ):
-        await batch_untargeted._search_sample("a", set(), MagicMock())
-        await batch_untargeted._search_sample("b", set(), MagicMock())
+        await batch_untargeted._search_sample("a", set(), PeakAssignmentConfig())
+        await batch_untargeted._search_sample("b", set(), PeakAssignmentConfig())
 
     assert seen == {"a": 0.9, "b": CUSTOM_ELEMENTS["^N"].default_purity}
 

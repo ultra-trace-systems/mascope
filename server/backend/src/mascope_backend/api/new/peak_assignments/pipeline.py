@@ -59,12 +59,18 @@ from mascope_backend.api.new.peak_assignments.config import (
     MAX_UNTARGETED_PEAKS_CEILING,
     PeakAssignmentConfig,
 )
-from mascope_backend.api.new.peak_assignments.decoy import DecoyPlan
+from mascope_backend.api.new.peak_assignments.decoy import (
+    DecoyPlan,
+    inherited_calibration,
+)
 from mascope_backend.api.new.peak_assignments.engine import (
     LIST_PRIOR_WEIGHT,
+    MASS_CALIBRATION_KEY,
+    PATTERN_SCORING_KEY,
     SOURCE_DATABASE,
     build_unassigned_assignments,
     list_readings,
+    listed_formula_identities,
     pattern_scoring_for,
     pattern_scoring_snapshot,
     record_displaced_list_readings,
@@ -72,6 +78,9 @@ from mascope_backend.api.new.peak_assignments.engine import (
     untargeted_matches_to_peak_assignments,
     untargeted_seeds,
     untargeted_targets,
+)
+from mascope_backend.api.new.peak_assignments.envelope_fit import (
+    recorded_envelope_tolerance,
 )
 from mascope_backend.api.new.peak_assignments.halogen_twins import record_twins
 from mascope_backend.api.new.peak_assignments.identification_level import (
@@ -98,6 +107,7 @@ from mascope_backend.socket.notifications import (
 from mascope_file.name import get_instrument_type
 from mascope_tools.composition.custom_elements import labelled_purity
 from mascope_tools.composition.finder import assign_compositions
+from mascope_tools.composition.mass_accuracy import SampleMassAccuracy
 
 
 class Stage(StrEnum):
@@ -131,6 +141,9 @@ class Proposal(StrEnum):
     KNOWN_AND_SEARCH = "known set and search"
     #: The known set alone.
     KNOWN = "known set"
+    #: The formula search over the representatives of the batch's unassigned
+    #: anchors that the sample holds (``batch_untargeted``).
+    SEARCH = "search on the representatives"
 
 
 class Measurement(StrEnum):
@@ -143,6 +156,12 @@ class Measurement(StrEnum):
     #: A decoy's control's, recorded on the control and never fitted again on
     #: the decoy's wrong readings (``decoy.DecoyPlan``).
     CONTROL = "control"
+    #: The sample's own, as its latest run recorded it: the width, centre and
+    #: line-share tolerance it scored at and the mass calibration it judged at.
+    #: A sample no run recorded one for scores at the instrument class's width
+    #: and its reagent lines' centre, and its mass gate fits on what the path
+    #: committed and the source's own lines, as a run's does.
+    RECORDED = "recorded"
 
 
 @dataclass(frozen=True)
@@ -181,8 +200,16 @@ INGEST_FOLD = AssignmentPath(
     "ingest fold", Stage.RESOLVE, Proposal.KNOWN, Measurement.FITTED
 )
 
+#: The batch's untargeted search, one sample at a time: the search on the
+#: representatives that sample holds, at its recorded measurement. Its rows are
+#: merged across the batch's samples before any is written
+#: (``batch_untargeted.run_batch_untargeted_search``).
+BATCH_SEARCH = AssignmentPath(
+    "batch search", Stage.RESOLVE, Proposal.SEARCH, Measurement.RECORDED
+)
+
 #: Every path, in the order this module names them.
-PATHS: tuple[AssignmentPath, ...] = (RUN, DECOY, INGEST_FOLD)
+PATHS: tuple[AssignmentPath, ...] = (RUN, DECOY, INGEST_FOLD, BATCH_SEARCH)
 
 
 @dataclass
@@ -237,6 +264,14 @@ class RunContext:
     :param notification: The progress a run reports on, if any.
     :param strict_instrument: Whether a file name that names no instrument
         class fails the pass; a path with nobody to report to reads none.
+    :param targets: The batch search's representatives in this sample, the
+        peaks it may enumerate.
+    :param persistent_peak_ids: Those of them whose anchors are persistent,
+        which the batch search takes however faint.
+    :param explained_peak_ids: The peaks the batch ledger already explains in
+        this sample: a member that reads a formula, or one a pre-pass claimed.
+        The batch search judges "unexplained" against them as a run does
+        against its Stage A and its pre-passes.
     """
 
     path: AssignmentPath
@@ -248,6 +283,9 @@ class RunContext:
     decoy_plan: DecoyPlan | None = None
     notification: UserNotification | None = None
     strict_instrument: bool = True
+    targets: frozenset[str] = frozenset()
+    persistent_peak_ids: frozenset[str] = frozenset()
+    explained_peak_ids: frozenset[str] = frozenset()
     #: The stages run so far, in order, a round's once per round.
     ran: list[Stage] = field(default_factory=list)
     # -- resolve
@@ -276,7 +314,11 @@ class RunContext:
     envelope: Any = None
     listed_formulas: frozenset[str] = frozenset()
     scoring: Any = None
+    envelope_tolerance: Any = None
+    recorded_calibration: Any = None
     search: SearchProposal | None = None
+    unsearched: int = 0
+    by_persistence: set[str] = field(default_factory=set)
     # -- score
     fit_by_seed: dict = field(default_factory=dict)
     winner_accuracy: Any = None
@@ -496,6 +538,8 @@ async def propose(ctx: RunContext) -> None:
         await _propose_known_set(ctx)
     if proposal is Proposal.KNOWN_AND_SEARCH and ctx.config.run_untargeted:
         await _propose_by_search(ctx)
+    if proposal is Proposal.SEARCH:
+        await _propose_on_representatives(ctx)
 
 
 async def _propose_known_set(ctx: RunContext) -> None:
@@ -555,6 +599,7 @@ async def _propose_known_set(ctx: RunContext) -> None:
             )
         )
     await ctx.progress(0.4)
+    ctx.envelope_tolerance = envelope.tolerance
     # How this sample's envelopes are predicted and matched, resolved before
     # the search because the judging reads it whether or not the search ran: a
     # pass of the known set alone still has committed rows whose peaks a
@@ -741,6 +786,174 @@ async def _propose_by_search(ctx: RunContext) -> None:
     search.ran = True
 
 
+async def _propose_on_representatives(ctx: RunContext) -> None:
+    """The batch's untargeted search over one sample's representative peaks,
+    in the context of its whole spectrum (``batch_untargeted``).
+
+    The frame is the sample's peaks at or above the config's intensity floor,
+    and the persistent anchors' representatives under it: a peak the search
+    enumerates is one of the peaks it reads (``admitted_targets``). A peak the
+    claim stage took is no target, nor is one the batch ledger explains
+    (``explained_peak_ids``), as a run's search never searches a peak its
+    claims or its Stage A took.
+
+    It ranks at the measurement the sample's latest run recorded
+    (:func:`_recorded_measurement`), since no Stage A runs here. The lists a
+    run of the sample reads are read for their formulas alone, never matched:
+    they corroborate a reading through a secondary channel, tell the partner
+    gate what they name, and can open a halogen to the twin re-read, as in a
+    run. That re-read follows the search, with a peak unexplained where neither
+    the claim stage nor the batch ledger explains it (``explained_peak_ids``):
+    the batch's frame, as a run's is its Stage A and its pre-passes.
+    """
+    # Imported here: the batch search imports this module.
+    from mascope_backend.api.new.peak_assignments.batch_untargeted import (
+        admitted_targets,
+    )
+
+    sample = ctx.sample
+    config = ctx.config
+    peaks_df = ctx.peaks_df
+    frame = (
+        peaks_df[
+            (peaks_df["intensity"] > 0)
+            & (
+                (peaks_df["intensity"] >= config.peak_intensity_threshold)
+                | peaks_df["sample_peak_id"].isin(ctx.persistent_peak_ids)
+            )
+        ]
+        .sort_values("mz")
+        .reset_index(drop=True)
+    )
+    targets, scope, by_persistence = admitted_targets(
+        frame,
+        set(ctx.targets) - ctx.claimed_peak_ids - ctx.explained_peak_ids,
+        set(ctx.persistent_peak_ids),
+        peak_intensity_threshold=config.peak_intensity_threshold,
+        max_untargeted_peaks=config.max_untargeted_peaks,
+        ceiling=MAX_UNTARGETED_PEAKS_CEILING,
+    )
+    ctx.unsearched = scope["eligible_peaks"] - scope["searched_peaks"]
+    notations, mechanism_id_by_notation = service._untargeted_ionization_notations(
+        ctx.searched_mechanisms
+    )
+    search = ctx.search = SearchProposal(
+        remainder=targets,
+        frame=frame,
+        columns=[column for column in service.SEARCH_PEAK_COLUMNS if column in frame],
+        mechanism_id_by_notation=mechanism_id_by_notation,
+        scope=scope,
+        excluded=ctx.claimed_peak_ids | set(ctx.explained_peak_ids),
+    )
+    await _recorded_measurement(ctx)
+    if targets.empty:
+        ctx.by_persistence = by_persistence
+        return
+    if scope["limited"]:
+        runtime.logger.info(
+            f"Batch untargeted search on sample '{sample.sample_item_name}' "
+            f"searches {scope['searched_peaks']} of {scope['eligible_peaks']} "
+            "representative peaks"
+        )
+    if not notations:
+        # The mode's own mechanisms decide whether there is anything to search
+        # at all (`service._searched_mechanisms`).
+        runtime.logger.info(
+            f"Untargeted batch search skips sample '{sample.sample_item_name}': "
+            "no polarity-compatible ionization mechanisms."
+        )
+        return
+    ctx.by_persistence = by_persistence
+    resolved_profile = ctx.resolved_profile
+    ctx.listed_formulas = listed_formula_identities(
+        await service._fetch_known_isotopes(
+            sample,
+            ctx.match_params.isotope_abundance_threshold,
+            ctx.mechanism_ids,
+            ctx.searched_mechanisms,
+            known_window=resolved_profile.context.known_window,
+            resolution=ctx.resolution,
+        )
+    )
+    search_config = resolved_profile.search_config(notations)
+    heuristics_config = resolved_profile.heuristics_config()
+    runtime.logger.info(
+        f"Untargeted batch search of sample '{sample.sample_item_name}' searches "
+        f"profile '{resolved_profile.profile.name}' / context "
+        f"'{resolved_profile.context.name}': {resolved_profile.element_ranges} "
+        f"at {resolved_profile.mz_precision_ppm} ppm"
+    )
+    scored_frame = frame[search.columns]
+    search.started = time.perf_counter()
+    matches_df, _ = await asyncio.to_thread(
+        assign_compositions,
+        scored_frame,
+        search_config,
+        heuristics_config,
+        targets=targets["mz"].tolist(),
+        scoring=ctx.scoring,
+    )
+    search.matches, search.twin_records = await service._reread_halogen_twins(
+        matches_df,
+        scored_frame,
+        resolved_profile=resolved_profile,
+        listed_formulas=ctx.listed_formulas,
+        searched_mzs=targets["mz"],
+        claimed_mzs=frame.loc[frame["sample_peak_id"].isin(search.excluded), "mz"],
+        search_config=search_config,
+        heuristics=heuristics_config,
+        scoring=ctx.scoring,
+        candidate_threshold=config.candidate_threshold,
+        search_scope=scope,
+        sample_name=sample.sample_item_name,
+    )
+    search.ran = True
+
+
+async def _recorded_measurement(ctx: RunContext) -> None:
+    """The measurement a path with no Stage A of its own scores and judges at:
+    what the sample's latest run recorded (:attr:`Measurement.RECORDED`).
+
+    The width that run fitted (``service.sample_recorded_width``), at which a
+    run's own search ranks; the line-share tolerance it fitted
+    (``envelope_fit.recorded_envelope_tolerance``); the centre it scored at,
+    or where no run recorded one the reagent lines the claim stage read, taken
+    only beyond the width (``SampleMassAccuracy.scoring_mu_ppm``); and the
+    mass calibration its gate judged at, which the refit stage takes as a
+    decoy takes its control's. A TOF's window is bounded by that width, as a
+    run's own search bounds it by the one its Stage A fitted (step 3.6).
+    """
+    sample_item_id = ctx.sample.sample_item_id
+    width = await service.sample_recorded_width(sample_item_id)
+    ctx.envelope_tolerance = await recorded_envelope_tolerance(sample_item_id)
+    _, recorded = await service._latest_in_app_run(sample_item_id)
+    has_centre, centre = service._recorded_scoring_centre(
+        (recorded or {}).get(PATTERN_SCORING_KEY)
+    )
+    ctx.mass_accuracy = SampleMassAccuracy(
+        sigma_ppm=width, reagent=centre if has_centre else ctx.reagent_offset
+    )
+    calibration = (recorded or {}).get(MASS_CALIBRATION_KEY)
+    ctx.recorded_calibration = (
+        inherited_calibration(calibration) if isinstance(calibration, dict) else None
+    )
+    ctx.scoring = pattern_scoring_for(
+        ctx.match_params,
+        ctx.mass_accuracy,
+        ctx.instrument_type,
+        ctx.resolution,
+        envelope_tolerance=ctx.envelope_tolerance,
+    )
+    ctx.resolved_profile = with_fitted_window(
+        ctx.resolved_profile,
+        sigma_ppm=ctx.scoring.sigma_ppm if width is not None else None,
+        mu_ppm=ctx.scoring.mu_ppm,
+        sigmas=BELOW_ASSIGNABILITY_Z,
+        instrument_type=ctx.instrument_type,
+    )
+    ctx.winner_accuracy = ctx.mass_accuracy
+
+
 # --- score ----------------------------------------------------------------------
 
 
@@ -766,7 +979,7 @@ async def score(ctx: RunContext) -> None:
             to_custom_element_format,
         ),
         reagent_offset=service._run_scoring_centre(ctx.mass_accuracy),
-        envelope_tolerance=ctx.envelope.tolerance,
+        envelope_tolerance=ctx.envelope_tolerance,
         inherited_accuracy=None if plan is None else plan.accuracy,
         resolution=ctx.resolution,
     )
@@ -804,6 +1017,7 @@ async def elect(ctx: RunContext) -> None:
     search = ctx.search
     if search is not None and search.ran:
         election = search.election
+        released = set() if election is None else election.released
         ctx.stage_b = untargeted_matches_to_peak_assignments(
             search.matches,
             peaks_df=search.frame,
@@ -815,23 +1029,38 @@ async def elect(ctx: RunContext) -> None:
             formula_formatter=to_custom_element_format,
             max_alternatives=config.max_alternatives,
             minor_channels=ctx.resolved_profile.minor_channels,
-            excluded_peak_ids=search.excluded - election.released,
+            excluded_peak_ids=search.excluded - released,
             fit_by_seed=ctx.fit_by_seed,
             listed_formulas=ctx.listed_formulas,
         )
-        held = record_displaced_list_readings(
-            ctx.stage_b, election.displaced, config.max_alternatives
+        # Each names a reading at the head of the row's alternatives, under
+        # the cap: the reading the twin replaced leads, then the list reading
+        # the row displaced.
+        held = (
+            0
+            if election is None
+            else record_displaced_list_readings(
+                ctx.stage_b, election.displaced, config.max_alternatives
+            )
         )
         record_twins(ctx.stage_b, search.twin_records, config.max_alternatives)
-        runtime.logger.info(
-            f"Stage B assigned {len(ctx.stage_b)} of {len(search.remainder)} "
-            "remaining peaks via untargeted search; of "
-            f"{election.summary['measured']} list hits it measured, "
-            f"{election.summary['with_rivals']} kept their peak against a "
-            f"closed-shell rival and {election.summary['taken_by_rivals']} lost it "
-            f"to one ({held} held by the search) "
-            f"({time.perf_counter() - search.started:.1f} s)"
-        )
+        if election is None:
+            runtime.logger.info(
+                f"Untargeted search of sample '{sample.sample_item_name}' read "
+                f"{len(ctx.stage_b)} rows on its {len(search.remainder)} "
+                "representative peaks and their lines "
+                f"({time.perf_counter() - search.started:.1f} s)"
+            )
+        else:
+            runtime.logger.info(
+                f"Stage B assigned {len(ctx.stage_b)} of {len(search.remainder)} "
+                "remaining peaks via untargeted search; of "
+                f"{election.summary['measured']} list hits it measured, "
+                f"{election.summary['with_rivals']} kept their peak against a "
+                f"closed-shell rival and {election.summary['taken_by_rivals']} "
+                f"lost it to one ({held} held by the search) "
+                f"({time.perf_counter() - search.started:.1f} s)"
+            )
     service._hold_opened_channel_readings(
         ctx.stage_a,
         searched_mechanisms=ctx.searched_mechanisms,
@@ -901,7 +1130,13 @@ def _judging_for(ctx: RunContext) -> service.Judging:
         partner_gated_channels=resolved_profile.partner_gated_channels,
         reagent_lines=ctx.reagent_rows,
         resolution=ctx.resolution,
-        inherited_calibration=None if plan is None else plan.calibration,
+        inherited_calibration=(
+            plan.calibration
+            if plan is not None
+            else ctx.recorded_calibration
+            if ctx.path.measurement is Measurement.RECORDED
+            else None
+        ),
         envelope_tolerance=ctx.scoring.envelope_tolerance,
         artifact_peak_ids=frozenset(ctx.artifact_peak_ids),
         instrument_type=ctx.instrument_type,
@@ -1069,7 +1304,7 @@ async def level(ctx: RunContext) -> None:
             ctx.match_params,
             peak_budget=ctx.config.stage_b_confidence_peaks,
             reagent_offset=service._run_scoring_centre(ctx.mass_accuracy),
-            envelope_tolerance=ctx.envelope.tolerance,
+            envelope_tolerance=ctx.envelope_tolerance,
             accuracy=ctx.winner_accuracy,
         )
         search.scope[WINNER_CONFIDENCE_KEY] = winner_confidence
@@ -1278,6 +1513,18 @@ async def keep_fold(
         persisted=False,
         defer_consensus_to=defer_consensus_to,
     )
+
+
+async def keep_search_rows(ctx: RunContext) -> tuple[list[dict], int, set[str]]:
+    """The batch search keeps a sample's judged rows for the batch: every
+    sample's are merged into one reading per anchor before any is written
+    (``batch_untargeted.merge_search_rows``).
+
+    :return: The judged rows, shaped as ledger rows that will never be
+        written; how many of the sample's representatives the cap left
+        unsearched; and the representatives persistence alone admitted.
+    """
+    return ctx.judged.rows, ctx.unsearched, ctx.by_persistence
 
 
 # --- the runner -----------------------------------------------------------------

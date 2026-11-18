@@ -394,8 +394,7 @@ REASON_ABSENT_LINE = "absent_line"
 REASON_CONTEXT_PRIOR = "context_prior"
 
 #: Step 3.6: a formula only the carbon skeleton of its organonitrate groups
-#: admits (:func:`nox_skeleton_reason`), and the record a batch search's row
-#: carries of it (:func:`hold_skeleton_readings`).
+#: admits (:func:`nox_skeleton_reason`).
 REASON_NOX_SKELETON = "nox_skeleton"
 
 #: The provenance block a monoisotopic row carries: the lines of its predicted
@@ -1283,40 +1282,6 @@ def nox_skeleton_reason(
         "skeleton admits is a candidate at most",
         caps=True,
     )
-
-
-def hold_skeleton_readings(rows: Iterable[dict], context: ChemistryContext) -> int:
-    """Hold a batch search's skeleton readings at candidate, in place.
-
-    A batch search runs no tiering pass, and its rows' tiers are what its
-    members take, so the one rule of this pass its own search makes needed
-    is asked here: a reading only the skeleton admits
-    (:func:`nox_skeleton_reason`) is held at ``candidate``, with its
-    isotopologue rows, and carries :data:`REASON_NOX_SKELETON` in its
-    provenance, as a run's row carries it among its reasons.
-
-    :param rows: The search's rows.
-    :param context: The sample's chemistry context.
-    :return: How many monoisotopic readings it held.
-    """
-    rows = list(rows)
-    held: set[str] = set()
-    for row in rows:
-        if row.get("role") != ROLE_M0 or not row.get("assigned_formula"):
-            continue
-        reason = nox_skeleton_reason(row, context, True)
-        if reason is None:
-            continue
-        _provenance(row)[REASON_NOX_SKELETON] = reason
-        _cap(row)
-        held.add(str(row.get("peak_assignment_id")))
-    for row in rows:
-        if (
-            row.get("role") == ROLE_ISO_CHILD
-            and str(row.get("owner_peak_assignment_id")) in held
-        ):
-            _cap(row)
-    return len(held)
 
 
 def detect_threshold(tolerance: EnvelopeTolerance | None) -> tuple[float, str]:

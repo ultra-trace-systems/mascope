@@ -23,6 +23,7 @@ from sqlalchemy import select
 from mascope_backend.api.new.peak_assignments import (
     batch_peaks_controller,
     batch_untargeted,
+    pipeline,
     service,
 )
 from mascope_backend.api.new.peak_assignments.batch_curation import (
@@ -331,15 +332,37 @@ def _stub_engine(monkeypatch, samples, peaks, matches, pairings):
                 errors[(ion, peak)] = {"mz_error_ppm": 0.9}
         return ion_by_seed, fit_by_ion, errors, pd.DataFrame({"x": [1]})
 
-    monkeypatch.setattr(batch_untargeted, "load_sample_peaks", load_peaks)
-    monkeypatch.setattr(batch_untargeted, "assign_compositions", assign)
-    monkeypatch.setattr(batch_untargeted, "fetch_sample_mechanisms", mechanisms)
-    monkeypatch.setattr(batch_untargeted, "_untargeted_ionization_notations", notations)
+    # The search runs the stage list, which reads the sample through the
+    # service's helpers and the library's names in its own module.
+    monkeypatch.setattr(service, "load_sample_peaks", load_peaks)
+    monkeypatch.setattr(pipeline, "assign_compositions", assign)
+    monkeypatch.setattr(service, "fetch_sample_mechanisms", mechanisms)
+    monkeypatch.setattr(service, "_untargeted_ionization_notations", notations)
+    monkeypatch.setattr(pipeline, "default_match_params", match_params)
     monkeypatch.setattr(batch_untargeted, "default_match_params", match_params)
     monkeypatch.setattr(batch_untargeted, "score_seeds", seeded)
-    monkeypatch.setattr(batch_untargeted, "_seeded_fits", seeded_fits)
-    monkeypatch.setattr(batch_untargeted, "_resolution_of", resolution_of)
+    monkeypatch.setattr(service, "_seeded_rescore", _rescored(seeded_fits))
+    monkeypatch.setattr(service, "_resolution_of", resolution_of)
     return calls
+
+
+def _rescored(seeded_fits):
+    """The search's seeded re-score (``service._seeded_rescore``), from a
+    stand-in for its fits: the measurement it scored at is none."""
+
+    async def rescore(
+        sample, params, seeds, *, reagent_offset, envelope_tolerance, **_kwargs
+    ):
+        fits = await seeded_fits(
+            sample,
+            params,
+            seeds,
+            reagent_offset=reagent_offset,
+            envelope_tolerance=envelope_tolerance,
+        )
+        return fits, None
+
+    return rescore
 
 
 async def _anchors_by_mz(session_factory, batch_id):
@@ -440,9 +463,9 @@ async def test_a_secondary_channel_the_mode_declares_is_searched_once(
         searched.append([mechanism.ionization_mechanism_id for mechanism in mechs])
         return ["H+"], {"H+": "mech-h"}
 
-    monkeypatch.setattr(batch_untargeted, "fetch_sample_mechanisms", mechanisms)
-    monkeypatch.setattr(batch_untargeted, "fetch_mechanisms_by_notation", secondary)
-    monkeypatch.setattr(batch_untargeted, "_untargeted_ionization_notations", notations)
+    monkeypatch.setattr(service, "fetch_sample_mechanisms", mechanisms)
+    monkeypatch.setattr(service, "fetch_mechanisms_by_notation", secondary)
+    monkeypatch.setattr(service, "_untargeted_ionization_notations", notations)
 
     await run_batch_untargeted_search(
         folded_batch["batch_id"], PeakAssignmentConfig(profile="UR")
@@ -470,7 +493,7 @@ async def test_the_searched_sample_is_re_scored_at_its_reagent_lines_offset(
     # reagent lines off its own peak list and the re-score of its commits is
     # centred there, as a run of the sample centres its own.
     monkeypatch.setattr(
-        batch_untargeted,
+        service,
         "load_sample_peaks",
         lambda sample: _frame(_PEAKS["S1"] + _urea_lines(-1.3)),
     )
@@ -486,12 +509,6 @@ async def test_the_searched_sample_is_re_scored_at_its_reagent_lines_offset(
     # The propagation of the same run measures the other sample under the
     # search's own configuration, so it resolves the same lines to the same
     # offset rather than the auto profile, whose mechanisms name no reagent.
-    monkeypatch.setattr(
-        service, "load_sample_peaks", batch_untargeted.load_sample_peaks
-    )
-    monkeypatch.setattr(
-        service, "fetch_sample_mechanisms", batch_untargeted.fetch_sample_mechanisms
-    )
     propagated = stubbed_engine["score_configs"]
     assert propagated
     for sample, config in propagated:
@@ -548,7 +565,7 @@ async def test_a_sample_with_a_run_is_re_scored_where_that_run_scored(
     # at the library's fit, so the search's re-score is centred there too.
     samples = folded_batch["samples"]
     monkeypatch.setattr(
-        batch_untargeted,
+        service,
         "load_sample_peaks",
         lambda sample: _frame(_PEAKS["S1"] + _urea_lines(-1.3)),
     )
@@ -585,12 +602,6 @@ async def test_a_sample_with_a_run_is_re_scored_where_that_run_scored(
 
     # The other sample has no run, so its propagation claims its lines under
     # the search's configuration; once a run records a centre, that is read.
-    monkeypatch.setattr(
-        service, "load_sample_peaks", batch_untargeted.load_sample_peaks
-    )
-    monkeypatch.setattr(
-        service, "fetch_sample_mechanisms", batch_untargeted.fetch_sample_mechanisms
-    )
     sample, config = next(
         (sample, config)
         for sample, config in stubbed_engine["score_configs"]
@@ -679,7 +690,7 @@ async def test_the_search_ranks_the_sample_where_a_run_scores_it(
     # chose readings a run of the sample would not.
     samples = folded_batch["samples"]
     monkeypatch.setattr(
-        batch_untargeted,
+        service,
         "load_sample_peaks",
         lambda sample: _frame(_PEAKS["S1"] + _urea_lines(shift_ppm)),
     )
@@ -875,7 +886,7 @@ async def test_a_sample_that_will_not_read_leaves_its_anchors_unsearched(
     def unreadable(sample):
         raise FileNotFoundError("the peak file has moved")
 
-    monkeypatch.setattr(batch_untargeted, "load_sample_peaks", unreadable)
+    monkeypatch.setattr(service, "load_sample_peaks", unreadable)
 
     counts = await run_batch_untargeted_search(batch_id, PeakAssignmentConfig())
 
@@ -1148,7 +1159,10 @@ async def test_a_reading_elected_on_persistence_alone_is_held_at_candidate(
     assert s2["pf"].fit_score == pytest.approx(0.86)
     assert tier_name(s2["pf"].tier) == "candidate"
     held = faint.provenance[PERSISTENCE_KEY]["held_members"]
-    assert set(held) == set(samples.values()) - {samples["S12"]}
+    # S1 holds the representative its search read, which the run's tiering
+    # rules already hold at candidate - it stands on its one peak - so the
+    # persistence rule finds nothing of it to hold.
+    assert set(held) == set(samples.values()) - {samples["S12"], samples["S1"]}
     assert faint.consensus_tier == "candidate"
     assert _reason_rules(faint) == ["persistence_only"]
     (reason,) = faint.provenance[TIER_REASONS_KEY]
@@ -1325,7 +1339,9 @@ async def test_a_pin_and_its_release_leave_the_hold_for_a_lift_to_take(
     await _search_persistence(persistence_batch)
     faint = (await _anchors_by_mz(async_session_factory, batch_id))[150]
     held = set(faint.provenance[PERSISTENCE_KEY]["held_members"])
-    assert held == set(samples.values()) - {samples["S12"]}
+    # Its searched representative's is held by the run's rules already
+    # (``test_a_reading_elected_on_persistence_alone_is_held_at_candidate``).
+    assert held == set(samples.values()) - {samples["S12"], samples["S1"]}
     # Another reading of the peak in its registry, one a sample once carried.
     async with async_session_factory() as session:
         anchor = await session.get(BatchPeak, faint.batch_peak_id)
@@ -1345,15 +1361,22 @@ async def test_a_pin_and_its_release_leave_the_hold_for_a_lift_to_take(
     counts = await run_batch_peak_curation(
         batch_id, faint.batch_peak_id, other, "C9H11NO", PeakAssignmentConfig()
     )
-    assert counts["members_repointed"] == len(held)
+    # Every member re-pointed, the searched representative's with the rest.
+    assert counts["members_repointed"] == len(held) + 1
     pinned = (await _anchors_by_mz(async_session_factory, batch_id))[150]
     assert pinned.consensus_formula == "C8H11N3"
     assert "held_members" not in pinned.provenance[PERSISTENCE_KEY]
     # What the pin archives is each member's measurement, not the hold, which
-    # went with the pin's recompute.
-    archived = pinned.provenance["manual"]["displaced_members"]
-    assert {state["sample_item_id"] for state in archived} == held
-    assert {tier_name(state["tier"]) for state in archived} == {"assigned"}
+    # went with the pin's recompute: assigned where the hold held it, and the
+    # tier the run's rules held the representative's at.
+    archived = {
+        state["sample_item_id"]: tier_name(state["tier"])
+        for state in pinned.provenance["manual"]["displaced_members"]
+    }
+    assert archived == {
+        **dict.fromkeys(held, "assigned"),
+        samples["S1"]: "candidate",
+    }
 
     # Released, the elected reading is held again, its members with it.
     await release_batch_peak_curation(batch_id, faint.batch_peak_id)
@@ -1396,7 +1419,7 @@ async def test_a_reading_the_vote_puts_below_candidate_is_not_counted_held(
     async def seeded_fits(sample, params, seeds, *, reagent_offset, envelope_tolerance):
         return {seed: 0.05 if seed[0] == "C9H11NO" else 0.88 for seed in seeds}
 
-    monkeypatch.setattr(batch_untargeted, "_seeded_fits", seeded_fits)
+    monkeypatch.setattr(service, "_seeded_rescore", _rescored(seeded_fits))
     counts, _ = await _search_persistence(persistence_batch)
 
     faint = (await _anchors_by_mz(async_session_factory, batch_id))[150]
