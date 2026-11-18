@@ -1027,7 +1027,8 @@ async def calibration_mz_apply(
     - Judge the fit against the quality bar (see :func:`stamp_quality_verdict`)
     - Update sample file database record with new calibration
     - Notify completion for each affected batch and remove existing matches
-    - Set non-ACQUISITION batches to "rematch"
+    - Set non-ACQUISITION batches to "rematch", keeping a pending
+      "recalibrate" (one held before the apply or set while it ran)
     - Return m/z fit result data and message
 
     :param fit: Fit dictionary.
@@ -1060,6 +1061,16 @@ async def calibration_mz_apply(
         b.sample_batch_id
         for b in affected_sample_batches
         if b.sample_batch_type != "ACQUISITION"
+    ]
+    # Read before the "processing" write below covers it: the batches that
+    # wait on a recalibration still wait on it after this apply (see the
+    # write at the end). Only the batches this apply holds: an ACQUISITION
+    # batch is never held, so a run on it may change its status meanwhile,
+    # and a restore would write over that.
+    pending_recalibration_ids = [
+        b.sample_batch_id
+        for b in affected_sample_batches
+        if b.sample_batch_type != "ACQUISITION" and b.status == "recalibrate"
     ]
     # already "processing" batches will not change the status
     await update_sample_batch_status(
@@ -1184,11 +1195,24 @@ async def calibration_mz_apply(
                 parent_id=process_id,
             )
     # --- Set non-ACQUISITION batches to "rematch" ---
-    # ACQUISITION batches being matched for the first time
+    # ACQUISITION batches being matched for the first time.
+    # A batch that waited on a recalibration goes back to "recalibrate": this
+    # apply re-fits one file, and the batch's other files still owe the
+    # recalibration (a recalibration ends in a rematch, so it covers this
+    # one). The rematch write passes never_lower, so a "recalibrate" written
+    # over "processing" while this apply ran - by a rematch forced from
+    # "recalibrate" finishing - is kept too.
+    if pending_recalibration_ids:
+        await update_sample_batch_status(
+            sample_batch_ids=pending_recalibration_ids,
+            status="recalibrate",
+            independent_transaction=True,
+        )
     await update_sample_batch_status(
         sample_batch_ids=non_acquisition_batch_ids,
         status="rematch",
         independent_transaction=True,
+        never_lower=True,
     )
     runtime.logger.info(
         f"Set {len(non_acquisition_batch_ids)} non-ACQUISITION batch(es) "

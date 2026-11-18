@@ -16,17 +16,21 @@ pending needs keep the stronger; a second rematch asked for meanwhile is
 locked out by the first's claim (``rematch_claim``), and the outcome log says
 the status the batch holds. A batch without samples still goes to
 ``ready``, and the socket event carries the status each batch holds, not the
-one asked for.
+one asked for. A calibration apply to one file of a batch pending a
+recalibration leaves the batch at ``recalibrate``, and keeps one set while
+the apply ran.
 """
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import func, select, text
 from test_utils import captured_logs
 
+from mascope_backend.api.controllers.calibration import calibration_controller
 from mascope_backend.api.controllers.match import match_controller
 from mascope_backend.api.controllers.sample.batches.status import service
 from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
@@ -95,10 +99,20 @@ async def status_dataset(async_session_factory):
 
 
 async def _batch(
-    async_session_factory, ctx, status, with_sample=True, ionization_mode_id=None
+    async_session_factory,
+    ctx,
+    status,
+    with_sample=True,
+    ionization_mode_id=None,
+    batch_type=None,
 ):
-    """A batch at ``status``, with one sample item unless ``with_sample`` is off."""
+    """A batch at ``status``, with one sample item unless ``with_sample`` is off.
+
+    ``batch_type`` sets ``sample_batch_type`` when given, else the column's
+    default stands.
+    """
     batch_id = gen_id()
+    extra = {} if batch_type is None else {"sample_batch_type": batch_type}
     async with async_session_factory() as session:
         session.add(
             SampleBatch(
@@ -107,6 +121,7 @@ async def _batch(
                 sample_batch_name=f"Status Batch {batch_id}",
                 sample_batch_utc_created=_NOW,
                 status=status,
+                **extra,
             )
         )
         if with_sample:
@@ -834,3 +849,150 @@ async def test_a_second_rematch_is_locked_out_while_the_first_runs(
     assert resp.status_code == 202, resp.text
     assert state["calls"] == 2
     assert await _status(async_session_factory, batch_id) == after_second
+
+
+# ============= A calibration apply =============
+
+
+async def _file_in_batches(async_session_factory, ctx, statuses, batch_type=None):
+    """A sample file of its own, with one sample item in a batch per status."""
+    file_id = gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            SampleFile(
+                sample_file_id=file_id,
+                filename=f"test-orbion_{file_id}.raw",
+                instrument="test-orbion",
+                datetime=_NOW_NAIVE,
+                datetime_utc=_NOW,
+                length=60.0,
+                range={"min": 0, "max": 500},
+                polarity="+",
+            )
+        )
+        await session.commit()
+    batch_ids = [
+        await _batch(
+            async_session_factory,
+            {**ctx, "file_id": file_id},
+            status,
+            batch_type=batch_type,
+        )
+        for status in statuses
+    ]
+    return file_id, batch_ids
+
+
+async def _apply_calibration(monkeypatch, file_id, during_apply=None):
+    """Run ``calibration_mz_apply`` on ``file_id`` with the file work mocked out.
+
+    The batch lookups and status writes are real; ``during_apply`` runs where
+    the fit is applied, while the batches are held at ``processing``.
+    """
+
+    async def _apply(_fit):
+        if during_apply is not None:
+            await during_apply()
+
+    handler = SimpleNamespace(apply=_apply)
+    sample_file = SimpleNamespace(
+        sample_file_id=file_id,
+        mz_calibration=None,
+        instrument="test-orbion",
+        range=None,
+        to_dict=dict,
+    )
+    sum_signal = SimpleNamespace(mz=SimpleNamespace(values=[100.0, 200.0]))
+    ctrl = calibration_controller
+    monkeypatch.setattr(ctrl, "fetch_sample_file", AsyncMock(return_value=sample_file))
+    monkeypatch.setattr(ctrl, "send_progress_user_notification", AsyncMock())
+    monkeypatch.setattr(
+        ctrl, "get_calibration_handler", MagicMock(return_value=handler)
+    )
+    monkeypatch.setattr(ctrl, "get_sum_signal", MagicMock(return_value=sum_signal))
+    monkeypatch.setattr(ctrl, "fit_seal_valid", MagicMock(return_value=True))
+    monkeypatch.setattr(ctrl, "stamp_quality_verdict", MagicMock(return_value=[]))
+    monkeypatch.setattr(ctrl, "carry_acquisition_drift", MagicMock(return_value=False))
+    monkeypatch.setattr(ctrl, "update_sample_file", AsyncMock())
+    monkeypatch.setattr(ctrl, "SampleFileUpdate", MagicMock())
+    monkeypatch.setattr(ctrl, "match_remove_sample", AsyncMock())
+
+    await ctrl.calibration_mz_apply.__wrapped__(
+        fit={"verified": True}, filename=f"test-orbion_{file_id}.raw", user_id=None
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_calibration_apply_keeps_a_pending_recalibrate(
+    async_session_factory, status_dataset, sample_view, monkeypatch
+):
+    """Applying a fit to one file of a batch pending a recalibration leaves
+    the batch at ``recalibrate``: its other files still owe it. A batch
+    without one goes to ``rematch``, as before."""
+    file_id, (pending, idle) = await _file_in_batches(
+        async_session_factory, status_dataset, ["recalibrate", "ready"]
+    )
+    seen = {}
+
+    async def _during():
+        seen["pending"] = await _status(async_session_factory, pending)
+
+    await _apply_calibration(monkeypatch, file_id, during_apply=_during)
+
+    assert seen["pending"] == "processing"
+    assert await _status(async_session_factory, pending) == "recalibrate"
+    assert await _status(async_session_factory, idle) == "rematch"
+
+
+@pytest.mark.asyncio
+async def test_a_calibration_apply_keeps_a_recalibrate_set_while_it_ran(
+    async_session_factory, status_dataset, sample_view, monkeypatch
+):
+    """A ``recalibrate`` written over the apply's ``processing`` while it ran
+    survives the apply's final ``rematch`` write. It stands for a rematch
+    forced from ``recalibrate`` that was running when the apply started, so
+    the batch was already at ``processing``, and that finished inside the
+    apply's window. No edit can write it there: the ionization-mode update,
+    the one edit that sets ``recalibrate``, refuses while a batch it touches
+    is ``processing``."""
+    file_id, (batch_id,) = await _file_in_batches(
+        async_session_factory, status_dataset, ["processing"]
+    )
+
+    async def _during():
+        await service.update_sample_batch_status(
+            sample_batch_ids=[batch_id], status="recalibrate"
+        )
+
+    await _apply_calibration(monkeypatch, file_id, during_apply=_during)
+
+    assert await _status(async_session_factory, batch_id) == "recalibrate"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("during", ["rematch", "processing"])
+async def test_a_calibration_apply_leaves_an_acquisition_batch_alone(
+    async_session_factory, status_dataset, sample_view, monkeypatch, during
+):
+    """The apply never holds an ACQUISITION batch, so it never writes its
+    status, not even to restore a ``recalibrate`` it read at the start. A
+    batch **Recalibrate** finishing (``rematch``) or a forced rematch holding
+    it (``processing``) while the apply ran keeps what it wrote."""
+    file_id, (batch_id,) = await _file_in_batches(
+        async_session_factory,
+        status_dataset,
+        ["recalibrate"],
+        batch_type="ACQUISITION",
+    )
+    seen = {}
+
+    async def _during():
+        seen["start"] = await _status(async_session_factory, batch_id)
+        await service.update_sample_batch_status(
+            sample_batch_ids=[batch_id], status=during
+        )
+
+    await _apply_calibration(monkeypatch, file_id, during_apply=_during)
+
+    assert seen["start"] == "recalibrate"
+    assert await _status(async_session_factory, batch_id) == during
