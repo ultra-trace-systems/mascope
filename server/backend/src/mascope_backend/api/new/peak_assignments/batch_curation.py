@@ -15,12 +15,15 @@ order:
   carry it, and the vote's own winner is kept beside it so a disagreement stays
   visible.
 - **Propagate.** The pinned identity is measured on every sample holding a
-  member that does not already carry it, through the seeded chain the untargeted
-  search propagates with: a member the ion's envelope reaches takes the identity
-  with a fit of its own; one it does not reach keeps what it had. Nothing is
-  inferred from another sample's spectrum. What each re-pointed member read
-  before is archived on the pin (``displaced_members``), so release is an undo
-  and not a re-vote over rewritten evidence.
+  member that does not already carry it, through the stage list's
+  person's-choice path (``pipeline.PERSONS_CHOICE``): measured as an ion
+  through the seeded chain, a member the ion's envelope takes takes the
+  identity with a fit of its own, tiered on its evidence and asked the
+  spectrum's rules alone - the lines it predicts must be there - as a hand
+  assignment on a sample's row is; one it does not reach keeps what it had.
+  Nothing is inferred from another sample's spectrum. What each re-pointed
+  member read before is archived on the pin (``displaced_members``), so
+  release is an undo and not a re-vote over rewritten evidence.
 - **Recompute**, once, so the batch ledger and every derived Sample view agree.
 
 **Release** puts the archived member states back where nobody has changed them
@@ -32,10 +35,9 @@ before "use this" the inspector asks :func:`measure_batch_peak_candidate` what
 the pin would make of this sample's member: the ion's fit, its envelope's lines
 and which of them the spectrum holds, the plausibility, the evidence and the
 tier, beside what the member reads now. Nothing is written. The measurement is
-the propagation's own (``batch_untargeted.score_in_sample`` and
-``measured_reading``), so the numbers shown are the ones the pin then writes on
-that member; a pin made from that sample records the measurement under
-``provenance.manual.measured``.
+the pin's own stages run on that sample (``batch_untargeted.measure_on_sample``),
+so the numbers shown are the ones the pin then writes on that member; a pin
+made from that sample records the measurement under ``provenance.manual.measured``.
 
 The claim is guarded as a verdict's is: the client names the consensus formula it
 saw (``expected_formula``), and a mismatch is refused rather than a pin recorded
@@ -56,6 +58,7 @@ from datetime import datetime as dt
 from datetime import timezone
 from typing import Any, Optional
 
+import pandas as pd
 from fastapi import status
 from sqlalchemy import select
 
@@ -87,8 +90,8 @@ from mascope_backend.api.new.peak_assignments.batch_runs import touch_ledger
 from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     Annotation,
     _propagate_to_sample,
-    measured_reading,
-    score_in_sample,
+    measure_on_sample,
+    reads_annotation,
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.derived_evidence import (
@@ -98,6 +101,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     evidence_for,
     monoisotopic_row,
 )
+from mascope_backend.api.new.peak_assignments.pipeline import PERSONS_CHOICE
 from mascope_backend.api.new.peak_assignments.seeded_scoring import (
     build_seeded_isotopes_df,
     fetch_mechanisms_by_id,
@@ -430,27 +434,23 @@ def _reading_of(member: Any, anchor: Any) -> dict:
     }
 
 
-def candidate_measurement(
-    entry: dict,
-    sample_peak_id: str,
-    scored: tuple,
-    config: PeakAssignmentConfig,
-) -> dict:
+def candidate_measurement(entry: dict, sample_peak_id: str, ctx) -> dict:
     """The numbers a pin of ``entry`` would write on the member at
-    ``sample_peak_id``, read off one seeded scoring of the identity.
+    ``sample_peak_id``, read off the person's-choice stages run on its sample
+    (``pipeline.PERSONS_CHOICE``, :func:`measure_batch_peak_candidate`).
 
-    The fit, evidence and tier are :func:`batch_untargeted.measured_reading`'s,
-    the very reading the propagation writes; ``takes_member`` says whether the
-    pin re-points the member at all (False: the envelope did not reach its
-    peak, and it keeps what it reads). The lines are every isotopologue the ion
-    predicts, each with the peak of this sample it paired to, if any.
+    The fit, evidence and tier are the judged row's on the member's peak, the
+    very row the pin writes: measured as an ion through the seeded chain,
+    elected on its peak, tiered on its evidence and asked the spectrum's rules,
+    as a hand assignment on a sample's row is. ``takes_member`` says whether
+    the pin re-points the member at all (False: the envelope did not take its
+    peak, and it keeps what it reads). The lines are every isotopologue the
+    ion predicts, each with the peak of this sample it paired to, if any.
 
     :param entry: The registry entry being measured.
     :param sample_peak_id: The member's peak.
-    :param scored: ``score_in_sample``'s four maps.
-    :param config: The configuration the pin is measured under.
+    :param ctx: The pass (``batch_untargeted.measure_on_sample``).
     """
-    ion_by_seed, fit_by_ion, errors_by_pairing, scored_df = scored
     formula = entry["formula"]
     annotation = Annotation(
         formula=formula,
@@ -459,8 +459,20 @@ def candidate_measurement(
         role=ROLE_M0,
         owner_batch_peak_id=None,
     )
-    reading = measured_reading(
-        annotation, sample_peak_id, ion_by_seed, fit_by_ion, errors_by_pairing, config
+    row = next(
+        (
+            row
+            for row in ctx.judged.rows
+            if str(row.get("sample_peak_id")) == str(sample_peak_id)
+        ),
+        None,
+    )
+    taken = row is not None and reads_annotation(row, annotation)
+    ion_by_seed, _fits, errors_by_pairing, scored_df = ctx.seeded or (
+        {},
+        {},
+        {},
+        pd.DataFrame(),
     )
     ion_id = ion_by_seed.get((formula, annotation.ionization_mechanism_id))
     lines: list[dict] = []
@@ -473,18 +485,24 @@ def candidate_measurement(
             scored_df[scored_df["target_ion_id"].astype(str) == str(ion_id)]
         )
     errors = errors_by_pairing.get((ion_id, sample_peak_id), {}) if ion_id else {}
+    fit = row.get("fit_score") if taken else None
     return {
         "plausibility": round(float(formula_plausibility(formula)), 4),
-        "fit_score": reading.fit if reading else None,
-        "evidence": reading.evidence if reading else None,
-        "tier": reading.tier if reading else None,
+        "fit_score": fit,
+        "evidence": evidence_for(fit, formula) if taken else None,
+        "tier": row.get("tier") if taken else None,
+        "tier_reasons": (
+            list((row.get("provenance") or {}).get("tier_reasons") or [])
+            if taken
+            else []
+        ),
         "mz_error_ppm": errors.get("mz_error_ppm"),
         "abundance_error": errors.get("abundance_error"),
         "lines": lines,
         "lines_found": sum(1 for line in lines if line.get("sample_peak_id")),
-        "takes_member": reading is not None,
+        "takes_member": taken,
         "blocked_reason": None
-        if reading is not None
+        if taken
         else (
             "the ion could not be generated under its adduct"
             if ion_id is None
@@ -581,12 +599,21 @@ async def measure_batch_peak_candidate(
             blocked_reason="the identity names no adduct, and the ion is built from one",
         )
     else:
-        scored = await score_in_sample(
+        ctx = await measure_on_sample(
             sample_item_id,
-            {(entry["formula"], entry["ionization_mechanism_id"])},
+            {
+                batch_peak_id: Annotation(
+                    formula=entry["formula"],
+                    ion_formula=entry.get("ion_formula"),
+                    ionization_mechanism_id=entry["ionization_mechanism_id"],
+                    role=ROLE_M0,
+                    owner_batch_peak_id=None,
+                )
+            },
             config,
+            PERSONS_CHOICE,
         )
-        measurement.update(candidate_measurement(entry, sample_peak_id, scored, config))
+        measurement.update(candidate_measurement(entry, sample_peak_id, ctx))
     scored_ok = measurement.get("takes_member")
     return {
         "status": "success",
@@ -744,6 +771,7 @@ async def run_batch_peak_curation(
                     only_unassigned=False,
                     skip_candidate={batch_peak_id: candidate},
                     displaced=displaced,
+                    path=PERSONS_CHOICE,
                 )
                 counts["samples_measured"] += 1
             except Exception:  # noqa: BLE001 - one bad sample must not abort the pin

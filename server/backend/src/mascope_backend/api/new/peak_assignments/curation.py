@@ -55,6 +55,7 @@ from datetime import datetime as dt
 from datetime import timezone
 from typing import NamedTuple
 
+import pandas as pd
 from sqlalchemy import select
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
@@ -88,26 +89,18 @@ from mascope_backend.api.new.peak_assignments.fold_view import (
 )
 from mascope_backend.api.new.peak_assignments.identification_level import (
     IDENTIFICATION_LEVEL,
-    hand_level,
     inherited_level,
 )
-from mascope_backend.api.new.peak_assignments.mass_gate import SpectrumLines
 from mascope_backend.api.new.peak_assignments.schemas import (
     PromoteAlternativeBody,
     SetAssignmentBody,
 )
 from mascope_backend.api.new.peak_assignments.service import (
-    _resolution_of,
     load_sample_peaks,
     provenance_with_calibration,
 )
-from mascope_backend.api.new.peak_assignments.tiering import (
-    LineGate,
-    ask_absent_line,
-)
+from mascope_backend.api.new.peak_assignments.tiering import LineGate
 from mascope_backend.api.new.peak_assignments.tiers import (
-    TIER_ASSIGNED,
-    TIER_CANDIDATE,
     TIER_UNASSIGNED,
     TIERS,
     normalize_tier,
@@ -968,33 +961,52 @@ class _LinesAsked(NamedTuple):
     unread: bool = False
 
 
-async def _absent_line_of(
-    session, sample, run: PeakAssignmentRun, row: dict
-) -> _LinesAsked:
-    """Ask a hand assignment whether the spectrum holds the lines it predicts.
+async def _persons_choice(
+    session,
+    sample,
+    run: PeakAssignmentRun,
+    row: dict,
+    bands: tuple[float, float],
+) -> tuple[dict, _LinesAsked]:
+    """A hand assignment through the stage list's person's-choice path
+    (``pipeline.PERSONS_CHOICE``): the person's formula takes the row, tiered
+    on its evidence under the run's bands, and is asked the spectrum's rules -
+    whether the lines it predicts are there - at the gate the run asked its own
+    rows at (:meth:`tiering.LineGate.from_record`), over the sample's peaks read
+    as the run read them: at the setup's labelled purity, and on a decoy run's
+    shifted axis, with the peaks the pre-passes claim read as neither a line
+    nor an absence. Then its identification level. The batch's *Use this* is
+    the same path on a batch peak's members (``batch_curation``).
 
-    At the gate the run asked its own rows at
-    (:meth:`tiering.LineGate.from_record`), over the sample's peaks read as the
-    run read them - at the setup's labelled
-    purity, and on a decoy run's shifted axis - with the peaks the run's
-    artifact rows hold read as neither a line nor an absence. A run that asked
-    no line asks none of its hand assignments either: an imported run, whose
-    configuration is its engine's own, and a run tiered before rule set 11 or
-    without the sample's peaks.
+    A run that asked no line asks none of its hand assignments either: an
+    imported run, whose configuration is its engine's own, and a run tiered
+    before rule set 11 or without the sample's peaks. Nor does one whose
+    sample's peaks cannot be read now, which the edit's message says.
 
     :param session: The edit's session, which reads the run's artifact rows.
     :param sample: The sample view row.
     :param run: The row's run.
-    :param row: The curated row as the rule reads it; its provenance takes the
-        record of what was asked (``tiering.PREDICTED_ENVELOPE``).
-    :return: The reason (``tiering.absent_line_reason``) where a line is
-        missing, or that the peaks could not be read.
+    :param row: The curated row as the stages read it, written into.
+    :param bands: The run's ``(assigned, candidate)`` bands.
+    :return: The row as judged, and what asking its lines came to.
     """
-    if run.engine != IN_APP_ENGINE or not isinstance(run.config, dict):
-        return _LinesAsked()
-    gate = LineGate.from_record(run.config.get(TIERING_KEY))
-    if gate is None:
-        return _LinesAsked()
+    # Imported here: the stage list composes the service, which this module
+    # imports.
+    from mascope_backend.api.new.peak_assignments.pipeline import (
+        PERSONS_CHOICE,
+        RunContext,
+        run_stages,
+    )
+
+    recorded = (
+        run.config
+        if run.engine == IN_APP_ENGINE and isinstance(run.config, dict)
+        else {}
+    )
+    decoy = recorded.get("decoy")
+    decoy = decoy if isinstance(decoy, dict) else {}
+    assigned_band, candidate_band = bands
+    # The peaks the run claimed as the detector's ringing are its own record.
     artifact_peak_ids = frozenset(
         str(peak_id)
         for peak_id in (
@@ -1006,29 +1018,59 @@ async def _absent_line_of(
             )
         ).scalars()
     )
-    decoy = run.config.get("decoy")
-    decoy = decoy if isinstance(decoy, dict) else {}
     with (
         labelled_purity(await sample_label_purity(sample.sample_item_id)),
         shifted_mz_axis(ppm=decoy.get("mz_shift_ppm"), da=decoy.get("mz_shift_da")),
     ):
-        try:
-            peaks_df = await asyncio.to_thread(load_sample_peaks, sample)
-        except Exception as exc:  # noqa: BLE001 - the edit stands without it
-            runtime.logger.warning(
-                f"Peaks of sample '{sample.sample_item_name}' unreadable ({exc}); "
-                "a hand assignment's isotope lines were not checked"
+        # Read only where they will be asked: a monoisotopic row, on a run
+        # that asked its own rows' lines.
+        unread = False
+        peaks_df = pd.DataFrame(columns=["sample_peak_id", "mz", "intensity"])
+        if (
+            row.get("role") == ROLE_M0
+            and LineGate.from_record(recorded.get(TIERING_KEY)) is not None
+        ):
+            try:
+                peaks_df = await asyncio.to_thread(load_sample_peaks, sample)
+            except Exception as exc:  # noqa: BLE001 - the edit stands without it
+                runtime.logger.warning(
+                    f"Peaks of sample '{sample.sample_item_name}' unreadable "
+                    f"({exc}); a hand assignment's isotope lines were not checked"
+                )
+                unread = True
+
+        async def keep(ctx: RunContext) -> list[dict]:
+            return ctx.judged.rows
+
+        ctx = await run_stages(
+            RunContext(
+                path=PERSONS_CHOICE,
+                sample=sample,
+                config=PeakAssignmentConfig(
+                    assigned_threshold=assigned_band,
+                    candidate_threshold=candidate_band,
+                ),
+                run_id=run.peak_assignment_run_id,
+                keep=keep,
+                strict_instrument=False,
+                strict_chemistry=False,
+                peaks_df=peaks_df,
+                chosen=[row],
+                recorded=recorded,
+                recorded_artifact_peak_ids=artifact_peak_ids,
             )
-            return _LinesAsked(unread=True)
-        resolution = await _resolution_of(sample)
-        _, reason = ask_absent_line(
-            row,
-            SpectrumLines.from_peaks(peaks_df, resolution),
-            gate,
-            resolution=resolution,
-            artifact_peak_ids=artifact_peak_ids,
         )
-    return _LinesAsked(reason=reason)
+    (judged,) = ctx.result
+    asks = (
+        ctx.line_gate is not None
+        and judged.get("role") == ROLE_M0
+        and not peaks_df.empty
+    )
+    reasons = (judged.get("provenance") or {}).get("tier_reasons") or []
+    return judged, _LinesAsked(
+        reason=reasons[0] if reasons and asks else None,
+        unread=unread and ctx.line_gate is not None and judged.get("role") == ROLE_M0,
+    )
 
 
 @api_controller()
@@ -1272,40 +1314,37 @@ async def curate_assignment(
         assignment.target_ion_id = target_ion_id
         assignment.role = _role_for(chosen.get("isotope_label"))
         assignment.source = SOURCE_MANUAL
-        # Tiered on evidence, like both engine stages: the hand chooses the
-        # formula, but what tier that choice earns is still measured, and the
-        # plausibility of a formula a person picked counts exactly as much as
-        # that of one an engine picked. Routed through `evidence_for` rather than
-        # multiplying the `plausibility` above, so the fail-open case (a formula
-        # that will not parse) reads as the fit alone here as it does everywhere
-        # else, instead of collapsing to no evidence at all. `formula_plausibility`
-        # is memoized, so recomputing it costs nothing.
-        assignment.tier = tier_for_evidence(
-            evidence_for(fit_score, assigned),
-            candidate_threshold=candidate_band,
-            assigned_threshold=assigned_band,
-        )
-        # And then asked whether the spectrum holds the lines the formula
-        # predicts, as the run asked its own rows (`_absent_line_of`): an
-        # absent line holds the row at candidate at most, and is the one
-        # reason a hand assignment lists. A hand isotopologue is not asked:
-        # the rule reads a formula's lines from its main one, and the row has
-        # no M0 on the run.
-        lines = _LinesAsked()
-        if assignment.role == ROLE_M0:
-            hand_row = {
+        # Tiered on evidence, like both engine stages, and then asked whether
+        # the spectrum holds the lines the formula predicts, as the run asked
+        # its own rows: the stage list's person's-choice path
+        # (:func:`_persons_choice`). An absent line holds the row at candidate
+        # at most, and is the one reason a hand assignment lists. A hand
+        # isotopologue is not asked: the rule reads a formula's lines from its
+        # main one, and the row has no M0 on the run.
+        judged, lines = await _persons_choice(
+            session,
+            sample,
+            run,
+            {
+                "peak_assignment_id": assignment.peak_assignment_id,
                 "sample_peak_id": assignment.sample_peak_id,
-                "ion_formula": assignment.ion_formula,
+                "sample_peak_mz": assignment.sample_peak_mz,
                 "sample_peak_intensity": assignment.sample_peak_intensity,
+                "role": assignment.role,
+                "assigned_formula": assignment.assigned_formula,
+                "ion_formula": assignment.ion_formula,
+                "ionization_mechanism_id": assignment.ionization_mechanism_id,
+                "isotope_label": assignment.isotope_label,
+                "source": assignment.source,
+                "fit_score": assignment.fit_score,
                 "mz_error_ppm": assignment.mz_error_ppm,
+                "owner_peak_assignment_id": None,
                 "provenance": dict(assignment.provenance or {}),
-            }
-            lines = await _absent_line_of(session, sample, run, hand_row)
-            if lines.reason is not None:
-                hand_row["provenance"]["tier_reasons"] = [lines.reason]
-                if assignment.tier == TIER_ASSIGNED:
-                    assignment.tier = TIER_CANDIDATE
-            assignment.provenance = hand_row["provenance"]
+            },
+            (assigned_band, candidate_band),
+        )
+        assignment.tier = judged["tier"]
+        assignment.provenance = judged["provenance"]
         # The engine's verdict is about a FORMULA, not about a row, so it
         # survives exactly as long as the row still holds the formula it judged.
         # Three cases, and only the last is "no engine judged this":
@@ -1328,23 +1367,13 @@ async def curate_assignment(
         # a family for the composition it replaced, not for this one, so there
         # is no owner here that was ever competed for.
         assignment.owner_peak_assignment_id = None
-        # Its identification level is what the mapping can state of a formula
-        # a person chose: refuted where a line it predicts is absent, else
-        # rivals not measured, since no shortlist of the run was competed
-        # against it. The isotopologues put back with it show its level, and so
-        # do the ones a re-commit of the same compound left standing.
-        level = hand_level(
-            {
-                "role": assignment.role,
-                "source": assignment.source,
-                "assigned_formula": assignment.assigned_formula,
-                "provenance": assignment.provenance,
-            }
-        )
-        assignment.provenance = {
-            **(assignment.provenance or {}),
-            IDENTIFICATION_LEVEL: level,
-        }
+        # Its identification level, which the stages stated of the formula a
+        # person chose (``identification_level.hand_level``): refuted where a
+        # line it predicts is absent, else rivals not measured, since no
+        # shortlist of the run was competed against it. The isotopologues put
+        # back with it show its level, and so do the ones a re-commit of the
+        # same compound left standing.
+        level = assignment.provenance[IDENTIFICATION_LEVEL]
         assignment.level = level["level"]
         for child in [*restored, *(family if same_compound else [])]:
             inherited = inherited_level(level, assignment.peak_assignment_id)

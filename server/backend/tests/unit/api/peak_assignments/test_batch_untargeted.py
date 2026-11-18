@@ -6,12 +6,13 @@ outcome says. See ``batch_untargeted.py``.
 """
 
 import math
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from types import SimpleNamespace
 from unittest.mock import DEFAULT, AsyncMock, patch
 
 import pandas as pd
 import pytest
+from stage_stubs import seeded_frame  # the tests root, on sys.path
 
 from mascope_backend.api.new.peak_assignments import batch_untargeted
 from mascope_backend.api.new.peak_assignments.batch_peaks import role_code
@@ -39,6 +40,7 @@ from mascope_backend.api.new.peak_assignments.profiles import (
     resolve_profile,
 )
 from mascope_backend.api.new.peak_assignments.tiers import (
+    TIER_ASSIGNED,
     TIER_CANDIDATE,
 )
 from mascope_tools.composition.mass_accuracy import PRED_SIGMA_PPM
@@ -845,6 +847,486 @@ async def test_a_searched_member_reads_the_tier_a_run_of_its_sample_gives():
     assert row["provenance"]["evidence"] >= PeakAssignmentConfig().assigned_threshold
 
 
+# --- a batch decision measured on a member (pipeline.PROPAGATION) ----------------
+
+
+async def _measure(
+    sample,
+    peaks,
+    mechanisms,
+    readings,
+    *,
+    secondary=(),
+    known=None,
+    path=None,
+    resolution=None,
+):
+    """Measure batch decisions on one sample as the propagation does
+    (``batch_untargeted.measure_on_sample``), and keep nothing.
+
+    :param readings: ``(anchor, formula, ion, mechanism id, peaks)`` per
+        decision: its ion a line on each of the peaks, at one fit.
+    :param path: The path; the propagation's unless a test says.
+    :param resolution: The file's resolving power; none unless a test says.
+    :return: The judged rows by peak, and the stand-ins, the seeded scorer's
+        keyword arguments per call among them (``scored``).
+    """
+    from mascope_backend.api.new.peak_assignments import pipeline
+
+    pairings = {
+        (formula, mechanism_id): (f"ion-{anchor}", ion, paired)
+        for anchor, formula, ion, mechanism_id, paired in readings
+    }
+    scored_with = []
+
+    async def score(scored, seeds, params, **kwargs):
+        scored_with.append(kwargs)
+        ion_by_seed = {seed: pairings[seed][0] for seed in seeds if seed in pairings}
+        fit_by_ion = {ion: 0.95 for ion in ion_by_seed.values()}
+        errors = {
+            (pairings[seed][0], peak): {"mz_error_ppm": 0.1}
+            for seed in ion_by_seed
+            for peak in pairings[seed][2]
+        }
+        return (
+            ion_by_seed,
+            fit_by_ion,
+            errors,
+            seeded_frame(
+                ion_by_seed,
+                fit_by_ion,
+                errors,
+                peaks,
+                lambda formula, mechanism_id: pairings[(formula, mechanism_id)][1],
+            ),
+        )
+
+    stack, mocks = _searching(
+        sample,
+        peaks,
+        mechanisms,
+        finder=lambda *args, **kwargs: (pd.DataFrame(), None),
+        secondary=secondary,
+        known=known,
+        resolution=resolution,
+    )
+    mocks["scored"] = scored_with
+    annotations = {
+        anchor: Annotation(formula, ion, mechanism_id, "M0", None)
+        for anchor, formula, ion, mechanism_id, _ in readings
+    }
+    with stack, patch(f"{_PIPE}.score_seeds", score):
+        ctx = await batch_untargeted.measure_on_sample(
+            "si-1",
+            annotations,
+            PeakAssignmentConfig(),
+            path or pipeline.PROPAGATION,
+        )
+    return {row["sample_peak_id"]: row for row in ctx.judged.rows}, mocks
+
+
+@pytest.mark.asyncio
+async def test_a_measured_reading_is_read_at_the_files_resolution():
+    # The stage list reads the file's R(m/z) once: a decision's lines are
+    # measured at that reading, and the lists a run of the member's sample
+    # reads are resolved at it, as a run's Stage A and its re-score read
+    # theirs (MAS-977).
+    def orbitrap(mz):
+        return 100_000.0
+
+    _, mocks = await _measure(
+        _sample(),
+        _peaks([("p1", 160.8413, 1.0e6)]),
+        [_mechanism("[M-H]-", "im-h")],
+        [("bp-1", "Br2", "Br2H-", "im-h", ["p1"])],
+        resolution=orbitrap,
+    )
+
+    mocks["resolution"].assert_awaited_once()
+    assert [kwargs["resolution"] for kwargs in mocks["scored"]] == [orbitrap]
+    mocks["known"].assert_awaited_once()
+    assert mocks["known"].await_args.kwargs["resolution"] is orbitrap
+
+
+def _reasons(row):
+    return [
+        (reason["rule"], reason["caps"])
+        for reason in row["provenance"].get("tier_reasons", [])
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "formula, ion, capping",
+    [
+        ("Br2", "Br2H-", ["lone_peak"]),
+        ("C7H7O", "C7H6O-", ["odd_electron", "lone_peak"]),
+    ],
+    ids=["lone", "radical"],
+)
+async def test_a_reading_measured_on_a_member_is_judged_as_its_search_judges_it(
+    formula, ion, capping
+):
+    # MAS-858: the batch search reads a reading on the sample it searched, and
+    # the propagation measures it on another's member. A run of either sample
+    # finds it by searching, so both are the formula search's rows, asked the
+    # rules a run asks only of those: a reading alone on its one peak is held
+    # at candidate in both (the lone peak, and the radical for an
+    # odd-electron neutral), though its evidence bands it assigned.
+    peaks = _peaks([("p1", 160.8413, 1.0e6)])
+    mechanisms = [_mechanism("[M-H]-", "im-h")]
+
+    def finder(*args, **kwargs):
+        return pd.DataFrame([_match(160.8413, formula, ion, "[M-H]-")]), None
+
+    stack, _ = _searching(_sample(), peaks, mechanisms, finder=finder)
+    with stack:
+        (searched,), _, _ = await batch_untargeted._search_sample(
+            "si-1", {"p1"}, PeakAssignmentConfig()
+        )
+    measured, _ = await _measure(
+        _sample(), peaks, mechanisms, [("bp-1", formula, ion, "im-h", ["p1"])]
+    )
+
+    member = measured["p1"]
+    for row in (searched, member):
+        assert row["source"] == "untargeted"
+        assert row["tier"] == TIER_CANDIDATE
+        assert [rule for rule, caps in _reasons(row) if caps] == capping
+    assert _reasons(member) == _reasons(searched)
+    assert member["provenance"]["evidence"] >= PeakAssignmentConfig().assigned_threshold
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "compound, identities, detail",
+    [
+        (
+            "tc-br2",
+            None,
+            "matched from the target library, which somebody named for this data",
+        ),
+        (None, [{"name": "bromine"}], "matched from a reference list, as bromine"),
+    ],
+    ids=["target library", "reference list"],
+)
+async def test_a_member_reading_an_ion_its_lists_hold_is_that_lists_row(
+    compound, identities, detail
+):
+    # A run of the sample commits an ion its lists hold through Stage A, as
+    # that list's row, which the rules for the search's rows do not ask: the
+    # lone reading the test above holds stands at the tier its evidence bands,
+    # on the list.
+    known = pd.DataFrame(
+        [
+            {
+                "target_compound_formula": "Br2",
+                "ionization_mechanism_id": "im-h",
+                "target_compound_id": compound,
+                "reference_identities": identities,
+            }
+        ]
+    )
+    measured, _ = await _measure(
+        _sample(),
+        _peaks([("p1", 160.8413, 1.0e6)]),
+        [_mechanism("[M-H]-", "im-h")],
+        [("bp-1", "Br2", "Br2H-", "im-h", ["p1"])],
+        known=known,
+    )
+
+    row = measured["p1"]
+    assert row["source"] == "database"
+    assert row["target_compound_id"] == compound
+    assert row["tier"] == TIER_ASSIGNED
+    assert not [rule for rule, caps in _reasons(row) if caps]
+    (listed,) = [
+        reason
+        for reason in row["provenance"]["tier_reasons"]
+        if reason["rule"] == "on_a_list"
+    ]
+    assert listed["detail"] == detail
+
+
+def _claiming(claim, peak_ids):
+    """The claim stage taking ``peak_ids``, through the reagent pre-pass or the
+    artifact one, with no row of its own; None claims nothing."""
+    if claim == "reagent":
+        return patch(
+            f"{_SVC}._reagent_assignments", return_value=([], set(peak_ids), None)
+        )
+    if claim == "artifact":
+        return patch(f"{_SVC}._artifact_assignments", return_value=([], set(peak_ids)))
+    return nullcontext()
+
+
+#: A Br2H- reading and the peaks of its envelope: its monoisotopic line on p1,
+#: the 81Br line on p2 and the 81Br2 one on p3.
+_BR2_PEAKS = [
+    ("p1", 158.8450, 0.514e6),
+    ("p2", 160.8430, 1.0e6),
+    ("p3", 162.8410, 0.486e6),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("claim", ["reagent", "artifact", None])
+async def test_a_measured_reading_takes_no_line_on_a_peak_the_claim_stage_took(claim):
+    # A run elects no reading on a peak its claim stage took: Stage A drops a
+    # line that landed on one, and the search drops its row there. So a
+    # reading measured on a member whose 81Br line falls on a claimed peak
+    # stands on its monoisotopic line alone, and the lone-peak rule holds it
+    # at candidate, as it holds the search's row in the sample it searched.
+    # The claimed peak is still in the spectrum, so no line reads absent. With
+    # nothing claimed the line is the second observation in both.
+    peaks = _peaks(_BR2_PEAKS)
+    mechanisms = [_mechanism("[M-H]-", "im-h")]
+    line = {**_match(160.8430, "Br2", "Br2H-", "[M-H]-"), "isotope_label": "81Br"}
+
+    def finder(*args, **kwargs):
+        return pd.DataFrame([_match(158.8450, "Br2", "Br2H-", "[M-H]-"), line]), None
+
+    stack, _ = _searching(_sample(), peaks, mechanisms, finder=finder)
+    with stack, _claiming(claim, {"p2"}):
+        rows, _, _ = await batch_untargeted._search_sample(
+            "si-1", {"p1"}, PeakAssignmentConfig()
+        )
+    with _claiming(claim, {"p2"}):
+        measured, _ = await _measure(
+            _sample(),
+            peaks,
+            mechanisms,
+            [("bp-1", "Br2", "Br2H-", "im-h", ["p1", "p2"])],
+        )
+
+    searched = {row["sample_peak_id"]: row for row in rows}
+    capping = {}
+    for path, ledger in (("search", searched), ("measured", measured)):
+        capping[path] = [rule for rule, caps in _reasons(ledger["p1"]) if caps]
+        if claim is None:
+            assert ledger["p2"]["role"] == "iso_child"
+            assert ledger["p1"]["tier"] == TIER_ASSIGNED
+        else:
+            assert set(ledger) == {"p1"}
+            assert ledger["p1"]["tier"] == TIER_CANDIDATE
+            assert capping[path] == ["lone_peak"]
+    assert capping["measured"] == capping["search"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("claim", ["reagent", "artifact"])
+async def test_a_measured_reading_whose_ion_the_claim_stage_took_is_elected_nowhere(
+    claim,
+):
+    # Where the claim stage took a reading's monoisotopic peak, the peak is the
+    # source's and so is the envelope a run reads off it: Stage A drops the
+    # whole ion, and the search is never offered the peak. A batch decision
+    # measured there is elected on no peak, its 81Br line's included, and the
+    # member keeps what it reads.
+    with _claiming(claim, {"p1"}):
+        measured, _ = await _measure(
+            _sample(),
+            _peaks(_BR2_PEAKS),
+            [_mechanism("[M-H]-", "im-h")],
+            [("bp-1", "Br2", "Br2H-", "im-h", ["p1", "p2"])],
+        )
+
+    assert measured == {}
+
+
+@pytest.mark.asyncio
+async def test_a_pin_takes_its_members_peak_whatever_the_claim_stage_took():
+    # A person's formula takes the peak it was chosen for: a pin is measured
+    # and elected on its member's peak, and on its lines, though a pre-pass
+    # claimed them, as a pin always was.
+    from mascope_backend.api.new.peak_assignments import pipeline
+
+    with _claiming("reagent", {"p1", "p2"}):
+        measured, _ = await _measure(
+            _sample(),
+            _peaks(_BR2_PEAKS),
+            [_mechanism("[M-H]-", "im-h")],
+            [("bp-1", "Br2", "Br2H-", "im-h", ["p1", "p2"])],
+            path=pipeline.PERSONS_CHOICE,
+        )
+
+    assert measured["p1"]["assigned_formula"] == "Br2"
+    assert measured["p2"]["role"] == "iso_child"
+
+
+async def _measure_ammonium_reading(*, known):
+    """The ammonium reading of ``_search_ammonium_reading``, measured on a
+    uronium sample whose spectrum opens the channel, over a known set of
+    ``known``.
+
+    :return: The judged row on its peak, and the fake known-set read.
+    """
+    measured, mocks = await _measure(
+        _sample(polarity="+"),
+        _peaks(
+            [
+                ("p0", 100.0, 1.0e6),
+                ("p1", 138.0986, 1.0e4),
+                ("p2", 188.1281, 1.0e5),
+            ]
+        ),
+        [_mechanism("[M+H]+", "im-h"), _mechanism("[M+CH4N2O+H]+", "im-urea")],
+        [("bp-1", "C9H14O3", "C9H18NO3+", "im-nh4", ["p2"])],
+        secondary=[_mechanism("[M+NH4]+", "im-nh4")],
+        known=known,
+    )
+    return measured["p2"], mocks["known"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("listed", [True, False], ids=["listed", "unlisted"])
+async def test_a_list_naming_the_neutral_corroborates_a_measured_reading(listed):
+    # Step 3.4 as a run of the sample reads it, and as the batch search reads
+    # it (``test_a_list_naming_the_neutral_corroborates_a_batch_searchs_reading``):
+    # a reading through a secondary channel is the search's row, held at
+    # candidate unless a list the sample is read against names its neutral.
+    # The library holds the neutral through the mode's own channel only, so a
+    # run would have to search for its ammonium ion, as for any other.
+    known = pd.DataFrame(
+        {
+            "target_compound_formula": ["O3C9H14" if listed else "C9H16O3"],
+            "ionization_mechanism_id": ["im-h"],
+            "target_compound_id": ["tc-1"],
+        }
+    )
+    row, known_isotopes = await _measure_ammonium_reading(known=known)
+
+    assert row["source"] == "untargeted"
+    assert row["provenance"]["minor_channel"]["corroborated_by"] == (
+        "list" if listed else None
+    )
+    assert row["provenance"]["minor_channel"]["capped"] is not listed
+    # Read as a run reads it: the target library through the mode's own
+    # mechanisms, the reference lists through every searched one, under the
+    # context's ceiling, at the file's resolving power (none read here).
+    (call,) = known_isotopes.await_args_list
+    sample, threshold, mechanism_ids, mechanisms = call.args
+    assert sample.sample_item_id == "si-1"
+    assert threshold == 1e-4
+    assert mechanism_ids == ["im-h", "im-urea"]
+    assert [m.ionization_mechanism_id for m in mechanisms] == [
+        "im-h",
+        "im-urea",
+        "im-nh4",
+    ]
+    assert call.kwargs == {
+        "known_window": resolve_profile(
+            PeakAssignmentConfig(),
+            ["[M+H]+", "[M+CH4N2O+H]+"],
+            instrument_type="orbi",
+            polarity="+",
+        ).context.known_window,
+        "resolution": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_measured_readings_partner_gate_turns_tropylium_as_a_searchs():
+    # The search's row carries the other readings of its ion the search would
+    # have held, so the partner gate weighs them as it weighs the batch
+    # search's (``test_the_search_s_partner_gate_turns_tropylium_as_a_run_s_does``):
+    # the tropylium ion measured as protonated C7H6 reads as toluene less a
+    # hydride, which the sample shows through electron transfer.
+    measured, _ = await _measure(
+        _sample(polarity="+"),
+        _peaks(
+            [
+                ("p1", 91.0542, 1.0e6),
+                ("p2", 92.0621, 3.0e6),
+                ("p3", 202.0777, 5.0e6),
+            ]
+        ),
+        [_mechanism("[M]+.", "im-ct")],
+        [
+            ("bp-1", "C7H6", "C7H7+", "im-h", ["p1"]),
+            ("bp-2", "C7H8", "C7H8+", "im-ct", ["p2"]),
+        ],
+        secondary=[_mechanism("[M+H]+", "im-h"), _mechanism("[M-H]+", "im-hydride")],
+    )
+
+    tropylium = measured["p1"]
+    assert tropylium["assigned_formula"] == "C7H8"
+    assert tropylium["ionization_mechanism_id"] == "im-hydride"
+    assert tropylium["provenance"]["partner_gate"]["through"] == "[M-H]+"
+    # The reading it was measured as, set aside on it as the search's own.
+    (displaced,) = [
+        alternative
+        for alternative in tropylium["alternatives"]
+        if alternative["assigned_formula"] == "C7H6"
+    ]
+    assert displaced["same_ion"] is True
+    assert displaced["source"] == "untargeted"
+    assert {
+        alternative["source"] for alternative in measured["p2"]["alternatives"]
+    } == {"untargeted"}
+
+
+@pytest.mark.asyncio
+async def test_a_persons_choice_reads_no_list():
+    # A pin's rules are the spectrum's alone, which ask nothing of a list.
+    from mascope_backend.api.new.peak_assignments import pipeline
+
+    _, mocks = await _measure(
+        _sample(),
+        _peaks([("p1", 160.8413, 1.0e6)]),
+        [_mechanism("[M-H]-", "im-h")],
+        [("bp-1", "Br2", "Br2H-", "im-h", ["p1"])],
+        path=pipeline.PERSONS_CHOICE,
+    )
+
+    mocks["known"].assert_not_awaited()
+
+
+def test_a_known_set_holds_an_ion_through_the_channel_it_was_read_through():
+    # Stage A reads the target library through the mode's own channels and a
+    # reference list through every searched one: an ion is held by neutral and
+    # channel, a neutral spelled another way is the same, and the reference
+    # lists' names ride on whichever list's row holds it.
+    from mascope_backend.api.new.peak_assignments.engine import ListedIon, listed_ions
+
+    names = [{"name": "acetic acid"}]
+    benzene = [{"name": "benzene"}]
+    columns = [
+        "target_compound_formula",
+        "ionization_mechanism_id",
+        "target_compound_id",
+        "reference_identities",
+    ]
+    known = pd.DataFrame(
+        [
+            # Two compounds of one neutral in the library: the first by id.
+            ("CH3COOH", "im-h", "tc-2", None),
+            ("C2H4O2", "im-h", "tc-1", None),
+            ("C2H4O2", "im-nh4", None, names),
+            ("C2H4O2", "im-h", None, names),
+            ("C6H6", "im-ct", None, benzene),
+            (None, "im-h", "tc-3", None),
+        ],
+        columns=columns,
+    )
+
+    assert listed_ions(known) == {
+        ("C2H4O2", "im-h"): ListedIon("tc-1", names),
+        ("C2H4O2", "im-nh4"): ListedIon(None, names),
+        ("C6H6", "im-ct"): ListedIon(None, benzene),
+    }
+    # The target library's frame alone, before a reference list joins it:
+    # its ions name their compounds and no reference list's names.
+    library = pd.DataFrame(
+        [("C7H8", "im-ct", "tc-4")],
+        columns=columns[:3],
+    )
+    assert listed_ions(library) == {("C7H8", "im-ct"): ListedIon("tc-4", None)}
+    assert listed_ions(pd.DataFrame()) == {}
+    # A known set read for the neutrals it names alone holds no ion.
+    assert listed_ions(pd.DataFrame({"target_compound_formula": ["C2H4O2"]})) == {}
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("recorded", [True, False], ids=["recorded", "none"])
 async def test_the_search_s_mass_gate_judges_at_the_samples_recorded_calibration(
@@ -1485,3 +1967,33 @@ async def test_the_search_names_its_run_on_the_records_it_writes():
         await batch_untargeted.search_batch_untargeted.__wrapped__("sb-1")
 
     assert seen["batch_peak_run_id"] == "run-7"
+
+
+def test_a_judged_row_reads_an_annotation_in_its_formula_mechanism_and_role():
+    # A member takes a batch decision only where its sample's judged row on
+    # the member's peak reads the decision: the formula, through its
+    # mechanism, in the role the anchor plays. The same formula read as one
+    # of its isotope lines is another reading, whose tier is that line's.
+    annotation = Annotation(
+        formula="C6H12O6",
+        ion_formula="C6H13O6+",
+        ionization_mechanism_id="mech-h",
+        role="M0",
+        owner_batch_peak_id=None,
+    )
+    row = {
+        "assigned_formula": "C6H12O6",
+        "ionization_mechanism_id": "mech-h",
+        "role": "M0",
+    }
+
+    assert batch_untargeted.reads_annotation(row, annotation)
+    assert not batch_untargeted.reads_annotation(
+        row | {"role": "iso_child"}, annotation
+    )
+    assert not batch_untargeted.reads_annotation(
+        row | {"ionization_mechanism_id": "mech-na"}, annotation
+    )
+    assert not batch_untargeted.reads_annotation(
+        row | {"assigned_formula": "C6H10O5"}, annotation
+    )

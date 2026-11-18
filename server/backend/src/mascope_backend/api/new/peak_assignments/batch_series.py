@@ -12,8 +12,10 @@ whose proposals beat the decoys are committed (:class:`SeriesEvidence`).
 A committed proposal is a formula to measure, not an assignment. It is scored
 against every sample that holds a member of its anchor through the batch
 untargeted search's propagation chain (``batch_untargeted._propagate_to_sample``),
-so each member carries a fit of its own, tiered under the batch's bands, and a
-member whose peak the formula's envelope does not reach stays as it was. Where
+so each member carries a fit of its own and the tier a run of its sample gives
+the reading, the series' record counted as its second observation as such a
+run counts it, and a member whose peak the formula's envelope does not reach
+stays as it was. Where
 an anchor's members already read the peak another way, the proposal takes a
 member only where it measures at least as well: a homologue is a reason to
 measure a formula, not to overrule a better measured one. Where the anchor
@@ -775,6 +777,7 @@ async def run_batch_series_detection(
                     only_unassigned=False,
                     source=SOURCE_SERIES,
                     prefer_better=True,
+                    series=plan.records,
                 )
                 counts["samples_measured"] += 1
             except Exception:  # noqa: BLE001 - one bad sample must not abort the pass

@@ -55,7 +55,6 @@ from sqlalchemy import func, or_, select
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.lib.api_features import api_controller_background_task
-from mascope_backend.api.new.match.params import default_match_params
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     PERSISTENCE_KEY,
     REASON_PERSISTENCE_ONLY,
@@ -87,17 +86,18 @@ from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_REAGENT,
     SOURCE_UNTARGETED,
     evidence_for,
-    tier_for_evidence,
+    formula_identity,
     untargeted_targets,
 )
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
 from mascope_backend.api.new.peak_assignments.pipeline import (
     BATCH_SEARCH,
+    PROPAGATION,
+    AssignmentPath,
     RunContext,
     keep_search_rows,
     run_stages,
 )
-from mascope_backend.api.new.peak_assignments.seeded_scoring import score_seeds
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_CANDIDATE,
     TIER_RANK,
@@ -909,64 +909,6 @@ async def _apply_search_rows(
     return written
 
 
-@dataclass(frozen=True)
-class MeasuredReading:
-    """What measuring an identity on one member's peak gives it: the ion's fit,
-    the evidence (fit x plausibility) and the tier that evidence bands to."""
-
-    ion_id: str
-    fit: float
-    evidence: float
-    tier: str
-
-
-async def score_in_sample(
-    sample_item_id: str, seeds: set[tuple[str, str]], config: PeakAssignmentConfig
-):
-    """Score ``seeds`` against one sample's own peaks, as the propagation does.
-
-    Centred where the search's own re-score centres the searched sample: the
-    reagent lines ``config``'s profile claims. Shared by the propagation and by
-    the batch curation's preview (``batch_curation.measure_batch_peak_candidate``),
-    so a measured alternative reads what its pin then writes.
-
-    :return: :func:`seeded_scoring.score_seeds`'s four maps.
-    """
-    sample = await fetch_sample(sample_item_id)
-    match_params = await default_match_params(sample_item_id)
-    return await score_seeds(sample, seeds, match_params, config=config)
-
-
-def measured_reading(
-    annotation: Annotation,
-    sample_peak_id: str,
-    ion_by_seed: dict,
-    fit_by_ion: dict,
-    errors_by_pairing: dict,
-    config: PeakAssignmentConfig,
-) -> Optional[MeasuredReading]:
-    """The reading a member on ``sample_peak_id`` takes from a scored identity,
-    or None when the ion's envelope did not pair to that peak or has no fit.
-
-    The tier is banded off the evidence under ``config``'s thresholds, the
-    search's own bands; no tiering rule is applied, as none is when the
-    propagation writes the member.
-    """
-    ion_id = ion_by_seed.get((annotation.formula, annotation.ionization_mechanism_id))
-    if ion_id is None or (ion_id, sample_peak_id) not in errors_by_pairing:
-        return None
-    fit = fit_by_ion.get(ion_id)
-    evidence = evidence_for(fit, annotation.formula)
-    if fit is None or evidence is None:
-        return None
-    tier = tier_for_evidence(
-        evidence,
-        candidate_threshold=config.candidate_threshold,
-        assigned_threshold=config.assigned_threshold,
-    )
-    return MeasuredReading(ion_id=ion_id, fit=fit, evidence=evidence, tier=tier)
-
-
 async def _propagate_to_sample(
     sample_batch_id: str,
     sample_item_id: str,
@@ -978,16 +920,27 @@ async def _propagate_to_sample(
     skip_candidate: Optional[dict[str, int]] = None,
     displaced: Optional[list] = None,
     prefer_better: bool = False,
+    path: AssignmentPath = PROPAGATION,
+    series: Optional[dict[str, dict]] = None,
 ) -> int:
-    """Measure the annotated anchors' formulas against one other sample and
-    write the result onto its members of those anchors.
+    """Measure the annotated anchors' readings on one sample and write the
+    result onto its members of those anchors.
 
-    The seeded chain scores each (formula, mechanism) as an ion against the
-    sample's own peaks. A member whose peak the ion's envelope paired to takes
-    the ion's fit, tiered under the search's own bands; a member the envelope
-    did not reach stays unassigned. A reagent member names its ion's registry
-    entry, so it is not an unassigned member here, and the search does not
-    write over the claim. Runs outside the fold lock, writes inside.
+    The stage list's PROPAGATION path (``pipeline.py``): every stage of a run,
+    with one given reading proposed per member and the sample's recorded
+    measurement. Each annotated anchor's reading is proposed to its member as
+    a list proposes its formula to a peak, measured as an ion in one seeded
+    pass over the sample's peaks, elected as Stage A elects a list's reading,
+    read as the row a run of the sample makes of it - a list's where the
+    sample's lists hold its ion, the search's otherwise - and judged as a run
+    judges that row - the mass gate at the sample's recorded calibration, the
+    partner gate, the cross-channel pass, the tiering rules, the claims - so a
+    member takes the tier a run of its sample gives the same reading
+    (MAS-858). A member whose peak the reading's envelope did not take keeps
+    what it reads, and so does one whose reading the judging read another way.
+    A reagent member names its ion's registry entry, so it is not an
+    unassigned member here, and the search does not write over the claim.
+    Runs outside the fold lock, writes inside.
 
     The batch curation measures a pinned identity the same way, over every
     member rather than the unassigned ones (``only_unassigned=False``),
@@ -995,7 +948,9 @@ async def _propagate_to_sample(
     registry index) and archiving what each re-pointed member read before
     (``displaced``, appended to): a member the persistence rule holds at
     candidate at the tier it was measured at (``batch_peaks.measured_state``).
-    ``source`` is recorded on a registry entry this write creates.
+    ``source`` is recorded on a registry entry this write creates. A pin is a
+    person's choice (``path=pipeline.PERSONS_CHOICE``): its reading is asked
+    the spectrum's rules alone, as a hand assignment on a sample's row is.
 
     The series detection measures its proposals over every member too, and
     with ``prefer_better``: a member that already reads its peak another way
@@ -1003,29 +958,132 @@ async def _propagate_to_sample(
     own, one that already reads the same formula is left as it is, and one a
     pre-pass claimed or read as another peak's isotope line is not touched. A
     homologue is a reason to measure a formula, not to overrule a better
-    measured reading.
+    measured reading. It hands over its records (``series``, anchor id -> the
+    record of the series that proposed the reading): a member's row that reads
+    its anchor's proposal carries the record, as a run of the sample reads it
+    off the batch once the anchor's consensus names the formula
+    (``service.stamp_series``), since the series is the second observation a
+    proposal rests on. While the proposals are measured the batch serves no
+    reader the record yet (``batch_peaks.standing_series_record``).
 
     :return: How many members were assigned.
     """
-    seeds = {
-        (a.formula, a.ionization_mechanism_id)
-        for a in annotations.values()
-        if a.formula and a.ionization_mechanism_id
-    }
-    if not seeds:
-        return 0
-    ion_by_seed, fit_by_ion, errors_by_pairing, _ = await score_in_sample(
-        sample_item_id, seeds, config
-    )
-    if not ion_by_seed:
-        return 0
-
     conditions = [
         BatchPeakOccurrence.sample_item_id == sample_item_id,
         BatchPeakOccurrence.batch_peak_id.in_(list(annotations)),
     ]
     if only_unassigned:
         conditions.append(BatchPeakOccurrence.candidate.is_(None))
+    async with async_session() as session:
+        held = (
+            await session.execute(
+                select(
+                    BatchPeakOccurrence.batch_peak_id,
+                    BatchPeakOccurrence.sample_peak_id,
+                ).where(*conditions)
+            )
+        ).all()
+    held_anchors = {anchor for anchor, _ in held}
+    given = {
+        anchor: annotation
+        for anchor, annotation in annotations.items()
+        if anchor in held_anchors
+        and annotation.formula
+        and annotation.ionization_mechanism_id
+    }
+    if not given:
+        return 0
+    records = series or {}
+
+    async def keep(ctx: RunContext) -> int:
+        return await _write_measured_members(
+            sample_batch_id,
+            sample_item_id,
+            given,
+            ctx.judged.rows,
+            conditions,
+            source=source,
+            skip_candidate=skip_candidate,
+            displaced=displaced,
+            prefer_better=prefer_better,
+        )
+
+    ctx = await run_stages(
+        RunContext(
+            path=path,
+            sample=await fetch_sample(sample_item_id),
+            config=config,
+            run_id=fold_run_id(sample_item_id),
+            keep=keep,
+            given=given,
+            series_by_peak={
+                str(peak): records[anchor] for anchor, peak in held if anchor in records
+            },
+        )
+    )
+    return ctx.result
+
+
+async def measure_on_sample(
+    sample_item_id: str,
+    annotations: dict[str, Annotation],
+    config: PeakAssignmentConfig,
+    path: AssignmentPath,
+) -> RunContext:
+    """Run a path's stages for annotated readings on one sample and keep
+    nothing: what a propagation or a pin would write there, read back off the
+    judged ledger (``batch_curation.measure_batch_peak_candidate``).
+
+    :return: The pass, its judged rows on :attr:`RunContext.judged`.
+    """
+
+    async def keep(ctx: RunContext) -> RunContext:
+        return ctx
+
+    return await run_stages(
+        RunContext(
+            path=path,
+            sample=await fetch_sample(sample_item_id),
+            config=config,
+            run_id=fold_run_id(sample_item_id),
+            keep=keep,
+            given=annotations,
+        )
+    )
+
+
+def reads_annotation(row: dict, annotation: Annotation) -> bool:
+    """Whether a judged row reads an annotated anchor's reading: its formula,
+    through its mechanism, in its role."""
+    return (
+        formula_identity(row.get("assigned_formula"))
+        == formula_identity(annotation.formula)
+        and str(row.get("ionization_mechanism_id"))
+        == str(annotation.ionization_mechanism_id)
+        and row.get("role") == annotation.role
+    )
+
+
+async def _write_measured_members(
+    sample_batch_id: str,
+    sample_item_id: str,
+    annotations: dict[str, Annotation],
+    rows: list[dict],
+    conditions: list,
+    *,
+    source: str,
+    skip_candidate: Optional[dict[str, int]],
+    displaced: Optional[list],
+    prefer_better: bool,
+) -> int:
+    """Write the propagation's judged rows onto the sample's members, under the
+    batch's fold lock: each member whose peak the judged ledger reads as its
+    anchor's reading takes it, at the judged tier
+    (:func:`_propagate_to_sample` says which members are written).
+
+    :return: How many members were assigned.
+    """
+    by_peak = {str(row["sample_peak_id"]): row for row in rows}
     assigned = 0
     async with async_session() as session:
         await _acquire_batch_fold_lock(session, sample_batch_id)
@@ -1049,27 +1107,25 @@ async def _propagate_to_sample(
             .all()
         }
         for member in members:
-            annotation = annotations[member.batch_peak_id]
+            annotation = annotations.get(member.batch_peak_id)
+            if annotation is None:
+                continue
             if (
                 skip_candidate
                 and skip_candidate.get(member.batch_peak_id) == member.candidate
             ):
                 continue
-            reading = measured_reading(
-                annotation,
-                member.sample_peak_id,
-                ion_by_seed,
-                fit_by_ion,
-                errors_by_pairing,
-                config,
-            )
-            if reading is None:
-                continue
-            if prefer_better and not _takes_the_member(
-                member, anchors[member.batch_peak_id], annotation, reading.evidence
-            ):
+            row = by_peak.get(str(member.sample_peak_id))
+            if row is None or not reads_annotation(row, annotation):
                 continue
             anchor = anchors[member.batch_peak_id]
+            if prefer_better and not _takes_the_member(
+                member,
+                anchor,
+                annotation,
+                evidence_for(row.get("fit_score"), annotation.formula) or 0.0,
+            ):
+                continue
             if displaced is not None:
                 displaced.append(measured_state(member, anchor))
             registry = list(anchor.candidates or [])
@@ -1083,8 +1139,8 @@ async def _propagate_to_sample(
             if len(registry) != len(anchor.candidates or []):
                 anchor.candidates = registry
             member.candidate = index
-            member.tier = tier_code(reading.tier)
-            member.fit_score = reading.fit
+            member.tier = tier_code(row["tier"])
+            member.fit_score = row.get("fit_score")
             member.role = role_code(annotation.role)
             member.owner_batch_peak_id = annotation.owner_batch_peak_id
             member.p_correct = None

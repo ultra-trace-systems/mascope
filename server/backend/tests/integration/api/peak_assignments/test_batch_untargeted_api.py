@@ -19,6 +19,7 @@ import pandas as pd
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
+from stage_stubs import stub_seeded_scorer  # the tests root, on sys.path
 
 from mascope_backend.api.new.peak_assignments import (
     batch_peaks_controller,
@@ -280,6 +281,7 @@ def _stub_engine(monkeypatch, samples, peaks, matches, pairings):
         "seeded_offsets": [],
         "seeded_tolerances": [],
         "score_configs": [],
+        "propagation_offsets": [],
     }
 
     def load_peaks(sample):
@@ -339,10 +341,16 @@ def _stub_engine(monkeypatch, samples, peaks, matches, pairings):
     monkeypatch.setattr(service, "fetch_sample_mechanisms", mechanisms)
     monkeypatch.setattr(service, "_untargeted_ionization_notations", notations)
     monkeypatch.setattr(pipeline, "default_match_params", match_params)
-    monkeypatch.setattr(batch_untargeted, "default_match_params", match_params)
-    monkeypatch.setattr(batch_untargeted, "score_seeds", seeded)
     monkeypatch.setattr(service, "_seeded_rescore", _rescored(seeded_fits))
     monkeypatch.setattr(service, "_resolution_of", resolution_of)
+    # The propagation measures the readings through the stage list, whose
+    # election reads the scored frame a seeded pass gives.
+    stub_seeded_scorer(
+        monkeypatch,
+        seeded,
+        lambda sample_item_id: _frame(peaks[by_id[sample_item_id]]),
+        offsets=calls["propagation_offsets"],
+    )
     return calls
 
 
@@ -507,13 +515,13 @@ async def test_the_searched_sample_is_re_scored_at_its_reagent_lines_offset(
     assert offset.mu_ppm == pytest.approx(-1.3, abs=1e-6)
 
     # The propagation of the same run measures the other sample under the
-    # search's own configuration, so it resolves the same lines to the same
-    # offset rather than the auto profile, whose mechanisms name no reagent.
-    propagated = stubbed_engine["score_configs"]
+    # search's own configuration: its claim stage claims the same lines under
+    # the search's profile, rather than the auto profile, whose mechanisms
+    # name no reagent, and measures at the offset they give.
+    propagated = stubbed_engine["propagation_offsets"]
     assert propagated
-    for sample, config in propagated:
-        assert config.profile == "UR"
-        assert await service.sample_reagent_offset(sample, config) == offset
+    for _sample, centre in propagated:
+        assert centre == offset
     assert await service.sample_reagent_offset(propagated[0][0]) is None
 
 
@@ -600,19 +608,20 @@ async def test_a_sample_with_a_run_is_re_scored_where_that_run_scored(
     [offset] = stubbed_engine["seeded_offsets"]
     assert offset == service.ReagentOffset(mu_ppm=-0.05, lines=12, beyond_width=True)
 
-    # The other sample has no run, so its propagation claims its lines under
-    # the search's configuration; once a run records a centre, that is read.
-    sample, config = next(
-        (sample, config)
-        for sample, config in stubbed_engine["score_configs"]
+    # The other sample has no run, so its propagation measures at the lines
+    # its claim stage claims under the search's configuration; once a run
+    # records a centre, that is what a reader outside a run takes.
+    sample, claimed = next(
+        (sample, centre)
+        for sample, centre in stubbed_engine["propagation_offsets"]
         if sample.sample_item_id == samples["S2"]
     )
-    claimed = await service.sample_reagent_offset(sample, config)
     assert (claimed.lines, claimed.beyond_width) == (3, True)
     assert claimed.mu_ppm == pytest.approx(-1.3, abs=1e-6)
     await _record_run(
         async_session_factory, samples["S2"], "completed", 1, _scoring(0.0, "none")
     )
+    config = PeakAssignmentConfig(profile="UR")
     assert await service.sample_reagent_offset(sample, config) is None
 
 
@@ -753,6 +762,30 @@ async def test_a_sample_with_a_run_is_searched_at_that_runs_line_tolerance(
     assert stubbed_engine["seeded_tolerances"] == [expected]
 
 
+async def test_the_propagation_runs_every_stage_of_the_list(
+    folded_batch, stubbed_engine, monkeypatch
+):
+    # Each sample's members are measured by the stage list's PROPAGATION path:
+    # the run's stages with one given reading proposed per member, judged by
+    # the run's rules.
+    passes = []
+    run_stages = pipeline.run_stages
+
+    async def recording(ctx):
+        passes.append(ctx)
+        return await run_stages(ctx)
+
+    monkeypatch.setattr(batch_untargeted, "run_stages", recording)
+    await run_batch_untargeted_search(folded_batch["batch_id"], PeakAssignmentConfig())
+
+    propagated = [ctx for ctx in passes if ctx.path is pipeline.PROPAGATION]
+    assert [ctx.sample.sample_item_id for ctx in propagated] == [
+        folded_batch["samples"]["S2"]
+    ]
+    assert propagated[0].ran == list(pipeline.STAGES)
+    assert propagated[0].path.rules is pipeline.Rules.RUN
+
+
 async def test_the_other_sample_is_measured_and_takes_a_fit_of_its_own(
     async_session_factory, folded_batch, stubbed_engine
 ):
@@ -760,10 +793,11 @@ async def test_the_other_sample_is_measured_and_takes_a_fit_of_its_own(
     counts = await run_batch_untargeted_search(batch_id, PeakAssignmentConfig())
 
     # Both samples hold members of the annotated anchors; S1's were written by
-    # the search itself, so S2 is the one the seeded chain measured.
+    # the search itself, so S2 is the one the seeded chain measured: S1 holds
+    # no unassigned member to propose a reading to.
     assert counts["samples_rescored"] == 2
     scored = [name for name, _ in stubbed_engine["score"]]
-    assert sorted(scored) == ["S1", "S2"]
+    assert scored == ["S2"]
     assert all(seeds == {("C6H12O6", "mech-h")} for _, seeds in stubbed_engine["score"])
     assert counts["members_propagated"] == 2  # S2's p1 and p2; p3 unreached
 
@@ -836,12 +870,12 @@ async def test_a_sample_that_cannot_be_measured_is_skipped_and_the_pass_finishes
     measured, and the deferred consensus pass still runs over every anchor the
     search set out from, so the anchors describe the members they now have."""
     batch_id, samples = folded_batch["batch_id"], folded_batch["samples"]
-    scorer = batch_untargeted.score_seeds  # the fixture's canned pairing
+    scorer = pipeline.score_seeds  # the fixture's canned pairing
 
-    async def failing(sample, seeds, params, *, config=None):
+    async def failing(sample, seeds, params, **kwargs):
         if sample.sample_item_id == samples["S2"]:
             raise FileNotFoundError("S2's peak file has moved")
-        return await scorer(sample, seeds, params)
+        return await scorer(sample, seeds, params, **kwargs)
 
     recomputed = []
     recompute = batch_untargeted.recompute_batch_consensus
@@ -850,7 +884,7 @@ async def test_a_sample_that_cannot_be_measured_is_skipped_and_the_pass_finishes
         recomputed.append(set(batch_peak_ids))
         return await recompute(sample_batch_id, batch_peak_ids)
 
-    monkeypatch.setattr(batch_untargeted, "score_seeds", failing)
+    monkeypatch.setattr(pipeline, "score_seeds", failing)
     monkeypatch.setattr(batch_untargeted, "recompute_batch_consensus", recording)
 
     counts = await run_batch_untargeted_search(batch_id, PeakAssignmentConfig())
@@ -1158,11 +1192,12 @@ async def test_a_reading_elected_on_persistence_alone_is_held_at_candidate(
     s2 = await _members(async_session_factory, samples["S2"])
     assert s2["pf"].fit_score == pytest.approx(0.86)
     assert tier_name(s2["pf"].tier) == "candidate"
-    held = faint.provenance[PERSISTENCE_KEY]["held_members"]
-    # S1 holds the representative its search read, which the run's tiering
-    # rules already hold at candidate - it stands on its one peak - so the
-    # persistence rule finds nothing of it to hold.
-    assert set(held) == set(samples.values()) - {samples["S12"], samples["S1"]}
+    # Every member reads a lone faint line, which the rules a run of its
+    # sample asks of the search's reading already hold at candidate, in the
+    # searched sample and in the measured ones alike: it stands on its one
+    # peak, and its 13C line is not there (the lone-peak and absent-line
+    # rules). So the persistence rule finds no member of it to hold.
+    assert "held_members" not in faint.provenance[PERSISTENCE_KEY]
     assert faint.consensus_tier == "candidate"
     assert _reason_rules(faint) == ["persistence_only"]
     (reason,) = faint.provenance[TIER_REASONS_KEY]
@@ -1286,14 +1321,18 @@ async def test_its_13c_line_in_a_sample_lifts_it(
     anchors = await _anchors_by_mz(async_session_factory, batch_id)
     faint = anchors[150]
     assert anchors[151].isotopologue_of == faint.batch_peak_id
-    assert faint.consensus_tier == "assigned"
+    # The line lifts the persistence rule's cap. What the batch peak stands
+    # at is then its members': each a lone faint reading, which a run of its
+    # sample holds at candidate (the lone-peak and absent-line rules), so it
+    # stays there.
+    assert faint.consensus_tier == "candidate"
     assert _reason_rules(faint) == ["second_line"]
     # The admission stays on the record whatever lifts the cap; the members
     # it held are back at the tier they were measured at.
     assert faint.provenance[PERSISTENCE_KEY]["formula"] == "C9H11NO"
     assert "held_members" not in faint.provenance[PERSISTENCE_KEY]
     s2 = await _members(async_session_factory, persistence_batch["samples"]["S2"])
-    assert tier_name(s2["pf"].tier) == "assigned"
+    assert tier_name(s2["pf"].tier) == "candidate"
 
 
 async def _sodium_mechanism(session_factory):
@@ -1328,7 +1367,10 @@ async def test_the_same_neutral_through_another_channel_lifts_it(
 
     anchors = await _anchors_by_mz(async_session_factory, batch_id)
     assert anchors[172].consensus_formula == "C9H11NO"
-    assert anchors[150].consensus_tier == "assigned"
+    # Lifted off the persistence rule's cap, and held at candidate by its
+    # members' own lone-peak and absent-line rules
+    # (``test_its_13c_line_in_a_sample_lifts_it``).
+    assert anchors[150].consensus_tier == "candidate"
     assert _reason_rules(anchors[150]) == ["corroborated"]
 
 
@@ -1338,10 +1380,10 @@ async def test_a_pin_and_its_release_leave_the_hold_for_a_lift_to_take(
     batch_id, samples = persistence_batch["batch_id"], persistence_batch["samples"]
     await _search_persistence(persistence_batch)
     faint = (await _anchors_by_mz(async_session_factory, batch_id))[150]
-    held = set(faint.provenance[PERSISTENCE_KEY]["held_members"])
-    # Its searched representative's is held by the run's rules already
+    # Every member is held at candidate by its own sample's rules already
     # (``test_a_reading_elected_on_persistence_alone_is_held_at_candidate``).
-    assert held == set(samples.values()) - {samples["S12"], samples["S1"]}
+    assert "held_members" not in faint.provenance[PERSISTENCE_KEY]
+    members = set(samples.values()) - {samples["S12"]}
     # Another reading of the peak in its registry, one a sample once carried.
     async with async_session_factory() as session:
         anchor = await session.get(BatchPeak, faint.batch_peak_id)
@@ -1350,7 +1392,8 @@ async def test_a_pin_and_its_release_leave_the_hold_for_a_lift_to_take(
         anchor.candidates = registry
         await session.commit()
     # The pin measures it in each sample, where its envelope reaches the
-    # faint peak, and re-points every member.
+    # faint peak, and re-points every member: a person's choice, asked the
+    # spectrum's rules alone, which ask no line where no run recorded a gate.
     _stub_engine(
         monkeypatch,
         samples,
@@ -1361,22 +1404,19 @@ async def test_a_pin_and_its_release_leave_the_hold_for_a_lift_to_take(
     counts = await run_batch_peak_curation(
         batch_id, faint.batch_peak_id, other, "C9H11NO", PeakAssignmentConfig()
     )
-    # Every member re-pointed, the searched representative's with the rest.
-    assert counts["members_repointed"] == len(held) + 1
+    assert counts["members_repointed"] == len(members)
     pinned = (await _anchors_by_mz(async_session_factory, batch_id))[150]
     assert pinned.consensus_formula == "C8H11N3"
     assert "held_members" not in pinned.provenance[PERSISTENCE_KEY]
-    # What the pin archives is each member's measurement, not the hold, which
-    # went with the pin's recompute: assigned where the hold held it, and the
-    # tier the run's rules held the representative's at.
+    s2 = await _members(async_session_factory, samples["S2"])
+    assert tier_name(s2["pf"].tier) == "assigned"
+    # What the pin archives is each member's measurement: the tier its own
+    # sample's rules held it at.
     archived = {
         state["sample_item_id"]: tier_name(state["tier"])
         for state in pinned.provenance["manual"]["displaced_members"]
     }
-    assert archived == {
-        **dict.fromkeys(held, "assigned"),
-        samples["S1"]: "candidate",
-    }
+    assert archived == dict.fromkeys(members, "candidate")
 
     # Released, the elected reading is held again, its members with it.
     await release_batch_peak_curation(batch_id, faint.batch_peak_id)
@@ -1384,19 +1424,19 @@ async def test_a_pin_and_its_release_leave_the_hold_for_a_lift_to_take(
     assert released.consensus_formula == "C9H11NO"
     assert released.consensus_tier == "candidate"
     assert _reason_rules(released) == ["persistence_only"]
-    assert set(released.provenance[PERSISTENCE_KEY]["held_members"]) == held
     s2 = await _members(async_session_factory, samples["S2"])
     assert tier_name(s2["pf"].tier) == "candidate"
 
-    # And a second channel lifts it, the members it held too.
+    # And a second channel lifts the persistence rule's cap; its members'
+    # own rules still hold the batch peak at candidate.
     await _sodium_mechanism(async_session_factory)
     await _add_sample(async_session_factory, batch_id, "S13", _sodiated_rows)
     lifted = (await _anchors_by_mz(async_session_factory, batch_id))[150]
-    assert lifted.consensus_tier == "assigned"
+    assert lifted.consensus_tier == "candidate"
     assert _reason_rules(lifted) == ["corroborated"]
     assert "held_members" not in lifted.provenance[PERSISTENCE_KEY]
     s2 = await _members(async_session_factory, samples["S2"])
-    assert tier_name(s2["pf"].tier) == "assigned"
+    assert tier_name(s2["pf"].tier) == "candidate"
 
 
 async def test_a_reading_the_vote_puts_below_candidate_is_not_counted_held(
@@ -1459,7 +1499,7 @@ async def test_a_channel_in_a_later_chunk_lifts_it_in_the_same_pass(
 
     anchors = await _anchors_by_mz(async_session_factory, batch_id)
     assert anchors[150].batch_peak_id < anchors[172].batch_peak_id
-    assert anchors[150].consensus_tier == "assigned"
+    assert anchors[150].consensus_tier == "candidate"
     assert _reason_rules(anchors[150]) == ["corroborated"]
 
 
@@ -1486,7 +1526,7 @@ async def test_a_series_of_the_batch_anchoring_it_lifts_it(
     await recompute_batch_consensus(batch_id, {faint_id})
 
     faint = (await _anchors_by_mz(async_session_factory, batch_id))[150]
-    assert faint.consensus_tier == "assigned"
+    assert faint.consensus_tier == "candidate"
     assert _reason_rules(faint) == ["series_anchor"]
 
 
@@ -1649,7 +1689,9 @@ async def test_a_batch_peak_a_later_search_takes_on_its_height_loses_the_record(
     await run_batch_untargeted_search(batch["batch_id"], PeakAssignmentConfig())
     faint = (await _anchors_by_mz(async_session_factory, batch["batch_id"]))[150]
     assert PERSISTENCE_KEY not in (faint.provenance or {})
-    assert faint.consensus_tier == "assigned"
+    # No persistence rule holds it; its members' own rules do, each a lone
+    # faint line in its sample.
+    assert faint.consensus_tier == "candidate"
     assert _reason_rules(faint) == []
 
 

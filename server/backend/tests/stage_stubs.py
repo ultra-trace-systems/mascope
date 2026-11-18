@@ -1,0 +1,168 @@
+"""Stand-ins for what the stage list reads of a sample, for the tests of the
+batch passes that measure a decision on a sample's members: the batch search's
+propagation, the series detection, a pin and an import
+(``pipeline.PROPAGATION``). The integration tests drive whole passes over the
+test database with them; the unit tests measure one reading.
+
+The stage list resolves each member's sample as a run does, so these stand in
+for its peaks and its mechanisms, and for the seeded scorer, whose canned
+pairings are turned into the scored frame Stage A's election reads
+(``engine.invert_matches_to_peak_assignments``). Everything between them is
+the stage list's own: the election, the judging and the level.
+"""
+
+from collections.abc import Callable
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pandas as pd
+
+from mascope_backend.api.new.peak_assignments import pipeline, service
+from mascope_tools.composition.heuristic_filter import element_counts
+from mascope_tools.composition.utils import to_hill_order
+
+
+def mechanism(notation: str, mechanism_id: str) -> SimpleNamespace:
+    """A mechanism row as the service reads one."""
+    return SimpleNamespace(
+        ionization_mechanism=notation,
+        ionization_mechanism_id=mechanism_id,
+        ionization_mechanism_polarity=notation[-1],
+    )
+
+
+def frame(peaks) -> pd.DataFrame:
+    """A peak list from ``(sample_peak_id, mz, intensity)`` triples."""
+    return pd.DataFrame(
+        [
+            {"sample_peak_id": peak, "mz": mz, "intensity": intensity}
+            for peak, mz, intensity in peaks
+        ]
+    )
+
+
+def protonated(formula: str) -> str:
+    """The ``[M+H]+`` ion of a neutral, as the matcher names it."""
+    counts = dict(element_counts(formula))
+    counts["H"] = counts.get("H", 0) + 1
+    return f"{to_hill_order(counts)}+"
+
+
+def stub_sample_reads(
+    monkeypatch,
+    peaks_of: Callable[[str], pd.DataFrame],
+    mechanisms,
+) -> None:
+    """The sample's peaks (``peaks_of(sample_item_id)``) and its mode's
+    mechanisms; no secondary channel the deployment holds, no resolving power
+    and no ion current read. Its batch's records, its setup and its named
+    context are read from the test database, which holds none of them."""
+    rows = list(mechanisms)
+    monkeypatch.setattr(
+        service, "load_sample_peaks", lambda sample: peaks_of(sample.sample_item_id)
+    )
+    monkeypatch.setattr(
+        service,
+        "fetch_sample_mechanisms",
+        AsyncMock(return_value=([m.ionization_mechanism_id for m in rows], rows)),
+    )
+    monkeypatch.setattr(
+        service, "fetch_mechanisms_by_notation", AsyncMock(return_value=[])
+    )
+    monkeypatch.setattr(service, "_resolution_of", AsyncMock(return_value=None))
+    monkeypatch.setattr(service, "_source_line_cap", AsyncMock(return_value=None))
+
+
+def seeded_frame(
+    ion_by_seed: dict,
+    fit_by_ion: dict,
+    errors: dict,
+    peaks: pd.DataFrame,
+    ion_formula: Callable[[str, str], str],
+) -> pd.DataFrame:
+    """The scored frame a seeded pass gives for canned pairings: each seed's
+    ion a line on every peak of ``peaks`` it paired to, the lightest its
+    monoisotopic one, all at the ion's canned fit.
+
+    :param ion_formula: The ion a seed's formula makes through its mechanism.
+    """
+    by_peak = {str(row.sample_peak_id): row for row in peaks.itertuples(index=False)}
+    rows = []
+    for (formula, mechanism_id), ion in ion_by_seed.items():
+        fit = fit_by_ion.get(ion)
+        if fit is None:
+            continue
+        paired = sorted(
+            (peak for ion_id, peak in errors if ion_id == ion and peak in by_peak),
+            key=lambda peak: by_peak[peak].mz,
+        )
+        for index, peak in enumerate(paired):
+            observed = by_peak[peak]
+            error = errors[(ion, peak)]
+            rows.append(
+                {
+                    "target_isotope_id": f"{ion}#{index}",
+                    "target_ion_id": ion,
+                    "target_isotope_formula": None,
+                    "mz": float(observed.mz),
+                    "relative_abundance": 1.0 if index == 0 else 0.1,
+                    "resolution": "HIGH",
+                    "target_ion_formula": ion_formula(formula, mechanism_id),
+                    "ionization_mechanism_id": mechanism_id,
+                    "ionization_mechanism": None,
+                    "target_compound_id": None,
+                    "target_compound_formula": formula,
+                    "sample_peak_id": peak,
+                    "sample_peak_mz": float(observed.mz),
+                    "sample_peak_intensity": float(observed.intensity),
+                    "sample_peak_tof": None,
+                    "match_score": float(fit),
+                    "match_mz_error": error.get("mz_error_ppm"),
+                    "match_abundance_error": error.get("abundance_error", 0.0),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def stub_seeded_scorer(
+    monkeypatch,
+    seeded,
+    peaks_of: Callable[[str], pd.DataFrame],
+    ion_formula: Callable[[str, str], str] = lambda formula, _mech: protonated(formula),
+    offsets: list | None = None,
+) -> None:
+    """The seeded scorer the stage list measures a given reading with, from a
+    stand-in ``seeded(sample, seeds, params)`` that gives canned pairings: the
+    frame Stage A's election reads is built from them (:func:`seeded_frame`).
+
+    :param offsets: Where each measurement's centre is appended, if given.
+    """
+
+    async def score(sample, seeds, params, **kwargs):
+        if offsets is not None:
+            offsets.append((sample, kwargs.get("reagent_offset")))
+        ion_by_seed, fit_by_ion, errors, _ = await seeded(sample, seeds, params)
+        return (
+            ion_by_seed,
+            fit_by_ion,
+            errors,
+            seeded_frame(
+                ion_by_seed,
+                fit_by_ion,
+                errors,
+                peaks_of(sample.sample_item_id),
+                ion_formula,
+            ),
+        )
+
+    monkeypatch.setattr(pipeline, "score_seeds", score)
+
+
+__all__ = [
+    "frame",
+    "mechanism",
+    "protonated",
+    "seeded_frame",
+    "stub_sample_reads",
+    "stub_seeded_scorer",
+]

@@ -17,10 +17,16 @@ import pytest
 import pytest_asyncio
 from pydantic import ValidationError
 from sqlalchemy import select
+from stage_stubs import (  # the tests root, on sys.path
+    frame,
+    mechanism,
+    stub_sample_reads,
+    stub_seeded_scorer,
+)
 
 from mascope_backend.api.new.peak_assignments import (
     batch_import,
-    batch_untargeted,
+    pipeline,
 )
 from mascope_backend.api.new.peak_assignments.batch_import import (
     REASON_CURATED,
@@ -172,7 +178,7 @@ def stubbed_scorer(monkeypatch):
     calls = []
 
     async def match_params(sample_item_id):
-        return SimpleNamespace(isotope_abundance_threshold=0.01)
+        return SimpleNamespace(isotope_abundance_threshold=0.01, mz_tolerance=5.0)
 
     async def seeded(sample, seeds, params, *, config=None):
         calls.append((sample.sample_item_id, set(seeds)))
@@ -184,9 +190,20 @@ def stubbed_scorer(monkeypatch):
         }
         return ion_by_seed, fit_by_ion, errors, pd.DataFrame({"x": [1]})
 
-    monkeypatch.setattr(batch_untargeted, "default_match_params", match_params)
-    monkeypatch.setattr(batch_untargeted, "score_seeds", seeded)
+    _stub_reads(monkeypatch, match_params)
+    stub_seeded_scorer(monkeypatch, seeded, _peaks_of)
     return calls
+
+
+def _peaks_of(sample_item_id):
+    """Each sample's peaks: both hold the same three m/z."""
+    return frame(_PEAKS["S1"])
+
+
+def _stub_reads(monkeypatch, match_params):
+    """What the stage list reads of each sample (``stage_stubs``)."""
+    stub_sample_reads(monkeypatch, _peaks_of, [mechanism("[M+H]+", "mech-h")])
+    monkeypatch.setattr(pipeline, "default_match_params", match_params)
 
 
 def _rows(*specs):
@@ -439,12 +456,12 @@ async def test_a_sample_that_cannot_be_measured_is_skipped_and_the_rest_are_meas
     already matched their anchors, the other samples are measured against them,
     and the deferred consensus pass runs over the matched anchors."""
     batch_id, samples = folded_batch["batch_id"], folded_batch["samples"]
-    scorer = batch_untargeted.score_seeds  # the fixture's canned pairing
+    scorer = pipeline.score_seeds  # the fixture's canned pairing
 
-    async def failing(sample, seeds, params, *, config=None):
+    async def failing(sample, seeds, params, **kwargs):
         if sample.sample_item_id == samples["S2"]:
             raise FileNotFoundError("S2's peak file has moved")
-        return await scorer(sample, seeds, params)
+        return await scorer(sample, seeds, params, **kwargs)
 
     recomputed = []
     recompute = batch_import.recompute_batch_consensus
@@ -453,7 +470,7 @@ async def test_a_sample_that_cannot_be_measured_is_skipped_and_the_rest_are_meas
         recomputed.append(set(batch_peak_ids))
         return await recompute(sample_batch_id, batch_peak_ids)
 
-    monkeypatch.setattr(batch_untargeted, "score_seeds", failing)
+    monkeypatch.setattr(pipeline, "score_seeds", failing)
     monkeypatch.setattr(batch_import, "recompute_batch_consensus", recording)
 
     counts = await run_batch_import(
@@ -488,9 +505,9 @@ async def test_a_cancellation_mid_import_still_recomputes_and_stays_a_cancellati
     out - and a failure there is logged rather than allowed to replace the
     cancellation, which has to reach the caller as what it is."""
     batch_id, samples = folded_batch["batch_id"], folded_batch["samples"]
-    scorer = batch_untargeted.score_seeds
+    scorer = pipeline.score_seeds
 
-    async def cancelled(sample, seeds, params, *, config=None):
+    async def cancelled(sample, seeds, params, **kwargs):
         if sample.sample_item_id == samples["S2"]:
             raise asyncio.CancelledError()
         return await scorer(sample, seeds, params)
@@ -504,7 +521,7 @@ async def test_a_cancellation_mid_import_still_recomputes_and_stays_a_cancellati
             raise RuntimeError("the database went away")
         return await recompute(sample_batch_id, batch_peak_ids)
 
-    monkeypatch.setattr(batch_untargeted, "score_seeds", cancelled)
+    monkeypatch.setattr(pipeline, "score_seeds", cancelled)
     monkeypatch.setattr(batch_import, "recompute_batch_consensus", recording)
 
     with pytest.raises(asyncio.CancelledError):
@@ -525,7 +542,7 @@ def two_identity_scorer(monkeypatch):
     envelope reaches the 250 of every sample, so two anchors can land."""
 
     async def match_params(sample_item_id):
-        return SimpleNamespace(isotope_abundance_threshold=0.01)
+        return SimpleNamespace(isotope_abundance_threshold=0.01, mz_tolerance=5.0)
 
     async def seeded(sample, seeds, params, *, config=None):
         ion_by_seed = {
@@ -539,8 +556,8 @@ def two_identity_scorer(monkeypatch):
         }
         return ion_by_seed, fit_by_ion, errors, pd.DataFrame({"x": [1]})
 
-    monkeypatch.setattr(batch_untargeted, "default_match_params", match_params)
-    monkeypatch.setattr(batch_untargeted, "score_seeds", seeded)
+    _stub_reads(monkeypatch, match_params)
+    stub_seeded_scorer(monkeypatch, seeded, _peaks_of)
 
 
 def _verdict_rows(*specs):

@@ -356,70 +356,137 @@ ENTRY = {
 }
 
 
-def _scored(pairing, fit=0.81, lines=None):
-    """``score_in_sample``'s four maps for one ion, ``ion-x``."""
+#: The sample's peaks a measured candidate pairs to: its M0 and its M+1.
+PEAKS = pd.DataFrame(
+    [
+        {"sample_peak_id": "p1", "mz": 211.0812, "intensity": 1.0e5},
+        {"sample_peak_id": "p2", "mz": 212.0846, "intensity": 8.0e3},
+        {"sample_peak_id": "p7", "mz": 300.0, "intensity": 1.0e3},
+    ]
+)
+
+
+def _line(ion, mz, share, peak, isotope, ion_formula, error, formula, fit):
+    observed = PEAKS.set_index("sample_peak_id")
+    return {
+        "target_isotope_id": f"{ion}-{isotope}",
+        "target_ion_id": ion,
+        "mz": mz,
+        "relative_abundance": share,
+        "resolution": "HIGH",
+        "sample_peak_id": peak,
+        "sample_peak_mz": None if peak is None else observed.loc[peak, "mz"],
+        "sample_peak_intensity": 0.0
+        if peak is None
+        else observed.loc[peak, "intensity"],
+        "sample_peak_tof": None,
+        "target_isotope_formula": isotope,
+        "target_ion_formula": ion_formula,
+        "target_compound_formula": formula,
+        "target_compound_id": None,
+        "ionization_mechanism_id": "mH",
+        "ionization_mechanism": None,
+        "match_score": fit,
+        "match_mz_error": error,
+        "match_abundance_error": None if peak is None else 0.02,
+    }
+
+
+def _scored(pairing, fit=0.81):
+    """What the seeded scorer gives for one ion, ``ion-x``: its maps, and the
+    scored frame its M0 line paired to ``p1`` and its M+1 to ``p2`` in, beside
+    another seed's ion on ``p1`` whose lines are none of this identity's."""
     frame = pd.DataFrame(
-        lines
-        if lines is not None
-        else [
-            {
-                "target_ion_id": "ion-x",
-                "mz": 211.0812,
-                "relative_abundance": 0.9,
-                "sample_peak_id": "p1",
-                "target_isotope_formula": "C7H15O7",
-                "target_ion_formula": "C7H15O7+",
-                "match_mz_error": 0.9,
-                "match_abundance_error": 0.02,
-            },
-            {
-                "target_ion_id": "ion-x",
-                "mz": 212.0846,
-                "relative_abundance": 0.08,
-                "sample_peak_id": "p2",
-                "target_isotope_formula": "[13C]C6H15O7",
-                "target_ion_formula": "C7H15O7+",
-                "match_mz_error": 1.1,
-                "match_abundance_error": 0.05,
-            },
-            {
-                "target_ion_id": "ion-x",
-                "mz": 213.0855,
-                "relative_abundance": 0.02,
-                "sample_peak_id": None,
-                "target_isotope_formula": "C7H15O6[18O]",
-                "target_ion_formula": "C7H15O7+",
-                "match_mz_error": None,
-                "match_abundance_error": None,
-            },
-            # Another seed's ion in the same frame: none of its lines are this
-            # identity's.
-            {
-                "target_ion_id": "ion-y",
-                "mz": 211.0790,
-                "relative_abundance": 1.0,
-                "sample_peak_id": "p1",
-                "target_isotope_formula": "C11H11N2O2",
-                "target_ion_formula": "C11H11N2O2+",
-                "match_mz_error": -9.0,
-                "match_abundance_error": 0.0,
-            },
+        [
+            _line(
+                "ion-x", 211.0812, 0.9, "p1", "C7H15O7", "C7H15O7+", 0.9, "C7H14O7", fit
+            ),
+            _line(
+                "ion-x",
+                212.0846,
+                0.08,
+                "p2",
+                "[13C]C6H15O7",
+                "C7H15O7+",
+                1.1,
+                "C7H14O7",
+                fit,
+            ),
+            _line(
+                "ion-x",
+                213.0855,
+                0.02,
+                None,
+                "C7H15O6[18O]",
+                "C7H15O7+",
+                None,
+                "C7H14O7",
+                fit,
+            ),
+            _line(
+                "ion-y",
+                211.0790,
+                1.0,
+                "p1",
+                "C11H11N2O2",
+                "C11H11N2O2+",
+                -9.0,
+                "C11H10N2O2",
+                0.0,
+            ),
         ]
     )
+    if fit is None:
+        frame = frame.iloc[0:0]
+    paired = {key[1] for key in pairing}
+    frame = frame[frame["sample_peak_id"].isin(paired) | frame["sample_peak_id"].isna()]
     return (
         {("C7H14O7", "mH"): "ion-x"},
-        {"ion-x": fit},
+        {} if fit is None else {"ion-x": fit},
         pairing,
         frame,
     )
 
 
-def test_a_measured_candidate_reads_the_pins_numbers_and_its_lines():
+async def _measured(entry, scored, config=None):
+    """What a pin of ``entry`` writes on the member at ``p1``: the
+    person's-choice stages from the election on, over ``scored``."""
+    from mascope_backend.api.new.peak_assignments import pipeline
+    from mascope_backend.api.new.peak_assignments.batch_untargeted import Annotation
+
+    ctx = pipeline.RunContext(
+        path=pipeline.PERSONS_CHOICE,
+        sample=SimpleNamespace(sample_item_id="si-1"),
+        config=config or PeakAssignmentConfig(),
+        run_id="fold-si-1",
+        peaks_df=PEAKS,
+        given={
+            "bp-1": Annotation(
+                formula=entry["formula"],
+                ion_formula=entry["ion_formula"],
+                ionization_mechanism_id=entry["ionization_mechanism_id"],
+                role="M0",
+                owner_batch_peak_id=None,
+            )
+        },
+    )
+    ctx.seeded = scored
+    for stage in (pipeline.elect, pipeline.cap, pipeline.level):
+        await stage(ctx)
+    return candidate_measurement(entry, "p1", ctx)
+
+
+@pytest.mark.asyncio
+async def test_a_measured_candidate_reads_the_pins_numbers_and_its_lines():
     config = PeakAssignmentConfig()
-    out = candidate_measurement(
+    out = await _measured(
         ENTRY,
-        "p1",
-        _scored({("ion-x", "p1"): {"mz_error_ppm": 0.9, "abundance_error": 0.02}}),
+        _scored(
+            {
+                ("ion-x", "p1"): {"mz_error_ppm": 0.9, "abundance_error": 0.02},
+                ("ion-x", "p2"): {"mz_error_ppm": 1.1},
+            }
+        ),
         config,
     )
     evidence = evidence_for(0.81, "C7H14O7")
@@ -439,46 +506,38 @@ def test_a_measured_candidate_reads_the_pins_numbers_and_its_lines():
     assert out["lines_found"] == 2
 
 
-def test_the_tier_bands_under_the_configuration_the_pin_measures_with():
+@pytest.mark.asyncio
+async def test_the_tier_bands_under_the_configuration_the_pin_measures_with():
     strict = PeakAssignmentConfig(candidate_threshold=0.95, assigned_threshold=0.99)
-    out = candidate_measurement(
-        ENTRY, "p1", _scored({("ion-x", "p1"): {"mz_error_ppm": 0.9}}), strict
+    out = await _measured(
+        ENTRY, _scored({("ion-x", "p1"): {"mz_error_ppm": 0.9}}), strict
     )
     assert out["tier"] == "below_assignability"
 
 
-def test_a_candidate_whose_envelope_misses_the_members_peak_takes_nothing():
-    out = candidate_measurement(
-        ENTRY,
-        "p1",
-        _scored({("ion-x", "p7"): {"mz_error_ppm": 2.0}}),
-        PeakAssignmentConfig(),
-    )
+@pytest.mark.asyncio
+async def test_a_candidate_whose_envelope_misses_the_members_peak_takes_nothing():
+    out = await _measured(ENTRY, _scored({("ion-x", "p7"): {"mz_error_ppm": 2.0}}))
     assert out["takes_member"] is False
     assert out["fit_score"] is None
     assert out["evidence"] is None
     assert out["tier"] is None
     assert out["mz_error_ppm"] is None
     assert "does not reach this sample's peak" in out["blocked_reason"]
-    # The lines are still what the spectrum holds of the ion.
-    assert out["lines_found"] == 2
 
 
-def test_a_candidate_with_no_fit_takes_nothing():
-    out = candidate_measurement(
-        ENTRY,
-        "p1",
-        _scored({("ion-x", "p1"): {"mz_error_ppm": 0.9}}, fit=None),
-        PeakAssignmentConfig(),
+@pytest.mark.asyncio
+async def test_a_candidate_with_no_fit_takes_nothing():
+    out = await _measured(
+        ENTRY, _scored({("ion-x", "p1"): {"mz_error_ppm": 0.9}}, fit=None)
     )
     assert out["takes_member"] is False
     assert out["fit_score"] is None
 
 
-def test_an_ion_that_cannot_be_built_says_so():
-    out = candidate_measurement(
-        ENTRY, "p1", ({}, {}, {}, pd.DataFrame()), PeakAssignmentConfig()
-    )
+@pytest.mark.asyncio
+async def test_an_ion_that_cannot_be_built_says_so():
+    out = await _measured(ENTRY, ({}, {}, {}, pd.DataFrame()))
     assert out["takes_member"] is False
     assert out["lines"] == []
     assert out["lines_found"] == 0
@@ -495,15 +554,19 @@ UNLIKELY = {
 }
 
 
-def test_an_unlikely_formula_is_measured_on_its_evidence_not_its_fit():
+@pytest.mark.asyncio
+async def test_an_unlikely_formula_is_measured_on_its_evidence_not_its_fit():
     config = PeakAssignmentConfig()
+    frame = pd.DataFrame(
+        [_line("ion-x", 211.0812, 1.0, "p1", "C2H9N8", "C2H9N8+", 0.4, "C2H8N8", 0.9)]
+    )
     scored = (
         {("C2H8N8", "mH"): "ion-x"},
         {"ion-x": 0.9},
         {("ion-x", "p1"): {"mz_error_ppm": 0.4}},
-        pd.DataFrame(),
+        frame,
     )
-    out = candidate_measurement(UNLIKELY, "p1", scored, config)
+    out = await _measured(UNLIKELY, scored, config)
     assert out["plausibility"] == pytest.approx(0.4224, abs=1e-4)
     assert out["fit_score"] == pytest.approx(0.9)
     assert out["evidence"] == pytest.approx(0.9 * out["plausibility"], abs=1e-3)

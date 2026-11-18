@@ -28,11 +28,17 @@ import pandas as pd
 import pytest
 import pytest_asyncio
 from sqlalchemy import select, update
+from stage_stubs import (  # the tests root, on sys.path
+    frame,
+    stub_sample_reads,
+    stub_seeded_scorer,
+)
+from stage_stubs import mechanism as mechanism_row
 
 from mascope_backend.api.new.peak_assignments import (
     batch_peaks_routes,
     batch_series,
-    batch_untargeted,
+    pipeline,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     SERIES_KEY,
@@ -262,9 +268,20 @@ def stubbed(monkeypatch):
                     errors[(ion, peak_id)] = {"mz_error_ppm": 0.2}
         return ion_by_seed, fit_by_ion, errors, pd.DataFrame({"x": [1]})
 
+    def peaks_of(sample_item_id):
+        return frame(
+            (peak_id, _mz(formula), 5000.0)
+            for peak_id, (formula, _) in _peaks().items()
+        )
+
     monkeypatch.setattr(batch_series, "_mode_chemistry", chemistry)
-    monkeypatch.setattr(batch_untargeted, "default_match_params", match_params)
-    monkeypatch.setattr(batch_untargeted, "score_seeds", seeded)
+    # The proposals are measured on each member through the stage list, which
+    # reads the sample's peaks and mode as a run does.
+    stub_sample_reads(monkeypatch, peaks_of, [mechanism_row(NOTATION, MECHANISM)])
+    monkeypatch.setattr(pipeline, "default_match_params", match_params)
+    stub_seeded_scorer(
+        monkeypatch, seeded, peaks_of, ion_formula=lambda formula, _mech: _ion(formula)
+    )
     return scored
 
 
@@ -422,10 +439,14 @@ async def test_a_second_detection_on_an_unchanged_ledger_keeps_the_series(
     anchors = await _anchors(async_session_factory, batch_id)
     before = _records(anchors)
     assert len(before) == 10
-    # Most of the members it measured now read assigned: the batch's tier for
-    # them is what a walk starts from, unless it is the series' own.
+    # Half the members it measured now read assigned, the series their second
+    # observation, as a run of their sample counts it. The rest are held at
+    # candidate by the rules such a run asks of the same reading, the search's
+    # in a run: an expected line absent, or the oxygen lattice of C5H4O7. The
+    # batch's tier for them is what a walk starts from, unless it is the
+    # series' own.
     lifted = {k for k in before if anchors[k].consensus_tier == "assigned"}
-    assert len(lifted) == 9
+    assert lifted == {"down-1", "down-2", "down-3", "up-2", "up-3"}
     members = {
         name: await _members(async_session_factory, samples[name]) for name in samples
     }

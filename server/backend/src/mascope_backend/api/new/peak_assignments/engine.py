@@ -1857,6 +1857,47 @@ def record_mirror_same_ion_readings(
     :param max_alternatives: Cap on stored alternatives per row.
     :return: How many mirror rows carry at least one reading.
     """
+    return record_same_ion_readings(
+        [row for row in assignments if is_reference_mirror_row(row)],
+        mechanism_id_by_notation=mechanism_id_by_notation,
+        search_config=search_config,
+        heuristics_config=heuristics_config,
+        formula_formatter=formula_formatter,
+        max_alternatives=max_alternatives,
+    )
+
+
+def record_same_ion_readings(
+    rows: list[dict],
+    *,
+    mechanism_id_by_notation: dict[str, str],
+    search_config: CompositionSearchConfig,
+    heuristics_config: HeuristicFilterConfig,
+    formula_formatter=None,
+    max_alternatives: int = 5,
+) -> int:
+    """Give each monoisotopic row the other readings of its ion: the family
+    the untargeted search would have given that ion, written as an election's
+    displaced readings are (:func:`record_mirror_same_ion_readings` says how).
+
+    A reference mirror's rows take it, which were matched rather than elected,
+    and so does a batch decision measured on a sample and read as the search's
+    row there (``pipeline``), which a search of the sample would have elected
+    out of that family. Each reading carries the row's own source, as an
+    election's do.
+
+    :param rows: The rows to give a family; modified in place. An isotopologue,
+        a row with no formula and one through a mechanism the run did not
+        search are left as they are.
+    :param mechanism_id_by_notation: The mechanisms the run searched, in the
+        finder's notation, mapped to their ids.
+    :param search_config: The untargeted search's configuration, whose element
+        box a reading has to sit in.
+    :param heuristics_config: The untargeted search's heuristic filter.
+    :param formula_formatter: How the untargeted stage writes a formula.
+    :param max_alternatives: Cap on stored alternatives per row.
+    :return: How many rows carry at least one reading.
+    """
     notation_by_id = {
         str(mechanism_id): notation
         for notation, mechanism_id in mechanism_id_by_notation.items()
@@ -1864,9 +1905,8 @@ def record_mirror_same_ion_readings(
     format_formula = formula_formatter or (lambda formula: formula)
     rows = [
         row
-        for row in assignments
-        if is_reference_mirror_row(row)
-        and row.get("role") == ROLE_M0
+        for row in rows
+        if row.get("role") == ROLE_M0
         and row.get("assigned_formula")
         and str(row.get("ionization_mechanism_id")) in notation_by_id
     ]
@@ -1916,7 +1956,7 @@ def record_mirror_same_ion_readings(
                         float(formula_plausibility(member["formula"])), 4
                     ),
                     "same_ion": True,
-                    "source": SOURCE_DATABASE,
+                    "source": row.get("source"),
                 }
             )
         row["alternatives"] = cap_alternatives(row, readings + rivals, max_alternatives)
@@ -2513,7 +2553,7 @@ def untargeted_matches_to_peak_assignments(
         this run switched on. They are searched beside the mode's own
         mechanisms but are not equal to them: they only take peaks no primary
         channel explains, and a winner on one is capped at ``candidate`` unless
-        something corroborates it (see :func:`_apply_minor_channel_policy`).
+        something corroborates it (see :func:`apply_minor_channel_policy`).
     :param listed_formulas: The neutrals the sample's lists name, as
         :func:`formula_identity` keys (:func:`listed_formula_identities`): a
         secondary-channel winner one of them names is corroborated by it.
@@ -2839,7 +2879,7 @@ def untargeted_matches_to_peak_assignments(
         )
 
     if minor_channels:
-        _apply_minor_channel_policy(
+        apply_minor_channel_policy(
             assignments,
             mechanism_id_by_notation,
             minor_channels,
@@ -2954,8 +2994,10 @@ def apply_partner_gates(
     measured the run, so that a partner is a reading that gate's ceiling
     leaves committed (:func:`tier_under_ceiling`), and before the
     cross-channel pass reads the ledger, so that a reading it sets aside is no
-    rival there. A batch search reads it so too, in its judge stage, over the
-    rows it read in a sample (``service.Judging``).
+    rival there. Every path of the stage list that judges as a run does reads
+    it so, in its judge stage (``service.Judging``): a batch search over the
+    rows it read in a sample, a batch decision measured on a sample over the
+    rows measured there.
 
     A partner is a monoisotopic row committed at candidate or better through
     one of the mode's own channels whose neutral is the reading's, compared as
@@ -3515,7 +3557,81 @@ def listed_formula_identities(known_isotopes_df: pd.DataFrame) -> frozenset[str]
     )
 
 
-def _apply_minor_channel_policy(
+@dataclass(frozen=True)
+class ListedIon:
+    """What Stage A's row for an ion of its known set says of the list.
+
+    :ivar target_compound_id: The target library's compound, where the library
+        holds the ion; None where only a reference list does.
+    :ivar reference_identities: The reference lists' names for its neutral,
+        which ride on the row whichever list holds the ion; None where no
+        reference list names it.
+    """
+
+    target_compound_id: str | None
+    reference_identities: list | None
+
+
+def listed_ions(known_isotopes_df: pd.DataFrame) -> dict[tuple[str, str], ListedIon]:
+    """The ions a Stage A known set holds, by neutral and channel.
+
+    Stage A reads each list through the channels it is read through - the
+    target library through the mode's own, a reference list through every
+    channel the run searches - and commits an ion it matched as that list's
+    row (:func:`invert_matches_to_peak_assignments`): the target library's
+    names its compound, a reference list's names none, and either carries the
+    reference lists' names for its neutral. A reading through a channel no
+    list was read through is no list's row, though a list may still name its
+    neutral (:func:`listed_formula_identities`).
+
+    :param known_isotopes_df: The known-isotope frame Stage A matches; empty
+        where no list was read. A frame that names no channel or no compound
+        holds no ion.
+    :return: ``(formula identity, mechanism id)`` -> what the list's row says;
+        of several target compounds of one neutral, the first by id.
+    """
+    columns = {
+        "target_compound_formula",
+        "ionization_mechanism_id",
+        "target_compound_id",
+    }
+    if known_isotopes_df.empty or not columns <= set(known_isotopes_df.columns):
+        return {}
+    frame = known_isotopes_df[known_isotopes_df["target_compound_formula"].notna()]
+    identity = {
+        formula: formula_identity(formula)
+        for formula in frame["target_compound_formula"].unique()
+    }
+    mirror = reference_mirror_mask(frame)
+    names: dict[str, list] = {}
+    if mirror.any():
+        for formula, identities in zip(
+            frame.loc[mirror, "target_compound_formula"],
+            frame.loc[mirror, REFERENCE_IDENTITIES_COL],
+            strict=True,
+        ):
+            names.setdefault(identity[formula], identities)
+    # A reference list's row carries no compound id, which is what tells the
+    # two lists apart (:func:`is_target_library_row`).
+    held = frame[
+        ["target_compound_formula", "ionization_mechanism_id", "target_compound_id"]
+    ].drop_duplicates()
+    compounds: dict[tuple[str, str], str | None] = {}
+    for formula, mechanism, compound in held.itertuples(index=False):
+        key = (identity[formula], str(mechanism))
+        library = None if pd.isna(compound) else str(compound)
+        current = compounds.get(key)
+        if library is not None and (current is None or library < current):
+            compounds[key] = library
+        else:
+            compounds.setdefault(key, None)
+    return {
+        key: ListedIon(compound, names.get(key[0]))
+        for key, compound in compounds.items()
+    }
+
+
+def apply_minor_channel_policy(
     assignments: list[dict],
     mechanism_id_by_notation: dict[str, str],
     minor_channels: frozenset[str],
@@ -3594,7 +3710,7 @@ def hold_opened_channel_readings(
     ``candidate`` unless an isotopologue of its own or the same neutral on one
     of the mode's own channels corroborates it, each read off Stage A's own
     rows as the search's are read off the search's
-    (:func:`_apply_minor_channel_policy`). The list is why the reading was
+    (:func:`apply_minor_channel_policy`). The list is why the reading was
     made, so it is no corroboration of it, and the isotopologue still is: what
     a search row lacks is a name for the neutral, which a list's reading has
     (step 3.4 changed the search's rule, not this one). The partner gate and
@@ -3641,7 +3757,7 @@ def _hold_minor_readings(
     :param list_rows: Whether the rows are a list's own readings, which an
         isotopologue corroborates and the list does not
         (:func:`hold_opened_channel_readings`). A search row is corroborated by
-        a list and not by an isotopologue (:func:`_apply_minor_channel_policy`).
+        a list and not by an isotopologue (:func:`apply_minor_channel_policy`).
     :return: How many rows were judged, and how many the cap lowered.
     """
     summary = {"read": 0, "capped": 0}
