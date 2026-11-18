@@ -160,7 +160,7 @@ async def test_a_line_off_the_axis_the_others_agree_on_is_no_point(filestore):
     assert [round(point["target_mz"]) for point in points] == [62, 79, 81, 125]
     assert all(point["retained"] for point in points)
     assert handler.fitted_on["search"] == {
-        "window_ppm": 500.0,
+        "window_ppm": 250.0,
         "n_lines": 4,
         "n_ions": 3,
     }
@@ -260,7 +260,7 @@ async def test_the_record_names_the_collection_the_model_and_the_node(filestore)
     # a square-root axis
     assert [entry["mode"] for entry in model["compared"]] == [0, 2]
     assert handler.fitted_on["search"] == {
-        "window_ppm": 500.0,
+        "window_ppm": 250.0,
         "n_lines": 5,
         "n_ions": 4,
     }
@@ -612,7 +612,7 @@ async def test_an_axis_off_past_the_refine_window_fits_the_lines_not_their_neigh
     assert all(point["retained"] for point in quality["points"])
     assert (quality["n_points"], quality["n_lines"]) == (9, 9)
     assert quality["search"] == {
-        "window_ppm": 500.0,
+        "window_ppm": 250.0,
         "n_lines": 9,
         "n_ions": 8,
     }

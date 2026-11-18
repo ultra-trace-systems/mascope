@@ -12,8 +12,10 @@ instead (GitHub #2776).
 So the calibrants are found by the axis on which the most of them agree,
 whatever the file's axis says:
 
-1. Each calibrant line has candidates: the most intense peaks within a wide
-   search window of where the file's axis puts it.
+1. Each calibrant line has candidates: the most intense peaks within a
+   window of where the file's axis puts it, wider than any drift seen. The
+   node searches a window as wide as the drift seen first, and a wider one
+   only when too few ions agree there (``TofCalibrationHandler``).
 2. Every two candidates of two different ions make a hypothesis: the mode-0
    axis through both. One whose slope p1 is far from the file's own is
    dropped; two candidates of nearby lines can make an axis of any slope.

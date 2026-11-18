@@ -490,11 +490,12 @@ the constants are in
 ### Matching
 
 The matching steps and their constants - the 0.15 abundance floor, S/N >= 10, the 500 ppm
-search window, the FWHM overlap drop within 100 ppm, eight candidates a line, the consensus in TOF space, one
-reading per peak, three points at least - are in
+search window searched within 250 ppm first, the FWHM overlap drop within 100 ppm, eight candidates
+a line, the consensus in TOF space, one reading per peak, three points at least - are in
 [calibration.md](../user/how-it-works/calibration.md#how-a-tof-files-calibrants-are-found).
 In the code: `DEFAULT_ISOTOPE_ABUNDANCE_MIN`; `load_peak_data` and `drop_bad_peaks` (weak and
-satellite peaks out); `TOF_SNR_THRESHOLD`; `TOF_SEARCH_WINDOW_PPM` and `TOF_SEARCH_CANDIDATES`;
+satellite peaks out); `TOF_SNR_THRESHOLD`; `TOF_SEARCH_WINDOW_PPM`, `TOF_SEARCH_NEAR_WINDOW_PPM`,
+`TOF_SEARCH_NEAR_MIN_IONS` and `TOF_SEARCH_CANDIDATES`;
 `_remove_overlapping_mzs` and `TOF_OVERLAP_REACH_PPM` (the Orbitrap's local-dominance guard is
 off for TOF);
 `TofCalibrationHandler._match_isotopes` and `tof_calibrant_search`; `_one_reading_per_peak`.
@@ -519,6 +520,24 @@ trust the acquisition axis to find the calibrants:
   the most intense peak within 2,000 ppm, and that window holds 1 to 5 peaks of S/N 10 or more, so
   eight is room, not a cut. A file whose axis is further off than 500 ppm finds no lines and ends in
   "Not enough calibration peaks", which the drift warning of the files before it will have flagged.
+- **Within 250 ppm first.** The search runs on the candidates within 250 ppm
+  (`TOF_SEARCH_NEAR_WINDOW_PPM`, the fleet's largest drift) and takes the axis it finds there when
+  at least three ions agree on it (`TOF_SEARCH_NEAR_MIN_IONS`: two ions always make an axis). Only
+  when fewer do does it run on the candidates within 500 ppm, and it takes that axis only when it
+  holds more ions. Searched within 500 ppm at once, TOF H's 814 November nitrate files (MAS-951's
+  prod job, version 3) gave 14 fits more than 200 ppm from the stored fit. Five of them, on days 1,
+  2 and 6, took peaks 380 to 475 ppm off, where the best axis within 250 ppm held as many ions
+  (four files) or one fewer (one); on days 1 and 2 its lines were 5 to 50 times brighter. Within
+  250 ppm those five fit 2 to 44 ppm from the stored fit, as most files of their day did, and the
+  bar of 4 lines at 7 ppm is met in 753 files against 755: the two it loses are two of the five.
+  806 files take the same peaks either way. Two files on day 5, whose stored fits are `poor`,
+  change axis: within 500 ppm they took NO2-, NO3-, TFA and HNO3.NO3- 490 ppm from the stored fit,
+  within 250 ppm TFA, HNO3.NO3- and the two upper lines 180 ppm from it; which is right, the job
+  cannot say. Seven others, one on day 1 and six on day 6, sit 204 to 226 ppm from the stored fit
+  either way. The limit: a file whose axis is further off than 250 ppm is found on its calibrants
+  only where fewer than three ions agree within 250 ppm, and on a spectrum as dense as TOF H's three
+  may by chance. The five corpus files whose candidates were captured, their axis read up to 450
+  ppm either way, still fit as they do: with their axis past 250 ppm, no three ions agree within it.
 - **Hypotheses.** Every two candidates of two ions give a mode-0 axis; one whose p1 is more than
   1 % from the file's own (`TOF_SEARCH_P1_PRIOR`, fitted through the candidates' stored m/z) is
   dropped. Each is refitted once by least squares to the lines it holds within the residual
@@ -619,9 +638,9 @@ kept or left out, with its ion, residual and S/N (`points`); the m/z span of the
 `node_version` ([calibration.md](../user/how-it-works/calibration.md#what-a-tof-record-says)).
 Since MAS-183 the `model` also lists each model's held-out error (`compared`, null on fewer than
 four ions) and the gain mode 2 needs (`min_gain_ppm`), and the node is version 2. Since MAS-951 the
-block also has `search`: the search window (`window_ppm`) and how many lines and ions the winning
-axis held (`n_lines`, `n_ions`), and the node is version 3. `refine_window` is still recorded, and
-no longer limits a TOF search.
+block also has `search`: the window the winning axis was found in (`window_ppm`, 250 or 500) and
+how many lines and ions it held (`n_lines`, `n_ions`), and the node is version 3. `refine_window`
+is still recorded, and no longer limits a TOF search.
 A record fitted before then keeps only the counts and means. Two other kinds of record
 exist: the converter's `{"mode": 0, "par": [...]}` with the acquisition software's coefficients,
 stamped `status: "unfitted"` since 2026-09-18 and recognised without the stamp before that
@@ -766,10 +785,10 @@ Code, shipped in releases.
   compound no longer brings an ion for every mechanism of the mode (MAS-186).
 - **Drift-tolerant calibrant matching.** Find the calibrants by a consensus in TOF space - the
   mode-0 axis through two candidates of two ions on which the most ions find a peak within the
-  residual tolerance - among the strongest peaks within a 500 ppm search window, instead of within
-  the 100 ppm refine window of where the acquisition axis puts each line. The record keeps the
-  pre-fit error and the drift warning against the acquisition axis, and adds the search
-  (section 3, "Matching"; MAS-951).
+  residual tolerance - among the strongest peaks within 250 ppm, or within a 500 ppm search window
+  when fewer than three ions agree there, instead of within the 100 ppm refine window of where the
+  acquisition axis puts each line. The record keeps the pre-fit error and the drift warning against
+  the acquisition axis, and adds the search (section 3, "Matching"; MAS-951).
 - **Calibration transfer**, if the decision on modes without calibrants picks it: a file whose mode
   has no calibrants takes the parameters of the nearest fitted files of the same instrument and
   polarity, interpolated in time within a window, recorded as `status: transferred` with its
