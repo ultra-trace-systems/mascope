@@ -15,7 +15,7 @@ import pandas as pd
 import polars as pl
 import pytest
 
-from mascope_tools.composition import heuristic_filter
+from mascope_tools.composition import heuristic_filter, line_model
 from mascope_tools.composition.finder import assign_compositions, find_compositions
 from mascope_tools.composition.heuristic_filter import (
     SAME_ION_ALTERNATIVES,
@@ -523,7 +523,7 @@ class TestTheFamilyIsOneScoringUnit:
             seen.append(ion_formula)
             return real(ion_formula, ion_charge, *args, **kwargs)
 
-        monkeypatch.setattr(heuristic_filter, "predict_isotopes", counting)
+        monkeypatch.setattr(line_model, "predict_isotopes", counting)
         candidates = [
             _candidate("C6H11NO8", "[M-H]-", "C6H10NO8-"),
             _candidate("C5H10NO5", "[M+CO3]-", "C6H10NO8-"),

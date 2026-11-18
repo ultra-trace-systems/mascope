@@ -136,10 +136,11 @@ def test_the_ladder_claim_reads_a_labelled_reagent_at_the_setups_purity(
 
 
 def test_reference_lines_read_a_labelled_element_at_the_purity_in_effect():
-    def abundances():
-        element = target_ions_compute._extract_custom_elements({"^N": 1})["^N"]
-        return [isotope["abundance"] for isotope in element["isotopes"]]
+    def light_over_heavy():
+        _, probs, formulae = target_ions_compute.predict_isotopes({"^N": 1, "O": 3}, -1)
+        lines = dict(zip(formulae, probs))
+        return lines["NO3-"] / lines["[15N]O3-"]
 
-    assert abundances() == pytest.approx([0.02, 0.98])
+    assert light_over_heavy() == pytest.approx(0.02 / 0.98)
     with labelled_purity(0.9):
-        assert abundances() == pytest.approx([0.1, 0.9])
+        assert light_over_heavy() == pytest.approx(0.1 / 0.9)

@@ -10,10 +10,10 @@ import numpy as np
 import polars as pl
 import pytest
 
-from mascope_tools.composition import heuristic_filter
-from mascope_tools.composition.heuristic_filter import (
+from mascope_tools.composition import line_model
+from mascope_tools.composition.heuristic_filter import match_isotopic_pattern
+from mascope_tools.composition.line_model import (
     _fold_under_floor,
-    match_isotopic_pattern,
     merge_unresolved_lines,
     predict_isotopes,
     predict_resolved_isotopes,
@@ -314,7 +314,7 @@ def test_a_fold_into_the_brightest_line_keeps_a_line_on_the_floor(monkeypatch):
     # own under the floor and folds into M0, which then reads 1.005. The line
     # at exactly 1% of M0 as merged stays kept, though it is under 1% of 1.005.
     monkeypatch.setattr(
-        heuristic_filter,
+        line_model,
         "predict_isotopes",
         lambda *args, **kwargs: (
             np.array([100.0, 100.07, 101.0]),
@@ -370,7 +370,7 @@ def _fine_structure_of(ion):
 def _predicted_as(monkeypatch, mzs, intensities, labels, power=1000.0):
     """Predict ``X+`` with the predictor's lines replaced by these."""
     monkeypatch.setattr(
-        heuristic_filter,
+        line_model,
         "predict_isotopes",
         lambda *args, **kwargs: (
             np.array(mzs, dtype=float),
@@ -537,7 +537,7 @@ def test_a_resolution_that_raises_folds_nothing():
 def test_a_line_at_or_under_zero_mz_is_a_group_of_its_own():
     # Its width is not positive and takes no line, not even its own; the
     # targeted library's degenerate atomless ion reaches the grouping so.
-    groups = heuristic_filter.group_unresolved_lines(
+    groups = line_model.group_unresolved_lines(
         [-0.000549, 0.0, 18.0106, 18.0107], [0.5, 0.2, 0.3, 0.1], _resolving(1e4)
     )
 
@@ -548,7 +548,7 @@ def test_fold_targets_names_the_kept_line_a_dim_line_goes_to():
     # At m/z 100 and a resolving power of 1000 a FWHM is 0.1: the dim line
     # 0.08 over a kept line goes to it, the one 0.2 away and the kept lines
     # go nowhere.
-    targets = heuristic_filter.fold_targets(
+    targets = line_model.fold_targets(
         [100.0, 101.0, 101.08, 101.3], [True, True, False, False], _resolving(1000.0)
     )
 
