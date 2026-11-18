@@ -244,7 +244,7 @@ and the rule has three parts:
    `_apply_consensus` runs, since that function returns only whether any of
    its columns was written and overwrites the old values in place; after it,
    the hook collects the anchors whose formula or mechanism moved, and the
-   anchors the same function deleted for having no members left, whose old
+   anchors the chunk deleted for having no members left, whose old
    key loses their intensities too. For each it recomputes the rollups of
    the old and the new key over the whole batch, and the catalog's two rows
    follow. Hooking the fold alone, or either of the two callers above the
