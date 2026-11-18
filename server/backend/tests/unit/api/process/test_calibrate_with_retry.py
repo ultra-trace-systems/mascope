@@ -9,6 +9,7 @@ that giving up on a data condition stays below the error-monitoring threshold
 All external dependencies are mocked - no DB, file I/O, or Socket.IO required.
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -311,3 +312,83 @@ async def test_a_result_without_a_verdict_is_not_verified(returned):
     assert calibrate.await_count == 1
     # Not a data condition but a caller that lost the warning: monitored.
     assert [r["level"].name for r in _monitored(records)] == ["WARNING"]
+
+
+@pytest.mark.asyncio
+async def test_a_withheld_fit_ends_the_loop_with_nothing_recorded():
+    """A caller that turned the fit down (``before_apply``) wants no wider
+    tolerance and no failure marker: nothing of the file changed."""
+    calibrate, records = await _run_with(
+        AsyncMock(return_value={"data": {"withheld": True}})
+    )
+
+    assert calibrate.await_count == 1
+    assert calibrate.result.withheld is True
+    assert calibrate.result.verified is False
+    calibrate.recorder.assert_not_awaited()
+    calibrate.notifier.assert_not_awaited()
+    assert _monitored(records) == []
+
+
+@pytest.mark.asyncio
+async def test_the_caller_last_word_reaches_the_calibration():
+    async def last_word(fit):
+        return True
+
+    calibrate = AsyncMock(return_value={"data": {"verified": True}})
+    with (
+        patch(f"{_SVC}.calibration_mz_calibrate_sample", calibrate),
+        patch(f"{_SVC}._record_calibration_failure", AsyncMock()),
+    ):
+        await calibrate_with_retry(
+            sample=_SAMPLE, sample_file_id="sf-001", before_apply=last_word
+        )
+
+    assert calibrate.await_args.kwargs["before_apply"] is last_word
+
+
+@pytest.mark.asyncio
+async def test_only_a_fault_says_it_is_one():
+    """A fault may clear on a later attempt, a spectrum's failure will not:
+    the re-calibration runner tries the one again and lists the other."""
+    fault, _ = await _run(ApiException("Database failed", {}, 500))
+    given_up, _ = await _run(ApiException("m/z fitting warning: few peaks", {}, 200))
+    fitted, _ = await _run(None)
+
+    assert fault.result.fault is True
+    assert given_up.result.fault is False
+    assert fitted.result.fault is False
+
+
+def test_the_tolerance_widens_and_the_refine_window_follows_it():
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        widen_mz_error_tolerance,
+    )
+
+    params = SimpleNamespace(mz_error_tolerance=15.0, refine_window=100)
+    seen = []
+    for _ in range(4):
+        widen_mz_error_tolerance(params)
+        seen.append((params.mz_error_tolerance, params.refine_window))
+
+    # The window stays wider than the tolerance once the tolerance reaches it
+    assert seen == [(30.0, 100), (60.0, 100), (120.0, 121.0), (240.0, 241.0)]
+
+
+async def _run_with(calibrate: AsyncMock):
+    """``_run`` with a calibration mock of the test's own."""
+    recorder = AsyncMock()
+    notifier = AsyncMock()
+    with (
+        captured_logs() as records,
+        patch(f"{_SVC}.calibration_mz_calibrate_sample", calibrate),
+        patch(f"{_SVC}._record_calibration_failure", recorder),
+        patch(f"{_SVC}.emit_user_notification", notifier),
+    ):
+        result = await calibrate_with_retry(
+            sample=_SAMPLE, sample_file_id="sf-001", user_id=1
+        )
+    calibrate.recorder = recorder
+    calibrate.notifier = notifier
+    calibrate.result = result
+    return calibrate, records

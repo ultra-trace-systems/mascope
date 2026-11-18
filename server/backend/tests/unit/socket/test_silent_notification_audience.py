@@ -200,3 +200,52 @@ async def test_the_decorator_still_reaches_the_service(monkeypatch):
 
     emitter.assert_awaited_once()
     assert emitter.await_args.args[0].silent is True
+
+
+@pytest.mark.asyncio
+async def test_a_task_run_for_nobody_files_no_monitoring_event(emit):
+    """A maintenance script that calibrates thousands of files for nobody
+    (``without_audience``) has no reader to lose a success on: a few such
+    notifications per file would each be a monitoring event."""
+    from mascope_backend.socket.notifications import without_audience
+
+    done = UserNotification(
+        process_id="p", type="calibration_mz_apply", status="success", message="ok"
+    )
+    with _Monitored() as monitored, without_audience():
+        await handle_notifications(["user_id"], done, {}, None)
+
+    assert monitored.records == []
+    emit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_task_run_for_nobody_still_reaches_an_open_page(emit):
+    """A page open on the batch the script rematches follows it."""
+    from mascope_backend.socket.notifications import without_audience
+
+    done = UserNotification(
+        process_id="p", type="rematch_batch", status="success", message="ok"
+    )
+    with without_audience():
+        await handle_notifications(
+            ["sample_batch_id"], done, {"sample_batch_id": "sb-1"}, None
+        )
+
+    emit.assert_awaited_once()
+    assert emit.await_args.kwargs["room_id"] == "sb-1"
+
+
+@pytest.mark.asyncio
+async def test_without_audience_ends_with_its_task(emit):
+    from mascope_backend.socket.notifications import without_audience
+
+    done = UserNotification(
+        process_id="p", type="calibration_mz_apply", status="success", message="ok"
+    )
+    with without_audience():
+        pass
+    with _Monitored() as monitored:
+        await handle_notifications(["user_id"], done, {}, None)
+
+    assert monitored.levels == ["WARNING"]

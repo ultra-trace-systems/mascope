@@ -2,6 +2,9 @@
 
 import json
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from typing import Any
 
@@ -38,6 +41,33 @@ USER_NOTIFICATION_BUDGET_BYTES = 256 * 1024
 #: flood the monitoring the warning reports to, and the first says all the
 #: rest would.
 USER_NOTIFICATION_BUDGET_WARNING_INTERVAL_S = 60 * 60
+
+#: Whether the task at hand runs for nobody (:func:`without_audience`).
+_without_audience: ContextVar[bool] = ContextVar(
+    "notifications_without_audience", default=False
+)
+
+
+@contextmanager
+def without_audience() -> Iterator[None]:
+    """Run what follows for nobody: its notifications have no one to reach.
+
+    For a maintenance script that works through a server's files with the
+    controllers the app runs for a user - the TOF re-calibration runner
+    (``recalibrate_tof``) calibrates and matches thousands of files - and has
+    no user to report to. A notification of it that finds no room and no user
+    was never meant for anyone, so it is dropped at DEBUG, as a ``silent`` one
+    is, rather than logged at WARNING as a message lost
+    (:func:`handle_notifications`): every WARNING record goes to error
+    monitoring, a few per file. A notification that does find a room is still
+    sent to it, so a page open on a batch the script rematches follows it.
+    """
+    token = _without_audience.set(True)
+    try:
+        yield
+    finally:
+        _without_audience.reset(token)
+
 
 # Monotonic time of each notification type's last over-budget warning.
 # Per process, like the acquisition-drift window: each backend worker can
@@ -432,7 +462,7 @@ async def handle_notifications(
         if room_key == "user_id" or not room_id:
             if user_id is not None:
                 await emit_user_notification(notification, user_id=user_id)
-            elif notification.silent:
+            elif notification.silent or _without_audience.get():
                 # A silent packet carries nothing to read: it exists only to
                 # end the progress bar the process opened in a browser. With
                 # no room and no user there is no browser and no bar, so
@@ -443,9 +473,11 @@ async def handle_notifications(
                 # fourteen for a single sample that will not calibrate - and
                 # every WARNING record is exported to error monitoring
                 # (mascope_runtime.logging._SENTRY_LEVELS), which would turn
-                # a routine no-op into fourteen monitoring events.
+                # a routine no-op into fourteen monitoring events. A task
+                # run for nobody (without_audience) has no reader to lose a
+                # message on either, whatever its notification says.
                 runtime.logger.debug(
-                    f"Skipping silent notification with no audience: no room_id for "
+                    f"Skipping notification with no audience: no room_id for "
                     f"'{room_key}', no user_id available. "
                     f"Notification type: {notification.type}, status: {notification.status}"
                 )
