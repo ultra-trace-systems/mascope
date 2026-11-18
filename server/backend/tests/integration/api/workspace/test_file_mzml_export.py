@@ -17,6 +17,7 @@ Fixtures used:
 
 import datetime
 import os
+import shutil
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
@@ -34,6 +35,7 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
 from mascope_backend.api.new.file import service
 from mascope_backend.db import SampleFile, SampleItem
 from mascope_backend.db.id import gen_id
+from mascope_file import name as mascope_name
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[6]
@@ -166,10 +168,7 @@ def raw_file(monkeypatch, tmp_path):
     """Resolve every sample file to the committed raw file, and the user's
     temp directory to ``tmp_path``."""
     monkeypatch.delenv("MASCOPE_THERMO_BACKEND", raising=False)
-    monkeypatch.setattr(service, "get_sample_file_type", lambda _name: "orbi_raw")
-    monkeypatch.setattr(
-        service, "filename_to_datafile_path", lambda _name: str(KORBI_POS)
-    )
+    monkeypatch.setattr(service, "stored_data_file", lambda _name: str(KORBI_POS))
     with patch(
         "mascope_backend.api.new.temp.storage.user_temp_dir",
         return_value=str(tmp_path),
@@ -336,7 +335,9 @@ async def test_a_failed_write_leaves_no_folder_behind(
 async def test_a_file_that_is_not_thermo_raw_is_skipped(
     raw_file, async_session_factory, sample_file, monkeypatch
 ):
-    monkeypatch.setattr(service, "get_sample_file_type", lambda _name: "tof_h5")
+    monkeypatch.setattr(
+        service, "stored_data_file", lambda name: f"/store/{name}/data.h5"
+    )
 
     with pytest.raises(ApiException) as warning:
         await export_mzml(sample_file_ids=[sample_file], sample_item_ids=[], user_id=1)
@@ -344,6 +345,69 @@ async def test_a_file_that_is_not_thermo_raw_is_skipped(
     name = f"{await _filename(async_session_factory, sample_file)}.mzML"
     assert warning.value.tech_message["data"]["not_found"] == [name]
     assert os.listdir(raw_file) == []
+
+
+@pytest.mark.asyncio
+async def test_a_file_the_filestore_does_not_keep_is_skipped(
+    raw_file, async_session_factory, sample_file, monkeypatch
+):
+    monkeypatch.setattr(service, "stored_data_file", lambda _name: None)
+
+    with pytest.raises(ApiException) as warning:
+        await export_mzml(sample_file_ids=[sample_file], sample_item_ids=[], user_id=1)
+
+    name = f"{await _filename(async_session_factory, sample_file)}.mzML"
+    assert warning.value.tech_message["data"]["not_found"] == [name]
+    assert os.listdir(raw_file) == []
+
+
+@pytest.mark.asyncio
+async def test_a_file_whose_name_leaves_its_directory_is_skipped(
+    async_session_factory, sample_file, monkeypatch, tmp_path
+):
+    # Found as a download finds it: a name with a separator leads to a raw
+    # file planted beside the store, and it is not read.
+    monkeypatch.delenv("MASCOPE_THERMO_BACKEND", raising=False)
+    store = tmp_path / "store"
+    store.mkdir()
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    monkeypatch.setattr(mascope_name.runtime.meta, "filestore", str(store))
+    monkeypatch.setattr(mascope_name, "get_sample_file_type", lambda _f: "orbi_raw")
+    monkeypatch.setattr(
+        mascope_name,
+        "parse_path_from_item_filename",
+        lambda name: os.path.join(str(store), name),
+    )
+    planted = tmp_path / "elsewhere"
+    planted.mkdir()
+    shutil.copyfile(KORBI_POS, planted / "data.raw")
+    steered = "../elsewhere"
+    assert os.path.isfile(mascope_name.filename_to_datafile_path(steered))
+
+    async with async_session_factory() as session:
+        row = await session.get(SampleFile, sample_file)
+        original = row.filename
+        row.filename = steered
+        await session.commit()
+    try:
+        with (
+            patch(
+                "mascope_backend.api.new.temp.storage.user_temp_dir",
+                return_value=str(temp),
+            ),
+            pytest.raises(ApiException) as warning,
+        ):
+            await export_mzml(
+                sample_file_ids=[sample_file], sample_item_ids=[], user_id=1
+            )
+    finally:
+        async with async_session_factory() as session:
+            (await session.get(SampleFile, sample_file)).filename = original
+            await session.commit()
+
+    assert warning.value.tech_message["data"]["not_found"] == [f"{steered}.mzML"]
+    assert os.listdir(temp) == []
 
 
 @pytest.mark.asyncio

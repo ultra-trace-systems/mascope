@@ -2025,7 +2025,7 @@ async def get_sample_file_metadata(
     )
 
 
-def _stored_data_file(filename: str) -> str | None:
+def stored_data_file(filename: str) -> str | None:
     """The path of the source data file a sample file keeps, if it keeps one.
 
     :param filename: Sample file name.
@@ -2075,7 +2075,7 @@ async def get_sample_file_raw(sample_file_id: str) -> FileResponse:
     sample_file_data = await get_sample_file(sample_file_id)
     filename = sample_file_data.get("data").get("filename")
 
-    path = await asyncio.to_thread(_stored_data_file, filename)
+    path = await asyncio.to_thread(stored_data_file, filename)
     if path is None:
         raise NotFoundException(
             f"Sample file '{filename}' keeps no source data file to download"

@@ -28,7 +28,7 @@ from sqlalchemy.orm import undefer
 from mascope_backend import vocabulary
 from mascope_backend.api.controllers.sample.batches.export import service as export
 from mascope_backend.api.controllers.sample.files.sample_files_controller import (
-    _stored_data_file,
+    stored_data_file,
 )
 from mascope_backend.api.new.temp.storage import download_name
 from mascope_backend.db import (
@@ -463,7 +463,7 @@ def _raw_files(
     package_files: list[PackageFile] = []
     taken: set[str] = set()
     for sample_file in files:
-        source = _stored_data_file(sample_file.filename)
+        source = stored_data_file(sample_file.filename)
         extension = source.rsplit(".", 1)[-1] if source else None
         name = _unique(
             _path_safe(sample_file.filename) + (f".{extension}" if extension else ""),

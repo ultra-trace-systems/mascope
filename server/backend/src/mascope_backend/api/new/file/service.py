@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from mascope_backend import vocabulary
 from mascope_backend.api.controllers.sample.files.sample_files_controller import (
-    _stored_data_file,
+    stored_data_file,
 )
 from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.lib.exceptions.api_exceptions import (
@@ -19,12 +19,6 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
 from mascope_backend.api.new.temp.storage import user_temp_path
 from mascope_backend.db import SampleFile, SampleItem, async_session
 from mascope_backend.runtime import runtime
-from mascope_file.name import (
-    filename_to_datafile_path,
-    get_instrument_type,
-    get_sample_file_type,
-    parse_path_from_item_filename,
-)
 from mascope_thermo.backend import open_backend
 from mascope_thermo.mzml import CvParam, InstrumentConfiguration, write_mzml
 from mascope_thermo.thermo import NoScansFoundError
@@ -101,15 +95,16 @@ async def download_files(
     if len(sample_files) > 1:
         # The raw files are written straight into the zip, from where they are
         # stored: a folder of copies beside it would take their size twice.
+        # Each is looked up as the single file below and
+        # GET /api/sample/files/{id}/raw look theirs up, so a name that is not
+        # one path segment, or that leads out of the filestore, is not found
+        # here either. The member keeps the data file's extension, .raw or .h5.
         members: list[tuple[str, str]] = []
         for sample_file in sample_files:
-            # derive sample file path
-            file_path = parse_path_from_item_filename(sample_file.filename)
-            instrument_type = get_instrument_type(sample_file.filename)
-            extension = "raw" if instrument_type == "orbi" else "h5"
-            from_path = os.path.join(file_path, f"data.{extension}")
-            if os.path.exists(from_path):
-                members.append((from_path, f"{sample_file.filename}.{extension}"))
+            from_path = await asyncio.to_thread(stored_data_file, sample_file.filename)
+            if from_path is not None:
+                extension = os.path.splitext(from_path)[1]
+                members.append((from_path, f"{sample_file.filename}{extension}"))
                 found.append(sample_file.to_dict())
             else:
                 not_found.append(sample_file.to_dict())
@@ -135,7 +130,7 @@ async def download_files(
         # caller's access again. A copy would take the file's size a second
         # time, and keep the user waiting for it before the download starts.
         sample_file = sample_files[0]
-        if await asyncio.to_thread(_stored_data_file, sample_file.filename):
+        if await asyncio.to_thread(stored_data_file, sample_file.filename):
             source = sample_file.sample_file_id
             found.append(sample_file.to_dict())
         else:
@@ -279,10 +274,12 @@ async def export_mzml(
     download = None
     try:
         for name, filename, polarity, t0, t1 in jobs:
-            if get_sample_file_type(filename) != "orbi_raw":
+            # Found as a download finds it: only a Thermo raw file the
+            # filestore keeps, under a name that is one path segment.
+            datafile_path = await asyncio.to_thread(stored_data_file, filename)
+            if datafile_path is None or os.path.splitext(datafile_path)[1] != ".raw":
                 not_found.append(name)
                 continue
-            datafile_path = filename_to_datafile_path(filename)
             try:
                 instrument = await asyncio.to_thread(
                     _instrument_configuration, datafile_path

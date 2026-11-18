@@ -2,7 +2,8 @@
 Tests: the raw-file download task behind ``POST /api/file/download``.
 
 What it leaves in the user's temp directory: more than one file is written
-into one zip there, and nothing else is; one file is not copied at all, but
+into one zip there, and nothing else is, each found as the source data
+route finds it; one file is not copied at all, but
 named by its id for the web app to fetch from where it is stored
 (``GET /api/sample/files/{id}/raw``, ``test_sample_file_raw_route.py``). Each sample file of this
 module resolves to a raw file of its own under ``tmp_path``; the route's
@@ -40,12 +41,7 @@ def stored(monkeypatch, tmp_path):
     store = tmp_path / "store"
     temp = tmp_path / "temp"
     temp.mkdir()
-    monkeypatch.setattr(service, "get_instrument_type", lambda _name: "orbi")
-    monkeypatch.setattr(
-        service, "parse_path_from_item_filename", lambda name: str(store / name)
-    )
-    # The same for the single file, which the source data route's own lookup
-    # finds.
+    # One file and many are found by the source data route's own lookup.
     monkeypatch.setattr(mascope_name.runtime.meta, "filestore", str(store))
     monkeypatch.setattr(mascope_name, "get_sample_file_type", lambda _f: "orbi_raw")
     monkeypatch.setattr(
@@ -186,6 +182,63 @@ async def test_a_failed_zip_leaves_nothing_behind(
         await download_files(sample_file_ids=[sample_file, beta_sample_file], user_id=1)
 
     assert os.listdir(stored) == []
+
+
+@pytest.mark.asyncio
+async def test_a_tof_file_keeps_its_h5_extension_in_the_zip(
+    stored, async_session_factory, sample_file, beta_sample_file, monkeypatch
+):
+    names = []
+    for sample_file_id in (sample_file, beta_sample_file):
+        name = await _filename(async_session_factory, sample_file_id)
+        folder = stored.parent / "store" / name
+        folder.mkdir(parents=True)
+        (folder / "data.h5").write_bytes(name.encode())
+        names.append(name)
+    monkeypatch.setattr(mascope_name, "get_sample_file_type", lambda _f: "tof_h5")
+
+    result = await download_files(
+        sample_file_ids=[sample_file, beta_sample_file], user_id=1
+    )
+
+    download = result["_notification_data"]["download"]
+    with zipfile.ZipFile(stored / download) as archive:
+        assert sorted(archive.namelist()) == sorted(f"{n}.h5" for n in names)
+
+
+@pytest.mark.asyncio
+async def test_a_file_whose_name_leaves_its_directory_is_left_out_of_the_zip(
+    stored, async_session_factory, sample_file, beta_sample_file
+):
+    # As for the single file below: a name with a separator leads to a raw
+    # file planted beside the store. The zip does not carry it.
+    (name,) = await _store(stored, async_session_factory, sample_file)
+    planted = stored.parent / "elsewhere"
+    planted.mkdir()
+    (planted / "data.raw").write_bytes(b"not this sample's")
+    steered = "../elsewhere"
+    assert os.path.isfile(os.path.join(stored.parent / "store", steered, "data.raw"))
+
+    async with async_session_factory() as session:
+        row = await session.get(SampleFile, beta_sample_file)
+        original = row.filename
+        row.filename = steered
+        await session.commit()
+    try:
+        with pytest.raises(ApiException) as warning:
+            await download_files(
+                sample_file_ids=[sample_file, beta_sample_file], user_id=1
+            )
+    finally:
+        async with async_session_factory() as session:
+            (await session.get(SampleFile, beta_sample_file)).filename = original
+            await session.commit()
+
+    data = warning.value.tech_message["data"]
+    assert data["found"] == [name]
+    assert data["not_found"] == [steered]
+    with zipfile.ZipFile(stored / data["download"]) as archive:
+        assert archive.namelist() == [f"{name}.raw"]
 
 
 @pytest.mark.asyncio
