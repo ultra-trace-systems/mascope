@@ -9,7 +9,7 @@ import pandas as pd
 from loguru import logger
 
 from .._resolve import resolve_id
-from ._base import BaseResource, Needs, _coerce_datetime_columns
+from ._base import UNSET, BaseResource, Needs, _coerce_datetime_columns
 
 
 #: The columns of :meth:`BatchesResource.ion_series`, in order.
@@ -259,8 +259,10 @@ class BatchesResource(BaseResource):
         target_collection_ids: Sequence[str] | None = None,
         name: str | None = None,
         description: str | None = None,
+        chemistry_context: str | None = UNSET,
     ) -> dict[str, Any]:
-        """Rename a batch, change its description, or set its collections.
+        """Rename a batch, change its description or chemistry context, or set
+        its collections.
 
         Left out, ``target_collection_ids`` is not sent and the batch keeps
         its target collections, so ``update(batch_id, name=...)`` only
@@ -279,6 +281,12 @@ class BatchesResource(BaseResource):
         :type name: str, optional
         :param description: Its new description.
         :type description: str, optional
+        :param chemistry_context: The chemistry context the samples were
+            drawn from, such as ``"chamber"`` or ``"ambient-air"``: a peak
+            assignment run on ``auto`` takes it before its reagent profile's
+            default, and the dataset's after it. Left out, it stays as it
+            is; ``None`` clears it, and the dataset's applies.
+        :type chemistry_context: str, optional
         :return: The updated batch.
         :rtype: dict[str, Any]
         :raises PermissionDeniedError: Without the editor role on the batch,
@@ -291,6 +299,8 @@ class BatchesResource(BaseResource):
             body["sample_batch_name"] = name
         if description is not None:
             body["sample_batch_description"] = description
+        if chemistry_context is not UNSET:
+            body["chemistry_context"] = chemistry_context
         return self._write(
             "PATCH",
             f"sample/batches/{batch_id}",

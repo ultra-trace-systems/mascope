@@ -990,6 +990,12 @@ mascope.matching.save_batch(batch_id)
   `samples.update` takes the whole sample: start from `samples.get`, and give
   an ingested sample (type `ACQUISITION`, which only the system sets) a user
   type in the same call, or the route refuses it.
+- `datasets.create`, `datasets.update` and `batches.update` take a
+  `chemistry_context`, such as `"chamber"` or `"ambient-air"`: the context
+  the samples were drawn from, which a peak assignment run on `auto` takes
+  before its reagent profile's default (a batch's before its dataset's). An
+  update that leaves it out keeps the context; `chemistry_context=None`
+  clears it.
 - A formula change in `compounds.update` deletes the compound and creates it
   again under a new ID, with the name and CAS number the item gives: send
   both with the formula.
