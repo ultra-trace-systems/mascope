@@ -440,7 +440,10 @@ def _real_steps(rebuilt):
     """The run's steps against the database, around a stand-in detection
     and a check that finds the rebuilt store current."""
 
-    async def rebuild(filename):
+    async def rebuild(filename, before_write):
+        # The detection succeeds, then the steps run before the store is
+        # written, as the script's rebuild runs them
+        await before_write()
         rebuilt.append(filename)
 
     return script.Steps(

@@ -1254,6 +1254,7 @@ def compute_peaks(
     instrument_functions: tuple,
     progress_callback: Callable[[int], None] | None = None,
     per_stream: bool | None = None,
+    before_write: Callable[[], None] | None = None,
 ):
     """Compute peaks for a sample file.
 
@@ -1271,6 +1272,12 @@ def compute_peaks(
         that record as it is, so that re-detecting a file's peaks never
         changes what was decided for it.
     :type per_stream: bool | None
+    :param before_write: Called once the peaks are detected, before anything
+        of them is recorded or written: what has to happen only to a file
+        whose detection succeeded. When it raises, the file keeps the store
+        and the recorded decision it had, and the error propagates. It runs
+        in the calling thread, under the file's detection lock.
+    :type before_write: Callable[[], None] | None
     :raises TimeoutError: If another process was detecting the same file's
         peaks, or applying an m/z calibration to it, for longer than
         ``mascope_file.io.ZARR_PROCESS_LOCK_TIMEOUT``
@@ -1287,6 +1294,8 @@ def compute_peaks(
     with m_io.zarr_write_lock(m_io.peak_detection_lock_path(filename)):
         peak_detector = get_peak_detector(filename, instrument_functions, per_stream)
         asyncio.run(peak_detector.detect_peaks(progress_callback=progress_callback))
+        if before_write is not None:
+            before_write()
         props = m_io.read_props(filename)
         had_store = os.path.exists(
             m_name.filename_to_zarr_path(filename, "peak_timeseries")

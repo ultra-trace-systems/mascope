@@ -183,33 +183,46 @@ class _Recorder:
     """Every step a run takes, as stand-ins that record what they were
     asked."""
 
-    def __init__(self, fail=(), stale_after=(), uncounted_after=()):
+    def __init__(self, fail=(), stale_after=(), uncounted_after=(), fail_at=None):
         self.calls = []
         self._fail = set(fail)
+        self._fail_at = fail_at
         self._stale_after = set(stale_after)
         self._uncounted_after = set(uncounted_after)
 
     async def samples_of(self, sample_file_id):
         return [f"{sample_file_id}-item"], [f"{sample_file_id}-batch"]
 
+    def _step(self, step):
+        if step == self._fail_at:
+            raise RuntimeError(f"{step} failed")
+
     async def queue_rematch(self, batches):
         self.calls.append(("queue", tuple(batches)))
+        self._step("queue")
 
     async def remove_matches(self, samples):
         self.calls.append(("remove", tuple(samples)))
+        self._step("remove")
 
     async def refresh_tic(self, sample_file_id, filename):
-        self.calls.append(("tic", filename))
+        self.calls.append(("tic", sample_file_id, filename))
+        self._step("tic")
         return 2
 
     async def refresh_ms2(self, sample_file_id, filename):
-        self.calls.append(("ms2", filename))
+        self.calls.append(("ms2", sample_file_id, filename))
+        self._step("ms2")
         return filename == "second"
 
-    async def rebuild(self, filename):
-        self.calls.append(("rebuild", filename))
+    async def rebuild(self, filename, before_write):
+        """Detects, then awaits ``before_write``, then writes, as the
+        script's rebuild does; a file in ``fail`` fails its detection."""
+        self.calls.append(("detect", filename))
         if filename in self._fail:
             raise RuntimeError("detection failed")
+        await before_write()
+        self.calls.append(("rebuild", filename))
 
     def check(self, filename):
         state = script.STALE if filename in self._stale_after else script.CURRENT
@@ -229,18 +242,20 @@ class _Recorder:
         )
 
 
-def test_a_file_is_set_to_rematch_and_read_again_before_its_store_is_written():
-    """The store last: a run that stops partway leaves the file stale, and
-    the next one does every step again."""
+def test_a_file_is_read_again_and_set_to_rematch_between_detection_and_write():
+    """After the detection, so a file that cannot be detected keeps its
+    batches; the store last, so a run that stops partway leaves the file
+    stale, and the next one does every step again."""
     recorder = _Recorder()
 
     outcome = asyncio.run(script.rebuild_all(STALE[:1], recorder.steps()))
 
     assert recorder.calls == [
+        ("detect", "first"),
+        ("tic", "id-first", "first"),
+        ("ms2", "id-first", "first"),
         ("queue", ("id-first-batch",)),
         ("remove", ("id-first-item",)),
-        ("tic", "first"),
-        ("ms2", "first"),
         ("rebuild", "first"),
     ]
     assert outcome.counts["rebuilt"] == 1
@@ -273,6 +288,34 @@ def test_a_failed_rebuild_is_named_and_the_run_goes_on():
     assert ("rebuild", "second") in recorder.calls
 
 
+def test_a_file_whose_detection_fails_keeps_its_batches_and_matches():
+    """The issue #3095 fixes: a file that fails for a lasting reason used to
+    be reset by every run that failed on it."""
+    recorder = _Recorder(fail={"first"})
+
+    outcome = asyncio.run(script.rebuild_all(STALE, recorder.steps()))
+
+    first = [call for call in recorder.calls if "first" in str(call)]
+    assert first == [("detect", "first")]
+    assert outcome.batches == {"id-second-batch"}
+    assert outcome.samples == {"id-second-item"}
+    assert outcome.counts["tic_items"] == 2
+
+
+@pytest.mark.parametrize("step", ["tic", "ms2", "queue", "remove"])
+def test_a_step_before_the_write_that_fails_leaves_the_store_unwritten(step):
+    """A file whose reset fails partway is not written over: it stays stale,
+    and the next run does every step again."""
+    recorder = _Recorder(fail_at=step)
+
+    outcome = asyncio.run(script.rebuild_all(STALE[:1], recorder.steps()))
+
+    assert ("rebuild", "first") not in recorder.calls
+    assert outcome.failed == ["first"]
+    assert outcome.counts["failed"] == 1
+    assert outcome.counts["rebuilt"] == 0
+
+
 def test_a_rebuild_that_does_not_take_is_named():
     """The store is written either way; one that still disagrees with its
     file is a fault, not the routine state after an upgrade."""
@@ -290,7 +333,7 @@ def test_a_capped_rebuild_stops_once_it_has_rebuilt_enough():
 
     outcome = asyncio.run(script.rebuild_all(STALE, recorder.steps(), limit=1))
 
-    assert ("rebuild", "second") not in recorder.calls
+    assert ("detect", "second") not in recorder.calls
     assert outcome.counts["rebuilt"] == 1
     assert outcome.left_over
 
@@ -315,7 +358,7 @@ def _capped_run(monkeypatch, files, limit, fail=(), stale_after=(), batch=2):
             candidates, lambda _: True, check, recorder.steps(), limit
         )
     )
-    rebuilt = [name for step, name in recorder.calls if step == "rebuild"]
+    rebuilt = [call[1] for call in recorder.calls if call[0] == "detect"]
     return outcome, counts, rebuilt, checked
 
 
@@ -426,8 +469,8 @@ def _run(monkeypatch, files, limit, fail=(), current=(), uncounted=(), fill=Fals
     monkeypatch.setattr(script, "_refresh_ms2", recorder.refresh_ms2)
     rebuilt = set(current)
 
-    async def rebuild(filename):
-        await recorder.rebuild(filename)
+    async def rebuild(filename, before_write):
+        await recorder.rebuild(filename, before_write)
         rebuilt.add(filename)
 
     monkeypatch.setattr(script, "_rebuild", rebuild)

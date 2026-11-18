@@ -9,6 +9,7 @@ stand-ins in ``tests/unit/db/test_rebuild_stale_peak_stores.py``.
 
 import asyncio
 
+import pytest
 from composite_acquisition import COMPOSITE, MICROSCANS
 from scripted_acquisition import SAMPLE_FILENAME
 
@@ -147,13 +148,17 @@ def test_a_run_rebuilds_the_stale_file_and_reports_it(acquire, instrument_functi
     async def samples_of(sample_file_id):
         return ["item-1", "item-2"], ["batch-1"]
 
+    async def rebuild(filename, before_write):
+        """The script's rebuild but for the instrument functions, which the
+        database would hold."""
+        await script._detect_and_write(filename, instrument_functions, before_write)
+        done.append("written")
+
     async def note(name, *args):
+        # Between the detection and the write: the store is the stale one
+        assert script.check(SAMPLE_FILENAME).state == script.STALE
         done.append(name)
         return 0
-
-    async def rebuild(filename):
-        done.append("rebuild")
-        await _rebuilt(instrument_functions)
 
     steps = script.Steps(
         samples_of=samples_of,
@@ -166,7 +171,7 @@ def test_a_run_rebuilds_the_stale_file_and_reports_it(acquire, instrument_functi
     )
     outcome = asyncio.run(script.rebuild_all(stale, steps))
 
-    assert done == ["queue", "remove", "tic", "ms2", "rebuild"]
+    assert done == ["tic", "ms2", "queue", "remove", "written"]
     assert outcome.counts["rebuilt"] == 1
     assert not outcome.failed
     assert outcome.batches == {"batch-1"}
@@ -178,3 +183,87 @@ async def _rebuilt(instrument_functions):
     """What the script's rebuild runs, with the test's instrument functions
     in the place of those the database holds."""
     await asyncio.to_thread(m_peak.compute_peaks, SAMPLE_FILENAME, instrument_functions)
+
+
+def test_a_reset_that_fails_leaves_the_stale_store_and_its_record(
+    acquire, instrument_functions
+):
+    """``before_write`` raising: nothing of the detection is recorded or
+    written, so the file stays stale for the next run."""
+    acquire(SCANS)
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions)
+    acquire(SCANS[1:])
+    props = m_io.read_props(SAMPLE_FILENAME)
+
+    async def reset():
+        raise RuntimeError("the batches could not be set to rematch")
+
+    with pytest.raises(RuntimeError, match="rematch"):
+        asyncio.run(
+            script._detect_and_write(SAMPLE_FILENAME, instrument_functions, reset)
+        )
+
+    assert script.check(SAMPLE_FILENAME).state == script.STALE
+    assert m_io.read_props(SAMPLE_FILENAME) == props
+
+
+def test_a_detection_that_fails_resets_nothing(
+    acquire, instrument_functions, monkeypatch
+):
+    acquire(SCANS)
+
+    class Failing:
+        async def detect_peaks(self, progress_callback=None):
+            raise ValueError("no peaks can be detected on this file")
+
+    monkeypatch.setattr(m_peak, "get_peak_detector", lambda *_: Failing())
+    reset = []
+
+    async def before_write():
+        reset.append(True)
+
+    with pytest.raises(ValueError, match="no peaks"):
+        asyncio.run(
+            script._detect_and_write(
+                SAMPLE_FILENAME, instrument_functions, before_write
+            )
+        )
+    assert reset == []
+
+
+def test_a_file_without_an_instrument_configuration_resets_nothing(monkeypatch):
+    import mascope_backend.api.new.instrument_configs.lib as lib
+
+    async def unreadable(filename):
+        raise LookupError(f"no instrument configuration for {filename}")
+
+    monkeypatch.setattr(lib, "read_instrument_functions", unreadable)
+    reset = []
+
+    async def before_write():
+        reset.append(True)
+
+    with pytest.raises(LookupError, match="instrument configuration"):
+        asyncio.run(script._rebuild(SAMPLE_FILENAME, before_write))
+    assert reset == []
+
+
+def test_a_before_write_that_fails_records_no_new_decision(
+    acquire, instrument_functions
+):
+    """Called before the decision is recorded: a detection handed another
+    decision than the file's, whose ``before_write`` raises, leaves the
+    file's record as it was, not only its store."""
+    acquire(SCANS)
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions)
+    m_io.update_props(SAMPLE_FILENAME, {m_peak.PER_STREAM_PROP: True})
+
+    def refuse():
+        raise RuntimeError("refused")
+
+    with pytest.raises(RuntimeError, match="refused"):
+        m_peak.compute_peaks(
+            SAMPLE_FILENAME, instrument_functions, per_stream=False, before_write=refuse
+        )
+
+    assert m_io.read_props(SAMPLE_FILENAME)[m_peak.PER_STREAM_PROP] is True
