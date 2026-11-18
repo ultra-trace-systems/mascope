@@ -63,7 +63,11 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
-from mascope_backend.api.new.peak_assignments.batch_blend import BLEND_KEY, blend_of
+from mascope_backend.api.new.peak_assignments.batch_blend import (
+    BLEND_KEY,
+    BLEND_TIERS,
+    blend_of,
+)
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
     TIER_BELOW_ASSIGNABILITY,
@@ -2167,7 +2171,11 @@ def vote_consensus(
     # reads it.
     if others:
         blend = blend_of(
-            winner, winner_members, others[0][0], members_by_formula[others[0][0]]
+            winner,
+            winner_members,
+            others[0][0],
+            members_by_formula[others[0][0]],
+            n_committed=sum(1 for m in assigned if _member(m, "tier") in BLEND_TIERS),
         )
         if blend is not None:
             provenance[BLEND_KEY] = blend
