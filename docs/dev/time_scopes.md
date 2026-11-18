@@ -5,7 +5,7 @@
 - **Status:** design
 - **As of:** 2026-11-18
 - **Tracked in:** [Time scopes and dashboards](https://linear.app/ultra-trace/project/time-scopes-and-dashboards-e5387f5d08e6)
-  (Linear, P-MAS-22: the decisions MAS-1020 to MAS-1024 and the steps MAS-1025
+  (Linear, P-MAS-22: the decisions MAS-1020 to MAS-1024 and MAS-1038, the steps MAS-1025
   to MAS-1037 across milestones 0 to 5, filed 2026-11-18; decision MAS-218 of
   *Visual digests* is answered by this note)
 - **What:** The scope as the unit of viewing beside the batch as the unit of analysis: a time window, a range across batches or the live present, drawn by the visual digests' Figure spec in the app, and saved as a dashboard.
@@ -40,6 +40,10 @@ The feature, as a person meets it:
   the PDF report the visual digests package produces.
 - **Now.** A scope whose end is open follows the instrument: the latest sample
   or the last N minutes, refreshing as files arrive.
+- **Two modes, one rule.** The batch view is where results are made and
+  corrected; Explore and Dashboards are where they are read. Data is changed
+  in a batch and read in a scope, and three bridges join the two (section
+  4.6).
 
 The design in one paragraph. Mascope's hierarchy workspace -> dataset -> batch
 -> sample is right for what it does: a batch is where anchors are frozen, a
@@ -300,6 +304,49 @@ The mockups are frames F and G of the navigation review of 2026-11-05, kept
 in the owner's artifacts; the frames are the design, the measures are the
 implementation's to move.
 
+### 4.6 Two modes, one invariant
+
+The design has two modes, and the shell should say so rather than let a
+person infer them from what the main area happens to hold.
+
+- **The batch view** is where results are made and corrected. Its unit is one
+  batch because that is the unit the engine computes over; its evidence is per
+  sample and per peak, a spectrum, an isotopologue envelope, a fit; its
+  controls write: verdicts, re-search, calibration, target collections. It
+  follows the data model closely because it has to.
+- **Explore and Dashboards** are where results are read. A scope resolves to
+  batches and draws their ledgers through the series identity; it owns
+  nothing and writes nothing.
+
+The invariant a user learns once: **data is changed in a batch and read in a
+scope.** The names users meet are places, not modes: *Explore* and
+*Dashboards* in the sidebar, and a batch by its name in the outline. There is
+no mode switch, because the sidebar already is one.
+
+The shell signals the mode in three ways. The breadcrumb's root: the workspace
+chain in a batch, *Explore* or the dashboard's name otherwise. The scope
+strip's form: *Batch* and *Window* are live on a batch, the range presets are
+live in Explore, and picking a range on a batch hands over to Explore with the
+batch's instrument and modes carried along. The write controls: verdict cells,
+the inspector and re-search are present in a batch and absent in Explore.
+
+Three bridges keep the two modes one app:
+
+1. **From Explore to a batch.** A click on a series point opens that sample
+   in its batch with the peak focused; a species row's menu offers *Open in a
+   batch*, the brightest sample of the species in the range.
+2. **From a batch to Explore.** A ledger row or the inspector offers *Explore
+   this species over time*, opening Explore with the compound preselected and
+   the batch's instrument and modes as the scope.
+3. **From Explore to curation across a range.** *Make a batch of this range*
+   hands the scope to the finder. Whether a verdict may instead fan out from
+   Explore to every batch peak in the range, behind an approval, is open
+   question 5; until it is answered the first bridge is the curation path,
+   one batch at a time.
+
+The user documentation's concepts page states the two modes and the invariant
+when the shell ships (MAS-712, MAS-713, MAS-1031).
+
 ---
 
 ## 5. API and SDK surface
@@ -376,6 +423,7 @@ follow.
 | 2 | Who may share a dashboard to a workspace, and who may edit a shared one? | As target collections: any editor of the workspace shares; the owner edits; a shared one is copied to edit. | MAS-1022, gates the dashboard routes |
 | 3 | Does a dashboard pin the engine run, or follow? | Follows, with the run on its face; a report pins by being a snapshot. | MAS-1023, gates the dashboard view |
 | 4 | Does the finder's time histogram and the scope strip's coverage strip become one component? | Yes; the finder's histogram is the coverage strip with counts. | MAS-1024, gates Explore and the finder pane |
+| 5 | May a verdict fan out from Explore to every batch peak of a range, behind an approval, or is a batch the only place to curate? | Not before the dashboards' pilot shows the need; until then a series point opens its sample's batch. The batches would still own the results. | MAS-1038, gates nothing yet |
 
 The time zone and the single-instrument scope, open in the first draft, are
 decisions 8 and 9: both followed from choices already made.
