@@ -14,7 +14,7 @@ from scripted_acquisition import SAMPLE_FILENAME
 
 import mascope_file.io as m_io
 import mascope_signal.peak as m_peak
-from mascope_signal.peak import (
+from mascope_tools.alignment.utils import (
     LOCAL_FLOOR_FACTOR,
     LOCAL_FLOOR_MIN_NEIGHBOURS,
     LOCAL_FLOOR_WINDOW_PPM,
@@ -136,6 +136,17 @@ def test_the_order_of_the_list_does_not_matter():
 
 def test_an_empty_list_has_nothing_under_a_floor():
     assert below_local_floor(np.array([]), np.array([])).size == 0
+
+
+def test_the_detector_uses_the_rule_the_thermo_parity_test_judges():
+    """The Thermo parity test judges its m/z deviation and S:N count over
+    the peaks above this floor. It cannot import ``mascope_signal``, which
+    depends on ``mascope_thermo``, so the rule lives in ``mascope_tools`` and
+    both import it from there, constants and all. A copy here would let the
+    two drift apart."""
+    import mascope_tools.alignment.utils as m_utils
+
+    assert m_peak.below_local_floor is m_utils.below_local_floor
 
 
 # -- through the detector ------------------------------------------------------------

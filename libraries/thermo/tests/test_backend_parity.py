@@ -33,7 +33,7 @@ from mascope_thermo.backend import MS_SCAN_DETECTOR_STATS, open_backend
 from mascope_thermo.calibration import CONVERSION_B, CONVERSION_C
 from mascope_thermo.lib import thermo_available
 from mascope_thermo.scan_filter import parse_scan_filter
-from mascope_tools.alignment.utils import flag_satellite_peaks
+from mascope_tools.alignment.utils import below_local_floor, flag_satellite_peaks
 
 
 # Every test here compares OpenTFRaw against the Thermo backend, which needs the
@@ -803,13 +803,6 @@ _STEP_MATCH_SHARE = 0.5
 #: (``mascope_signal``), which the averaged S:N feeds.
 _WEAK_SN = 3.0
 
-#: The local floor of ``mascope_signal.peak.below_local_floor``, restated
-#: (:func:`_below_local_floor`): its ``LOCAL_FLOOR_WINDOW_PPM``,
-#: ``LOCAL_FLOOR_MIN_NEIGHBOURS`` and ``LOCAL_FLOOR_FACTOR``.
-_LOCAL_FLOOR_WINDOW_PPM = 3000.0
-_LOCAL_FLOOR_MIN_NEIGHBOURS = 300
-_LOCAL_FLOOR_FACTOR = 5.0
-
 
 def _calibration_step_ppm(path, scans) -> float:
     """The largest move of one frequency's m/z between consecutive ``scans``.
@@ -837,31 +830,6 @@ def _calibration_step_ppm(path, scans) -> float:
         u = 2.0 * mz / (b0 + np.sqrt(b0 * b0 + 4.0 * c0 * mz))
         steps.append(abs(b1 * u + c1 * u * u - mz) / mz * 1e6)
     return float(max(steps))
-
-
-def _below_local_floor(mz: np.ndarray, heights: np.ndarray) -> np.ndarray:
-    """Which peaks of one peak list peak detection sets under the local floor.
-
-    The rule of ``mascope_signal.peak.below_local_floor`` for a list of one
-    spectrum, restated with its constants (``LOCAL_FLOOR_WINDOW_PPM``,
-    ``LOCAL_FLOOR_MIN_NEIGHBOURS``, ``LOCAL_FLOOR_FACTOR``): ``mascope_signal``
-    depends on ``mascope_thermo``, so this library's tests do not import it.
-    Where the peaks within the window of a peak's m/z number the neighbours
-    or more besides it, a peak under the factor times their median height is
-    one of a floor's maxima.
-    """
-    mz = np.asarray(mz, dtype=np.float64)
-    heights = np.asarray(heights, dtype=np.float64)
-    below = np.zeros(mz.size, dtype=bool)
-    order = np.argsort(mz, kind="stable")
-    sorted_mz, sorted_heights = mz[order], heights[order]
-    half_width = _LOCAL_FLOOR_WINDOW_PPM * 1e-6
-    lower = np.searchsorted(sorted_mz, sorted_mz * (1 - half_width))
-    upper = np.searchsorted(sorted_mz, sorted_mz * (1 + half_width))
-    for i in np.flatnonzero(upper - lower - 1 >= _LOCAL_FLOOR_MIN_NEIGHBOURS):
-        floor = np.median(sorted_heights[lower[i] : upper[i]])
-        below[order[i]] = sorted_heights[i] < _LOCAL_FLOOR_FACTOR * floor
-    return below
 
 
 def _side_lobes_or_satellites(monkeypatch, path, mz, intensity, resolution, window):
@@ -1008,14 +976,14 @@ def _averaged_centroid_failures(readings: dict) -> list[str]:
     # (3) The matched peaks must agree to *sub-0.1 ppm* -- this is the HRMS mass
     # accuracy guarantee, and the centroid m/z is what feeds peak detection,
     # so it is judged over the peaks that detection keeps: those above the
-    # local floor (_below_local_floor). Measured on the demo raws: median
-    # 0.04-0.09 ppm, p90 0.11-0.25 ppm (the highest of both is the raw at
-    # 60,000). Beside one dominant ion of a high-resolution acquisition,
-    # thousands of weak centroids crowd under the floor and scatter 0.12-0.14
-    # ppm at the median; above it the highest median is 0.096 ppm on the
-    # customer files. With no matched peak above the floor there is nothing
-    # to judge, and that is itself a failure.
-    kept_o = ~_below_local_floor(om, oi)
+    # local floor (below_local_floor, the weak flag's own rule). Measured on
+    # the demo raws: median 0.04-0.09 ppm, p90 0.11-0.25 ppm (the highest of
+    # both is the raw at 60,000). Beside one dominant ion of a high-resolution
+    # acquisition, thousands of weak centroids crowd under the floor and
+    # scatter 0.12-0.14 ppm at the median; above it the highest median is
+    # 0.096 ppm on the customer files. With no matched peak above the floor
+    # there is nothing to judge, and that is itself a failure.
+    kept_o = ~below_local_floor(om, oi)
     md = dev_ppm[matched & kept_o]
     if not md.size:
         failures.append("no matched peak above the local floor")
@@ -1054,7 +1022,7 @@ def _averaged_centroid_failures(readings: dict) -> list[str]:
     # 1.5 times the per-scan noise over sqrt(N), and the weak centroids under
     # the floor there cross the threshold under OpenTFRaw only. Asserted where
     # there are enough peaks to be statistically meaningful.
-    t_pass = int(((tsn >= _WEAK_SN) & ~_below_local_floor(tm, ti)).sum())
+    t_pass = int(((tsn >= _WEAK_SN) & ~below_local_floor(tm, ti)).sum())
     o_pass = int(((osn >= _WEAK_SN) & kept_o).sum())
     if t_pass >= 20 and not 0.7 * t_pass <= o_pass <= 1.4 * t_pass:
         failures.append(f"{o_pass} averaged centroids above S:N 3 vs Thermo {t_pass}")

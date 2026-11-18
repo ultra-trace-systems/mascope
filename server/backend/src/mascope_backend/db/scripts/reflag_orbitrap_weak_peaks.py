@@ -4,12 +4,13 @@ local floor, in the peak stores written before the floor existed.
 
 An Orbitrap peak is weak when its signal-to-noise is under
 ``SIGNAL_TO_NOISE_THRESHOLD``, or when it sits under the floor of a dense
-stretch of its own spectrum (``mascope_signal.peak.below_local_floor``,
-#2752). The flag is set when a file's peaks are detected, so every store
-written before the floor keeps the signal-to-noise flag alone until its file
-is detected again. Around the reagent ions of a file averaged over many
-microscans that leaves a floor of maxima, tens of thousands of peaks a
-file, which the peak list, calibration and matching all read as peaks.
+stretch of its own spectrum
+(``mascope_tools.alignment.utils.below_local_floor``, #2752). The flag is set
+when a file's peaks are detected, so every store written before the floor
+keeps the signal-to-noise flag alone until its file is detected again.
+Around the reagent ions of a file averaged over many microscans that leaves a
+floor of maxima, tens of thousands of peaks a file, which the peak list,
+calibration and matching all read as peaks.
 
 The rule reads only what the store holds - each peak's m/z,
 ``sum_peak_heights`` and ``signal_to_noise``, and its ``polarity``, or its
@@ -97,6 +98,7 @@ import mascope_signal.compute as m_compute
 import mascope_signal.mz_factor as m_factor
 import mascope_signal.peak as m_peak
 import mascope_signal.stitch as m_stitch
+import mascope_tools.alignment.utils as m_floor
 from mascope_backend.db import async_session, configure_database_engine
 from mascope_backend.runtime import runtime
 from mascope_thermo.scan_filter import parse_stream_key
@@ -160,9 +162,9 @@ def rule() -> dict:
     file read under other parameters is read again."""
     return {
         "signal_to_noise": m_peak.SIGNAL_TO_NOISE_THRESHOLD,
-        "window_ppm": m_peak.LOCAL_FLOOR_WINDOW_PPM,
-        "min_neighbours": m_peak.LOCAL_FLOOR_MIN_NEIGHBOURS,
-        "factor": m_peak.LOCAL_FLOOR_FACTOR,
+        "window_ppm": m_floor.LOCAL_FLOOR_WINDOW_PPM,
+        "min_neighbours": m_floor.LOCAL_FLOOR_MIN_NEIGHBOURS,
+        "factor": m_floor.LOCAL_FLOOR_FACTOR,
     }
 
 
