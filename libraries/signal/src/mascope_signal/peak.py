@@ -31,7 +31,11 @@ from mascope_match.params import (
 )
 from mascope_signal.runtime import runtime
 from mascope_thermo.thermo import NoScansFoundError
-from mascope_tools.alignment.utils import flag_exception_peaks, flag_satellite_peaks
+from mascope_tools.alignment.utils import (
+    below_local_floor,
+    flag_exception_peaks,
+    flag_satellite_peaks,
+)
 
 
 # Restrict large chunks for dask
@@ -78,20 +82,6 @@ SNR_WINDOW_DMZ = DMZ
 #: that of all of them in 99 draws of 100, and it holds against 14 runs that
 #: are clusters of several ions rather than one.
 SNR_EVENT_MIN_RUNS = 30
-#: The half-width, in ppm of a peak's m/z, of the window an Orbitrap peak is
-#: measured against when its spectrum is dense there (:func:`below_local_floor`).
-#: Wide enough that the comb a few hundred ppm either side of a reagent ion,
-#: dense over too short a stretch, does not fill it: those are the satellite
-#: flag's.
-LOCAL_FLOOR_WINDOW_PPM = 3000.0
-#: How many other peaks of its spectrum that window must hold for the stretch
-#: to count as dense: one every 20 ppm on average over 6000 ppm. A list of
-#: resolved ions does not come near it; the floor of maxima around a dominant
-#: ion in a spectrum averaged over many microscans holds one every few ppm.
-LOCAL_FLOOR_MIN_NEIGHBOURS = 300
-#: How many times the median height of the window's peaks a peak of a dense
-#: stretch has to stand to be kept
-LOCAL_FLOOR_FACTOR = 5.0
 #: The TOF sample interval, in ns, a file whose props do not record one is
 #: taken to have: a TOF peak's area is its bins' sum times the interval.
 DEFAULT_SAMPLE_INTERVAL_NS = 0.25
@@ -136,61 +126,6 @@ PER_STREAM_PROP = "peaks_per_stream"
 #: that rescaling the axis cannot bring two rows back onto one double
 #: (:func:`_strictly_increasing`).
 MZ_ROW_SEPARATION = 2.0**-40
-
-
-def below_local_floor(
-    mz: np.ndarray,
-    heights: np.ndarray,
-    spectrum: np.ndarray | None = None,
-) -> np.ndarray:
-    """Which peaks of an Orbitrap peak list sit under the floor around them.
-
-    The instrument writes a signal-to-noise with every centroid, and the weak
-    flag goes by it. Its noise is one figure for a wide stretch of m/z, and
-    it does not follow a floor that rises locally. Around a reagent ion of
-    millions of counts, a spectrum averaged over many microscans holds a
-    floor of maxima, a centroid every few ppm over several Da, each read far
-    above the threshold: the averaging lowered the noise and left the floor.
-
-    A peak is measured against the peaks around it instead: those of its own
-    spectrum within :data:`LOCAL_FLOOR_WINDOW_PPM` of its m/z, itself
-    included. Where the window holds at least
-    :data:`LOCAL_FLOOR_MIN_NEIGHBOURS` other peaks, the stretch is a floor
-    rather than a list of resolved ions, and a peak under
-    :data:`LOCAL_FLOOR_FACTOR` times the median height of the window's peaks
-    is one of its maxima. A real ion in the floor stands out of it and stays.
-    Where the window holds fewer peaks, the stretch says nothing of a floor
-    and its peaks are left to the signal-to-noise.
-
-    :param mz: The peaks' m/z
-    :type mz: np.ndarray
-    :param heights: Their heights, in any unit the list shares
-    :type heights: np.ndarray
-    :param spectrum: The spectrum each peak is of: its polarity, or its stream
-        where the file is detected per stream; None for a list of one. A peak
-        is measured against its own spectrum's peaks only: another
-        spectrum's floor is no floor of its.
-    :type spectrum: np.ndarray | None
-    :return: True for each peak under the floor of a dense stretch
-    :rtype: np.ndarray
-    """
-    mz = np.asarray(mz, dtype=np.float64)
-    heights = np.asarray(heights, dtype=np.float64)
-    if spectrum is None:
-        spectrum = np.zeros(mz.size, dtype=np.int8)
-    spectrum = np.asarray(spectrum)
-    below = np.zeros(mz.size, dtype=bool)
-    half_width = LOCAL_FLOOR_WINDOW_PPM * 1e-6
-    for label in np.unique(spectrum):
-        members = np.flatnonzero(spectrum == label)
-        order = members[np.argsort(mz[members], kind="stable")]
-        sorted_mz, sorted_heights = mz[order], heights[order]
-        lower = np.searchsorted(sorted_mz, sorted_mz * (1 - half_width))
-        upper = np.searchsorted(sorted_mz, sorted_mz * (1 + half_width))
-        for i in np.flatnonzero(upper - lower - 1 >= LOCAL_FLOOR_MIN_NEIGHBOURS):
-            floor = np.median(sorted_heights[lower[i] : upper[i]])
-            below[order[i]] = sorted_heights[i] < LOCAL_FLOOR_FACTOR * floor
-    return below
 
 
 class PeakDetectionError(Exception):
