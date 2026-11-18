@@ -349,7 +349,7 @@ exist, with different strengths:
 | Series key | Identity | Stable across batches | Source | In |
 |---|---|---|---|---|
 | `ion:<target_ion_id>` | a compound's ion in a target collection | yes, by construction | `/match/records/ion/series` | v1 |
-| `formula:<formula>|<adduct>` | an assigned formula and adduct from the batch ledger | yes while the engine agrees with itself; the store records the run per batch | `/batch-peaks/records/series` | v1 |
+| `formula:<formula>\|<adduct>` | an assigned formula and adduct from the batch ledger | yes while the engine agrees with itself; the store records the run per batch | `/batch-peaks/records/series` | v1 |
 | `mz:<centre>` | an untargeted m/z bin aligned across batches | needs ppm gap-clustering across batches and tolerance for calibration drift | batch-peak consensus m/z, or peaks | v3 (section 3, `covariation`) |
 
 v1 charts draw targeted ions and assigned formulas. The time by m/z heatmap
@@ -561,8 +561,9 @@ The live view is the output this plan did not have. It needs two things:
    section 2.1 exists for this. A day's scope renders live from the routes
    the app's batch charts use today. A campaign's scope needs server-side
    rollups, which the client-side campaign store does not give the
-   server: that is the real cost inside decision 8's question (a), and
-   the pilot measures the demand before anyone builds it.
+   server: that is the real cost of the app drawing long series itself
+   (MAS-218's option (a)), and decision 8's answer takes it on as the
+   rollups of [`time_scopes.md`](time_scopes.md) section 4.3.
 2. **A Figure renderer component in the app.** One Vue component that
    draws a Figure spec with plotly.js, beside the hand-written navigation
    charts, sharing the theme (section 2.4) so the two read as one system.
@@ -924,7 +925,9 @@ issue for the owner in the Linear project.
    rejected as the only path: a bundle is a snapshot, and a dashboard that
    cannot follow today's data is a report. Taken with the pilot's reading
    in hand; recorded so it is not decided by default. *Answered
-   2026-11-18 by the owner, ahead of the pilot: (a), with (b)'s renderer
+   2026-11-18 by the owner, ahead of the pilot, in MAS-218's terms: (a),
+   the app draws long time series itself over a time range, with (b)'s
+   renderer, the component that would have embedded a stored bundle,
    inside it. The design is [`time_scopes.md`](time_scopes.md): the scope
    as the unit of viewing, server-side rollups written at the ingest
    fold, the figure endpoint and renderer of section 2.8, saved recipes
