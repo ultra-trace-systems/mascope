@@ -386,8 +386,9 @@ offering and should be priced as one.
 ### 6.3 A site in mainland China
 
 Managed on-premises, as 6.1 draws it, does not fit a site in mainland China.
-Both of its outbound paths fail there: the updates for technical reasons, the
-tunnel because of the rules. Two routes fit instead. Without a partner, the
+Both of its outbound paths fail there. The updates fail for technical
+reasons. The tunnel fails because the rules leave it unsettled and the
+customer's IT will refuse it. Two routes fit instead. Without a partner, the
 server sits at the site as an isolated appliance (6.3.1). With a local
 partner, a Mascope region inside China serves every Chinese customer
 (6.3.2).
@@ -408,9 +409,21 @@ From the mainland:
 So a Chinese site updates by the isolated plan's signed bundle
 ([isolated_deployment_plan.md](isolated_deployment_plan.md) section 5), which
 already carries the third-party images. It therefore waits on the bundle
-phases: MAS-303, and the issues it files. The alternative is to mirror our
-images into a registry inside China, run by a Chinese cloud provider. That
-adds an account there and a publishing step to every release.
+phases: MAS-303, and the issues it files.
+
+The bundle still has to reach the site. It is a GitHub release asset of a
+gigabyte or two (the isolated plan's section 5.2), so it comes one of three
+ways:
+
+- downloaded across the border, where a file download can resume after an
+  image pull would have timed out;
+- carried in by a local partner;
+- fetched from a copy hosted inside China.
+
+The alternative to the bundle is to mirror our images into a registry inside
+China, run by a Chinese cloud provider. That adds an account there and a
+publishing step to every release. It also needs the updater change that
+6.3.2 records, since today's updater cannot take a mirror.
 
 **The tunnel, technically.** Tailscale often connects:
 
@@ -428,37 +441,83 @@ Tunnel and a reverse SSH tunnel, cross the same border.
 
 **The tunnel, by the rules.** This is the real blocker.
 
-- The Ministry of Industry and Information Technology's notice of January
-  2017 bars anyone from setting up or renting cross-border dedicated lines or
-  other channels, VPNs included, without the telecom authorities' approval
-  ([translation](https://www.chinalawtranslate.com/%e5%b7%a5%e4%b8%9a%e5%92%8c%e4%bf%a1%e6%81%af%e5%8c%96%e9%83%a8%e5%85%b3%e4%ba%8e%e6%b8%85%e7%90%86%e8%a7%84%e8%8c%83%e4%ba%92%e8%81%94%e7%bd%91%e7%bd%91%e7%bb%9c%e6%8e%a5%e5%85%a5%e6%9c%8d%e5%8a%a1/?lang=en)).
-- The ministry later said that foreign and multinational firms needing such
-  links should rent them from operators with international gateways
-  ([Yicai Global, July 2017](https://www.yicaiglobal.com/news/new-vpn-regulation-will-not-affect-lawful-users-miit-says)).
+- **The 2017 notice.** In January 2017 the Ministry of Industry and
+  Information Technology issued a notice to carriers, internet access
+  operators and the provincial telecom administrations. It was a clean-up
+  campaign set to run until 31 March 2018.
+  - Among the problems the operators had to find and fix in their own
+    networks, it lists setting up or renting dedicated lines or other
+    channels, VPNs included, without approval, "to conduct cross-border
+    business activities" (part 2(2), item 4;
+    [official text, reprinted](https://www.cac.gov.cn/2017-01/23/c_1120366809.htm);
+    [translation](https://www.chinalawtranslate.com/%e5%b7%a5%e4%b8%9a%e5%92%8c%e4%bf%a1%e6%81%af%e5%8c%96%e9%83%a8%e5%85%b3%e4%ba%8e%e6%b8%85%e7%90%86%e8%a7%84%e8%8c%83%e4%ba%92%e8%81%94%e7%bd%91%e7%bd%91%e7%bb%9c%e6%8e%a5%e5%85%a5%e6%9c%8d%e5%8a%a1/?lang=en)).
+  - The same item has carriers tell users that a leased international line
+    is for their internal office use only.
+- **The ministry's Q&A** of 26 January 2017. Foreign trade and multinational
+  firms that need cross-border links for their own office use may rent them
+  from operators licensed for international gateways
+  ([Q&A](https://www.cac.gov.cn/2017-01/26/c_1120381529.htm);
+  [Yicai Global, July 2017](https://www.yicaiglobal.com/news/new-vpn-regulation-will-not-affect-lawful-users-miit-says),
+  for a later statement to the same effect).
+- **The nearest standing rule** is the 2002 measures on international
+  communications gateways (Ministry of Information Industry Order No. 22),
+  Art. 22
+  ([text](https://www.gov.cn/zhengce/2022-08/23/content_5722724.htm)):
+  - a VPN through an international gateway that runs a telecom business
+    needs the ministry's approval;
+  - one for internal use is filed with the ministry.
 
-A standing tunnel from the customer's server to Ultra Trace's hosts is a
-self-built cross-border channel of exactly that kind. Expect the customer's
-IT to refuse it.
+A standing tunnel from the customer's server to Ultra Trace's hosts fits
+neither branch cleanly. It runs no telecom business, and it is not the
+customer's internal use alone. Its status is unsettled, a question for
+counsel (section 11). Either way, expect the customer's IT to refuse it.
 
 **Atmospheric data.**
 
-- The Measures for the Administration of Foreign-related Meteorological
-  Observation and Data
-  ([InforMEA](https://informea.org/en/content/legislation/measures-administration-foreign-related-meteorological-observation-and-data))
-  require a permit for a foreign-related observation station, and govern
-  meteorological data provided to foreign parties.
-- In October 2023 the Ministry of State Security reported that it had
-  checked more than 3,000 foreign-related stations. It found several hundred
-  sending data abroad in real time without approval
+- **The Measures for the Administration of Foreign-related Meteorological
+  Observation and Data.** These are China Meteorological Administration
+  (CMA) Order No. 40, issued with the Ministry of State Security and the
+  state secrets administration. They have been in force since 1 August 2022
+  and replace the 2006 measures
+  ([text](https://www.cma.gov.cn/zfxxgk/gknr/flfgbz/gz/202207/t20220726_5000069.html),
+  [InforMEA](https://informea.org/en/content/legislation/measures-administration-foreign-related-meteorological-observation-and-data)).
+  - **Art. 5:** no organisation or individual may provide observation sites
+    or meteorological data to a foreign organisation or individual that is
+    not approved.
+  - **Art. 6:** a foreign-related observation station needs a permit.
+  - **Art. 25(1):** meteorological observation is the systematic observation
+    and measurement of the atmosphere's physical processes and phenomena,
+    "and their chemical properties".
+- **What that means for an Orbion's data.** Whether it may reach Ultra
+  Trace's hosting turns on Art. 5: is it meteorological data in this sense,
+  and are we approved? It does not turn on who runs the station.
+- **CMA's Meteorological Data Management Measures.** These are Order No. 49,
+  in force since 1 November 2026
+  ([text](https://www.cma.gov.cn/zfxxgk/gknr/flfgbz/gz/202609/t20260924_8062585.html)).
+  - **Art. 2:** they apply to meteorological data handled inside China.
+  - **Art. 3:** they define such data broadly, as any record of
+    meteorological and related information about the Earth system's
+    spheres.
+  - **Art. 28:** CMA sets a catalogue of important meteorological data.
+  - **Art. 29:** sending important meteorological data abroad needs a
+    data-export security assessment and a national security review.
+- **The 2023 checks.** In October 2023 the Ministry of State Security
+  reported that it had checked more than 3,000 foreign-related stations. It
+  found several hundred sending data abroad in real time without approval
   ([CNA](https://www.cna.com.tw/news/acn/202310310031.aspx)).
-- Whether an Orbion measuring atmospheric composition falls within the
-  measures is unconfirmed (section 11). The question bears hardest on the
+- **What is unconfirmed.** Whether an Orbion's measurements are
+  meteorological data in these measures' sense, and whether any are in CMA's
+  catalogue, is unconfirmed (section 11). The question bears hardest on the
   cloud offerings, which send every measurement abroad as it is made.
-- The Cyberspace Administration of China's cross-border data provisions of
-  March 2024 exempt data from academic cooperation from their assessment and
-  contract requirements. The exemption holds only when the data contains no
-  personal information and no important data
+- **The CAC exemption.** The Cyberspace Administration of China's
+  cross-border data provisions of March 2024 exempt data from academic
+  cooperation from their assessment and contract requirements
   ([Hunton](https://www.hunton.com/privacy-and-cybersecurity-law-blog/2024/03/27/new-era-of-regulation-for-cross-border-transfers-in-china/)).
+  - The exemption holds only when the data contains no personal information
+    and no important data. Whether atmospheric data is important data goes
+    through CMA's catalogue.
+  - The exemption is from the CAC's own procedures, so it does not lift
+    Art. 5's approval, which is CMA's.
 
 **What fits:**
 
@@ -469,13 +528,25 @@ IT to refuse it.
   well. Neither report has been tested.
 - The isolated plan's support bundle (its section 6), for diagnosis without
   a session.
-- A standing tunnel only over a cross-border line the customer already rents
-  from a licensed operator, and only with their written approval.
+- A tunnel only over a cross-border line the customer already rents from a
+  licensed operator, and only with their written approval. Even then,
+  counsel has to find our use within the line's internal-office-use limit
+  (6.3.2, section 11).
 - A local partner for hands-on work.
 
-That is the isolated appliance of 6.2. Its gateway (section 7), whichever
-machine plays that role, crosses the border only in sessions the customer
-opens.
+That is the isolated appliance of 6.2, with one change: the isolated plan's
+subnet router (its sections 4.1 and 4.2) stays off.
+
+- A tunnel to our hosts is a cross-border channel whether it is up for a
+  window or all the time, so the customer's switch does not settle the rules'
+  question.
+- A Chinese site's sessions are therefore the attended remote-desktop
+  sessions above, started and ended by someone at the PC.
+- Its gateway (section 7), whichever machine plays that role, carries no
+  tunnel of ours and relays nothing outside those sessions.
+- Remote desktop is the customer using a commercial service, where a tunnel
+  is a channel into their network. Whether the rules see that difference is
+  part of the same question for counsel.
 
 #### 6.3.2 With a local partner: a Mascope region in China
 
@@ -533,22 +604,36 @@ and the image registry into settings. Section 11 records the choice.
   its online application, and the subscription is paid to China Unicom
   ([CEN](https://help.aliyun.com/en/cen/support/faq-about-cross-border-network-communication),
   [Express Connect](https://help.aliyun.com/en/express-connect/support/faq-about-cross-border-service)).
-  This is the licensed-operator route that the 2017 notice points to, so as
-  far as the network rules go, a standing tunnel over it is allowed. It is
-  the most robust route, at a monthly fee.
+  - It is the licensed-operator route that the 2017 notice and the
+    ministry's Q&A point to.
+  - The same notice limits such a line to the user's internal office use.
+    It also bars using the line to connect domestic and overseas data
+    centres or business platforms to run a telecom business.
+  - Whether our maintenance of the partner's region counts as the partner's
+    internal office use is a question for counsel (section 11). If it does,
+    this is the most robust route, at a monthly fee.
 - **Windows the partner opens.** At the agreed time the partner admits our
   jump host or starts the tunnel, we do the work, and they close it again.
-  The session is logged. SSH from abroad to a Chinese cloud server usually
-  works but can be throttled, so a window needs time to spare. There is no
-  standing tunnel.
+  - The session is logged.
+  - SSH from abroad to a Chinese cloud server usually works but can be
+    throttled, so a window needs time to spare.
+  - There is no standing tunnel, but a tunnel up for a window is still a
+    channel across the border, so the rules ask the same question of it
+    (6.3.1).
+  - What a window adds is less exposure, plus the partner's own switch and
+    log.
+
+  Counsel answers the windowed and the standing case together (section 11).
 
 **The catch: our access counts as data export.** The CAC's guidelines of
 31 August 2022 for the outbound-transfer security assessment treat an
 overseas party's right to access, retrieve, download or export data stored
 in China as an outbound transfer
 ([Han Kun](https://www.hankunlaw.com/en/portal/article/index/cid/8/id/9655.html)).
-An admin login on the server can read the database. So maintenance is
-designed not to need the data:
+An admin login on the server can read the database. If the measurements are
+meteorological data, Order No. 40's Art. 5 also limits what the partner may
+show us, and Order No. 49 applies to the data inside China (6.3.1). So
+maintenance is designed not to need the data:
 
 - Our role updates the software and checks its health. It does not read
   measurements, and the logs and the contract back that up.
@@ -606,7 +691,11 @@ In mainland China, managed on-premises does not fit (6.3).
 
 - **Without a partner:** the isolated appliance with attended support is
   the row that fits. The cloud rows would send every measurement abroad, so
-  they wait on the meteorological-data question.
+  they wait on the meteorological-data question. Cloud + Connector also
+  waits on the tunnel question. A connector's administration (5.2) is
+  Tailscale to our admin devices, a standing tunnel across the border
+  (6.3.2). So without a partner, a connector needs the customer's licensed
+  line or windows the customer opens, as a partner's does.
 - **With a local partner running a Mascope region inside China:** the first
   two rows come back for Chinese customers, with the region in the
   instance's place.
@@ -693,21 +782,30 @@ isolated plan's phases. (MAS-973.)
   accepts; and whether TeamViewer works through the connector's proxy on 443
   as its documentation says (phase A's test).
 - **A site in mainland China** (6.3), for the customer and Chinese counsel:
-  - whether an Orbion measuring atmospheric composition is a foreign-related
-    meteorological observation station in the measures' sense, and so
-    whether its data may reach Ultra Trace's hosting at all;
-  - whether its data counts as important data under the Cyberspace
-    Administration's provisions;
+  - whether an Orbion's measurements are meteorological data in the sense of
+    CMA Order No. 40 (Art. 25), and so whether Art. 5 lets them reach Ultra
+    Trace's hosting without CMA's approval;
+  - whether any of them are in CMA's catalogue of important meteorological
+    data (Order No. 49, Art. 28). That catalogue also decides whether they
+    are important data for the Cyberspace Administration's exemption;
+  - the status of a tunnel from the customer's server to our hosts, under
+    the 2017 notice and Art. 22 of the 2002 gateway measures, and whether one
+    up for a window differs from a standing one;
   - whether the customer already rents a cross-border line from a licensed
-    operator.
+    operator, and whether our use of it would fall within its
+    internal-office-use limit.
 
   For a partner region (6.3.2), also for counsel:
-  - whether our maintenance access counts as a transfer of important data;
+  - whether our maintenance access counts as a transfer of important data,
+    which again goes through CMA's catalogue;
+  - what Order No. 40's Art. 5 lets the partner show us, and what Order
+    No. 49 asks of the partner for the data it holds in China;
+  - whether our maintenance over the partner's licensed line counts as the
+    partner's internal office use, and the same tunnel question for the
+    windows;
   - whether the service needs only the ICP filing, or the commercial licence
     too;
-  - which MLPS level applies;
-  - whether the meteorological measures still apply when the data stays in
-    China under a Chinese operator.
+  - which MLPS level applies.
 
   For us:
   - which remote-support tool crosses the border well enough, tested at the
