@@ -27,7 +27,8 @@ that does not track is another peak the window reached, no reading of this
 ion's share. A predicted line the scorer saw absent - no peak, or one the match
 parameters' ratio window turned away - counts toward its bin's presence. On an
 Orbitrap only the 13C lines are read (the curve is the 13C lines' response,
-decision 32); on a TOF every line, since its centre and width are of the
+decision 32), a line read as its brightest member where the run merged lines
+at the file's R(m/z); on a TOF every line, since its centre and width are of the
 committed lines' relative error. A line is read as the score reads it: its
 intensity over the anchor's, the most abundant predicted line's, against its
 share of that line, at an expected S/N of its share times the anchor's S/N.
@@ -62,6 +63,9 @@ from sqlalchemy import select
 
 import mascope_file.io as m_io
 import mascope_thermo.streams as m_streams
+from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
+    LEAD_ISOTOPE_FORMULA,
+)
 from mascope_backend.api.new.peak_assignments.config import IN_APP_ENGINE
 from mascope_backend.api.new.peak_assignments.engine import (
     ENVELOPE_TOLERANCE_KEY,
@@ -141,6 +145,17 @@ def is_carbon13_line(formula, labels: dict[str, int] | None = None) -> bool:
         if set(substituted) != {CARBON_13}:
             return False
     return True
+
+
+def _line_name(ion: pd.DataFrame, index) -> str | None:
+    """The isotopologue a line of the frame is read as: its leading member
+    where the run resolved its lines at the file's R(m/z)
+    (``target_ions_compute.LEAD_ISOTOPE_FORMULA``), else its own formula."""
+    if LEAD_ISOTOPE_FORMULA in ion.columns:
+        lead = ion.at[index, LEAD_ISOTOPE_FORMULA]
+        if isinstance(lead, str) and lead:
+            return lead
+    return ion.at[index, "target_isotope_formula"]
 
 
 def _finite(value) -> float | None:
@@ -270,7 +285,7 @@ def envelope_lines(
             if index == anchor:
                 continue
             if form == FORM_CURVE and not is_carbon13_line(
-                ion.at[index, "target_isotope_formula"], labels
+                _line_name(ion, index), labels
             ):
                 continue
             share = float(abundance[index]) / float(abundance[anchor])

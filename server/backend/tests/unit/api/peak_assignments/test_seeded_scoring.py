@@ -41,6 +41,18 @@ from mascope_tools.composition.profiles import INSTRUMENT_FALLBACK_SIGMA_PPM
 
 pytestmark = pytest.mark.asyncio
 
+
+@pytest.fixture(autouse=True)
+def _no_resolution(monkeypatch):
+    """These samples have no file to read a resolving power off: their seeds'
+    lines are the fine structure, as a file without one gets them."""
+
+    async def none(sample):
+        return None
+
+    monkeypatch.setattr(service, "_resolution_of", none)
+
+
 MECH = "mech-h"
 TARGET = ("C20H38O2", MECH)
 #: Twenty others, C and O counts the target's, so their envelopes are as deep.
@@ -540,3 +552,47 @@ async def test_a_runs_seeded_re_score_is_handed_the_runs_tolerance(stubbed):
         await _fit({TARGET}, reagent_offset=None, envelope_tolerance=CENTRED_LOW)
     )
     assert fits[TARGET] < await _fit({TARGET}, envelope_tolerance=None) - 0.05
+
+
+def _low_resolution(mz):
+    """A resolving power at which one peak holds an ion's M+1 cluster."""
+    return 2000.0
+
+
+async def test_the_seeds_lines_are_resolved_at_the_files_resolution(
+    stubbed, monkeypatch
+):
+    """The seeded chain predicts its lines as Stage A and the search do, at the
+    file's R(m/z) (MAS-977): fewer, merged lines where the file reads one."""
+    await score_seeds(SAMPLE, {TARGET}, OrbiMatchParams())
+    fine = len(stubbed[-1])
+
+    async def resolution(sample):
+        return _low_resolution
+
+    monkeypatch.setattr(service, "_resolution_of", resolution)
+    await score_seeds(SAMPLE, {TARGET}, OrbiMatchParams())
+
+    assert len(stubbed[-1]) < fine
+
+
+async def test_a_runs_re_score_is_handed_the_runs_resolution(stubbed, monkeypatch):
+    """A run reads its file's resolving power once and hands it on; the chain
+    does not read it again."""
+    await score_seeds(SAMPLE, {TARGET}, OrbiMatchParams(), resolution=_low_resolution)
+    merged = len(stubbed[-1])
+
+    async def unread(sample):
+        raise AssertionError("the run's re-score read the resolution again")
+
+    monkeypatch.setattr(service, "_resolution_of", unread)
+    await service._seeded_rescore(
+        SAMPLE,
+        OrbiMatchParams(),
+        {TARGET},
+        reagent_offset=None,
+        envelope_tolerance=None,
+        resolution=_low_resolution,
+    )
+
+    assert len(stubbed[-1]) == merged

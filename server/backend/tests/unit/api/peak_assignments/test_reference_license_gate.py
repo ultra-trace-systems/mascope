@@ -32,6 +32,9 @@ import pandas as pd
 import pytest
 
 import mascope_backend.api.new.peak_assignments.service as service
+from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
+    FileLines,
+)
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.service import (
     REFERENCE_LICENSES_KEY,
@@ -43,6 +46,9 @@ from mascope_reference import KnownComposition, KnownIdentity
 
 
 _MOD = "mascope_backend.api.new.peak_assignments.service"
+
+#: An Orbitrap file with no resolution read: its fine lines as they are.
+_FINE = FileLines("HIGH")
 
 
 def _mechanism(mech_id="m-deprot", notation="[M-H]-", polarity="-"):
@@ -159,7 +165,7 @@ class TestGateAtTheCallSite:
         known, _ = self._patches([None])
 
         await _fetch_reference_known_isotopes(
-            _orbi_sample(), 0.0, [_mechanism()], known_window=None
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None, file_lines=_FINE
         )
 
         assert known.await_args.kwargs["licenses"] is None
@@ -169,7 +175,7 @@ class TestGateAtTheCallSite:
         known, _ = self._patches([["CC0", "public-domain"]])
 
         await _fetch_reference_known_isotopes(
-            _orbi_sample(), 0.0, [_mechanism()], known_window=None
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None, file_lines=_FINE
         )
 
         assert known.await_args.kwargs["licenses"] == {"CC0", "public-domain"}
@@ -181,10 +187,10 @@ class TestGateAtTheCallSite:
         known, build = self._patches([None, ["public-domain"]])
 
         await _fetch_reference_known_isotopes(
-            _orbi_sample(), 0.0, [_mechanism()], known_window=None
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None, file_lines=_FINE
         )
         await _fetch_reference_known_isotopes(
-            _orbi_sample(), 0.0, [_mechanism()], known_window=None
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None, file_lines=_FINE
         )
 
         assert build.call_count == 2
@@ -196,10 +202,10 @@ class TestGateAtTheCallSite:
         known, build = self._patches([["public-domain"]] * 2)
 
         await _fetch_reference_known_isotopes(
-            _orbi_sample(), 0.0, [_mechanism()], known_window=None
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None, file_lines=_FINE
         )
         await _fetch_reference_known_isotopes(
-            _orbi_sample(), 0.0, [_mechanism()], known_window=None
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None, file_lines=_FINE
         )
 
         build.assert_called_once()

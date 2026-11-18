@@ -15,6 +15,10 @@ import pandas as pd
 import pytest
 
 import mascope_backend.api.new.peak_assignments.service as service
+from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
+    FileLines,
+    lines_at_file,
+)
 from mascope_backend.api.new.peak_assignments.service import (
     _build_reference_isotopes_df,
     _fetch_reference_known_isotopes,
@@ -25,6 +29,9 @@ from mascope_tools.composition.profiles import KNOWN_WINDOW_CEILING
 
 
 _MOD = "mascope_backend.api.new.peak_assignments.service"
+
+#: An Orbitrap file with no resolution read: its fine lines as they are.
+_FINE = FileLines("HIGH")
 
 
 def _mechanism(mech_id="m-deprot", notation="[M-H]-", polarity="-"):
@@ -55,9 +62,7 @@ def _known(formula, mass, names):
 
 def test_expands_formula_into_reference_isotope_rows():
     known = [_known("C10H16O3", 184.1099, ["Pinonic acid", "Norpinonic acid"])]
-    df = _build_reference_isotopes_df(
-        known, [_mechanism()], resolution_type="HIGH", abundance_threshold=0.0
-    )
+    df = _build_reference_isotopes_df(known, [_mechanism()])
     assert not df.empty
     # Shaped like the target known-isotope frame, plus the carried identities.
     for col in (
@@ -86,31 +91,33 @@ def test_expands_formula_into_reference_isotope_rows():
     assert df["relative_abundance"].between(0.0, 1.0).all()
 
 
-def test_resolution_and_abundance_filters():
+def test_a_files_lines_are_the_fine_lines_resolved_at_its_resolution():
+    # The cache holds the fine lines; each run resolves them at its file's
+    # R(m/z) and holds them to its abundance floor (MAS-977).
     known = [_known("C9H14O4", 186.0892, ["Pinic acid"])]
-    high = _build_reference_isotopes_df(
-        known, [_mechanism()], resolution_type="HIGH", abundance_threshold=0.0
-    )
-    low = _build_reference_isotopes_df(
-        known, [_mechanism()], resolution_type="LOW", abundance_threshold=0.0
-    )
+    fine = _build_reference_isotopes_df(known, [_mechanism()])
+    high = lines_at_file(fine, FileLines("HIGH"))
+    low = lines_at_file(fine, FileLines("LOW", lambda mz: 5000.0))
     assert not high.empty and not low.empty
     assert (high["resolution"] == "HIGH").all()
     assert (low["resolution"] == "LOW").all()
+    assert len(high) == len(fine)
+    # One peak of a 5000-resolution file holds the M+1 cluster: fewer lines,
+    # the same total abundance.
+    assert len(low) < len(high)
+    assert low["relative_abundance"].sum() == pytest.approx(
+        high["relative_abundance"].sum()
+    )
     # An abundance floor at half the base peak drops the isotope tail.
     floor = 0.5 * float(high["relative_abundance"].max())
-    floored = _build_reference_isotopes_df(
-        known, [_mechanism()], resolution_type="HIGH", abundance_threshold=floor
-    )
+    floored = lines_at_file(fine, FileLines("HIGH"), floor)
     assert not floored.empty
     assert len(floored) < len(high)
     assert (floored["relative_abundance"] >= floor).all()
 
 
 def test_empty_when_no_formulas():
-    df = _build_reference_isotopes_df(
-        [], [_mechanism()], resolution_type="HIGH", abundance_threshold=0.0
-    )
+    df = _build_reference_isotopes_df([], [_mechanism()])
     assert df.empty
 
 
@@ -162,10 +169,10 @@ class TestReferenceExpansionCache:
         _, known, build = self._patches([(("src-1", "t1"),)] * 2, built)
 
         first = await _fetch_reference_known_isotopes(
-            _orbi_sample(), 0.0, [_mechanism()], known_window=None
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None, file_lines=_FINE
         )
         second = await _fetch_reference_known_isotopes(
-            _orbi_sample(), 0.0, [_mechanism()], known_window=None
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None, file_lines=_FINE
         )
 
         build.assert_called_once()
@@ -182,7 +189,7 @@ class TestReferenceExpansionCache:
 
         async def fetch():
             await _fetch_reference_known_isotopes(
-                _orbi_sample(), 0.0, [_mechanism()], known_window=None
+                _orbi_sample(), 0.0, [_mechanism()], known_window=None, file_lines=_FINE
             )
 
         await fetch()
@@ -200,10 +207,10 @@ class TestReferenceExpansionCache:
         _, _, build = self._patches([(("src-1", "t1"),), (("src-1", "t2"),)], built)
 
         await _fetch_reference_known_isotopes(
-            _orbi_sample(), 0.0, [_mechanism()], known_window=None
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None, file_lines=_FINE
         )
         await _fetch_reference_known_isotopes(
-            _orbi_sample(), 0.0, [_mechanism()], known_window=None
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None, file_lines=_FINE
         )
 
         assert build.call_count == 2
@@ -214,12 +221,12 @@ class TestReferenceExpansionCache:
         self._patches([(("src-1", "t1"),)] * 2, built)
 
         first = await _fetch_reference_known_isotopes(
-            _orbi_sample(), 0.0, [_mechanism()], known_window=None
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None, file_lines=_FINE
         )
         first["mz"] = -1.0
         first["extra"] = True
         second = await _fetch_reference_known_isotopes(
-            _orbi_sample(), 0.0, [_mechanism()], known_window=None
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None, file_lines=_FINE
         )
 
         assert "extra" not in second.columns
@@ -230,7 +237,7 @@ class TestReferenceExpansionCache:
         _, known, build = self._patches([()], pd.DataFrame())
 
         df = await _fetch_reference_known_isotopes(
-            _orbi_sample(), 0.0, [_mechanism()], known_window=None
+            _orbi_sample(), 0.0, [_mechanism()], known_window=None, file_lines=_FINE
         )
 
         assert df.empty
@@ -242,7 +249,7 @@ class TestReferenceExpansionCache:
         fingerprint, known, build = self._patches([(("src-1", "t1"),)], pd.DataFrame())
 
         df = await _fetch_reference_known_isotopes(
-            _orbi_sample(), 0.0, [], known_window=None
+            _orbi_sample(), 0.0, [], known_window=None, file_lines=_FINE
         )
 
         assert df.empty
@@ -258,7 +265,11 @@ class TestReferenceExpansionCache:
         _, known, _ = self._patches([(("src-1", "t1"),)], built)
 
         await _fetch_reference_known_isotopes(
-            _orbi_sample(), 0.0, [_mechanism()], known_window=KNOWN_WINDOW_CEILING
+            _orbi_sample(),
+            0.0,
+            [_mechanism()],
+            known_window=KNOWN_WINDOW_CEILING,
+            file_lines=_FINE,
         )
 
         assert known.await_args.kwargs["ceiling"] == KNOWN_WINDOW_CEILING
@@ -281,7 +292,7 @@ class TestReferenceExpansionCache:
             (_orbi_sample(), KNOWN_WINDOW_CEILING),
         ]:
             await _fetch_reference_known_isotopes(
-                sample, 0.0, [_mechanism()], known_window=ceiling
+                sample, 0.0, [_mechanism()], known_window=ceiling, file_lines=_FINE
             )
 
         # Three distinct keys; the fourth call is the first one again.

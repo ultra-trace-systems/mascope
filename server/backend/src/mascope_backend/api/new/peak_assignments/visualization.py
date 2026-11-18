@@ -19,6 +19,7 @@ import pandas as pd
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
+    FileLines,
     generate_target_ions_from_composition,
 )
 from mascope_backend.api.controllers.visualization.visualization_controller import (
@@ -72,9 +73,17 @@ async def _composition_match_isotopes(
         target_compound_id=gen_id(),
         target_compound_formula=norm(assigned_formula),
     )
-    ions, isotopes = generate_target_ions_from_composition(compound, [mechanism])
+    # Imported here: the service's run imports half the package.
+    from mascope_backend.api.new.peak_assignments.service import _resolution_of
+
+    # The lines the file's R(m/z) shows, as a run's Stage A and its seeded
+    # chain match them (MAS-977), not the stored library's.
     resolution = "LOW" if get_instrument_type(sample.filename) == "tof" else "HIGH"
-    isotopes = [iso for iso in isotopes if iso.resolution == resolution]
+    ions, isotopes = generate_target_ions_from_composition(
+        compound,
+        [mechanism],
+        file_lines=FileLines(resolution, await _resolution_of(sample)),
+    )
     if not ions or not isotopes:
         return pd.DataFrame(), None, mechanism
     ion = ions[0]

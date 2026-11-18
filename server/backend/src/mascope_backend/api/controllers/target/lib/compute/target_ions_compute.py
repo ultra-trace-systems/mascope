@@ -7,6 +7,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import numpy as np
+import pandas as pd
 
 from mascope_backend.api.models.target.compounds.target_compound_pydantic_model import (
     TargetCompoundBase,
@@ -52,6 +53,14 @@ STORED_TOF_RESOLVING_POWER = 1e4
 TARGET_ISOTOPE_FORMULA_LENGTH = (
     TargetIsotope.__table__.c.target_isotope_formula.type.length
 )
+
+
+#: The column a file's resolved line carries its leading member's formula in:
+#: the brightest isotopologue it holds, which the line is read as. On an
+#: Orbitrap the 13C line holds its 17O line and folds its 2H line, and is still
+#: the 13C line the run's response curve is fitted on
+#: (``envelope_fit.envelope_lines``).
+LEAD_ISOTOPE_FORMULA = "lead_isotope_formula"
 
 
 @dataclass(frozen=True)
@@ -597,6 +606,23 @@ def group_target_isotopes(
     :param resolution: The resolving power, a number or a function of m/z.
     :return: The lines' m/z, abundances and joined formulae, in m/z order.
     """
+    lines = _resolved_target_lines(masses, probs, formulae, resolution)
+    return (
+        [line[0] for line in lines],
+        [line[1] for line in lines],
+        [line[2] for line in lines],
+    )
+
+
+def _resolved_target_lines(
+    masses, probs, formulae, resolution: float | Callable[[float], float]
+) -> list[tuple[float, float, str, str]]:
+    """:func:`group_target_isotopes`' lines, each with the formula of the
+    member that leads it: its brightest, which the line is read as.
+
+    :return: Per line, in m/z order, its m/z, abundance, joined formulae and
+        leading member's formula.
+    """
     # Sorted by m/z, so each line lists its names in m/z order
     mz = np.array(masses, dtype=float)
     order = np.argsort(mz, kind="stable")
@@ -604,7 +630,7 @@ def group_target_isotopes(
     intensity = np.array(probs, dtype=float)[order]
     formula = np.array(formulae, dtype=object)[order]
     if not mz.size:
-        return [], [], []
+        return []
     power = resolution if callable(resolution) else (lambda _, r=resolution: r)
     lines = [
         (
@@ -615,6 +641,7 @@ def group_target_isotopes(
                 TARGET_ISOTOPE_FORMULA_LENGTH,
                 intensity[list(line.members)],
             ),
+            str(formula[line.members[int(np.argmax(intensity[list(line.members)]))]]),
         )
         for line in resolve_lines(
             mz,
@@ -626,11 +653,7 @@ def group_target_isotopes(
         )
     ]
     lines.sort(key=lambda line: line[0])
-    return (
-        [line[0] for line in lines],
-        [line[1] for line in lines],
-        [line[2] for line in lines],
-    )
+    return lines
 
 
 def ion_lines(
@@ -655,3 +678,78 @@ def ion_lines(
     if resolution is None:
         return fine
     return group_target_isotopes(*fine, resolution)
+
+
+def lines_at_file(
+    fine: pd.DataFrame,
+    file_lines: FileLines,
+    abundance_threshold: float | str = 0.0,
+) -> pd.DataFrame:
+    """A frame of ions' fine lines as one file shows them.
+
+    Each ion's fine structure (the stored library's ``HIGH`` rows, or the same
+    lines predicted in memory) is resolved at the file's R(m/z)
+    (:func:`group_target_isotopes`), the way the envelope match predicts a
+    candidate's lines, and the lines under the abundance threshold are left
+    out after the merge, so a line's share is what its peak holds. A resolved
+    line takes the id of its first member and the file's resolution type;
+    every other column is the ion's.
+
+    :param fine: One row per fine line: ``target_ion_id``,
+        ``target_isotope_id``, ``target_isotope_formula``, ``mz``,
+        ``relative_abundance``, and the ion's own columns.
+    :param file_lines: The file whose lines to resolve.
+    :param abundance_threshold: The least abundance a line keeps, or the name
+        of the column holding each ion's own.
+    :return: The frame of the file's lines, its columns the input's and
+        :data:`LEAD_ISOTOPE_FORMULA`.
+    """
+    if fine.empty:
+        return fine.assign(
+            resolution=file_lines.resolution_type, **{LEAD_ISOTOPE_FORMULA: None}
+        )
+    power = file_lines.resolving_power()
+    if power is None:
+        # Each fine line is a line of its own, and leads itself.
+        lines = fine.assign(
+            resolution=file_lines.resolution_type,
+            **{LEAD_ISOTOPE_FORMULA: fine.get("target_isotope_formula")},
+        )
+    else:
+        # One ion's fine lines together, by m/z; the ion's own columns are
+        # copied from its first line, by position.
+        ordered = fine.sort_values(["target_ion_id", "mz"], kind="stable")
+        ordered = ordered.reset_index(drop=True)
+        ions = ordered["target_ion_id"].to_numpy()
+        starts = np.flatnonzero(np.r_[True, ions[1:] != ions[:-1]])
+        ends = np.r_[starts[1:], ions.size]
+        mzs = ordered["mz"].to_numpy(dtype=float)
+        abundances = ordered["relative_abundance"].to_numpy(dtype=float)
+        formulae = ordered["target_isotope_formula"].to_numpy(dtype=object)
+        isotope_ids = ordered["target_isotope_id"].to_numpy(dtype=object)
+        first, line_ids, line_mzs, line_abundances, names = [], [], [], [], []
+        leads = []
+        for start, end in zip(starts, ends):
+            resolved = _resolved_target_lines(
+                mzs[start:end], abundances[start:end], formulae[start:end], power
+            )
+            first.extend([start] * len(resolved))
+            line_ids.extend(f"{isotope_ids[start]}.{k}" for k in range(len(resolved)))
+            for mz, abundance, joined, lead in resolved:
+                line_mzs.append(mz)
+                line_abundances.append(abundance)
+                names.append(joined)
+                leads.append(lead)
+        lines = ordered.iloc[first].reset_index(drop=True)
+        lines["target_isotope_id"] = line_ids
+        lines["target_isotope_formula"] = names
+        lines[LEAD_ISOTOPE_FORMULA] = leads
+        lines["mz"] = np.asarray(line_mzs, dtype=float)
+        lines["relative_abundance"] = np.asarray(line_abundances, dtype=float)
+        lines = lines.assign(resolution=file_lines.resolution_type)
+    threshold = (
+        lines[abundance_threshold]
+        if isinstance(abundance_threshold, str)
+        else abundance_threshold
+    )
+    return lines[lines["relative_abundance"] >= threshold].reset_index(drop=True)
