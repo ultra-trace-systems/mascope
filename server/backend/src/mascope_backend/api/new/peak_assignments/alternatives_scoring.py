@@ -59,8 +59,10 @@ from mascope_backend.api.new.peak_assignments.seeded_scoring import (
     score_or_none,
     score_seeds,
 )
-from mascope_backend.api.new.peak_assignments.service import fetch_sample_mechanisms
-from mascope_backend.db import PeakAssignment, async_session
+from mascope_backend.api.new.peak_assignments.service import (
+    recorded_searched_mechanisms,
+)
+from mascope_backend.db import PeakAssignment, PeakAssignmentRun, async_session
 from mascope_tools.composition.arbitration import arbitrate_candidates
 from mascope_tools.composition.heuristic_filter import formula_plausibility
 
@@ -222,9 +224,11 @@ async def score_row_alternatives(
 ) -> dict:
     """Measure a row's formula-only alternatives against the peak they name.
 
-    For each such formula, every adduct this sample is recorded under is tried
-    in one seeded pass, and the one whose monoisotopic peak lands on this row's
-    observed peak with the strongest evidence is reported. A formula no adduct
+    For each such formula, every channel the row's run searched is tried in one
+    seeded pass - the sample's own adducts and the secondary channels the run
+    opened (``service.recorded_searched_mechanisms``), as the search proposed
+    the shortlist through them all - and the one whose monoisotopic peak lands
+    on this row's observed peak with the strongest evidence is reported. A formula no adduct
     places on the peak is reported blocked, with the reason said plainly.
 
     Ranked by evidence - ``fit x plausibility``, the currency both engine
@@ -262,6 +266,10 @@ async def score_row_alternatives(
             )
         alternatives = list(assignment.alternatives or [])
         sample_peak_id = assignment.sample_peak_id
+        run = await session.get(
+            PeakAssignmentRun, getattr(assignment, "peak_assignment_run_id", None)
+        )
+        run_config = getattr(run, "config", None)
 
     selected = unscorable_alternatives(alternatives)
     wanted = selected[:MAX_SCORED_FORMULAS]
@@ -275,7 +283,11 @@ async def score_row_alternatives(
         }
 
     sample = await fetch_sample(sample_item_id)
-    _, mechanisms = await fetch_sample_mechanisms(sample)
+    # Every channel the row's run searched, the secondary ones it opened
+    # included: the search proposed the shortlist through them all (MAS-895).
+    mechanisms = await recorded_searched_mechanisms(
+        sample, run_config if isinstance(run_config, dict) else None
+    )
     match_params = await default_match_params(sample_item_id)
 
     formulas = {formula for _, formula in wanted}

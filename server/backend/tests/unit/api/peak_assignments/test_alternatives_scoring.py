@@ -46,6 +46,7 @@ from mascope_tools.composition.heuristic_filter import formula_plausibility
 
 
 _MOD = "mascope_backend.api.new.peak_assignments.alternatives_scoring"
+_SVC = "mascope_backend.api.new.peak_assignments.service"
 
 #: The peak the row under test sits on.
 PEAK_ID = "sp-1"
@@ -81,16 +82,24 @@ def _scored_row(ion_id, mz, peak_id, mz_error=0.5, abundance_error=0.02):
 def _assignment(alternatives):
     return SimpleNamespace(
         peak_assignment_id="pa-1",
+        peak_assignment_run_id="run-1",
         sample_item_id="si-1",
         sample_peak_id=PEAK_ID,
         alternatives=alternatives,
     )
 
 
-def _session_returning(assignment):
-    """An ``async_session()`` context whose ``get()`` yields ``assignment``."""
+def _session_returning(assignment, run=None):
+    """An ``async_session()`` context whose ``get()`` yields ``assignment``,
+    and ``run`` for its run."""
+    from mascope_backend.db import PeakAssignmentRun
+
     session = AsyncMock()
-    session.get = AsyncMock(return_value=assignment)
+    session.get = AsyncMock(
+        side_effect=lambda model, _key: (
+            run if model is PeakAssignmentRun else assignment
+        )
+    )
     ctx = AsyncMock()
     ctx.__aenter__ = AsyncMock(return_value=session)
     ctx.__aexit__ = AsyncMock(return_value=False)
@@ -104,6 +113,8 @@ async def _run(
     ion_by_seed=None,
     fit_by_ion=None,
     scored_rows=(),
+    run=None,
+    opened=(),
 ):
     """Call the controller with every heavy edge faked.
 
@@ -118,7 +129,7 @@ async def _run(
     with (
         patch(
             f"{_MOD}.async_session",
-            return_value=_session_returning(_assignment(alternatives)),
+            return_value=_session_returning(_assignment(alternatives), run),
         ),
         patch(
             f"{_MOD}.fetch_sample",
@@ -129,13 +140,17 @@ async def _run(
             ),
         ),
         patch(
-            f"{_MOD}.fetch_sample_mechanisms",
+            f"{_SVC}.fetch_sample_mechanisms",
             AsyncMock(
                 return_value=(
                     [m.ionization_mechanism_id for m in mechanisms],
                     list(mechanisms),
                 )
             ),
+        ),
+        patch(
+            f"{_SVC}.fetch_mechanisms_by_notation",
+            AsyncMock(return_value=list(opened)),
         ),
         patch(
             f"{_MOD}.default_match_params",
@@ -272,6 +287,48 @@ class TestScoring:
             ("C9H8", "im-h"),
             ("C9H8", "im-nh4"),
             ("C9H8", "im-na"),
+        }
+
+    @pytest.mark.asyncio
+    async def test_seeds_under_the_channels_the_rows_run_opened_too(self):
+        # MAS-895: the search proposed the shortlist through every channel it
+        # searched, the ones the run opened included, so a formula that fits
+        # the peak only through one of them is placed there, not blocked.
+        run = SimpleNamespace(
+            config={"resolved_profile": {"secondary_channels": ["[M+Na]+"]}}
+        )
+        result, score_seeds = await _run(
+            [{"assigned_formula": "C6H12O6"}],
+            mechanisms=(PROTON,),
+            run=run,
+            opened=(SODIUM,),
+            ion_by_seed={("C6H12O6", "im-na"): "ion-na"},
+            fit_by_ion={"ion-na": 0.9},
+            scored_rows=[_scored_row("ion-na", 203.0526, PEAK_ID)],
+        )
+
+        seeded = score_seeds.await_args.args[1]
+        assert seeded == {("C6H12O6", "im-h"), ("C6H12O6", "im-na")}
+        (entry,) = result["data"]
+        assert entry["ionization_mechanism_id"] == "im-na"
+        assert entry["adducts_tried"] == 2
+        assert "blocked_reason" not in entry
+
+    @pytest.mark.asyncio
+    async def test_a_channel_the_mode_declares_is_seeded_once(self):
+        run = SimpleNamespace(
+            config={"resolved_profile": {"secondary_channels": ["[M+NH4]+"]}}
+        )
+        _, score_seeds = await _run(
+            [{"assigned_formula": "C6H12O6"}],
+            mechanisms=(PROTON, AMMONIUM),
+            run=run,
+            opened=(AMMONIUM,),
+        )
+
+        assert score_seeds.await_args.args[1] == {
+            ("C6H12O6", "im-h"),
+            ("C6H12O6", "im-nh4"),
         }
 
     @pytest.mark.asyncio
