@@ -21,6 +21,7 @@ from test_engine import TestScoreIonsByFit  # same directory, as test_orchestrat
 from test_mass_gate import PRECISION, _anchors, _row
 from test_orchestrator import (
     _MOD,
+    _PIPE,
     TestTheLaddersAreClimbedThroughTheOpenedChannels,
     TestTheListsAreReadThroughTheOpenedChannels,
     _patches,
@@ -598,6 +599,29 @@ class TestADecoyRun:
         return mocks
 
     @pytest.mark.asyncio
+    async def test_a_decoy_runs_every_stage_of_the_list_at_its_controls(self):
+        # A decoy arm is the stage list's DECOY path: the run's stages, with
+        # the measurement its control recorded.
+        from mascope_backend.api.new.peak_assignments import pipeline
+
+        passes = []
+        run_stages = pipeline.run_stages
+
+        async def recording(ctx):
+            passes.append(ctx)
+            return await run_stages(ctx)
+
+        self._start(_plan())
+        patch(f"{_PIPE}.run_stages", side_effect=recording).start()
+
+        await _run(PeakAssignmentConfig(decoy=SHIFT))
+
+        (ctx,) = passes
+        assert ctx.path is pipeline.DECOY
+        assert ctx.path.measurement is pipeline.Measurement.CONTROL
+        assert ctx.ran == list(pipeline.STAGES)
+
+    @pytest.mark.asyncio
     async def test_every_read_of_the_run_sees_the_shifted_axis(self):
         self._start(_plan())
 
@@ -626,12 +650,12 @@ class TestADecoyRun:
     async def test_the_search_is_told_what_the_lists_name(self):
         # The decoy reads its lists as the control does, so a secondary
         # channel's winner a list names is corroborated in both (3.4).
-        from mascope_backend.api.new.peak_assignments import service
+        from mascope_backend.api.new.peak_assignments import pipeline
 
         self._start(_plan(envelope=inherited_envelope_fit(_curve_record())))
         search = patch(
-            f"{_MOD}.untargeted_matches_to_peak_assignments",
-            wraps=service.untargeted_matches_to_peak_assignments,
+            f"{_PIPE}.untargeted_matches_to_peak_assignments",
+            wraps=pipeline.untargeted_matches_to_peak_assignments,
         ).start()
 
         await _run(PeakAssignmentConfig(decoy=SHIFT))

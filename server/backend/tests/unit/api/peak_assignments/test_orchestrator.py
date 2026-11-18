@@ -41,6 +41,8 @@ from mascope_tools.composition.mass_accuracy import ReagentOffset, SampleMassAcc
 
 
 _MOD = "mascope_backend.api.new.peak_assignments.service"
+#: The stage list, which looks the library's names up in its own module.
+_PIPE = "mascope_backend.api.new.peak_assignments.pipeline"
 
 
 def _claim_stub(acquired=True):
@@ -194,7 +196,7 @@ def _patches(
             f"{_MOD}.fetch_sample", new_callable=AsyncMock, return_value=_sample()
         ),
         "match_params": patch(
-            f"{_MOD}.default_match_params",
+            f"{_PIPE}.default_match_params",
             new_callable=AsyncMock,
             return_value=match_params,
         ),
@@ -247,7 +249,7 @@ def _patches(
             return_value=(["[M+H]+"], {"[M+H]+": "[M+H]+"}),
         ),
         "compositions": patch(
-            f"{_MOD}.assign_compositions",
+            f"{_PIPE}.assign_compositions",
             return_value=(
                 stage_b_matches if stage_b_matches is not None else pd.DataFrame(),
                 {},
@@ -269,7 +271,7 @@ def _patches(
         # What the sample's batch decided of its known species lives with its
         # batch ledger in the database; these samples' batches decided none.
         "batch_species": patch(
-            f"{_MOD}.batch_species_for", new_callable=AsyncMock, return_value=[]
+            f"{_PIPE}.batch_species_for", new_callable=AsyncMock, return_value=[]
         ),
         # What the file was acquired at, which a thin Orbitrap file's pooled
         # curve is matched on, is read off its stream row and its .props:
@@ -284,14 +286,18 @@ def _patches(
         # The context the sample's batch and dataset name lives with them in
         # the database; this sample's name none.
         "named_context": patch(
-            f"{_MOD}.named_context_for",
+            f"{_PIPE}.named_context_for",
             new_callable=AsyncMock,
             return_value=NamedContext(),
         ),
         "claim": patch(f"{_MOD}.assignment_claim", _claim_stub()),
         "session": patch(f"{_MOD}.async_session", side_effect=recorder.session_factory),
+        # The ledger is inserted where the run keeps it, in the stage list.
+        "ledger_session": patch(
+            f"{_PIPE}.async_session", side_effect=recorder.session_factory
+        ),
         "progress": patch(
-            f"{_MOD}.send_progress_user_notification", new_callable=AsyncMock
+            f"{_PIPE}.send_progress_user_notification", new_callable=AsyncMock
         ),
     }
 
@@ -464,6 +470,34 @@ class TestTheJudgedLedger:
     """What the run persists is what the passes that judge it left."""
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("untargeted", [False, True], ids=["known", "search"])
+    async def test_a_run_runs_every_stage_of_the_list(self, untargeted):
+        # The run is the stage list's RUN path: every stage, from resolving
+        # the chemistry to persisting the ledger, once per judging round.
+        from mascope_backend.api.new.peak_assignments import pipeline
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        passes = []
+        run_stages = pipeline.run_stages
+
+        async def recording(ctx):
+            passes.append(ctx)
+            return await run_stages(ctx)
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        _start(_patches(_Recorder(), peaks, _stage_a_rows()))
+        patch(f"{_PIPE}.run_stages", side_effect=recording).start()
+
+        result = await _run(PeakAssignmentConfig(run_untargeted=untargeted))
+
+        (ctx,) = passes
+        assert ctx.path is pipeline.RUN
+        assert ctx.ran == list(pipeline.STAGES)
+        assert result["status"] == "success"
+
+    @pytest.mark.asyncio
     async def test_a_peak_whose_line_left_the_ledger_is_persisted_unassigned(self):
         # An isotopologue released with the reading it belonged to is a peak
         # nothing explains, and the ledger still has a row for it.
@@ -472,17 +506,17 @@ class TestTheJudgedLedger:
             PeakAssignmentConfig,
         )
 
-        judge = service.judge_commits
+        judged_ledger = service.Judging.result
 
-        def releasing(rows, **kwargs):
-            judged = judge(rows, **kwargs)
+        def releasing(self):
+            judged = judged_ledger(self)
             judged.rows = [row for row in judged.rows if row["role"] == "M0"]
             return judged
 
         peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
         recorder = _Recorder()
         _start(_patches(recorder, peaks, _stage_a_rows()))
-        patch(f"{_MOD}.judge_commits", side_effect=releasing).start()
+        patch.object(service.Judging, "result", releasing).start()
 
         result = await _run(PeakAssignmentConfig(run_untargeted=False))
 
@@ -543,6 +577,31 @@ class TestTheJudgedLedger:
 
         mocks["seeded"].assert_awaited_once()
         assert mocks["seeded"].await_args.kwargs["resolution"] is orbitrap
+
+    @pytest.mark.asyncio
+    async def test_stage_a_reads_its_known_set_at_the_runs_resolution(self):
+        # The stage list reads the file's R(m/z) once, and Stage A resolves the
+        # lines of its known set at that reading (MAS-977): with none, an
+        # Orbitrap file's lines would be its fine lines, unmerged.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        def orbitrap(mz):
+            return 100_000.0
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+        mocks["resolution"].return_value = orbitrap
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        mocks["resolution"].assert_awaited_once()
+        mocks["known"].assert_awaited_once()
+        file_lines = mocks["known"].await_args.args[3]
+        assert file_lines.resolution is orbitrap
+        assert mocks["reference"].await_args.kwargs["file_lines"] is file_lines
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("read", [True, False], ids=["read", "none"])
@@ -644,7 +703,7 @@ class TestTheJudgedLedger:
             PeakAssignmentConfig,
         )
 
-        judge = service.judge_commits
+        judge = service.Judging
         handed = {}
 
         def recording(rows, **kwargs):
@@ -653,7 +712,7 @@ class TestTheJudgedLedger:
 
         peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
         _start(_patches(_Recorder(), peaks, _stage_a_rows()))
-        patch(f"{_MOD}.judge_commits", side_effect=recording).start()
+        patch(f"{_MOD}.Judging", side_effect=recording).start()
 
         await _run(
             PeakAssignmentConfig(
@@ -672,7 +731,7 @@ class TestTheJudgedLedger:
             PeakAssignmentConfig,
         )
 
-        judge = service.judge_commits
+        judge = service.Judging
         handed = {}
 
         def recording(rows, **kwargs):
@@ -682,7 +741,7 @@ class TestTheJudgedLedger:
         peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
         recorder = _Recorder()
         _start(_patches(recorder, peaks, _stage_a_rows()))
-        patch(f"{_MOD}.judge_commits", side_effect=recording).start()
+        patch(f"{_MOD}.Judging", side_effect=recording).start()
 
         await _run(PeakAssignmentConfig(run_untargeted=False, context="chamber"))
 
@@ -705,7 +764,7 @@ class TestTheJudgedLedger:
         # run read of it - its spectrum, the gate its lines were asked at, its
         # channels, instrument, context and artifacts - and recorded with the
         # tiering record; the column goes in beside the tier.
-        from mascope_backend.api.new.peak_assignments import service
+        from mascope_backend.api.new.peak_assignments import pipeline, service
         from mascope_backend.api.new.peak_assignments.config import (
             PeakAssignmentConfig,
         )
@@ -714,7 +773,7 @@ class TestTheJudgedLedger:
         )
         from mascope_backend.api.new.peak_assignments.mass_gate import SpectrumLines
 
-        levels, judge = service.apply_levels, service.judge_commits
+        levels, judge = pipeline.apply_levels, service.Judging
         handed, judged = {}, {}
 
         def recording(rows, **kwargs):
@@ -728,8 +787,8 @@ class TestTheJudgedLedger:
         peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
         recorder = _Recorder()
         _start(_patches(recorder, peaks, _stage_a_rows()))
-        patch(f"{_MOD}.apply_levels", side_effect=recording).start()
-        patch(f"{_MOD}.judge_commits", side_effect=judging).start()
+        patch(f"{_PIPE}.apply_levels", side_effect=recording).start()
+        patch(f"{_MOD}.Judging", side_effect=judging).start()
         # A file whose resolving power the run read, so the one the level pass
         # is handed can be told from none.
         patch(
@@ -833,7 +892,7 @@ class TestTheJudgedLedger:
             PeakAssignmentConfig,
         )
 
-        judge = service.judge_commits
+        judge = service.Judging
         handed = {}
 
         def recording(rows, **kwargs):
@@ -849,7 +908,7 @@ class TestTheJudgedLedger:
         )
         recorder = _Recorder()
         mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
-        patch(f"{_MOD}.judge_commits", side_effect=recording).start()
+        patch(f"{_MOD}.Judging", side_effect=recording).start()
 
         await _run(PeakAssignmentConfig(profile="NO3"))
 
@@ -885,7 +944,7 @@ class TestTheJudgedLedger:
             PeakAssignmentConfig,
         )
 
-        judge = service.judge_commits
+        judge = service.Judging
         handed = {}
 
         def recording(rows, **kwargs):
@@ -896,7 +955,7 @@ class TestTheJudgedLedger:
         recorder = _Recorder()
         started = _start(_patches(recorder, peaks, _stage_a_rows()))
         started["named_context"].return_value = named
-        patch(f"{_MOD}.judge_commits", side_effect=recording).start()
+        patch(f"{_MOD}.Judging", side_effect=recording).start()
 
         await _run(PeakAssignmentConfig(run_untargeted=False, context=requested))
 
@@ -949,7 +1008,7 @@ class TestTheJudgedLedger:
             None,
         )
         assert fitted.tolerance.detect_snr == 10.0
-        judge = service.judge_commits
+        judge = service.Judging
         handed = {}
 
         def recording(rows, **kwargs):
@@ -974,7 +1033,7 @@ class TestTheJudgedLedger:
             f"{_MOD}.claim_artifact_peaks",
             side_effect=lambda df, *_args: df[df["sample_peak_id"] == "p-lobe"],
         ).start()
-        patch(f"{_MOD}.judge_commits", side_effect=recording).start()
+        patch(f"{_MOD}.Judging", side_effect=recording).start()
 
         await _run(PeakAssignmentConfig(run_untargeted=False))
 
@@ -1505,7 +1564,7 @@ class TestStageHandoff:
     async def test_the_search_is_told_what_the_lists_name(self):
         """Every neutral the lists Stage A read name, matched or not: a
         secondary-channel winner a list names is corroborated by it (3.4)."""
-        from mascope_backend.api.new.peak_assignments import service
+        from mascope_backend.api.new.peak_assignments import pipeline
         from mascope_backend.api.new.peak_assignments.config import (
             PeakAssignmentConfig,
         )
@@ -1521,8 +1580,8 @@ class TestStageHandoff:
             return_value=pd.DataFrame(unmatched),
         )
         patches["stage_b"] = patch(
-            f"{_MOD}.untargeted_matches_to_peak_assignments",
-            wraps=service.untargeted_matches_to_peak_assignments,
+            f"{_PIPE}.untargeted_matches_to_peak_assignments",
+            wraps=pipeline.untargeted_matches_to_peak_assignments,
         )
         mocks = _start(patches)
 
@@ -1551,7 +1610,7 @@ class TestStageHandoff:
             new_callable=AsyncMock,
             return_value=pd.DataFrame(unmatched),
         )
-        patches["judge"] = patch(f"{_MOD}.judge_commits", wraps=service.judge_commits)
+        patches["judge"] = patch(f"{_MOD}.Judging", wraps=service.Judging)
         mocks = _start(patches)
 
         await _run(PeakAssignmentConfig(run_untargeted=True))
@@ -2469,6 +2528,10 @@ class TestResolvedProfile:
                 "instrument": patch(
                     f"{_MOD}.get_instrument_type", return_value=instrument
                 ),
+                # The stage list reads the class off the file name too.
+                "stage_instrument": patch(
+                    f"{_PIPE}.get_instrument_type", return_value=instrument
+                ),
                 "accuracy": patch(
                     f"{_MOD}.sample_mass_accuracy",
                     side_effect=lambda df, reagent, **_kwargs: replace(
@@ -3214,7 +3277,7 @@ async def test_the_run_records_the_setup_it_searched_under():
     peaks = _peaks_df([("p1", 181.0707, 10000.0)])
     recorder = _Recorder()
     mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
-    setup = patch(f"{_MOD}.sample_setup", new_callable=AsyncMock, return_value=stamp)
+    setup = patch(f"{_PIPE}.sample_setup", new_callable=AsyncMock, return_value=stamp)
     setup.start()
 
     await _run(PeakAssignmentConfig(run_untargeted=False))
@@ -3306,7 +3369,7 @@ class TestTheRunTakesItsBatchsWord:
             ),
         )
         patches["batch_species"] = patch(
-            f"{_MOD}.batch_species_for",
+            f"{_PIPE}.batch_species_for",
             new_callable=AsyncMock,
             return_value=[species] if decided else [],
         )
@@ -3576,7 +3639,7 @@ async def test_the_mass_gate_reads_the_sources_lines_by_the_calibrant_cap():
     read = patch(
         f"{_MOD}._source_line_cap", new_callable=AsyncMock, return_value=cap
     ).start()
-    judged = patch(f"{_MOD}.judge_commits", wraps=service.judge_commits).start()
+    judged = patch(f"{_MOD}.Judging", wraps=service.Judging).start()
 
     await _run(PeakAssignmentConfig(run_untargeted=False))
 
