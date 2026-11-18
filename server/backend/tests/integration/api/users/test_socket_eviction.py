@@ -1191,6 +1191,32 @@ def _messages(records, level: str) -> list[str]:
     return [r["message"] for r in records if r["level"].name == level]
 
 
+def _miss_once(person: User, asked: list[int], before_retry=None):
+    """
+    The socket read, missing ``person``'s first one.
+
+    The sweep arms every account the database holds, in the order the database
+    returns them, so the person's eviction can be kept first or last.
+
+    :param asked: Where the person's reads are counted.
+    :param before_retry: Awaited before the person's read is tried again.
+    """
+    read = eviction.get_user_socket_sids
+
+    async def miss_person_once(user_id):
+        if user_id == person.id:
+            asked.append(user_id)
+            if len(asked) == 1:
+                raise RedisConnectionError("Connection refused.")
+            if before_retry is not None:
+                await before_retry()
+        return await read(user_id)
+
+    return patch(
+        "mascope_backend.socket.eviction.get_user_socket_sids", miss_person_once
+    )
+
+
 @pytest.mark.asyncio
 async def test_the_script_waits_for_an_eviction_redis_missed(
     person, sio, script_redis, quick_retries, script_window
@@ -1199,20 +1225,19 @@ async def test_the_script_waits_for_an_eviction_redis_missed(
     _, disconnect = script_redis
     settled = _settled_before(disconnect)
     await _open_socket("sid-a", person, datetime.now(timezone.utc) - LONG_AGO)
-    read = eviction.get_user_socket_sids
     asked: list[int] = []
+    # The retry goes through only once the script waits for it, wherever the
+    # sweep's order put the person: kept still, it is what the script waits for.
+    waiting = asyncio.Event()
+    settle = eviction.settle_sign_out_retries
 
-    async def miss_person_once(user_id):
-        # The sweep arms every account the database holds; only this one's
-        # first read misses.
-        if user_id == person.id:
-            asked.append(user_id)
-            if len(asked) == 1:
-                raise RedisConnectionError("Connection refused.")
-        return await read(user_id)
+    async def settle_seen(timeout):
+        waiting.set()
+        return await settle(timeout)
 
     with (
-        patch("mascope_backend.socket.eviction.get_user_socket_sids", miss_person_once),
+        _miss_once(person, asked, before_retry=waiting.wait),
+        patch.object(password_change, "settle_sign_out_retries", settle_seen),
         captured_logs(level="DEBUG") as records,
     ):
         await sweep_script.run_require_password_change()
@@ -1220,6 +1245,49 @@ async def test_the_script_waits_for_an_eviction_redis_missed(
     assert len(asked) == 2
     await _assert_evicted(sio, "sid-a", person)
     assert settled == [True]
+    warnings = _messages(records, "WARNING")
+    assert any(m.startswith("1 eviction(s) found Redis out of reach") for m in warnings)
+    infos = _messages(records, "INFO")
+    assert "Evictions that went through on a retry: 1 of 1" in infos
+    assert "Open sessions are moved to the password screen at once." in infos
+    assert not _messages(records, "ERROR")
+
+
+@pytest.mark.asyncio
+async def test_the_script_counts_an_eviction_retried_before_it_waits(
+    person, sio, script_redis, quick_retries, script_window
+):
+    """
+    A kept eviction is tried again as soon as Redis answers, which can be while
+    the script still notifies the other accounts. It went unsaid, as nothing was
+    left to wait for, when the person came first in the sweep's order.
+    """
+    _, disconnect = script_redis
+    settled = _settled_before(disconnect)
+    await _open_socket("sid-a", person, datetime.now(timezone.utc) - LONG_AGO)
+    asked: list[int] = []
+    reload = password_change.emit_record_reload
+
+    async def reload_once_retried(**kwargs):
+        # The last call of the notifying loop, before the script waits.
+        async def retried() -> bool:
+            return not eviction._retries
+
+        await _until(retried)
+        return await reload(**kwargs)
+
+    with (
+        _miss_once(person, asked),
+        patch.object(password_change, "emit_record_reload", reload_once_retried),
+        captured_logs(level="DEBUG") as records,
+    ):
+        await sweep_script.run_require_password_change()
+
+    assert len(asked) == 2
+    await _assert_evicted(sio, "sid-a", person)
+    assert settled == [True]
+    warnings = _messages(records, "WARNING")
+    assert not [m for m in warnings if "waiting up to" in m]
     infos = _messages(records, "INFO")
     assert "Evictions that went through on a retry: 1 of 1" in infos
     assert "Open sessions are moved to the password screen at once." in infos

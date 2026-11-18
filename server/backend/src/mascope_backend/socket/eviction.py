@@ -103,6 +103,10 @@ SIGNED_OUT_EVENT = "signed_out"
 #: answers.
 _retries: dict[tuple, Callable[[], Awaitable[object]]] = {}
 
+#: How many of them this worker has kept, ever: each once, however often it is
+#: kept again. One can go through before anyone looks at :data:`_retries`.
+_kept_count = 0
+
 #: The task that tries them again, while any is kept.
 _retry_task: asyncio.Task | None = None
 
@@ -401,13 +405,15 @@ def _retry_later(key: tuple, retry: Callable[[], Awaitable[object]]) -> None:
     :param retry: The call that tries it again. It never raises, and keeps
         itself again if Redis is still out of reach.
     """
-    global _retry_task
-    if key not in _retries and len(_retries) >= storage_config.sign_out_retry_limit:
-        runtime.logger.error(
-            f"Dropped a sign-out that found Redis out of reach ({key[0]}, user "
-            f"{key[1]}): {len(_retries)} are kept already [Worker {os.getpid()}]"
-        )
-        return
+    global _retry_task, _kept_count
+    if key not in _retries:
+        if len(_retries) >= storage_config.sign_out_retry_limit:
+            runtime.logger.error(
+                f"Dropped a sign-out that found Redis out of reach ({key[0]}, user "
+                f"{key[1]}): {len(_retries)} are kept already [Worker {os.getpid()}]"
+            )
+            return
+        _kept_count += 1
     _retries[key] = retry
     if not _retrying():
         _retry_task = asyncio.create_task(_retry_kept())
@@ -448,6 +454,18 @@ async def _retry_kept() -> None:
 def sign_out_retries_kept() -> int:
     """How many evictions and sign-outs this process keeps to try again."""
     return len(_retries)
+
+
+def sign_out_retries_ever_kept() -> int:
+    """
+    How many evictions and sign-outs this process has kept to try again since
+    it started, each once however often it was kept again.
+
+    A kept one is tried again as soon as Redis answers, so by the time a caller
+    asks what :func:`sign_out_retries_kept` still keeps, some may have gone
+    through already; the difference of two readings of this counts them too.
+    """
+    return _kept_count
 
 
 async def settle_sign_out_retries(timeout: float) -> int:
