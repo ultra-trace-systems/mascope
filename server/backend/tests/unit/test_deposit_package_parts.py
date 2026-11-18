@@ -568,7 +568,7 @@ def test_file_names_that_read_alike_in_a_path_get_paths_of_their_own(monkeypatch
     """A character no file system takes in a name is replaced, and a name
     that then meets another one already taken is marked with its id."""
     monkeypatch.setattr(
-        collect, "_stored_data_file", lambda filename: f"/store/{filename}/data.raw"
+        collect, "stored_data_file", lambda filename: f"/store/{filename}/data.raw"
     )
     files = [
         _sample_file("first", "x_2026.01.01-12h00m00s_a:b"),
