@@ -174,7 +174,10 @@ before tiering rule set 11, G14 before 13), not 0.
 
 The identification level (step 5.8) is read off the ledger's `level` column:
 the share of the first engine's committed monoisotopic rows at 4a, 4b, 5a and
-5b, of those that state a level; where the tier and the level cross, the
+5b, of those that state a level; the 5b rows split by what put them there,
+read off the records G13 and G14 read (an absent line, an unseparated peak,
+or neither of them, which leaves the plausibility floor; a row can carry
+both of the first two); where the tier and the level cross, the
 share of the assigned rows at level 5 and of the rows under assigned at 4 or
 above; and on each decoy arm, the share of its committed rows at 4 or above.
 They are readings, gated by no target, and a run from before the level reads

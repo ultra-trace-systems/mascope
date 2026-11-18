@@ -533,6 +533,64 @@ def test_the_level_shares_and_where_tier_and_level_cross():
     assert _value(readings["level_under_assigned_at_4"]) == (50.0, 2)
 
 
+def test_the_5b_rows_split_by_what_put_them_there():
+    absent = {"predicted_envelope": {"lines": [{"state": "absent"}]}}
+    unseparated = {"peak_separation": {"separated": False}}
+    # Eight rows at 5b: three with an absent line alone, two with an
+    # unseparated peak alone, one with both, and two with neither: one whose
+    # lines were all found, and one whose peak is unseparated but a separated
+    # partner commits the neutral. A 5a row with both records is left out.
+    provenance = {
+        "p1": absent,
+        "p2": absent,
+        "p3": absent,
+        "p4": unseparated,
+        "p5": unseparated,
+        "p6": {**absent, **unseparated},
+        "p7": {"predicted_envelope": {"lines": [{"state": "found"}]}},
+        "p8": {**unseparated, "cross_channel": {"separated_through": ["[M+Br]-"]}},
+        "p9": {**absent, **unseparated},
+    }
+    rows = [
+        _row(peak, tier="candidate" if peak == "p4" else "assigned", level="5b")
+        for peak in provenance
+    ]
+    rows[-1]["level"] = "5a"
+
+    readings = metrics.card_readings(_frame(rows, provenance=provenance))
+
+    assert _value(readings["level_5b_absent"]) == (50.0, 8)
+    assert _value(readings["level_5b_unseparated"]) == (37.5, 8)
+    assert _value(readings["level_5b_neither"]) == (25.0, 8)
+    assert [key for key, _, _ in metrics.METRICS if key.startswith("level_5b_")] == [
+        f"level_5b_{fact}" for fact in metrics.LEVEL_5B_FACTS
+    ]
+
+
+def test_a_5b_row_without_a_record_carries_none_of_its_facts():
+    # A run whose 5b rows hold no envelope record leaves the column all None;
+    # a frame of the ledger's flattened columns puts NaN beside a count. Both
+    # read as not carrying the fact.
+    frame = _frame([_row("p1", level="5b"), _row("p2", level="5b")])
+    frame["a_absent_lines"] = [None, None]
+    frame["a_unseparated"] = [None, True]
+
+    assert _value(metrics.level_5b_fact(frame, "absent")) == (0.0, 2)
+    assert _value(metrics.level_5b_fact(frame, "unseparated")) == (50.0, 2)
+    assert _value(metrics.level_5b_fact(frame, "neither")) == (50.0, 2)
+    frame["a_absent_lines"] = [2, None]
+    assert _value(metrics.level_5b_fact(frame, "absent")) == (50.0, 2)
+    assert _value(metrics.level_5b_fact(frame, "neither")) == (0.0, 2)
+    assert _value(metrics.level_5b_fact(frame.drop(columns="a_level"), "absent")) == (
+        None,
+        None,
+    )
+    # A set with no row at 5b reads none of the split, every fact alike.
+    frame["a_level"] = "5a"
+    for fact in metrics.LEVEL_5B_FACTS:
+        assert _value(metrics.level_5b_fact(frame, fact)) == (None, 0)
+
+
 def test_a_run_from_before_the_level_reads_no_level():
     readings = metrics.card_readings(_frame([_row("p1"), _row("p2")]))
 
