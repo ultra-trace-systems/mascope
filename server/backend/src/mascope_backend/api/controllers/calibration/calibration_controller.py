@@ -17,6 +17,7 @@ import hmac
 import json
 import numbers
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import cast
@@ -755,6 +756,14 @@ async def restore_mz_calibration(sample_file, cleared: ClearedMzCalibration) -> 
     )
 
 
+def _user_rooms(user_id: int | None) -> list:
+    """The rooms a calibration's progress goes to: the user's who asked for
+    it, and none when nobody did. A run without a user - a maintenance script
+    such as ``recalibrate_tof`` - has nobody to tell, and a room of None is
+    refused by the emitter, which failed the calibration with it."""
+    return [user_id] if user_id is not None else []
+
+
 @api_controller()
 async def get_mz_calibration(
     instrument: str | None = None,
@@ -900,7 +909,7 @@ async def calibration_mz_fit(
         data={
             "sample_item_id": sample_item_id,
             "filename": sample.filename,
-            "_room_ids": [user_id],
+            "_room_ids": _user_rooms(user_id),
             "_user_id": user_id,
         },
     )
@@ -1253,6 +1262,15 @@ async def calibration_mz_apply(
     }
 
 
+#: A caller's last word on a fit before :func:`calibration_mz_calibrate_sample`
+#: applies it: given the fit, sealed and with its quality block and the
+#: preview of its verdict, it answers whether to apply it. The TOF
+#: re-calibration runner (``recalibrate_tof``) turns down a fit below the bar
+#: that would replace one that cleared it, and records what the file had
+#: before one it lets through.
+BeforeApply = Callable[[dict], Awaitable[bool]]
+
+
 @api_controller_background_task(
     success_notification_rooms=["user_id"],
     success_reload=[("match", "affected_sample_batch_ids")],
@@ -1263,6 +1281,7 @@ async def calibration_mz_calibrate_sample(
     sample_item_id: str,
     mz_calibration_params: MzCalibrationParams,
     manual: bool = False,
+    before_apply: BeforeApply | None = None,
     independent_transaction: bool = False,
     user_id: int | None = None,
     process_id: str | None = None,
@@ -1274,6 +1293,7 @@ async def calibration_mz_calibrate_sample(
     Steps:
     - Retrieve sample and affected sample/batch IDs
     - Fit m/z calibration parameters
+    - Ask ``before_apply``, when given, whether to apply the fit
     - Apply calibration to the sample file
     - Return notification data for reload events
 
@@ -1284,6 +1304,12 @@ async def calibration_mz_calibrate_sample(
     :param manual: Whether an operator asked for this calibration rather than
         the automatic pipeline; forwarded to :func:`calibration_mz_apply`.
     :type manual: bool
+    :param before_apply: The caller's last word on the fit (:data:`BeforeApply`):
+        given the fit as it is about to be applied, it answers whether to
+        apply it. A fit it turns down is not applied, and nothing of the
+        file changes: the answer then says ``withheld``. None applies every
+        fit, as the pipeline and the dialog do.
+    :type before_apply: BeforeApply | None
     :param independent_transaction: Whether to run as independent transaction
     :type independent_transaction: bool
     :param user_id: Current user triggered operation (for user notifications)
@@ -1319,7 +1345,7 @@ async def calibration_mz_calibrate_sample(
         data={
             "sample_item_id": sample_item_id,
             "filename": sample.filename,
-            "_room_ids": [user_id],
+            "_room_ids": _user_rooms(user_id),
             "_user_id": user_id,
         },
     )
@@ -1337,6 +1363,28 @@ async def calibration_mz_calibrate_sample(
     )
     fit = calibration_mz_fit_result["data"].get("fit", None)
     await send_progress_user_notification(notification, 0.3)
+
+    # --- The caller's last word on it ---
+    if before_apply is not None and fit is not None and not await before_apply(fit):
+        runtime.logger.info(
+            f"m/z fit of sample '{sample.sample_item_name}' withheld by its "
+            "caller: not applied."
+        )
+        return {
+            "status": "success",
+            "message": (
+                f"Sample '{sample.sample_item_name}' m/z fitted; the fit was "
+                "withheld and not applied."
+            ),
+            "data": {"withheld": True},
+            "_notification_data": {
+                "sample_item_id": sample_item_id,
+                "sample_file_id": sample.sample_file_id,
+                "filename": sample.filename,
+                "affected_sample_item_ids": affected_sample_item_ids,
+                "affected_sample_batch_ids": affected_sample_batch_ids,
+            },
+        }
 
     # --- Apply m/z calibration ---
     await calibration_mz_apply(

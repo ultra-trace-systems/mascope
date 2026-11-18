@@ -14,6 +14,7 @@ from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
 from mascope_backend.acquisition_record import declared_ionization
 from mascope_backend.api.controllers.calibration.calibration_controller import (
+    BeforeApply,
     ClearedMzCalibration,
     calibration_mz_calibrate_sample,
     is_unfitted_record,
@@ -885,6 +886,16 @@ class CalibrationOutcome:
     #: Why the sample is not calibrated, as a sentence for the file's
     #: processing detail; None when verified.
     reason: str | None = None
+    #: The caller's ``before_apply`` turned the fit down, so nothing of the
+    #: file changed (``calibrate_with_retry``).
+    withheld: bool = False
+    #: The calibration stopped on a fault rather than on the spectrum: an
+    #: error a wider tolerance cannot clear, which another attempt later may.
+    fault: bool = False
+
+
+#: Why a sample is not calibrated when its caller withheld the fit.
+_CALIBRATION_WITHHELD = "The m/z fit was withheld by its caller and not applied."
 
 
 def _calibration_error_reason(error: ApiException) -> str:
@@ -3511,11 +3522,29 @@ async def _report_calibration_below_bar(
 _CALIBRATION_GAVE_NO_VERDICT = "The m/z calibration ended without a verified fit."
 
 
+def widen_mz_error_tolerance(params) -> None:
+    """Widen a calibration's m/z error tolerance for its next attempt.
+
+    The tolerance doubles, and the refine window, which has to stay wider
+    than the tolerance, follows it once it reaches it. The attempts of
+    :func:`calibrate_with_retry` go 15, 30, 60, ... 960 ppm this way, and so
+    does the TOF re-calibration runner's dry run (``recalibrate_tof``),
+    which has to offer a file the calibrants ingest would.
+
+    :param params: The attempt's parameters (``MzCalibrationParams`` or
+        ``CalibrationFitParams``), changed in place.
+    """
+    params.mz_error_tolerance *= 2
+    if params.refine_window <= params.mz_error_tolerance:
+        params.refine_window = params.mz_error_tolerance + 1
+
+
 async def calibrate_with_retry(
     sample: dict,
     sample_file_id: str | None = None,
     user_id: int | None = None,
     process_id: str | None = None,
+    before_apply: BeforeApply | None = None,
 ) -> CalibrationOutcome:
     """Calibrate sample with retry logic
 
@@ -3540,6 +3569,12 @@ async def calibrate_with_retry(
     :type user_id: int | None, optional
     :param process_id: Process ID for tracking
     :type process_id: str | None, optional
+    :param before_apply: Asked about the fit of the attempt that made one,
+        before it is applied (``calibration_mz_calibrate_sample``). A fit it
+        turns down ends the loop with nothing applied and nothing recorded:
+        a wider tolerance would only offer it worse calibrants. None, as the
+        pipeline calls it, applies every fit.
+    :type before_apply: BeforeApply | None, optional
     :return: Whether a verified fit was applied, and why not when it was not.
     :rtype: CalibrationOutcome
     """
@@ -3553,12 +3588,17 @@ async def calibrate_with_retry(
             result = await calibration_mz_calibrate_sample(
                 sample_item_id=sample["sample_item_id"],
                 mz_calibration_params=mz_calibration_params,
+                before_apply=before_apply,
                 independent_transaction=False,
                 user_id=user_id,
                 process_id=gen_id(8),
                 parent_id=process_id,
             )
             data = (result or {}).get("data") or {}
+            if data.get("withheld"):
+                return CalibrationOutcome(
+                    verified=False, reason=_CALIBRATION_WITHHELD, withheld=True
+                )
             if "verified" not in data:
                 # No verdict: the fit's warning was reported and swallowed by
                 # a step that had no parent to raise it to, or the result came
@@ -3611,6 +3651,7 @@ async def calibrate_with_retry(
                 return CalibrationOutcome(
                     verified=False,
                     reason=f"The m/z calibration failed: {_calibration_error_reason(e)}.",
+                    fault=True,
                 )
             if i == CALIBRATION_ITERATIONS:
                 # INFO: an expected data condition (a spectrum too poor to
@@ -3642,16 +3683,8 @@ async def calibrate_with_retry(
                     reason=f"The m/z calibration failed: {_calibration_error_reason(e)}.",
                 )
             else:
-                # Double the m/z error tolerance, check refinement window limits, then retry
                 old_tolerance = mz_calibration_params.mz_error_tolerance
-                mz_calibration_params.mz_error_tolerance *= 2
-                if (
-                    mz_calibration_params.refine_window
-                    <= mz_calibration_params.mz_error_tolerance
-                ):
-                    mz_calibration_params.refine_window = (
-                        mz_calibration_params.mz_error_tolerance + 1
-                    )
+                widen_mz_error_tolerance(mz_calibration_params)
                 # INFO: a retry that usually succeeds; the give-up above is
                 # INFO too - only a non-retryable status logs at ERROR
                 runtime.logger.info(
