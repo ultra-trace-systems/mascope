@@ -18,9 +18,9 @@ corrected, and TOF M's and site B's were measured and kept. Of the node's change
 the record that says what a fit was made on (MAS-182), the three-parameter model (MAS-183) and the
 search that finds the calibrants however far the acquisition axis drifts (MAS-951) are in; the
 rest are still to come. How the existing data is re-calibrated is decided (MAS-192, section 6),
-and which stored files a refit can read is counted (MAS-193, section 6). Sites are named by letter
-and instruments by neutral labels (TOF H, TOF M, B1–B3) throughout, as everywhere in this
-repository.
+which stored files a refit can read is counted (MAS-193, section 6), and the runner that refits
+them is built (MAS-195, section 6). Sites are named by letter and instruments by neutral labels
+(TOF H, TOF M, B1–B3) throughout, as everywhere in this repository.
 
 ## 1. The problem
 
@@ -943,8 +943,10 @@ section 2 named five.
   it counted any file: two could not open their filestore, and the third was not run. The census
   of section 2 counts no TOF there.
 
-**The runner** (MAS-195), in `tooling/` beside the audit tool, on the pattern of the paced
-re-process driver of the composite-cut rollout (MAS-90: 7,358 files on one site in ten hours):
+**The runner** (MAS-195), beside the audit tool, on the pattern of the paced re-process driver of
+the composite-cut rollout (MAS-90: 7,358 files on one site in ten hours). Built as the maintenance
+script `recalibrate_tof` (the operator's steps are in
+[maintaining.md](../maintaining.md#re-calibrating-a-tof-instruments-stored-files)):
 
 1. Refit and apply with the node's own handler, under the instrument's current calibrant set and
    model, newest first, in batches with a gap between them and a backlog guard. It applies what
@@ -960,6 +962,26 @@ re-process driver of the composite-cut rollout (MAS-90: 7,358 files on one site 
    Applying a fit clears the file's matches and only flags its batches `rematch` (section 3);
    nothing refreshes them by itself. The runner touches no peak-assignment runs; it lists those on
    the files it applied.
+
+How it does each, as built:
+
+- **The fit and the apply are ingest's.** A run calibrates each file through `calibrate_with_retry`,
+  the pipeline's own loop, which now takes a caller's last word on a fit before it is applied
+  (`before_apply`). The runner's turns down a `poor` fit over an `ok` record, and records what the
+  file had before any fit it lets through. On a copy of the regression corpus, a file the runner
+  calibrated and the same file calibrated by the pipeline's loop end with the same record, `.props`
+  and axes, bit for bit.
+- **The target** of a mode is its collection's id and isotopes hash and the node's version, as a
+  record since MAS-182 carries them (`quality.collection`, `quality.node_version`).
+- **The dry run** refits with the audit's read-only handler, at the tolerances ingest widens through
+  (`widen_mz_error_tolerance`). On an internal copy of 70 TOF files it gave every file the audit's
+  `collection/node` fit, and so the same axis change in every band.
+- **A rollback is bit for bit** whatever the old record was. An applied fit gives its axes back by
+  itself. The converter's record does not: its coefficients count samples from the start of the raw
+  file's axis, which the converter cut, so the stored axes are the record's from the index the cut
+  ended at, which the runner finds and checks, and the peaks' m/z are where detection placed them,
+  which no record gives back. Those are kept beside the ledger.
+- **Modes without calibrants** are counted and left: their transfer step waits for MAS-187.
 
 **The run** (MAS-196), on the plan owner's word, one site at a time: site A first as the canary,
 then site B, the internal server last, each measured with the audit tool before and after. Within
