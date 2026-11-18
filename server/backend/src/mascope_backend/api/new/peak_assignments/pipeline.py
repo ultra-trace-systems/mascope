@@ -336,14 +336,21 @@ async def resolve(ctx: RunContext) -> None:
     ctx.ionization_setup = await sample_setup(sample.sample_item_id)
     ctx.mechanism_ids, ctx.mechanisms = await service.fetch_sample_mechanisms(sample)
     ctx.instrument_type = _instrument_type(sample, strict=ctx.strict_instrument)
+    plan = ctx.decoy_plan
     ctx.resolved_profile = resolve_profile(
         ctx.config,
         mechanism_notations=[m.ionization_mechanism for m in ctx.mechanisms],
         instrument_type=ctx.instrument_type,
         polarity=sample.polarity,
         # The context the sample's batch or dataset names, which a run on
-        # `auto` takes before the profile's default (step 3.6).
-        named_context=await named_context_for(sample.sample_batch_id),
+        # `auto` takes before the profile's default (step 3.6). A decoy takes
+        # what they named when its control ran, so it searches its control's
+        # chemistry whatever they name now (`decoy.recorded_named_context`).
+        named_context=(
+            plan.named_context
+            if ctx.inherits
+            else await named_context_for(sample.sample_batch_id)
+        ),
     )
     # -- Opportunistic channels (`service._resolve_secondary_channels`).
     (
@@ -352,7 +359,6 @@ async def resolve(ctx: RunContext) -> None:
     ) = await service._resolve_secondary_channels(
         sample, ctx.resolved_profile, ctx.peaks_df
     )
-    plan = ctx.decoy_plan
     if plan is not None:
         runtime.logger.info(
             f"Run '{ctx.run_id}' is a decoy of run '{plan.control_run_id}' for "

@@ -119,6 +119,7 @@ from mascope_backend.api.new.peak_assignments.decoy import (
     DECOY_ARM_KEY,
     DecoyPlan,
     DecoyRefused,
+    context_differs,
     declared_channels,
     plan_decoy,
     swap_channels,
@@ -4455,9 +4456,34 @@ async def plan_sample_decoy(sample, config: PeakAssignmentConfig) -> DecoyPlan:
     """
     control_run_id, control_config = await _latest_in_app_run(sample.sample_item_id)
     plan = plan_decoy(config.decoy, config, control_run_id, control_config)
+    # The context it searches under is its control's: resolved under the
+    # control's settings and the context the control's batch and dataset named
+    # (`decoy.recorded_named_context`), never what they name now. Refused where
+    # even so its reagent profile or its context would not be the control's,
+    # which a control records.
+    channels = None
+    if (control_config.get(RESOLVED_PROFILE_KEY) or {}).get("context") is not None:
+        _, channels = await fetch_sample_mechanisms(sample)
+        try:
+            instrument_type = get_instrument_type(sample.filename)
+        except ValueError:
+            instrument_type = None
+        differ = context_differs(
+            resolve_profile(
+                config,
+                mechanism_notations=[m.ionization_mechanism for m in channels],
+                instrument_type=instrument_type,
+                polarity=sample.polarity,
+                named_context=plan.named_context,
+            ),
+            control_config,
+        )
+        if differ is not None:
+            raise DecoyRefused(f"{differ} (run '{control_run_id}')")
     if not config.decoy.swap_adducts:
         return plan
-    _, channels = await fetch_sample_mechanisms(sample)
+    if channels is None:
+        _, channels = await fetch_sample_mechanisms(sample)
     profile_name = (control_config.get(RESOLVED_PROFILE_KEY) or {}).get("profile")
     if not channels or profile_name is None:
         raise DecoyRefused(

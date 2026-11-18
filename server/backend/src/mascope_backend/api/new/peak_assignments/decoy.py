@@ -63,7 +63,11 @@ from mascope_backend.api.new.peak_assignments.envelope_fit import (
     inherited_envelope_fit,
 )
 from mascope_backend.api.new.peak_assignments.mass_gate import MassCalibration
-from mascope_backend.api.new.peak_assignments.profiles import RESOLVED_PROFILE_KEY
+from mascope_backend.api.new.peak_assignments.profiles import (
+    RESOLVED_PROFILE_KEY,
+    NamedContext,
+    ResolvedProfile,
+)
 from mascope_tools.composition.mass_accuracy import (
     MU_SOURCE_FITTED,
     MU_SOURCE_REAGENT,
@@ -130,6 +134,9 @@ class DecoyPlan:
         empty for a shift.
     :param swapped: For the adduct arm, each of the mode's channels and the
         adduct it was swapped for, None where none was left to take.
+    :param named_context: What the control's batch and dataset named when it
+        ran (:func:`recorded_named_context`), which the decoy resolves its
+        chemistry under instead of what they name now.
     """
 
     decoy: PeakAssignmentDecoy
@@ -140,6 +147,7 @@ class DecoyPlan:
     window_ppm: float | None = None
     mechanisms: tuple[SimpleNamespace, ...] = ()
     swapped: dict[str, str | None] = field(default_factory=dict)
+    named_context: NamedContext = NamedContext()
 
     def record(self) -> dict:
         """What the decoy run records about it (:data:`DECOY_ARM_KEY`)."""
@@ -183,6 +191,62 @@ def settings_differ(config: PeakAssignmentConfig, control_config: dict) -> list[
         ) from invalid
     mine = config.settings()
     return sorted(key for key in mine if mine[key] != control[key])
+
+
+def recorded_named_context(control_config: dict) -> NamedContext:
+    """What the control's batch and its dataset named when the control ran.
+
+    A run on ``auto`` takes the chemistry context its batch or dataset names
+    (step 3.6), read when it starts, and records what each named. A decoy
+    resolves under that record rather than reading them again: renamed since,
+    they would put the decoy under another context than its control, and its
+    rate would be a number about another run. A control recorded before the
+    record names nothing, which is what such a control resolved under: on
+    ``auto``, the reagent profile's default.
+
+    :param control_config: The control's stored config.
+    :return: The names it recorded.
+    """
+    snapshot = control_config.get(RESOLVED_PROFILE_KEY)
+    named = snapshot.get("named_context") if isinstance(snapshot, dict) else None
+    if not isinstance(named, dict):
+        return NamedContext()
+    return NamedContext(batch=named.get("batch"), dataset=named.get("dataset"))
+
+
+def context_differs(resolved: ResolvedProfile, control_config: dict) -> str | None:
+    """Whether the chemistry a decoy resolved, its reagent profile and its
+    context, is not its control's.
+
+    Resolved under its control's settings and the context its control's batch
+    and dataset named (:func:`recorded_named_context`), a decoy takes its
+    control's profile and context. Where it still does not - the sample's mode
+    edited since into another reagent profile, whose default context can bear
+    the same name, or a context the library no longer holds - it would search
+    other reagent lines, element caps, ratio windows and priors than the run
+    it bounds.
+
+    :param resolved: The decoy's resolution.
+    :param control_config: The control's stored config.
+    :return: Why, where it differs; None where neither does, or the control
+        recorded neither.
+    """
+    snapshot = control_config.get(RESOLVED_PROFILE_KEY)
+    if not isinstance(snapshot, dict):
+        return None
+    profile = snapshot.get("profile")
+    if profile is not None and profile != resolved.profile.name:
+        return (
+            f"it resolves the reagent profile '{resolved.profile.name}', and its "
+            f"control searched under '{profile}'"
+        )
+    recorded = snapshot.get("context")
+    if recorded is None or recorded == resolved.context.name:
+        return None
+    return (
+        f"it resolves the chemistry context '{resolved.context.name}', and its "
+        f"control searched under '{recorded}'"
+    )
 
 
 def decoy_window_ppm(control_config: dict) -> float | None:
@@ -415,4 +479,5 @@ def plan_decoy(
         calibration=inherited_calibration(calibration),
         envelope=inherited_envelope_fit(control_config.get(ENVELOPE_TOLERANCE_KEY)),
         window_ppm=window,
+        named_context=recorded_named_context(control_config),
     )

@@ -65,7 +65,11 @@ from mascope_backend.api.new.peak_assignments.mass_gate import (
     apply_mass_gate,
     measure_mass_gate,
 )
-from mascope_backend.api.new.peak_assignments.profiles import RESOLVED_PROFILE_KEY
+from mascope_backend.api.new.peak_assignments.profiles import (
+    RESOLVED_PROFILE_KEY,
+    NamedContext,
+    resolve_profile,
+)
 from mascope_backend.api.new.peak_assignments.service import (
     _run_scoring_centre,
     load_sample_peaks,
@@ -403,6 +407,28 @@ class TestPlanningADecoy:
         assert plan.envelope.tolerance == DEFAULT_TOLERANCE
         assert plan.envelope.record()["inherited"] is True
 
+    def test_a_decoy_resolves_under_what_its_control_s_batch_named(self):
+        # MAS-918: what the batch and dataset named when the control ran is
+        # the decoy's, whatever they name now.
+        control = _control()
+        control[RESOLVED_PROFILE_KEY]["named_context"] = {
+            "batch": "chamber",
+            "dataset": "ambient-air",
+        }
+
+        plan = plan_decoy(SHIFT, PeakAssignmentConfig(decoy=SHIFT), "run-c", control)
+
+        assert plan.named_context == NamedContext(
+            batch="chamber", dataset="ambient-air"
+        )
+
+    def test_a_control_from_before_the_named_context_names_none(self):
+        # Such a control resolved `auto` to its profile's default, as a decoy
+        # naming nothing does.
+        plan = plan_decoy(SHIFT, PeakAssignmentConfig(decoy=SHIFT), "run-c", _control())
+
+        assert plan.named_context == NamedContext()
+
     def test_a_sample_with_no_run_of_its_own_has_nothing_to_bound(self):
         with pytest.raises(DecoyRefused, match=re.escape(REFUSED_NO_CONTROL)):
             plan_decoy(SHIFT, PeakAssignmentConfig(decoy=SHIFT), None, None)
@@ -620,6 +646,26 @@ class TestADecoyRun:
         assert ctx.path is pipeline.DECOY
         assert ctx.path.measurement is pipeline.Measurement.CONTROL
         assert ctx.ran == list(pipeline.STAGES)
+
+    @pytest.mark.asyncio
+    async def test_a_decoy_reads_its_control_s_context_whatever_its_batch_names_now(
+        self,
+    ):
+        # MAS-918: its control ran on `auto` while the batch named the chamber;
+        # the batch has named another context since. The decoy searches under
+        # the chamber's, the context its control searched under, and records it.
+        mocks = self._start(_plan(named_context=NamedContext(batch="chamber")))
+        mocks["named_context"].return_value = NamedContext(batch="ambient-air")
+
+        await _run(PeakAssignmentConfig(decoy=SHIFT))
+
+        mocks["named_context"].assert_not_awaited()
+        resolved = self.recorder.recorded_configs()[-1][RESOLVED_PROFILE_KEY]
+        assert (resolved["context"], resolved["context_source"]) == (
+            "chamber",
+            "batch",
+        )
+        assert resolved["named_context"] == {"batch": "chamber", "dataset": None}
 
     @pytest.mark.asyncio
     async def test_every_read_of_the_run_sees_the_shifted_axis(self):
@@ -1040,7 +1086,10 @@ class TestPlanningTheAdductArm:
             new_callable=AsyncMock,
             return_value=held,
         ).start()
-        return SimpleNamespace(sample_item_id="si-1", polarity=polarity)
+        self.control = control
+        return SimpleNamespace(
+            sample_item_id="si-1", polarity=polarity, filename="orbi-sample.raw"
+        )
 
     @pytest.mark.asyncio
     async def test_each_channel_is_swapped_the_fingerprint_first(self):
@@ -1090,6 +1139,71 @@ class TestPlanningTheAdductArm:
 
         with pytest.raises(DecoyRefused, match="no channel"):
             await plan_sample_decoy(sample, PeakAssignmentConfig(decoy=SWAP))
+
+    @pytest.mark.asyncio
+    async def test_a_decoy_that_resolves_another_context_is_refused(self):
+        # Under the control's named context the decoy resolves the profile's
+        # default here, while its control searched under the chamber's: the
+        # library has since dropped what it named, say. No decoy then.
+        from mascope_backend.api.new.peak_assignments.service import (
+            plan_sample_decoy,
+        )
+
+        sample = self._start(
+            profile="BR", channels=[_mechanism("im-br", "[M+Br]-")], held=[]
+        )
+        self.control[RESOLVED_PROFILE_KEY].update(
+            context="chamber", named_context={"batch": None, "dataset": None}
+        )
+
+        with pytest.raises(DecoyRefused, match="its control searched under 'chamber'"):
+            await plan_sample_decoy(sample, PeakAssignmentConfig(decoy=SHIFT))
+
+    @pytest.mark.asyncio
+    async def test_a_decoy_whose_mode_now_resolves_another_profile_is_refused(self):
+        # The sample's mode was edited from bromide to nitrate since its control
+        # ran. Both profiles default to the same context name, so the context
+        # alone would let the decoy search another reagent's chemistry.
+        from mascope_backend.api.new.peak_assignments.service import (
+            plan_sample_decoy,
+        )
+
+        sample = self._start(
+            profile="BR", channels=[_mechanism("im-no3", "[M+NO3]-")], held=[]
+        )
+        context = resolve_profile(
+            PeakAssignmentConfig(),
+            mechanism_notations=["[M+NO3]-"],
+            instrument_type="orbi",
+            polarity="-",
+        ).context.name
+        self.control[RESOLVED_PROFILE_KEY].update(
+            context=context, named_context={"batch": None, "dataset": None}
+        )
+
+        with pytest.raises(
+            DecoyRefused,
+            match="resolves the reagent profile 'NO3', and its control searched "
+            "under 'BR'",
+        ):
+            await plan_sample_decoy(sample, PeakAssignmentConfig(decoy=SHIFT))
+
+    @pytest.mark.asyncio
+    async def test_a_decoy_under_its_control_s_named_context_is_planned(self):
+        from mascope_backend.api.new.peak_assignments.service import (
+            plan_sample_decoy,
+        )
+
+        sample = self._start(
+            profile="BR", channels=[_mechanism("im-br", "[M+Br]-")], held=[]
+        )
+        self.control[RESOLVED_PROFILE_KEY].update(
+            context="chamber", named_context={"batch": "chamber", "dataset": None}
+        )
+
+        plan = await plan_sample_decoy(sample, PeakAssignmentConfig(decoy=SHIFT))
+
+        assert plan.named_context == NamedContext(batch="chamber")
 
     @pytest.mark.asyncio
     async def test_a_shift_reads_no_channel(self):
