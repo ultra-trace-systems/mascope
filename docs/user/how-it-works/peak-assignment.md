@@ -1407,9 +1407,19 @@ you are looking at. So before you pin one, the inspector measures it on this sam
 peak the way the pin will. The alternative then shows the fit, the m/z error, the tier
 the pin would give it here and how many of its isotope lines this spectrum holds. Its
 tooltip adds the plausibility, the evidence and what the sample reads now. These are
-the numbers the pin then writes for this sample. When the identity's isotope pattern
-does not reach this peak, the alternative says *not reached here*: a pin leaves this
-sample as it is. Nothing is saved by looking. The pin's note keeps what was measured
+the numbers the pin then writes for this sample.
+
+A pin is your choice, as an assignment by hand on one sample is, and both are judged
+alike: the tier is read off the evidence, and then the spectrum is asked whether it
+holds the isotope lines the formula predicts, at the gate the sample's assignment run
+asked its own rows at. A line that should be there and is not holds the pin's reading
+at *candidate* in that sample, as it holds a hand assignment. A sample with no such
+run, one only folded into the batch ledger, has no such gate and is asked no line, nor
+is one whose run asked its own rows none: there the pin's reading takes the tier its
+evidence gives. Nothing else a run asks is asked of a person's choice: those rules
+weigh rivals, channels and lists, which a choice is not. When the identity's isotope
+pattern does not reach this peak, the alternative says *not reached here*: a pin leaves
+this sample as it is. Nothing is saved by looking. The pin's note keeps what was measured
 before it was made.
 
 An identity that reads the peak as an isotope line of a compound, such as its 13C line,
@@ -1607,6 +1617,14 @@ calibrate and judge with its mass gate off. A line's height is read at the
 control's envelope tolerance for the same reason: the few envelopes a decoy
 confirms are wrong formulas, and too few to measure one of its own.
 
+A decoy searches under its control's chemistry context. A run on *Auto* takes the
+context its batch or dataset names, read when the run starts. A decoy reads what they
+named when its control ran, not what they name now, so renaming the batch's context in
+between does not put the decoy under another context than its control. A decoy whose
+reagent profile or context would still differ from its control's, because the sample's
+ionization mode has since changed or the context no longer exists, is refused, with the
+reason.
+
 A shift moves the sample's formulas, not the source that made the spectrum.
 So a shifted run looks for the source's own ions where they are stored: it
 opens the secondary channels its control opened, and claims the reagent lines
@@ -1744,6 +1762,24 @@ It writes no per-sample runs: the results appear in the batch ledger and in each
 sample's view, marked as untargeted. An assignment run on a sample still takes
 precedence for that sample.
 
+**The search judges as an assignment run does.** Each sample's search takes the same
+steps, in the same order, as an assignment run of that sample: it reads the sample's
+chemistry, sets aside the peaks the source made (its reagent lines and the detector's
+ringing), searches, reads a chlorine or bromine twin again (*Chlorine and bromine from
+their twin line*, above), measures every reading it commits, and then asks each reading
+every rule a run asks: the mass calibration, the partner and second-channel checks, and
+the rules under *Why a row holds its tier*. It reads the mass calibration, the width and
+the line tolerance the sample's latest assignment run recorded; a sample no run has
+assigned is read at its instrument's width and its reagent lines' centre. A peak the
+batch ledger already explains is neither searched nor read as a twin. Measuring the
+composition in the other samples does the same: each sample's peak takes the tier an
+assignment run of that sample gives the same reading, not its fit alone. A run finds
+such a reading by searching, so it is judged as the search's reading in each sample,
+unless one of that sample's lists holds the ion through that adduct: a run then
+matches it from the list, and it is judged as the list's match. So a reading that
+stands on one peak, with no line of its isotope pattern beside it, is held at
+*candidate* (*one peak only*), in the batch ledger as in a run.
+
 **A faint peak that recurs is searched too.** The intensity threshold and the peak
 ceiling decide which batch peaks the search takes by height, as a run's untargeted
 stage does. Beside them, the search takes every batch peak whose peak is present in
@@ -1808,8 +1844,9 @@ where in the TOF's wider window only about half of the proposals that land on a
 candidate agree with its formula.
 
 A kept proposal is measured, not assigned: it is scored in every sample its batch peak
-is in, as the untargeted search measures what it finds, and a sample whose peak the
-formula's isotope pattern does not reach keeps the peak as it was. Where a sample
+is in, as the untargeted search measures what it finds, at the tier an assignment run of
+the sample gives the same reading, and a sample whose peak the formula's isotope pattern
+does not reach keeps the peak as it was. Where a sample
 already reads the peak another way, the series' formula takes it only where it measures
 at least as well. A batch peak already held at *candidate* on the proposed formula is
 not measured again; the series is recorded beside it. A row a series vouches for shows
@@ -2621,7 +2658,8 @@ land its result on the batch ledger as a run of its own, through the SDK
 `POST /api/batch-peaks/batch/{id}/runs/import`. Each row is matched to the batch peak
 nearest its m/z (within 5 ppm by default) and its composition is then measured against
 every sample that holds that peak, so the ledger shows Mascope's own fit of the engine's
-formula, with the engine named as the source. Curated batch peaks are left alone, as are
+formula, at the tier an assignment run of that sample gives the same reading, with the
+engine named as the source. Curated batch peaks are left alone, as are
 isotopologue peaks, and rows whose adduct could not be resolved to a mechanism; the run's
 summary counts what landed and why the rest did not. The ledger as it was stays under
 the previous run in the run selector, so the two views can be compared, and *Rebuild

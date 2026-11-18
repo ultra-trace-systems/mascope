@@ -1918,6 +1918,14 @@ computes their batch's peaks. The ceiling guards against a pathological
 acquisition: a sample with hundreds of thousands of peaks is skipped at
 ingest, logged, and left for an explicit run.
 
+Under the default, `"batch"`, an ingested sample is assigned from its known
+compounds and folded straight into its batch's ledger, with no per-sample run
+written. It is judged exactly as an assignment run of the sample without the
+untargeted search judges it: the same tiering rules, the same identification
+level, and a labelled reagent's lines read at the purity of the sample's
+ionization setup. So the batch ledger shows each of its peaks at the tier such
+a run gives.
+
 `peak_assignment_ingest_ledger = "sample"` restores the behaviour releases
 before the batch-primary ledger had: every ingested sample also gets a
 per-sample run, about a kilobyte per detected peak, most of it placeholder
