@@ -55,7 +55,9 @@ what the file's record holds (:func:`close_open_apply`): the apply's fit, and
 the apply is finished and ``applied``; what the file had before, and what the
 apply may have written of its axes is put back (``restored``); anything else,
 and another apply has rewritten the file since (``superseded``). An apply that
-fails part-way in a run is put back at once the same way.
+fails part-way in a run is closed at once the same way: put back when its
+record did not land, finished when it did. A rollback that fails part-way
+leaves the record it wrote back; the same rollback run again finishes it.
 
 **The ledger** is ``<filestore>/tof_recalibration/<instrument>/ledger.jsonl``
 (``TOF_RECAL_LEDGER`` names another directory), one JSON event per line,
@@ -1152,7 +1154,9 @@ async def run_file(
     record = stored.mz_calibration if stored else None
     if "apply" in state:
         apply = state["apply"]
-        if _same_fit(record, apply["new"]):
+        # A fault can come after the record landed, in the match removal or
+        # the batches' status: the apply then has its tail still to do
+        if _same_fit(record, apply["new"]) and not outcome.fault:
             ledger.write(
                 {
                     "event": "applied",
@@ -1167,8 +1171,10 @@ async def run_file(
         ledger.write(
             {"event": "error", **base, "apply_incomplete": True, "error": error}
         )
-        # What the apply may have written is put back now, not by a later run
-        await _close_now(apply, ledger)
+        # Closed now, not by a later run: put back when its record did not
+        # land, finished when it did
+        if await _close_now(apply, ledger) == "applied":
+            return Outcome(record_status(record), {"error": error})
         return Outcome("error", {"error": error})
     if "hook_error" in state:
         # The next run tries the file again
@@ -1192,11 +1198,14 @@ async def run_file(
     return Outcome("failed", {"reason": outcome.reason})
 
 
-async def _close_now(apply: dict, ledger: Ledger) -> None:
-    """Close an apply that did not land, or leave it for the next run's
-    :func:`reconcile` when that fails too."""
+async def _close_now(apply: dict, ledger: Ledger) -> str | None:
+    """Close an apply that did not finish (:func:`close_open_apply`), or
+    leave it for the next run's :func:`reconcile` when that fails too.
+
+    :return: What :func:`close_open_apply` answered, or None when it raised.
+    """
     try:
-        await close_open_apply(apply, ledger)
+        return await close_open_apply(apply, ledger)
     except Exception as error:  # noqa: BLE001 - the next run tries again
         runtime.logger.opt(exception=True).info(
             f"Closing the open apply of {apply['sample_file_id']} raised"
@@ -1209,6 +1218,7 @@ async def _close_now(apply: dict, ledger: Ledger) -> None:
                 "error": f"{type(error).__name__}: {error}",
             }
         )
+        return None
 
 
 # --- Matching what was applied ---
@@ -1543,11 +1553,21 @@ async def rollback_file(event: dict, ledger: Ledger) -> Outcome:
     The file's samples lose their matches and its batches other than
     acquisition ones go to ``rematch``, as after an apply; :func:`settle` then
     matches them again.
+
+    A file that already holds its record from before the apply is one an
+    earlier rollback wrote back, and then failed or was cut off before it
+    said so: the match removal or the batches' status still to do. It is
+    rolled back again in full, which writes the same axes and record, and
+    finishes it.
     """
     sample_file_id = event["sample_file_id"]
     sample_file = await fetch_sample_file(sample_file_id=sample_file_id)
+    record = sample_file.mz_calibration
     reason = None
-    if not _same_fit(sample_file.mz_calibration, event.get("new")):
+    if not (
+        _same_fit(record, event.get("new"))
+        or _same_fit(record, event["before"]["record"])
+    ):
         reason = "the record changed since the runner applied it"
     else:
         try:
