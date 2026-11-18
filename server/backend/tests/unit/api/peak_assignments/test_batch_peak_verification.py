@@ -17,6 +17,7 @@ from mascope_backend.api.new.peak_assignments.batch_peak_verification import (
     is_stale,
     with_current_claim,
 )
+from mascope_backend.api.new.peak_assignments.batch_peaks import GRADE_DRIFT
 from mascope_backend.api.new.peak_assignments.schemas import VerifyBatchPeakBody
 
 
@@ -32,6 +33,8 @@ def _anchor(**over):
         support_fraction=1.0,
         n_present=2,
         is_ambiguous=0,
+        continuity_grade=None,
+        continuity=None,
     )
     base.update(over)
     return SimpleNamespace(**base)
@@ -116,7 +119,27 @@ def test_the_context_snapshot_is_what_the_human_saw():
         "support_fraction": 1.0,
         "n_present": 2,
         "is_ambiguous": True,
+        "continuity_grade": None,
+        "continuity_stale": None,
     }
+
+
+def _graded(**detail):
+    base = dict(n_present_at_compute=2, formula="C6H12O6", ionization_mechanism_id="m1")
+    base.update(detail)
+    return _anchor(continuity_grade=GRADE_DRIFT, continuity=base)
+
+
+def test_a_graded_anchor_snapshots_its_grade_as_current():
+    snap = context_snapshot(_graded())
+    assert snap["continuity_grade"] == GRADE_DRIFT
+    assert snap["continuity_stale"] is False
+
+
+def test_a_grade_behind_the_ledger_snapshots_as_stale():
+    snap = context_snapshot(_graded(n_present_at_compute=5))
+    assert snap["continuity_grade"] == GRADE_DRIFT
+    assert snap["continuity_stale"] is True
 
 
 def test_confirming_needs_an_evidence_level_and_the_formula_judged():

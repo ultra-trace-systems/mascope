@@ -40,6 +40,7 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     CodedHTTPException,
     NotFoundException,
 )
+from mascope_backend.api.new.peak_assignments.batch_peaks import continuity_stale
 from mascope_backend.api.new.peak_assignments.claims import (
     claim_level,
     mapping_context,
@@ -121,7 +122,12 @@ def context_snapshot(anchor: Any) -> dict:
 
     Pinned on the record because the consensus keeps moving under later folds,
     and a verdict is only interpretable against what it was a verdict *on*.
+    The ratio-stability grade (``continuity_grade``) and whether it was behind
+    the ledger (``continuity_stale``) are part of what was seen; both are None
+    on an anchor the continuity pass has not graded. A snapshot taken before
+    they were recorded lacks the keys: a reader takes that as "not recorded".
     """
+    grade = getattr(anchor, "continuity_grade", None)
     return {
         "mz": anchor.mz,
         "consensus_formula": anchor.consensus_formula,
@@ -132,6 +138,8 @@ def context_snapshot(anchor: Any) -> dict:
         "support_fraction": anchor.support_fraction,
         "n_present": anchor.n_present,
         "is_ambiguous": bool(anchor.is_ambiguous),
+        "continuity_grade": grade,
+        "continuity_stale": None if grade is None else continuity_stale(anchor),
     }
 
 
