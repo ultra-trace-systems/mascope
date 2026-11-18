@@ -263,6 +263,7 @@ it is installed:
 | `pypi.org`, `files.pythonhosted.org` | The CLI reinstall at each release |
 | The Ubuntu archive and security mirrors, or the customer's own mirror | OS patching |
 | An NTP source | Time |
+| Optional: `challenges.cloudflare.com` | Only with [Turnstile](maintaining.md#turning-turnstile-on) on. The backend checks each sign-in's token there, with Cloudflare's siteverify, and refuses every password sign-in with a 503 when it cannot reach it. Users' browsers load the check from the same host, so the site's firewall must let them reach it too |
 | Optional: the monitoring endpoints | A healthchecks.io-style URL for the [backup](maintaining.md#backups) and [disk-monitor](maintaining.md#the-monitor-early-warning) pings, and the [error-tracking](maintaining.md#error-reporting-to-glitchtip-opt-in) box where a tunnel to it exists |
 
 A first install (`tooling/ubuntu.sh install`) needs more than that - the apt
