@@ -132,7 +132,9 @@ recalibration (a scales icon, after its ionization mode's calibration
 collection changed) keeps that icon: once recalibrated, it is flagged for
 a rematch, which picks up the target changes too. A rematch forced on such a
 batch leaves it waiting for the recalibration, whether it succeeds, matches
-only some samples or fails: a rematch does not re-fit the m/z axis. A batch
+only some samples or fails: a rematch does not re-fit the m/z axis. Applying
+an m/z calibration to one of its files leaves it waiting too, since its other
+files still owe the recalibration. A batch
 edited while its rematch runs keeps the flag the edit set when the run
 finishes, since the run's matches predate the edit; if the run itself still
 owes a recalibration, the batch waits for that. Its icon then shows the

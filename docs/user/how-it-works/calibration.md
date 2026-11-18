@@ -152,7 +152,7 @@ $$m = \left( \frac{\text{TOF} - p_1}{p_0} \right)^2$$
 A TOF fit is absolute.
 Applying it recomputes the m/z axis from the stored time-of-flight index of every point of the spectrum and every detected peak, and nothing depends on the axis the file had before (an Orbitrap fit, by contrast, rescales the stored axis by a cumulative factor).
 So re-calibrating needs no peak re-detection, an earlier fit is restored exactly from its parameters, in either model, and applying the same fit twice changes nothing.
-Applying a fit clears the file's matches and marks its batches for rematching.
+Applying a fit clears the file's matches and marks its batches for rematching; a batch still waiting on a recalibration stays marked for it.
 Editing the calibration collection a mode already uses only marks its batches: the files stay on their old calibration until someone re-calibrates them.
 A TOF file that has never been fitted carries the axis the acquisition software wrote, stamped `unfitted` in its calibration record.
 
