@@ -923,7 +923,13 @@ issue for the owner in the Linear project.
    or per workspace, is part of the decision. Embedding stored bundles is
    rejected as the only path: a bundle is a snapshot, and a dashboard that
    cannot follow today's data is a report. Taken with the pilot's reading
-   in hand; recorded so it is not decided by default.
+   in hand; recorded so it is not decided by default. *Answered
+   2026-11-18 by the owner, ahead of the pilot: (a), with (b)'s renderer
+   inside it. The design is [`time_scopes.md`](time_scopes.md): the scope
+   as the unit of viewing, server-side rollups written at the ingest
+   fold, the figure endpoint and renderer of section 2.8, saved recipes
+   per user shareable to a workspace (open question 6), and the
+   chemistry as a facet of a compound's series rather than a partition.*
 
 ---
 

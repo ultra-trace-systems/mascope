@@ -602,7 +602,11 @@ phase 1 depends on nothing.
 - **No quick look without a batch.** Decision 1 means a trend over six months
   is seen only after a batch exists and has been matched. The answer is to
   make a batch cheap to build and to throw away, not to add a second read
-  path.
+  path. *Revised 2026-11-18:* the quick look is a scope, not a batch;
+  [`time_scopes.md`](time_scopes.md) adds the read path (rollups at the
+  fold, a figure route) while this decision stands for curation, and its
+  *Make a batch of this range* is this note's create-from-filter with the
+  scope as the filter.
 - **Row growth.** Every exploratory batch duplicates sample rows and, once
   matched, match rows; `match_isotope` is the large table. Worth measuring
   after phase 1 before encouraging throwaway batches.
