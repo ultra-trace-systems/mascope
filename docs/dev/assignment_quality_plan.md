@@ -3,8 +3,8 @@
 # Closing the assignment quality gap: the work, step by step
 
 - **Status:** building
-- **As of:** 2026-11-17
-- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73, MAS-408 to MAS-410, MAS-443, MAS-568 to MAS-570, MAS-609, MAS-708, MAS-709, MAS-777, MAS-823 to MAS-841, MAS-860, MAS-870, MAS-881, MAS-908, MAS-922 and MAS-938 to MAS-946)
+- **As of:** 2026-11-18
+- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73, MAS-408 to MAS-410, MAS-443, MAS-568 to MAS-570, MAS-609, MAS-708, MAS-709, MAS-777, MAS-823 to MAS-841, MAS-860, MAS-870, MAS-881, MAS-890, MAS-908, MAS-922 and MAS-938 to MAS-946)
 - **What:** The step-by-step plan closing the assignment quality gap: stages, gates, decisions and risks.
 
 ## Status
@@ -113,7 +113,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 4.5 - profiles as versioned rows, routing by detection | - |  | planned |
 | 4.6 - a structured adduct row beside the notation string | - |  | built: the row's columns on `ionization_mechanism`, filled by a migration that refuses an unreadable row; `[2M+H]+`, `[M+2H]2+` and `[M+H-H2O]+` read, written and given target ions; the finder and the engine search them since MAS-729 (#2996), which also reads a removing mechanism's one H as its species and the rest as its loss (`[M-H-H2O]-`), searched at the same mass; corroboration keys unchanged; moves no metric; MAS-318 |
 | 4.7 - seed batch-peak anchors from the batch's target-ion list | - |  | built, off by default, seeded on evidence at mint (the owner's design review): with a batch's `seed_batch_peaks` on, a peak that mints a new anchor and that its row assigns, at candidate or better, to the monoisotopic line of a target ion of the batch's collections mints it at the ion's m/z (`HIGH` lines on an Orbitrap, `LOW` on a TOF), marked `seeded`, where the peak lies inside the seed's window and no anchor holds the seed; an absent target mints nothing, and turning the option on moves no existing anchor. Measured on the testbed copy by refolding each batch's stored runs in memory, unseeded and seeded (11 batches with collections, 3-8 samples with runs each): no member changes trace and no seed is left without a member, so only an anchor's m/z moves, to its ion's. Orbitrap, eight batches: 20 seeds, median move 0.1-0.5 ppm per batch, max 0.86, none over 1 ppm. TOF F1: 7 seeds, median 1.4 ppm, max 6.2; F2: 11, median 0.7, max 2.4; E: 2, median 1.3, max 2.0. No mint refused its seed. The tier gate (the review's round 5) matters: seeding from every M0 target row, the run's refused rows included, gave 62 seeds with moves up to 2.4 ppm on Orbitrap and 9.6 ppm on TOF. G1 to G14 read the samples' runs, which a fold does not touch, so no gate metric moves; MAS-319 |
-| 4.8 - blend splitting: a batch peak whose members disagree along intensity or time | - |  | the flag half built, the split not: after every vote the two leading formulas are tested for a clean parting, intensity by a Mann-Whitney rank test (p 0.01, 90 % of pairs one way), acquisition time by an exact runs test (p 0.01, at most half the runs an interleaving gives), over the members at candidate or better, never two formulas reading one ion; a probable blend is recorded on the batch peak (`blend`), marked in the ledger with a filter, both formulas on the chart; read on the testbed's nine fully folded ledgers, 92 flags (0 on set A's batch, 1 on the largest analysis batch), four of ten read by hand two compounds on one peak, so the split waits; no tier moves; MAS-320 |
+| 4.8 - blend splitting: a batch peak whose members disagree along intensity or time | - |  | the flag half built, the split not: after every vote the two leading formulas are tested for a clean parting, intensity by a Mann-Whitney rank test (p 0.01, 90 % of pairs one way), acquisition time by an exact runs test (p 0.01, at most half the runs an interleaving gives), over the members at candidate or better, never two formulas reading one ion; a probable blend is recorded on the batch peak (`blend`), marked in the ledger with a filter, both formulas on the chart; read on the testbed's nine fully folded ledgers, 92 flags (0 on set A's batch, 1 on the largest analysis batch), four of ten read by hand two compounds on one peak, so the split waits; no tier moves; MAS-320. Sharpened (2026-11-18): the smaller side must hold 3 % of the anchor's members at candidate or better, the two together 60 %, and a time parting must step the level 1.25 times at its change point; 92 flags fall to 57, a fresh ten read four two compounds, two undecided and four not, so the split still waits (#3323); MAS-890 |
 | 4.9 - refuse or segregate mixed-instrument batches at the fold | - |  | built: segregated; the fold searches a batch's anchors per mode and per instrument type, read off the anchor's intensity unit; the ledger and the series name the partition (`instrument_type`), the Batch peaks ledger shows one at a time and the chart draws only its selection; a single-instrument batch folds as before; moves no metric; MAS-321 |
 | 4.10 - fold-in and series benchmarks, and the two measurement-gated calls | - |  | built: three benchmarks in the read-path suite, run on a copy of the bench (`peak_assignment_batch_primary.md` section 7.1); the fold is O(P x N), not bounded: 2 s per arrival at 160 samples, 35 s at 5,000 (#3231); the series read holds its latency, but a chunk of 100 batch peaks over 5,000 samples is 37 MB (#3232); the anchor axis and the Stage B cost per anchor read for decisions 10.4 and 10.5, which stay the plan owner's; moves no metric; MAS-322 |
 | 4.11 - temporal continuity: the ratio-stability pass, its columns and its endpoint | - |  | built: every isotope line and its family root, and every two channels of one neutral, at assigned or candidate, graded on the within-sample ratio across a time-ordered batch (spread 1.4826 x MAD, drift by Spearman rho and a Theil-Sen change): stable, drift (the traces co-vary per 4.2), red, inconclusive or insufficient, on two `batch_peak` columns the ledger serves with a stale mark; run by its endpoint and at a rebuild's end, the fold trigger off for 4.13; on the testbed's six folded analysis batches 1,752 pairs, 1,008 stable, 122 red, 24 drift, the isotope reds a dim line's response; no tier moves; MAS-323 |
@@ -2600,6 +2600,58 @@ who edits chemistry and stays last.
     sharper test would hold the minority side to a share of the anchor's
     members (the three misses are minorities of 2 % or less, or scatter
     over many formulas) and read the level step at a time switch.
+- **Sharpened** (MAS-890, #3204, 2026-11-18). Three rules, each a
+  provisional constant beside the others in `batch_blend.py`. The shares
+  count the anchor's committed members, those carrying a formula at
+  candidate or better, the population the two sides are drawn from:
+  - **The minority side** must hold 3 % of them (`BLEND_MIN_MINORITY_SHARE`).
+    The two dim-flip misses read 1.0 and 1.9 %; the lowest of the right
+    four read 7.9 %.
+  - **The two sides together** must hold 60 % (`BLEND_MIN_PAIR_SHARE`). The
+    scatter miss read 53 %; every other flag 67 % or more.
+  - **A parting in time** must step the level at its change point
+    (`BLEND_MIN_LEVEL_STEP`, 1.25). The change point is the split of the
+    two formulas' members, in acquisition order, where the first formula's
+    share before and after differ most: the one switch where they come in
+    two blocks. The step is the ratio of the members' median intensities
+    before and after it, read as median log intensities. The three right
+    time partings stepped 1.31, 1.35 and 1.83, the flat one 1.11. Read
+    over each formula's members instead of at the change point, one right
+    parting read 1.06: its level moved at the switch, then the other
+    formula came back at the new level.
+  - The record carries `shares` (`minority`, `pair`) and the time
+    reading's `level_step`.
+- **Measured again** (2026-11-18, the branch's test over the same nine
+  ledgers, read-only). 57 flags where develop's test gives 92: 0 on set
+  A's batch and the largest analysis batch, 1, 37 and 19 on three other
+  analysis batches; 33 by intensity, 24 by time. The 35 dropped: 15 by the
+  minority share, 1 by the joint share, 19 by the level step. Of the ten
+  read on 2026-11-13, the rules keep the four right ones and the isobaric
+  pair, and drop the three misses, the flat time parting and the batch-wide
+  mechanism switch. The floors were set on those ten, so they say nothing
+  of the rules' worth. A fresh ten, drawn at random from the other 52
+  (five per axis), read by the same criteria:
+  - **Two compounds on one peak (4).** Two where a compound sits early in
+    the batch and goes, leaving an isotope line of a bright neighbouring
+    anchor at a 2.9 to 3.3 times lower level. Two where the anchor is a
+    neighbour's 34S or 18O line and a compound adds to it in some samples:
+    per sample, the anchor over the neighbour reads the line's ratio on the
+    line's side, and 1.7 times that on the other.
+  - **Undecided (2).** Three formulas taking turns as the trace's level
+    declines smoothly, their ions 2 ppm apart; and a switch with a 1.35
+    times step followed by a larger fall with no switch, the ions 1.6 ppm
+    apart.
+  - **Not a blend (4).** Three where one side reads the anchor as a
+    neighbour's isotope line and the other reads the same line as a
+    compound of its own: per sample the anchor over the neighbour is the
+    same on both sides, or lower off the line's side, and a second compound
+    could only add to it. And an onset: a compound appears partway through
+    the batch, and the dim baseline before it, which several formulas read
+    in turn, is the other side.
+  - **So** four of ten again: the split stays unbuilt. The misses now are
+    an isotope line read two ways by its level, which the members'
+    `iso_child` role and the parent's intensity in the same sample can
+    tell, and an onset read by scatter (#3323).
 - **Size.** M.
 
 ### 4.11 Ratio stability, the diagnostic of 4.2's reading

@@ -2530,10 +2530,25 @@ So after every vote, the consensus tests the two formulas it ranked first:
 
 An axis parts the two where its test is significant at p 0.01 and the parting is clean.
 For intensity, at least 90% of the pairs order one way. For time, the formulas come in at
-most half the runs an interleaving would give. Each formula needs three samples or more,
-counting only those that read it at *candidate* or better. Two formulas whose samples read
-one ion are not tested: that is one compound read through two mechanisms, the same ion on
-the peak. A batch peak that is parted on either axis is a probable blend.
+most half the runs an interleaving would give, and the peak's level steps where they
+switch. The switch is the point in acquisition order that best parts the two formulas.
+The samples' median intensity before it and after it must differ by 1.25 times or more.
+Two compounds taking turns move the level as one goes and the other comes. A reading that
+switches at a flat level is one compound read two ways, as a slow drift of the mass reading
+would give.
+
+Only the samples that read a formula at *candidate* or better count, and each formula needs
+three or more. Two formulas are not tested when:
+
+- their samples read one ion: that is one compound read through two mechanisms, the same
+  ion on the peak;
+- the smaller of the two holds under 3% of the batch peak's samples at *candidate* or
+  better: a handful of dim samples that read another compound's isotope line is not a
+  second compound;
+- the two together hold under 60% of them: a parting between two of many formulas is
+  scatter, not two compounds sharing the peak.
+
+A batch peak that is parted on either axis is a probable blend.
 
 A probable blend carries an intersect mark beside its formula in the *Batch peaks* ledger.
 Its tooltip names the two formulas with their ions and how many samples read each, and
@@ -2546,13 +2561,17 @@ is not; the filter then keeps the compound with its lines. The chart names such 
 by both formulas, the consensus first, and its hover says the axis.
 
 The flag is shown, never weighed: the consensus, its tier and the alternatives stay as the
-samples voted. Every threshold is provisional. Of ten flags read by hand on real batches,
-four were two compounds on one peak, three could not be told and three were scatter the
-tests still let through. So splitting a blend into two traces waits for a sharper test. Every recompute of a batch
-peak's consensus tests it: a sample folding in, *Rebuild batch ledger*, a curation. A batch
-folded before the test existed shows its blends after a rebuild. The ledger's records carry
-the reason as `blend`, with `formulas`, `ions`, `n`, `axis` and each axis' reading under
-`intensity` and `time`.
+samples voted. Every threshold is provisional. The share and level-step rules were added
+after ten flags read by hand on real batches gave four two compounds on one peak, three that
+could not be told and three that were not. With them, a fresh ten read four, two and four:
+most of the misses were an isotope line of a brighter neighbouring peak read two ways. So
+splitting a blend into two traces still waits for a sharper test
+([#3323](https://github.com/ultra-trace-systems/mascope/issues/3323)). Every recompute of
+a batch peak's consensus tests it: a sample folding in, *Rebuild batch ledger*, a curation.
+A batch folded before a rule changed shows the new flags after a rebuild. The ledger's
+records carry the reason as `blend`, with `formulas`, `ions`, `n`, `shares` (`minority`
+and `pair`), `axis` and each axis' reading under `intensity` and `time`; the time reading
+carries its `level_step`.
 
 ### Batch runs
 
