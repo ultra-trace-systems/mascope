@@ -25,7 +25,8 @@ An eviction that finds Redis out of reach once it is connected is kept, to be
 tried again when Redis answers, as in a worker
 (:mod:`mascope_backend.socket.eviction`); but the script ends when it is done,
 so it waits a few retry intervals for those before it disconnects, and says how
-many it had to drop.
+many went through on a retry, those that did while it was still notifying
+included, and how many it had to drop.
 """
 
 from collections.abc import Sequence
@@ -34,6 +35,7 @@ from mascope_backend.runtime import runtime
 from mascope_backend.socket.eviction import (
     evict_ended_sessions,
     settle_sign_out_retries,
+    sign_out_retries_ever_kept,
     sign_out_retries_kept,
 )
 from mascope_backend.socket.records.service import (
@@ -96,12 +98,13 @@ async def notify_password_change_from_script(
             "reconnect, and open tabs are not notified"
         )
         return False
+    kept_before = sign_out_retries_ever_kept()
     try:
         evicted = await notify_password_change(user_ids, required=required)
     finally:
         # While Redis is still connected, and on a failure too: the loop
         # ends with the script, and would cancel the retries without a word.
-        kept, dropped = await _settle_kept_evictions()
+        kept, dropped = await _settle_kept_evictions(kept_before)
         await redis_storage_client.disconnect()
     if required:
         runtime.logger.info(f"Open sockets evicted from their rooms: {evicted}")
@@ -113,18 +116,25 @@ async def notify_password_change_from_script(
     return not dropped
 
 
-async def _settle_kept_evictions() -> tuple[int, int]:
+async def _settle_kept_evictions(kept_before: int) -> tuple[int, int]:
     """
     Wait for the evictions kept to be tried again, then drop what is left.
 
-    :return: How many were kept, and how many of them were dropped.
+    One kept early in the run can go through while the script still notifies
+    the other accounts, as soon as Redis answers: it is counted as kept and as
+    gone through, though nothing is left of it to wait for.
+
+    :param kept_before: :func:`sign_out_retries_ever_kept` before the run.
+    :return: How many were kept during the run, and how many of them were
+        dropped.
     """
-    kept = sign_out_retries_kept()
-    if not kept:
-        return 0, 0
+    kept = sign_out_retries_ever_kept() - kept_before
+    waiting = sign_out_retries_kept()
+    if not waiting:
+        return kept, 0
     window = SCRIPT_RETRY_ROUNDS * storage_config.sign_out_retry_interval
     runtime.logger.warning(
-        f"{kept} eviction(s) found Redis out of reach: waiting up to {window} s "
+        f"{waiting} eviction(s) found Redis out of reach: waiting up to {window} s "
         "for Redis to answer, to try them again"
     )
     dropped = await settle_sign_out_retries(window)
