@@ -468,6 +468,19 @@ def test_a_minority_side_under_the_floor_is_not_a_blend(n_dim, flagged):
         assert blend["shares"]["minority"] == round(10 / 310, 4)
 
 
+@pytest.mark.parametrize("n_dim,flagged", [(9, False), (10, True)])
+def test_a_pinned_side_under_the_floor_is_not_a_blend(n_dim, flagged):
+    # The pin is the first side the test reads, and here the smaller one:
+    # the floor holds whichever side is the minority.
+    members = _bright_and_dim(300, n_dim)
+    blend = vote_consensus(members, manual={"formula": B}).provenance.get(BLEND_KEY)
+    assert (blend is not None) is flagged
+    if flagged:
+        assert blend["formulas"] == [B, A]
+        assert blend["n"] == [10, 300]
+        assert blend["shares"]["minority"] == round(10 / 310, 4)
+
+
 def test_the_minority_side_counts_its_members_at_candidate_or_better():
     # Twelve of B's members, eight of them below assignability: four commit,
     # 4 of 204, under the floor, though 12 of 212 would be over it.
