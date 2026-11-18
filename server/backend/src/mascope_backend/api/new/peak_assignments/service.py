@@ -5154,7 +5154,7 @@ async def _stage_a_assignments(
         tolerance, at the width and offset the first pass measured.
         And the neutrals the lists it read name, matched or not
         (:func:`listed_formula_identities`), which corroborate a search row
-        through a secondary channel (``engine._apply_minor_channel_policy``).
+        through a secondary channel (``engine.apply_minor_channel_policy``).
     """
     first = await _stage_a_first_pass(
         sample,

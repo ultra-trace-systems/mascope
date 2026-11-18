@@ -19,7 +19,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
 
-from mascope_backend.api.new.peak_assignments import curation
+from mascope_backend.api.new.peak_assignments import curation, service
 from mascope_backend.api.new.peak_assignments.config import MAX_ALTERNATIVES_CEILING
 from mascope_backend.api.new.peak_assignments.tiering import (
     DETECT_DEFAULT,
@@ -2240,7 +2240,7 @@ async def asks_lines(curated_run, async_session_factory, monkeypatch):
         return None
 
     monkeypatch.setattr(curation, "load_sample_peaks", spectrum.load)
-    monkeypatch.setattr(curation, "_resolution_of", no_resolution)
+    monkeypatch.setattr(service, "_resolution_of", no_resolution)
     return spectrum
 
 
@@ -2262,6 +2262,36 @@ def _assign_bromo(data: dict, **overrides) -> dict:
         "mz_error_ppm": 0.3,
         **overrides,
     }
+
+
+@pytest.mark.asyncio
+async def test_a_hand_assignment_runs_the_person_s_choice_path(
+    editor_client, curated_run, asks_lines, monkeypatch
+):
+    """The hand assignment is the stage list's PERSONS_CHOICE path, which the
+    batch's *Use this* runs too (``test_batch_curation_api``): every stage,
+    with the person's formula proposed and the spectrum's rules asked."""
+    from mascope_backend.api.new.peak_assignments import pipeline
+
+    passes = []
+    run_stages = pipeline.run_stages
+
+    async def recording(ctx):
+        passes.append(ctx)
+        return await run_stages(ctx)
+
+    monkeypatch.setattr(pipeline, "run_stages", recording)
+    asks_lines.peaks = _bromo_peaks()
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["blank_id"]),
+        json=_assign_bromo(curated_run),
+    )
+
+    assert response.status_code == 200
+    (ctx,) = passes
+    assert ctx.path is pipeline.PERSONS_CHOICE
+    assert ctx.path.rules is pipeline.Rules.SPECTRUM
+    assert ctx.ran == list(pipeline.STAGES)
 
 
 @pytest.mark.asyncio
@@ -2653,7 +2683,7 @@ async def test_the_files_resolving_power_shapes_the_prediction(
     async def tof_resolution(sample):
         return lambda mz: 5000.0
 
-    monkeypatch.setattr(curation, "_resolution_of", tof_resolution)
+    monkeypatch.setattr(service, "_resolution_of", tof_resolution)
     asks_lines.peaks = _bromo_peaks()
     await editor_client.patch(
         _url(curated_run, curated_run["blank_id"]),

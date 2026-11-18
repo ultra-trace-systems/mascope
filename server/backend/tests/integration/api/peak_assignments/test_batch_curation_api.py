@@ -20,11 +20,19 @@ import pandas as pd
 import pytest
 import pytest_asyncio
 from sqlalchemy import select, update
+from stage_stubs import (  # the tests root, on sys.path
+    frame,
+    mechanism,
+    stub_sample_reads,
+    stub_seeded_scorer,
+)
 
 from mascope_backend.api.new.peak_assignments import (
     batch_curation,
     batch_peaks_routes,
     batch_untargeted,
+    pipeline,
+    service,
 )
 from mascope_backend.api.new.peak_assignments.batch_coherence import (
     _write_records as _write_co_variation_records,
@@ -225,6 +233,21 @@ async def anchor(async_session_factory, pa_test_data):
     return found
 
 
+def _stub_reads(monkeypatch):
+    """What the stage list reads of each sample: its one peak, its mode's
+    mechanism and canned match params (``stage_stubs``)."""
+
+    async def match_params(sample_item_id):
+        return SimpleNamespace(isotope_abundance_threshold=0.01, mz_tolerance=5.0)
+
+    stub_sample_reads(
+        monkeypatch,
+        lambda sample_item_id: frame([("p1", 181.0707, 5000.0)]),
+        [mechanism("[M+H]+", MECH)],
+    )
+    monkeypatch.setattr(pipeline, "default_match_params", match_params)
+
+
 @pytest.fixture
 def stubbed_scorer(monkeypatch):
     """The seeded scorer reaches p1 in whichever sample it is measured on, with
@@ -241,11 +264,12 @@ def stubbed_scorer(monkeypatch):
             pd.DataFrame({"x": [1]}),
         )
 
-    async def match_params(sample_item_id):
-        return SimpleNamespace(isotope_abundance_threshold=0.01)
-
-    monkeypatch.setattr(batch_untargeted, "score_seeds", seeded)
-    monkeypatch.setattr(batch_untargeted, "default_match_params", match_params)
+    _stub_reads(monkeypatch)
+    stub_seeded_scorer(
+        monkeypatch,
+        seeded,
+        lambda sample_item_id: frame([("p1", 181.0707, 5000.0)]),
+    )
     return calls
 
 
@@ -323,14 +347,11 @@ async def test_curation_pins_propagates_and_recomputes(
 async def test_a_member_the_measurement_does_not_reach_keeps_its_own(
     async_session_factory, anchor, monkeypatch
 ):
-    async def unreached(sample, seeds, params, *, config=None):
+    async def unreached(sample, seeds, params, **kwargs):
         return {}, {}, {}, pd.DataFrame()
 
-    async def match_params(sample_item_id):
-        return SimpleNamespace(isotope_abundance_threshold=0.01)
-
-    monkeypatch.setattr(batch_untargeted, "score_seeds", unreached)
-    monkeypatch.setattr(batch_untargeted, "default_match_params", match_params)
+    _stub_reads(monkeypatch)
+    monkeypatch.setattr(pipeline, "score_seeds", unreached)
     counts = await run_batch_peak_curation(
         anchor["batch_id"],
         anchor["batch_peak_id"],
@@ -507,14 +528,14 @@ async def test_a_sample_that_cannot_be_measured_keeps_its_identity_and_the_pin_s
     bp = await _anchor_row(async_session_factory, anchor["batch_peak_id"])
     other = next(i for i, e in enumerate(bp.candidates) if e["formula"] == "C7H14O7")
 
-    scorer = batch_untargeted.score_seeds  # the fixture's canned pairing
+    scorer = pipeline.score_seeds  # the fixture's canned pairing
 
-    async def failing(sample, seeds, params, *, config=None):
+    async def failing(sample, seeds, params, **kwargs):
         if sample.sample_item_id == anchor["s1"]:
             raise FileNotFoundError("S1's peak file has moved")
-        return await scorer(sample, seeds, params)
+        return await scorer(sample, seeds, params, **kwargs)
 
-    monkeypatch.setattr(batch_untargeted, "score_seeds", failing)
+    monkeypatch.setattr(pipeline, "score_seeds", failing)
 
     counts = await run_batch_peak_curation(
         anchor["batch_id"],
@@ -668,16 +689,18 @@ async def test_the_pin_records_the_measurement_under_its_own_configuration(
 async def test_the_measurement_and_the_pin_score_under_the_pins_configuration(
     anchor, stubbed_scorer, monkeypatch
 ):
-    """The configuration centres the seeded scoring (the reagent lines its
-    profile claims), so the preview and the propagation hand it on alike."""
-    scorer = batch_untargeted.score_seeds
+    """The configuration resolves the chemistry the seeded scoring is centred
+    at (the reagent lines its profile claims), so the preview and the
+    propagation hand it on alike: both run the person's-choice stages under
+    the pin's configuration."""
+    run_stages = pipeline.run_stages
     configs = []
 
-    async def recording(sample, seeds, params, *, config=None):
-        configs.append(config)
-        return await scorer(sample, seeds, params)
+    async def recording(ctx):
+        configs.append((ctx.path, ctx.config))
+        return await run_stages(ctx)
 
-    monkeypatch.setattr(batch_untargeted, "score_seeds", recording)
+    monkeypatch.setattr(batch_untargeted, "run_stages", recording)
     strict = PeakAssignmentConfig(candidate_threshold=0.95, assigned_threshold=0.99)
     await run_batch_peak_curation(
         anchor["batch_id"],
@@ -689,7 +712,9 @@ async def test_the_measurement_and_the_pin_score_under_the_pins_configuration(
     )
     # One for the measurement on S1, one for the propagation to it.
     assert len(configs) == 2
-    assert all(config is strict for config in configs)
+    assert all(
+        path is pipeline.PERSONS_CHOICE and config is strict for path, config in configs
+    )
 
 
 async def test_a_pin_without_a_measured_sample_records_none(
@@ -712,7 +737,7 @@ async def test_a_measurement_that_fails_does_not_cost_the_pin(
     async def broken(*args, **kwargs):
         raise RuntimeError("the preview broke")
 
-    monkeypatch.setattr(batch_curation, "score_in_sample", broken)
+    monkeypatch.setattr(batch_curation, "measure_on_sample", broken)
     counts = await run_batch_peak_curation(
         anchor["batch_id"],
         anchor["batch_peak_id"],
@@ -731,7 +756,7 @@ async def test_a_measurement_that_fails_does_not_cost_the_pin(
 async def test_an_alternative_the_envelope_does_not_reach_says_the_sample_keeps_its_own(
     guest_client, anchor, assignment_enabled, monkeypatch
 ):
-    async def unreached(sample, seeds, params, *, config=None):
+    async def unreached(sample, seeds, params, **kwargs):
         (formula, mech) = next(iter(seeds))
         # The ion is built, its envelope pairs to some other peak.
         return (
@@ -741,11 +766,8 @@ async def test_an_alternative_the_envelope_does_not_reach_says_the_sample_keeps_
             pd.DataFrame(),
         )
 
-    async def match_params(sample_item_id):
-        return SimpleNamespace(isotope_abundance_threshold=0.01)
-
-    monkeypatch.setattr(batch_untargeted, "score_seeds", unreached)
-    monkeypatch.setattr(batch_untargeted, "default_match_params", match_params)
+    _stub_reads(monkeypatch)
+    monkeypatch.setattr(pipeline, "score_seeds", unreached)
     response = await guest_client.get(
         _measure_url(anchor),
         params={
@@ -1362,3 +1384,69 @@ async def test_a_searchs_rows_move_the_stamp_and_the_completed_run_holds_it(
         run = await session.get(BatchPeakRun, run_id)
     assert run.is_current == 1
     assert run.ledger_utc_modified == run.batch_peak_run_utc_completed
+
+
+async def test_a_pin_is_asked_the_spectrums_rules_as_a_hand_assignment_is(
+    async_session_factory, anchor, stubbed_scorer, monkeypatch
+):
+    """A person's choice, on the batch as on a sample's row: the stage list's
+    PERSONS_CHOICE path. S1's run asked its rows' lines, and the pinned
+    formula's lines are not in S1's spectrum, so the pin holds S1's member at
+    candidate, where its evidence alone bands it assigned - as a hand
+    assignment of it on S1's row is held (``test_manual_curation``)."""
+    from mascope_backend.api.new.peak_assignments.tiering import (
+        DETECT_DEFAULT,
+        LineGate,
+    )
+
+    gate = LineGate(5.0, 0.01, 3.0, DETECT_DEFAULT, 0.1, False)
+    async with async_session_factory() as session:
+        run = (
+            await session.execute(
+                select(PeakAssignmentRun).where(
+                    PeakAssignmentRun.sample_item_id == anchor["s1"]
+                )
+            )
+        ).scalar_one()
+        run.config = {
+            **(run.config or {}),
+            "tiering": {
+                "version": 11,
+                "absent_line": {"spectrum": True, **gate.record()},
+            },
+        }
+        await session.commit()
+    passes = []
+    run_stages = pipeline.run_stages
+
+    async def recording(ctx):
+        passes.append(ctx)
+        return await run_stages(ctx)
+
+    monkeypatch.setattr(batch_untargeted, "run_stages", recording)
+    # A noise estimate, so the ion's 13C line is one the spectrum would show,
+    # and a peak above it, so its m/z is inside what the spectrum reads.
+    monkeypatch.setattr(
+        service,
+        "load_sample_peaks",
+        lambda sample: frame([("p1", 181.0707, 5000.0), ("p9", 250.0, 50.0)]).assign(
+            signal_to_noise=100.0
+        ),
+    )
+    await run_batch_peak_curation(
+        anchor["batch_id"],
+        anchor["batch_peak_id"],
+        anchor["other"],
+        "C6H12O6",
+        PeakAssignmentConfig(),
+    )
+
+    (ctx,) = passes
+    assert ctx.path is pipeline.PERSONS_CHOICE
+    assert ctx.ran == list(pipeline.STAGES)
+    (row,) = [row for row in ctx.judged.rows if row["sample_peak_id"] == "p1"]
+    assert [reason["rule"] for reason in row["provenance"]["tier_reasons"]] == [
+        "absent_line"
+    ]
+    members = await _members(async_session_factory, anchor["batch_peak_id"])
+    assert tier_name(members[anchor["s1"]].tier) == "candidate"

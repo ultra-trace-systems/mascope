@@ -67,14 +67,26 @@ from mascope_backend.api.new.peak_assignments.engine import (
     LIST_PRIOR_WEIGHT,
     MASS_CALIBRATION_KEY,
     PATTERN_SCORING_KEY,
+    ROLE_ISO_CHILD,
+    ROLE_M0,
     SOURCE_DATABASE,
+    SOURCE_UNTARGETED,
+    TIERING_KEY,
+    apply_minor_channel_policy,
     build_unassigned_assignments,
+    drop_ions_claimed_elsewhere,
+    evidence_for,
+    formula_identity,
+    invert_matches_to_peak_assignments,
     list_readings,
     listed_formula_identities,
+    listed_ions,
     pattern_scoring_for,
     pattern_scoring_snapshot,
     record_displaced_list_readings,
+    record_same_ion_readings,
     settle_list_election,
+    tier_for_evidence,
     untargeted_matches_to_peak_assignments,
     untargeted_seeds,
     untargeted_targets,
@@ -84,8 +96,11 @@ from mascope_backend.api.new.peak_assignments.envelope_fit import (
 )
 from mascope_backend.api.new.peak_assignments.halogen_twins import record_twins
 from mascope_backend.api.new.peak_assignments.identification_level import (
+    IDENTIFICATION_LEVEL,
     LEVEL_SUMMARY,
     apply_levels,
+    hand_level,
+    inherited_level,
 )
 from mascope_backend.api.new.peak_assignments.mass_gate import (
     BELOW_ASSIGNABILITY_Z,
@@ -97,6 +112,13 @@ from mascope_backend.api.new.peak_assignments.profile_preview import (
 from mascope_backend.api.new.peak_assignments.profiles import (
     resolve_profile,
     with_fitted_window,
+)
+from mascope_backend.api.new.peak_assignments.reagent_pass import FragmentClaims
+from mascope_backend.api.new.peak_assignments.seeded_scoring import score_seeds
+from mascope_backend.api.new.peak_assignments.tiering import LineGate, ask_absent_line
+from mascope_backend.api.new.peak_assignments.tiers import (
+    TIER_ASSIGNED,
+    TIER_CANDIDATE,
 )
 from mascope_backend.db import PeakAssignment, PeakAssignmentRun, async_session
 from mascope_backend.runtime import runtime
@@ -144,6 +166,13 @@ class Proposal(StrEnum):
     #: The formula search over the representatives of the batch's unassigned
     #: anchors that the sample holds (``batch_untargeted``).
     SEARCH = "search on the representatives"
+    #: One given formula per member: the reading the batch decided for each
+    #: anchor the sample holds a member of, proposed to the member's peak as a
+    #: list proposes its formula to a peak.
+    GIVEN = "one given formula per member"
+    #: The person's formula: a hand assignment's on a sample's row, a pin's on
+    #: a batch peak's members.
+    PERSONS_FORMULA = "the person's formula"
 
 
 class Measurement(StrEnum):
@@ -164,6 +193,20 @@ class Measurement(StrEnum):
     RECORDED = "recorded"
 
 
+class Rules(StrEnum):
+    """What a path's judge and cap stages ask of its readings."""
+
+    #: Every rule a run asks: the reading changes and every cap.
+    RUN = "run"
+    #: The rules about the spectrum alone, which a person's choice is asked:
+    #: whether the lines its formula predicts are there (``tiering.ask_absent_line``,
+    #: step 3.4e). The others weigh rivals, channels and lists, which a
+    #: person's choice is not; a missing line is missing whoever named the
+    #: formula. Whether the unresolved-peak rule is one of them is MAS-766's
+    #: open call; until it is made, it is not.
+    SPECTRUM = "spectrum"
+
+
 @dataclass(frozen=True)
 class AssignmentPath:
     """A configuration of the stage list.
@@ -172,12 +215,14 @@ class AssignmentPath:
     :param start: The stage it starts at; it runs every stage after it.
     :param proposal: What its propose stage proposes.
     :param measurement: Where its measurement model comes from.
+    :param rules: What its judge and cap stages ask.
     """
 
     name: str
     start: Stage
     proposal: Proposal
     measurement: Measurement
+    rules: Rules = Rules.RUN
 
     def stages(self) -> tuple[Stage, ...]:
         """The stages this path runs, in order, a round counted once."""
@@ -208,8 +253,34 @@ BATCH_SEARCH = AssignmentPath(
     "batch search", Stage.RESOLVE, Proposal.SEARCH, Measurement.RECORDED
 )
 
+#: The batch's decisions measured on one sample's members: the batch search's
+#: propagation of what it found, the series detection's proposals and an
+#: import's readings (``batch_untargeted._propagate_to_sample``).
+PROPAGATION = AssignmentPath(
+    "propagation", Stage.RESOLVE, Proposal.GIVEN, Measurement.RECORDED
+)
+
+#: A person's choice: the hand assignment on a sample's row
+#: (``curation.curate_assignment``) and the batch's *Use this*, a pin measured
+#: on each member (``batch_curation``). Both read one rule set, the spectrum's,
+#: at the gate the sample's run recorded.
+PERSONS_CHOICE = AssignmentPath(
+    "person's choice",
+    Stage.RESOLVE,
+    Proposal.PERSONS_FORMULA,
+    Measurement.RECORDED,
+    Rules.SPECTRUM,
+)
+
 #: Every path, in the order this module names them.
-PATHS: tuple[AssignmentPath, ...] = (RUN, DECOY, INGEST_FOLD, BATCH_SEARCH)
+PATHS: tuple[AssignmentPath, ...] = (
+    RUN,
+    DECOY,
+    INGEST_FOLD,
+    BATCH_SEARCH,
+    PROPAGATION,
+    PERSONS_CHOICE,
+)
 
 
 @dataclass
@@ -264,6 +335,9 @@ class RunContext:
     :param notification: The progress a run reports on, if any.
     :param strict_instrument: Whether a file name that names no instrument
         class fails the pass; a path with nobody to report to reads none.
+    :param strict_chemistry: Whether a sample bound under no ionization mode
+        fails the pass; a person's choice, whose rules read the spectrum
+        alone, reads it as declaring no mechanism.
     :param targets: The batch search's representatives in this sample, the
         peaks it may enumerate.
     :param persistent_peak_ids: Those of them whose anchors are persistent,
@@ -272,6 +346,20 @@ class RunContext:
         this sample: a member that reads a formula, or one a pre-pass claimed.
         The batch search judges "unexplained" against them as a run does
         against its Stage A and its pre-passes.
+    :param given: The readings a path proposes one per member, by the anchor
+        whose members they are (``batch_untargeted.Annotation``).
+    :param series_by_peak: The batch's series records of given readings, by
+        the peak each is proposed on, which the batch serves no reader while
+        the series detection measures them
+        (``batch_peaks.standing_series_record``): the elect stage stamps them
+        as it stamps the ones the batch serves.
+    :param chosen: A hand assignment's row, the person's reading already
+        measured (``curation``).
+    :param recorded: The run config a recorded measurement is read off; None
+        reads the sample's latest in-app run's.
+    :param recorded_artifact_peak_ids: The peaks the run a person's choice is
+        made on claimed as the detector's ringing, which its spectrum's rules
+        read as neither a line nor an absence; None reads the claim stage's.
     """
 
     path: AssignmentPath
@@ -283,9 +371,15 @@ class RunContext:
     decoy_plan: DecoyPlan | None = None
     notification: UserNotification | None = None
     strict_instrument: bool = True
+    strict_chemistry: bool = True
     targets: frozenset[str] = frozenset()
     persistent_peak_ids: frozenset[str] = frozenset()
     explained_peak_ids: frozenset[str] = frozenset()
+    given: dict[str, Any] = field(default_factory=dict)
+    series_by_peak: dict[str, dict] = field(default_factory=dict)
+    chosen: list[dict] = field(default_factory=list)
+    recorded: dict | None = None
+    recorded_artifact_peak_ids: frozenset[str] | None = None
     #: The stages run so far, in order, a round's once per round.
     ran: list[Stage] = field(default_factory=list)
     # -- resolve
@@ -313,10 +407,15 @@ class RunContext:
     mass_accuracy: Any = None
     envelope: Any = None
     listed_formulas: frozenset[str] = frozenset()
+    listed_ions: dict = field(default_factory=dict)
     scoring: Any = None
     envelope_tolerance: Any = None
     recorded_calibration: Any = None
+    line_gate: Any = None
     search: SearchProposal | None = None
+    seeds: set[tuple[str, str]] = field(default_factory=set)
+    # -- score
+    seeded: Any = None
     unsearched: int = 0
     by_persistence: set[str] = field(default_factory=set)
     # -- score
@@ -376,7 +475,9 @@ async def resolve(ctx: RunContext) -> None:
         ctx.peaks_df = await asyncio.to_thread(service.load_sample_peaks, sample)
         await ctx.progress(0.1)
     ctx.ionization_setup = await sample_setup(sample.sample_item_id)
-    ctx.mechanism_ids, ctx.mechanisms = await service.fetch_sample_mechanisms(sample)
+    ctx.mechanism_ids, ctx.mechanisms = await _mechanisms_of(
+        sample, strict=ctx.strict_chemistry
+    )
     ctx.instrument_type = _instrument_type(sample, strict=ctx.strict_instrument)
     plan = ctx.decoy_plan
     ctx.resolved_profile = resolve_profile(
@@ -453,6 +554,21 @@ async def resolve(ctx: RunContext) -> None:
     # for every pass that predicts an isotope line - the reagent pre-pass, the
     # envelope match, the mass gate and the tiering pass.
     ctx.resolution = await service._resolution_of(sample)
+
+
+async def _mechanisms_of(sample, *, strict: bool) -> tuple[list[str], list]:
+    """The sample's mode's mechanisms (``service.fetch_sample_mechanisms``).
+
+    A sample bound under no ionization mode has none to read, and the read
+    fails on it. A path whose rules read the spectrum alone reads such a
+    sample as declaring no mechanism instead of failing.
+    """
+    try:
+        return await service.fetch_sample_mechanisms(sample)
+    except AttributeError:
+        if strict:
+            raise
+        return [], []
 
 
 def _instrument_type(sample, *, strict: bool) -> str | None:
@@ -540,6 +656,8 @@ async def propose(ctx: RunContext) -> None:
         await _propose_by_search(ctx)
     if proposal is Proposal.SEARCH:
         await _propose_on_representatives(ctx)
+    if proposal in (Proposal.GIVEN, Proposal.PERSONS_FORMULA):
+        await _propose_given(ctx)
 
 
 async def _propose_known_set(ctx: RunContext) -> None:
@@ -910,6 +1028,44 @@ async def _propose_on_representatives(ctx: RunContext) -> None:
     search.ran = True
 
 
+async def _propose_given(ctx: RunContext) -> None:
+    """One given formula per member: the reading the batch decided for each of
+    its anchors this sample holds a member of (:attr:`RunContext.given`), each
+    one an ion to measure through its mechanism.
+
+    A batch decision is proposed to a sample as a list proposes its formula to
+    a peak: the score stage measures it on the sample's own peaks, and the
+    elect stage elects one reading per peak as Stage A elects a list's. It is
+    measured at the sample's recorded measurement
+    (:func:`_recorded_measurement`).
+
+    Under a run's rules each reading is then judged as the row a run of the
+    sample makes of it (:func:`_read_as_a_run_reads`), so the lists a run of
+    the sample reads are read here, as the batch search reads them, never
+    matched: for the ions they hold, whose readings a run commits as a list's
+    rows, and for the neutrals they name, which corroborate a reading through
+    a secondary channel. A person's choice reads none: its rules are the
+    spectrum's.
+    """
+    ctx.seeds = {
+        (annotation.formula, annotation.ionization_mechanism_id)
+        for annotation in ctx.given.values()
+        if annotation.formula and annotation.ionization_mechanism_id
+    }
+    await _recorded_measurement(ctx)
+    if ctx.path.rules is Rules.RUN:
+        known = await service._fetch_known_isotopes(
+            ctx.sample,
+            ctx.match_params.isotope_abundance_threshold,
+            ctx.mechanism_ids,
+            ctx.searched_mechanisms,
+            known_window=ctx.resolved_profile.context.known_window,
+            resolution=ctx.resolution,
+        )
+        ctx.listed_formulas = listed_formula_identities(known)
+        ctx.listed_ions = listed_ions(known)
+
+
 async def _recorded_measurement(ctx: RunContext) -> None:
     """The measurement a path with no Stage A of its own scores and judges at:
     what the sample's latest run recorded (:attr:`Measurement.RECORDED`).
@@ -926,7 +1082,12 @@ async def _recorded_measurement(ctx: RunContext) -> None:
     sample_item_id = ctx.sample.sample_item_id
     width = await service.sample_recorded_width(sample_item_id)
     ctx.envelope_tolerance = await recorded_envelope_tolerance(sample_item_id)
-    _, recorded = await service._latest_in_app_run(sample_item_id)
+    recorded = ctx.recorded
+    if recorded is None:
+        _, recorded = await service._latest_in_app_run(sample_item_id)
+    # The gate its absent-line rule asked lines at, which a person's choice
+    # is asked at; None where it asked none.
+    ctx.line_gate = LineGate.from_record((recorded or {}).get(TIERING_KEY))
     has_centre, centre = service._recorded_scoring_centre(
         (recorded or {}).get(PATTERN_SCORING_KEY)
     )
@@ -966,6 +1127,22 @@ async def score(ctx: RunContext) -> None:
     params (``service._seeded_rescore``): the second measurement is what the
     row is tiered on, so a search's "assigned" and a list's mean one thing.
     """
+    if ctx.path.proposal in (Proposal.GIVEN, Proposal.PERSONS_FORMULA):
+        if not ctx.seeds:
+            # A hand assignment's reading comes measured.
+            return
+        # The given readings, each an ion measured as a list's is: in one match
+        # pass over the sample's peaks, gated by its match parameters and fit
+        # at its recorded measurement (``seeded_scoring.score_seeds``).
+        ctx.seeded = await score_seeds(
+            ctx.sample,
+            ctx.seeds,
+            ctx.match_params,
+            reagent_offset=service._run_scoring_centre(ctx.mass_accuracy),
+            envelope_tolerance=ctx.envelope_tolerance,
+            resolution=ctx.resolution,
+        )
+        return
     search = ctx.search
     if search is None or not search.ran:
         return
@@ -995,8 +1172,11 @@ async def elect(ctx: RunContext) -> None:
 
     The search's matches become rows on the peaks it was offered and no
     earlier stage took (``engine.untargeted_matches_to_peak_assignments``),
-    carrying the list readings it displaced and the twins it read. Then, on
-    the rows of both:
+    carrying the list readings it displaced and the twins it read. Given
+    readings are elected as Stage A elects a list's. Under a run's rules none
+    is elected on a peak the claim stage took, and each is then the row a run
+    of the sample makes of it, a list's or the search's
+    (:func:`_read_as_a_run_reads`). Then, on the rows of both:
 
     - a list's readings through the channels the run opened are held as the
       search's readings through them are, before any pass reads them as
@@ -1009,11 +1189,48 @@ async def elect(ctx: RunContext) -> None:
       (``service._claim_fragments``);
     - and a reading the batch's series detection proposed for its peak
       carries the series' record, which the tiering pass counts as a second
-      observation (step 4.1). Not on a decoy arm: the batch ledger is the
-      control's chemistry, not the arm's.
+      observation (step 4.1), the detection's own measurement of it included
+      (:attr:`RunContext.series_by_peak`). Not on a decoy arm: the batch
+      ledger is the control's chemistry, not the arm's.
     """
     sample = ctx.sample
     config = ctx.config
+    if ctx.path.proposal in (Proposal.GIVEN, Proposal.PERSONS_FORMULA) and (
+        ctx.seeded is not None
+    ):
+        frame = ctx.seeded[3]
+        if ctx.path.rules is Rules.RUN:
+            # No reading is elected on a peak the claim stage took, as a run
+            # elects none there: Stage A drops an ion whose monoisotopic line a
+            # pre-pass claimed and any line that landed on a claimed peak, and
+            # the search drops its rows on them
+            # (``engine.drop_ions_claimed_elsewhere``). Dropped once measured,
+            # as the search drops its own: the fit still read the claimed
+            # peak as part of the pattern. A person's formula takes the peak
+            # it was chosen for.
+            frame = drop_ions_claimed_elsewhere(frame, ctx.claimed_peak_ids)
+        # One reading per peak among the given ones, elected as Stage A elects
+        # a list's: the measured ion owns the peak its gated line paired to,
+        # an isotopologue beside its ion's monoisotopic row, and the rest are
+        # its alternatives (``engine.invert_matches_to_peak_assignments``).
+        # Uncalibrated, as a batch decision's measurement always was.
+        rows = invert_matches_to_peak_assignments(
+            frame,
+            sample_item_id=sample.sample_item_id,
+            peak_assignment_run_id=ctx.run_id,
+            candidate_threshold=config.candidate_threshold,
+            assigned_threshold=config.assigned_threshold,
+            max_alternatives=config.max_alternatives,
+            instrument=ctx.instrument_type,
+            calibration=None,
+        )
+        if ctx.path.rules is Rules.RUN:
+            ctx.stage_a, ctx.stage_b = _read_as_a_run_reads(ctx, rows)
+        else:
+            ctx.stage_a = rows
+    if ctx.path.rules is Rules.SPECTRUM:
+        _elect_persons_choice(ctx)
+        return
     search = ctx.search
     if search is not None and search.ran:
         election = search.election
@@ -1084,8 +1301,95 @@ async def elect(ctx: RunContext) -> None:
         if ctx.decoy_plan is not None
         else service.stamp_series(
             ctx.fragments.rows,
-            await service.batch_series_by_peak(sample.sample_item_id),
+            {
+                **await service.batch_series_by_peak(sample.sample_item_id),
+                **ctx.series_by_peak,
+            },
         )
+    )
+
+
+def _read_as_a_run_reads(
+    ctx: RunContext, rows: list[dict]
+) -> tuple[list[dict], list[dict]]:
+    """Each given reading as the row a run of the sample makes of it, so the
+    judging asks it what a run asks of that row.
+
+    A run commits an ion its lists hold through Stage A, as that list's row
+    (``engine.listed_ions``): the target library's names its compound, and
+    either carries the reference lists' names for its neutral. Every other
+    reading a run commits is the formula search's, and so is such a given
+    one: the batch searched for it, or a series or an import named it, and a
+    run of the sample would have had to search for it too. The search's rows
+    (``source`` untargeted) then get what the search gives its own before any
+    judging: the other readings of their ion it would have held, which the
+    partner gate and the cross-channel pass weigh
+    (``engine.record_same_ion_readings``), and the cap on a reading through a
+    secondary channel, which a list naming its neutral lifts
+    (``engine.apply_minor_channel_policy``). The tiering pass then asks them
+    the rules it asks only of the search's rows: the lone peak, the radical,
+    the context's priors, the nitrate skeleton and the shapes of a formula
+    found by mass.
+
+    :param ctx: The pass, its lists read (:func:`_propose_given`).
+    :param rows: The elected rows, each isotopologue beside its owner.
+    :return: The lists' rows and the search's, as Stage A's and the search's
+        rows of a run.
+    """
+    listed: list[dict] = []
+    searched: list[dict] = []
+    for row in rows:
+        ion = ctx.listed_ions.get(
+            (
+                formula_identity(row.get("assigned_formula")),
+                str(row.get("ionization_mechanism_id")),
+            )
+        )
+        if ion is None:
+            row["source"] = SOURCE_UNTARGETED
+            searched.append(row)
+            continue
+        row["target_compound_id"] = ion.target_compound_id
+        if ion.reference_identities:
+            row["provenance"]["reference_identities"] = ion.reference_identities
+        listed.append(row)
+    notations, mechanism_id_by_notation = service._untargeted_ionization_notations(
+        ctx.searched_mechanisms
+    )
+    record_same_ion_readings(
+        searched,
+        mechanism_id_by_notation=mechanism_id_by_notation,
+        search_config=ctx.resolved_profile.search_config(notations),
+        heuristics_config=ctx.resolved_profile.heuristics_config(),
+        formula_formatter=to_custom_element_format,
+        max_alternatives=ctx.config.max_alternatives,
+    )
+    apply_minor_channel_policy(
+        searched,
+        mechanism_id_by_notation,
+        ctx.resolved_profile.minor_channels,
+        listed_formulas=ctx.listed_formulas,
+    )
+    return listed, searched
+
+
+def _elect_persons_choice(ctx: RunContext) -> None:
+    """A person's formula takes the peak it was chosen for, tiered on its
+    evidence under the path's bands as both engine stages tier theirs: the hand
+    chooses the formula, but what tier the choice earns is still measured. A
+    pin's reading is the elected one on each member's peak; a hand
+    assignment's is the row given. Nothing else of a run's election is asked
+    of it: no list holds it, no family is written and no fragment claimed."""
+    config = ctx.config
+    for row in ctx.chosen:
+        row["tier"] = tier_for_evidence(
+            evidence_for(row.get("fit_score"), row.get("assigned_formula")),
+            candidate_threshold=config.candidate_threshold,
+            assigned_threshold=config.assigned_threshold,
+        )
+    ctx.stage_a = [*ctx.stage_a, *ctx.chosen]
+    ctx.fragments = FragmentClaims(
+        rows=ctx.stage_a, fragments=[], peak_ids=set(), summary={"ladders": []}
     )
 
 
@@ -1103,6 +1407,9 @@ async def refit(ctx: RunContext) -> None:
     lines each envelope's peaks hold, and the run's channels, bands, context
     and measurement.
     """
+    if ctx.path.rules is Rules.SPECTRUM:
+        # A person's choice refits nothing: it is asked at what was recorded.
+        return
     if ctx.judging is None:
         ctx.lines = SpectrumLines.from_peaks(ctx.peaks_df, ctx.resolution)
         # The cap on how bright a source line may be to anchor the mass gate,
@@ -1151,7 +1458,10 @@ async def judge(ctx: RunContext) -> None:
     """The reading changes: the partner gate settles which molecule each ion
     read through a gated channel is, against the molecules the sample shows
     through the mode's own, and the cross-channel pass records what the
-    settled readings say of each other (``service.Judging.judge``)."""
+    settled readings say of each other (``service.Judging.judge``). A person's
+    choice changes no reading: its formula is the person's."""
+    if ctx.path.rules is Rules.SPECTRUM:
+        return
     ctx.judging.judge()
 
 
@@ -1164,6 +1474,9 @@ async def cap(ctx: RunContext) -> None:
     another round reads it as that neighbour's (:func:`run_stages`); once
     none does, the round's rows are the judged ledger.
     """
+    if ctx.path.rules is Rules.SPECTRUM:
+        _cap_by_the_spectrum(ctx)
+        return
     judging = ctx.judging
     judging.cap()
     if judging.another_round():
@@ -1171,6 +1484,59 @@ async def cap(ctx: RunContext) -> None:
     ctx.judged = judging.result()
     ctx.tiering = {**ctx.judged.tiering, "series_anchored": ctx.series_anchored}
     _report_judging(ctx)
+
+
+def _cap_by_the_spectrum(ctx: RunContext) -> None:
+    """The spectrum's rules (:attr:`Rules.SPECTRUM`): each monoisotopic row is
+    asked whether the spectrum holds the lines its formula predicts, at the
+    gate the sample's run asked its own rows at (``tiering.ask_absent_line``).
+    An absent line holds the row at candidate at most, never lifts one, and
+    is the reason it lists; its isotopologue rows follow it. A sample whose
+    run asked no line is asked none, and so is one whose peaks the pass has
+    none of."""
+    rows = ctx.fragments.rows
+    gate = ctx.line_gate
+    artifacts = (
+        frozenset(ctx.artifact_peak_ids)
+        if ctx.recorded_artifact_peak_ids is None
+        else ctx.recorded_artifact_peak_ids
+    )
+    lines = (
+        None
+        if gate is None or ctx.peaks_df is None or ctx.peaks_df.empty
+        else SpectrumLines.from_peaks(ctx.peaks_df, ctx.resolution)
+    )
+    ctx.lines = lines
+    capped: set[str] = set()
+    asked = 0
+    for row in rows:
+        if row.get("role") != ROLE_M0 or lines is None:
+            continue
+        _, reason = ask_absent_line(
+            row,
+            lines,
+            gate,
+            resolution=ctx.resolution,
+            artifact_peak_ids=artifacts,
+        )
+        asked += 1
+        if reason is None:
+            continue
+        row.setdefault("provenance", {})["tier_reasons"] = [reason]
+        if row.get("tier") == TIER_ASSIGNED:
+            row["tier"] = TIER_CANDIDATE
+            capped.add(str(row.get("peak_assignment_id")))
+    for row in rows:
+        owner = str(row.get("owner_peak_assignment_id") or "")
+        if row.get("role") == ROLE_ISO_CHILD and owner in capped:
+            if row.get("tier") == TIER_ASSIGNED:
+                row["tier"] = TIER_CANDIDATE
+    ctx.tiering = {
+        "rules": Rules.SPECTRUM.value,
+        "asked": asked,
+        "capped": len(capped),
+    }
+    ctx.judged = service.JudgedCommits(rows, {}, {}, ctx.tiering, {})
 
 
 def _report_judging(ctx: RunContext) -> None:
@@ -1289,6 +1655,9 @@ async def level(ctx: RunContext) -> None:
     """
     sample = ctx.sample
     rows = ctx.judged.rows
+    if ctx.path.rules is Rules.SPECTRUM:
+        _level_persons_choice(rows)
+        return
     search = ctx.search
     if ctx.config.stage_b_confidence and search is not None:
         # Imported here: the inspector's module imports the service.
@@ -1338,6 +1707,28 @@ async def level(ctx: RunContext) -> None:
         )
         + f" ({levels['rivals_not_measured']} with no measured shortlist)"
     )
+
+
+def _level_persons_choice(rows: list[dict]) -> None:
+    """What the mapping can state of a person's formula
+    (``identification_level.hand_level``): refuted where a line it predicts is
+    absent, else its rivals not measured, since no shortlist of a run was
+    competed against it. Its isotopologue rows show its level."""
+    by_id: dict[str, dict] = {}
+    for row in rows:
+        if row.get("role") != ROLE_M0 or not row.get("assigned_formula"):
+            continue
+        level = hand_level(row)
+        row.setdefault("provenance", {})[IDENTIFICATION_LEVEL] = level
+        row["level"] = level["level"]
+        by_id[str(row.get("peak_assignment_id"))] = level
+    for row in rows:
+        if row.get("role") != ROLE_ISO_CHILD or not row.get("assigned_formula"):
+            continue
+        owner = str(row.get("owner_peak_assignment_id") or "")
+        level = inherited_level(by_id.get(owner), owner)
+        row.setdefault("provenance", {})[IDENTIFICATION_LEVEL] = level
+        row["level"] = level["level"]
 
 
 # --- persist --------------------------------------------------------------------
