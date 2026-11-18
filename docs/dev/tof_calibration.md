@@ -518,8 +518,12 @@ trust the acquisition axis to find the calibrants:
   and with its peaks taken away the best other holds two. Each fitted corpus file, its axis read 150
   ppm either way or 300 ppm high, still fits as it did. On those files every line the node keeps is
   the most intense peak within 2,000 ppm, and that window holds 1 to 5 peaks of S/N 10 or more, so
-  eight is room, not a cut. A file whose axis is further off than 500 ppm finds no lines and ends in
-  "Not enough calibration peaks", which the drift warning of the files before it will have flagged.
+  eight is room, not a cut. A file whose axis is further off than 500 ppm has none of its
+  calibrants among the candidates. On a sparse spectrum it finds too few lines and ends in "Not
+  enough calibration peaks". On a dense one, three or more ions can still agree on an axis by
+  chance, as the 380 to 475 ppm fits below did, and the file is fitted on peaks that are not its
+  calibrants: #2776's failure, further out, which the 40 % line share may flag but need not. The
+  drift warning of the files before it will have flagged either.
 - **Within 250 ppm first.** The search runs on the candidates within 250 ppm
   (`TOF_SEARCH_NEAR_WINDOW_PPM`, the fleet's largest drift) and takes the axis it finds there when
   at least three ions agree on it (`TOF_SEARCH_NEAR_MIN_IONS`: two ions always make an axis). Only

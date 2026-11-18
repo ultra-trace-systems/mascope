@@ -147,13 +147,16 @@ def read_stored_peaks(filename: str) -> StoredPeaks:
     The peaks are on the axis the file carries now, which is what a
     re-calibration fits on. The node fits a new file on the converter's axis
     instead. The fit itself depends on the TOF index alone, but the axis
-    decides which calibrants it is given: the peaks that fall in the refine
-    window, the pre-fit ``match_mz_error`` and the ``match_score`` built from
-    it, both filters of the good matches (``abs(match_mz_error)`` within the
-    refine window, ``match_score`` at least ``match_score_min``), and the
-    error the subset search breaks ties by. So on a file whose axis has
-    changed since ingest, a refit can keep other calibrants than the node
-    did; the reproduction check reports that case.
+    decides which calibrants it is given: the peaks that fall in the search
+    windows around where it puts each line, and so which axis the consensus
+    finds among them (the refine window instead, when ``windowed``); the
+    slope the search's prior is taken around; the pre-fit
+    ``match_mz_error`` and the ``match_score`` built from it; both filters
+    of the good matches (``abs(match_mz_error)`` within the search window,
+    ``match_score`` at least ``match_score_min``); and the error the subset
+    search breaks ties by. So on a file whose axis has changed since ingest,
+    a refit can keep other calibrants than the node did; the reproduction
+    check reports that case.
 
     Synchronous: it reads the filestore, so it runs in a worker thread.
 
