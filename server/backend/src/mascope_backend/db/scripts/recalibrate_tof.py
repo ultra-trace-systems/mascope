@@ -49,6 +49,14 @@ rematch while the live ingest has more than ``TOF_RECAL_BACKLOG`` files in
 progress. A file ``STOP`` in the ledger's directory ends the run at the next
 file; the next run rematches what is left first.
 
+**An apply cut off** - Ctrl+C, a restart, a fault part-way - leaves an
+``apply`` event with no outcome. A run and a rollback first close each one by
+what the file's record holds (:func:`close_open_apply`): the apply's fit, and
+the apply is finished and ``applied``; what the file had before, and what the
+apply may have written of its axes is put back (``restored``); anything else,
+and another apply has rewritten the file since (``superseded``). An apply that
+fails part-way in a run is put back at once the same way.
+
 **The ledger** is ``<filestore>/tof_recalibration/<instrument>/ledger.jsonl``
 (``TOF_RECAL_LEDGER`` names another directory), one JSON event per line,
 appended and synced as it happens, in the filestore so the site's backup
@@ -95,7 +103,7 @@ import sys
 import time
 from collections import Counter, defaultdict
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as day_time
 
@@ -204,6 +212,10 @@ _INVERTIBLE_MODES = (0, 1, 2)
 
 #: Ledger events that settle a file under its target until a retry.
 _SETTLED = ("applied", "kept", "failed", "skipped", "rollback")
+#: Ledger events that close a file's open apply (:meth:`Ledger.open_apply`):
+#: it landed, was undone, was put back, or another apply rewrote the file.
+#: Nothing else does: an error, a kept or a failed fit leaves it open.
+_CLOSES_APPLY = ("applied", "rollback", "restored", "superseded")
 
 
 # --- Configuration ---
@@ -360,31 +372,47 @@ class Ledger:
     def settled(self, target_of: Callable[[str], dict | None]) -> set[str]:
         """The files with an outcome under the target they would be run to.
 
+        A file with an open apply is never settled, whatever came after it.
+
         :param target_of: The target a file's mode has now, by its mode id.
         """
         last: dict[str, dict] = {}
         for event in self.events:
             if event.get("event") in _SETTLED and event.get("sample_file_id"):
                 last[event["sample_file_id"]] = event
+        still_open = self.open_applies()
         return {
             file_id
             for file_id, event in last.items()
-            if event["event"] == "rollback"
-            or event.get("target") == target_of(event.get("mode_id"))
+            if file_id not in still_open
+            and (
+                event["event"] == "rollback"
+                or event.get("target") == target_of(event.get("mode_id"))
+            )
         }
 
+    def open_applies(self) -> dict[str, dict]:
+        """Each file's apply event that nothing closed since (``applied``, a
+        rollback, a put-back, or another apply over it): one a run that was
+        cut off, or an apply that failed part-way, left. Such an apply may have
+        written the file's axes, its ``.props``, its record, or all of them."""
+        still_open: dict[str, dict] = {}
+        for event in self.events:
+            kind, sample_file_id = event.get("event"), event.get("sample_file_id")
+            if kind == "apply":
+                still_open[sample_file_id] = event
+            elif kind in _CLOSES_APPLY:
+                still_open.pop(sample_file_id, None)
+        return still_open
+
     def open_apply(self, sample_file_id: str) -> dict | None:
-        """The file's apply event that no outcome followed: one a run that
-        stopped, or an apply that failed part-way, left. What the file had
-        before is that event's, not what the file holds now."""
+        """The file's open apply, if it has one (:meth:`open_applies`)."""
         open_event = None
         for event in self.of_file(sample_file_id):
             kind = event.get("event")
             if kind == "apply":
                 open_event = event
-            elif kind in ("applied", "rollback") or (
-                kind == "error" and not event.get("apply_incomplete")
-            ):
+            elif kind in _CLOSES_APPLY:
                 open_event = None
         return open_event
 
@@ -416,12 +444,12 @@ class Ledger:
         return list(pending.values())
 
     def touched_batches(self) -> set[str]:
-        """Every batch other than an acquisition one that an apply or a
-        rollback of the ledger set to ``rematch``."""
+        """Every batch other than an acquisition one that an apply, a rollback
+        or a put-back of the ledger set to ``rematch``."""
         return {
             batch_id
             for event in self.events
-            if event.get("event") in ("apply", "rollback")
+            if event.get("event") in ("apply", "rollback", "restored")
             for batch_id in event.get("batches") or ()
         }
 
@@ -919,14 +947,14 @@ async def _file_state(sample_file_id: str):
         return await session.get(SampleFile, sample_file_id)
 
 
-async def _other_batches(sample_file_id: str) -> list[str]:
+async def _other_batches(sample_file_id: str) -> dict[str, str]:
     """The batches other than acquisition ones that hold a sample of the
-    file: those an apply sets to ``rematch``."""
+    file, those an apply sets to ``rematch``, and the status of each."""
     async with async_session() as session:
-        return list(
+        return dict(
             (
                 await session.execute(
-                    select(SampleBatch.sample_batch_id)
+                    select(SampleBatch.sample_batch_id, SampleBatch.status)
                     .join(
                         SampleItem,
                         SampleItem.sample_batch_id == SampleBatch.sample_batch_id,
@@ -936,10 +964,9 @@ async def _other_batches(sample_file_id: str) -> list[str]:
                         SampleBatch.sample_batch_type != "ACQUISITION",
                     )
                     .distinct()
+                    .order_by(SampleBatch.sample_batch_id)
                 )
-            )
-            .scalars()
-            .all()
+            ).all()
         )
 
 
@@ -1011,7 +1038,18 @@ async def run_file(
     edges,
 ) -> Outcome:
     """Calibrate one file as ingest does, keeping an ``ok`` record from a
-    ``poor`` fit, with the ledger written before the apply."""
+    ``poor`` fit, with the ledger written before the apply.
+
+    The file is read again at its turn, which can come a day after the run
+    chose it: what it holds then is what the ``ok`` rule judges and what the
+    ledger records as before. A file calibrated onto the target since is left.
+    """
+    stored = await _file_state(candidate.sample_file_id)
+    if stored is None:
+        return Outcome("gone")
+    if on_target(stored.mz_calibration, target.target):
+        return Outcome("on target already")
+    candidate = replace(candidate, record=stored.mz_calibration, range=stored.range)
     sample = candidate.calibrating[0]
     old_record = copy.deepcopy(candidate.record)
     base = {
@@ -1024,10 +1062,9 @@ async def run_file(
     }
     state: dict = {}
 
-    async def before_apply(fit: dict) -> bool:
+    async def judge(fit: dict) -> bool:
         issues = calibration_quality_issues(fit.get("quality"), candidate.filename)
         new_status = "poor" if issues else "ok"
-        state["fit"] = {"mode": fit["mode"], "par": fit["par"]}
         if record_status(old_record) == "ok" and new_status != "ok":
             ledger.write(
                 {
@@ -1041,10 +1078,10 @@ async def run_file(
             )
             state["kept"] = True
             return False
-        carried = ledger.open_apply(candidate.sample_file_id)
+        carried = state.get("apply")
         if carried is not None:
-            # An apply that did not finish may have written the axes and the
-            # props: what the file had is the first attempt's
+            # An earlier attempt's apply that did not finish may have written
+            # the axes and the props: what the file had is that attempt's
             before, plan = carried["before"], carried["restore"]
         else:
             props = await asyncio.to_thread(_props_before, candidate.filename)
@@ -1063,7 +1100,12 @@ async def run_file(
             before["props"].get("mz_calibration"),
             plan["offset"],
         )
-        event = ledger.write(
+        batches = await _other_batches(candidate.sample_file_id)
+        # A batch the unfinished attempt held at processing waited on a
+        # recalibration if it did when that attempt began
+        pending = {b for b, status in batches.items() if status == "recalibrate"}
+        pending.update((carried or {}).get("recalibrate") or ())
+        state["apply"] = ledger.write(
             {
                 "event": "apply",
                 **base,
@@ -1072,12 +1114,26 @@ async def run_file(
                 "old": _compact(old_record),
                 "new": _compact({**fit, "status": new_status}),
                 "bands": (axis_change(axis, fit, n_samples, edges) if axis else []),
-                "batches": await _other_batches(candidate.sample_file_id),
+                "batches": list(batches),
+                "recalibrate": sorted(pending),
                 "assignment_runs": await _assignment_runs(candidate.sample_file_id),
             }
         )
-        state["apply"] = event
         return True
+
+    async def before_apply(fit: dict) -> bool:
+        # The runner's own failure - a store it cannot read, a ledger or a
+        # snapshot it cannot write - withholds the fit, so it never reaches
+        # the node as the file's calibration failing: that would log an error
+        # and leave a failure marker over a converter record
+        try:
+            return await judge(fit)
+        except Exception as error:  # noqa: BLE001 - the runner's, not the file's
+            runtime.logger.opt(exception=True).info(
+                f"Recording {candidate.filename} before its apply raised"
+            )
+            state["hook_error"] = f"{type(error).__name__}: {error}"
+            return False
 
     outcome = await calibrate_with_retry(
         sample={
@@ -1092,35 +1148,34 @@ async def run_file(
         process_id=gen_id(8),
         before_apply=before_apply,
     )
-    if state.get("kept"):
-        return Outcome("kept")
     stored = await _file_state(candidate.sample_file_id)
     record = stored.mz_calibration if stored else None
     if "apply" in state:
-        applied = isinstance(record, dict) and (
-            record.get("mode"),
-            record.get("par"),
-        ) == (state["fit"]["mode"], state["fit"]["par"])
-        if not applied:
+        apply = state["apply"]
+        if _same_fit(record, apply["new"]):
             ledger.write(
                 {
-                    "event": "error",
+                    "event": "applied",
                     **base,
-                    "apply_incomplete": True,
-                    "error": outcome.reason,
+                    "apply_seq": apply["seq"],
+                    "status": record_status(record),
+                    "verified": bool(record.get("verified")),
                 }
             )
-            return Outcome("error", {"error": outcome.reason})
+            return Outcome(record_status(record))
+        error = state.get("hook_error") or outcome.reason
         ledger.write(
-            {
-                "event": "applied",
-                **base,
-                "apply_seq": state["apply"]["seq"],
-                "status": record_status(record),
-                "verified": bool(record.get("verified")),
-            }
+            {"event": "error", **base, "apply_incomplete": True, "error": error}
         )
-        return Outcome(record_status(record))
+        # What the apply may have written is put back now, not by a later run
+        await _close_now(apply, ledger)
+        return Outcome("error", {"error": error})
+    if "hook_error" in state:
+        # The next run tries the file again
+        ledger.write({"event": "error", **base, "error": state["hook_error"]})
+        return Outcome("error", {"error": state["hook_error"]})
+    if state.get("kept"):
+        return Outcome("kept")
     if outcome.fault:
         # Not the spectrum's: the next run tries the file again
         ledger.write({"event": "error", **base, "error": outcome.reason})
@@ -1135,6 +1190,25 @@ async def run_file(
         }
     )
     return Outcome("failed", {"reason": outcome.reason})
+
+
+async def _close_now(apply: dict, ledger: Ledger) -> None:
+    """Close an apply that did not land, or leave it for the next run's
+    :func:`reconcile` when that fails too."""
+    try:
+        await close_open_apply(apply, ledger)
+    except Exception as error:  # noqa: BLE001 - the next run tries again
+        runtime.logger.opt(exception=True).info(
+            f"Closing the open apply of {apply['sample_file_id']} raised"
+        )
+        ledger.write(
+            {
+                "event": "error",
+                "sample_file_id": apply["sample_file_id"],
+                "open_apply": apply["seq"],
+                "error": f"{type(error).__name__}: {error}",
+            }
+        )
 
 
 # --- Matching what was applied ---
@@ -1255,6 +1329,63 @@ async def settle(config: Config, ledger: Ledger) -> dict:
 # --- Rollback ---
 
 
+class CannotRestore(Exception):
+    """A file's axes cannot all be given back as the ledger recorded them."""
+
+
+def restore_axes(
+    filename: str, before: dict, plan: dict, kept: dict
+) -> tuple[dict[str, np.ndarray], np.ndarray | None]:
+    """Every m/z axis of the file as it was before the apply, and its peaks',
+    decided before any is written.
+
+    A store the ledger kept takes the kept array; any other takes the old
+    record's axis from the plan's offset. A store made since the apply, such
+    as the ``sum_signal_<hash>`` cache a time window of the file leaves, is in
+    neither when no offset gives the axes back: it takes the file's axis the
+    ledger kept, which is what a cache is on, when one kept axis has its size.
+
+    Synchronous: it reads the filestore.
+
+    :raises CannotRestore: On a store no axis can be decided for, before
+        anything is written.
+    """
+    record = before["props"].get("mz_calibration") or {}
+    offset = plan.get("offset")
+    kept_axes = [kept[name] for name in sorted(kept) if name != "peak_timeseries"]
+    axes = {}
+    for var in _axis_vars(filename):
+        if var in kept:
+            axes[var] = kept[var]
+            continue
+        size = m_io.load_coord(filename, var, "mz").size
+        if offset is not None:
+            axes[var] = _formula(np.arange(size), record, offset)
+            continue
+        same = [axis for axis in kept_axes if axis.size == size]
+        if not same or any(not np.array_equal(same[0], axis) for axis in same[1:]):
+            raise CannotRestore(
+                f"the store {var} was made after the apply, and no axis the "
+                "ledger kept is its size"
+            )
+        axes[var] = same[0]
+    try:
+        tofs = m_io.load_coord(filename, "peak_timeseries", "tof")
+    except FileNotFoundError:
+        tofs = None
+    peaks = None
+    if tofs is not None:
+        if "peak_timeseries" in kept:
+            peaks = kept["peak_timeseries"]
+        elif offset is not None:
+            peaks = _formula(tofs, record, offset)
+        else:
+            raise CannotRestore(
+                "the peaks were stored after the apply, and no offset gives their m/z"
+            )
+    return axes, peaks
+
+
 class RestoreHandler(TofCalibrationHandler):
     """Writes a file's m/z axes and ``.props`` back as the ledger recorded
     them, under the locks an apply holds (``_guarded_apply``)."""
@@ -1266,27 +1397,14 @@ class RestoreHandler(TofCalibrationHandler):
         self._kept = kept
 
     def _apply_sync(self, fit: dict):
-        props_before = self._before["props"]
-        record = props_before.get("mz_calibration") or {}
-        offset = self._plan.get("offset")
-        for var in _axis_vars(self.filename):
-            if var in self._kept:
-                axis = self._kept[var]
-            else:
-                size = m_io.load_coord(self.filename, var, "mz").size
-                axis = _formula(np.arange(size), record, offset)
+        # Every axis decided under the lock before the first is written, so a
+        # store that cannot be given back leaves the file as it is
+        axes, peaks = restore_axes(self.filename, self._before, self._plan, self._kept)
+        for var, axis in axes.items():
             m_io.update_zarr_array_coord(self.filename, var, "mz", axis)
-        try:
-            tofs = m_io.load_coord(self.filename, "peak_timeseries", "tof")
-        except FileNotFoundError:
-            tofs = None
-        if tofs is not None:
-            peaks = (
-                self._kept["peak_timeseries"]
-                if "peak_timeseries" in self._kept
-                else _formula(tofs, record, offset)
-            )
+        if peaks is not None:
             m_io.update_zarr_array_coord(self.filename, "peak_timeseries", "mz", peaks)
+        props_before = self._before["props"]
         path = os.path.join(
             m_name.parse_path_from_item_filename(self.filename), ".props"
         )
@@ -1299,21 +1417,144 @@ class RestoreHandler(TofCalibrationHandler):
         write_json(path, props, indent=4)
 
 
+def _same_fit(record: dict | None, other: dict | None) -> bool:
+    """Whether two records hold the same fit: the same parameters, fitted by
+    the same node version from the same collection.
+
+    The parameters alone do not tell an apply that landed from one that did
+    not: a refit from the same peaks and calibrants gives the parameters the
+    file already had, and only the stamp of the collection or the node it was
+    made by is new. Either may be a full record, whose stamp is in its
+    ``quality``, or the ledger's compact one (:func:`_compact`).
+    """
+
+    def fingerprint(value):
+        # No record, and a failure marker the node made of none, hold none
+        value = value if isinstance(value, dict) else {}
+        stamp = value["quality"] if isinstance(value.get("quality"), dict) else value
+        return (
+            value.get("mode"),
+            value.get("par"),
+            stamp.get("collection"),
+            stamp.get("node_version"),
+        )
+
+    return fingerprint(record) == fingerprint(other)
+
+
+def _kept_arrays(ledger: Ledger, plan: dict) -> dict:
+    if not plan.get("snapshot"):
+        return {}
+    with np.load(os.path.join(ledger.directory, plan["snapshot"])) as arrays:
+        return {name: arrays[name] for name in arrays.files}
+
+
+async def _held_batches(sample_file_id: str, pending_before=()):
+    """The file's samples, the batches other than acquisition ones that hold
+    them, and of those the ones that wait on a recalibration: at
+    ``recalibrate`` now, or at ``processing`` and at ``recalibrate`` when the
+    apply began (``pending_before``)."""
+    affected = await fetch_affected_sample_data(
+        sample_file_ids=[sample_file_id], include_objects=True
+    )
+    batches = [
+        batch
+        for batch in affected.affected_sample_batches or []
+        if batch.sample_batch_type != "ACQUISITION"
+    ]
+    pending = [
+        batch.sample_batch_id
+        for batch in batches
+        if batch.status == "recalibrate"
+        or (batch.status == "processing" and batch.sample_batch_id in pending_before)
+    ]
+    return affected, [batch.sample_batch_id for batch in batches], pending
+
+
+async def _release(held: list[str], pending: list[str]) -> None:
+    """The batches back to waiting, as an apply leaves them: a pending
+    recalibration kept, every other at ``rematch``."""
+    if pending:
+        await update_sample_batch_status(
+            sample_batch_ids=pending, status="recalibrate", independent_transaction=True
+        )
+    await update_sample_batch_status(
+        sample_batch_ids=held,
+        status="rematch",
+        independent_transaction=True,
+        never_lower=True,
+    )
+
+
+async def _remove_matches(affected) -> None:
+    for sample in affected.affected_samples or []:
+        await match_remove_sample(
+            sample_item_id=sample.sample_item_id,
+            full_remove=True,
+            independent_transaction=False,
+            process_id=gen_id(8),
+        )
+
+
+async def _write_back(
+    sample_file, event: dict, ledger: Ledger, *, remove_matches: bool
+) -> list[str]:
+    """Write back what the file had before the apply the event records: its
+    m/z axes and ``.props``, then its database record and range.
+
+    Its batches other than acquisition ones are held at ``processing`` while
+    it does, and go to ``rematch`` after, as around an apply
+    (``calibration_mz_apply``). Not through the apply itself: it judges and
+    stamps every fit it is given, and this writes the old record back as it
+    was.
+
+    :param remove_matches: Whether the file's samples lose their matches: they
+        were made on the axes being taken back.
+    :raises CannotRestore: Before anything is touched.
+    :return: The batches it set to ``rematch``.
+    """
+    plan, before = event["restore"], event["before"]
+    kept = await asyncio.to_thread(_kept_arrays, ledger, plan)
+    # Decided before the batches are held: a refusal touches nothing
+    await asyncio.to_thread(restore_axes, sample_file.filename, before, plan, kept)
+    affected, held, pending = await _held_batches(
+        sample_file.sample_file_id, event.get("recalibrate") or ()
+    )
+    await update_sample_batch_status(
+        sample_batch_ids=held, status="processing", independent_transaction=True
+    )
+    try:
+        await RestoreHandler(sample_file.filename, before, plan, kept).apply({})
+        sample_file.mz_calibration = copy.deepcopy(before["record"])
+        sample_file.range = copy.deepcopy(before["range"])
+        await update_sample_file(
+            sample_file.sample_file_id, SampleFileUpdate(**sample_file.to_dict())
+        )
+        if remove_matches:
+            await _remove_matches(affected)
+    finally:
+        await _release(held, pending)
+    return held
+
+
 async def rollback_file(event: dict, ledger: Ledger) -> Outcome:
     """Put back what a file had before the apply the event records.
 
     The file's samples lose their matches and its batches other than
-    acquisition ones go to ``rematch``, as after an apply
-    (``calibration_mz_apply``); :func:`settle` then matches them again. Not
-    through the apply itself: it judges and stamps every fit it is given,
-    and a rollback writes the old record back as it was.
+    acquisition ones go to ``rematch``, as after an apply; :func:`settle` then
+    matches them again.
     """
     sample_file_id = event["sample_file_id"]
     sample_file = await fetch_sample_file(sample_file_id=sample_file_id)
-    current = sample_file.mz_calibration or {}
-    new = event.get("new") or {}
-    if (current.get("mode"), current.get("par")) != (new.get("mode"), new.get("par")):
+    reason = None
+    if not _same_fit(sample_file.mz_calibration, event.get("new")):
         reason = "the record changed since the runner applied it"
+    else:
+        try:
+            held = await _write_back(sample_file, event, ledger, remove_matches=True)
+        except CannotRestore as error:
+            reason = str(error)
+    if reason is not None:
         ledger.write(
             {
                 "event": "rollback_refused",
@@ -1323,55 +1564,6 @@ async def rollback_file(event: dict, ledger: Ledger) -> Outcome:
             }
         )
         return Outcome("refused", {"reason": reason})
-
-    plan = event["restore"]
-    kept = {}
-    if plan.get("snapshot"):
-        with np.load(os.path.join(ledger.directory, plan["snapshot"])) as arrays:
-            kept = {name: arrays[name] for name in arrays.files}
-
-    affected = await fetch_affected_sample_data(
-        sample_file_ids=[sample_file_id], include_objects=True
-    )
-    batches = affected.affected_sample_batches or []
-    held = [b.sample_batch_id for b in batches if b.sample_batch_type != "ACQUISITION"]
-    pending = [
-        b.sample_batch_id
-        for b in batches
-        if b.sample_batch_type != "ACQUISITION" and b.status == "recalibrate"
-    ]
-    await update_sample_batch_status(
-        sample_batch_ids=held, status="processing", independent_transaction=True
-    )
-    try:
-        await RestoreHandler(sample_file.filename, event["before"], plan, kept).apply(
-            {}
-        )
-        sample_file.mz_calibration = copy.deepcopy(event["before"]["record"])
-        sample_file.range = copy.deepcopy(event["before"]["range"])
-        await update_sample_file(
-            sample_file.sample_file_id, SampleFileUpdate(**sample_file.to_dict())
-        )
-        for sample in affected.affected_samples or []:
-            await match_remove_sample(
-                sample_item_id=sample.sample_item_id,
-                full_remove=True,
-                independent_transaction=False,
-                process_id=gen_id(8),
-            )
-    finally:
-        if pending:
-            await update_sample_batch_status(
-                sample_batch_ids=pending,
-                status="recalibrate",
-                independent_transaction=True,
-            )
-        await update_sample_batch_status(
-            sample_batch_ids=held,
-            status="rematch",
-            independent_transaction=True,
-            never_lower=True,
-        )
     ledger.write(
         {
             "event": "rollback",
@@ -1383,6 +1575,106 @@ async def rollback_file(event: dict, ledger: Ledger) -> Outcome:
         }
     )
     return Outcome("rolled_back")
+
+
+# --- An apply a run left open ---
+
+
+async def close_open_apply(event: dict, ledger: Ledger) -> str:
+    """Bring a file whose apply no outcome followed to a state the ledger
+    knows, by what its database record holds now.
+
+    - The apply's fit: the apply landed, and the run was cut off before it
+      said so. What the apply had left undone after its record - the
+      samples' matches removed, the batches at ``rematch`` - is done, and the
+      apply is ``applied``: matched by :func:`settle`, and a rollback can
+      undo it.
+    - What the file had before: the apply did not land, but may have written
+      some of the axes and the ``.props``. They are put back as the ledger
+      recorded them, and the record too, over a failure marker the node may
+      have left on a converter record (``restored``). The samples' matches
+      are on those axes, and are kept. The file is then offered again.
+    - Anything else: an apply since, by a person or a re-process, rewrote
+      every axis of the file and its record, and the open apply is
+      ``superseded``.
+
+    :return: Which of them, or ``left open`` with the reason logged and in
+        the ledger when the axes cannot be given back.
+    """
+    sample_file_id = event["sample_file_id"]
+    ids = {
+        "sample_file_id": sample_file_id,
+        "apply_seq": event["seq"],
+        "mode_id": event.get("mode_id"),
+        "target": event.get("target"),
+        "batch": event.get("batch"),
+    }
+    sample_file = await _file_state(sample_file_id)
+    if sample_file is None:
+        ledger.write({"event": "superseded", **ids, "reason": "the file is gone"})
+        return "superseded"
+    record = sample_file.mz_calibration
+    if _same_fit(record, event.get("new")):
+        affected, held, pending = await _held_batches(
+            sample_file_id, event.get("recalibrate") or ()
+        )
+        try:
+            await _remove_matches(affected)
+        finally:
+            await _release(held, pending)
+        ledger.write(
+            {
+                "event": "applied",
+                **ids,
+                "status": record_status(record),
+                "verified": bool(record.get("verified")),
+                "reconciled": True,
+            }
+        )
+        return "applied"
+    if _same_fit(record, event["before"]["record"]):
+        try:
+            held = await _write_back(sample_file, event, ledger, remove_matches=False)
+        except CannotRestore as error:
+            runtime.logger.info(
+                f"The open apply of {sample_file.filename} is left open: {error}."
+            )
+            ledger.write({"event": "restore_refused", **ids, "reason": str(error)})
+            return "left open"
+        ledger.write({"event": "restored", **ids, "batches": held})
+        return "restored"
+    ledger.write(
+        {
+            "event": "superseded",
+            **ids,
+            "reason": "another apply replaced the record since",
+            "record": _compact(record),
+        }
+    )
+    return "superseded"
+
+
+async def reconcile(ledger: Ledger) -> Counter:
+    """Close every apply the ledger has open (:func:`close_open_apply`), as
+    the first thing a run or a rollback does."""
+    counts = Counter()
+    for event in list(ledger.open_applies().values()):
+        try:
+            counts[await close_open_apply(event, ledger)] += 1
+        except Exception as error:  # noqa: BLE001 - one file's failure
+            runtime.logger.opt(exception=True).info(
+                f"Closing the open apply of {event['sample_file_id']} raised"
+            )
+            ledger.write(
+                {
+                    "event": "error",
+                    "sample_file_id": event["sample_file_id"],
+                    "open_apply": event["seq"],
+                    "error": f"{type(error).__name__}: {error}",
+                }
+            )
+            counts["left open"] += 1
+    return counts
 
 
 def rollback_events(ledger: Ledger, selection: tuple[str, ...]) -> list[dict]:
@@ -1428,6 +1720,8 @@ class Report:
     #: Per band: each file's median change
     bands: dict = field(default_factory=lambda: defaultdict(list))
     assignment_runs: int = 0
+    #: How the applies an earlier run left open were closed
+    reconciled: Counter = field(default_factory=Counter)
     settle: dict | None = None
     batches: list = field(default_factory=list)
 
@@ -1441,6 +1735,7 @@ class Report:
                 band: audit.spread(values) for band, values in self.bands.items()
             },
             "assignment_runs": self.assignment_runs,
+            "reconciled": dict(self.reconciled),
             "settle": self.settle,
             "batches": self.batches,
             "files": self.files,
@@ -1497,13 +1792,16 @@ async def run_runner(config: Config) -> Report:
     log = runtime.logger.info
 
     if writable:
-        # What a stopped run left unmatched goes first
+        # What a stopped run left goes first: its open applies closed, then
+        # what it left unmatched matched
+        report.reconciled = await reconcile(ledger)
         report.settle = await settle(config, ledger)
 
     candidates = await select_candidates(config)
     targets = await _targets(candidates, config)
     target_of = {mode_id: t.target for mode_id, t in targets.items()}
     settled = set() if config.retry else ledger.settled(target_of.get)
+    still_open = ledger.open_applies()
     log(
         f"TOF re-calibration of {config.instrument} ({config.action}): "
         f"{len(candidates)} TOF file(s)"
@@ -1531,6 +1829,10 @@ async def run_runner(config: Config) -> Report:
             report.counts[f"not fitted by ingest: {why}"] += 1
             continue
         target = targets[mode_id]
+        if candidate.sample_file_id in still_open:
+            # One the run could not close: the log and the ledger say why
+            report.counts["an apply left open"] += 1
+            continue
         if on_target(candidate.record, target.target):
             report.counts["on target already"] += 1
             continue
@@ -1691,6 +1993,9 @@ async def _dry_one(candidate, target, config, report) -> Outcome:
 async def run_rollback(config: Config) -> Report:
     ledger = Ledger(config.ledger_dir, writable=True)
     report = Report(action=ROLLBACK, instrument=config.instrument)
+    # A file a run left half-applied is closed first, so the last completed
+    # apply of each file is the one to undo
+    report.reconciled = await reconcile(ledger)
     events = rollback_events(ledger, config.rollback)
     runtime.logger.info(
         f"Rolling back {len(events)} file(s) of {config.instrument} from {ledger.path}."
@@ -1720,6 +2025,8 @@ def log_report(report: Report) -> None:
     log = runtime.logger.info
     log("=" * 80)
     log(f"TOF RE-CALIBRATION ({report.action.upper()}) of {report.instrument}")
+    for kind, count in sorted(report.reconciled.items()):
+        log(f"  an apply an earlier run left open, now {kind}: {count}")
     for kind, count in sorted(report.counts.items()):
         log(f"  {kind}: {count}")
     if report.action != ROLLBACK:

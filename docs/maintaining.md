@@ -2760,7 +2760,10 @@ TOF_RECAL_INSTRUMENT=<name> TOF_RECAL_ACTION=run \
   collection as it is now is already on target, and is skipped. Files in a
   mode without calibrants are counted and left for calibration transfer. A
   blank, a file with more than one sample to calibrate, and a file without the
-  stores a refit reads are listed, not refitted.
+  stores a refit reads are listed, not refitted. A file's turn can come a day
+  after the run chose it, so its record is read again then. One calibrated
+  onto the target meanwhile is left, and the `ok` rule judges the record the
+  file holds at its turn.
 - **Pacing.** 25 files a batch, a minute between batches, and a hold before
   each file and each rematch while the live ingest has more than 20 files in
   progress: the pace the composite cut's re-processing kept beside a site's
@@ -2772,11 +2775,19 @@ TOF_RECAL_INSTRUMENT=<name> TOF_RECAL_ACTION=run \
 - **Stopping.** Create a file `STOP` in the ledger's directory (below): the
   run ends before its next file, once what it applied is matched. Remove the
   file and run it again to go on; it skips what is done. Ctrl+C ends it at
-  once, and the next run first matches what was left unmatched. A file the
+  once, and can cut off the apply of the file it is on. So a run, and a
+  rollback, first closes every apply the ledger has open, by what the file's
+  record holds. An apply that reached the database is finished: its samples'
+  matches removed and its batches set to `rematch`, then matched as any other.
+  One that did not has the axes it may have written put back, and the file
+  is offered again. One that another apply has rewritten since is left to
+  that one. An apply that fails part-way during a run is put back at once
+  the same way. The summary counts each kind. Then the run matches what was
+  left unmatched. A file the
   ledger has an outcome for - kept, failed, not refit-ready, rolled back - is
   not offered again under the same target; `TOF_RECAL_RETRY=1` offers it
-  again. An error that is not the file's own, such as a database fault, is
-  tried again by the next run.
+  again. An error that is not the file's own, such as a database fault or the
+  runner failing to write its ledger, is tried again by the next run.
 - **What to watch.** The batch lines in the log; the summary's count of the
   batches it touched that are still at `rematch`, which should be none when
   it ends (one a person holds open is retried by the next run); and the live
@@ -2798,7 +2809,11 @@ A rollback puts back the file's database record and range, and its `.props`
 record and range, as the ledger recorded them before the apply, and every m/z
 axis of the file bit for bit; then it matches the file again, as after an
 apply. It refuses a file whose record changed since the run applied it, by a
-manual recalibration for instance, and says so. A peak timeseries the fit
+manual recalibration for instance, and says so. A store made since the apply,
+such as the cached sum signal a time window of the file leaves, goes back to
+the file's old axis too; when none of the axes the ledger kept fits it, the
+rollback refuses the file before it touches anything, and says which store.
+A peak timeseries the fit
 computed for a peak whose store lacked it stays: it is the peak's on any
 calibration.
 
