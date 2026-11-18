@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 from mascope_tools.composition.arbitration import candidate_density, unseparated
+from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
 from mascope_tools.composition.finder import (
     HELD_BY_LIBRARY,
     HELD_BY_LINES,
@@ -626,10 +627,28 @@ class TestTheReadingsOwnLines:
         weighing = _weighed(0.1, [_rival("C12H12N4O", 0.9)], own_line=(0.3, 0.9))
         assert weighing.winner is None
 
+    def test_a_line_within_three_widths_tracks_as_the_mass_gate_reads_it(self):
+        # 1.3 ppm from the ion's own error: past two widths (1 ppm), inside
+        # the line model's three (1.5 ppm), the mass gate's bar (MAS-977).
+        weighing = _weighed(0.1, [_rival("C12H12N4O", 0.9)], own_line=(0.3, 1.4))
+        assert weighing.winner is None
+
     def test_a_line_off_the_ions_own_error_is_no_evidence(self):
-        # 2.9 ppm from the ion's own error, where two widths are 1 ppm.
+        # 2.9 ppm from the ion's own error, where three widths are 1.5 ppm.
         weighing = _weighed(0.1, [_rival("C12H12N4O", 0.9)], own_line=(0.3, 3.0))
         assert weighing.winner == 1
+
+    def test_a_line_over_the_runs_fitted_threshold_is_evidence(self):
+        # 2% of a peak at a signal-to-noise of 100, an expected 2: under the
+        # default threshold of 3, over a fitted curve's 1.5, at which the fit
+        # charges the line's absence (MAS-977).
+        fitted = PatternScoring(
+            sigma_ppm=0.5, envelope_tolerance=EnvelopeTolerance(detect_snr=1.5)
+        )
+        weighing = _weighed(
+            0.1, [_rival("C12H12N4O", 0.9)], own_line=(0.02, 0.2), scoring=fitted
+        )
+        assert weighing.winner is None
 
     def test_without_a_noise_estimate_a_line_counts_by_its_share(self):
         def weigh(share):

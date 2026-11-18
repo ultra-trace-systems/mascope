@@ -526,6 +526,18 @@ class TestClaimingPeaks:
 
         assert [hit.index for hit in hits if not hit.is_isotopologue] == [1]
 
+    def test_an_isotopologue_takes_the_nearest_peak_in_its_window(self):
+        """A line's peak is the nearest one in its window, the line model's
+        matcher (MAS-977): a brighter peak at the window's edge, within the
+        height the line allows, is not the line."""
+        mz, intensity = _spectrum(("Br", -1, 1e6))
+        line = int(np.argmax(mz))
+        mz = np.append(mz, mz[line] * (1 + 0.6 * ORBI_PPM * 1e-6))
+        intensity = np.append(intensity, intensity[line] * 1.5)
+        hits, _ = claim(reagent_library("BR"), mz, intensity)
+
+        assert [hit.index for hit in hits if hit.is_isotopologue] == [line]
+
     def test_an_isotopologue_with_an_analyte_on_top_is_left(self):
         """A peak far taller than the envelope predicts has something else in
         it, and claiming it would bury that."""

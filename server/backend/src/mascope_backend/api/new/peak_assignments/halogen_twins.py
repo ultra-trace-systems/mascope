@@ -55,6 +55,7 @@ from mascope_tools.composition.heuristic_filter import (
     element_counts,
     formula_plausibility,
 )
+from mascope_tools.composition.line_model import height_within, nearest_peak
 from mascope_tools.composition.models import (
     CompositionSearchConfig,
     HeuristicFilterConfig,
@@ -204,17 +205,9 @@ def _is_reading(formula) -> bool:
 
 
 def _nearest(sorted_mzs: np.ndarray, target: float) -> int | None:
-    """The index of the m/z nearest ``target`` within :data:`TWIN_PPM`."""
-    index = int(np.searchsorted(sorted_mzs, target))
-    best = None
-    for candidate in (index - 1, index):
-        if 0 <= candidate < len(sorted_mzs):
-            off = abs(sorted_mzs[candidate] - target)
-            if off <= target * TWIN_PPM * 1e-6 and (
-                best is None or off < abs(sorted_mzs[best] - target)
-            ):
-                best = candidate
-    return best
+    """The index of the m/z nearest ``target`` within :data:`TWIN_PPM`: the
+    line model's matcher (``line_model.nearest_peak``) at the twin's window."""
+    return nearest_peak(sorted_mzs, target, TWIN_PPM)
 
 
 def _carries(label, elements: Iterable[str]) -> bool:
@@ -331,7 +324,12 @@ def find_twins(
         twin_mz = float(mzs[index])
         ratio = float(heights[index] / heights[position])
         expected = ONE_ATOM_RATIO[halogen]
-        if not expected / TWIN_RATIO_FACTOR <= ratio <= expected * TWIN_RATIO_FACTOR:
+        if not height_within(
+            ratio,
+            expected,
+            at_least=1.0 / TWIN_RATIO_FACTOR,
+            at_most=TWIN_RATIO_FACTOR,
+        ):
             continue
         if twin_mz in explained or twin_mz in claimed:
             continue

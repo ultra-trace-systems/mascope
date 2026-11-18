@@ -45,9 +45,14 @@ independent evidence* and *arbitrating between candidates that all fit the mass*
 Every peak is assigned in a two-stage engine:
 
 - **Stage A — database-first.** The peak is matched against the sample's known target
-  library (the same target isotopologues used by [target matching](matching.md)) and
+  library (the compounds and ions of [target matching](matching.md)) and
   against any [reference lists](../guides/reference-lists.md) your deployment has
-  loaded; the best-fitting known composition wins the peak. A reference list is matched only within its own element,
+  loaded; the best-fitting known composition wins the peak. Each ion's isotope lines
+  are the peaks your instrument resolves at the file's own resolving power, predicted
+  as the untargeted search predicts a candidate's (*a predicted line*, under
+  [the fit score](#the-fit-score-a-pure-measurement)): one formula's lines are the same
+  lines whichever stage reads it. Target matching reads a TOF file's lines merged at
+  one resolving power for every file, and an Orbitrap file's one isotopologue per line. A reference list is matched only within its own element,
   carbon and mass window, under a ceiling the sample's chemistry context sets; only in
   the polarity it is detected in; and it contributes radicals only if it allows them.
   The target library is read through the ionization mechanisms of the sample's mode; a
@@ -77,7 +82,10 @@ compound's place on a list counts for it: a closed-shell formula from the search
 the peak only where its evidence (fit × plausibility, see
 [Arbitration](#arbitration-competing-the-candidates)) is more than twice the compound's,
 and ahead of it by more than a tie. It must also explain the compound's own isotope
-lines, the ones the spectrum shows where the compound predicts them: the fit charges a
+lines, the ones the spectrum shows where the compound predicts them, at an expected
+signal-to-noise the run counts an absent line at, and whose mass error follows the
+compound's own within three of the sample's mass widths, the bar the mass gate reads an
+isotopologue at: the fit charges a
 reading for a line it predicts and the spectrum lacks, but never charges a rival for a
 line the spectrum holds and the rival leaves unexplained. A siloxane's silicon lines, or
 the bromine line of a bromide adduct, keep the list's compound on its peak against a
@@ -529,7 +537,9 @@ and the inspector heads the card with it; the *reagent* chip beside it says the 
 made it. An ion's isotope lines are claimed with it and are its family, as an analyte's
 isotopologues are the analyte's. A line is one peak your instrument resolves: on a TOF,
 the peak one mass unit above the ion is its 13C, 15N, 2H and 17O lines together, claimed
-as one line at their combined height. The lines fold under the ion's monoisotopic row,
+as one line at their combined height. A line takes the peak nearest to where the ion's
+own error puts it, as every check reads a line, and not one at most three times its
+predicted height. The lines fold under the ion's monoisotopic row,
 counted in its **+N** marker, and the inspector lists them in the ion's isotopologue
 table against the abundances its isotope pattern predicts. A fragment's lines fold under
 the fragment the same way. The *reagent* count above the ledger still counts every peak
@@ -662,8 +672,12 @@ the scans without it were below the noise.
 A predicted line is a peak your instrument can resolve, not a single isotopologue. On a
 TOF, the peak one mass unit above a compound holds its 13C line and also its 15N, 2H and
 17O lines, a few mDa apart. The untargeted search reads that peak against the sum of all
-four, at the resolving power recorded for the file, and so does the check that reads a
-peak as a neighbour's isotope line (*a neighbour's isotope line*, below). A line too
+four, at the resolving power recorded for the file, and so do Stage A, the re-score of
+the search's readings, the composition fit the API serves, the reagent pass and every
+check that reads a line, the check that reads a peak as a neighbour's isotope line
+(*a neighbour's isotope line*, below) among them. On an Orbitrap the same holds at its
+resolving power: lines closer than half a peak width, such as a 13C and a 17O line, are
+one line. A line too
 faint to predict on its own still counts when it sits less than one peak width from a
 line that is predicted: it is added to that line, since one peak that wide holds both.
 Two such faint lines less than one peak width apart that are bright enough together are

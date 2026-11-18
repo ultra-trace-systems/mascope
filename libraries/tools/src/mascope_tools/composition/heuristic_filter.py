@@ -1986,31 +1986,6 @@ def calibrate_score(raw, calibration=None):
     return 1.0 / (1.0 + np.exp(-(a * np.asarray(raw, float) + b)))
 
 
-def _outside_band(
-    rel_obs: np.ndarray,
-    pr: np.ndarray,
-    expected_snr: np.ndarray,
-    tolerance: EnvelopeTolerance,
-    by_presence: np.ndarray | None = None,
-) -> np.ndarray:
-    """How far each line's observed share sits outside the band the tolerance
-    admits for it, signed; zero inside.
-
-    The band is :meth:`EnvelopeTolerance.admitted` at the line's expected SNR,
-    in units of the predicted share. Today's tolerance admits the predicted
-    share alone, so this is ``rel_obs - pr`` exactly. A line read by its scan
-    presence (``by_presence``) is read at its mean per scan, the dilution the
-    band's lower end allows for taken out, and is held to the share itself.
-    """
-    lower, upper = tolerance.admitted(expected_snr)
-    if by_presence is not None:
-        lower = np.where(by_presence, upper, lower)
-    low, high = lower * pr, upper * pr
-    return np.where(
-        rel_obs < low, rel_obs - low, np.where(rel_obs > high, rel_obs - high, 0.0)
-    )
-
-
 def score_pattern_v2(
     observed_mass_errors_ppm: np.ndarray,
     observed_intensities: np.ndarray,
@@ -2150,18 +2125,20 @@ def score_pattern_v2(
     rel_obs, by_presence = presence_corrected(
         oi / base_int, levels, np.full(n, levels[0])
     )
-    sigma_rel = np.maximum.reduce(
-        [
-            # Unknown SNR contributes 0 here, so the abundance floors below decide.
-            rel_obs * np.sqrt(inv_snr**2 + inv_snr[0] ** 2),
-            tolerance.floor * pr,
-            np.full(n, 1e-3),
-        ]
-    )
     expected_snr = pr * snr[0] if snr_known[0] else np.full(n, np.nan)
+    # The line model's height test (`line_model.height_deviation`): how far the
+    # share sits outside the band the tolerance admits, in widths of its noise
+    # (an unknown SNR contributes 0, so the abundance floors decide).
     int_L = np.exp(
         -0.5
-        * (_outside_band(rel_obs, pr, expected_snr, tolerance, by_presence) / sigma_rel)
+        * height_deviation(
+            rel_obs,
+            pr,
+            expected_snr,
+            tolerance=tolerance,
+            inverse_snr=np.sqrt(inv_snr**2 + inv_snr[0] ** 2),
+            by_presence=by_presence,
+        )
         ** 2
     )
     k_detect = k_detect if tolerance.detect_snr is None else tolerance.detect_snr
@@ -2173,12 +2150,15 @@ def score_pattern_v2(
     L[m] = mass_L[m] * int_L[m]
     absent = ~matched
     absent[0] = False
-    if snr_known[0]:
-        detectable = absent & (pr * snr[0] >= k_detect)
-    else:
-        # No base SNR -> the expected-SNR gate is unevaluable; fall back to abundance, so
-        # the score stays envelope-aware instead of ignoring every absent isotopologue.
-        detectable = absent & (pr >= rel_detect_no_snr)
+    # The line model's detectability (`line_model.line_detectable`): with no base
+    # SNR the expected-SNR gate is unevaluable and it falls back to abundance, so
+    # the score stays envelope-aware instead of ignoring every absent isotopologue.
+    detectable = absent & line_detectable(
+        pr,
+        snr[0] if snr_known[0] else None,
+        detect_snr=k_detect,
+        rel_detect_no_snr=rel_detect_no_snr,
+    )
     L[detectable] = miss_penalty
     include = ~np.isnan(L)
     L = np.where(include, np.maximum(L, 1e-6), 1.0)
@@ -2284,19 +2264,16 @@ def score_patterns_v2(
     with np.errstate(divide="ignore", invalid="ignore"):
         levels = scan_levels(snr, n_scans, n_scans_total, n)
         rel_obs, by_presence = presence_corrected(oi / oi[first], levels, levels[first])
-        sigma_rel = np.maximum.reduce(
-            [
-                rel_obs * np.sqrt(inv_snr**2 + inv_snr[first] ** 2),
-                tolerance.floor * pr,
-                np.full(n, 1e-3),
-            ]
-        )
         expected_snr = np.where(snr_known[first], pr * snr[first], np.nan)
         int_L = np.exp(
             -0.5
-            * (
-                _outside_band(rel_obs, pr, expected_snr, tolerance, by_presence)
-                / sigma_rel
+            * height_deviation(
+                rel_obs,
+                pr,
+                expected_snr,
+                tolerance=tolerance,
+                inverse_snr=np.sqrt(inv_snr**2 + inv_snr[first] ** 2),
+                by_presence=by_presence,
             )
             ** 2
         )
@@ -2307,8 +2284,11 @@ def score_patterns_v2(
     m = matched & ~anchor
     L[m] = mass_L[m] * int_L[m]
     absent = ~matched & ~anchor
-    detectable = absent & np.where(
-        snr_known[first], pr * snr[first] >= k_detect, pr >= rel_detect_no_snr
+    detectable = absent & line_detectable(
+        pr,
+        np.where(snr_known[first], snr[first], np.nan),
+        detect_snr=k_detect,
+        rel_detect_no_snr=rel_detect_no_snr,
     )
     L[detectable] = miss_penalty
     include = ~np.isnan(L)

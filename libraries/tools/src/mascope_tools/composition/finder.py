@@ -29,18 +29,17 @@ from mascope_tools.composition.grid import (
     build_neutral_grid,
 )
 from mascope_tools.composition.heuristic_filter import (
-    DETECT_SNR_K,
     FALLBACK_SIGMA_PPM,
     ISOTOPE_CANDIDATE_LIMIT,
     PATTERN_BASE_SNR,
     PATTERN_REQUIRED_LINES,
-    REL_DETECT_NO_SNR,
     SAME_ION_ALTERNATIVES,
     apply_heuristic_rules,
     formula_plausibility,
     match_isotopic_pattern,
     neutral_is_closed_shell,
 )
+from mascope_tools.composition.line_model import line_detectable, tracks
 from mascope_tools.composition.models import (
     Atom,
     CompositionSearchConfig,
@@ -157,10 +156,6 @@ HELD_BY_LINES = "unexplained_lines"
 #: Why a rival that cleared the list's prior did not take the peak: the reading
 #: is a compound of the sample's own target library.
 HELD_BY_LIBRARY = "target_library"
-
-#: How many of the sample's mass widths a line's mass error may sit from its
-#: ion's own and still be read as tracking it.
-LINE_TRACKING_WIDTHS = 2.0
 
 #: How much more a line may hold than a rival's envelope predicts there, as a
 #: share of the prediction, for the rival to explain it: a rival predicting less
@@ -913,10 +908,12 @@ def _tracking_lines(
 ) -> frozenset[float]:
     """The lines of a reading's envelope that are evidence for it.
 
-    A line is one the spectrum was expected to show (the fit's own
-    detectability gate) and whose mass error follows the ion's own line within
-    :data:`LINE_TRACKING_WIDTHS` of the sample's width - the mass gate's notion
-    of an isotopologue that corroborates its row. A line any rival of the same
+    A line is one the spectrum was expected to show - the fit's own
+    detectability gate, at the run's fitted threshold where its response curve
+    set one (``line_model.line_detectable``) - and whose mass error follows the
+    ion's own line within ``line_model.TRACKING_WIDTHS`` of the sample's width,
+    the mass gate's notion of an isotopologue that corroborates its row
+    (``line_model.tracks``). A line any rival of the same
     nominal envelope predicts at the same place, such as a CHO reading's 13C
     line, is explained by that rival too, so the lines only tell readings apart
     where the envelope is distinctive.
@@ -932,20 +929,17 @@ def _tracking_lines(
     if masses.size < 2 or not predicted[0] > 0:
         return frozenset()
     base_snr = scored.scored[own_index].get(PATTERN_BASE_SNR)
-    width = (scoring or PatternScoring()).sigma_ppm or FALLBACK_SIGMA_PPM
+    scoring = scoring or PatternScoring()
+    width = scoring.sigma_ppm or FALLBACK_SIGMA_PPM
     lines = set()
     for index in range(1, masses.size):
         if not masses[index]:
             continue
-        share = predicted[index] / predicted[0]
-        detectable = (
-            share * base_snr >= DETECT_SNR_K
-            if base_snr is not None
-            else share >= REL_DETECT_NO_SNR
-        )
-        if detectable and abs(errors[index] - errors[0]) <= (
-            LINE_TRACKING_WIDTHS * width
-        ):
+        if line_detectable(
+            predicted[index] / predicted[0],
+            base_snr,
+            tolerance=scoring.envelope_tolerance,
+        ) and tracks(errors[index], errors[0], width):
             lines.add(float(masses[index]))
     return frozenset(lines)
 
@@ -1322,7 +1316,7 @@ def process_isotopes(
         # Index 0 is the ion's own line, which is what the pattern's intensities
         # are relative to and, for a candidate the composition search proposed,
         # the peak it was enumerated for
-        # (`heuristic_filter.anchor_on_monoisotopic`). Its label still comes
+        # (`line_model.anchor_on_monoisotopic`). Its label still comes
         # from its own configuration like every other row's, because a caller
         # may hand this function a pattern in any order; what index 0 means to
         # THIS function is the line the rest of the envelope hangs off, and a

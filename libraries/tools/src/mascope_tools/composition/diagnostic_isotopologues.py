@@ -46,7 +46,7 @@ envelope tolerance admits at the line's expected S/N (step 3.5b,
 ``envelope_tolerance.EnvelopeTolerance.admitted``) it is the predicted share;
 outside, the distance to the band's nearer end is read in the line's width -
 its own and its parent's noise, the tolerance's floor of the share, and the
-score's absolute floor of :data:`SHARE_WIDTH_FLOOR`, whichever is widest. The
+score's absolute floor of ``line_model.SHARE_WIDTH_FLOOR``, whichever is widest. The
 ratio holds within :data:`HOLD_WIDTHS` of those widths.
 
 A spectrum tells an isotope line from another peak only where that reach is
@@ -79,7 +79,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -88,8 +88,11 @@ from mascope_tools.composition.envelope_tolerance import (
     DEFAULT_TOLERANCE,
     EnvelopeTolerance,
 )
-from mascope_tools.composition.heuristic_filter import (
-    group_unresolved_lines,
+from mascope_tools.composition.line_model import (
+    height_deviation,
+    height_width,
+    line_centre,
+    line_groups,
     predict_isotopes,
 )
 
@@ -106,10 +109,6 @@ PREDICTION_DEPTH = 1e-5
 #: The least share of the peak it falls in an isotope line must carry to be read
 #: on its own. Under half, the peak is another line's.
 MIN_DOMINANCE = 0.5
-
-#: The fit score's absolute floor of a line's width, as a share of the parent
-#: (``score_pattern_v2``'s ``1e-3``): a dim line is never judged tighter.
-SHARE_WIDTH_FLOOR = 1e-3
 
 #: How many of its widths a ratio may sit outside the admitted band and still
 #: hold: the band a normal reading of the share stays in 95% of the time.
@@ -234,12 +233,12 @@ def predict_diagnostic_isotopologues(
     labels = list(labels)
     if "M0" not in labels:
         return ()
-    groups = _groups(mzs, intensities, resolution)
+    groups = line_groups(mzs, intensities, resolution)
     group_of = {index: members for members in groups for index in members}
     mono = labels.index("M0")
     mono_group = group_of[mono]
     mono_share = float(intensities[mono_group].sum())
-    mono_centre = _centre(mzs, intensities, mono_group)
+    mono_centre = line_centre(mzs, intensities, mono_group)
     isotopologues = []
     for label in isotopes:
         if label not in labels:
@@ -250,34 +249,13 @@ def predict_diagnostic_isotopologues(
         isotopologues.append(
             DiagnosticIsotopologue(
                 label=label,
-                mz_offset=_centre(mzs, intensities, members) - mono_centre,
+                mz_offset=line_centre(mzs, intensities, members) - mono_centre,
                 ratio=share / mono_share,
                 own_ratio=float(intensities[index]) / float(intensities[mono]),
                 resolved=float(intensities[index]) >= MIN_DOMINANCE * share,
             )
         )
     return tuple(isotopologues)
-
-
-def _groups(
-    mzs: np.ndarray, intensities: np.ndarray, resolution: float | None
-) -> list[list[int]]:
-    """The lines one peak of the file's width holds, as index lists."""
-    if resolution is None or not resolution > 0 or mzs.size < 2:
-        return [[index] for index in range(mzs.size)]
-    width: Callable[[float], float] = lambda _mz: float(resolution)  # noqa: E731
-    return [
-        list(map(int, members))
-        for members in group_unresolved_lines(mzs, intensities, width)
-    ]
-
-
-def _centre(mzs: np.ndarray, intensities: np.ndarray, members: list[int]) -> float:
-    weights = intensities[members]
-    total = float(weights.sum())
-    if total <= 0:
-        return float(mzs[members].mean())
-    return float(np.sum(mzs[members] * weights) / total)
 
 
 @dataclass(frozen=True)
@@ -309,14 +287,6 @@ def _usable(snr: float | None) -> float | None:
     return value if math.isfinite(value) and value > 0 else None
 
 
-def _width(
-    ratio: float, expected: float, tolerance: EnvelopeTolerance, inverse_snr: float
-) -> float:
-    """A line's width at a ratio: its noise, the tolerance's floor of the
-    predicted share, or the score's absolute floor, whichever is widest."""
-    return max(ratio * inverse_snr, tolerance.floor * expected, SHARE_WIDTH_FLOOR)
-
-
 def judge_ratio(
     observed: float,
     expected: float,
@@ -338,17 +308,15 @@ def judge_ratio(
     parent = _usable(parent_snr)
     own = _usable(line_snr)
     expected_snr = parent * expected if parent is not None else math.nan
-    lower, upper = tolerance.admitted(np.array([expected_snr]))
-    low, high = float(lower[0]) * expected, float(upper[0]) * expected
-    if observed < low:
-        outside = observed - low
-    elif observed > high:
-        outside = observed - high
-    else:
-        outside = 0.0
     inverse = math.hypot(1.0 / own if own else 0.0, 1.0 / parent if parent else 0.0)
-    deviation = outside / _width(observed, expected, tolerance, inverse)
-    reach = HOLD_WIDTHS * _width(expected, expected, tolerance, inverse)
+    # The line model's height test, the fit score's own: the share's distance
+    # from the band the tolerance admits, in widths of its noise.
+    deviation = height_deviation(
+        observed, expected, expected_snr, tolerance=tolerance, inverse_snr=inverse
+    )
+    reach = HOLD_WIDTHS * height_width(
+        expected, expected, tolerance=tolerance, inverse_snr=inverse
+    )
     return RatioReading(
         observed=float(observed),
         expected=float(expected),
@@ -426,7 +394,6 @@ __all__ = [
     "PREDICTION_DEPTH",
     "REASON_FEW_SPECTRA",
     "REASON_UNRESOLVED",
-    "SHARE_WIDTH_FLOOR",
     "TRACK_SHARE",
     "VERDICT_NOT_STAMPED",
     "VERDICT_STAMPED",
