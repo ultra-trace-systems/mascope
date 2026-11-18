@@ -3479,8 +3479,8 @@ class AssignmentCalibration(Base):
     Moves the assignment-confidence calibration out of the in-code registry so a curve can be
     (re)fit per deployment -- e.g. a user runs known standards + near-mass decoys on their
     instrument -- without a code change. Holds the Platt parameters ``a``/``b`` plus the
-    per-adduct corroboration log-odds (keyed by adduct notation, e.g. ``{"[M+Br]-": 2.28}``) and the
-    provenance mirrored from :class:`mascope_tools.composition.calibration.Calibration`.
+    per-adduct corroboration log likelihood ratios (keyed by adduct notation, e.g.
+    ``{"[M+Br]-": 1.63}``) and the provenance mirrored from :class:`mascope_tools.composition.calibration.Calibration`.
 
     Keyed by ``(instrument, score_version)`` because a curve is only valid for the fit-score
     version it was fit against; ``is_active`` marks the row the loader reads (refitting flips the

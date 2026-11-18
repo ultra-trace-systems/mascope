@@ -864,7 +864,7 @@ class TestInvertMatches:
 
     def test_adduct_corroboration_lifts_p_correct(self):
         # Same compound assigned via two adducts ([M+H]+ and the distinctive [M+Br]-): the [M+H]+
-        # winner is corroborated by the [M+Br]- (weight ~2.28) and should get a p_correct boost
+        # winner is corroborated by the [M+Br]- (weight ~1.63) and should get a p_correct boost
         # + corroboration provenance; the [M+Br]- winner is corroborated only by the generic [M+H]+
         # (weight 0), so it gets no lift. Both share evidence (same fit + formula).
         match_df = pd.DataFrame(

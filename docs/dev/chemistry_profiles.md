@@ -71,7 +71,7 @@ The codebase has been leaving hooks exactly where profiles land:
 - **Per-adduct corroboration weights are hand-fit provisional data**
   (`PROVISIONAL_ORBITRAP`,
   [calibration.py](../../libraries/tools/src/mascope_tools/composition/calibration.py)):
-  `{"[M+Br]-": 2.28, "[M+NH4]+": 0.83, "[M+CH4N2O+H]+": 0.70, …}` — measured per
+  `{"[M+Br]-": 1.63, "[M+NH4]+": 0.49, "[M+CH4N2O+H]+": 0.49, …}` — measured per
   reagent chemistry, stored per instrument.
 - **`acquisition_params` are captured on ingest and consumed by nothing**
   (Phase 0 item 1 of the ionization redesign, PR #1723) — the observed-physics
@@ -369,7 +369,7 @@ their campaign provenance):
 
 | preset | polarity | adduct panel | element grid | notes |
 |---|---|---|---|---|
-| `BR` | − | `[M+Br]-`, `[M-H]-`, `[M+HBr+Br]-`; `[M+CO3]-`, `[M+Br2]-` and `[M+HCOO]-` secondary (formate from plan step 3.2) | `C0-40 H0-80 N0-3 O0-18 S0-2 Cl0-2 Br0-2` | corroboration weight already measured (+Br⁻ LR ≈ 9.8×) |
+| `BR` | − | `[M+Br]-`, `[M-H]-`, `[M+HBr+Br]-`; `[M+CO3]-`, `[M+Br2]-` and `[M+HCOO]-` secondary (formate from plan step 3.2) | `C0-40 H0-80 N0-3 O0-18 S0-2 Cl0-2 Br0-2` | corroboration weight already measured (+Br⁻ LR ≈ 5.1×, odds ratio 9.8×) |
 | `UR` | + | `[M+H]+`, `[M+CH4N2O+H]+` | `C0-40 H0-90 N0-8 O0-15 S0-2` | urea/uronium |
 | `NO3` | − | `[M+NO3]-`, `[M-H]-`; `[M+CO3]-` and `[M+HCOO]-` secondary | `C0-40 H0-60 N0-3 O0-25 S0-2` | provisional in peaky — ship marked provisional |
 | `NO3_15N` | − | `[M+^NO3]-`, `[M-H]-`; `[M+CO3]-` and `[M+HCOO]-` secondary | as NO3 | `^N` purity 0.98 as data |

@@ -21,8 +21,11 @@ apples-to-apples; the only difference is whether the offset is a real adduct rel
     P(present) as a function of #real adducts already seen (is co-occurrence self-consistent?)
     logit(is_real_slot) ~ intercept                      the odds a matched adduct is genuine
 
-The per-adduct LR is exactly the Bayesian odds-update weight to fold into p_correct: each
-independently corroborating adduct multiplies the odds of a correct formula by ~LR. Runs against
+The per-adduct likelihood ratio LR = P(present | real) / P(present | swap) is the Bayesian
+odds-update weight to fold into p_correct: each independently corroborating adduct multiplies the
+odds of a correct formula by ~LR, so ln(LR) is the weight apply_corroboration adds to the log odds.
+The odds ratio odds(P_real) / odds(P_swap) is printed beside it for the record; it is NOT the
+update's weight, and overstates it whenever the rates are not small (#3161). Runs against
 the v1 bundle's real spectra; the v1 seed's poor adduct library is irrelevant -- we apply the full
 adduct panel and offsets ourselves.
 
@@ -548,6 +551,14 @@ def main() -> int:
     def odds(p):
         return p / (1 - p) if 0 < p < 1 else float("inf")
 
+    def likelihood_ratio(rp, sp):
+        """P(present | real) / P(present | null): the odds update's factor."""
+        return rp / sp if sp > 0 else float("nan")
+
+    def odds_ratio(rp, sp):
+        """odds(P_real) / odds(P_null), for the record only: not the update's factor."""
+        return odds(rp) / odds(sp) if 0 < sp < 1 and 0 < rp < 1 else float("nan")
+
     def rate(mask):
         sub = S[mask]["present"]
         return sub.mean(), len(sub)
@@ -563,20 +574,22 @@ def main() -> int:
     print(f"  ANCHOR-SWAP (null 2)    P={swap_p:.4f}  (n={n_swap})")
     if 0 < rand_p < 1:
         print(
-            f"  --> LR vs random  = {odds(real_p) / odds(rand_p):.1f}x per corroborating adduct"
+            f"  --> LR vs random  = {likelihood_ratio(real_p, rand_p):.1f}x per corroborating "
+            f"adduct  (odds ratio {odds_ratio(real_p, rand_p):.1f}x)"
         )
     if 0 < swap_p < 1:
         print(
-            f"  --> LR vs swap    = {odds(real_p) / odds(swap_p):.1f}x  (the defensible, harder null)"
+            f"  --> LR vs swap    = {likelihood_ratio(real_p, swap_p):.1f}x  (the defensible, "
+            f"harder null; odds ratio {odds_ratio(real_p, swap_p):.1f}x)"
         )
 
     print("\n=== by polarity (LR vs anchor-swap null) ===")
     for pol, g in S.groupby("polarity"):
         rp = g[g["null_type"] == "real"]["present"].mean()
         sp = g[g["null_type"] == "swap"]["present"].mean()
-        lr = odds(rp) / odds(sp) if 0 < sp < 1 and 0 < rp < 1 else float("nan")
         print(
-            f"  {pol}: real={rp:.3f}  swap={sp:.3f}  LR={lr:.1f}x  "
+            f"  {pol}: real={rp:.3f}  swap={sp:.3f}  LR={likelihood_ratio(rp, sp):.1f}x  "
+            f"odds ratio={odds_ratio(rp, sp):.1f}x  "
             f"(n_real={int((g['null_type'] == 'real').sum())})"
         )
 
@@ -591,14 +604,14 @@ def main() -> int:
         sp = gm[gm["null_type"] == "swap"]["present"]
         if len(rp) < 20:
             continue
-        lr = (
-            odds(rp.mean()) / odds(sp.mean())
-            if 0 < sp.mean() < 1 and 0 < rp.mean() < 1
-            else float("nan")
-        )
+        lr = likelihood_ratio(rp.mean(), sp.mean())
+        or_ = odds_ratio(rp.mean(), sp.mean())
+        # weight = ln(LR), the log-odds update apply_corroboration adds; the odds ratio
+        # beside it is the figure the weights were once wrongly read off (#3161).
         print(
             f"  {m:14s} real={rp.mean():.3f}  swap={sp.mean():.3f}  "
-            f"LR={lr:.2f}x  log-odds={np.log(lr):+.2f}  (n={len(rp)})"
+            f"LR={lr:.2f}x  weight=ln(LR)={np.log(lr):+.2f}  "
+            f"odds ratio={or_:.2f}x (ln {np.log(or_):+.2f})  (n={len(rp)})"
         )
 
     # co-occurrence distribution among real detections
