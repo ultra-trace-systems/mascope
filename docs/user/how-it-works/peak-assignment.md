@@ -1495,7 +1495,11 @@ runs were deleted or pruned, or it was folded into the batch without one &mdash;
 from the batch ledger instead. The run selector lists it as **Batch ledger**; the
 ledger carries what the batch knows about each peak (formula, adduct, tier, fit and
 isotopologue family), and the inspector's close alternatives are what
-the rest of the batch saw at that m/z. It carries no mass error or isotope label, and
+the rest of the batch saw at that m/z. Where a member of the batch was matched to a
+target compound with the peak's identity, **listed as** and the inspector show
+*target* and that compound's name, as the batch ledger does. The target is the
+identity's, not this sample's: this peak itself may not have been matched to it. It
+carries no mass error or isotope label, and
 it cannot be edited by hand &mdash; assign the sample for a ledger of its own. Verdicts
 can still be recorded against it.
 

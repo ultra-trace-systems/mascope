@@ -185,6 +185,7 @@ from mascope_backend.api.new.peak_assignments.fold_view import (
     fold_run_record,
     is_fold_id,
     member_detail,
+    member_target_id,
     verification_target,
 )
 from mascope_backend.api.new.peak_assignments.halogen_twins import (
@@ -1107,6 +1108,9 @@ async def get_peak_assignment_detail(
             derived["batch_persistence"] = row_persistence(derived, found[1])
             derived["batch_flat_series"] = row_flat_series(derived, found[1])
             await _with_isotopologue_records(session, derived, found[1])
+            await with_target_listings(
+                session, [derived], lambda _row: member_target_id(*found)
+            )
         else:
             derived = None
             assignment = await session.get(PeakAssignment, peak_assignment_id)
