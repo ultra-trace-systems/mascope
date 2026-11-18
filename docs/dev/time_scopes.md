@@ -5,15 +5,17 @@
 - **Status:** design
 - **As of:** 2026-11-18
 - **Tracked in:** [Time scopes and dashboards](https://linear.app/ultra-trace/project/time-scopes-and-dashboards-e5387f5d08e6)
-  (Linear, P-MAS-22, created 2026-11-18; decision MAS-218 of *Visual digests* is
-  answered by this note)
+  (Linear, P-MAS-22: the decisions MAS-1020 to MAS-1024 and the steps MAS-1025
+  to MAS-1037 across milestones 0 to 5, filed 2026-11-18; decision MAS-218 of
+  *Visual digests* is answered by this note)
 - **What:** The scope as the unit of viewing beside the batch as the unit of analysis: a time window, a range across batches or the live present, drawn by the visual digests' Figure spec in the app, and saved as a dashboard.
 
 Status: **design, nothing built** (2026-11-18). The owner set the direction on
 2026-11-18: users ask about time, not about the hierarchy, and the ionization
 chemistry is a measurement mode to overlay, not a wall between figures. Code
 anchors were read on `develop` at 571e05051 and are named where a claim rests
-on them. Section 8 lists what is open, each item with a recommendation.
+on them. Section 9 lists what is open, each item with a recommendation; the
+Linear project carries each as a Decision issue that gates the step it decides.
 
 ## Picking this up
 
@@ -130,7 +132,8 @@ instrument.
 
 ## 3. Decisions
 
-Set by the owner on 2026-11-18, from the review that proposed this design.
+Set by the owner on 2026-11-18, from the review that proposed this design;
+8 and 9 follow from decisions already taken elsewhere. MAS-1020 is the record.
 
 | # | Decision |
 |---|---|
@@ -141,6 +144,8 @@ Set by the owner on 2026-11-18, from the review that proposed this design.
 | 5 | **A dashboard is a saved recipe rendered live.** One Figure spec, one recipe schema, three outputs: the app, the HTML dashboard, the PDF report ([`visual_digest.md`](visual_digest.md) section 2.8). A recipe stores chart kinds, parameters and a scope, never data. |
 | 6 | **Saved recipes are the user's, shareable to a workspace.** Stored on the server; the sidebar lists them. The package's shipped recipes stay files. |
 | 7 | **The live scope is asked for.** A person switches a scope to *now*; nothing follows the instrument unasked, and a dashboard remembers whether it follows. |
+| 8 | **The scope strip shows the instrument's acquisition time zone** by default, the zone on the axis, a setting to switch: the visual digests' decision 6, applied to the app. |
+| 9 | **A scope spans one instrument** until the tier-3 `comparison` chart exists (MAS-244); two sites side by side is that chart's job, not phase 2's. |
 
 Not chosen, and why:
 
@@ -291,12 +296,12 @@ another project, the dependency is a `blockedBy`, filed when the phase is.
 
 | Phase | What ships | Depends on |
 |---|---|---|
-| 0 · The window | The scope strip on the batch view with the brush; the window in the location; the ledger and charts narrowed to it. Client-side. | the main area of MAS-713 (or the batch view as it is, if earlier) |
-| 1 · The renderer on a day | The Figure renderer component; the figure route over a `batch` or `window` scope, reading the series routes the batch charts use today. | visual digests phase 2 (the spec and the tier-1 charts) |
-| 2 · The range | `series_rollup`, `series_catalog`, the fold hook and the backfill; the resolve and species routes; Explore over a range with the facet control. The piece that is beyond the UI. | phase 1; measured per section 8 before the backfill runs on a production server |
-| 3 · Dashboards | The `dashboard` table and routes; the Dashboards section; Edit, Share, Report as PDF; `mascope_ai` saving a recipe from a conversation. | phase 2; the visual digests' digest and PDF (phase 3 there) |
-| 4 · Now | The `now` kind, re-resolved on the file socket; the following indicator. | phase 2 |
-| 5 · The acquisition outline as a calendar | The sidebar shows an acquisition workspace as a coverage calendar rather than year and day nodes. Optional. | MAS-712 and phase 2 |
+| 0 · The window (MAS-1025) | The scope strip on the batch view with the brush; the window in the location; the ledger and charts narrowed to it. Client-side. | the main area of MAS-713 (or the batch view as it is, if earlier) |
+| 1 · The renderer on a day (MAS-1026, MAS-1027) | The Figure renderer component; the figure route over a `batch` or `window` scope, reading the series routes the batch charts use today. | visual digests phase 2 (the spec and the tier-1 charts) |
+| 2 · The range (MAS-1028 to MAS-1031) | `series_rollup`, `series_catalog`, the fold hook and the backfill; the resolve and species routes; Explore over a range with the facet control. The piece that is beyond the UI. | phase 1; measured per section 8 before the backfill runs on a production server |
+| 3 · Dashboards (MAS-1032 to MAS-1035) | The `dashboard` table and routes; the Dashboards section; Edit, Share, Report as PDF; `mascope_ai` saving a recipe from a conversation. | phase 2; the visual digests' digest and PDF (phase 3 there) |
+| 4 · Now (MAS-1036) | The `now` kind, re-resolved on the file socket; the following indicator. | phase 2 |
+| 5 · The acquisition outline as a calendar (MAS-1037) | The sidebar shows an acquisition workspace as a coverage calendar rather than year and day nodes. Optional. | MAS-712 and phase 2 |
 
 Phase 0 is small and independent; phases 1 and 2 are the project; 3 to 5
 follow.
@@ -331,14 +336,15 @@ follow.
 
 ## 9. Open questions
 
-| # | Question | Recommendation |
-|---|---|---|
-| 1 | Does `GET /api/samples` get a time-range form, or is the scope route the only cross-batch read? | The scope route only; the samples route keeps its contract and the finder's search route is the sample-level query. |
-| 2 | Who may share a dashboard to a workspace, and who may edit a shared one? | As target collections: any editor of the workspace shares; the owner edits; a shared one is copied to edit. |
-| 3 | Which time zone does the strip show? | The instrument's acquisition zone by default, the zone on the axis, a setting to switch, as the visual digests decided (their decision 6). |
-| 4 | Does a scope span instruments? | Not in phase 2; two sites side by side is the package's tier-3 `comparison` chart and comes when it does. |
-| 5 | Does a dashboard pin the engine run, or follow? | Follows, with the run on its face; a report pins by being a snapshot. |
-| 6 | Does the finder's time histogram and the scope strip's coverage strip become one component? | Yes; the finder's histogram is the coverage strip with counts. |
+| # | Question | Recommendation | Decision issue |
+|---|---|---|---|
+| 1 | Does `GET /api/samples` get a time-range form, or is the scope route the only cross-batch read? | The scope route only; the samples route keeps its contract and the finder's search route is the sample-level query. | MAS-1021, gates the scope routes |
+| 2 | Who may share a dashboard to a workspace, and who may edit a shared one? | As target collections: any editor of the workspace shares; the owner edits; a shared one is copied to edit. | MAS-1022, gates the dashboard routes |
+| 3 | Does a dashboard pin the engine run, or follow? | Follows, with the run on its face; a report pins by being a snapshot. | MAS-1023, gates the dashboard view |
+| 4 | Does the finder's time histogram and the scope strip's coverage strip become one component? | Yes; the finder's histogram is the coverage strip with counts. | MAS-1024, gates Explore and the finder pane |
+
+The time zone and the single-instrument scope, open in the first draft, are
+decisions 8 and 9: both followed from choices already made.
 
 ---
 
