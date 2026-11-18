@@ -184,7 +184,8 @@ class AuditCalibrationHandler(TofCalibrationHandler):
     :param windowed: Match each isotope to the most intense peak within the
         refine window of where the file's axis puts it, as the node did up to
         its version 2, instead of searching
-        for the axis the calibrants agree on.
+        for the axis the calibrants agree on; the overlap filter then looks
+        for a neighbour one peak width off, however wide, as it did.
     """
 
     def __init__(
@@ -236,6 +237,12 @@ class AuditCalibrationHandler(TofCalibrationHandler):
             return BaseCalibrationHandler._match_isotopes(self, match_df, peaks)
         return super()._match_isotopes(match_df, peaks)
 
+    @property
+    def _overlap_reach_ppm(self) -> float | None:
+        if self._windowed:
+            return BaseCalibrationHandler._overlap_reach_ppm.fget(self)
+        return super()._overlap_reach_ppm
+
     def _peaks_to_match(self, stream: str | None = None):
         return self._stored.peaks
 
@@ -244,7 +251,9 @@ class AuditCalibrationHandler(TofCalibrationHandler):
     ) -> np.ndarray:
         if peak_mzs.size <= 1:
             return peak_mzs
-        return self._remove_overlapping_mzs(peak_mzs, self._resolution_function)
+        return self._remove_overlapping_mzs(
+            peak_mzs, self._resolution_function, reach_ppm=self._overlap_reach_ppm
+        )
 
     async def _load_peak_timeseries(
         self, peak_mzs: np.ndarray, stream: str | None = None

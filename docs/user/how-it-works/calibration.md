@@ -28,6 +28,7 @@ On a TOF file the numbers are these, and the calibrants are found another way.
 A calibrant's isotopes are kept when their relative abundance is at least 0.15.
 Peaks of the mode's polarity with a signal-to-noise ratio of at least 10 are candidates within 500 ppm of where the file's own axis puts each line: the search window.
 A peak that overlaps a neighbour within one FWHM by the instrument's resolution function is dropped, and so is the neighbour; the local-dominance guard is an Orbitrap rule and is off for TOF.
+A TOF peak is 110 to about 430 ppm wide, so on a TOF file the overlap test looks for the neighbour no further than 100 ppm: as far as it looked when only the peaks within the 100 ppm refine window reached it.
 Each line keeps its eight strongest remaining peaks in the window, by time-averaged peak area, and the search below decides which of them is the calibrant.
 A fit needs at least three matched points; fewer leaves the file with the warning *Not enough calibration peaks*.
 The three-parameter model below is tried only where the points kept come from four ions or more.

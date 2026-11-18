@@ -707,18 +707,35 @@ class BaseCalibrationHandler:
         _, resolution_function = await read_instrument_functions(
             self.filename, polarity=self.params.polarity, stream=stream
         )
-        return self._remove_overlapping_mzs(peak_mzs, resolution_function)
+        return self._remove_overlapping_mzs(
+            peak_mzs, resolution_function, reach_ppm=self._overlap_reach_ppm
+        )
+
+    @property
+    def _overlap_reach_ppm(self) -> float | None:
+        """How far from a peak the overlap filter looks for a neighbour, in
+        ppm: None for one peak width, however wide. The TOF node caps it
+        (:class:`TofCalibrationHandler`)."""
+        return None
 
     @staticmethod
     def _remove_overlapping_mzs(
         peak_mzs: np.ndarray,
         resolution_function,
+        reach_ppm: float | None = None,
     ) -> np.ndarray:
-        """Remove peaks that are too close to each other based on the instrument resolution."""
+        """Remove peaks that are too close to each other based on the instrument resolution.
+
+        Two peaks overlap when their FWHM envelopes do, and both are removed.
+        With ``reach_ppm``, an envelope is at most that wide, so two peaks
+        further apart than it never overlap.
+        """
         sorted_idx = np.argsort(peak_mzs)
         sorted_mzs = peak_mzs[sorted_idx]
 
         fwhm = sorted_mzs / resolution_function(sorted_mzs)
+        if reach_ppm is not None:
+            fwhm = np.minimum(fwhm, reach_ppm * 1e-6 * sorted_mzs)
         left_edges = sorted_mzs - fwhm / 2
         right_edges = sorted_mzs + fwhm / 2
 
@@ -1128,6 +1145,14 @@ class TofCalibrationHandler(BaseCalibrationHandler):
         refine window. Which of the peaks there is the calibrant, the
         consensus decides (:meth:`_match_isotopes`)."""
         return calibration_config.TOF_SEARCH_WINDOW_PPM
+
+    @property
+    def _overlap_reach_ppm(self) -> float | None:
+        """A TOF peak is wider than the refine window, so the overlap filter
+        looks no further than :data:`calibration_config.TOF_OVERLAP_REACH_PPM`
+        for a neighbour: as far as it saw when the refine window bounded the
+        peaks it was given, now that the search window brings it more."""
+        return calibration_config.TOF_OVERLAP_REACH_PPM
 
     def _search_targets(self, target_isotopes_df: pd.DataFrame) -> pd.Series:
         """The lines the fit can be made on, those at the abundance floor or

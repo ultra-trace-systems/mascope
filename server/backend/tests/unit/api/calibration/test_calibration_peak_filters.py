@@ -1,6 +1,7 @@
 """Unit tests for calibration peak filtering methods."""
 
 import numpy as np
+import pytest
 from calibration_test_support import get_small_peak_data, get_test_calibration_handler
 
 from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
@@ -185,6 +186,22 @@ class TestRemoveOverlappingMzs:
         )
 
         np.testing.assert_array_equal(test_mzs, peak_mzs)
+
+    @pytest.mark.parametrize("apart_ppm, kept", [(150.0, True), (60.0, False)])
+    def test_a_reach_caps_how_far_a_neighbour_overlaps(self, apart_ppm, kept):
+        # At R=3 000 one FWHM is 333 ppm: both pairs overlap by width alone.
+        # A reach of 100 ppm leaves the pair 150 ppm apart, not the one 60.
+        peak_mzs = np.array([100.0, 100.0 * (1 + apart_ppm * 1e-6)])
+
+        wide = BaseCalibrationHandler._remove_overlapping_mzs(
+            peak_mzs, _constant_resolution(3_000)
+        )
+        reached = BaseCalibrationHandler._remove_overlapping_mzs(
+            peak_mzs, _constant_resolution(3_000), reach_ppm=100.0
+        )
+
+        assert wide.size == 0
+        assert reached.size == (2 if kept else 0)
 
 
 def _dominance_peak_data(mzs, heights, polarity="+"):
