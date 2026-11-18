@@ -429,12 +429,12 @@ def formula_identity(formula: str | None) -> str:
         formula is never merged with another.
     """
     text = str(formula or "").strip()
-    if not text:
-        return ""
     try:
         counts = {symbol: n for symbol, n in parse_composition(text).items() if n}
     except Exception:  # noqa: BLE001 - an unreadable formula keeps its own text
         return text
+    # Nothing counted is the empty neutral only where "()" says so; a blank
+    # formula keeps its blank text, and an unreadable one its own.
     if not counts and text != "()":
         return text
     return to_hill_order(counts)

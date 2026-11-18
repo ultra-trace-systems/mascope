@@ -595,3 +595,129 @@ class TestTheRankingBetweenDifferentIons:
         for candidate, data in zip(ranked, isotope_data):
             expected, _, _ = predict_isotopes(candidate["ion"][:-1], 1)
             assert np.allclose(data["predicted_masses"], expected)
+
+
+class TestOneFamilyEnumerator:
+    """One enumerator gives every reading of an ion: the finder's election
+    completes a committed winner's family from it, and a list's matches take
+    theirs from it, so the three are one family."""
+
+    MECHANISMS = ["[M+H]+", "[M+NH4]+", "[M+CH4N2O+H]+"]
+    CONFIG = CompositionSearchConfig(
+        ionizations=",".join(MECHANISMS),
+        element_count_ranges="C1-20 H0-40 N0-3 O0-10",
+        mass_range_ppm=2.0,
+    )
+
+    def test_an_ion_s_family_holds_every_reading_through_the_run_s_channels(self):
+        family = heuristic_filter.same_ion_family(
+            "C10H23N2O3+", self.MECHANISMS, self.CONFIG
+        )
+        assert [(m["formula"], m["ionization_mechanism"]) for m in family] == [
+            ("C10H22N2O3", "[M+H]+"),
+            ("C10H19NO3", "[M+NH4]+"),
+            ("C9H18O2", "[M+CH4N2O+H]+"),
+        ]
+        assert {m["ion"] for m in family} == {"C10H23N2O3+"}
+
+    def test_two_spellings_of_one_ion_have_one_family(self):
+        one = heuristic_filter.same_ion_family(
+            "C10H23N2O3+", self.MECHANISMS, self.CONFIG
+        )
+        assert one == heuristic_filter.same_ion_family(
+            "C10H23O3N2+", self.MECHANISMS, self.CONFIG
+        )
+
+    def test_a_mechanism_of_another_charge_makes_no_reading(self):
+        assert (
+            heuristic_filter.same_ion_family(
+                "C10H23N2O3-", self.MECHANISMS, self.CONFIG
+            )
+            == []
+        )
+
+    def test_a_list_s_reading_is_its_ion_s_family_less_itself(self):
+        family = heuristic_filter.same_ion_family(
+            "C10H23N2O3+", self.MECHANISMS, self.CONFIG
+        )
+        (proposed,) = propose_same_ion_readings(
+            [("C10H22N2O3", "[M+H]+")], self.MECHANISMS, self.CONFIG
+        )
+        assert proposed == family[1:]
+
+    def test_a_reading_through_a_channel_the_run_did_not_search_has_none(self):
+        # Its ion has readings through the searched channels, but a reading the
+        # run could not have made is no row of the run's to give a family.
+        assert propose_same_ion_readings(
+            [("C10H19NO3", "[M+NH4]+")],
+            ["[M+H]+", "[M+CH4N2O+H]+"],
+            self.CONFIG,
+        ) == [[]]
+
+
+class TestTheElectionReadsOneIonAsOneIon:
+    def test_two_spellings_of_one_ion_are_one_family(self):
+        # The finder writes its ions in Hill order; a family is grouped by the
+        # ion's composition and charge all the same, as every pass tells one
+        # ion from another.
+        acid = _candidate("C11H20O7", "[M-H]-", "C11H19O7-")
+        adduct = _candidate("C10H18O5", "[M+HCOO]-", "C11H19O7-")
+        adduct["ion"] = "C11H19O7-".replace("H19O7", "O7H19")
+        (elected,) = elect_same_ion_families([acid, adduct])
+        assert elected["formula"] == "C10H18O5"
+        assert [r["formula"] for r in elected[SAME_ION_ALTERNATIVES]] == ["C11H20O7"]
+
+    def test_the_same_composition_at_another_charge_is_another_ion(self):
+        one = _candidate("C6H12O6", "[M+H]+", "C6H13O6+")
+        other = _candidate("C6H14O6", "[M-H]-", "C6H13O6-")
+        assert len(elect_same_ion_families([one, other])) == 2
+
+
+class TestAWinnerIsElectedAgainOverItsWholeFamily:
+    MECHANISMS = TestOneFamilyEnumerator.MECHANISMS
+    CONFIG = TestOneFamilyEnumerator.CONFIG
+
+    def _family(self, ion="C10H23N2O3+"):
+        return heuristic_filter.same_ion_family(ion, self.MECHANISMS, self.CONFIG)
+
+    def test_a_reading_the_window_left_out_is_added_and_can_win(self):
+        # The window's row cap kept only the protonated reading; the urea
+        # adduct carries the most mass and is the family's elected reading.
+        protonated = dict(
+            _candidate("C10H22N2O3", "[M+H]+", "C10H23N2O3+"),
+            isotopic_pattern_score=0.9,
+        )
+        completed = heuristic_filter.complete_same_ion_family(
+            protonated, self._family()
+        )
+        assert completed["formula"] == "C9H18O2"
+        assert completed["ionization_mechanism"] == "[M+CH4N2O+H]+"
+        # What was measured is the ion's and stays.
+        assert completed["isotopic_pattern_score"] == 0.9
+        assert completed["ion"] == "C10H23N2O3+"
+        assert [
+            (r["formula"], r["ionization_mechanism"])
+            for r in completed[SAME_ION_ALTERNATIVES]
+        ] == [("C10H19NO3", "[M+NH4]+"), ("C10H22N2O3", "[M+H]+")]
+        assert completed[SAME_ION_ALTERNATIVES][0]["neutral_mass"] == pytest.approx(
+            calculate_mass(formula="C10H19NO3")
+        )
+
+    def test_a_complete_family_is_left_as_it_was(self):
+        members = [
+            _candidate(formula, notation, "C10H23N2O3+")
+            for formula, notation in (
+                ("C10H22N2O3", "[M+H]+"),
+                ("C10H19NO3", "[M+NH4]+"),
+                ("C9H18O2", "[M+CH4N2O+H]+"),
+            )
+        ]
+        (elected,) = elect_same_ion_families(members)
+        assert (
+            heuristic_filter.complete_same_ion_family(elected, self._family())
+            is elected
+        )
+
+    def test_another_ion_s_family_adds_nothing(self):
+        lone = _candidate("C3H4", None, "C2H3+")
+        assert heuristic_filter.complete_same_ion_family(lone, self._family()) is lone

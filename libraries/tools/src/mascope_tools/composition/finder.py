@@ -35,9 +35,11 @@ from mascope_tools.composition.heuristic_filter import (
     PATTERN_REQUIRED_LINES,
     SAME_ION_ALTERNATIVES,
     apply_heuristic_rules,
+    complete_same_ion_family,
     formula_plausibility,
     match_isotopic_pattern,
     neutral_is_closed_shell,
+    same_ion_family,
 )
 from mascope_tools.composition.line_model import line_detectable, tracks
 from mascope_tools.composition.models import (
@@ -254,6 +256,7 @@ def assign_compositions(
         utils.parse_ionization(name)
         for name in get_ionization_mech_string_list(config.ionizations)
     ]
+    notations = [mechanism.mascope_notation for mechanism in mechanisms]
 
     known = known or {}
     for mz, grid in grids_for_targets(mzs, config, mechanisms):
@@ -361,6 +364,17 @@ def assign_compositions(
                 # top of a ranking by fit x plausibility - so a count taken at
                 # the top would be about a formula the row does not carry.
                 around=main_candidate["formula"],
+            )
+            # Elected again over every reading of its ion, the readings the
+            # window's row cap left out of the election among them: one family
+            # enumerator gives the search's rows and the list's matches theirs
+            # (`heuristic_filter.same_ion_family`). The density above is the
+            # ion's, so it stays whichever reading of the ion the row names.
+            main_candidate = complete_same_ion_family(
+                main_candidate,
+                same_ion_family(
+                    str(main_candidate.get("ion") or ""), notations, config, heuristics
+                ),
             )
 
             if has_envelope:
@@ -773,7 +787,7 @@ def _score_reading(
     grid_candidates = [
         candidate
         for candidate in kept
-        if candidate.get("ion") != own["ion"]
+        if utils.ion_identity(candidate.get("ion")) != utils.ion_identity(own["ion"])
         and (
             not closed_shell_only
             or neutral_is_closed_shell(str(candidate.get("formula") or ""))
@@ -802,7 +816,7 @@ def _score_reading(
     best_by_formula: dict[str, dict] = {}
     own_fit = 0.0
     for candidate in scored:
-        if candidate.get("ion") == own["ion"]:
+        if utils.ion_identity(candidate.get("ion")) == utils.ion_identity(own["ion"]):
             own_fit = float(candidate.get("isotopic_pattern_score") or 0.0)
             continue
         best_by_formula.setdefault(str(candidate.get("formula")), candidate)
@@ -877,7 +891,8 @@ def _weigh(
         (
             index
             for index, candidate in enumerate(scored.scored)
-            if candidate.get("ion") == scored.own["ion"]
+            if utils.ion_identity(candidate.get("ion"))
+            == utils.ion_identity(scored.own["ion"])
         ),
         None,
     )

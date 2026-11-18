@@ -614,3 +614,61 @@ class TestTheDensityOnACommittedRow:
         assert by_label["M0"][CANDIDATE_DENSITY] == 4
         assert CANDIDATE_DENSITY not in by_label["81Br"]
         assert CANDIDATE_DENSITY not in by_label["81Br2"]
+
+
+def test_a_committed_winner_is_elected_over_its_ions_whole_family(monkeypatch):
+    """A reading of the winner's ion that the window's row cap left out of the
+    election is added to its family and elected where it ranks first.
+
+    Every reading of one ion shares its mass, its envelope and its score, so
+    the search names the reading the election rule names over the whole family
+    the enumerator gives (``heuristic_filter.same_ion_family``), as a list's
+    match takes its family from the same enumerator.
+    """
+    from mascope_tools.composition import finder
+    from mascope_tools.composition.heuristic_filter import SAME_ION_ALTERNATIVES
+
+    protonated = {
+        "formula": "C10H22N2O3",
+        "ion": "C10H23N2O3+",
+        "ionization_mechanism": "[M+H]+",
+        "composition_error_ppm": 0.1,
+        "neutral_mass": 218.16,
+        "unsaturation": 1.0,
+    }
+    monkeypatch.setattr(
+        finder, "find_compositions", lambda target_mz, config, grid=None: [protonated]
+    )
+    monkeypatch.setattr(
+        finder,
+        "match_isotopic_pattern",
+        lambda candidates, peaks, scoring=None: (
+            [
+                dict(
+                    candidates[0],
+                    isotopic_pattern_score=0.9,
+                    **{PATTERN_REQUIRED_LINES: True},
+                )
+            ],
+            [_pattern([219.17], ["M0"], [0.0])],
+        ),
+    )
+    peaks = pd.DataFrame({"mz": [219.17], "intensity": [1000.0]})
+    config = CompositionSearchConfig(
+        ionizations="[M+H]+,[M+NH4]+,[M+CH4N2O+H]+",
+        element_count_ranges="C1-20 H0-40 N0-3 O0-10",
+        mass_range_ppm=5.0,
+    )
+
+    matches, _ = assign_compositions(peaks, config, targets=[219.17])
+
+    (row,) = matches[matches["formula"] != "---"].to_dict("records")
+    assert (row["formula"], row["ionization_mechanism"]) == (
+        "C9H18O2",
+        "[M+CH4N2O+H]+",
+    )
+    assert row["ion"] == "C10H23N2O3+"
+    assert [
+        (reading["formula"], reading["ionization_mechanism"])
+        for reading in row[SAME_ION_ALTERNATIVES]
+    ] == [("C10H19NO3", "[M+NH4]+"), ("C10H22N2O3", "[M+H]+")]
