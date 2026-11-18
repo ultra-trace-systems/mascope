@@ -106,6 +106,25 @@ class TestOneIonIsOneCandidate:
         assert readings[ammoniated_glucose].density == 1
         assert len(readings[ammoniated_glucose].competitors) == 1
 
+    def test_one_ion_spelled_two_ways_counts_once(self):
+        # One ion is one ion however it is written, as every pass tells one
+        # from another (``utils.ion_identity``): its composition and charge.
+        from mascope_tools.composition.degeneracy import _reading
+
+        reading = _reading(
+            [
+                {"formula": "C6H12O6", "ion": "C6H16NO6+", "ionization_mechanism": "a"},
+                {
+                    "formula": "C6H15NO6",
+                    "ion": "C6H16O6N+",
+                    "ionization_mechanism": "b",
+                },
+            ],
+            censored=False,
+            max_competitors=3,
+        )
+        assert reading.density == 1
+
     def test_a_second_channel_still_adds_the_ions_only_it_can_make(self):
         # The collapse is on the ION, not on the channel: a channel that reaches
         # a genuinely different ion still contributes it.

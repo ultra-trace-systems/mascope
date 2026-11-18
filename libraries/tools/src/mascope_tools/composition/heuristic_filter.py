@@ -56,14 +56,17 @@ from mascope_tools.composition.scan_presence import (
     scan_levels,
 )
 from mascope_tools.composition.utils import (
+    calculate_mass,
     combine_counts_and_ionization,
-    ion_counts,
+    formula_identity,
+    ion_identity,
     ionization_composition,
     neutral_counts,
     normalize_formula_with_isotopes,
     parse_composition,
     parse_ionization,
     to_hill_order,
+    to_pyteomics,
 )
 
 
@@ -1083,17 +1086,58 @@ def polyhalide_cluster(formula: str | None, notation: str | None) -> bool:
     return bool(present) and present <= HALOGENS
 
 
+def _election_key(candidate: dict[str, Any]) -> tuple:
+    """How one reading of an ion ranks against the others in its family.
+
+    Closed-shell neutral first, then the most massive mechanism, then the
+    fewest molecules: one moiety makes [M+H]+ and [2M+H]+ readings of one ion,
+    and only the molecule count tells them apart. The formula breaks what is
+    left, two different moieties of identical mass, so the order is total and
+    never falls through to enumeration order.
+    """
+    return (
+        not neutral_is_closed_shell(str(candidate.get("formula") or "")),
+        -mechanism_mass_contribution(candidate.get("ionization_mechanism")),
+        mechanism_multimer(candidate.get("ionization_mechanism")),
+        str(candidate.get("formula") or ""),
+    )
+
+
+def _same_ion_key(candidate: dict[str, Any]) -> tuple[str, str] | str:
+    """The ion a candidate makes, as one ion is told from another everywhere
+    (:func:`utils.ion_identity`); its text where it names none."""
+    ion = candidate.get("ion")
+    return ion_identity(ion) or str(ion or "")
+
+
+def _displaced(member: dict[str, Any]) -> dict[str, Any]:
+    """A reading an election displaced, as its winner carries it."""
+    return {
+        "formula": member.get("formula"),
+        "ion": member.get("ion"),
+        "ionization_mechanism": member.get("ionization_mechanism"),
+        "neutral_mass": member.get("neutral_mass"),
+        "unsaturation": member.get("unsaturation"),
+    }
+
+
 def elect_same_ion_families(
     candidates: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Collapse candidates that make the same ion into one ranked hypothesis.
 
-    The reading elected is the one whose neutral is a closed-shell molecule and,
-    among those, whose mechanism carries the most mass. A monomer and a multimer
-    reading of one ion (``[M+H]+`` on C6H12O6, ``[2M+H]+`` on C3H6O3) carry the
-    same moiety, so the mass ties them, and the reading of fewer molecules is
-    elected: a multimer's own monomer ion is normally in the spectrum beside it,
-    and the multimer reading is the one that needs that second ion to be seen.
+    One ion is one ion however the finder spelled it (:func:`utils.
+    ion_identity`). The reading elected is the one whose neutral is a
+    closed-shell molecule and, among those, whose mechanism carries the most
+    mass (:func:`_election_key`). A monomer and a multimer reading of one ion
+    (``[M+H]+`` on C6H12O6, ``[2M+H]+`` on C3H6O3) carry the same moiety, so
+    the mass ties them, and the reading of fewer molecules is elected: a
+    multimer's own monomer ion is normally in the spectrum beside it, and the
+    multimer reading is the one that needs that second ion to be seen.
+
+    The family is the candidates the finder enumerated; the readings its row
+    cap left out of a window are added to a committed winner's family from
+    :func:`same_ion_family` (:func:`complete_same_ion_family`).
 
     :param candidates: Scored or unscored candidate dicts, each carrying ``ion``
         and ``ionization_mechanism``.
@@ -1102,78 +1146,124 @@ def elect_same_ion_families(
         :data:`SAME_ION_ALTERNATIVES`. A family of one is returned untouched and
         carries no such key, so the common case adds nothing to the row.
     """
-    by_ion: dict[str, list[dict[str, Any]]] = {}
+    by_ion: dict[tuple[str, str] | str, list[dict[str, Any]]] = {}
     for candidate in candidates:
-        by_ion.setdefault(str(candidate.get("ion") or ""), []).append(candidate)
+        by_ion.setdefault(_same_ion_key(candidate), []).append(candidate)
 
     elected: list[dict[str, Any]] = []
     for members in by_ion.values():
         if len(members) == 1:
             elected.append(members[0])
             continue
-        # Closed-shell neutral first, then the most massive mechanism, then the
-        # fewest molecules: one moiety makes [M+H]+ and [2M+H]+ readings of one
-        # ion, and only the molecule count tells them apart. The formula breaks
-        # what is left, two different moieties of identical mass, so the order
-        # is total and never falls through to enumeration order.
-        ranked = sorted(
-            members,
-            key=lambda c: (
-                not neutral_is_closed_shell(str(c.get("formula") or "")),
-                -mechanism_mass_contribution(c.get("ionization_mechanism")),
-                mechanism_multimer(c.get("ionization_mechanism")),
-                str(c.get("formula") or ""),
-            ),
-        )
+        ranked = sorted(members, key=_election_key)
         winner = dict(ranked[0])
-        winner[SAME_ION_ALTERNATIVES] = [
-            {
-                "formula": member.get("formula"),
-                "ion": member.get("ion"),
-                "ionization_mechanism": member.get("ionization_mechanism"),
-                "neutral_mass": member.get("neutral_mass"),
-                "unsaturation": member.get("unsaturation"),
-            }
-            for member in ranked[1:]
-        ]
+        winner[SAME_ION_ALTERNATIVES] = [_displaced(member) for member in ranked[1:]]
         elected.append(winner)
     return elected
 
 
-def propose_same_ion_readings(
-    readings: Sequence[tuple[str, str]],
+def complete_same_ion_family(
+    candidate: dict[str, Any], family: Sequence[dict[str, Any]]
+) -> dict[str, Any]:
+    """A committed winner, elected again over its whole family.
+
+    The finder's window keeps the closest rows of each mechanism, so a
+    reading of the winner's ion through another mechanism can be one the row
+    cap left out of the election. Every reading of one ion shares its mass and
+    its envelope, and so its score: electing again over the family
+    :func:`same_ion_family` enumerates moves only which neutral and mechanism
+    the row names, never what was measured.
+
+    :param candidate: The elected candidate, with any readings it displaced.
+    :param family: Every reading of its ion (:func:`same_ion_family`), its own
+        among them.
+    :return: The candidate, elected over the readings it carried and the ones
+        the family adds, carrying the others under
+        :data:`SAME_ION_ALTERNATIVES`; the candidate as given where the family
+        adds nothing.
+    """
+    own = {
+        "formula": candidate.get("formula"),
+        "ion": candidate.get("ion"),
+        "ionization_mechanism": candidate.get("ionization_mechanism"),
+        "neutral_mass": candidate.get("neutral_mass"),
+        "unsaturation": candidate.get("unsaturation"),
+    }
+
+    def reading(member: dict[str, Any]) -> tuple[str, Any]:
+        return (
+            formula_identity(member.get("formula")),
+            member.get("ionization_mechanism"),
+        )
+
+    members = [own, *(candidate.get(SAME_ION_ALTERNATIVES) or [])]
+    seen = {reading(member) for member in members}
+    enumerated = {reading(member) for member in family}
+    # A family that does not hold the candidate's own reading is another
+    # ion's, or one the enumerator cannot read: it adds nothing.
+    added = (
+        [_displaced(member) for member in family if reading(member) not in seen]
+        if reading(own) in enumerated
+        else []
+    )
+    if not added:
+        return candidate
+    for member in added:
+        if member.get("neutral_mass") is None:
+            try:
+                member["neutral_mass"] = float(
+                    calculate_mass(formula=to_pyteomics(str(member["formula"])))
+                )
+            except Exception:  # noqa: BLE001 - a mass nobody can read stays unknown
+                member["neutral_mass"] = None
+    ranked = sorted(members + added, key=_election_key)
+    winner = dict(candidate)
+    winner.update(ranked[0])
+    winner[SAME_ION_ALTERNATIVES] = [_displaced(member) for member in ranked[1:]]
+    return winner
+
+
+def _ion_charge(ion_formula: str) -> int:
+    """The signed charge an ion formula ends in: one sign per charge."""
+    text = ion_formula.strip()
+    signs = len(text) - len(text.rstrip("+-"))
+    return 0 if not signs else (signs if text.endswith("+") else -signs)
+
+
+def same_ion_families(
+    ions: Sequence[str],
     notations: Sequence[str],
     config: CompositionSearchConfig,
     heuristics_config: HeuristicFilterConfig | None = None,
 ) -> list[list[dict[str, Any]]]:
-    """The family a search would have given each reading's ion.
+    """Every neutral reading of each ion through the run's channels.
 
-    :func:`elect_same_ion_families` collapses the readings of one ion that the
-    finder enumerated. A reading the finder did not make - a formula a reference
-    list names, matched through one mechanism - arrives with no family, and this
-    builds the one its ion would have had: through every other mechanism of the
-    search, the neutral that makes the same ion formula, kept where the grid
-    holds it (:func:`grid.admits`) and the heuristic rules pass it, the two cuts
-    every enumerated candidate goes through before an election sees it.
+    The one enumerator of a same-ion family. Readings of one ion formula share
+    its mass and its envelope, so a split needs no window and no score to be a
+    member: it is arithmetic on the ion. Through each mechanism of the ion's
+    charge, the neutral whose ion it is (:func:`utils.neutral_counts`), kept
+    where the grid holds it (:func:`grid.admits`) and the heuristic rules pass
+    it, the two cuts every enumerated candidate goes through before an
+    election sees it. A mechanism of another charge makes no reading, nor one
+    of several molecules whose ion is not that many copies of one neutral. A
+    split that would need a negative count, or the label of a labelled
+    reagent, is one no grid holds, and :func:`grid.admits` refuses it: the
+    finder never proposes a labelled neutral. Nor is the reagent ion itself a
+    reading of an analyte.
 
-    It is arithmetic on one ion, not a search. Readings of the same ion formula
-    share its mass and its envelope, so a split needs no window and no score to
-    be a member. A mechanism of another charge makes no reading, nor one of
-    several molecules whose ion is not that many copies of one neutral
-    (:func:`utils.neutral_counts`). A split that
-    would need a negative count, or the label of a labelled reagent, is one no
-    grid holds, and :func:`grid.admits` refuses it: the finder never proposes a
-    labelled neutral. Nor is the reagent ion itself a reading of an analyte.
+    The finder's election completes a committed winner's family from it
+    (:func:`complete_same_ion_family`), and a list's matches take theirs from
+    it (:func:`propose_same_ion_readings`), so the three are one family.
 
-    :param readings: ``(neutral formula, mechanism notation)`` pairs.
-    :param notations: Every mechanism the search runs, the readings' own among
-        them.
+    :param ions: Ion formulas with their charge, such as ``C10H18BrO3-``.
+    :param notations: Every mechanism the search runs.
     :param config: The search whose element box and unsaturation window a
         split has to sit in.
     :param heuristics_config: The filter a split has to pass.
-    :return: For each reading, in order, the other readings of its ion - each
-        carrying the formula, ion and mechanism an election's displaced reading
-        does - and an empty list where the ion has none.
+    :return: For each ion, in order, its readings - each carrying the
+        ``formula``, ``ion`` and ``ionization_mechanism`` an election's
+        displaced reading does - in the order of ``notations``; an empty list
+        for an ion nothing can read.
     """
     mechanisms = {}
     for notation in dict.fromkeys(notations):
@@ -1183,17 +1273,21 @@ def propose_same_ion_readings(
             continue
 
     splits: list[list[tuple[str, str, str]]] = []
-    for formula, notation in readings:
+    for ion_formula in ions:
         members: list[tuple[str, str, str]] = []
+        identity = ion_identity(ion_formula)
         try:
-            counts = dict(parse_composition(formula))
-        except Exception:  # noqa: BLE001 - a formula nobody can parse has no family
-            counts = {}
-        if counts and notation in mechanisms:
-            own = mechanisms[notation]
-            ion = ion_counts(counts, own)
-            for other, mechanism in mechanisms.items():
-                if other == notation or mechanism.charge != own.charge:
+            ion = (
+                dict(parse_composition(identity[0]))
+                if identity and identity[0] not in ("", "()")
+                else {}
+            )
+        except Exception:  # noqa: BLE001 - an ion nobody can parse has no family
+            ion = {}
+        charge = _ion_charge(str(ion_formula or ""))
+        if ion and charge:
+            for notation, mechanism in mechanisms.items():
+                if mechanism.charge != charge:
                     continue
                 split = neutral_counts(ion, mechanism)
                 if split and admits(config, split):
@@ -1201,7 +1295,7 @@ def propose_same_ion_readings(
                         (
                             to_hill_order(split),
                             combine_counts_and_ionization(split, mechanism),
-                            other,
+                            notation,
                         )
                     )
         splits.append(members)
@@ -1218,6 +1312,71 @@ def propose_same_ion_readings(
             if formula in kept
         ]
         for members in splits
+    ]
+
+
+def same_ion_family(
+    ion: str,
+    notations: Sequence[str],
+    config: CompositionSearchConfig,
+    heuristics_config: HeuristicFilterConfig | None = None,
+) -> list[dict[str, Any]]:
+    """Every neutral reading of one ion (:func:`same_ion_families`)."""
+    return same_ion_families([ion], notations, config, heuristics_config)[0]
+
+
+def propose_same_ion_readings(
+    readings: Sequence[tuple[str, str]],
+    notations: Sequence[str],
+    config: CompositionSearchConfig,
+    heuristics_config: HeuristicFilterConfig | None = None,
+) -> list[list[dict[str, Any]]]:
+    """The family a search would have given each reading's ion.
+
+    A reading the finder did not make - a formula a list names, matched
+    through one mechanism - arrives with no family, and this gives it the one
+    its ion has (:func:`same_ion_families`), less the reading itself.
+
+    :param readings: ``(neutral formula, mechanism notation)`` pairs.
+    :param notations: Every mechanism the search runs, the readings' own among
+        them.
+    :param config: The search whose element box and unsaturation window a
+        split has to sit in.
+    :param heuristics_config: The filter a split has to pass.
+    :return: For each reading, in order, the other readings of its ion - each
+        carrying the formula, ion and mechanism an election's displaced reading
+        does - and an empty list where the ion has none.
+    """
+    searched = set(notations)
+    ions: list[str] = []
+    for formula, notation in readings:
+        if notation not in searched:
+            ions.append("")
+            continue
+        try:
+            counts = {
+                symbol: count
+                for symbol, count in parse_composition(formula).items()
+                if count
+            }
+            ions.append(
+                combine_counts_and_ionization(counts, parse_ionization(notation))
+                if counts
+                else ""
+            )
+        except Exception:  # noqa: BLE001 - a reading nobody can parse has no family
+            ions.append("")
+    families = same_ion_families(ions, notations, config, heuristics_config)
+    return [
+        [
+            member
+            for member in family
+            if not (
+                member["ionization_mechanism"] == notation
+                and formula_identity(member["formula"]) == formula_identity(formula)
+            )
+        ]
+        for (formula, notation), family in zip(readings, families, strict=True)
     ]
 
 

@@ -286,10 +286,12 @@ def _reading(
     results: list[dict], *, censored: bool, max_competitors: int
 ) -> DegeneracyReading:
     """Collapse a peak's plausible compositions into one reading."""
-    by_ion: dict[str, tuple[float, str]] = {}
+    by_ion: dict[tuple[str, str], tuple[float, str]] = {}
     for result in results:
-        ion = str(result.get("ion") or "")
-        if not ion:
+        # One ion however it was spelled, as every pass tells one ion from
+        # another (:func:`utils.ion_identity`).
+        ion = utils.ion_identity(result.get("ion"))
+        if ion is None:
             continue
         error = abs(float(result.get("composition_error_ppm") or 0.0))
         label = f"{result.get('formula')} {result.get('ionization_mechanism')}".strip()
