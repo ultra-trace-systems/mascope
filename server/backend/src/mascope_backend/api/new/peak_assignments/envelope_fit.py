@@ -22,7 +22,7 @@ workspace's target library or a reference list proposed the formula. Of those,
 the ones whose monoisotopic line sits within the mass gate's cap
 (``mass_gate.OFF_CALIBRATION_Z`` of the width Stage A scored at, about the
 centre it scored at) are read, and of their lines only the ones the gate would
-call tracking (``mass_gate.tracks_its_parent`` at the class's precision): a line
+call tracking (``line_model.tracks`` at the class's precision): a line
 that does not track is another peak the window reached, no reading of this
 ion's share. A predicted line the scorer saw absent - no peak, or one the match
 parameters' ratio window turned away - counts toward its bin's presence. On an
@@ -77,8 +77,6 @@ from mascope_backend.api.new.peak_assignments.engine import (
 )
 from mascope_backend.api.new.peak_assignments.mass_gate import (
     OFF_CALIBRATION_Z,
-    tracking_tolerance_ppm,
-    tracks_its_parent,
 )
 from mascope_backend.db import (
     AcquisitionStream,
@@ -103,6 +101,7 @@ from mascope_tools.composition.envelope_tolerance import (
     EnvelopeTolerance,
     fit_envelope_tolerance,
 )
+from mascope_tools.composition.line_model import tracks
 from mascope_tools.composition.mass_accuracy import scoring_sigma_ppm
 from mascope_tools.composition.utils import parse_formula_tokens
 
@@ -238,7 +237,6 @@ def envelope_lines(
 
     width = scoring_sigma_ppm(mass_accuracy.sigma_ppm, float(fallback_sigma_ppm))
     centre = float(mass_accuracy.scoring_mu_ppm or 0.0)
-    tracking = tracking_tolerance_ppm(float(fallback_sigma_ppm))
     snr_column, ratio_column = [], []
     read: set[tuple] = set()
     for _, ion in frame.groupby("target_ion_id", sort=False):
@@ -297,8 +295,10 @@ def envelope_lines(
                 # reads a child against its owner, and that line against the
                 # anchor where it is not the anchor itself.
                 reference = anchor_error if index == mono.name else mono_error
-                if not tracks_its_parent(
-                    ion.at[index, "match_mz_error"], reference, tracking
+                if not tracks(
+                    ion.at[index, "match_mz_error"],
+                    reference,
+                    float(fallback_sigma_ppm),
                 ):
                     continue
                 ratio = (observed / anchor_intensity) / share

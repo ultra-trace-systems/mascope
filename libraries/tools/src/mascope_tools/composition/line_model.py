@@ -47,7 +47,6 @@ from mascope_tools.composition.config import (
     ELECTRON_MASS,
     ENVELOPE_ABUNDANCE_FLOOR,
     ISOTOPE_MATCHING_INTENSITY_TOLERANCE,
-    TARGET_LIBRARY_ABUNDANCE_FLOOR,
     UNRESOLVED_MEMBER_DEPTH,
 )
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS, label_purity
@@ -60,14 +59,12 @@ from mascope_tools.composition.utils import to_pyteomics
 
 __all__ = [
     "DETECT_SNR_K",
-    "ENVELOPE_ABUNDANCE_FLOOR",
     "LABELLED_REAGENT_PURITY",
     "LineCheck",
     "REL_DETECT_NO_SNR",
+    "SHARE_WIDTH_FLOOR",
     "ResolvedLine",
-    "TARGET_LIBRARY_ABUNDANCE_FLOOR",
     "TRACKING_WIDTHS",
-    "UNRESOLVED_MEMBER_DEPTH",
     "anchor_on_monoisotopic",
     "check_line",
     "conf_to_label",
@@ -76,8 +73,11 @@ __all__ = [
     "fold_targets",
     "group_unresolved_lines",
     "height_deviation",
+    "height_width",
     "height_within",
+    "line_centre",
     "line_detectable",
+    "line_groups",
     "merge_unresolved_lines",
     "monoisotopic_index",
     "nearest_peak",
@@ -752,7 +752,7 @@ def within_intensity_window(
     S/N is unknown, and a file with no curve, keep the fixed window. So does a
     line read by its scan presence (:mod:`scan_presence`): its share is read at
     its mean per scan, the dilution the curve allows for taken out, as the fit
-    score's band holds it to the share itself (:func:`_outside_band`).
+    score's band holds it to the share itself (:func:`height_deviation`).
 
     :param intensity_error: Each line's observed / predicted share minus one.
     :param expected_snr: Each line's expected S/N: the anchor's S/N times the
@@ -806,6 +806,45 @@ def _line_of(
         else float(mzs[members].mean())
     )
     return centre, total
+
+
+def line_centre(mzs, intensities, members: Sequence[int]) -> float:
+    """Where the line a set of fine lines makes sits: their abundance-weighted
+    centre, or their mean where they carry no abundance."""
+    return _line_of(
+        members, np.asarray(mzs, dtype=float), np.asarray(intensities, dtype=float)
+    )[0]
+
+
+def line_groups(
+    mzs, intensities, resolution: float | Callable[[float], float] | None
+) -> list[list[int]]:
+    """The fine lines one peak of the file's width holds, as index lists.
+
+    The first step of :func:`resolve_lines` alone (:func:`group_unresolved_lines`)
+    for a reader that reads a group's members, not the floored envelope: the
+    batch's diagnostic and merged-row readers. Without a usable resolving power
+    each line is a group of its own.
+
+    :param mzs: The fine lines' m/z values.
+    :param intensities: Their abundances, same order.
+    :param resolution: The resolving power, a number or a function of m/z, or
+        None.
+    :return: One index list per group.
+    """
+    mzs = np.asarray(mzs, dtype=float)
+    if resolution is None or mzs.size < 2:
+        return [[index] for index in range(mzs.size)]
+    if not callable(resolution):
+        if not resolution > 0:
+            return [[index] for index in range(mzs.size)]
+        resolution = lambda _mz, power=float(resolution): power  # noqa: E731
+    return [
+        list(map(int, members))
+        for members in group_unresolved_lines(
+            mzs, np.asarray(intensities, dtype=float), resolution
+        )
+    ]
 
 
 def resolve_lines(
@@ -914,21 +953,35 @@ def resolve_lines(
 # --- The matcher ---------------------------------------------------------------
 
 
-def nearest_peak(mzs: np.ndarray, line_mz: float, tolerance_ppm: float) -> int | None:
+def nearest_peak(
+    mzs: np.ndarray,
+    line_mz: float,
+    tolerance_ppm: float,
+    *,
+    skip: frozenset[int] | set[int] = frozenset(),
+) -> int | None:
     """The peak a line matches: the nearest one inside its window, or None.
 
-    :func:`nearest_peaks` for one line.
+    :func:`nearest_peaks` for one line; the peaks need not be sorted. A tie
+    goes to the first of them in the list, the lighter one in a sorted list,
+    as :func:`nearest_peaks` gives it.
 
-    :param mzs: The peak list's m/z values, sorted ascending.
+    :param mzs: The peak list's m/z values.
     :param line_mz: Where the line is predicted, on the axis the peaks are read
         on.
     :param tolerance_ppm: The match window, either side.
+    :param skip: Peaks another line or reading has already taken, which this
+        line cannot take.
     :return: The peak's index, or None where the window holds none.
     """
-    found, index = nearest_peaks(
-        np.asarray(mzs, dtype=float), np.array([float(line_mz)]), tolerance_ppm
-    )
-    return int(index[0]) if bool(found[0]) else None
+    mzs = np.asarray(mzs, dtype=float)
+    distance = np.abs(mzs - float(line_mz))
+    within = np.flatnonzero(distance <= float(line_mz) * tolerance_ppm * 1e-6)
+    if skip:
+        within = np.array([index for index in within if int(index) not in skip])
+    if not within.size:
+        return None
+    return int(within[np.argmin(distance[within])])
 
 
 # --- The check -----------------------------------------------------------------
@@ -978,7 +1031,7 @@ def line_detectable(
 
     :param share: The line's predicted share of the anchor; scalar or array.
     :param base_snr: The anchor's signal-to-noise, or None / NaN / not positive
-        for none.
+        for none; an array gives each line its own anchor's.
     :param tolerance: The run's fitted envelope tolerance, or None.
     :param detect_snr: The threshold to ask at, overriding the tolerance's.
     :param rel_detect_no_snr: The share asked without a signal-to-noise.
@@ -986,11 +1039,10 @@ def line_detectable(
     """
     threshold = detect_threshold(tolerance) if detect_snr is None else detect_snr
     shares = np.asarray(share, dtype=float)
-    snr = None if base_snr is None else float(base_snr)
-    if snr is not None and np.isfinite(snr) and snr > 0:
-        answer = shares * snr >= threshold
-    else:
-        answer = shares >= rel_detect_no_snr
+    snr = np.asarray(np.nan if base_snr is None else base_snr, dtype=float)
+    known = np.isfinite(snr) & (snr > 0)
+    with np.errstate(invalid="ignore"):
+        answer = np.where(known, shares * snr >= threshold, shares >= rel_detect_no_snr)
     return bool(answer) if answer.ndim == 0 else answer
 
 
@@ -1021,6 +1073,40 @@ def height_within(
     return True
 
 
+#: The narrowest a line's height is ever judged, as a share of its anchor: a
+#: dim line's noise and the tolerance's floor of its share can both run to
+#: nothing, and the fit score and the batch's ratio readers would then judge
+#: it against no width at all.
+SHARE_WIDTH_FLOOR = 1e-3
+
+
+def height_width(
+    observed,
+    expected,
+    *,
+    tolerance: EnvelopeTolerance | None = None,
+    inverse_snr=0.0,
+    width_floor: float = SHARE_WIDTH_FLOOR,
+):
+    """How wide a line's observed share is read, as a share of its anchor.
+
+    Its noise (the observed share times ``inverse_snr``), the tolerance's floor
+    of the predicted share, or ``width_floor``, whichever is widest: the width
+    :func:`height_deviation` counts a share's distance from the band in.
+
+    :return: The width per line (a float for scalars).
+    """
+    tolerance = tolerance or DEFAULT_TOLERANCE
+    width = np.maximum.reduce(
+        [
+            np.asarray(observed, dtype=float) * np.asarray(inverse_snr, dtype=float),
+            tolerance.floor * np.asarray(expected, dtype=float),
+            np.full(np.broadcast(observed, expected).shape, width_floor),
+        ]
+    )
+    return float(width) if np.ndim(width) == 0 else width
+
+
 def height_deviation(
     observed,
     expected,
@@ -1029,7 +1115,7 @@ def height_deviation(
     tolerance: EnvelopeTolerance | None = None,
     inverse_snr=0.0,
     by_presence=None,
-    width_floor: float = 1e-3,
+    width_floor: float = SHARE_WIDTH_FLOOR,
 ):
     """How far a line's observed share sits outside the band the run admits, in
     widths; zero inside.
@@ -1064,12 +1150,15 @@ def height_deviation(
     outside = np.where(
         observed < low, observed - low, np.where(observed > high, observed - high, 0.0)
     )
-    width = np.maximum.reduce(
-        [
-            observed * np.asarray(inverse_snr, dtype=float),
-            tolerance.floor * expected,
-            np.full(np.shape(outside), width_floor),
-        ]
+    width = np.broadcast_to(
+        height_width(
+            observed,
+            expected,
+            tolerance=tolerance,
+            inverse_snr=inverse_snr,
+            width_floor=width_floor,
+        ),
+        np.shape(outside),
     )
     deviation = outside / width
     if np.ndim(observed) == 0 and np.ndim(expected) == 0:

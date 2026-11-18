@@ -78,6 +78,7 @@ from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_CANDIDATE,
     TIER_RANK,
 )
+from mascope_tools.composition.line_model import TRACKING_WIDTHS, tracks
 from mascope_tools.composition.mass_accuracy import (
     MASS_TREND_ABS_FLOOR_MDA,
     MassTrend,
@@ -100,25 +101,18 @@ OFF_CALIBRATION_Z = 3.0
 BELOW_ASSIGNABILITY_Z = 6.0
 
 #: How many of the instrument class's precision an isotopologue's mass error may
-#: sit from its parent's and still be read as the same ion. Three, because the
-#: quantity being tested is a DIFFERENCE of two measurements and this is a three
-#: sigma test on it: the difference is about as wide as the class's precision on
-#: the sets that have real envelopes (0.28 to 0.45 ppm against a 0.3 ppm class),
-#: so testing at the bare precision is a two-thirds-of-one-sigma test and throws
-#: away a third to a half of the genuine children. Measured on the gate, the
-#: share of children kept at one, two and three times the precision: A 59, 84,
-#: 91%; B 66, 88, 95%; C 67, 78, 81%; C2 66, 82, 90%; D 50, 74, 84%. What the
-#: anchors then fit does not move at any of those multiples (A +0.02 ppm at 0.12
-#: wide throughout, D -0.17 at 0.35 to 0.40), so this number does not decide the
-#: calibration - it decides which rows a run calls corroborated, which is the
-#: flag step 2.4 reads.
+#: sit from its parent's and still be read as the same ion: the line model's
+#: one bar (``line_model.TRACKING_WIDTHS``, three, measured on the gate).
 #:
 #: On a TOF no multiple separates the two populations, because a coincidental
 #: pairing is spread evenly across the matching window rather than clustered:
 #: the same three sets keep 37-46% at one and 77-82% at three. There the test is
 #: a purity choice rather than a separation, which is why 2.4 weighs isotope
-#: corroboration by instrument class rather than counting it.
-TRACKING_SIGMAS = 3.0
+#: corroboration by instrument class rather than counting it. What the anchors
+#: then fit does not move at any of the multiples measured (A +0.02 ppm at 0.12
+#: wide throughout, D -0.17 at 0.35 to 0.40), so this number does not decide the
+#: calibration - it decides which rows a run calls corroborated, which is the
+#: flag step 2.4 reads.
 
 #: The signal-to-noise at which the class's precision describes a line. Below
 #: it a line is placed less well, by the square root of how much fainter it is.
@@ -358,36 +352,17 @@ def is_committed(row: dict) -> bool:
 def tracking_tolerance_ppm(precision_ppm: float) -> float:
     """How far an isotopologue's mass error may sit from its parent's.
 
-    :param precision_ppm: The instrument class's precision.
-    :return: The bar, :data:`TRACKING_SIGMAS` of it.
-    """
-    return TRACKING_SIGMAS * float(precision_ppm)
-
-
-def tracks_its_parent(
-    child_error_ppm: float | None,
-    parent_error_ppm: float | None,
-    tolerance_ppm: float,
-) -> bool:
-    """Whether an isotopologue's mass error is its parent's, within precision.
-
     Two lines of one ion are one measurement of one axis: their mass errors
     differ only by what centroiding does to each peak, so a child whose error
     sits further from its parent's than the instrument class can explain is not
     that ion's isotopologue - it is another peak the matching window happened to
-    reach. A row missing either error cannot be shown to track and does not.
+    reach. Whether a pair tracks is the line model's test
+    (``line_model.tracks``), at this bar.
 
-    :param child_error_ppm: The isotopologue's own mass error.
-    :param parent_error_ppm: Its owner's.
-    :param tolerance_ppm: The bar, from :func:`tracking_tolerance_ppm`.
-    :return: Whether the pair may be read as one envelope.
+    :param precision_ppm: The instrument class's precision.
+    :return: The bar, ``line_model.TRACKING_WIDTHS`` of it.
     """
-    if child_error_ppm is None or parent_error_ppm is None:
-        return False
-    child, parent = float(child_error_ppm), float(parent_error_ppm)
-    if not (np.isfinite(child) and np.isfinite(parent)):
-        return False
-    return abs(child - parent) <= float(tolerance_ppm)
+    return TRACKING_WIDTHS * float(precision_ppm)
 
 
 @dataclass(frozen=True)
@@ -624,9 +599,9 @@ def tracking_of(
     child_error, parent_error = float(child_error_ppm), float(parent_error_ppm)
     if not (math.isfinite(child_error) and math.isfinite(parent_error)):
         return TRACKING_UNTRACKED
-    miss = abs(child_error - parent_error)
-    if miss <= tracking_tolerance_ppm(precision_ppm):
+    if tracks(child_error, parent_error, precision_ppm):
         return TRACKING_TRACKS
+    miss = abs(child_error - parent_error)
     if miss <= line_tolerance_ppm(precision_ppm, child, parent):
         return TRACKING_IN_DOUBT
     return TRACKING_UNTRACKED
@@ -700,11 +675,10 @@ def corroboration_of(
 
     :param assignments: Every row built for this sample, in any order.
     :param precision_ppm: The instrument class's precision. The bar a child's
-        error must meet against its parent's is :data:`TRACKING_SIGMAS` of it,
-        which is a three sigma test on their difference.
+        error must meet against its parent's is ``line_model.TRACKING_WIDTHS``
+        of it, which is a three sigma test on their difference.
     :return: Corroboration keyed by ``peak_assignment_id``, committed rows only.
     """
-    tolerance = tracking_tolerance_ppm(precision_ppm)
     error_by_id = {
         str(row["peak_assignment_id"]): row.get("mz_error_ppm")
         for row in assignments
@@ -719,8 +693,8 @@ def corroboration_of(
         owner_id = row.get("owner_peak_assignment_id")
         if not is_committed(row) or not owner_id or is_claimed(row):
             continue
-        if tracks_its_parent(
-            row.get("mz_error_ppm"), error_by_id.get(str(owner_id)), tolerance
+        if tracks(
+            row.get("mz_error_ppm"), error_by_id.get(str(owner_id)), precision_ppm
         ):
             tracking_children.add(str(row["peak_assignment_id"]))
             confirmed_owners.add(str(owner_id))

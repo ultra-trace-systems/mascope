@@ -67,6 +67,7 @@ from mascope_tools.composition.diagnostic_isotopologues import (
     DiagnosticIsotopologue,
     predict_diagnostic_isotopologues,
 )
+from mascope_tools.composition.line_model import height_within
 
 
 #: The lines a merged row is read against: the 13C line, then the diagnostic
@@ -248,12 +249,15 @@ def read_share(ratios: Iterable[float], expected: float) -> ShareReading:
     if not factors:
         return ShareReading(0, None, 0, VERDICT_UNTESTABLE)
     median = statistics.median(factors)
-    above = sum(1 for factor in factors if factor > HIGH_FACTOR)
+    # The line model's height test, at the batch reading's own bounds.
+    above = sum(
+        1 for factor in factors if not height_within(factor, 1.0, at_most=HIGH_FACTOR)
+    )
     if len(factors) < MIN_SPECTRA:
         return ShareReading(len(factors), median, above, VERDICT_UNTESTABLE)
-    holds = MEDIAN_LOW <= median <= MEDIAN_HIGH and above < MAX_HIGH_SHARE * len(
-        factors
-    )
+    holds = height_within(
+        median, 1.0, at_least=MEDIAN_LOW, at_most=MEDIAN_HIGH
+    ) and above < MAX_HIGH_SHARE * len(factors)
     return ShareReading(
         len(factors),
         median,

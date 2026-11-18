@@ -155,7 +155,7 @@ there. Each committed monoisotopic row's envelope is predicted as the claims
 read it (:func:`predicted_envelope`), and a line is asked where the fit's own
 detectability gate would charge its absence: its expected signal-to-noise, the
 row's peak's times the line's share, at or above the threshold the file's own
-response curve sets (step 3.5b), else ``DETECT_SNR_K``; on a peak with no
+response curve sets (step 3.5b), else ``line_model.DETECT_SNR_K``; on a peak with no
 signal-to-noise, a share of at least ``REL_DETECT_NO_SNR``. A line no peak of
 the spectrum sits on, within the run's match window, caps the row at candidate
 (:func:`absent_line_reason`). Every source is asked and nothing lifts it: a
@@ -288,20 +288,26 @@ from mascope_tools.composition.arbitration import CANDIDATE_DENSITY
 from mascope_tools.composition.diagnostic_isotopologues import ion_charge
 from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
 from mascope_tools.composition.heuristic_filter import (
-    DETECT_SNR_K,
-    REL_DETECT_NO_SNR,
-    anchor_on_monoisotopic,
     context_skeleton_groups,
     element_counts,
     neutral_is_closed_shell,
     nox_skeletons,
     oxygen_free_cluster,
     polyhalide_cluster,
-    predict_resolved_isotopes,
 )
 from mascope_tools.composition.implausibility import (
     implausible_signatures,
     skeleton_spared_signatures,
+)
+from mascope_tools.composition.line_model import (
+    REL_DETECT_NO_SNR,
+    anchor_on_monoisotopic,
+    height_within,
+    line_detectable,
+    predict_resolved_isotopes,
+)
+from mascope_tools.composition.line_model import (
+    detect_threshold as line_detect_threshold,
 )
 from mascope_tools.composition.profiles import (
     PRIOR_ELEMENT,
@@ -1317,16 +1323,17 @@ def detect_threshold(tolerance: EnvelopeTolerance | None) -> tuple[float, str]:
     """The expected signal-to-noise from which an absent line counts.
 
     The fit's own: the threshold the file's response curve set where step 3.5b
-    fitted one that sets it, else :data:`DETECT_SNR_K`, as
-    ``score_pattern_v2`` reads it.
+    fitted one that sets it, else ``line_model.DETECT_SNR_K``, as
+    ``score_pattern_v2`` reads it (``line_model.detect_threshold``).
 
     :param tolerance: The envelope tolerance the run scored at, or None.
     :return: The threshold, and :data:`DETECT_FROM_CURVE` or
         :data:`DETECT_DEFAULT` for where it came from.
     """
+    threshold = line_detect_threshold(tolerance)
     if tolerance is not None and tolerance.detect_snr is not None:
-        return float(tolerance.detect_snr), DETECT_FROM_CURVE
-    return float(DETECT_SNR_K), DETECT_DEFAULT
+        return threshold, DETECT_FROM_CURVE
+    return threshold, DETECT_DEFAULT
 
 
 @dataclass(frozen=True)
@@ -1529,8 +1536,8 @@ def expected_lines(
     for index in range(1, len(mzs)):
         share = float(shares[index])
         expected = None if snr is None else share * snr
-        detectable = (
-            share >= rel_detect_no_snr if expected is None else expected >= detect_snr
+        detectable = line_detectable(
+            share, snr, detect_snr=detect_snr, rel_detect_no_snr=rel_detect_no_snr
         )
         if not detectable and index != m2:
             continue
@@ -2108,7 +2115,11 @@ def envelope_neighbours(
                 if key in found:
                     continue
                 intensity = float(candidate.get("sample_peak_intensity") or 0.0)
-                if intensity > owner_intensity * share * ENVELOPE_HEIGHT_TOLERANCE:
+                if not height_within(
+                    intensity,
+                    owner_intensity * share,
+                    at_most=ENVELOPE_HEIGHT_TOLERANCE,
+                ):
                     continue
                 found[key] = {
                     "neighbour": str(owner.get("peak_assignment_id")),
@@ -2128,7 +2139,7 @@ def predicted_envelope(
     """An ion's predicted lines, its own first, with heights relative to it.
 
     A line is a peak the file can resolve, as the envelope match predicts one
-    (``heuristic_filter.predict_resolved_isotopes``): what both rules that read
+    (``line_model.predict_resolved_isotopes``): what both rules that read
     this compare with a line is one measured peak. On a TOF the neighbour's
     peak one mass unit up holds its 13C, 15N, 2H and 17O lines, and read
     against the 13C line alone it sits over the line's share and off its mass:
@@ -2961,9 +2972,10 @@ def _predicted_line_for(
         line_mz = float(predicted_mzs[index])
         if abs(mz - line_mz) > line_mz * mz_tolerance_ppm * 1e-6:
             continue
-        if (
-            intensity
-            > owner_intensity * float(shares[index]) * ENVELOPE_HEIGHT_TOLERANCE
+        if not height_within(
+            intensity,
+            owner_intensity * float(shares[index]),
+            at_most=ENVELOPE_HEIGHT_TOLERANCE,
         ):
             continue
         if best is None or abs(mz - line_mz) < abs(mz - best[1]):

@@ -55,10 +55,14 @@ import numpy as np
 from mascope_tools.composition.config import ELECTRON_MASS
 from mascope_tools.composition.heuristic_filter import (
     element_counts,
-    monoisotopic_index,
     neutral_is_closed_shell,
-    predict_resolved_isotopes,
     senior_plausibility,
+)
+from mascope_tools.composition.line_model import (
+    height_within,
+    monoisotopic_index,
+    nearest_peak,
+    predict_resolved_isotopes,
 )
 from mascope_tools.composition.mechanism_notation import (
     MechanismNotationError,
@@ -1933,7 +1937,7 @@ def _isotopologue_hits(
     than where its formula says it should.
 
     A line is a peak the file can resolve, as in the envelope match
-    (``heuristic_filter.predict_resolved_isotopes``). On a TOF the urea dimer's
+    (``line_model.predict_resolved_isotopes``). On a TOF the urea dimer's
     peak one mass unit up holds its 13C and 15N lines together and sits 19 ppm
     under the one and 33 ppm over the other, and the nitrate dimer's 14 ppm over
     its 15N line: at a TOF's 10 ppm claim no isotopologue alone finds either.
@@ -1962,12 +1966,13 @@ def _isotopologue_hits(
         if relative < min_relative:
             continue
         target = float(predicted_mz[position]) + shift
-        index = _brightest_in_window(mz_array, intensity_array, target, ppm, taken)
+        # The line model's matcher: the nearest peak no claim has taken.
+        index = nearest_peak(mz_array, target, ppm, skip=taken)
         if index is None:
             continue
         observed = float(intensity_array[index])
         expected = relative * parent.intensity
-        if expected > 0.0 and observed > max_excess * expected:
+        if expected > 0.0 and not height_within(observed, expected, at_most=max_excess):
             # An analyte is sitting on this mass as well; leave the peak.
             continue
         taken.add(index)

@@ -13,7 +13,6 @@ from mascope_tools.composition.diagnostic_isotopologues import (
     MAX_SPAN,
     MIN_JUDGED,
     REASON_FEW_SPECTRA,
-    SHARE_WIDTH_FLOOR,
     TRACK_SHARE,
     VERDICT_NOT_STAMPED,
     VERDICT_STAMPED,
@@ -26,6 +25,7 @@ from mascope_tools.composition.diagnostic_isotopologues import (
     stamps_in,
 )
 from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
+from mascope_tools.composition.line_model import SHARE_WIDTH_FLOOR
 
 
 #: One heavy atom's ratio to its light one, as the isotope tables give them.

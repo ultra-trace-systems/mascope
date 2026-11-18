@@ -119,8 +119,10 @@ from mascope_tools.composition.envelope_tolerance import (
     DEFAULT_TOLERANCE,
     EnvelopeTolerance,
 )
-from mascope_tools.composition.heuristic_filter import (
-    group_unresolved_lines,
+from mascope_tools.composition.line_model import (
+    line_centre,
+    line_detectable,
+    line_groups,
     predict_isotopes,
 )
 from mascope_tools.composition.mechanism_notation import mechanism_key
@@ -250,41 +252,19 @@ def silicon_line(
     share = float(m2_ratio) * SI29_PER_SI30 * float(intensities[mono])
     mzs = np.append(mzs, mzs[mono] + SI29_SPACING / abs(charge))
     intensities = np.append(intensities, share)
-    groups = _groups(mzs, intensities, resolution)
+    groups = line_groups(mzs, intensities, resolution)
     group_of = {index: members for members in groups for index in members}
     line = mzs.size - 1
     members = group_of[line]
     mono_members = group_of[mono]
     group_share = float(intensities[members].sum())
     return SiliconLine(
-        mz_offset=_centre(mzs, intensities, members)
-        - _centre(mzs, intensities, mono_members),
+        mz_offset=line_centre(mzs, intensities, members)
+        - line_centre(mzs, intensities, mono_members),
         ratio=group_share / float(intensities[mono_members].sum()),
         own_ratio=share / float(intensities[mono]),
         resolved=share >= MIN_DOMINANCE * group_share,
     )
-
-
-def _groups(
-    mzs: np.ndarray, intensities: np.ndarray, resolution: float | None
-) -> list[list[int]]:
-    """The lines one peak of the file's width holds, as index lists."""
-    if resolution is None or not resolution > 0 or mzs.size < 2:
-        return [[index] for index in range(mzs.size)]
-    return [
-        list(map(int, members))
-        for members in group_unresolved_lines(
-            mzs, intensities, lambda _mz: float(resolution)
-        )
-    ]
-
-
-def _centre(mzs: np.ndarray, intensities: np.ndarray, members: list[int]) -> float:
-    weights = intensities[members]
-    total = float(weights.sum())
-    if total <= 0:
-        return float(mzs[members].mean())
-    return float(np.sum(mzs[members] * weights) / total)
 
 
 def offset_error_ppm(
@@ -586,8 +566,7 @@ def can_tell(sample: TwinSample, ratio: float) -> bool:
     snr = _usable(sample.labelled_snr)
     if snr is None or not sample.labelled > 0:
         return False
-    detect = sample.tolerance.detect_snr
-    return snr * ratio >= (DEFAULT_DETECT_SNR if detect is None else detect)
+    return line_detectable(ratio, snr, tolerance=sample.tolerance)
 
 
 def twin_present(sample: TwinSample, ratio: float) -> bool:
