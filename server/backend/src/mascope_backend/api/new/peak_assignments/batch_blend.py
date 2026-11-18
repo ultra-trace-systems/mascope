@@ -33,12 +33,37 @@ left, mostly dim members a weak fit had flipped to another formula. So the
 two sides are the members at candidate or better, and the two formulas must
 name different ions.
 
+Ten of the flags this left, read by hand, gave four two compounds, three
+undecided and three not (MAS-890, #3204). The misses were of two kinds,
+and each is a test the two sides must pass before either axis is read.
+Both count the anchor's committed members: those that carry a formula at
+candidate or better, the members the two sides are drawn from. Two misses
+were a handful of dim members of a compound assigned in hundreds of
+samples, flipped to the 13C or 18O line of another compound: a rank test is
+significant on such a minority, though it is no second chemistry. So the
+smaller side must hold :data:`BLEND_MIN_MINORITY_SHARE` of the committed
+members. The third was an anchor whose members scatter over many formulas,
+the two leading ones both implausible: a parting between two of many
+readings is not two compounds sharing a trace. So the two sides together
+must hold :data:`BLEND_MIN_PAIR_SHARE` of them.
+
+A third rule is the time axis' own. Where two compounds take turns on one
+trace, one goes and another comes, and the trace's level steps where the
+reading switches. A reading that switches at a flat level is one compound
+read two ways: a slow mass drift moving which candidate sits closest gives
+the same picture. So a time parting must also show a level step. The
+change point is where the two formulas' members, in acquisition order,
+split best: where the first formula's share before it and after it differ
+most, the one switch where they come in two blocks. The step is the ratio
+of the members' median intensities before and after it, read as median log
+intensities, and must reach :data:`BLEND_MIN_LEVEL_STEP`.
+
 A clean separation on either axis - significant at :data:`BLEND_ALPHA` and
 past the axis' own effect bar - marks the anchor a probable blend with the two
 formulas, their ions and the axis: a reason recorded on the anchor, which the
 ledger and the chart show. Nothing reads it back: the tier, the vote and ``is_ambiguous``
 stay as they were. Splitting such an anchor into two traces is the second half
-of the step, built once the flag has been read on real batches.
+of the step, built once the flag is right more often than not.
 
 Pure: no DB. Every threshold is provisional, a first-principles starting point
 until the flag has been counted on real batches (the plan's step 4.8 row).
@@ -47,6 +72,7 @@ until the flag has been counted on real batches (the plan's step 4.8 row).
 from __future__ import annotations
 
 import math
+import statistics
 from collections import Counter
 from typing import Any, Iterable, Optional
 
@@ -83,6 +109,24 @@ BLEND_MIN_SEPARATION = 0.9
 #: formulas in a few blocks, not a slight clustering a large batch makes
 #: significant.
 BLEND_MAX_RUNS_SHARE = 0.5
+#: Provisional. The least share of the anchor's committed members (at
+#: candidate or better) the smaller of the two sides must hold: a handful of
+#: dim flips in a compound assigned in hundreds of samples is not a second
+#: chemistry, however significant its ranks. The two such misses read 1 and
+#: 2 % on the testbed; a two-compound reading read 8 %.
+BLEND_MIN_MINORITY_SHARE = 0.03
+#: Provisional. The least share of the anchor's committed members the two
+#: sides must hold together: a parting between two of many formulas the
+#: members scatter over is not two compounds sharing a trace. The scatter
+#: miss read 53 % on the testbed; every other flag 67 % or more.
+BLEND_MIN_PAIR_SHARE = 0.6
+#: Provisional. The least level step a time parting must show at its change
+#: point: the ratio of the members' median intensities before and after it,
+#: the larger over the smaller. Two compounds taking turns move the trace's
+#: level where the reading switches; one compound read two ways leaves it
+#: flat. On the testbed the two-compound readings stepped 1.3 to 3.3 times,
+#: the flat one 1.1.
+BLEND_MIN_LEVEL_STEP = 1.25
 #: The tiers at which a member commits to its formula and enters the test.
 BLEND_TIERS = frozenset({TIER_ASSIGNED, TIER_CANDIDATE})
 
@@ -162,16 +206,57 @@ def _acquisition_key(member: Any) -> tuple:
     )
 
 
+def level_step(before: list, after: list) -> Optional[float]:
+    """How far apart two stretches of a trace sit: the ratio of their median
+    intensities, the larger over the smaller, read as the median log
+    intensity of each. None where either has fewer than
+    :data:`BLEND_MIN_MEMBERS` members with a positive, finite intensity.
+
+    :param before: The members before the change point.
+    :param after: The members from it on.
+    """
+    a = [math.log(v) for v in _finite_intensities(before) if v > 0.0]
+    b = [math.log(v) for v in _finite_intensities(after) if v > 0.0]
+    if len(a) < BLEND_MIN_MEMBERS or len(b) < BLEND_MIN_MEMBERS:
+        return None
+    return math.exp(abs(statistics.median(a) - statistics.median(b)))
+
+
+def change_point(sides: list[int]) -> int:
+    """Where a sequence of two labels splits best: the index ``k`` (the
+    first item after the split, 1 to ``len(sides) - 1``) at which the share
+    of label 0 before it and from it on differ most, the earliest on a tie.
+    Two blocks split at their one switch.
+
+    :param sides: The labels in order, 0 and 1, both present.
+    """
+    n = len(sides)
+    n0 = sides.count(0)
+    best, at = -1.0, 1
+    zeros = 0
+    for k in range(1, n):
+        zeros += sides[k - 1] == 0
+        gap = abs(zeros / k - (n0 - zeros) / (n - k))
+        if gap > best + 1e-12:
+            best, at = gap, k
+    return at
+
+
 def time_reading(first: list, second: list) -> Optional[dict]:
-    """The runs test of two formulas' members in acquisition order, or None
-    where either has fewer than :data:`BLEND_MIN_MEMBERS` members with an
-    acquisition time.
+    """The runs test of two formulas' members in acquisition order, with the
+    level step at its change point, or None where either has fewer than
+    :data:`BLEND_MIN_MEMBERS` members with an acquisition time.
+
+    The level step (:func:`level_step`) compares the dated members of both
+    formulas before the change point (:func:`change_point`) with those from
+    it on. An unread step - too few intensities - does not separate.
 
     :param first: The first formula's members.
     :param second: The second formula's members.
     :return: ``p`` (one-sided: this few runs or fewer), ``runs``,
-        ``expected_runs`` under interleaving, ``first_earlier`` (whether the
-        first formula's members sit earlier on average) and ``separates``.
+        ``expected_runs`` under interleaving, ``level_step`` (None where
+        unread), ``first_earlier`` (whether the first formula's members sit
+        earlier on average) and ``separates``.
     """
     timed = [(m, 0) for m in first if _get(m, "acquired") is not None] + [
         (m, 1) for m in second if _get(m, "acquired") is not None
@@ -188,12 +273,16 @@ def time_reading(first: list, second: list) -> Optional[dict]:
     first_rank = sum(i for i, side in enumerate(sides) if side == 0) / n1
     second_rank = sum(i for i, side in enumerate(sides) if side == 1) / n2
     clean = runs <= BLEND_MAX_RUNS_SHARE * expected
+    at = change_point(sides)
+    step = level_step([m for m, _ in timed[:at]], [m for m, _ in timed[at:]])
+    steps = step is not None and step >= BLEND_MIN_LEVEL_STEP
     return {
         "p": _significant(p),
         "runs": runs,
         "expected_runs": round(expected, 2),
+        "level_step": None if step is None else round(step, 3),
         "first_earlier": first_rank < second_rank,
-        "separates": bool(p <= BLEND_ALPHA and clean),
+        "separates": bool(p <= BLEND_ALPHA and clean and steps),
     }
 
 
@@ -210,19 +299,29 @@ def blend_of(
     first: Iterable[Any],
     second_formula: str,
     second: Iterable[Any],
+    *,
+    n_committed: int,
 ) -> Optional[dict]:
     """The probable-blend record of an anchor, or None where neither axis
     separates its two leading formulas cleanly.
 
     Each side is the members at a tier of :data:`BLEND_TIERS`; two formulas
-    whose sides' most common ions are one are not tested.
+    whose sides' most common ions are one are not tested, nor two whose sides
+    hold too small a share of the anchor's committed members: the smaller
+    side under :data:`BLEND_MIN_MINORITY_SHARE` of them, or both together
+    under :data:`BLEND_MIN_PAIR_SHARE`.
 
     :param first_formula: The vote's winner (or the pinned formula).
     :param first: The assigned members that carry it.
     :param second_formula: The formula ranked next by the vote.
     :param second: The assigned members that carry it.
+    :param n_committed: How many of the anchor's members carry a formula at
+        a tier of :data:`BLEND_TIERS`, whichever formula: the shares'
+        denominator.
     :return: ``formulas`` (the two, the winner first), ``ions`` (each side's
         most common ion), ``n`` (each side's members at candidate or better),
+        ``shares`` (``minority``, the smaller side's share of the committed
+        members, and ``pair``, both sides' together),
         ``axis`` (the separating axis, the more significant where both
         separate), and each axis' reading under ``intensity`` and ``time`` -
         None where it could not be tested - with the formula on its bright
@@ -234,6 +333,17 @@ def blend_of(
     second = [m for m in second if _get(m, "tier") in BLEND_TIERS]
     ions = [_modal_ion(first), _modal_ion(second)]
     if ions[0] is not None and ions[0] == ions[1]:
+        return None
+    if n_committed <= 0:
+        return None
+    shares = {
+        "minority": min(len(first), len(second)) / n_committed,
+        "pair": (len(first) + len(second)) / n_committed,
+    }
+    if (
+        shares["minority"] < BLEND_MIN_MINORITY_SHARE
+        or shares["pair"] < BLEND_MIN_PAIR_SHARE
+    ):
         return None
     intensity = intensity_reading(first, second)
     time = time_reading(first, second)
@@ -254,6 +364,7 @@ def blend_of(
         "formulas": [first_formula, second_formula],
         "ions": ions,
         "n": [len(first), len(second)],
+        "shares": {key: round(value, 4) for key, value in shares.items()},
         "axis": min(separating)[1],
         AXIS_INTENSITY: intensity,
         AXIS_TIME: time,

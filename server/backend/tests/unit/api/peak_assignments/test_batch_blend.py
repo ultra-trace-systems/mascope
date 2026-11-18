@@ -1,9 +1,11 @@
 """The probable-blend test of a batch peak's consensus (step 4.8, MAS-320).
 
 Synthetic batches: two formulas separated by intensity are flagged; separated
-by acquisition time are flagged; interleaved on both are not; a single formula
-never is. Around those, the bars that keep a large batch's slight shift from
-reading as a blend, and the members the time test leaves out.
+by acquisition time, with the trace's level stepping where they switch, are
+flagged; interleaved on both are not; a single formula never is. Around
+those, the bars that keep a large batch's slight shift from reading as a
+blend, the members the time test leaves out, and the three rules of MAS-890:
+the minority side's share, the two sides' joint share and the level step.
 """
 
 import itertools
@@ -19,9 +21,12 @@ from mascope_backend.api.new.peak_assignments.batch_blend import (
     AXIS_INTENSITY,
     AXIS_TIME,
     BLEND_KEY,
+    BLEND_TIERS,
     blend_of,
     blend_record_of,
+    change_point,
     intensity_reading,
+    level_step,
     runs_p_value,
     time_reading,
 )
@@ -59,8 +64,30 @@ def _batch(labels, intensities):
 
 def _interleaved_intensities(n):
     # Every other member bright: neither formula of an alternating batch is
-    # the brighter, nor of a two-block one.
+    # the brighter, nor of a two-block one, and a two-block one's level does
+    # not step where they switch.
     return [1000.0 + 37.0 * ((i * 7) % n) for i in range(n)]
+
+
+#: A wide wobble, so two levels apart by a step overlap: neither formula is
+#: the brighter in 90 % of the pairs.
+_WOBBLE = [0.6, 1.6, 0.9, 1.3, 0.7, 1.5, 1.0, 1.2]
+
+
+def _stepped(labels, step=1000.0 / 600.0):
+    """Intensities for ``labels`` whose level steps by ``step`` between A and
+    B (A the higher), each wobbling so the two overlap."""
+    return [
+        (1000.0 if f == A else 1000.0 / step) * _WOBBLE[i % len(_WOBBLE)]
+        for i, f in enumerate(labels)
+    ]
+
+
+def _blend_of(first, second):
+    """``blend_of`` on two sides that are the anchor's only committed
+    members."""
+    committed = sum(1 for m in [*first, *second] if m["tier"] in BLEND_TIERS)
+    return blend_of(A, first, B, second, n_committed=committed)
 
 
 # --- the four cases of the brief ------------------------------------------------
@@ -87,19 +114,19 @@ def test_two_formulas_separated_by_intensity_are_flagged():
 
 def test_two_formulas_separated_by_time_are_flagged():
     labels = [A] * 8 + [B] * 8
-    consensus = vote_consensus(_batch(labels, _interleaved_intensities(16)))
+    consensus = vote_consensus(_batch(labels, _stepped(labels)))
     blend = consensus.provenance[BLEND_KEY]
     assert blend["axis"] == AXIS_TIME
     assert blend["time"]["runs"] == 2
     assert blend["time"]["earlier"] == A
+    assert blend["time"]["level_step"] == pytest.approx(1000.0 / 600.0, abs=1e-3)
     assert blend["intensity"]["separates"] is False
+    assert blend["shares"] == {"minority": 0.5, "pair": 1.0}
 
 
 def test_the_later_formula_is_named_as_such():
     labels = [B] * 8 + [A] * 8
-    blend = vote_consensus(_batch(labels, _interleaved_intensities(16))).provenance[
-        BLEND_KEY
-    ]
+    blend = vote_consensus(_batch(labels, _stepped(labels))).provenance[BLEND_KEY]
     assert blend["time"]["earlier"] == B
 
 
@@ -160,7 +187,7 @@ def test_a_winner_on_the_dim_side_parts_as_cleanly():
     reading = intensity_reading(dim, bright)
     assert reading["separation"] == 0.0
     assert reading["separates"] is True
-    assert blend_of(A, dim, B, bright)["intensity"]["brighter"] == B
+    assert _blend_of(dim, bright)["intensity"]["brighter"] == B
 
 
 def test_a_slight_intensity_shift_in_a_large_batch_is_not_a_blend():
@@ -190,7 +217,7 @@ def test_both_axes_separating_name_the_more_significant():
     labels = [A] * 10 + [B] * 10
     intensities = [5000.0 + i for i in range(10)] + [100.0 + i for i in range(10)]
     first, second = _split(_batch(labels, intensities))
-    blend = blend_of(A, first, B, second)
+    blend = _blend_of(first, second)
     assert blend["intensity"]["separates"] and blend["time"]["separates"]
     expected = min(
         (blend["intensity"]["p"], AXIS_INTENSITY), (blend["time"]["p"], AXIS_TIME)
@@ -204,7 +231,7 @@ def test_both_axes_separating_name_the_more_significant():
 def test_two_formulas_reading_one_ion_are_not_a_blend():
     # One ion through two mechanisms, switched in time: one ion on the trace.
     labels = [A] * 8 + [B] * 8
-    members = _batch(labels, _interleaved_intensities(16))
+    members = _batch(labels, _stepped(labels))
     for m in members:
         m["ion_formula"] = "C7H12NO+"
     assert BLEND_KEY not in vote_consensus(members).provenance
@@ -217,7 +244,7 @@ def test_two_formulas_reading_one_ion_are_not_a_blend():
 
 def test_the_ion_compared_is_the_one_most_of_a_side_reads():
     labels = [A] * 8 + [B] * 8
-    members = _batch(labels, _interleaved_intensities(16))
+    members = _batch(labels, _stepped(labels))
     for m in members:
         m["ion_formula"] = "X+"
     # One of A's members reads another ion: A still reads X+ mostly.
@@ -232,24 +259,24 @@ def test_the_ion_compared_is_the_one_most_of_a_side_reads():
 )
 def test_a_side_counts_only_its_members_at_candidate_or_better(side, tier, flagged):
     labels = [A] * 8 + [B] * 8
-    members = _batch(labels, _interleaved_intensities(16))
+    members = _batch(labels, _stepped(labels))
     for m in members[8 * side : 8 * side + 8]:
         m["tier"] = tier
     first, second = _split(members)
-    assert (blend_of(A, first, B, second) is not None) is flagged
+    assert (_blend_of(first, second) is not None) is flagged
 
 
 def test_the_sides_are_counted_after_the_tier_filter():
     labels = [A] * 8 + [B] * 8
-    members = _batch(labels, _interleaved_intensities(16))
+    members = _batch(labels, _stepped(labels))
     for m in members[8:14]:
         m["tier"] = "below_assignability"
     first, second = _split(members)
     # Two of B's members commit to it: under the floor, so nothing is tested.
-    assert blend_of(A, first, B, second) is None
+    assert _blend_of(first, second) is None
     for m in members[8:11]:
         m["tier"] = "candidate"
-    blend = blend_of(A, first, B, second)
+    blend = _blend_of(first, second)
     assert blend is not None and blend["n"] == [8, 5]
 
 
@@ -258,7 +285,7 @@ def test_the_sides_are_counted_after_the_tier_filter():
 
 def test_a_member_with_no_acquisition_time_is_left_out_of_the_time_test():
     labels = [A] * 6 + [B] * 6
-    members = _batch(labels, _interleaved_intensities(12))
+    members = _batch(labels, _stepped(labels))
     # Undated, and placed where it would break the second block in two.
     members.append(_member(A, 9, acquired=False))
     reading = time_reading(*_split(members))
@@ -323,7 +350,7 @@ def test_the_runs_p_value_holds_for_a_large_batch():
 def test_the_vote_winner_and_its_runner_up_are_tested():
     # A third, minor formula rides along without entering the test.
     labels = [A] * 8 + [B] * 8
-    members = _batch(labels, _interleaved_intensities(16))
+    members = _batch(labels, _stepped(labels))
     members += [_member("C5H10O5", 100 + i) for i in range(3)]
     consensus = vote_consensus(members)
     assert set(consensus.provenance[BLEND_KEY]["formulas"]) == {A, B}
@@ -332,7 +359,7 @@ def test_the_vote_winner_and_its_runner_up_are_tested():
 
 def test_a_pin_is_tested_against_the_vote_leader():
     labels = [A] * 8 + [B] * 8 + ["C5H10O5"] * 3
-    members = _batch(labels, _interleaved_intensities(19))
+    members = _batch(labels, _stepped(labels))
     # Weight A over B, then pin B: the test reads B (the pin) against A.
     for m in members[:8]:
         m["fit_score"] = 1.0
@@ -363,15 +390,15 @@ def test_the_record_is_read_off_the_anchors_provenance():
 
 def test_a_recompute_over_the_same_members_writes_the_same_record():
     labels = [A] * 8 + [B] * 8
-    members = _batch(labels, _interleaved_intensities(16))
+    members = _batch(labels, _stepped(labels))
+    assert BLEND_KEY in vote_consensus(members).provenance
     assert vote_consensus(members).provenance == vote_consensus(members).provenance
 
 
 def test_the_record_keeps_a_p_value_to_three_significant_digits():
     # 2 / C(16, 8) = 0.000155400...: a float with digits to spare.
-    blend = vote_consensus(
-        _batch([A] * 8 + [B] * 8, _interleaved_intensities(16))
-    ).provenance[BLEND_KEY]
+    labels = [A] * 8 + [B] * 8
+    blend = vote_consensus(_batch(labels, _stepped(labels))).provenance[BLEND_KEY]
     assert blend["time"]["p"] == 0.000155
     assert runs_p_value(8, 8, 2) == pytest.approx(2 / 12870)
 
@@ -383,11 +410,22 @@ def test_all_tied_intensities_leave_the_axis_untested():
     assert intensity_reading(*_split(tied)) is None
 
 
-def test_a_time_blend_with_tied_intensities_writes_a_strict_json_record():
+def test_a_time_parting_with_tied_intensities_steps_no_level():
+    # Every intensity tied: the rank test reads nothing and the level does
+    # not move at the switch, so the clean parting in time is no blend.
     labels = [A] * 30 + [B] * 5
-    blend = vote_consensus(_batch(labels, [1.0] * 35)).provenance[BLEND_KEY]
+    members = _batch(labels, [1.0] * 35)
+    reading = time_reading(*_split(members))
+    assert reading["runs"] == 2 and reading["p"] <= batch_blend.BLEND_ALPHA
+    assert reading["level_step"] == 1.0
+    assert reading["separates"] is False
+    assert BLEND_KEY not in vote_consensus(members).provenance
+
+
+def test_a_time_blend_writes_a_strict_json_record():
+    labels = [A] * 30 + [B] * 5
+    blend = vote_consensus(_batch(labels, _stepped(labels))).provenance[BLEND_KEY]
     assert blend["axis"] == AXIS_TIME
-    assert blend["intensity"] is None
     json.dumps(blend, allow_nan=False)
 
 
@@ -402,6 +440,167 @@ def test_a_member_with_a_non_finite_intensity_is_left_out_of_the_rank_test(bad):
     assert reading["separates"] is True
     assert reading["separation"] == 1.0
     json.dumps(reading, allow_nan=False)
+
+
+# --- the shares and the level step (MAS-890) ----------------------------------------
+
+
+def _bright_and_dim(n_bright, n_dim):
+    """A compound in ``n_bright`` samples and another, every member dimmer,
+    in ``n_dim``, spread through the batch: an intensity parting, never a
+    time one."""
+    members = [_member(A, 2 * i, 5000.0 + i) for i in range(n_bright)]
+    members += [_member(B, 2 * i + 1, 100.0 + i) for i in range(n_dim)]
+    return members
+
+
+@pytest.mark.parametrize("n_dim,flagged", [(9, False), (10, True)])
+def test_a_minority_side_under_the_floor_is_not_a_blend(n_dim, flagged):
+    # 9 of 309 committed members is 2.9 %, 10 of 310 3.2 %: either way the
+    # rank test is significant, and a handful of dim flips is no second
+    # chemistry.
+    members = _bright_and_dim(300, n_dim)
+    reading = intensity_reading(*_split(members))
+    assert reading["separates"] is True
+    blend = vote_consensus(members).provenance.get(BLEND_KEY)
+    assert (blend is not None) is flagged
+    if flagged:
+        assert blend["shares"]["minority"] == round(10 / 310, 4)
+
+
+def test_the_minority_side_counts_its_members_at_candidate_or_better():
+    # Twelve of B's members, eight of them below assignability: four commit,
+    # 4 of 204, under the floor, though 12 of 212 would be over it.
+    members = _bright_and_dim(200, 12)
+    for m in members[200:208]:
+        m["tier"] = "below_assignability"
+    assert BLEND_KEY not in vote_consensus(members).provenance
+    for m in members[200:208]:
+        m["tier"] = "candidate"
+    assert vote_consensus(members).provenance[BLEND_KEY]["n"] == [200, 12]
+
+
+def _scattered(n_others, tier="candidate"):
+    """Ten members of A, ten dimmer of B, and ``n_others`` more formulas
+    with one member each, at ``tier``."""
+    members = _bright_and_dim(10, 10)
+    for i in range(n_others):
+        other = _member(f"C{i + 1}H4O9", 100 + i, 1000.0, fit=0.5)
+        other["tier"] = tier
+        members.append(other)
+    return members
+
+
+@pytest.mark.parametrize("n_others,flagged", [(14, False), (13, True)])
+def test_two_of_many_scattered_formulas_are_not_a_blend(n_others, flagged):
+    # 20 of 34 committed members is 59 %, 20 of 33 61 %.
+    members = _scattered(n_others)
+    consensus = vote_consensus(members)
+    assert {consensus.consensus_formula, consensus.alternatives[0]["formula"]} == {
+        A,
+        B,
+    }
+    blend = consensus.provenance.get(BLEND_KEY)
+    assert (blend is not None) is flagged
+    if flagged:
+        assert blend["shares"]["pair"] == round(20 / 33, 4)
+
+
+def test_the_shares_count_only_the_anchors_committed_members():
+    # The same scatter below assignability: the members carry a formula and
+    # vote, but commit to nothing, so the two sides hold all that commits.
+    members = _scattered(14, tier="below_assignability")
+    blend = vote_consensus(members).provenance[BLEND_KEY]
+    assert blend["shares"] == {"minority": 0.5, "pair": 1.0}
+
+
+def test_no_committed_member_tests_nothing():
+    labels = [A] * 8 + [B] * 8
+    first, second = _split(_batch(labels, _stepped(labels)))
+    assert blend_of(A, first, B, second, n_committed=0) is None
+
+
+def test_a_time_parting_at_a_flat_level_is_not_a_blend():
+    # Two clean blocks, and the trace's level does not move at the switch:
+    # one compound read two ways, as a slow mass drift reads it.
+    labels = [A] * 8 + [B] * 8
+    members = _batch(labels, _interleaved_intensities(16))
+    reading = time_reading(*_split(members))
+    assert reading["runs"] == 2 and reading["p"] <= batch_blend.BLEND_ALPHA
+    assert reading["level_step"] < batch_blend.BLEND_MIN_LEVEL_STEP
+    assert reading["separates"] is False
+    assert BLEND_KEY not in vote_consensus(members).provenance
+
+
+@pytest.mark.parametrize("step,flagged", [(1.22, False), (1.28, True)])
+def test_a_time_parting_must_step_the_level_past_the_bar(step, flagged):
+    labels = [A] * 8 + [B] * 8
+    members = _batch(labels, _stepped(labels, step))
+    reading = time_reading(*_split(members))
+    assert reading["level_step"] == pytest.approx(step, abs=1e-3)
+    assert reading["separates"] is flagged
+    assert (BLEND_KEY in vote_consensus(members).provenance) is flagged
+
+
+def test_the_level_step_is_read_at_the_change_point():
+    # A in the first six samples at 1000, B in the next six at 550, A again
+    # in the last six at 300. The parting is at the first switch: 1000
+    # before it, the middle of the 550s and the 300s after. A's own middle,
+    # between its 1000s and its 300s, sits on B's level and reads no step.
+    labels = [A] * 6 + [B] * 6 + [A] * 6
+    levels = {0: 1000.0, 1: 550.0, 2: 300.0}
+    intensities = [levels[i // 6] * (1.0 + 0.01 * (i % 6)) for i in range(18)]
+    members = _batch(labels, intensities)
+    first, second = _split(members)
+    assert level_step(first, second) < batch_blend.BLEND_MIN_LEVEL_STEP
+    reading = time_reading(first, second)
+    expected = level_step(members[:6], members[6:])
+    assert reading["level_step"] == pytest.approx(expected, abs=1e-3)
+    assert reading["level_step"] > 2.0
+    assert reading["separates"] is True
+    blend = vote_consensus(members).provenance[BLEND_KEY]
+    assert blend["axis"] == AXIS_TIME
+
+
+def test_an_unread_level_step_does_not_separate():
+    # B's members carry no intensity: the runs test reads them, the level
+    # step cannot.
+    labels = [A] * 8 + [B] * 8
+    members = _batch(labels, _stepped(labels))
+    for m in members[8:]:
+        m["intensity"] = None
+    reading = time_reading(*_split(members))
+    assert reading["runs"] == 2 and reading["p"] <= batch_blend.BLEND_ALPHA
+    assert reading["level_step"] is None
+    assert reading["separates"] is False
+    json.dumps(reading, allow_nan=False)
+
+
+def test_the_level_step_reads_positive_finite_intensities_only():
+    before = [_member(A, i, v) for i, v in enumerate([400.0, 400.0, 400.0])]
+    after = [_member(B, i, 100.0) for i in range(3)]
+    assert level_step(before, after) == pytest.approx(4.0)
+    noise = [0.0, -5.0, math.nan, math.inf, None]
+    before += [_member(A, 10 + i, v) for i, v in enumerate(noise)]
+    after += [_member(B, 10 + i, v) for i, v in enumerate(noise)]
+    assert level_step(before, after) == pytest.approx(4.0)
+    assert level_step(after, before) == pytest.approx(4.0)
+    assert level_step(before, after[:2] + after[3:]) is None
+    assert level_step(before[:2] + before[3:], after) is None
+
+
+@pytest.mark.parametrize(
+    "sides,at",
+    [
+        ([0, 0, 0, 1, 1], 3),
+        ([1, 1, 0, 0, 0, 0], 2),
+        ([0, 0, 0, 1, 1, 1, 0, 0, 0], 3),  # a tie: the earliest
+        ([0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0], 6),
+        ([0, 1], 1),
+    ],
+)
+def test_the_change_point_is_where_the_labels_split_best(sides, at):
+    assert change_point(sides) == at
 
 
 def _split(members):

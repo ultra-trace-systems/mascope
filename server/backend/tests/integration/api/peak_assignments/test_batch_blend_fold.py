@@ -3,11 +3,11 @@ acquisition times off the batch's samples, records the blend on the anchor,
 and the ledger, the chart's series and an earlier run's snapshot serve it
 (step 4.8, MAS-320).
 
-One species at one m/z in twelve samples of a batch: the first six acquired
-read it as one formula, the last six as another, at interleaved intensities,
-so only acquisition time separates the two. The samples are folded out of
-acquisition order: the order the test reads is the samples' clock, not the
-fold's.
+One m/z in twelve samples of a batch: the first six acquired read it as one
+formula, the last six as another, at intensities that overlap but whose level
+steps down 1.5 times where the reading switches (MAS-890), so only acquisition time
+separates the two. The samples are folded out of acquisition order: the order
+the test reads is the samples' clock, not the fold's.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -140,8 +140,10 @@ async def _seed(session, formula_of, *, timing="hourly", id_of=None):
                 sample_item_id=si,
                 sample_peak_id="P1",
                 sample_peak_mz=MZ,
-                # Interleaved: neither formula is the brighter.
-                sample_peak_intensity=1000.0 + 250.0 * ((i * 5) % N),
+                # Overlapping: neither formula is the brighter, and the
+                # level steps down by 1.5 times after the first six acquired.
+                sample_peak_intensity=(1000.0 + 250.0 * ((i * 5) % N))
+                / (1.0 if i < N // 2 else 2.0),
                 role="M0",
                 assigned_formula=formula,
                 ion_formula=f"{formula}H+",
@@ -212,7 +214,9 @@ async def test_two_formulas_apart_in_time_mark_the_anchor_a_blend(
     assert record["time"]["runs"] == 2
     assert record["time"]["earlier"] == EARLY
     assert record["intensity"]["separates"] is False
+    assert record["time"]["level_step"] >= 1.25
     assert record["n"] == [6, 6]
+    assert record["shares"] == {"minority": 0.5, "pair": 1.0}
 
 
 async def test_the_segments_of_one_file_are_read_in_the_order_they_start(
