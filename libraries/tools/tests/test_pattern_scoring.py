@@ -14,7 +14,7 @@ import polars as pl
 import pytest
 
 from mascope_tools.composition.heuristic_filter import (
-    ISOTOPE_ABUNDANCE_THRESHOLD,
+    ENVELOPE_ABUNDANCE_FLOOR,
     PATTERN_BASE_SNR,
     PATTERN_REQUIRED_LINES,
     envelope_floor_for_peak,
@@ -61,7 +61,7 @@ class TestEnvelopeFloor:
         scoring = PatternScoring(abundance_floor=SAMPLE_FLOOR)
         assert (
             envelope_floor_for_peak(4.0e3, 20.0, 1.0, scoring)
-            == ISOTOPE_ABUNDANCE_THRESHOLD
+            == ENVELOPE_ABUNDANCE_FLOOR
         )
 
     def test_without_snr_the_peak_list_still_bounds_it(self):
@@ -98,7 +98,7 @@ class TestEnvelopeFloor:
         # on every peak, however bright and however clean.
         assert (
             envelope_floor_for_peak(4.0e6, 10_000.0, 1.0, PatternScoring())
-            == ISOTOPE_ABUNDANCE_THRESHOLD
+            == ENVELOPE_ABUNDANCE_FLOOR
         )
 
 

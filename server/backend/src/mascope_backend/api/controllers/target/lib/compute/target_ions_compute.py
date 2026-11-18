@@ -3,13 +3,10 @@ Functions for target ions and target isotopes generation.
 """
 
 import re
-from collections.abc import Sequence
-from itertools import combinations_with_replacement
-from itertools import product as cartesian_product
-from math import comb
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 
 import numpy as np
-from IsoSpecPy import IsoThreshold
 
 from mascope_backend.api.models.target.compounds.target_compound_pydantic_model import (
     TargetCompoundBase,
@@ -21,17 +18,16 @@ from mascope_backend.db import (
 )
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
-from mascope_tools.composition.config import ELECTRON_MASS
 from mascope_tools.composition.config import (
-    ISOTOPE_ABUNDANCE_THRESHOLD as ENVELOPE_FLOOR,
+    ENVELOPE_ABUNDANCE_FLOOR,
+    TARGET_LIBRARY_ABUNDANCE_FLOOR,
 )
-from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS, label_purity
+from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
 from mascope_tools.composition.finder import replace_atom_with_isotope
-from mascope_tools.composition.heuristic_filter import (
-    extract_isotope_labels,
-    fold_targets,
-    group_unresolved_lines,
+from mascope_tools.composition.line_model import (
+    predict_isotopes as predict_fine_lines,
 )
+from mascope_tools.composition.line_model import resolve_lines
 from mascope_tools.composition.mechanism_notation import (
     AdductRow,
     MechanismNotationError,
@@ -45,15 +41,41 @@ from mascope_tools.composition.utils import (
 )
 
 
-# Threshold for high resolution isotope peaks prediction
-# We store "all" isotopes in the database, filter by abundance later if needed
-ISOTOPE_ABUNDANCE_THRESHOLD = 0.00001  # 0.001 %
-# Low/TOF resolution constant
-RESOLUTION_LOW = 1e4
+# The resolving power the stored library's LOW lines are merged at. The
+# classic match (`mascope_match`) matches a TOF file against these stored lines
+# and stores its results against their ids, so they are computed once, when a
+# target is saved, with no file to read a resolution off. The peak assignment
+# reads no stored line: it predicts each ion's lines at the file's own R(m/z)
+# (`ion_lines`, MAS-977), as the envelope match does.
+STORED_TOF_RESOLVING_POWER = 1e4
 # The column a low resolution isotope's joined formulae are stored in
 TARGET_ISOTOPE_FORMULA_LENGTH = (
     TargetIsotope.__table__.c.target_isotope_formula.type.length
 )
+
+
+@dataclass(frozen=True)
+class FileLines:
+    """The file an ion's lines are predicted for: the R(m/z) they are merged at.
+
+    :ivar resolution_type: The file's resolution type, ``LOW`` for a TOF and
+        ``HIGH`` otherwise, which the lines are labelled with.
+    :ivar resolution: The file's resolving power as a function of m/z, or None
+        where its instrument functions could not be read. Then a TOF's lines
+        are merged at :data:`STORED_TOF_RESOLVING_POWER`, as the stored
+        library's are, and another file's lines are the fine structure.
+    """
+
+    resolution_type: str
+    resolution: Callable[[float], float] | None = None
+
+    def resolving_power(self) -> Callable[[float], float] | None:
+        """The R(m/z) to merge at, or None for the fine structure."""
+        if self.resolution is not None:
+            return self.resolution
+        if self.resolution_type == "LOW":
+            return lambda _: STORED_TOF_RESOLVING_POWER
+        return None
 
 
 class SkipIonizationMechanism(Exception):
@@ -107,17 +129,28 @@ def charge_string(charge: int) -> str:
 def generate_target_ions_from_composition(
     target_compound: TargetCompoundBase,
     ionization_mechanisms: list[IonizationMechanism],
+    *,
+    file_lines: "FileLines | None" = None,
 ) -> tuple[list[TargetIon], list[TargetIsotope]]:
     """Generate target ions and isotopes based on target compound composition and given ionization mechanisms
 
     Combines the neutral formula with each ionization mechanism (formula addition/
     subtraction), potentially including custom elements (e.g. ^N). Predicts isotopic
-    patterns using IsoSpecPy.
+    patterns with the line model (``mascope_tools.composition.line_model``).
+
+    The stored library holds two sets of lines per ion: ``HIGH``, the fine
+    structure, and ``LOW``, merged at :data:`STORED_TOF_RESOLVING_POWER` for
+    the classic match. A reader with a file in hand passes ``file_lines`` and
+    gets one set, the lines that file's R(m/z) shows (:func:`ion_lines`),
+    labelled with the file's resolution type so a reader filtering by it keeps
+    them.
 
     :param target_compound: Target compound to use as a base for the ions
     :type target_compound: TargetCompoundBase
     :param ionization_mechanisms: List of ionization mechanisms to apply to the target compound
     :type ionization_mechanisms: list[IonizationMechanism]
+    :param file_lines: The file whose lines to predict, or None for the stored
+        library's two sets.
     :return: 2-tuple of (list of ions (instances of TargetIon), list of isotopes (instances of TargetIsotope))
     :rtype: tuple
     """
@@ -186,12 +219,16 @@ def generate_target_ions_from_composition(
         target_ions.append(ion)
 
         predicted_isotopes = dict()
-        # Predict high resolution isotopes
-        predicted_isotopes["HIGH"] = predict_isotopes(ion_composition, ion_charge)
-        # Group for low resolution
-        predicted_isotopes["LOW"] = group_target_isotopes(
-            *predicted_isotopes["HIGH"], RESOLUTION_LOW
-        )
+        if file_lines is not None:
+            predicted_isotopes[file_lines.resolution_type] = ion_lines(
+                ion_composition, ion_charge, file_lines.resolving_power()
+            )
+        else:
+            # The fine structure, and the classic match's TOF lines
+            predicted_isotopes["HIGH"] = predict_isotopes(ion_composition, ion_charge)
+            predicted_isotopes["LOW"] = group_target_isotopes(
+                *predicted_isotopes["HIGH"], STORED_TOF_RESOLVING_POWER
+            )
         # Store target isotopes
         for resolution, (masses, probs, formulae) in predicted_isotopes.items():
             target_isotopes.extend(
@@ -378,11 +415,14 @@ def _get_raw_ion(
 def predict_isotopes(
     ion_composition: dict[str, int], ion_charge: int
 ) -> tuple[list[float], list[float], list[str]]:
-    """Predicts isotope masses and abundances for a given ion using IsoSpecPy.
+    """An ion's fine structure, one line per isotopologue, as the library stores it.
 
-    Handles custom elements (e.g., ^N for isotopically labelled nitrogen) by:
-    1. Computing isotope pattern for the non-custom part using IsoSpecPy
-    2. Multiplying with custom element isotope distributions
+    The line model's predictor (``mascope_tools.composition.line_model``), the
+    one every reader of an ion's isotope lines predicts by, to the target
+    library's depth (``TARGET_LIBRARY_ABUNDANCE_FLOOR``). A labelled reagent
+    atom ('^N') is read at the purity in effect, the run's setup's inside a run.
+    Each line is named by its isotopologue's formula, every heavy isotope
+    written out (:func:`isotopologue_formula`).
 
     :param ion_composition: Composition of the ion as ``{symbol: count}`` (may
         contain '^X' custom elements)
@@ -390,192 +430,78 @@ def predict_isotopes(
     :param ion_charge: Ion charge (e.g. +1, -1)
     :type ion_charge: int
     :raises UnknownCustomElement: If a custom element is unknown.
-    :return: 3-tuple lists of (m/z values, relative abundances, isotope formulae)
+    :return: 3-tuple lists of (m/z values, abundances, isotope formulae)
     :rtype: tuple[list[float], list[float], list[str]]
     """
-    custom_elements = _extract_custom_elements(ion_composition)
-    base_composition = {
-        symbol: count
-        for symbol, count in ion_composition.items()
-        if not symbol.startswith("^") and count > 0
-    }
-    base_formula = to_hill_notation(base_composition)
-
-    # Compute isotope pattern for the base (non-custom) part
-    base_masses, base_probs, base_labels = _compute_base_isotope_pattern(base_formula)
-
-    # Combine with custom element isotope patterns if present
-    if custom_elements:
-        masses, probs, formulae = _combine_with_custom_elements(
-            base_formula, base_masses, base_probs, base_labels, custom_elements
-        )
-    else:
-        masses = base_masses
-        probs = base_probs
-        formulae = [
-            replace_atom_with_isotope(base_formula, label) for label in base_labels
-        ]
-
-    # Correct masses for electron charge and add charge string to formulae
-    masses = [(m - ELECTRON_MASS * ion_charge) / abs(ion_charge) for m in masses]
-    charge_str = charge_string(ion_charge)
-    formulae = [f + charge_str for f in formulae]
-
-    return masses, probs, formulae
-
-
-def _extract_custom_elements(ion_composition: dict[str, int]) -> dict[str, dict]:
-    """Extract custom element data from an ion composition.
-
-    Isotope masses and abundances come from the shared custom-element registry
-    (mascope_tools.composition.custom_elements); the labelled-reagent purity sets
-    the heavy/light isotope split.
-
-    :param ion_composition: Ion composition to check for custom elements
-    :return: Dict mapping custom element symbols to their properties
-    :raises UnknownCustomElement: If a custom element is not in the registry
-    """
-    custom_elements = {}
-
     for symbol, count in ion_composition.items():
-        if not symbol.startswith("^") or count <= 0:
-            continue
-
-        element = CUSTOM_ELEMENTS.get(symbol)
-        if element is None:
+        if symbol.startswith("^") and count > 0 and symbol not in CUSTOM_ELEMENTS:
             raise UnknownCustomElement(symbol)
-
-        # Labelled distribution: heaviest isotope at `purity`, remainder split to
-        # the lighter isotope(s). For the two-isotope elements defined today this
-        # is simply (1 - purity) on the light isotope, `purity` on the heavy one.
-        # The purity in effect: a run's ionization setup's, inside the run.
-        purity = label_purity(symbol)
-        abundances = [1.0 - purity] + [purity] * (len(element.isotopes) - 1)
-
-        custom_elements[symbol] = {
-            "count": count,
-            "regular_symbol": element.base_element,
-            "lightest_mass_number": element.isotopes[0][1],
-            "isotopes": [
-                {
-                    "mass": mass,
-                    "abundance": abundance,
-                    "mass_number": mass_number,
-                }
-                for (mass, mass_number), abundance in zip(element.isotopes, abundances)
-            ],
-        }
-
-    return custom_elements
-
-
-def _compute_base_isotope_pattern(
-    formula: str,
-) -> tuple[list[float], list[float], list[str]]:
-    """Compute isotope pattern for a formula using IsoSpecPy.
-
-    :param formula: Chemical formula string (without custom elements)
-    :return: 3-tuple of (masses, probabilities, isotope labels)
-    """
-    if not formula:
-        # Empty formula (e.g., just custom elements with nothing else)
-        return [0.0], [1.0], [""]
-
-    predicted_peaks = IsoThreshold(
-        formula=formula,
-        threshold=ISOTOPE_ABUNDANCE_THRESHOLD,
-        get_confs=True,
+    composition = {symbol: count for symbol, count in ion_composition.items() if count}
+    ion_formula = to_hill_notation(composition)
+    masses, probs, labels = predict_fine_lines(
+        ion_formula, ion_charge, None, TARGET_LIBRARY_ABUNDANCE_FLOOR
+    )
+    charge_str = charge_string(ion_charge)
+    return (
+        [float(mass) for mass in masses],
+        [float(prob) for prob in probs],
+        [isotopologue_formula(composition, label) + charge_str for label in labels],
     )
 
-    masses = [float(m) for m in predicted_peaks.masses]
-    probs = [float(p) for p in predicted_peaks.probs]
-    labels = extract_isotope_labels(formula, predicted_peaks)
 
-    return masses, probs, labels
+def isotopologue_formula(composition: dict[str, int], label: str) -> str:
+    """One isotopologue's formula from the ion's composition and its line's label.
 
+    The label is the line model's: ``M0`` for the ion itself, ``13C`` or
+    ``13C2+18O`` for natural substitutions, and for a labelled reagent atom
+    ('^N') the atoms of it left at the light isotope (``14N``, ``14N2``), every
+    other one at the labelled isotope. The natural part is written as the
+    envelope's rows write it (``replace_atom_with_isotope``), the labelled
+    atoms before it, and the heavy isotopes then lead the formula:
+    ``[13C]C5H12O6``, ``[15N]2C2H4O``, ``[15N]NC2H4O``.
 
-def _combine_with_custom_elements(
-    base_formula: str,
-    base_masses: list[float],
-    base_probs: list[float],
-    base_labels: list[str],
-    custom_elements: dict[str, dict],
-) -> tuple[list[float], list[float], list[str]]:
-    """Multiply base isotope pattern with custom element isotope distributions.
-
-    For custom elements with multiple atoms (e.g., ^N2), enumerates all isotope
-    combinations following multinomial distribution. For multiple custom elements
-    (e.g., ^H and ^N), computes the Cartesian product of their combinations.
-
-    Duplicate formulas (from different isotope paths yielding same composition)
-    are merged by summing probabilities.
-
-    :param base_formula: Formula string for the base (non-custom) part
-    :param base_masses: Base isotope masses
-    :param base_probs: Base isotope probabilities
-    :param base_labels: Base isotope labels (e.g., "M0", "17O")
-    :param custom_elements: Dict of custom element data
-    :return: 3-tuple of combined (masses, probabilities, formulae)
+    :param composition: The ion's composition, '^X' atoms included.
+    :param label: The line's label.
+    :return: The isotopologue's formula, no charge.
     """
-    # Generate isotope combinations for each custom element
-    custom_combinations = [
-        _generate_isotope_combinations(custom_data)
-        for custom_data in custom_elements.values()
-    ]
-
-    # Compute Cartesian product of all custom element combinations
-    all_custom_combos = list(cartesian_product(*custom_combinations))
-
-    # Use dict to merge duplicate formulas
-    # Key: normalized formula, Value: (mass, accumulated_prob)
-    formula_data: dict[str, tuple[float, float]] = {}
-
-    for base_mass, base_prob, base_label in zip(base_masses, base_probs, base_labels):
-        # Convert label to proper formula (e.g., "M0" -> "O3", "17O" -> "[17O]O2")
-        base_isotope_formula = (
-            replace_atom_with_isotope(base_formula, base_label) if base_formula else ""
-        )
-
-        for custom_combo in all_custom_combos:
-            # Multiply all custom element contributions
-            total_mass = base_mass + sum(c[0] for c in custom_combo)
-            total_prob = base_prob
-            for c in custom_combo:
-                total_prob *= c[1]
-
-            if total_prob < ISOTOPE_ABUNDANCE_THRESHOLD:
-                continue
-
-            # Concatenate custom element formulae
-            custom_formula = "".join(c[2] for c in custom_combo)
-
-            # Combine and normalize to merge elements (e.g. NN -> N2), then reorder
-            # to put isotope labels at the front.
-            raw_combined = custom_formula + base_isotope_formula
-            normalized = _reorder_isotopes_first(
-                to_hill_notation(parse_formula_tokens(raw_combined))
-                if raw_combined
-                else ""
-            )
-
-            # Merge duplicates by summing probabilities
-            if normalized in formula_data:
-                existing_mass, existing_prob = formula_data[normalized]
-                # Use probability-weighted average mass (masses should be nearly identical)
-                new_prob = existing_prob + total_prob
-                new_mass = (
-                    existing_mass * existing_prob + total_mass * total_prob
-                ) / new_prob
-                formula_data[normalized] = (new_mass, new_prob)
-            else:
-                formula_data[normalized] = (total_mass, total_prob)
-
-    # Convert back to lists
-    combined_formulae = list(formula_data.keys())
-    combined_masses = [formula_data[f][0] for f in combined_formulae]
-    combined_probs = [formula_data[f][1] for f in combined_formulae]
-
-    return combined_masses, combined_probs, combined_formulae
+    customs = {
+        symbol: count for symbol, count in composition.items() if symbol.startswith("^")
+    }
+    base = to_hill_notation(
+        {
+            symbol: count
+            for symbol, count in composition.items()
+            if symbol not in customs
+        }
+    )
+    light = {
+        f"{CUSTOM_ELEMENTS[symbol].isotopes[0][1]}"
+        f"{CUSTOM_ELEMENTS[symbol].base_element}": symbol
+        for symbol in customs
+    }
+    light_counts = dict.fromkeys(customs, 0)
+    natural = []
+    for part in [] if label in ("M0", "", "---") else label.split("+"):
+        match = re.fullmatch(r"(\d+[A-Z][a-z]?)(\d*)", part)
+        if match is not None and match.group(1) in light:
+            light_counts[light[match.group(1)]] += int(match.group(2) or 1)
+        else:
+            natural.append(part)
+    base_formula = replace_atom_with_isotope(base, "+".join(natural)) if base else ""
+    if not customs:
+        return base_formula
+    labelled = ""
+    for symbol, count in customs.items():
+        element = CUSTOM_ELEMENTS[symbol]
+        heavy = count - light_counts[symbol]
+        lighter = light_counts[symbol]
+        if heavy:
+            labelled += f"[{element.isotopes[-1][1]}{element.base_element}]"
+            labelled += str(heavy) if heavy > 1 else ""
+        if lighter:
+            labelled += element.base_element + (str(lighter) if lighter > 1 else "")
+    raw = labelled + base_formula
+    return _reorder_isotopes_first(to_hill_notation(parse_formula_tokens(raw)))
 
 
 def _reorder_isotopes_first(formula: str) -> str:
@@ -604,123 +530,6 @@ def _reorder_isotopes_first(formula: str) -> str:
     remaining = re.sub(isotope_pattern, "", formula)
 
     return "".join(isotopes) + remaining
-
-
-def _generate_isotope_combinations(
-    custom_data: dict,
-) -> list[tuple[float, float, str]]:
-    """Generate all isotope combinations for a custom element.
-
-    For n atoms with k isotopes, generates all distributions following
-    multinomial probability. E.g., ^N2 with 2% 14N / 98% 15N yields:
-    - N2: 0.02**2 = 0.04%
-    - [15N]N: 2 * 0.02 * 0.98 = 3.92%
-    - [15N]2: 0.98**2 = 96.04%
-
-    :param custom_data: Dict with 'count', 'regular_symbol', 'lightest_mass_number', 'isotopes'
-    :return: List of (mass, probability, formula) tuples
-
-    Examples
-    --------
-    Single atom with two isotopes (like ^N with 2% 14N / 98% 15N):
-
-    >>> data = {
-    ...     "count": 1,
-    ...     "regular_symbol": "N",
-    ...     "lightest_mass_number": 14,
-    ...     "isotopes": [
-    ...         {"mass": 14.003, "abundance": 0.02, "mass_number": 14},
-    ...         {"mass": 15.000, "abundance": 0.98, "mass_number": 15},
-    ...     ],
-    ... }
-    >>> result = _generate_isotope_combinations(data)
-    >>> len(result)
-    2
-    >>> result[0]  # Light isotope (14N)
-    (14.003, 0.02, 'N')
-    >>> result[1]  # Heavy isotope (15N)
-    (15.0, 0.98, '[15N]')
-
-    Two atoms - multinomial distribution (^N2):
-
-    >>> data2 = {
-    ...     "count": 2,
-    ...     "regular_symbol": "N",
-    ...     "lightest_mass_number": 14,
-    ...     "isotopes": [
-    ...         {"mass": 14.003, "abundance": 0.02, "mass_number": 14},
-    ...         {"mass": 15.000, "abundance": 0.98, "mass_number": 15},
-    ...     ],
-    ... }
-    >>> result2 = _generate_isotope_combinations(data2)
-    >>> len(result2)  # N2, [15N]N, [15N]2
-    3
-    >>> result2[0]  # N2: 0.02^2 = 0.0004
-    (28.006, 0.0004, 'N2')
-    >>> result2[1][1]  # [15N]N: 2 * 0.02 * 0.98 = 0.0392
-    0.0392
-    >>> result2[1][2]  # Formula shows heavy isotope first
-    '[15N]N'
-    >>> result2[2][0], round(result2[2][1], 4), result2[2][2]  # [15N]2: 0.98^2 = 0.9604
-    (30.0, 0.9604, '[15N]2')
-    """
-    count = custom_data["count"]
-    symbol = custom_data["regular_symbol"]
-    isotopes = custom_data["isotopes"]
-    lightest = custom_data["lightest_mass_number"]
-
-    results = []
-    for combo in combinations_with_replacement(range(len(isotopes)), count):
-        # Count occurrences of each isotope index
-        counts_per_isotope = {i: combo.count(i) for i in set(combo)}
-
-        # Mass = sum of (isotope_mass × count)
-        mass = sum(isotopes[i]["mass"] * c for i, c in counts_per_isotope.items())
-
-        # Probability = multinomial_coeff × product(abundance^count)
-        prob = _multinomial_coeff(count, list(counts_per_isotope.values()))
-        for i, c in counts_per_isotope.items():
-            prob *= isotopes[i]["abundance"] ** c
-
-        # Build formula: heavy isotopes first (descending mass), then light
-        formula_parts = []
-        for i, c in sorted(
-            counts_per_isotope.items(),
-            key=lambda x: isotopes[x[0]]["mass_number"],
-            reverse=True,
-        ):
-            if c == 0:
-                continue
-            mass_num = isotopes[i]["mass_number"]
-            count_str = str(c) if c > 1 else ""
-            if mass_num == lightest:
-                formula_parts.append(f"{symbol}{count_str}")
-            else:
-                formula_parts.append(f"[{mass_num}{symbol}]{count_str}")
-
-        results.append((mass, prob, "".join(formula_parts)))
-
-    return results
-
-
-def _multinomial_coeff(n: int, counts: list[int]) -> int:
-    """Calculate multinomial coefficient n! / (k1! * k2! * ...).
-
-    Examples
-    --------
-    >>> _multinomial_coeff(4, [2, 2])  # 4! / (2! * 2!) = 6
-    6
-    >>> _multinomial_coeff(3, [1, 1, 1])  # 3! / (1! * 1! * 1!) = 6
-    6
-    >>> _multinomial_coeff(5, [3, 2])  # 5! / (3! * 2!) = 10
-    10
-    """
-    result = 1
-    remaining = n
-    for k in counts:
-        result *= comb(remaining, k)
-        remaining -= k
-    return result
 
 
 def fit_isotope_names(
@@ -762,99 +571,87 @@ def fit_isotope_names(
 
 
 def group_target_isotopes(
-    masses: list, probs: list, formulae: list, resolution: float
+    masses: list,
+    probs: list,
+    formulae: list,
+    resolution: float | Callable[[float], float],
 ) -> tuple[list, list, list]:
-    """
-    Group target isotope m/z, relative abundance (probs), and isotope formulae
-    to produce lower resolution isotopes.
+    """The lines a file of this resolving power shows, from an ion's fine lines.
 
-    The isotopes one peak of this resolving power cannot separate are one
-    line, grouped as the untargeted envelope match groups them
-    (:func:`~mascope_tools.composition.heuristic_filter.group_unresolved_lines`):
-    from the most abundant isotope not yet taken, every isotope not yet taken
-    within half the FWHM (m/z / resolution / 2) either side of it. Starting
-    from the most abundant keeps a TOF's M+1 cluster whole: a bin started at
-    the lightest isotope, the 15N one, leaves the 13C, 17O and 2H isotopes of
-    a light ion behind, as a line of their own (mascope#2587).
+    The line model's resolution (``line_model.resolve_lines``), the one the
+    envelope match predicts by: one peak holds, from the most abundant line
+    not yet taken, every line within half a FWHM of it (mascope#2587); lines
+    under the envelope's floor less than one FWHM apart that together clear it
+    are one line (mascope#3163); a line still under it less than one FWHM from a
+    line over it is added to that line (mascope#2591). The library keeps "all"
+    lines, so a line under the floor that no line took stays a line of its own.
 
     The isotope formulae are concatenated with "/" separator for all isotopes
     that fall within the same line, in m/z order, the most abundant first up
     to what the column holds (:func:`fit_isotope_names`). The line's m/z and
     abundance count every isotope in it, named or not.
 
-    :param masses: High resolution target isotope m/z
-    :type masses: list
-    :param probs: High resolution target isotope relative abundance
-    :type probs: list
-    :param formulae: High resolution target isotope formulae
-    :type formulae: list
-    :param resolution: Resolution value
-    :type resolution: float
-    :return: Tuple with lists of grouped "mz", "relative_abundance",
-            "target_isotope_formula" values, in m/z order
-    :rtype: tuple[list, list, list]
+    :param masses: The fine lines' m/z.
+    :param probs: Their abundances.
+    :param formulae: Their isotopologue formulae.
+    :param resolution: The resolving power, a number or a function of m/z.
+    :return: The lines' m/z, abundances and joined formulae, in m/z order.
     """
-    # Convert to numpy arrays to simplify computations
+    # Sorted by m/z, so each line lists its names in m/z order
     mz = np.array(masses, dtype=float)
-    intensity = np.array(probs, dtype=float)
-    formula = np.array(formulae)
-
-    # Sort by m/z, so each line lists its names in m/z order
-    sorted_indices = np.argsort(mz, kind="stable")
-    mz = mz[sorted_indices]
-    intensity = intensity[sorted_indices]
-    formula = formula[sorted_indices]
-
-    def line_of(members: np.ndarray) -> tuple[float, float]:
-        weights = intensity[members]
-        total = float(np.sum(weights))
-        # Center of mass for mz in the line
-        centre = (
-            float(np.sum(mz[members] * weights) / total)
-            if total > 0
-            else float(np.mean(mz[members]))
+    order = np.argsort(mz, kind="stable")
+    mz = mz[order]
+    intensity = np.array(probs, dtype=float)[order]
+    formula = np.array(formulae, dtype=object)[order]
+    if not mz.size:
+        return [], [], []
+    power = resolution if callable(resolution) else (lambda _, r=resolution: r)
+    lines = [
+        (
+            line.mz,
+            line.abundance,
+            fit_isotope_names(
+                formula[list(line.members)].tolist(),
+                TARGET_ISOTOPE_FORMULA_LENGTH,
+                intensity[list(line.members)],
+            ),
         )
-        return centre, total
-
-    groups = group_unresolved_lines(mz, intensity, lambda _: resolution)
-    grouped = [line_of(members) for members in groups]
-    centres = np.array([centre for centre, _ in grouped], dtype=float)
-    totals = np.array([total for _, total in grouped], dtype=float)
-
-    # A line under the envelope match's floor that one peak cannot separate
-    # from a line over it, less than one FWHM away, is added to that line, as
-    # the envelope match folds it (predict_resolved_isotopes). The 15N line of
-    # a light ion sits there: 6.4 mDa under the 13C line of C3H8NO+, where a
-    # FWHM is 7.5 mDa. Lines under the floor with no such neighbour stay lines
-    # of their own.
-    keep = totals >= ENVELOPE_FLOOR * totals.max(initial=0.0)
-    targets = fold_targets(centres, keep, lambda _: resolution)
-    folded = [list(group) for group in groups]
-    for index in np.flatnonzero(targets >= 0):
-        folded[targets[index]].extend(groups[index])
-
-    lines = []
-    for index, members in enumerate(folded):
-        if targets[index] >= 0:
-            continue
-        # Ascending, so the names stay in m/z order
-        members = np.sort(np.array(members, dtype=int))
-        centre, total = line_of(members)
-        lines.append(
-            (
-                centre,
-                total,
-                fit_isotope_names(
-                    formula[members].tolist(),
-                    TARGET_ISOTOPE_FORMULA_LENGTH,
-                    intensity[members],
-                ),
-            )
+        for line in resolve_lines(
+            mz,
+            intensity,
+            formula.tolist(),
+            power,
+            ENVELOPE_ABUNDANCE_FLOOR,
+            keep_under_floor=True,
         )
-
+    ]
     lines.sort(key=lambda line: line[0])
     return (
         [line[0] for line in lines],
         [line[1] for line in lines],
         [line[2] for line in lines],
     )
+
+
+def ion_lines(
+    ion_composition: dict[str, int],
+    ion_charge: int,
+    resolution: Callable[[float], float] | None,
+) -> tuple[list, list, list]:
+    """An ion's lines as a file of this resolving power shows them.
+
+    The fine structure (:func:`predict_isotopes`) resolved at the file's
+    R(m/z) (:func:`group_target_isotopes`), what the peak assignment's Stage
+    A, its seeded chain and the composition chart match against, so a target
+    ion's line and a search candidate's are the same line. Without a
+    resolution, the fine structure itself.
+
+    :param ion_composition: The ion's composition.
+    :param ion_charge: Its charge.
+    :param resolution: The file's resolving power as a function of m/z, or None.
+    :return: The lines' m/z, abundances and formulae.
+    """
+    fine = predict_isotopes(ion_composition, ion_charge)
+    if resolution is None:
+        return fine
+    return group_target_isotopes(*fine, resolution)

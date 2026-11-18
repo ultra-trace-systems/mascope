@@ -25,7 +25,7 @@ class ChemInfoConfig(BaseModel):
     # The least share of its ion's brightest line a line may have for a search
     # asked for isotopologues (`isotopologues=True`) to read a peak as that
     # line. 1% is the depth the composition finder predicts an envelope to
-    # for scoring (`mascope_tools.composition.config.ISOTOPE_ABUNDANCE_THRESHOLD`):
+    # for scoring (`mascope_tools.composition.config.ENVELOPE_ABUNDANCE_FLOOR`):
     # the 13C line of any carbon compound, a single 34S or 37Cl, the 18O line of
     # an oxygen-rich ion and the 2% unlabelled remainder of a 15N reagent are all
     # above it.

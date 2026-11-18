@@ -154,7 +154,7 @@ class PatternScoring:
     sigma_ppm: float | None = None
     mu_ppm: float = 0.0
     mz_tolerance_ppm: float = config.ISOTOPE_MATCHING_MZ_TOLERANCE_PPM
-    abundance_floor: float = config.ISOTOPE_ABUNDANCE_THRESHOLD
+    abundance_floor: float = config.ENVELOPE_ABUNDANCE_FLOOR
     resolution: Callable[[float], float] | None = None
     envelope_tolerance: EnvelopeTolerance | None = None
 
