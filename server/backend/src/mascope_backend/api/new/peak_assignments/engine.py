@@ -1332,6 +1332,29 @@ def _reference_copies(matched: "pd.DataFrame") -> "pd.Series":
     )
 
 
+def _ion_keys(group: "pd.DataFrame") -> "pd.Series":
+    """Each Stage A candidate's ion, as one ion is told from another
+    (``utils.ion_identity``); its neutral where the frame names no ion, so a
+    candidate without one is still a hypothesis of its own.
+
+    :param group: One peak's candidates, carrying ``_formula_key``.
+    :return: The keys, on the group's index.
+    """
+    ions = (
+        group["target_ion_formula"]
+        if "target_ion_formula" in group.columns
+        else pd.Series(None, index=group.index, dtype=object)
+    )
+    return pd.Series(
+        [
+            ion_identity(_str_or_none(ion)) or ("", str(key))
+            for ion, key in zip(ions, group["_formula_key"], strict=True)
+        ],
+        index=group.index,
+        dtype=object,
+    )
+
+
 def invert_matches_to_peak_assignments(
     match_isotope_df: pd.DataFrame,
     sample_item_id: str,
@@ -1498,20 +1521,19 @@ def invert_matches_to_peak_assignments(
         # see tested. The winner's own formula through another mechanism is no
         # rival, and neither is a reading of the winner's own ion, as
         # `cap_alternatives` leaves out `same_ion` entries.
+        ion_keys = _ion_keys(group)
+        winner_ion = ion_keys.iloc[0]
         past_cap: set[str] = set()
         if len(rivals) > len(runners):
-            winner_ion = ion_identity(_str_or_none(winner.get("target_ion_formula")))
-            ions = (
-                rivals["target_ion_formula"]
-                if "target_ion_formula" in rivals.columns
-                else [None] * len(rivals)
-            )
             past_cap = (
                 {
                     str(key)
-                    for key, ion in zip(rivals["_formula_key"], ions, strict=True)
-                    if winner_ion is None
-                    or ion_identity(_str_or_none(ion)) != winner_ion
+                    for key, ion in zip(
+                        rivals["_formula_key"],
+                        ion_keys.loc[rivals.index],
+                        strict=True,
+                    )
+                    if ion != winner_ion
                 }
                 - set(runners["_formula_key"])
                 - {str(winner["_formula_key"])}
@@ -1534,8 +1556,20 @@ def invert_matches_to_peak_assignments(
         # competitors is distinguishable from a 1.0 won by default; "how good" is
         # `p_correct` (the calibrated evidence), which does not divide by the
         # field and does fall for a poor lone candidate.
+        #
+        # And the peak's candidates are its IONS. Two list compounds that make
+        # one ion through two channels (C10H18O3 through [M+Br]-, C10H19BrO3
+        # through [M-H]-) share its mass and its envelope, so the spectrum
+        # cannot tell them apart and neither is the other's rival: they are
+        # one hypothesis, its best reading standing for it, as the search
+        # elects one reading per ion before it ranks anything. The other
+        # reading stays on the row as a reading of its ion (`same_ion`).
         arbitrated = arbitrate_candidates(
-            zip(group["_formula_key"], group["_fit"], strict=True)
+            zip(
+                group["_formula_key"][~ion_keys.duplicated()],
+                group["_fit"][~ion_keys.duplicated()],
+                strict=True,
+            )
         )
         winner_arbitrated = next(
             c for c in arbitrated if c.formula == str(winner["_formula_key"])
@@ -1558,10 +1592,19 @@ def invert_matches_to_peak_assignments(
             else None
         )
         alternatives = [
-            _alternative_dict(
-                row, reference_identities_by_formula, main_isotope_ids, main_mz_by_ion
+            {
+                **_alternative_dict(
+                    row,
+                    reference_identities_by_formula,
+                    main_isotope_ids,
+                    main_mz_by_ion,
+                ),
+                # Another reading of the winner's own ion, not a rival.
+                **({"same_ion": True} if ion_key == winner_ion else {}),
+            }
+            for (_, row), ion_key in zip(
+                runners.iterrows(), ion_keys.loc[runners.index], strict=True
             )
-            for _, row in runners.iterrows()
         ]
 
         ion_id = _str_or_none(winner.get("target_ion_id"))
@@ -1758,7 +1801,7 @@ def _fold_adduct_corroboration(
         }
 
 
-def record_mirror_same_ion_readings(
+def record_stage_a_same_ion_readings(
     assignments: list[dict],
     *,
     mechanism_id_by_notation: dict[str, str],
@@ -1767,30 +1810,32 @@ def record_mirror_same_ion_readings(
     formula_formatter=None,
     max_alternatives: int = 5,
 ) -> int:
-    """Give each reference mirror row the other readings of its ion.
+    """Give each Stage A row the other readings of its ion.
 
     An election leaves the readings it displaced on its winner, flagged
     ``same_ion``. A Stage A row was matched rather than elected, so it arrives
     with none, and the question they answer is as open on it: the ion a list's
     formula makes through one mechanism is, to the same mass and envelope,
-    another neutral's through another. This writes the family the untargeted
-    search would have given that ion
-    (``heuristic_filter.propose_same_ion_readings``) the way an election's
-    displaced readings are written: ahead of the row's scored rivals, and
-    carrying the row's own fit and mass error, since the ion and so the
-    measurement is the same.
+    another neutral's through another. This writes the family the one
+    enumerator gives that ion (``heuristic_filter.propose_same_ion_readings``,
+    the search's own ``same_ion_family``) the way an election's displaced
+    readings are written: ahead of the row's scored rivals, and carrying the
+    row's own fit and mass error, since the ion and so the measurement is the
+    same.
 
     A rival already on the row that restates a reading - the same neutral
     through the same mechanism, which the known set can hold as a compound of
     its own - is that reading, so it is flagged and moved ahead rather than
     repeated.
 
-    The target library's rows get none. Their formulas are the workspace's own
-    curation (:func:`is_target_library_row`), where a list's is a prior matched
-    against every sample. Only a monoisotopic row gets them, as in an election:
-    an isotopologue is its owner's ion on another line.
+    A reference list's row and a target library's row alike: the library's
+    formula is the workspace's own curation (:func:`is_target_library_row`),
+    which settles which reading of the ion the row is
+    (``cross_channel.same_ion_question``), and the other readings are still
+    what the peak's ion reads as. Only a monoisotopic row gets them, as in an
+    election: an isotopologue is its owner's ion on another line.
 
-    :param assignments: Every row built for this sample; mirror rows are
+    :param assignments: Every row built for this sample; Stage A rows are
         modified in place.
     :param mechanism_id_by_notation: The mechanisms the run searched, in the
         finder's notation, mapped to their ids.
@@ -1799,10 +1844,10 @@ def record_mirror_same_ion_readings(
     :param heuristics_config: The untargeted search's heuristic filter.
     :param formula_formatter: How the untargeted stage writes a formula.
     :param max_alternatives: Cap on stored alternatives per row.
-    :return: How many mirror rows carry at least one reading.
+    :return: How many Stage A rows carry at least one reading.
     """
     return record_same_ion_readings(
-        [row for row in assignments if is_reference_mirror_row(row)],
+        [row for row in assignments if row.get("source") == SOURCE_DATABASE],
         mechanism_id_by_notation=mechanism_id_by_notation,
         search_config=search_config,
         heuristics_config=heuristics_config,
@@ -1822,10 +1867,10 @@ def record_same_ion_readings(
 ) -> int:
     """Give each monoisotopic row the other readings of its ion: the family
     the untargeted search would have given that ion, written as an election's
-    displaced readings are (:func:`record_mirror_same_ion_readings` says how).
+    displaced readings are (:func:`record_stage_a_same_ion_readings` says how).
 
-    A reference mirror's rows take it, which were matched rather than elected,
-    and so does a batch decision measured on a sample and read as the search's
+    Stage A's rows take it, which were matched rather than elected, and so
+    does a batch decision measured on a sample and read as the search's
     row there (``pipeline``), which a search of the sample would have elected
     out of that family. Each reading carries the row's own source, as an
     election's do.

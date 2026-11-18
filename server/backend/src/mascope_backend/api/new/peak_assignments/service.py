@@ -148,7 +148,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     invert_matches_to_peak_assignments,
     listed_formula_identities,
     reading_as_alternative,
-    record_mirror_same_ion_readings,
+    record_stage_a_same_ion_readings,
     sample_mass_accuracy,
     score_ions_by_fit,
 )
@@ -2599,8 +2599,8 @@ def _claim_fragments(
 ) -> FragmentClaims:
     """Read the fragments of the analytes the stages committed as the source's.
 
-    Shared by a run and the run-less ingest fold, after the reference mirror
-    rows carry their ion's families and before any pass that weighs the rows as
+    Shared by a run and the run-less ingest fold, after Stage A's rows carry
+    their ion's families and before any pass that weighs the rows as
     molecules, so the two ledgers read one peak the same way
     (``reagent_pass.claim_fragments``).
 
@@ -2648,27 +2648,27 @@ def _notation_by_id(searched_mechanisms: list[SimpleNamespace]) -> dict[str, str
     return notation_by_id
 
 
-def _record_mirror_readings(
+def _record_same_ion_readings(
     stage_a_assignments: list[dict],
     *,
     searched_mechanisms: list[SimpleNamespace],
     resolved_profile: ResolvedProfile,
     max_alternatives: int,
 ) -> int:
-    """Give each reference mirror row its ion's family, which reads no tier and
-    so is written once however many times the passes after it run.
+    """Give each Stage A row its ion's family, which reads no tier and so is
+    written once however many times the passes after it run.
 
     It is built under the untargeted search's own box and filter, whether or
     not that stage ran, so it is the family the search would have held. Every
     path of the stage list writes it in its elect stage, before the fragment
     claim and the judging rounds that read the families (:class:`Judging`).
 
-    :return: How many mirror rows carry same-ion readings.
+    :return: How many Stage A rows carry same-ion readings.
     """
     notations, mechanism_id_by_notation = _untargeted_ionization_notations(
         searched_mechanisms
     )
-    return record_mirror_same_ion_readings(
+    return record_stage_a_same_ion_readings(
         stage_a_assignments,
         mechanism_id_by_notation=mechanism_id_by_notation,
         search_config=resolved_profile.search_config(notations),

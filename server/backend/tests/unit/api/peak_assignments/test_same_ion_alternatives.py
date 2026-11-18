@@ -11,7 +11,7 @@ import pandas as pd
 
 from mascope_backend.api.new.peak_assignments.engine import (
     RIVALS_PAST_CAP,
-    record_mirror_same_ion_readings,
+    record_stage_a_same_ion_readings,
     untargeted_matches_to_peak_assignments,
 )
 from mascope_tools.composition.heuristic_filter import formula_plausibility
@@ -248,7 +248,7 @@ def _stage_a(
 
 
 def _record(rows, max_alternatives=5, ids=None):
-    return record_mirror_same_ion_readings(
+    return record_stage_a_same_ion_readings(
         rows,
         mechanism_id_by_notation=URONIUM_IDS if ids is None else ids,
         search_config=SEARCH,
@@ -258,7 +258,8 @@ def _record(rows, max_alternatives=5, ids=None):
 
 
 class TestAReferenceMirrorsRow:
-    """A list's formula arrives matched, and is given its ion's family."""
+    """A list's formula arrives matched, and is given its ion's family: a
+    reference list's and a target library's alike."""
 
     def test_it_carries_the_reading_an_election_would_have_displaced(self):
         # Dimethylformamide through [M+H]+ is acrolein through [M+NH4]+.
@@ -326,8 +327,20 @@ class TestAReferenceMirrorsRow:
         assert alternatives[0]["same_ion"] is True
         assert alternatives[0]["reference_identities"] == [{"name": "acrolein"}]
 
-    def test_a_target_library_row_is_given_none(self):
+    def test_a_target_library_row_is_given_its_family_too(self):
+        # One enumerator gives every reading of an ion, whoever named the
+        # formula: the library's name settles which reading the row is
+        # (cross_channel.same_ion_question), not what else its ion reads as.
         rows = [_stage_a(compound="tc-1")]
+        assert _record(rows) == 1
+        (alternative,) = rows[0]["alternatives"]
+        assert alternative["assigned_formula"] == "C3H4O"
+        assert alternative["ionization_mechanism_id"] == "im-nh4"
+        assert alternative["same_ion"] is True
+
+    def test_a_search_row_is_given_none_here(self):
+        # The search's rows carry the family their election gave them.
+        rows = [{**_stage_a(), "source": "untargeted"}]
         assert _record(rows) == 0
         assert rows[0]["alternatives"] is None
 
