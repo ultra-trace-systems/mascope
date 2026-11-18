@@ -47,8 +47,8 @@ class Calibration:
     ``a``/``b`` are the Platt parameters (``P = sigmoid(a*score + b)``). The rest is
     provenance so a calibrated number is auditable and its trust level is explicit.
 
-    ``corroboration_weights`` are the per-adduct log-odds by which co-occurring adducts of
-    the same compound update ``p_correct`` (see :func:`apply_corroboration`), measured on the
+    ``corroboration_weights`` are the per-adduct log likelihood ratios by which co-occurring
+    adducts of the same compound update the log odds of ``p_correct`` (see :func:`apply_corroboration`), measured on the
     golden set (``tooling/score_eval/corroboration_benchmark.py``). They ride on the same
     per-instrument object because, like the Platt curve, they encode this instrument's reagent
     chemistry and are refit alongside it. ``None``/empty means no corroboration adjustment.
@@ -63,7 +63,7 @@ class Calibration:
     fit_utc: str | None = None  # when it was fit (ISO-8601)
     source: str | None = None  # dataset / reference provenance it was fit from
     provisional: bool = True  # True until fit on a curated, sufficient dataset
-    # {adduct notation -> log-odds boost}; e.g. {"[M+Br]-": 2.28, "[M+NH4]+": 0.83}
+    # {adduct notation -> log likelihood ratio boost}; e.g. {"[M+Br]-": 1.63, "[M+NH4]+": 0.49}
     corroboration_weights: Mapping[str, float] | None = field(default=None)
     # {evidence level -> weight} the labels were fit under (EVIDENCE_LEVEL_WEIGHTS), or
     # None for a curve fit on unweighted labels (the decoy goldens, a refit given no levels)
@@ -112,7 +112,7 @@ def apply_corroboration(
     update: ``logit(p') = logit(p) + clamp(sum(weights[a] for a in observed_adducts), -cap, cap)``.
 
     ``observed_adducts`` are the OTHER adducts (beyond the winner's own) via which the same
-    compound was independently assigned; each contributes its measured log-odds. Generic adducts
+    compound was independently assigned; each contributes its measured log likelihood ratio. Generic adducts
     (protonation/deprotonation) carry ~0, distinctive ones (e.g. bromide) carry more, so a strong
     corroborator lifts a weak assignment while a generic one barely moves a strong one. Returns
     ``p_correct`` unchanged when it is ``None`` (uncalibrated), or when there are no weights or no
@@ -719,14 +719,18 @@ def refit_corroboration(
 # (true vs decoy). PRELIMINARY -- a placeholder until a curated reference dataset replaces
 # it; refit with `fit_calibration` and update here (or, later, the per-instrument store).
 # Held-out ECE 0.029; e.g. evidence 0.3 -> P 0.16, 0.6 -> 0.52, 0.9 -> 0.86.
-# Per-adduct corroboration log-odds, measured on the same demo goldens via the offset-decoy
+# Per-adduct corroboration weights, measured on the same demo goldens via the offset-decoy
 # benchmark (real adduct offset vs anchor-swap null; tooling/score_eval/corroboration_benchmark.py
-# and _corroboration_metrics.json). Distinctive reagent adducts corroborate strongly, generic
-# protonation/deprotonation ~0. PROVISIONAL, instrument+library specific -- refit per deployment.
+# and _corroboration_metrics.json). Each is the log likelihood ratio of the adduct's peak being
+# present, ln(P(present | real) / P(present | swap)), the factor apply_corroboration's odds update
+# needs: bromide ln(0.535 / 0.105), ammonium ln(0.513 / 0.314), urea ln(0.379 / 0.232). Not the
+# log odds ratio of the same rates, which overstates the update (2.28, 0.83, 0.70; #3161).
+# Distinctive reagent adducts corroborate strongly, generic protonation/deprotonation ~0.
+# PROVISIONAL, instrument+library specific -- refit per deployment.
 PROVISIONAL_ORBITRAP_CORROBORATION = {
-    "[M+Br]-": 2.28,
-    "[M+NH4]+": 0.83,
-    "[M+CH4N2O+H]+": 0.70,
+    "[M+Br]-": 1.63,
+    "[M+NH4]+": 0.49,
+    "[M+CH4N2O+H]+": 0.49,
     "[M+H]+": 0.0,
     "[M-H]-": 0.0,
 }

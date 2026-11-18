@@ -193,6 +193,44 @@ def test_corroboration_raises_probability_with_a_strong_adduct():
     assert p == pytest.approx(1 / (1 + np.exp(-z)))
 
 
+# The benchmark's recorded presence rates (tooling/score_eval/_corroboration_metrics.json):
+# P(the adduct's peak is present | real adduct offset), P(... | anchor-swap null).
+BENCHMARK_RATES = {
+    "[M+Br]-": (0.535, 0.105),
+    "[M+NH4]+": (0.513, 0.314),
+    "[M+CH4N2O+H]+": (0.379, 0.232),
+}
+
+
+def test_shipped_weights_are_log_likelihood_ratios_of_the_recorded_rates():
+    # The odds update needs ln(P(present | real) / P(present | swap)); the log odds
+    # ratio of the same rates (2.28, 0.83, 0.70) overstates it (#3161).
+    for adduct, (p_real, p_swap) in BENCHMARK_RATES.items():
+        lr = np.log(p_real / p_swap)
+        odds_ratio = np.log((p_real / (1 - p_real)) / (p_swap / (1 - p_swap)))
+        assert PROVISIONAL_ORBITRAP_CORROBORATION[adduct] == pytest.approx(
+            lr, abs=0.005
+        )
+        assert abs(PROVISIONAL_ORBITRAP_CORROBORATION[adduct] - odds_ratio) > 0.2
+    assert PROVISIONAL_ORBITRAP_CORROBORATION["[M+H]+"] == 0.0
+    assert PROVISIONAL_ORBITRAP_CORROBORATION["[M-H]-"] == 0.0
+
+
+def test_corroboration_lifts_by_the_likelihood_ratio_not_the_odds_ratio():
+    # One rate pair where the two ratios differ: bromide, 0.535 against 0.105, a
+    # likelihood ratio of 5.1 and an odds ratio of 9.8. A Bayesian update multiplies
+    # the prior odds by the likelihood ratio, so the posterior odds are 1.5 * 5.1.
+    p_real, p_swap = BENCHMARK_RATES["[M+Br]-"]
+    prior = 0.6
+    p = apply_corroboration(prior, ["[M+Br]-"], PROVISIONAL_ORBITRAP_CORROBORATION)
+    posterior_odds = p / (1 - p)
+    assert posterior_odds == pytest.approx(
+        (prior / (1 - prior)) * (p_real / p_swap), rel=0.01
+    )
+    odds_ratio = (p_real / (1 - p_real)) / (p_swap / (1 - p_swap))
+    assert posterior_odds < 0.6 * (prior / (1 - prior)) * odds_ratio
+
+
 def test_corroboration_generic_adduct_barely_moves_it():
     # deprotonation carries ~0 log-odds -> essentially unchanged
     assert apply_corroboration(0.6, ["[M-H]-"], WEIGHTS) == pytest.approx(0.6, abs=1e-9)
@@ -230,7 +268,7 @@ def test_the_adduct_row_leaves_the_corroboration_weights_as_they_were():
     weights = dict(PROVISIONAL_ORBITRAP_CORROBORATION)
     assert corroboration_by_mechanism(weights) == weights
     assert apply_corroboration(0.6, ["[M+Br]-"], weights) == pytest.approx(
-        1 / (1 + np.exp(-(np.log(0.6 / 0.4) + 2.28)))
+        1 / (1 + np.exp(-(np.log(0.6 / 0.4) + 1.63)))
     )
     # A multimer, a charge above one or a neutral loss of a weighted adduct is
     # another mechanism, and takes none of its weight.

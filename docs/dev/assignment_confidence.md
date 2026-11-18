@@ -463,9 +463,9 @@ no backend or DB, only `mascope_tools` + tests.
   **target-decoy design on the real demo spectra**: for each true detection (its primary
   `[M+H]+`/`[M-H]-` envelope fits a real peak at m/z `p`), check whether a peak sits at each of the
   compound's *other* adduct m/z's, versus two nulls. Choice of null is everything:
-  - **random offset** (a peak at `p + random Δ`): P = 0.008 → an inflated **~104×** LR.
+  - **random offset** (a peak at `p + random Δ`): P = 0.008 → an inflated **~57×** LR.
   - **anchor-swap** (the *same* real adduct offset re-anchored on a random real peak): P = 0.251 →
-    a defensible **~2.5×** LR. Adduct offsets like +NH₃ (17.027 Da) are generic mass differences
+    a defensible **~1.8×** LR. Adduct offsets like +NH₃ (17.027 Da) are generic mass differences
     that recur throughout a spectrum, so the random null is far too easy. The anchor-swap null is
     the honest one.
 
@@ -481,19 +481,23 @@ no backend or DB, only `mascope_tools` + tests.
   Full run (152 files, 13,270 detections). The weight is strongly **adduct-specific** — the
   chemically distinctive bromide corroborates strongly, the generic pos adducts barely:
 
-  | adduct | P(real) | P(swap) | LR | log-odds |
-  |---|---|---|---|---|
-  | `[M+Br]-`       | 0.535 | 0.105 | **9.8×** | +2.28 |
-  | `[M+NH4]+`      | 0.513 | 0.314 | 2.3× | +0.83 |
-  | `[M+CH4N2O+H]+` | 0.379 | 0.232 | 2.0× | +0.70 |
+  | adduct | P(real) | P(swap) | LR | weight, ln LR | odds ratio (ln) |
+  |---|---|---|---|---|---|
+  | `[M+Br]-`       | 0.535 | 0.105 | **5.1×** | +1.63 | 9.8× (+2.28) |
+  | `[M+NH4]+`      | 0.513 | 0.314 | 1.6× | +0.49 | 2.3× (+0.83) |
+  | `[M+CH4N2O+H]+` | 0.379 | 0.232 | 1.6× | +0.49 | 2.0× (+0.70) |
 
-  By polarity: neg **9.8×** (bromide is chemically distinctive — mass defect + 1:1 ⁷⁹/⁸¹Br isotope
+  The weight is the likelihood ratio `P(real) / P(swap)`, the factor a Bayesian odds update
+  multiplies by. The weights first shipped were the log odds ratios of the same rates, which
+  overstate the update when the rates are not small (#3161); the benchmark prints both.
+
+  By polarity, as odds ratios (their rates were not recorded): neg **9.8×** (bromide is chemically distinctive — mass defect + 1:1 ⁷⁹/⁸¹Br isotope
   pair), pos **2.1×** (the +NH₃/+urea offsets are generic mass differences). So corroboration is a
-  **real but modest, adduct-specific** signal — not the dominant factor the naive random-null 104×
+  **real but modest, adduct-specific** signal — not the dominant factor the naive random-null 57×
   implied.
 
   **Fold-in — implemented (D6).** The measured weights are folded into `p_correct` as an
-  **additive per-adduct log-odds update** (not the adduct-agnostic count heuristic, which is kept
+  **additive per-adduct log likelihood ratio update** (not the adduct-agnostic count heuristic, which is kept
   only for display): `logit(p_correct') = logit(p_correct) + clamp(Σ_{observed adducts a} w_a, ±cap)`
   (`apply_corroboration`, cap 3.0). A compound seen via several confident adducts lifts each winner
   by the co-occurring adducts' `w_a`; the engine does this as a run-level post-pass over the M0

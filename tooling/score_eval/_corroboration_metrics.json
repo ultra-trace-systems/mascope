@@ -6,16 +6,19 @@
     "real_offset_present": 0.4573,
     "random_offset_present": 0.0080,
     "anchor_swap_present": 0.2513,
-    "lr_vs_random": 104.3,
-    "lr_vs_swap": 2.5
+    "lr_vs_random": 57.2,
+    "lr_vs_swap": 1.82,
+    "odds_ratio_vs_random": 104.3,
+    "odds_ratio_vs_swap": 2.5
   },
-  "by_polarity_lr_vs_swap": { "neg": 9.8, "pos": 2.1 },
+  "by_polarity_odds_ratio_vs_swap": { "neg": 9.8, "pos": 2.1 },
   "per_adduct_lr_vs_swap": {
-    "[M+Br]-":       { "p_real": 0.535, "p_swap": 0.105, "lr": 9.80, "log_odds": 2.28, "n": 3044 },
-    "[M+NH4]+":      { "p_real": 0.513, "p_swap": 0.314, "lr": 2.30, "log_odds": 0.83, "n": 10226 },
-    "[M+CH4N2O+H]+": { "p_real": 0.379, "p_swap": 0.232, "lr": 2.01, "log_odds": 0.70, "n": 10226 }
+    "[M+Br]-":       { "p_real": 0.535, "p_swap": 0.105, "lr": 5.10, "log_lr": 1.63, "odds_ratio": 9.80, "log_odds_ratio": 2.28, "n": 3044 },
+    "[M+NH4]+":      { "p_real": 0.513, "p_swap": 0.314, "lr": 1.63, "log_lr": 0.49, "odds_ratio": 2.30, "log_odds_ratio": 0.83, "n": 10226 },
+    "[M+CH4N2O+H]+": { "p_real": 0.379, "p_swap": 0.232, "lr": 1.63, "log_lr": 0.49, "odds_ratio": 2.01, "log_odds_ratio": 0.70, "n": 10226 }
   },
-  "recommendation": "fold as additive per-adduct log-odds on logit(p_correct), capped (<=+3) and shrunk; weights are instrument/library-specific -> calibration store (D6); monoisotopic-only => conservative lower bound",
+  "ratios": "lr = p_real / p_swap, the likelihood ratio; log_lr is the corroboration weight. odds_ratio = odds(p_real) / odds(p_swap) is what this record first named lr and the shipped weights were read off (#3161); the by-polarity rates were not recorded, so only their odds ratios remain.",
+  "recommendation": "fold as additive per-adduct log likelihood ratios on logit(p_correct), capped (<=+3) and shrunk; weights are instrument/library-specific -> calibration store (D6); monoisotopic-only => conservative lower bound",
   "caveats": [
     "weights encode Br/Ur reagent chemistry; do not hardcode universally",
     "'present' is monoisotopic-only, so LRs are a conservative lower bound vs a fit-gated corroboration",
