@@ -158,6 +158,19 @@ class CalibrationConfig(BaseModel):
     # intense of them: eight candidates is room, not a cut.
     TOF_SEARCH_WINDOW_PPM: float = 500.0
     TOF_SEARCH_CANDIDATES: int = 8
+    # The search looks within TOF_SEARCH_NEAR_WINDOW_PPM first, the largest
+    # drift seen, and takes the axis it finds there when at least
+    # TOF_SEARCH_NEAR_MIN_IONS ions agree on it: two ions always make an axis,
+    # so agreement starts at the third. Only when fewer do does it look to
+    # TOF_SEARCH_WINDOW_PPM, and it takes the axis it finds there only when
+    # that one holds more ions. Searched to 500 ppm at once, the drifting TOF's
+    # 814 November nitrate files (MAS-951's prod job) gave five fits 380 to
+    # 475 ppm from the file's stored fit, where an axis within 250 ppm held as
+    # many ions, or one fewer. Within 250 ppm first, those five fit within 45
+    # ppm of it, as most files of their day did; 806 of the 814 files take
+    # the same peaks either way.
+    TOF_SEARCH_NEAR_WINDOW_PPM: float = 250.0
+    TOF_SEARCH_NEAR_MIN_IONS: int = 3
     # The overlap filter drops two peaks closer than one peak width, and on a
     # TOF it looks no further than this for the neighbour. A TOF peak is 110
     # to about 430 ppm wide on the fleet (resolving power 2,300 to 9,000);

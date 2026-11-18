@@ -296,6 +296,119 @@ async def test_the_search_window_reaches_five_hundred_ppm(filestore, off, found)
         assert handler.warning == "Not enough calibration peaks"
 
 
+@pytest.mark.parametrize("off, window", [(240.0, 250.0), (260.0, 500.0)])
+@pytest.mark.asyncio
+async def test_the_search_looks_within_250_ppm_first(filestore, off, window):
+    """The file's axis read 240 ppm off: the search finds the calibrants
+    within 250 ppm and looks no further. At 260 ppm it finds none there and
+    looks to 500 ppm; the fit is the same."""
+    filename = support.write_file(
+        filestore, support.calibrant_peaks(), stored=support.axis_off(off)
+    )
+
+    handler = await _node_fit(filename, support.isotopes())
+
+    assert _kept(handler) == [62, 79, 81, 125, 188]
+    assert handler.fitted_on["search"] == {
+        "window_ppm": window,
+        "n_lines": 5,
+        "n_ions": 4,
+    }
+
+
+def _true_errors(handler) -> np.ndarray:
+    """How far from the true axis each line the fit kept sits, in ppm."""
+    kept = [row for row in handler.stats if "mz" in row]
+    return audit.ppm_error(
+        [row["sample_peak_tof"] for row in kept],
+        [row["mz"] for row in kept],
+        support.TRUE_FIT,
+    )
+
+
+@pytest.mark.asyncio
+async def test_three_ions_agreeing_near_the_file_s_axis_keep_the_search_there(
+    filestore,
+):
+    """Three ions agree within 250 ppm, faint, on the true axis; NO3-.(HNO3)2
+    has no peak there. 400 ppm off, all four agree, a hundred times brighter:
+    so many peaks sit that far off, the drifting TOF's files showed, that
+    some agree by chance. The search stays with the three."""
+    peaks = [
+        peak
+        for peak in _decoys([0.0, 0.0, 0.0, 0.0, 0.0], off=400.0)
+        if not (round(peak["mz"]) == 188 and peak["area"] == 1.0)
+    ]
+    filename = support.write_file(filestore, peaks)
+
+    handler = await _node_fit(filename, support.isotopes())
+
+    assert _kept(handler) == [62, 79, 81, 125]
+    assert np.max(np.abs(_true_errors(handler))) < 1e-6
+    assert handler.fitted_on["search"] == {
+        "window_ppm": 250.0,
+        "n_lines": 4,
+        "n_ions": 3,
+    }
+
+
+@pytest.mark.asyncio
+async def test_two_ions_agreeing_near_the_file_s_axis_are_no_consensus(filestore):
+    """The file's axis reads 400 ppm off the true one, and two peaks, of NO3-
+    and NO3-.HNO3, sit where it puts their lines: two ions always make an
+    axis. The search looks to 500 ppm, where all four ions agree on the true
+    axis, and the fit is made there."""
+    # Placed by their m/z, as the file is written in the order of the peaks'
+    near = [
+        {"mz": peak["mz"] * (1 - 400e-6), "area": 100.0}
+        for peak in support.calibrant_peaks()
+        if round(peak["mz"]) in (62, 125)
+    ]
+    filename = support.write_file(
+        filestore,
+        support.calibrant_peaks() + near,
+        stored=support.axis_off(400.0),
+    )
+
+    handler = await _node_fit(filename, support.isotopes())
+
+    assert _kept(handler) == [62, 79, 81, 125, 188]
+    assert np.max(np.abs(_true_errors(handler))) < 1e-6
+    assert handler.fitted_on["search"] == {
+        "window_ppm": 500.0,
+        "n_lines": 5,
+        "n_ions": 4,
+    }
+
+
+@pytest.mark.asyncio
+async def test_an_axis_further_off_holding_no_more_ions_is_not_taken(filestore):
+    """NO3- and NO3-.HNO3 alone have peaks on the true axis, faint, and as
+    many a hundred times brighter 400 ppm off. Two ions are no consensus, so
+    the search looks to 500 ppm, but the brighter pair holds no more ions
+    than the near one, and the search keeps the near pair, too few to fit."""
+    lines = [
+        peak["mz"]
+        for peak in support.calibrant_peaks()
+        if round(peak["mz"]) in (62, 125)
+    ]
+    peaks = [{"mz": mz, "area": 1.0} for mz in lines] + [
+        {"mz": mz, "ppm": 400.0, "area": 100.0} for mz in lines
+    ]
+    filename = support.write_file(filestore, peaks)
+    stored = audit.read_stored_peaks(filename)
+
+    refit = await audit.refit(
+        stored, support.params(), support.isotopes(), support.resolution
+    )
+
+    assert refit.fit is None
+    readings = refit.readings
+    assert sorted(round(mz) for mz in readings.mz) == [62, 125]
+    errors = audit.ppm_error(readings.sample_peak_tof, readings.mz, support.TRUE_FIT)
+    assert np.max(np.abs(errors)) < 1e-6
+
+
 def _crowded(n_brighter: int) -> list[dict]:
     """The calibrant lines, NO3-.HNO3's with brighter peaks beside it, each
     60 ppm from the next: apart by more than a peak's width, inside its
@@ -394,18 +507,18 @@ async def test_the_axis_need_not_hold_the_reagent_ion(filestore):
         188,
     ]
     assert handler.fitted_on["search"] == {
-        "window_ppm": 500.0,
+        "window_ppm": 250.0,
         "n_lines": 4,
         "n_ions": 3,
     }
 
 
-def _decoys(scatter: list[float]) -> list[dict]:
+def _decoys(scatter: list[float], off: float = 150.0) -> list[dict]:
     """The calibrant lines, faint, and beside each a peak a hundred times
-    brighter on an axis 400 ppm off, scattered about it by ``scatter``."""
+    brighter on an axis ``off`` ppm off, scattered about it by ``scatter``."""
     peaks = [{**peak, "area": 1.0} for peak in support.calibrant_peaks()]
     decoys = [
-        {"mz": peak["mz"], "ppm": 400.0 + ppm, "area": 100.0}
+        {"mz": peak["mz"], "ppm": off + ppm, "area": 100.0}
         for peak, ppm in zip(peaks, scatter)
     ]
     return peaks + decoys
@@ -415,7 +528,7 @@ def _decoys(scatter: list[float]) -> list[dict]:
 async def test_the_node_tells_tied_axes_apart_within_a_third_of_the_tolerance(
     filestore,
 ):
-    """Both axes hold all four ions within 15 ppm: the brighter one 400 ppm
+    """Both axes hold all four ions within 15 ppm: the brighter one 150 ppm
     off, its lines scattered by 7 ppm, and the true one. Within 5 ppm, a
     third of the tolerance, only the true one holds them, and the fit is
     made on its lines. Within 10 ppm both would, and the brighter would win."""
@@ -471,7 +584,7 @@ async def test_an_ion_offered_twice_is_one_ion(filestore):
     handler = await _node_fit(filename, twice)
 
     assert handler.fitted_on["search"] == {
-        "window_ppm": 500.0,
+        "window_ppm": 250.0,
         "n_lines": 5,
         "n_ions": 4,
     }
@@ -500,7 +613,7 @@ async def test_a_line_below_the_abundance_floor_is_no_line_of_the_search(filesto
     handler = await _node_fit(filename, pd.concat([isotopes, faint]))
 
     assert handler.fitted_on["search"] == {
-        "window_ppm": 500.0,
+        "window_ppm": 250.0,
         "n_lines": 5,
         "n_ions": 4,
     }

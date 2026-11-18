@@ -26,7 +26,7 @@ Each peak is given an expected width envelope, and any overlapping pairs are dis
 
 On a TOF file the numbers are these, and the calibrants are found another way.
 A calibrant's isotopes are kept when their relative abundance is at least 0.15.
-Peaks of the mode's polarity with a signal-to-noise ratio of at least 10 are candidates within 500 ppm of where the file's own axis puts each line: the search window.
+Peaks of the mode's polarity with a signal-to-noise ratio of at least 10 are candidates within 500 ppm of where the file's own axis puts each line: the search window. The search looks within 250 ppm of it first, as below.
 A peak that overlaps a neighbour within one FWHM by the instrument's resolution function is dropped, and so is the neighbour; the local-dominance guard is an Orbitrap rule and is off for TOF.
 A TOF peak is 110 to about 430 ppm wide, so on a TOF file the overlap test looks for the neighbour no further than 100 ppm: as far as it looked when only the peaks within the 100 ppm refine window reached it.
 Each line keeps its eight strongest remaining peaks in the window, by time-averaged peak area, and the search below decides which of them is the calibrant.
@@ -44,13 +44,15 @@ This is a random sample consensus ([Fischler and Bolles, 1981](https://doi.org/1
 
 ```mermaid
 flowchart TD
-  A["Each line: its 8 strongest peaks within 500 ppm"] --> B[Every two peaks of two ions: the axis through both]
+  A["Each line: its 8 strongest peaks within 250 ppm"] --> B[Every two peaks of two ions: the axis through both]
   B --> C{"Slope within 1 % of the file's own?"}
   C -- no --> X[Dropped]
   C -- yes --> D[Refit it to the lines within 15 ppm]
-  D --> E[Score it]
-  E --> F[The best axis]
-  F --> G["Each line: its strongest peak within 15 ppm of it"]
+  D --> E[Score it: the best axis]
+  E --> W{"Three ions or more on it?"}
+  W -- no --> V["The same within 500 ppm: taken if more ions agree"]
+  W -- yes --> G
+  V --> G["Each line: its strongest peak within 15 ppm of the axis"]
   G --> H[The fit, as for any file]
 ```
 
@@ -61,7 +63,9 @@ flowchart TD
 - The winning axis need not hold the reagent ion. The collection marks no ion as the reagent, and agreement is the evidence: four or five ions within 15 ppm of one axis do not line up by chance. A reagent line further than the tolerance from the axis the others agree on would be dropped by the fit's residual rule anyway.
 - The pre-fit error the record keeps, and the acquisition-drift warning over 50 ppm, are still measured against the file's own axis, so an operator still sees the acquisition calibration drift.
 - The automatic pipeline retries a fit that warns at twice the tolerance, up to six times; the search then counts the lines within the wider tolerance.
-- The search window is twice the largest drift measured on a TOF. A wider one would reach axes that weak peaks agree on by chance: on a dense spectrum with a collection of many ions, a window of 2,000 ppm found five ions agreeing on an axis 1,200 ppm off, where the right axis held three. A file whose axis is further off than 500 ppm finds no calibrants and ends in *Not enough calibration peaks*.
+- The search looks within 250 ppm first, the largest drift measured on a TOF, and takes the best axis there when at least three ions agree on it: two ions always make an axis, so agreement starts at the third. Only when fewer do does it look within the whole search window, 500 ppm, and it takes the axis it finds there only when more ions agree on it than on the one within 250 ppm.
+- The wider the window, the more axes peaks that are no calibrant's agree on by chance. On a dense spectrum with a collection of many ions, a window of 2,000 ppm found five ions agreeing on an axis 1,200 ppm off, where the right axis held three. On a drifting TOF's 814 nitrate files, searched within 500 ppm at once, five fits took peaks 380 to 475 ppm from where the file's earlier fit put its calibrants, where an axis within 250 ppm held as many ions, or one fewer. Searched within 250 ppm first, those five fit within 45 ppm of the earlier fit, as most files of their day did.
+- A file whose axis is further off than 250 ppm is fitted on its calibrants only where fewer than three ions agree on an axis within 250 ppm, and on a dense spectrum three may do so by chance. A file whose axis is further off than 500 ppm finds no calibrants and ends in *Not enough calibration peaks*. The acquisition-drift warning flags a drift over 50 ppm long before either.
 - On a TOF file, the calibration dialog's **Refine window** does not limit the search: the search window does, and it is not a setting.
 
 ## Quality Assessment and Scoring
@@ -230,7 +234,7 @@ Beside its parameters and the counts and mean errors of its quality block, a TOF
 - **Lines**: how many distinct lines the collection offered above the abundance floor, matched or not. A line two ions share counts once.
 - **Collection**: the calibration collection, and a hash of the isotopes it offered under the mode's ionization mechanisms: their formulas, exact m/z and abundances. Editing the collection's compounds changes the hash, so files fitted on different versions of one collection can be told apart. The hash is the same on every server.
 - **Model**: the model kept, by Tofwerk's number: 0 for the square-root model, 2 for the three-parameter one. Its equation is in Tofwerk's names, `i = p1*sqrt(m) + p2` or `i = p1*m^p3 + p2`: `i` is the time-of-flight index, `p1` and `p2` are $p_0$ and $p_1$ above, and `p3` is $p_2$. Beside it, `compared` lists each model's mean held-out error in ppm, and `min_gain_ppm` the 0.5 ppm the three-parameter model has to gain. `compared` is empty (`null`) when the calibrants came from fewer than four ions, and a model whose fits failed has no error in it.
-- **Search**: how the calibrants were found: the search window in ppm (`window_ppm`), and how many lines, of how many ions, the winning axis held within the tolerance (`n_lines`, `n_ions`). The record keeps the refinement window it was given as well, which no longer limits a TOF search.
+- **Search**: how the calibrants were found: the window the winning axis was found in, in ppm (`window_ppm`): 250, or 500 where the search had to look further, and how many lines, of how many ions, the winning axis held within the tolerance (`n_lines`, `n_ions`). The record keeps the refinement window it was given as well, which no longer limits a TOF search.
 - **Node version**: the version of the calibration step that made the fit. Version 1 fitted the square-root model alone; version 2 also tries the three-parameter one; version 3 finds the calibrants by the search above, where versions 1 and 2 matched each within the refinement window of where the file's axis put it.
 
 The calibration dialog lists the points of the fit it previews, a line the fit left out in muted text, and the badge of a calibrated TOF sample names the span.
