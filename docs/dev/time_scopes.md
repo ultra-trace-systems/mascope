@@ -89,7 +89,9 @@ it.
   ([`sample_filters_and_metadata.md`](sample_filters_and_metadata.md)
   section 2.2); the ingest design's next cut adds one batch per scan range.
   Every ingested sample folds into its batch ledger at
-  `fold_in_sample` / `fold_sample_into_batch_peaks`
+  `fold_sample_into_batch_peaks`, the fold that reads the sample's assignment
+  rows, writes its occurrences and recomputes each touched anchor's consensus
+  (`fold_in_sample` is its pure, in-memory anchor step)
   ([batch_peaks.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/batch_peaks.py),
   [batch_peaks_controller.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/batch_peaks_controller.py)),
   so a batch ledger holds one row per (batch peak, member sample) with the
@@ -202,7 +204,7 @@ The visual digests' two keys stay, and a third groups them (decision 3):
 | Series key | Identity | Facets |
 |---|---|---|
 | `ion:<target_ion_id>` | a target ion of a collection | the collection's mode |
-| `formula:<formula>|<adduct>` | an assigned formula with its adduct, from the ledger | the adduct, hence the mode |
+| `formula:<formula>\|<adduct>` | an assigned formula with its adduct, from the ledger | the adduct, hence the mode |
 | `compound:<neutral formula>` | the neutral compound, across adducts | one series per adduct and mode present in the scope |
 
 A chart over a `compound:` key draws one line per adduct by default, with the
@@ -218,11 +220,29 @@ A table `series_rollup`: one row per (batch, series key, bin width, bin
 start) with `n`, `median`, `mean`, `p10`, `p90`, `max`, the mode and the run
 id, at two widths, one hour and one day. A table `series_catalog`: one row per
 (instrument, mode, series key) with the neutral formula, adduct, first and last
-seen, days seen, so the species-in-range list is a lookup. Both are written in
-the fold (`fold_in_sample`) for the sample's bins and recomputed for a batch
-when its ledger is rebuilt or its run changes; a one-off backfill walks every
-acquisition batch. Raw cadence inside a window comes from the existing series
-routes, which a day's scope uses as it does today.
+seen, days seen, so the species-in-range list is a lookup.
+
+Both are written where a sample folds into its batch ledger,
+`fold_sample_into_batch_peaks`
+([batch_peaks_controller.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/batch_peaks_controller.py)),
+and after `recompute_batch_consensus` when a backfill or a rebuild folds with
+`defer_consensus_to`. The rule has three parts:
+
+1. **A fold writes the folded sample's bins** for every series the sample
+   carries.
+2. **A consensus change rewrites the batch peak.** A `formula:` series is a
+   batch peak's *consensus* formula and adduct, and `_apply_consensus` can
+   move them on a new sample's vote, a curation or a re-fold. When it does,
+   every earlier member's intensity belongs to another key, so the rollups
+   of that batch peak's old and new keys are recomputed over the whole
+   batch, and the catalog's two rows follow. Writing only the folded
+   sample's bins would leave a six-month chart drifting from the ledger with
+   nothing to show it.
+3. **A ledger rebuild or a run change recomputes the batch.** A one-off
+   backfill walks every acquisition batch through the same code.
+
+Raw cadence inside a window comes from the existing series routes, which a
+day's scope uses as it does today.
 
 Size: 300 series at hourly bins is about 2.6 million rows per instrument, per
 mode, per year, and 110 thousand at daily bins; well inside Postgres on the
@@ -313,9 +333,11 @@ follow.
 - **Rollup volume and the fold's latency.** Section 4.3's estimate is per
   instrument and mode; a fleet server with four instruments and three
   chemistries at hourly bins holds about 30 million rows a year. Measure the
-  fold's added time and the table's size on a copy of a production database
-  before the backfill is scheduled; daily-only rollups beyond a year are the
-  fallback.
+  fold's added time, the consensus recompute's cost (a changed consensus
+  rewrites one batch peak's rows for every member under two keys, up to a
+  few thousand rows, and a curation can change many peaks at once) and the
+  table's size on a copy of a production database before the backfill is
+  scheduled; daily-only rollups beyond a year are the fallback.
 - **Series drift across runs.** A `formula:` series is stable while the
   engine agrees with itself; a run change can rename a compound. The run is a
   marker on the axis and a filter; a chart never joins two runs silently.
