@@ -88,7 +88,6 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     in_batch_run,
     touch_ledger,
 )
-from mascope_backend.api.new.peak_assignments.cross_channel import neutral_key
 from mascope_backend.api.new.peak_assignments.reagent_pass import library_ion
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
@@ -122,6 +121,7 @@ from mascope_tools.composition.coherence import (
     read_flatness,
     strength,
 )
+from mascope_tools.composition.utils import formula_identity
 
 
 #: A partition of the batch's anchors: their ionization mode and the
@@ -221,7 +221,7 @@ def partition_anchors(
         notation = notation_by_id.get(anchor.ionization_mechanism_id or "")
         if not formula or not notation or anchor.consensus_tier == TIER_UNASSIGNED:
             continue
-        part.neutrals.setdefault(neutral_key(formula), []).append(
+        part.neutrals.setdefault(formula_identity(formula), []).append(
             Channel(
                 batch_peak_id=anchor.batch_peak_id,
                 formula=formula,

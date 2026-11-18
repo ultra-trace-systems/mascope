@@ -89,7 +89,6 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     in_batch_run,
     touch_ledger,
 )
-from mascope_backend.api.new.peak_assignments.cross_channel import neutral_key
 from mascope_backend.api.new.peak_assignments.envelope_fit import (
     recorded_envelope_tolerances,
 )
@@ -143,6 +142,7 @@ from mascope_tools.composition.merged_isotopologues import (
     mass_scatter_ppm,
     position_window_ppm,
 )
+from mascope_tools.composition.utils import formula_identity
 
 
 def is_labelled_ion(anchor: Any) -> bool:
@@ -484,7 +484,7 @@ def plan_pairs(
         partner_key = pair_channel(anchor, notation)
         if partner_key is None:
             continue
-        neutral = neutral_key(anchor.consensus_formula)
+        neutral = formula_identity(anchor.consensus_formula)
         channels[neutral].add(mechanism_key(notation))
         sides.append((anchor, notation, partner_key, neutral))
     for anchor, notation, partner_key, neutral in sides:

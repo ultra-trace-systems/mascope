@@ -15,7 +15,6 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
     SAME_ION_SETTLED,
     SETTLED_BY_SECOND_CHANNEL,
     SETTLED_BY_TARGET_LIBRARY,
-    neutral_key,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
     GRID_RIVALS,
@@ -62,6 +61,7 @@ from mascope_tools.composition.heuristic_filter import (
     PLAUSIBILITY_FLOOR,
     formula_plausibility,
 )
+from mascope_tools.composition.utils import formula_identity
 
 
 #: The channel every row here is read through unless it says otherwise.
@@ -637,7 +637,7 @@ class TestTheRivalTests:
             alternatives=[rival("C7H16O5", 0.88)],
             provenance={"cross_channel": {"channels": [PROTON, "[M+NH4]+"]}},
         )
-        committed = {neutral_key("C7H16O5"): {PROTON: "assigned"}}
+        committed = {formula_identity("C7H16O5"): {PROTON: "assigned"}}
 
         assert tests_of(level(row, neutral_channels=committed)) == {"C7H16O5": OPEN}
 

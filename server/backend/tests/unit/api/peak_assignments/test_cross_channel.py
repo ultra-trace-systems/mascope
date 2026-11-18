@@ -24,7 +24,6 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
     cap_cross_channel,
     channels_by_neutral,
     donates_nitrogen,
-    neutral_key,
     nitrogen_donating_channels,
     partner_heights,
     partner_tier,
@@ -34,6 +33,7 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
 from mascope_backend.api.new.peak_assignments.cross_channel import (
     same_ion_question as _same_ion_question,
 )
+from mascope_tools.composition.utils import formula_identity
 
 
 PROTON = "prot"
@@ -798,7 +798,7 @@ class TestARivalTheSampleShows:
             ),
         ]
         self.gate(rows)
-        assert neutral_key("C6H4(CH3)2") == neutral_key("C8H10")
+        assert formula_identity("C6H4(CH3)2") == formula_identity("C8H10")
         assert rows[0]["tier"] == "candidate"
         assert rows[0]["provenance"]["cross_channel"][REASON_AMBIGUOUS_ADDUCT] == {
             "alternative": "C8H10",
@@ -1356,10 +1356,12 @@ class TestTheRunsRecord:
         ]
         index = channels_by_neutral(rows, dict(POSITIVE))
         assert index == {
-            neutral_key("C6H12O6"): {"[M+H]+": "candidate", "[M+NH4]+": "assigned"}
+            formula_identity("C6H12O6"): {"[M+H]+": "candidate", "[M+NH4]+": "assigned"}
         }
-        assert partner_tier(index[neutral_key("C6H12O6")], "[M+H]+") == "assigned"
-        assert partner_tier(index[neutral_key("C6H12O6")], "[M+NH4]+") == "candidate"
+        assert partner_tier(index[formula_identity("C6H12O6")], "[M+H]+") == "assigned"
+        assert (
+            partner_tier(index[formula_identity("C6H12O6")], "[M+NH4]+") == "candidate"
+        )
 
 
 def mirror(row_id: str, formula: str, mechanism: str, **kwargs) -> dict:
@@ -1480,10 +1482,10 @@ class TestTheNeutralsIdentity:
         # A curated row spells its formula explicit where an untargeted row does
         # not, and the same compound seen through Stage A and Stage B has to
         # group or the corroboration is lost exactly where it is best evidenced.
-        assert neutral_key("C1H4N2O1") == neutral_key("CH4N2O")
+        assert formula_identity("C1H4N2O1") == formula_identity("CH4N2O")
 
     def test_different_neutrals_stay_different(self):
-        assert neutral_key("C6H12O6") != neutral_key("C6H12O5")
+        assert formula_identity("C6H12O6") != formula_identity("C6H12O5")
 
     def test_the_two_spellings_corroborate_each_other(self):
         rows = [
@@ -1500,7 +1502,7 @@ def test_channels_by_neutral_reads_only_committed_monoisotopic_rows():
         {**row("c", "C6H12O6", UREA), "assigned_formula": None},
     ]
     assert channels_by_neutral(rows, dict(POSITIVE)) == {
-        neutral_key("C6H12O6"): {"[M+H]+": "assigned"}
+        formula_identity("C6H12O6"): {"[M+H]+": "assigned"}
     }
 
 
@@ -1528,7 +1530,7 @@ class TestBeforeTheMassGatesCap:
             row("b", "C6H12O6", AMMONIUM, tier="candidate"),
         ]
         assert channels_by_neutral(rows, dict(POSITIVE)) == {
-            neutral_key("C6H12O6"): {
+            formula_identity("C6H12O6"): {
                 "[M+H]+": "below_assignability",
                 "[M+NH4]+": "candidate",
             }
@@ -1541,7 +1543,7 @@ class TestBeforeTheMassGatesCap:
         self, ceiling, shown
     ):
         rows = [off_calibration(row("a", "C6H12O6", PROTON), ceiling)]
-        neutral = neutral_key("C6H12O6")
+        neutral = formula_identity("C6H12O6")
         assert (
             neutral in partner_heights(rows, dict(POSITIVE), frozenset({"[M+NH4]+"}))
         ) is shown

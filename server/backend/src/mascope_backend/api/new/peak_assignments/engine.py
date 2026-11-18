@@ -12,11 +12,9 @@ persistence.
 """
 
 import math
-import re
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
-from functools import lru_cache
 
 import numpy as np
 import pandas as pd
@@ -83,9 +81,9 @@ from mascope_tools.composition.models import (
 from mascope_tools.composition.scoring import pattern_scoring_for_sample
 from mascope_tools.composition.utils import (
     calculate_mass,
-    parse_composition,
+    formula_identity,
+    ion_identity,
     parse_formula_tokens,
-    to_hill_order,
 )
 
 
@@ -1189,60 +1187,6 @@ def _alternative_dict(
     if formula_identities:
         alternative["reference_identities"] = formula_identities
     return alternative
-
-
-@lru_cache(maxsize=4096)
-def formula_identity(formula: str | None) -> str:
-    """A neutral formula's identity, however it was written.
-
-    Stage A's frame holds formulas from two authors. A target library holds what
-    a person typed - ``CH3COOH``, ``NH3``, ``H2SO4`` - and a reference list holds
-    the same neutrals in Hill order, so one reading of a peak can arrive spelled
-    twice. Compared as text the two spellings were two hypotheses: the tie
-    between them fell to alphabetical order, the library's entry lost its own
-    line to the list's copy, and the candidate-density rule counted the copy as
-    a rival. Read as a composition they are one.
-
-    :param formula: A neutral formula as a library or a reference list spells it.
-    :return: The Hill-order formula of its composition, ``"()"`` for the empty
-        neutral, and the text as given where it does not parse, so an unreadable
-        formula is never merged with another.
-    """
-    text = str(formula or "").strip()
-    try:
-        counts = {symbol: n for symbol, n in parse_composition(text).items() if n}
-    except Exception:  # noqa: BLE001 - an unreadable formula keeps its own text
-        return text
-    if not counts and text not in ("", "()"):
-        return text
-    return to_hill_order(counts)
-
-
-#: The charge an ion formula ends in: its signs, one per charge (``-``,
-#: ``++``), never a count, which would read as the last element's
-#: (``target_ions_compute.charge_string``).
-_CHARGE = re.compile(r"[+-]+$")
-
-
-def ion_identity(ion_formula: str | None) -> tuple[str, str] | None:
-    """An ion's identity, however its neutral and adduct were split.
-
-    ``C10H18O3`` read through ``[M+Br]-`` and ``C10H19BrO3`` read through
-    ``[M-H]-`` are one ion, ``C10H18BrO3-``: the same mass and the same
-    envelope, so the spectrum cannot tell them apart and one of them is no
-    rival of the other. Read as a composition and a charge, so two spellings
-    of one ion agree.
-
-    :param ion_formula: An ion formula with its charge, such as ``C6H11O2-``.
-        Its charge is the signs it ends in, as the engine writes it.
-    :return: ``(composition, charge)``, or None where there is no ion named.
-    """
-    if not ion_formula or not isinstance(ion_formula, str):
-        return None
-    text = ion_formula.strip()
-    match = _CHARGE.search(text)
-    charge = match.group(0) if match else ""
-    return formula_identity(text[: match.start()] if match else text), charge
 
 
 #: The provenance key a row carries where the cap on its stored

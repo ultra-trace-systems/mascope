@@ -99,7 +99,6 @@ from mascope_backend.api.new.peak_assignments.batch_stages import (
     mark_every_stage_stale,
     mark_stale,
 )
-from mascope_backend.api.new.peak_assignments.cross_channel import neutral_key
 from mascope_backend.api.new.peak_assignments.engine import (
     is_monoisotopic_formula,
     labelled_isotopes,
@@ -125,6 +124,7 @@ from mascope_backend.socket.notifications import (
     send_progress_user_notification,
 )
 from mascope_file.name import get_instrument_type
+from mascope_tools.composition.utils import formula_identity
 
 
 def _intensity_variable(filename: str) -> str:
@@ -967,8 +967,8 @@ def partition_channels(
     As a run counts a second channel (``cross_channel.channels_by_neutral``):
     a reading that commits a formula on a peak of its own - no line of
     another batch peak's - through a mechanism, keyed on the neutral's
-    element counts (``cross_channel.neutral_key``), so two spellings of one
-    formula are one neutral. A batch peak's fresh consensus replaces what the
+    composition (``utils.formula_identity``), so two spellings of one formula
+    are one neutral. A batch peak's fresh consensus replaces what the
     ledger stored for it.
 
     :param stored: (batch peak id, partition, formula, mechanism,
@@ -993,7 +993,7 @@ def partition_channels(
         if not formula or not mechanism or isotopologue_of is not None:
             continue
         if formula not in keys:
-            keys[formula] = neutral_key(formula)
+            keys[formula] = formula_identity(formula)
         channels[(partition, keys[formula])].add(mechanism)
     return channels
 
@@ -1082,7 +1082,7 @@ async def _persistence_facts(
     for bp_id in ids:
         bp, consensus = voted[bp_id]
         others = channels.get(
-            (_partition_of(bp), neutral_key(consensus.consensus_formula)), set()
+            (_partition_of(bp), formula_identity(consensus.consensus_formula)), set()
         ) - {consensus.ionization_mechanism_id}
         if lines.get(bp_id) or others:
             facts[bp_id] = PersistenceFacts(

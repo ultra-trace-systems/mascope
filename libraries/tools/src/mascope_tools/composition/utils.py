@@ -406,6 +406,68 @@ def remove_ones_from_formula(formula: str) -> str:
     return formula
 
 
+@lru_cache(maxsize=4096)
+def formula_identity(formula: str | None) -> str:
+    """A neutral formula's identity, however it was written.
+
+    The one test of "the same neutral" every pass asks. A target library holds
+    what a person typed - ``CH3COOH``, ``NH3``, ``C6H4(CH3)2`` - a reference
+    list holds the same neutrals in Hill order, and a curated row spells its
+    counts out (``C1H4N2O1``) where a search row does not (``CH4N2O``). Compared
+    as text, one reading of a peak arrived spelled twice: the tie between the
+    two spellings fell to alphabetical order, the library's entry lost its own
+    line to the list's copy, a density counted the copy as a rival, and one
+    neutral seen through two channels failed to group. Read as a composition
+    they are one.
+
+    :param formula: A neutral formula as a library, a list or a search spells
+        it.
+    :return: The Hill-order formula of its composition; ``"()"`` for the empty
+        neutral, the reading of a reagent ion of no molecule; ``""`` where no
+        formula is named at all, which is no neutral and so never the empty
+        one; and the text as given where it does not parse, so an unreadable
+        formula is never merged with another.
+    """
+    text = str(formula or "").strip()
+    if not text:
+        return ""
+    try:
+        counts = {symbol: n for symbol, n in parse_composition(text).items() if n}
+    except Exception:  # noqa: BLE001 - an unreadable formula keeps its own text
+        return text
+    if not counts and text != "()":
+        return text
+    return to_hill_order(counts)
+
+
+#: The charge an ion formula ends in: its signs, one per charge (``-``,
+#: ``++``), never a count, which would read as the last element's.
+_ION_CHARGE = re.compile(r"[+-]+$")
+
+
+def ion_identity(ion_formula: str | None) -> tuple[str, str] | None:
+    """An ion's identity, however its neutral and adduct were split.
+
+    ``C10H18O3`` read through ``[M+Br]-`` and ``C10H19BrO3`` read through
+    ``[M-H]-`` are one ion, ``C10H18BrO3-``: the same mass and the same
+    envelope, so the spectrum cannot tell them apart and one of them is no
+    rival of the other. Read as a composition (:func:`formula_identity`) and a
+    charge, so two spellings of one ion agree. The one test of "the same ion"
+    every pass asks.
+
+    :param ion_formula: An ion formula with its charge, such as ``C6H11O2-``.
+        Its charge is the signs it ends in, as the finder and the target ions
+        write it.
+    :return: ``(composition, charge)``, or None where there is no ion named.
+    """
+    if not ion_formula or not isinstance(ion_formula, str):
+        return None
+    text = ion_formula.strip()
+    match = _ION_CHARGE.search(text)
+    charge = match.group(0) if match else ""
+    return formula_identity(text[: match.start()] if match else text), charge
+
+
 # Token: a bracket isotope ('[15N]'), a caret custom element ('^N'), or a plain
 # element ('C', 'Br'), each with an optional trailing count.
 _FORMULA_TOKEN = re.compile(r"(\[\d+[A-Z][a-z]?\]|\^?[A-Z][a-z]?)(\d*)")

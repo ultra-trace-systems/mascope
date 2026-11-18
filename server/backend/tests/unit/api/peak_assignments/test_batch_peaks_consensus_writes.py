@@ -225,7 +225,7 @@ def test_the_channels_are_the_partitions_own_readings_on_peaks_of_their_own():
     from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
         partition_channels,
     )
-    from mascope_backend.api.new.peak_assignments.cross_channel import neutral_key
+    from mascope_tools.composition.utils import formula_identity
 
     here, there = ("sb", "mode", "heights"), ("sb", "mode", "areas")
     stored = [
@@ -239,7 +239,7 @@ def test_the_channels_are_the_partitions_own_readings_on_peaks_of_their_own():
         # A reading with no mechanism names no channel.
         ("bp-none", here, "C9H11NO", None, None),
     ]
-    key = neutral_key("C9H11NO")
+    key = formula_identity("C9H11NO")
     assert partition_channels(stored, {})[(here, key)] == {"mech-h", "mech-na"}
     assert partition_channels(stored, {})[(there, key)] == {"mech-k"}
 
@@ -248,14 +248,14 @@ def test_a_fresh_reading_replaces_what_the_ledger_stored():
     from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
         partition_channels,
     )
-    from mascope_backend.api.new.peak_assignments.cross_channel import neutral_key
+    from mascope_tools.composition.utils import formula_identity
 
     here = ("sb", "mode", "heights")
     stored = [
         ("bp-h", here, "C9H11NO", "mech-h", None),
         ("bp-na", here, "C9H11NO", "mech-na", None),
     ]
-    key = neutral_key("C9H11NO")
+    key = formula_identity("C9H11NO")
     # This pass moved the sodiated batch peak to another formula, and made a
     # third one, stored with nothing, a reading through ammonium.
     fresh = {
