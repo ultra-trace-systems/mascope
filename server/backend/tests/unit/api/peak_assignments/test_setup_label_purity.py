@@ -13,7 +13,12 @@ import pytest
 
 from mascope_backend.api.controllers.target.lib.compute import target_ions_compute
 from mascope_backend.api.new.ionization.modes.schema import DEFAULT_LABEL_PURITY
-from mascope_backend.api.new.peak_assignments import batch_untargeted, service
+from mascope_backend.api.new.peak_assignments import (
+    batch_untargeted,
+    pipeline,
+    service,
+)
+from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.db import IonizationMode
 from mascope_tools.composition.custom_elements import (
     CUSTOM_ELEMENTS,
@@ -32,25 +37,51 @@ def test_a_setup_that_names_none_reads_the_library_default():
 
 
 @pytest.mark.asyncio
-async def test_a_run_reads_the_purity_of_its_samples_setup():
-    seen = {}
-
-    async def assign(*args, **kwargs):
-        seen["purity"] = label_purity("^N")
-        return {"status": "success"}
+async def test_a_run_moves_its_sample_onto_the_current_setup():
+    assign = AsyncMock(return_value={"status": "success"})
 
     with (
         patch.object(service, "move_to_current_versions", AsyncMock()) as move,
-        patch.object(
-            service, "sample_label_purity", AsyncMock(return_value=0.9)
-        ) as purity,
         patch.object(service, "_assign_sample", assign),
     ):
         await service._run_sample_assignment("si-1")
 
     move.assert_awaited_once_with(sample_item_ids=["si-1"])
+    assign.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", pipeline.PATHS, ids=lambda path: path.name)
+async def test_every_stage_reads_the_purity_of_its_samples_setup(path):
+    # The stage list sets the purity around every stage it runs, whichever
+    # path runs them, and leaves it as it found it.
+    seen = []
+
+    async def stage(ctx):
+        seen.append(label_purity("^N"))
+
+    async def settle(ctx):
+        seen.append(label_purity("^N"))
+        ctx.judged = object()
+
+    stages = {name: stage for name in pipeline.STAGES}
+    stages[pipeline.Stage.CAP] = settle
+    ctx = pipeline.RunContext(
+        path=path,
+        sample=SimpleNamespace(sample_item_id="si-1"),
+        config=PeakAssignmentConfig(),
+        run_id="r-1",
+    )
+    with (
+        patch.dict(pipeline.STAGE_FUNCTIONS, stages),
+        patch.object(
+            pipeline, "sample_label_purity", AsyncMock(return_value=0.9)
+        ) as purity,
+    ):
+        await pipeline.run_stages(ctx)
+
     purity.assert_awaited_once_with("si-1")
-    assert seen["purity"] == 0.9
+    assert seen == [0.9] * len(path.stages())
     assert label_purity("^N") == CUSTOM_ELEMENTS["^N"].default_purity
 
 

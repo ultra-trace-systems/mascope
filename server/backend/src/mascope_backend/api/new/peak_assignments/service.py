@@ -17,11 +17,10 @@ import asyncio
 import copy
 import math
 import re
-import time
 import weakref
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime as dt
 from datetime import timezone
 from types import SimpleNamespace
@@ -29,7 +28,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 from fastapi import status
-from sqlalchemy import and_, func, insert, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import aliased
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
@@ -108,7 +107,6 @@ from mascope_backend.api.new.peak_assignments.config import (
     IN_APP_ENGINE,
     INGEST_LEDGER_BATCH,
     MAX_ALTERNATIVES_CEILING,
-    MAX_UNTARGETED_PEAKS_CEILING,
     PEAK_ASSIGNMENT_ENGINE_VERSION,
     STAGE_B_V2_ENGINE_VERSION,
     PeakAssignmentConfig,
@@ -136,7 +134,6 @@ from mascope_backend.api.new.peak_assignments.engine import (
     DISPLACED_BY_CLAIM,
     ENVELOPE_TOLERANCE_KEY,
     FRAGMENTS_KEY,
-    LIST_PRIOR_WEIGHT,
     MASS_CALIBRATION_KEY,
     PARTNER_GATE_KEY,
     PATTERN_SCORING_KEY,
@@ -154,19 +151,11 @@ from mascope_backend.api.new.peak_assignments.engine import (
     drop_ions_claimed_elsewhere,
     hold_opened_channel_readings,
     invert_matches_to_peak_assignments,
-    list_readings,
     listed_formula_identities,
-    pattern_scoring_for,
-    pattern_scoring_snapshot,
     reading_as_alternative,
-    record_displaced_list_readings,
     record_mirror_same_ion_readings,
     sample_mass_accuracy,
     score_ions_by_fit,
-    settle_list_election,
-    untargeted_matches_to_peak_assignments,
-    untargeted_seeds,
-    untargeted_targets,
 )
 from mascope_backend.api.new.peak_assignments.envelope_claims import (
     EnvelopeClaim,
@@ -192,21 +181,17 @@ from mascope_backend.api.new.peak_assignments.fold_view import (
 )
 from mascope_backend.api.new.peak_assignments.halogen_twins import (
     find_twins,
-    record_twins,
     reread_twins,
     twin_halogens,
 )
 from mascope_backend.api.new.peak_assignments.identification_level import (
     IDENTIFICATION_LEVEL,
-    LEVEL_SUMMARY,
-    apply_levels,
     inherited_level,
     is_level,
     level_lines,
 )
 from mascope_backend.api.new.peak_assignments.listing import reference_listing
 from mascope_backend.api.new.peak_assignments.mass_gate import (
-    BELOW_ASSIGNABILITY_Z,
     OFF_CALIBRATION_Z,
     MassCalibration,
     SourceLineCap,
@@ -222,7 +207,6 @@ from mascope_backend.api.new.peak_assignments.profiles import (
     RESOLVED_PROFILE_KEY,
     ResolvedProfile,
     resolve_profile,
-    with_fitted_window,
     with_secondary_channels,
 )
 from mascope_backend.api.new.peak_assignments.reagent_pass import (
@@ -291,7 +275,6 @@ from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.notifications import (
     UserNotification,
-    send_progress_user_notification,
 )
 from mascope_file.name import get_instrument_type
 from mascope_match import compute_match_isotopes, shift_mz, shifted_mz_axis, unshift_mz
@@ -322,7 +305,6 @@ from mascope_tools.composition.envelope_tolerance import (
     EnvelopeLines,
     EnvelopeTolerance,
 )
-from mascope_tools.composition.finder import assign_compositions
 from mascope_tools.composition.heuristic_filter import SCORE_VERSION
 from mascope_tools.composition.known_window import KnownWindow
 from mascope_tools.composition.mass_accuracy import (
@@ -3189,77 +3171,188 @@ def judge_commits(
         (``tiering.nox_skeleton_reason``).
     :return: The judged rows and each pass's summary.
     """
-    claims: dict[str, EnvelopeClaim] = {}
-    claim_round = 0
+    judging = Judging(
+        rows,
+        stage_a_accuracy=stage_a_accuracy,
+        fallback_sigma_ppm=fallback_sigma_ppm,
+        notation_by_id=notation_by_id,
+        mz_tolerance_ppm=mz_tolerance_ppm,
+        abundance_floor=abundance_floor,
+        max_alternatives=max_alternatives,
+        lines=lines,
+        tier_bands=tier_bands,
+        minor_channels=minor_channels,
+        partner_gated_channels=partner_gated_channels,
+        reagent_lines=reagent_lines,
+        resolution=resolution,
+        inherited_calibration=inherited_calibration,
+        envelope_tolerance=envelope_tolerance,
+        artifact_peak_ids=artifact_peak_ids,
+        instrument_type=instrument_type,
+        listed_formulas=listed_formulas,
+        source_line_cap=source_line_cap,
+        context=context,
+        nox_skeleton=nox_skeleton,
+    )
     while True:
-        claim_round += 1
-        # -- Reading changes, and what the caps read of them.
-        judged = apply_claims(
-            copy.deepcopy(rows), claims.values(), max_alternatives=max_alternatives
+        judging.refit()
+        judging.judge()
+        judging.cap()
+        if not judging.another_round():
+            return judging.result()
+
+
+@dataclass
+class Judging:
+    """A sample's commits through the judging rounds: the refit, judge and cap
+    stages of the stage list (``pipeline.ROUND``), each a method here, run in
+    that order and repeated until the reading changes reach a fixed point
+    (:meth:`another_round`). :func:`judge_commits` says what a round does;
+    the parameters are its own, and ``rows`` are never modified.
+
+    :ivar claims: The lines earlier rounds read as their owners', by row.
+    :ivar rounds: The rounds begun.
+    :ivar judged: The round's rows: a fresh copy of ``rows`` with the claims
+        applied, which the round's passes then modify.
+    :ivar found: The claims the round's caps left, which another round
+        applies; ``held`` says what held the rest back.
+    """
+
+    rows: list[dict]
+    stage_a_accuracy: SampleMassAccuracy | None
+    fallback_sigma_ppm: float
+    notation_by_id: dict[str, str]
+    mz_tolerance_ppm: float
+    abundance_floor: float
+    max_alternatives: int
+    lines: SpectrumLines | None = None
+    tier_bands: dict[str, float] | None = None
+    minor_channels: frozenset[str] = frozenset()
+    partner_gated_channels: frozenset[str] = frozenset()
+    reagent_lines: Sequence[dict] = ()
+    resolution: Callable[[float], float] | None = None
+    inherited_calibration: MassCalibration | None = None
+    envelope_tolerance: EnvelopeTolerance | None = None
+    artifact_peak_ids: frozenset[str] = frozenset()
+    instrument_type: str | None = None
+    listed_formulas: frozenset[str] = frozenset()
+    source_line_cap: SourceLineCap | None = None
+    context: ChemistryContext | None = None
+    nox_skeleton: bool = False
+    claims: dict[str, EnvelopeClaim] = field(default_factory=dict)
+    rounds: int = 0
+    judged: list[dict] = field(default_factory=list)
+    mass_calibration: dict = field(default_factory=dict)
+    partner_gate: dict = field(default_factory=dict)
+    cross_channel: dict = field(default_factory=dict)
+    tiering: dict = field(default_factory=dict)
+    found: list[EnvelopeClaim] = field(default_factory=list)
+    held: dict = field(default_factory=dict)
+
+    def refit(self) -> None:
+        """Begin a round: the rows as the claims so far leave them, and the
+        mass gate's measurement of them (``mass_gate.measure_mass_gate``),
+        which records every row's ceiling and lowers none. A claim moves
+        which rows anchor the calibration, so it is measured each round."""
+        self.rounds += 1
+        self.judged = apply_claims(
+            copy.deepcopy(self.rows),
+            self.claims.values(),
+            max_alternatives=self.max_alternatives,
         )
-        mass_calibration = measure_mass_gate(
-            judged,
-            stage_a_accuracy=stage_a_accuracy,
-            fallback_sigma_ppm=fallback_sigma_ppm,
-            lines=lines,
-            reagent_lines=reagent_lines,
-            calibration=inherited_calibration,
-            source_line_cap=source_line_cap,
+        self.mass_calibration = measure_mass_gate(
+            self.judged,
+            stage_a_accuracy=self.stage_a_accuracy,
+            fallback_sigma_ppm=self.fallback_sigma_ppm,
+            lines=self.lines,
+            reagent_lines=self.reagent_lines,
+            calibration=self.inherited_calibration,
+            source_line_cap=self.source_line_cap,
         )
-        partner_gate = apply_partner_gates(
-            judged,
-            notation_by_id=notation_by_id,
-            minor_channels=minor_channels,
-            partner_gated_channels=partner_gated_channels,
-            tier_bands=tier_bands,
-            listed_formulas=listed_formulas,
+
+    def judge(self) -> None:
+        """The reading changes, and what the caps read of them: the partner
+        gate settles each gated ion's reading, under the ceilings the refit
+        recorded, and the cross-channel pass records what the settled
+        readings say of each other."""
+        self.partner_gate = apply_partner_gates(
+            self.judged,
+            notation_by_id=self.notation_by_id,
+            minor_channels=self.minor_channels,
+            partner_gated_channels=self.partner_gated_channels,
+            tier_bands=self.tier_bands,
+            listed_formulas=self.listed_formulas,
         )
-        cross_channel = read_cross_channel(
-            judged, notation_by_id=notation_by_id, minor_channels=minor_channels
+        self.cross_channel = read_cross_channel(
+            self.judged,
+            notation_by_id=self.notation_by_id,
+            minor_channels=self.minor_channels,
         )
-        # -- The caps, which only lower a tier, in the order that decides
-        # which of them a row names.
-        cap_mass_gate(judged, mass_calibration)
-        cap_cross_channel(judged, cross_channel)
-        tiering = apply_tiering(
-            judged,
-            mz_tolerance_ppm=mz_tolerance_ppm,
-            abundance_floor=abundance_floor,
-            notation_by_id=notation_by_id,
-            tier_bands=tier_bands,
-            resolution=resolution,
-            lines=lines,
-            envelope_tolerance=envelope_tolerance,
-            artifact_peak_ids=artifact_peak_ids,
-            instrument_type=instrument_type,
-            context=context,
-            nox_skeleton=nox_skeleton,
+
+    def cap(self) -> None:
+        """The caps, which only lower a tier, in the order that decides which
+        of them a row names; then the lines on an assigned neighbour's
+        envelope that they left in doubt, which another round reads as that
+        neighbour's (:meth:`another_round`)."""
+        cap_mass_gate(self.judged, self.mass_calibration)
+        cap_cross_channel(self.judged, self.cross_channel)
+        self.tiering = apply_tiering(
+            self.judged,
+            mz_tolerance_ppm=self.mz_tolerance_ppm,
+            abundance_floor=self.abundance_floor,
+            notation_by_id=self.notation_by_id,
+            tier_bands=self.tier_bands,
+            resolution=self.resolution,
+            lines=self.lines,
+            envelope_tolerance=self.envelope_tolerance,
+            artifact_peak_ids=self.artifact_peak_ids,
+            instrument_type=self.instrument_type,
+            context=self.context,
+            nox_skeleton=self.nox_skeleton,
         )
-        found, held = find_envelope_claims(
-            judged,
-            mz_tolerance_ppm=mz_tolerance_ppm,
-            abundance_floor=abundance_floor,
-            precision_ppm=fallback_sigma_ppm,
-            lines=lines,
-            resolution=resolution,
+        self.found, self.held = find_envelope_claims(
+            self.judged,
+            mz_tolerance_ppm=self.mz_tolerance_ppm,
+            abundance_floor=self.abundance_floor,
+            precision_ppm=self.fallback_sigma_ppm,
+            lines=self.lines,
+            resolution=self.resolution,
         )
-        if not found or claim_round >= MAX_CLAIM_ROUNDS:
-            tiering.update(
-                claim_rounds=claim_round,
+
+    def another_round(self) -> bool:
+        """Whether the round just capped found a claim no round applied, and
+        the rounds have not run out (:data:`MAX_CLAIM_ROUNDS`): the claims
+        then join the earlier ones for the next. Otherwise the round's rows
+        stand, and the tiering record says what the claims did.
+
+        :return: True where another round is to run.
+        """
+        if not self.found or self.rounds >= MAX_CLAIM_ROUNDS:
+            self.tiering.update(
+                claim_rounds=self.rounds,
                 # Rows on an assigned neighbour's line that stayed as they were,
                 # by the reason that held each back.
-                held=held,
+                held=self.held,
                 # Isotopologues that left the ledger with the reading they
                 # belonged to.
-                released=sum(len(claim.released) for claim in claims.values()),
+                released=sum(len(claim.released) for claim in self.claims.values()),
                 # Claims the last round found and no round applied: none unless
                 # the rounds ran out.
-                unapplied=len(found),
+                unapplied=len(self.found),
             )
-            return JudgedCommits(
-                judged, mass_calibration, cross_channel, tiering, partner_gate
-            )
-        claims.update((claim.row_id, claim) for claim in found)
+            return False
+        self.claims.update((claim.row_id, claim) for claim in self.found)
+        return True
+
+    def result(self) -> JudgedCommits:
+        """The rows the last round left, and each pass's summary."""
+        return JudgedCommits(
+            self.judged,
+            self.mass_calibration,
+            self.cross_channel,
+            self.tiering,
+            self.partner_gate,
+        )
 
 
 #: The stored library's fine structure, which a run resolves at the file's
@@ -5177,23 +5270,18 @@ async def _run_sample_assignment(
     """:func:`_assign_sample` under the sample's current ionization setup.
 
     A sample bound under a version an edit has replaced moves onto the current
-    one first, and the engine reads labelled ions at the purity that version
-    carries (``custom_elements.labelled_purity``): every prediction of a
-    labelled envelope the run makes, in Stage A's reference lines, the reagent
-    pre-pass, the untargeted search and the tiering, reads it. A decoy run's
-    shift is set the same way (``mascope_match.shifted_mz_axis``).
+    one first, and the stage list reads labelled ions at the purity that
+    version carries (``pipeline.run_stages``). A decoy run's shift is set here
+    (``mascope_match.shifted_mz_axis``).
     """
     await move_to_current_versions(sample_item_ids=[sample_item_id])
     # A decoy that shifts the axis shifts it for every read the run makes, the
     # peak table and the targeted matcher's series alike; any other run reads
     # the axis as stored.
     decoy = config.decoy if config is not None else None
-    with (
-        labelled_purity(await sample_label_purity(sample_item_id)),
-        shifted_mz_axis(
-            ppm=None if decoy is None else decoy.mz_shift_ppm,
-            da=None if decoy is None else decoy.mz_shift_da,
-        ),
+    with shifted_mz_axis(
+        ppm=None if decoy is None else decoy.mz_shift_ppm,
+        da=None if decoy is None else decoy.mz_shift_da,
     ):
         return await _assign_sample(
             sample_item_id,
@@ -5221,7 +5309,9 @@ async def _assign_sample(
     Every observed peak of the sample gets exactly one PeakAssignment row in
     a PeakAssignmentRun: Stage A assigns from the known target library,
     Stage B (optional) assigns the remainder via untargeted composition
-    search, and leftover peaks are persisted as unassigned.
+    search, and leftover peaks are persisted as unassigned. The stages are the
+    stage list's (``pipeline.RUN``, ``pipeline.DECOY`` for a decoy arm); this
+    admits the sample, plans a decoy, and owns the run row's life.
 
     :param sample_item_id: ID of the sample item to assign
     :param config: Optional run configuration; defaults are used when omitted
@@ -5236,7 +5326,6 @@ async def _assign_sample(
     :return: A dictionary with run summary and status message
     """
     sample = await fetch_sample(sample_item_id)
-    ionization_setup = await sample_setup(sample_item_id)
     config = config or PeakAssignmentConfig()
 
     reason = ineligible_reason(sample)
@@ -5289,813 +5378,39 @@ async def _assign_sample(
             f"Starting peak assignment run '{run.peak_assignment_run_id}' "
             f"for sample '{sample.sample_item_name}'"
         )
-        match_params = await default_match_params(sample_item_id)
-
-        notification = UserNotification(
-            process_id=process_id,
-            parent_id=parent_id,
-            type="assign_sample_peaks",
-            status="pending",
-            message=f"Assigning peaks for sample '{sample.sample_item_name}'.",
-            data={
-                "sample_item_id": sample_item_id,
-                "peak_assignment_run_id": run.peak_assignment_run_id,
-                "_user_id": user_id,
-            },
+        # Imported here: the stage list composes this module's helpers.
+        from mascope_backend.api.new.peak_assignments.pipeline import (
+            DECOY,
+            RUN,
+            RunContext,
+            keep_run,
+            run_stages,
         )
 
-        # -- Load every observed peak of the sample
-        peaks_df = load_sample_peaks(sample)
-        await send_progress_user_notification(notification, 0.1)
-
-        # -- Resolve the sample's mechanism set once; every stage below
-        # consumes the same resolution.
-        mechanism_ids, mechanisms = await fetch_sample_mechanisms(sample)
-
-        # -- Resolve the chemistry this run searches under, and record it on the
-        # run. Recorded here rather than at creation because the mechanisms it
-        # reads are only known now, and recorded even when the untargeted stage
-        # goes on to be skipped: a run has to say what it would have searched.
-        instrument_type = get_instrument_type(sample.filename)
-        resolved_profile = resolve_profile(
-            config,
-            mechanism_notations=[m.ionization_mechanism for m in mechanisms],
-            instrument_type=instrument_type,
-            polarity=sample.polarity,
-            # The context the sample's batch or dataset names, which a run on
-            # `auto` takes before the profile's default (step 3.6).
-            named_context=await named_context_for(sample.sample_batch_id),
-        )
-        # -- Opportunistic channels (:func:`_resolve_secondary_channels`).
-        resolved_profile, secondary_mechanisms = await _resolve_secondary_channels(
-            sample, resolved_profile, peaks_df
-        )
-        if decoy_plan is not None:
-            runtime.logger.info(
-                f"Run '{run.peak_assignment_run_id}' is a decoy of run "
-                f"'{decoy_plan.control_run_id}' for sample "
-                f"'{sample.sample_item_name}': {decoy_plan.decoy.arm}, scored at "
-                "its control's calibration"
-            )
-        # The mode's own channels, read before a decoy swaps them: the reagent
-        # pre-pass's ladder claim reads the source's lines through them, which
-        # are the sample's whatever the arm (:func:`_reagent_assignments`).
-        own_mechanisms = _searched_mechanisms(
-            mechanisms, secondary_mechanisms, resolved_profile
-        )
-        if decoy_plan is not None and decoy_plan.decoy.swap_adducts:
-            # Swapped after the chemistry is resolved, which reads the mode's
-            # own channels: the profile, the grid and the reagent are the
-            # sample's, and only the adducts read through them are wrong. No
-            # secondary channel is opened beside them.
-            mechanisms = list(decoy_plan.mechanisms)
-            mechanism_ids = [m.ionization_mechanism_id for m in mechanisms]
-            secondary_mechanisms = []
-            runtime.logger.info(
-                f"Decoy run '{run.peak_assignment_run_id}' searches "
-                + ", ".join(
-                    f"{own} as {wrong or 'nothing'}"
-                    for own, wrong in decoy_plan.swapped.items()
-                )
-            )
-        if resolved_profile.unavailable_channels:
-            # Once per run, and only for a channel the sample actually shows:
-            # an operator can act on this by adding the mechanism.
-            runtime.logger.info(
-                f"Sample '{sample.sample_item_name}' shows the fingerprint of "
-                f"{', '.join(resolved_profile.unavailable_channels)}, which this "
-                "deployment has no ionization mechanism for; not searched."
-            )
-        await _record_resolved_profile(
-            run.peak_assignment_run_id,
-            config,
-            resolved_profile,
-            ionization_setup=ionization_setup,
-            decoy_arm=None if decoy_plan is None else decoy_plan.record(),
-        )
-        # The mechanisms a sample's channels are searched and read through:
-        # Stage A reads the reference lists through them, the untargeted
-        # search enumerates through them, and the passes after both read them.
-        searched_mechanisms = _searched_mechanisms(
-            mechanisms, secondary_mechanisms, resolved_profile
-        )
-
-        # The file's resolving power, read once: what one peak of the file holds
-        # for every pass that predicts an isotope line - the reagent pre-pass,
-        # the envelope match, the mass gate and the tiering pass.
-        resolution = await _resolution_of(sample)
-        # And the cap on how bright a source line may be to anchor the mass
-        # gate, which the m/z calibration node puts on its calibrants
-        source_line_cap = await _source_line_cap(sample)
-
-        # -- The reagent pre-pass, ahead of both stages: the source's own
-        # cluster ions are the brightest peaks in the spectrum and none of them
-        # is sample chemistry, so they are claimed here and taken out of what
-        # either stage may assign. Ordering is the whole mechanism - nothing
-        # downstream is ever offered the peak, so nothing can overwrite it.
-        # The library ions the sample's batch decided present (step 4.2h):
-        # the file claims them on the batch's word where its own claim does not.
-        batch_species = await batch_species_for(sample)
-        reagent_assignments, reagent_peak_ids, reagent_offset = _reagent_assignments(
-            peaks_df,
-            resolved_profile,
-            sample_item_id,
-            run.peak_assignment_run_id,
-            resolution=resolution,
-            own_mechanisms=own_mechanisms,
-            sample_name=sample.sample_item_name,
-            batch_species=batch_species,
-        )
-        if reagent_assignments:
-            runtime.logger.info(
-                f"Reagent pre-pass claimed {len(reagent_assignments)} of "
-                f"{len(peaks_df)} peaks of sample '{sample.sample_item_name}' "
-                f"for profile '{resolved_profile.profile.name}'"
-            )
-
-        # -- The artifact pre-pass, on the same footing: ringing around a very
-        # intense centroid is the detector's answer to a neighbour, not a
-        # species, and the same ordering argument applies. Most of the class is
-        # already gone - the peak detector flags sidelobes and the peak read
-        # drops them - so this claims the residue a sample's own time window
-        # shows that the file's summed heights did not.
-        artifact_assignments, artifact_peak_ids = _artifact_assignments(
-            peaks_df,
-            instrument_type,
-            sample_item_id,
-            run.peak_assignment_run_id,
-            claimed_peak_ids=reagent_peak_ids,
-        )
-        if artifact_assignments:
-            runtime.logger.info(
-                f"Artifact pre-pass claimed {len(artifact_assignments)} of "
-                f"{len(peaks_df)} peaks of sample '{sample.sample_item_name}' "
-                "as instrument ringing"
-            )
-        claimed_peak_ids = reagent_peak_ids | artifact_peak_ids
-
-        # -- Stage A: database-first assignment from the known composition set:
-        # the curated target library plus (when loaded) the reference mirror.
-        (
-            stage_a_assignments,
-            confidence_calibration,
-            mass_accuracy,
-            envelope,
-            listed_formulas,
-        ) = await _stage_a_assignments(
-            sample,
-            config,
-            match_params,
-            mechanism_ids,
-            searched_mechanisms,
-            run.peak_assignment_run_id,
-            excluded_peak_ids=claimed_peak_ids,
-            fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
-            known_window=resolved_profile.context.known_window,
-            reagent_offset=reagent_offset,
-            ionization_setup=ionization_setup,
-            reagent_profile=resolved_profile.profile.name,
-            inherited_accuracy=None if decoy_plan is None else decoy_plan.accuracy,
-            inherited_envelope=None if decoy_plan is None else decoy_plan.envelope,
-            resolution=resolution,
-        )
-        runtime.logger.info(
-            f"Stage A assigned {len(stage_a_assignments)} of {len(peaks_df)} "
-            f"peaks from the known target library"
-        )
-        if envelope.inherited is not None:
-            runtime.logger.info(
-                f"Sample '{sample.sample_item_name}' reads an isotope line's share "
-                f"at its control run's {envelope.fit.form} tolerance, level "
-                f"{envelope.fit.level}"
-            )
-        else:
-            runtime.logger.info(
-                f"Sample '{sample.sample_item_name}' reads an isotope line's share "
-                f"at the {envelope.fit.form} tolerance, level {envelope.fit.level}, "
-                f"over {envelope.fit.lines.lines} of its committed lines "
-                f"({envelope.fit.lines.absent} predicted lines absent)"
-                + (
-                    f", pooled over {envelope.fit.pooled_files} files"
-                    if envelope.fit.pooled_files
-                    else ""
-                )
-            )
-        await send_progress_user_notification(notification, 0.4)
-
-        # -- Stage B: untargeted composition search for the remainder. The
-        # pre-passes' peaks are in this set from the start, so the stage never
-        # searches them: a reagent cluster has an ordinary elemental composition
-        # and an untargeted search would fit a neutral to it happily.
-        assigned_peak_ids = set(claimed_peak_ids)
-        assigned_peak_ids.update(
-            assignment["sample_peak_id"] for assignment in stage_a_assignments
-        )
-        stage_b_assignments: list[dict] = []
-        search_scope: dict | None = None
-        scoring_snapshot: dict | None = None
-        # How this sample's envelopes are predicted and matched, resolved before
-        # the untargeted branch because the tiering pass reads it whether or not
-        # that branch ran: a run of Stage A alone still has committed rows whose
-        # peaks a neighbour's envelope may already predict.
-        scoring = pattern_scoring_for(
-            match_params,
-            mass_accuracy,
-            instrument_type,
-            resolution,
-            envelope_tolerance=envelope.tolerance,
-        )
-        # On a TOF the search's window is bounded by the width Stage A fitted
-        # (step 3.6): a candidate further from the sample's centre than the
-        # mass gate's floor is one it would hold below assignability whatever
-        # its fit, so it is no candidate to search for.
-        resolved_profile = with_fitted_window(
-            resolved_profile,
-            sigma_ppm=scoring.sigma_ppm
-            if mass_accuracy.sigma_ppm is not None
-            else None,
-            mu_ppm=scoring.mu_ppm,
-            sigmas=BELOW_ASSIGNABILITY_Z,
-            instrument_type=instrument_type,
-        )
-        # The measurement the untargeted winners' fits were scored at: the
-        # seeded re-score's where it scored any, else Stage A's, which the
-        # finder's own numbers were scored at.
-        winner_accuracy = mass_accuracy
-        if config.run_untargeted:
-            eligible_df = peaks_df[
-                ~peaks_df["sample_peak_id"].isin(assigned_peak_ids)
-                & (peaks_df["intensity"] >= config.peak_intensity_threshold)
-                & (peaks_df["intensity"] > 0)
-            ]
-            remainder_df, search_scope = untargeted_targets(
-                eligible_df, config.max_untargeted_peaks, MAX_UNTARGETED_PEAKS_CEILING
-            )
-            remainder_df = remainder_df.sort_values("mz")
-            if search_scope["limited"]:
-                # A peak nobody searched is not a peak nobody could explain, and
-                # only the run can say which of the two a blank row is.
-                runtime.logger.info(
-                    f"Untargeted stage for sample '{sample.sample_item_name}' "
-                    f"searches {search_scope['searched_peaks']} of "
-                    f"{search_scope['eligible_peaks']} unexplained peaks"
-                    + (
-                        f"; the rest are past the {search_scope['ceiling']}-peak "
-                        "ceiling"
-                        if search_scope["at_ceiling"]
-                        else ""
-                    )
-                )
-
-            notations, mechanism_id_by_notation = _untargeted_ionization_notations(
-                searched_mechanisms
-            )
-            # One positionally-indexed frame feeds both the search and the join
-            # back. The finder returns rows in the order it was given them, so
-            # position - not float m/z equality - is what maps a result to the
-            # peak it came from.
-            search_peaks_df = peaks_df.reset_index(drop=True)
-            # Every monoisotopic peak a list read is put to the search too. There
-            # the list's reading is one candidate beside the grid's, and a rival
-            # takes the peak only where its evidence beats the reading's by the
-            # list's prior (engine.LIST_PRIOR_WEIGHT); where none does, the
-            # grid's rivals are counted into the reading's density.
-            readings = (
-                list_readings(
-                    stage_a_assignments,
-                    search_peaks_df,
-                    _notation_by_id(searched_mechanisms),
-                )
-                if notations
-                else {}
-            )
-            if not notations or (remainder_df.empty and not readings):
-                skip_reason = (
-                    "no polarity-compatible ionization mechanisms"
-                    if not notations
-                    else "no eligible unassigned peaks and no list hits"
-                )
-                runtime.logger.info(f"Skipping untargeted stage: {skip_reason}")
-            else:
-                search_config = resolved_profile.search_config(notations)
-                secondary = sorted(resolved_profile.minor_channels)
-                runtime.logger.info(
-                    f"Untargeted stage for sample '{sample.sample_item_name}' "
-                    f"searches profile '{resolved_profile.profile.name}' / "
-                    f"context '{resolved_profile.context.name}': "
-                    f"{search_config.element_count_ranges} at "
-                    f"{search_config.mass_range_ppm} ppm"
-                    + (
-                        f"; secondary channels {', '.join(secondary)}"
-                        if secondary
-                        else ""
-                    )
-                )
-                # assign_compositions is synchronous and CPU-bound (it enumerates
-                # the compositions the element box allows over the spectrum's mass
-                # range, then bisects one window per target). This
-                # runs as a background task on the API event loop, so offload it
-                # to a worker thread to avoid blocking every other request and
-                # the progress notifications for the duration of the search.
-                # Stage B opts into the Senior/RDBE feasibility cut: the
-                # peak-centric engine wants chemically impossible formulas gone
-                # before arbitration. It stays off for the legacy composition
-                # search, which predates the rule being implemented. The
-                # resolved context's ratio windows ride along with it.
-                heuristics_config = resolved_profile.heuristics_config()
-                # The whole spectrum is the context, the remainder and the list
-                # peaks are what is enumerated. An isotope envelope is scored
-                # against every peak the frame holds, so an isotopologue is found
-                # wherever it sits - below the stage's intensity threshold, past
-                # its cap, or on a peak another pass already owns - instead of only
-                # inside the searched set. That is what lets an ion's envelope
-                # claim its own lines before the next target's turn comes, and it
-                # is what keeps a peak that is somebody's isotopologue from being
-                # enumerated as a fresh M0. Enumeration cost scales with the
-                # targets, not with the context.
-                #
-                # The noise estimate rides along when the file has one: it is
-                # what decides whether a predicted line's absence is evidence.
-                # So do the scan counts, which say how far a dim line's
-                # height is diluted by the scans it missed.
-                search_columns = [
-                    column
-                    for column in SEARCH_PEAK_COLUMNS
-                    if column in search_peaks_df.columns
-                ]
-                scoring_snapshot = pattern_scoring_snapshot(
-                    scoring, mass_accuracy, search_peaks_df[search_columns]
-                )
-                runtime.logger.info(
-                    f"Untargeted stage for sample '{sample.sample_item_name}' scores "
-                    f"at {scoring.sigma_ppm:.3f} ppm "
-                    f"({scoring_snapshot['sigma_source']}, "
-                    f"{mass_accuracy.anchors} anchors of "
-                    f"{mass_accuracy.anchor_ions} ions), offset "
-                    f"{scoring.mu_ppm:+.3f} ppm ({scoring_snapshot['mu_source']})"
-                )
-                started = time.perf_counter()
-                matches_df, _ = await asyncio.to_thread(
-                    assign_compositions,
-                    search_peaks_df[search_columns],
-                    search_config,
-                    heuristics_config,
-                    targets=remainder_df["mz"].tolist()
-                    + [reading.mz for reading in readings.values()],
-                    scoring=scoring,
-                    known={reading.mz: reading for reading in readings.values()},
-                    known_prior=LIST_PRIOR_WEIGHT,
-                    # A radical is never held at assigned, so it is no plausible
-                    # rival to a list's reading (the plan owner's answer).
-                    closed_shell_rivals=True,
-                )
-                election = settle_list_election(
-                    stage_a_assignments, matches_df, readings
-                )
-                stage_a_assignments = election.stage_a
-                search_scope["list_hits"] = election.summary
-                # -- A chlorine or bromine reading, proposed from its twin line
-                # rather than from an opened grid (step 3.6): a searched peak
-                # whose 37Cl or 81Br twin sits unexplained at the exact offset is
-                # searched again over carbon, hydrogen, oxygen and that halogen,
-                # and the reading replaces the peak's where it passes every gate.
-                matches, twin_records = await _reread_halogen_twins(
-                    election.matches,
-                    search_peaks_df[search_columns],
-                    resolved_profile=resolved_profile,
-                    listed_formulas=listed_formulas,
-                    searched_mzs=remainder_df["mz"],
-                    claimed_mzs=search_peaks_df.loc[
-                        search_peaks_df["sample_peak_id"].isin(
-                            assigned_peak_ids - election.released
-                        ),
-                        "mz",
-                    ],
-                    search_config=search_config,
-                    heuristics=heuristics_config,
-                    scoring=scoring,
-                    candidate_threshold=config.candidate_threshold,
-                    search_scope=search_scope,
-                    sample_name=sample.sample_item_name,
-                )
-                # ...and then every reading the finder committed to is measured
-                # again the way Stage A measures one: as an ion, through one
-                # match pass over the sample, gated by the run's match params.
-                # That second measurement is what the row is tiered on, so a
-                # Stage B "assigned" and a Stage A "assigned" mean one thing.
-                fit_by_seed, rescored_accuracy = await _seeded_rescore(
-                    sample,
-                    match_params,
-                    untargeted_seeds(
-                        matches,
-                        mechanism_id_by_notation,
-                        to_custom_element_format,
-                    ),
-                    reagent_offset=_run_scoring_centre(mass_accuracy),
-                    envelope_tolerance=envelope.tolerance,
-                    inherited_accuracy=(
-                        None if decoy_plan is None else decoy_plan.accuracy
-                    ),
-                    resolution=resolution,
-                )
-                if rescored_accuracy is not None:
-                    winner_accuracy = rescored_accuracy
-                stage_b_assignments = untargeted_matches_to_peak_assignments(
-                    matches,
-                    peaks_df=search_peaks_df,
-                    sample_item_id=sample_item_id,
-                    peak_assignment_run_id=run.peak_assignment_run_id,
-                    candidate_threshold=config.candidate_threshold,
-                    assigned_threshold=config.assigned_threshold,
-                    mechanism_id_by_notation=mechanism_id_by_notation,
-                    formula_formatter=to_custom_element_format,
-                    max_alternatives=config.max_alternatives,
-                    minor_channels=resolved_profile.minor_channels,
-                    excluded_peak_ids=assigned_peak_ids - election.released,
-                    fit_by_seed=fit_by_seed,
-                    listed_formulas=listed_formulas,
-                )
-                held = record_displaced_list_readings(
-                    stage_b_assignments, election.displaced, config.max_alternatives
-                )
-                record_twins(stage_b_assignments, twin_records, config.max_alternatives)
-                runtime.logger.info(
-                    f"Stage B assigned {len(stage_b_assignments)} of "
-                    f"{len(remainder_df)} remaining peaks via untargeted search; "
-                    f"of {election.summary['measured']} list hits it measured, "
-                    f"{election.summary['with_rivals']} kept their peak against a "
-                    f"closed-shell rival and {election.summary['taken_by_rivals']} "
-                    f"lost it to one ({held} held by the search) "
-                    f"({time.perf_counter() - started:.1f} s)"
-                )
-        # -- A list's readings through the channels the run opened are held as
-        # the search's readings through them are, on the rows the election
-        # left, before any pass reads them as partners or rivals.
-        _hold_opened_channel_readings(
-            stage_a_assignments,
-            searched_mechanisms=searched_mechanisms,
-            resolved_profile=resolved_profile,
-            sample_name=sample.sample_item_name,
-        )
-        # -- A reference list's matches carry the other readings of their ion.
-        # Written before the passes below, since it reads no tier and they may
-        # run more than once.
-        mirror_families = _record_mirror_readings(
-            stage_a_assignments,
-            searched_mechanisms=searched_mechanisms,
-            resolved_profile=resolved_profile,
-            max_alternatives=config.max_alternatives,
-        )
-        # -- The fragments the source made of an analyte the stages committed,
-        # read as the source's before anything weighs them as molecules: a
-        # fragment read as a molecule is a partner, a second channel and a
-        # rival to every other reading of its mass.
-        fragments = _claim_fragments(
-            stage_a_assignments + stage_b_assignments,
-            resolved_profile=resolved_profile,
-            searched_mechanisms=searched_mechanisms,
-            sample_name=sample.sample_item_name,
-        )
-        # -- The passes that judge the finished ledger, on the committed rows of
-        # both stages together, and before the unassigned placeholders are
-        # built, which commit nothing and have nothing to measure
-        # (`judge_commits`). The reading changes come first: a line an earlier
-        # round found on an assigned neighbour's envelope is read as that
-        # neighbour's, and the partner gate settles which molecule each ion
-        # read through a gated channel is, against the molecules the sample
-        # shows through the mode's own channels. Then the caps:
-        # - the run's own mass calibration and the gate on it, since the
-        #   corroboration it reads is a property of the whole ledger - which
-        #   reading kept an isotopologue, and which peak a curated identity
-        #   claimed - with the source's own lines the reagent pre-pass claimed
-        #   among its anchors. It measures before the partner gate, which reads
-        #   its partners under its ceilings, and caps after it;
-        # - what the sample's other channels say about each committed neutral,
-        #   and which readings of one ion nothing measured tells apart;
-        # - why every committed row holds the tier it holds, which reads what
-        #   the two above recorded, the finished ledger's own envelopes, and
-        #   which lines of each envelope the sample's peaks hold;
-        # - and before all three, the homologous series the batch's series
-        #   detection found for any of these readings, a second observation
-        #   of it the tiering pass counts (step 4.1). Not on a decoy arm: the
-        #   batch ledger is the control's chemistry, not the arm's.
-        # The three caps only ever lower a tier, and decide on the readings
-        # and what was recorded of them, so their order decides which cap a
-        # row names and never which tier it ends on. A line the tiering pass
-        # finds on an assigned neighbour's envelope is read as that
-        # neighbour's, never above the tier the run held the row at when it
-        # found it, and the whole round runs again over the ledger that
-        # leaves.
-        series_anchored = (
-            0
-            if decoy_plan is not None
-            else stamp_series(
-                fragments.rows, await batch_series_by_peak(sample_item_id)
+        ctx = await run_stages(
+            RunContext(
+                path=RUN if decoy_plan is None else DECOY,
+                sample=sample,
+                config=config,
+                run_id=run.peak_assignment_run_id,
+                keep=keep_run,
+                run=run,
+                decoy_plan=decoy_plan,
+                notification=UserNotification(
+                    process_id=process_id,
+                    parent_id=parent_id,
+                    type="assign_sample_peaks",
+                    status="pending",
+                    message=f"Assigning peaks for sample '{sample.sample_item_name}'.",
+                    data={
+                        "sample_item_id": sample_item_id,
+                        "peak_assignment_run_id": run.peak_assignment_run_id,
+                        "_user_id": user_id,
+                    },
+                ),
             )
         )
-        lines = SpectrumLines.from_peaks(peaks_df, resolution)
-        judged = judge_commits(
-            fragments.rows,
-            stage_a_accuracy=mass_accuracy,
-            fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
-            notation_by_id=_notation_by_id(searched_mechanisms),
-            mz_tolerance_ppm=scoring.mz_tolerance_ppm,
-            abundance_floor=scoring.abundance_floor,
-            max_alternatives=config.max_alternatives,
-            lines=lines,
-            tier_bands=config.tier_bands(),
-            minor_channels=resolved_profile.minor_channels,
-            partner_gated_channels=resolved_profile.partner_gated_channels,
-            reagent_lines=reagent_assignments,
-            resolution=resolution,
-            inherited_calibration=(
-                None if decoy_plan is None else decoy_plan.calibration
-            ),
-            envelope_tolerance=scoring.envelope_tolerance,
-            artifact_peak_ids=frozenset(artifact_peak_ids),
-            instrument_type=instrument_type,
-            listed_formulas=listed_formulas,
-            source_line_cap=source_line_cap,
-            context=resolved_profile.context,
-            nox_skeleton=resolved_profile.nox_skeleton,
-        )
-        mass_calibration = judged.mass_calibration
-        cross_channel = judged.cross_channel
-        tiering = {**judged.tiering, "series_anchored": series_anchored}
-        partner_gate = judged.partner_gate
-        if mass_calibration["applied"]:
-            trend = mass_calibration["trend"]
-            centre = (
-                f"a centre following {trend['offset_mda']:+.3f} mDa over m/z "
-                f"{trend['mz_lo']:.0f}-{trend['mz_hi']:.0f}"
-                if trend
-                else f"a constant centre ({mass_calibration['trend_refused']})"
-            )
-            runtime.logger.info(
-                f"Sample '{sample.sample_item_name}' calibrates at "
-                f"{mass_calibration['mu_ppm']:+.3f} ppm, width "
-                f"{mass_calibration['sigma_ppm']:.3f} ppm over "
-                f"{mass_calibration['anchors']} anchors "
-                f"({mass_calibration['reagent_anchors']} of them the source's own "
-                "lines), judged at "
-                f"{centre}; "
-                f"{mass_calibration['capped']} of "
-                f"{mass_calibration['committed'] - mass_calibration['corroborated']} "
-                "uncorroborated commits capped off calibration"
-            )
-        else:
-            runtime.logger.info(
-                f"Sample '{sample.sample_item_name}' corroborated "
-                f"{mass_calibration['corroborated']} of "
-                f"{mass_calibration['committed']} commits and had "
-                f"{mass_calibration['reagent_anchors']} of the source's own lines, "
-                "too few to measure a mass calibration; no row is gated on one"
-            )
-        followed = mass_calibration["isotopologues"]
-        runtime.logger.info(
-            f"Sample '{sample.sample_item_name}' isotopologues: "
-            f"{followed['tracks']} track their parents, {followed['in_doubt']} "
-            f"only within what their lines deliver ({mass_calibration['capped_in_doubt']} "
-            f"held at candidate for it), {followed['untracked']} not at all "
-            f"({mass_calibration['capped_untracked']} held at candidate for it)"
-        )
-        if partner_gate["rounds"]:
-            runtime.logger.info(
-                f"Sample '{sample.sample_item_name}' partner gate: "
-                f"{partner_gate['partnered']} opportunistic readings stand on a "
-                f"partner, {partner_gate['swapped']} turned to another reading and "
-                f"{partner_gate['kept']} left to the cap, over "
-                f"{partner_gate['rounds']} rounds"
-                + ("" if partner_gate["settled"] else " (not settled)")
-                + f"; {partner_gate['contested']} weighed against another borne-out "
-                f"reading, {partner_gate['contest_swapped']} taken by it, "
-                f"{partner_gate['outweighed']} readings outweighed at "
-                f"{partner_gate['margin']:g} times and "
-                f"{partner_gate['within_margin']} within it"
-            )
-        runtime.logger.info(
-            f"Sample '{sample.sample_item_name}' corroborates "
-            f"{cross_channel['corroborated']} of {cross_channel['committed_m0']} "
-            f"committed readings across {len(cross_channel['channels'])} channels; "
-            f"{cross_channel['ambiguous_nitrogen'] + cross_channel['ambiguous_adduct']} "
-            "read an ion another molecule explains as well "
-            f"({cross_channel['ambiguous_nitrogen']} with another nitrogen count), "
-            f"{cross_channel['capped']} of them capped, "
-            f"{cross_channel['capped_mirror']} of those reference-list matches "
-            f"({cross_channel['capped_isotopologues']} isotopologues with them); "
-            f"{sum(cross_channel['settled'].values())} others settled "
-            f"({cross_channel['settled']}), "
-            f"{cross_channel['shown_rival_weighed']} of them the mode's own reading "
-            "against a rival the sample shows short of the "
-            f"{cross_channel['partner_margin']:g}-fold margin; {mirror_families} "
-            "reference-list matches carry other readings of their ion"
-        )
-        runtime.logger.info(
-            f"Sample '{sample.sample_item_name}' tiers "
-            f"{tiering['committed_m0']} committed readings on rule set "
-            f"{tiering['version']}: {tiering['capped']} capped "
-            f"({tiering['capped_isotopologues']} isotopologue rows with them)"
-            + (
-                ", "
-                + ", ".join(
-                    f"{count} {rule}"
-                    for rule, count in sorted(
-                        tiering["capped_by_rule"].items(), key=lambda kv: -kv[1]
-                    )
-                )
-                if tiering["capped_by_rule"]
-                else ""
-            )
-            + f"; {tiering['claimed']} lines read as an assigned neighbour's "
-            f"isotopologue ({tiering['claimed_with_their_lines']} of their own "
-            f"lines with them, {tiering['released']} released) over "
-            f"{tiering['claim_rounds']} rounds"
-            + (
-                ", held back: "
-                + ", ".join(
-                    f"{count} {why}" for why, count in sorted(tiering["held"].items())
-                )
-                if tiering["held"]
-                else ""
-            )
-        )
-        committed_rows = judged.rows
-        # -- The untargeted winners' confidence, where the run asks for it: the
-        # shortlist each winner's row carries, measured on the peak it names
-        # through every channel the search went through and at the width the
-        # winners were re-scored at, and the winner's share of the scored
-        # field recorded as Stage A records its own. Read off the finished
-        # ledger, after every pass that may swap a reading, so the share is the
-        # committed row's; it writes provenance alone, so no pass above would
-        # read it anyway.
-        if config.stage_b_confidence and search_scope is not None:
-            # Imported here: the inspector's module imports this one.
-            from mascope_backend.api.new.peak_assignments.alternatives_scoring import (
-                WINNER_CONFIDENCE_KEY,
-                measure_winner_confidence,
-            )
-
-            winner_confidence = await measure_winner_confidence(
-                sample,
-                committed_rows,
-                searched_mechanisms,
-                match_params,
-                peak_budget=config.stage_b_confidence_peaks,
-                reagent_offset=_run_scoring_centre(mass_accuracy),
-                envelope_tolerance=envelope.tolerance,
-                accuracy=winner_accuracy,
-            )
-            search_scope[WINNER_CONFIDENCE_KEY] = winner_confidence
-            runtime.logger.info(
-                f"Sample '{sample.sample_item_name}' measured the shortlists of "
-                f"{winner_confidence['measured']} of "
-                f"{winner_confidence['winners']} untargeted winners "
-                f"({winner_confidence['unreached']} past the budget of "
-                f"{winner_confidence['peak_budget']}): "
-                f"{winner_confidence['placed']} of {winner_confidence['formulas']} "
-                f"formulas placed on their peak, {winner_confidence['ties']} "
-                f"winners tied ({winner_confidence['seconds']:.1f} s)"
-            )
-        # -- What a reader may state of each committed row: its identification
-        # level (step 5.8), read off the finished ledger and the shortlists
-        # measured above, beside the tier and moving none. Recorded with the
-        # tiering record, whose absent-line gate the rivals' lines are asked at.
-        tiering[LEVEL_SUMMARY] = apply_levels(
-            committed_rows,
-            notation_by_id=_notation_by_id(searched_mechanisms),
-            instrument_type=instrument_type,
-            context=resolved_profile.context,
-            lines=lines,
-            tiering=tiering,
-            resolution=resolution,
-        )
-        runtime.logger.info(
-            f"Sample '{sample.sample_item_name}' identification levels on rule set "
-            f"{tiering[LEVEL_SUMMARY]['level_rules_version']}: "
-            + (
-                ", ".join(
-                    f"{count} at {level}"
-                    for level, count in tiering[LEVEL_SUMMARY]["levels"].items()
-                )
-                or "no committed reading"
-            )
-            + f" ({tiering[LEVEL_SUMMARY]['rivals_not_measured']} with no measured "
-            "shortlist)"
-        )
-        await _record_resolved_profile(
-            run.peak_assignment_run_id,
-            config,
-            resolved_profile,
-            search_scope,
-            scoring_snapshot,
-            mass_calibration,
-            cross_channel,
-            tiering,
-            partner_gate,
-            fragments.summary if fragments.summary["ladders"] else None,
-            ionization_setup,
-            envelope.record(),
-            None if decoy_plan is None else decoy_plan.record(),
-        )
-        await send_progress_user_notification(notification, 0.8)
-
-        # -- Persist the complete ledger: one row per observed peak. What the
-        # passes left committed, since an isotopologue released with the reading
-        # it belonged to is a peak nothing explains.
-        assigned_peak_ids = (
-            claimed_peak_ids
-            | fragments.peak_ids
-            | {assignment["sample_peak_id"] for assignment in committed_rows}
-        )
-        unassigned_df = peaks_df[~peaks_df["sample_peak_id"].isin(assigned_peak_ids)]
-        unassigned_assignments = build_unassigned_assignments(
-            unassigned_df,
-            sample_item_id=sample_item_id,
-            peak_assignment_run_id=run.peak_assignment_run_id,
-        )
-
-        all_assignments = (
-            reagent_assignments
-            + fragments.fragments
-            + artifact_assignments
-            + committed_rows
-            + unassigned_assignments
-        )
-        # Insert owners before children: owner_peak_assignment_id is a
-        # self-referential FK validated per row during the bulk insert.
-        all_assignments.sort(
-            key=lambda row: row["owner_peak_assignment_id"] is not None
-        )
-        if all_assignments:
-            async with async_session() as session:
-                await session.execute(insert(PeakAssignment), all_assignments)
-                # The curve the rows were scored against, committed with them.
-                # It is the run's to record - one curve serves a whole run - but
-                # it has to land in the same transaction as the ledger, because
-                # a run interrupted after this point keeps its rows without ever
-                # being finalized: the startup reaper marks it failed and leaves
-                # the ledger standing, and a read that names that run by id
-                # serves rows whose P(correct) would then name no curve at all.
-                await session.execute(
-                    update(PeakAssignmentRun)
-                    .where(
-                        PeakAssignmentRun.peak_assignment_run_id
-                        == run.peak_assignment_run_id
-                    )
-                    .values(confidence_calibration=confidence_calibration)
-                )
-                await session.commit()
-
-        await _finalize_run(run.peak_assignment_run_id, "completed")
-        await send_progress_user_notification(notification, 1.0)
-
-        # Fold this completed run into the batch peaks so the batch overview
-        # reflects every assignment path: sample arrival, an explicit single-sample
-        # re-assign, and a batch assign (which loops this function). Isolated -- a
-        # fold-in failure must never fail or un-complete the assignment itself.
-        # A decoy is never folded: its rows are the sample read wrong on
-        # purpose, and the batch ledger is the sample's result.
-        try:
-            from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-                fold_sample_into_batch_peaks,
-            )
-
-            if decoy_plan is None:
-                await fold_sample_into_batch_peaks(sample_item_id)
-        except Exception as fold_error:  # noqa: BLE001 - fold-in is best-effort
-            runtime.logger.warning(
-                f"Batch-peak fold-in failed for sample '{sample_item_id}' "
-                f"(run '{run.peak_assignment_run_id}'): {fold_error}"
-            )
-
-        database_assigned = sum(
-            1 for row in committed_rows if row.get("source") == SOURCE_DATABASE
-        )
-        untargeted_assigned = len(committed_rows) - database_assigned
-        message = (
-            f"Assigned peaks for sample '{sample.sample_item_name}': "
-            f"{database_assigned} from the target library, "
-            f"{untargeted_assigned} untargeted, "
-            f"{len(unassigned_assignments)} unassigned "
-            f"({len(all_assignments)} peaks total)."
-        )
-        runtime.logger.info(message)
-        return {
-            "status": "success",
-            "message": message,
-            "data": {
-                "peak_assignment_run_id": run.peak_assignment_run_id,
-                "total_peaks": len(all_assignments),
-                "database_assigned": database_assigned,
-                "untargeted_assigned": untargeted_assigned,
-                "unassigned": len(unassigned_assignments),
-            },
-            "_notification_data": {
-                "sample_batch_id": sample.sample_batch_id,
-                "sample_item_id": sample_item_id,
-                "peak_assignment_run_id": run.peak_assignment_run_id,
-            },
-        }
+        return ctx.result
     except asyncio.CancelledError:
         # CancelledError is a BaseException, so the failure handler below never
         # sees it - without this branch a cancelled run stayed 'running' until
