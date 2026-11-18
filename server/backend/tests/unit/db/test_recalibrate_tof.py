@@ -1071,6 +1071,57 @@ async def test_an_apply_that_cannot_be_put_back_is_left_to_the_next_run(
     assert ledger.open_apply("f1")["seq"] == 1
 
 
+@pytest.mark.parametrize("status", ["ok", "poor"])
+@pytest.mark.asyncio
+async def test_a_fault_after_the_record_landed_finishes_the_apply(
+    filestore, tmp_path, status
+):
+    """The node's match removal or its batches' status failing after it wrote
+    the record: what the apply left undone is done now, as for a run cut off
+    there, and the file is applied."""
+    write_file(filestore, APPLIED)
+    old = {**APPLIED, "verified": True}
+    stored = {**FIT_OK, "status": status, "verified": True}
+    # The node held the batches at processing and never let them go
+    stack, mocks = _controllers(
+        _Row(sample_file_id="f1", filename=FILENAME, mz_calibration=stored, range=[]),
+        [
+            ("a1", "ACQUISITION", "ready"),
+            ("b1", "ANALYSIS", "processing"),
+            ("b2", "ANALYSIS", "processing"),
+        ],
+    )
+    with stack:
+        outcome, ledger, _ = await _run_file(
+            tmp_path,
+            _candidate(old),
+            FIT_OK,
+            stored,
+            outcome=CalibrationOutcome(
+                verified=False, reason="statement timeout", fault=True
+            ),
+            batches=AsyncMock(return_value={"b1": "ready", "b2": "recalibrate"}),
+            issues=("residual",) if status == "poor" else (),
+        )
+
+    assert outcome.kind == status
+    assert outcome.detail == {"error": "statement timeout"}
+    apply, error, applied = ledger.events
+    assert (error["event"], error["apply_incomplete"]) == ("error", True)
+    assert (applied["event"], applied["apply_seq"]) == ("applied", apply["seq"])
+    assert _removed(mocks) == [("s1", True), ("s2", True)]
+    assert _statuses(mocks) == [
+        ("recalibrate", ["b2"], False),
+        ("rematch", ["b1", "b2"], True),
+    ]
+    assert mocks["update_sample_file"].await_count == 0
+    # Matched by the run's settle, undone by a rollback, not offered again
+    assert ledger.open_apply("f1") is None
+    assert [e["sample_file_id"] for e in ledger.unmatched()] == ["f1"]
+    assert script.rollback_events(ledger, ("file:f1",)) == [apply]
+    assert ledger.settled({"m1": TARGET}.get) == {"f1"}
+
+
 @pytest.mark.parametrize("fails", ["restore_plan", "write_snapshot", "_other_batches"])
 @pytest.mark.asyncio
 async def test_the_runner_failing_before_an_apply_is_its_own_error(
@@ -1895,7 +1946,12 @@ async def test_a_rollback_that_cannot_give_the_axes_back_touches_nothing(
 async def test_a_record_changed_since_the_apply_is_not_rolled_back(tmp_path):
     ledger = _ledger(
         tmp_path,
-        {"event": "apply", "sample_file_id": "f1", "new": {"mode": 0, "par": [1, 2]}},
+        {
+            "event": "apply",
+            "sample_file_id": "f1",
+            "before": {"record": {"mode": 0, "par": [5, 6]}},
+            "new": {"mode": 0, "par": [1, 2]},
+        },
     )
     changed = SimpleNamespace(
         filename=FILENAME, mz_calibration={"mode": 0, "par": [3, 4]}
@@ -1905,6 +1961,93 @@ async def test_a_record_changed_since_the_apply_is_not_rolled_back(tmp_path):
 
     assert outcome.kind == "refused"
     assert ledger.events[-1]["event"] == "rollback_refused"
+
+
+def _applied_file(ledger, event):
+    """The file's row after the apply the event records, and the ledger's
+    ``applied`` for it."""
+    ledger.write(
+        {
+            "event": "applied",
+            "sample_file_id": "f1",
+            "apply_seq": event["seq"],
+            "mode_id": "m1",
+            "target": TARGET,
+        }
+    )
+    return _Row(
+        sample_file_id="f1",
+        filename=FILENAME,
+        mz_calibration={**NEW_FIT, "status": "ok", "verified": True},
+        range=[10.1, 300.2],
+    )
+
+
+#: An analysis batch, and one that waits on a recalibration
+_BATCHES = [("b1", "ANALYSIS", "ready"), ("b2", "ANALYSIS", "recalibrate")]
+#: How a rollback leaves them: held, then the pending one kept
+_HELD_AND_LET_GO = [
+    ("processing", ["b1", "b2"], False),
+    ("recalibrate", ["b2"], False),
+    ("rematch", ["b1", "b2"], True),
+]
+
+
+@pytest.mark.parametrize("fails", ["axes", "record"])
+@pytest.mark.asyncio
+async def test_a_rollback_that_fails_writing_back_lets_the_batches_go(
+    filestore, tmp_path, fails
+):
+    ledger = script.Ledger(str(tmp_path / "ledger"), writable=True)
+    event, _ = await _apply_event(filestore, ledger)
+    stack, mocks = _controllers(_applied_file(ledger, event), _BATCHES)
+    with (
+        stack,
+        patch.object(
+            script.RestoreHandler,
+            "apply",
+            AsyncMock(side_effect=OSError("disk full") if fails == "axes" else None),
+        ),
+    ):
+        if fails == "record":
+            mocks["update_sample_file"].side_effect = OSError("connection lost")
+        with pytest.raises(OSError):
+            await script.rollback_file(event, ledger)
+
+    assert _statuses(mocks) == _HELD_AND_LET_GO
+    assert _removed(mocks) == []
+    assert ledger.events[-1]["event"] == "applied"
+
+
+@pytest.mark.asyncio
+async def test_a_rollback_cut_off_after_its_record_is_finished_by_the_next(
+    filestore, tmp_path
+):
+    """The first rollback wrote the old record back, then failed removing the
+    matches: the same rollback again finishes it."""
+    ledger = script.Ledger(str(tmp_path / "ledger"), writable=True)
+    event, original = await _apply_event(filestore, ledger)
+    row = _applied_file(ledger, event)
+    stack, mocks = _controllers(row, _BATCHES)
+    with stack:
+        mocks["match_remove_sample"].side_effect = [None, OSError("connection lost")]
+        with pytest.raises(OSError):
+            await script.rollback_file(event, ledger)
+        # The database holds the old record; the ledger still says applied
+        assert row.mz_calibration == event["before"]["record"]
+        assert script.rollback_events(ledger, ("file:f1",)) == [event]
+
+        mocks["match_remove_sample"].side_effect = None
+        outcome = await script.rollback_file(event, ledger)
+
+    assert outcome.kind == "rolled_back"
+    assert_same(original, everything(filestore))
+    assert row.mz_calibration == event["before"]["record"]
+    assert _removed(mocks) == [("s1", True), ("s2", True)] * 2
+    assert _statuses(mocks) == _HELD_AND_LET_GO * 2
+    assert ledger.events[-1]["event"] == "rollback"
+    assert [e["sample_file_id"] for e in ledger.unmatched()] == ["f1"]
+    assert script.rollback_events(ledger, ("file:f1",)) == []
 
 
 # --- An apply a run left open ---
