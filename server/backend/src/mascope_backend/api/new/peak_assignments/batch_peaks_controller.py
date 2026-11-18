@@ -347,9 +347,9 @@ async def fold_sample_into_batch_peaks(
         runs, a touched anchor's consensus columns describe the members it had
         before this fold.
     :param rows: The sample's assignment rows to fold, in place of the latest
-        completed run's. The run-less ingest path hands the fold what Stage A
-        computed in memory, shaped as ledger rows (attribute access), and
-        no run is consulted.
+        completed run's. The run-less ingest path hands the fold what the
+        stage list's ingest fold judged in memory (``pipeline.INGEST_FOLD``),
+        shaped as ledger rows (attribute access), and no run is consulted.
     :param persisted: Whether ``rows`` exist as ``peak_assignment`` rows. False
         for rows that were never written: the members then link to no ledger
         row, while the ids the rows carry still resolve the family link among

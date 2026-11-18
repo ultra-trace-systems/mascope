@@ -64,7 +64,6 @@ from mascope_backend.api.new.ionization.modes.versions import (
     sample_setup,
     setup_stamp,
 )
-from mascope_backend.api.new.match.params import default_match_params
 from mascope_backend.api.new.match.params.lib import (
     isotope_abundance_threshold_expr,
 )
@@ -75,9 +74,6 @@ from mascope_backend.api.new.peak_assignments.admission import (
 from mascope_backend.api.new.peak_assignments.artifact_pass import (
     build_artifact_assignments,
     claim_artifact_peaks,
-)
-from mascope_backend.api.new.peak_assignments.batch_known_species import (
-    batch_species_for,
 )
 from mascope_backend.api.new.peak_assignments.batch_peak_verification import (
     claim_of,
@@ -116,7 +112,6 @@ from mascope_backend.api.new.peak_assignments.config import (
     peak_assignment_on_ingest,
 )
 from mascope_backend.api.new.peak_assignments.cross_channel import (
-    apply_cross_channel,
     cap_cross_channel,
     read_cross_channel,
 )
@@ -146,7 +141,6 @@ from mascope_backend.api.new.peak_assignments.engine import (
     STAGE_A_FIT_MIN_IONS,
     TIERING_KEY,
     apply_partner_gates,
-    build_unassigned_assignments,
     calibration_meta,
     drop_ions_claimed_elsewhere,
     hold_opened_channel_readings,
@@ -200,9 +194,6 @@ from mascope_backend.api.new.peak_assignments.mass_gate import (
     measure_mass_gate,
 )
 from mascope_backend.api.new.peak_assignments.peak_ids import load_peak_ids
-from mascope_backend.api.new.peak_assignments.profile_preview import (
-    named_context_for,
-)
 from mascope_backend.api.new.peak_assignments.profiles import (
     RESOLVED_PROFILE_KEY,
     ResolvedProfile,
@@ -2529,59 +2520,6 @@ def _searched_mechanisms(
     ]
 
 
-def _read_other_readings(
-    stage_a_assignments: list[dict],
-    stage_b_assignments: list[dict],
-    *,
-    searched_mechanisms: list[SimpleNamespace],
-    resolved_profile: ResolvedProfile,
-    tier_bands: dict[str, float] | None = None,
-    listed_formulas: frozenset[str] = frozenset(),
-) -> dict:
-    """Read every channel: the partner gate, then the mass gate's cap and the
-    cross-channel pass.
-
-    The run-less ingest fold's reading of what a run's :func:`judge_commits`
-    reads, so a reference-list row capped for another reading of its ion in a
-    run is capped on the batch ledger too. Each reference mirror row carries
-    its ion's family by now (:func:`_record_mirror_readings`): an election
-    carries the readings it displaced and a matched row carries none, so the
-    cross-channel pass could not ask a list's formula what it asks the search's
-    without the family written first.
-
-    The rows come measured and not capped (``mass_gate.measure_mass_gate``),
-    as a round of :func:`judge_commits` hands them on: the partner gate, which
-    changes readings, reads its partners under the ceilings the measurement
-    recorded, and the caps come after it.
-
-    :param stage_a_assignments: Stage A's rows, modified in place.
-    :param stage_b_assignments: The untargeted stage's rows; none on the fold.
-    :param searched_mechanisms: :func:`_searched_mechanisms`.
-    :param resolved_profile: The sample's resolved chemistry.
-    :param tier_bands: The run's evidence bands, for the partner gate.
-    :param listed_formulas: The neutrals the sample's lists name
-        (``engine.listed_formula_identities``), which the partner gate records
-        as a swapped-in reading's corroboration, as it does in a run.
-    :return: The cross-channel pass's summary.
-    """
-    notation_by_id = _notation_by_id(searched_mechanisms)
-    rows = stage_a_assignments + stage_b_assignments
-    apply_partner_gates(
-        rows,
-        notation_by_id=notation_by_id,
-        minor_channels=resolved_profile.minor_channels,
-        partner_gated_channels=resolved_profile.partner_gated_channels,
-        tier_bands=tier_bands,
-        listed_formulas=listed_formulas,
-    )
-    cap_mass_gate(rows)
-    return apply_cross_channel(
-        rows,
-        notation_by_id=notation_by_id,
-        minor_channels=resolved_profile.minor_channels,
-    )
-
-
 def _hold_opened_channel_readings(
     stage_a_assignments: list[dict],
     *,
@@ -2687,9 +2625,9 @@ def _record_mirror_readings(
     so is written once however many times the passes after it run.
 
     It is built under the untargeted search's own box and filter, whether or
-    not that stage ran, so it is the family the search would have held. A run
-    and the run-less ingest fold both write it before the fragment claim and
-    the passes that read the families (:func:`_read_other_readings`).
+    not that stage ran, so it is the family the search would have held. Every
+    path of the stage list writes it in its elect stage, before the fragment
+    claim and the judging rounds that read the families (:class:`Judging`).
 
     :return: How many mirror rows carry same-ion readings.
     """
@@ -5487,40 +5425,22 @@ async def _fold_sample_peaks_without_run(
     """Assign a newly processed sample database-first and fold the result straight
     into its batch's batch peaks, writing no per-sample run.
 
-    The ingest path under ``peak_assignment_ingest_ledger = "batch"``. Stage A
-    runs exactly as it does for a run - same peak read, same known-isotope set,
-    same gating, scoring and arbitration - but the rows never reach
-    ``peak_assignment``: each detected peak becomes a member of an anchor, and
-    the Sample view is served from those members (``fold_view``). What is not
-    kept is what only a run keeps - per-peak alternatives and provenance, mass
-    and abundance error - and an explicit run on the sample restores it,
-    replacing the members' links as it folds.
+    The ingest path under ``peak_assignment_ingest_ledger = "batch"``: the stage
+    list's INGEST_FOLD path (``pipeline.py``), the run's stages with the known
+    set alone proposed. Every stage runs as it does for a run of the sample with
+    the untargeted search off - the same pre-passes, the same Stage A, the same
+    judging rounds and tiering rules, the same identification level - so a
+    fold and such a run give every row the same tier. What differs is where
+    the rows go: never to ``peak_assignment``, but each detected peak a member
+    of an anchor, and the Sample view served from those members
+    (``fold_view``). What is not kept is what only a run keeps - per-peak
+    alternatives and provenance, mass and abundance error - and an explicit run
+    on the sample restores it, replacing the members' links as it folds.
 
     A sample the engine would refuse a run for (a blank, an unverified
-    calibration) is skipped with a log line and nothing is written.
-
-    The mass gate runs here as it does in a run, over the commits this path
-    has. Every commit here is a Stage A one, and any of them off calibration is
-    capped unless an isotopologue tracks it. A target library row anchors the
-    calibration and a reference mirror's row does not
-    (``mass_gate.CORROBORATED_CURATED``). Without the gate here, such a row
-    would hold a tier on this ledger that the gate takes from it in a run. The
-    two calibrations are fitted over different commits, since a run also has
-    the untargeted stage's. So a row near the cap can still fall on either side
-    of it on the two paths, and where this path measures no calibration the
-    gate stands down, as it does in a run with too few anchors.
-    ``test_fold_without_run`` pins that the gate runs here, and
-    ``test_mass_gate`` pins which Stage A rows it may act on. The gate reads the
-    sample's lines here as in a run, so an isotopologue that does not track its
-    parent is held at candidate on both paths. The tiering pass does not run
-    here, so no line is read as a neighbour's isotopologue on this path.
-
-    The same-ion rule runs here too, for the same reason
-    (:func:`_read_other_readings`): a reference mirror's row whose ion reads as
-    another molecule through another of the channels a run would read is capped
-    at candidate on this ledger as in a run. What can settle it differs, since a
-    second channel here can only be another of Stage A's commits, so this path
-    can cap a row that a run's untargeted readings would have corroborated.
+    calibration) is skipped with a log line and nothing is written. One whose
+    file name names no instrument class still folds, read as of no class, as
+    the fold always read it: the ingest hook has nobody to report a failure to.
 
     :param sample_item_id: The sample to fold.
     :param defer_consensus_to: As for ``fold_sample_into_batch_peaks``: a
@@ -5534,217 +5454,30 @@ async def _fold_sample_peaks_without_run(
             f"{reason}."
         )
         return None
-    config = PeakAssignmentConfig(run_untargeted=False)
-    match_params = await default_match_params(sample_item_id)
-    peaks_df = load_sample_peaks(sample)
-    # The rows are shaped as ledger rows - the fold reads them as such - and
-    # stamped with the derived run's id: the run they will never be.
-    run_id = fold_run_id(sample_item_id)
-    inputs = await _stage_a_inputs(sample, config, peaks_df, run_id)
-    resolved_profile = inputs.resolved_profile
-    searched_mechanisms = inputs.searched_mechanisms
-    reagent, artifact = inputs.reagent, inputs.artifact
-    claimed_peak_ids = inputs.claimed_peak_ids
-    # Stage A's rows here are scored at the tolerance it fits, as a run's are,
-    # its pool read under the defaults as a run's is under its config. But
-    # there is no run to record it on: the sample's later readers read it at
-    # today's numbers (#2989).
-    stage_a, _, mass_accuracy, _envelope, listed = await _stage_a_assignments(
-        sample,
-        config,
-        match_params,
-        inputs.mechanism_ids,
-        searched_mechanisms,
-        run_id,
-        excluded_peak_ids=claimed_peak_ids,
-        fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
-        known_window=resolved_profile.context.known_window,
-        reagent_offset=inputs.reagent_offset,
-    )
-    _hold_opened_channel_readings(
-        stage_a,
-        searched_mechanisms=searched_mechanisms,
-        resolved_profile=resolved_profile,
-        sample_name=sample.sample_item_name,
-    )
-    # The fragments of what Stage A committed, read at the point a run reads
-    # them: after the mirror rows carry their families, before any pass that
-    # weighs a row as a molecule.
-    _record_mirror_readings(
-        stage_a,
-        searched_mechanisms=searched_mechanisms,
-        resolved_profile=resolved_profile,
-        max_alternatives=config.max_alternatives,
-    )
-    fragments = _claim_fragments(
-        stage_a,
-        resolved_profile=resolved_profile,
-        searched_mechanisms=searched_mechanisms,
-        sample_name=sample.sample_item_name,
-    )
-    stage_a = fragments.rows
-    # The run's gate over this path's commits, so that a reference mirror's
-    # row off calibration is capped here as a run would cap it, and an
-    # isotopologue that does not track its parent is held as a run holds it.
-    # The source's lines anchor its calibration as they anchor a run's. It
-    # measures here, and caps after the partner gate below, as in a run.
-    # Nothing records the summary: there is no run to put it on.
-    measure_mass_gate(
-        stage_a,
-        stage_a_accuracy=mass_accuracy,
-        fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
-        lines=SpectrumLines.from_peaks(peaks_df, inputs.resolution),
-        reagent_lines=reagent,
-        source_line_cap=await _source_line_cap(sample),
-    )
-    # ...and the run's same-ion check, through the channels a run would read,
-    # so a reference-list row whose ion reads as well another way is not held
-    # at a tier a run takes from it.
-    cross_channel = _read_other_readings(
-        stage_a,
-        [],
-        searched_mechanisms=searched_mechanisms,
-        resolved_profile=resolved_profile,
-        tier_bands=config.tier_bands(),
-        listed_formulas=listed,
-    )
-    assigned = (
-        claimed_peak_ids
-        | fragments.peak_ids
-        | {row["sample_peak_id"] for row in stage_a}
-    )
-    unassigned = build_unassigned_assignments(
-        peaks_df[~peaks_df["sample_peak_id"].isin(assigned)],
-        sample_item_id=sample_item_id,
-        peak_assignment_run_id=run_id,
-    )
-    runtime.logger.info(
-        f"Stage A assigned {len(stage_a)} of {len(peaks_df)} peaks of sample "
-        f"'{sample.sample_item_name}' ({len(reagent)} claimed by the reagent "
-        f"pre-pass, {len(artifact)} by the artifact one, "
-        f"{len(fragments.fragments)} read as fragments, "
-        f"{cross_channel['capped']} capped for another reading of their ion); "
-        "folding into the batch ledger without a run"
-    )
-    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-        fold_sample_into_batch_peaks,
+    # Imported here: the stage list composes this module's helpers.
+    from mascope_backend.api.new.peak_assignments.pipeline import (
+        INGEST_FOLD,
+        RunContext,
+        keep_fold,
+        run_stages,
     )
 
-    return await fold_sample_into_batch_peaks(
-        sample_item_id,
-        rows=[
-            SimpleNamespace(**row)
-            for row in reagent + fragments.fragments + artifact + stage_a + unassigned
-        ],
-        persisted=False,
-        defer_consensus_to=defer_consensus_to,
+    async def keep(ctx: RunContext) -> str | None:
+        return await keep_fold(ctx, defer_consensus_to=defer_consensus_to)
+
+    ctx = await run_stages(
+        RunContext(
+            path=INGEST_FOLD,
+            sample=sample,
+            config=PeakAssignmentConfig(run_untargeted=False),
+            # The rows are shaped as ledger rows - the fold reads them as such -
+            # and stamped with the derived run's id: the run they will never be.
+            run_id=fold_run_id(sample_item_id),
+            keep=keep,
+            strict_instrument=False,
+        )
     )
-
-
-@dataclass(frozen=True)
-class _StageAInputs:
-    """What Stage A reads of a sample beside its peaks, composed without a run
-    (:func:`_stage_a_inputs`).
-
-    :param mechanism_ids: The mode's mechanism ids, which the target library is
-        read through.
-    :param searched_mechanisms: The mechanisms the reference lists are read
-        through: the mode's own and the secondary channels the sample opens.
-    :param resolved_profile: The sample's resolved chemistry, its channels
-        resolved.
-    :param resolution: The file's resolving power; None where it has none.
-    :param reagent: The reagent pre-pass's rows.
-    :param reagent_offset: Where the pre-pass's lines put the mass axis.
-    :param artifact: The artifact pre-pass's rows.
-    :param claimed_peak_ids: The peaks the two pre-passes claimed, which
-        Stage A is not offered.
-    """
-
-    mechanism_ids: list[str]
-    searched_mechanisms: list[SimpleNamespace]
-    resolved_profile: ResolvedProfile
-    resolution: Callable[[float], float] | None
-    reagent: list[dict]
-    reagent_offset: ReagentOffset | None
-    artifact: list[dict]
-    claimed_peak_ids: set[str]
-
-
-async def _stage_a_inputs(
-    sample, config: PeakAssignmentConfig, peaks_df: pd.DataFrame, run_id: str
-) -> _StageAInputs:
-    """Compose Stage A's inputs for a sample the way a run does, without one.
-
-    The run-less fold reads its sample through it, and a thin file's pool
-    reads each neighbour through it (:func:`_neighbour_envelope_lines`), so
-    neither drifts from what a run of that sample would hand Stage A.
-
-    :param sample: The sample view row.
-    :param config: The configuration the chemistry is resolved under.
-    :param peaks_df: The sample's peaks (:func:`load_sample_peaks`).
-    :param run_id: The id the pre-passes' rows are stamped with.
-    :return: The inputs.
-    """
-    mechanism_ids, mechanisms = await fetch_sample_mechanisms(sample)
-    # Both pre-passes run here too. The untargeted stage is off on this path,
-    # but they are not part of it: a reagent peak is the source's chemistry and
-    # a sidelobe is the detector's, whichever way the sample was assigned, and
-    # an ingest fold that left either unassigned would disagree with the run
-    # that later replaces it.
-    # The instrument type matters here even though this path never runs the
-    # untargeted stage: it also sets the window the reagent pre-pass claims in,
-    # so leaving it out had the fold claiming at the 10 ppm fallback while a run
-    # on the same sample claimed at an Orbitrap's 3 - exactly the drift between
-    # the two ledgers the shared helper exists to prevent. It is read
-    # defensively because the parse raises for a sample that keeps no data file
-    # and whose name does not say, and standing down is this path's contract.
-    try:
-        instrument_type = get_instrument_type(sample.filename)
-    except ValueError:
-        instrument_type = None
-    resolved_profile = resolve_profile(
-        config,
-        mechanism_notations=[m.ionization_mechanism for m in mechanisms],
-        instrument_type=instrument_type,
-        polarity=sample.polarity,
-        named_context=await named_context_for(sample.sample_batch_id),
-    )
-    # The channels a run would read: the reagent pre-pass's ladder claim reads
-    # them, Stage A reads the reference lists through them, and the passes
-    # after it read them.
-    resolved_profile, secondary_mechanisms = await _resolve_secondary_channels(
-        sample, resolved_profile, peaks_df
-    )
-    searched_mechanisms = _searched_mechanisms(
-        mechanisms, secondary_mechanisms, resolved_profile
-    )
-    # Read once, for the passes that predict an isotope line: the reagent
-    # pre-pass, and on the fold the mass gate, as a run reads them.
-    resolution = await _resolution_of(sample)
-    # As a run takes its batch's word (step 4.2h), so the two ledgers agree.
-    reagent, reagent_peak_ids, reagent_offset = _reagent_assignments(
-        peaks_df,
-        resolved_profile,
-        sample.sample_item_id,
-        run_id,
-        resolution=resolution,
-        own_mechanisms=searched_mechanisms,
-        sample_name=sample.sample_item_name,
-        batch_species=await batch_species_for(sample),
-    )
-    artifact, artifact_peak_ids = _artifact_assignments(
-        peaks_df, instrument_type, sample.sample_item_id, run_id, reagent_peak_ids
-    )
-    return _StageAInputs(
-        mechanism_ids=mechanism_ids,
-        searched_mechanisms=searched_mechanisms,
-        resolved_profile=resolved_profile,
-        resolution=resolution,
-        reagent=reagent,
-        reagent_offset=reagent_offset,
-        artifact=artifact,
-        claimed_peak_ids=reagent_peak_ids | artifact_peak_ids,
-    )
+    return ctx.result
 
 
 #: The id a neighbour's first-pass rows are stamped with: they are read for
@@ -5780,8 +5513,9 @@ async def _neighbour_envelope_lines(
     """A neighbour's own lines, for a thin file's pooled curve.
 
     Its Stage A first pass at today's numbers (:func:`_stage_a_first_pass`),
-    on its own peaks, mechanisms, channels and pre-passes, composed as the
-    run-less fold composes them (:func:`_stage_a_inputs`), and read by
+    on its own peaks, mechanisms, channels and pre-passes, composed by the stage
+    list's resolve and claim stages as the run-less fold composes them
+    (``pipeline.resolve``, ``pipeline.claim``), and read by
     ``envelope_fit.envelope_lines``. The config and the match parameters are
     the reading run's, so every line of one pool is measured alike. Labelled
     lines are predicted at the purity of the neighbour's own setup, as a run of
@@ -5903,10 +5637,28 @@ async def _read_neighbour_lines(
         return None
     if peaks_df.empty:
         return None
+    # Imported here: the stage list composes this module's helpers.
+    from mascope_backend.api.new.peak_assignments.pipeline import (
+        INGEST_FOLD,
+        RunContext,
+        claim,
+        resolve,
+    )
+
     with labelled_purity(await sample_label_purity(neighbour.sample_item_id)):
-        inputs = await _stage_a_inputs(
-            neighbour, config, peaks_df, _NEIGHBOUR_READ_RUN_ID
+        # The stage list's first two stages, composed as the run-less fold
+        # composes them: its peaks, mechanisms, channels and pre-passes.
+        inputs = RunContext(
+            path=INGEST_FOLD,
+            sample=neighbour,
+            config=config,
+            run_id=_NEIGHBOUR_READ_RUN_ID,
+            match_params=match_params,
+            peaks_df=peaks_df,
+            strict_instrument=False,
         )
+        await resolve(inputs)
+        await claim(inputs)
         fallback_sigma_ppm = inputs.resolved_profile.fallback_sigma_ppm
         first = await _stage_a_first_pass(
             neighbour,

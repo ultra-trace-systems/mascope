@@ -26,6 +26,8 @@ from mascope_tools.composition.envelope_tolerance import (
 
 
 _SVC = "mascope_backend.api.new.peak_assignments.service"
+#: The stage list, which looks the library's names up in its own module.
+_PIPE = "mascope_backend.api.new.peak_assignments.pipeline"
 #: What Stage A hands on of a tolerance it fitted nothing for: today's numbers.
 NO_ENVELOPE_FIT = RunEnvelopeFit(fit_envelope_tolerance(FORM_DEFAULT, EnvelopeLines()))
 _CTL = "mascope_backend.api.new.peak_assignments.batch_peaks_controller"
@@ -106,9 +108,33 @@ def _patched(
         ),
         "params": stack.enter_context(
             patch(
-                f"{_SVC}.default_match_params",
+                f"{_PIPE}.default_match_params",
                 new_callable=AsyncMock,
-                return_value=SimpleNamespace(isotope_abundance_threshold=0.01),
+                return_value=SimpleNamespace(
+                    isotope_abundance_threshold=0.01, mz_tolerance=2.0
+                ),
+            )
+        ),
+        # The setup the sample is bound under, and its labelled reagent's
+        # purity: none here, as for a sample bound under no mode.
+        "setup": stack.enter_context(
+            patch(f"{_PIPE}.sample_setup", new_callable=AsyncMock, return_value=None)
+        ),
+        "purity": stack.enter_context(
+            patch(
+                f"{_PIPE}.sample_label_purity",
+                new_callable=AsyncMock,
+                return_value=None,
+            )
+        ),
+        # What the sample's batch decided, which a fold reads as a run does: no
+        # known species and no series, unless a test says.
+        "batch_species": stack.enter_context(
+            patch(f"{_PIPE}.batch_species_for", new_callable=AsyncMock, return_value=[])
+        ),
+        "series": stack.enter_context(
+            patch(
+                f"{_SVC}.batch_series_by_peak", new_callable=AsyncMock, return_value={}
             )
         ),
         "peaks": stack.enter_context(
@@ -146,7 +172,7 @@ def _patched(
         # the database; none unless a test says.
         "named_context": stack.enter_context(
             patch(
-                f"{_SVC}.named_context_for",
+                f"{_PIPE}.named_context_for",
                 new_callable=AsyncMock,
                 return_value=NamedContext(),
             )
@@ -209,6 +235,66 @@ async def test_folds_stage_a_and_the_placeholders_without_persisting():
 
 
 @pytest.mark.asyncio
+async def test_the_fold_runs_every_stage_of_the_list():
+    # The fold is the stage list's INGEST_FOLD path: the known set alone
+    # proposed, every stage from resolving the chemistry to keeping the rows.
+    from mascope_backend.api.new.peak_assignments import pipeline
+    from mascope_backend.api.new.peak_assignments.service import (
+        fold_sample_peaks_without_run,
+    )
+
+    passes = []
+    run_stages = pipeline.run_stages
+
+    async def recording(ctx):
+        passes.append(ctx)
+        return await run_stages(ctx)
+
+    stack, _mocks = _patched()
+    with stack:
+        stack.enter_context(patch(f"{_PIPE}.run_stages", side_effect=recording))
+        assert await fold_sample_peaks_without_run("si-1") == "batch-1"
+
+    (ctx,) = passes
+    assert ctx.path is pipeline.INGEST_FOLD
+    assert ctx.path.proposal is pipeline.Proposal.KNOWN
+    assert ctx.ran == list(pipeline.STAGES)
+    assert ctx.search is None
+    # The batch's series records, which a run's elect stage reads too.
+    _mocks["series"].assert_awaited_once_with("si-1")
+
+
+@pytest.mark.asyncio
+async def test_the_fold_reads_labelled_lines_at_its_setups_purity():
+    # MAS-905: every stage of the fold reads a labelled reagent's lines at the
+    # purity the sample's setup carries, as a run of it does.
+    from mascope_backend.api.new.peak_assignments.service import (
+        fold_sample_peaks_without_run,
+    )
+    from mascope_tools.composition.custom_elements import (
+        CUSTOM_ELEMENTS,
+        label_purity,
+    )
+
+    stack, mocks = _patched()
+    mocks["purity"].return_value = 0.9
+    seen = []
+    stage_a = mocks["stage_a"].return_value
+
+    async def stage_a_reads(*args, **kwargs):
+        seen.append(label_purity("^N"))
+        return stage_a
+
+    mocks["stage_a"].side_effect = stage_a_reads
+    with stack:
+        assert await fold_sample_peaks_without_run("si-1") == "batch-1"
+
+    mocks["purity"].assert_awaited_once_with("si-1")
+    assert seen == [0.9]
+    assert label_purity("^N") == CUSTOM_ELEMENTS["^N"].default_purity
+
+
+@pytest.mark.asyncio
 async def test_stage_a_is_told_where_the_reagent_lines_put_the_axis():
     """The fold's Stage A falls back to the reagent lines' offset as a run's does.
 
@@ -227,6 +313,7 @@ async def test_stage_a_is_told_where_the_reagent_lines_put_the_axis():
     stack, mocks = _patched()
     # An Orbitrap, whose scoring width 1.3 ppm is beyond.
     stack.enter_context(patch(f"{_SVC}.get_instrument_type", return_value="orbi"))
+    stack.enter_context(patch(f"{_PIPE}.get_instrument_type", return_value="orbi"))
     mocks["peaks"].return_value = pd.DataFrame(
         {
             "sample_peak_id": ["p1", "r1", "r2", "r3"],
@@ -275,6 +362,7 @@ async def test_the_fold_claims_the_source_s_lines_at_the_files_resolution(read):
     mzs, _, labels = predict_resolved_isotopes("C2H9N4O2", 1, 1e-3, tof)
     stack, mocks = _patched()
     stack.enter_context(patch(f"{_SVC}.get_instrument_type", return_value="orbi"))
+    stack.enter_context(patch(f"{_PIPE}.get_instrument_type", return_value="orbi"))
     mocks["peaks"].return_value = pd.DataFrame(
         {
             "sample_peak_id": ["p1", "r1", "r2", "r2-m1"],
@@ -388,6 +476,7 @@ async def test_the_fold_anchors_its_gate_on_the_source_s_lines_as_a_run_does(
     labels = ("[CH4N2O+H]+", "[(CH4N2O)2+H]+", "[(CH4N2O)3+H]+")
     stack, mocks = _patched()
     stack.enter_context(patch(f"{_SVC}.get_instrument_type", return_value="orbi"))
+    stack.enter_context(patch(f"{_PIPE}.get_instrument_type", return_value="orbi"))
     mocks["peaks"].return_value = pd.DataFrame(
         {
             "sample_peak_id": ["peak-off", "r1", "r2", "r3"],
@@ -491,6 +580,7 @@ async def test_the_fold_reads_an_isotopologue_s_line_as_a_run_does(
     stack, mocks = _patched()
     # An Orbitrap, whose lines track their parents within 0.9 ppm.
     stack.enter_context(patch(f"{_SVC}.get_instrument_type", return_value="orbi"))
+    stack.enter_context(patch(f"{_PIPE}.get_instrument_type", return_value="orbi"))
     mocks["stage_a"].return_value = (
         rows,
         None,
@@ -511,7 +601,9 @@ async def test_the_fold_reads_an_isotopologue_s_line_as_a_run_does(
     assert line.tier == tier
     expected = "in_doubt" if noise < 10 else "untracked"
     assert line.provenance["mass_gate"]["tracking"] == expected
-    assert folded["peak-m0"].tier == "assigned"
+    # The gate holds nothing against the line's owner; the tiering rules a
+    # run asks of it are the fold's too (``test_the_fold_tiers_...``).
+    assert "ceiling" not in folded["peak-m0"].provenance["mass_gate"]
 
 
 @pytest.mark.asyncio
@@ -621,6 +713,7 @@ async def test_the_fold_reads_a_list_through_the_channels_a_run_opens():
     ]
     with stack:
         stack.enter_context(patch(f"{_SVC}.get_instrument_type", return_value="orbi"))
+        stack.enter_context(patch(f"{_PIPE}.get_instrument_type", return_value="orbi"))
         assert await fold_sample_peaks_without_run("si-1") == "batch-1"
 
     args = mocks["stage_a"].call_args.args
@@ -670,6 +763,7 @@ async def test_the_fold_climbs_the_ladders_through_the_channels_a_run_opens(
     mocks["secondary"].return_value = [mechanism("m-hy", "[M-H]+")] if abstracts else []
     with stack:
         stack.enter_context(patch(f"{_SVC}.get_instrument_type", return_value="orbi"))
+        stack.enter_context(patch(f"{_PIPE}.get_instrument_type", return_value="orbi"))
         assert await fold_sample_peaks_without_run("si-1") == "batch-1"
 
     folded = {row.sample_peak_id: row for row in mocks["fold"].call_args.kwargs["rows"]}
@@ -691,6 +785,7 @@ async def test_the_pre_passes_claims_are_folded_and_kept_out_of_stage_a():
     labels = ("[CH4N2O+H]+", "[(CH4N2O)2+H]+", "[(CH4N2O)3+H]+")
     stack, mocks = _patched()
     stack.enter_context(patch(f"{_SVC}.get_instrument_type", return_value="orbi"))
+    stack.enter_context(patch(f"{_PIPE}.get_instrument_type", return_value="orbi"))
     mocks["peaks"].return_value = pd.DataFrame(
         {
             "sample_peak_id": ["p1", "r1", "r2", "r3", "p-lobe"],
@@ -801,19 +896,22 @@ class TestTheFoldClaimsInTheRunsWindow:
     @staticmethod
     def _resolve_spy(stack, instrument):
         """Patch the instrument read and capture what resolve_profile is told."""
-        from mascope_backend.api.new.peak_assignments import service
+        from mascope_backend.api.new.peak_assignments import pipeline
 
         seen = {}
         stack.enter_context(
             patch(f"{_SVC}.get_instrument_type", side_effect=instrument)
         )
-        real = service.resolve_profile
+        stack.enter_context(
+            patch(f"{_PIPE}.get_instrument_type", side_effect=instrument)
+        )
+        real = pipeline.resolve_profile
 
         def spy(config, **kwargs):
             seen.update(kwargs)
             return real(config, **kwargs)
 
-        stack.enter_context(patch(f"{_SVC}.resolve_profile", side_effect=spy))
+        stack.enter_context(patch(f"{_PIPE}.resolve_profile", side_effect=spy))
         return seen
 
     @pytest.mark.asyncio
@@ -875,7 +973,7 @@ class TestTheFoldClaimsInTheRunsWindow:
         run does, so the two ledgers hold the same known set."""
         from dataclasses import replace
 
-        from mascope_backend.api.new.peak_assignments import service
+        from mascope_backend.api.new.peak_assignments import pipeline
         from mascope_backend.api.new.peak_assignments.service import (
             fold_sample_peaks_without_run,
         )
@@ -884,7 +982,7 @@ class TestTheFoldClaimsInTheRunsWindow:
             get_chemistry_context,
         )
 
-        real = service.resolve_profile
+        real = pipeline.resolve_profile
 
         def resolved_under_the_context(config, **kwargs):
             return replace(
@@ -897,7 +995,12 @@ class TestTheFoldClaimsInTheRunsWindow:
                 patch(f"{_SVC}.get_instrument_type", return_value="orbi")
             )
             stack.enter_context(
-                patch(f"{_SVC}.resolve_profile", side_effect=resolved_under_the_context)
+                patch(f"{_PIPE}.get_instrument_type", return_value="orbi")
+            )
+            stack.enter_context(
+                patch(
+                    f"{_PIPE}.resolve_profile", side_effect=resolved_under_the_context
+                )
             )
             await fold_sample_peaks_without_run("si-1")
 
@@ -949,12 +1052,13 @@ async def test_the_fold_takes_its_batchs_word_as_a_run_does():
     stack, mocks = _patched()
     batch_species = stack.enter_context(
         patch(
-            f"{_SVC}.batch_species_for",
+            f"{_PIPE}.batch_species_for",
             new_callable=AsyncMock,
             return_value=[species],
         )
     )
     stack.enter_context(patch(f"{_SVC}.get_instrument_type", return_value="orbi"))
+    stack.enter_context(patch(f"{_PIPE}.get_instrument_type", return_value="orbi"))
     mocks["peaks"].return_value = pd.DataFrame(
         {
             "sample_peak_id": ["m", "d", "t"],

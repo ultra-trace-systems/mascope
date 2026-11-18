@@ -39,6 +39,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
+from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
@@ -128,6 +129,8 @@ class Proposal(StrEnum):
     #: The known set (Stage A), then the formula search over the peaks it
     #: leaves and the ones its lists read, where the config asks for it.
     KNOWN_AND_SEARCH = "known set and search"
+    #: The known set alone.
+    KNOWN = "known set"
 
 
 class Measurement(StrEnum):
@@ -172,8 +175,14 @@ DECOY = AssignmentPath(
     "decoy", Stage.RESOLVE, Proposal.KNOWN_AND_SEARCH, Measurement.CONTROL
 )
 
+#: The run-less ingest fold: the known set alone, folded straight into the
+#: batch ledger with no run written (``service.fold_sample_peaks_without_run``).
+INGEST_FOLD = AssignmentPath(
+    "ingest fold", Stage.RESOLVE, Proposal.KNOWN, Measurement.FITTED
+)
+
 #: Every path, in the order this module names them.
-PATHS: tuple[AssignmentPath, ...] = (RUN, DECOY)
+PATHS: tuple[AssignmentPath, ...] = (RUN, DECOY, INGEST_FOLD)
 
 
 @dataclass
@@ -396,9 +405,6 @@ async def resolve(ctx: RunContext) -> None:
     # for every pass that predicts an isotope line - the reagent pre-pass, the
     # envelope match, the mass gate and the tiering pass.
     ctx.resolution = await service._resolution_of(sample)
-    # And the cap on how bright a source line may be to anchor the mass gate,
-    # which the m/z calibration node puts on its calibrants.
-    ctx.source_line_cap = await service._source_line_cap(sample)
 
 
 def _instrument_type(sample, *, strict: bool) -> str | None:
@@ -479,8 +485,10 @@ async def propose(ctx: RunContext) -> None:
     search enumerates is what the known set left, and the measurement it ranks
     at is the one the known set's lines fitted.
     """
-    await _propose_known_set(ctx)
-    if ctx.config.run_untargeted:
+    proposal = ctx.path.proposal
+    if proposal in (Proposal.KNOWN_AND_SEARCH, Proposal.KNOWN):
+        await _propose_known_set(ctx)
+    if proposal is Proposal.KNOWN_AND_SEARCH and ctx.config.run_untargeted:
         await _propose_by_search(ctx)
 
 
@@ -862,6 +870,9 @@ async def refit(ctx: RunContext) -> None:
     """
     if ctx.judging is None:
         ctx.lines = SpectrumLines.from_peaks(ctx.peaks_df, ctx.resolution)
+        # The cap on how bright a source line may be to anchor the mass gate,
+        # which the m/z calibration node puts on its calibrants.
+        ctx.source_line_cap = await service._source_line_cap(ctx.sample)
         ctx.judging = _judging_for(ctx)
     ctx.judging.refit()
 
@@ -1226,6 +1237,41 @@ async def keep_run(ctx: RunContext) -> dict:
             "peak_assignment_run_id": ctx.run_id,
         },
     }
+
+
+async def keep_fold(
+    ctx: RunContext, *, defer_consensus_to: set[str] | None = None
+) -> str | None:
+    """The ingest fold keeps its ledger as the sample's members in its batch's
+    batch peaks, and writes no run (``fold_view`` serves the Sample view from
+    them). Its rows are shaped as ledger rows, stamped with the derived run's
+    id: the run they will never be.
+
+    :param defer_consensus_to: As for ``fold_sample_into_batch_peaks``: a
+        whole-batch walk collects the anchors touched and recomputes once.
+    :return: The batch folded into.
+    """
+    # Imported here: the batch fold imports the service, which this module
+    # composes.
+    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+        fold_sample_into_batch_peaks,
+    )
+
+    every, committed, _ = ledger_rows(ctx)
+    runtime.logger.info(
+        f"Stage A assigned {len(committed)} of {len(ctx.peaks_df)} peaks of sample "
+        f"'{ctx.sample.sample_item_name}' ({len(ctx.reagent_rows)} claimed by the "
+        f"reagent pre-pass, {len(ctx.artifact_rows)} by the artifact one, "
+        f"{len(ctx.fragments.fragments)} read as fragments, "
+        f"{ctx.tiering['capped']} capped by the tiering rules); folding into the "
+        "batch ledger without a run"
+    )
+    return await fold_sample_into_batch_peaks(
+        ctx.sample.sample_item_id,
+        rows=[SimpleNamespace(**row) for row in every],
+        persisted=False,
+        defer_consensus_to=defer_consensus_to,
+    )
 
 
 # --- the runner -----------------------------------------------------------------

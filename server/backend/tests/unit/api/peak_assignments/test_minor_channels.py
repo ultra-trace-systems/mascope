@@ -1967,13 +1967,14 @@ class TestAListsReadingThroughAGatedChannel:
     ids=["listed", "unlisted"],
 )
 def test_the_folds_reading_records_a_list_as_a_run_does(listed, corroboration, tier):
-    """The run-less fold's reading of the other channels tells the partner gate
-    what the lists name, as a run's judging does: a reading the gate swapped
+    """The stage list's judge stage tells the partner gate what the lists
+    name, on every path (``service.Judging.judge``): a reading the gate swapped
     in keeps a list's corroboration when a later round takes its partner
     away, and with it the tier the policy's cap would take
     (``TestThePartnerGate.test_a_swapped_in_reading_a_list_names_keeps_the_list``
-    is the same ledger through the gate alone). The fold's own rows are
-    Stage A's, which the gate never swaps, so the rows here are a search's."""
+    is the same ledger through the gate alone). The run-less fold's own rows
+    are Stage A's, which the gate never swaps, so the rows here are a
+    search's."""
     benzyl = ledger_row(
         "benzyl", "C7H6", "im-h", alternatives=(("H8C7", "im-hydride"),)
     )
@@ -1996,18 +1997,23 @@ def test_the_folds_reading_records_a_list_as_a_run_does(listed, corroboration, t
     seen = ledger_row("c7h7", "C7H7", "im-ct", intensity=2.0e5)
     opened = frozenset({"[M+H]+", "[M-H]+"})
 
-    service_module._read_other_readings(
-        [],
+    judging = service_module.Judging(
         [benzyl, partner, seen],
-        searched_mechanisms=[
-            SimpleNamespace(ionization_mechanism_id=mid, ionization_mechanism=notation)
-            for notation, mid in CT_IDS.items()
-        ],
-        resolved_profile=SimpleNamespace(
-            minor_channels=opened, partner_gated_channels=opened
-        ),
+        stage_a_accuracy=None,
+        fallback_sigma_ppm=1.0,
+        notation_by_id={mid: notation for notation, mid in CT_IDS.items()},
+        mz_tolerance_ppm=3.0,
+        abundance_floor=0.01,
+        max_alternatives=5,
         tier_bands=BANDS,
+        minor_channels=opened,
+        partner_gated_channels=opened,
         listed_formulas=listed,
+    )
+    judging.refit()
+    judging.judge()
+    benzyl = next(
+        row for row in judging.judged if row["peak_assignment_id"] == "benzyl"
     )
 
     assert (benzyl["assigned_formula"], benzyl["ionization_mechanism_id"]) == (
