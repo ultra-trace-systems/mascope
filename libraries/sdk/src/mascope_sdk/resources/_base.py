@@ -14,6 +14,23 @@ if TYPE_CHECKING:
     from ..client import MascopeClient
 
 
+class _Unset:
+    """The default of a parameter whose ``None`` means "set it to null".
+
+    An update call leaves a field it was not given out of the request, so
+    the field stays as it is; given ``None``, it sends null and clears it.
+    """
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+    def __bool__(self) -> bool:
+        return False
+
+
+UNSET: Any = _Unset()
+
+
 def _coerce_datetime_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Convert known datetime columns to proper datetime types.
 

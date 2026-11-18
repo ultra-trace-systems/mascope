@@ -1628,6 +1628,29 @@ class TestWriteContract:
         )
         assert dataset_id not in [row["dataset_id"] for row in remaining]
 
+    def test_a_chemistry_context_is_set_kept_and_cleared(self, scratch):
+        datasets = scratch.client.datasets
+        batches = scratch.client.batches
+        _skip_unless_param(datasets.update, "chemistry_context")
+
+        created = datasets.create(f"context {scratch.tag}", chemistry_context="chamber")
+        dataset_id = created["dataset_id"]
+        assert created["chemistry_context"] == "chamber"
+        # Left out, the context stays; None clears it.
+        kept = datasets.update(dataset_id, name=f"context renamed {scratch.tag}")
+        assert kept["chemistry_context"] == "chamber"
+        cleared = datasets.update(dataset_id, chemistry_context=None)
+        assert cleared["chemistry_context"] is None
+        datasets.delete(dataset_id)
+
+        batch_id = _scratch_batch(scratch, "context batch")
+        named = batches.update(batch_id, chemistry_context="ambient-air")
+        assert named["chemistry_context"] == "ambient-air"
+        kept = batches.update(batch_id, name="context batch renamed")
+        assert kept["chemistry_context"] == "ambient-air"
+        cleared = batches.update(batch_id, chemistry_context=None)
+        assert cleared["chemistry_context"] is None
+
     def test_batch_update_copy_delete(self, scratch):
         batches = scratch.client.batches
         _skip_unless_attr(batches, "copy")

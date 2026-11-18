@@ -6,7 +6,7 @@ from typing import Any
 import pandas as pd
 from loguru import logger
 
-from ._base import BaseResource, Needs, _coerce_datetime_columns
+from ._base import UNSET, BaseResource, Needs, _coerce_datetime_columns
 
 
 #: The role a dataset write needs, as docs/user/sdk/index.md lists it.
@@ -78,6 +78,7 @@ class DatasetsResource(BaseResource):
         instrument: str | None = None,
         icon: dict[str, str] | None = None,
         workspace_id: str | None = None,
+        chemistry_context: str | None = None,
     ) -> dict[str, Any]:
         """Create a dataset.
 
@@ -96,6 +97,11 @@ class DatasetsResource(BaseResource):
         :type icon: dict[str, str], optional
         :param workspace_id: The workspace; the client's when None.
         :type workspace_id: str, optional
+        :param chemistry_context: The chemistry context the samples were
+            drawn from, such as ``"chamber"`` or ``"ambient-air"``: a peak
+            assignment run on ``auto`` takes it before its reagent profile's
+            default, and a batch's own before it. None names none.
+        :type chemistry_context: str, optional
         :return: The new dataset, with its ``dataset_id``.
         :rtype: dict[str, Any]
         :raises PermissionDeniedError: Without the editor role there.
@@ -112,6 +118,8 @@ class DatasetsResource(BaseResource):
             body["instrument"] = instrument
         if icon is not None:
             body["icon"] = icon
+        if chemistry_context is not None:
+            body["chemistry_context"] = chemistry_context
         return self._write(
             "POST",
             f"workspaces/{workspace_id}/datasets",
@@ -126,8 +134,9 @@ class DatasetsResource(BaseResource):
         description: str | None = None,
         icon: dict[str, str] | None = None,
         workspace_id: str | None = None,
+        chemistry_context: str | None = UNSET,
     ) -> dict[str, Any]:
-        """Rename a dataset, or change its description or icon.
+        """Rename a dataset, or change its description, icon or chemistry context.
 
         Only the fields given are sent; the others stay as they are.
 
@@ -141,6 +150,12 @@ class DatasetsResource(BaseResource):
         :type icon: dict[str, str], optional
         :param workspace_id: The workspace it is in; the client's when None.
         :type workspace_id: str, optional
+        :param chemistry_context: The chemistry context the samples were
+            drawn from, such as ``"chamber"`` or ``"ambient-air"``: a peak
+            assignment run on ``auto`` takes it before its reagent profile's
+            default, and a batch's own before it. Left out, it
+            stays as it is; ``None`` clears it.
+        :type chemistry_context: str, optional
         :return: The updated dataset.
         :rtype: dict[str, Any]
         :raises PermissionDeniedError: Without the editor role in the
@@ -153,6 +168,8 @@ class DatasetsResource(BaseResource):
             body["dataset_description"] = description
         if icon is not None:
             body["icon"] = icon
+        if chemistry_context is not UNSET:
+            body["chemistry_context"] = chemistry_context
         return self._write(
             "PATCH",
             f"workspaces/{self._workspace(workspace_id)}/datasets/{dataset_id}",
