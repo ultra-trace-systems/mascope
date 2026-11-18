@@ -1,14 +1,18 @@
 import json
 import os
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
     TARGET_ISOTOPE_FORMULA_LENGTH,
+    FileLines,
     charge_string,
     fit_isotope_names,
     generate_target_ions_from_composition,
     group_target_isotopes,
+    lines_at_file,
 )
 from mascope_backend.db import (
     IonizationMechanism,
@@ -17,8 +21,9 @@ from mascope_backend.db import (
     TargetIsotope,
 )
 from mascope_tools.composition import heuristic_filter
-from mascope_tools.composition.config import ELECTRON_MASS
+from mascope_tools.composition.config import ELECTRON_MASS, ENVELOPE_ABUNDANCE_FLOOR
 from mascope_tools.composition.mechanism_notation import parse_mechanism
+from mascope_tools.composition.models import PatternScoring
 from mascope_tools.composition.utils import calculate_mass
 
 
@@ -271,6 +276,83 @@ def test_group_target_isotopes_folds_a_dim_line_it_cannot_separate():
     assert probs == pytest.approx([1.005, 0.1, 0.005, 0.05, 0.02])
     assert masses[0] == pytest.approx((100.0 + 0.005 * 99.993) / 1.005)
     assert masses[1:] == pytest.approx([101.0, 101.0102, 102.0, 102.007])
+
+
+def test_two_faint_lines_one_peak_holds_are_one_line():
+    """Two lines under 1 %, 0.06 apart at m/z 101 where a FWHM is 0.101 at a
+    resolving power of 1000, are between half and one FWHM apart: binned at
+    half a FWHM each was a line of its own, though one peak holds both and
+    together they clear the floor (mascope#3163). They are one line, as the
+    envelope match predicts it."""
+    masses, probs, formulae = group_target_isotopes(
+        [100.0, 101.0, 101.06], [1.0, 0.006, 0.006], ["a", "b", "c"], 1000.0
+    )
+
+    assert formulae == ["a", "b/c"]
+    assert probs == pytest.approx([1.0, 0.012])
+    assert masses[1] == pytest.approx(101.03)
+
+
+def test_a_tof_m1_line_is_one_line_as_a_target_ion_and_as_a_search_candidate():
+    """One line model (MAS-977): the M+1 line a TOF file of this R(m/z) shows
+    is predicted identically by the target library a run's Stage A matches -
+    resolved from its stored fine lines, or predicted for the file - and by the
+    envelope the composition search scores a candidate on."""
+    compound = TargetCompound(
+        target_compound_id="unit-m1", target_compound_formula="C10H15NO3"
+    )
+    mechanism = IonizationMechanism(
+        ionization_mechanism_id="unit-mech-h",
+        ionization_mechanism_polarity="-",
+        ionization_mechanism="[M-H]-",
+    )
+
+    # About 40000 at m/z 197, a FWHM of 4.9 mDa: the 15N line, 6.3 mDa under
+    # the 13C one, is a peak of its own, where at the stored library's 10000
+    # one peak holds it with the 13C line.
+    def resolution(mz):
+        return 200.0 * mz
+
+    def m1_share(mzs, shares):
+        mzs, shares = np.asarray(mzs, dtype=float), np.asarray(shares, dtype=float)
+        mono = int(np.argmin(mzs))
+        m1 = int(np.argmin(np.abs(mzs - (mzs[mono] + 1.0034))))
+        return mzs[m1], shares[m1] / shares[mono]
+
+    _, stored = generate_target_ions_from_composition(compound, [mechanism])
+    fine = pd.DataFrame(
+        [
+            {
+                "target_ion_id": iso.target_ion_id,
+                "target_isotope_id": iso.target_isotope_id,
+                "target_isotope_formula": iso.target_isotope_formula,
+                "mz": iso.mz,
+                "relative_abundance": iso.relative_abundance,
+            }
+            for iso in stored
+            if iso.resolution == "HIGH"
+        ]
+    )
+    stage_a = lines_at_file(fine, FileLines("LOW", resolution))
+    _, predicted = generate_target_ions_from_composition(
+        compound, [mechanism], file_lines=FileLines("LOW", resolution)
+    )
+    candidate_mzs, candidate_shares, _ = heuristic_filter._predicted_envelope(
+        "C10H14NO3", -1, ENVELOPE_ABUNDANCE_FLOOR, PatternScoring(resolution=resolution)
+    )
+
+    candidate = m1_share(candidate_mzs, candidate_shares)
+    for mzs, shares in (
+        (stage_a["mz"], stage_a["relative_abundance"]),
+        ([i.mz for i in predicted], [i.relative_abundance for i in predicted]),
+    ):
+        mz, share = m1_share(mzs, shares)
+        assert mz == pytest.approx(candidate[0], abs=1e-9)
+        assert share == pytest.approx(candidate[1], rel=1e-9)
+    # Not the stored LOW line, merged at one resolving power for every TOF.
+    low = [i for i in stored if i.resolution == "LOW"]
+    _, share = m1_share([i.mz for i in low], [i.relative_abundance for i in low])
+    assert share > candidate[1] * 1.02
 
 
 def test_group_target_isotopes_reads_the_floor_off_the_most_abundant_line():

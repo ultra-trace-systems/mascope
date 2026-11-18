@@ -26,6 +26,7 @@ from.
 """
 
 import asyncio
+from collections.abc import Callable
 from types import SimpleNamespace
 
 import numpy as np
@@ -33,6 +34,7 @@ import pandas as pd
 from sqlalchemy import select
 
 from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
+    FileLines,
     generate_target_ions_from_composition,
 )
 from mascope_backend.api.new.ionization.modes.versions import sample_label_purity
@@ -100,11 +102,14 @@ def build_seeded_isotopes_df(
     mechanisms_by_id: dict[str, SimpleNamespace],
     resolution_type: str,
     abundance_threshold: float,
+    resolution: Callable[[float], float] | None = None,
 ) -> tuple[pd.DataFrame, dict[tuple[str, str], str]]:
     """Expand a formula x mechanism list into a Stage-A isotope frame.
 
-    The same target-ion/IsoSpec path the curated library and the reference
-    mirror use, shaped like ``_fetch_known_target_isotopes`` output so
+    The same target-ion path the curated library and the reference mirror
+    use, the lines resolved at the file's R(m/z) as theirs are
+    (``target_ions_compute.FileLines``), shaped like
+    ``_fetch_known_target_isotopes`` output so
     ``compute_match_isotopes`` and the fit scorer consume it unchanged. Ion and
     isotope ids are synthetic, used only to group the scored frame back to
     seeds - they are never persisted. A formula that fails to generate is
@@ -115,6 +120,8 @@ def build_seeded_isotopes_df(
     :param resolution_type: "LOW" (TOF) or "HIGH", the sample's.
     :param abundance_threshold: Minimum relative abundance to participate, the
         sample's match-params floor as in Stage A.
+    :param resolution: The file's resolving power as a function of m/z, or None
+        where it has none (``FileLines``).
     :return: The seeded isotope frame, and seed pair -> synthetic ion id.
     """
     mechanism_ids_by_formula: dict[str, list[str]] = {}
@@ -136,7 +143,11 @@ def build_seeded_isotopes_df(
             target_compound_formula=formula,
         )
         try:
-            ions, isotopes = generate_target_ions_from_composition(compound, mechanisms)
+            ions, isotopes = generate_target_ions_from_composition(
+                compound,
+                mechanisms,
+                file_lines=FileLines(resolution_type, resolution),
+            )
         except Exception as error:  # noqa: BLE001 - a bad formula skips, never fails
             runtime.logger.debug(f"Skipping seed formula '{formula}': {error}")
             continue
@@ -355,6 +366,11 @@ RESOLVE_REAGENT_OFFSET = object()
 #: sample's latest run recorded. Distinct from None, today's numbers.
 RESOLVE_ENVELOPE_TOLERANCE = object()
 
+#: The caller has not read the sample file's resolving power, and the chain
+#: reads it (``service._resolution_of``). Distinct from None, the answer for a
+#: file whose instrument functions could not be read.
+RESOLVE_RESOLUTION = object()
+
 
 async def score_seeds(
     sample,
@@ -367,6 +383,7 @@ async def score_seeds(
         RESOLVE_ENVELOPE_TOLERANCE
     ),
     inherited_accuracy: SampleMassAccuracy | None = None,
+    resolution: Callable[[float], float] | None | object = RESOLVE_RESOLUTION,
 ) -> tuple[
     dict[tuple[str, str], str],
     dict[str, float | None],
@@ -409,6 +426,9 @@ async def score_seeds(
         since the seeds there are a shortlist of mostly wrong formulas
         (``alternatives_scoring.measure_winner_confidence``). None everywhere
         else.
+    :param resolution: The file's resolving power, which the seeds' lines are
+        resolved at as Stage A resolves its known set's: a run's own reading;
+        left out, it is read here.
     :return: ``(ion by seed, fit by ion, errors by pairing, the scored frame)``.
     """
     if not seeds:
@@ -422,6 +442,7 @@ async def score_seeds(
             config=config,
             envelope_tolerance=envelope_tolerance,
             inherited_accuracy=inherited_accuracy,
+            resolution=resolution,
         )
 
 
@@ -434,6 +455,7 @@ async def _score_seeds(
     config: PeakAssignmentConfig | None,
     envelope_tolerance: EnvelopeTolerance | None | object,
     inherited_accuracy: SampleMassAccuracy | None = None,
+    resolution: Callable[[float], float] | None | object = RESOLVE_RESOLUTION,
 ) -> tuple[
     dict[tuple[str, str], str],
     dict[str, float | None],
@@ -444,12 +466,18 @@ async def _score_seeds(
     mechanisms_by_id = await fetch_mechanisms_by_id(
         {mechanism_id for _, mechanism_id in seeds}
     )
+    if resolution is RESOLVE_RESOLUTION:
+        # Imported here: the service imports this module for its own runs.
+        from mascope_backend.api.new.peak_assignments.service import _resolution_of
+
+        resolution = await _resolution_of(sample)
     seeded_df, ion_by_seed = await asyncio.to_thread(
         build_seeded_isotopes_df,
         seeds,
         mechanisms_by_id,
         resolution_type_of(sample),
         match_params.isotope_abundance_threshold,
+        resolution,
     )
     if seeded_df.empty:
         return ion_by_seed, {}, {}, pd.DataFrame()

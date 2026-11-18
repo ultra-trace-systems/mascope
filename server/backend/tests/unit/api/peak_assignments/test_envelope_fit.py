@@ -20,6 +20,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
+    LEAD_ISOTOPE_FORMULA,
+)
 from mascope_backend.api.new.peak_assignments import envelope_fit
 from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_ISO_CHILD,
@@ -323,6 +326,27 @@ class TestTheEnvelopesRead:
         )
 
         assert _lines(frame, _committed(frame)[:1]).ratio.size == 1
+
+    def test_a_13c_line_merged_at_the_files_resolution_is_read_by_its_lead(self):
+        """At an Orbitrap's resolving power the 13C line holds its 17O line,
+        and the run names it by both (MAS-977). It is still the 13C line the
+        curve is fitted on: its brightest member, which the frame names in
+        ``lead_isotope_formula``. An 18O line that holds a fainter 13C2 line
+        is not one."""
+        merged = [
+            ("C10H15O4-", 1.0, 1.0, 0.1),
+            ("C9[13C]H15O4-/C10H15O3[17O]-", 0.112, 0.85, 0.15),
+            ("C8[13C]2H15O4-/C10H15O3[18O]-", 0.013, 1.0, 0.1),
+        ]
+        frame = pd.DataFrame(_ion("ion-1", merged))
+
+        assert _lines(frame).ratio.size == 0
+        frame[LEAD_ISOTOPE_FORMULA] = [
+            "C10H15O4-",
+            "C9[13C]H15O4-",
+            "C10H15O3[18O]-",
+        ]
+        assert _lines(frame).ratio.tolist() == pytest.approx([0.85])
 
     def test_a_frame_without_isotopologue_formulas_reads_no_curve(self):
         frame = pd.DataFrame(_ion("ion-1", C10)).drop(columns="target_isotope_formula")

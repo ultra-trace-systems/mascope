@@ -35,7 +35,9 @@ from sqlalchemy.orm import aliased
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.controllers.samples.lib.samples_peaks import extract_peaks
 from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
+    FileLines,
     generate_target_ions_from_composition,
+    lines_at_file,
 )
 from mascope_backend.api.lib.api_features import (
     api_controller,
@@ -239,6 +241,8 @@ from mascope_backend.api.new.peak_assignments.reagent_pass import (
 )
 from mascope_backend.api.new.peak_assignments.schemas import DEFAULT_PAGE_LIMIT
 from mascope_backend.api.new.peak_assignments.seeded_scoring import (
+    RESOLVE_RESOLUTION,
+    resolution_type_of,
     score_seeds,
     scored_accuracy,
 )
@@ -3253,10 +3257,19 @@ def judge_commits(
         claims.update((claim.row_id, claim) for claim in found)
 
 
+#: The stored library's fine structure, which a run resolves at the file's
+#: R(m/z) (``target_ions_compute.lines_at_file``).
+FINE_LINES = "HIGH"
+
+#: The column a fetched fine line carries its ion's abundance threshold in.
+_ABUNDANCE_THRESHOLD_COL = "abundance_threshold"
+
+
 async def _fetch_known_target_isotopes(
     sample: Sample,
     isotope_abundance_threshold: float,
     ionization_mechanism_ids: list[str],
+    file_lines: FileLines,
 ) -> pd.DataFrame:
     """
     Fetch the full known-isotopologue set for a sample (Stage A input).
@@ -3266,17 +3279,22 @@ async def _fetch_known_target_isotopes(
     whole library - and it carries the compound/ion metadata that ends up
     denormalized on PeakAssignment rows.
 
+    The library's fine lines are read and resolved at the file's R(m/z)
+    (``target_ions_compute.lines_at_file``), as the envelope match predicts a
+    search candidate's, rather than its stored ``LOW`` lines, merged at one
+    resolving power for every TOF, or its unmerged ``HIGH`` ones (MAS-977).
+    The abundance threshold, an ion's own or the instrument's, is applied to
+    the resolved lines.
+
     :param sample: Sample model object
     :param isotope_abundance_threshold: Minimum relative abundance for a
         target isotope to participate
     :param ionization_mechanism_ids: The sample's mechanism ids, resolved
         once per run by :func:`fetch_sample_mechanisms`
+    :param file_lines: The sample file's resolution, its lines resolved at.
     :return: DataFrame of target isotopes with compound/ion metadata
     """
     async with async_session() as session:
-        resolution_type = (
-            "LOW" if get_instrument_type(sample.filename) == "tof" else "HIGH"
-        )
         abundance_threshold = isotope_abundance_threshold_expr(
             TargetIon.filter_params,
             sample.instrument,
@@ -3297,6 +3315,7 @@ async def _fetch_known_target_isotopes(
                 TargetCompound.target_compound_formula,
                 IonizationMechanism.ionization_mechanism,
                 IonizationMechanism.ionization_mechanism_polarity,
+                abundance_threshold.label(_ABUNDANCE_THRESHOLD_COL),
             )
             .distinct(TargetIsotope.target_isotope_id)
             .select_from(TargetIsotope)
@@ -3324,14 +3343,21 @@ async def _fetch_known_target_isotopes(
                 TargetCollectionInSampleBatch.sample_batch_id == sample.sample_batch_id,
                 TargetIon.ionization_mechanism_id.in_(ionization_mechanism_ids),
                 IonizationMechanism.ionization_mechanism_polarity == sample.polarity,
-                TargetIsotope.resolution == resolution_type,
-                TargetIsotope.relative_abundance >= abundance_threshold,
+                TargetIsotope.resolution == FINE_LINES,
             )
         )
         if not (rows := (await session.execute(stmt)).all()):
             return pd.DataFrame()
 
-    target_isotopes_df = pd.DataFrame([row._asdict() for row in rows])
+    target_isotopes_df = await asyncio.to_thread(
+        lines_at_file,
+        pd.DataFrame([row._asdict() for row in rows]),
+        file_lines,
+        _ABUNDANCE_THRESHOLD_COL,
+    )
+    target_isotopes_df = target_isotopes_df.drop(columns=[_ABUNDANCE_THRESHOLD_COL])
+    if target_isotopes_df.empty:
+        return pd.DataFrame()
     runtime.logger.info(
         f"Found {len(target_isotopes_df)} known target isotopes for sample "
         f"'{sample.sample_item_name}' (polarity: {sample.polarity})"
@@ -3342,15 +3368,14 @@ async def _fetch_known_target_isotopes(
 def _build_reference_isotopes_df(
     known_compositions: list,
     mechanisms: list,
-    resolution_type: str,
-    abundance_threshold: float,
 ) -> pd.DataFrame:
-    """Expand reference formulas into Stage A isotope rows (CPU-bound).
+    """Expand reference formulas into their ions' fine lines (CPU-bound).
 
-    For every unique reference formula, reuses the same target-ion/IsoSpec path
-    the curated library uses to produce ions -> isotopologues, keeps the rows for
-    the sample's resolution above the abundance floor, and shapes them like
-    :func:`_fetch_known_target_isotopes` output. Reference rows carry synthetic
+    For every unique reference formula, reuses the same target-ion path the
+    curated library uses to produce ions -> isotopologues, keeps their fine
+    structure, which a run resolves at its file's R(m/z) and holds to its
+    abundance floor (``target_ions_compute.lines_at_file``), and shapes them
+    like :func:`_fetch_known_target_isotopes` output. Reference rows carry synthetic
     isotope/ion ids (for in-run grouping only), no ``target_compound_id``, and a
     ``reference_identities`` list the inversion drops into provenance.
     """
@@ -3371,9 +3396,7 @@ def _build_reference_isotopes_df(
         ion_by_id = {ion.target_ion_id: ion for ion in ions}
         identities = [asdict(identity) for identity in known.identities]
         for iso in isotopes:
-            if iso.resolution != resolution_type:
-                continue
-            if iso.relative_abundance < abundance_threshold:
+            if iso.resolution != FINE_LINES:
                 continue
             ion = ion_by_id.get(iso.target_ion_id)
             if ion is None:
@@ -3404,15 +3427,15 @@ def _build_reference_isotopes_df(
     return pd.DataFrame(rows)
 
 
-# The expanded reference frame is identical for every run over the same
-# (reference state, licence gate, mechanism set, resolution, abundance floor),
-# so a Stage-A batch of N samples should pay the IsoSpec expansion once, not N
-# times. The key's reference part comes from known_state_fingerprint, so a
+# The expanded reference frame, its ions' fine lines, is identical for every
+# run over the same (reference state, licence gate, mechanism set), so a
+# Stage-A batch of N samples should pay the IsoSpec expansion once, not N
+# times; each run then resolves it at its own file's R(m/z) and floor. The key's reference part comes from known_state_fingerprint, so a
 # re-synced or (de)activated source invalidates naturally; the licence gate is
 # in the key too, because narrowing it must not be served the wider frame a run
 # from before the change left behind, and so is the labelled reagent's purity
 # a run's setup reads its labelled lines at. A handful of entries covers a
-# deployment's realistic (instrument, polarity, threshold) combinations.
+# deployment's realistic (mechanism set, polarity) combinations.
 _REFERENCE_ISOTOPE_CACHE_MAX = 8
 _reference_isotope_cache: OrderedDict[tuple, pd.DataFrame] = OrderedDict()
 _reference_isotope_cache_lock = asyncio.Lock()
@@ -3424,6 +3447,7 @@ async def _fetch_reference_known_isotopes(
     mechanisms: list[SimpleNamespace],
     *,
     known_window: KnownWindow | None,
+    file_lines: FileLines,
 ) -> pd.DataFrame:
     """Reference-database contribution to the Stage A known set.
 
@@ -3445,6 +3469,7 @@ async def _fetch_reference_known_isotopes(
         once per run by :func:`fetch_sample_mechanisms`.
     :param known_window: The resolved chemistry context's ceiling on every
         source's window, or None where the context sets none.
+    :param file_lines: The sample file's resolution, its lines resolved at.
     :return: DataFrame in the known-isotope shape, or empty.
     """
     if not mechanisms:
@@ -3459,13 +3484,10 @@ async def _fetch_reference_known_isotopes(
 
     licenses = reference_license_gate()
     polarity = SAMPLE_POLARITIES.get(sample.polarity)
-    resolution_type = "LOW" if get_instrument_type(sample.filename) == "tof" else "HIGH"
     cache_key = (
         fingerprint,
         None if licenses is None else tuple(licenses),
         tuple(sorted(m.ionization_mechanism_id for m in mechanisms)),
-        resolution_type,
-        isotope_abundance_threshold,
         known_window,
         polarity,
         # The lines of a labelled ion are built at the purity in effect, the
@@ -3474,43 +3496,59 @@ async def _fetch_reference_known_isotopes(
     )
 
     async with _reference_isotope_cache_lock:
-        cached = _reference_isotope_cache.get(cache_key)
-        if cached is not None:
+        reference_isotopes_df = _reference_isotope_cache.get(cache_key)
+        if reference_isotopes_df is not None:
             _reference_isotope_cache.move_to_end(cache_key)
             runtime.logger.debug(
                 f"Reference isotope cache hit for sample '{sample.sample_item_name}'"
             )
-            return cached.copy()
-
-        async with async_session() as session:
-            # licenses=None keeps every record, which is what an unconfigured
-            # deployment must get - the argument is only narrowing.
-            known = await iter_known_compositions(
-                session,
-                licenses=None if licenses is None else set(licenses),
-                ceiling=known_window,
-                polarity=polarity,
-            )
-        if not known:
-            reference_isotopes_df = pd.DataFrame()
         else:
-            reference_isotopes_df = await asyncio.to_thread(
-                _build_reference_isotopes_df,
-                known,
-                mechanisms,
-                resolution_type,
-                isotope_abundance_threshold,
+            reference_isotopes_df = await _build_reference_known_isotopes(
+                sample, polarity, licenses, mechanisms, known_window
             )
-        gate = "" if licenses is None else f" (licences: {', '.join(licenses)})"
-        runtime.logger.info(
-            f"Built {len(reference_isotopes_df)} reference known isotopes from "
-            f"{len(known)} reference formulas for sample "
-            f"'{sample.sample_item_name}'{gate}"
+            _reference_isotope_cache[cache_key] = reference_isotopes_df
+            while len(_reference_isotope_cache) > _REFERENCE_ISOTOPE_CACHE_MAX:
+                _reference_isotope_cache.popitem(last=False)
+    # Resolved outside the lock: the fine lines are shared, the file's R(m/z)
+    # is this run's.
+    return await asyncio.to_thread(
+        lines_at_file, reference_isotopes_df, file_lines, isotope_abundance_threshold
+    )
+
+
+async def _build_reference_known_isotopes(
+    sample: Sample,
+    polarity,
+    licenses,
+    mechanisms: list[SimpleNamespace],
+    known_window: KnownWindow | None,
+) -> pd.DataFrame:
+    """The reference lists' fine lines for a cache miss of
+    :func:`_fetch_reference_known_isotopes`."""
+    async with async_session() as session:
+        # licenses=None keeps every record, which is what an unconfigured
+        # deployment must get - the argument is only narrowing.
+        known = await iter_known_compositions(
+            session,
+            licenses=None if licenses is None else set(licenses),
+            ceiling=known_window,
+            polarity=polarity,
         )
-        _reference_isotope_cache[cache_key] = reference_isotopes_df
-        while len(_reference_isotope_cache) > _REFERENCE_ISOTOPE_CACHE_MAX:
-            _reference_isotope_cache.popitem(last=False)
-        return reference_isotopes_df.copy()
+    if not known:
+        reference_isotopes_df = pd.DataFrame()
+    else:
+        reference_isotopes_df = await asyncio.to_thread(
+            _build_reference_isotopes_df,
+            known,
+            mechanisms,
+        )
+    gate = "" if licenses is None else f" (licences: {', '.join(licenses)})"
+    runtime.logger.info(
+        f"Built {len(reference_isotopes_df)} reference known isotopes from "
+        f"{len(known)} reference formulas for sample "
+        f"'{sample.sample_item_name}'{gate}"
+    )
+    return reference_isotopes_df
 
 
 def _combine_known_isotopes(
@@ -3542,9 +3580,11 @@ async def _fetch_known_isotopes(
     mechanisms: list[SimpleNamespace],
     *,
     known_window: KnownWindow | None,
+    resolution: Callable[[float], float] | None | object = RESOLVE_RESOLUTION,
 ) -> pd.DataFrame:
     """The known set a run of the sample reads: the target library and the
-    reference lists, as one frame (:func:`_combine_known_isotopes`).
+    reference lists, as one frame (:func:`_combine_known_isotopes`), each
+    ion's lines as the file's R(m/z) shows them.
 
     Stage A matches it against the sample's peaks. A batch search, which runs
     no Stage A, reads it for the neutrals it names alone
@@ -3560,16 +3600,22 @@ async def _fetch_known_isotopes(
         (:func:`_fetch_reference_known_isotopes`).
     :param known_window: The resolved chemistry context's ceiling on every
         reference source's window, or None where the context sets none.
+    :param resolution: The file's resolving power as the run read it
+        (:func:`_resolution_of`), or :data:`RESOLVE_RESOLUTION` to read it here.
     :return: The combined frame, empty where neither names anything.
     """
+    if resolution is RESOLVE_RESOLUTION:
+        resolution = await _resolution_of(sample)
+    file_lines = FileLines(resolution_type_of(sample), resolution)
     target_isotopes_df = await _fetch_known_target_isotopes(
-        sample, isotope_abundance_threshold, mechanism_ids
+        sample, isotope_abundance_threshold, mechanism_ids, file_lines
     )
     reference_isotopes_df = await _fetch_reference_known_isotopes(
         sample,
         isotope_abundance_threshold,
         mechanisms,
         known_window=known_window,
+        file_lines=file_lines,
     )
     return _combine_known_isotopes(target_isotopes_df, reference_isotopes_df)
 
@@ -4696,6 +4742,7 @@ async def _seeded_rescore(
     reagent_offset: ReagentOffset | None,
     envelope_tolerance: EnvelopeTolerance | None,
     inherited_accuracy: SampleMassAccuracy | None = None,
+    resolution: Callable[[float], float] | None | object = RESOLVE_RESOLUTION,
 ) -> tuple[dict[tuple[str, str], float | None], SampleMassAccuracy | None]:
     """Measure the untargeted stage's readings the way Stage A measures one.
 
@@ -4723,6 +4770,8 @@ async def _seeded_rescore(
         latest run recorded. None is today's numbers.
     :param inherited_accuracy: In a decoy run, its control's measurement, which
         the seeds are scored at instead of one fitted off them.
+    :param resolution: The file's resolving power as the run read it, the
+        seeds' lines are resolved at; left out, the chain reads it.
     :return: Fit per seed, where a seed whose ion the pass could not score is
         absent and its rows fall back to the finder's own number; and the
         measurement the fits were scored at (``seeded_scoring.scored_accuracy``),
@@ -4737,6 +4786,7 @@ async def _seeded_rescore(
         reagent_offset=reagent_offset,
         envelope_tolerance=envelope_tolerance,
         inherited_accuracy=inherited_accuracy,
+        resolution=resolution,
     )
     fits = {
         seed: fit_by_ion.get(ion_id)
@@ -4799,6 +4849,7 @@ async def _stage_a_first_pass(
     reagent_profile: str | None = None,
     inherited_accuracy: SampleMassAccuracy | None = None,
     inherited_envelope: RunEnvelopeFit | None = None,
+    resolution: Callable[[float], float] | None | object = RESOLVE_RESOLUTION,
 ) -> _StageAFirstPass:
     """Stage A's first pass, at today's numbers - or a decoy's control's
     tolerance - before any envelope tolerance is fitted.
@@ -4817,6 +4868,7 @@ async def _stage_a_first_pass(
         mechanism_ids,
         mechanisms,
         known_window=known_window,
+        resolution=resolution,
     )
     listed_formulas = listed_formula_identities(known_isotopes_df)
     if not known_isotopes_df.empty:
@@ -4931,6 +4983,7 @@ async def _stage_a_assignments(
     reagent_profile: str | None = None,
     inherited_accuracy: SampleMassAccuracy | None = None,
     inherited_envelope: RunEnvelopeFit | None = None,
+    resolution: Callable[[float], float] | None | object = RESOLVE_RESOLUTION,
 ) -> tuple[list[dict], dict | None, SampleMassAccuracy, RunEnvelopeFit, frozenset[str]]:
     """Stage A: database-first assignment from the known composition set.
 
@@ -4984,6 +5037,8 @@ async def _stage_a_assignments(
         which the frame is scored at from the first pass and which the stage
         returns, instead of one fitted on the decoy's own commits. None for
         every other run.
+    :param resolution: The file's resolving power as the run read it, the
+        lines of its known set are resolved at (:func:`_fetch_known_isotopes`).
     :return: The assignment rows; what a run records about the confidence curve
         their P(correct) came from - None when Stage A never ran or the
         instrument has no curve; and what the target library's own matched
@@ -5021,6 +5076,7 @@ async def _stage_a_assignments(
         reagent_profile=reagent_profile,
         inherited_accuracy=inherited_accuracy,
         inherited_envelope=inherited_envelope,
+        resolution=resolution,
     )
     if inherited_envelope is not None:
         # A decoy's commits are wrong formulas on a moved axis, and few: it
@@ -5359,6 +5415,7 @@ async def _assign_sample(
             reagent_profile=resolved_profile.profile.name,
             inherited_accuracy=None if decoy_plan is None else decoy_plan.accuracy,
             inherited_envelope=None if decoy_plan is None else decoy_plan.envelope,
+            resolution=resolution,
         )
         runtime.logger.info(
             f"Stage A assigned {len(stage_a_assignments)} of {len(peaks_df)} "
@@ -5597,6 +5654,7 @@ async def _assign_sample(
                     inherited_accuracy=(
                         None if decoy_plan is None else decoy_plan.accuracy
                     ),
+                    resolution=resolution,
                 )
                 if rescored_accuracy is not None:
                     winner_accuracy = rescored_accuracy

@@ -33,6 +33,9 @@ import pandas as pd
 import pytest
 from test_engine import _isotope_row  # same directory; pytest puts it on sys.path
 
+from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
+    FileLines,
+)
 from mascope_backend.api.new.peak_assignments.profiles import NamedContext
 from mascope_tools.composition.mass_accuracy import ReagentOffset, SampleMassAccuracy
 
@@ -2313,10 +2316,20 @@ class TestResolvedProfile:
         recorder = _Recorder()
         mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
 
+        def resolution(mz):
+            return 60000.0
+
+        mocks["resolution"].return_value = resolution
+
         await _run(PeakAssignmentConfig(run_untargeted=False, context=context))
 
         expected = KNOWN_WINDOW_CEILING if ceiling == "shipped" else None
-        assert mocks["reference"].await_args.kwargs == {"known_window": expected}
+        assert mocks["reference"].await_args.kwargs == {
+            "known_window": expected,
+            # The run's own reading of its file's resolving power, which the
+            # known set's lines are resolved at (MAS-977).
+            "file_lines": FileLines("HIGH", resolution),
+        }
         snapshot = recorder.recorded_configs()[0]["resolved_profile"]
         assert snapshot["known_window"] == (
             None if expected is None else expected.to_json()
