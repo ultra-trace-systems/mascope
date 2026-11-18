@@ -186,7 +186,11 @@ from mascope_tools.composition.mechanism_notation import (
     MechanismNotationError,
     parse_mechanism,
 )
-from mascope_tools.composition.utils import parse_composition, parse_ionization
+from mascope_tools.composition.utils import (
+    formula_identity,
+    parse_composition,
+    parse_ionization,
+)
 
 
 #: How many distinct channels a neutral needs before the run calls it
@@ -318,11 +322,11 @@ def other_readings(row: dict, notation_by_id: dict[str, str]) -> list[dict]:
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
     :return: The displaced readings that name another neutral.
     """
-    own_neutral = neutral_key(row.get("assigned_formula"))
+    own_neutral = formula_identity(row.get("assigned_formula"))
     return [
         reading
         for reading in same_ion_readings(row, notation_by_id)
-        if neutral_key(reading.get("assigned_formula")) != own_neutral
+        if formula_identity(reading.get("assigned_formula")) != own_neutral
     ]
 
 
@@ -424,7 +428,7 @@ def weighed(
     theirs = [
         height
         for through, height in partners.get(
-            neutral_key(reading.get("assigned_formula")), ()
+            formula_identity(reading.get("assigned_formula")), ()
         )
         if through != reading.get("channel")
     ]
@@ -434,7 +438,7 @@ def weighed(
     ours = [
         height
         for through, height in partners.get(
-            neutral_key(row.get("assigned_formula")), ()
+            formula_identity(row.get("assigned_formula")), ()
         )
         if through != channel
     ]
@@ -573,9 +577,9 @@ def _named(reading: dict) -> dict:
 def neutral_counts(formula: str | None) -> dict[str, int] | None:
     """A neutral's element counts, however its formula was written.
 
-    A formula the element counter cannot read is read as the partner gate reads
-    one (``engine.formula_identity``): a target library holds what a person
-    typed, and ``C6H4(CH3)2`` is the xylene a search writes ``C8H10``.
+    A formula the element counter cannot read is read as its identity is
+    (``utils.formula_identity``): a target library holds what a person typed,
+    and ``C6H4(CH3)2`` is the xylene a search writes ``C8H10``.
 
     :return: The counts, or None for a formula nothing can read.
     """
@@ -593,15 +597,6 @@ def neutral_counts(formula: str | None) -> dict[str, int] | None:
     return counts or None
 
 
-def neutral_key(formula: str | None) -> str:
-    """A neutral's identity, independent of how its formula was written
-    (:func:`neutral_counts`); a formula nothing can read keeps its own text."""
-    counts = neutral_counts(formula)
-    if not counts:
-        return str(formula or "")
-    return " ".join(f"{element}{counts[element]}" for element in sorted(counts))
-
-
 def channels_by_neutral(
     assignments: list[dict], notation_by_id: dict[str, str]
 ) -> dict[str, dict[str, str | None]]:
@@ -611,8 +606,9 @@ def channels_by_neutral(
     second line of the same envelope, not a second channel, so counting it would
     let one observation corroborate itself.
 
-    Keyed on the neutral's element counts rather than on its written formula: a
-    curated row spells one explicit ("C1H4N2O1") where an untargeted row does
+    Keyed on the neutral's identity (``utils.formula_identity``), the one the
+    partner gate reads, rather than on its written formula: a curated row
+    spells one explicit ("C1H4N2O1") where an untargeted row does
     not ("CH4N2O"), so the same neutral seen through Stage A and Stage B would
     otherwise fail to group. It changes three rows on the gate - urea, seen
     through the carbonate channel and through the curated rows on the bromide
@@ -638,7 +634,7 @@ def channels_by_neutral(
         notation = notation_by_id.get(str(row.get("ionization_mechanism_id")))
         if not notation:
             continue
-        by_channel = seen.setdefault(neutral_key(row.get("assigned_formula")), {})
+        by_channel = seen.setdefault(formula_identity(row.get("assigned_formula")), {})
         tier = tier_under_ceiling(row)
         tier = tier if tier in TIER_RANK else None
         if notation not in by_channel or _outranks(tier, by_channel[notation]):
@@ -701,7 +697,7 @@ def partner_heights(
     :param assignments: Every row built for this sample.
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
     :param minor_channels: The run's opportunistic channels.
-    :return: Per neutral (:func:`neutral_key`), each such row's channel and
+    :return: Per neutral (:func:`formula_identity`), each such row's channel and
         height, the channel so that a reading's own can be left out
         (:func:`weighed`).
     """
@@ -716,7 +712,7 @@ def partner_heights(
         notation = notation_by_id.get(str(row.get("ionization_mechanism_id")))
         if not notation or notation in minor_channels:
             continue
-        neutral = neutral_key(row.get("assigned_formula"))
+        neutral = formula_identity(row.get("assigned_formula"))
         heights.setdefault(neutral, []).append((notation, _height(row)))
     return heights
 
@@ -735,7 +731,7 @@ def brightest_by_channel(
 
     :param assignments: Every row built for this sample.
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
-    :return: Per neutral (:func:`neutral_key`), per channel, the row.
+    :return: Per neutral (:func:`formula_identity`), per channel, the row.
     """
     brightest: dict[str, dict[str, dict]] = {}
     for row in assignments:
@@ -748,7 +744,9 @@ def brightest_by_channel(
         notation = notation_by_id.get(str(row.get("ionization_mechanism_id")))
         if not notation:
             continue
-        by_channel = brightest.setdefault(neutral_key(row.get("assigned_formula")), {})
+        by_channel = brightest.setdefault(
+            formula_identity(row.get("assigned_formula")), {}
+        )
         held = by_channel.get(notation)
         if held is None or _height(row) > _height(held):
             by_channel[notation] = row
@@ -1009,7 +1007,7 @@ def read_cross_channel(
         if not is_committed(row) or row.get("role") != ROLE_M0:
             continue
         summary["committed_m0"] += 1
-        seen = channels.get(neutral_key(row.get("assigned_formula")), {})
+        seen = channels.get(formula_identity(row.get("assigned_formula")), {})
         corroborated = len(seen) >= CHANNELS_FOR_CORROBORATION
         summary["corroborated"] += corroborated
         own_channel = notation_by_id.get(str(row.get("ionization_mechanism_id")))

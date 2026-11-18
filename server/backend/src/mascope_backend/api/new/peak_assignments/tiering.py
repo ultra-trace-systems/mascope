@@ -251,7 +251,6 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
     SETTLED_BY_RADICAL,
     SETTLED_BY_SECOND_CHANNEL,
     SETTLED_BY_TARGET_LIBRARY,
-    neutral_key,
     nitrogen_count,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
@@ -315,6 +314,7 @@ from mascope_tools.composition.profiles import (
     PRIOR_SULFUR,
     ChemistryContext,
 )
+from mascope_tools.composition.utils import formula_identity
 
 
 #: Bumped whenever a rule is added, removed or re-thresholded. Recorded on the
@@ -2368,7 +2368,7 @@ def separated_partners(
     for row in m0_rows:
         channel = notation_by_id.get(str(row.get("ionization_mechanism_id")))
         if channel:
-            readings[neutral_key(row.get("assigned_formula"))].append(
+            readings[formula_identity(row.get("assigned_formula"))].append(
                 (channel, str(row.get("peak_assignment_id")))
             )
     found: dict[str, tuple[list[str], list[str]]] = {}
@@ -2376,7 +2376,7 @@ def separated_partners(
         own = notation_by_id.get(str(row.get("ionization_mechanism_id")))
         by_channel: dict[str, bool] = {}
         for channel, partner_id in readings.get(
-            neutral_key(row.get("assigned_formula")), ()
+            formula_identity(row.get("assigned_formula")), ()
         ):
             record = separations.get(partner_id)
             if channel == own or record is None:

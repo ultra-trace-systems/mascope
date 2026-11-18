@@ -81,7 +81,6 @@ import pandas as pd
 
 from mascope_backend.api.new.peak_assignments.config import MAX_ALTERNATIVES_CEILING
 from mascope_backend.api.new.peak_assignments.cross_channel import (
-    neutral_key,
     same_ion_readings,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
@@ -118,6 +117,7 @@ from mascope_tools.composition.reagents import (
     match_reagent_clusters,
     reagent_library,
 )
+from mascope_tools.composition.utils import formula_identity
 
 
 __all__ = [
@@ -495,10 +495,10 @@ def library_ion(
     composition, charge = _unsigned(ion_formula)
     if not composition or not charge:
         return None
-    key = (neutral_key(composition), charge)
+    key = (formula_identity(composition), charge)
     for profile in profiles:
         for cluster in reagent_library_for(profile):
-            if (neutral_key(cluster.formula), cluster.charge) == key:
+            if (formula_identity(cluster.formula), cluster.charge) == key:
                 return cluster
     return None
 
@@ -777,7 +777,7 @@ def _ion_key(formula: str | None) -> str:
     holds, which is what it should.
     """
     text = str(formula or "").strip().rstrip("+-.")
-    return neutral_key(text) if text else ""
+    return formula_identity(text) if text else ""
 
 
 def _height(row: dict) -> float:
@@ -814,7 +814,7 @@ def _shown_on(
         channel = _channel(row, notation_by_id)
         if channel is None or channel in minor_channels:
             continue
-        shown.setdefault(neutral_key(row.get("assigned_formula")), set()).add(
+        shown.setdefault(formula_identity(row.get("assigned_formula")), set()).add(
             str(row.get("sample_peak_id"))
         )
     return shown
@@ -963,11 +963,11 @@ def claim_fragments(
     shown = _shown_on(monoisotopic, notation_by_id, minor_channels)
     claimed: dict[str, dict] = {}
     for ladder in ladders:
-        parent_key = neutral_key(ladder.parent)
+        parent_key = formula_identity(ladder.parent)
         parents = [
             row
             for row in monoisotopic
-            if neutral_key(row.get("assigned_formula")) == parent_key
+            if formula_identity(row.get("assigned_formula")) == parent_key
             and _channel(row, notation_by_id) is not None
             and _channel(row, notation_by_id) not in minor_channels
         ]
@@ -1002,7 +1002,7 @@ def claim_fragments(
                 continue
             readings = [row] + same_ion_readings(row, notation_by_id)
             if any(
-                shown.get(neutral_key(reading.get("assigned_formula")), set())
+                shown.get(formula_identity(reading.get("assigned_formula")), set())
                 - ladder_peaks
                 for reading in readings
             ):

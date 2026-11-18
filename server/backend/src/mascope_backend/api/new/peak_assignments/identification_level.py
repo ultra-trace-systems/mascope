@@ -115,7 +115,6 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
     SETTLED_BY_TARGET_LIBRARY,
     carries_label,
     channels_by_neutral,
-    neutral_key,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
     GRID_RIVALS,
@@ -618,7 +617,7 @@ def judge_rival(
             }
     if not ctx.tof:
         through = _corroborating_channels(row, ctx)
-        if through and neutral_key(rival.formula) not in ctx.neutral_channels:
+        if through and formula_identity(rival.formula) not in ctx.neutral_channels:
             return {
                 **entry,
                 "test": TEST_SECOND_CHANNEL,

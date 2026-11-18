@@ -19,6 +19,7 @@ from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.cross_channel import (
     REASON_AMBIGUOUS_ADDUCT,
     apply_cross_channel,
+    read_cross_channel,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
     PARTNER_GATE_KEPT,
@@ -862,6 +863,33 @@ class TestThePartnerGate:
         )
         assert formate["provenance"]["partner_gate"]["partner"] is True
         assert formate["tier"] == TIER_ASSIGNED
+
+    @pytest.mark.parametrize(
+        ("library_formula", "formate_formula"),
+        [("CH3COOH", "C2H4O2"), ("C2H4O2", "C2H4O2"), ("C1H2O1", "CH2O")],
+    )
+    def test_one_neutral_is_one_neutral_to_the_gate_and_the_cross_channel_pass(
+        self, library_formula, formate_formula
+    ):
+        # The partner gate and the cross-channel pass ask one question of one
+        # ledger - which neutral does this row commit - and answer it with one
+        # function, so a neutral the gate reads as the formate reading's
+        # partner is the second channel the cross-channel pass counts.
+        library = self._row("a1", library_formula, "im-deprot", source="database")
+        formate = self._formate("f1", formate_formula)
+        rows = self._gate(
+            [library, formate], self.IDS, minor={"[M+HCOO]-"}, gated={"[M+HCOO]-"}
+        )
+        read_cross_channel(
+            rows,
+            notation_by_id={mid: n for n, mid in self.IDS.items()},
+            minor_channels=frozenset({"[M+HCOO]-"}),
+        )
+        assert formate["provenance"]["partner_gate"]["partner"] is True
+        for row in rows:
+            record = row["provenance"]["cross_channel"]
+            assert record["channels"] == ["[M+HCOO]-", "[M-H]-"]
+            assert record["corroborated"] is True
 
     def test_a_swapped_reading_stays_under_the_mass_gates_ceiling(self):
         # The mass gate judged the ion's line, which the acid reading shares,
