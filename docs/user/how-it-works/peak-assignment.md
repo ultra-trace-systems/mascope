@@ -256,7 +256,8 @@ matrix prior.
 sample, but nothing in a sample says whether it was drawn from the open air or a smog
 chamber, so a chamber experiment searched as ambient air. A dataset or a batch can name
 its context once: **Chemistry context** in the dialog that creates or edits it. A run on
-*Auto* then takes the batch's, else the dataset's, else the profile's own. A context
+*Auto* then takes the batch's, else the dataset's, else the profile's own. A copy of a
+batch keeps the context the original names. A context
 named for the run wins over all three, and *No profile* keeps no context. The run
 records where its context came from, and the launcher says when the batch or the
 dataset named it.

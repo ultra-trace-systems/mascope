@@ -59,3 +59,36 @@ async def test_an_unknown_chemistry_context_is_refused(editor_client, alpha_batc
     assert response.status_code in (400, 422)
     stored = (await editor_client.get(f"/api/sample/batches/{alpha_batch}")).json()
     assert stored["data"]["chemistry_context"] is None
+
+
+async def _copy_and_read(editor_client, dataset_id, batch_id, name):
+    response = await editor_client.post(
+        f"/api/sample/batches/{batch_id}/copy",
+        json={"dataset_id": dataset_id, "sample_batch_name": name},
+    )
+    assert response.status_code == 202
+    listed = await editor_client.get(
+        "/api/sample/batches", params={"dataset_id": dataset_id}
+    )
+    copies = [b for b in listed.json()["data"] if b["sample_batch_name"] == name]
+    assert len(copies) == 1
+    return copies[0]["chemistry_context"]
+
+
+@pytest.mark.asyncio
+async def test_a_copied_batch_keeps_its_chemistry_context(
+    editor_client, alpha_dataset, alpha_batch
+):
+    url = f"/api/sample/batches/{alpha_batch}"
+    assert (await editor_client.get(url)).json()["data"]["chemistry_context"] is None
+    assert (
+        await _copy_and_read(editor_client, alpha_dataset, alpha_batch, "Plain copy")
+        is None
+    )
+
+    named = await editor_client.patch(url, json={"chemistry_context": "chamber"})
+    assert named.status_code == 200
+    assert (
+        await _copy_and_read(editor_client, alpha_dataset, alpha_batch, "Named copy")
+        == "chamber"
+    )

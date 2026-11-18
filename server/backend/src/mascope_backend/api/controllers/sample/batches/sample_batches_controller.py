@@ -1151,6 +1151,7 @@ async def copy_sample_batch(
             else original_sample_batch.polarity
         ),
         target_collection_ids=target_collection_ids,
+        chemistry_context=original_sample_batch.chemistry_context,
     )
 
     # Create the new sample batch
