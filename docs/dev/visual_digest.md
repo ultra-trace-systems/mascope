@@ -3,7 +3,7 @@
 # Visual digests: charts, dashboards and reports over the SDK
 
 - **Status:** building
-- **As of:** 2026-11-04
+- **As of:** 2026-11-18
 - **Tracked in:** [Visual digests](https://linear.app/ultra-trace/project/visual-digests-51cecff8f790) (Linear, MAS-217 to MAS-244)
 - **What:** Charts, dashboards and reports over the SDK for campaign-scale questions.
 
@@ -446,7 +446,7 @@ spec.
 - **Peaky.** Written in October 2026, this note let peaky keep its figures
   with no dependency either way. The "Peaky is the shell" framing of
   [`ai_analyst_shell.md`](ai_analyst_shell.md) section 2.5 (proposed
-  2026-11-04, pending the peaky owner's agreement, MAS-665) supersedes
+  2026-11-04, agreed by both owners in November 2026, MAS-665) supersedes
   that: report rendering and the science figures are recipe *step
   implementations*, and step implementations are Mascope's. Peaky's figure
   modules become chart kinds here, each named in the catalogue (section 3);
@@ -455,8 +455,9 @@ spec.
   report style and the narrative template stay Peaky's, as data. Peaky
   then depends on `mascope_viz` the way it pins the SDK, and each module
   moves through the boundary note's protocol with a register row, "same
-  output expected" tested on the corpus. Until MAS-665 is decided nothing
-  moves; the catalogue's mapping says what would.
+  output expected" tested on the corpus. MAS-665 is taken, so each module
+  moves this way as its chart kind is built; the catalogue's mapping says
+  which.
 - **The web app** keeps its six charts as they are: they are navigation
   surfaces, with click-to-focus and lasso selection wired into the stores,
   and a declarative spec should not carry that. What the app gains is a
@@ -644,8 +645,8 @@ the rotation an interactive parameter of the plotly rendering;
 and `mass_accuracy` at the scope of one batch; `batch/clustering.py`'s
 co-varying-family panels are `covariation`, which then moves peaky's
 method here as the implementation rather than shelling out (open
-question 5, answered this way if MAS-665 stands); the report's section
-functions become sections of the `campaign` and `composition` recipes
+question 5, answered this way now that MAS-665 is taken); the report's
+section functions become sections of the `campaign` and `composition` recipes
 (section 2.6). The tiered Excel workbook is a tabular export, not a
 figure, and stays with the assignment run it describes. No new kind is
 needed; four existing ones gain a precedent to read first.
@@ -903,7 +904,8 @@ issue for the owner in the Linear project.
    `digest` delegate to this package (MAS-129 amended).* Written as "peaky
    stays independent" in October 2026; restated 2026-11-04 under the shell
    framing: peaky's figure modules are step implementations and move here
-   as chart kinds (section 2.5, the mapping in section 3), pending MAS-665.
+   as chart kinds (section 2.5, the mapping in section 3). Taken by both
+   owners, November 2026 (MAS-665, Done 2026-11-11).
 6. **Time zone.** *Recommend UTC in the store, the file's acquisition zone
    for display by default, a named zone on request, the zone on every
    axis.*
