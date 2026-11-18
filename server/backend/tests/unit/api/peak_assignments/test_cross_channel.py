@@ -98,7 +98,7 @@ def row(
     ``displaced`` is the reading of the same ion the row's own reading set
     aside, as ``(neutral, mechanism id)``, or a list of them - what
     ``elect_same_ion_families`` stores on an election, what
-    ``record_mirror_same_ion_readings`` writes on a reference mirror's row, and
+    ``record_same_ion_readings`` writes on a reference mirror's row, and
     what the same-ion rule reads. A row without one is a row whose ion had only
     one reading. ``compound`` is the target library compound a Stage A row was
     committed for; a ``database`` row without one is a reference mirror's.

@@ -2771,3 +2771,103 @@ class TestTheRivalsACapLeavesOut:
         ]
         assert capped["provenance"][RIVALS_PAST_CAP] == 2
         assert RIVALS_PAST_CAP not in whole["provenance"]
+
+
+class TestStageACompetesIonsNotFormulas:
+    """Two list compounds that make one ion through two channels share its mass
+    and its envelope: the spectrum cannot tell them apart, so neither is the
+    other's rival. Stage A counts the peak's ions, as the search elects one
+    reading per ion before it ranks anything."""
+
+    def _frame(self, *, bromide_score=0.9, acid_score=0.9, rival=None):
+        rows = [
+            # C10H18O3 through [M+Br]- and C10H19BrO3 through [M-H]-: one ion,
+            # C10H18BrO3-.
+            _isotope_row(
+                target_isotope_id="iso-br",
+                target_ion_id="ion-br",
+                target_compound_id="cmp-hydroxy",
+                compound_formula="C10H18O3",
+                ion_formula="C10H18O3Br-",
+                mz=265.0445,
+                relative_abundance=1.0,
+                sample_peak_id="p1",
+                match_score=bromide_score,
+                ionization="[M+Br]-",
+            ),
+            _isotope_row(
+                target_isotope_id="iso-acid",
+                target_ion_id="ion-acid",
+                target_compound_id="cmp-bromo",
+                compound_formula="C10H19BrO3",
+                ion_formula="C10H18BrO3-",
+                mz=265.0445,
+                relative_abundance=1.0,
+                sample_peak_id="p1",
+                match_score=acid_score,
+                ionization="[M-H]-",
+            ),
+        ]
+        if rival is not None:
+            rows.append(
+                _isotope_row(
+                    target_isotope_id="iso-rival",
+                    target_ion_id="ion-rival",
+                    target_compound_id="cmp-rival",
+                    compound_formula=rival,
+                    ion_formula=f"{rival}Br-",
+                    mz=265.0445,
+                    relative_abundance=1.0,
+                    sample_peak_id="p1",
+                    match_score=0.9,
+                    ionization="[M+Br]-",
+                )
+            )
+        return pd.DataFrame(rows)
+
+    def _invert(self, df):
+        [assignment] = invert_matches_to_peak_assignments(
+            df,
+            sample_item_id="s1",
+            peak_assignment_run_id="run1",
+            candidate_threshold=CANDIDATE,
+            assigned_threshold=ASSIGNED,
+        )
+        return assignment
+
+    def test_an_ion_read_through_two_channels_counts_once_in_the_density(self):
+        row = self._invert(self._frame())
+        provenance = row["provenance"]
+        assert provenance["candidate_density"] == 1
+        assert provenance["n_candidates"] == 1
+        assert provenance["is_tie"] is False
+        assert provenance["confidence"] == 1.0
+
+    def test_the_other_reading_stays_on_the_row_as_a_reading_of_its_ion(self):
+        row = self._invert(self._frame())
+        (other,) = row["alternatives"]
+        assert {row["assigned_formula"], other["assigned_formula"]} == {
+            "C10H18O3",
+            "C10H19BrO3",
+        }
+        assert other["same_ion"] is True
+
+    def test_another_ion_on_the_peak_is_still_a_rival(self):
+        row = self._invert(self._frame(rival="C11H22O2"))
+        provenance = row["provenance"]
+        assert provenance["n_candidates"] == 2
+        rival = next(
+            alt for alt in row["alternatives"] if alt["assigned_formula"] == "C11H22O2"
+        )
+        assert "same_ion" not in rival
+
+    def test_a_reading_of_the_ion_past_the_cap_is_not_counted_as_a_rival(self):
+        [row] = invert_matches_to_peak_assignments(
+            self._frame(rival="C11H22O2"),
+            sample_item_id="s1",
+            peak_assignment_run_id="run1",
+            candidate_threshold=CANDIDATE,
+            assigned_threshold=ASSIGNED,
+            max_alternatives=0,
+        )
+        assert row["provenance"][RIVALS_PAST_CAP] == 1

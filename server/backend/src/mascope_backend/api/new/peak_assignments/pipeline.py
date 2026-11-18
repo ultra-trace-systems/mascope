@@ -435,7 +435,7 @@ class RunContext:
     winner_accuracy: Any = None
     # -- elect
     stage_b: list[dict] = field(default_factory=list)
-    mirror_families: int = 0
+    same_ion_families: int = 0
     fragments: Any = None
     series_anchored: int = 0
     # -- refit, judge, cap
@@ -1194,8 +1194,8 @@ async def elect(ctx: RunContext) -> None:
     - a list's readings through the channels the run opened are held as the
       search's readings through them are, before any pass reads them as
       partners or rivals (``service._hold_opened_channel_readings``);
-    - a reference list's matches carry the other readings of their ion
-      (``service._record_mirror_readings``), which reads no tier and so is
+    - a list's matches carry the other readings of their ion
+      (``service._record_same_ion_readings``), which reads no tier and so is
       written once however many rounds judge them;
     - the fragments the source made of a committed analyte are read as the
       source's before anything weighs them as molecules
@@ -1298,7 +1298,7 @@ async def elect(ctx: RunContext) -> None:
         resolved_profile=ctx.resolved_profile,
         sample_name=sample.sample_item_name,
     )
-    ctx.mirror_families = service._record_mirror_readings(
+    ctx.same_ion_families = service._record_same_ion_readings(
         ctx.stage_a,
         searched_mechanisms=ctx.searched_mechanisms,
         resolved_profile=ctx.resolved_profile,
@@ -1638,8 +1638,8 @@ def _report_judging(ctx: RunContext) -> None:
         f"({cross_channel['settled']}), "
         f"{cross_channel['shown_rival_weighed']} of them the mode's own reading "
         "against a rival the sample shows short of the "
-        f"{cross_channel['partner_margin']:g}-fold margin; {ctx.mirror_families} "
-        "reference-list matches carry other readings of their ion"
+        f"{cross_channel['partner_margin']:g}-fold margin; "
+        f"{ctx.same_ion_families} list matches carry other readings of their ion"
     )
     runtime.logger.info(
         f"Sample '{name}' tiers {tiering['committed_m0']} committed readings on "

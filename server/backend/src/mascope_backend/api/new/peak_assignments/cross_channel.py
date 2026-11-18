@@ -104,15 +104,16 @@ two priors agree, not that the spectrum chose. A reading the spectrum cannot
 tell from another molecule is not assigned on a prior (the plan owner's rule,
 step 2.8).
 
-A reference mirror's row
-------------------------
+A list's row
+------------
 
 A Stage A row is matched rather than elected. A reference mirror's row is a
 list's formula matched against every sample, and the same arithmetic reaches
 it - dimethylformamide through ``[M+H]+`` is the same ion as acrolein through
-``[M+NH4]+``. Such a row is given the readings the untargeted search would have held
-in its ion's family (``engine.record_mirror_same_ion_readings``) and asked what
-an election is asked.
+``[M+NH4]+``. Such a row is given the readings the one family enumerator gives
+its ion (``engine.record_same_ion_readings``) and asked what an election is
+asked. A target library's row carries its family too, and the library's name
+settles which reading of the ion it is (:data:`SETTLED_BY_TARGET_LIBRARY`).
 
 A labelled reagent donates no nitrogen, and that is the whole reason to run
 one: the 15N of a ``[M+[15N]O3]-`` reagent is 0.997 Da from an analyte's own
@@ -286,8 +287,8 @@ def same_ion_readings(row: dict, notation_by_id: dict[str, str]) -> list[dict]:
     decided which readings of one ion exist - it enumerated them, elected one
     and kept the rest - so asking the row is asking what this run actually
     proposed, where rebuilding a candidate from the element grid would ask what
-    it might have. A reference mirror's row carries the family the same search
-    would have held, written onto it before this pass runs.
+    it might have. A Stage A row carries the family the same enumerator gives
+    its ion, written onto it before this pass runs.
 
     :param row: A committed assignment row.
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
