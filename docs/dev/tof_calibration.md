@@ -1,7 +1,7 @@
 # TOF mass calibration
 
 - **Status:** building
-- **As of:** 2026-11-17
+- **As of:** 2026-11-18
 - **Tracked in:** [TOF mass calibration](https://linear.app/ultra-trace/project/tof-mass-calibration-8271ef05d142) (Linear, MAS-171 to MAS-197)
 - **What:** TOF mass calibration across the analysed range: measure, fix calibrants, model, re-calibrate.
 
@@ -16,8 +16,9 @@ this note is its record.*
 tool and the fleet baseline (section 2). Of the calibrant sets (milestone 1), TOF H's has been
 corrected, and TOF M's and site B's were measured and kept. Of the node's changes (milestone 2),
 the record that says what a fit was made on is in (MAS-182); the rest are still to come. How the
-existing data is re-calibrated is decided (MAS-192, section 6). Sites are named by letter and
-instruments by neutral labels (TOF H, TOF M, B1–B3) throughout, as everywhere in this repository.
+existing data is re-calibrated is decided (MAS-192, section 6), and which stored files a refit
+can read is counted (MAS-193, section 6). Sites are named by letter and instruments by neutral
+labels (TOF H, TOF M, B1–B3) throughout, as everywhere in this repository.
 
 ## 1. The problem
 
@@ -91,7 +92,7 @@ A census of the stored records by kind (the input to re-calibration, section 6):
 | A | 3,677 | 3,649 | 27 | 1 |
 | internal | 2,167 | 0 | 2,167 | 0 |
 
-The re-calibration readiness inventory (milestone 4) is added here when it is run.
+The re-calibration readiness inventory of 2026-11-18 (milestone 4) is in section 6.
 
 ### The baseline on 2026-10-21
 
@@ -781,13 +782,72 @@ stored peak TOF indices followed by an apply, which recomputes every m/z axis of
 TOF index. No peak re-detection, no re-conversion, and an earlier fit is restored bit for bit from
 its parameters.
 
-**Readiness** (MAS-193). A read-only census per site: files per instrument × mode × record kind ×
-month; whether the oldest files still hold the stores a refit needs (`peak_timeseries.zarr` with a
-`tof` coordinate, `sum_signal.zarr`) in the current format; every file classed as refit-ready,
-needs re-detection first, or has no peaks; which files have no sample item and so no mode. The
-table comes here. Why B2's files are parked at `calibration_failed` is known: all 954 by
-2026-10-24 are in its two ambient/zero modes, which have no calibrant collection (section 2), and
-they wait for calibration transfer (MAS-187).
+**Readiness** (MAS-193, 2026-11-18). A read-only census of every TOF file on every server, from
+the database and the filestore: the database through the read-only role, the filestore as an
+unprivileged user that can only read it. Every file's directory and its stores' metadata were
+looked at; on up to three files a month per instrument the peak store was also opened and its
+`tof` and `mz` coordinates read (144 files). The classes:
+
+- *Refit-ready*: a source (`data.h5` or `signal.zarr`), `.props`, and a peak store with the `tof`
+  coordinate, every variable the refit loads, and at least one peak.
+- *Re-detect first*: a source, but a peak store without `tof` or without another variable the
+  refit loads.
+- *No peaks*: an empty peak store, no source, no `.props` or no directory.
+- *Not read*: the directory is closed to the census's user. The runner reads as the app does, so
+  this says nothing about the file itself.
+
+| Site | Instrument | Files | Months | Refit-ready | Re-detect first | No peaks | Not read | No sample | Parked | Assignment runs |
+| -- | -- | --: | -- | --: | --: | --: | --: | --: | --: | --: |
+| A | TOF H | 3,072 | 2026-04 to 11 | 2,258 | 0 | 0 | 814 | 1 | 16 | 0 |
+| A | TOF M | 4,681 | 2026-08 to 11 | 3,796 | 0 | 0 | 885 | 0 | 0 | 0 |
+| B | B1 | 22,473 | 2026-05 to 11 | 16,909 | 0 | 5,564 | 0 | 0 | 498 | 0 |
+| B | B2 | 20,127 | 2026-05 to 11 | 13,856 | 0 | 6,271 | 0 | 3 | 954 | 0 |
+| B | B3 | 7,061 | 2025-09 to 2026-11 | 6,951 | 50 | 60 | 0 | 12 | 1 | 0 |
+| internal | eight test TOFs | 2,241 | 2017-10 to 2026-03 | 2,232 | 0 | 9 | 0 | 0 | 0 | 0 |
+
+The classes add up to the files on every instrument. *No sample*: files with no sample item, so
+no mode; all of them are in the class their stores give. *Parked*: files at `calibration_failed`.
+The census takes each file's instrument as stored, so it counts eight internal instruments where
+section 2 named five.
+
+**Record kinds** per site, the census of section 2 a month on:
+
+| Site | TOF files | Node `ok` | Node `poor` | Legacy, bare | Legacy, verified | Unfitted | Failed |
+| -- | --: | --: | --: | --: | --: | --: | --: |
+| A | 7,753 | 7,315 | 395 | 0 | 27 | 1 | 15 |
+| B | 49,661 | 14,279 | 3 | 13,692 | 16,889 | 4,794 | 4 |
+| internal | 2,241 | 62 | 0 | 9 | 2,161 | 9 | 0 |
+
+- **No peaks is the ambient and zero modes of B1 and B2.** 11,791 of site B's 11,895 empty peak
+  stores are in B1's ambient mode and B2's two ambient/zero modes, which have no calibrant
+  collection. The other 104 are in reagent modes: 7 on B1, 37 on B2 and 60 on B3. The internal server's 9 are the unfitted files of one instrument. A refit
+  has nothing to read on these files; calibration transfer (MAS-187) can still give them an axis.
+- **The oldest files hold.** Every peak store is zarr v2 with consolidated metadata and a `tof`
+  coordinate, and every file with a peak store has `sum_signal.zarr`. On every file opened the
+  `tof` values were finite and inside the sum signal's axis, float64 but for 6 internal files
+  (float32). The exception is B3's first month, 2025-09: 50 peak stores lack `peak_id`, so those
+  files need re-detection first. `sparsity` is missing from
+  4,702 stores on site B and 2,160 on the internal server; a read rebuilds it, so it blocks
+  nothing. No store has a per-stream `stream` variable.
+- **The parked files** are explained. On site B, 1,451 are in a mode without a calibrant
+  collection: 497 in B1's ambient mode, 950 and 4 in B2's two ambient/zero modes. One B1 and one
+  B3 file failed the fit. On site A, 15 TOF H files from 2026-10 failed the fit. One from 2026-04
+  is parked because its mode had no collection, though it has one now and the file a node record.
+  Every parked file is refit-ready.
+- **No site has a peak-assignment run on a TOF file**, so the derived stale check of MAS-192 is
+  not needed before any site's run.
+- **Not read on site A: the November files.** Their directories are closed to an unprivileged
+  user, as TOF H's were for MAS-183. Every earlier file of both instruments is refit-ready, and
+  all 1,699 have node records, so they are most likely refit-ready too.
+- **Stored m/z against the record.** On each file opened, the largest gap between a stored peak
+  m/z and the m/z the record's parameters give its TOF index. Sites A and B: 76 of 98 files within
+  0.1 ppm, 14 with no peak to compare, and 8 more than 100 ppm off. The internal server: 29 of 46
+  within 0.1 ppm, 3 with no peak, and 14 legacy files 5 ppm or more off. On those files the stored
+  axis is not the one the record describes. A refit recomputes every m/z from the TOF index, so
+  this does not block it, but their dry-run shift will be large. The cause was not read.
+- **The other five servers.** Two have no TOF file. On the other three the census stopped before
+  it counted any file: two could not open their filestore, and the third was not run. The census
+  of section 2 counts no TOF there.
 
 **The runner** (MAS-195), in `tooling/` beside the audit tool, on the pattern of the paced
 re-process driver of the composite-cut rollout (MAS-90: 7,358 files on one site in ten hours):
