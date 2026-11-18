@@ -43,25 +43,35 @@ until "${CURL[@]}" -o /dev/null "$BASE_URL"; do
 done
 echo "[smoke] frontend is up after ~${elapsed}s"
 
+# Every check captures the body first and matches on the variable. Piping
+# curl into grep -q races: grep exits at its first match and closes the pipe,
+# curl fails writing the rest of a body larger than one write (exit 23), and
+# pipefail reports a page that was served as a failed check. A here-string is
+# not a pipeline, so grep -q may stop early there. A failed fetch leaves the
+# body empty, and the check's own FAIL line says what is missing.
+fetch() {
+  "${CURL[@]}" "$@" || true
+}
+
 echo "[smoke] frontend serves the app shell..."
-"${CURL[@]}" "$BASE_URL" | grep -qi "<!doctype html" || {
+shell=$(fetch "$BASE_URL")
+grep -qiF "<!doctype html" <<<"$shell" || {
   echo "[smoke] FAIL: response is not an HTML document" >&2
   exit 1
 }
 
 echo "[smoke] bundled docs are served at /docs/..."
-"${CURL[@]}" "$BASE_URL/docs/" | grep -qi "Mascope" || {
+docs=$(fetch "$BASE_URL/docs/")
+grep -qiF "Mascope" <<<"$docs" || {
   echo "[smoke] FAIL: /docs/ does not serve the documentation site" >&2
   exit 1
 }
-"${CURL[@]}" "$BASE_URL/docs/help-content.json" | grep -q "{" || {
+help_content=$(fetch "$BASE_URL/docs/help-content.json")
+[[ "$help_content" == *"{"* ]] || {
   echo "[smoke] FAIL: /docs/help-content.json is missing (in-app help popovers)" >&2
   exit 1
 }
-# Captured, not piped into grep -q: the document is large enough that grep
-# exiting at its first match would cut curl off mid-write, and pipefail would
-# report that as a failure.
-openapi=$("${CURL[@]}" "$BASE_URL/docs/openapi.json" || true)
+openapi=$(fetch "$BASE_URL/docs/openapi.json")
 [[ "$openapi" == *'"openapi": "3.'* ]] || {
   echo "[smoke] FAIL: /docs/openapi.json does not serve the API's OpenAPI document" >&2
   exit 1
@@ -81,14 +91,14 @@ trap 'rm -f "$jar"' EXIT
 
 echo "[smoke] authenticated API answers..."
 me=$("${CURL[@]}" -b "$jar" "$BASE_URL/api/users/me")
-echo "$me" | grep -q "$EMAIL" || {
+[[ "$me" == *"$EMAIL"* ]] || {
   echo "[smoke] FAIL: /api/users/me does not identify $EMAIL: $me" >&2
   exit 1
 }
 
 echo "[smoke] seeded data is present..."
 workspaces=$("${CURL[@]}" -b "$jar" "$BASE_URL/api/workspaces")
-echo "$workspaces" | grep -q '"workspace_id"' || {
+[[ "$workspaces" == *'"workspace_id"'* ]] || {
   echo "[smoke] FAIL: /api/workspaces returned no workspaces: $workspaces" >&2
   exit 1
 }
