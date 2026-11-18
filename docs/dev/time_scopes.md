@@ -222,22 +222,26 @@ id, at two widths, one hour and one day. A table `series_catalog`: one row per
 (instrument, mode, series key) with the neutral formula, adduct, first and last
 seen, days seen, so the species-in-range list is a lookup.
 
-Both are written where a sample folds into its batch ledger,
-`fold_sample_into_batch_peaks`
-([batch_peaks_controller.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/batch_peaks_controller.py)),
-and after `recompute_batch_consensus` when a backfill or a rebuild folds with
-`defer_consensus_to`. The rule has three parts:
+Both are written from two hooks in
+[batch_peaks_controller.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/batch_peaks_controller.py),
+and the rule has three parts:
 
 1. **A fold writes the folded sample's bins** for every series the sample
-   carries.
+   carries. The hook is in `fold_sample_into_batch_peaks`, the fold that reads
+   the sample's assignment rows and writes its occurrences.
 2. **A consensus change rewrites the batch peak.** A `formula:` series is a
-   batch peak's *consensus* formula and adduct, and `_apply_consensus` can
-   move them on a new sample's vote, a curation or a re-fold. When it does,
-   every earlier member's intensity belongs to another key, so the rollups
-   of that batch peak's old and new keys are recomputed over the whole
-   batch, and the catalog's two rows follow. Writing only the folded
-   sample's bins would leave a six-month chart drifting from the ledger with
-   nothing to show it.
+   batch peak's *consensus* formula and adduct, and they move on a new
+   sample's vote, a curation, an import, an untargeted or series pass, a
+   known-species, water-ladder or merged-isotopologue pass, or a re-fold.
+   Every one of those paths, the fold and the deferred backfill included,
+   ends in `_recompute_consensus`, which calls `_apply_consensus` and learns
+   from its return whether `consensus_formula` or `ionization_mechanism_id`
+   moved, inside the caller's transaction. That is where the hook sits:
+   `_recompute_consensus` collects the anchors whose formula or mechanism
+   changed and recomputes the rollups of each one's old and new keys over
+   the whole batch, and the catalog's two rows follow. Hooking the fold
+   alone would miss curation and the batch passes, and a six-month chart
+   would drift from the ledger with nothing to show it.
 3. **A ledger rebuild or a run change recomputes the batch.** A one-off
    backfill walks every acquisition batch through the same code.
 
