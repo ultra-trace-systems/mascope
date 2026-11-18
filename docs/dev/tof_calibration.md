@@ -790,23 +790,30 @@ looked at; on up to three files a month per instrument the peak store was also o
 
 - *Refit-ready*: a source (`data.h5` or `signal.zarr`), `.props`, and a peak store with the `tof`
   coordinate, every variable the refit loads, and at least one peak.
-- *Re-detect first*: a source, but a peak store without `tof` or without another variable the
-  refit loads.
+- *Re-detect first*: a source and `.props`, but no peak store, an unreadable one, or one without
+  `tof` or another variable the refit loads.
 - *No peaks*: an empty peak store, no source, no `.props` or no directory.
 - *Not read*: the directory is closed to the census's user. The runner reads as the app does, so
   this says nothing about the file itself.
 
-| Site | Instrument | Files | Months | Refit-ready | Re-detect first | No peaks | Not read | No sample | Parked | Assignment runs |
-| -- | -- | --: | -- | --: | --: | --: | --: | --: | --: | --: |
-| A | TOF H | 3,072 | 2026-04 to 11 | 2,258 | 0 | 0 | 814 | 1 | 16 | 0 |
-| A | TOF M | 4,681 | 2026-08 to 11 | 3,796 | 0 | 0 | 885 | 0 | 0 | 0 |
-| B | B1 | 22,473 | 2026-05 to 11 | 16,909 | 0 | 5,564 | 0 | 0 | 498 | 0 |
-| B | B2 | 20,127 | 2026-05 to 11 | 13,856 | 0 | 6,271 | 0 | 3 | 954 | 0 |
-| B | B3 | 7,061 | 2025-09 to 2026-11 | 6,951 | 50 | 60 | 0 | 12 | 1 | 0 |
-| internal | eight test TOFs | 2,241 | 2017-10 to 2026-03 | 2,232 | 0 | 9 | 0 | 0 | 0 | 0 |
+The table splits the refit-ready files by what the refit has to fit against. *Fittable*: a
+mode with a calibrant collection, the refit's scope (MAS-192). *No calibrants*: every mode of the
+file is without a collection, or the file has no sample and so no mode. These have the stores
+but nothing to refit against, and wait for calibration transfer (MAS-187).
 
-The classes add up to the files on every instrument. *No sample*: files with no sample item, so
-no mode; all of them are in the class their stores give. *Parked*: files at `calibration_failed`.
+| Site | Instrument | Files | Months | Refit-ready, fittable | Refit-ready, no calibrants | Re-detect first | No peaks | Not read | No sample | Parked | Assignment runs |
+| -- | -- | --: | -- | --: | --: | --: | --: | --: | --: | --: | --: |
+| A | TOF H | 3,072 | 2026-04 to 11 | 2,257 | 1 | 0 | 0 | 814 | 1 | 16 | 0 |
+| A | TOF M | 4,681 | 2026-08 to 11 | 3,796 | 0 | 0 | 0 | 885 | 0 | 0 | 0 |
+| B | B1 | 22,473 | 2026-05 to 11 | 15,584 | 1,325 | 0 | 5,564 | 0 | 0 | 498 | 0 |
+| B | B2 | 20,127 | 2026-05 to 11 | 9,037 | 4,819 | 0 | 6,271 | 0 | 3 | 954 | 0 |
+| B | B3 | 7,061 | 2025-09 to 2026-11 | 6,949 | 2 | 50 | 60 | 0 | 12 | 1 | 0 |
+| internal | eight test TOFs | 2,241 | 2017-10 to 2026-03 | 2,231 | 1 | 0 | 9 | 0 | 0 | 0 | 0 |
+
+The classes add up to the files on every instrument. Of the 46,002 refit-ready files, 39,854 are
+in a fittable mode and 6,148 are not: 6,142 in modes without a collection (B1 1,325, B2 4,816,
+one internal instrument 1) and 6 with no sample (B2 3, B3 2, TOF H 1). *No sample*: files with
+no sample item, so no mode; all of them are in the class their stores give. *Parked*: files at `calibration_failed`.
 The census takes each file's instrument as stored, so it counts eight internal instruments where
 section 2 named five.
 
@@ -833,7 +840,9 @@ section 2 named five.
   collection: 497 in B1's ambient mode, 950 and 4 in B2's two ambient/zero modes. One B1 and one
   B3 file failed the fit. On site A, 15 TOF H files from 2026-10 failed the fit. One from 2026-04
   is parked because its mode had no collection, though it has one now and the file a node record.
-  Every parked file is refit-ready.
+  Every parked file has the stores a refit reads. The 1,451 in modes without a collection wait for
+  calibration transfer (MAS-187); the 17 failed fits and the TOF H file whose mode has a
+  collection now are in the refit's scope.
 - **No site has a peak-assignment run on a TOF file**, so the derived stale check of MAS-192 is
   not needed before any site's run.
 - **Not read on site A: the November files.** Their directories are closed to an unprivileged
