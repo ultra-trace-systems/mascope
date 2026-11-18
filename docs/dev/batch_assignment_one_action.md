@@ -4,7 +4,8 @@
 - **As of:** 2026-11-18
 - **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c)
   (Linear, milestone 8 "One button: assigning a batch from the app": MAS-1011 to
-  MAS-1017, the Decision MAS-1012 among them; it builds on MAS-983 in milestone 7)
+  MAS-1017, among them the Decision MAS-1012, decided; it builds on MAS-983 in
+  milestone 7)
 - **What:** One control that assigns a whole batch, runs the batch stages in a fixed order
   as one batch run and says whether the batch needs it, replacing the row of nine
   per-step buttons.
@@ -46,8 +47,9 @@ Six problems follow from that.
 3. **Nothing says whether the batch needs a run.** Samples fold in at ingest with known
    compositions only (`auto_assign_sample_peaks`, `peak_assignment_ingest_ledger =
    "batch"`). A fold can knock a step's record off any batch peak whose reading it moves.
-   No code tracks "this step needs re-running"; the only signal is
-   `ledger_utc_modified`.
+   Only ratio stability tracks whether it needs re-reading: the fold re-grades it and
+   `continuity_stale` marks a grade stale on the ledger and the snapshot. For every
+   other step the only signal is `ledger_utc_modified`.
 4. **The labels name mechanisms, not outcomes, and none of them is primary.** The
    design system allows one filled primary per surface
    ([`frontend_design_system.md`](frontend_design_system.md) section 5). The bar fills
@@ -159,8 +161,8 @@ ceiling, the intensity threshold and the alternatives kept. The dialog is the ex
 `PeakAssignConfigForm` on the dialog grammar of MAS-156: *Edit assignment settings*, then
 *Cancel* and *Save*. Saving does not start a pass. It marks the batch behind, and the
 next *Re-assign* uses the new settings. The per-sample dialog opens on the batch's
-settings and may override them for that one run. Whether the settings are the batch's at
-all is the Decision MAS-1012.
+settings and may override them for that one run. That the settings are the batch's was
+decided in MAS-1012 on 2026-11-18.
 
 ### 3.5 Feedback
 
@@ -319,7 +321,7 @@ The bar reads it on focus and on every `peak_assignment_reload`. A curation, a v
 an import is not a reason: each acts on the current run by design, and an import shows as
 its own run. The SDK gets `assignment_status()`.
 
-### 5.4 Settings on the batch (MAS-1012, MAS-1014)
+### 5.4 Settings on the batch (MAS-1014, decided in MAS-1012)
 
 A nullable `assignment_settings` JSON on `sample_batch`, validated as a
 `PeakAssignmentConfig` without its decoy block. Null means the defaults. It is edited
@@ -339,18 +341,19 @@ settings it ran under in its run's `config`, and the status read compares their 
   settled). The pass is a press, not a hook on ingest: running it on arrival is decision
   10.5 of that note (MAS-322), which is still open.
 - **What moves a tier is MAS-983's and the plan's business, not this note's.**
-  Co-variation, stamps, batch checks and ratio stability stay records only (decisions 35
-  to 37 of the plan). The issues here change when and how a pass is started and shown,
-  never what it writes.
+  Co-variation and ratio stability stay display-only (decision 35 of the plan), and the
+  isotopologue stamps and batch checks stay recorded facts (steps 4.2c and 4.2g) until a
+  later step counts them in the tiers. The issues here change when and how a pass is
+  started and shown, never what it writes.
 - **The per-sample run stays the deep dive.** Curation stays at the batch peak, and
   verdicts and curations still act on the current run.
 - **The tier vocabulary, the provisional marker and the hidden P(correct) are untouched.**
 
 ## 7. Decisions for the plan owner
 
-1. **Settings on the batch or per user** (3.4, 5.4): the Decision MAS-1012. The
-   recommendation is on the batch, so a pass is reproducible by anyone. The cost is a
-   column and a migration.
+1. **Settings on the batch or per user** (3.4, 5.4): decided in MAS-1012 on
+   2026-11-18, on the batch, so a pass is reproducible by anyone. The cost is a column
+   and a migration (MAS-1014).
 2. **Who sees Advanced** (3.3): a call for the plan owner in MAS-1015. The options are
    every editor, a user setting (*Show assignment stages*), or superusers only. The
    recommendation is the user setting: the plan's own testers need it, and a lab user
@@ -389,7 +392,7 @@ The `blockedBy` relations hold the order.
 |---|---|---|---|
 | MAS-1011 | A pass of the batch stages is one batch run: one snapshot, progress per stage, a cancel that leaves no run running | MAS-983 | M |
 | MAS-1013 | The batch's assignment status: where the batch stands and why it is behind | MAS-1011, MAS-983 | M |
-| MAS-1012 | Decision: the settings on the batch, or each user's | none | |
+| MAS-1012 | Decision: the settings on the batch, or each user's (decided 2026-11-18: on the batch) | none | |
 | MAS-1014 | The settings saved on the batch and read by every pass | MAS-1012, MAS-1013, MAS-1011 | S |
 | MAS-1015 | *Assign batch*: the control, replacing the nine buttons | MAS-1011, MAS-1013 | M |
 | MAS-1016 | Details and Run history, in place of the run selector | MAS-1015, MAS-1011 | M |
