@@ -14,7 +14,8 @@ Orbitrap.
 The propylamine specimen's 228 Th line is a cluster, C13H26NO2+, and its 287 Th
 line is that cluster with propylamine added, C16H35N2O2+: each is listed under
 the ion formula the node matched. Six ions are enough for the node to compare
-mode 2 with mode 0, which it does on no other specimen; it keeps mode 0.
+mode 2 with mode 0, which it does on no other specimen; it keeps mode 0, at
+7.0 ppm held out against mode 2's 9.7 ppm.
 
 ## What a fixture holds
 
@@ -46,7 +47,11 @@ it. Nothing names the file, its instrument, site, date or ionization mode.
   instrument function gives it.
 - `fit`: the node's fit at ingest, `mode` and `par`, and its `points`: every
   line it chose from, with its ion, exact and observed m/z, its peak's TOF
-  index, its residual under the fit in ppm, and whether the fit kept it.
+  index, its residual under the fit in ppm, and whether the fit kept it. On
+  propylamine also `compared`: the models the node compared, each with its
+  error in ppm at the calibrants it was not fitted on, from the record's
+  `quality.model`. The other two keep three ions each, too few to compare the
+  models on.
 
 ## Who reads them
 
@@ -56,7 +61,8 @@ it. Nothing names the file, its instrument, site, date or ionization mode.
 - `server/backend/tests/unit/api/calibration/test_tof_calibration_specimens.py`
   writes each fixture into a filestore as a TOF file and runs the node's
   `TofCalibrationHandler` on it: the same lines and the same axis as at
-  ingest, to 0.01 ppm, and the calibration audit's refit equal to the node's.
+  ingest, to 0.01 ppm, the models compared to 0.01 ppm where the fixture
+  holds them, and the calibration audit's refit equal to the node's.
   It also changes one thing at a time on the bromide specimen (a misread
   line, a brighter neighbour, a line's S/N) so that the residual tolerance,
   the refine window and the S/N floor each decide. And it adds negative

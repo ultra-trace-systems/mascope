@@ -8,9 +8,9 @@ the node made on the file when it was ingested. Written into a filestore,
 it is the file as the node first read it.
 
 Two checks per specimen. The node fits it as it did then: the same lines
-kept and the same axis, to 0.01 ppm. And the calibration audit's refit,
-which the plan measures every TOF against, is the node's fit to 0.01 ppm on
-real data too, not only on the synthetic files of
+kept, the same axis and the same models compared, to 0.01 ppm. And the
+calibration audit's refit, which the plan measures every TOF against, is the
+node's fit to 0.01 ppm on real data too, not only on the synthetic files of
 ``test_tof_calibration_audit.py``. A change to the search for the calibrants,
 the S/N floor, the selection rule or the fit's loss moves the first;
 re-baseline the specimens (the fixtures' README) only when such a change is
@@ -105,6 +105,18 @@ async def test_the_node_fits_a_specimen_as_it_did_at_ingest(filestore, kind):
         audit.axis_difference_ppm(node.fit_result, expected, _tof_span(found))
         < SAME_AXIS_PPM
     )
+    # The models it compared, where the record holds them: mode 2 against
+    # mode 0, each at the calibrants it was not fitted on
+    if "compared" in expected:
+        compared = node.fitted_on["model"]["compared"]
+        assert compared is not None, "the node compared no models"
+        assert [entry["mode"] for entry in compared] == [
+            entry["mode"] for entry in expected["compared"]
+        ]
+        for entry, want in zip(compared, expected["compared"], strict=True):
+            assert entry["held_out_ppm"] == pytest.approx(
+                want["held_out_ppm"], abs=SAME_AXIS_PPM
+            ), entry["mode"]
     residuals = {
         round(p["target_mz"], 6): p["residual_ppm"] for p in node.fitted_on["points"]
     }
@@ -391,6 +403,12 @@ def _points_of(found: dict) -> list[float]:
     ]
 
 
+# --- Polarity, on the propylamine specimen ---
+#
+# A positive-mode file whose store holds no negative peak: the test below adds
+# some, to show the node reads only the peaks of the polarity it fits.
+
+
 @pytest.mark.asyncio
 async def test_a_positive_fit_takes_no_negative_peak(filestore):
     """The propylamine specimen, a positive-mode file, with a negative peak
@@ -428,6 +446,7 @@ async def test_a_positive_fit_takes_no_negative_peak(filestore):
         model=None,
     )
 
+    assert node.fit_result is not None, node.warning
     points = _points(node)
     assert 178.23 not in points
     assert [round(p["target_mz"], 6) for p in node.fitted_on["points"]] == [
