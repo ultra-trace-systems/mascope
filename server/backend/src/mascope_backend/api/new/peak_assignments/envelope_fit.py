@@ -84,6 +84,7 @@ from mascope_backend.db import (
     PeakAssignmentRun,
     Sample,
     SampleItem,
+    SampleMeasurementModel,
     async_session,
 )
 from mascope_backend.runtime import runtime
@@ -590,21 +591,43 @@ async def recorded_envelope_tolerances(
     sample_batch_id: str,
 ) -> dict[str, EnvelopeTolerance]:
     """The tolerance each sample of a batch scored at, as its latest
-    completed in-app run recorded it: what the batch's isotopologue stamping
-    (``batch_isotopologues``) judges a line's share at in each sample. A
-    sample with no such run is not named; its reader takes today's. One
-    sample's reader outside a run reads the tolerance with the rest of its
-    model (``service.recorded_measurement``).
+    completed in-app run recorded it, or for a sample with none, as the
+    run-less fold that assigned it kept it (``service.record_sample_model``):
+    what the batch's isotopologue stamping (``batch_isotopologues``) judges a
+    line's share at in each sample. One sample's reader outside a run reads
+    the same tolerance with the rest of its model
+    (``service.recorded_measurement``). A sample neither recorded is not
+    named; its reader takes today's.
 
     :param sample_batch_id: The batch.
     :return: Sample -> its tolerance.
     """
-    return {
+    tolerances = {
         sample_item_id: EnvelopeTolerance.from_record(record)
         for sample_item_id, record in await _latest_records(
             None, batch_id=sample_batch_id
         )
     }
+    async with async_session() as session:
+        folded = (
+            await session.execute(
+                select(
+                    SampleMeasurementModel.sample_item_id,
+                    SampleMeasurementModel.config,
+                )
+                .join(
+                    Sample,
+                    Sample.sample_item_id == SampleMeasurementModel.sample_item_id,
+                )
+                .where(Sample.sample_batch_id == sample_batch_id)
+            )
+        ).all()
+    for sample_item_id, config in folded:
+        if sample_item_id not in tolerances and isinstance(config, dict):
+            tolerances[sample_item_id] = EnvelopeTolerance.from_record(
+                config.get(ENVELOPE_TOLERANCE_KEY)
+            )
+    return tolerances
 
 
 @dataclass(frozen=True)

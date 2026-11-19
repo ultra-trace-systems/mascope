@@ -633,8 +633,9 @@ batch's *Search untargeted* (below) and what it propagates - is scored at the mo
 sample's latest run in Mascope recorded, its width, centre and line tolerance from that
 one run. The inspector's alternatives for a row read the model of the row's own run. An
 imported run does not count, and a decoy run (below) is never that run. A sample with no
-such run is read as a run whose library matched too little: at the instrument class's
-width and its own reagent ions' centre.
+such run, one only folded into the batch ledger, is read at the model the fold fitted
+and kept for it. A sample with neither is read as a run whose library matched too
+little: at the instrument class's width and its own reagent ions' centre.
 
 How closely a line's height must follow its predicted share is the run's own, too. By
 default a clean line is held to 5% of its share, and a missing line counts against the
@@ -667,9 +668,7 @@ each gave and the time they span. On a TOF the run measures one offset and one
 spread of how its lines read against their shares, since a TOF's signal-to-noise column
 is not read that way yet. The run records which of these it used, and a formula measured
 on its own afterwards - *Use this*, the inspector's evidence - is read at the tolerance
-in the model the sample's latest run in Mascope recorded. A sample with no such run, one
-only folded into the batch ledger, is measured at the defaults, though its folded rows
-were scored at a tolerance fitted on the spot.
+in the model the sample's latest run in Mascope recorded, or the one its fold kept.
 
 An Orbitrap file whose peaks record the scans they are present in (*Scan Presence* on
 [Peak Detection](peak-detection.md)) needs no such measurement for its lines: it
@@ -1926,8 +1925,9 @@ their twin line*, above), measures every reading it commits, and then asks each 
 every rule a run asks: the mass calibration, the partner and second-channel checks, and
 the rules under *Why a row holds its tier*. It reads the measurement model the sample's
 latest assignment run recorded, its width, centre and line tolerance read together from
-that one run even where another run completes meanwhile; a sample no run has assigned is
-read at its instrument's width and its reagent lines' centre. A peak the
+that one run even where another run completes meanwhile; a sample only folded is read at
+the model its fold kept, and a sample neither has assigned at its instrument's width and
+its reagent lines' centre. A peak the
 batch ledger already explains is neither searched nor read as a twin. Measuring the
 composition in the other samples does the same: each sample's peak takes the tier an
 assignment run of that sample gives the same reading, not its fit alone. A run finds

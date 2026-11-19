@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 from fastapi import status
 from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import aliased
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
@@ -262,6 +263,7 @@ from mascope_backend.db import (
     PeakAssignmentRun,
     Sample,
     SampleBatch,
+    SampleMeasurementModel,
     TargetCollectionInSampleBatch,
     TargetCompound,
     TargetCompoundInTargetCollection,
@@ -4745,6 +4747,51 @@ async def plan_sample_decoy(sample, config: PeakAssignmentConfig) -> DecoyPlan:
     return replace(plan, mechanisms=searched, swapped=swapped)
 
 
+async def record_sample_model(sample_item_id: str, record: dict) -> None:
+    """Keep the model a run-less pass fitted on a sample: the ingest fold's and
+    the batch ledger rebuild's, which have no run to record it on (MAS-725).
+
+    One row per sample, the last such pass's, replacing any before it; a
+    reader outside a run takes it where the sample has no completed in-app run
+    (:func:`recorded_measurement`).
+
+    :param sample_item_id: The sample.
+    :param record: What a run keeps of its model in its config: the model's
+        record under ``measurement_model`` and the line-share tolerance's under
+        ``envelope_tolerance``.
+    """
+    now = dt.now(timezone.utc)
+    statement = pg_insert(SampleMeasurementModel).values(
+        sample_item_id=sample_item_id,
+        engine_version=PEAK_ASSIGNMENT_ENGINE_VERSION,
+        config=record,
+        sample_measurement_model_utc_recorded=now,
+    )
+    statement = statement.on_conflict_do_update(
+        index_elements=[SampleMeasurementModel.sample_item_id],
+        set_={
+            "engine_version": statement.excluded.engine_version,
+            "config": statement.excluded.config,
+            "sample_measurement_model_utc_recorded": now,
+        },
+    )
+    async with async_session() as session:
+        await session.execute(statement)
+        await session.commit()
+
+
+async def _recorded_sample_model(sample_item_id: str) -> dict | None:
+    """What :func:`record_sample_model` kept for a sample, or None."""
+    async with async_session() as session:
+        return (
+            await session.execute(
+                select(SampleMeasurementModel.config).where(
+                    SampleMeasurementModel.sample_item_id == sample_item_id
+                )
+            )
+        ).scalar_one_or_none()
+
+
 #: :func:`recorded_measurement` was handed no reagent lines' centre, and
 #: claims the lines where it needs them. Distinct from None, a pass's answer
 #: for a profile with no reagent library.
@@ -4771,12 +4818,15 @@ async def recorded_measurement(
     inspector's evidence and alternatives, the batch search and its
     propagation, the seeded chain's every caller outside a run read it here.
 
-    Where no run recorded one, the sample is read as a run whose target
-    library fitted nothing reads it: at the instrument class's width, and at
-    the reagent lines' centre where they put the axis beyond that width,
-    claimed as the run-less ingest fold claims them - the configuration's
-    profile (the default's where the caller has none), from the sample's own
-    mechanisms, instrument and polarity, over the same peak read.
+    Where the sample has no completed in-app run, the model the last run-less
+    pass fitted on it - the ingest fold, the batch ledger's rebuild - is read
+    instead, which it kept per sample (:func:`record_sample_model`). Where
+    nothing recorded one, the sample is read as a run whose target library
+    fitted nothing reads it: at the instrument class's width, and at the
+    reagent lines' centre where they put the axis beyond that width, claimed
+    as the run-less ingest fold claims them - the configuration's profile (the
+    default's where the caller has none), from the sample's own mechanisms,
+    instrument and polarity, over the same peak read.
 
     :param sample: The sample.
     :param config: The configuration of the pass the caller is part of, whose
@@ -4796,7 +4846,9 @@ async def recorded_measurement(
         in for one).
     """
     if recorded is None:
-        _, recorded = await _latest_in_app_run(sample.sample_item_id)
+        run_id, recorded = await _latest_in_app_run(sample.sample_item_id)
+        if run_id is None:
+            recorded = await _recorded_sample_model(sample.sample_item_id)
     try:
         instrument_type = get_instrument_type(sample.filename)
     except ValueError:
