@@ -27,32 +27,30 @@ _ITEMS = "mascope_backend.api.controllers.sample.items.sample_items_controller"
 
 
 def _tic_reads(answers):
-    """Stand in for both reads, recording each.
+    """Stand in for the reader's TIC per scan, recording each read.
 
-    The MS1 read goes through ``_polarity_tic_per_scan``, which reads the
-    polarity as its sample does; the wider read asks ``get_tic_per_scan`` for
-    every scan type.
+    The MS1 read goes through ``get_sample_tic``, which reads the polarity
+    as its sample does - for a file with no peak store, as these are, its
+    MS1 scans; the wider read asks for every scan type.
 
     :param answers: What each read gives, by the scan type it asked for
         (``"Ms"`` for the first): a TIC array, or an exception to raise.
-    :return: The two stand-ins, and the list their reads are recorded in.
+    :return: The stand-in, and the list its reads are recorded in.
     """
     reads = []
 
-    def answer(base_filename, polarity, scan_type):
+    def get_tic_per_scan(base_filename, polarity=None, scan_type="Ms", stream=None):
         reads.append((base_filename, polarity, scan_type))
         given = answers[scan_type]
         if isinstance(given, Exception):
             raise given
         return np.arange(len(given), dtype=float), np.asarray(given, dtype=float)
 
-    def polarity_tic_per_scan(base_filename, polarity):
-        return answer(base_filename, polarity, "Ms")
+    return get_tic_per_scan, reads
 
-    def get_tic_per_scan(base_filename, polarity=None, scan_type="Ms"):
-        return answer(base_filename, polarity, scan_type)
 
-    return polarity_tic_per_scan, get_tic_per_scan, reads
+def _no_store(base_filename):
+    raise FileNotFoundError(base_filename)
 
 
 async def _tic(answers):
@@ -60,9 +58,9 @@ async def _tic(answers):
         _sample_item_tic,
     )
 
-    polarity_tic_per_scan, get_tic_per_scan, reads = _tic_reads(answers)
+    get_tic_per_scan, reads = _tic_reads(answers)
     with (
-        patch(f"{_ITEMS}._polarity_tic_per_scan", polarity_tic_per_scan),
+        patch(f"{_ITEMS}.m_compute._peak_store_metadata", _no_store),
         patch(f"{_ITEMS}.m_compute.get_tic_per_scan", get_tic_per_scan),
     ):
         tic = await _sample_item_tic(filename="instrument-A_file", polarity="+")

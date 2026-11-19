@@ -47,7 +47,7 @@ One row per sample.
 
 | Column | Content |
 |---|---|
-| Sample name, Filename, Datetime, Sample type, TIC, Filter ID | The sample as the sample browser shows it. *Datetime* is the acquisition's start in the instrument's local time. *TIC* is the mean total ion current per MS1 scan, in the unit of the sample's averaged spectrum: counts for an Orbitrap, ions/s for a TOF |
+| Sample name, Filename, Datetime, Sample type, TIC, Filter ID | The sample as the sample browser shows it. *Datetime* is the acquisition's start in the instrument's local time. *TIC* is the mean total ion current per MS1 scan, in the unit of the sample's averaged spectrum: counts for an Orbitrap, ions/s for a TOF. For a sample stitched from several scan ranges it is the stitched spectrum's: each range's mean TIC for the m/z that range supplies |
 | Total peak intensity (cps), Match score | The sample's match summary, empty for a sample with no match |
 | Sample item ID, Sample file ID | The sample's id, and the id of the raw file it was cut from |
 | Datetime UTC | The acquisition's start in UTC, written without a zone (Excel stores none) |

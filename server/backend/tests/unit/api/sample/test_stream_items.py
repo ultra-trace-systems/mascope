@@ -310,8 +310,8 @@ async def _created(
         patch(f"{_ITEMS}.refuse_superseded_binding", new_callable=AsyncMock),
         patch.object(
             sample_items_controller.m_compute,
-            "get_sample_tic_per_scan",
-            return_value=(None, [1.0, 2.0]),
+            "get_sample_tic",
+            return_value=1.5,
             side_effect=sample_tic,
         ) as tic,
         patch.object(
@@ -346,9 +346,9 @@ def _inserted(session):
 
 @pytest.mark.asyncio
 async def test_an_items_tic_is_its_polaritys_as_its_sample_reads_it():
-    """Over the scans of the polarity's composite where the store stitches
-    it (``get_sample_tic_per_scan``), which the store decides and not the
-    row the item names. Its window is its polarity's, as before."""
+    """The TIC of the polarity's composite where the store stitches it
+    (``get_sample_tic``), which the store decides and not the row the item
+    names. Its window is its polarity's, as before."""
     item = AcquisitionItemCreate(
         sample_item_name="the composite",
         sample_item_type="ACQUISITION",
