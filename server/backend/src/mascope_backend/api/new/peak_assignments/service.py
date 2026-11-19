@@ -5093,7 +5093,8 @@ async def _stage_a_assignments(
         (:func:`envelope_fit.fit_run_envelope_tolerance`), which Stage A's own
         rows are scored at, and the search and its seeded re-score after them.
         Stage A first scores at today's numbers, since it is its commits that
-        the fit reads, and scores its frame again at the fitted tolerance.
+        the fit reads, and gates and scores its frame again at the fitted
+        tolerance, at the width and offset the first pass measured.
         And the neutrals the lists it read name, matched or not
         (:func:`listed_formula_identities`), which corroborate a search row
         through a secondary channel (``engine._apply_minor_channel_policy``).
@@ -5139,8 +5140,11 @@ async def _stage_a_assignments(
     stage_a_assignments = first.rows
     if envelope.fit.level != LEVEL_DEFAULT and not first.matched.empty:
         # Gated and scored again at the fitted tolerance, and the peaks
-        # arbitrated on that: the same width and offset, since those were read
-        # off the frame and the tolerance moves neither.
+        # arbitrated on that, at the first pass's width and offset: the ones
+        # the run records and Stage B and the mass gate are scored at. The
+        # fitted window can admit a line the first pass turned away, a TOF
+        # line read below 0.6 of its share where the curve opens, and refitted
+        # here that line would be an anchor and move both.
         stage_a_assignments = await asyncio.to_thread(
             first.assignments_of,
             score_ions_by_fit(
@@ -5149,6 +5153,7 @@ async def _stage_a_assignments(
                 reagent_offset=reagent_offset,
                 min_anchor_ions=STAGE_A_FIT_MIN_IONS,
                 envelope_tolerance=envelope.tolerance,
+                inherited_accuracy=first.mass_accuracy,
             ),
         )
     return (

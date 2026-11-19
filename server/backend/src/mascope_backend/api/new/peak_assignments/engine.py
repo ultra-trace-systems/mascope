@@ -982,9 +982,9 @@ def score_ions_by_fit(
     The returned frame carries that verdict: an isotopologue the gating rejected
     comes back with ``sample_peak_intensity`` zeroed, not just excluded from the
     arithmetic. `apply_match_params` only zeroes the intensity of pairings outside
-    the *m/z* tolerance or missing the isotope ratio by 100 % or more - one it
-    rejected on a smaller ratio miss or the intensity floor keeps its intensity,
-    the signal the targeted ion sum counts - so without
+    the *m/z* tolerance or missing the isotope ratio by 100 % or more - one the
+    gate rejected on the line model's height test or the intensity floor keeps
+    its intensity, the signal the targeted ion sum counts - so without
     this the ownership guard in
     `invert_matches_to_peak_assignments` would let a pairing this function counted
     as ABSENT claim its peak anyway, carrying the ion's (possibly "assigned") fit
@@ -1034,20 +1034,24 @@ def score_ions_by_fit(
         scores at today's 5% and threshold of 3, as Stage A's first pass does
         before the fit exists.
     :param inherited_accuracy: A measurement the frame is scored at instead of
-        one fitted off it: a decoy run's, which is its control's
-        (:mod:`decoy`). Its own rows are wrong formulas on a moved axis, and
-        fitted on them the score would centre on the shift. None fits the
-        frame, as every other run does.
+        one fitted off it. A decoy run's, which is its control's
+        (:mod:`decoy`): its own rows are wrong formulas on a moved axis, and
+        fitted on them the score would centre on the shift. And Stage A's
+        second pass's, which is its first pass's
+        (``service._stage_a_assignments``): the fitted tolerance can admit
+        lines the first pass's gate turned away, and fitted on them the
+        width and offset would move off the ones the run records. None fits
+        the frame, as every other pass does.
     :return: The gated frame with every ion's fit as its rows' ``match_score``.
     """
     if match_isotope_df.empty or not _FIT_SCORE_COLS.issubset(match_isotope_df.columns):
         return match_isotope_df
 
     df = match_isotope_df.copy()
-    # Honour apply_match_params gating: an isotopologue it rejected (score 0) is
-    # absent to the fit score (its intensity may still be set, e.g. a little
-    # outside the isotope ratio tolerance or below the intensity floor but on
-    # its m/z).
+    # Honour the gate (`seeded_scoring.gate_lines`): an isotopologue it
+    # rejected (score 0) is absent to the fit score (its intensity may still be
+    # set, e.g. on its m/z but outside the line model's height test at the
+    # run's tolerance, or below the intensity floor).
     if "match_score" in df.columns:
         gated_out = pd.to_numeric(df["match_score"], errors="coerce").fillna(0.0) == 0
         df.loc[gated_out, "sample_peak_intensity"] = 0.0
@@ -1435,7 +1439,7 @@ def invert_matches_to_peak_assignments(
     # matcher pairs each target isotope to the nearest peak in a wide 0.5 Da search window
     # (for the legacy Match tab's ppm-error display), then `apply_match_params` zeroes
     # `sample_peak_intensity` for pairings outside the m/z tolerance and
-    # `score_ions_by_fit` zeroes it for the ones the gating rejected on the isotope ratio or
+    # `score_ions_by_fit` zeroes it for the ones the gating rejected on the line's height or
     # the intensity floor (both legs of one gating decision, see its docstring). Without this guard a trace
     # isotopologue whose real peak is absent claims whatever peak sits in that window - tens
     # to hundreds of ppm off, or below the floor the scorer treated as no peak at all, and

@@ -23,21 +23,24 @@ from mascope_backend.api.new.match.params.lib import apply_match_params
 from mascope_backend.api.new.peak_assignments import service
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import (
+    STAGE_A_FIT_MIN_IONS,
     SampleMassAccuracy,
     line_heights_within,
+    score_ions_by_fit,
 )
 from mascope_backend.api.new.peak_assignments.envelope_fit import RunEnvelopeFit
 from mascope_backend.api.new.peak_assignments.seeded_scoring import (
     gate_and_score,
     gate_lines,
 )
-from mascope_match.params import OrbiMatchParams
+from mascope_match.params import OrbiMatchParams, TofMatchParams
 from mascope_tools.composition.envelope_tolerance import (
     FORM_CURVE,
     EnvelopeLines,
     EnvelopeTolerance,
     fit_envelope_tolerance,
 )
+from mascope_tools.composition.mass_accuracy import mass_accuracy_anchors
 
 
 _SVC = "mascope_backend.api.new.peak_assignments.service"
@@ -319,3 +322,79 @@ class TestStageA:
 
         # 0.6 under its share is the fitted curve's; 0.6 over it no curve's.
         assert self._kept(scored.call_args.args[0]) == [True, True, True, False]
+
+
+def _tof_frame():
+    """A TOF file's frame whose fitted curve admits lines today's window shuts.
+
+    Twelve ions, enough to fit a width on their main lines alone. Each has one
+    line of share 0.2, read at 0.4 of it and without scan counts, as a TOF line
+    is: 0.6 under its share, outside today's window and inside the fitted
+    curve's at its expected S/N of 20. Each sits 6 ppm off its main line, so
+    counted as anchors those lines move the fitted width and offset.
+    """
+    rows = []
+    for index, error in enumerate(np.linspace(-1.5, 1.5, 12)):
+        ion = f"ion-{index}"
+        rows.append(_line(ion, 1.0, 0.0, snr=MAIN_SNR, mz_error=error))
+        rows.append(_line(ion, 0.2, -0.6, mz_error=error + 6.0))
+    return pd.DataFrame(rows)
+
+
+class TestStageAMassAccuracy:
+    """Stage A's second pass scores at the width and offset of its first."""
+
+    @pytest.mark.asyncio
+    async def test_the_second_pass_scores_at_the_first_pass_measurement(self):
+        frame = _tof_frame()
+        fitted = _fitted()
+        arbitrated = MagicMock(return_value=[])
+        with (
+            patch(f"{_SVC}._fetch_known_isotopes", AsyncMock(return_value=frame)),
+            patch(f"{_SVC}.listed_formula_identities", return_value=frozenset()),
+            patch(
+                f"{_SVC}.compute_match_isotopes",
+                AsyncMock(return_value=frame.copy()),
+            ),
+            patch(f"{_SVC}.get_instrument_type", return_value="tof"),
+            patch(f"{_SVC}.load_calibration", AsyncMock(return_value=None)),
+            patch(f"{_SVC}.invert_matches_to_peak_assignments", arbitrated),
+            patch(
+                f"{_SVC}.fit_run_envelope_tolerance",
+                AsyncMock(return_value=fitted),
+            ),
+        ):
+            _, _, accuracy, _, _ = await service._stage_a_assignments(
+                SimpleNamespace(
+                    sample_item_id="si-1", filename="tof-sample.h5", polarity="-"
+                ),
+                PeakAssignmentConfig(),
+                TofMatchParams(),
+                ["m-1"],
+                [],
+                "run-1",
+                fallback_sigma_ppm=3.0,
+                known_window=None,
+            )
+        first, second = (call.args[0] for call in arbitrated.call_args_list)
+
+        # The premise: the first pass fits on the main lines alone, and the
+        # fitted curve lets the minor lines in as anchors too.
+        assert len(mass_accuracy_anchors(first)) == 12
+        assert len(mass_accuracy_anchors(second)) == 24
+        assert accuracy.anchors == 12
+
+        def scores(inherited):
+            return score_ions_by_fit(
+                gate_lines(frame, TofMatchParams(), fitted.tolerance),
+                fallback_sigma_ppm=3.0,
+                reagent_offset=None,
+                min_anchor_ions=STAGE_A_FIT_MIN_IONS,
+                envelope_tolerance=fitted.tolerance,
+                inherited_accuracy=inherited,
+            )["match_score"].to_numpy()
+
+        # Refitted on those, the width and offset would move, and the scores.
+        assert not np.allclose(scores(None), scores(accuracy))
+        # The pass scores at the one the run records and Stage B is scored at.
+        np.testing.assert_allclose(second["match_score"].to_numpy(), scores(accuracy))
