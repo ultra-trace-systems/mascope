@@ -522,6 +522,29 @@ class TestTheJudgedLedger:
         }
 
     @pytest.mark.asyncio
+    async def test_the_runs_re_score_reads_its_lines_at_the_runs_resolution(self):
+        # The search's readings are tiered on a re-score of their lines, read at
+        # the R(m/z) the run read Stage A's at and the finder ranked them at:
+        # with none, an Orbitrap file's lines would be its fine lines, unmerged,
+        # and a TOF file's merged at 10,000 (MAS-977).
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        def orbitrap(mz):
+            return 100_000.0
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+        mocks["resolution"].return_value = orbitrap
+
+        await _run(PeakAssignmentConfig(run_untargeted=True))
+
+        mocks["seeded"].assert_awaited_once()
+        assert mocks["seeded"].await_args.kwargs["resolution"] is orbitrap
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("read", [True, False], ids=["read", "none"])
     async def test_a_neighbour_s_lines_are_read_at_the_files_resolution(self, read):
         # The resolving power the mass gate reads the lines at is the one the
