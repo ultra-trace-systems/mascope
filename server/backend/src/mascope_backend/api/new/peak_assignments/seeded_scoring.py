@@ -5,7 +5,7 @@ propagation of a found or curated identity to the samples holding the peak, the
 inspector's untargeted shortlist - is the same four steps
 every time: generate the ions and their isotopologues in memory, match them
 against the sample's peaks in ONE ``compute_match_isotopes`` pass, gate the
-frame with ``apply_match_params``, and fit-score it with ``score_ions_by_fit``.
+frame with :func:`gate_lines`, and fit-score it with ``score_ions_by_fit``.
 Only the seeds, and what the caller reads off the result, differ.
 
 Declared here rather than inside either caller because the steps are subtle in
@@ -41,6 +41,7 @@ from mascope_backend.api.new.ionization.modes.versions import sample_label_purit
 from mascope_backend.api.new.match.params.lib import apply_match_params
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import (
+    line_heights_within,
     sample_mass_accuracy,
     score_ions_by_fit,
 )
@@ -222,6 +223,36 @@ async def fetch_mechanisms_by_id(
     }
 
 
+def gate_lines(
+    match_isotope_df: pd.DataFrame,
+    match_params,
+    envelope_tolerance: EnvelopeTolerance | None = None,
+) -> pd.DataFrame:
+    """Gate a match frame as the assignment reads it: the match parameters'
+    mass window and intensity floor, and the line model's height test at the
+    run's tolerance (``engine.line_heights_within``) in place of their fixed
+    isotope-ratio tolerance.
+
+    Stage A's frame and the seeded re-score's are both gated here, as the
+    finder admits a search candidate's lines on that same height test, so a
+    line is its ion's on one test wherever the run reads it (MAS-977). The
+    classic match keeps the user's ratio tolerance (``apply_match_params``
+    alone): its results and categories are what that setting filters. A line
+    the test turns away scores 0, and the fit score then reads it absent and
+    releases its peak (``engine.score_ions_by_fit``).
+
+    :param match_isotope_df: The raw match frame.
+    :param match_params: The sample's match parameters.
+    :param envelope_tolerance: The run's fitted tolerance, or None for today's.
+    :return: The gated frame.
+    """
+    return apply_match_params(
+        match_isotope_df,
+        match_params,
+        heights_within=line_heights_within(match_isotope_df, envelope_tolerance),
+    )
+
+
 def gate_and_score(
     match_isotope_df: pd.DataFrame,
     match_params,
@@ -263,13 +294,14 @@ def gate_and_score(
     :param envelope_tolerance: How well a run of the sample measures a line's
         share: inside a run the one its Stage A fitted, outside one what its
         latest run recorded (``envelope_fit.recorded_envelope_tolerance``).
-        A seed list is no set of committed envelopes to fit one on. None is
-        today's numbers.
+        A seed list is no set of committed envelopes to fit one on. The lines
+        are gated at it (:func:`gate_lines`) and scored at it. None is today's
+        numbers.
     :param inherited_accuracy: The measurement a decoy run scores everything
         at, its control's; the frame is then never fitted
         (``engine.score_ions_by_fit``). None for every other caller.
     """
-    gated = apply_match_params(match_isotope_df, match_params)
+    gated = gate_lines(match_isotope_df, match_params, envelope_tolerance)
     return score_ions_by_fit(
         gated,
         fallback_sigma_ppm=fallback_sigma_ppm,
@@ -394,7 +426,7 @@ async def score_seeds(
 
     The engine's Stage-A chain over a seeded frame and nothing more: ions for
     the seed list, one ``compute_match_isotopes`` pass (a single peak read
-    covers every seed), ``apply_match_params`` gating, ``score_ions_by_fit`` at
+    covers every seed), :func:`gate_lines` gating, ``score_ions_by_fit`` at
     the sample's instrument class's width and the offset a run of it scores at
     where the seeds are too few to fit their own (:func:`gate_and_score`). No
     candidate enumeration, no untargeted stage, no arbitration.

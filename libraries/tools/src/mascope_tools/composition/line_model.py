@@ -24,11 +24,15 @@ and two matchers (MAS-977). They are answered here, once:
   once. A reader that needs a different tolerance on purpose passes it as a
   named parameter; the constant it passes says why next to where it is defined.
 
-The match pass's ratio gate (``apply_match_params``) is not a reading of this
-module's height test: it is the classic match's user-set ``isotope_ratio_
-tolerance``, which the classic match results and their stored categories are
-filtered by, and the assignment's Stage A reads its scores through the fit
-score (:func:`height_deviation`) rather than through the gate's category.
+In the assignment the match pass's ratio gate is this module's height test. A
+line the gate turns away is absent to the fit score and its peak goes to the
+search, so the gate decides which of Stage A's lines exist. Stage A and the
+seeded re-score therefore gate their lines by :func:`within_intensity_window`
+at the run's fitted tolerance, the test the finder admits a candidate's lines
+by, in place of the match parameters' fixed ``isotope_ratio_tolerance``
+(``peak_assignments.seeded_scoring.gate_lines``). The classic match keeps that
+user-set tolerance: its results and their stored categories are what it
+filters.
 
 References: isotope fine structure, Lacki et al., Anal. Chem. 2017, 89, 3272
 (IsoSpec); natural isotope abundances, Meija et al., Pure Appl. Chem. 2016, 88,

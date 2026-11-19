@@ -609,12 +609,15 @@ the envelopes its lists confirmed: for every range of expected signal-to-noise, 
 below its share a 13C line reads in that file, and how often it is there at all
 ([Barlow et al. 1972][ba72] for the monotone fit). A line then costs nothing anywhere
 between that low reading and its full share, and a missing line counts only where that
-file's lines are usually present. When the composition search tries a candidate
-formula, a peak more than 40% off its line's share is taken for another compound's and
-the line counts as missing. On a file with a measured response (its own, or one pooled
-from the files near it), the lower end of that cut moves down to the file's low reading,
-so a faint 13C line is found rather than counted against the formula. Above the share
-the 40% cut stays. A file with too few confirmed lines takes the measurement pooled with
+file's lines are usually present. Wherever the run reads a formula's lines, in Stage A,
+in the composition search and in the re-score of the search's readings, a peak more than
+40% off its line's share is taken for another compound's and the line counts as missing.
+On a file with a measured response (its own, or one pooled from the files near it), the
+lower end of that cut moves down to the file's low reading, so a faint 13C line is found
+rather than counted against the formula. Above the share the 40% cut stays. The isotope
+ratio tolerance of the match parameters (0.2 on an Orbitrap) is target matching's own:
+assignment reads the same lines by this one cut, so a line is the ion's on the same test
+in either stage. A file with too few confirmed lines takes the measurement pooled with
 the six files of its batch acquired nearest it in time at the same settings, and failing
 that the defaults. Each of the six is measured afresh, the way the run measures its own
 lines and under the run's own settings, never read from a run of its own. So the pooled

@@ -50,7 +50,7 @@ def _first_pass_patches(threads: dict, rows: list[dict]):
             f"{_SVC}.drop_ions_claimed_elsewhere",
             _recording(threads, "drop", lambda df, *_: df),
         ),
-        patch(f"{_SVC}.apply_match_params", side_effect=lambda df, _params: df),
+        patch(f"{_SVC}.gate_lines", side_effect=lambda df, *_args, **_kwargs: df),
         patch(f"{_SVC}.score_ions_by_fit", side_effect=lambda df, **_kwargs: df),
         patch(f"{_SVC}.sample_mass_accuracy", return_value=SampleMassAccuracy()),
         patch(f"{_SVC}.get_instrument_type", return_value="orbi"),
@@ -104,7 +104,7 @@ async def test_the_rescore_at_the_fitted_tolerance_arbitrates_off_the_loop():
     first = service._StageAFirstPass(
         rows=[{"role": "M0", "sample_peak_id": "p1", "fit_score": 0.5}],
         scored=FRAME,
-        gated=FRAME,
+        matched=FRAME,
         mass_accuracy=SampleMassAccuracy(),
         confidence_calibration=None,
         listed_formulas=frozenset(),
@@ -118,6 +118,7 @@ async def test_the_rescore_at_the_fitted_tolerance_arbitrates_off_the_loop():
     with (
         patch(f"{_SVC}._stage_a_first_pass", AsyncMock(return_value=first)),
         patch(f"{_SVC}.fit_run_envelope_tolerance", AsyncMock(return_value=fitted)),
+        patch(f"{_SVC}.gate_lines", side_effect=lambda df, *_args, **_kwargs: df),
         patch(f"{_SVC}.score_ions_by_fit", side_effect=lambda df, **_kwargs: df),
     ):
         rows, _, _, envelope, _ = await service._stage_a_assignments(

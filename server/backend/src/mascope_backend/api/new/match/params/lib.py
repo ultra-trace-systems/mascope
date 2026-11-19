@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 from sqlalchemy import func
 from sqlalchemy.sql.elements import ColumnElement
@@ -117,7 +118,10 @@ async def default_match_params(sample_item_id: str):
 
 
 def apply_match_params(
-    match_isotope_df, match_params: BaseMatchParams = None
+    match_isotope_df,
+    match_params: BaseMatchParams = None,
+    *,
+    heights_within=None,
 ) -> pd.DataFrame:
     """
     Apply filtering logic to a isotope-lvl matches DataFrame.
@@ -126,6 +130,12 @@ def apply_match_params(
     :type match_isotope_df: pd.DataFrame
     :param match_params: Optional; Pydantic model of filtering parameters.
     :type match_params: BaseMatchParams
+    :param heights_within: Per row, whether the line's height passes a height
+        test of the caller's, which then stands in for the parameters'
+        ``isotope_ratio_tolerance``: the assignment's Stage A and seeded
+        re-score pass the line model's test at the run's fitted tolerance
+        (``peak_assignments.engine.line_heights_within``). None, for the classic
+        match, gates on the parameters' tolerance.
     :return: DataFrame with applied filters.
     :rtype: pd.DataFrame
     """
@@ -194,9 +204,14 @@ def apply_match_params(
     # more takes the intensity as well: that peak is not the line read noisily.
     within_mz = df["match_mz_error"].abs() <= params_df["mz_tolerance"]
     abundance_error = df["match_abundance_error"].abs()
+    height_accepted = (
+        abundance_error <= params_df["isotope_ratio_tolerance"]
+        if heights_within is None
+        else pd.Series(np.asarray(heights_within, dtype=bool), index=df.index)
+    )
     score_accepted = (
         within_mz
-        & (abundance_error <= params_df["isotope_ratio_tolerance"])
+        & height_accepted
         & (df["sample_peak_intensity"] >= params_df["peak_min_intensity"])
     )
     keeps_intensity = within_mz & (abundance_error < RATIO_MISS_DROPS_INTENSITY)
