@@ -268,6 +268,17 @@ def _fixed_mechanism_id(parts: "MechanismParts") -> str:
     only, like a generated id, because an id travels in URL paths and query
     strings.
 
+    A mechanism of another shape says it, so that it never takes the id of
+    the simple one it extends, and an id of the simple shape reads as before:
+
+    - the molecule count, after ``sys``: ``[2M+H]+`` is ``sys2MAddHPos``;
+    - the neutral an adding mechanism loses, after its moiety as ``Ls``:
+      ``[M+H-H2O]+`` is ``sysAddHLsH2OPos``. A mechanism that only removes
+      names its loss among what it removes, as it did before it had one:
+      ``[M-H-H2O]-`` is ``sysLossHH2ONeg``;
+    - the size of a charge above one, after the polarity: ``[M+2H]2+`` is
+      ``sysAdd2HPos2``.
+
     :param parts: The mechanism, read.
     :return: The id, at most the column's 16 characters for every shipped
         mechanism (pinned by the catalogue's tests).
@@ -275,10 +286,14 @@ def _fixed_mechanism_id(parts: "MechanismParts") -> str:
     moiety = (
         "E" if parts.electron_transfer else "".join(parts.removed_terms or parts.terms)
     )
+    if parts.addition and parts.neutral_loss:
+        moiety += "Ls" + "".join(parts.loss_terms)
     moiety = re.sub(r"[^A-Za-z0-9]", "", moiety.replace("^", "Lab"))
+    count = f"{parts.multimer}M" if parts.multimer > 1 else ""
     operation = "Add" if parts.addition else "Loss"
     polarity = "Pos" if parts.charge > 0 else "Neg"
-    return f"sys{operation}{moiety}{polarity}"
+    size = str(abs(parts.charge)) if abs(parts.charge) > 1 else ""
+    return f"sys{count}{operation}{moiety}{polarity}{size}"
 
 
 @lru_cache(maxsize=1)
