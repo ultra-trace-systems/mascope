@@ -58,6 +58,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from mascope_tools.composition.robust import robust_spread
+
 
 #: The fit score's relative intensity floor today: a clean line's share is
 #: judged at 5% of itself.
@@ -469,7 +471,7 @@ def fit_centre_width(
     if errors.size < min_lines:
         return None
     centre = float(np.median(errors))
-    width = float(1.4826 * np.median(np.abs(errors - centre)))
+    width = robust_spread(errors, centre)
     return centre, width
 
 
