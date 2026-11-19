@@ -91,6 +91,7 @@ from scipy.stats import rankdata
 from sqlalchemy import bindparam, func, select, update
 
 from mascope_backend.api.lib.api_features import api_controller_background_task
+from mascope_backend.api.new.peak_assignments.batch_blend import acquisition_key
 from mascope_backend.api.new.peak_assignments.batch_coherence import (
     partition_anchors,
     partition_of,
@@ -189,10 +190,10 @@ class SampleTime:
 
 
 def acquisition_order(samples: Iterable[SampleTime]) -> dict[str, int]:
-    """Sample -> its place in acquisition order: by acquisition time, the
-    segments of one file by where they start, then by id so the order is
-    total."""
-    ordered = sorted(samples, key=lambda s: (s.acquired, s.t0 or 0.0, s.sample_item_id))
+    """Sample -> its place in acquisition order
+    (:func:`batch_blend.acquisition_key`): by acquisition time, the segments
+    of one file by where they start, then by id so the order is total."""
+    ordered = sorted(samples, key=acquisition_key)
     return {s.sample_item_id: index for index, s in enumerate(ordered)}
 
 

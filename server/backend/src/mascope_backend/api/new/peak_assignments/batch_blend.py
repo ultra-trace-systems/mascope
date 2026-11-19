@@ -198,11 +198,19 @@ def runs_p_value(n1: int, n2: int, runs: int) -> float:
     return min(1.0, count / total)
 
 
-def _acquisition_key(member: Any) -> tuple:
+def acquisition_key(item: Any) -> tuple:
+    """Where a member or a sample sits in acquisition order: by acquisition
+    time, the segments of one file by where they start, then by sample id so
+    the order is total. The one order of the batch passes: the continuity
+    pass's (``continuity.acquisition_order``) and the blend test's.
+
+    :param item: Anything with, or a dict of, ``acquired``, ``t0`` and
+        ``sample_item_id``.
+    """
     return (
-        _get(member, "acquired"),
-        _get(member, "t0") or 0.0,
-        _get(member, "sample_item_id") or "",
+        _get(item, "acquired"),
+        _get(item, "t0") or 0.0,
+        _get(item, "sample_item_id") or "",
     )
 
 
@@ -265,7 +273,7 @@ def time_reading(first: list, second: list) -> Optional[dict]:
     n2 = len(timed) - n1
     if n1 < BLEND_MIN_MEMBERS or n2 < BLEND_MIN_MEMBERS:
         return None
-    timed.sort(key=lambda pair: _acquisition_key(pair[0]))
+    timed.sort(key=lambda pair: acquisition_key(pair[0]))
     sides = [side for _, side in timed]
     runs = 1 + sum(1 for x, y in zip(sides, sides[1:]) if x != y)
     expected = 1.0 + 2.0 * n1 * n2 / (n1 + n2)
