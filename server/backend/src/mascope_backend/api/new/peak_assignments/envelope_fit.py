@@ -10,12 +10,13 @@ form, decided by decision 32). This module reads it off the run.
 
 **Where.** After Stage A and before the search is scored, as Stage A's width
 and offset are: Stage A scores its frame at today's numbers, builds its rows,
-and its committed envelopes are what the fit reads. The run then scores Stage
-A's frame again, the search's ranking, and the seeded re-score its search rows
-are tiered on, all at the one fitted tolerance, so no row of the run is read at
-another. A fit that waited for the judging passes could read the search's
-second-channel rows too, but each committed row would then need its fit, its
-evidence, its tier and its arbitration derived a second time.
+and its committed envelopes are what the fit reads. The run then gates and
+scores Stage A's frame again, at the first pass's width and offset, and the
+search's ranking and the seeded re-score its search rows are tiered on, all at
+the one fitted tolerance, so no row of the run is read at another. A fit that
+waited for the judging passes could read the search's second-channel rows too,
+but each committed row would then need its fit, its evidence, its tier and its
+arbitration derived a second time.
 
 **What is read.** A committed Stage A envelope is a list's reading: the
 workspace's target library or a reference list proposed the formula. Of those,
@@ -24,8 +25,9 @@ the ones whose monoisotopic line sits within the mass gate's cap
 centre it scored at) are read, and of their lines only the ones the gate would
 call tracking (``line_model.tracks`` at the class's precision): a line
 that does not track is another peak the window reached, no reading of this
-ion's share. A predicted line the scorer saw absent - no peak, or one the match
-parameters' ratio window turned away - counts toward its bin's presence. On an
+ion's share. A predicted line the scorer saw absent - no peak, or one the gate
+turned away, the line model's height test at today's tolerance
+(``seeded_scoring.gate_lines``) - counts toward its bin's presence. On an
 Orbitrap only the 13C lines are read (the curve is the 13C lines' response,
 decision 32), a line read as its brightest member where the run merged lines
 at the file's R(m/z); on a TOF every line, since its centre and width are of the
