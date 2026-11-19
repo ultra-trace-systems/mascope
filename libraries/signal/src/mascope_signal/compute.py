@@ -1539,6 +1539,118 @@ def get_sample_tic_per_scan(
     return _tic_of_streams(base_filename, keys, polarity)
 
 
+def get_sample_tic(base_filename: str, polarity: Literal["+", "-"]) -> float:
+    """Mean TIC per scan of one polarity of a file, in its sample's spectrum.
+
+    The TIC of the spectrum a sample of the polarity reads, in that
+    spectrum's unit. A polarity read as one set of scans - a store detected
+    whole, a polarity with a single stream, a file with no peak store yet -
+    has a spectrum averaged over its scans, and its TIC is their mean TIC
+    (:func:`get_sample_tic_per_scan`).
+
+    A polarity whose streams the store stitches has a spectrum that takes
+    each m/z from the one stream that owns it, averaged over that stream's
+    own scans (:func:`get_composite_sum_signal`). Its TIC is what each of
+    those streams puts into it: the stream's mean TIC per scan, times the
+    share of the stream's signal that lies in the m/z it owns
+    (:func:`_owned_shares`). Not the mean over the scans of every stream
+    pooled, which divides each stream's ion current by scans that record
+    other m/z: on a composite of five windows it read under a third of the
+    composite's TIC, below the reagent ion the composite holds. Nor the sum
+    of the streams' whole TICs, which counts twice what two streams both
+    measure, as a full scan does the m/z of the SIM windows inside its range.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :param polarity: The polarity whose TIC to read
+    :type polarity: str
+    :raises ValueError: If the store carries only part of what a per-stream
+        store does
+    :raises StalePeakStoreError: If a per-stream store carries no map, or the
+        file holds no stream under a key it lists
+    :raises mascope_thermo.thermo.NoScansFoundError: If the file holds no
+        scan of the polarity
+    :return: The mean TIC per scan; NaN where the read hands back no scan
+    :rtype: float
+    """
+    try:
+        keys, stitch = _peak_store_metadata(base_filename)
+    except FileNotFoundError:
+        keys, stitch = [], None  # no store yet: the polarity's own scans
+    runs = stitch["runs"].get(polarity) if stitch else None
+    if not runs:
+        _, tic_per_scan = get_tic_per_scan(base_filename, polarity=polarity)
+        return _mean_tic(tic_per_scan)
+    owners = sorted({run[2] for run in runs})
+    shares = _owned_shares(base_filename, polarity, owners)
+    tic, read = 0.0, False
+    for index in owners:
+        try:
+            stream_tic = _stream_mean_tic(base_filename, polarity, keys[index])
+        except m_thermo.NoScansFoundError:
+            continue  # a stream with no scan puts nothing in
+        tic += shares[index] * stream_tic
+        read = True
+    if not read:
+        raise m_thermo.NoScansFoundError(
+            f"No scans found in the scan streams of '{base_filename}' for "
+            f"polarity '{polarity}'."
+        )
+    return tic
+
+
+def _stream_mean_tic(base_filename: str, polarity: str, key: str) -> float:
+    """The mean TIC per scan of one stream of a per-stream store.
+
+    :raises StalePeakStoreError: If the file holds no stream under the key
+    :raises mascope_thermo.thermo.NoScansFoundError: If the stream holds no
+        scan of the polarity
+    """
+    try:
+        _, stream_tic = get_tic_per_scan(base_filename, polarity=polarity, stream=key)
+    except m_thermo.UnknownStreamError as error:
+        raise _stale_stream_key(key) from error
+    return _mean_tic(stream_tic)
+
+
+def _mean_tic(tic_per_scan) -> float:
+    """The mean of a read's TIC per scan; NaN, unwarned, for a read of no scan."""
+    return float(np.mean(tic_per_scan)) if np.size(tic_per_scan) else float("nan")
+
+
+def _owned_shares(
+    base_filename: str, polarity: Literal["+", "-"], streams: list[int]
+) -> dict[int, float]:
+    """The share of each stream's signal that lies in the m/z it owns.
+
+    Read off the peak store, by summed peak height: of every peak a stream
+    detected in the polarity, the ones in its composite (the store's
+    ``composite`` mask), weak and satellite peaks included, as the scan's TIC
+    includes them. A scan's TIC is one number for its whole range, so what
+    lies between its peaks is taken to lie in the m/z it owns in the same
+    proportion. A stream with no peak height to weigh has its whole TIC
+    counted: nothing says it lies elsewhere.
+
+    :param base_filename: Sample file filename
+    :param polarity: The polarity the streams are of
+    :param streams: The streams, as indices among the store's keys
+    :return: The share of each, by index
+    """
+    data = m_io.load_peak_data(base_filename, drop_bad_peaks=False, composite=False)
+    of_polarity = data.polarity.values == polarity
+    stream = data.stream.values
+    owned = data.composite.values.astype(bool)
+    heights = np.nan_to_num(data.sum_peak_heights.values.astype(float))
+    shares = {}
+    for index in streams:
+        detected = of_polarity & (stream == index)
+        total = heights[detected].sum()
+        shares[index] = (
+            float(heights[detected & owned].sum() / total) if total > 0 else 1.0
+        )
+    return shares
+
+
 def get_stored_tic_per_scan(base_filename: str) -> tuple[np.ndarray, np.ndarray]:
     """TIC of each scan a file's peak store holds on its time axis.
 

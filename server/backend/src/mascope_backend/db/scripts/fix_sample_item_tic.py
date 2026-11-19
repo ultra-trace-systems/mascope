@@ -15,6 +15,11 @@ the function itself and not a copy of it. Dividing the stored sum by a scan
 count would not give the same number: the reader leaves out an outlying
 first scan, and a stitched polarity reads each stream's own scans.
 
+A stitched polarity's TIC was later read as its composite spectrum's, each
+stream's mean TIC for the m/z it owns, where it had been the mean over every
+stream's scans pooled. Running this again after that change rewrites those
+items, and writes every other item's TIC as it was.
+
 The rule reads a whole polarity of a file, whatever window an item spans, so
 it runs once per file and polarity and writes the result to every item of
 that pair, copies in other workspaces included. Items with no TIC are left
