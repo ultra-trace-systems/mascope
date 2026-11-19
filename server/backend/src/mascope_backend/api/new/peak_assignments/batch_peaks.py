@@ -218,6 +218,18 @@ def instrument_type_of(intensity_variable: Optional[str]) -> Optional[str]:
     return INSTRUMENT_TYPE_BY_INTENSITY_VARIABLE.get(intensity_variable)
 
 
+def is_monoisotopic(anchor: Any) -> bool:
+    """Whether an anchor reads an ion's monoisotopic line: an ion that names no
+    isotope in brackets (``[13C]C9H15+``), and no other batch peak's isotope
+    line. An anchor with no ion is not: nothing is known about it.
+
+    :param anchor: A ``BatchPeak`` row or anything with its
+        ``consensus_ion_formula`` and ``isotopologue_of``.
+    """
+    ion = anchor.consensus_ion_formula
+    return bool(ion) and "[" not in ion and not anchor.isotopologue_of
+
+
 # --- the member row's codes -----------------------------------------------------
 
 #: A member stores its tier as a ``smallint``: the tier's rank, so the code

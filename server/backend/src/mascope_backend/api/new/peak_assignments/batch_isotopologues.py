@@ -75,6 +75,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     STAMPED_ISOTOPOLOGUE_OF_KEY,
     diagnostic_isotopologues_record_reads,
     instrument_type_of,
+    is_monoisotopic,
     mz_from_delta,
     resolution_from_tol_ppm,
     role_name,
@@ -130,12 +131,6 @@ REASON_TAKEN = "another_parent"
 REASON_NOT_FOUND = "not_found"
 
 
-def _monoisotopic(ion_formula: Optional[str]) -> bool:
-    """Whether an anchor's ion is its monoisotopic line: an isotope line's ion
-    names its isotope in brackets (``[13C]C9H15+``)."""
-    return bool(ion_formula) and "[" not in ion_formula
-
-
 def is_parent(anchor: Any) -> bool:
     """Whether an anchor is a committed monoisotopic batch peak, whose
     isotope lines are predicted: a formula at a tier that commits one, its own
@@ -145,8 +140,7 @@ def is_parent(anchor: Any) -> bool:
         bool(anchor.consensus_formula)
         and anchor.consensus_tier != TIER_UNASSIGNED
         and not anchor.consensus_role
-        and not anchor.isotopologue_of
-        and _monoisotopic(anchor.consensus_ion_formula)
+        and is_monoisotopic(anchor)
     )
 
 

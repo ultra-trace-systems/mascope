@@ -9,6 +9,7 @@ docs/dev/peak_assignment_batch_primary.md (section 12).
 """
 
 import itertools
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +21,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     candidate_index,
     compute_consensus,
     fold_in_sample,
+    is_monoisotopic,
     max_intensity,
     mz_delta_ppm,
     mz_from_delta,
@@ -48,6 +50,28 @@ def test_resolution_adaptive_tol_is_half_fwhm_plus_margin():
     assert resolution_adaptive_tol_ppm(
         200.0, None, drift_margin_ppm=2.0
     ) == pytest.approx(2.0)
+
+
+# --- the monoisotopic line ----------------------------------------------------
+
+
+def _ion_anchor(ion, isotopologue_of=None):
+    return SimpleNamespace(consensus_ion_formula=ion, isotopologue_of=isotopologue_of)
+
+
+@pytest.mark.parametrize(
+    ("ion", "isotopologue_of", "expected"),
+    [
+        ("C10H15O4-", None, True),
+        ("[13C]C9H15O4-", None, False),
+        ("C10H15O4-", "bp-owner", False),
+        # Nothing is known about an anchor with no ion: it is not monoisotopic.
+        (None, None, False),
+        ("", None, False),
+    ],
+)
+def test_is_monoisotopic(ion, isotopologue_of, expected):
+    assert is_monoisotopic(_ion_anchor(ion, isotopologue_of)) is expected
 
 
 # --- anchor snapping ---------------------------------------------------------

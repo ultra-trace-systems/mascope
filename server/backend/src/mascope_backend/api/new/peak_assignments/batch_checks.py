@@ -73,6 +73,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     BATCH_CHECKS_KEY,
     ROLE_REAGENT,
     batch_checks_record_reads,
+    is_monoisotopic,
     mz_from_delta,
     resolution_from_tol_ppm,
     role_name,
@@ -146,18 +147,11 @@ from mascope_tools.composition.merged_isotopologues import (
 )
 
 
-def _monoisotopic(anchor: Any) -> bool:
-    """Whether an anchor reads an ion's monoisotopic line: no family link, and
-    an ion that names no isotope in brackets (``[13C]C9H15+``)."""
-    ion = anchor.consensus_ion_formula
-    return bool(ion) and "[" not in ion and not anchor.isotopologue_of
-
-
 def is_labelled_ion(anchor: Any) -> bool:
     """Whether an anchor reads a labelled ion whose twin is read: monoisotopic,
     carrying a labelled atom (``^N``), and either the reagent's own ion or an
     analyte at a tier that commits its formula."""
-    if not _monoisotopic(anchor) or "^" not in anchor.consensus_ion_formula:
+    if not is_monoisotopic(anchor) or "^" not in anchor.consensus_ion_formula:
         return False
     if anchor.consensus_role == ROLE_REAGENT:
         return True
@@ -420,7 +414,7 @@ def pair_channel(anchor: Any, notation: Optional[str]) -> Optional[str]:
     partner_key = pair_partner(notation)
     if (
         partner_key is None
-        or not _monoisotopic(anchor)
+        or not is_monoisotopic(anchor)
         or anchor.consensus_role
         or not anchor.consensus_formula
         or anchor.consensus_tier == TIER_UNASSIGNED
