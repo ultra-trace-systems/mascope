@@ -16,6 +16,8 @@ from .mass_accuracy import (
     fit_sample_mass_accuracy,
     mass_accuracy_anchors,
     scoring_sigma_ppm,
+    unwiden_sigma_ppm,
+    widen_sigma_ppm,
 )
 from .mechanism_notation import (
     AdductRow,
@@ -113,6 +115,8 @@ __all__ = [
     "SampleMassAccuracy",
     "score_candidates",
     "scoring_sigma_ppm",
+    "unwiden_sigma_ppm",
+    "widen_sigma_ppm",
     "standard_notation",
     "to_row",
 ]

@@ -35,6 +35,8 @@ from mascope_tools.composition.mass_accuracy import (
     mass_accuracy_anchors,
     scoring_sigma_ppm,
     trend_width_floor_ppm,
+    unwiden_sigma_ppm,
+    widen_sigma_ppm,
 )
 
 
@@ -180,6 +182,14 @@ class TestTheWidthAScoreIsJudgedAt:
         assert scoring_sigma_ppm(1.4, 0.3) == pytest.approx(
             math.hypot(1.4, PRED_SIGMA_PPM)
         )
+
+    def test_the_widening_and_its_inverse(self):
+        assert widen_sigma_ppm(0.30) == pytest.approx(math.hypot(0.30, PRED_SIGMA_PPM))
+        # A run records the width it scored at; the fit is read back from it.
+        assert unwiden_sigma_ppm(scoring_sigma_ppm(0.17, 0.3)) == pytest.approx(0.17)
+        assert unwiden_sigma_ppm(widen_sigma_ppm(2.5)) == pytest.approx(2.5)
+        # A recorded width under the prediction term reads as a fit of zero.
+        assert unwiden_sigma_ppm(PRED_SIGMA_PPM / 2) == 0.0
 
 
 def _on_a_trend(count, *, a=-0.25, b=-0.12, noise=0.05, lo=59.0, hi=400.0, seed=3):
