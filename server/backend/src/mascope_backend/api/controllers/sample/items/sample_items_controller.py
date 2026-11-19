@@ -92,7 +92,9 @@ async def _sample_item_tic(filename: str, polarity: str | None) -> float | None:
     does not get twice the TIC.
 
     Those are the MS1 scans of its polarity, as its sample reads them
-    (:func:`_polarity_tic_per_scan`). A polarity that recorded none - an
+    (:func:`_polarity_tic`): a stitched polarity's TIC is that of its
+    composite spectrum, each stream's for the m/z it owns, and not a mean
+    over every stream's scans pooled. A polarity that recorded none - an
     acquisition of fragmentation scans alone - has no MS1 TIC to report, so
     its TIC is that of the scans it does have. The two are not comparable, and
     nothing compares them: a sample with no MS1 scans has no peaks, so it is
@@ -112,8 +114,8 @@ async def _sample_item_tic(filename: str, polarity: str | None) -> float | None:
     :return: The mean TIC per scan, or None when it is not a finite number.
     """
     try:
-        _, tic_values = await asyncio.to_thread(
-            _polarity_tic_per_scan, base_filename=filename, polarity=polarity
+        tic = await asyncio.to_thread(
+            _polarity_tic, base_filename=filename, polarity=polarity
         )
     except NoScansFoundError:
         _, tic_values = await asyncio.to_thread(
@@ -122,9 +124,7 @@ async def _sample_item_tic(filename: str, polarity: str | None) -> float | None:
             polarity=polarity,
             scan_type=None,
         )
-    if not np.size(tic_values):
-        return None
-    tic = float(np.mean(tic_values))
+        tic = float(np.mean(tic_values)) if np.size(tic_values) else math.nan
     return tic if math.isfinite(tic) else None
 
 
@@ -246,12 +246,12 @@ async def get_sample_item(sample_item_id: str) -> dict:
     }
 
 
-def _polarity_tic_per_scan(base_filename: str, polarity: str) -> tuple:
-    """The scans an item of this polarity covers, with the TIC of each.
+def _polarity_tic(base_filename: str, polarity: str) -> float:
+    """The mean TIC per scan of an item of this polarity, NaN for no scan.
 
-    As the item's sample reads them (``get_sample_tic_per_scan``): over the
-    scans of the polarity's composite where the file's store stitches it,
-    each stream's scans as that stream selects them. A stale per-stream store
+    As the item's sample reads its spectrum (``get_sample_tic``): where the
+    file's store stitches the polarity, the TIC of the composite, each
+    stream's mean TIC per scan for the m/z it owns. A stale per-stream store
     is read as a pooled one, which is how the file's stream rows take it:
     its next processing makes the item anew. So is a store that carries only
     part of what a per-stream store does: its item reads no stream row
@@ -262,9 +262,10 @@ def _polarity_tic_per_scan(base_filename: str, polarity: str) -> tuple:
     Synchronous: it reads the filestore, so it runs in a worker thread.
     """
     try:
-        return m_compute.get_sample_tic_per_scan(base_filename, polarity)
+        return m_compute.get_sample_tic(base_filename, polarity)
     except (m_compute.StalePeakStoreError, m_compute.PartialPeakStoreError):
-        return m_compute.get_tic_per_scan(base_filename, polarity=polarity)
+        _, tic_values = m_compute.get_tic_per_scan(base_filename, polarity=polarity)
+        return float(np.mean(tic_values)) if np.size(tic_values) else math.nan
 
 
 #: The reference from an item to the stream row it reads, as the database

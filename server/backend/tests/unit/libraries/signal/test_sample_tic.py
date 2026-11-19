@@ -9,6 +9,12 @@ item's TIC and the per-scan export's TIC are read the way the store was
 built (``mascope_signal.compute.get_sample_tic_per_scan`` and
 ``get_stored_tic_per_scan``). A file detected whole is read as it always
 was.
+
+The sample's TIC is that of its spectrum (``get_sample_tic``). A stitched
+polarity's spectrum takes each m/z from the stream that owns it, averaged
+over that stream's scans, so its TIC is each stream's mean TIC for the m/z
+it owns: not a mean over every stream's scans pooled, which read below the
+reagent ion the spectrum holds.
 """
 
 import numpy as np
@@ -151,6 +157,85 @@ def test_streams_that_read_no_scan_between_them_are_no_scans(composite, monkeypa
         m_compute.get_sample_tic_per_scan(SAMPLE_FILENAME, "-")
     with pytest.raises(NoScansFoundError, match=r"scan streams of '.*'\.$"):
         m_compute.get_stored_tic_per_scan(SAMPLE_FILENAME)
+
+
+# -- the TIC of the sample's spectrum ---------------------------------------------
+
+
+def test_a_stitched_polaritys_tic_is_its_composites(composite):
+    """Each stream's mean TIC per scan, for the share of its signal in the
+    m/z it owns: the reagent scan its reagent ion and dimer (1400 of its
+    1440), the low and the high window all they hold, the mid window all but
+    the ion at 450 the high window owns (47 of 55)."""
+    tic = m_compute.get_sample_tic(SAMPLE_FILENAME, "-")
+
+    assert tic == pytest.approx(1400.0 + LOW_TIC + 47.0 + HIGH_TIC)
+
+
+def test_a_stitched_polaritys_tic_holds_its_brightest_ion(composite):
+    """What the pooled mean got wrong: over every stream's scans, the
+    reagent scan's ion current was divided by fourteen scans where its
+    reagent ion is averaged over its own five, and the sample's TIC read
+    below the reagent ion it holds."""
+    pooled = np.mean(COMPOSITE_TICS)
+    reagent_ion = 1000.0  # its height in each of the reagent scans
+
+    assert pooled < reagent_ion
+    assert m_compute.get_sample_tic(SAMPLE_FILENAME, "-") > reagent_ion
+
+
+def test_what_two_streams_both_measure_is_counted_once(composite):
+    """The reagent scan records the ion at 80 the low window owns, and the
+    mid window the one at 450 the high window owns: the streams' whole TICs
+    summed count those twice."""
+    whole = REAGENT_TIC + LOW_TIC + MID_TIC + HIGH_TIC
+
+    assert m_compute.get_sample_tic(SAMPLE_FILENAME, "-") < whole
+
+
+def test_a_polarity_with_one_stream_has_its_mean_tic(acquire, instrument_functions):
+    acquire(WITH_POSITIVE, {**MICROSCANS, 5: 10})
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
+
+    assert m_compute.get_sample_tic(SAMPLE_FILENAME, "+") == 70.0
+
+
+@pytest.mark.parametrize("detected", [True, False], ids=["pooled-store", "no-store"])
+def test_a_file_detected_whole_has_its_polaritys_mean_tic(
+    acquire, instrument_functions, detected
+):
+    acquire(COMPOSITE, MICROSCANS)
+    if detected:
+        m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=False)
+
+    tic = m_compute.get_sample_tic(SAMPLE_FILENAME, "-")
+
+    assert tic == pytest.approx(np.mean(COMPOSITE_TICS))
+
+
+def test_a_stitched_tic_with_a_stream_key_the_file_no_longer_holds_is_stale(
+    composite, acquire
+):
+    acquire([("FTMS - p NSI Full ms [40.0000-600.0000]", 1, {62.0: 100.0})] * 3)
+
+    with pytest.raises(StalePeakStoreError, match="reads back no stream"):
+        m_compute.get_sample_tic(SAMPLE_FILENAME, "-")
+
+
+def test_a_stitched_tic_of_streams_that_read_no_scan_is_no_scans(
+    composite, monkeypatch
+):
+    selected = composite._selected
+
+    def _selected(polarity=None, t_min=None, t_max=None, stream=None):
+        if stream is not None:
+            raise NoScansFoundError(f"No scans found: stream={stream!r}")
+        return selected(polarity, t_min, t_max, stream)
+
+    monkeypatch.setattr(composite, "_selected", _selected)
+
+    with pytest.raises(NoScansFoundError, match="scan streams of .* for polarity '-'"):
+        m_compute.get_sample_tic(SAMPLE_FILENAME, "-")
 
 
 # -- a file detected whole, and one with no store ---------------------------------

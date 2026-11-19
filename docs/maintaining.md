@@ -37,7 +37,7 @@ Everything below assumes an Ubuntu host provisioned with
 | Give stored matches the intensity of isotope lines that missed their ratio (once, after the upgrade; dry run first) | `DRY_RUN=1 mascope prod db script run reaggregate_ratio_gated_intensity`, then without `DRY_RUN` |
 | Audit a TOF instrument's m/z calibration | `TOF_AUDIT_INSTRUMENT=<name> mascope prod db script run audit_tof_calibration` |
 | Fill the model of instruments registered before it was read (once, after the upgrade) | `DRY_RUN=1 mascope prod db script run backfill_instrument_model`, then without `DRY_RUN` |
-| Recompute every sample's TIC as the mean per scan (once, after the upgrade) | `DRY_RUN=1 mascope prod db script run fix_sample_item_tic`, then without `DRY_RUN` |
+| Recompute every sample's TIC as the mean per scan (after the upgrade that brings it, and again after the one that reads a stitched sample's TIC off its spectrum) | `DRY_RUN=1 mascope prod db script run fix_sample_item_tic`, then without `DRY_RUN` |
 | Give the copies made before origin keys one, where their window was not edited (count first) | `DRY_RUN=1 mascope prod db script run backfill_origin_keys`, then without `DRY_RUN` |
 | **Disk monitor status / run now** | `systemctl list-timers mascope-disk-check.timer` / `sudo systemctl start mascope-disk-check.service` |
 | Disk monitor history | `journalctl -u mascope-disk-check.service` (fill rate and projection on each line) |
@@ -2752,6 +2752,17 @@ workspaces included. A sample with no TIC is left for ingestion to fill. A
 file it cannot read is skipped and counted in a warning at the end; its
 samples keep the old sum. Each file is written as it is read, so a run that
 stops keeps what it wrote, and running it again writes the same values.
+
+A sample stitched from several scan ranges has a spectrum that takes each
+m/z from the one range that owns it, averaged over that range's own scans.
+Its TIC is that spectrum's: each range's mean TIC per scan, for the share of
+the range's peak signal that lies in the m/z it owns. Version 1.16.0 took
+the mean over the scans of every range pooled, which divided each range's
+ion current by scans that record other m/z: on a five-range acquisition it
+read under a third of the stitched spectrum's TIC, below the reagent ion
+the spectrum holds. Run `fix_sample_item_tic` again after the upgrade that
+brings this. It reads every file again, and the TIC it writes changes only
+for the stitched samples.
 
 A TOF file that recorded no signal has a TIC of 0. A TIC that reads as no
 finite number, a NaN or an infinity, is stored as none: the sample has no

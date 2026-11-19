@@ -171,8 +171,10 @@ def rig(monkeypatch) -> None:
     # opens the file's peak store first; these files have none.
     monkeypatch.setattr(
         sample_items_controller.m_compute,
-        "get_sample_tic_per_scan",
-        lambda base_filename, polarity: _tic_per_scan(base_filename, polarity),
+        "get_sample_tic",
+        lambda base_filename, polarity: float(
+            np.mean(_tic_per_scan(base_filename, polarity)[1])
+        ),
     )
     monkeypatch.setattr(
         sample_items_controller.m_compute,
