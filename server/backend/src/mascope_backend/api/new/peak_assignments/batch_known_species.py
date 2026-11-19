@@ -84,6 +84,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     SOURCE_ROLES,
     candidate_index,
     instrument_type_of,
+    is_isotope_line,
     known_species_record_of,
     manual_pin_of,
     member_state,
@@ -603,13 +604,6 @@ for _library in REAGENT_CLUSTERS.values():
 del _library, _cluster
 
 
-def _monoisotopic(anchor: Any) -> bool:
-    """A batch peak of its own ion: no other's isotope line, and an ion that
-    names no isotope (``[13C]C9H15+``)."""
-    ion = anchor.consensus_ion_formula
-    return not anchor.isotopologue_of and (not ion or "[" not in ion)
-
-
 def _order(value: Any) -> Any:
     """A value's place in a tie-break: a tuple's parts in order, a None among
     them before any text (an imported row may name no mechanism)."""
@@ -743,7 +737,7 @@ def listed_species(row: Row) -> Optional[Species]:
 def species_of(row: Row, claims: dict[str, dict]) -> Optional[Species]:
     """The known species a batch peak is, a library ion before a listed
     compound; None for any other batch peak."""
-    if not _monoisotopic(row.anchor):
+    if is_isotope_line(row.anchor):
         return None
     return library_species(row, claims) or listed_species(row)
 
@@ -1061,7 +1055,7 @@ def read_co_variations(rows: list[Row], decisions: list[Decision]) -> None:
     keys = {
         row.batch_peak_id
         for row in rows
-        if _monoisotopic(row.anchor) and not row.anchor.consensus_role
+        if not is_isotope_line(row.anchor) and not row.anchor.consensus_role
     }
     keys |= {d.row.batch_peak_id for d, _ in pairs}
     keys |= {core.row.batch_peak_id for _, core in pairs}

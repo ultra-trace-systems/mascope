@@ -221,16 +221,32 @@ def instrument_type_of(intensity_variable: Optional[str]) -> Optional[str]:
     return INSTRUMENT_TYPE_BY_INTENSITY_VARIABLE.get(intensity_variable)
 
 
-def is_monoisotopic(anchor: Any) -> bool:
-    """Whether an anchor reads an ion's monoisotopic line: an ion that names no
-    isotope in brackets (``[13C]C9H15+``), and no other batch peak's isotope
-    line. An anchor with no ion is not: nothing is known about it.
+def is_isotope_line(anchor: Any) -> bool:
+    """Whether an anchor is known to read an isotope line: another batch peak's
+    (``isotopologue_of``), or an ion that names its isotope in brackets
+    (``[13C]C9H15+``). An anchor with no ion is not known to be one.
+
+    The readers that also take unassigned anchors (the series walk's targets,
+    the co-variation reading's traces, the known species) leave out what this
+    names; the readers that need the line to be an ion's own read
+    :func:`is_monoisotopic`.
 
     :param anchor: A ``BatchPeak`` row or anything with its
         ``consensus_ion_formula`` and ``isotopologue_of``.
     """
     ion = anchor.consensus_ion_formula
-    return bool(ion) and "[" not in ion and not anchor.isotopologue_of
+    return bool(anchor.isotopologue_of) or (bool(ion) and "[" in ion)
+
+
+def is_monoisotopic(anchor: Any) -> bool:
+    """Whether an anchor reads an ion's monoisotopic line: an ion that names no
+    isotope, and no other batch peak's isotope line (:func:`is_isotope_line`).
+    An anchor with no ion is not: nothing is known about it.
+
+    :param anchor: A ``BatchPeak`` row or anything with its
+        ``consensus_ion_formula`` and ``isotopologue_of``.
+    """
+    return bool(anchor.consensus_ion_formula) and not is_isotope_line(anchor)
 
 
 # --- the member row's codes -----------------------------------------------------

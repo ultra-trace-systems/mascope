@@ -64,6 +64,7 @@ from mascope_backend.api.new.cheminfo.utils import to_custom_element_format
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     ROLE_M0,
     SERIES_KEY,
+    is_isotope_line,
     manual_pin_of,
     series_record_of,
     standing_series_record,
@@ -137,13 +138,6 @@ SOURCE_SERIES = "series"
 # --- pure helpers -------------------------------------------------------------
 
 
-def _monoisotopic(ion_formula: Optional[str]) -> bool:
-    """Whether an anchor's ion is its monoisotopic line: an isotope line's ion
-    names its isotope in brackets (``[13C]C9H15+``), and a series is a
-    statement about molecules, not about their isotope lines."""
-    return not ion_formula or "[" not in ion_formula
-
-
 @dataclass
 class ModeAnchors:
     """One ionization mode's anchors, as the walk reads them.
@@ -213,9 +207,8 @@ def series_anchors(
         peaks[anchor.ionization_mode_id].append(
             MeasuredPeak(anchor.batch_peak_id, anchor.mz, anchor.max_intensity)
         )
-        if anchor.consensus_role or anchor.isotopologue_of:
-            continue
-        if not _monoisotopic(anchor.consensus_ion_formula):
+        # A series is a statement about molecules, not their isotope lines.
+        if anchor.consensus_role or is_isotope_line(anchor):
             continue
         mode = modes[anchor.ionization_mode_id]
         tier = anchor.consensus_tier
