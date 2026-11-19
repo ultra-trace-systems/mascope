@@ -21,6 +21,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     candidate_index,
     compute_consensus,
     fold_in_sample,
+    is_isotope_line,
     is_monoisotopic,
     max_intensity,
     mz_delta_ppm,
@@ -72,6 +73,23 @@ def _ion_anchor(ion, isotopologue_of=None):
 )
 def test_is_monoisotopic(ion, isotopologue_of, expected):
     assert is_monoisotopic(_ion_anchor(ion, isotopologue_of)) is expected
+
+
+@pytest.mark.parametrize(
+    ("ion", "isotopologue_of", "expected"),
+    [
+        ("C10H15O4-", None, False),
+        ("[13C]C9H15O4-", None, True),
+        ("C10H15O4-", "bp-owner", True),
+        (None, "bp-owner", True),
+        # An unassigned anchor is not known to be an isotope line: the series
+        # walk, the co-variation reading and the known species keep it.
+        (None, None, False),
+        ("", None, False),
+    ],
+)
+def test_is_isotope_line(ion, isotopologue_of, expected):
+    assert is_isotope_line(_ion_anchor(ion, isotopologue_of)) is expected
 
 
 # --- anchor snapping ---------------------------------------------------------

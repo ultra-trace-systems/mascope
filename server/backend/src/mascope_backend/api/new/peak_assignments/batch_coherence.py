@@ -78,6 +78,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     FLAT_SERIES_KEY,
     ROLE_REAGENT,
     instrument_type_of,
+    is_isotope_line,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     _acquire_batch_fold_lock,
@@ -129,12 +130,6 @@ from mascope_tools.composition.coherence import (
 #: instrument type their unit names. Two partitions' traces are never read
 #: against each other.
 Partition = tuple[Optional[str], Optional[str]]
-
-
-def _monoisotopic(ion_formula: Optional[str]) -> bool:
-    """Whether an anchor's ion is its monoisotopic line: an isotope line's ion
-    names its isotope in brackets (``[13C]C9H15+``)."""
-    return not ion_formula or "[" not in ion_formula
 
 
 def partition_of(anchor: Any) -> Partition:
@@ -208,7 +203,7 @@ def partition_anchors(
     partitions: dict[Partition, PartitionAnchors] = defaultdict(PartitionAnchors)
     for anchor in sorted(anchors, key=lambda a: a.batch_peak_id):
         # An isotope line repeats its parent's trace, the reagent's included.
-        if anchor.isotopologue_of or not _monoisotopic(anchor.consensus_ion_formula):
+        if is_isotope_line(anchor):
             continue
         part = partitions[partition_of(anchor)]
         if anchor.consensus_role == ROLE_REAGENT:

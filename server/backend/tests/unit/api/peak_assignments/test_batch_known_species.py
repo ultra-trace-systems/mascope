@@ -791,6 +791,55 @@ class TestTheCore:
         # The primary ion is its own core: nothing to read it against.
         assert by_id["M"].co_variation is None
 
+    def test_unassigned_traces_carry_the_common_mode(self):
+        """The batch's drift is read off the unassigned peaks too: with it
+        removed, a trimer and a primary ion that only share the drift do not
+        co-vary. Left out, the two have no common mode at all to read past."""
+        rng = np.random.default_rng(11)
+        samples = [f"s{i}" for i in range(12)]
+        drive = rng.normal(0.0, 0.5, len(samples))
+        anchors, members = [], {}
+
+        def add(key, mz, values, factory, **extra):
+            anchors.append(anchor(key, mz, **extra))
+            members[key] = {
+                s: factory(s, mz=mz, intensity=float(10**v))
+                for s, v in zip(samples, values)
+            }
+
+        for k in range(6):
+            add(
+                f"U{k}",
+                220.0 + k,
+                5 + drive + rng.normal(0.0, 0.01, len(samples)),
+                member,
+            )
+        add(
+            "M",
+            61.04,
+            7 + drive + rng.normal(0.0, 0.2, len(samples)),
+            lambda s, **kw: claimed(s, ion="CH5N2O+", **kw),
+            ion="CH5N2O+",
+            role="reagent",
+            max_intensity=1e9,
+        )
+        add(
+            "T",
+            TRIMER_MZ,
+            4 + drive + rng.normal(0.0, 0.2, len(samples)),
+            lambda s, **kw: claimed(s, **kw),
+            ion=TRIMER,
+            role="reagent",
+            max_intensity=1e5,
+        )
+        plan = plan_batch(anchors, members, {})
+        trimer = next(d for d in plan.decisions if d.row.batch_peak_id == "T")
+
+        assert trimer.co_variation["core_batch_peak_id"] == "M"
+        assert trimer.co_variation["verdict"] == "not_co_varying"
+        assert trimer.co_variation["n_spectra"] == 12
+        assert abs(trimer.co_variation["r"]) < 0.6
+
     def test_a_ladder_rung_is_read_against_the_ion_it_grew_from(self):
         anchors, members, _ = _co_varying_batch()
         anchors.append(
