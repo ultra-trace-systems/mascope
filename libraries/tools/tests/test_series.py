@@ -346,15 +346,23 @@ class TestTheWalk:
             ).items()
         } == {"down": "C6H12O"}
 
-    def test_a_simple_mechanism_steps_as_it_did(self):
-        # [M-H]- is one molecule, one charge, no loss: the finder does not ask
-        # whether a neutral holds the H it takes off, and neither does the
-        # walk, so a simple mechanism proposes what it proposed before.
+    def test_a_step_that_takes_away_what_a_simple_mechanism_removes_proposes_nothing(
+        self,
+    ):
+        # [M-H]- is one molecule, one charge, no loss, and still takes a
+        # hydrogen off: C2O3 has none, so the finder reads no such neutral
+        # through it and the walk from C2H2O4 one water down proposes none.
         source = SeriesSource("a", "C2H2O4", "[M-H]-")
-        proposals = walk_series(
-            [source], [target("b", "C2O3")], WATER, tolerance_ppm=3.0
+        assert (
+            walk_series([source], [target("b", "C2O3")], WATER, tolerance_ppm=3.0) == {}
         )
-        assert proposals["b"].formula == "C2O3"
+
+    def test_a_simple_mechanism_steps_to_a_neutral_that_keeps_what_it_removes(self):
+        source = SeriesSource("a", "C3H4O5", "[M-H]-")
+        proposals = walk_series(
+            [source], [target("b", "C3H2O4")], WATER, tolerance_ppm=3.0
+        )
+        assert proposals["b"].formula == "C3H2O4"
 
     def test_a_mechanism_it_cannot_mass_steps_nowhere(self):
         source = SeriesSource("a", "C8H10O5", "not a mechanism")

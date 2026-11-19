@@ -258,11 +258,9 @@ def _makes_its_ion(counts: Mapping[str, int], mechanism: IonizationMechanism) ->
     down is C6H12, which ``[M+H-H2O]+`` cannot ionize, and its ion would be
     spelled as C6H12O's at another m/z. The finder reads no such neutral
     through such a mechanism, so the walk proposes none. A simple mechanism
-    (one molecule, one charge, no loss) is not checked, as the finder does
-    not check it: ``[M-H]-`` reads what it read before.
+    that removes a species is held to the same: C2O3 has no hydrogen for
+    ``[M-H]-`` to take, so a walk from C2H2O4 one water down proposes nothing.
     """
-    if mechanism.simple:
-        return True
     return all(count >= 0 for count in ion_counts(counts, mechanism).values())
 
 

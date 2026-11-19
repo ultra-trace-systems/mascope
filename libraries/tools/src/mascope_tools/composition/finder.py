@@ -618,8 +618,7 @@ def _monoisotopic_readings(
             row,
         )
         for row in rows
-        if ionization_mechanism.simple
-        or _makes_its_ion(grid.pyteomics_composition(row), ionization_mechanism)
+        if _makes_its_ion(grid.pyteomics_composition(row), ionization_mechanism)
     ]
     errors.sort()
     results = []
@@ -653,7 +652,9 @@ def _monoisotopic_readings(
 
 def _makes_its_ion(counts: dict[str, int], mechanism: IonizationMechanism) -> bool:
     """Whether a neutral holds every atom a mechanism's ion takes off it: the
-    species a mechanism removes and the neutral it loses. The empty neutral
+    species a mechanism removes and the neutral it loses. A simple mechanism
+    is asked too: C6O6 has no hydrogen for ``[M-H]-`` to take, and its "ion"
+    would be spelled C6O6-, one hydrogen off its own m/z. The empty neutral
     makes no multimer and loses nothing, so it never does."""
     if not counts:
         return False

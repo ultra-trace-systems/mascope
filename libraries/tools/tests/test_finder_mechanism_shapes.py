@@ -99,6 +99,38 @@ def test_a_neutral_that_cannot_lose_the_neutral_is_not_read():
     assert all("O" in r["formula"] for r in found)
 
 
+@pytest.mark.parametrize(
+    ("notation", "neutral", "box"),
+    [
+        ("[M-H]-", "C6O6", "C0-10 H0-20 O0-10"),
+        ("[M-Cl]-", "C4H6O4", "C0-10 H0-20 O0-10 Cl0-2"),
+    ],
+    ids=["deprotonation, no hydrogen", "chloride loss, no chlorine"],
+)
+def test_a_neutral_that_lacks_what_a_simple_mechanism_removes_is_not_read(
+    notation, neutral, box
+):
+    # One molecule, one charge, no loss, and still an atom taken off: C6O6
+    # has no hydrogen for [M-H]- to take, and its "ion" would be spelled
+    # C6O6-, one hydrogen off its own m/z. The targeted path refuses it too.
+    mechanism = parse_ionization(notation)
+    target = mechanism.ion_mz(calculate_mass(formula=neutral))
+    found = find_compositions(
+        target, _config(notation, element_count_ranges=box, mass_range_ppm=5.0)
+    )
+    assert neutral not in {r["formula"] for r in found}
+    removed = "Cl" if "Cl" in notation else "H"
+    assert all(removed in r["formula"] for r in found)
+
+
+def test_a_simple_mechanism_still_reads_a_neutral_that_holds_what_it_removes():
+    mechanism = parse_ionization("[M-H]-")
+    found = find_compositions(
+        mechanism.ion_mz(GLUCOSE_MASS), _config("[M-H]-", mass_range_ppm=5.0)
+    )
+    assert [r["ion"] for r in _glucose(found)] == ["C6H11O6-"]
+
+
 def test_the_reagent_ion_alone_is_read_only_through_one_molecule_that_loses_nothing():
     calcium = parse_ionization("[M+Ca]2+")
     (alone,) = find_compositions(calcium.ion_mz(0.0), _config("[M+Ca]2+"))
