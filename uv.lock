@@ -1669,7 +1669,7 @@ requires-dist = [
 
 [[package]]
 name = "mascope-cli"
-version = "2026.11.4"
+version = "2026.11.19"
 source = { editable = "tooling/cli" }
 dependencies = [
     { name = "mascope-runtime", extra = ["logs"] },
