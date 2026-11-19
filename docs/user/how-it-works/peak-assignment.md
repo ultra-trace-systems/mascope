@@ -65,7 +65,9 @@ Every peak is assigned in a two-stage engine:
   what the mechanism adds less what it loses. The ion's formula is the `n`
   molecules with the species added or removed and the neutral loss taken off
   after, as target ions are built, so a molecule with no water to lose is never
-  read through `[M+H-H2O]+` or `[M-H-H2O]-`. Its isotope lines are predicted at its own charge:
+  read through `[M+H-H2O]+` or `[M-H-H2O]-`, and one with no hydrogen (C6O6) never
+  through `[M-H]-`, nor one with no chlorine through `[M-Cl]-`. A series step
+  (*Detect series*) proposes no such molecule either. Its isotope lines are predicted at its own charge:
   those of a doubly charged ion sit half a mass unit apart, and the mass window is
   the same ppm of the ion's m/z. Where a dimer and one molecule make the same ion,
   as two C3H6O3 and C6H12O6 do with a proton, the run reads the one molecule and
