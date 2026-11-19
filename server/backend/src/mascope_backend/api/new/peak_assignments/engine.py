@@ -67,6 +67,7 @@ from mascope_tools.composition.heuristic_filter import (
     neutral_is_closed_shell,
     propose_same_ion_readings,
 )
+from mascope_tools.composition.line_model import within_intensity_window
 from mascope_tools.composition.mass_accuracy import (
     MASS_ACCURACY_MIN_ANCHORS,
     ReagentOffset,
@@ -870,6 +871,81 @@ def drop_ions_claimed_elsewhere(
     return match_isotope_df[keep]
 
 
+def line_heights_within(
+    match_isotope_df: pd.DataFrame,
+    envelope_tolerance: EnvelopeTolerance | None = None,
+) -> np.ndarray:
+    """Per row, whether the line's height passes the line model's height test.
+
+    The one matcher's height test (``line_model.within_intensity_window``), the
+    one the finder admits a search candidate's lines by, read off a match
+    frame: each line's ``match_abundance_error`` against its ion's main line,
+    at its expected signal-to-noise, the main line's times the line's
+    predicted share of it, at the run's fitted tolerance. A line the match
+    pass read scan by scan (``ratio_scan_count``, an Orbitrap line read over
+    the scans holding it and its main line) is read by its presence, so the
+    window does not open below the share for it. Stage A and the seeded
+    re-score gate their lines by it in place of the match parameters' fixed
+    ratio tolerance (``apply_match_params(..., heights_within=...)``), so a
+    line is the ion's on the same test wherever the run reads it (MAS-977).
+
+    Positional, as a frame that has been through a gate and a scorer can carry
+    a duplicated index. A row without an error is not within.
+
+    :param match_isotope_df: A match frame (``target_ion_id``,
+        ``relative_abundance``, ``match_abundance_error``, and
+        ``signal_to_noise`` and ``ratio_scan_count`` where it has them).
+    :param envelope_tolerance: The run's fitted tolerance, or None for today's.
+    :return: A boolean per row.
+    """
+    if match_isotope_df.empty:
+        return np.zeros(0, dtype=bool)
+    codes, _ = pd.factorize(match_isotope_df["target_ion_id"], use_na_sentinel=False)
+    abundance = pd.to_numeric(
+        match_isotope_df["relative_abundance"], errors="coerce"
+    ).to_numpy(float)
+    error = pd.to_numeric(
+        match_isotope_df["match_abundance_error"], errors="coerce"
+    ).to_numpy(float)
+    snr = (
+        pd.to_numeric(match_isotope_df["signal_to_noise"], errors="coerce").to_numpy(
+            float
+        )
+        if "signal_to_noise" in match_isotope_df
+        else np.full(len(match_isotope_df), np.nan)
+    )
+    # Each ion's main line: its most abundant, the first of them on a tie, the
+    # line the match pass read every other one against.
+    order = np.lexsort(
+        (np.arange(codes.size), -np.nan_to_num(abundance, nan=-np.inf), codes)
+    )
+    first = np.ones(codes.size, dtype=bool)
+    first[1:] = codes[order][1:] != codes[order][:-1]
+    main = np.empty(codes.max() + 1, dtype=int)
+    main[codes[order][first]] = order[first]
+    main_of = main[codes]
+    main_snr = snr[main_of]
+    # The finder's: no expected S/N where the main line carries none, so the
+    # window stays fixed (``heuristic_filter.score_ion_envelope``).
+    with np.errstate(divide="ignore", invalid="ignore"):
+        expected_snr = np.where(
+            np.isfinite(main_snr) & (main_snr > 0),
+            main_snr * abundance / abundance[main_of],
+            np.nan,
+        )
+    by_presence = (
+        pd.to_numeric(match_isotope_df["ratio_scan_count"], errors="coerce")
+        .notna()
+        .to_numpy()
+        if "ratio_scan_count" in match_isotope_df
+        else None
+    )
+    return np.asarray(
+        within_intensity_window(error, expected_snr, envelope_tolerance, by_presence),
+        dtype=bool,
+    )
+
+
 def score_ions_by_fit(
     match_isotope_df: pd.DataFrame,
     fallback_sigma_ppm: float | None = None,
@@ -896,10 +972,12 @@ def score_ions_by_fit(
     contested peak to the better-corroborated assignment, not the one with the
     best single-peak mass hit.
 
-    Call AFTER `apply_match_params`: it zeroes ``sample_peak_intensity`` for
-    isotopologues outside the m/z tolerance, and this treats any isotopologue the
-    gating rejected (``match_score == 0``) as absent, so the fit score honours the
-    same tolerance / intensity-floor gating as the targeted Match tab.
+    Call AFTER the gate (`seeded_scoring.gate_lines`: `apply_match_params` with
+    the line model's height test, :func:`line_heights_within`): it zeroes
+    ``sample_peak_intensity`` for isotopologues outside the m/z tolerance, and
+    this treats any isotopologue the gating rejected (``match_score == 0``) as
+    absent, so the fit score honours the gate's mass window, height test and
+    intensity floor.
 
     The returned frame carries that verdict: an isotopologue the gating rejected
     comes back with ``sample_peak_intensity`` zeroed, not just excluded from the

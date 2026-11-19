@@ -133,6 +133,8 @@ The checks do not all take the same thing from a line.
   A minor line's ratio is read against the most abundant line, so without that line's peak the ratio reads 0, which is off by 100 %.
 - **Under the minimum peak intensity**, the line's score is set to 0 and its intensity is kept.
 
+[Peak assignment](peak-assignment.md) checks the same pairing by the m/z tolerance and the minimum peak intensity, but holds a line's height to the cut the untargeted search reads a candidate's lines by, 40 % either side of its share, rather than to the isotope ratio tolerance.
+
 An ion's intensity is the sum of its lines' intensities, and it is what the batch overview chart plots for the ion in each file.
 So a line that misses the ratio by less than 100 % in one file still counts towards the ion's intensity in that file.
 

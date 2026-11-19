@@ -90,7 +90,7 @@ def _first_pass(purity_seen: list) -> AsyncMock:
         return service._StageAFirstPass(
             rows=[{"role": "M0"}],
             scored=pd.DataFrame({"frame": [1]}),
-            gated=pd.DataFrame({"frame": [1]}),
+            matched=pd.DataFrame({"frame": [1]}),
             mass_accuracy=SampleMassAccuracy(sigma_ppm=0.4),
             confidence_calibration=None,
             listed_formulas=frozenset(),
@@ -232,7 +232,7 @@ class TestStageAReadsItsNeighboursUnderItsOwnInputs:
         first = service._StageAFirstPass(
             rows=[],
             scored=pd.DataFrame(),
-            gated=pd.DataFrame(),
+            matched=pd.DataFrame(),
             mass_accuracy=SampleMassAccuracy(),
             confidence_calibration=None,
             listed_formulas=frozenset(),

@@ -67,7 +67,6 @@ from mascope_backend.api.new.ionization.modes.versions import (
 )
 from mascope_backend.api.new.match.params import default_match_params
 from mascope_backend.api.new.match.params.lib import (
-    apply_match_params,
     isotope_abundance_threshold_expr,
 )
 from mascope_backend.api.new.peak_assignments.admission import (
@@ -242,6 +241,7 @@ from mascope_backend.api.new.peak_assignments.reagent_pass import (
 from mascope_backend.api.new.peak_assignments.schemas import DEFAULT_PAGE_LIMIT
 from mascope_backend.api.new.peak_assignments.seeded_scoring import (
     RESOLVE_RESOLUTION,
+    gate_lines,
     resolution_type_of,
     score_seeds,
     scored_accuracy,
@@ -4845,8 +4845,8 @@ class _StageAFirstPass:
 
     :param rows: The assignment rows.
     :param scored: The gated, fit-scored frame, which the envelope fit reads.
-    :param gated: The frame through the match parameters, before the fit score,
-        which a second pass scores again.
+    :param matched: The frame as matched, before any gate, which a second pass
+        gates and scores again at the fitted tolerance (:func:`gate_lines`).
     :param mass_accuracy: What the frame says of the sample's mass error.
     :param confidence_calibration: The record of the confidence curve the rows'
         P(correct) came from; None where Stage A never ran or the instrument
@@ -4858,7 +4858,7 @@ class _StageAFirstPass:
 
     rows: list[dict]
     scored: pd.DataFrame
-    gated: pd.DataFrame
+    matched: pd.DataFrame
     mass_accuracy: SampleMassAccuracy
     confidence_calibration: dict | None
     listed_formulas: frozenset[str]
@@ -4893,7 +4893,7 @@ async def _stage_a_first_pass(
     :func:`_stage_a_assignments`'.
     """
     mass_accuracy = inherited_accuracy or SampleMassAccuracy(reagent=reagent_offset)
-    gated_df = match_isotope_df = pd.DataFrame()
+    matched_df = match_isotope_df = pd.DataFrame()
     known_isotopes_df = await _fetch_known_isotopes(
         sample,
         match_params.isotope_abundance_threshold,
@@ -4915,13 +4915,23 @@ async def _stage_a_first_pass(
             match_isotope_df = await asyncio.to_thread(
                 drop_ions_claimed_elsewhere, match_isotope_df, excluded_peak_ids
             )
-        # Gate raw matches by the sample's match parameters, exactly as the
-        # targeted Match pipeline does: this zeroes the score of peaks whose
-        # m/z error, isotope-ratio error, or intensity falls outside
-        # tolerance. Without it a peak tens of ppm off a target would be
-        # tiered "assigned" here while the Match tab reports no match.
+        # Gate raw matches by the sample's match parameters' mass window and
+        # intensity floor, as the targeted Match pipeline does: without it a
+        # peak tens of ppm off a target would be tiered "assigned" here while
+        # the Match tab reports no match. A line's height is held to the line
+        # model's test at the run's tolerance, the one the search's lines are
+        # admitted by, not to the parameters' fixed ratio tolerance
+        # (:func:`gate_lines`): a line that test turns away is absent to the
+        # fit and its peak goes to the search.
         if not match_isotope_df.empty:
-            gated_df = apply_match_params(match_isotope_df, match_params)
+            # A decoy reads its control's tolerance from the start; any other
+            # run first today's numbers, since the fit reads the commits this
+            # pass makes.
+            tolerance = (
+                None if inherited_envelope is None else inherited_envelope.tolerance
+            )
+            matched_df = match_isotope_df
+            gated_df = gate_lines(match_isotope_df, match_params, tolerance)
             # Deliberately score Stage A with the fit score (score_pattern_v2):
             # the peak-centric engine's scoring engine is the ion-level fit
             # quality, not the targeted matcher's per-isotopologue term. Runs
@@ -4935,12 +4945,7 @@ async def _stage_a_first_pass(
                 reagent_offset=reagent_offset,
                 min_anchor_ions=STAGE_A_FIT_MIN_IONS,
                 inherited_accuracy=inherited_accuracy,
-                # A decoy reads its control's tolerance from the start; any
-                # other run first today's numbers, since the fit reads the
-                # commits this pass makes.
-                envelope_tolerance=(
-                    None if inherited_envelope is None else inherited_envelope.tolerance
-                ),
+                envelope_tolerance=tolerance,
             )
             # Read off the frame the fit was computed on, so Stage B is judged
             # at the width Stage A was judged at rather than at one refitted
@@ -4983,7 +4988,7 @@ async def _stage_a_first_pass(
             # which held every other request of the server behind it.
             rows=await asyncio.to_thread(assignments_of, match_isotope_df),
             scored=match_isotope_df,
-            gated=gated_df,
+            matched=matched_df,
             mass_accuracy=mass_accuracy,
             confidence_calibration=confidence_calibration,
             listed_formulas=listed_formulas,
@@ -4992,7 +4997,7 @@ async def _stage_a_first_pass(
     return _StageAFirstPass(
         rows=[],
         scored=match_isotope_df,
-        gated=gated_df,
+        matched=matched_df,
         mass_accuracy=mass_accuracy,
         confidence_calibration=None,
         listed_formulas=listed_formulas,
@@ -5132,14 +5137,14 @@ async def _stage_a_assignments(
         read_neighbour=_neighbour_reader(config, match_params),
     )
     stage_a_assignments = first.rows
-    if envelope.fit.level != LEVEL_DEFAULT and not first.gated.empty:
-        # Scored again from the gated frame at the fitted tolerance, and the
-        # peaks arbitrated on that: the same width and offset, since those were
-        # read off the frame and the tolerance moves neither.
+    if envelope.fit.level != LEVEL_DEFAULT and not first.matched.empty:
+        # Gated and scored again at the fitted tolerance, and the peaks
+        # arbitrated on that: the same width and offset, since those were read
+        # off the frame and the tolerance moves neither.
         stage_a_assignments = await asyncio.to_thread(
             first.assignments_of,
             score_ions_by_fit(
-                first.gated,
+                gate_lines(first.matched, match_params, envelope.tolerance),
                 fallback_sigma_ppm=fallback_sigma_ppm,
                 reagent_offset=reagent_offset,
                 min_anchor_ions=STAGE_A_FIT_MIN_IONS,

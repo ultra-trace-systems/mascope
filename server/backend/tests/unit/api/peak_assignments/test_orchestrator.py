@@ -222,7 +222,7 @@ def _patches(
         # Gating and fit scoring are covered by their own tests; keep the frame
         # intact so arbitration sees exactly the rows the test declared.
         "apply_params": patch(
-            f"{_MOD}.apply_match_params", side_effect=lambda df, _params: df
+            f"{_MOD}.gate_lines", side_effect=lambda df, *_args, **_kwargs: df
         ),
         "fit": patch(f"{_MOD}.score_ions_by_fit", side_effect=lambda df, **_kwargs: df),
         "calibration": patch(
