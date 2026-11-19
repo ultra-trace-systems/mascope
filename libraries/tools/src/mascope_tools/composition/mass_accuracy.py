@@ -26,6 +26,7 @@ the constant centre.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
@@ -60,9 +61,10 @@ MIN_FITTED_SIGMA_PPM = 0.05
 #: Correct matches spread wider than the calibration anchors do - centroiding,
 #: prediction error and the analyte's own tail - so the fitted instrument width
 #: is widened by this in quadrature before a candidate is scored against it.
-#: Added by :func:`scoring_sigma_ppm`, which is how every caller should reach
-#: it: the fitted width and the width a score is judged at are different
-#: numbers, and only the second one includes this.
+#: Added by :func:`widen_sigma_ppm` (through :func:`scoring_sigma_ppm` where a
+#: fallback applies) and taken off by :func:`unwiden_sigma_ppm`, which is how
+#: every caller should reach it: the fitted width and the width a score is
+#: judged at are different numbers, and only the second one includes this.
 PRED_SIGMA_PPM = 0.5
 
 
@@ -144,6 +146,28 @@ def fit_sample_mass_accuracy(
     return fit_mass_accuracy(mass_accuracy_anchors(match_isotope_df))
 
 
+def widen_sigma_ppm(sigma_ppm: float) -> float:
+    """A fitted width widened to the width a score judges against: the fit
+    and :data:`PRED_SIGMA_PPM` added in quadrature.
+
+    :param sigma_ppm: The fitted (or fallback) width, in ppm.
+    :return: The scoring width, in ppm.
+    """
+    return float(np.hypot(float(sigma_ppm), PRED_SIGMA_PPM))
+
+
+def unwiden_sigma_ppm(scoring_sigma_ppm: float) -> float:
+    """The inverse of :func:`widen_sigma_ppm`: the width a sample's lines were
+    fitted at, from the width it scored at. A run records the width it scored
+    at, and the stages that score at the fit itself need the fit back. A
+    recorded width under :data:`PRED_SIGMA_PPM` reads as a fit of zero.
+
+    :param scoring_sigma_ppm: The recorded scoring width, in ppm.
+    :return: The fitted width it was widened from, in ppm.
+    """
+    return math.sqrt(max(float(scoring_sigma_ppm) ** 2 - PRED_SIGMA_PPM**2, 0.0))
+
+
 def scoring_sigma_ppm(
     fitted_sigma_ppm: float | None,
     fallback_sigma_ppm: float,
@@ -162,7 +186,7 @@ def scoring_sigma_ppm(
     :return: The Gaussian width of the score's mass term, in ppm.
     """
     sigma = fallback_sigma_ppm if fitted_sigma_ppm is None else fitted_sigma_ppm
-    return float(np.hypot(float(sigma), PRED_SIGMA_PPM))
+    return widen_sigma_ppm(sigma)
 
 
 #: Where the offset a sample is scored at came from, as its run records it:

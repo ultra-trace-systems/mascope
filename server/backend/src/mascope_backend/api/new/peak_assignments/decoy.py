@@ -43,7 +43,6 @@ and runs the arm (``service.decoy_plan``).
 
 from __future__ import annotations
 
-import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -68,10 +67,10 @@ from mascope_backend.api.new.peak_assignments.profiles import RESOLVED_PROFILE_K
 from mascope_tools.composition.mass_accuracy import (
     MU_SOURCE_FITTED,
     MU_SOURCE_REAGENT,
-    PRED_SIGMA_PPM,
     MassTrend,
     ReagentOffset,
     SampleMassAccuracy,
+    unwiden_sigma_ppm,
 )
 from mascope_tools.composition.mechanism_notation import mechanism_key
 from mascope_tools.composition.profiles import get_reagent_profile
@@ -205,21 +204,6 @@ def decoy_window_ppm(control_config: dict) -> float | None:
     return max(known) if known else None
 
 
-def fitted_sigma_ppm(scoring_sigma_ppm: float) -> float:
-    """The width a sample's lines were fitted at, from the width it scored at.
-
-    The inverse of ``mass_accuracy.scoring_sigma_ppm``, which widens a fitted
-    width by :data:`~mascope_tools.composition.mass_accuracy.PRED_SIGMA_PPM` in
-    quadrature: a run records the width it scored at, and the stages that
-    score at the fit itself (Stage A's ions, the seeded re-score) need the
-    fit back.
-
-    :param scoring_sigma_ppm: The recorded scoring width.
-    :return: The fitted width it was widened from.
-    """
-    return math.sqrt(max(float(scoring_sigma_ppm) ** 2 - PRED_SIGMA_PPM**2, 0.0))
-
-
 def inherited_accuracy(scoring: dict) -> SampleMassAccuracy:
     """Stage A's measurement as a control's ``pattern_scoring`` recorded it.
 
@@ -252,7 +236,7 @@ def inherited_accuracy(scoring: dict) -> SampleMassAccuracy:
     return SampleMassAccuracy(
         mu_ppm=float(mu_ppm) if mu_source == MU_SOURCE_FITTED else None,
         sigma_ppm=(
-            fitted_sigma_ppm(sigma)
+            unwiden_sigma_ppm(sigma)
             if scoring.get("sigma_source") == "fitted" and sigma is not None
             else None
         ),

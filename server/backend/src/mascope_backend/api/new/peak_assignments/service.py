@@ -127,7 +127,6 @@ from mascope_backend.api.new.peak_assignments.decoy import (
     DecoyPlan,
     DecoyRefused,
     declared_channels,
-    fitted_sigma_ppm,
     plan_decoy,
     swap_channels,
     wrong_adducts,
@@ -333,6 +332,7 @@ from mascope_tools.composition.mass_accuracy import (
     ReagentOffset,
     SampleMassAccuracy,
     reagent_line_offset,
+    unwiden_sigma_ppm,
 )
 from mascope_tools.composition.mechanism_notation import (
     MechanismNotationError,
@@ -4502,7 +4502,7 @@ async def sample_recorded_width(sample_item_id: str) -> float | None:
     sigma = snapshot.get("sigma_ppm")
     if snapshot.get("sigma_source") != "fitted" or sigma is None:
         return None
-    return fitted_sigma_ppm(sigma)
+    return unwiden_sigma_ppm(sigma)
 
 
 async def sample_reagent_offset(

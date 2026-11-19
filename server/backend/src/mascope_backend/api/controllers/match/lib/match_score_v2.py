@@ -41,7 +41,7 @@ from mascope_tools.composition.heuristic_filter import (
     score_pattern_v2,
     score_patterns_v2,
 )
-from mascope_tools.composition.mass_accuracy import PRED_SIGMA_PPM
+from mascope_tools.composition.mass_accuracy import widen_sigma_ppm
 
 
 def match_score_version() -> int:
@@ -152,7 +152,7 @@ def ion_score_v2(
         else None
     )
     n_scans, n_scans_total = _scan_counts(g)
-    sig = float(np.hypot(sigma_ppm, PRED_SIGMA_PPM)) if sigma_ppm is not None else None
+    sig = widen_sigma_ppm(sigma_ppm) if sigma_ppm is not None else None
     raw = score_pattern_v2(
         me,
         oi,
@@ -257,7 +257,7 @@ def ion_scores_v2(
     n_scans, n_scans_total = _scan_counts(frame)
     if n_scans is not None:
         n_scans, n_scans_total = n_scans[order], n_scans_total[order]
-    sig = float(np.hypot(sigma_ppm, PRED_SIGMA_PPM)) if sigma_ppm is not None else None
+    sig = widen_sigma_ppm(sigma_ppm) if sigma_ppm is not None else None
     scores = score_patterns_v2(
         me,
         oi,

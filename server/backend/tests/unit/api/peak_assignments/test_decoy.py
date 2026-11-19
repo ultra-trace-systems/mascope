@@ -42,7 +42,6 @@ from mascope_backend.api.new.peak_assignments.decoy import (
     DecoyPlan,
     DecoyRefused,
     declared_channels,
-    fitted_sigma_ppm,
     inherited_accuracy,
     inherited_calibration,
     plan_decoy,
@@ -238,9 +237,6 @@ class TestTheControlsMeasurementIsInherited:
         else:
             assert inherited.sigma_ppm == pytest.approx(accuracy.sigma_ppm, abs=1e-3)
         assert inherited.anchors == accuracy.anchors
-
-    def test_the_fit_is_read_back_from_the_width_it_was_widened_to(self):
-        assert fitted_sigma_ppm(scoring_sigma_ppm(0.17, 0.3)) == pytest.approx(0.17)
 
     def test_stage_a_scores_a_shifted_frame_at_the_inherited_centre(self):
         # Ten library ions 9 ppm out, as Stage A meets them on a shifted axis.
