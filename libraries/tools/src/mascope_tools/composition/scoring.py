@@ -39,10 +39,8 @@ from mascope_tools.composition.heuristic_filter import (
     peak_scan_counts,
     score_ion_envelopes,
 )
-from mascope_tools.composition.mass_accuracy import (
-    SampleMassAccuracy,
-    scoring_sigma_ppm,
-)
+from mascope_tools.composition.mass_accuracy import SampleMassAccuracy
+from mascope_tools.composition.measurement_model import MeasurementModel
 from mascope_tools.composition.models import PatternScoring
 from mascope_tools.composition.profiles import resolve_fallback_sigma_ppm
 
@@ -94,15 +92,44 @@ def pattern_scoring_for_sample(
         None for today's numbers.
     :return: The scoring parameters for the sample's search.
     """
-    return PatternScoring(
-        sigma_ppm=scoring_sigma_ppm(
-            mass_accuracy.sigma_ppm, resolve_fallback_sigma_ppm(instrument_type)
+    return pattern_scoring_for_model(
+        MeasurementModel.v1(
+            mass_accuracy,
+            resolve_fallback_sigma_ppm(instrument_type),
+            envelope_tolerance,
         ),
-        mu_ppm=float(mass_accuracy.scoring_mu_ppm or 0.0),
+        match_params,
+        resolution,
+    )
+
+
+def pattern_scoring_for_model(
+    model: MeasurementModel,
+    match_params: MatchParams,
+    resolution: Callable[[float], float] | None = None,
+) -> PatternScoring:
+    """How a sample's isotope envelopes are scored at its measurement model.
+
+    The model's width (:attr:`MeasurementModel.width_ppm`), its centre, read at
+    each line's m/z where it follows a trend, and its line-share tolerance;
+    the window and the floor of the sample's match parameters. Every scorer of
+    a run reads its model through this, so the search ranks a candidate where
+    the run's rows are scored and capped.
+
+    :param model: The run's measurement model
+        (:class:`~mascope_tools.composition.measurement_model.MeasurementModel`).
+    :param match_params: The sample's resolved match parameters.
+    :param resolution: The file's resolving power as a function of m/z.
+    :return: The scoring parameters.
+    """
+    return PatternScoring(
+        sigma_ppm=model.width_ppm,
+        mu_ppm=model.scoring_mu_ppm,
         mz_tolerance_ppm=float(match_params.mz_tolerance),
         abundance_floor=float(match_params.isotope_abundance_threshold),
         resolution=resolution,
-        envelope_tolerance=envelope_tolerance,
+        envelope_tolerance=model.envelope_tolerance,
+        centre=model.centres_ppm if model.trend is not None else None,
     )
 
 

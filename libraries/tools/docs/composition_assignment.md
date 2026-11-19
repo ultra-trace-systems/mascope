@@ -92,10 +92,26 @@ fitted or the instrument class's, the offset Stage A fitted or, where it fitted 
 reagent lines' when they put the axis beyond that width (`SampleMassAccuracy.scoring_mu_ppm`,
 with `SampleMassAccuracy` and `ReagentOffset` in `composition.mass_accuracy`), the window
 and the floor of the sample's match parameters (any object with `mz_tolerance` and
-`isotope_abundance_threshold`), and the file's resolving power. Mascope's engine calls it
-for every sample it searches, so an outside engine that reads the sample's numbers through
-the SDK and calls it gets the object the engine scored at, rather than a re-derivation that
-puts the rules in another order.
+`isotope_abundance_threshold`), and the file's resolving power. It builds the sample's
+v1 measurement model and hands it to `composition.scoring.pattern_scoring_for_model`.
+
+A run reads one measurement model, `composition.measurement_model.MeasurementModel`: the
+centre as a function of m/z (a constant, or a `MassTrend` where the run's commits demand
+one), the width a mass error is judged in (`width_ppm`, the fitted width or the class's
+widened by `PRED_SIGMA_PPM`, never narrower than its floor), the line-share tolerance, and
+the anchors of each kind it was fitted on. It is fitted at two named points: v1
+(`MeasurementModel.v1`) on Stage A's measurement, and v2 (`MeasurementModel.v2`) on the
+run's corroborated commits, floored at v1's width. `refit_adopts` is the rule a run takes
+v2 by: where v2 is measured and moves the centre or the width beyond
+`REFIT_BOUND_WIDTHS` of v1's width over the committed m/z range, or v1 measured nothing of
+its own. The run scores and caps at the version it takes. `z_of` reads a row's distance at
+the same centre and width the fit score is read at, and `pattern_scoring_for_model` fills
+a `PatternScoring` in from a model, its `centre` function where the centre follows m/z.
+Mascope's engine scores every sample through it, and records the model once on the run
+(`MeasurementModel.record`), so an outside engine that reads a run through the SDK
+rebuilds it with `MeasurementModel.from_run_config` and scores where the run did, rather
+than re-deriving the rules in another order. A run from before the one record is read at
+its `pattern_scoring` snapshot, the v1 it scored at.
 
 `composition.scoring.score_candidates(candidates, peaks, scoring)` is the finder's ranking
 measurement for any number of candidates at once: a frame with each candidate's `ion`
