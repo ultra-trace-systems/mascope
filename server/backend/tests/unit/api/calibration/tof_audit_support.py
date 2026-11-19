@@ -225,7 +225,7 @@ def snapshot(root) -> dict:
 SPECIMEN_DIR = (
     Path(__file__).resolve().parents[6] / "libraries" / "tofwerk" / "tests" / "data"
 )
-SPECIMENS = ("bromide", "nitrate")
+SPECIMENS = ("bromide", "nitrate", "propylamine")
 
 
 def specimen(kind: str) -> dict:

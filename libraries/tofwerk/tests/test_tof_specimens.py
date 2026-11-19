@@ -23,7 +23,7 @@ from mascope_tofwerk.calibration import mz_calibrate, tof_to_mass
 
 
 DATA = Path(__file__).parent / "data"
-SPECIMENS = ("bromide", "nitrate")
+SPECIMENS = ("bromide", "nitrate", "propylamine")
 
 #: How far a refit may move a line, in ppm.
 SAME_AXIS_PPM = 0.01

@@ -389,3 +389,60 @@ def _points_of(found: dict) -> list[float]:
         for line in found["calibrants"]
         if line["relative_abundance"] >= 0.15
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_positive_fit_takes_no_negative_peak(filestore):
+    """The propylamine specimen, a positive-mode file, with a negative peak
+    beside each of its peaks, ten times brighter and 10 ppm off, and one on
+    the line of the propylamine trimer at 178.2 Th, which has no positive
+    peak within the tolerance. The node reads only peaks of the fit's
+    polarity: it fits the specimen as it did at ingest, and the trimer takes
+    no peak. Read without the polarity, each negative peak would drop the
+    line beside it as an overlapping neighbour, and the trimer would take
+    the one on its line."""
+    found = copy.deepcopy(support.specimen("propylamine"))
+    trimer = 178.227774
+    negatives = []
+    for peak in found["peaks"]:
+        twin = copy.deepcopy(peak)
+        twin["polarity"] = "-"
+        for key in ("area", "sum_area", "sum_height"):
+            twin[key] *= 10.0
+        p1, p2 = found["axis"]["par"]
+        twin["tof"] = p1 * np.sqrt(peak["mz"] * (1 + 10e-6)) + p2
+        twin["mz"] = float(tof_to_mass(np.array([twin["tof"]]), 0, [p1, p2])[0])
+        negatives.append(twin)
+    on_trimer = copy.deepcopy(max(found["peaks"], key=lambda peak: peak["snr"]))
+    on_trimer.update(_placed(found, trimer, 0.0), polarity="-")
+    negatives.append(on_trimer)
+    found["peaks"] = sorted([*found["peaks"], *negatives], key=lambda p: p["mz"])
+    filename = support.write_specimen(filestore, found)
+
+    node = await _node_fit(filename, found)
+    refit = await audit.refit(
+        audit.read_stored_peaks(filename),
+        support.specimen_params(found),
+        support.specimen_isotopes(found),
+        support.specimen_resolution(found),
+        model=None,
+    )
+
+    points = _points(node)
+    assert 178.23 not in points
+    assert [round(p["target_mz"], 6) for p in node.fitted_on["points"]] == [
+        round(p["target_mz"], 6) for p in found["fit"]["points"]
+    ]
+    assert _kept(node) == sorted(
+        round(p["target_mz"], 6) for p in found["fit"]["points"] if p["retained"]
+    )
+    assert (
+        audit.axis_difference_ppm(node.fit_result, found["fit"], _tof_span(found))
+        < SAME_AXIS_PPM
+    )
+    assert refit.fit is not None, refit.warning
+    assert (
+        audit.axis_difference_ppm(refit.fit, node.fit_result, _tof_span(found))
+        < SAME_AXIS_PPM
+    )
+    assert not any(label.startswith("C9H28N3+") for label in refit.retained)

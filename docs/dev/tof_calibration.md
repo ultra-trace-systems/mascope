@@ -812,13 +812,14 @@ Code, shipped in releases.
   derived fixtures committed to the repository (`libraries/tofwerk/tests/data/`, whose README says
   what they hold). Each holds every peak within 200 ppm of a calibrant line, matched or not, the
   file's axis, the calibrants, and the fit the node made at ingest. The full specimens, every peak
-  of each file, are kept in the fleet regression corpus (`runs/2026-11-17_mas191-tof-specimens/`).
+  of each file, are kept in the fleet regression corpus (`runs/2026-11-17_mas191-tof-specimens/`,
+  `runs/2026-11-19_mas936-tof-specimen/`).
   The tests: a refit of the kept lines with `mz_calibrate` gives the node's parameters and every
   residual; the node's `TofCalibrationHandler` fits each specimen as it did at ingest, to 0.01 ppm;
   and the calibration audit's refit equals the node's to 0.01 ppm. Real calibrants sit well inside
   every threshold, so the loss, the residual tolerance, the refine window and the S/N floor are each
-  pinned on a specimen with one thing changed. Nitrate (−) and bromide (−) are in; propylamine (+)
-  waits for a positive-mode TOF file in the corpus (MAS-936).
+  pinned on a specimen with one thing changed. Nitrate (−), bromide (−) and propylamine (+) are in
+  (MAS-936).
 
 ### 4 · Re-calibrate existing data
 
