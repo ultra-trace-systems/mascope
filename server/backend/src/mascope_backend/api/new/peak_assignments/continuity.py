@@ -131,6 +131,7 @@ from mascope_backend.db import (
     async_session,
 )
 from mascope_tools.composition.coherence import VERDICT_CO_VARYING
+from mascope_tools.composition.robust import robust_spread
 
 
 #: The version of the detail's shape.
@@ -138,9 +139,6 @@ DETAIL_VERSION = 1
 
 #: The tiers a pair's two peaks must both hold.
 PAIRED_TIERS = (TIER_ASSIGNED, TIER_CANDIDATE)
-
-#: 1.4826 x MAD estimates a normal standard deviation.
-MAD_TO_SIGMA = 1.4826
 
 #: The batch types and the sample type the gates read.
 BATCH_ACQUISITION = "ACQUISITION"
@@ -534,8 +532,7 @@ def read_ratio(
     if n < MIN_PAIRED_SAMPLES or n_times < MIN_DISTINCT_TIMES:
         return RatioReading(GRADE_INSUFFICIENT, REASON_FEW_SAMPLES, n, n_times)
     median = float(np.median(values))
-    mad = float(np.median(np.abs(values - median)))
-    sigma = MAD_TO_SIGMA * mad
+    sigma = robust_spread(values, median)
     span = float(seconds.max() - seconds.min())
     tested = n >= MIN_DRIFT_SAMPLES
     rho = drift_log = None
@@ -565,7 +562,7 @@ def read_ratio(
         return RatioReading(GRADE_RED, REASON_SPREAD, **facts)
     if not tested:
         return RatioReading(GRADE_INCONCLUSIVE, REASON_UNTESTED_DRIFT, **facts)
-    if mad == 0:
+    if sigma == 0:
         return RatioReading(GRADE_INCONCLUSIVE, REASON_TIED, **facts)
     if sigma <= SPREAD_STABLE[kind]:
         return RatioReading(GRADE_STABLE, REASON_TIGHT, **facts)

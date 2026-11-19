@@ -54,6 +54,8 @@ from typing import Any, Callable, Iterable, Mapping
 
 import numpy as np
 
+from mascope_tools.composition.robust import robust_spread
+
 
 @dataclass(frozen=True)
 class AdductCorroboration:
@@ -202,9 +204,10 @@ def ratio_reference(
     if len(values) < max(min_count, 1):
         return None
     centre = float(np.median(values))
-    mad = float(np.median(np.abs(values - centre)))
     return RatioReference(
-        centre=centre, spread=max(1.4826 * mad, spread_floor), n=len(values)
+        centre=centre,
+        spread=max(robust_spread(values, centre), spread_floor),
+        n=len(values),
     )
 
 
