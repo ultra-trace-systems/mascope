@@ -790,6 +790,39 @@ class TestTheSourcesBrightLines:
     def test_a_line_of_no_recorded_intensity_is_not(self):
         assert not CAP.over({**_line("unread"), "sample_peak_intensity": None})
 
+    def test_a_stitched_samples_line_is_a_share_of_its_own_stream(self):
+        """Each line against the ion current of the stream it was averaged
+        over. Against the polarity's, pooled over every stream's scans, the
+        reagent line read as several times its share and the narrow
+        window's line as a fraction of its own."""
+        cap = SourceLineCap(
+            tic=1000.0,
+            tic_share_max=0.25,
+            tic_by_peak={"peak-reagent": 4000.0, "peak-sim": 100.0},
+        )
+
+        # 800 is 80 % of the pooled 1000, 20 % of its own stream's 4000
+        assert not cap.over(_line("reagent", intensity=800.0))
+        # 50 is 5 % of the pooled 1000, 50 % of its own stream's 100
+        assert cap.over(_line("sim", intensity=50.0))
+
+    def test_a_line_of_no_stream_is_held_to_the_polarity(self):
+        cap = SourceLineCap(tic=1000.0, tic_share_max=0.25, tic_by_peak={})
+
+        assert cap.over(_line("unmapped", intensity=800.0))
+        assert not cap.over(_line("weak", intensity=250.0))
+
+    def test_a_stream_with_no_ion_current_leaves_the_absolute_cap(self):
+        cap = SourceLineCap(
+            tic=1000.0,
+            tic_share_max=0.25,
+            peak_intensity_max=100.0,
+            tic_by_peak={"peak-a": float("nan"), "peak-b": 0.0},
+        )
+
+        assert not cap.over(_line("a", intensity=50.0))
+        assert cap.over(_line("b", intensity=500.0))
+
     def test_with_no_ion_current_the_absolute_cap_still_applies(self):
         cap = SourceLineCap(tic=0.0, tic_share_max=0.25, peak_intensity_max=100.0)
 

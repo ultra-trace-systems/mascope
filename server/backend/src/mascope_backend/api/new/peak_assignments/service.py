@@ -295,7 +295,12 @@ from mascope_match import compute_match_isotopes, shift_mz, shifted_mz_axis, uns
 from mascope_match.compute.axis import current_mz_shift
 from mascope_reference import iter_known_compositions, known_state_fingerprint
 from mascope_reference.scope import SAMPLE_POLARITIES
-from mascope_signal.compute import get_tic_per_scan
+from mascope_signal.compute import (
+    PartialPeakStoreError,
+    StalePeakStoreError,
+    get_stream_tic_by_peak,
+    get_tic_per_scan,
+)
 from mascope_tools.composition.arbitration import CANDIDATE_DENSITY
 from mascope_tools.composition.calibration import (
     CalibrationRefused,
@@ -3694,10 +3699,12 @@ async def _source_line_cap(sample) -> SourceLineCap | None:
     The m/z calibration node's default for the file's instrument class
     (``OrbiCalibrationParams``, ``TofCalibrationParams``), held against the
     mean ion current per scan of the sample's polarity, which a line's
-    averaged height (:func:`load_sample_peaks`) is a share of. None where the
-    class has no cap, the TOF's, and where the ion current cannot be read:
-    the source's lines then anchor the gate as they did before there was a
-    cap, which is said.
+    averaged height (:func:`load_sample_peaks`) is a share of. Where the
+    file's store stitches the polarity, each line is held against its own
+    stream's instead (:func:`_source_ion_current`). None where the class has
+    no cap, the TOF's, and where the ion current cannot be read: the
+    source's lines then anchor the gate as they did before there was a cap,
+    which is said.
 
     :param sample: The sample view row.
     :return: The cap, or None for none.
@@ -3712,10 +3719,9 @@ async def _source_line_cap(sample) -> SourceLineCap | None:
     if params.calibrant_tic_share_max is None and params.peak_intensity_max is None:
         return None
     try:
-        _, tic_per_scan = await asyncio.to_thread(
-            get_tic_per_scan, sample.filename, polarity=sample.polarity
+        tic, tic_by_peak = await asyncio.to_thread(
+            _source_ion_current, sample.filename, sample.polarity
         )
-        tic = float(np.mean(tic_per_scan))
     except Exception as exc:  # noqa: BLE001 - the lines anchor uncapped
         runtime.logger.info(
             f"No ion current for sample '{sample.sample_item_name}' ({exc}); "
@@ -3726,7 +3732,33 @@ async def _source_line_cap(sample) -> SourceLineCap | None:
         tic=tic,
         tic_share_max=params.calibrant_tic_share_max,
         peak_intensity_max=params.peak_intensity_max,
+        tic_by_peak=tic_by_peak,
     )
+
+
+def _source_ion_current(
+    filename: str, polarity: str
+) -> tuple[float, dict[str, float] | None]:
+    """The ion current a sample's source lines are shares of.
+
+    The mean TIC per scan of the polarity and, for a polarity the file's
+    store stitches, the mean TIC per scan of the stream each peak is of
+    (``get_stream_tic_by_peak``). A stale per-stream store, or one that
+    carries only part of what a per-stream store does, is read as a pooled
+    one, as the sample's own TIC reads it: its lines are held to the
+    polarity's.
+
+    Synchronous: it reads the filestore, so it runs in a worker thread.
+
+    :return: The polarity's TIC, and the TIC by peak id or None
+    """
+    _, tic_per_scan = get_tic_per_scan(filename, polarity=polarity)
+    tic = float(np.mean(tic_per_scan))
+    try:
+        tic_by_peak = get_stream_tic_by_peak(filename, polarity)
+    except (StalePeakStoreError, PartialPeakStoreError):
+        tic_by_peak = None
+    return tic, tic_by_peak
 
 
 def count_sample_peaks(sample: Sample) -> int:

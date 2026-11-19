@@ -1082,7 +1082,10 @@ What caps a row at candidate:
   line carrying more than 28 % of the ion current is left out of the
   calibration, by the cap the m/z calibration puts on its calibrants
   ([mass calibration](calibration.md#the-brightest-calibrants-are-left-out)); the
-  run's record counts such lines as `reagent_capped`. Where the lines under the cap
+  run's record counts such lines as `reagent_capped`. On a sample stitched from
+  several scan ranges, a line's share is of the ion current of its own range, the
+  scans it is averaged over, as the m/z calibration measures each range's
+  calibrants. Where the lines under the cap
   are much of what the run measures on, the constant centre can still lean toward them.
   The calibration's centre can follow the mass range: where the run's assignments show their mass error changing with m/z the
   way a fixed offset in millidaltons does, growing in ppm as the mass falls, each ion is
