@@ -104,7 +104,7 @@ DETECT_SNR_K = 3.0
 # isotopologue at or above this fraction of the base peak is penalised regardless of SNR.
 # Without a noise estimate the expected-SNR gate (p_i*s_0 >= k_detect) cannot be evaluated,
 # and simply excluding every absent peak makes the score envelope-blind. Predicted
-# envelopes run down to 1e-5 relative abundance (ENVELOPE_ABUNDANCE_FLOOR), so some
+# envelopes run down to 1e-5 relative abundance (TARGET_LIBRARY_ABUNDANCE_FLOOR), so some
 # threshold is mandatory; 0.10 is the ~1:10 dynamic range that any peak strong enough to be
 # matched at all demonstrably exceeds, and it covers the diagnostic cases (Cl 32%, Br 97%,
 # one 13C on C>=10). Below it, absence is uninformative without a noise estimate.

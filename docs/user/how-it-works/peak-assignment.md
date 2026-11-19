@@ -538,7 +538,7 @@ made it. An ion's isotope lines are claimed with it and are its family, as an an
 isotopologues are the analyte's. A line is one peak your instrument resolves: on a TOF,
 the peak one mass unit above the ion is its 13C, 15N, 2H and 17O lines together, claimed
 as one line at their combined height. A line takes the peak nearest to where the ion's
-own error puts it, as every check reads a line, and not one at most three times its
+own error puts it, as every check reads a line, when that peak is at most three times its
 predicted height. The lines fold under the ion's monoisotopic row,
 counted in its **+N** marker, and the inspector lists them in the ion's isotopologue
 table against the abundances its isotope pattern predicts. A fragment's lines fold under
@@ -1655,9 +1655,12 @@ count from the monoisotopic peak, the way an isotope table does - a bromine-rich
 M0, M+2, M+4, M+6, with M0 the lightest peak of the cluster rather than the tallest - and
 its abundances are fractions of the most abundant isotopologue, so nothing reads above
 100 %. Where a line's isotopologue formula is known, the line is named by how it differs
-from the monoisotopic peak instead, such as `[13C]` or `[81Br]2`. For an ion made with a
-labelled reagent such as 15N-nitrate, whose monoisotopic peak is the labelled one, the
-reagent's unlabelled remainder - its M-1 - reads `[14N]`, its labelled atom at 14N. When
+from the monoisotopic peak instead, such as `[13C]` or `[81Br]2`. A line that holds several
+isotopologues, because one peak at the file's resolving power holds them all, names each
+of them in order of mass: an Orbitrap ion's 13C line often reads `[13C]/[17O]/[2H]`. For
+an ion made with a labelled reagent such as 15N-nitrate, whose monoisotopic peak is the
+labelled one, the reagent's unlabelled remainder - its M-1 - reads `[14N]`, its labelled
+atom at 14N. When
 none of the predicted isotopologues pairs with the family's main peak, the card keeps the
 pattern's numbers and adds a *main peak* line saying which prediction came nearest, how
 far away it lies, and whether it paired with a peak elsewhere.
