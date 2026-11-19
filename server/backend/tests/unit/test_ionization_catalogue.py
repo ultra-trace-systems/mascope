@@ -150,6 +150,58 @@ def test_a_removing_mechanism_s_id_names_its_loss_too(notation, fixed_id):
     assert _fixed_mechanism_id(parse_mechanism(notation)) == fixed_id
 
 
+#: Mechanisms of the shapes no shipped mode or channel holds yet, and the ids
+#: the first one shipped would be seeded under: each apart from the simple
+#: mechanism it extends, and from every id :data:`FIXED_IDS` pins.
+SHAPED_IDS = {
+    "[2M+H]+": "sys2MAddHPos",
+    "[3M+H]+": "sys3MAddHPos",
+    "[2M-H]-": "sys2MLossHNeg",
+    "[2M]+.": "sys2MLossEPos",
+    "[M+H-H2O]+": "sysAddHLsH2OPos",
+    "[M+Na-H2O]+": "sysAddNaLsH2OPos",
+    "[M+2H]2+": "sysAdd2HPos2",
+    "[M-2H]2-": "sysLoss2HNeg2",
+    "[M-H-H2O]-": "sysLossHH2ONeg",
+}
+
+
+@pytest.mark.parametrize(("notation", "fixed_id"), sorted(SHAPED_IDS.items()))
+def test_the_id_says_the_molecule_count_the_loss_and_the_charge(notation, fixed_id):
+    from mascope_backend.ionization_catalogue import _fixed_mechanism_id
+    from mascope_tools.composition.mechanism_notation import parse_mechanism
+
+    assert _fixed_mechanism_id(parse_mechanism(notation)) == fixed_id
+
+
+def test_no_shape_takes_another_mechanism_s_id():
+    """``[M+H-H2O]+`` and ``[2M+H]+`` used to be seeded as ``sysAddHPos``,
+    the id of ``[M+H]+``."""
+    from mascope_backend.ionization_catalogue import _fixed_mechanism_id
+    from mascope_tools.composition.mechanism_notation import parse_mechanism
+
+    notations = sorted(set(FIXED_IDS) | set(SHAPED_IDS))
+    ids = [_fixed_mechanism_id(parse_mechanism(notation)) for notation in notations]
+
+    assert len(ids) == len(set(ids))
+
+
+@pytest.mark.parametrize("notation", sorted(SHAPED_IDS))
+def test_a_shaped_id_fits_the_column_and_a_url(notation):
+    """Each shape fits the column as the shipped ids do. A mechanism with two
+    of them on top of a species can pass it (``[2M+H-H2O]+`` would be 17
+    characters): the shipped mechanisms' own test refuses such a one the day
+    it is shipped, before a seed could write it."""
+    from mascope_backend.ionization_catalogue import _fixed_mechanism_id
+    from mascope_tools.composition.mechanism_notation import parse_mechanism
+
+    column = IonizationMechanism.__table__.c.ionization_mechanism_id.type.length
+    fixed_id = _fixed_mechanism_id(parse_mechanism(notation))
+
+    assert len(fixed_id) <= column
+    assert re.fullmatch(r"sys[A-Za-z0-9]+", fixed_id)
+
+
 @pytest.mark.parametrize(
     ("ion", "charge", "mechanisms", "neutral"),
     [
