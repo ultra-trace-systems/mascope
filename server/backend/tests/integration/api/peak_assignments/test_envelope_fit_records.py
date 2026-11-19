@@ -508,3 +508,94 @@ async def test_a_file_that_records_neither_count_has_no_settings(
     monkeypatch.setattr(envelope_fit.m_io, "read_props", read)
 
     assert await envelope_fit.acquisition_settings(_sample(batch, "A")) is None
+
+
+def _fold_record(ratio: float, mu_ppm: float) -> dict:
+    """What a run-less fold keeps for a sample: its model, a v2 centred at
+    ``mu_ppm``, and its curve at ``ratio``."""
+    model = MeasurementModel.v1(
+        SampleMassAccuracy(mu_ppm=0.0, sigma_ppm=0.2, anchors=30, anchor_ions=9),
+        INSTRUMENT_FALLBACK_SIGMA_PPM["orbi"],
+    ).v2(mu_ppm=mu_ppm, sigma_ppm=0.1, commits=120, source_lines=4)
+    return {
+        "measurement_model": model.record(),
+        "envelope_tolerance": _record(ratio, TEN, lines=25),
+    }
+
+
+async def _recorded(sample_item_id: str):
+    sample = SimpleNamespace(
+        sample_item_id=sample_item_id, filename="sample.raw", polarity="+"
+    )
+    return await service.recorded_measurement(sample, reagent_offset=None)
+
+
+async def test_after_a_run_less_fold_a_reader_reads_the_folds_model(batch):
+    # MAS-725: the fold scored its rows at a model and a curve of its own; a
+    # reader of the sample outside a run - the inspector, a pin, the batch
+    # search - reads them, not the class's width and today's numbers.
+    kept = _fold_record(0.8, -0.6)
+    await service.record_sample_model(batch.samples["S"], kept)
+
+    recorded, model, from_record = await _recorded(batch.samples["S"])
+
+    assert from_record is True
+    assert recorded == kept
+    assert (model.version, model.scoring_mu_ppm) == (2, -0.6)
+    assert model.envelope_tolerance == EnvelopeTolerance.from_record(
+        kept["envelope_tolerance"]
+    )
+    assert model.envelope_tolerance.lower[1] == pytest.approx(0.8)
+
+
+async def test_a_later_fold_replaces_the_samples_record(batch):
+    await service.record_sample_model(batch.samples["S"], _fold_record(0.8, -0.6))
+    await service.record_sample_model(batch.samples["S"], _fold_record(0.5, 0.3))
+
+    _recorded_config, model, _ = await _recorded(batch.samples["S"])
+
+    assert model.scoring_mu_ppm == pytest.approx(0.3)
+    assert model.envelope_tolerance.lower[1] == pytest.approx(0.5)
+
+
+async def test_a_samples_run_comes_before_its_folds_record(batch):
+    # A completed in-app run is the sample's result: its record is read, and
+    # the fold's only where there is none.
+    await service.record_sample_model(batch.samples["S"], _fold_record(0.8, -0.6))
+    await batch.run("S", _record(0.5, TEN, lines=25), minutes_ago=30)
+
+    _recorded_config, model, from_record = await _recorded(batch.samples["S"])
+
+    # That run recorded no model of its own: the sample is read as a run
+    # whose library fitted nothing, at its tolerance.
+    assert from_record is False
+    assert model.version == 1
+    assert model.envelope_tolerance.lower[1] == pytest.approx(0.5)
+
+
+async def test_a_decoy_run_does_not_hide_the_folds_record(batch):
+    await service.record_sample_model(batch.samples["S"], _fold_record(0.8, -0.6))
+    await batch.run(
+        "S", _record(0.2, TEN, lines=25), minutes_ago=5, decoy="swap_adducts"
+    )
+
+    _recorded_config, model, _ = await _recorded(batch.samples["S"])
+
+    assert model.scoring_mu_ppm == pytest.approx(-0.6)
+
+
+async def test_the_batch_reads_a_folded_samples_tolerance_where_it_has_no_run(batch):
+    # The batch's isotopologue stamping reads each sample's tolerance in one
+    # read: a run's where the sample has one, else what its fold kept.
+    run_record = _record(0.5, TEN, lines=25)
+    await batch.run("S", run_record, minutes_ago=30)
+    await service.record_sample_model(batch.samples["S"], _fold_record(0.2, 0.0))
+    folded = _fold_record(0.8, -0.6)
+    await service.record_sample_model(batch.samples["A"], folded)
+
+    tolerances = await envelope_fit.recorded_envelope_tolerances(batch.id)
+
+    assert tolerances[batch.samples["S"]] == EnvelopeTolerance.from_record(run_record)
+    assert tolerances[batch.samples["A"]] == EnvelopeTolerance.from_record(
+        folded["envelope_tolerance"]
+    )

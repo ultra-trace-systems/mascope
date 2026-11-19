@@ -190,6 +190,11 @@ def _patched(
                 return_value="batch-1",
             )
         ),
+        # Where the fold keeps the model it scored the sample at, which has
+        # no run to record it on.
+        "kept_model": stack.enter_context(
+            patch(f"{_SVC}.record_sample_model", new_callable=AsyncMock)
+        ),
     }
     mocks["stage_a"].return_value = (
         [_stage_a_row("si-1", fold_run_id("si-1"))],
@@ -234,6 +239,63 @@ async def test_folds_stage_a_and_the_placeholders_without_persisting():
     stage_a.assert_awaited_once()
     assert stage_a.call_args.args[1].run_untargeted is False
     assert stage_a.call_args.args[5] == fold_run_id("si-1")
+
+
+@pytest.mark.asyncio
+async def test_the_fold_keeps_the_model_it_scored_the_sample_at():
+    # MAS-725: the fold has no run to record its model on, so it keeps it for
+    # the sample, in the shape a run's config holds it, and every reader
+    # outside a run reads it there (``service.recorded_measurement``).
+    from mascope_backend.api.new.peak_assignments.service import (
+        fold_sample_peaks_without_run,
+    )
+    from mascope_tools.composition.measurement_model import MeasurementModel
+
+    stack, mocks = _patched()
+    with stack:
+        await fold_sample_peaks_without_run("si-1")
+
+    mocks["kept_model"].assert_awaited_once()
+    sample_item_id, record = mocks["kept_model"].await_args.args
+    assert sample_item_id == "si-1"
+    assert set(record) == {"measurement_model", "envelope_tolerance"}
+    assert record["envelope_tolerance"] == NO_ENVELOPE_FIT.record()
+    model = MeasurementModel.from_run_config(record)
+    # Stage A measured nothing here: the class's width stands in, and the
+    # refit found too few commits to take.
+    assert (model.version, model.sigma_source) == (1, "instrument_class")
+    assert record["measurement_model"]["gate"]["refit"]["fitted"] is False
+    assert record["measurement_model"]["scoring"]["mz_tolerance_ppm"] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_a_fold_that_takes_v2_keeps_v2_for_the_sample():
+    # The refit moves the centre beyond the bound: the fold scores and caps at
+    # v2, and keeps v2, not the v1 it ranked at, for every reader outside it.
+    from mascope_backend.api.new.peak_assignments.mass_gate import MassCalibration
+    from mascope_backend.api.new.peak_assignments.service import (
+        fold_sample_peaks_without_run,
+    )
+    from mascope_tools.composition.measurement_model import MeasurementModel
+
+    stack, mocks = _patched()
+    refitted = MassCalibration(mu_ppm=-1.5, sigma_ppm=0.2, anchors=40)
+    with stack:
+        stack.enter_context(
+            patch(
+                "mascope_backend.api.new.peak_assignments.mass_gate."
+                "fit_run_mass_accuracy",
+                return_value=refitted,
+            )
+        )
+        await fold_sample_peaks_without_run("si-1")
+
+    _sample_item_id, record = mocks["kept_model"].await_args.args
+    assert record["measurement_model"]["gate"]["refit"]["adopted"] is True
+    model = MeasurementModel.from_run_config(record)
+    assert model.version == 2
+    assert model.scoring_mu_ppm == pytest.approx(-1.5)
+    assert record["measurement_model"]["ranked_at"]["version"] == 1
 
 
 @pytest.mark.asyncio

@@ -2851,6 +2851,32 @@ class CompactAlternatives(TypeDecorator):
         return [unpack_alternative(entry) for entry in value]
 
 
+class SampleMeasurementModel(Base):
+    """The measurement model a run-less pass fitted on a sample: the ingest
+    fold and the batch ledger's rebuild, which assign a sample without a run to
+    record it on.
+
+    One row per sample, the last such pass's. ``config`` holds what a run keeps
+    in its own config: the model under ``measurement_model`` and the line-share
+    tolerance under ``envelope_tolerance``, so a reader outside a run reads it
+    as it reads a run's (``service.recorded_measurement``), where the sample
+    has no completed in-app run of its own: a run's record comes first.
+    """
+
+    __tablename__ = "sample_measurement_model"
+
+    sample_item_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("sample_item.sample_item_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    engine_version: Mapped[str] = mapped_column(String(64))
+    config: Mapped[dict] = mapped_column(JSON)
+    sample_measurement_model_utc_recorded: Mapped[dt] = mapped_column(
+        TIMESTAMP(timezone=True), default=lambda: dt.now(timezone.utc)
+    )
+
+
 class PeakAssignment(Base):
     """Per-peak assignment result for one observed sample peak in a run.
 
@@ -4052,6 +4078,7 @@ __all__ = [
     "MatchRating",
     "PeakAssignmentRun",
     "PeakAssignment",
+    "SampleMeasurementModel",
     "BatchPeak",
     "BatchPeakOccurrence",
     "BatchPeakVerification",

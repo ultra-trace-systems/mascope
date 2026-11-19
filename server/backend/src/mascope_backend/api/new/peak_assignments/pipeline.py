@@ -61,7 +61,9 @@ from mascope_backend.api.new.peak_assignments.config import (
 )
 from mascope_backend.api.new.peak_assignments.decoy import DecoyPlan
 from mascope_backend.api.new.peak_assignments.engine import (
+    ENVELOPE_TOLERANCE_KEY,
     LIST_PRIOR_WEIGHT,
+    MEASUREMENT_MODEL_KEY,
     ROLE_ISO_CHILD,
     ROLE_M0,
     SOURCE_DATABASE,
@@ -1878,7 +1880,9 @@ async def keep_fold(
     """The ingest fold keeps its ledger as the sample's members in its batch's
     batch peaks, and writes no run (``fold_view`` serves the Sample view from
     them). Its rows are shaped as ledger rows, stamped with the derived run's
-    id: the run they will never be.
+    id: the run they will never be. The model it scored and capped them at is
+    kept for the sample (``service.record_sample_model``), which every reader
+    outside a run reads where the sample has no run.
 
     :param defer_consensus_to: As for ``fold_sample_into_batch_peaks``: a
         whole-batch walk collects the anchors touched and recomputes once.
@@ -1899,12 +1903,28 @@ async def keep_fold(
         f"{ctx.tiering['capped']} capped by the tiering rules); folding into the "
         "batch ledger without a run"
     )
-    return await fold_sample_into_batch_peaks(
+    batch = await fold_sample_into_batch_peaks(
         ctx.sample.sample_item_id,
         rows=[SimpleNamespace(**row) for row in every],
         persisted=False,
         defer_consensus_to=defer_consensus_to,
     )
+    # The model the fold scored and capped its rows at, kept for the sample,
+    # which has no run to record it on: the inspector, a pin and the batch
+    # search read the sample at it (MAS-725).
+    await service.record_sample_model(
+        ctx.sample.sample_item_id,
+        {
+            MEASUREMENT_MODEL_KEY: measurement_model_record(
+                ctx.judged.model,
+                ranked_at=ctx.model,
+                scoring=scoring_snapshot(ctx.scoring),
+                gate=ctx.judged.mass_calibration,
+            ),
+            ENVELOPE_TOLERANCE_KEY: ctx.envelope.record(),
+        },
+    )
+    return batch
 
 
 async def keep_search_rows(ctx: RunContext) -> tuple[list[dict], int, set[str]]:
