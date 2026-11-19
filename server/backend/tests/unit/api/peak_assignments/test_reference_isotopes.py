@@ -180,6 +180,41 @@ class TestReferenceExpansionCache:
         pd.testing.assert_frame_equal(first, second)
 
     @pytest.mark.asyncio
+    async def test_each_run_holds_the_cached_lines_to_its_own_floor(self):
+        """The cache holds the fine lines whatever the floor, so the floor a
+        run is handed is what keeps it at its own: two runs at two floors read
+        two sets of lines off one build."""
+        built = pd.DataFrame(
+            {
+                "target_ion_id": ["ion-1", "ion-1"],
+                "target_isotope_id": ["iso-1", "iso-2"],
+                "target_isotope_formula": ["C10H15O3-", "[13C]C9H15O3-"],
+                "mz": [183.1026, 184.1060],
+                "relative_abundance": [1.0, 0.11],
+            }
+        )
+        _, _, build = self._patches([(("src-1", "t1"),)] * 2, built)
+
+        async def fetch(floor):
+            return await _fetch_reference_known_isotopes(
+                _orbi_sample(),
+                floor,
+                [_mechanism()],
+                known_window=None,
+                file_lines=_FINE,
+            )
+
+        deep = await fetch(0.0)
+        shallow = await fetch(0.5)
+
+        build.assert_called_once()
+        assert deep["target_isotope_formula"].tolist() == [
+            "C10H15O3-",
+            "[13C]C9H15O3-",
+        ]
+        assert shallow["target_isotope_formula"].tolist() == ["C10H15O3-"]
+
+    @pytest.mark.asyncio
     async def test_a_run_under_another_purity_builds_its_own(self):
         """The lines of a labelled ion are built at the purity the run's setup
         carries, so a run under another purity is not served the frame one
