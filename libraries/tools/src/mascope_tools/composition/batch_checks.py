@@ -115,11 +115,11 @@ from mascope_tools.composition.diagnostic_isotopologues import (
     predict_diagnostic_isotopologues,
 )
 from mascope_tools.composition.envelope_tolerance import (
-    DEFAULT_DETECT_SNR,
     DEFAULT_TOLERANCE,
     EnvelopeTolerance,
 )
 from mascope_tools.composition.line_model import (
+    DETECT_SNR_K,
     line_centre,
     line_detectable,
     line_groups,
@@ -703,7 +703,7 @@ def thresholds() -> dict:
         "hold_widths": HOLD_WIDTHS,
         "min_judged": MIN_JUDGED,
         "track_share": TRACK_SHARE,
-        "default_detect_snr": DEFAULT_DETECT_SNR,
+        "default_detect_snr": DETECT_SNR_K,
         "si29_per_si30": round(SI29_PER_SI30, 6),
     }
 

@@ -65,15 +65,20 @@ from mascope_tools.composition.robust import robust_spread
 #: judged at 5% of itself.
 RELATIVE_FLOOR = 0.05
 
-#: The expected S/N at which an absent line is charged, where nothing was
-#: fitted. ``heuristic_filter.DETECT_SNR_K``; restated here because that module
-#: imports this one, and pinned equal to it by a test.
-DEFAULT_DETECT_SNR = 3.0
+#: Expected signal-to-noise at which a predicted line counts as one the
+#: spectrum should have shown. The fit score charges an absent line above it
+#: and ignores one below (``score_pattern_v2``'s ``k_detect``), where no
+#: response curve was fitted; the envelope predictor stops at the same place,
+#: because a line nobody could have seen is not worth predicting either. One
+#: constant, here because ``line_model`` and ``heuristic_filter`` import this
+#: module, so the score, the predictor and the tolerance cannot disagree about
+#: what "detectable" means.
+DETECT_SNR_K = 3.0
 
 #: The lower edges of the response curve's bins of expected line S/N; the last
 #: bin is open. The edges 5.3 measured on, from the detectability threshold up:
 #: a line under 3 is in the list as good as never, and none is charged there.
-RESPONSE_SNR_EDGES = (3.0, 10.0, 20.0, 50.0, 100.0)
+RESPONSE_SNR_EDGES = (DETECT_SNR_K, 10.0, 20.0, 50.0, 100.0)
 
 #: The quantile of a bin's observed / predicted share the admitted band opens
 #: down to (the reference's form, decision 32).
@@ -189,9 +194,7 @@ class EnvelopeTolerance:
             return cls()
         detect = record.get("detect_snr")
         detect_snr = (
-            None
-            if detect is None or float(detect) == DEFAULT_DETECT_SNR
-            else float(detect)
+            None if detect is None or float(detect) == DETECT_SNR_K else float(detect)
         )
         if record.get("form") == FORM_CURVE:
             bins = record.get("bins") or []
@@ -517,7 +520,7 @@ class EnvelopeFit:
             "level": self.level,
             "lines": self.lines.lines,
             "absent": self.lines.absent,
-            "detect_snr": float(DEFAULT_DETECT_SNR if detect is None else detect),
+            "detect_snr": float(DETECT_SNR_K if detect is None else detect),
         }
         if self.form == FORM_CURVE:
             record.update(

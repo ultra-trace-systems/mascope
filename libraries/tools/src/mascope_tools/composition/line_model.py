@@ -56,6 +56,7 @@ from mascope_tools.composition.config import (
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS, label_purity
 from mascope_tools.composition.envelope_tolerance import (
     DEFAULT_TOLERANCE,
+    DETECT_SNR_K,
     EnvelopeTolerance,
 )
 from mascope_tools.composition.utils import to_pyteomics
@@ -96,12 +97,10 @@ __all__ = [
 
 # --- The detectability threshold and the floors ------------------------------
 
-# Expected signal-to-noise at which a predicted line counts as one the spectrum
-# should have shown. The fit score charges an absent line above it and ignores
-# one below (`score_pattern_v2`'s `k_detect`); the envelope predictor stops at
-# the same place, because a line nobody could have seen is not worth predicting
-# either. One constant so the two cannot disagree about what "detectable" means.
-DETECT_SNR_K = 3.0
+# `DETECT_SNR_K`, the expected signal-to-noise at which a predicted line counts
+# as one the spectrum should have shown, is `envelope_tolerance`'s, which this
+# module imports; it is re-exported here, so the score, the predictor and the
+# tolerance read one constant.
 
 
 # Detectability threshold used when the base peak's SNR is unknown: an ABSENT predicted
