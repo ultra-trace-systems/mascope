@@ -58,8 +58,8 @@ tiers read; it is not what will move the agreement metrics.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pandas as pd
@@ -754,15 +754,33 @@ class SourceLineCap:
     (``service.load_sample_peaks``), against their mean ion current per scan,
     as the node reads a file's calibrants.
 
-    :param tic: The sample's mean total ion current per scan, its polarity's.
+    A sample stitched from several scan streams averages each line over its
+    own stream's scans, and each of those scans fills the trap with that
+    stream's ions alone: its share is of that stream's mean ion current
+    (``tic_by_peak``), as the node fits each stream on its own calibrants.
+    Against the polarity's, pooled over every stream's scans, a reagent line
+    read as several times its share, and a line of a narrow window as a
+    fraction of its own.
+
+    :param tic: The sample's mean total ion current per scan, its polarity's;
+        what a line of no stream in ``tic_by_peak`` is held to.
     :param tic_share_max: The largest share of it one line may carry, or None.
     :param peak_intensity_max: The largest intensity one line may have, or
         None.
+    :param tic_by_peak: For a stitched sample, the mean ion current per scan
+        of the stream each peak is of, by ``sample_peak_id``; None otherwise.
     """
 
     tic: float
     tic_share_max: float | None = None
     peak_intensity_max: float | None = None
+    tic_by_peak: Mapping[str, float] | None = field(default=None, hash=False)
+
+    def tic_of(self, row: dict) -> float:
+        """The ion current a source line's share is of."""
+        if self.tic_by_peak is None:
+            return self.tic
+        return self.tic_by_peak.get(str(row.get("sample_peak_id")), self.tic)
 
     def over(self, row: dict) -> bool:
         """Whether a source line is brighter than the cap; one whose
@@ -771,7 +789,8 @@ class SourceLineCap:
         if intensity is None:
             return False
         intensity = float(intensity)
-        share = intensity / self.tic if self.tic > 0 else math.nan
+        tic = self.tic_of(row)
+        share = intensity / tic if tic > 0 else math.nan
         return bool(
             calibrants_over_cap(
                 [intensity], [share], self.tic_share_max, self.peak_intensity_max

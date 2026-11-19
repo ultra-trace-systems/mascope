@@ -238,6 +238,65 @@ def test_a_stitched_tic_of_streams_that_read_no_scan_is_no_scans(
         m_compute.get_sample_tic(SAMPLE_FILENAME, "-")
 
 
+# -- the ion current each peak is a share of ----------------------------------------
+
+
+def _composite_peaks_by_mz():
+    store = m_io.load_peak_data(SAMPLE_FILENAME, drop_bad_peaks=False)
+    return {
+        round(float(mz)): str(peak_id)
+        for mz, peak_id in zip(store.mz.values, store.peak_id.values, strict=True)
+    }
+
+
+def test_each_peak_of_a_stitched_polarity_is_of_its_own_streams_tic(composite):
+    """The reagent scan's ion and dimer, the low window's three ions, the mid
+    window's two below 444 and the high window's two: each against the mean
+    TIC per scan of the stream it was averaged over."""
+    by_peak = m_compute.get_stream_tic_by_peak(SAMPLE_FILENAME, "-")
+    peaks = _composite_peaks_by_mz()
+
+    assert {mz: by_peak[peak_id] for mz, peak_id in peaks.items()} == {
+        62: REAGENT_TIC,
+        125: REAGENT_TIC,
+        80: LOW_TIC,
+        100: LOW_TIC,
+        121: LOW_TIC,
+        134: MID_TIC,  # 134.5, the mid window's
+        300: MID_TIC,
+        450: HIGH_TIC,
+        700: HIGH_TIC,
+    }
+    assert sorted(by_peak) == sorted(peaks.values())
+
+
+def test_a_polarity_the_store_does_not_stitch_has_no_stream_tic(
+    acquire, instrument_functions
+):
+    acquire(WITH_POSITIVE, {**MICROSCANS, 5: 10})
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
+
+    assert m_compute.get_stream_tic_by_peak(SAMPLE_FILENAME, "+") is None
+
+
+@pytest.mark.parametrize("detected", [True, False], ids=["pooled-store", "no-store"])
+def test_a_file_detected_whole_has_no_stream_tic(
+    acquire, instrument_functions, detected
+):
+    acquire(COMPOSITE, MICROSCANS)
+    if detected:
+        m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=False)
+
+    assert m_compute.get_stream_tic_by_peak(SAMPLE_FILENAME, "-") is None
+
+
+def test_a_stream_tic_of_a_key_the_file_no_longer_holds_is_stale(composite, acquire):
+    acquire([("FTMS - p NSI Full ms [40.0000-600.0000]", 1, {62.0: 100.0})] * 3)
+
+    with pytest.raises(StalePeakStoreError, match="reads back no stream"):
+        m_compute.get_stream_tic_by_peak(SAMPLE_FILENAME, "-")
+
+
 # -- a file detected whole, and one with no store ---------------------------------
 
 

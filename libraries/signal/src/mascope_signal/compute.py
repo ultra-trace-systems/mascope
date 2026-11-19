@@ -1599,6 +1599,54 @@ def get_sample_tic(base_filename: str, polarity: Literal["+", "-"]) -> float:
     return tic
 
 
+def get_stream_tic_by_peak(
+    base_filename: str, polarity: Literal["+", "-"]
+) -> dict[str, float] | None:
+    """The mean TIC per scan of the stream each peak of a stitched polarity is of.
+
+    What a peak's height is a share of where the file's store stitches the
+    polarity: the peak is averaged over its own stream's scans, and each of
+    those scans fills the trap with that stream's ions alone, so its share of
+    the ion current is of its stream's, as the m/z calibration of each stream
+    reads its calibrants'. By peak id, for every peak of the polarity's
+    composite (``mascope_file.io.load_peak_data``), weak and satellite ones
+    included. A stream with no scan to read gives its peaks a NaN.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :param polarity: The polarity whose peaks to read
+    :type polarity: str
+    :raises ValueError: If the store carries only part of what a per-stream
+        store does
+    :raises StalePeakStoreError: If a per-stream store carries no map, or the
+        file holds no stream under a key it lists
+    :return: The TIC by peak id; None for a polarity the store does not
+        stitch, and for a file with no store, whose peaks are averaged over
+        the polarity's scans
+    :rtype: dict[str, float] | None
+    """
+    try:
+        keys, stitch = _peak_store_metadata(base_filename)
+    except FileNotFoundError:
+        return None
+    if not (stitch and stitch["runs"].get(polarity)):
+        return None
+    data = m_io.load_peak_data(base_filename, drop_bad_peaks=False)
+    of_polarity = data.polarity.values == polarity
+    peak_ids = data.peak_id.values[of_polarity]
+    streams = data.stream.values[of_polarity].astype(int)
+    tics = {}
+    for index in np.unique(streams).tolist():
+        try:
+            tics[index] = _stream_mean_tic(base_filename, polarity, keys[index])
+        except m_thermo.NoScansFoundError:
+            tics[index] = float("nan")
+    return {
+        str(peak_id): tics[stream]
+        for peak_id, stream in zip(peak_ids, streams.tolist(), strict=True)
+    }
+
+
 def _stream_mean_tic(base_filename: str, polarity: str, key: str) -> float:
     """The mean TIC per scan of one stream of a per-stream store.
 
