@@ -56,9 +56,9 @@ K. Ned. Akad. Wet. 1950, 53, 386; Sen, J. Am. Stat. Assoc. 1968, 63, 1379).
 
 **The batch** must be time-ordered (:func:`time_ordering`): an ACQUISITION
 batch is; an ANALYSIS batch is where its largest gap between distinct
-acquisition times is at most ``MAX_GAP_FACTOR`` times the median gap. A batch
-that is not has its grades withdrawn, with the reason, rather than left
-standing.
+acquisition times is at most ``TIME_ORDER_GAP_FACTOR`` times the median gap.
+A batch that is not has its grades withdrawn, with the reason, rather than
+left standing.
 
 **The pass** (:func:`run_batch_continuity`) runs after the folds, over the
 whole batch, never inside a fold: its unit is a pair of anchors, every new
@@ -103,7 +103,6 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     GRADE_INSUFFICIENT,
     GRADE_RED,
     GRADE_STABLE,
-    MAX_GAP_FACTOR,
     MAX_PAIRS_PER_ANCHOR,
     MAX_PAIRS_PER_BATCH,
     MIN_DISTINCT_TIMES,
@@ -114,6 +113,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     RHO_DRIFT,
     SPREAD_RED,
     SPREAD_STABLE,
+    TIME_ORDER_GAP_FACTOR,
     resolve_candidate,
     standing_co_variation_record,
 )
@@ -204,11 +204,11 @@ def time_ordering(
 
     An ACQUISITION batch is: it is made per day of continuous acquisition.
     Any other is where its largest gap between distinct acquisition times is
-    at most :data:`MAX_GAP_FACTOR` times the median one. The gaps are between
-    distinct times, not samples: the segments of one file share its time, and
-    a median of zero would refuse every batch of segmented files. A batch with
-    fewer than :data:`MIN_DISTINCT_TIMES` distinct times is not, as no pair
-    could pass that gate anyway. Blanks are left out.
+    at most :data:`TIME_ORDER_GAP_FACTOR` times the median one. The gaps are
+    between distinct times, not samples: the segments of one file share its
+    time, and a median of zero would refuse every batch of segmented files. A
+    batch with fewer than :data:`MIN_DISTINCT_TIMES` distinct times is not, as
+    no pair could pass that gate anyway. Blanks are left out.
 
     :return: ``(time_ordered, reason, facts)``.
     """
@@ -226,7 +226,7 @@ def time_ordering(
         return True, None, facts
     if len(distinct) < MIN_DISTINCT_TIMES:
         return False, REASON_FEW_TIMES, facts
-    if facts["max_gap_seconds"] > MAX_GAP_FACTOR * facts["median_gap_seconds"]:
+    if facts["max_gap_seconds"] > TIME_ORDER_GAP_FACTOR * facts["median_gap_seconds"]:
         return False, REASON_GAP, facts
     return True, None, facts
 
@@ -724,7 +724,7 @@ def grade_batch(
             "spread_stable": dict(SPREAD_STABLE),
             "spread_red": SPREAD_RED,
             "max_pairs_per_batch": max_pairs,
-            "max_gap_factor": MAX_GAP_FACTOR,
+            "max_gap_factor": TIME_ORDER_GAP_FACTOR,
         },
     }
     pairs_of: dict[str, list[Pair]] = defaultdict(list)
@@ -1065,7 +1065,7 @@ def continuity_outcome(summary: dict, sample_batch_id: str) -> dict:
                     "(too few distinct acquisition times)."
                     if summary["reason"] == REASON_FEW_TIMES
                     else "(a gap between its acquisitions is more than "
-                    f"{MAX_GAP_FACTOR} times the median one)."
+                    f"{TIME_ORDER_GAP_FACTOR} times the median one)."
                 )
             ),
             "data": summary,

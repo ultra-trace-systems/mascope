@@ -166,8 +166,11 @@ MAX_PAIRS_PER_BATCH = 20_000
 #: Provisional. The time-ordering gate of an ANALYSIS batch: its largest gap
 #: between distinct acquisition times may be at most this many times the median
 #: gap. An ACQUISITION batch, made per day of continuous acquisition, is
-#: time-ordered by construction.
-MAX_GAP_FACTOR = 10
+#: time-ordered by construction. Not the water ladder's
+#: ``water_ladder.SEGMENT_GAP_FACTOR`` (5): that one cuts a batch into segments
+#: read one by one, and only past an hour as well; this one refuses the whole
+#: batch for the continuity pass, so it lets a longer gap through.
+TIME_ORDER_GAP_FACTOR = 10
 
 #: Whether a fold runs the pass after it commits. Off: the pass runs from its
 #: endpoint and at a rebuild's end only. A fold-triggered pass may cost about what

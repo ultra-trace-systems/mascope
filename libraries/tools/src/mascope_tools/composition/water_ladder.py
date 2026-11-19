@@ -23,9 +23,9 @@ The segments
 ------------
 
 A batch is cut into acquisition segments where the time between two spectra
-runs past :data:`MIN_GAP_SECONDS` and :data:`GAP_FACTOR` times the batch's
-median spacing (:func:`acquisition_segments`): an instrument restart, a night
-off. A segment of fewer than :data:`MIN_SEGMENT_SPECTRA` spectra joins the
+runs past :data:`MIN_GAP_SECONDS` and :data:`SEGMENT_GAP_FACTOR` times the
+batch's median spacing (:func:`acquisition_segments`): an instrument restart,
+a night off. A segment of fewer than :data:`MIN_SEGMENT_SPECTRA` spectra joins the
 neighbour it is closer to in time, as a presence share over a handful of
 spectra says little. Every rung is read per segment.
 
@@ -135,8 +135,12 @@ BLEND_FWHM = 0.5
 
 #: A gap between two spectra longer than both of these cuts the batch into
 #: acquisition segments: an hour, and five times the batch's median spacing.
+#: Not the continuity pass's time-ordering gate
+#: (``batch_peaks.TIME_ORDER_GAP_FACTOR``, 10): a cut here only splits the
+#: ladder's reading into segments, while that gate refuses a whole batch, so
+#: this one cuts at a shorter gap.
 MIN_GAP_SECONDS = 3600.0
-GAP_FACTOR = 5.0
+SEGMENT_GAP_FACTOR = 5.0
 
 #: A segment of fewer spectra than this joins its nearer neighbour.
 MIN_SEGMENT_SPECTRA = 10
@@ -172,7 +176,7 @@ def thresholds() -> dict:
         "local_floor_da": LOCAL_FLOOR_DA,
         "blend_fwhm": BLEND_FWHM,
         "min_gap_seconds": MIN_GAP_SECONDS,
-        "gap_factor": GAP_FACTOR,
+        "gap_factor": SEGMENT_GAP_FACTOR,
         "min_segment_spectra": MIN_SEGMENT_SPECTRA,
         "references": list(WATER_RUNG_REFERENCES),
     }
@@ -210,7 +214,7 @@ def acquisition_segments(
     times: Mapping[str, Optional[float]],
     *,
     min_gap_seconds: float = MIN_GAP_SECONDS,
-    gap_factor: float = GAP_FACTOR,
+    gap_factor: float = SEGMENT_GAP_FACTOR,
     min_spectra: int = MIN_SEGMENT_SPECTRA,
 ) -> list[Segment]:
     """Cut a batch's spectra into acquisition segments.
@@ -735,7 +739,7 @@ __all__ = [
     "FAILED_ABSENT",
     "FAILED_CARBON",
     "FAILED_DECOYS",
-    "GAP_FACTOR",
+    "SEGMENT_GAP_FACTOR",
     "LOCAL_FLOOR_DA",
     "LOCAL_FLOOR_QUANTILE",
     "MIN_GAP_SECONDS",
