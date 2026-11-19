@@ -13,13 +13,13 @@ Inputs to the score follow the matched-array convention of
 ``test_score_pattern_v2``: the anchor first, an unmatched line carries 0.
 """
 
+import inspect
 import math
 
 import numpy as np
 import pytest
 
 from mascope_tools.composition.envelope_tolerance import (
-    DEFAULT_DETECT_SNR,
     DEFAULT_TOLERANCE,
     FORM_CENTRE_WIDTH,
     FORM_CURVE,
@@ -102,9 +102,16 @@ class TestTodaysToleranceScoresAsBefore:
             ) == score_pattern_v2(me, oi, snr, pr)
 
     def test_the_default_threshold_is_the_score_s(self):
-        # The fit restates the detectability threshold rather than import it,
-        # and its first bin starts there: one number, named twice.
-        assert DEFAULT_DETECT_SNR == DETECT_SNR_K == RESPONSE_SNR_EDGES[0]
+        # One detectability threshold: the fit's, the score's defaults and the
+        # first bin of the response curve all read the same constant.
+        from mascope_tools.composition import envelope_tolerance, line_model
+
+        assert envelope_tolerance.DETECT_SNR_K is DETECT_SNR_K
+        assert line_model.DETECT_SNR_K is DETECT_SNR_K
+        assert RESPONSE_SNR_EDGES[0] == DETECT_SNR_K
+        for score in (score_pattern_v2, score_patterns_v2):
+            default = inspect.signature(score).parameters["k_detect"].default
+            assert default == DETECT_SNR_K
         assert DEFAULT_TOLERANCE.floor == RELATIVE_FLOOR == 0.05
 
 
@@ -593,7 +600,7 @@ class TestTheLevels:
 
         assert fit.level == LEVEL_DEFAULT
         assert fit.tolerance == DEFAULT_TOLERANCE
-        assert fit.record()["detect_snr"] == DEFAULT_DETECT_SNR
+        assert fit.record()["detect_snr"] == DETECT_SNR_K
 
     def test_a_tof_fits_its_centre_and_width_and_pools_nothing(self):
         own = _lines((10.0, [0.9, 1.0, 1.1, 1.2] * 6, 0))
