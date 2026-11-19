@@ -1141,7 +1141,9 @@ lighter peak of the same compound ([Xu et al. 2015][xu15]; [Domingo-Almenara et 
 neutral less one of these losses through the same channel, on a shorter peak, the lighter
 row names the heavier one, the loss, and how tall its peak is against the heavier one's. A
 lighter peak as tall as the heavier or taller is not named: a fragment's ions come from its
-precursor's. Nothing in one spectrum tells a fragment from a compound of its own, so this is
+precursor's. Nor is a pair through a channel whose ion holds two or more molecules, such as
+`[2M+H]+`: those ions are the loss once per molecule apart, and a dimer that sheds one water
+is `[2M+H-H2O]+`, not the lighter compound's dimer. Nothing in one spectrum tells a fragment from a compound of its own, so this is
 a grouping to know about, not evidence: measured on the demo dataset, a peak one loss below
 a real ion turns out to be nearly as likely as a peak the same neutral above it, which is
 the spectrum's family of related formulas rather than fragmentation, nitric acid aside. On a

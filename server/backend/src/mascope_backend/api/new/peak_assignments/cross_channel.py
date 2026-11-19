@@ -182,6 +182,10 @@ from mascope_tools.composition.heuristic_filter import (
     element_counts,
     neutral_is_closed_shell,
 )
+from mascope_tools.composition.mechanism_notation import (
+    MechanismNotationError,
+    parse_mechanism,
+)
 from mascope_tools.composition.utils import parse_composition, parse_ionization
 
 
@@ -786,6 +790,15 @@ def intensity_consistency(
     return records, summary
 
 
+def _multimer(notation: str) -> int:
+    """How many molecules a channel's ion holds; one when nothing reads the
+    notation, as the pairing read every channel before multimers."""
+    try:
+        return parse_mechanism(notation).multimer
+    except MechanismNotationError:
+        return 1
+
+
 def in_source_fragments(
     brightest: dict[str, dict[str, dict]],
 ) -> tuple[dict[int, list[dict]], dict[int, list[dict]], dict]:
@@ -802,6 +815,12 @@ def in_source_fragments(
     taller, and 489 rows are left named. A neutral whose formula carries a
     labelled atom, or nothing can read, is in no pair.
 
+    Nor is a pair through a channel whose ion holds more than one molecule,
+    ``[2M+H]+``: there the two ions are the loss times the molecule count
+    apart, and a dimer that sheds the loss once is ``[2M+H-H2O]+``, not the
+    lighter neutral's dimer. The record is display only, so such a channel
+    records nothing rather than a gap its ions do not have.
+
     :param brightest: :func:`brightest_by_channel`.
     :return: Per row (by its identity), the neutrals it may be a fragment of,
         the brightest first; per row, the neutrals that may be its fragments;
@@ -816,6 +835,8 @@ def in_source_fragments(
     by_loss: dict[str, int] = {}
     taller = 0
     for channel in sorted(by_channel):
+        if _multimer(channel) != 1:
+            continue
         rows = by_channel[channel]
         counts = {
             neutral: found

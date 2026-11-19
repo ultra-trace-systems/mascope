@@ -1788,3 +1788,45 @@ class TestAnInSourceFragment:
         rows.append(row("typed", "C9H13(CHO)O2", DEPROT, intensity=1.0e3))  # C10H14O3
         gate(rows, NEGATIVE)
         assert record(rows, "typed")[IN_SOURCE_FRAGMENT_OF][0]["loss"] == "H2O"
+
+
+class TestAnInSourceFragmentThroughAMultimer:
+    # Glucose and glucose less water: through a dimer channel their ions are
+    # two waters apart, so the pair names a gap the ions do not have.
+    @pytest.mark.parametrize(
+        ("notation", "named"),
+        [
+            ("[M+H]+", True),
+            ("[M+2H]2+", True),
+            ("[M+H-H2O]+", True),
+            ("-H+", True),
+            ("[2M+H]+", False),
+            ("[3M+H]+", False),
+            ("not a mechanism", True),
+        ],
+    )
+    def test_only_a_channel_of_one_molecule_names_a_pair(self, notation, named):
+        rows = [
+            row("parent", "C6H12O6", "chan", intensity=1.0e5),
+            row("fragment", "C6H10O5", "chan", intensity=2.0e4),
+        ]
+        summary = gate(rows, {"chan": notation})
+        assert (IN_SOURCE_FRAGMENT_OF in record(rows, "fragment")) is named
+        assert (IN_SOURCE_FRAGMENTS in record(rows, "parent")) is named
+        assert summary[IN_SOURCE_FRAGMENTS]["pairs"] == (1 if named else 0)
+
+    def test_a_multimer_channel_leaves_the_runs_other_channels_alone(self):
+        # A real run reads both: [2M+H]+ sorts before [M+H]+, and skipping it
+        # must not end the pass before the monomer channel's pair is named.
+        rows = [
+            row("parent", "C6H12O6", "mono", intensity=1.0e5),
+            row("fragment", "C6H10O5", "mono", intensity=2.0e4),
+            row("dimer-parent", "C6H12O6", "dimer", intensity=1.0e5),
+            row("dimer-fragment", "C6H10O5", "dimer", intensity=2.0e4),
+        ]
+        summary = gate(rows, {"mono": "[M+H]+", "dimer": "[2M+H]+"})
+        assert IN_SOURCE_FRAGMENT_OF in record(rows, "fragment")
+        assert IN_SOURCE_FRAGMENTS in record(rows, "parent")
+        assert IN_SOURCE_FRAGMENT_OF not in record(rows, "dimer-fragment")
+        assert IN_SOURCE_FRAGMENTS not in record(rows, "dimer-parent")
+        assert summary[IN_SOURCE_FRAGMENTS]["pairs"] == 1
