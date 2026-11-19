@@ -233,6 +233,9 @@ def _peak_counts(rng, size):
 
 def _scorings(rng):
     resolving_power = float(rng.choice([8000.0, 60000.0]))
+    # A centre that follows m/z, as a run's measurement model reads one where
+    # its commits demand it: each line read from the centre at its own m/z.
+    intercept, offset_mda = float(rng.normal(0, 0.5)), float(rng.normal(0, 0.2))
     return PatternScoring(
         sigma_ppm=rng.choice([None, 0.6, 3.0]),
         mu_ppm=float(rng.normal(0, 0.5)),
@@ -240,6 +243,11 @@ def _scorings(rng):
         abundance_floor=float(rng.choice([1e-5, 1e-3, 0.01])),
         resolution=(lambda mz: resolving_power) if rng.random() < 0.4 else None,
         envelope_tolerance=TOLERANCES[int(rng.integers(len(TOLERANCES)))],
+        centre=(
+            (lambda mz: intercept + offset_mda * 1000.0 / np.asarray(mz))
+            if rng.random() < 0.4
+            else None
+        ),
     )
 
 

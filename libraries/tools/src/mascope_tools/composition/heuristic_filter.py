@@ -1661,7 +1661,7 @@ def score_ion_envelope(
         observed_intensities[0] > 0 and observed_intensities[brightest] > 0
     )
     score = score_pattern_v2(
-        observed_mass_errors_ppm - scoring.mu_ppm,
+        observed_mass_errors_ppm - scoring.centres_at(predicted_mzs),
         observed_intensities,
         observed_snr,
         predicted_rel,
@@ -1817,7 +1817,7 @@ def score_ion_envelopes(
         observed_intensity[brightest] > 0
     )
     scores = score_patterns_v2(
-        observed_mass_error - scoring.mu_ppm,
+        observed_mass_error - scoring.centres_at(predicted_mz),
         observed_intensity,
         observed_snr,
         predicted_rel,

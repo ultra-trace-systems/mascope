@@ -19,6 +19,12 @@ from .mass_accuracy import (
     unwiden_sigma_ppm,
     widen_sigma_ppm,
 )
+from .measurement_model import (
+    MODEL_V1,
+    MODEL_V2,
+    MeasurementModel,
+    refit_adopts,
+)
 from .mechanism_notation import (
     AdductRow,
     from_row,
@@ -30,7 +36,11 @@ from .mechanism_notation import (
 )
 from .models import CompositionSearchConfig, HeuristicFilterConfig, PatternScoring
 from .profiles import resolve_fallback_sigma_ppm, resolve_match_tolerance_ppm
-from .scoring import pattern_scoring_for_sample, score_candidates
+from .scoring import (
+    pattern_scoring_for_model,
+    pattern_scoring_for_sample,
+    score_candidates,
+)
 
 
 # `formula_plausibility` is exported because it is not an internal detail of the
@@ -81,6 +91,14 @@ from .scoring import pattern_scoring_for_sample, score_candidates
 # Mascope did rebuilds it from the run's record (`EnvelopeTolerance.from_record`)
 # rather than fitting a second copy.
 #
+# `MeasurementModel` is what those pieces became once a run reads one estimate
+# of its axis: the centre (a trend where its commits demand one), the width and
+# the line-share tolerance, fitted at Stage A (v1) and again on the run's
+# corroborated commits (v2), recorded once on the run. An outside engine reads
+# a run's model with `MeasurementModel.from_run_config` and scores at it with
+# `pattern_scoring_for_model`; `refit_adopts` is the rule that decides which
+# version a run scored and capped at.
+#
 # The mechanism notation readers are exported for the same kind of caller: a
 # mechanism is the one string an engine publishing into Mascope and Mascope
 # itself must spell alike. Mascope stores and shows the standard adduct notation
@@ -104,12 +122,17 @@ __all__ = [
     "mass_accuracy_anchors",
     "MASS_ACCURACY_MIN_ANCHORS",
     "MASS_OFFSET_MIN_ANCHORS",
+    "MeasurementModel",
     "mechanism_key",
+    "MODEL_V1",
+    "MODEL_V2",
     "parse_mechanism",
+    "pattern_scoring_for_model",
     "pattern_scoring_for_sample",
     "PatternScoring",
     "PRED_SIGMA_PPM",
     "ReagentOffset",
+    "refit_adopts",
     "resolve_fallback_sigma_ppm",
     "resolve_match_tolerance_ppm",
     "SampleMassAccuracy",

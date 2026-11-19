@@ -1,6 +1,8 @@
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 
+import numpy as np
+
 from mascope_tools.composition import config
 from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
 
@@ -149,6 +151,10 @@ class PatternScoring:
         a match in, and the expected signal-to-noise from which an absent line
         counts. ``None`` scores at today's numbers, a 5% tolerance and a
         threshold of 3.
+    :param centre: The sample's centre as a function of m/z, where it follows
+        one (``measurement_model.MeasurementModel.centres_ppm``): each line's
+        mass error is then read from the centre at that line's m/z instead of
+        from ``mu_ppm``. ``None`` reads every line from ``mu_ppm``.
     """
 
     sigma_ppm: float | None = None
@@ -157,6 +163,18 @@ class PatternScoring:
     abundance_floor: float = config.ENVELOPE_ABUNDANCE_FLOOR
     resolution: Callable[[float], float] | None = None
     envelope_tolerance: EnvelopeTolerance | None = None
+    centre: Callable[[np.ndarray], np.ndarray] | None = None
+
+    def centres_at(self, mz) -> np.ndarray | float:
+        """The centre each line's mass error is read from, at the lines' m/z.
+
+        :param mz: The lines' predicted m/z.
+        :return: :attr:`mu_ppm` where the sample follows no centre function,
+            else the function's value at each line.
+        """
+        if self.centre is None:
+            return self.mu_ppm
+        return np.asarray(self.centre(np.asarray(mz, dtype=float)), dtype=float)
 
 
 @dataclass(frozen=True)
