@@ -21,6 +21,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     continuity_stale,
     instrument_type_of,
     known_species_summary,
+    line_owner_of,
     manual_pin_of,
     merged_isotopologue_of_summary,
     mz_from_delta,
@@ -163,6 +164,9 @@ def _batch_peak_meta(bp) -> dict:
         "instrument_type": instrument_type_of(bp.intensity_variable),
         "max_intensity": bp.max_intensity,
         "isotopologue_of": bp.isotopologue_of,
+        # The one owner link of an isotope line, which the ledger folds the
+        # row under and the ratio stability pairs it with (MAS-865).
+        "line_owner_id": line_owner_of(bp),
         # Pinned by hand for the whole batch (batch_curation.py).
         "curated": manual_pin_of(bp) is not None,
         # Minted at a target ion's m/z rather than at its peak's

@@ -324,6 +324,59 @@ class TestThePairs:
             (PAIR_ISOTOPOLOGUE, "m0", "l2"),
         }
 
+    def test_a_stamped_line_pairs_with_the_row_it_is_drawn_under(self):
+        # A stamp leaves the line reading its own formula; the one owner link
+        # (line_owner_of) is the stamp's parent, which the ledger draws it
+        # under, so the line pairs with it (MAS-865).
+        stamped = anchor(
+            "s1",
+            formula="C9H9NO",
+            provenance={
+                "stamped_isotopologue_of": {"batch_peak_id": "m0", "formula": "C6H12O6"}
+            },
+        )
+        assert root_parent_id(stamped, {"m0": anchor("m0"), "s1": stamped}) == "m0"
+        assert _pairs(anchor("m0"), stamped) == {(PAIR_ISOTOPOLOGUE, "m0", "s1")}
+
+    def test_a_line_of_a_stamped_line_pairs_with_the_stamps_root(self):
+        # The ledger walks through the stamp and draws l2 under m0: so does
+        # the pass, and the family's formula is the one the stamp predicted.
+        stamped = anchor(
+            "s1",
+            formula="C9H9NO",
+            provenance={
+                "stamped_isotopologue_of": {"batch_peak_id": "m0", "formula": "C6H12O6"}
+            },
+        )
+        assert _pairs(anchor("m0"), stamped, line("l2", "s1", formula="C9H9NO")) == {
+            (PAIR_ISOTOPOLOGUE, "m0", "s1"),
+            (PAIR_ISOTOPOLOGUE, "m0", "l2"),
+        }
+
+    def test_a_stale_stamp_owns_no_line(self):
+        stale = anchor(
+            "s1",
+            formula="C9H9NO",
+            provenance={
+                "stamped_isotopologue_of": {
+                    "batch_peak_id": "m0",
+                    "formula": "C6H12O6",
+                    "stale": True,
+                }
+            },
+        )
+        assert _pairs(anchor("m0"), stale) == set()
+
+    def test_a_stamp_predicted_for_another_formula_forms_no_pair(self):
+        stamped = anchor(
+            "s1",
+            formula="C9H9NO",
+            provenance={
+                "stamped_isotopologue_of": {"batch_peak_id": "m0", "formula": "C7H14O5"}
+            },
+        )
+        assert _pairs(anchor("m0"), stamped) == set()
+
     def test_a_link_the_ledger_cannot_follow_forms_no_pair(self):
         index = {"x": line("x", "y"), "y": line("y", "x")}
         assert root_parent_id(index["x"], index) is None
