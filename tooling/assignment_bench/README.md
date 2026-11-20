@@ -400,11 +400,14 @@ In order:
    a commit on develop that is an ancestor of the head, with a gate verdict,
    every set of the run and nothing left out. Of two such cards, the one
    whose commit is behind the other's is passed over, and of two of one
-   commit the later one is read. The run log names that card, and the
-   comment's baseline line names its ref and commit. The rolling baseline
-   stays as it was. Only with no such card is nothing diffed: the comment
-   then says so, with the baseline's commit and the merge base. So does a
-   comment with no baseline yet.
+   commit the later one is read. On a linear develop that card is often
+   the rolling baseline itself. Either way it is at or behind the merge
+   base, so what develop merged after it can still show as new or fixed:
+   the run log says so, and the comment's baseline line names the card's
+   ref and commit, so a reader can tell (#3362 tracks doing better). The
+   rolling baseline stays as it was. With no such card nothing is diffed:
+   the comment then says so, with the baseline's commit and the merge
+   base. So does a comment with no baseline yet.
 3. **The run**, as below.
 4. **The comment.** It posts one comment on the PR, which starts with the
    marker `<!-- mascope-bench-card -->`. A re-run on the same PR, at a new

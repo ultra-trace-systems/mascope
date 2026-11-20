@@ -888,12 +888,7 @@ class BenchRun:
                         say(no_diff)
                         base = None
                     else:
-                        say(
-                            f"baseline: develop's card of {older['at']} "
-                            f"({older['ref']} at {older['sha'][:9]}), the newest card "
-                            f"of a commit behind {ref}; the rolling one is not: "
-                            + no_diff.removeprefix("No diff: ")
-                        )
+                        say(self._stand_in(older, base, ref, sha, post.pr.base_branch))
                         base, no_diff = older, None
             summary["migration"] = migrate(
                 self.instance,
@@ -1630,6 +1625,42 @@ class BenchRun:
             f"No diff: develop's baseline ({base['sha'][:9]}, made {base['at']}) is "
             f"older than this PR's merge base {merge_base[:9]}; the nightly run of "
             f"develop's head makes a newer one."
+        )
+
+    def _stand_in(
+        self, older: dict, base: dict, ref: str, sha: str, branch: str
+    ) -> str:
+        """The log line for a card of develop read in place of a rolling
+        baseline older than the PR's merge base. Every develop card behind
+        ``sha`` is at or behind that merge base, so the line says how far
+        behind it the card is read, and that develop's merges after the
+        card count as the branch's (#3362)."""
+        card = f"develop's card of {older['at']} ({older['ref']} at {older['sha'][:9]})"
+        merge_base = self.instance.merge_base(sha, f"origin/{branch}")
+        if merge_base is None:
+            return (
+                f"baseline: {card}, the newest card of develop behind {ref}. The "
+                f"merge base of this PR could not be found, so what develop merged "
+                f"after that card may count as the branch's."
+            )
+        if older["sha"] == merge_base:
+            return (
+                f"baseline: {card}, the newest card of develop behind {ref}, at "
+                f"this PR's merge base."
+            )
+        behind = (
+            f"It is older than this PR's merge base {merge_base[:9]}: what develop "
+            f"merged between the two counts as the branch's."
+        )
+        if older["sha"] == base["sha"]:
+            return (
+                f"baseline: {card}, the rolling baseline, as no newer card of "
+                f"develop is behind {ref}. {behind}"
+            )
+        return (
+            f"baseline: {card}, the newest card of develop behind {ref}, in place "
+            f"of the rolling baseline ({base['sha'][:9]}, made {base['at']}). "
+            f"{behind}"
         )
 
     def _newest_ancestor(self, state: dict, sha: str, chosen) -> dict | None:
