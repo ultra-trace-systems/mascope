@@ -399,9 +399,18 @@ to run the commands against any instance and how to ask for a card.
   `tooling/systemd/bench-baseline.service` and `.timer`, installed in the
   account the agents run as, beside the testbed's service. At 01:30 the
   service moves a checkout kept for it alone to develop's head and runs
-  `bench run origin/develop --baseline` from it, so develop's card is made
-  by develop's comparison tool; it waits on the lock behind a run in
-  progress. Exit 1, a card that failed its gate, counts as success; a run
+  `bench run origin/develop --baseline --decoys` from it, so develop's card
+  is made by develop's comparison tool and carries the decoy arms; it waits
+  on the lock behind a run in progress. The arms run every night on develop,
+  and on a PR only where the step touches scoring (the plan owner,
+  2026-11-20): `--decoys` on a PR only when the brief's `**Bench.**` line
+  asks, and a brief asks only where the step changes the scorer, the tiering
+  rules, the mass gate, the rival or corroboration tests, or what a decoy
+  arm reads. A card with the arms diffs its decoy rows against the
+  nightly's; one without them compares the control readings, says in its
+  baseline line that the baseline's decoy rows were not run on this ref,
+  and keeps its verdict (MAS-1058). After a change to the unit, install it
+  again from the repository and reload the user manager (below). Exit 1, a card that failed its gate, counts as success; a run
   that made no card fails the unit. The install, once, from a checkout:
 
   ```sh

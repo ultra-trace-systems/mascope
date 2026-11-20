@@ -1285,6 +1285,7 @@ def test_two_cards_differing_in_one_reading_diff_to_that_row():
         ],
         "only_baseline": [],
         "only_card": [],
+        "arms_not_run": [],
     }
 
 
@@ -2300,3 +2301,25 @@ def test_a_list_that_is_not_one_stops_the_card_before_anything_is_read(
     with pytest.raises(SystemExit, match=message):
         compare_runs.main(["--sets", str(served), "--card", str(tmp_path / "card")])
     assert not (tmp_path / "card").exists()
+
+
+def test_a_card_without_arms_diffs_the_controls_of_a_baseline_with_them():
+    old = _card({"A": {"G1": (6.2, 999), "decoy x9 held_pct": (3.0, 10)}})
+    new = _card({"A": {"G1": (6.2, 999)}})
+    diff = compare_runs.diff_cards(old, new)
+    assert diff["moved"] == [] and diff["compared"] == 1
+    assert diff["arms_not_run"] == ["x9"]
+    assert compare_runs.baseline_line(diff) == (
+        "0 of 1 readings moved; the baseline's decoy rows were not run on this ref (x9)"
+    )
+    new["baseline"] = diff
+    own = json.loads(compare_runs.card_files(new)["card_A.json"])
+    assert own["baseline"]["arms_not_run"] == ["x9"]
+
+
+def test_a_card_with_arms_diffs_its_decoy_rows():
+    old = _card({"A": {"G1": (6.2, 999), "decoy x9 held_pct": (3.0, 10)}})
+    new = _card({"A": {"G1": (6.2, 999), "decoy x9 held_pct": (5.0, 10)}})
+    diff = compare_runs.diff_cards(old, new)
+    assert diff["arms_not_run"] == []
+    assert [m["metric"] for m in diff["moved"]] == ["decoy x9 held_pct"]
