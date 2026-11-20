@@ -52,6 +52,12 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     STATUS_COMPLETED,
     start_run,
 )
+from mascope_backend.api.new.peak_assignments.batch_stages import (
+    BatchStage,
+    begin_stage,
+    finish_stage,
+    stage_standing,
+)
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
 from mascope_backend.api.new.peak_assignments.schemas import BatchImportRow
 from mascope_backend.db import (
@@ -523,6 +529,7 @@ async def test_a_cancellation_mid_import_still_recomputes_and_stays_a_cancellati
 
     monkeypatch.setattr(pipeline, "score_seeds", cancelled)
     monkeypatch.setattr(batch_import, "recompute_batch_consensus", recording)
+    await _stages_ran(batch_id, BatchStage.SERIES)
 
     with pytest.raises(asyncio.CancelledError):
         await run_batch_import(
@@ -531,6 +538,45 @@ async def test_a_cancellation_mid_import_still_recomputes_and_stays_a_cancellati
 
     anchors = await _anchors_by_mz(async_session_factory, batch_id)
     assert recomputed == [{anchors[181].batch_peak_id}]
+    # The sample measured before the cancellation committed its members: the
+    # stages read them, so they are stale whichever way the recompute went.
+    assert await _stale_reasons(batch_id) == {"series": "import"}
+
+
+async def _stages_ran(batch_id, *stages):
+    """Record stages as run and current, as a pass leaves them."""
+    for stage in stages:
+        _, started = await begin_stage(batch_id, stage)
+        await finish_stage(batch_id, stage, started, run_id=None)
+
+
+async def _stale_reasons(batch_id):
+    standing = await stage_standing(batch_id)
+    return {
+        entry["stage"]: entry["stale_reason"]
+        for entry in standing["stages"]
+        if entry["state"] == "stale"
+    }
+
+
+async def test_an_import_leaves_every_stage_that_ran_stale(
+    folded_batch, stubbed_scorer
+):
+    """An import measures members across the batch, past what they read:
+    every stage reads them, so every stage that ran is stale, and a pass
+    starts again at the first of them."""
+    batch_id = folded_batch["batch_id"]
+    await _stages_ran(batch_id, BatchStage.SERIES, BatchStage.BATCH_CHECKS)
+    assert await _stale_reasons(batch_id) == {}
+
+    await run_batch_import(
+        batch_id, "peaky", 5.0, _rows((181.0709, "C6H12O6")), POLARITY
+    )
+
+    assert await _stale_reasons(batch_id) == {
+        "series": "import",
+        "batch_checks": "import",
+    }
 
 
 # --- The engine's own verdict --------------------------------------------------

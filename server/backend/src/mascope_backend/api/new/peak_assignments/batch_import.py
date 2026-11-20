@@ -60,6 +60,10 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     fail_run,
     touch_ledger,
 )
+from mascope_backend.api.new.peak_assignments.batch_stages import (
+    REASON_IMPORT,
+    mark_batch_stale,
+)
 from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     Annotation,
     _propagate_to_sample,
@@ -546,6 +550,11 @@ async def run_batch_import(
                 "its committed samples touched still describe their previous "
                 "members; rebuilding the ledger recomputes them."
             )
+        finally:
+            # Every batch stage reads the members measured above, which are
+            # committed whether or not the walk finished, so every stage is
+            # stale until it runs on them. Never raises.
+            await mark_batch_stale(sample_batch_id, REASON_IMPORT)
     # After the recompute, so each verdict is checked against the identity the
     # ledger now shows for its anchor.
     (
