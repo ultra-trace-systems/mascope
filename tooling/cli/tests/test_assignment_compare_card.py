@@ -2323,3 +2323,27 @@ def test_a_card_with_arms_diffs_its_decoy_rows():
     diff = compare_runs.diff_cards(old, new)
     assert diff["arms_not_run"] == []
     assert [m["metric"] for m in diff["moved"]] == ["decoy x9 held_pct"]
+
+
+def test_a_set_that_read_no_arm_on_a_card_with_arms_diffs_its_decoy_rows():
+    # The card ran the arms: B read them, A read none. A's decoy rows are
+    # gone on this ref, which is a move, not "not run".
+    readings = {"G1": (6.2, 999), "decoy x9 held_pct": (3.0, 10)}
+    old = _card({"A": readings, "B": readings})
+    new = _card({"A": {"G1": (6.2, 999)}, "B": readings})
+    diff = compare_runs.diff_cards(old, new)
+    assert diff["arms_not_run"] == []
+    assert [(m["set"], m["metric"]) for m in diff["moved"]] == [
+        ("A", "decoy x9 held_pct")
+    ]
+
+
+def test_an_arm_not_read_marks_a_card_made_with_arms():
+    # No decoy reading anywhere, but a column says an arm was not read:
+    # the card was made with the arms.
+    old = _card({"A": {"G1": (6.2, 999), "decoy x9 held_pct": (3.0, 10)}})
+    new = _card({"A": {"G1": (6.2, 999)}})
+    new["columns"]["A"]["decoys_not_read"] = {"x9": 1}
+    diff = compare_runs.diff_cards(old, new)
+    assert diff["arms_not_run"] == []
+    assert [m["metric"] for m in diff["moved"]] == ["decoy x9 held_pct"]
