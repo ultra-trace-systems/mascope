@@ -1,7 +1,7 @@
 # Automatic ingest: chemistry routing and acquisition splitting - design
 
 - **Status:** building
-- **As of:** 2026-11-03
+- **As of:** 2026-11-06
 - **Tracked in:** [Automatic ingest: routing and splitting](https://linear.app/ultra-trace/project/automatic-ingest-routing-and-splitting-68acd9575fa9) (Linear) and GitHub #2098
 - **Supersedes:** `ionization_method_config.md` (retired 2026-10-22; its target model is in phase 8 of section 10)
 - **What:** Automatic ingest: binding a file's chemistry by evidence and splitting it into streams, segments and windows.
@@ -19,8 +19,8 @@ and layout override, the per-stream stale rebuild (step 6) and MS2 routes
 taking the stream; phase 8, the profiles, is filed as milestone 9 of the
 Linear project, and of its target model the `Instrument` row and the
 versioned ionization setup are built (MAS-300, 2026-10-27), and so are the
-seeded profiles' calibrant and diagnostic collections (MAS-312), the rest
-unbuilt (MAS-313, MAS-337, MAS-344);
+seeded profiles' calibrant and diagnostic collections (MAS-312) and their
+place in the browser (MAS-337), the rest unbuilt (MAS-313, MAS-344);
 detection is built as an audit: it reads each file's chemistry off its
 reagent ions and binds nothing, and its first production read fails
 the rung's gate at one site** (2026-11-03). Written for issue #2098 ("Split files into
@@ -1976,15 +1976,15 @@ What a regular user needs from a profile, and how far each part is built
 | Its identity, name, polarity and adduct panel (mechanisms) | shipped in #2193: eleven chemistries seeded at every start (`mascope_backend.ionization_catalogue`, `db.admin.ionization.ensure_system_modes`) |
 | Its calibrant collection: the reagent-ion library as m/z anchors | built (MAS-312): seeded at every start for the seven chemistries with a reagent, the reagent ion and its own clusters; a site's own collection on the mode still wins |
 | Its diagnostic collection: the reagent ions to look for | built (MAS-312): every line of the reagent, seeded beside the calibrants |
-| Its place in the browser | not built; the listing hides an unadopted profile unless asked (`include_system`), and the frontend never asks, so Choose chemistry cannot offer one |
+| Its place in the browser | built (MAS-337): every profile is listed from the first start, with what it has routed (file count, the newest file's acquisition time); the *Chemistry* settings open on the profiles with the site's own modes, tokens, mechanisms and collection overrides under Advanced; Choose chemistry offers the profiles first; a file bound to one names it in its status |
 | Recognition: a fingerprint, and a hint on the method name | phase 5, and a measurement in phase 8 |
 
 The first row is what made the method binding measurable at all: judged on the mode
 record, a third of the fleet's Orbitrap files look ambiguous; judged on the
 chemistry a profile names, three in a hundred (2.4). The next three rows are
 phase 8, which is what makes a profile usable on the day a server is
-installed. Until the browser lists the profiles, a fresh server processes its
-first file only after someone has built a mode the advanced way.
+installed: a fresh server's first file waits once, and choosing a profile for
+it is one click.
 
 The versioned `reagent_profile` row of `chemistry_profiles.md` (section 3.1
 there) is the same object with an element grid and a matrix context beside
@@ -3284,12 +3284,24 @@ unchanged.
   and writes the binding with source `catalogue`.
 - **A complete profile is listed from the start**, marked as shipped, and
   "adopted" stops being a state: adopting a profile is choosing it for a
-  file. The `include_system` switch goes with it.
+  file. The `include_system` switch goes with it. *Built (MAS-337), with
+  every profile listed rather than the complete ones alone: the four with no
+  reagent are listed too, marked as shipping no calibrants, so that a site
+  can complete one under Advanced instead of making a mode of its own for a
+  chemistry Mascope ships. Choose chemistry offers them under Advanced. A
+  row's "what it has routed" is the count of the files the ingest filed
+  under it and the newest one's acquisition time, not its name: the modes
+  are reference data any user reads, and a raw file is shown only to its
+  instrument's workspace. What a site has put on a seeded mode decides only
+  whether deleting a mechanism releases it (`holds_deployment_data`).*
 - **A Chemistry surface for regular users, Advanced for the rest.** Profiles
   first, each with what it has routed. The site's own modes, tokens,
   mechanisms and collection overrides move under Advanced. Choose chemistry
   lists the profiles. Storage keeps its names and tables; only what the
-  browser calls things changes.
+  browser calls things changes. *Built (MAS-337): the Chemistry settings
+  open on Profiles; Advanced holds the modes and mechanisms tabs, where a
+  profile's row edits only its collections; a file bound to a profile names
+  it as one in its status, whatever rung bound it.*
 - **Cold start without the advanced path.** The catalogue covers a site on
   a shipped method; a site on its own method parks once and clicks once. One
   read-only measurement decides whether more is worth doing: how many of the

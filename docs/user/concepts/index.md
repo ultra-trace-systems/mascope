@@ -132,7 +132,10 @@ Two related concepts describe how neutral molecules become the ions you measure:
   It bundles a set of mechanisms together with a designated **calibrant
   collection** and **diagnostic collection**, and carries a short **token** used
   to recognise it in filenames. Each sample records the ionization mode it was
-  processed under.
+  processed under. The **chemistry profiles** Mascope ships are ionization
+  modes too, the same on every server and with no token: a file is put under
+  one by choosing it for the file
+  ([Chemistry profiles](../guides/import-files.md#chemistry-profiles)).
 
 Because an ionization mode names its calibrant and diagnostic collections,
 changing a mode's collections flags the affected batches for **re-calibration**
@@ -144,7 +147,7 @@ modes are shared reference data; editors and above can manage them.
 An ionization mode is **versioned**. Changing what it computes from - its
 polarity, its mechanisms, either collection, or the isotopic purity of its
 labelled reagent - makes its next version, shown beside its name in the
-ionization settings. Samples already processed keep the version they were
+**Chemistry** settings, under **Advanced**. Samples already processed keep the version they were
 processed under, so their results still say what produced them; the
 re-calibration or re-match their batch is flagged for moves them onto the new
 version, as does a peak assignment run or reprocessing their file. The

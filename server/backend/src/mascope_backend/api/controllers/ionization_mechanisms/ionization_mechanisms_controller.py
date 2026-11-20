@@ -26,7 +26,7 @@ from mascope_backend.api.models.ionization_mechanisms.ionization_mechanism_pydan
     IonizationMechanismRead,
     IonizationMechanismSortColumn,
 )
-from mascope_backend.api.new.ionization.modes.util import system_mode_adopted
+from mascope_backend.api.new.ionization.modes.util import holds_deployment_data
 from mascope_backend.api.new.ionization.modes.versions import (
     held_by_earlier_versions,
     still_held,
@@ -383,14 +383,12 @@ async def create_ionization_mechanism(
     }
 
 
-async def _release_unadopted_system_modes(
-    session, ionization_mechanism_id: str
-) -> set[str]:
-    """Delete the seeded modes holding this mechanism that nobody adopted.
-
-    Adoption is ``system_mode_adopted``, the same predicate the listing reads,
-    so a mode this refuses to release is one the deployment can actually see.
-    A seeded mode that is not adopted carries nothing of the deployment's.
+async def _release_seeded_modes(session, ionization_mechanism_id: str) -> set[str]:
+    """Delete the seeded modes holding this mechanism that carry nothing of
+    the deployment's (``holds_deployment_data``): no collection of its own,
+    no sample and no edit. Every mode is listed, so one this refuses to
+    release is one the deployment can see, and one it releases is told to
+    the browsers that list it.
 
     :param session: The session the deletion runs in.
     :param ionization_mechanism_id: The mechanism about to be deleted.
@@ -404,10 +402,10 @@ async def _release_unadopted_system_modes(
             await session.execute(
                 select(IonizationMode).where(
                     IonizationMode.system_key.is_not(None),
-                    # A superseded version is the history of an adopted one:
+                    # A superseded version is the history of an edited one:
                     # its successor carries the collections.
                     IonizationMode.is_active.is_(True),
-                    ~system_mode_adopted(),
+                    ~holds_deployment_data(),
                 )
             )
         )
@@ -467,17 +465,15 @@ async def delete_ionization_mechanism(ionization_mechanism_id: str) -> dict:
                 "is one Mascope ships and cannot be deleted"
             )
 
-        # -- Drop the seeded modes nobody adopted that hold this mechanism -- #
+        # -- Drop the seeded modes still as seeded that hold this mechanism -- #
         # A mode Mascope ships cannot be deleted through its own route, so one
         # built on a mechanism the deployment is retiring would pin that
-        # mechanism for good. Unadopted, the mode has no samples and no
+        # mechanism for good. As seeded, the mode has no samples and no
         # collection of the deployment's, so nothing of the deployment's is
         # lost: the collections Mascope seeds for its chemistry, which it may
         # point at, stay behind. Seeding leaves the mode out from now on,
         # because the mechanism it needs is gone.
-        released = await _release_unadopted_system_modes(
-            session, ionization_mechanism_id
-        )
+        released = await _release_seeded_modes(session, ionization_mechanism_id)
 
         # -- Find the ionization modes still referencing it -- #
         # Read in this session rather than through get_ionization_mechanism,
@@ -549,7 +545,11 @@ async def delete_ionization_mechanism(ionization_mechanism_id: str) -> dict:
         # Commit the transaction
         await session.commit()
 
-    # -- Emit deletion event -- #
+    # -- Emit deletion events -- #
+    # The released modes first: they were listed, every mode is, and a browser
+    # that kept them would offer a mode whose mechanism is gone.
+    for mode_id in sorted(released):
+        await emit_record_deleted(record_type="ionization_mode", record_id=mode_id)
     await emit_record_deleted(
         record_type="ionization_mechanism",
         record_id=ionization_mechanism_id,

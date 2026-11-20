@@ -25,9 +25,9 @@ from sqlalchemy.orm import selectinload
 import mascope_backend.db as db_module
 import mascope_backend.db.admin.ionization.ensure_system_modes as seed_module
 from mascope_backend.api.new.ionization.modes.schema import IonizationModeUpdate
-from mascope_backend.api.new.ionization.modes.service import update_ionization_mode
-from mascope_backend.api.new.ionization.modes.util import (
-    fetch_listable_ionization_modes,
+from mascope_backend.api.new.ionization.modes.service import (
+    get_ionization_modes,
+    update_ionization_mode,
 )
 from mascope_backend.db import (
     Dataset,
@@ -787,23 +787,26 @@ async def test_a_mode_samples_are_bound_under_takes_its_collections_as_a_new_ver
 
 
 @pytest.mark.asyncio
-async def test_the_listing_still_leaves_the_shipped_chemistries_out(fresh_db):
-    """Their own collections are not the site's, so they do not adopt them; a
-    collection of the site's does, as it did."""
+async def test_a_fresh_server_lists_every_shipped_chemistry(fresh_db):
+    """Listed from the first start, before anything is processed under one:
+    choosing one for a file is all it takes (MAS-337). The chemistries with a
+    reagent come with their calibrants, which is what calibrates that first
+    file; the others with none, which the browser says."""
     await ensure_system_ionization()
-    assert {
-        mode.ionization_mode_id for mode in await fetch_listable_ionization_modes()
-    } == set()
 
-    site = await _site_collection(fresh_db)
-    async with fresh_db() as session:
-        await session.execute(
-            update(IonizationMode)
-            .where(IonizationMode.ionization_mode_id == _BROMIDE_MODE)
-            .values(diagnostic_collection_id=site)
-        )
-        await session.commit()
+    listed = {
+        mode["ionization_mode_id"]: mode
+        for mode in (await get_ionization_modes())["data"]
+    }
 
+    assert set(listed) == {mode_id for _, mode_id, *_ in SYSTEM_MODES}
+    calibrants = {
+        collection.system_key: collection.collection_id
+        for collection in seeded_collections()
+        if collection.mode_field == "calibration_collection_id"
+    }
     assert {
-        mode.ionization_mode_id for mode in await fetch_listable_ionization_modes()
-    } == {_BROMIDE_MODE}
+        mode_id: listed[mode_id]["calibration_collection_id"]
+        for _, mode_id, *_ in SYSTEM_MODES
+    } == {key_mode: calibrants.get(key) for key, key_mode, *_ in SYSTEM_MODES}
+    assert {mode["routed_files"] for mode in listed.values()} == {0}
