@@ -51,6 +51,17 @@ stale once something has:
 
 The ledger serves where each stage stands (:func:`stage_standing`).
 
+**One pass at a time.** A pass holds a stage row ``running`` from its first
+stage's start to its last stage's end: each later stage begins in the
+transaction the stage before it ends in (:func:`hand_over`), so it holds one
+also where it holds no batch run (judging samples again, stamping versions,
+the ratio stability, the probable blends). Every step's route refuses while
+one does (``batch_runs.check_no_run_in_flight``), and so does a pass's first
+stage, which a second press can reach before the first pass's stage is
+marked (:func:`begin_stage`). Every writer of the stage rows takes the
+batch's fold lock first, as a fold does, so no two lock them in different
+orders (:func:`_fold_lock`).
+
 Every run of a stage counts up its version, and every record it writes carries
 the version (``version`` in the record): a batch decision is a versioned
 record, which a sample's run can name (MAS-985).
@@ -68,11 +79,15 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any, Optional
 
+from fastapi import status
 from sqlalchemy import case, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from mascope_backend.api.lib.api_features import api_controller_background_task
-from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+from mascope_backend.api.lib.exceptions.api_exceptions import (
+    ApiException,
+    CodedHTTPException,
+)
 from mascope_backend.api.new.peak_assignments.batch_peaks import STAGE_VERSION
 from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_BATCH_CHECKS,
@@ -83,6 +98,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_SERIES,
     ACTION_STRIP_ISOTOPOLOGUES,
     ACTION_WATER_LADDERS,
+    RUN_IN_FLIGHT_CODE,
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.db import BatchPeak, BatchPeakRun, BatchPeakStage, async_session
@@ -470,6 +486,69 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class BatchStageRunningException(CodedHTTPException):
+    """A pass of the batch stages is running on this batch (409).
+
+    A pass holds a stage row ``running`` from its first stage's start to its
+    last stage's end, also where it holds no batch run: while it judges
+    samples again, stamps versions, or runs the ratio stability and the
+    probable blends. Each step's route, the pass's own, a rebuild and an
+    import refuse while it does (``batch_runs.check_no_run_in_flight``), and
+    so does a pass's first stage (:func:`begin_stage`).
+    """
+
+    error_code = RUN_IN_FLIGHT_CODE
+
+    def __init__(self, sample_batch_id: str, running: Any):
+        spec = STAGE_BY_NAME.get(running.stage)
+        label = spec.label if spec is not None else running.stage
+        started = (
+            f", started {running.utc_started:%Y-%m-%d %H:%M} UTC"
+            if running.utc_started is not None
+            else ""
+        )
+        super().__init__(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"The batch stages are running on this batch ({label}{started}); "
+                "wait for them to finish"
+            ),
+        )
+
+
+async def running_stage(session, sample_batch_id: str) -> Optional[BatchPeakStage]:
+    """The batch's stage a pass is running, if one is."""
+    return (
+        (
+            await session.execute(
+                select(BatchPeakStage).where(
+                    BatchPeakStage.sample_batch_id == sample_batch_id,
+                    BatchPeakStage.state == STATE_RUNNING,
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+
+
+async def _fold_lock(session, sample_batch_id: str) -> None:
+    """The batch's fold lock, taken before any stage row is written.
+
+    A fold marks the stage rows inside its own transaction, under this lock,
+    and so does a consensus recompute. A writer of more than one stage row
+    that took the rows' own locks first could lock them in another order than
+    the fold, and Postgres would abort one of the two to break the deadlock.
+    Taken first by every writer, the lock orders them all.
+    """
+    # Imported here: the controller imports the fold, which imports this module.
+    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+        _acquire_batch_fold_lock,
+    )
+
+    await _acquire_batch_fold_lock(session, sample_batch_id)
+
+
 async def mark_stale(
     session,
     sample_batch_id: str,
@@ -480,7 +559,8 @@ async def mark_stale(
     skip_running: bool = False,
 ) -> None:
     """Mark stages of a batch stale, on the caller's session and inside its
-    transaction: the fold's, which writes what they read.
+    transaction: the fold's, which writes what they read, and which holds
+    the batch's fold lock (:func:`_fold_lock`).
 
     Only a stage that has run has a row to mark; one that never ran is not
     stale, it is not run. A running stage keeps running, and the mark is what
@@ -518,52 +598,97 @@ async def mark_every_stage_stale(session, sample_batch_id: str, reason: str) -> 
     await mark_stale(session, sample_batch_id, stages_from(STAGES[0].stage), reason)
 
 
-async def begin_stage(sample_batch_id: str, stage: BatchStage) -> tuple[int, datetime]:
-    """Record a stage's run as started: its version counted up, its state
-    running.
+async def mark_batch_stale(sample_batch_id: str, reason: str) -> None:
+    """Mark every stage of a batch stale, in a transaction of its own under
+    the fold lock: the mark of a writer whose rewrites commit sample by
+    sample, a rebuild. Shielded, and logged rather than
+    raised where it fails: it is written while an interruption unwinds too,
+    and must not replace what interrupted it."""
 
-    :return: The run's version, and when it started.
-    """
-    started = _now()
-    async with async_session() as session:
-        statement = pg_insert(BatchPeakStage).values(
-            sample_batch_id=sample_batch_id,
-            stage=stage.value,
-            version=1,
-            state=STATE_RUNNING,
-            utc_started=started,
+    async def write() -> None:
+        async with async_session() as session:
+            await _fold_lock(session, sample_batch_id)
+            await mark_every_stage_stale(session, sample_batch_id, reason)
+            await session.commit()
+
+    try:
+        await asyncio.shield(write())
+    except Exception as exc:  # noqa: BLE001 - never replace what interrupted it
+        runtime.logger.warning(
+            f"Could not mark the batch stages of batch '{sample_batch_id}' stale "
+            f"({reason}): {exc}"
         )
-        statement = statement.on_conflict_do_update(
-            index_elements=[BatchPeakStage.sample_batch_id, BatchPeakStage.stage],
-            set_={
-                "version": BatchPeakStage.version + 1,
-                "state": STATE_RUNNING,
-                "utc_started": started,
-            },
-        ).returning(BatchPeakStage.version)
-        version = (await session.execute(statement)).scalar_one()
-        await session.commit()
+
+
+async def _begin(session, sample_batch_id: str, stage: BatchStage) -> tuple:
+    """A stage's row written as running, its version counted up, on the
+    caller's session under its fold lock."""
+    started = _now()
+    statement = pg_insert(BatchPeakStage).values(
+        sample_batch_id=sample_batch_id,
+        stage=stage.value,
+        version=1,
+        state=STATE_RUNNING,
+        utc_started=started,
+    )
+    statement = statement.on_conflict_do_update(
+        index_elements=[BatchPeakStage.sample_batch_id, BatchPeakStage.stage],
+        set_={
+            "version": BatchPeakStage.version + 1,
+            "state": STATE_RUNNING,
+            "utc_started": started,
+        },
+    ).returning(BatchPeakStage.version)
+    version = (await session.execute(statement)).scalar_one()
     return version, started
 
 
-async def finish_stage(
+async def begin_stage(sample_batch_id: str, stage: BatchStage) -> tuple[int, datetime]:
+    """Record a stage's run as started: its version counted up, its state
+    running. Refused while another of the batch's stages runs: a pass's first
+    stage, started by a second press that came in before the first pass's
+    own stage was marked (the routes' refusal reads the same rows, and a
+    request can reach it in between). Each later stage of a pass begins as
+    the one before it ends (:func:`hand_over`), so a pass holds a running
+    stage from its start to its end.
+
+    :return: The run's version, and when it started.
+    :raises BatchStageRunningException: Another stage of the batch runs.
+    """
+    async with async_session() as session:
+        await _fold_lock(session, sample_batch_id)
+        running = await running_stage(session, sample_batch_id)
+        if running is not None:
+            raise BatchStageRunningException(sample_batch_id, running)
+        begun = await _begin(session, sample_batch_id, stage)
+        await session.commit()
+    return begun
+
+
+async def hand_over(
     sample_batch_id: str,
     stage: BatchStage,
     started: datetime,
     *,
     run_id: Optional[str],
     stale_reason: Optional[str] = None,
-) -> str:
-    """Record a stage's run as finished, and mark every stage after it stale.
+    then: Optional[BatchStage] = None,
+) -> tuple[str, Optional[tuple[int, datetime]]]:
+    """Record a stage's run as finished, mark every stage after it stale, and
+    begin ``then``, the pass's next stage, in the same transaction: between
+    two stages of a pass no moment passes with none of them running, so no
+    second pass is admitted there.
 
     It is current unless something marked it stale after it started (a fold
     that landed while it ran) or the run itself stopped partway
     (``stale_reason``).
 
-    :return: The state it ends in.
+    :return: The state it ends in, and ``then``'s version and start where it
+        began.
     """
     now = _now()
     async with async_session() as session:
+        await _fold_lock(session, sample_batch_id)
         row = (
             await session.execute(
                 select(BatchPeakStage)
@@ -588,41 +713,76 @@ async def finish_stage(
             row.stale_reason = None
             row.utc_stale = None
         state = row.state
+        # ``then`` runs next, on what this stage wrote: it is begun, not
+        # marked; the stages after it read what it will write.
         await mark_stale(
             session,
             sample_batch_id,
-            stages_after(stage),
+            [later for later in stages_after(stage) if later != then],
             upstream_reason(stage),
             at=now,
         )
+        await session.flush()
+        begun = await _begin(session, sample_batch_id, then) if then else None
         await session.commit()
+    return state, begun
+
+
+async def finish_stage(
+    sample_batch_id: str,
+    stage: BatchStage,
+    started: datetime,
+    *,
+    run_id: Optional[str],
+    stale_reason: Optional[str] = None,
+) -> str:
+    """Record a stage's run as finished, and mark every stage after it stale
+    (:func:`hand_over`, with no stage to begin next).
+
+    :return: The state it ends in.
+    """
+    state, _ = await hand_over(
+        sample_batch_id, stage, started, run_id=run_id, stale_reason=stale_reason
+    )
     return state
 
 
-async def stop_stage(sample_batch_id: str, stage: BatchStage) -> None:
+async def stop_stage(
+    sample_batch_id: str, stage: BatchStage, *, then: Optional[BatchStage] = None
+) -> None:
     """Record a stage's run as stopped partway: what it wrote stands, and it is
     stale until it runs again. The stages after it read what it left, so they
-    are stale too. Shielded: it is written while a cancellation unwinds."""
+    are stale too. ``then``, the pass's next stage, is stopped as well where
+    the hand-over to it committed before the interruption: it began, and
+    nothing will end it. Shielded: it is written while a cancellation
+    unwinds."""
 
     async def write() -> None:
         now = _now()
         async with async_session() as session:
-            await session.execute(
-                update(BatchPeakStage)
-                .where(
-                    BatchPeakStage.sample_batch_id == sample_batch_id,
-                    BatchPeakStage.stage == stage.value,
-                )
-                .values(
-                    state=STATE_STALE, stale_reason=REASON_INTERRUPTED, utc_stale=now
-                )
-            )
+            await _fold_lock(session, sample_batch_id)
             await mark_stale(
                 session,
                 sample_batch_id,
                 stages_after(stage),
                 upstream_reason(stage),
                 at=now,
+            )
+            stopped = [stage.value] + ([then.value] if then is not None else [])
+            await session.execute(
+                update(BatchPeakStage)
+                .where(
+                    BatchPeakStage.sample_batch_id == sample_batch_id,
+                    BatchPeakStage.stage.in_(stopped),
+                    # ``then`` only where it began: else the upstream mark
+                    # above says why it is stale.
+                    (BatchPeakStage.stage == stage.value)
+                    | (BatchPeakStage.state == STATE_RUNNING),
+                )
+                .values(
+                    state=STATE_STALE, stale_reason=REASON_INTERRUPTED, utc_stale=now
+                )
+                .execution_options(synchronize_session=False)
             )
             await session.commit()
 
@@ -768,10 +928,19 @@ async def stamp_versions(
 # --- the pass ---------------------------------------------------------------------
 
 
-async def _run_stage(spec: StageSpec, call: StageCall) -> dict:
-    """Run one stage: its version counted up, its steps run, its records
-    stamped, and its standing written whichever way it ends."""
-    version, started = await begin_stage(call.sample_batch_id, spec.stage)
+async def _run_stage(
+    spec: StageSpec,
+    call: StageCall,
+    begun: tuple[int, datetime],
+    then: Optional[BatchStage],
+) -> tuple[dict, Optional[tuple[int, datetime]]]:
+    """Run one stage, already begun: its steps run, its records stamped, and
+    its standing written whichever way it ends. Its end begins ``then``, the
+    pass's next stage, in the same transaction (:func:`hand_over`).
+
+    :return: What it ran, and ``then``'s version and start.
+    """
+    version, started = begun
     token = STAGE_VERSION.set(version)
     try:
         outcomes = await spec.run(call)
@@ -779,27 +948,31 @@ async def _run_stage(spec: StageSpec, call: StageCall) -> dict:
         await stamp_versions(call.sample_batch_id, spec.record_keys, run_ids, version)
         if spec.rewrites:
             outcomes.append(await judge_again(spec.stage, call, version, outcomes))
+        # In the guard: a finish that fails leaves the stage stopped, not
+        # running.
+        state, after = await hand_over(
+            call.sample_batch_id,
+            spec.stage,
+            started,
+            run_id=run_ids[-1] if run_ids else None,
+            stale_reason=(
+                REASON_PARTIAL if any(stopped_partway(o) for o in outcomes) else None
+            ),
+            then=then,
+        )
     except BaseException:
-        await stop_stage(call.sample_batch_id, spec.stage)
+        await stop_stage(call.sample_batch_id, spec.stage, then=then)
         raise
     finally:
         STAGE_VERSION.reset(token)
-    state = await finish_stage(
-        call.sample_batch_id,
-        spec.stage,
-        started,
-        run_id=run_ids[-1] if run_ids else None,
-        stale_reason=(
-            REASON_PARTIAL if any(stopped_partway(o) for o in outcomes) else None
-        ),
-    )
-    return {
+    entry = {
         "stage": spec.stage.value,
         "label": spec.label,
         "version": version,
         "state": state,
         "outcomes": outcomes,
     }
+    return entry, after
 
 
 #: The key a step's outcome data names, per sample, the batch peaks whose
@@ -955,6 +1128,7 @@ async def run_batch_stages(
         starts at the first that is not current.
     :param config: The search's and the series' settings; the engine's
         defaults when None.
+    :raises BatchStageRunningException: A pass already runs on the batch.
     """
     if from_stage is not None and from_stage not in {s.stage.value for s in STAGES}:
         raise ApiException(
@@ -972,8 +1146,13 @@ async def run_batch_stages(
         parent_id=process_id,
     )
     ran: list[dict] = []
-    for stage in stages:
-        ran.append(await _run_stage(STAGE_BY_NAME[stage], call))
+    # The first stage begins here, refused while another pass runs; each
+    # later one as the stage before it ends.
+    begun = await begin_stage(sample_batch_id, stages[0]) if stages else None
+    for index, stage in enumerate(stages):
+        then = stages[index + 1] if index + 1 < len(stages) else None
+        entry, begun = await _run_stage(STAGE_BY_NAME[stage], call, begun, then)
+        ran.append(entry)
     return stages_outcome(
         sample_batch_id,
         ran,
@@ -984,6 +1163,7 @@ async def run_batch_stages(
 
 __all__ = [
     "BatchStage",
+    "BatchStageRunningException",
     "STAGES",
     "STAGE_BY_NAME",
     "STAGE_OF_KEY",
@@ -992,10 +1172,13 @@ __all__ = [
     "begin_stage",
     "finish_stage",
     "first_not_current",
+    "hand_over",
+    "mark_batch_stale",
     "mark_every_stage_stale",
     "mark_stale",
     "plan",
     "run_batch_stages",
+    "running_stage",
     "stage_standing",
     "stage_states",
     "stages_after",

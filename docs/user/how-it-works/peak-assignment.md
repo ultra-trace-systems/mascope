@@ -1747,6 +1747,11 @@ made for.
   sample is folded in runs every stage, and the order the buttons are pressed in leaves no
   mark on the ledger. The API's `POST /api/batch-peaks/batch/{id}/run-stages` starts it at
   a stage you name, with the same rule, or at the first stage that is not current.
+- **One pass at a time.** While the stages run, every step's button, the API's
+  `run-stages`, *Rebuild batch ledger* and an import answer that the batch stages are
+  running, and name the stage (409). That holds for the whole pass, also while it judges
+  samples again or runs the ratio stability and the probable blends, which open no batch
+  run of their own.
 - **New members are brought up to the batch's readings.** A sample folded in after a
   stage ran, or folded again from a new run of its own, reads its own rows. Running the
   stages again claims the passing water-ladder rungs and the present known species in it,

@@ -9,7 +9,10 @@ stage runs, leaves every stage that ran stale; a stage that raises, is
 cancelled or leaves samples unread is stale and the records it wrote carry
 its version; each step's route starts the pass at its own stage; the ledger
 says where every stage stands; a server restart leaves a running stage stale.
-See ``batch_stages.py``.
+And one pass at a time: while a pass runs, every step's route and a second
+pass are refused, also between two stages; a stage whose end fails is
+stopped, not left running; every writer of the stage rows takes the batch's
+fold lock first. See ``batch_stages.py``.
 """
 
 import asyncio
@@ -22,12 +25,14 @@ from sqlalchemy import select
 
 from mascope_backend.api.new.peak_assignments import batch_peaks_routes, batch_stages
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    _acquire_batch_fold_lock,
     fold_sample_into_batch_peaks,
     rebuild_batch_ledger,
     recompute_batch_consensus,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_SERIES,
+    RUN_IN_FLIGHT_CODE,
     complete_run,
     start_run,
 )
@@ -36,8 +41,12 @@ from mascope_backend.api.new.peak_assignments.batch_stages import (
     BatchStage,
     begin_stage,
     finish_stage,
+    hand_over,
+    mark_batch_stale,
     run_batch_stages,
+    running_stage,
     stage_standing,
+    stop_stage,
 )
 from mascope_backend.db import (
     BatchPeak,
@@ -628,3 +637,224 @@ async def test_a_server_restart_leaves_a_running_stage_stale(
         ).scalar_one()
     assert row.state == "stale"
     assert row.stale_reason == "interrupted"
+
+
+# --- one pass at a time ------------------------------------------------------------
+
+
+def _hold(stand_ins, stage):
+    """Hold a pass inside ``stage`` until released."""
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def hold(call):
+        entered.set()
+        await release.wait()
+
+    stand_ins["hooks"][stage] = hold
+    return entered, release
+
+
+REFUSED_WHILE_A_PASS_RUNS = [path for path, _ in ROUTES] + ["run-stages", "backfill"]
+
+
+@pytest.mark.parametrize("path", REFUSED_WHILE_A_PASS_RUNS)
+async def test_every_steps_route_is_refused_while_a_pass_runs(
+    editor_client, folded, assignment_enabled, stand_ins, monkeypatch, path
+):
+    """The ratio stability opens no batch run, so only the stage's row says a
+    pass runs: each step's route, the pass's own and a rebuild refuse on it,
+    naming the stage, and launch nothing."""
+    batch_id = folded["batch_id"]
+    launched = []
+
+    async def fake_task(**kwargs):
+        launched.append(kwargs)
+
+    entered, release = _hold(stand_ins, "continuity")
+    first = asyncio.create_task(_run(batch_id))
+    try:
+        await asyncio.wait_for(entered.wait(), 30)
+        monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
+        monkeypatch.setattr(batch_peaks_routes, "compute_batch_peaks", fake_task)
+        url = f"/api/batch-peaks/batch/{batch_id}/{path}"
+        refused = await editor_client.post(url)
+        assert refused.status_code == 409, refused.text
+        assert RUN_IN_FLIGHT_CODE in refused.text
+        assert "Ratio stability" in refused.text
+        assert launched == []
+    finally:
+        release.set()
+        await first
+    admitted = await editor_client.post(url)
+    assert admitted.status_code == 202, admitted.text
+    assert len(launched) == 1
+
+
+async def test_a_second_pass_past_the_routes_refusal_is_refused_at_its_first_stage(
+    folded, stand_ins
+):
+    """A press that reached the route before the first pass marked its first
+    stage is refused when its own first stage begins, and changes nothing."""
+    batch_id = folded["batch_id"]
+    entered, release = _hold(stand_ins, "continuity")
+    first = asyncio.create_task(_run(batch_id))
+    try:
+        await asyncio.wait_for(entered.wait(), 30)
+        before = await _states(batch_id)
+        with pytest.raises(Exception, match="running on this batch"):
+            # Bounded: a second pass let through would plan from the held
+            # stage and wait on the same hold.
+            await asyncio.wait_for(_run(batch_id, "batch_checks"), 10)
+        assert await _states(batch_id) == before
+        assert "batch_checks" not in stand_ins["ran"]
+    finally:
+        release.set()
+        await first
+    states = await _states(batch_id)
+    assert {e["state"] for e in states.values()} == {"current"}
+    assert stand_ins["ran"] == ORDER
+
+
+async def test_between_two_stages_of_a_pass_the_next_one_already_runs(
+    folded, stand_ins, monkeypatch, async_session_factory
+):
+    """Each stage of a pass begins as the one before it ends, in one
+    transaction: every write to the stage rows after the first stage's start
+    finds one of them running, as a second press reading them would, so no
+    moment of the pass admits a second one. Read before each writer takes
+    the fold lock, which every writer of the rows takes first."""
+    batch_id = folded["batch_id"]
+    seen = []
+    lock = batch_stages._fold_lock
+
+    async def probing(session, sample_batch_id):
+        async with async_session_factory() as other:
+            running = await running_stage(other, sample_batch_id)
+        seen.append(running.stage if running is not None else None)
+        await lock(session, sample_batch_id)
+
+    monkeypatch.setattr(batch_stages, "_fold_lock", probing)
+    await _run(batch_id)
+    # The first stage's start finds none running; every stage's end finds
+    # it running.
+    assert seen == [None] + ORDER
+    states = await _states(batch_id)
+    assert {e["state"] for e in states.values()} == {"current"}
+    assert {e["version"] for e in states.values()} == {1}
+
+
+async def test_a_stage_whose_end_fails_is_stopped_not_left_running(
+    folded, stand_ins, monkeypatch
+):
+    batch_id = folded["batch_id"]
+
+    async def fails_at_the_series(sample_batch_id, stage, *args, **kwargs):
+        if stage == BatchStage.SERIES:
+            raise RuntimeError("deadlock detected")
+        return await hand_over(sample_batch_id, stage, *args, **kwargs)
+
+    with pytest.raises(Exception):  # the pass re-raises it, wrapped
+        monkeypatch.setattr(batch_stages, "hand_over", fails_at_the_series)
+        await _run(batch_id)
+    states = await _states(batch_id)
+    assert states["series"]["state"] == "stale"
+    assert states["series"]["stale_reason"] == "interrupted"
+    assert states["isotope_lines"]["state"] == "current"
+    # The stage after it never began.
+    assert states["co_variation"]["state"] == "not_run"
+    assert "running" not in {e["state"] for e in states.values()}
+
+    # On a batch every stage has run on: the stage after it did not begin,
+    # so it is stale for the series' sake, not stopped.
+    monkeypatch.setattr(batch_stages, "hand_over", hand_over)
+    await _run(batch_id)
+    monkeypatch.setattr(batch_stages, "hand_over", fails_at_the_series)
+    with pytest.raises(Exception):  # the pass re-raises it, wrapped
+        await _run(batch_id, "series")
+    states = await _states(batch_id)
+    assert states["series"]["stale_reason"] == "interrupted"
+    assert states["co_variation"]["state"] == "stale"
+    assert states["co_variation"]["stale_reason"] == "upstream:series"
+    assert "running" not in {e["state"] for e in states.values()}
+
+
+async def test_a_pass_interrupted_right_after_a_hand_over_leaves_no_stage_running(
+    folded, stand_ins, monkeypatch
+):
+    """The hand-over committed, beginning the next stage, and the pass was
+    cancelled before it went on: the stage it began is stopped too."""
+    batch_id = folded["batch_id"]
+
+    async def cancelled_after_the_series(sample_batch_id, stage, *args, **kwargs):
+        ended = await hand_over(sample_batch_id, stage, *args, **kwargs)
+        if stage == BatchStage.SERIES:
+            raise asyncio.CancelledError()
+        return ended
+
+    monkeypatch.setattr(batch_stages, "hand_over", cancelled_after_the_series)
+    with pytest.raises(asyncio.CancelledError):
+        await _run(batch_id)
+    states = await _states(batch_id)
+    assert states["co_variation"]["state"] == "stale"
+    assert states["co_variation"]["stale_reason"] == "interrupted"
+    assert "running" not in {e["state"] for e in states.values()}
+    assert "co_variation" not in stand_ins["ran"]
+
+
+WRITERS = ["begin", "hand_over", "finish", "stop", "mark_batch_stale"]
+
+
+@pytest.mark.parametrize("writer", WRITERS)
+async def test_every_writer_of_the_stage_rows_waits_on_the_fold_lock(
+    folded, async_session_factory, writer
+):
+    """A fold marks the stage rows under the batch's fold lock. A writer of
+    the rows that locked them first could lock them in another order than
+    the fold does, and one of the two would be aborted as a deadlock; each
+    takes the fold lock first instead, so it waits while a fold holds it."""
+    batch_id = folded["batch_id"]
+    _, started = await begin_stage(batch_id, BatchStage.SERIES)
+    if writer == "begin":
+        await finish_stage(batch_id, BatchStage.SERIES, started, run_id=None)
+    calls = {
+        "begin": lambda: begin_stage(batch_id, BatchStage.SERIES),
+        "hand_over": lambda: hand_over(
+            batch_id,
+            BatchStage.SERIES,
+            started,
+            run_id=None,
+            then=BatchStage.CO_VARIATION,
+        ),
+        "finish": lambda: finish_stage(
+            batch_id, BatchStage.SERIES, started, run_id=None
+        ),
+        "stop": lambda: stop_stage(batch_id, BatchStage.SERIES),
+        "mark_batch_stale": lambda: mark_batch_stale(batch_id, "rebuild"),
+    }
+    async with async_session_factory() as holder:
+        await _acquire_batch_fold_lock(holder, batch_id)
+        task = asyncio.create_task(calls[writer]())
+        await asyncio.sleep(0.5)
+        assert not task.done()
+        await holder.rollback()
+    await asyncio.wait_for(task, 10)
+
+
+async def test_a_rebuild_marks_the_stages_under_the_fold_lock(
+    folded, stand_ins, monkeypatch
+):
+    """The rebuild's own mark goes through the locked writer."""
+    batch_id = folded["batch_id"]
+    marks = []
+    real = batch_stages.mark_batch_stale
+
+    async def recording(sample_batch_id, reason):
+        marks.append(reason)
+        await real(sample_batch_id, reason)
+
+    from mascope_backend.api.new.peak_assignments import batch_peaks_controller
+
+    monkeypatch.setattr(batch_peaks_controller, "mark_batch_stale", recording)
+    await _run(batch_id, "batch_checks")
+    await rebuild_batch_ledger(batch_id)
+    assert marks == ["rebuild"]
