@@ -279,6 +279,40 @@ becomes a versioned record, which a sample's run reads as an input (MAS-985). A 
 stages stale, and the pipeline re-runs from the first stale one. Each existing button
 starts the pipeline from its own stage until MAS-1015 replaces the buttons.
 
+As built (`batch_stages.py`):
+
+- Nine stages, the order of 4.1 without the fold, which stays *Rebuild batch ledger*
+  until MAS-1011's `needs_fold`: `water_ladders`, `known_species`, `search`,
+  `isotope_lines` (strip, then stamp), `series`, `co_variation`, `continuity`,
+  `batch_checks` and `blends` (the consensus of every batch peak read again; the level
+  joins it as a stage once 5.8c makes one). `POST /batch-peaks/batch/{id}/run-stages`
+  takes `from_stage`, or starts at the first stage that is not current. A named stage
+  after one that is not current (stale, or never run on the batch) starts the pass at
+  that one instead, and so does each step's button: a stage that ran before the stages it
+  reads leaves a ledger that depends on the click order, which the Verify's two-order test
+  found (*Decide known species* pressed before the water ladders ever ran claims a rung for
+  another source ion on one file's own test, and the ladder after it finds the rung taken).
+- 4.3 as built: the strip reads a row it stripped before again where a member does not
+  read the parent's line yet (`batch_merged_isotopologues.strip_again`), and the search
+  proposes the reading it assigned a batch peak to a member of it that reads nothing
+  (`batch_untargeted._readings_to_measure_again`). The water ladders and known species
+  claim per member already, and the series measures a corroborated proposal on the
+  members that do not read it (MAS-769).
+- Each stage still records itself as its step's batch run, so a pass makes up to eight
+  runs; MAS-1011 makes it one.
+- `batch_peak_stage` holds each stage's `version` (its runs) and `state` (current,
+  running, stale) with `stale_reason` (`fold`, `rebuild`, `upstream:<stage>`,
+  `interrupted`, `partial`, `consensus`). The ledger read serves `stages` and
+  `stale_stages`, which MAS-1013's status read builds on. A record a stage writes
+  carries the version it was written at.
+- A member a stage rewrote carries `batch_written`: the stage, the version and what the
+  member read before. A withdrawn decision (a known species no longer present, a rung no
+  longer passing) puts that back, and the in-app rows from what they kept under
+  `provenance.batch_written_before`, but for a row assigned by hand since.
+- After a rewriting stage, every sample it wrote in is judged again through the stage
+  list (`batch_rejudge.py`), and after the series every sample whose member a series
+  record corroborates.
+
 ### 5.2 One run per pass (MAS-1011)
 
 A new action, `assign`. A pass:
