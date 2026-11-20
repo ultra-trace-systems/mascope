@@ -13,7 +13,11 @@ App on the agent box, as for every comment the agents write):
 
 The PR carries one bench comment: the first comment that starts with
 :data:`MARKER` is edited in place on a re-run, and one is made only when there
-is none (or it cannot be edited). A PR whose branch lives in a fork is refused
+is none (or it cannot be edited). A run that has no card to post (it stopped,
+failed, or its card was refused) does not replace that comment: it adds one
+line under it, with the commit it ran (:func:`failure_line`), and posts its
+whole failure only on a PR with no bench comment yet. ``bench.py post`` posts
+a card that was written but not posted. A PR whose branch lives in a fork is refused
 before anything runs. Everything posted is scrubbed with the bench's deny list
 first (``run.py``); a body the scrub refuses is replaced by the refusal.
 
@@ -23,6 +27,7 @@ what to post and scrubs it.
 
 from __future__ import annotations
 
+import datetime
 import json
 import re
 import subprocess
@@ -43,6 +48,13 @@ LIMIT = 60_000
 #: How much of an error a failed run posts.
 TAIL_LINES = 30
 TAIL_CHARS = 3_000
+
+#: How much of an error a failure's line under an existing comment holds.
+LINE_CHARS = 300
+
+#: Seconds one ``gh`` call may take: a run that outlived its caller's
+#: identity must not hang in its cleanup on GitHub.
+GH_TIMEOUT_S = 120
 
 #: The kinds of name the deny list holds, in the order a token is matched
 #: against them: a refused card names the kind, never the name.
@@ -86,7 +98,7 @@ class Gh(Protocol):
 
     def marked(self, number: int) -> list[dict]:
         """The PR's comments that start with :data:`MARKER`, oldest first:
-        ``{"id", "url"}``."""
+        ``{"id", "url", "body"}``."""
 
     def create(self, number: int, body: str) -> str:
         """Comment on the PR; the comment's URL."""
@@ -112,7 +124,12 @@ class GhCli:
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=GH_TIMEOUT_S,
             )
+        except subprocess.TimeoutExpired:
+            raise PostError(
+                f"gh {' '.join(args[:2])} did not answer within {GH_TIMEOUT_S} s"
+            ) from None
         except OSError as error:
             raise PostError(f"gh could not be run: {error}") from None
         if out.returncode != 0:
@@ -139,7 +156,7 @@ class GhCli:
             f"repos/{{owner}}/{{repo}}/issues/{number}/comments",
             "--jq",
             f".[] | select(.body | startswith({json.dumps(MARKER)})) "
-            "| {id: .id, url: .html_url}",
+            "| {id: .id, url: .html_url, body: .body}",
         )
         return [json.loads(line) for line in out.splitlines() if line.strip()]
 
@@ -218,6 +235,22 @@ class Poster:
             except PostError:
                 continue
         return self.gh.create(self.number, body), False
+
+    def add_line(self, line: str) -> str | None:
+        """Add one line under the PR's bench comment, keeping what it holds.
+
+        :return: The comment's URL, or None when the PR has no bench comment
+            this caller may edit: the caller then posts the whole failure.
+        """
+        for comment in self.gh.marked(self.number):
+            body = comment.get("body")
+            if not isinstance(body, str):
+                continue
+            try:
+                return self.gh.edit(comment["id"], body.rstrip("\n") + f"\n\n{line}\n")
+            except PostError:
+                continue
+        return None
 
 
 # ------------------------------------------------------------ the deny list
@@ -308,6 +341,10 @@ TEXTS = (
         "The comparison wrote no card (exit).",
         "No set could be read.",
         "The run stopped:",
+        "The run was stopped: SIGTERM SIGHUP SIGINT KeyboardInterrupt, the "
+        "process that started it went away.",
+        "Bench run failed on",
+        "The error holds.",
         "The error's text was refused by the scrub: it holds. It is printed where "
         "the run ran.",
         "The deny list could not be built to scrub the error, so its text is not "
@@ -549,6 +586,24 @@ def refused_body(summary: dict, pr: PullRequest, where: str, kind: str) -> str:
         f"<sub>Posted by `bench run {summary['ref']} --post {pr.number}` on the agent box; a re-run edits this comment.</sub>",
     ]
     return "\n".join(lines) + "\n"
+
+
+def failure_line(summary: dict, what: str, text: str | None = None) -> str:
+    """One line for a run that has no card, under the PR's bench comment.
+
+    It names the commit the run was of, so that a card above it, which names
+    its own, is not read as this head's; ``text`` adds the error's last line.
+    """
+    when = datetime.datetime.now().astimezone().isoformat(timespec="minutes")
+    line = f"**Bench run failed on `{_sha(summary.get('sha'))}`** ({when}): {what}"
+    last = next(
+        (one.strip() for one in reversed((text or "").splitlines()) if one.strip()),
+        None,
+    )
+    if last:
+        last = last.replace("`", "'")[:LINE_CHARS]
+        line += f" `{last}`"
+    return line
 
 
 def failed_body(

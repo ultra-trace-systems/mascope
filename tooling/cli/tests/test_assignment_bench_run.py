@@ -34,6 +34,7 @@ def _load():
 
 bench = _load()
 brun = bench.bench_run
+stopping = sys.modules["stopping"]
 cr = brun._compare_module()
 
 DEVELOP = "d" * 40
@@ -81,6 +82,14 @@ class FakeInstance:
     def bind(self):
         self.calls.append("bind")
         return 3, 8093
+
+    def resolve(self, ref):
+        if ref not in self.shas:
+            raise bench.BenchError(f"no commit {ref!r}")
+        return self.shas[ref]
+
+    def free_port(self):
+        self.calls.append("free_port")
 
     def checkout(self, ref):
         self.calls.append(("checkout", ref))
@@ -470,7 +479,7 @@ def test_a_run_builds_the_ref_runs_every_sample_and_writes_the_card(rig, capsys)
     calls = rig.instance.calls
     # Built and migrated before the backend starts, with peak assignment on;
     # stopped and its worktree removed once the card is written.
-    assert calls[:3] == ["check_env", "bind", ("checkout", "topic")]
+    assert calls[:4] == ["check_env", "bind", "free_port", ("checkout", "topic")]
     assert calls.index("migrate") < calls.index(("start", True))
     # The ref is not on develop: the database is dumped before its migration
     # and put back once the backend has stopped, before the worktree goes.
@@ -544,7 +553,12 @@ def test_develop_runs_after_a_branch_with_a_migration_of_its_own(rig, capsys):
     assert "putting the database back to r2" in printed
 
     assert rig.run("develop") == 0
-    assert rig.instance.calls[:3] == ["check_env", "bind", ("checkout", "develop")]
+    assert rig.instance.calls[:4] == [
+        "check_env",
+        "bind",
+        "free_port",
+        ("checkout", "develop"),
+    ]
     assert "migrate" not in rig.instance.calls
     assert rig.instance.db == ["r2"]
 
@@ -606,7 +620,7 @@ def test_a_failed_restore_is_kept_and_the_next_command_puts_it_back(rig, capsys)
     rig.instance.restore_fails = False
     assert rig.run("develop") == 0
     calls = rig.instance.calls
-    assert calls[3] == ("restore", "bench_0.dump")
+    assert calls[4] == ("restore", "bench_0.dump")
     assert "migrate" not in calls
     assert rig.instance.db == ["r2"]
     assert not rig.home.restore_point.exists()
@@ -1620,7 +1634,9 @@ def test_a_second_run_waits_for_the_first(tmp_path, capsys):
         t.join()
 
     assert order == ["first in", "first out", "second in"]
-    assert "holds the lock (pid" in capsys.readouterr().out
+    printed = capsys.readouterr().out
+    assert "waiting for the bench's lock, number 1 in the queue" in printed
+    assert "ahead: a bench command, pid" in printed and "(holds it)" in printed
 
 
 def test_no_wait_refuses_while_another_command_runs(tmp_path, capsys):

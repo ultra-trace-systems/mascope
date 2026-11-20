@@ -68,6 +68,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import post as bench_post  # noqa: E402
+from stopping import STOPPER, Stopped  # noqa: E402
 
 
 REPO = _HERE.parents[1]
@@ -662,6 +663,13 @@ def _words(text: str) -> list[str]:
     return [w for w in re.split(r"[^A-Za-z0-9]+", text) if w]
 
 
+def _card_words(made: dict, cr) -> set[str]:
+    """The words a card prints of its own: its engines' names and vocabulary."""
+    return set(_words(f"{made['engines']['a']} {made['engines']['b']}")) | set(
+        cr.card_vocabulary(made)
+    )
+
+
 def _key_words(value) -> set[str]:
     """Every word of every key of a JSON value, at any depth."""
     if isinstance(value, dict):
@@ -733,8 +741,11 @@ class BenchRun:
             return self._run_once(ref, sets, decoys, True, post, progress)
         except bench_post.PostError:
             raise
-        except Exception as error:
-            self._post_failure(post, ref, error, progress)
+        except (Exception, Stopped, KeyboardInterrupt) as error:
+            if not progress.get("recorded"):
+                # A stop after the card was recorded leaves the card to
+                # `bench.py post`: it is no failure.
+                self._post_failure(post, ref, error, progress)
             raise
 
     def _run_once(self, ref, sets, decoys, baseline, post, progress) -> int:
@@ -855,7 +866,11 @@ class BenchRun:
         card = None
         results: dict[str, dict] = {}
         progress["results"] = results
+        stop: BaseException | None = None
         try:
+            # An earlier run's backend that outlived it is stopped first: it
+            # holds the port, and the database a restore must drop.
+            self.instance.free_port()
             sha = self.instance.checkout(ref)
             develop = self.instance.develop_sha()
             summary.update(sha=sha, develop=develop)
@@ -895,45 +910,99 @@ class BenchRun:
                 state,
                 creds,
             )
-        finally:
-            self.instance.stop()
-            # After the backend, which holds the database open; before the
-            # worktree goes. A restore that fails keeps its record, and the
-            # next bench command that migrates tries it again.
-            try:
-                if restore(self.instance, say) and summary["migration"]:
-                    summary["migration"]["restored"] = True
-            except Exception as error:  # noqa: BLE001
-                if summary["migration"]:
-                    summary["migration"]["restored"] = False
-                runlog.note(f"restore failed: {type(error).__name__}: {error}")
-                say(
-                    "the database could not be put back (run.log says why); the "
-                    "next bench command that migrates tries again"
-                )
-            self.instance.remove_worktree()
-            say(
-                "the ref's backend is stopped and its worktree removed; the instance stays"
-            )
+        except (Stopped, KeyboardInterrupt) as error:
+            stop = error
+        except BaseException:
+            with STOPPER.shield():
+                self._cleanup(summary, runlog)
+            raise
 
-        for name in chosen:
-            summary["sets"][name] = self._set_summary(plans[name], results.get(name))
-        summary["finished"] = now()
-        summary["minutes"] = round((self.clock() - started) / 60, 1)
-        summary["card"] = {k: card[k] for k in ("verdict", "gate", "sets") if k in card}
-        problems = run_problems(summary["sets"])
-        if base and card.get("diff") is not None:
-            summary["baseline"] = {k: base[k] for k in ("ref", "sha", "at", "path")}
-        promoted = None
-        if baseline and card["verdict"] in ("pass", "fail"):
-            promoted = self._promote(ref, summary, problems, state, out, say)
-        summary["is_baseline"] = promoted is not None
-        self._write_outputs(out, summary, card, runlog)
-        self._record(state, ref, summary, card, base, out)
+        # Shielded from the cleanup to the record: a signal that comes now
+        # waits until the card is on record, which `bench.py post` then posts.
+        with STOPPER.shield():
+            self._cleanup(summary, runlog)
+            for name in chosen:
+                summary["sets"][name] = self._set_summary(
+                    plans[name], results.get(name)
+                )
+            summary["finished"] = now()
+            summary["minutes"] = round((self.clock() - started) / 60, 1)
+            if stop is not None:
+                self._stopped(ref, plans, results, summary, state, out, runlog, stop)
+            else:
+                summary["card"] = {
+                    k: card[k] for k in ("verdict", "gate", "sets") if k in card
+                }
+                summary["no_diff"] = no_diff
+                problems = run_problems(summary["sets"])
+                if base and card.get("diff") is not None:
+                    summary["baseline"] = {
+                        k: base[k] for k in ("ref", "sha", "at", "path")
+                    }
+                promoted = None
+                if baseline and card["verdict"] in ("pass", "fail"):
+                    promoted = self._promote(ref, summary, problems, state, out, say)
+                summary["is_baseline"] = promoted is not None
+                self._write_outputs(out, summary, card, runlog)
+                self._record(state, ref, summary, card, base, out)
+                progress["recorded"] = card["verdict"] in ("pass", "fail", "written")
+        if stop is not None:
+            raise stop
         code = self._report(chosen, summary, card, problems, out, say)
         if post is not None:
-            self._post_card(post, summary, card, out, problems, no_diff, runlog)
+            try:
+                self._post_card(post, summary, card, out, problems, no_diff, runlog)
+            except bench_post.PostError as error:
+                if progress["recorded"]:
+                    raise bench_post.PostError(
+                        f"{error}; the card is written: `bench.py post {ref} --pr "
+                        f"{post.pr.number}` posts it"
+                    ) from None
+                raise
         return code
+
+    def _cleanup(self, summary: dict, runlog: RunLog) -> None:
+        """Stop the ref's backend, put the database back, remove the worktree."""
+        say = runlog.say
+        self.instance.stop()
+        # After the backend, which holds the database open; before the
+        # worktree goes. A restore that fails keeps its record, and the
+        # next bench command that migrates tries it again.
+        try:
+            if restore(self.instance, say) and summary["migration"]:
+                summary["migration"]["restored"] = True
+        except Exception as error:  # noqa: BLE001
+            if summary["migration"]:
+                summary["migration"]["restored"] = False
+            runlog.note(f"restore failed: {type(error).__name__}: {error}")
+            say(
+                "the database could not be put back (run.log says why); the "
+                "next bench command that migrates tries again"
+            )
+        self.instance.remove_worktree()
+        say("the ref's backend is stopped and its worktree removed; the instance stays")
+
+    def _stopped(self, ref, plans, results, summary, state, out, runlog, stop) -> None:
+        """Write and record a stopped run: ``run.json`` with a ``stopped``
+        verdict and how far the sets got, and the card list's entry."""
+        why = stop.why if isinstance(stop, Stopped) else "KeyboardInterrupt"
+        runlog.say(f"the run was stopped ({why}); no card")
+        summary["card"] = {"verdict": "stopped", "sets": []}
+        summary["stopped"] = why
+        try:
+            deny = self._deny(state, plans, results)
+        except Exception as error:  # noqa: BLE001 - the database may be gone too
+            runlog.note(f"the deny list could not be built: {error}")
+            deny = ([], [], [])
+        card = {
+            "verdict": "stopped",
+            "sets": [],
+            "deny": deny,
+            "diff": None,
+            "own": set(_words(why)),
+        }
+        self._write_outputs(out, summary, card, runlog)
+        self._record(state, ref, summary, card, None, out)
 
     # -------------------------------------------------------------- build
 
@@ -1349,9 +1418,7 @@ class BenchRun:
         }
         made = json.loads(files["card.json"])
         cr = _compare_module()
-        own = set(
-            _words(f"{made['engines']['a']} {made['engines']['b']}")
-        ) | cr.card_vocabulary(made)
+        own = _card_words(made, cr)
         tokens = self._tokens(deny, read, sorted(own))
         try:
             cr.scrub(files, tokens)
@@ -1451,6 +1518,9 @@ class BenchRun:
             | _key_words(summary)
             | set(_words(summary["ref"]))
         )
+        if summary.get("no_diff"):
+            # Why there is no diff, in the comment's own sentences.
+            own |= bench_post.WORDS
         if card.get("diff") is not None:
             own |= _key_words(json.loads(texts["diff.json"]))
         tokens = self._tokens(card["deny"], card["sets"], sorted(own))
@@ -1547,26 +1617,35 @@ class BenchRun:
             body = bench_post.card_body(
                 summary, out, post.pr, problems, cr, no_diff=no_diff
             )
-        elif verdict == "refused":
+            self._publish(
+                post, body, tokens, card["deny"], summary, runlog.say, runlog.note
+            )
+            return
+        text = None
+        if verdict == "refused":
             where, kind = card.get("refusal") or ("the card", bench_post.UNKNOWN_KIND)
             body = bench_post.refused_body(summary, post.pr, where, kind)
+            what = f"The card was refused by the scrub: {where} holds {kind}."
         elif verdict == "error":
             text, withheld = self._scrubbed(
                 card.get("tail"), tokens, card["deny"], runlog
             )
+            what = f"The comparison wrote no card (exit {card.get('code')})."
             body = bench_post.failed_body(
-                summary,
-                post.pr,
-                f"The comparison wrote no card (exit {card.get('code')}).",
-                text,
-                withheld=withheld,
+                summary, post.pr, what, text, withheld=withheld
             )
         else:
-            body = bench_post.failed_body(
-                summary, post.pr, "No set could be read.", None
-            )
-        self._publish(
-            post, body, tokens, card["deny"], summary, runlog.say, runlog.note
+            what = "No set could be read."
+            body = bench_post.failed_body(summary, post.pr, what, None)
+        self._publish_failure(
+            post,
+            body,
+            bench_post.failure_line(summary, what, text),
+            tokens,
+            card["deny"],
+            summary,
+            runlog.say,
+            runlog.note,
         )
 
     def _scrubbed(
@@ -1612,18 +1691,45 @@ class BenchRun:
             + f" on PR #{post.pr.number}: {url}"
         )
 
+    def _publish_failure(self, post, body, line, tokens, deny, summary, say, note):
+        """A run with no card: one line under the PR's bench comment, which
+        keeps the card it holds; the whole failure only when there is none.
+
+        The line is scrubbed on its own: the comment it goes under was
+        scrubbed when it was posted, and is left as it is.
+        """
+        cr = _compare_module()
+        try:
+            cr.scrub({"the failure's line": line}, tokens)
+        except cr.CardRefused as refused:
+            note(f"the scrub refused the failure's line: {refused}")
+            line = bench_post.failure_line(
+                summary, f"The error holds {self._kind(refused.token, deny)}."
+            )
+        url = post.add_line(line)
+        if url is None:
+            self._publish(post, body, tokens, deny, summary, say, note)
+            return
+        say(f"added the failure under the bench comment on PR #{post.pr.number}: {url}")
+
     def _post_failure(self, post, ref, error, progress) -> None:
-        """Post a run that stopped on an error: the error's tail, scrubbed."""
+        """Post a run that stopped on an error or a signal: one line under
+        the PR's bench comment, or the error's tail, scrubbed, where there is
+        no comment yet."""
         summary = {"ref": ref, "sha": progress.get("sha"), "sets": {}}
         kind = type(error).__name__
-        what = f"The run stopped: {kind}."
+        if isinstance(error, (Stopped, KeyboardInterrupt)):
+            why = error.why if isinstance(error, Stopped) else kind
+            what, detail = f"The run was stopped: {why}.", None
+        else:
+            what, detail = f"The run stopped: {kind}.", bench_post.tail(str(error))
         say = lambda line: print(
             f"{datetime.datetime.now():%H:%M:%S} {line}", flush=True
         )  # noqa: E731
         try:
             state = self.load_state()
             deny = self._deny(state, {}, progress.get("results") or {})
-            own = set(_words(ref)) | set(_words(kind)) | bench_post.WORDS
+            own = set(_words(ref)) | set(_words(what)) | bench_post.WORDS
             tokens = self._tokens(deny, list(state.get("sets") or {}), sorted(own))
         except Exception as why:  # the state or the database could not be read
             say(
@@ -1637,17 +1743,95 @@ class BenchRun:
                 withheld="The deny list could not be built to scrub the error, so its text is not posted.",
             )
             try:
-                url, edited = post.post(body)
+                url = post.add_line(bench_post.failure_line(summary, what))
+                if url is None:
+                    url, edited = post.post(body)
                 say(f"posted the failure on PR #{post.pr.number}: {url}")
             except bench_post.PostError as failed:
                 say(f"the failure could not be posted: {failed}")
             return
-        text, withheld = self._scrubbed(bench_post.tail(str(error)), tokens, deny)
+        text, withheld = self._scrubbed(detail, tokens, deny)
         body = bench_post.failed_body(summary, post.pr, what, text, withheld=withheld)
         try:
-            self._publish(post, body, tokens, deny, summary, say, lambda line: None)
+            self._publish_failure(
+                post,
+                body,
+                bench_post.failure_line(summary, what, text),
+                tokens,
+                deny,
+                summary,
+                say,
+                lambda line: None,
+            )
         except bench_post.PostError as failed:
             say(f"the failure could not be posted: {failed}")
+
+    # ---------------------------------------------------------------- post
+
+    def post(self, ref: str, poster: bench_post.Poster) -> int:
+        """``bench.py post <ref> --pr N``: post the newest written card of
+        ``ref``'s current head on the PR, running nothing.
+
+        The card is the newest of the bench's cards of ``ref`` (named as the
+        run named it) that was written whole. It is refused when it is of
+        another commit than the ref's head now: a card of an older head is
+        no reading of the PR.
+        """
+        if poster.pr is None:
+            poster.open()
+        state = self.load_state()
+        head = self.instance.resolve(ref)
+        written = [
+            record
+            for record in state.get("cards") or []
+            if record.get("ref") == ref
+            and record.get("verdict") in ("pass", "fail", "written")
+            and (self.home.cards / record["path"] / "card.json").exists()
+            and (self.home.cards / record["path"] / "run.json").exists()
+        ]
+        if not written:
+            raise RunError(
+                f"the bench has no written card of {ref}: `bench.py run {ref} "
+                f"--post {poster.number}` makes one"
+            )
+        record = written[-1]
+        if record["sha"] != head:
+            raise RunError(
+                f"the newest card of {ref} is of {record['sha'][:9]}, not of its "
+                f"head {head[:9]}: `bench.py run {ref} --post {poster.number}` "
+                f"makes one of the head"
+            )
+        out = self.home.cards / record["path"]
+        summary = json.loads((out / "run.json").read_text(encoding="utf-8"))
+        made = json.loads((out / "card.json").read_text(encoding="utf-8"))
+        cr = _compare_module()
+        # The card's run ids are not kept: its files were scrubbed against
+        # them when they were written, and are scrubbed here against the rest.
+        deny = self._deny(state, {}, {})
+        own = (
+            _card_words(made, cr)
+            | _key_words(summary)
+            | set(_words(summary["ref"]))
+            | bench_post.WORDS
+        )
+        if (out / "diff.json").exists():
+            own |= _key_words(json.loads((out / "diff.json").read_text("utf-8")))
+        tokens = self._tokens(deny, list(summary["sets"]), sorted(own))
+        body = bench_post.card_body(
+            summary,
+            out,
+            poster.pr,
+            run_problems(summary["sets"]),
+            cr,
+            no_diff=summary.get("no_diff"),
+        )
+        with RunLog(out / "run.log") as runlog:
+            runlog.say(
+                f"posting the card of {ref} at {record['sha'][:9]}, made "
+                f"{record['at']}, on PR #{poster.number}"
+            )
+            self._publish(poster, body, tokens, deny, summary, runlog.say, runlog.note)
+        return 0
 
     # ------------------------------------------------------------ baseline
 

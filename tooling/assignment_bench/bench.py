@@ -5,6 +5,7 @@
     bench.py run <ref> [--sets A,D,...] [--decoys] [--baseline] [--post PR] [--no-wait] [--jobs N] [--budget-min M] [--workers N]
     bench.py baseline [CARD]
     bench.py review [--sets A,D,...] [--top N] | --record SHEET [--recalibrate] [--wait]
+    bench.py post <ref> --pr N
     bench.py status
 
 ``init`` builds the bench instance (env ``bench``) from a sets manifest
@@ -27,7 +28,8 @@ every sample into the instance beside the in-app runs (``reference.py``).
 pinned reference and writes the card, diffed against develop's rolling
 baseline with ``--baseline``; ``baseline`` shows that baseline or makes a card
 of develop it (``run.py``). ``run --post <pr>`` posts the card on the PR as one
-comment, edited in place on a re-run (``post.py``).
+comment, edited in place on a re-run (``post.py``); ``post <ref> --pr N``
+posts the newest card of the ref's current head without running anything.
 
 Everything the bench keeps lives in its home, ``$MASCOPE_PATH/.runtime/bench``
 (``--home`` or ``MASCOPE_BENCH_HOME`` elsewhere): a copy of the manifest with
@@ -72,6 +74,7 @@ import reference as bench_reference  # noqa: E402
 import review as bench_review  # noqa: E402
 import run as bench_run  # noqa: E402
 from manifest import Manifest, ManifestError, ResolvedFile  # noqa: E402
+from stopping import STOPPER, QuietStream, Stopped, watch_parent  # noqa: E402
 
 
 REPO = _HERE.parents[1]
@@ -95,6 +98,13 @@ SETTLED_POLLS = 3
 #: file converter is connected, which it is not for a while after start.
 UPLOAD_ATTEMPTS = 20
 UPLOAD_PAUSE_S = 15.0
+
+
+#: Seconds between two looks of a command waiting for the bench's lock.
+LOCK_POLL_S = 2.0
+
+#: Seconds an earlier bench backend on the bench's port is given to stop.
+STALE_STOP_S = 60.0
 
 
 class BenchError(RuntimeError):
@@ -196,39 +206,199 @@ class Home:
         for sub in (self.logs, self.cards):
             sub.mkdir(exist_ok=True)
 
+    @property
+    def queue(self) -> Path:
+        """The tickets of the commands waiting for the lock, one file each."""
+        return self.root / "queue"
+
     @contextlib.contextmanager
-    def lock(self, wait: bool = False, hint: str = "--wait to queue"):
+    def lock(
+        self,
+        wait: bool = False,
+        hint: str = "--wait to queue",
+        what: str = "a bench command",
+        poll_s: float | None = None,
+    ):
         """One bench command at a time on this home; ``wait`` queues behind
-        the one that holds it, saying so, instead of refusing."""
+        the one that holds it and those already waiting, saying so, instead of
+        refusing.
+
+        ``flock`` wakes its waiters in no order, so a command that waits takes
+        a numbered ticket in :attr:`queue` and only the lowest ticket asks for
+        the lock: the commands take it in the order they asked. A ticket whose
+        process is gone is dropped by the next look. ``what`` says what the
+        command is (``run <ref>``), for the line a waiter prints.
+        """
         self.make()
+        self.queue.mkdir(exist_ok=True)
+        poll_s = LOCK_POLL_S if poll_s is None else poll_s
         handle = open(self.root / "bench.lock", "a+")
+        ticket: Path | None = None
+        got = False
         try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+            with self._queue_guard():
+                waiting = self._tickets()
+                got = not waiting and _try_lock(handle)
+                if not got:
+                    if not wait:
+                        raise BenchError(
+                            f"{self._busy(handle, waiting)}; {hint}"
+                        ) from None
+                    ticket = self._take_ticket(what)
+            said = None
+            while not got:
+                with self._queue_guard():
+                    waiting = self._tickets()
+                    mine = _ticket_seq(ticket)
+                    ahead = [t for t in waiting if t["seq"] < mine]
+                    if not ahead and _try_lock(handle):
+                        ticket.unlink(missing_ok=True)
+                        ticket, got = None, True
+                        break
+                    line = self._wait_line(handle, ahead)
+                if line != said:
+                    log(line)
+                    said = line
+                time.sleep(poll_s)
             handle.seek(0)
-            holder = handle.read().strip() or "?"
-            if not wait:
-                handle.close()
-                raise BenchError(
-                    f"another bench command holds the lock ({holder}); {hint}"
-                ) from None
-            log(f"another bench command holds the lock ({holder}); waiting for it")
-            fcntl.flock(handle, fcntl.LOCK_EX)
-        handle.seek(0)
-        handle.truncate()
-        handle.write(f"pid {os.getpid()} since {now()}\n")
-        handle.flush()
-        try:
+            handle.truncate()
+            handle.write(
+                json.dumps({"pid": os.getpid(), "what": what, "since": now()}) + "\n"
+            )
+            handle.flush()
             yield
         finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
+            if ticket is not None:
+                ticket.unlink(missing_ok=True)
+            with contextlib.suppress(OSError):
+                if got:
+                    # Free again: the next waiter names no holder that is gone.
+                    handle.seek(0)
+                    handle.truncate()
+                    handle.flush()
+                fcntl.flock(handle, fcntl.LOCK_UN)
             handle.close()
+
+    @contextlib.contextmanager
+    def _queue_guard(self):
+        """The queue's own lock, held only while a ticket is read or written."""
+        with open(self.root / "queue.lock", "a") as guard:
+            fcntl.flock(guard, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(guard, fcntl.LOCK_UN)
+
+    def _tickets(self) -> list[dict]:
+        """The live tickets, lowest first; a dead process's ticket is dropped."""
+        out = []
+        for path in sorted(self.queue.glob("*.json")):
+            try:
+                ticket = json.loads(path.read_text(encoding="utf-8"))
+                ticket["seq"] = _ticket_seq(path)
+            except (OSError, ValueError):
+                continue
+            if not _alive(ticket.get("pid"), ticket.get("start")):
+                path.unlink(missing_ok=True)
+                continue
+            out.append(ticket)
+        return out
+
+    def _take_ticket(self, what: str) -> Path:
+        counter = self.queue / "next"
+        try:
+            seq = int(counter.read_text(encoding="utf-8").strip() or 0)
+        except (OSError, ValueError):
+            seq = 0
+        seq += 1
+        counter.write_text(f"{seq}\n", encoding="utf-8")
+        path = self.queue / f"{seq:010d}.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "start": _start_time(os.getpid()),
+                    "what": what,
+                    "since": now(),
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return path
+
+    def _holder(self, handle) -> str | None:
+        """Who holds the lock, as its file says, or None while it is free."""
+        handle.seek(0)
+        text = handle.read().strip()
+        if not text:
+            return None
+        try:
+            held = json.loads(text)
+        except ValueError:
+            return text  # an older bench's line: "pid N since T"
+        return f"{held.get('what')}, pid {held.get('pid')}, since {held.get('since')}"
+
+    def _busy(self, handle, waiting: list[dict]) -> str:
+        holder = self._holder(handle) or "?"
+        line = f"another bench command holds the lock ({holder})"
+        if waiting:
+            line += f" and {len(waiting)} wait for it"
+        return line
+
+    def _wait_line(self, handle, ahead: list[dict]) -> str:
+        """Where this command stands: its place, the holder and those ahead."""
+        holder = self._holder(handle)
+        names = ([f"{holder} (holds it)"] if holder else []) + [
+            f"{t.get('what')}, pid {t.get('pid')}, waiting since {t.get('since')}"
+            for t in ahead
+        ]
+        return (
+            f"waiting for the bench's lock, number {len(ahead) + 1} in the queue; "
+            f"ahead: {'; '.join(names) or 'none'}"
+        )
 
     def write_private(self, path: Path, text: str) -> None:
         tmp = path.with_name(path.name + ".tmp")
         tmp.write_text(text, encoding="utf-8")
         tmp.chmod(0o600)
         tmp.replace(path)
+
+
+def _try_lock(handle) -> bool:
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    return True
+
+
+def _ticket_seq(path: Path) -> int:
+    return int(path.name.split(".", 1)[0])
+
+
+def _start_time(pid: int) -> str | None:
+    """A process's start time in clock ticks since boot, which tells it from
+    a later process given the same pid; None where ``/proc`` has none."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    # The command name, in parentheses, may hold spaces: count after it.
+    return stat.rsplit(")", 1)[1].split()[19]
+
+
+def _alive(pid, start) -> bool:
+    """Whether the process that wrote a ticket still runs."""
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return start is None or _start_time(pid) in (None, start)
 
 
 # -------------------------------------------------------------------- state
@@ -831,6 +1001,9 @@ class Instance(Protocol):
 
     def bind(self) -> tuple[int, int]: ...
 
+    def resolve(self, ref: str) -> str:
+        """The commit a ref names now, without checking it out."""
+
     def checkout(self, ref: str) -> str: ...
 
     def start(self, peak_assignment: bool = False, workers: int = 1) -> str:
@@ -838,6 +1011,9 @@ class Instance(Protocol):
         it, ``workers`` is its uvicorn worker count."""
 
     def stop(self) -> None: ...
+
+    def free_port(self) -> None:
+        """Stop an earlier bench backend on the bench's port; refuse a stranger."""
 
     def drop(self) -> None: ...
 
@@ -928,6 +1104,8 @@ class DevInstance:
         self.repo = repo
         self._runtime = runtime
         self.api_port: int | None = None
+        #: The backend this process started, to reap when it stops.
+        self._proc: subprocess.Popen | None = None
 
     # -- paths and names
 
@@ -1045,8 +1223,8 @@ class DevInstance:
         self.api_port = inst.api_port
         return inst.slot, inst.api_port
 
-    def checkout(self, ref: str) -> str:
-        """Check ``ref`` out into the bench worktree and sync its environment."""
+    def resolve(self, ref: str) -> str:
+        """The commit ``ref`` names now, ``origin/<ref>`` first, after a fetch."""
         subprocess.run(
             ["git", "-C", str(self.repo), "fetch", "-q", "origin"], check=False
         )
@@ -1071,6 +1249,11 @@ class DevInstance:
                 break
         if sha is None:
             raise BenchError(f"no commit {ref!r} (tried origin/{ref} and {ref})")
+        return sha
+
+    def checkout(self, ref: str) -> str:
+        """Check ``ref`` out into the bench worktree and sync its environment."""
+        sha = self.resolve(ref)
         wt = self.home.worktree
         if (wt / ".git").exists():
             subprocess.run(
@@ -1246,11 +1429,7 @@ class DevInstance:
             raise BenchError("bind the instance before starting it")
         self.configure(workers)
         base = f"http://localhost:{self.api_port}"
-        with socket.socket() as probe:
-            if probe.connect_ex(("127.0.0.1", self.api_port)) == 0:
-                raise BenchError(
-                    f"port {self.api_port} is already listened on: is the bench running?"
-                )
+        self.free_port()
         logfile = (
             self.home.logs / f"backend-{datetime.datetime.now():%Y%m%d-%H%M%S}.log"
         )
@@ -1258,7 +1437,9 @@ class DevInstance:
         env.pop("MASCOPE_ENV", None)
         if peak_assignment:
             env["MASCOPE_PEAK_ASSIGNMENT"] = "1"
-        with open(logfile, "ab") as out:
+        # Shielded: a stop between the start and the pid file would leave a
+        # backend no cleanup knows of.
+        with open(logfile, "ab") as out, STOPPER.shield():
             proc = subprocess.Popen(
                 [
                     "uv",
@@ -1278,7 +1459,8 @@ class DevInstance:
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
             )
-        self.home.pid.write_text(str(proc.pid))
+            self.home.pid.write_text(str(proc.pid))
+            self._proc = proc
         import requests
 
         deadline = time.monotonic() + 600
@@ -1333,8 +1515,8 @@ class DevInstance:
     def stop(self) -> None:
         if not self.home.pid.exists():
             return
-        pid = int(self.home.pid.read_text())
-        if not self._is_backend(pid):
+        pid = self._recorded_pid()
+        if pid is None or not self._is_backend(pid):
             # A pid file left by a crash or a reboot: the pid may be another
             # process's by now, and its group is not the bench's to signal.
             log(
@@ -1342,19 +1524,75 @@ class DevInstance:
             )
             self.home.pid.unlink(missing_ok=True)
             return
-        with contextlib.suppress(ProcessLookupError):
-            pgid = os.getpgid(pid)
-            os.killpg(pgid, signal.SIGTERM)
-            for _ in range(30):
-                time.sleep(1)
-                try:
-                    os.killpg(pgid, 0)
-                except ProcessLookupError:
-                    break
-            else:
-                os.killpg(pgid, signal.SIGKILL)
+        proc = self._proc if self._proc is not None and self._proc.pid == pid else None
+        _stop_group(pid, 30, reap=proc.poll if proc is not None else None)
+        self._proc = None
         self.home.pid.unlink(missing_ok=True)
         log("backend stopped; the database and the filestore stay")
+
+    def _recorded_pid(self) -> int | None:
+        try:
+            return int(self.home.pid.read_text().strip())
+        except (OSError, ValueError):
+            return None
+
+    def free_port(self) -> None:
+        """Free the bench's port for its backend, or refuse a stranger on it.
+
+        A listener on the port that an earlier bench backend holds, one in
+        the process group of the pid the bench recorded and running in the
+        bench's worktree, is the remains of a run that was killed before its
+        cleanup: it is stopped and waited for, up to :data:`STALE_STOP_S`. A
+        listener the bench did not start is someone else's, and refused.
+        """
+        if self.api_port is None:
+            raise BenchError("bind the instance before starting it")
+        port = self.api_port
+        if not port_listened(port):
+            return
+        leader = self._recorded_pid() if self.home.pid.exists() else None
+        holders = listeners(port)
+        if (
+            leader is None
+            or not holders
+            or not all(self._of_backend(pid, leader) for pid in holders)
+        ):
+            raise BenchError(
+                f"port {port} is already listened on by a process the bench did not "
+                f"start ({', '.join(map(str, sorted(holders))) or 'pid unknown'}): "
+                f"another instance holds the bench's slot"
+            )
+        log(
+            f"port {port} is held by an earlier bench backend (pid {leader}); "
+            f"stopping it, for up to {STALE_STOP_S:.0f} s"
+        )
+        _stop_group(leader, STALE_STOP_S)
+        if port_listened(port):
+            raise BenchError(
+                f"port {port} is still listened on {STALE_STOP_S:.0f} s after its "
+                f"earlier bench backend was stopped"
+            )
+        self.home.pid.unlink(missing_ok=True)
+        log(f"the earlier bench backend is stopped; port {port} is free")
+
+    def _of_backend(self, pid: int, leader: int) -> bool:
+        """Whether ``pid`` belongs to the backend the bench started as
+        ``leader``: in its process group, while the leader is that backend, or
+        running in the bench's worktree or a folder of it (the leader may be
+        gone before its workers)."""
+        try:
+            if os.getpgid(pid) != leader:
+                return False
+        except OSError:
+            return False
+        if self._is_backend(leader):
+            return True
+        try:
+            cwd = Path(os.readlink(f"/proc/{pid}/cwd"))
+        except OSError:
+            return False
+        worktree = self.home.worktree.resolve()
+        return cwd == worktree or worktree in cwd.parents
 
     def _is_backend(self, pid: int) -> bool:
         """Whether ``pid`` is the backend ``start`` launched: a group leader
@@ -1464,6 +1702,77 @@ class DevInstance:
 
     def owner_secret(self) -> Path:
         return self.runtime / ".runtime" / "secrets" / "server_owner_secret_key.txt"
+
+
+def port_listened(port: int) -> bool:
+    """Whether something accepts connections on the port, on this host."""
+    with socket.socket() as probe:
+        return probe.connect_ex(("127.0.0.1", port)) == 0
+
+
+def listeners(port: int) -> set[int]:
+    """The pids of this user's processes that listen on a TCP port.
+
+    Read from ``/proc``: the listening sockets' inodes from ``/proc/net/tcp``
+    and ``tcp6``, then the processes whose descriptors hold them. Another
+    account's processes cannot be read, and are not in the answer.
+    """
+    inodes = set()
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            lines = Path(table).read_text().splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            cols = line.split()
+            # local address "ADDR:PORT" in hex; state 0A is LISTEN.
+            if len(cols) > 9 and cols[3] == "0A":
+                if int(cols[1].rsplit(":", 1)[1], 16) == port:
+                    inodes.add(cols[9])
+    wanted = {f"socket:[{inode}]" for inode in inodes}
+    pids = set()
+    if not wanted:
+        return pids
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            for fd in (proc / "fd").iterdir():
+                with contextlib.suppress(OSError):
+                    if os.readlink(fd) in wanted:
+                        pids.add(int(proc.name))
+                        break
+        except OSError:
+            continue
+    return pids
+
+
+def _stop_group(
+    pgid: int, wait_s: float, reap: Callable[[], object] | None = None
+) -> None:
+    """SIGTERM a process group, wait up to ``wait_s`` seconds for it to be
+    gone, then SIGKILL what is left of it and wait for that a little.
+
+    :param reap: Reaps the group's leader when this process is its parent:
+        an exited leader stays in its group as a zombie until it is reaped.
+    """
+    reap = reap or (lambda: None)
+
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(pgid, signal.SIGTERM)
+        for _ in range(max(1, int(wait_s))):
+            time.sleep(1)
+            reap()
+            try:
+                os.killpg(pgid, 0)
+            except ProcessLookupError:
+                return
+        os.killpg(pgid, signal.SIGKILL)
+        # What is left of it closes its sockets as it exits: wait for that.
+        for _ in range(10):
+            time.sleep(0.5)
+            reap()
+            os.killpg(pgid, 0)
 
 
 def runs_dev_run(argv: list[str]) -> bool:
@@ -2073,9 +2382,36 @@ def main(argv: list[str] | None = None) -> int:
     p_review.add_argument(
         "--wait", action="store_true", help="queue behind another bench command"
     )
+    p_post = sub.add_parser(
+        "post",
+        help="post the newest card of a ref's current head on a pull request, "
+        "without running anything",
+    )
+    p_post.add_argument("ref", help="the ref the card was run for, as it was named")
+    p_post.add_argument(
+        "--pr", type=int, required=True, metavar="N", help="the pull request"
+    )
     sub.add_parser("status", help="the env, slot, sets, reference pin and last cards")
     args = parser.parse_args(argv)
 
+    # A signal or a starter that goes away ends the command through its
+    # cleanup, not at once (``stopping.py``).
+    stdout, stderr = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = QuietStream(stdout), QuietStream(stderr)
+    STOPPER.install()
+    watching = watch_parent()
+    try:
+        return _main(args)
+    except Stopped as stop:
+        print(f"bench: stopped ({stop.why}); cleaned up", file=sys.stderr)
+        return stop.exit_code
+    finally:
+        watching.set()
+        STOPPER.uninstall()
+        sys.stdout, sys.stderr = stdout, stderr
+
+
+def _main(args) -> int:
     try:
         home = Home(args.home or default_home())
         instance = DevInstance(home, env=args.env)
@@ -2089,6 +2425,17 @@ def main(argv: list[str] | None = None) -> int:
         bench = Bench(home=home, instance=instance, connect=connect)
         if args.command == "status":
             return bench.status()
+        if args.command == "post":
+            runner = bench_run.BenchRun(
+                home=home,
+                instance=instance,
+                connect=connect,
+                load_state=lambda: load_state(home, instance.env),
+                save_state=lambda state: save_state(home, state),
+            )
+            poster = bench_post.Poster(gh=bench_post.GhCli(), number=args.pr)
+            poster.open()
+            return runner.post(args.ref, poster)
         if args.command in ("run", "baseline"):
             runner = bench_run.BenchRun(
                 home=home,
@@ -2103,7 +2450,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.command == "baseline":
                 if args.card is None:
                     return runner.baseline()
-                with home.lock(wait=args.wait):
+                with home.lock(wait=args.wait, what="baseline"):
                     return runner.baseline(args.card)
             poster = None
             if args.post is not None:
@@ -2111,7 +2458,9 @@ def main(argv: list[str] | None = None) -> int:
                 poster = bench_post.Poster(gh=bench_post.GhCli(), number=args.post)
                 poster.open()
             with home.lock(
-                wait=not args.no_wait, hint="without --no-wait a run waits for it"
+                wait=not args.no_wait,
+                hint="without --no-wait a run waits for it",
+                what=f"run {args.ref}",
             ):
                 return runner.run(
                     args.ref,
@@ -2146,7 +2495,7 @@ def main(argv: list[str] | None = None) -> int:
                     raise BenchError("--recalibrate goes with --record")
                 review.sheet(args.sets, top=args.top)
                 return 0
-            with home.lock(wait=args.wait):
+            with home.lock(wait=args.wait, what="review --record"):
                 return review.record(args.record, recalibrate=args.recalibrate)
         if args.command == "reference":
             runner = bench_reference.Reference(
@@ -2161,9 +2510,9 @@ def main(argv: list[str] | None = None) -> int:
                 jobs=args.jobs,
                 prepare=prepare,
             )
-            with home.lock(wait=args.wait):
+            with home.lock(wait=args.wait, what=f"reference {args.pin}"):
                 return runner.run(args.pin, reinstall=args.reinstall, only=args.sets)
-        with home.lock(wait=args.wait):
+        with home.lock(wait=args.wait, what="init"):
             return bench.init(
                 args.manifest,
                 ref=args.ref,
@@ -2179,6 +2528,10 @@ def main(argv: list[str] | None = None) -> int:
         bench_run.RunError,
         bench_post.PostError,
     ) as error:
+        if STOPPER.stopping is not None:
+            # An error on the way out of a stop: the stop is what ended it.
+            print(f"bench: {error}", file=sys.stderr)
+            return STOPPER.stopping.exit_code
         print(f"bench: {error}", file=sys.stderr)
         return 2
 
