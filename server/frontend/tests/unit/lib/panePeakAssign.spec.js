@@ -2204,6 +2204,16 @@ describe('PanePeakAssign manual curation', () => {
     expect(wrapper.vm.altTooltip(ALTERNATIVES[0])).not.toContain('Not assignable')
   })
 
+  // The alternative's hover names where it came from in words, as the line
+  // under the formula does, not as the API's value.
+  it("names an alternative's source in words on hover", async () => {
+    const wrapper = await mountPane()
+
+    expect(wrapper.vm.altTooltip(ALTERNATIVES[0], 0)).toContain('source: list match')
+    expect(wrapper.vm.altTooltip(ALTERNATIVES[3], 3)).toContain('source: formula search')
+    expect(wrapper.vm.altTooltip(ALTERNATIVES[0], 0)).not.toContain('database')
+  })
+
   it('accepts either the recorded mechanism or the target ion as the adduct', async () => {
     const wrapper = await mountPane()
 
@@ -4452,5 +4462,20 @@ describe('PanePeakAssign a peak the source made', () => {
 
     expect(wrapper.find('.insp-formula').text()).toBe('C3H7NO')
     expect(wrapper.findAll('.insp-sub').at(-1).text()).toMatch(/^C3H8NO\+\s*·\s*list match$/)
+  })
+})
+
+// The engine's own tier sits beside this server's in the inspector; its hover
+// names it in words, as the chip does, not as the API's key.
+describe("PanePeakAssign the engine's own tier", () => {
+  it('names the tier in words on hover', async () => {
+    focusedAssignment = {
+      ...assignment({ formula: 'C6H12O6', tier: 'candidate' }),
+      engine_tier: 'below_assignability'
+    }
+    const wrapper = await mountPane()
+
+    expect(wrapper.vm.engineTierTooltip).toContain('Engine tier: below assignability,')
+    expect(wrapper.vm.engineTierTooltip).not.toContain('below_assignability')
   })
 })

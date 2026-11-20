@@ -43,6 +43,7 @@ import {
   bucketOf as bucketFor,
   bucketRank,
   engineBucketOf,
+  tierName,
   tierRank
 } from '@/lib/tiers'
 import { LEVEL_FILTER_OPTIONS, isLevel, levelRank } from '@/lib/levels'
@@ -810,12 +811,13 @@ watch([() => selectedRow.value?.sample_peak_id, () => rows.value.length], scroll
 })
 
 // Says which of the two tiers this chip is, and whether it agrees. Without it
-// two chips on one row read as one claim rendered twice.
+// two chips on one row read as one claim rendered twice. Both tiers are named
+// in words, not as the API's keys.
 const engineTierTooltip = (row) =>
   row.engine_tier === row.tier
-    ? `The producing engine's own tier: ${row.engine_tier} (agrees with this server's)`
-    : `The producing engine's own tier: ${row.engine_tier}, where this server's ` +
-      `banding of the evidence says ${row.tier}`
+    ? `The producing engine's own tier: ${tierName(row.engine_tier)} (agrees with this server's)`
+    : `The producing engine's own tier: ${tierName(row.engine_tier)}, where this server's ` +
+      `banding of the evidence says ${tierName(row.tier)}`
 
 // Isotopologues folded under a formula's M0.
 const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).length

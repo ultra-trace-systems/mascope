@@ -6,7 +6,7 @@ import { beautifySnakeCase } from '@/lib/utils'
 import { useApp } from '@/stores'
 import { batchPeakLabel } from '@/lib/batchChart'
 import { blendOf, blendSummary } from '@/lib/batchBlend'
-import { tierMeta } from '@/lib/tiers'
+import { tierName } from '@/lib/tiers'
 import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger'
 import { glasbey } from '../colors.js'
 
@@ -346,7 +346,7 @@ export const useChartAssignmentsData = defineStore('chart.batch.assignments', ()
           <br>
           <b>${traceName}</b>
           <br>
-          Tier: ${tierMeta(record.consensus_tier).name}${record.n_present ? ` · ${record.n_present} samples` : ''}
+          Tier: ${tierName(record.consensus_tier)}${record.n_present ? ` · ${record.n_present} samples` : ''}
           <br>${blendLine(record)}
           <b>%{text}</b>
           <br>

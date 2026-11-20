@@ -757,6 +757,86 @@ describe('PaneBrowserBatchPeaks tier ordering', () => {
     expect(Object.keys(wrapper.vm.filters)).toContain(columnFor('consensus_tier').props('field'))
   })
 
+  // The menu's options are shown and written through PrimeVue's optionLabel and
+  // optionValue, so the stubs do the same: the Column renders its filter slot
+  // with a model of its own, and the Select shows option[optionLabel] and writes
+  // option[optionValue] (the option itself where either is unset). Dropping
+  // optionValue would write the whole { value, label } object into the EQUALS
+  // constraint, which no row's bucket equals, and the table would empty.
+  it("names the tier menu's options in words and writes the tier's key", async () => {
+    const models = {}
+    const SelectStub = {
+      name: 'Select',
+      props: ['modelValue', 'options', 'optionLabel', 'optionValue', 'placeholder'],
+      emits: ['update:modelValue', 'change'],
+      methods: {
+        labelOf(option) {
+          return this.optionLabel ? option[this.optionLabel] : option
+        },
+        pick(option) {
+          const value = this.optionValue ? option[this.optionValue] : option
+          this.$emit('update:modelValue', value)
+          this.$emit('change', { value })
+        }
+      },
+      template:
+        '<ul class="select-stub" :data-placeholder="placeholder">' +
+        '<li v-for="(option, i) in options" :key="i" class="select-option" ' +
+        '@click="pick(option)">{{ labelOf(option) }}</li></ul>'
+    }
+    app = makeApp({
+      peaks: [
+        peak('bp-1', 'assigned', 0.9),
+        peak('bp-2', 'below_assignability', 0.2),
+        peak('bp-3', 'candidate', 0.5)
+      ]
+    })
+    localStorage.clear()
+    setActivePinia(createPinia())
+    wrapper = mount(PaneBrowserBatchPeaks, {
+      global: {
+        stubs: {
+          ...GLOBAL_STUBS,
+          Select: SelectStub,
+          Column: {
+            ...ColumnStub,
+            setup(props) {
+              const model = reactive({ value: null })
+              models[props.field] = model
+              return { model, callback: () => {} }
+            },
+            template:
+              '<div class="column-stub" :data-field="field">' +
+              '<slot name="filter" :filterModel="model" :filterCallback="callback" /></div>'
+          }
+        },
+        directives: { tooltip: {}, help: {} }
+      }
+    })
+    await wrapper.vm.$nextTick()
+
+    const menu = wrapper
+      .find('.column-stub[data-field="consensus_tier"]')
+      .find('.select-stub[data-placeholder="Any tier"]')
+    const options = menu.findAll('.select-option')
+    expect(options.map((option) => option.text())).toEqual([
+      'assigned',
+      'candidate',
+      'below assignability',
+      'unassigned',
+      'reagent',
+      'artifact'
+    ])
+
+    await options[2].trigger('click')
+    expect(models.consensus_tier.value).toBe('below_assignability')
+
+    // What the menu wrote is a value the table filters on.
+    wrapper.vm.filters.consensus_tier.constraints[0].value = models.consensus_tier.value
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.rows.map((row) => row.batch_peak_id)).toEqual(['bp-2'])
+  })
+
   it('offers the tier menu one rule, so no rule can outlive the chips', async () => {
     // A second EQUALS rule ANDed onto the first matches nothing, and the strip
     // - which reads only the first - would go on claiming to show a tier.
@@ -2792,6 +2872,22 @@ describe('PaneBrowserBatchPeaks engine tier', () => {
     expect(text).toContain('assigned')
     expect(text).toContain('level 3')
     expect(wrapper.vm.engineTierTooltip(peaks()[1])).toContain('agrees')
+  })
+
+  it('names both tiers in words, not as the API keys', async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+    const text = wrapper.vm.engineTierTooltip({
+      consensus_tier: 'candidate',
+      engine_tier: 'below_assignability'
+    })
+    const reverse = wrapper.vm.engineTierTooltip({
+      consensus_tier: 'below_assignability',
+      engine_tier: 'candidate'
+    })
+
+    expect(text).toContain("The importing engine's own tier: below assignability, where")
+    expect(reverse).toContain("the members' measurements says below assignability")
+    expect(`${text}${reverse}`).not.toContain('below_assignability')
   })
 
   it('keeps only the batch peaks where the engine disagrees, when asked', async () => {

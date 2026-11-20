@@ -189,6 +189,15 @@ export const bucketRank = (tier, role) =>
 export const tierMeta = (tier) => TIER_META[tierBucket(tier)]
 
 /**
+ * A tier's full name, for a hover or a menu that names it in words. Read
+ * through `tierMeta`, so it names the same tier the chip beside it shows.
+ *
+ * @param {string} tier the tier as stored on the record
+ * @returns {string} e.g. 'below assignability'
+ */
+export const tierName = (tier) => tierMeta(tier).name
+
+/**
  * Histogram of tiers over `records`, one bucket per tier and always all of
  * them.
  *

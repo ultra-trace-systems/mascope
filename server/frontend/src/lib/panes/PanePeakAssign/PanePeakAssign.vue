@@ -47,7 +47,7 @@ import {
   sampleStampSummary,
   sampleStampTooltip
 } from '@/lib/batchIsotopologues'
-import { ROLE_BUCKETS, bucketRank } from '@/lib/tiers'
+import { ROLE_BUCKETS, bucketRank, tierName } from '@/lib/tiers'
 import {
   heldByNote,
   isLevel,
@@ -87,7 +87,7 @@ const engineTierTooltip = computed(() => {
   if (!tier) return null
   const agrees = tier === focusedAssignment.value?.tier
   return (
-    `Engine tier: ${tier}, as the engine that made this run rated it\n` +
+    `Engine tier: ${tierName(tier)}, as the engine that made this run rated it\n` +
     (agrees
       ? "It agrees with Mascope's tier."
       : "It differs from Mascope's tier, which reads the evidence alone; the engine also " +
@@ -2504,9 +2504,6 @@ const demotedCount = computed(() => {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.9rem;
   opacity: 0.7;
-}
-.insp-sub .src {
-  text-transform: capitalize;
 }
 .evidence {
   display: grid;
