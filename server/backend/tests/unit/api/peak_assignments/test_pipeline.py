@@ -165,7 +165,6 @@ async def test_a_searched_row_names_its_twin_s_reading_before_the_list_reading_i
         patch.object(
             pipeline, "untargeted_matches_to_peak_assignments", return_value=[row]
         ),
-        patch.object(pipeline.service, "_hold_opened_channel_readings"),
         patch.object(pipeline.service, "_record_same_ion_readings", return_value=0),
         patch.object(pipeline.service, "stamp_series", return_value=0),
         patch.object(

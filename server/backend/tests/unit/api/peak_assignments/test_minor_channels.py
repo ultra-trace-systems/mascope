@@ -25,7 +25,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     PARTNER_GATE_KEPT,
     PARTNER_GATE_LIST,
     apply_partner_gates,
-    hold_opened_channel_readings,
+    cap_second_channel,
     listed_formula_identities,
     untargeted_matches_to_peak_assignments,
 )
@@ -46,6 +46,7 @@ from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
     TIER_CANDIDATE,
 )
+from mascope_tools.composition.utils import formula_identity
 
 
 MECHANISM_IDS = {"[M+H]+": "im-h", "[M+NH4]+": "im-nh4"}
@@ -76,7 +77,9 @@ def _match(mz, formula, ion, mechanism, score, isotope_label="M0"):
 
 
 def _assign(matches, peaks, minor=frozenset({"[M+NH4]+"}), listed=None):
-    return untargeted_matches_to_peak_assignments(
+    """The untargeted stage's rows, judged by the second-channel cap as a
+    run's caps judge them once the reading changes have settled."""
+    rows = untargeted_matches_to_peak_assignments(
         pd.DataFrame(matches),
         peaks_df=peaks,
         sample_item_id="si-1",
@@ -86,8 +89,14 @@ def _assign(matches, peaks, minor=frozenset({"[M+NH4]+"}), listed=None):
         mechanism_id_by_notation=MECHANISM_IDS,
         max_alternatives=5,
         minor_channels=minor,
-        listed_formulas=listed,
     )
+    cap_second_channel(
+        rows,
+        notation_by_id={mid: n for n, mid in MECHANISM_IDS.items()},
+        minor_channels=frozenset(minor),
+        listed_formulas=listed or frozenset(),
+    )
+    return rows
 
 
 class TestTheCrossCompositionContest:
@@ -325,13 +334,22 @@ class TestThePartnerGate:
 
     IDS = {"[M+NO3]-": "im-no3", "[M-H]-": "im-deprot", "[M+HCOO]-": "im-formate"}
 
-    def _gate(self, rows, ids, minor, gated):
+    def _gate(self, rows, ids, minor, gated, listed=frozenset()):
+        """The partner gate, and after it the second-channel cap, as a run's
+        judging loop reads them: the reading changes, then the caps."""
+        notation_by_id = {mid: n for n, mid in ids.items()}
         apply_partner_gates(
             rows,
-            notation_by_id={mid: n for n, mid in ids.items()},
+            notation_by_id=notation_by_id,
             minor_channels=frozenset(minor),
             partner_gated_channels=frozenset(gated),
             tier_bands=BANDS,
+        )
+        cap_second_channel(
+            rows,
+            notation_by_id=notation_by_id,
+            minor_channels=frozenset(minor),
+            listed_formulas=frozenset(listed),
         )
         return rows
 
@@ -646,20 +664,21 @@ class TestThePartnerGate:
     _row = staticmethod(ledger_row)
 
     def _formate(self, row_id, formula, acid=None):
-        """A formate reading the policy capped, with its acid reading if any."""
+        """A formate reading as the search builds it, at the tier its evidence
+        earns, with its acid reading if any. No cap is on it yet: the
+        second-channel cap judges it after the gate."""
         return self._row(
             row_id,
             formula,
             "im-formate",
-            tier=TIER_CANDIDATE,
-            capped=True,
             alternatives=() if acid is None else ((acid, "im-deprot"),),
         )
 
-    def test_a_reading_with_no_family_is_lifted_by_a_partner_a_swap_makes(self):
-        # r1's ion reads no other way, so the first round leaves it to the
-        # cap; r2's own gate then turns r2 into the C10 acid, which is exactly
-        # r1's partner, and r1 is judged again.
+    def test_a_reading_with_no_family_stands_on_a_partner_a_swap_makes(self):
+        # r1's ion reads no other way, so the first round leaves it as it is;
+        # r2's own gate then turns r2 into the C10 acid, which is exactly r1's
+        # partner, and r1 is judged again. The cap after the gate reads the
+        # partner the walk settled on.
         r1 = self._formate("r1", "C10H18O5")
         r2 = self._formate("r2", "C9H16O3", acid="C10H18O5")
         self._gate([r1, r2], self.IDS, minor={"[M+HCOO]-"}, gated={"[M+HCOO]-"})
@@ -670,12 +689,12 @@ class TestThePartnerGate:
         assert r1["provenance"]["partner_gate"] == {
             "channel": "[M+HCOO]-",
             "partner": True,
-            "uncapped": True,
         }
         assert r1["tier"] == TIER_ASSIGNED
         assert r1["provenance"]["minor_channel"] == {
             "corroborated_by": "second_channel",
             "capped": False,
+            "isotopologue": False,
         }
 
     def test_the_walk_says_when_its_rounds_ran_out(self, monkeypatch):
@@ -729,48 +748,52 @@ class TestThePartnerGate:
         assert summary["settled"] is True
         assert summary["partnered"] == 1 and summary["swapped"] == 2
 
-    def test_a_partner_that_is_gone_re_imposes_the_cap(self):
-        # The policy corroborated the formate reading on a search row that the
-        # gate does not count as a partner: nothing else reads the ion, so the
-        # row is left to the cap, and the cap is put back.
+    def test_a_row_under_candidate_is_no_partner_and_the_cap_holds(self):
+        # The same neutral below assignability through the mode's own channel
+        # does not show the molecule: nothing else reads the ion, so the gate
+        # leaves the row as it is and the cap after it holds it. (The search's
+        # build-time policy once counted such a row, and the gate put the cap
+        # back where it had.)
         below = self._row("b", "C10H18O5", "im-deprot", tier="below_assignability")
-        formate = self._row("f", "C10H18O5", "im-formate")
-        formate["provenance"]["minor_channel"] = {
-            "corroborated_by": "second_channel",
-            "capped": False,
-        }
+        formate = self._formate("f", "C10H18O5")
         self._gate([below, formate], self.IDS, minor={"[M+HCOO]-"}, gated={"[M+HCOO]-"})
         assert formate["tier"] == TIER_CANDIDATE
         assert formate["provenance"]["minor_channel"] == {
             "corroborated_by": None,
             "capped": True,
+            "isotopologue": False,
         }
-        assert formate["provenance"]["partner_gate"]["recapped"] is True
+        assert formate["provenance"]["partner_gate"]["kept"] == PARTNER_GATE_KEPT
 
-    def test_a_list_s_corroboration_is_not_taken_back(self):
-        # The same row, corroborated by a list naming its neutral: no partner
-        # is gone, so the cap stays off.
+    def test_a_list_lifts_the_cap_where_no_partner_does(self):
+        # The same row, its neutral named by a list.
         below = self._row("b", "C10H18O5", "im-deprot", tier="below_assignability")
-        formate = self._row("f", "C10H18O5", "im-formate")
-        formate["provenance"]["minor_channel"] = {
+        formate = self._formate("f", "C10H18O5")
+        self._gate(
+            [below, formate],
+            self.IDS,
+            minor={"[M+HCOO]-"},
+            gated={"[M+HCOO]-"},
+            listed={"C10H18O5"},
+        )
+        assert formate["tier"] == TIER_ASSIGNED
+        assert formate["provenance"]["minor_channel"] == {
             "corroborated_by": "list",
             "capped": False,
             "isotopologue": False,
         }
-        self._gate([below, formate], self.IDS, minor={"[M+HCOO]-"}, gated={"[M+HCOO]-"})
-        assert formate["tier"] == TIER_ASSIGNED
-        assert formate["provenance"]["minor_channel"]["capped"] is False
-        assert "recapped" not in formate["provenance"]["partner_gate"]
 
     @pytest.mark.parametrize(
         "ceiling", [TIER_CANDIDATE, "below_assignability"], ids=["at", "below"]
     )
-    def test_a_cap_put_back_is_the_policys_under_the_ceiling(self, ceiling):
-        # s stands on the acid r's gate turns r into, which lifts s's cap;
-        # r then swaps back and takes that partner away. The cap s gets back
-        # is the policy's, read off its evidence, and the mass gate's cap,
-        # after the gate, holds s under its ceiling only where that is below
-        # the policy's cap.
+    def test_a_partner_a_swap_back_takes_leaves_the_cap_under_the_ceiling(
+        self, ceiling
+    ):
+        # s stands on the acid r's gate turns r into; r then swaps back and
+        # takes that partner away. The gate leaves s's reading and its tier as
+        # they were; the second-channel cap after it holds s at candidate, and
+        # the mass gate's cap holds it under its ceiling only where that is
+        # below the second-channel cap.
         below = ceiling != TIER_CANDIDATE
         r = self._formate("r", "C9H16O3", acid="C10H18O5")
         s = self._formate("s", "C10H18O5")
@@ -780,22 +803,30 @@ class TestThePartnerGate:
             "reason": "off_calibration",
         }
         t = self._formate("t", "C8H14O", acid="C9H16O3")
+        notation_by_id = {mid: n for n, mid in self.IDS.items()}
         summary = apply_partner_gates(
             [r, s, t],
-            notation_by_id={mid: n for n, mid in self.IDS.items()},
+            notation_by_id=notation_by_id,
             minor_channels=frozenset({"[M+HCOO]-"}),
             partner_gated_channels=frozenset({"[M+HCOO]-"}),
             tier_bands=BANDS,
         )
-        assert s["provenance"]["partner_gate"]["recapped"] is True
+        assert s["provenance"]["partner_gate"]["kept"] == PARTNER_GATE_KEPT
+        # The gate applies no cap.
+        assert s["tier"] == TIER_ASSIGNED
+        assert summary["held"] == 0
+        cap_second_channel(
+            [r, s, t],
+            notation_by_id=notation_by_id,
+            minor_channels=frozenset({"[M+HCOO]-"}),
+        )
         assert s["provenance"]["minor_channel"] == {
             "corroborated_by": None,
             "capped": True,
+            "isotopologue": False,
         }
-        # The policy's cap; the gate applies no other.
         assert s["tier"] == TIER_CANDIDATE
         assert "capped" not in s["provenance"]["mass_gate"]
-        assert summary["held"] == 0
         cap_mass_gate([r, s, t])
         assert s["tier"] == ceiling
         assert s["provenance"]["mass_gate"].get("capped") == (
@@ -939,18 +970,19 @@ class TestThePartnerGate:
         ],
         ids=["listed", "unlisted"],
     )
-    def test_a_swapped_in_reading_a_list_names_keeps_the_list(
+    def test_a_swapped_in_reading_a_list_names_is_corroborated_by_the_list(
         self, listed, corroboration, tier
     ):
         # Round one finds no partner for protonated C7H6 and swaps the benzyl
         # cation onto toluene less a hydride, another opportunistic reading,
         # whose partner is a row an earlier walk turned to toluene. That row's
         # set-aside reading is borne out, so it turns back, and in round two
-        # the swapped-in reading has no partner any more. Where a list names
-        # toluene, the swap recorded the list, which cannot go away; where
-        # none does, the second channel it read is gone and the cap is back.
-        # The list's key is a composition, as the policy's is, so it names
-        # the reading however the ledger spells it.
+        # the swapped-in reading has no partner any more. The second-channel
+        # cap after the gate reads the settled ledger: where a list names
+        # toluene the list corroborates the reading, and where none does the
+        # cap holds it (MAS-751's case, read once instead of lifted and put
+        # back). The list's key is a composition, so it names the reading
+        # however the ledger spells it.
         benzyl = ledger_row(
             "benzyl", "C7H6", "im-h", alternatives=(("H8C7", "im-hydride"),)
         )
@@ -972,12 +1004,18 @@ class TestThePartnerGate:
         ]
         seen = ledger_row("c7h7", "C7H7", "im-ct", intensity=2.0e5)
         opened = frozenset({"[M+H]+", "[M-H]+"})
+        notation_by_id = {mid: n for n, mid in CT_IDS.items()}
         summary = apply_partner_gates(
             [benzyl, partner, seen],
-            notation_by_id={mid: n for n, mid in CT_IDS.items()},
+            notation_by_id=notation_by_id,
             minor_channels=opened,
             partner_gated_channels=opened,
             tier_bands=BANDS,
+        )
+        cap_second_channel(
+            [benzyl, partner, seen],
+            notation_by_id=notation_by_id,
+            minor_channels=opened,
             listed_formulas=listed,
         )
         assert summary["rounds"] >= 2 and summary["settled"] is True
@@ -990,11 +1028,8 @@ class TestThePartnerGate:
         assert verdict["corroborated_by"] == corroboration
         assert verdict["capped"] is (corroboration is None)
         assert benzyl["tier"] == tier
-        assert ("recapped" in benzyl["provenance"]["partner_gate"]) is (
-            corroboration is None
-        )
 
-    def test_a_lifted_cap_stays_under_the_mass_gates_ceiling(self):
+    def test_a_reading_on_a_partner_stays_under_the_mass_gates_ceiling(self):
         partner = self._row("p", "C10H18O5", "im-deprot")
         formate = self._formate("f", "C10H18O5")
         formate["provenance"]["mass_gate"] = {
@@ -1002,19 +1037,14 @@ class TestThePartnerGate:
             "ceiling": TIER_CANDIDATE,
             "reason": "off_calibration",
         }
-        summary = apply_partner_gates(
-            [partner, formate],
-            notation_by_id={mid: n for n, mid in self.IDS.items()},
-            minor_channels=frozenset({"[M+HCOO]-"}),
-            partner_gated_channels=frozenset({"[M+HCOO]-"}),
-            tier_bands=BANDS,
+        self._gate(
+            [partner, formate], self.IDS, minor={"[M+HCOO]-"}, gated={"[M+HCOO]-"}
         )
-        assert formate["provenance"]["partner_gate"]["uncapped"] is True
+        assert formate["provenance"]["partner_gate"]["partner"] is True
         assert formate["provenance"]["minor_channel"]["capped"] is False
-        # The tier the lifted reading's evidence earns; the mass gate's cap,
-        # after the gate, holds it under the ceiling.
+        # The second-channel cap does not hold it; the mass gate's cap, after
+        # the gate, holds it under the ceiling.
         assert formate["tier"] == TIER_ASSIGNED
-        assert summary["held"] == 1
         cap_mass_gate([partner, formate])
         assert formate["tier"] == TIER_CANDIDATE
         assert formate["provenance"]["mass_gate"]["capped"] == TIER_CANDIDATE
@@ -1057,19 +1087,26 @@ class TestTheStrongerPartnerDecides:
 
     def test_the_brighter_partner_takes_the_ion_and_settles_it(self):
         benzyl = self._benzyl()
-        summary = self._gate(
-            [
-                benzyl,
-                self._seen("c7h6", "C7H6", 1.0e5),
-                self._seen("tol", "C7H8", 3.0e6),
-            ]
-        )
+        rows = [
+            benzyl,
+            self._seen("c7h6", "C7H6", 1.0e5),
+            self._seen("tol", "C7H8", 3.0e6),
+        ]
+        summary = self._gate(rows)
         assert (benzyl["assigned_formula"], benzyl["ionization_mechanism_id"]) == (
             "C7H8",
             "im-hydride",
         )
         # The ion's fit stays, and the tier is the new reading's own.
         assert benzyl["tier"] == TIER_ASSIGNED
+        # The gate caps nothing; the second-channel cap after it reads the
+        # partner the contest weighed.
+        assert "minor_channel" not in benzyl["provenance"]
+        cap_second_channel(
+            rows,
+            notation_by_id={mid: n for n, mid in CT_IDS.items()},
+            minor_channels=self.OPENED,
+        )
         assert benzyl["provenance"]["minor_channel"] == {
             "corroborated_by": "second_channel",
             "capped": False,
@@ -1799,12 +1836,14 @@ class TestAListIsReadThroughTheChannelsTheRunOpened:
 
     @staticmethod
     def _hold(rows, ids=OPENED_CT, minor=("[M-CH3]+", "[M+H]+"), opened=None):
-        return hold_opened_channel_readings(
+        """The second-channel cap over a list's rows; what it held of them."""
+        held = cap_second_channel(
             rows,
             notation_by_id=ids,
             minor_channels=frozenset(minor),
             opened_channels=frozenset(minor if opened is None else opened),
         )
+        return {"read": held["list_read"], "capped": held["list_capped"]}
 
     def test_a_reading_with_nothing_behind_it_is_held_at_candidate(self):
         # D4's methyl-loss ion, the siloxane's base peak on this source.
@@ -1950,16 +1989,23 @@ class TestAListsReadingThroughAGatedChannel:
         assert d4["tier"] == TIER_CANDIDATE
         assert summary["list_kept"] == 0
 
-    def test_on_a_partner_the_reading_stands_and_its_cap_is_lifted(self):
-        # The partner is the search's row, which Stage A's own hold never saw.
-        d4 = list_row("a1", "C8H24O4Si4", "im-me", capped=True, tier=TIER_CANDIDATE)
+    def test_on_a_partner_the_reading_stands_and_the_cap_does_not_hold_it(self):
+        # The partner is the search's row: the cap after the gate reads both
+        # stages, where Stage A's own hold at build time saw Stage A's alone.
+        d4 = list_row("a1", "C8H24O4Si4", "im-me")
         molecular_ion = ledger_row("b1", "C8H24O4Si4", "im-ct")
+        minor = frozenset({"[M-CH3]+", "[M+H]+"})
 
-        self._gate([d4, molecular_ion], OPENED_CT, minor=("[M-CH3]+", "[M+H]+"))
+        self._gate([d4, molecular_ion], OPENED_CT, minor=minor)
+        cap_second_channel(
+            [d4, molecular_ion],
+            notation_by_id=OPENED_CT,
+            minor_channels=minor,
+            opened_channels=minor,
+        )
 
         assert d4["tier"] == TIER_ASSIGNED
         assert d4["provenance"]["partner_gate"]["partner"] is True
-        assert d4["provenance"]["partner_gate"]["uncapped"] is True
         assert d4["provenance"]["minor_channel"] == {
             "corroborated_by": "second_channel",
             "capped": False,
@@ -2000,20 +2046,17 @@ class TestAListsReadingThroughAGatedChannel:
 
 
 @pytest.mark.parametrize(
-    ("listed", "corroboration", "tier"),
-    [
-        (frozenset({"C7H8"}), "list", TIER_ASSIGNED),
-        (frozenset(), None, TIER_CANDIDATE),
-    ],
+    ("listed", "corroboration"),
+    [(frozenset({"C7H8"}), "list"), (frozenset(), None)],
     ids=["listed", "unlisted"],
 )
-def test_the_folds_reading_records_a_list_as_a_run_does(listed, corroboration, tier):
-    """The stage list's judge stage tells the partner gate what the lists
-    name, on every path (``service.Judging.judge``): a reading the gate swapped
-    in keeps a list's corroboration when a later round takes its partner
-    away, and with it the tier the policy's cap would take
-    (``TestThePartnerGate.test_a_swapped_in_reading_a_list_names_keeps_the_list``
-    is the same ledger through the gate alone). The run-less fold's own rows
+def test_the_folds_reading_records_a_list_as_a_run_does(listed, corroboration):
+    """The stage list's judging rounds tell the second-channel cap what the
+    lists name, on every path (``service.Judging.cap``): a reading the gate
+    swapped in is corroborated by a list where a later round took its partner
+    away, and held where nothing names it (``TestThePartnerGate.
+    test_a_swapped_in_reading_a_list_names_is_corroborated_by_the_list`` is
+    the same ledger through the gate and the cap alone). The run-less fold's own rows
     are Stage A's, which the gate never swaps, so the rows here are a
     search's."""
     benzyl = ledger_row(
@@ -2050,9 +2093,11 @@ def test_the_folds_reading_records_a_list_as_a_run_does(listed, corroboration, t
         minor_channels=opened,
         partner_gated_channels=opened,
         listed_formulas=listed,
+        opened_channels=opened,
     )
     judging.refit()
     judging.judge()
+    judging.cap()
     benzyl = next(
         row for row in judging.judged if row["peak_assignment_id"] == "benzyl"
     )
@@ -2062,4 +2107,184 @@ def test_the_folds_reading_records_a_list_as_a_run_does(listed, corroboration, t
         "im-hydride",
     )
     assert benzyl["provenance"]["minor_channel"]["corroborated_by"] == corroboration
-    assert benzyl["tier"] == tier
+    # The cap's own verdict: the tiering rules after it may still hold the
+    # row for reasons of their own.
+    assert benzyl["provenance"]["minor_channel"]["capped"] is (corroboration is None)
+    # ...and the round's tiering record says what the cap judged and held:
+    # the swapped-in reading, and the partner's row, which the gate read back
+    # through the proton channel because the sample shows C7H7.
+    assert judging.another_round() is False
+    assert judging.result().tiering["second_channel"] == {
+        "read": 2,
+        "capped": int(corroboration is None),
+        "list_read": 0,
+        "list_capped": 0,
+    }
+
+
+class TestEachSecondChannelConfigurationLiftsWhatItsTableSays:
+    """One rule (``engine.SecondChannelRule``), four configurations, each
+    lifted by exactly what its row says:
+
+    | configuration | isotopologue | list | partner |
+    | -- | -- | -- | -- |
+    | SEARCH_READING_RULE | no | yes | mode channel, candidate or better |
+    | LIST_READING_RULE | yes | no | mode channel, candidate or better |
+    | PARTNER_RULE | no | no | mode channel, candidate or better |
+    | CORROBORATION_RULE | no | no | any channel, any tier |
+
+    A partner's tier is read under the mass gate's ceiling, and a channel the
+    run cannot name is no channel of any configuration.
+    """
+
+    NOTATIONS = {"im-h": "[M+H]+", "im-ct": "[M]+.", "im-nh4": "[M+NH4]+"}
+    MINOR = frozenset({"[M+NH4]+"})
+    NEUTRAL = "C6H12O6"
+
+    def _reading(self):
+        return {
+            "role": "M0",
+            "assigned_formula": self.NEUTRAL,
+            "ionization_mechanism_id": "im-nh4",
+            "tier": TIER_ASSIGNED,
+            "provenance": {},
+        }
+
+    def _partner(self, mechanism="im-ct", tier=TIER_CANDIDATE, ceiling=None):
+        row = {
+            "role": "M0",
+            "assigned_formula": "H12C6O6",
+            "ionization_mechanism_id": mechanism,
+            "tier": tier,
+            "provenance": {},
+        }
+        if ceiling is not None:
+            row["provenance"]["mass_gate"] = {"ceiling": ceiling}
+        return row
+
+    #: What lifts each configuration, by the evidence it is offered.
+    TABLE = {
+        "SEARCH_READING_RULE": {
+            "isotopologue": False,
+            "list": True,
+            "mode partner": True,
+            "partner under candidate": False,
+            "partner the mass gate holds under candidate": False,
+            "opportunistic partner": False,
+            "unnamed channel": False,
+        },
+        "LIST_READING_RULE": {
+            "isotopologue": True,
+            "list": False,
+            "mode partner": True,
+            "partner under candidate": False,
+            "partner the mass gate holds under candidate": False,
+            "opportunistic partner": False,
+            "unnamed channel": False,
+        },
+        "PARTNER_RULE": {
+            "isotopologue": False,
+            "list": False,
+            "mode partner": True,
+            "partner under candidate": False,
+            "partner the mass gate holds under candidate": False,
+            "opportunistic partner": False,
+            "unnamed channel": False,
+        },
+        "CORROBORATION_RULE": {
+            "isotopologue": False,
+            "list": False,
+            "mode partner": True,
+            "partner under candidate": True,
+            "partner the mass gate holds under candidate": True,
+            "opportunistic partner": True,
+            "unnamed channel": False,
+        },
+    }
+
+    def _offered(self, evidence):
+        """The partner rows, list and isotopologue one piece of evidence is."""
+        partners: list[dict] = []
+        listed: frozenset[str] = frozenset()
+        isotopologue = False
+        if evidence == "isotopologue":
+            isotopologue = True
+        elif evidence == "list":
+            listed = frozenset({self.NEUTRAL})
+        elif evidence == "mode partner":
+            partners = [self._partner()]
+        elif evidence == "partner under candidate":
+            partners = [self._partner(tier="below_assignability")]
+        elif evidence == "partner the mass gate holds under candidate":
+            partners = [self._partner(ceiling="below_assignability")]
+        elif evidence == "opportunistic partner":
+            partners = [self._partner(mechanism="im-nh4")]
+        elif evidence == "unnamed channel":
+            partners = [self._partner(mechanism="im-unnamed")]
+        return partners, listed, isotopologue
+
+    @pytest.mark.parametrize(
+        ("configuration", "evidence"),
+        [
+            (configuration, evidence)
+            for configuration, row in TABLE.items()
+            for evidence in row
+        ],
+    )
+    def test_the_configuration_lifts_what_its_row_says(self, configuration, evidence):
+        rule = getattr(engine_module, configuration)
+        partners, listed, isotopologue = self._offered(evidence)
+        neutrals = {
+            formula_identity(row["assigned_formula"])
+            for row in partners
+            if rule.is_partner(row, self.NOTATIONS, self.MINOR)
+        }
+        found = rule.corroboration(
+            self._reading(),
+            partners=neutrals,
+            listed_formulas=listed,
+            isotopologue=isotopologue,
+        )
+        assert (found is not None) is self.TABLE[configuration][evidence]
+
+    def test_the_sample_shows_its_molecule_by_the_partner_configuration(self):
+        for row in (
+            self._partner(),
+            self._partner(tier="below_assignability"),
+            self._partner(mechanism="im-nh4"),
+        ):
+            assert engine_module.shows_molecule(
+                row, self.NOTATIONS, self.MINOR
+            ) is engine_module.PARTNER_RULE.is_partner(row, self.NOTATIONS, self.MINOR)
+
+    def test_the_cap_reads_each_kind_of_row_by_its_configuration(self):
+        # A search's reading and a list's reading through an opened channel,
+        # each with an isotopologue and named by a list: the list lifts the
+        # search's, the isotopologue the list's.
+        search = {**self._reading(), "peak_assignment_id": "s", "source": "untargeted"}
+        listed_row = {
+            **self._reading(),
+            "peak_assignment_id": "l",
+            "source": "database",
+        }
+        lines = [
+            {
+                "peak_assignment_id": f"{owner}-iso",
+                "role": "iso_child",
+                "owner_peak_assignment_id": owner,
+                "tier": TIER_ASSIGNED,
+            }
+            for owner in ("s", "l")
+        ]
+        held = cap_second_channel(
+            [search, listed_row, *lines],
+            notation_by_id=self.NOTATIONS,
+            minor_channels=self.MINOR,
+            opened_channels=self.MINOR,
+            listed_formulas=frozenset({self.NEUTRAL}),
+        )
+        assert search["provenance"]["minor_channel"]["corroborated_by"] == "list"
+        assert listed_row["provenance"]["minor_channel"]["corroborated_by"] == (
+            "isotopologue"
+        )
+        assert held == {"read": 1, "capped": 0, "list_read": 1, "list_capped": 0}

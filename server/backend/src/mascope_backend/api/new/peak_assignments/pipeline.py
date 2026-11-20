@@ -72,7 +72,6 @@ from mascope_backend.api.new.peak_assignments.engine import (
     SOURCE_DATABASE,
     SOURCE_UNTARGETED,
     TIERING_KEY,
-    apply_minor_channel_policy,
     build_unassigned_assignments,
     drop_ions_claimed_elsewhere,
     evidence_for,
@@ -1194,9 +1193,6 @@ async def elect(ctx: RunContext) -> None:
     of the sample makes of it, a list's or the search's
     (:func:`_read_as_a_run_reads`). Then, on the rows of both:
 
-    - a list's readings through the channels the run opened are held as the
-      search's readings through them are, before any pass reads them as
-      partners or rivals (``service._hold_opened_channel_readings``);
     - a list's matches carry the other readings of their ion
       (``service._record_same_ion_readings``), which reads no tier and so is
       written once however many rounds judge them;
@@ -1262,7 +1258,6 @@ async def elect(ctx: RunContext) -> None:
             minor_channels=ctx.resolved_profile.minor_channels,
             excluded_peak_ids=search.excluded - released,
             fit_by_seed=ctx.fit_by_seed,
-            listed_formulas=ctx.listed_formulas,
         )
         # Each names a reading at the head of the row's alternatives, under
         # the cap: the reading the twin replaced leads, then the list reading
@@ -1292,12 +1287,6 @@ async def elect(ctx: RunContext) -> None:
                 f"lost it to one ({held} held by the search) "
                 f"({time.perf_counter() - search.started:.1f} s)"
             )
-    service._hold_opened_channel_readings(
-        ctx.stage_a,
-        searched_mechanisms=ctx.searched_mechanisms,
-        resolved_profile=ctx.resolved_profile,
-        sample_name=sample.sample_item_name,
-    )
     ctx.same_ion_families = service._record_same_ion_readings(
         ctx.stage_a,
         searched_mechanisms=ctx.searched_mechanisms,
@@ -1350,12 +1339,12 @@ def _read_as_a_run_reads(
     (``source`` untargeted) then get what the search gives its own before any
     judging: the other readings of their ion it would have held, which the
     partner gate and the cross-channel pass weigh
-    (``engine.record_same_ion_readings``), and the cap on a reading through a
-    secondary channel, which a list naming its neutral lifts
-    (``engine.apply_minor_channel_policy``). The tiering pass then asks them
-    the rules it asks only of the search's rows: the lone peak, the radical,
-    the context's priors, the nitrate skeleton and the shapes of a formula
-    found by mass.
+    (``engine.record_same_ion_readings``). The judging then caps a reading
+    through a secondary channel as it caps the search's, a list naming its
+    neutral lifting it (``engine.cap_second_channel``), and the tiering pass
+    asks them the rules it asks only of the search's rows: the lone peak, the
+    radical, the context's priors, the nitrate skeleton and the shapes of a
+    formula found by mass.
 
     :param ctx: The pass, its lists read (:func:`_propose_given`).
     :param rows: The elected rows, each isotopologue beside its owner.
@@ -1389,12 +1378,6 @@ def _read_as_a_run_reads(
         heuristics_config=ctx.resolved_profile.heuristics_config(),
         formula_formatter=to_custom_element_format,
         max_alternatives=ctx.config.max_alternatives,
-    )
-    apply_minor_channel_policy(
-        searched,
-        mechanism_id_by_notation,
-        ctx.resolved_profile.minor_channels,
-        listed_formulas=ctx.listed_formulas,
     )
     return listed, searched
 
@@ -1474,6 +1457,7 @@ def _judging_for(ctx: RunContext) -> service.Judging:
         artifact_peak_ids=frozenset(ctx.artifact_peak_ids),
         instrument_type=ctx.instrument_type,
         listed_formulas=ctx.listed_formulas,
+        opened_channels=resolved_profile.added_channels,
         source_line_cap=ctx.source_line_cap,
         context=resolved_profile.context,
         nox_skeleton=resolved_profile.nox_skeleton,

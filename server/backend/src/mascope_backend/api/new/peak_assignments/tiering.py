@@ -657,10 +657,10 @@ def minor_channel_detail(row: dict) -> str:
     """What the minor-channel cap says about a row it held at candidate.
 
     A list's reading through a channel the run opened is held for want of an
-    isotopologue or a second channel (``engine.hold_opened_channel_readings``);
-    a search row for want of a second channel or a list, its isotopologue
-    being no answer to which neutral clustered (step 3.4,
-    ``engine.apply_minor_channel_policy``).
+    isotopologue or a second channel (``engine.LIST_READING_RULE``); a search row
+    for want of a second channel or a list, its isotopologue being no answer
+    to which neutral clustered (step 3.4, ``engine.SEARCH_READING_RULE``), both by
+    the second-channel cap (``engine.cap_second_channel``).
 
     :param row: A row the cap holds.
     :return: The reason's sentence.
@@ -1011,7 +1011,7 @@ def isotope_lines(committed: Iterable[dict]) -> dict[str, list[dict]]:
     """Each monoisotopic row's committed isotopologue rows, by the row's id.
 
     Read off the ledger as it stands, as the minor-channel cap reads it
-    (``engine.apply_minor_channel_policy``): a line the run committed as the
+    (``engine.cap_second_channel``): a line the run committed as the
     row's own is one the fit expected the spectrum to show and found there.
 
     :param committed: The run's committed rows.

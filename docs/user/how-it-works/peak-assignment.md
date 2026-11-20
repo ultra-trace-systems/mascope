@@ -181,9 +181,11 @@ mode's own channels is never outweighed this way and keeps its formula; a rival 
 sample shows is weighed against it by the same margin, read from the other side: the
 rival has to be shown ten times as strongly to hold it at *candidate* (*ambiguous
 nitrogen* and *ambiguous adduct*, below). The rule reads the run's mass gate, so a partner
-is a reading that gate leaves committed, and the gate holds a reading the rule lifts or
-swaps in under the same ceiling as every other reading of its peak. A batch search reads
-the rule over its own rows. On any other instrument electron transfer names an
+is a reading that gate leaves committed, and the gate holds a reading the rule swaps in
+under the same ceiling as every other reading of its peak. The rule only settles which
+reading a row is; whether that reading reaches *assigned* is the cap after it (*What lets
+a secondary channel's reading reach assigned*, below). A batch search reads the rule, and
+that cap, over its own rows. On any other instrument electron transfer names an
 ambient-ion mode as readily, and such a mode keeps the ESI profile of its polarity; so does
 a mode with only protonation or deprotonation and no reagent. A secondary channel is
 searched only where the deployment holds its mechanism, so Mascope ships the mechanism of
@@ -230,8 +232,11 @@ its log says why.
 through a secondary channel, carbonate on a nitrate source or ammonium on a uronium one,
 is capped at *candidate* unless something says which molecule clustered with the
 channel's carrier: a loaded reference list or your target library names the molecule, or
-the sample commits the same molecule through one of the mode's own channels. The
-reading's own isotope lines are not enough on their own. A 13C line proves how many
+the sample shows the same molecule: a row of either stage commits it at *candidate* or
+better, after the mass gate's check, through one of the mode's own channels. That is the
+same test the opportunistic readings are settled by (*Auto*, above), and the cap reads it
+once, after they are settled and before the other caps. The reading's own isotope lines
+are not enough on their own. A 13C line proves how many
 carbons the ion holds, never which molecule clustered: benzene and methanol read through
 the carbonate channel reached *assigned* on that line alone. The lines still count for
 the reading as any line does, in its fit and as a second peak of its ion (*one peak
@@ -243,7 +248,8 @@ for itself as well as through the mode's own mechanisms. On a charge-transfer so
 whose mode declares electron transfer alone, a cyclic siloxane's methyl-loss ion, its
 base peak there, and its protonated molecule beside it are named from the list. A
 reading through an opened channel is capped at *candidate* unless its own isotope lines
-or the same compound through one of the mode's own channels corroborate it. The list
+corroborate it, or the sample shows the same compound through one of the mode's own
+channels as above. The list
 already names its molecule, which is what a search's reading has to find elsewhere, so
 here an isotope line is enough. Through a channel
 that needs the compound shown elsewhere (hydride abstraction, proton transfer, methyl
@@ -469,6 +475,11 @@ since what licenses it is a commit, where three things hold:
   at *candidate* or better through one of the mode's own channels. That is what tells a
   monoterpene's C6H7+ from protonated benzene: where the sample shows benzene's radical
   cation, the ion stays benzene's.
+
+The claim reads the ledger as the opportunistic readings leave it, after the mass gate's
+check, by the same test of what the sample shows. A claim takes the fragment's rows off
+and the readings are settled again without them, so a fragment is never the partner that
+settles another reading.
 
 The ladder leaves out C7H8+., C7H7+ and C8H9+, though the monoterpene's spectrum has them
 strong: they are toluene's radical cation and toluene and xylene less a hydride, and a
@@ -913,7 +924,11 @@ What caps a row at candidate:
 - **rivals left standing** — the peak's own evidence could not separate the committed
   formula from at least one other, no second ionization channel of the run committed
   the same neutral, and no homologous series of the batch names it (*Detecting series*,
-  below). A compound matched from a list is asked this too. When the run
+  below). A compound matched from a list is asked this too. Two list compounds that make
+  one ion through two channels, a hydroxy acid with bromide and its bromo acid
+  deprotonated, are one candidate, not two: the same mass and isotope pattern, so the
+  spectrum cannot tell them apart. The other stays on the row as another reading of its
+  ion. When the run
   searches formulas, the search also looks at that compound's peak: the formulas its
   element ranges hold for the mass are scored beside the list's, and any the evidence
   cannot tell apart count as rivals, named in the reason. A radical does not count,
@@ -1078,7 +1093,8 @@ What caps a row at candidate:
   be weighed on, and a rival the sample shows holds the row at *candidate* however faint
   the rival is. A formula from a loaded reference list is asked too: the run gives it the
   other readings of its ion that the formula search would have considered, shown with its
-  close alternatives.
+  close alternatives. A compound of your target library carries them as well, for you to
+  see, and stays exempt.
 - **off calibration** and **minor channel only** — caps the run applied earlier, restated
   here so every reason is in one place: a mass error far from the run's own fitted
   calibration with nothing corroborating it; and a commitment through a channel the

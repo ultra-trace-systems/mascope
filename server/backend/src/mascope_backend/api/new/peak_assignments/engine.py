@@ -619,7 +619,157 @@ def tier_under_ceiling(row: dict) -> str | None:
 
 
 #: The tiers at which a committed row shows its molecule (:func:`shows_molecule`).
-SHOWN_TIERS = (TIER_ASSIGNED, TIER_CANDIDATE)
+SHOWN_TIERS = frozenset({TIER_ASSIGNED, TIER_CANDIDATE})
+
+#: The channels a second channel's partner is read through: the mode's own,
+#: the channels the run searched and did not open for itself, since an
+#: opportunistic channel shows nothing on its own...
+PARTNER_MODE_CHANNELS = "mode"
+#: ...or any other channel the run searched, its opportunistic ones included.
+PARTNER_ANY_CHANNEL = "any"
+
+#: What a reading's corroboration is recorded as, by what corroborated it.
+CORROBORATED_BY_ISOTOPOLOGUE = "isotopologue"
+CORROBORATED_BY_LIST = "list"
+CORROBORATED_BY_SECOND_CHANNEL = "second_channel"
+
+
+@dataclass(frozen=True)
+class SecondChannelRule:
+    """What corroborates a reading through one channel: the one rule.
+
+    A reading is corroborated, first match first, by its own committed
+    isotopologue, by a list naming its neutral, or by a partner: a
+    monoisotopic row of the same neutral (``utils.formula_identity``) through
+    another channel. What lifts it is the rule's parameters, and each use of
+    "a second channel" is a configuration of it (:data:`SEARCH_READING_RULE`,
+    :data:`LIST_READING_RULE`, :data:`PARTNER_RULE`, :data:`CORROBORATION_RULE`), so the uses
+    differ where their configurations say and nowhere else.
+
+    :param isotopologue: Whether the reading's own committed isotopologue
+        corroborates it.
+    :param listed: Whether a list the sample was read against naming its
+        neutral corroborates it.
+    :param partner_tiers: The tiers at which a partner counts, read under the
+        mass gate's ceiling (:func:`tier_under_ceiling`); None for any tier.
+    :param partner_channels: The channels a partner is read through:
+        :data:`PARTNER_MODE_CHANNELS` or :data:`PARTNER_ANY_CHANNEL`.
+    """
+
+    isotopologue: bool
+    listed: bool
+    partner_tiers: frozenset[str] | None
+    partner_channels: str
+
+    def is_partner(
+        self, row: dict, notation_by_id: dict[str, str], minor_channels: frozenset[str]
+    ) -> bool:
+        """Whether a row is a partner under this rule.
+
+        A monoisotopic row with a formula, through a channel the run searched
+        (a channel it cannot name shows nothing), of the rule's channels and
+        at one of its tiers.
+
+        :param row: A ledger row.
+        :param notation_by_id: The run's mechanisms, by the id the rows carry.
+        :param minor_channels: The run's opportunistic channels.
+        :return: Whether the row commits its neutral as a partner here.
+        """
+        if row.get("role") != ROLE_M0 or not row.get("assigned_formula"):
+            return False
+        channel = notation_by_id.get(str(row.get("ionization_mechanism_id")))
+        if channel is None:
+            return False
+        if self.partner_channels == PARTNER_MODE_CHANNELS and channel in minor_channels:
+            return False
+        return self.partner_tiers is None or (
+            tier_under_ceiling(row) in self.partner_tiers
+        )
+
+    def corroboration(
+        self,
+        row: dict,
+        *,
+        partners: frozenset[str] | set[str],
+        listed_formulas: frozenset[str] = frozenset(),
+        isotopologue: bool = False,
+    ) -> str | None:
+        """What corroborates a reading under this rule, first match first.
+
+        :param row: The reading's row.
+        :param partners: The neutrals a partner of the rule commits through a
+            channel other than the reading's, as :func:`formula_identity`
+            keys.
+        :param listed_formulas: The neutrals the sample's lists name.
+        :param isotopologue: Whether the reading has a committed isotopologue.
+        :return: :data:`CORROBORATED_BY_ISOTOPOLOGUE`,
+            :data:`CORROBORATED_BY_LIST`, :data:`CORROBORATED_BY_SECOND_CHANNEL`,
+            or None where nothing the rule counts corroborates it.
+        """
+        neutral = formula_identity(row.get("assigned_formula"))
+        if self.isotopologue and isotopologue:
+            return CORROBORATED_BY_ISOTOPOLOGUE
+        if self.listed and neutral in listed_formulas:
+            return CORROBORATED_BY_LIST
+        if neutral in partners:
+            return CORROBORATED_BY_SECOND_CHANNEL
+        return None
+
+
+#: A search's reading through a secondary channel (step 3.4): a list naming
+#: the neutral, or the sample showing it through one of the mode's own
+#: channels. Its isotopologue is not enough: a 13C line proves the ion's
+#: carbon count, never which neutral clustered with the channel's carrier -
+#: benzene and methanol read through the carbonate channel reached "assigned"
+#: on their isotopologue alone.
+SEARCH_READING_RULE = SecondChannelRule(
+    isotopologue=False,
+    listed=True,
+    partner_tiers=SHOWN_TIERS,
+    partner_channels=PARTNER_MODE_CHANNELS,
+)
+
+#: A list's reading through a channel the run opened (step 3.3f): its own
+#: isotopologue, or the sample showing the neutral through one of the mode's
+#: own channels. The list is why the reading was made, so it is no
+#: corroboration of it; what a search's reading lacks, a name for the
+#: neutral, a list's reading has, so its isotopologue does count.
+LIST_READING_RULE = SecondChannelRule(
+    isotopologue=True,
+    listed=False,
+    partner_tiers=SHOWN_TIERS,
+    partner_channels=PARTNER_MODE_CHANNELS,
+)
+
+#: A partner: the sample shows the molecule (:func:`shows_molecule`). What the
+#: partner gate stands a gated reading on, the cross-channel pass weighs a
+#: rival by, and the fragment claim yields to, and the partner the two
+#: configurations above count.
+PARTNER_RULE = SecondChannelRule(
+    isotopologue=False,
+    listed=False,
+    partner_tiers=SHOWN_TIERS,
+    partner_channels=PARTNER_MODE_CHANNELS,
+)
+
+#: The cross-channel pass's corroboration (``cross_channel.channels_by_neutral``):
+#: two channels committed the neutral, at any tier and through any channel the
+#: run searched, its opportunistic ones included.
+#:
+#: It differs from the three configurations above on purpose (MAS-1018). They
+#: decide whether a reading may stand, so they bar a partner the sample does
+#: not show. This one counts: it records which channels saw the neutral, and
+#: the best tier on each travels with the count (``cross_channel.partner_tier``),
+#: so the partner's tier is weighed rather than barred. The tiering pass reads
+#: the count as the escape from its density, lone-peak and context caps.
+#: Reading it at :data:`PARTNER_RULE` instead would move results, and is left
+#: to be read on a card once the run has one measurement model (MAS-982).
+CORROBORATION_RULE = SecondChannelRule(
+    isotopologue=False,
+    listed=False,
+    partner_tiers=None,
+    partner_channels=PARTNER_ANY_CHANNEL,
+)
 
 
 def shows_molecule(
@@ -627,15 +777,17 @@ def shows_molecule(
 ) -> bool:
     """Whether the sample shows this row's molecule through it.
 
-    The one test of "the sample shows this molecule", which the partner gate
-    reads as a partner (:func:`apply_partner_gates`), the cross-channel pass as
-    a rival the sample bears out (``cross_channel.partner_heights``) and the
-    fragment claim as a reading shown elsewhere (``reagent_pass.
-    claim_fragments``). A monoisotopic row that commits its neutral at
-    candidate or better, under the mass gate's ceiling (:func:`
-    tier_under_ceiling`), through one of the mode's own channels: a channel
-    the run searched and did not open for itself. An opportunistic channel
-    shows nothing on its own, and neither does a channel the run cannot name.
+    The one test of "the sample shows this molecule" (:data:`PARTNER_RULE`), which
+    the partner gate reads as a partner (:func:`apply_partner_gates`), the
+    cross-channel pass as a rival the sample bears out (``cross_channel.
+    partner_heights``), the fragment claim as a reading shown elsewhere
+    (``reagent_pass.claim_fragments``), and the second-channel cap as a
+    reading's partner (:func:`cap_second_channel`). A monoisotopic row that
+    commits its neutral at candidate or better, under the mass gate's ceiling
+    (:func:`tier_under_ceiling`), through one of the mode's own channels: a
+    channel the run searched and did not open for itself. An opportunistic
+    channel shows nothing on its own, and neither does a channel the run
+    cannot name.
 
     It is read where the reading changes have settled and before any cap
     (``service.Judging.judge``): after the mass gate has measured the ledger,
@@ -647,12 +799,7 @@ def shows_molecule(
     :param minor_channels: The run's opportunistic channels.
     :return: Whether the row shows its molecule.
     """
-    if row.get("role") != ROLE_M0 or not row.get("assigned_formula"):
-        return False
-    channel = notation_by_id.get(str(row.get("ionization_mechanism_id")))
-    if channel is None or channel in minor_channels:
-        return False
-    return tier_under_ceiling(row) in SHOWN_TIERS
+    return PARTNER_RULE.is_partner(row, notation_by_id, minor_channels)
 
 
 def evidence_for(fit_score: float | None, formula: str | None) -> float | None:
@@ -2295,7 +2442,7 @@ def record_displaced_list_readings(
     """Give each search row that took a list hit's peak the reading it displaced.
 
     The reading goes first among the row's alternatives, and the weighing into
-    :data:`LIST_READING`: the list's formula, its identities, and the evidence
+    :data:`LIST_READING_RULE`: the list's formula, its identities, and the evidence
     the two readings were weighed on with the prior.
 
     :return: How many of the taken peaks a search row holds.
@@ -2508,7 +2655,6 @@ def untargeted_matches_to_peak_assignments(
     minor_channels: frozenset[str] | None = None,
     excluded_peak_ids: set[str] | None = None,
     fit_by_seed: dict[tuple[str, str], float | None] | None = None,
-    listed_formulas: frozenset[str] | None = None,
 ) -> list[dict]:
     """Map untargeted composition results onto peak assignments (Stage B).
 
@@ -2578,12 +2724,8 @@ def untargeted_matches_to_peak_assignments(
     :param minor_channels: Notations of the opportunistic secondary channels
         this run switched on. They are searched beside the mode's own
         mechanisms but are not equal to them: they only take peaks no primary
-        channel explains, and a winner on one is capped at ``candidate`` unless
-        something corroborates it (see :func:`apply_minor_channel_policy`).
-    :param listed_formulas: The neutrals the sample's lists name, as
-        :func:`formula_identity` keys (:func:`listed_formula_identities`): a
-        secondary-channel winner one of them names is corroborated by it.
-        None, for a caller that read no list, names none.
+        channel explains. A winner on one is judged after the reading changes
+        settle (:func:`cap_second_channel`), not here.
     :return: One assignment dict per assigned peak, ready for bulk insert.
     """
     if matches_df.empty or peaks_df.empty:
@@ -2904,14 +3046,6 @@ def untargeted_matches_to_peak_assignments(
             f"monoisotopic peak were not written; their peaks stay unassigned."
         )
 
-    if minor_channels:
-        apply_minor_channel_policy(
-            assignments,
-            mechanism_id_by_notation,
-            minor_channels,
-            listed_formulas=listed_formulas or frozenset(),
-        )
-
     return assignments
 
 
@@ -2930,13 +3064,13 @@ PARTNER_GATE_OUTWEIGHED = "outweighed"
 
 #: The verdict a gated reading carries where its ion reads no other way and
 #: the sample shows no partner: the row stays as the finder elected it, and
-#: the minor-channel policy's cap holds.
+#: the second-channel cap after the gate holds it (:func:`cap_second_channel`).
 PARTNER_GATE_KEPT = "no other reading of the ion"
 
 #: The verdict a reference list's gated reading carries where the gate would
 #: have made another reading of its ion the row's: the list named the compound,
-#: so its reading stays the row's, under the minor-channel policy's cap, and
-#: the other reading stays on the row for the cross-channel pass to weigh.
+#: so its reading stays the row's, under the second-channel cap, and the other
+#: reading stays on the row for the cross-channel pass to weigh.
 PARTNER_GATE_LIST = "a list names the compound"
 
 #: How many times as bright the brighter of two partners' peaks has to be for
@@ -2997,7 +3131,6 @@ def apply_partner_gates(
     minor_channels: frozenset[str],
     partner_gated_channels: frozenset[str],
     tier_bands: dict[str, float] | None,
-    listed_formulas: frozenset[str] = frozenset(),
 ) -> dict:
     """Let an opportunistic reading stand only where the sample shows its neutral.
 
@@ -3025,42 +3158,37 @@ def apply_partner_gates(
     rows it read in a sample, a batch decision measured on a sample over the
     rows measured there.
 
-    A partner is a monoisotopic row committed at candidate or better through
-    one of the mode's own channels whose neutral is the reading's, compared as
-    compositions (:func:`formula_identity`): a target library's ``CH3COOH``
-    partners a formate reading of ``C2H4O2``. How strongly the sample shows a
+    A partner is a row through which the sample shows the reading's neutral
+    (:func:`shows_molecule`): a monoisotopic row committed at candidate or
+    better through one of the mode's own channels, compared as compositions
+    (:func:`formula_identity`), so a target library's ``CH3COOH`` partners a
+    formate reading of ``C2H4O2``. How strongly the sample shows a
     neutral is the height of its brightest partner's peak. The tier is the
     bar a partner clears, not a measure of it: a partner's tier here is read
     before the caps that can still lower it, and a contest the tier decided
     would corroborate the very partner it chose.
 
-    A reading the gate gives a row, by a swap, a lifted cap or a cap put back,
-    takes the tier its own evidence earns, under the minor-channel policy's
-    cap where that holds, as a stage would have built it. The gate applies no
-    other cap: the mass gate's ceiling is the ion's line's, which every reading
-    of it shares, and that gate's cap holds the row under it after the gate,
-    as the cross-channel pass and the tiering pass judge it after the gate.
+    A reading the gate gives a row by a swap takes the tier its own evidence
+    earns, as a stage would have built it. The gate applies no cap: the caps
+    judge the readings it settled after it, the second-channel cap
+    (:func:`cap_second_channel`) among them, and the mass gate's ceiling is
+    the ion's line's, which every reading of it shares.
 
     For a monoisotopic row whose reading is through a partner-gated channel:
 
-    - the reading stands where it has a partner. Where the minor-channel
-      policy capped it for want of one among the search's own rows, the cap
-      is lifted here and the row says the second channel corroborated it;
+    - the reading stands where it has a partner;
     - otherwise the mode's own reading of the ion, where the family holds one
       whose neutral is a molecule, becomes the row's, keeping the fit and mass
       error that are the ion's, with its tier read off its own plausibility;
       failing that, the opportunistic reading whose neutral the sample shows
-      most strongly; failing that, the row stays as it is and the policy's
-      cap holds - re-imposed where the partner that once lifted it is gone,
-      read off the tier the row's evidence earns, not off the tier a lifted
-      reading held.
+      most strongly; failing that, the row stays as it is, and the
+      second-channel cap after the gate holds it at candidate.
 
     A reference list's row through a gated channel, which Stage A reads through
     the channels the run opened, is held to the same bar and never moved: the
     list named the compound, and taking another reading of the ion would put
-    the list's name on a formula it does not hold. Where it stands on a
-    partner its cap is lifted as above; otherwise it keeps its reading under
-    the policy's cap (:data:`PARTNER_GATE_LIST` where the gate would have
+    the list's name on a formula it does not hold. Where it has no partner it
+    keeps its reading (:data:`PARTNER_GATE_LIST` where the gate would have
     taken another reading), and the reading the gate would have taken stays
     on the row for the cross-channel pass to weigh.
 
@@ -3113,16 +3241,10 @@ def apply_partner_gates(
         a subset of ``minor_channels``: a gated reading is never a partner,
         which is what lets the contest be read once, after the walk.
     :param tier_bands: The run's evidence bands, for a swapped reading's tier.
-    :param listed_formulas: The neutrals the sample's lists name, as
-        :func:`formula_identity` keys (:func:`listed_formula_identities`). A
-        row swapped onto another opportunistic reading of one of them records
-        the list as its corroboration, as the minor-channel policy does: a
-        list cannot go away, so a later round that loses the partner does not
-        cap it again.
     :return: A JSON-serializable summary of the ledger the gate left: rows
-        standing on a partner, of them the caps lifted and the swaps undone,
-        rows swapped to another reading, rows left to the cap, of them the
-        caps re-imposed, rows given a tier the mass gate's ceiling holds
+        standing on a partner, of them the swaps undone, rows swapped to
+        another reading, rows left to the cap, rows given a tier the mass
+        gate's ceiling holds
         lower (which that gate's cap holds there), readings set aside, rows
         that weighed another partnered reading and of them the ones the
         contest moved, the readings outweighed and those within
@@ -3133,11 +3255,9 @@ def apply_partner_gates(
     """
     summary = {
         "partnered": 0,
-        "uncapped": 0,
         "swapped": 0,
         "swapped_back": 0,
         "kept": 0,
-        "recapped": 0,
         "held": 0,
         "set_aside": 0,
         "contested": 0,
@@ -3316,21 +3436,6 @@ def apply_partner_gates(
                 calculate_mass(formula=str(chosen["assigned_formula"]))
             )
         provenance.pop("unsaturation", None)
-        if chosen["ionization_mechanism_id"] in minor_ids:
-            # Another opportunistic reading, taken because the sample shows
-            # its neutral: that is the policy's own corroboration, and a list
-            # that names the neutral comes first, as it does in the policy.
-            # Only a search row is swapped, so the verdict records its line as
-            # the policy's does for one.
-            listed = formula_identity(chosen["assigned_formula"]) in listed_formulas
-            provenance["minor_channel"] = {
-                "corroborated_by": "list" if listed else "second_channel",
-                "capped": False,
-                "isotopologue": bool(children.get(str(row.get("peak_assignment_id")))),
-            }
-        else:
-            # The mode's own reading, so the policy's verdict is moot.
-            provenance.pop("minor_channel", None)
         provenance["partner_gate"] = gate
         row["alternatives"] = [displaced] + [
             alt for alt in row.get("alternatives") or [] if alt is not chosen
@@ -3379,26 +3484,10 @@ def apply_partner_gates(
             if row.get("ionization_mechanism_id") not in gated_ids:
                 continue
             own = notation_by_id.get(row["ionization_mechanism_id"])
-            verdict = provenance.get("minor_channel")
             if stands(row):
-                record = {
-                    key: value
-                    for key, value in gate.items()
-                    if key not in ("kept", "recapped")
-                }
+                record = {key: value for key, value in gate.items() if key != "kept"}
                 record.setdefault("channel", own)
                 record["partner"] = True
-                if verdict is not None and verdict.get("corroborated_by") is None:
-                    # The policy saw the search's rows alone; the partner is here.
-                    verdict["corroborated_by"] = "second_channel"
-                    if verdict.get("capped"):
-                        verdict["capped"] = False
-                        restored = tier_of(
-                            float(provenance.get("evidence") or 0.0), row
-                        )
-                        if restored is not None:
-                            row["tier"] = restored
-                        record["uncapped"] = True
                 if record != gate:
                     provenance["partner_gate"] = record
                     changed = True
@@ -3427,28 +3516,6 @@ def apply_partner_gates(
                     "partner": False,
                     "kept": PARTNER_GATE_KEPT if chosen is None else PARTNER_GATE_LIST,
                 }
-                if gate.get("recapped"):
-                    record["recapped"] = True
-                if verdict is not None and verdict.get("corroborated_by") == (
-                    "second_channel"
-                ):
-                    # The partner the policy or an earlier round read is gone:
-                    # the policy's cap again, read off the tier the evidence
-                    # earns, as the policy reads it. The mass gate's cap, after
-                    # the gate, holds it under that gate's ceiling, as it holds
-                    # every reading.
-                    verdict["corroborated_by"] = None
-                    held.discard(str(row.get("peak_assignment_id")))
-                    evidence = _float_or_none(provenance.get("evidence"))
-                    tier = None if evidence is None else earned(evidence)
-                    if tier is None:
-                        tier = row.get("tier")
-                    verdict["capped"] = tier == TIER_ASSIGNED
-                    if verdict["capped"]:
-                        tier = TIER_CANDIDATE
-                    if tier in TIER_RANK:
-                        row["tier"] = tier
-                    record["recapped"] = True
                 if record != gate:
                     provenance["partner_gate"] = record
                     changed = True
@@ -3534,11 +3601,9 @@ def apply_partner_gates(
         if row.get("ionization_mechanism_id") in gated_ids:
             if gate.get("partner") is True:
                 summary["partnered"] += 1
-                summary["uncapped"] += bool(gate.get("uncapped"))
                 summary["swapped_back"] += bool(gate.get("returned"))
             elif gate.get("kept"):
                 summary["kept"] += 1
-                summary["recapped"] += bool(gate.get("recapped"))
             summary["list_kept"] += gate.get("kept") == PARTNER_GATE_LIST
         if gate.get("displaced") and gate.get("partner") is False:
             summary["swapped"] += 1
@@ -3653,173 +3718,102 @@ def listed_ions(known_isotopes_df: pd.DataFrame) -> dict[tuple[str, str], Listed
     }
 
 
-def apply_minor_channel_policy(
-    assignments: list[dict],
-    mechanism_id_by_notation: dict[str, str],
-    minor_channels: frozenset[str],
-    *,
-    listed_formulas: frozenset[str] = frozenset(),
-) -> None:
-    """Cap an uncorroborated secondary-channel winner at ``candidate``, in place.
-
-    A secondary channel is searched because the sample's own spectrum shows its
-    carrier, not because any neutral it proposes has been demonstrated. So a
-    winner on one commits at the ledger's strongest word only when something
-    beyond the mass fit says which neutral clustered:
-
-    - a list the sample was read against names the neutral
-      (:func:`listed_formula_identities`); or
-    - the same neutral won a peak on one of the mode's own channels in this
-      sample, which is cross-channel corroboration in its simplest form.
-
-    An isotopologue of the reading is not enough on its own (step 3.4). A 13C
-    partner proves the ion's carbon count, never which neutral clustered with
-    the channel's carrier: benzene and methanol read through the carbonate
-    channel reached "assigned" on their isotopologue alone. The line still
-    counts toward the row's band as any line does, in its fit and as its
-    second observation (``tiering.lone_peak_reason``), and the verdict records
-    that it was there (``isotopologue``).
-
-    The list is read first: it is the one corroboration no later pass takes
-    away, where the partner gate puts the cap back when the second channel it
-    read is gone (:func:`apply_partner_gates`).
-
-    Neither is a tier rule of its own - stage 2's mechanical tiers take this
-    over and will say it better, with the reasons in provenance. Until then the
-    cap is what keeps an opportunistic channel from adding "assigned" rows on
-    its own authority, which is the failure mode the sodium measurement showed:
-    317 committed readings on a source with no sodium cluster in it.
-
-    Every secondary-channel row records the verdict either way, so a run says
-    which of its rows leaned on a channel it opened for itself. A reference
-    list's reading through a channel the run opened is held by its own rule
-    (:func:`hold_opened_channel_readings`).
-
-    :param assignments: The rows built for this sample, modified in place.
-    :param mechanism_id_by_notation: Notation to mechanism id, to recognise a
-        row's channel from the id it carries.
-    :param minor_channels: The notations that are secondary in this run.
-    :param listed_formulas: The neutrals the sample's lists name, as
-        :func:`formula_identity` keys.
-    """
-    minor_ids = {
-        mechanism_id_by_notation[notation]
-        for notation in minor_channels
-        if mechanism_id_by_notation.get(notation)
-    }
-    _hold_minor_readings(
-        assignments,
-        minor_ids=minor_ids,
-        judged_ids=minor_ids,
-        listed_formulas=listed_formulas,
-    )
-
-
-def hold_opened_channel_readings(
+def cap_second_channel(
     assignments: list[dict],
     *,
     notation_by_id: dict[str, str],
     minor_channels: frozenset[str],
-    opened_channels: frozenset[str],
+    opened_channels: frozenset[str] = frozenset(),
+    listed_formulas: frozenset[str] = frozenset(),
 ) -> dict:
-    """Hold a list's readings through the channels the run opened, in place.
+    """Cap at ``candidate`` each reading through a secondary channel that
+    nothing corroborates, in place.
 
-    Stage A reads a reference list through the mode's mechanisms and through
-    the secondary channels the run opened for itself, since a list names a
-    compound and not the channel it is seen through: the siloxanes' base peak
-    on a charge-transfer source is their methyl-loss ion, which the mode does
-    not declare. A reading through an opened channel is capped at
-    ``candidate`` unless an isotopologue of its own or the same neutral on one
-    of the mode's own channels corroborates it, each read off Stage A's own
-    rows as the search's are read off the search's
-    (:func:`apply_minor_channel_policy`). The list is why the reading was
-    made, so it is no corroboration of it, and the isotopologue still is: what
-    a search row lacks is a name for the neutral, which a list's reading has
-    (step 3.4 changed the search's rule, not this one). The partner gate and
-    the cross-channel pass read the rows after this, over both stages.
+    A secondary channel is searched because the sample's own spectrum shows its
+    carrier, not because any neutral it proposes has been demonstrated. So a
+    reading through one commits at the ledger's strongest word only when
+    something beyond the mass fit says which neutral clustered: the one
+    second-channel rule (:class:`SecondChannelRule`), in the configuration for
+    the row's kind.
 
-    A reading through a secondary channel the mode declares is left as it
-    was: the list was read through it before any channel was opened.
+    - **A search's reading**, through any secondary channel
+      (:data:`SEARCH_READING_RULE`): a list naming the neutral, or the sample
+      showing it through one of the mode's own channels. Its isotopologue is
+      recorded (``isotopologue``) and lifts nothing.
+    - **A list's reading through a channel the run opened**
+      (:data:`LIST_READING_RULE`): its own isotopologue, or the sample showing the
+      neutral. A list's reading through a secondary channel the mode declares
+      is left as it was: the list was read through it before any channel was
+      opened.
 
-    :param assignments: Stage A's rows, modified in place.
-    :param notation_by_id: The mechanisms Stage A read, by the id the rows
-        carry.
-    :param minor_channels: The run's secondary channels, none of which is a
-        second channel for another.
+    The partner is the partner gate's (:data:`PARTNER_RULE`, :func:`shows_molecule`),
+    from either stage, read once on the ledger the reading changes settled
+    (``service.Judging.judge``): this is a cap of the judging loop, which
+    only lowers a tier, after the partner gate has settled every gated ion's
+    reading. So the gate neither lifts it nor puts it back, and a reading the
+    gate gave the row is judged here as any other. Before it was a cap, a
+    search's reading was held at build time against the search's own rows at
+    any tier, a list's against Stage A's, and the gate lifted and re-imposed
+    the search's for its gated channels: three bars for one question.
+
+    Every judged row records the verdict either way (``minor_channel``), so a
+    run says which of its rows leaned on a channel it opened for itself.
+
+    :param assignments: Both stages' rows, modified in place.
+    :param notation_by_id: The run's mechanisms, by the id the rows carry.
+    :param minor_channels: The run's secondary channels.
     :param opened_channels: The ones the run added to the mode's mechanisms
-        (``ResolvedProfile.added_channels``), whose readings are held here.
-    :return: How many monoisotopic rows were read through an opened channel
-        (``read``), and how many of them the cap lowered (``capped``).
+        (``ResolvedProfile.added_channels``), whose list readings are judged.
+    :param listed_formulas: The neutrals the sample's lists name, as
+        :func:`formula_identity` keys (:func:`listed_formula_identities`).
+    :return: How many search readings and list readings were judged
+        (``read``, ``list_read``), and how many of each the cap lowered
+        (``capped``, ``list_capped``).
     """
+    summary = {"read": 0, "capped": 0, "list_read": 0, "list_capped": 0}
     minor_ids = {
         mid for mid, notation in notation_by_id.items() if notation in minor_channels
     }
-    opened_ids = {mid for mid in minor_ids if notation_by_id[mid] in opened_channels}
-    return _hold_minor_readings(
-        assignments, minor_ids=minor_ids, judged_ids=opened_ids, list_rows=True
-    )
-
-
-def _hold_minor_readings(
-    assignments: list[dict],
-    *,
-    minor_ids: set[str],
-    judged_ids: set[str],
-    listed_formulas: frozenset[str] = frozenset(),
-    list_rows: bool = False,
-) -> dict:
-    """Cap each uncorroborated monoisotopic row through ``judged_ids``, in place.
-
-    :param assignments: The rows, modified in place.
-    :param minor_ids: The mechanism ids of every secondary channel. A row
-        through one is no second channel for another.
-    :param judged_ids: The ones whose rows are judged.
-    :param listed_formulas: The neutrals the sample's lists name, one of which
-        corroborates a search row.
-    :param list_rows: Whether the rows are a list's own readings, which an
-        isotopologue corroborates and the list does not
-        (:func:`hold_opened_channel_readings`). A search row is corroborated by
-        a list and not by an isotopologue (:func:`apply_minor_channel_policy`).
-    :return: How many rows were judged, and how many the cap lowered.
-    """
-    summary = {"read": 0, "capped": 0}
-    if not judged_ids:
+    if not minor_ids:
         return summary
+    opened_ids = {mid for mid in minor_ids if notation_by_id[mid] in opened_channels}
     owners_with_children = {
         row["owner_peak_assignment_id"]
         for row in assignments
-        if row["role"] == ROLE_ISO_CHILD and row["owner_peak_assignment_id"]
+        if row.get("role") == ROLE_ISO_CHILD and row.get("owner_peak_assignment_id")
     }
-    primary_formulas = {
+    partners = {
         formula_identity(row["assigned_formula"])
         for row in assignments
-        if row["role"] == ROLE_M0
-        and row["ionization_mechanism_id"] not in minor_ids
-        and row["assigned_formula"]
+        if PARTNER_RULE.is_partner(row, notation_by_id, minor_channels)
     }
     for row in assignments:
-        if row["role"] != ROLE_M0 or row["ionization_mechanism_id"] not in judged_ids:
+        if row.get("role") != ROLE_M0 or not row.get("assigned_formula"):
             continue
-        isotopologue = row["peak_assignment_id"] in owners_with_children
-        neutral = formula_identity(row["assigned_formula"])
-        corroboration = None
-        if list_rows and isotopologue:
-            corroboration = "isotopologue"
-        elif neutral in listed_formulas:
-            corroboration = "list"
-        elif neutral in primary_formulas:
-            corroboration = "second_channel"
-        capped = corroboration is None and row["tier"] == TIER_ASSIGNED
-        provenance = row.setdefault("provenance", {})
-        verdict = {"corroborated_by": corroboration, "capped": capped}
-        if not list_rows:
-            # The line it has, which no longer lifts the cap on its own.
+        mechanism_id = row.get("ionization_mechanism_id")
+        if mechanism_id not in minor_ids:
+            continue
+        list_row = row.get("source") == SOURCE_DATABASE
+        if list_row and mechanism_id not in opened_ids:
+            continue
+        rule = LIST_READING_RULE if list_row else SEARCH_READING_RULE
+        isotopologue = row.get("peak_assignment_id") in owners_with_children
+        corroboration = rule.corroboration(
+            row,
+            partners=partners,
+            listed_formulas=listed_formulas,
+            isotopologue=isotopologue,
+        )
+        capped = corroboration is None and row.get("tier") == TIER_ASSIGNED
+        verdict: dict = {"corroborated_by": corroboration, "capped": capped}
+        if not list_row:
+            # The line it has, which does not lift the cap on its own.
             verdict["isotopologue"] = isotopologue
-        provenance["minor_channel"] = verdict
+        row.setdefault("provenance", {})["minor_channel"] = verdict
         if capped:
             row["tier"] = TIER_CANDIDATE
-        summary["read"] += 1
-        summary["capped"] += capped
+        summary["list_read" if list_row else "read"] += 1
+        summary["list_capped" if list_row else "capped"] += capped
     return summary
 
 

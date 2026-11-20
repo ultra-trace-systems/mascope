@@ -693,20 +693,20 @@ class TestADecoyRun:
         } == {id(plan.calibration)}
 
     @pytest.mark.asyncio
-    async def test_the_search_is_told_what_the_lists_name(self):
+    async def test_the_judging_is_told_what_the_lists_name(self):
         # The decoy reads its lists as the control does, so a secondary
-        # channel's winner a list names is corroborated in both (3.4).
-        from mascope_backend.api.new.peak_assignments import pipeline
+        # channel's winner a list names is corroborated in both (3.4), by the
+        # second-channel cap of the judging rounds.
+        from mascope_backend.api.new.peak_assignments import service
 
         self._start(_plan(envelope=inherited_envelope_fit(_curve_record())))
-        search = patch(
-            f"{_PIPE}.untargeted_matches_to_peak_assignments",
-            wraps=pipeline.untargeted_matches_to_peak_assignments,
+        judging = patch(
+            f"{_MOD}.cap_second_channel", wraps=service.cap_second_channel
         ).start()
 
         await _run(PeakAssignmentConfig(decoy=SHIFT))
 
-        assert search.call_args.kwargs["listed_formulas"] == frozenset({"C6H12O6"})
+        assert judging.call_args.kwargs["listed_formulas"] == frozenset({"C6H12O6"})
 
     @pytest.mark.asyncio
     async def test_every_score_reads_the_control_s_envelope_tolerance(self):

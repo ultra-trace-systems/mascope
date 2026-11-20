@@ -1561,40 +1561,10 @@ class TestStageHandoff:
         assert set(call.kwargs["known"]) == {181.0707}
 
     @pytest.mark.asyncio
-    async def test_the_search_is_told_what_the_lists_name(self):
+    async def test_the_judging_is_told_what_the_lists_name(self):
         """Every neutral the lists Stage A read name, matched or not: a
-        secondary-channel winner a list names is corroborated by it (3.4)."""
-        from mascope_backend.api.new.peak_assignments import pipeline
-        from mascope_backend.api.new.peak_assignments.config import (
-            PeakAssignmentConfig,
-        )
-
-        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p3", 300.1234, 500.0)])
-        recorder = _Recorder()
-        patches = _patches(recorder, peaks, _stage_a_rows())
-        unmatched = _mirror_rows()[:1]
-        unmatched[0]["target_compound_formula"] = "O3C9H14"
-        patches["reference"] = patch(
-            f"{_MOD}._fetch_reference_known_isotopes",
-            new_callable=AsyncMock,
-            return_value=pd.DataFrame(unmatched),
-        )
-        patches["stage_b"] = patch(
-            f"{_PIPE}.untargeted_matches_to_peak_assignments",
-            wraps=pipeline.untargeted_matches_to_peak_assignments,
-        )
-        mocks = _start(patches)
-
-        await _run(PeakAssignmentConfig(run_untargeted=True))
-
-        assert mocks["stage_b"].call_args.kwargs["listed_formulas"] == frozenset(
-            {"C6H12O6", "C9H14O3"}
-        )
-
-    @pytest.mark.asyncio
-    async def test_the_partner_gate_is_told_what_the_lists_name(self):
-        """The same neutrals reach the judging passes, where the partner gate
-        records a list that names a reading it swaps in, as the policy does."""
+        secondary-channel winner a list names is corroborated by it (3.4), in
+        the judging rounds' second-channel cap."""
         from mascope_backend.api.new.peak_assignments import service
         from mascope_backend.api.new.peak_assignments.config import (
             PeakAssignmentConfig,
@@ -1610,14 +1580,16 @@ class TestStageHandoff:
             new_callable=AsyncMock,
             return_value=pd.DataFrame(unmatched),
         )
-        patches["judge"] = patch(f"{_MOD}.Judging", wraps=service.Judging)
+        patches["judging"] = patch(f"{_MOD}.Judging", wraps=service.Judging)
         mocks = _start(patches)
 
         await _run(PeakAssignmentConfig(run_untargeted=True))
 
-        assert mocks["judge"].call_args.kwargs["listed_formulas"] == frozenset(
-            {"C6H12O6", "C9H14O3"}
-        )
+        kwargs = mocks["judging"].call_args.kwargs
+        assert kwargs["listed_formulas"] == frozenset({"C6H12O6", "C9H14O3"})
+        # ...and the channels the run opened, a list's readings through which
+        # the cap judges.
+        assert "opened_channels" in kwargs
 
     @pytest.mark.asyncio
     async def test_untargeted_stage_is_skipped_when_disabled(self):

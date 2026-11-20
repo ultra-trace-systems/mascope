@@ -36,6 +36,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     PARTNER_GATE_KEY,
     SampleMassAccuracy,
     apply_partner_gates,
+    cap_second_channel,
 )
 from mascope_backend.api.new.peak_assignments.envelope_claims import ENVELOPE_CLAIM
 from mascope_backend.api.new.peak_assignments.mass_gate import (
@@ -118,7 +119,7 @@ def raised(before: dict[int, str], rows: list[dict]) -> list[tuple[str, str, str
 @pytest.fixture(autouse=True)
 def caps_only_lower(monkeypatch):
     """Every judging round here asserts that no cap raises a tier: none of the
-    three, and nothing between the first of them and the claims they leave."""
+    four, and nothing between the first of them and the claims they leave."""
     started: dict[int, str] = {}
 
     def checked(name: str):
@@ -132,7 +133,12 @@ def caps_only_lower(monkeypatch):
 
         monkeypatch.setattr(service, name, wrapper)
 
-    for name in ("cap_mass_gate", "cap_cross_channel", "apply_tiering"):
+    for name in (
+        "cap_second_channel",
+        "cap_mass_gate",
+        "cap_cross_channel",
+        "apply_tiering",
+    ):
         checked(name)
 
     record = service.read_cross_channel
@@ -950,10 +956,6 @@ class TestThePartnerGateReadsTheJudgedLedger:
                 "plausibility": 1.0,
             }
         ]
-        row["provenance"]["minor_channel"] = {
-            "corroborated_by": "second_channel",
-            "capped": False,
-        }
         return row
 
     def _judge(self, rows: list[dict]):
@@ -995,44 +997,43 @@ class TestThePartnerGateReadsTheJudgedLedger:
         assert rows["pa-f"]["assigned_formula"] == "C10H18O5"
         assert rows["pa-f"]["provenance"]["partner_gate"]["partner"] is True
 
-    def _capped_formate(self, ppm: float) -> dict:
-        """A formate reading the policy held at candidate, at this offset."""
+    def _formate_at(self, ppm: float) -> dict:
+        """A formate reading as the search builds it, at this offset."""
         row = self._formate()
         row["mz_error_ppm"] = ppm
-        row["tier"] = "candidate"
-        row["provenance"]["minor_channel"] = {"corroborated_by": None, "capped": True}
         return row
 
     @pytest.mark.parametrize("ppm", [2.0, 2.5, 3.0])
-    def test_a_lifted_reading_stays_under_the_mass_gates_ceiling(self, ppm):
-        # The policy held the formate reading at candidate, so the mass gate
-        # lowered nothing and recorded only the ceiling; the partner gate then
-        # lifts the policy's cap, and the reading stays where a mode-channel
+    def test_a_reading_on_a_partner_stays_under_the_mass_gates_ceiling(self, ppm):
+        # The formate reading stands on its partner, so the second-channel cap
+        # does not hold it; the mass gate's cap holds it where a mode-channel
         # row at the same offset is held.
         partner = commit("pa-p", "C10H18O5", "C10H17O5-", 217.1081, 800.0)
         control = commit("pa-c", "C8H14O4", "C8H13O4-", 173.0819, 700.0, ppm=ppm)
         rows = by_id(
-            self._judge(anchors() + [partner, control, self._capped_formate(ppm)]).rows
+            self._judge(anchors() + [partner, control, self._formate_at(ppm)]).rows
         )
         assert rows["pa-c"]["tier"] == "candidate"
         assert rows["pa-c"]["provenance"]["mass_gate"]["reason"] == "off_calibration"
         formate = rows["pa-f"]
-        assert formate["provenance"]["partner_gate"]["uncapped"] is True
+        assert formate["provenance"]["partner_gate"]["partner"] is True
+        assert formate["provenance"]["minor_channel"]["capped"] is False
         assert formate["tier"] == "candidate"
         assert formate["provenance"]["mass_gate"]["ceiling"] == "candidate"
         assert formate["provenance"]["mass_gate"]["capped"] == "candidate"
 
-    def test_the_gate_is_told_what_the_lists_name(self, monkeypatch):
-        # A reading the gate swaps in records a list that names it, as the
-        # minor-channel policy does (engine.apply_partner_gates).
-        gate = service.apply_partner_gates
+    def test_the_second_channel_cap_is_told_what_the_lists_name(self, monkeypatch):
+        # A reading through a secondary channel a list names is corroborated
+        # by it, read in the caps (engine.cap_second_channel), and a list's
+        # reading through a channel the run opened is judged there.
+        cap = service.cap_second_channel
         seen = []
 
         def recording(rows, **kwargs):
-            seen.append(kwargs["listed_formulas"])
-            return gate(rows, **kwargs)
+            seen.append((kwargs["listed_formulas"], kwargs["opened_channels"]))
+            return cap(rows, **kwargs)
 
-        monkeypatch.setattr(service, "apply_partner_gates", recording)
+        monkeypatch.setattr(service, "cap_second_channel", recording)
         listed = frozenset({"C11H20O7"})
         judge_commits(
             anchors() + [self._formate()],
@@ -1046,13 +1047,30 @@ class TestThePartnerGateReadsTheJudgedLedger:
             minor_channels=frozenset({"[M+HCOO]-"}),
             partner_gated_channels=frozenset({"[M+HCOO]-"}),
             listed_formulas=listed,
+            opened_channels=frozenset({"[M+HCOO]-"}),
         )
-        assert seen and all(formulas == listed for formulas in seen)
+        assert seen and all(pair == (listed, frozenset({"[M+HCOO]-"})) for pair in seen)
+
+    def test_a_row_both_caps_hold_names_the_second_channel_s(self):
+        # A formate reading nothing corroborates, on a line off calibration:
+        # its ion reads no other way, so it stays, and both caps would hold it
+        # at candidate. The second-channel cap comes first, as the policy did
+        # when it held the row at build time, so the row names it and the mass
+        # gate records only its ceiling.
+        formate = self._formate_at(2.5)
+        formate["alternatives"] = []
+        rows = by_id(self._judge(anchors() + [formate]).rows)
+        formate = rows["pa-f"]
+        assert formate["assigned_formula"] == "C10H18O5"
+        assert formate["tier"] == "candidate"
+        assert formate["provenance"]["minor_channel"]["capped"] is True
+        assert formate["provenance"]["mass_gate"]["ceiling"] == "candidate"
+        assert "capped" not in formate["provenance"]["mass_gate"]
 
     def test_a_swapped_reading_stays_under_the_mass_gates_ceiling(self):
         # No partner, so the formate reading swaps to its acid: the acid is
         # the same ion on the same line, and the line is off calibration.
-        rows = by_id(self._judge(anchors() + [self._capped_formate(2.5)]).rows)
+        rows = by_id(self._judge(anchors() + [self._formate_at(2.5)]).rows)
         formate = rows["pa-f"]
         assert formate["assigned_formula"] == "C11H20O7"
         assert formate["tier"] == "candidate"
@@ -1319,9 +1337,9 @@ def test_the_run_records_the_partner_gates_summary_beside_the_cross_channel_one(
     assert PARTNER_GATE_KEY not in service._stored_run_config(PeakAssignmentConfig())
 
 
-#: The three caps of a judging round, in the order ``judge_commits`` applies
+#: The four caps of a judging round, in the order ``judge_commits`` applies
 #: them.
-CAPS = ("mass gate", "cross-channel", "tier rules")
+CAPS = ("second channel", "mass gate", "cross-channel", "tier rules")
 BANDS = {"assigned": 0.75, "candidate": 0.45}
 
 
@@ -1354,6 +1372,12 @@ def caps_in_order(
         judged, notation_by_id=notation_by_id, minor_channels=minor
     )
     caps = {
+        "second channel": lambda: cap_second_channel(
+            judged,
+            notation_by_id=notation_by_id,
+            minor_channels=minor,
+            opened_channels=minor,
+        ),
         "mass gate": lambda: cap_mass_gate(judged, mass_gate),
         "cross-channel": lambda: cap_cross_channel(judged, cross_channel),
         "tier rules": lambda: apply_tiering(
@@ -1516,7 +1540,7 @@ class TestTheCapsInEveryOrder:
             for order in itertools.permutations(CAPS)
         }
 
-        assert len(by_order) == 6
+        assert len(by_order) == 24
         first = by_order[CAPS]
         assert {
             order: found for order, found in by_order.items() if found != first
