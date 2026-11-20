@@ -83,6 +83,12 @@ describe('useBatchChartSelection', () => {
     expect(app.ui.notification.push).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'warning', message: expect.stringContaining('not loaded') })
     )
+    // It points at where the batch ledger is - the sample ledger's header -
+    // not at a tab that does not exist.
+    const { message } = app.ui.notification.push.mock.calls.at(-1)[0]
+    expect(message).toContain('Batch peaks ledger')
+    expect(message).toContain("click the batch name in this ledger's header")
+    expect(message).not.toContain('tab')
   })
 
   it("switches the chart to a species' instrument type, and says so", () => {

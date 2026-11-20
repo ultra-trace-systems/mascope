@@ -2158,6 +2158,23 @@ describe('PaneBrowserAssignment engine tier column', () => {
       'agrees'
     )
   })
+
+  it('names both tiers in words, not as the API keys', async () => {
+    seed(family({ id: 'a', mz: 100, intensity: 10, formula: 'C6H6' }))
+    const wrapper = await mountPane()
+    const text = wrapper.vm.engineTierTooltip({
+      tier: 'below_assignability',
+      engine_tier: 'below_assignability'
+    })
+    const differs = wrapper.vm.engineTierTooltip({
+      tier: 'below_assignability',
+      engine_tier: 'candidate'
+    })
+
+    expect(text).toContain("own tier: below assignability (agrees with this server's)")
+    expect(differs).toContain('banding of the evidence says below assignability')
+    expect(`${text}${differs}`).not.toContain('below_assignability')
+  })
 })
 
 // The identification level, in a column of its own beside the tier: what a

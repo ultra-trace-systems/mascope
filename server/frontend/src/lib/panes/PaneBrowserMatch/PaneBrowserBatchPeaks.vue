@@ -88,6 +88,7 @@ import {
   bucketOf,
   bucketRank,
   engineBucketOf,
+  tierName,
   tierRank
 } from '@/lib/tiers'
 import {
@@ -356,13 +357,13 @@ const hasFlatSeries = computed(() => shown.value.some((bp) => flatSeriesOf(bp) !
 const onlyFlatSeries = ref(false)
 
 // Says which of the two tiers the chip is, and whether it agrees, as the
-// sample ledger's does.
+// sample ledger's does. Both tiers are named in words, not as the API's keys.
 const engineTierTooltip = (row) => {
   const said = row.engine_claim ? ` - "${row.engine_claim}"` : ''
   return row.engine_tier === row.consensus_tier
-    ? `The importing engine's own tier: ${row.engine_tier} (agrees with the consensus)${said}`
-    : `The importing engine's own tier: ${row.engine_tier}, where the consensus of the ` +
-        `members' measurements says ${row.consensus_tier}${said}`
+    ? `The importing engine's own tier: ${tierName(row.engine_tier)} (agrees with the consensus)${said}`
+    : `The importing engine's own tier: ${tierName(row.engine_tier)}, where the consensus of ` +
+        `the members' measurements says ${tierName(row.consensus_tier)}${said}`
 }
 
 // --- The identification level -----------------------------------------------------
