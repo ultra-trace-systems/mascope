@@ -2560,15 +2560,71 @@ def _profile_solvents(name: str) -> tuple[str, ...]:
     return REAGENT_PROFILES[name].source_solvents
 
 
+#: The reagent ions' water ladders, per profile: the cores whose hydrates the
+#: source makes, by the label the profile's library names each by, and how many
+#: waters a spectrum's own claim climbs each. One table for both readers
+#: (MAS-983): a sample's pre-pass climbs a core only as far as a work names its
+#: hydrates - the nitrate reagent's acid dimer, :data:`DEFAULT_REAGENT_WATER_RUNGS`
+#: waters (3.3d) - and claims none on the others, while the batch measures every
+#: core's ladder on its own series up to :data:`MAX_BATCH_WATERS` (step 4.2j,
+#: :data:`WATER_CORE_LABELS`). The bromide reagent, its dimer and trimer and
+#: its cluster with the HBr the source sheds; the nitrate reagent, its two acid
+#: clusters and the air's nitrite; the labelled reagent's labelled cores. A
+#: positive profile declares none: its hydrated ions are the solvents' and the
+#: air's, which the pre-pass climbs.
+WATER_LADDER_CORES: dict[str, tuple[tuple[str, int], ...]] = {
+    "BR": (("[Br]-", 0), ("[Br2]-", 0), ("[Br3]-", 0), ("[Br+HBr]-", 0)),
+    "NO3": (
+        ("[NO3]-", 0),
+        ("[NO3+HNO3]-", 0),
+        ("[NO3+2xHNO3]-", DEFAULT_REAGENT_WATER_RUNGS),
+        ("[NO2]-", 0),
+    ),
+    "NO3_15N": (
+        ("[^NO3]-", 0),
+        ("[^NO3+H^NO3]-", 0),
+        ("[^NO3+2xH^NO3]-", DEFAULT_REAGENT_WATER_RUNGS),
+    ),
+}
+
+#: The reagent each profile's water ladders are built on, for the cores a
+#: spectrum climbs (:func:`reagent_water_ladder`).
+_WATER_REAGENT = {"NO3": "NO3", "NO3_15N": "^NO3"}
+
+
+def sample_water_ladders(profile_name: str) -> tuple[IonLadder, ...]:
+    """The water ladders a spectrum's own claim climbs for a profile: every
+    core :data:`WATER_LADDER_CORES` gives rungs to, as far as it gives them.
+
+    Only the nitrate reagent's acid dimer has a builder
+    (:func:`reagent_water_ladder`), and the table climbs no other core in a
+    spectrum: a core the table climbs that the builder does not make raises,
+    so the two cannot drift apart.
+
+    :param profile_name: The profile's name.
+    :return: Its ladders, empty when it climbs none.
+    """
+    ladders = []
+    for label, rungs in WATER_LADDER_CORES.get(profile_name, ()):
+        if not rungs:
+            continue
+        ladder = reagent_water_ladder(_WATER_REAGENT[profile_name], rungs=rungs)
+        if ladder.cores[0].cluster.label != label:
+            raise ValueError(
+                f"No spectrum ladder is built on {label} for {profile_name}"
+            )
+        ladders.append(ladder)
+    return tuple(ladders)
+
+
 #: The ladders per profile, keyed the way :data:`REAGENT_CLUSTERS` is: the
 #: solvent ladders of every positive source whose profile lists solvents, and
-#: the nitrate reagent's water ladder on its dimer core, labelled with the
-#: label.
+#: the water ladders a spectrum climbs (:func:`sample_water_ladders`).
 ION_LADDERS: dict[str, tuple[IonLadder, ...]] = {
     "EASYIC_POS": solvent_ladders(_profile_solvents("EASYIC_POS")),
     "UR": solvent_ladders(_profile_solvents("UR")),
-    "NO3": (reagent_water_ladder("NO3"),),
-    "NO3_15N": (reagent_water_ladder("^NO3"),),
+    "NO3": sample_water_ladders("NO3"),
+    "NO3_15N": sample_water_ladders("NO3_15N"),
 }
 
 
@@ -2600,16 +2656,11 @@ def ion_ladders(profile_name: str) -> tuple[IonLadder, ...]:
 #: engine reads on a humid TOF batch (its 0.10 line), as it climbs.
 MAX_BATCH_WATERS = 45
 
-#: The cores whose water ladder a batch measures, per profile, by the label the
-#: profile's library names each by: the bromide reagent, its dimer and trimer
-#: and its cluster with the HBr the source sheds; the nitrate reagent, its two
-#: acid clusters and the air's nitrite; the labelled reagent's labelled cores.
-#: A positive profile declares none: its hydrated ions are the solvents' and the
-#: air's, which the pre-pass climbs (3.3d).
+#: The cores whose water ladder a batch measures, per profile: every core of
+#: :data:`WATER_LADDER_CORES`, the one table the pre-pass's ladders read too.
 WATER_CORE_LABELS: dict[str, tuple[str, ...]] = {
-    "BR": ("[Br]-", "[Br2]-", "[Br3]-", "[Br+HBr]-"),
-    "NO3": ("[NO3]-", "[NO3+HNO3]-", "[NO3+2xHNO3]-", "[NO2]-"),
-    "NO3_15N": ("[^NO3]-", "[^NO3+H^NO3]-", "[^NO3+2xH^NO3]-"),
+    profile: tuple(label for label, _ in cores)
+    for profile, cores in WATER_LADDER_CORES.items()
 }
 
 #: A line of a core's envelope is a track of its own where it stands at this

@@ -610,3 +610,39 @@ class TestAPartitionsFlatness:
         flatness = read_flatness(traces, tic=_flat(1e6))
         assert flatness.series["half"].reason == REASON_RARE
         assert flatness.series["half"].n_spectra == len(SAMPLES)
+
+
+def test_read_pair_is_the_readings_own_pair_and_one_normalisation():
+    """One function and one normalisation for every reader of a pair
+    (MAS-983): for two analyte channels it is the reading's own residuals'
+    pair, the partition's whole reagent signal the normaliser; a reagent ion
+    read against its own core is divided by every other reagent ion, never by
+    itself."""
+    from mascope_tools.composition.coherence import batch_residuals, read_pair
+
+    rng = np.random.default_rng(7)
+    samples = [f"s{i:02d}" for i in range(24)]
+    drift = rng.normal(0, 0.3, len(samples))
+
+    def trace(scale, noise=0.05, follow=1.0):
+        return {
+            s: float(10 ** (scale + follow * d + rng.normal(0, noise)))
+            for s, d in zip(samples, drift)
+        }
+
+    traces = {f"a{i}": trace(4 + i * 0.1) for i in range(8)}
+    traces["x"] = trace(5)
+    traces["y"] = trace(5.2)
+    reagents = {"core": trace(7), "ion": trace(6.5), "other": trace(6.8, follow=0.0)}
+    whole = batch_residuals(traces, reagent_traces=reagents)
+    assert read_pair(traces, "x", "y", reagent_traces=reagents) == whole.co_variation(
+        "x", "y"
+    )
+    both = {**traces, "core": reagents["core"], "ion": reagents["ion"]}
+    without = batch_residuals(both, reagent_traces={"other": reagents["other"]})
+    assert read_pair(both, "ion", "core", reagent_traces=reagents) == (
+        without.co_variation("ion", "core")
+    )
+    assert read_pair(both, "ion", "core") == batch_residuals(both).co_variation(
+        "ion", "core"
+    )
