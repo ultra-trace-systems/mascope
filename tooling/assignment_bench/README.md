@@ -22,6 +22,7 @@ uv run python tooling/assignment_bench/bench.py reference --pin v0.9.0
 uv run python tooling/assignment_bench/bench.py run origin/develop --baseline
 uv run python tooling/assignment_bench/bench.py run <your branch> --baseline
 uv run python tooling/assignment_bench/bench.py run <your branch> --post <pr>
+uv run python tooling/assignment_bench/bench.py run <your branch> --post <pr> --fresh
 uv run python tooling/assignment_bench/bench.py post <your branch> --pr <pr>
 uv run python tooling/assignment_bench/bench.py review
 uv run python tooling/assignment_bench/bench.py review --record <sheet> --recalibrate
@@ -74,7 +75,9 @@ uv run python tooling/assignment_bench/bench.py status
   release tag beside the in-app runs; its section below has the detail.
 - **`run <ref>`** runs a ref's in-app engine on the sets and writes the
   card; **`baseline`** shows develop's rolling baseline card. Their section
-  below has the detail. **`run <ref> --post <pr>`** also posts the card on
+  below has the detail. A head whose engine inputs a complete card was
+  already made of gets that card in seconds, with no run; **`run <ref>
+  --fresh`** runs regardless ("A card without a run", below). **`run <ref> --post <pr>`** also posts the card on
   a pull request; "Asking for a card on a PR" below. **`post <ref> --pr
   <pr>`** posts a card a run already made, running nothing; the same
   section.
@@ -86,7 +89,8 @@ uv run python tooling/assignment_bench/bench.py status
   distinct formulas of its authors' list where it has one, the
   reference pin with peaky's version string and the `mascope-tools` it
   scored with, develop's baseline card, and the last five cards with their
-  ref, commit and verdict. It needs no runtime home.
+  ref, commit, verdict, engine digest, and whether each was run or reused
+  from another card (`reused <card>`). It needs no runtime home.
 - `--checkout DIR` names a `corpus checkout` for a manifest that names
   corpus objects. `--keep-running` leaves the backend up. `--wait` queues
   behind the bench commands that hold the lock or wait for it ("One run at
@@ -329,7 +333,8 @@ at once took 14 minutes on each set and a run 32 minutes, at a load
 average of about 3.5. One worker took 26 and 31 minutes for the runs. A
 ref from before the ledger's rule-record columns makes the card read each
 row's detail, which took 67 minutes. The decoy arms run three more engine
-runs per Orbitrap sample.
+runs per Orbitrap sample. A card reused from an earlier run of the same
+engine inputs takes seconds and holds nothing up ("A card without a run").
 
 **What a run writes**, in `cards/<ref>/<timestamp>/` of the bench's home
 (`origin/develop` is `origin-develop`):
@@ -338,7 +343,7 @@ runs per Orbitrap sample.
 |---|---|---|
 | `card.md`, `card.json`, `card_<set>.md`, `card_<set>.json` | the card (`tooling/assignment_compare/README.md`, "What the card writes") | yes, scrubbed |
 | `diff.md`, `diff.json` | with `--baseline`: the readings that moved since develop's baseline, and which card that was | yes, scrubbed |
-| `run.json` | the run: the ref and its commit, develop's head, the migration, the pin, per set the samples read and left out by reason, the minutes it took and each decoy arm's outcomes, the verdict, the baseline, whether it became the baseline | yes, scrubbed |
+| `run.json` | the run: the ref and its commit, develop's head, the migration, the engine digest and its parts (`engine`), the pin, per set the samples read and left out by reason, the minutes it took and each decoy arm's outcomes, the verdict, the baseline, whether it became the baseline, and for a reused card the card it reuses (`reused`) | yes, scrubbed |
 | `run.log` | every step, and each sample by id with what became of its runs and why | no: it names samples |
 | `work/` | the comparison's input: the sets with their sample ids, the deny list | no |
 
@@ -370,6 +375,76 @@ its dump, or delete `restore.json` once the ref's migration is on develop.
 Only the database goes back: anything the ref's runs
 wrote to the filestore stays there, with no row pointing at it.
 
+## A card without a run
+
+Most heads a card is asked for measure nothing new: a rebase onto a develop
+that moved only in the frontend, a docs commit, a step that changes only the
+app's pages. So `bench run <ref>` first works out the head's **engine
+digest**, from git alone, and looks for a card already made of it.
+
+The digest hashes everything a card can depend on, in three parts:
+
+- **The tree:** every path of the head's tree, by its blob, except those that
+  cannot move a card: `server/frontend/`, `docs/`, `changelog.d/`,
+  `.github/`, `agents/`, every `*.md` file, every path under a `tests`
+  folder, and `tooling/` but for `tooling/assignment_bench/` and
+  `tooling/assignment_compare/`. Everything else counts, so a new folder
+  counts until someone lists it (`IGNORED` in `run.py`). The migrations are
+  in the tree, so a new migration head is a new digest.
+- **The tool:** the bench and the comparison of the checkout `bench.py` runs
+  from, as they are on disk. They read the sets and make the card, whatever
+  the ref holds (step 8 above), so a card made by another copy of them is
+  not this checkout's card.
+- **The bench:** what the bench holds that a card reads. That is the
+  manifest it was built from, each set's samples and how they are read, and
+  the reference at its pin, run by run. A new manifest, `init --rebuild`, a
+  new pin or a republished sample are each a new digest.
+
+A card stands for the head when it is the newest card a run made of the same
+digest, of the same sets, with the decoy arms where the request asks for
+them, written whole, and with nothing left out that another run might read. A
+card with the decoy arms serves a request without them, not the reverse. A
+sample left out because `init` left it with a problem, it has no reference at
+the pin, or the server called it ineligible counts the same on every run. One
+that failed, was not the newest run, met a moved reference or ran over its
+set's budget does not, nor does a decoy run that failed, was cancelled or was
+lost.
+
+When there is such a card, the run:
+
+1. takes no lock, starts no backend, and touches neither the database nor the
+   worktree, so it ends in seconds while another run holds the bench;
+2. writes `cards/<ref>/<timestamp>/` for the head with the source's card in
+   it, and a `run.json` whose `reused` names the source's folder, ref and
+   commit and when it was made;
+3. reads the card as a run of the head would. With `--baseline` or
+   `--post` it takes the baseline a run would take, by the same rules,
+   including a card of develop standing in for a stale rolling baseline.
+   When that baseline is not the source's, or only one of the two heads is
+   develop's, it diffs the card afresh and judges its gate again: against
+   the baseline, or on its own on develop's head. Otherwise it copies the
+   source's files as they are;
+4. records it in the state's card list, prints the card, and exits as a
+   run with that card would: as the source's run did, unless the gate
+   read again says otherwise;
+5. with `--post`, posts the card as a run's is posted, with one line above
+   its table:
+
+   ```
+   *Engine inputs unchanged since `1a2b3c4d5`; this is that run's card.*
+   ```
+
+A card of develop counts, so a branch that changed only the frontend gets
+develop's card in seconds. A reused card is never a source itself, nor the
+rolling baseline: `bench baseline <card>` refuses one, and names the card it
+reuses.
+
+A run asks before it waits for the lock, and again once it has it, in case
+the run ahead of it in the queue made the card. **`--fresh`** runs
+regardless. A run of develop's head with `--baseline` always runs, since it
+is the run that makes the baseline: the nightly baseline runs with
+`--baseline --fresh`.
+
 ## Asking for a card on a PR
 
 An agent or a person asks for a card by running the bench on the branch,
@@ -386,7 +461,10 @@ App for an implementer and the reviewer App for a reviewer). One run at a
 time: a second caller waits its turn in the bench's queue and says where it
 stands (`--no-wait` refuses instead; "One run at a time" above). A run takes about 20 minutes over the demo
 sets, more with private sets beside them; `--sets` shortens it to the sets
-named, `--decoys` adds the arms.
+named, `--decoys` adds the arms. A head whose engine inputs a complete card
+was made of gets that card in seconds, posted with a line that says so ("A
+card without a run"): a rebase onto a develop that moved only outside the
+engine, or a docs commit, needs no new run. `--fresh` runs regardless.
 
 **`--decoys` on a PR only when the brief asks.** A brief's `**Bench.**`
 line asks for the arms only where the step changes the scorer, the tiering
@@ -478,9 +556,10 @@ the bench.
 `tooling/systemd/bench-baseline.service` and `bench-baseline.timer` are user
 units for the box the bench lives on, never a deployment's. Every night at
 01:30 the service moves a checkout of its own to develop's head and runs
-`bench run origin/develop --baseline --decoys` from it, so develop's card is
-made by develop's own comparison tool and holds the decoy arms a PR card
-may diff against. With the arms it takes about an hour and a half. A whole card becomes the rolling baseline.
+`bench run origin/develop --baseline --decoys --fresh` from it, so develop's
+card is made by develop's own comparison tool, made every night, and holds
+the decoy arms a PR card may diff against. With the arms it takes about an
+hour and a half. A whole card becomes the rolling baseline.
 A card that failed its gate still exits 1, which the unit counts as
 success; a run that made no card fails the unit. The install steps are in
 `docs/dev/assignment_bench.md`, "Operations".

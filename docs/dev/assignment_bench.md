@@ -3,8 +3,8 @@
 # The assignment bench: both engines on demand, on the agent box
 
 - **Status:** building
-- **As of:** 2026-11-17
-- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, milestone 6: MAS-64, MAS-835 to MAS-841, MAS-849, MAS-955)
+- **As of:** 2026-11-20
+- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, milestone 6: MAS-64, MAS-835 to MAS-841, MAS-849, MAS-955, MAS-1055, MAS-1057)
 - **What:** One command on the agent box that runs a branch's in-app assignment engine beside peaky at a pinned release on fixed sample sets, prints the plan's metrics as a card, and posts it on the PR; a worker runs it in its own session.
 
 ## 1. Why
@@ -332,6 +332,7 @@ replaced by the refusal. The nightly baseline is the user units
 | 6.7 | MAS-839 | the agents' skills run the bench and read the card (the ops repository, OPS-91) |
 | 6.8 | MAS-849 | more sets after the demo set: from the fleet corpus and the gate sets (the owner's picks) |
 | 6.6 fix | MAS-1055 | the lock as a queue, a clean end on a signal or a lost starter, a stale backend stopped, a failure as a line under the card, `bench.py post` (built: `tooling/assignment_bench/stopping.py`, `bench.py`, `run.py`, `post.py`) |
+| 6.6 reuse | MAS-1057 | a head whose engine inputs a complete card was made of gets that card without a run: the engine digest, `--fresh`, the reuse line on the PR (built: `tooling/assignment_bench/run.py`, `bench.py`, `post.py`) |
 | 6.9 | MAS-955 | the authors' lists on the card: both engines read against a research set's published peak list (built: `tooling/assignment_compare/metrics.py`, `truth` in the manifest) |
 
 6.4 started on 2026-11-11 against the testbed's existing runs; 6.2 starts
@@ -395,14 +396,26 @@ to run the commands against any instance and how to ask for a card.
   refused. A run with no card adds one line under the PR's bench comment,
   never over its card, and `bench.py post <ref> --pr N` posts a card that a
   run made but could not post (MAS-1055).
+- **A card without a run.** A run first hashes the head's engine inputs:
+  its tree but for the paths that cannot move a card (the frontend, docs,
+  Markdown, changelog fragments, CI, the File Agent, tests, and tooling but
+  the bench and the comparison), the caller's bench and comparison, and
+  what the bench holds. A complete card of that digest, the same sets and
+  the decoy arms where asked for is reused with no lock and no run, and
+  posted with a line naming the commit it was made at. On 2026-11-19 the
+  bench was busy from 10:27 to 21:41 on ten runs, much of it on heads that
+  differed from a carded one only in a rebase or outside the engine
+  (MAS-1057). `--fresh` runs regardless.
 - **The nightly baseline** is the user units
   `tooling/systemd/bench-baseline.service` and `.timer`, installed in the
   account the agents run as, beside the testbed's service. At 01:30 the
   service moves a checkout kept for it alone to develop's head and runs
-  `bench run origin/develop --baseline --decoys` from it, so develop's card
-  is made by develop's comparison tool and carries the decoy arms; it waits
-  on the lock behind a run in progress. The arms run every night on develop,
-  and on a PR only where the step touches scoring (the plan owner,
+  `bench run origin/develop --baseline --decoys --fresh` from it, so
+  develop's card is made by develop's comparison tool, made every night, and
+  carries the decoy arms; it waits on the lock behind a run in progress. A
+  run of develop's head with `--baseline` runs even without `--fresh`, so a
+  unit installed before the flag runs fresh too. The arms run every night on
+  develop, and on a PR only where the step touches scoring (the plan owner,
   2026-11-20): `--decoys` on a PR only when the brief's `**Bench.**` line
   asks, and a brief asks only where the step changes the scorer, the tiering
   rules, the mass gate, the rival or corroboration tests, or what a decoy
