@@ -36,6 +36,13 @@ One run, behind the bench's lock:
    baseline as ``--baseline`` does, but not against one older than the PR's
    merge base.
 
+Before any of it, unless ``--fresh``, the run hashes the head's engine inputs
+(:func:`engine_digest`) and looks for a complete card of the same digest,
+sets and arms. Finding one, it runs nothing and takes no lock: it writes that
+card as the head's, and posts it with a line that names the commit it was
+made at (``BenchRun.reuse``). A run of develop's head with ``--baseline``
+always runs.
+
 Each run writes ``cards/<ref>/<timestamp>/`` in the bench's home: the card
 (``card.md``, ``card.json`` and one pair per set), the diff against the
 baseline (``diff.md``, ``diff.json``) and the run's summary (``run.json``),
@@ -48,7 +55,10 @@ the lock.
 
 from __future__ import annotations
 
+import contextlib
 import datetime
+import fcntl
+import hashlib
 import json
 import os
 import re
@@ -60,7 +70,7 @@ import time
 from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Callable, Iterable, Protocol
 
 
 _HERE = Path(__file__).resolve().parent
@@ -134,6 +144,31 @@ LEFT_OUT = (
 #: What a run writes that may leave the box, every one scrubbed.
 OUTPUTS = ("diff.md", "diff.json", "run.json")
 
+#: A card's verdicts once it is written whole.
+WRITTEN = ("pass", "fail", "written")
+
+#: Why a sample is left off, where another run of the same inputs could
+#: read it: a card that left one out for these is no card to reuse. The
+#: other reasons (not ready, no reference at the pin, ineligible) come from
+#: the bench's state and the engine's code, which the engine digest holds.
+PASSING = ("reference_moved", "failed", "not_latest", "over_budget")
+
+#: A decoy arm's outcomes that another run of the same inputs might not have.
+PASSING_DECOY = ("failed", "cancelled", "lost", "over_budget", "stopped")
+
+#: The paths of a ref's tree that cannot move its card, which the engine
+#: digest leaves out: everything else counts, so a new folder counts until
+#: it is listed here. Besides these, every ``*.md`` file, every path under a
+#: ``tests`` folder, and ``tooling/`` but for :data:`COUNTED_TOOLING`.
+IGNORED = ("server/frontend/", "docs/", "changelog.d/", ".github/", "agents/")
+
+#: The tooling a card is made with: the bench and the comparison.
+COUNTED_TOOLING = ("tooling/assignment_bench/", "tooling/assignment_compare/")
+
+#: The caller's own copies of that tooling, which make the card (step 8 of a
+#: run): a card made by another copy of them is not this checkout's card.
+TOOL = (REPO / "tooling" / "assignment_bench", REPO / "tooling" / "assignment_compare")
+
 
 class RunError(RuntimeError):
     """A step of ``bench run`` that cannot go on; the message says why."""
@@ -141,6 +176,152 @@ class RunError(RuntimeError):
 
 class TransientError(RuntimeError):
     """The server did not answer, or answered 5xx: the same request may pass later."""
+
+
+# ------------------------------------------------------------ engine digest
+
+
+def counts(path: str) -> bool:
+    """Whether a path of a ref's tree can move the ref's card (:data:`IGNORED`)."""
+    if path.lower().endswith(".md") or path.startswith(IGNORED):
+        return False
+    if path.startswith("tooling/") and not path.startswith(COUNTED_TOOLING):
+        return False
+    return "tests" not in path.split("/")[:-1]
+
+
+def git_tree(repo: Path, sha: str) -> list[tuple[str, str]]:
+    """A commit's whole tree as ``(path, "mode type object")``, from git
+    alone: no checkout."""
+    out = subprocess.run(
+        ["git", "-C", str(repo), "ls-tree", "-r", "-z", "--full-tree", sha],
+        capture_output=True,
+        check=False,
+    )
+    if out.returncode != 0:
+        raise RunError(
+            f"cannot list the tree of {sha[:9]}: "
+            f"{out.stderr.decode('utf-8', 'replace').strip()[-300:]}"
+        )
+    entries = []
+    for item in out.stdout.split(b"\0"):
+        if item:
+            meta, path = item.split(b"\t", 1)
+            entries.append((path.decode("utf-8", "surrogateescape"), meta.decode()))
+    return entries
+
+
+def tree_digest(entries: Iterable[tuple[str, str]]) -> str:
+    """The digest of the tree's paths that count, by their blobs: two commits
+    that differ only in paths that cannot move the card have one digest. The
+    migrations are in it, so a new migration head is a new digest."""
+    h = hashlib.sha256()
+    for path, meta in sorted(entries):
+        if counts(path):
+            h.update(f"{meta}\t{path}\0".encode("utf-8", "surrogateescape"))
+    return h.hexdigest()
+
+
+def tool_digest(roots: Iterable[Path]) -> str:
+    """The digest of the caller's own bench and comparison, as they are on
+    disk: they read the sets and make the card, whatever the ref holds."""
+    h = hashlib.sha256()
+    for root in roots:
+        for path in sorted(root.rglob("*")):
+            if (
+                not path.is_file()
+                or "__pycache__" in path.parts
+                or path.suffix in (".pyc", ".pyo")
+                or path.suffix.lower() == ".md"
+            ):
+                continue
+            name = f"{root.name}/{path.relative_to(root).as_posix()}"
+            h.update(
+                f"{name}\0{hashlib.sha256(path.read_bytes()).hexdigest()}\0".encode()
+            )
+    return h.hexdigest()
+
+
+def bench_digest(state: dict) -> str:
+    """The digest of what the bench holds that a card reads: the manifest it
+    was built from, each set's samples and how they are read, and the
+    reference at its pin, run by run. ``init --rebuild``, a manifest that
+    changed, a new pin or a republished sample are each a new digest."""
+    reference = state.get("reference") or {}
+    held = {
+        "manifest": (state.get("manifest") or {}).get("digest"),
+        "sets": {
+            name: {
+                **{
+                    k: s.get(k)
+                    for k in (
+                        "mode",
+                        "instrument_class",
+                        "profile",
+                        "reference_window_ppm",
+                        "truth",
+                    )
+                },
+                "samples": sorted(
+                    [
+                        sorted(i["sample_item_id"] for i in r.get("items") or []),
+                        sorted(r.get("problems") or []),
+                    ]
+                    for r in s["samples"].values()
+                ),
+            }
+            for name, s in (state.get("sets") or {}).items()
+        },
+        "reference": {
+            **{k: reference.get(k) for k in ("pin", "version", "library", "block")},
+            "runs": {
+                name: {
+                    sample: [entry.get("run_id"), entry.get("digest")]
+                    for sample, entry in runs.items()
+                }
+                for name, runs in (reference.get("runs") or {}).items()
+            },
+            "unrunnable": reference.get("unrunnable") or {},
+        },
+    }
+    text = json.dumps(held, sort_keys=True, default=str)
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def engine_digest(instance, sha: str, state: dict, tool: Iterable[Path]) -> dict:
+    """Everything a bench run's card can depend on, as one digest: the ref's
+    tree where it counts, the caller's bench and comparison, and what the
+    bench holds. A card of one digest is a card of every head that has it.
+
+    :return: ``{"digest", "tree", "tool", "bench"}``, the digest and its parts.
+    """
+    parts = {
+        "tree": tree_digest(instance.tree(sha)),
+        "tool": tool_digest(tool),
+        "bench": bench_digest(state),
+    }
+    text = "".join(f"{k} {v}\n" for k, v in parts.items())
+    return {"digest": hashlib.sha256(text.encode()).hexdigest(), **parts}
+
+
+def passing_problems(sets: dict) -> list[str]:
+    """What a run left out, or a decoy outcome, that another run of the same
+    inputs might not have: a card with any is no card to reuse."""
+    out = []
+    for name, s in sets.items():
+        # A set over its budget leaves every sample out as ``over_budget``.
+        out += [
+            f"set {name}: {reason}"
+            for reason in s.get("left_out") or {}
+            if reason in PASSING
+        ]
+        out += [
+            f"set {name}: decoy {arm} {status}"
+            for arm, tally in (s.get("decoys") or {}).items()
+            for status in tally
+            if status in PASSING_DECOY
+        ]
+    return out
 
 
 # ---------------------------------------------------------------------- log
@@ -151,6 +332,22 @@ TEES: list["RunLog"] = []
 
 def now() -> str:
     return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _say(line: str) -> None:
+    """A console line of a command that has no run log (yet)."""
+    print(f"{datetime.datetime.now():%H:%M:%S} {line}", flush=True)
+
+
+@contextlib.contextmanager
+def _guard(path: Path):
+    """A lock of its own around one read and write of the state's card list."""
+    with open(path, "a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 class RunLog:
@@ -700,6 +897,8 @@ class BenchRun:
     :ivar api_of: The run's API, from the bench's URL and SDK token.
     :ivar workers: The ref's backend's uvicorn workers.
     :ivar stall_s: Seconds the comparison may write nothing before it is stopped.
+    :ivar tool: The bench and comparison folders the card is made with, for
+        the engine digest (:func:`tool_digest`).
     """
 
     home: object
@@ -713,6 +912,7 @@ class BenchRun:
     budget_s: float = BUDGET_MIN * 60
     workers: int = WORKERS
     stall_s: float = COMPARE_STALL_MIN * 60
+    tool: tuple[Path, ...] = TOOL
     poll_s: float = POLL_S
     sleep: Callable[[float], None] = time.sleep
     clock: Callable[[], float] = time.monotonic
@@ -727,6 +927,7 @@ class BenchRun:
         decoys: bool = False,
         baseline: bool = False,
         post: bench_post.Poster | None = None,
+        fresh: bool = False,
     ) -> int:
         """One run of ``ref``; 0 when the card passes with nothing left out,
         1 when it fails its gate or something was left out, 2 when no card was
@@ -735,7 +936,16 @@ class BenchRun:
         With ``post`` the run diffs against develop's baseline, as with
         ``baseline``, and its outcome goes on the PR: the card, the scrub's
         refusal, or, for a run that stops on an error, the error's tail.
+
+        Unless ``fresh``, a complete card of the same engine digest, sets and
+        arms is reused first (:meth:`reuse`), quietly when there is none: the
+        caller asked before it took the lock, and a run ahead of it in the
+        queue may have made one since.
         """
+        if not fresh:
+            code = self.reuse(ref, sets, decoys, baseline, post, quiet=True)
+            if code is not None:
+                return code
         if post is None:
             return self._run_once(ref, sets, decoys, baseline, None, {})
         if post.pr is None:
@@ -840,6 +1050,8 @@ class BenchRun:
             "reference": {"pin": reference["pin"], "version": reference.get("version")},
             "decoys": decoys,
             "migration": None,
+            "engine": None,
+            "reused": None,
             "sets": {},
             "card": None,
             "baseline": None,
@@ -880,16 +1092,12 @@ class BenchRun:
             summary.update(sha=sha, develop=develop)
             progress["sha"] = sha
             say(f"{ref} is {sha[:9]}" + (" (develop's head)" if sha == develop else ""))
+            summary["engine"] = engine_digest(self.instance, sha, state, self.tool)
+            say(f"engine digest {summary['engine']['digest'][:12]}")
             if post is not None and base is not None:
-                no_diff = self._stale(base, sha, post.pr.base_branch)
-                if no_diff:
-                    older = self._newest_ancestor(state, sha, chosen)
-                    if older is None:
-                        say(no_diff)
-                        base = None
-                    else:
-                        say(self._stand_in(older, base, ref, sha, post.pr.base_branch))
-                        base, no_diff = older, None
+                base, no_diff = self._pr_baseline(
+                    base, state, ref, sha, chosen, post, say
+                )
             summary["migration"] = migrate(
                 self.instance,
                 ref,
@@ -955,7 +1163,7 @@ class BenchRun:
                 summary["is_baseline"] = promoted is not None
                 self._write_outputs(out, summary, card, runlog)
                 self._record(state, ref, summary, card, base, out)
-                progress["recorded"] = card["verdict"] in ("pass", "fail", "written")
+                progress["recorded"] = card["verdict"] in WRITTEN
         if stop is not None:
             raise stop
         code = self._report(chosen, summary, card, problems, out, say)
@@ -1478,15 +1686,22 @@ class BenchRun:
         the card then names its pooled column as not on the baseline."""
         if sorted(read) == sorted(base.get("sets") or []):
             return base["card"]
-        card = json.loads(base["card"].read_text(encoding="utf-8"))
-        card["columns"] = {
-            name: column
-            for name, column in card.get("columns", {}).items()
-            if name in read
-        }
         path = work / "baseline.json"
-        path.write_text(json.dumps(card) + "\n", encoding="utf-8")
+        path.write_text(
+            json.dumps(self._baseline_json(base, read)) + "\n", encoding="utf-8"
+        )
         return path
+
+    def _baseline_json(self, base: dict, read: list[str]) -> dict:
+        """The baseline card as :meth:`_baseline_for` gives it, as JSON."""
+        card = json.loads(base["card"].read_text(encoding="utf-8"))
+        if sorted(read) != sorted(base.get("sets") or []):
+            card["columns"] = {
+                name: column
+                for name, column in card.get("columns", {}).items()
+                if name in read
+            }
+        return card
 
     # ------------------------------------------------------------ outputs
 
@@ -1544,6 +1759,8 @@ class BenchRun:
             set(card.get("own") or ())
             | _key_words(summary)
             | set(_words(summary["ref"]))
+            # A reused card names the folder and ref of the card it reuses.
+            | set(_words(" ".join(map(str, (summary.get("reused") or {}).values()))))
         )
         if summary.get("no_diff"):
             # Why there is no diff, in the comment's own sentences.
@@ -1564,20 +1781,32 @@ class BenchRun:
             (out / name).write_text(text, encoding="utf-8")
 
     def _record(self, state, ref, summary, card, base, out) -> None:
-        state.setdefault("cards", []).append(
-            {
-                "at": summary["finished"],
-                "ref": ref,
-                "sha": summary["sha"],
-                "path": str(out.relative_to(self.home.cards)),
-                "verdict": card["verdict"],
-                "sets": card["sets"],
-                "decoys": summary["decoys"],
-                "baseline": base["path"] if base else None,
-            }
-        )
-        state["cards"] = state["cards"][-50:]
-        self.save_state(state)
+        """Add the card to the state's card list, as the state is on disk now.
+
+        A reuse records its card without the bench's lock, so a run that began
+        before it reads the state again here rather than write its own older
+        copy over the reuse's entry; only a run that became the baseline
+        writes the baseline.
+        """
+        entry = {
+            "at": summary["finished"],
+            "ref": ref,
+            "sha": summary["sha"],
+            "path": str(out.relative_to(self.home.cards)),
+            "verdict": card["verdict"],
+            "sets": card["sets"],
+            "decoys": summary["decoys"],
+            "baseline": base["path"] if base else None,
+            "digest": (summary.get("engine") or {}).get("digest"),
+            "reused": (summary.get("reused") or {}).get("path"),
+        }
+        with _guard(self.home.root / "state.lock"):
+            current = self.load_state()
+            current["cards"] = ((current.get("cards") or []) + [entry])[-50:]
+            if summary.get("is_baseline"):
+                current["baseline"] = state.get("baseline")
+            self.save_state(current)
+        state["cards"] = current["cards"]
 
     def _report(self, chosen, summary, card, problems, out, say) -> int:
         for name in chosen:
@@ -1603,11 +1832,229 @@ class BenchRun:
             say(f"{len(problems)} problem(s):")
             for problem in problems:
                 print(f"  {problem}", flush=True)
-        if card["verdict"] in ("pass", "fail", "written"):
+        if card["verdict"] in WRITTEN:
             say(f"card: {out}")
-        if card["verdict"] not in ("pass", "fail", "written"):
+        if card["verdict"] not in WRITTEN:
             return 2
         return 1 if card["verdict"] == "fail" or problems else 0
+
+    # --------------------------------------------------------------- reuse
+
+    def reuse(
+        self,
+        ref: str,
+        sets: list[str] | None = None,
+        decoys: bool = False,
+        baseline: bool = False,
+        post: bench_post.Poster | None = None,
+        quiet: bool = False,
+    ) -> int | None:
+        """``ref``'s card without a run, where its engine inputs are unchanged.
+
+        It looks for the newest complete card (:meth:`_source`) of the ref's
+        head's engine digest (:func:`engine_digest`) and the same sets, with
+        the decoy arms where they are asked for: a card with them serves a
+        request without them, not the reverse. Finding one, it takes no lock,
+        starts no backend and touches neither the database nor the worktree.
+        It writes a card folder for the head whose ``run.json`` names the
+        source, with the source's card in it (diffed afresh where the
+        baseline it is read against is not the source's), records it, and
+        with ``post`` posts it with a line that says whose card it is. A run
+        of develop's head with ``--baseline`` is never served so: it is the
+        run that makes the baseline.
+
+        :param quiet: Say nothing when there is no card to reuse.
+        :return: The exit code the source's run had, or None when the ref
+            has to run.
+        """
+        say = (lambda line: None) if quiet else _say
+        # A card posted on a PR is diffed against develop's baseline (:meth:`run`).
+        baseline = baseline or post is not None
+        state = self.load_state()
+        chosen = choose_sets(state, sets)
+        if post is not None and post.pr is None:
+            post.open()
+        sha = self.instance.resolve(ref)
+        develop = self.instance.develop_sha()
+        if baseline and post is None and sha == develop:
+            say(
+                f"{ref} is develop's head, and with --baseline it makes the baseline: it runs"
+            )
+            return None
+        engine = engine_digest(self.instance, sha, state, self.tool)
+        source = self._source(state, engine["digest"], chosen, decoys)
+        if source is None:
+            say(
+                f"engine digest {engine['digest'][:12]}: no complete card of it with "
+                f"set(s) {', '.join(chosen)}"
+                + (" and the decoy arms" if decoys else "")
+                + "; it runs"
+            )
+            return None
+        return self._reuse(
+            ref, sha, develop, chosen, engine, source, state, baseline, post, say
+        )
+
+    def _source(
+        self, state: dict, digest: str, chosen: list[str], decoys: bool
+    ) -> dict | None:
+        """The newest card a run made of ``digest`` that can stand for a run
+        now: written whole, of the same sets, with the arms if asked for, and
+        nothing left out that another run might read (:func:`passing_problems`).
+
+        :return: Its state record with its ``run.json`` as ``summary``, or None.
+        """
+        for record in reversed(state.get("cards") or []):
+            if (
+                record.get("digest") != digest
+                or record.get("reused")
+                or record.get("verdict") not in WRITTEN
+                or (decoys and not record.get("decoys"))
+            ):
+                continue
+            folder = self.home.cards / record["path"]
+            try:
+                summary = json.loads((folder / "run.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if (
+                not (folder / "card.json").exists()
+                or sorted(summary.get("sets") or {}) != sorted(chosen)
+                or passing_problems(summary["sets"])
+            ):
+                continue
+            return {**record, "summary": summary}
+        return None
+
+    def _reuse(
+        self, ref, sha, develop, chosen, engine, source, state, baseline, post, say
+    ) -> int | None:
+        """Write, record, report and post the source's card as ``ref``'s."""
+        cr = _compare_module()
+        src = self.home.cards / source["path"]
+        was = source["summary"]
+        # The baseline a run of the head would read (:meth:`_run`), said in
+        # the card's run log once there is one.
+        base = self._baseline_card(state) if baseline else None
+        no_diff, said = None, []
+        if post is not None:
+            if base is None:
+                no_diff = "No diff: there is no baseline of develop yet."
+            else:
+                base, no_diff = self._pr_baseline(
+                    base, state, ref, sha, chosen, post, said.append
+                )
+        read = list((was.get("card") or {}).get("sets") or [])
+        made = json.loads((src / "card.json").read_text(encoding="utf-8"))
+        # A card of develop's head is gated on its own, any other against
+        # its baseline (``_card``). The source's files hold for the head when
+        # both read none, or the same baseline with both develop's head or
+        # neither; else the card is read again (:func:`regate`).
+        absolute = sha == develop
+        same = (base or {}).get("path") == (was.get("baseline") or {}).get("path")
+        if same and (
+            base is None or absolute == (was.get("sha") == was.get("develop"))
+        ):
+            files = {
+                path.name: path.read_text(encoding="utf-8")
+                for path in sorted(src.iterdir())
+                if path.is_file() and path.name.startswith("card")
+            }
+        else:
+            against = self._baseline_json(base, read) if base else None
+            try:
+                regate(made, against, absolute, cr)
+            except SystemExit as why:  # a baseline of another card format
+                say(
+                    f"the source card cannot be read against the baseline ({why}); "
+                    "it runs"
+                )
+                return None
+            files = cr.card_files(made)
+        deny = self._deny(state, {}, {})
+        own = _card_words(made, cr)
+        try:
+            cr.scrub(files, self._tokens(deny, read, sorted(own)))
+        except cr.CardRefused as refused:
+            say(
+                f"the card to reuse was refused by the scrub: {refused.where} holds "
+                f"{self._kind(refused.token, deny)}; it runs"
+            )
+            return None
+        diff = made.get("baseline")
+        gate = made.get("gate")
+        verdict = gate["verdict"] if gate else was["card"]["verdict"]
+        out = self._card_dir(ref)
+        with RunLog(out / "run.log") as runlog:
+            runlog.say(
+                f"bench run {ref}: {sha[:9]}"
+                + (" (develop's head)" if sha == develop else "")
+                + f", engine digest {engine['digest'][:12]}: its engine inputs are "
+                f"unchanged since {was['ref']} at {str(was['sha'])[:9]}, whose card of "
+                f"{was.get('finished')} this is; nothing runs"
+            )
+            runlog.note(f"the card reused: {src}")
+            for line in said:
+                runlog.say(line)
+            for name, text in files.items():
+                (out / name).write_text(text, encoding="utf-8")
+            stamp = now()
+            summary = {
+                "format": SUMMARY_FORMAT,
+                "ref": ref,
+                "sha": sha,
+                "develop": develop,
+                "started": stamp,
+                "finished": stamp,
+                "minutes": None,
+                "reference": was.get("reference"),
+                "decoys": bool(was.get("decoys")),
+                "migration": None,
+                "engine": engine,
+                "reused": {
+                    "path": source["path"],
+                    "ref": was["ref"],
+                    "sha": was["sha"],
+                    "at": was.get("finished"),
+                },
+                "sets": was["sets"],
+                "card": {
+                    **was["card"],
+                    "verdict": verdict,
+                    "gate": cr.gate_line(gate) if gate else None,
+                },
+                "baseline": (
+                    {k: base[k] for k in ("ref", "sha", "at", "path")}
+                    if base and diff is not None
+                    else None
+                ),
+                "is_baseline": False,
+                "no_diff": no_diff,
+            }
+            card = {
+                "verdict": verdict,
+                "sets": read,
+                "files": sorted(files),
+                "markdown": files.get("card.md", ""),
+                "own": own,
+                "gate": cr.gate_line(gate) if gate else None,
+                "diff": diff,
+                "deny": deny,
+            }
+            with STOPPER.shield():
+                self._write_outputs(out, summary, card, runlog)
+                self._record(state, ref, summary, card, base, out)
+            problems = run_problems(summary["sets"])
+            code = self._report(chosen, summary, card, problems, out, runlog.say)
+            if post is not None:
+                try:
+                    self._post_card(post, summary, card, out, problems, no_diff, runlog)
+                except bench_post.PostError as error:
+                    raise bench_post.PostError(
+                        f"{error}; the card is written: `bench.py post {ref} --pr "
+                        f"{post.pr.number}` posts it"
+                    ) from None
+        return code
 
     # ---------------------------------------------------------------- post
 
@@ -1626,6 +2073,24 @@ class BenchRun:
             f"older than this PR's merge base {merge_base[:9]}; the nightly run of "
             f"develop's head makes a newer one."
         )
+
+    def _pr_baseline(self, base, state, ref, sha, chosen, post, say):
+        """The baseline a card on ``post``'s PR is diffed against: develop's
+        rolling baseline, or where it is older than the PR's merge base the
+        newest card of develop behind ``sha`` (:meth:`_newest_ancestor`), or
+        none.
+
+        :return: The baseline or None, and why there is no diff or None.
+        """
+        no_diff = self._stale(base, sha, post.pr.base_branch)
+        if not no_diff:
+            return base, None
+        older = self._newest_ancestor(state, sha, chosen)
+        if older is None:
+            say(no_diff)
+            return None, no_diff
+        say(self._stand_in(older, base, ref, sha, post.pr.base_branch))
+        return older, None
 
     def _stand_in(
         self, older: dict, base: dict, ref: str, sha: str, branch: str
@@ -1722,7 +2187,7 @@ class BenchRun:
             own |= _key_words(json.loads((out / "diff.json").read_text("utf-8")))
         tokens = self._tokens(card["deny"], list(summary["sets"]), sorted(own))
         verdict = card["verdict"]
-        if verdict in ("pass", "fail", "written") and (out / "card.json").exists():
+        if verdict in WRITTEN and (out / "card.json").exists():
             body = bench_post.card_body(
                 summary, out, post.pr, problems, cr, no_diff=no_diff
             )
@@ -1894,7 +2359,7 @@ class BenchRun:
             record
             for record in state.get("cards") or []
             if record.get("ref") == ref
-            and record.get("verdict") in ("pass", "fail", "written")
+            and record.get("verdict") in WRITTEN
             and (self.home.cards / record["path"] / "card.json").exists()
             and (self.home.cards / record["path"] / "run.json").exists()
         ]
@@ -1975,6 +2440,11 @@ class BenchRun:
         if not (folder / "card.json").exists() or not summary_file.exists():
             raise RunError(f"{folder} holds no written card")
         summary = json.loads(summary_file.read_text(encoding="utf-8"))
+        if summary.get("reused"):
+            raise RunError(
+                f"{folder} reuses the card of {summary['reused']['path']}, made at "
+                f"{str(summary['reused']['sha'])[:9]}: make that card the baseline"
+            )
         if not self.instance.is_on_develop(summary["sha"]):
             raise RunError(
                 f"{summary['ref']} at {summary['sha'][:9]} is not on develop: the "
@@ -2003,6 +2473,24 @@ class BenchRun:
             file=out,
         )
         return 0
+
+
+def regate(made: dict, baseline: dict | None, absolute: bool, cr) -> None:
+    """Read a card again against another baseline, or none, as the
+    comparison would have (``compare_runs.run_card``): its gate, against the
+    baseline unless ``absolute``, and its diff.
+
+    :raises SystemExit: On a baseline of another card format, as the
+        comparison does.
+    """
+    thresholds = made.get("thresholds")
+    if thresholds:
+        made["gate"] = (
+            cr.judge_against(made, baseline, thresholds)
+            if baseline is not None and not absolute
+            else cr.judge(made, thresholds)
+        )
+    made["baseline"] = cr.diff_cards(baseline, made) if baseline is not None else None
 
 
 def run_problems(sets: dict) -> list[str]:

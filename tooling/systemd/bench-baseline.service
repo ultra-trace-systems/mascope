@@ -14,7 +14,7 @@ Type=oneshot
 EnvironmentFile=%h/.config/mascope/bench-baseline.env
 # A login shell, for the PATH uv and docker are on. The bench's lock holds
 # this run behind another bench command, and the next one behind it.
-ExecStart=/bin/bash -lc 'set -eu; cd "$$BENCH_CHECKOUT"; git fetch -q origin develop; git checkout -q --force --detach origin/develop; uv sync --frozen --all-groups -q; exec uv run --no-sync python tooling/assignment_bench/bench.py run origin/develop --baseline --decoys'
+ExecStart=/bin/bash -lc 'set -eu; cd "$$BENCH_CHECKOUT"; git fetch -q origin develop; git checkout -q --force --detach origin/develop; uv sync --frozen --all-groups -q; exec uv run --no-sync python tooling/assignment_bench/bench.py run origin/develop --baseline --decoys --fresh'
 # Exit 1 is a card that failed its gate or left samples out: a card was made,
 # and it became the baseline if it read everything. Exit 2 made no card.
 SuccessExitStatus=1

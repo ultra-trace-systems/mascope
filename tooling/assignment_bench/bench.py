@@ -2,7 +2,7 @@
 
     bench.py init <manifest> [--ref REF] [--rebuild] [--checkout DIR] [--keep-running] [--wait]
     bench.py reference --pin vX.Y.Z [--reinstall] [--jobs N] [--set NAME ...] [--wait]
-    bench.py run <ref> [--sets A,D,...] [--decoys] [--baseline] [--post PR] [--no-wait] [--jobs N] [--budget-min M] [--workers N]
+    bench.py run <ref> [--sets A,D,...] [--decoys] [--baseline] [--post PR] [--fresh] [--no-wait] [--jobs N] [--budget-min M] [--workers N]
     bench.py baseline [CARD]
     bench.py review [--sets A,D,...] [--top N] | --record SHEET [--recalibrate] [--wait]
     bench.py post <ref> --pr N
@@ -27,9 +27,11 @@ every sample into the instance beside the in-app runs (``reference.py``).
 ``run <ref>`` builds a ref, runs its in-app engine on the sets beside the
 pinned reference and writes the card, diffed against develop's rolling
 baseline with ``--baseline``; ``baseline`` shows that baseline or makes a card
-of develop it (``run.py``). ``run --post <pr>`` posts the card on the PR as one
-comment, edited in place on a re-run (``post.py``); ``post <ref> --pr N``
-posts the newest card of the ref's current head without running anything.
+of develop it (``run.py``). A head whose engine inputs a complete card was
+already made of gets that card in seconds, with no run (``--fresh`` runs).
+``run --post <pr>`` posts the card on the PR as one comment, edited in place
+on a re-run (``post.py``); ``post <ref> --pr N`` posts the newest card of the
+ref's current head without running anything.
 
 Everything the bench keeps lives in its home, ``$MASCOPE_PATH/.runtime/bench``
 (``--home`` or ``MASCOPE_BENCH_HOME`` elsewhere): a copy of the manifest with
@@ -1006,6 +1008,9 @@ class Instance(Protocol):
 
     def checkout(self, ref: str) -> str: ...
 
+    def tree(self, sha: str) -> list[tuple[str, str]]:
+        """The commit's whole tree, ``(path, "mode type object")``, from git."""
+
     def start(self, peak_assignment: bool = False, workers: int = 1) -> str:
         """Start the backend; ``peak_assignment`` switches the feature on for
         it, ``workers`` is its uvicorn worker count."""
@@ -1290,6 +1295,9 @@ class DevInstance:
             text=True,
             check=False,
         )
+
+    def tree(self, sha: str) -> list[tuple[str, str]]:
+        return bench_run.git_tree(self.repo, sha)
 
     def develop_sha(self) -> str:
         out = self._git("rev-parse", "--verify", "-q", "origin/develop^{commit}")
@@ -2207,9 +2215,11 @@ class Bench:
         if cards:
             print("cards", file=out)
             for card in cards[-5:]:
+                how = f"reused {card['reused']}" if card.get("reused") else "run"
                 print(
                     f"  {card.get('at')}  {card.get('ref')} at {str(card.get('sha'))[:9]}  "
-                    f"{card.get('verdict') or '-'}  {card.get('path')}",
+                    f"{card.get('verdict') or '-'}  engine {str(card.get('digest') or '-')[:12]}  "
+                    f"{how}  {card.get('path')}",
                     file=out,
                 )
         else:
@@ -2318,6 +2328,11 @@ def main(argv: list[str] | None = None) -> int:
         metavar="PR",
         help="post the card on this pull request as one comment, edited in place "
         "on a re-run; diffs against develop's baseline as --baseline does",
+    )
+    p_run.add_argument(
+        "--fresh",
+        action="store_true",
+        help="run even when a complete card of the head's engine inputs exists",
     )
     p_run.add_argument(
         "--no-wait",
@@ -2457,18 +2472,24 @@ def _main(args) -> int:
                 # Before the lock: a fork is refused before anything waits or runs.
                 poster = bench_post.Poster(gh=bench_post.GhCli(), number=args.post)
                 poster.open()
+            ask = {
+                "sets": args.sets,
+                "decoys": args.decoys,
+                "baseline": args.baseline or poster is not None,
+                "post": poster,
+            }
+            if not args.fresh:
+                # Before the lock: a head whose engine inputs are carded
+                # already gets that card while another run holds the bench.
+                code = runner.reuse(args.ref, **ask)
+                if code is not None:
+                    return code
             with home.lock(
                 wait=not args.no_wait,
                 hint="without --no-wait a run waits for it",
                 what=f"run {args.ref}",
             ):
-                return runner.run(
-                    args.ref,
-                    sets=args.sets,
-                    decoys=args.decoys,
-                    baseline=args.baseline or poster is not None,
-                    post=poster,
-                )
+                return runner.run(args.ref, fresh=args.fresh, **ask)
 
         def prepare() -> None:
             # The build the bench's data was ingested with, at its head:

@@ -11,6 +11,9 @@ App on the agent box, as for every comment the agents write):
   of name it was, never the name;
 - **a failed run**: the tail of its error.
 
+A card reused from an earlier run of the same engine inputs is posted as a
+card, with one line above its table that names the commit it was made at.
+
 The PR carries one bench comment: the first comment that starts with
 :data:`MARKER` is edited in place on a re-run, and one is made only when there
 is none (or it cannot be edited). A run that has no card to post (it stopped,
@@ -322,6 +325,7 @@ TEXTS = (
         "at, the PR's head; not the PR's head, which is",
         "reference; decoy arms; min, finished",
         "Samples read: of",
+        "Engine inputs unchanged since; this is that run's card.",
         "metric target",
         "Since develop's baseline at, made",
         "The headline readings among them:",
@@ -503,6 +507,9 @@ def card_body(
     gate = (summary.get("card") or {}).get("gate")
     if gate:
         lines += ["", f"**{gate}**"]
+    reused = summary.get("reused")
+    if reused:
+        lines += ["", reuse_line(reused)]
     lines += [""] + headline_table(card, cr)
 
     diff_file = out / "diff.json"
@@ -563,6 +570,15 @@ def card_body(
                 "The whole card", _demote(whole[: max(room, 0)]) + note
             )
     return "\n".join(body + foot) + "\n"
+
+
+def reuse_line(reused: dict) -> str:
+    """The line above a reused card's table: whose card it is (``run.py``,
+    ``BenchRun.reuse``)."""
+    return (
+        f"*Engine inputs unchanged since `{_sha(reused.get('sha'))}`; "
+        f"this is that run's card.*"
+    )
 
 
 def refused_body(summary: dict, pr: PullRequest, where: str, kind: str) -> str:

@@ -94,6 +94,9 @@ def gh():
 
 def _post(rig, gh, ref="topic", number=7, **kwargs):
     poster = post.Poster(gh=gh, number=number)
+    # A run, not a reuse: these tests are about what a run posts, and many
+    # run one head twice (a reused card's post has tests of its own).
+    kwargs.setdefault("fresh", True)
     return rig.run(ref, post=poster, **kwargs)
 
 
@@ -848,14 +851,14 @@ def test_post_refuses_a_card_of_another_commit(rig, gh):
 def test_post_takes_the_newest_written_card_past_a_later_stopped_run(rig, gh):
     assert rig.run("topic") == 0
     rig.compare.verdict = "fail"
-    assert rig.run("topic") == 1
+    assert rig.run("topic", fresh=True) == 1
 
     def stopped(**kwargs):
         raise base.stopping.Stopped(15, "SIGTERM")
 
     rig.compare = stopped
     with pytest.raises(base.stopping.Stopped):
-        rig.run("topic")
+        rig.run("topic", fresh=True)
     assert [c["verdict"] for c in rig.state()["cards"]] == ["pass", "fail", "stopped"]
 
     assert rig.runner().post("topic", post.Poster(gh=gh, number=7)) == 0
@@ -953,7 +956,10 @@ def test_a_card_that_cannot_be_posted_is_a_refusal_on_the_command_line(
         def __init__(self, **kwargs):
             pass
 
-        def run(self, ref, sets, decoys, baseline, post):
+        def reuse(self, ref, **kwargs):
+            return None
+
+        def run(self, ref, sets, decoys, baseline, post, fresh):
             post.post("x")
 
     monkeypatch.setattr(brun, "BenchRun", Runner)
@@ -974,7 +980,11 @@ def test_the_command_line_posts_and_diffs_against_the_baseline(tmp_path, monkeyp
         def __init__(self, **kwargs):
             pass
 
-        def run(self, ref, sets, decoys, baseline, post):
+        def reuse(self, ref, sets, decoys, baseline, post):
+            calls.append(("reuse", ref, baseline, post.number, post.pr.head_sha))
+            return None
+
+        def run(self, ref, sets, decoys, baseline, post, fresh):
             calls.append((ref, baseline, post.number, post.pr.head_sha))
             return 0
 
@@ -982,7 +992,7 @@ def test_the_command_line_posts_and_diffs_against_the_baseline(tmp_path, monkeyp
     monkeypatch.setattr(post, "GhCli", lambda: gh)
     home = str(tmp_path / "home")
     assert bench.main(["--home", home, "run", "topic", "--post", "7"]) == 0
-    assert calls == [("topic", True, 7, BRANCH)]
+    assert calls == [("reuse", "topic", True, 7, BRANCH), ("topic", True, 7, BRANCH)]
 
 
 def test_the_command_line_refuses_a_fork_before_it_takes_the_lock(
