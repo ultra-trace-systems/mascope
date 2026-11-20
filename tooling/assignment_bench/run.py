@@ -597,9 +597,11 @@ class CompareRuns:
         env: dict[str, str],
         log: Path,
         stall_s: float,
+        absolute: bool = False,
     ) -> int:
         """Run it into ``log``; stop it when the log has not grown for
-        ``stall_s`` seconds."""
+        ``stall_s`` seconds. ``absolute`` judges the gate on the card alone
+        even with a baseline (``--absolute-gate``): a card of develop's head."""
         command = [
             self.python,
             str(self.script),
@@ -615,6 +617,8 @@ class CompareRuns:
             command.append("--decoy")
         if baseline is not None:
             command += ["--baseline", str(baseline)]
+            if absolute:
+                command.append("--absolute-gate")
         with open(log, "a", encoding="utf-8") as fh:
             fh.write(f"$ compare_runs.py {' '.join(command[2:])}\n")
             fh.flush()
@@ -864,8 +868,18 @@ class BenchRun:
             if post is not None and base is not None:
                 no_diff = self._stale(base, sha, post.pr.base_branch)
                 if no_diff:
-                    say(no_diff)
-                    base = None
+                    older = self._newest_ancestor(state, sha, chosen)
+                    if older is None:
+                        say(no_diff)
+                        base = None
+                    else:
+                        say(
+                            f"baseline: develop's card of {older['at']} "
+                            f"({older['ref']} at {older['sha'][:9]}), the newest card "
+                            f"of a commit behind {ref}; the rolling one is not: "
+                            + no_diff.removeprefix("No diff: ")
+                        )
+                        base, no_diff = older, None
             summary["migration"] = migrate(
                 self.instance,
                 ref,
@@ -894,6 +908,7 @@ class BenchRun:
                 runlog,
                 state,
                 creds,
+                absolute=sha == develop,
             )
         finally:
             self.instance.stop()
@@ -1265,9 +1280,25 @@ class BenchRun:
         )
 
     def _card(
-        self, ref, chosen, plans, results, decoys, base, out, work, runlog, state, creds
+        self,
+        ref,
+        chosen,
+        plans,
+        results,
+        decoys,
+        base,
+        out,
+        work,
+        runlog,
+        state,
+        creds,
+        absolute=False,
     ) -> dict:
-        """Compare, scrub again, and only then write the card where it may leave."""
+        """Compare, scrub again, and only then write the card where it may leave.
+
+        Against a baseline the gate reads this ref's misses against develop's
+        (``compare_runs.judge_against``), unless ``absolute``: a card of
+        develop's head is judged on its own, its misses being develop's."""
         say = runlog.say
         read = [n for n in chosen if plans[n].samples]
         card: dict = {"verdict": None, "sets": read, "files": [], "diff": None}
@@ -1322,6 +1353,7 @@ class BenchRun:
             env=env,
             log=runlog.path,
             stall_s=self.stall_s,
+            absolute=absolute,
         )
         staged = staging / "card.json"
         if not staged.exists():
@@ -1529,6 +1561,52 @@ class BenchRun:
             f"older than this PR's merge base {merge_base[:9]}; the nightly run of "
             f"develop's head makes a newer one."
         )
+
+    def _newest_ancestor(self, state: dict, sha: str, chosen) -> dict | None:
+        """The newest card of develop behind ``sha`` that can be its baseline,
+        or None: a card of a commit on develop and an ancestor of ``sha``, with
+        a gate verdict, reading every chosen set with nothing left out. Of two
+        such, the one whose commit is behind the other's is the older."""
+        # Newest first, so of two cards of one commit the later one is read.
+        records = list(reversed(state.get("cards") or []))
+        if state.get("baseline"):
+            records.append(state["baseline"])
+        best, seen = None, {}
+        for record in records:
+            other = record.get("sha")
+            if not other or record.get("verdict", "pass") not in ("pass", "fail"):
+                continue
+            if not set(chosen) <= set(record.get("sets") or []):
+                continue
+            folder = self.home.cards / record["path"]
+            if (
+                not (folder / "card.json").exists()
+                or not (folder / "run.json").exists()
+            ):
+                continue
+            if best is not None and (
+                other == best["sha"] or not self.instance.contains(best["sha"], other)
+            ):
+                continue
+            if other not in seen:
+                seen[other] = self.instance.contains(
+                    other, sha
+                ) and self.instance.is_on_develop(other)
+            if not seen[other]:
+                continue
+            summary = json.loads((folder / "run.json").read_text(encoding="utf-8"))
+            read = {n: s for n, s in (summary.get("sets") or {}).items() if n in chosen}
+            if run_problems(read):
+                continue
+            best = {
+                "ref": record["ref"],
+                "sha": other,
+                "at": record["at"],
+                "path": record["path"],
+                "sets": list(record.get("sets") or []),
+                "card": folder / "card.json",
+            }
+        return best
 
     def _post_card(self, post, summary, card, out, problems, no_diff, runlog) -> None:
         """Post what the run made: the card, its refusal, or why there is none."""

@@ -256,6 +256,23 @@ the truth corpus's hold-outs, the lists stay readable to the agents' account:
 they are published, nothing is gated on them, and `bench run` reads them in
 the agent's own session (the plan owner's call, 2026-11-17).
 
+The gate against develop (MAS-1056). From 2026-11-13 develop itself
+missed five gated readings, so every card read `FAIL`, whether a PR changed
+nothing, added a miss or fixed one, and each reviewer diffed the misses
+against develop's card by hand. A card diffed against a card of develop now
+splits its misses into the ref's new ones, develop's, which both miss, and
+the ones the ref fixed; a shared miss the ref makes worse by more than the
+metric's noise is new. Its verdict is `PASS for this ref` with no new miss,
+and the line always counts develop's misses. Two cards of one commit read
+alike on every gated metric, so the noise is 0 (`thresholds.json`). A card
+of develop's head, or one with no baseline, keeps the absolute line, so the
+nightly card still fails while develop misses the stage gate. Whether a PR
+card may read `PASS` while develop misses is the plan owner's call; it is
+built that way, with develop's misses always on the line. On a PR whose
+merge base is newer than the rolling baseline, the card is now diffed and
+judged against the newest card of develop behind the PR's head, and names
+its commit, where it gave no diff before.
+
 A branch with a migration of its own moves the bench database to its
 revision, and develop is then refused until that migration is on develop;
 one that never lands leaves the bench where only `init --rebuild` brings it
@@ -282,7 +299,8 @@ As built (6.6, `tooling/assignment_bench/post.py`): `bench run <ref> --post
 branch lives in a fork. It diffs against develop's baseline as `--baseline`
 does, but not against a baseline older than the PR's merge base with
 develop, which would count what develop merged since as the branch's; the
-comment then says which baseline and which merge base. The comment starts
+newest card of develop behind the PR's head stands in for it (MAS-1056),
+and with none the comment says which baseline and which merge base. The comment starts
 with a fixed marker, and a re-run edits the first marked comment it may
 edit, so a PR carries one bench comment. It holds the ref and its commit
 (and whether that is the PR's head), the reference's pin, the samples read,

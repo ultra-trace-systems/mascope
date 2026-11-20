@@ -229,6 +229,30 @@ the gate fails or something was left out or a decoy run failed, and 2 when
 no card was written: refused by the scrub, nothing could be read, or a step
 could not go on.
 
+**The gate against develop.** A card diffed against a card of develop
+(`--baseline`, `--post`) is judged against it too: its gate line splits the
+misses into the ref's **new** ones, **develop's**, which both cards miss, and
+the ones it **fixed** (`tooling/assignment_compare/README.md`, "The gate
+against a baseline"). It passes with no new miss, whatever develop misses,
+and says how many misses are develop's:
+
+```text
+GATE stage3: PASS for this ref - 0 new, 5 develop's (Db G6_assigned 8 (<= 5); ...), 0 fixed
+```
+
+A miss both share counts as new when the ref makes it worse by more than the
+metric's noise. The noise is measured: two cards of develop at one commit
+(2026-11-18, all six sets), and two pairs of cards of a branch at one commit,
+read alike on every gated metric of every set. The engine and the card are
+deterministic over a fixed database, so the noise is **0 for every metric**
+(`noise` in `thresholds.json`), and any move further from a target is the
+ref's. Raise it per metric if two cards of one commit ever differ.
+
+A card of develop's head keeps the absolute line, judged on the card alone,
+though it is diffed against the last baseline: its misses are develop's own,
+so the nightly card still says `FAIL` while develop misses the stage gate.
+So does any card with no baseline to read.
+
 **Develop's rolling baseline.** `bench run origin/develop --baseline`
 diffs the card against develop's last baseline card, then becomes the
 baseline itself. That happens only when the ref is develop's head, the run
@@ -319,10 +343,18 @@ In order:
 1. **The PR.** It reads the PR with `gh pr view` before it takes the lock. A
    PR whose branch lives in a fork is refused, and nothing runs.
 2. **The diff.** `--post` diffs the card against develop's rolling baseline,
-   as `--baseline` does. A baseline older than the PR's merge base with
-   develop is not diffed against: it would count what develop merged since
-   as the branch's. The comment says so, with the baseline's commit and
-   the merge base. So does a comment with no baseline yet.
+   as `--baseline` does, and its gate reads the branch's misses against
+   the baseline's ("The gate against develop"). A baseline older than the
+   PR's merge base with develop, the common case after a merge to develop,
+   gives way to the newest card of develop behind the PR's head: a card of
+   a commit on develop that is an ancestor of the head, with a gate verdict,
+   every set of the run and nothing left out. Of two such cards, the one
+   whose commit is behind the other's is passed over, and of two of one
+   commit the later one is read. The run log names that card, and the
+   comment's baseline line names its ref and commit. The rolling baseline
+   stays as it was. Only with no such card is nothing diffed: the comment
+   then says so, with the baseline's commit and the merge base. So does a
+   comment with no baseline yet.
 3. **The run**, as below.
 4. **The comment.** It posts one comment on the PR, which starts with the
    marker `<!-- mascope-bench-card -->`. A re-run on the same PR, at a new

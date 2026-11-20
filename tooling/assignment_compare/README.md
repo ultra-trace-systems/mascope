@@ -214,6 +214,31 @@ It exits 0 when the card is written and passes (or no gate was asked), 1 when
 the gate fails and 2 when the scrub refuses the card. The pooled column is not
 marked: every target is stated per set.
 
+**The gate against a baseline.** With `--gate` and `--baseline` the gate
+reads the card's misses against the baseline's, the baseline judged by the
+same thresholds, and its verdict is the one for this ref:
+
+```text
+GATE stage3: PASS for this ref - 0 new, 5 develop's (Db G6_assigned 8 (<= 5); ...), 1 fixed (Nm G9 1.8 (<= 2), was 5.4)
+GATE stage3: FAIL for this ref - 1 new (Nc G9 3 (<= 2), was 1), 5 develop's (...), 0 fixed
+```
+
+- **new**: the card misses a reading the baseline met, did not read, or
+  holds no column for (`not read on the baseline`). A miss both have that
+  the card makes worse by more than the metric's `noise` (the thresholds
+  file) is new too, marked `worse than` the baseline's value: higher under a
+  `max`, lower under a `min`.
+- **develop's**: both miss it, and the card does not make it worse.
+- **fixed**: the baseline misses it and the card meets it.
+
+The verdict fails on a new miss, or on a set with no sample read, and never
+on develop's misses alone; the line always counts them. The exit code follows
+that verdict. `card.json` keeps the card's own verdict as `absolute` and the
+three lists under `against`; each set's card splits its own misses the same
+way. `--absolute-gate` keeps the line above, the card judged alone, while
+`--baseline` still diffs: the bench gives it on a card of develop's head,
+whose misses are its own.
+
 `--decoy` adds the decoy arms (above) as rows of their own,
 `decoy <arm> held`, `held_lt_350`, `held_ge_350`, `held_intensity`,
 `new_ion` and `on_control_reagent`, per set and pooled. They have no target
@@ -315,6 +340,9 @@ stage 3's G9 to G14 from the plan's stage 3 text.
   nothing (set J, decision 22).
 - A gated reading with no value is *not read*: named on the line, neither met
   nor missed.
+- `noise` gives per metric how far a reading moves between two cards of one
+  commit. Against a baseline, a miss both cards share is the card's own only
+  when it is worse by more than that. A metric it does not name has none.
 
 The shipped targets, per stage (the log's table, and the plan's stage 3 text
 for G9 to G14):

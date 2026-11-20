@@ -199,6 +199,145 @@ def test_a_baseline_older_than_the_merge_base_is_not_diffed_against(rig, gh, cap
     assert why in capsys.readouterr().out
 
 
+OLDER = "c" * 40
+
+
+def _older_develop_card(rig):
+    """A card of an older commit of develop, made after develop's baseline."""
+    rig.instance.shas["older"] = OLDER
+    rig.instance.revisions[OLDER] = rig.instance.revisions[DEVELOP]
+    rig.instance.on_develop.add(OLDER)
+    rig.instance.ancestry |= {(OLDER, DEVELOP), (OLDER, BRANCH)}
+    assert rig.run("older") == 0
+    return rig.state()["cards"][-1]
+
+
+def test_a_stale_baseline_gives_way_to_the_newest_card_of_develop_behind_the_ref(
+    rig, gh, capsys
+):
+    first = _develop_baseline(rig)
+    older = _older_develop_card(rig)
+    rig.instance.merge_bases[(BRANCH, "origin/develop")] = "f" * 40
+    rig.instance.ancestry.add((DEVELOP, BRANCH))
+
+    _post(rig, gh)
+
+    # develop's card is behind the PR's head and newer than the older one,
+    # though that one was made later.
+    given = rig.compare.calls[-1]["baseline"]
+    assert given == rig.home.cards / first["path"] / "card.json"
+    assert rig.compare.calls[-1]["absolute"] is False
+    printed = capsys.readouterr().out
+    assert (
+        f"baseline: develop's card of {first['at']} (origin/develop at "
+        f"{DEVELOP[:9]}), the newest card of a commit behind topic; the rolling "
+        f"one is not: develop's baseline ({DEVELOP[:9]}, made {first['at']}) is "
+        f"older than this PR's merge base {'f' * 9}"
+    ) in printed
+    body = gh.comments[0]["body"]
+    assert f"**Since develop's baseline** (`origin/develop` at `{DEVELOP[:9]}`" in body
+    assert "No diff" not in body
+    diff = json.loads((rig.card_dir() / "diff.json").read_text())
+    assert diff["baseline"]["sha"] == DEVELOP
+    assert rig.state()["cards"][-1]["baseline"] == first["path"]
+    assert rig.state()["baseline"] == first
+
+    # Where develop's card is not behind the ref, the older one is read.
+    rig.instance.ancestry.discard((DEVELOP, BRANCH))
+    _post(rig, gh)
+    assert (
+        rig.compare.calls[-1]["baseline"]
+        == rig.home.cards / older["path"] / "card.json"
+    )
+    assert f"(`older` at `{OLDER[:9]}`" in gh.comments[0]["body"]
+
+
+def test_of_the_cards_behind_the_ref_the_newest_commit_s_latest_is_read(rig, gh):
+    older = _older_develop_card(rig)
+    first = _develop_baseline(rig)
+    # A second card of develop's commit, made later and not the baseline.
+    assert rig.run("origin/develop") == 0
+    again = rig.state()["cards"][-1]
+    assert again["path"] != first["path"] and rig.state()["baseline"] == first
+    rig.instance.merge_bases[(BRANCH, "origin/develop")] = "f" * 40
+    rig.instance.ancestry.add((DEVELOP, BRANCH))
+
+    _post(rig, gh)
+
+    given = rig.compare.calls[-1]["baseline"]
+    assert given == rig.home.cards / again["path"] / "card.json"
+    assert given != rig.home.cards / older["path"] / "card.json"
+
+
+def test_a_card_without_a_verdict_or_its_files_is_no_baseline_for_a_ref(rig, gh):
+    first = _develop_baseline(rig)
+    assert rig.run("origin/develop") == 0
+    rig.instance.merge_bases[(BRANCH, "origin/develop")] = "f" * 40
+    rig.instance.ancestry.add((DEVELOP, BRANCH))
+    state = rig.state()
+    again = state["cards"][-1]
+    rolling = rig.home.cards / first["path"] / "card.json"
+
+    state["cards"][-1]["verdict"] = "error"
+    rig.runner().save_state(state)
+    _post(rig, gh)
+    assert rig.compare.calls[-1]["baseline"] == rolling
+
+    state["cards"][-1]["verdict"] = "pass"
+    rig.runner().save_state(state)
+    (rig.home.cards / again["path"] / "card.json").unlink()
+    _post(rig, gh)
+    assert rig.compare.calls[-1]["baseline"] == rolling
+
+
+def test_a_card_with_samples_left_out_is_no_baseline_for_a_ref(rig, gh):
+    _develop_baseline(rig)
+    older = _older_develop_card(rig)
+    rig.instance.merge_bases[(BRANCH, "origin/develop")] = "f" * 40
+    rig.instance.ancestry.add((DEVELOP, BRANCH))
+    summary_file = rig.home.cards / rig.state()["baseline"]["path"] / "run.json"
+    summary = json.loads(summary_file.read_text())
+    summary["sets"]["Db"]["left_out"] = {"failed": 1}
+    summary_file.write_text(json.dumps(summary))
+
+    _post(rig, gh)
+
+    assert (
+        rig.compare.calls[-1]["baseline"]
+        == rig.home.cards / older["path"] / "card.json"
+    )
+
+
+def test_a_card_of_other_sets_is_no_baseline_for_a_ref(rig, gh):
+    _develop_baseline(rig)
+    rig.instance.merge_bases[(BRANCH, "origin/develop")] = "f" * 40
+    rig.instance.ancestry.add((DEVELOP, BRANCH))
+    rig.instance.shas["older"] = OLDER
+    rig.instance.revisions[OLDER] = rig.instance.revisions[DEVELOP]
+    rig.instance.on_develop.add(OLDER)
+    rig.instance.ancestry |= {(OLDER, BRANCH)}
+    state = rig.state()
+    state["cards"][-1]["sets"] = ["Db"]
+    state["baseline"]["sets"] = ["Db"]
+    rig.runner().save_state(state)
+
+    _post(rig, gh)
+
+    assert rig.compare.calls[-1]["baseline"] is None
+    assert "No diff: develop's baseline" in gh.comments[0]["body"]
+
+
+def test_a_card_of_a_commit_off_develop_is_no_baseline_for_a_ref(rig, gh):
+    _develop_baseline(rig)
+    rig.instance.merge_bases[(BRANCH, "origin/develop")] = "f" * 40
+    rig.instance.ancestry.add((DEVELOP, BRANCH))
+    rig.instance.on_develop.discard(DEVELOP)
+
+    _post(rig, gh)
+
+    assert rig.compare.calls[-1]["baseline"] is None
+
+
 def test_a_baseline_at_or_after_the_merge_base_is_diffed_against(rig, gh):
     _develop_baseline(rig)
     rig.instance.merge_bases[(BRANCH, "origin/develop")] = "f" * 40
