@@ -60,6 +60,7 @@ from __future__ import annotations
 import bisect
 import math
 from collections import Counter, defaultdict
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
@@ -1914,6 +1915,78 @@ def member_state(member: Any) -> dict:
         "owner_batch_peak_id": _member(member, "owner_batch_peak_id"),
         "p_correct": _member(member, "p_correct"),
     }
+
+
+#: The batch stages that rewrite members, as their marks name them
+#: (``batch_stages.BatchStage`` spells the same names).
+MARK_WATER_LADDERS = "water_ladders"
+MARK_KNOWN_SPECIES = "known_species"
+MARK_SEARCH = "search"
+MARK_ISOTOPE_LINES = "isotope_lines"
+MARK_SERIES = "series"
+
+#: The version the running batch stage writes at, set by the pass that runs
+#: it (``batch_stages``); None for a step run outside a pass.
+STAGE_VERSION: ContextVar[Optional[int]] = ContextVar(
+    "batch_stage_version", default=None
+)
+
+
+def batch_mark_of(member: Any) -> Optional[dict]:
+    """The batch's mark on a member (``batch_written``), or None where the
+    member reads its sample's own run or fold."""
+    mark = _member(member, "batch_written")
+    return mark if isinstance(mark, dict) and mark.get("stage") else None
+
+
+def batch_mark(member: Any, stage: str) -> dict:
+    """The mark a batch stage leaves on a member it is about to rewrite: the
+    stage, the version it writes at, and what the member read before - its
+    own fields, with the mark an earlier stage left nested inside - so a
+    withdrawn decision can put it back.
+
+    It lives on the member, not on the batch peak's record of the decision,
+    so it outlives that record (MAS-891): a later stage tells the batch's
+    claim from the sample's own by it whatever became of the record.
+    """
+    before = member_state(member)
+    before.pop("sample_item_id", None)
+    earlier = batch_mark_of(member)
+    if earlier is not None:
+        before["batch_written"] = earlier
+    return {"stage": stage, "version": STAGE_VERSION.get(), "before": before}
+
+
+def mark_member(member: Any, stage: Optional[str]) -> None:
+    """Mark a member a batch stage is about to rewrite (:func:`batch_mark`);
+    with no stage, take the mark off: a person's or an import's reading is
+    not the batch's."""
+    member.batch_written = None if stage is None else batch_mark(member, stage)
+
+
+def restore_marked(member: Any, stage: str) -> bool:
+    """Put back what a member read before a stage's claim on it, where it still
+    carries that stage's mark (:func:`batch_mark`): the stage's decision was
+    withdrawn. A member a newer fold wrote carries no mark, and one a person
+    curated since carries none either, so neither is touched.
+
+    :return: Whether the member was put back.
+    """
+    mark = batch_mark_of(member)
+    if mark is None or mark.get("stage") != stage:
+        return False
+    before = mark.get("before") or {}
+    for key in (
+        "candidate",
+        "tier",
+        "fit_score",
+        "role",
+        "owner_batch_peak_id",
+        "p_correct",
+    ):
+        setattr(member, key, before.get(key))
+    member.batch_written = before.get("batch_written")
+    return True
 
 
 def _pinned_without_support(

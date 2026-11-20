@@ -119,6 +119,7 @@ from mascope_backend.api.new.peak_assignments.tiering import LineGate, ask_absen
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
     TIER_CANDIDATE,
+    TIER_RANK,
 )
 from mascope_backend.db import PeakAssignment, PeakAssignmentRun, async_session
 from mascope_backend.runtime import runtime
@@ -360,6 +361,15 @@ class RunContext:
     :param recorded_artifact_peak_ids: The peaks the run a person's choice is
         made on claimed as the detector's ringing, which its spectrum's rules
         read as neither a line nor an absence; None reads the claim stage's.
+    :param held_peak_ids: The peaks the batch claimed for the source in this
+        sample (a water-ladder rung, a known species): no given reading is
+        elected on them, as on the claim stage's own
+        (``batch_rejudge.rejudge_sample``).
+    :param floors: The tier a batch decision proposes its given reading at,
+        by the peak it is proposed on: a listed compound the batch decided
+        present, at candidate. The elect stage raises the reading to it, and
+        the judging and the caps may lower it again; the evidence alone does
+        not keep it below.
     """
 
     path: AssignmentPath
@@ -380,6 +390,8 @@ class RunContext:
     chosen: list[dict] = field(default_factory=list)
     recorded: dict | None = None
     recorded_artifact_peak_ids: frozenset[str] | None = None
+    held_peak_ids: frozenset[str] = frozenset()
+    floors: dict[str, str] = field(default_factory=dict)
     #: The stages run so far, in order, a round's once per round.
     ran: list[Stage] = field(default_factory=list)
     # -- resolve
@@ -436,8 +448,9 @@ class RunContext:
 
     @property
     def claimed_peak_ids(self) -> set[str]:
-        """The peaks the claim stage took out of every stage after it."""
-        return self.reagent_peak_ids | self.artifact_peak_ids
+        """The peaks the claim stage took out of every stage after it, and the
+        ones the batch claimed for the source (:attr:`held_peak_ids`)."""
+        return self.reagent_peak_ids | self.artifact_peak_ids | self.held_peak_ids
 
     @property
     def inherits(self) -> bool:
@@ -1224,6 +1237,7 @@ async def elect(ctx: RunContext) -> None:
             instrument=ctx.instrument_type,
             calibration=None,
         )
+        raise_to_floors(rows, ctx.floors)
         if ctx.path.rules is Rules.RUN:
             ctx.stage_a, ctx.stage_b = _read_as_a_run_reads(ctx, rows)
         else:
@@ -1307,6 +1321,24 @@ async def elect(ctx: RunContext) -> None:
             },
         )
     )
+
+
+def raise_to_floors(rows: list[dict], floors: dict[str, str]) -> int:
+    """Raise each monoisotopic row on a peak a batch decision proposes its
+    reading at a tier (:attr:`RunContext.floors`) to that tier, where its
+    evidence left it lower. The judging round after it may lower it again.
+
+    :return: How many rows were raised.
+    """
+    raised = 0
+    for row in rows:
+        floor = floors.get(str(row.get("sample_peak_id")))
+        if floor is None or row.get("role") != ROLE_M0:
+            continue
+        if TIER_RANK.get(row.get("tier"), 0) < TIER_RANK[floor]:
+            row["tier"] = floor
+            raised += 1
+    return raised
 
 
 def _read_as_a_run_reads(

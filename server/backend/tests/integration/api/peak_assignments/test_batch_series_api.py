@@ -65,6 +65,7 @@ from mascope_backend.api.new.peak_assignments.batch_series import (
     run_batch_series_detection,
     series_outcome,
 )
+from mascope_backend.api.new.peak_assignments.batch_stages import run_batch_stages
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import evidence_for
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
@@ -338,11 +339,13 @@ async def test_the_family_is_committed_and_its_proposals_measured(
     # Twelve proposals: one confirms its candidate, eleven are measured.
     assert counts["anchors_proposed"] == 12
     assert counts["anchors_corroborated"] == 1
-    assert counts["anchors_measured"] == 11
+    # The corroborated one is measured too, on the members that do not read
+    # its formula yet (MAS-769): here none, so it is left as it is.
+    assert counts["anchors_measured"] == 12
     assert counts["samples_measured"] == 2
     # Each measured seed is scored once per sample.
     assert len(stubbed) == 2
-    assert all(len(seeds) == 11 for seeds in stubbed)
+    assert all(len(seeds) == 12 for seeds in stubbed)
 
     anchors = await _anchors(async_session_factory, batch_id)
     homologue = anchors["up-1"]
@@ -392,6 +395,36 @@ async def test_a_candidate_on_the_proposed_formula_carries_the_series_untouched(
     for name in ("S1", "S2"):
         members = await _members(async_session_factory, samples[name])
         assert members["up-0"].fit_score == pytest.approx(0.7)
+
+
+async def test_a_candidate_the_series_corroborates_is_judged_again_at_once(
+    async_session_factory, series_batch, stubbed, only_its_own_stage
+):
+    """Run as a batch stage, the detection judges again every sample a record
+    of its corroborates (MAS-765): the series is the second observation the
+    candidate on its formula lacked, and its members read the tier a run of
+    their sample gives the reading now, with no new run. What they measured
+    stays."""
+    batch_id, samples = series_batch["batch_id"], series_batch["samples"]
+    outcome = await run_batch_stages(sample_batch_id=batch_id, from_stage="series")
+    [stage] = outcome["data"]["stages"]
+    judged = stage["outcomes"][-1]["data"]
+    assert judged["samples_judged"] == 2
+    anchors = await _anchors(async_session_factory, batch_id)
+    confirmed = anchors["up-0"]
+    assert confirmed.consensus_formula == _step(SOURCES[0], 1)
+    assert confirmed.consensus_tier == "assigned"
+    for name in ("S1", "S2"):
+        members = await _members(async_session_factory, samples[name])
+        assert tier_name(members["up-0"].tier) == "assigned"
+        assert members["up-0"].fit_score == pytest.approx(0.7)
+        # What the series measured carries its mark; what it only
+        # corroborated does not.
+        assert members["up-1"].batch_written["stage"] == "series"
+        assert members["up-0"].batch_written is None
+        # A member the sample's own run read, that no decision touched, keeps
+        # the run's tier.
+        assert tier_name(members["src-0"].tier) == "assigned"
 
 
 async def test_a_better_measured_reading_keeps_its_member(
@@ -595,6 +628,82 @@ async def test_an_interrupted_detection_is_found_again(
     assert counts["families_committed"] == 1
     assert counts["anchors_corroborated"] == 10
     assert len(_records(await _anchors(async_session_factory, batch_id))) == 10
+
+
+async def _ledger_state(session_factory, batch_id, samples):
+    """Peak id -> (consensus formula, consensus tier, standing series formula,
+    and per sample the formula and tier its member reads): the ledger as a
+    reader compares two of them."""
+    anchors = await _anchors(session_factory, batch_id)
+    members = {
+        name: await _members(session_factory, sample_item_id)
+        for name, sample_item_id in samples.items()
+    }
+    state = {}
+    for peak, anchor in anchors.items():
+        series = (anchor.provenance or {}).get(SERIES_KEY)
+        per_sample = []
+        for name in sorted(members):
+            member = members[name].get(peak)
+            if member is None:
+                continue
+            identity = resolve_candidate(anchor.candidates, member.candidate)
+            per_sample.append((name, identity.get("formula"), tier_name(member.tier)))
+        state[peak] = (
+            anchor.consensus_formula,
+            anchor.consensus_tier,
+            None if series is None or is_stale(series) else series["formula"],
+            tuple(per_sample),
+        )
+    return state
+
+
+async def test_an_interrupted_then_clean_detection_leaves_one_clean_runs_ledger(
+    async_session_factory, pa_test_data, series_batch, stubbed, monkeypatch
+):
+    """A detection that stops after the first sample, then a clean one, leave
+    the ledger one clean detection leaves (MAS-769): the clean one measures
+    the proposals it finds corroborated on the members that do not read them
+    yet, the second sample's among them."""
+    batch_id, samples = series_batch["batch_id"], series_batch["samples"]
+    propagate = batch_series._propagate_to_sample
+    calls = []
+
+    async def dies_on_the_second(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 2:
+            raise asyncio.CancelledError()
+        return await propagate(*args, **kwargs)
+
+    monkeypatch.setattr(batch_series, "_propagate_to_sample", dies_on_the_second)
+    with pytest.raises(asyncio.CancelledError):
+        await run_batch_series_detection(batch_id, PeakAssignmentConfig())
+    monkeypatch.setattr(batch_series, "_propagate_to_sample", propagate)
+    await run_batch_series_detection(batch_id, PeakAssignmentConfig())
+    interrupted = await _ledger_state(async_session_factory, batch_id, samples)
+
+    # The same batch again, detected once, cleanly.
+    clean_id, clean_samples = await _new_batch(
+        async_session_factory, pa_test_data, label="series-clean"
+    )
+    for name, fit in (("S1", 0.95), ("S2", 0.40)):
+        readings = _peaks()
+        readings["down-0"] = (_step(SOURCES[0], -1), ("candidate", RIVAL, fit))
+        await fold_sample_into_batch_peaks(
+            clean_samples[name],
+            rows=_rows(clean_samples[name], readings),
+            persisted=False,
+        )
+    await run_batch_series_detection(clean_id, PeakAssignmentConfig())
+    clean = await _ledger_state(async_session_factory, clean_id, clean_samples)
+    assert interrupted == clean
+    # The second sample's members of the proposals were measured.
+    measured = [
+        peak
+        for peak, (_, _, series, per_sample) in interrupted.items()
+        if series and all(formula == series for _, formula, _ in per_sample)
+    ]
+    assert len(measured) >= 9
 
 
 async def test_while_the_proposals_are_measured_no_reader_serves_them_unmeasured(

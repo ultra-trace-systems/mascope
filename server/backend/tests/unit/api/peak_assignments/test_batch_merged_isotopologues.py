@@ -869,6 +869,16 @@ class TestTheSummary:
         assert held["held_by_reason"] == {HELD_PARENT_ABSENT: 1}
         assert held["held_pairs"][0]["reason"] == HELD_PARENT_ABSENT
 
+    def test_a_row_stripped_again_and_moved_at_the_write_is_counted_so(self):
+        # A row stripped before counts among the rows stripped again, not the
+        # rows stripped now, and a move at the write takes it off that count.
+        found, pair = self._plan()
+        pair.again = True
+        counts = found.counts[("mode-1", "orbi")]
+        counts["stripped"], counts["stripped_again"] = 0, 1
+        moved = summarise(found, [Written(pair, "moved")])
+        assert (moved["stripped"], moved["stripped_again"], moved["moved"]) == (0, 0, 1)
+
     def test_the_lists_are_capped_and_the_counts_are_not(self):
         found, pair = self._plan()
         many = [Written(pair, "stripped") for _ in range(MAX_LISTED + 3)]

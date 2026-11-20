@@ -73,6 +73,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+from mascope_backend.api.new.peak_assignments.batch_peaks import STAGE_VERSION
 from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_BATCH_CHECKS,
     ACTION_CO_VARIATION,
@@ -771,13 +772,18 @@ async def _run_stage(spec: StageSpec, call: StageCall) -> dict:
     """Run one stage: its version counted up, its steps run, its records
     stamped, and its standing written whichever way it ends."""
     version, started = await begin_stage(call.sample_batch_id, spec.stage)
+    token = STAGE_VERSION.set(version)
     try:
         outcomes = await spec.run(call)
+        run_ids = await _runs_since(call.sample_batch_id, spec.actions, started)
+        await stamp_versions(call.sample_batch_id, spec.record_keys, run_ids, version)
+        if spec.rewrites:
+            outcomes.append(await judge_again(spec.stage, call, version, outcomes))
     except BaseException:
         await stop_stage(call.sample_batch_id, spec.stage)
         raise
-    run_ids = await _runs_since(call.sample_batch_id, spec.actions, started)
-    await stamp_versions(call.sample_batch_id, spec.record_keys, run_ids, version)
+    finally:
+        STAGE_VERSION.reset(token)
     state = await finish_stage(
         call.sample_batch_id,
         spec.stage,
@@ -793,6 +799,71 @@ async def _run_stage(spec: StageSpec, call: StageCall) -> dict:
         "version": version,
         "state": state,
         "outcomes": outcomes,
+    }
+
+
+#: The key a step's outcome data names, per sample, the batch peaks whose
+#: earlier claims it withdrew under (``batch_water_ladder.RESTORED_SAMPLES``).
+RESTORED_SAMPLES = "restored_samples"
+
+
+def restored_in(outcomes: list[dict]) -> dict[str, set[str]]:
+    """Sample -> the batch peaks a step's outcome says it withdrew claims at."""
+    restored: dict[str, set[str]] = {}
+    for outcome in outcomes:
+        data = outcome.get("data") if isinstance(outcome, dict) else None
+        named = data.get(RESTORED_SAMPLES) if isinstance(data, dict) else None
+        for sample, anchors in (named or {}).items():
+            restored.setdefault(sample, set()).update(anchors)
+    return restored
+
+
+async def judge_again(
+    stage: BatchStage, call: StageCall, version: int, outcomes: list[dict]
+) -> dict:
+    """Judge every sample a rewriting stage wrote in again, as a run judges
+    it (``batch_rejudge``): the members it marked, after the series the
+    members its records corroborate, and where it withdrew an earlier
+    decision the members it put back, take the tier the run's judging gives
+    the reading they carry.
+
+    :return: The step's outcome, as the stage's own steps report theirs.
+    """
+    from mascope_backend.api.new.peak_assignments.batch_rejudge import (
+        rejudge_samples,
+        samples_written,
+        series_corroborated,
+        species_restored,
+    )
+
+    samples: dict[str, frozenset[str]] = {
+        sample: frozenset()
+        for sample in await samples_written(call.sample_batch_id, stage.value, version)
+    }
+    # The decisions a sample's judging reads without a member rewritten: a
+    # series record that corroborates a member's reading, and a withdrawn
+    # known species, whose members read again what they read before it.
+    extra = {
+        BatchStage.SERIES: series_corroborated,
+        BatchStage.KNOWN_SPECIES: species_restored,
+    }.get(stage)
+    named = restored_in(outcomes)
+    if extra is not None:
+        for sample, anchors in (await extra(call.sample_batch_id, version)).items():
+            named.setdefault(sample, set()).update(anchors)
+    for sample, anchors in named.items():
+        samples[sample] = samples.get(sample, frozenset()) | frozenset(anchors)
+    counts = await rejudge_samples(call.sample_batch_id, samples, call.config)
+    judged = counts.get("samples_judged", 0)
+    moved = counts.get("members_moved", 0)
+    return {
+        "status": "partial" if counts.get("samples_failed") else "success",
+        "message": (
+            f"Judged {judged} sample{'s' if judged != 1 else ''} again as a run "
+            f"judges them: {moved} member{'s' if moved != 1 else ''} took "
+            "another tier."
+        ),
+        "data": counts,
     }
 
 

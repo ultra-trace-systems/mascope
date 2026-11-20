@@ -56,11 +56,15 @@ from sqlalchemy import func, or_, select
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    MARK_SEARCH,
     PERSISTENCE_KEY,
     REASON_PERSISTENCE_ONLY,
     ROLE_ISO_CHILD,
+    ROLE_UNASSIGNED,
     TIER_REASONS_KEY,
+    batch_mark_of,
     candidate_index,
+    mark_member,
     measured_state,
     resolve_candidate,
     role_code,
@@ -637,6 +641,80 @@ async def _unassigned_anchors_and_members(
     return {anchor.batch_peak_id: anchor for anchor in anchors}, list(members)
 
 
+async def _readings_to_measure_again(
+    session, sample_batch_id: str
+) -> tuple[dict[str, Annotation], set[str]]:
+    """The readings the search assigned that a member of their batch peak
+    does not carry: a sample folded in since the search, or folded again from
+    a new run of its own, brings a member that reads nothing there.
+
+    A batch peak the search assigned is no unassigned anchor any more, so the
+    search never searches it again (:func:`_unassigned_anchors_and_members`),
+    and such a member would stay unmeasured. Its batch peak's reading is
+    proposed to it instead, as the search's own propagation proposes a found
+    composition to every other sample's member (MAS-983, the batch stages'
+    design note 4.3). A batch peak is the search's where a member carries the
+    search's mark (``batch_peaks.batch_mark``) and reads the batch peak's
+    consensus; a member that reads a reading of its own is its file's, and
+    is not touched.
+
+    :return: Anchor id -> its reading, an isotope line's naming its owner,
+        and the samples whose member of an owner reads nothing.
+    """
+    rows = (
+        await session.execute(
+            select(BatchPeak, BatchPeakOccurrence)
+            .join(
+                BatchPeakOccurrence,
+                BatchPeakOccurrence.batch_peak_id == BatchPeak.batch_peak_id,
+            )
+            .where(
+                BatchPeak.sample_batch_id == sample_batch_id,
+                BatchPeak.consensus_tier != TIER_UNASSIGNED,
+                BatchPeak.consensus_formula.is_not(None),
+                BatchPeak.consensus_role.is_(None),
+            )
+        )
+    ).all()
+    searched: dict[str, BatchPeak] = {}
+    unread: dict[str, set[str]] = defaultdict(set)
+    for anchor, member in rows:
+        if member.candidate is None and member.role == role_code(ROLE_UNASSIGNED):
+            unread[anchor.batch_peak_id].add(member.sample_item_id)
+            continue
+        mark = batch_mark_of(member)
+        if mark is None or mark.get("stage") != MARK_SEARCH:
+            continue
+        identity = resolve_candidate(anchor.candidates, member.candidate)
+        if identity.get("formula") == anchor.consensus_formula and str(
+            identity.get("ionization_mechanism_id")
+        ) == str(anchor.ionization_mechanism_id):
+            searched[anchor.batch_peak_id] = anchor
+    # A monoisotopic reading a member lacks, with the search's isotope lines
+    # of it, which the measurement reads beside it as the search's own
+    # propagation does; a line alone is measured through its owner.
+    owners = {
+        batch_peak_id
+        for batch_peak_id, anchor in searched.items()
+        if not anchor.isotopologue_of
+        and unread.get(batch_peak_id)
+        and anchor.ionization_mechanism_id
+    }
+    annotations = {
+        batch_peak_id: Annotation(
+            formula=anchor.consensus_formula,
+            ion_formula=anchor.consensus_ion_formula,
+            ionization_mechanism_id=anchor.ionization_mechanism_id,
+            role=ROLE_ISO_CHILD if anchor.isotopologue_of else ROLE_M0,
+            owner_batch_peak_id=anchor.isotopologue_of or None,
+        )
+        for batch_peak_id, anchor in searched.items()
+        if batch_peak_id in owners or anchor.isotopologue_of in owners
+    }
+    samples = {sample for key in owners for sample in unread[key]}
+    return annotations, samples
+
+
 async def _occurrence_table(
     session, sample_batch_id: str
 ) -> tuple[dict[str, Occurrence], dict[tuple, Optional[float]]]:
@@ -897,6 +975,7 @@ async def _apply_search_rows(
             )
             if len(registry) != len(anchor.candidates or []):
                 anchor.candidates = registry
+            mark_member(member, MARK_SEARCH)
             member.candidate = index
             member.tier = tier_code(row["tier"])
             member.fit_score = row.get("fit_score")
@@ -922,6 +1001,7 @@ async def _propagate_to_sample(
     prefer_better: bool = False,
     path: AssignmentPath = PROPAGATION,
     series: Optional[dict[str, dict]] = None,
+    mark: Optional[str] = None,
 ) -> int:
     """Measure the annotated anchors' readings on one sample and write the
     result onto its members of those anchors.
@@ -1006,6 +1086,7 @@ async def _propagate_to_sample(
             skip_candidate=skip_candidate,
             displaced=displaced,
             prefer_better=prefer_better,
+            mark=mark,
         )
 
     ctx = await run_stages(
@@ -1075,11 +1156,14 @@ async def _write_measured_members(
     skip_candidate: Optional[dict[str, int]],
     displaced: Optional[list],
     prefer_better: bool,
+    mark: Optional[str] = None,
 ) -> int:
     """Write the propagation's judged rows onto the sample's members, under the
     batch's fold lock: each member whose peak the judged ledger reads as its
     anchor's reading takes it, at the judged tier
-    (:func:`_propagate_to_sample` says which members are written).
+    (:func:`_propagate_to_sample` says which members are written), and the
+    batch's mark of the stage that wrote it (``mark``; none for a person's
+    or an import's reading, which takes the batch's mark off).
 
     :return: How many members were assigned.
     """
@@ -1138,6 +1222,7 @@ async def _write_measured_members(
             )
             if len(registry) != len(anchor.candidates or []):
                 anchor.candidates = registry
+            mark_member(member, mark)
             member.candidate = index
             member.tier = tier_code(row["tier"])
             member.fit_score = row.get("fit_score")
@@ -1240,8 +1325,16 @@ async def run_batch_untargeted_search(
             session, sample_batch_id
         )
         persistent, splits = await _occurrence_table(session, sample_batch_id)
+        again, again_samples = await _readings_to_measure_again(
+            session, sample_batch_id
+        )
     counts = {
         "anchors_searched": len(anchors),
+        # Batch peaks the search assigned before whose reading is measured
+        # again on the members that read nothing yet.
+        "anchors_measured_again": sum(
+            1 for annotation in again.values() if annotation.role == ROLE_M0
+        ),
         # Anchors the cap kept out of the search. Zero unless a caller set
         # `max_untargeted_peaks` or a sample carries more representatives than
         # the ceiling; reported because a blank anchor means something different
@@ -1276,7 +1369,7 @@ async def run_batch_untargeted_search(
         "samples_rescored": 0,
         "samples_failed": 0,
     }
-    if not anchors:
+    if not anchors and not again:
         return counts
 
     representatives = choose_representatives(members)
@@ -1294,6 +1387,8 @@ async def run_batch_untargeted_search(
     members_by_sample: dict[str, list] = defaultdict(list)
     for member in members:
         members_by_sample[member.sample_item_id].append(member)
+    for sample_item_id in sorted(again_samples - set(members_by_sample)):
+        members_by_sample[sample_item_id] = []
 
     reports = process_id is not None
     total = len(by_sample) + len(members_by_sample)
@@ -1437,8 +1532,10 @@ async def run_batch_untargeted_search(
                     "Writing the untargeted batch search failed for sample "
                     f"'{sample_item_id}'."
                 )
-        annotations = merge.annotations
-        counts["anchors_annotated"] = len(annotations)
+        counts["anchors_annotated"] = len(merge.annotations)
+        # The readings found now, and those the search found before that a
+        # member folded in since does not carry yet.
+        annotations = {**again, **merge.annotations}
 
         if annotations:
             for sample_item_id in members_by_sample:
@@ -1447,7 +1544,11 @@ async def run_batch_untargeted_search(
                 )
                 try:
                     counts["members_propagated"] += await _propagate_to_sample(
-                        sample_batch_id, sample_item_id, annotations, config
+                        sample_batch_id,
+                        sample_item_id,
+                        annotations,
+                        config,
+                        mark=MARK_SEARCH,
                     )
                     counts["samples_rescored"] += 1
                 except Exception:  # noqa: BLE001 - one bad sample must not abort the pass
@@ -1466,7 +1567,7 @@ async def run_batch_untargeted_search(
         # touched. The vector is cancellation, which walks past the per-sample
         # `except` arms above because it is a BaseException.
         try:
-            await recompute_batch_consensus(sample_batch_id, set(anchors))
+            await recompute_batch_consensus(sample_batch_id, set(anchors) | set(again))
         except Exception:
             if walked_the_batch:
                 raise
@@ -1489,7 +1590,7 @@ async def run_batch_untargeted_search(
 def search_outcome(counts: dict, sample_batch_id: str) -> dict:
     """The controller result the background-task decorator reports from."""
     notification_data = {"sample_batch_id": sample_batch_id}
-    if not counts["anchors_searched"]:
+    if not counts["anchors_searched"] and not counts.get("anchors_measured_again"):
         return {
             "status": "partial",
             "message": (
@@ -1514,6 +1615,17 @@ def search_outcome(counts: dict, sample_batch_id: str) -> dict:
         f" {failed} sample{'s' if failed != 1 else ''} could not be read and "
         f"{'were' if failed != 1 else 'was'} skipped."
         if failed
+        else ""
+    )
+    # Said because these batch peaks were not searched: their reading stood,
+    # and only the members folded in since were measured against it.
+    measured_again = counts.get("anchors_measured_again", 0)
+    again = (
+        f" {measured_again} batch peak{'s' if measured_again != 1 else ''} the "
+        "search assigned before "
+        f"{'were' if measured_again != 1 else 'was'} measured again on the "
+        "members folded in since."
+        if measured_again
         else ""
     )
     # Said because it is the one place a sample's own reading of a peak was
@@ -1559,7 +1671,8 @@ def search_outcome(counts: dict, sample_batch_id: str) -> dict:
             f"{counts['anchors_annotated']} assigned a composition, and "
             f"{counts['members_propagated']} member peak"
             f"{'s' if counts['members_propagated'] != 1 else ''} in other samples "
-            f"measured against it.{lines}{persistence}{skipped}{unsearched}"
+            f"measured against it.{again}{lines}{persistence}{skipped}"
+            f"{unsearched}"
         ),
         "data": counts,
         "_notification_data": notification_data,

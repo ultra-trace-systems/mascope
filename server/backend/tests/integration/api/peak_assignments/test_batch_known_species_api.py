@@ -25,11 +25,18 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select, update
+from stage_stubs import (  # the tests root, on sys.path
+    frame,
+    stub_sample_reads,
+    stub_seeded_scorer,
+)
+from stage_stubs import mechanism as mechanism_row
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.new.peak_assignments import (
     batch_known_species,
     batch_peaks_routes,
+    pipeline,
 )
 from mascope_backend.api.new.peak_assignments.batch_known_species import (
     batch_species_for,
@@ -37,6 +44,7 @@ from mascope_backend.api.new.peak_assignments.batch_known_species import (
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     candidate_index,
+    resolve_candidate,
     role_code,
     tier_code,
 )
@@ -49,6 +57,9 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     complete_run,
     start_run,
 )
+from mascope_backend.api.new.peak_assignments.batch_stages import run_batch_stages
+from mascope_backend.api.new.peak_assignments.engine import MASS_CALIBRATION_KEY
+from mascope_backend.api.new.peak_assignments.mass_gate import MassCalibration
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
@@ -386,6 +397,95 @@ def _record(anchor):
     return (anchor.provenance or {}).get("known_species")
 
 
+def _stub_the_stage_list(monkeypatch, errors_by_peak, fits_by_peak=None):
+    """What a sample's judging reads, canned: every peak of the fixture, the
+    suite's mechanism, and a seeded scorer that pairs each proposed reading
+    to its peak at the given m/z error (0.2 ppm by default) and fit (0.9 by
+    default)."""
+    by_formula = {
+        reading["assigned_formula"]: peak
+        for name in ("S00", "S04")
+        for peak, reading in _readings(name).items()
+        if reading.get("role") == "M0" and reading.get("assigned_formula")
+    }
+
+    def peaks_of(sample_item_id):
+        return frame((peak, mz, 1e5) for peak, mz in MZ.items())
+
+    async def match_params(sample_item_id):
+        return SimpleNamespace(isotope_abundance_threshold=0.01, mz_tolerance=50)
+
+    async def seeded(sample, seeds, params, **kwargs):
+        ion_by_seed, fit_by_ion, errors = {}, {}, {}
+        for formula, mechanism in seeds:
+            peak = by_formula.get(formula)
+            if peak is None:
+                continue
+            ion = f"ion-{formula}"
+            ion_by_seed[(formula, mechanism)] = ion
+            fit_by_ion[ion] = (fits_by_peak or {}).get(peak, 0.9)
+            errors[(ion, peak)] = {"mz_error_ppm": errors_by_peak.get(peak, 0.2)}
+        return ion_by_seed, fit_by_ion, errors, None
+
+    stub_sample_reads(monkeypatch, peaks_of, [mechanism_row(NOTATION, MECH)])
+    monkeypatch.setattr(pipeline, "default_match_params", match_params)
+    stub_seeded_scorer(monkeypatch, seeded, peaks_of)
+
+
+async def test_a_claim_on_a_reading_below_candidate_goes_through_the_caps(
+    async_session_factory, known_batch, monkeypatch, only_its_own_stage
+):
+    """Run as a batch stage, the decision's claims are judged again as a run
+    judges them (MAS-983): proposed at candidate, the batch's word, and then
+    asked every rule a run's reading is asked. Measured 40 ppm off against the
+    mass calibration its sample's run recorded, the gate holds S02's claim
+    below assignability, where a step that set the tier directly put it at
+    candidate; S04, whose run recorded none, keeps the batch's candidate."""
+    samples, ids = known_batch["samples"], known_batch["ids"]
+    async with async_session_factory() as session:
+        await session.execute(
+            update(PeakAssignmentRun)
+            .where(
+                PeakAssignmentRun.peak_assignment_run_id == known_batch["runs"]["S02"]
+            )
+            .values(
+                config={
+                    MASS_CALIBRATION_KEY: MassCalibration(
+                        mu_ppm=0.0, sigma_ppm=0.1, anchors=120, gate_sigma_ppm=0.54
+                    ).snapshot()
+                }
+            )
+        )
+        await session.commit()
+    _stub_the_stage_list(monkeypatch, {"d": 40.0})
+    outcome = await run_batch_stages(
+        sample_batch_id=known_batch["batch_id"], from_stage="known_species"
+    )
+    [stage] = outcome["data"]["stages"]
+    assert stage["outcomes"][-1]["data"]["samples_judged"] >= 2
+    members = await _members(async_session_factory, ids["d"])
+    gated = members[samples["S02"]]
+    assert gated.tier == tier_code("below_assignability")
+    assert gated.batch_written["stage"] == "known_species"
+    assert members[samples["S04"]].tier == tier_code("candidate")
+
+
+async def test_a_claim_the_caps_let_stand_is_proposed_at_candidate(
+    async_session_factory, known_batch, monkeypatch, only_its_own_stage
+):
+    """Measured on its mass, the reading below candidate is proposed at
+    candidate, the batch's word, and the judging leaves it there. Its fit
+    alone reads it below assignability: the batch's decision, not the
+    evidence, is what puts it at candidate, and only a cap takes it lower."""
+    samples, ids = known_batch["samples"], known_batch["ids"]
+    _stub_the_stage_list(monkeypatch, {}, fits_by_peak={"d": 0.05})
+    await run_batch_stages(
+        sample_batch_id=known_batch["batch_id"], from_stage="known_species"
+    )
+    members = await _members(async_session_factory, ids["d"])
+    assert members[samples["S04"]].tier == tier_code("candidate")
+
+
 async def test_a_library_ion_in_most_samples_is_claimed_in_all_and_the_ledgers_agree(
     async_session_factory, known_batch
 ):
@@ -420,6 +520,9 @@ async def test_a_library_ion_in_most_samples_is_claimed_in_all_and_the_ledgers_a
         assert member.role == role_code("reagent")
         assert member.tier == tier_code("unassigned")
         assert member.fit_score is None
+    # Its line went with it, marked as the claim's, as the member is.
+    line_member = (await _members(async_session_factory, ids["t13"]))[samples["S00"]]
+    assert line_member.batch_written["stage"] == "known_species"
 
     # The in-app run's row is the pre-pass's claim, the reading it displaced
     # recorded; its 13C line goes with it, owned as it was.
@@ -600,22 +703,28 @@ async def test_the_batchs_own_claims_never_keep_a_species_present(
     assert record["files_by_reason"] == {"batch_claim": 4}
 
 
-async def test_a_new_decision_replaces_every_record(async_session_factory, known_batch):
+@pytest.mark.parametrize("stale", [False, True])
+async def test_a_new_decision_replaces_every_record(
+    async_session_factory, known_batch, stale
+):
+    """An ordinary analyte's batch peak carries a record no decision makes:
+    the next decision takes it off, also where a consensus recompute kept it
+    marked stale, which no reader serves but which is still the stage's own."""
     batch, ids = known_batch, known_batch["ids"]
+    record = {"verdict": "present", "reads": {"role": None}}
+    if stale:
+        record["stale"] = True
     async with async_session_factory() as session:
         await session.execute(
             update(BatchPeak)
             .where(BatchPeak.batch_peak_id == ids["a"])
-            .values(
-                provenance={
-                    "known_species": {"verdict": "present", "reads": {"role": None}}
-                }
-            )
+            .values(provenance={"known_species": record})
         )
         await session.commit()
     summary = await run_batch_known_species(batch["batch_id"])
     assert summary["records_cleared"] == 1
-    assert _record((await _anchors(async_session_factory, batch))["a"]) is None
+    anchor = (await _anchors(async_session_factory, batch))["a"]
+    assert "known_species" not in (anchor.provenance or {})
 
 
 async def test_a_hand_assignment_made_since_the_reading_holds_its_sample(
@@ -911,6 +1020,124 @@ async def test_the_plan_reads_each_lines_label_off_its_row(
     plan = batch_known_species.plan_batch(anchors, members, claims)
     [trimer] = [d for d in plan.decisions if d.row.batch_peak_id == ids["t"]]
     assert trimer.samples[samples["S00"]] is None
+
+
+async def _the_lists_own_tests_go(async_session_factory, batch):
+    """S00's run and S03's fold stop reading the siloxane: the two files whose
+    own test held read another compound, so no file's test holds."""
+    samples = batch["samples"]
+    rows = await _run_rows(async_session_factory, batch["runs"]["S00"])
+    async with async_session_factory() as session:
+        await session.execute(
+            update(PeakAssignment)
+            .where(PeakAssignment.peak_assignment_id == rows["d"].peak_assignment_id)
+            .values(assigned_formula=OTHER, source="untargeted", provenance=None)
+        )
+        await session.commit()
+    await fold_sample_into_batch_peaks(samples["S00"])
+    other = _analyte(OTHER, D4_ION, fit=0.5)
+    await fold_sample_into_batch_peaks(
+        samples["S03"],
+        rows=[
+            SimpleNamespace(**r)
+            for r in _rows(samples["S03"], "S03", overrides={"d": other})
+        ],
+        persisted=False,
+    )
+
+
+async def test_a_decision_that_no_longer_reads_a_species_present_withdraws_its_claims(
+    async_session_factory, known_batch
+):
+    """A later decision that reads the siloxane absent puts back what the
+    earlier one's claims overwrote (MAS-874): S02's member and its in-app row
+    read the other compound again, at what they measured, and S04's member
+    its own reading below candidate. The hand assignment it never claimed is
+    as it was."""
+    batch, samples, ids = known_batch, known_batch["samples"], known_batch["ids"]
+    await run_batch_known_species(batch["batch_id"])
+    claimed = (await _members(async_session_factory, ids["d"]))[samples["S02"]]
+    assert claimed.batch_written["stage"] == "known_species"
+    await _the_lists_own_tests_go(async_session_factory, batch)
+
+    await run_batch_known_species(batch["batch_id"])
+    record = _record((await _anchors(async_session_factory, batch))["d"])
+    assert record["verdict"] != "present"
+    assert record["restored"]["members_restored"] == 2
+    assert record["restored"]["rows_restored"] == 1
+    assert record["restored"]["samples"] == sorted([samples["S02"], samples["S04"]])
+    anchor = (await _anchors(async_session_factory, batch))["d"]
+    members = await _members(async_session_factory, ids["d"])
+    s02 = members[samples["S02"]]
+    assert resolve_candidate(anchor.candidates, s02.candidate)["formula"] == OTHER
+    assert s02.tier == tier_code("candidate")
+    assert s02.fit_score == pytest.approx(0.5)
+    assert s02.batch_written is None
+    s04 = members[samples["S04"]]
+    assert s04.tier == tier_code("below_assignability")
+    assert s04.fit_score == pytest.approx(0.4)
+    row = (await _run_rows(async_session_factory, batch["runs"]["S02"]))["d"]
+    assert (row.assigned_formula, row.tier) == (OTHER, "candidate")
+    assert row.fit_score == pytest.approx(0.5)
+    assert "batch_written_before" not in (row.provenance or {})
+    hand = (await _run_rows(async_session_factory, batch["runs"]["S01"]))["d"]
+    assert (hand.assigned_formula, hand.source) == (OTHER, "manual")
+
+
+async def test_a_withdrawn_decision_judges_its_samples_again(
+    async_session_factory, known_batch, monkeypatch, only_its_own_stage
+):
+    """Run as a batch stage, the decision that withdraws an earlier one's
+    claims judges again every sample it put back (MAS-983, task 8), and the
+    judging holds back the peaks the batch claimed for the source."""
+    from mascope_backend.api.new.peak_assignments import batch_rejudge
+
+    batch, samples = known_batch, known_batch["samples"]
+    _stub_the_stage_list(monkeypatch, {})
+    await run_batch_known_species(batch["batch_id"])
+    await _the_lists_own_tests_go(async_session_factory, batch)
+    held: dict[str, frozenset] = {}
+    real = batch_rejudge.run_stages
+
+    async def spy(ctx):
+        held[ctx.sample.sample_item_id] = ctx.held_peak_ids
+        return await real(ctx)
+
+    monkeypatch.setattr(batch_rejudge, "run_stages", spy)
+    outcome = await run_batch_stages(
+        sample_batch_id=batch["batch_id"], from_stage="known_species"
+    )
+    [stage] = outcome["data"]["stages"]
+    # The two it put back, among the samples its claims wrote in again.
+    assert stage["outcomes"][-1]["data"]["samples_judged"] == len(held)
+    assert {samples["S02"], samples["S04"]} <= set(held)
+    # The urea monomer every sample's pre-pass claimed is no reading's.
+    assert all("m" in peaks for peaks in held.values())
+
+
+async def test_a_row_a_person_curated_since_is_left_when_the_claim_is_withdrawn(
+    async_session_factory, known_batch
+):
+    """S02's row was assigned by hand after the claim: the withdrawal puts its
+    member back, and leaves the person's row as the person left it."""
+    batch, samples, ids = known_batch, known_batch["samples"], known_batch["ids"]
+    await run_batch_known_species(batch["batch_id"])
+    rows = await _run_rows(async_session_factory, batch["runs"]["S02"])
+    async with async_session_factory() as session:
+        await session.execute(
+            update(PeakAssignment)
+            .where(PeakAssignment.peak_assignment_id == rows["d"].peak_assignment_id)
+            .values(source="manual", tier="assigned")
+        )
+        await session.commit()
+    await _the_lists_own_tests_go(async_session_factory, batch)
+    await run_batch_known_species(batch["batch_id"])
+    record = _record((await _anchors(async_session_factory, batch))["d"])
+    assert record["restored"]["rows_restored"] == 0
+    row = (await _run_rows(async_session_factory, batch["runs"]["S02"]))["d"]
+    assert (row.assigned_formula, row.source, row.tier) == (D4, "manual", "assigned")
+    members = await _members(async_session_factory, ids["d"])
+    assert members[samples["S02"]].fit_score == pytest.approx(0.5)
 
 
 async def test_a_samples_own_claim_made_since_counts_as_its_own(

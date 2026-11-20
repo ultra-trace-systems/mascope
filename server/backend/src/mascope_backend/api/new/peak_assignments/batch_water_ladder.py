@@ -67,7 +67,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.new.peak_assignments.batch_known_species import (
@@ -89,19 +89,24 @@ from mascope_backend.api.new.peak_assignments.batch_known_species import (
     _read_rows,
     _row_marks,
     partition_of,
+    restore_row,
     trace_centre,
+    with_row_before,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    MARK_WATER_LADDERS,
     ROLE_ISO_CHILD,
     ROLE_REAGENT,
     SOURCE_ROLES,
     WATER_LADDER_KEY,
     candidate_index,
     manual_pin_of,
+    mark_member,
     member_state,
     mz_from_delta,
     reading_of,
     resolve_candidate,
+    restore_marked,
     role_code,
     tier_code,
     water_ladder_record_of,
@@ -969,10 +974,11 @@ def _write_claim(
                 isotope_label=None if line.track.monoisotopic else line.track.label,
                 owner_peak_assignment_id=owner_row_id,
             )
-            for key, value in values.items():
+            for key, value in with_row_before(own_row, values).items():
                 setattr(own_row, key, value)
             rows_rewritten += 1
         displaced[sample] = member_state(member)
+        mark_member(member, MARK_WATER_LADDERS)
         member.candidate = candidate_index(
             registry, None, line.ion_formula, None, source=SOURCE_REAGENT
         )
@@ -984,6 +990,7 @@ def _write_claim(
         # The member's isotope lines go with it, as a library ion's do.
         for line_member, line_anchor in lines.get(sample, ()):
             line_registry = list(line_anchor.candidates or [])
+            mark_member(line_member, MARK_WATER_LADDERS)
             line_member.candidate = candidate_index(
                 line_registry, None, line.ion_formula, None, source=SOURCE_REAGENT
             )
@@ -1000,12 +1007,15 @@ def _write_claim(
                 and line_row.peak_assignment_run_id in in_app_runs
                 and line_row.owner_peak_assignment_id == own_row.peak_assignment_id
             ):
-                for key, value in water_rung_row(
-                    _as_dict(line_row),
-                    rung,
-                    record,
-                    exact_mz=line.exact_mz,
-                    keep_line=True,
+                for key, value in with_row_before(
+                    line_row,
+                    water_rung_row(
+                        _as_dict(line_row),
+                        rung,
+                        record,
+                        exact_mz=line.exact_mz,
+                        keep_line=True,
+                    ),
                 ).items():
                     setattr(line_row, key, value)
             lines_rewritten += 1
@@ -1233,9 +1243,25 @@ def _chunks(claims: list[Claim]) -> list[list[Claim]]:
     return chunks
 
 
-async def _clear_stale_records(sample_batch_id: str, kept: set[str]) -> int:
+#: The summary key that names, per sample, the batch peaks whose earlier
+#: claims a measurement withdrew: the samples the stage judges again.
+RESTORED_SAMPLES = "restored_samples"
+
+
+async def _clear_stale_records(
+    sample_batch_id: str, kept: set[str]
+) -> tuple[int, dict[str, list[str]]]:
     """Take the record off every batch peak this measurement did not claim at:
-    a new measurement replaces every record."""
+    a new measurement replaces every record. Where a rung no longer passes,
+    its earlier claims are withdrawn (MAS-983): every member the ladder marked
+    at the batch peak, and its isotope lines, read again what they read
+    before it, and so do the in-app rows it rewrote, but for those a person
+    curated since (``batch_known_species.restore_row``).
+
+    :return: How many records came off, and sample -> the batch peaks whose
+        claims were withdrawn in it, which are judged again.
+    """
+    restored: dict[str, set[str]] = defaultdict(set)
     async with async_session() as session:
         await _acquire_batch_fold_lock(session, sample_batch_id)
         anchors = (
@@ -1249,18 +1275,55 @@ async def _clear_stale_records(sample_batch_id: str, kept: set[str]) -> int:
             .scalars()
             .all()
         )
-        cleared = 0
+        cleared: list[str] = []
         for anchor in anchors:
-            if anchor.batch_peak_id in kept or water_ladder_record_of(anchor) is None:
+            # Its own records, those a recompute marked stale too.
+            if (
+                anchor.batch_peak_id in kept
+                or water_ladder_record_of(anchor, stale=True) is None
+            ):
                 continue
             provenance = dict(anchor.provenance or {})
             provenance.pop(WATER_LADDER_KEY, None)
             anchor.provenance = provenance
-            cleared += 1
+            cleared.append(anchor.batch_peak_id)
         if cleared:
+            withdrawn = (
+                (
+                    await session.execute(
+                        select(BatchPeakOccurrence).where(
+                            or_(
+                                BatchPeakOccurrence.batch_peak_id.in_(cleared),
+                                BatchPeakOccurrence.owner_batch_peak_id.in_(cleared),
+                            ),
+                            BatchPeakOccurrence.batch_written.is_not(None),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            rows = await _read_rows(
+                session,
+                sorted(
+                    {m.peak_assignment_id for m in withdrawn if m.peak_assignment_id}
+                ),
+            )
+            touched: set[str] = set()
+            for member in withdrawn:
+                if not restore_marked(member, MARK_WATER_LADDERS):
+                    continue
+                touched.add(member.batch_peak_id)
+                restored[member.sample_item_id].add(member.batch_peak_id)
+                row = rows.get(member.peak_assignment_id or "")
+                if row is not None:
+                    restore_row(row)
+            if touched:
+                await session.flush()
+                await _recompute_consensus(session, touched, datetime.now(timezone.utc))
             await touch_ledger(session, sample_batch_id)
         await session.commit()
-    return cleared
+    return len(cleared), {sample: sorted(ids) for sample, ids in restored.items()}
 
 
 async def _unexplained_after(sample_batch_id: str) -> dict[Partition, Optional[float]]:
@@ -1431,11 +1494,14 @@ async def run_batch_water_ladders(
         written.extend(
             await _write_chunk(sample_batch_id, chunk, segments, batch_peak_run_id)
         )
-    cleared = await _clear_stale_records(
+    cleared, restored = await _clear_stale_records(
         sample_batch_id, {claim.batch_peak_id for claim in plan.claims}
     )
     after = await _unexplained_after(sample_batch_id)
-    return summarise(plan, written, after, cleared)
+    summary = summarise(plan, written, after, cleared)
+    if restored:
+        summary[RESTORED_SAMPLES] = restored
+    return summary
 
 
 def measuring_outcome(summary: dict, sample_batch_id: str) -> dict:

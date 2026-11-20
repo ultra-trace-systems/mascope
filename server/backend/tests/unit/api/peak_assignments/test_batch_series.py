@@ -307,13 +307,16 @@ class TestThePlan:
             owner_batch_peak_id=None,
         )
 
-    def test_a_candidate_already_reading_the_formula_is_corroborated_not_measured(
+    def test_a_candidate_already_reading_the_formula_is_corroborated_and_measured(
         self,
     ):
+        # Measured too, on the members that do not read the formula yet, which
+        # an earlier detection that stopped never reached (MAS-769); the ones
+        # that read it are left as they are when the members are written.
         held = {"tier": "candidate", "formula": "C9H12O5"}
         result = plan(ladder_batch(C9H12O5=held))
         assert "up-0" in result.corroborated
-        assert "up-0" not in result.annotations
+        assert result.annotations["up-0"].formula == "C9H12O5"
         assert result.records["up-0"]["formula"] == "C9H12O5"
 
     def test_a_candidate_reading_another_formula_is_measured_against_it(self):

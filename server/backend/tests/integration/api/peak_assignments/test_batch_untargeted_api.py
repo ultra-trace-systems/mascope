@@ -441,6 +441,8 @@ async def test_the_search_runs_on_the_brightest_member_and_annotates_the_anchor(
     # the searched sample's own rows are tiered the same way the propagated
     # ones are, so one anchor's members are all on one scale.
     assert s1["p1"].fit_score == pytest.approx(0.88)
+    # The batch's mark on what the search wrote, which outlives its record.
+    assert s1["p1"].batch_written["stage"] == "search"
     assert [name for name, _ in stubbed_engine["seeded_fits"]] == ["S1"]
     assert role_name(s1["p2"].role) == "iso_child"
     assert s1["p2"].owner_batch_peak_id == glucose.batch_peak_id
@@ -813,9 +815,103 @@ async def test_the_other_sample_is_measured_and_takes_a_fit_of_its_own(
     assert role_name(s2["p2"].role) == "iso_child"
     assert s2["p2"].owner_batch_peak_id == anchors[181].batch_peak_id
     assert s2["p3"].candidate is None  # the envelope did not reach it
+    # The propagation marks what it measured as the search's.
+    assert s2["p1"].batch_written["stage"] == "search"
+    assert s2["p3"].batch_written is None
     # Two members now back the consensus.
     assert anchors[181].support_fraction == pytest.approx(1.0)
     assert anchors[181].provenance["n_assigned"] == 2
+
+
+async def test_a_refolded_sample_is_measured_again_by_the_next_pass(
+    async_session_factory, folded_batch, stubbed_engine, only_these_stages
+):
+    """A sample folded in again reads its own rows, the search's reading of
+    its member gone. The batch peak still reads the search's composition, so
+    no search reaches it again; the next pass of the stages measures that
+    reading on the member that reads nothing (MAS-983's Verify, the batch
+    stages' design note 4.3)."""
+    from mascope_backend.api.new.peak_assignments.batch_stages import (
+        run_batch_stages,
+        stage_standing,
+    )
+
+    only_these_stages("search")
+    batch_id, samples = folded_batch["batch_id"], folded_batch["samples"]
+    await run_batch_stages(sample_batch_id=batch_id)
+    assert (await _members(async_session_factory, samples["S2"]))["p1"].batch_written[
+        "stage"
+    ] == "search"
+
+    # Folded again without the peak no search assigns: the sample holds no
+    # member of an unassigned batch peak, only the one the search's reading
+    # is measured on.
+    await fold_sample_into_batch_peaks(
+        samples["S2"],
+        rows=_unassigned_rows(samples["S2"], _PEAKS["S2"][:2]),
+        persisted=False,
+    )
+    assert (await _members(async_session_factory, samples["S2"]))[
+        "p1"
+    ].candidate is None
+    standing = await stage_standing(batch_id)
+    assert {e["stale_reason"] for e in standing["stages"]} == {"fold"}
+
+    outcome = await run_batch_stages(sample_batch_id=batch_id)
+    assert outcome["status"] == "success", outcome["message"]
+    [search] = [s for s in outcome["data"]["stages"] if s["stage"] == "search"]
+    assert search["outcomes"][0]["data"]["anchors_measured_again"] == 1
+    assert (
+        "1 batch peak the search assigned before was measured again on the "
+        "members folded in since." in outcome["message"]
+    )
+    anchors = await _anchors_by_mz(async_session_factory, batch_id)
+    s2 = await _members(async_session_factory, samples["S2"])
+    assert (
+        resolve_candidate(anchors[181].candidates, s2["p1"].candidate)["formula"]
+        == "C6H12O6"
+    )
+    assert s2["p1"].batch_written["stage"] == "search"
+    assert role_name(s2["p2"].role) == "iso_child"
+    assert anchors[181].provenance["n_assigned"] == 2
+    assert (await stage_standing(batch_id))["stale_stages"] == []
+
+
+async def test_a_batch_the_search_assigned_whole_still_measures_a_refolded_sample(
+    async_session_factory, pa_test_data, monkeypatch
+):
+    """With every batch peak assigned there is nothing to search, but a
+    sample folded in again still has its member measured against the
+    reading the search assigned there before."""
+    peaks = {name: rows[:2] for name, rows in _PEAKS.items()}
+    batch = await _fold_batch(async_session_factory, pa_test_data, peaks)
+    batch_id, samples = batch["batch_id"], batch["samples"]
+    _stub_engine(
+        monkeypatch,
+        samples,
+        peaks,
+        lambda targets: _canned_matches(),
+        {"C6H12O6": ("ion-glc", 0.81, ["p1", "p2"])},
+    )
+    first = await run_batch_untargeted_search(batch_id, PeakAssignmentConfig())
+    assert first["anchors_annotated"] == 2
+    await fold_sample_into_batch_peaks(
+        samples["S2"],
+        rows=_unassigned_rows(samples["S2"], peaks["S2"]),
+        persisted=False,
+    )
+    again = await run_batch_untargeted_search(batch_id, PeakAssignmentConfig())
+    assert (again["anchors_searched"], again["anchors_measured_again"]) == (0, 1)
+    assert again["members_propagated"] == 2
+    anchors = await _anchors_by_mz(async_session_factory, batch_id)
+    s2 = await _members(async_session_factory, samples["S2"])
+    assert (
+        resolve_candidate(anchors[181].candidates, s2["p1"].candidate)["formula"]
+        == "C6H12O6"
+    )
+    outcome = search_outcome(again, batch_id)
+    assert outcome["status"] == "success"
+    assert "measured again on the members folded in since" in outcome["message"]
 
 
 async def test_a_batch_with_nothing_unassigned_searches_nothing(
