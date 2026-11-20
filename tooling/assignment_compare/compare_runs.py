@@ -1699,8 +1699,9 @@ def diff_cards(baseline: dict, card: dict) -> dict:
     once, not reading by reading: a set's own card, given as the baseline of a
     whole one, holds none of the other sets and no pooled column.
 
-    A card made without the decoy arms (no ``decoy`` reading in a column)
-    against a baseline made with them compares the control readings alone:
+    A card made without the decoy arms (no ``decoy`` reading and no
+    ``decoys_not_read`` in any of its columns: the card records no flag, so
+    the decision is the whole card's, never one column's) against a baseline made with them compares the control readings alone:
     the baseline's decoy rows were not run on this ref, which is no move, and
     their arms are named in ``arms_not_run``. A card with the arms diffs its
     decoy rows as any other reading.
@@ -1714,12 +1715,17 @@ def diff_cards(baseline: dict, card: dict) -> dict:
         sys.exit(f"the baseline is not a card of format {CARD_FORMAT}")
     moved, by_column, not_run = [], {}, set()
     old_columns, new_columns = baseline.get("columns", {}), card["columns"]
+    without_arms = not any(
+        column.get("decoys_not_read")
+        or any(_is_decoy(key) for key in column.get("readings", {}))
+        for column in new_columns.values()
+    )
     for name in new_columns:
         if name not in old_columns:
             continue
         old = old_columns[name].get("readings", {})
         new = new_columns[name].get("readings", {})
-        if not any(_is_decoy(key) for key in new):
+        if without_arms:
             arms = {key.split(" ", 2)[1] for key in old if _is_decoy(key)}
             not_run |= arms
             old = {k: v for k, v in old.items() if not _is_decoy(k)}
