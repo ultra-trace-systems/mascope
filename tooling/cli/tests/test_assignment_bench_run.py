@@ -270,6 +270,7 @@ class FakeCompare:
         self.plant = None
         #: Changes the card's JSON before it is written.
         self.edit = None
+        self.decoy_held: dict[str, float] = {}
         #: Exit with this and write nothing, as a refused card does.
         self.refuse = None
 
@@ -298,6 +299,13 @@ class FakeCompare:
             }
             for name, spec in manifest["sets"].items()
         }
+        if decoy:
+            # One decoy reading per set, as a card read with the arms holds.
+            for name, column in columns.items():
+                column["readings"]["decoy x held_pct"] = {
+                    "value": self.decoy_held.get(name, 1.0),
+                    "n": 10,
+                }
         columns["pooled"] = {
             "instrument": "mixed",
             "readings": {
@@ -1368,6 +1376,42 @@ def test_a_run_of_some_sets_diffs_them_and_not_the_pooled_column(rig, capsys):
     assert diff["by_column"] == {"Et": 1}
     assert diff["only_card"] == ["pooled"]
     assert "not on the baseline: pooled" in capsys.readouterr().out
+
+
+def test_a_card_without_arms_against_a_baseline_with_them_diffs_the_controls(
+    rig, capsys
+):
+    rig.instance.revisions[BRANCH] = rig.instance.revisions[DEVELOP]
+    assert rig.run("origin/develop", baseline=True, decoys=True) == 0
+    assert rig.state()["baseline"]["decoys"] is True
+
+    rig.compare.verdict = "fail"
+    assert rig.run("topic", baseline=True) == 1
+    diff = json.loads((rig.card_dir() / "diff.json").read_text())
+    # The control readings are compared, the arms are named and not moved.
+    assert diff["compared"] == 3 and diff["moved"] == []
+    assert diff["arms_not_run"] == ["x"]
+    assert "the baseline's decoy rows were not run on this ref (x)" in (
+        capsys.readouterr().out
+    )
+    run = json.loads((rig.card_dir() / "run.json").read_text())
+    assert run["card"]["verdict"] == "fail"
+
+    # The same card with a passing gate keeps its pass: the arms are no miss.
+    rig.compare.verdict = "pass"
+    assert rig.run("topic", baseline=True) == 0
+
+
+def test_a_card_with_arms_diffs_its_decoy_rows_against_the_baseline(rig):
+    rig.instance.revisions[BRANCH] = rig.instance.revisions[DEVELOP]
+    rig.run("origin/develop", baseline=True, decoys=True)
+    rig.compare.decoy_held = {"Et": 4.0}
+    assert rig.run("topic", baseline=True, decoys=True) == 0
+    diff = json.loads((rig.card_dir() / "diff.json").read_text())
+    assert diff["arms_not_run"] == []
+    assert [(m["set"], m["metric"]) for m in diff["moved"]] == [
+        ("Et", "decoy x held_pct")
+    ]
 
 
 def test_without_the_flag_there_is_no_diff_and_no_baseline(rig):

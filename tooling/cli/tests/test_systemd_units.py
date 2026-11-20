@@ -842,3 +842,10 @@ def test_update_installs_nothing_but_a_pinned_mascope_cli(update_run, handover):
     result, calls = update_run([40], handover=handover)
     assert result.returncode == 2
     assert calls == ["mascope prod update --auto"]
+
+
+@needs_checkout
+def test_the_nightly_baseline_runs_the_decoy_arms():
+    unit = (SYSTEMD_DIR / "bench-baseline.service").read_text()
+    (start,) = [line for line in unit.splitlines() if line.startswith("ExecStart=")]
+    assert "bench.py run origin/develop --baseline --decoys" in start

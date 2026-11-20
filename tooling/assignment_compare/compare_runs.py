@@ -1699,20 +1699,30 @@ def diff_cards(baseline: dict, card: dict) -> dict:
     once, not reading by reading: a set's own card, given as the baseline of a
     whole one, holds none of the other sets and no pooled column.
 
+    A card made without the decoy arms (no ``decoy`` reading in a column)
+    against a baseline made with them compares the control readings alone:
+    the baseline's decoy rows were not run on this ref, which is no move, and
+    their arms are named in ``arms_not_run``. A card with the arms diffs its
+    decoy rows as any other reading.
+
     :return: ``{"compared": n, "by_column": {column: n}, "moved": [{"set",
         "metric", "was", "now"}], "only_baseline": [...], "only_card":
-        [...]}``.
+        [...], "arms_not_run": [...]}``.
     :raises SystemExit: On a baseline that is not a card of this format.
     """
     if baseline.get("format") != CARD_FORMAT:
         sys.exit(f"the baseline is not a card of format {CARD_FORMAT}")
-    moved, by_column = [], {}
+    moved, by_column, not_run = [], {}, set()
     old_columns, new_columns = baseline.get("columns", {}), card["columns"]
     for name in new_columns:
         if name not in old_columns:
             continue
         old = old_columns[name].get("readings", {})
         new = new_columns[name].get("readings", {})
+        if not any(_is_decoy(key) for key in new):
+            arms = {key.split(" ", 2)[1] for key in old if _is_decoy(key)}
+            not_run |= arms
+            old = {k: v for k, v in old.items() if not _is_decoy(k)}
         keys = list(new) + [k for k in old if k not in new]
         by_column[name] = len(keys)
         for key in keys:
@@ -1725,7 +1735,12 @@ def diff_cards(baseline: dict, card: dict) -> dict:
         "moved": moved,
         "only_baseline": [name for name in old_columns if name not in new_columns],
         "only_card": [name for name in new_columns if name not in old_columns],
+        "arms_not_run": sorted(not_run),
     }
+
+
+def _is_decoy(key: str) -> bool:
+    return key.startswith("decoy ")
 
 
 def baseline_line(diff: dict) -> str:
@@ -1735,6 +1750,11 @@ def baseline_line(diff: dict) -> str:
         line += f"; not on the baseline: {', '.join(diff['only_card'])}"
     if diff["only_baseline"]:
         line += f"; on the baseline only: {', '.join(diff['only_baseline'])}"
+    if diff.get("arms_not_run"):
+        line += (
+            "; the baseline's decoy rows were not run on this ref "
+            f"({', '.join(diff['arms_not_run'])})"
+        )
     return line
 
 
@@ -1858,6 +1878,7 @@ def card_files(card: dict) -> dict[str, str]:
                     "moved": [m for m in diff["moved"] if m["set"] == name],
                     "only_baseline": [],
                     "only_card": [k for k in diff["only_card"] if k == name],
+                    "arms_not_run": diff.get("arms_not_run", []),
                 }
                 if diff is not None
                 else None

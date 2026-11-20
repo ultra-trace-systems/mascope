@@ -388,6 +388,17 @@ stands (`--no-wait` refuses instead; "One run at a time" above). A run takes abo
 sets, more with private sets beside them; `--sets` shortens it to the sets
 named, `--decoys` adds the arms.
 
+**`--decoys` on a PR only when the brief asks.** A brief's `**Bench.**`
+line asks for the arms only where the step changes the scorer, the tiering
+rules, the mass gate, the rival or corroboration tests, or what a decoy arm
+reads. The arms are three more engine runs per sample: a card with them
+takes about 90 minutes of the one bench, one without about 32. Develop's
+nightly baseline always runs them, so a card with the arms diffs its decoy
+rows against develop's. A card without them compares the control readings
+alone, and its baseline line says the baseline's decoy rows were not run on
+this ref. The missing arms are no move, no miss and nothing left out: the
+card keeps the verdict and the exit it would have had.
+
 In order:
 
 1. **The PR.** It reads the PR with `gh pr view` before it takes the lock. A
@@ -467,8 +478,9 @@ the bench.
 `tooling/systemd/bench-baseline.service` and `bench-baseline.timer` are user
 units for the box the bench lives on, never a deployment's. Every night at
 01:30 the service moves a checkout of its own to develop's head and runs
-`bench run origin/develop --baseline` from it, so develop's card is made by
-develop's own comparison tool. A whole card becomes the rolling baseline.
+`bench run origin/develop --baseline --decoys` from it, so develop's card is
+made by develop's own comparison tool and holds the decoy arms a PR card
+may diff against. With the arms it takes about an hour and a half. A whole card becomes the rolling baseline.
 A card that failed its gate still exits 1, which the unit counts as
 success; a run that made no card fails the unit. The install steps are in
 `docs/dev/assignment_bench.md`, "Operations".
