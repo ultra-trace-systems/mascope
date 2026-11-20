@@ -128,7 +128,7 @@ The ledger's own breadcrumb goes, because the shell's says the same.
 | Plot | yes | yes | a checkbox; it plots the species in the batch chart, the same in both scopes |
 | m/z | yes | yes | Plex Mono, tabular |
 | Compound | yes | yes | the formula, with the listed name and its list under it when a list or target names it. This replaces the *Listed as* column |
-| Ion | yes | yes | the sample scope: the mechanism. The batch scope: the ion formula the read already serves (`consensus_ion_formula`). Either way, a `×N` pill when the neutral is seen through N channels, from the groups of 3.5 |
+| Ion | yes | yes | the sample scope: the mechanism. The batch scope: the ion formula the read already serves (`consensus_ion_formula`). Either way, a `×N` pill when the neutral is seen through N channels. In the sample scope it counts the sample's own rows (`channelRows`, as today), which needs no batch; in the batch scope it counts the groups the batch-peaks read serves (3.5) |
 | Intensity | yes | yes, as *Max intensity* | a compact number (`8.31k`, `1.20M`) and a log-scale bar. The batch scope's is `max_intensity`, the brightest sample's, and its header says so in its tooltip |
 | Tier | yes | yes | the tier chip; a capping reason as a mark on the chip |
 | Level | when any row has one | when any row has one | the level chip |
@@ -205,6 +205,22 @@ members, labels them, and adds the gaps.
 **Members are batch peaks.** A series step with no batch peak is a gap. The lens draws
 it greyed and labelled *no batch peak*, and counts it apart, so "4 batch peaks, one step
 with no peak" means four members and one gap, in the ledger and in the card alike.
+
+**Where each scope reads them.**
+
+- **The batch scope** reads the groups on the batch-peaks read, for every row at once.
+- **The sample scope's list** is the slim paged read, which carries none, and the detail
+  row arrives one row at a time, when a peak is focused.
+  - Its `×N` pill counts the sample's own rows (`channelRows`), as today, so it needs no
+    batch and shows before anything is clicked.
+  - A click on a badge or a pill reads that row's detail for `batch_groups` and applies
+    the lens from it, the members the sample does not hold included.
+  - Where the batch has no batch peaks yet, the detail has no groups. The lens then falls
+    back to the sample's own rows and shows channels only, as today's grouping does.
+  - *Group by* offers compound in the sample scope, from those same rows. Grouping by
+    series needs every row's groups at once, so it belongs to the batch scope.
+
+The sample's list read gains nothing.
 
 **The lens.** Any badge or pill that names other rows applies a lens when clicked:
 
