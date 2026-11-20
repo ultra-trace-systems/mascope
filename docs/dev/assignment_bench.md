@@ -297,10 +297,13 @@ worker on the LAN host, are recorded in the decision.
 As built (6.6, `tooling/assignment_bench/post.py`): `bench run <ref> --post
 <pr>` reads the PR with `gh` before it takes the lock and refuses one whose
 branch lives in a fork. It diffs against develop's baseline as `--baseline`
-does, but not against a baseline older than the PR's merge base with
-develop, which would count what develop merged since as the branch's; the
-newest card of develop behind the PR's head stands in for it (MAS-1056),
-and with none the comment says which baseline and which merge base. The comment starts
+does. A baseline older than the PR's merge base with develop gives way to
+the newest card of develop behind the PR's head (MAS-1056), often that
+baseline itself. Every such card is at or behind the merge base, so what
+develop merged after it can still show as new or fixed; the run log says
+so and the comment names the card's commit, so a reader can tell (#3362
+tracks doing better). With no such card the comment says which baseline
+and which merge base, and nothing is diffed. The comment starts
 with a fixed marker, and a re-run edits the first marked comment it may
 edit, so a PR carries one bench comment. It holds the ref and its commit
 (and whether that is the PR's head), the reference's pin, the samples read,

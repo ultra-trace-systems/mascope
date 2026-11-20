@@ -230,9 +230,9 @@ def test_a_stale_baseline_gives_way_to_the_newest_card_of_develop_behind_the_ref
     printed = capsys.readouterr().out
     assert (
         f"baseline: develop's card of {first['at']} (origin/develop at "
-        f"{DEVELOP[:9]}), the newest card of a commit behind topic; the rolling "
-        f"one is not: develop's baseline ({DEVELOP[:9]}, made {first['at']}) is "
-        f"older than this PR's merge base {'f' * 9}"
+        f"{DEVELOP[:9]}), the rolling baseline, as no newer card of develop is "
+        f"behind topic. It is older than this PR's merge base {'f' * 9}: what "
+        f"develop merged between the two counts as the branch's."
     ) in printed
     body = gh.comments[0]["body"]
     assert f"**Since develop's baseline** (`origin/develop` at `{DEVELOP[:9]}`" in body
@@ -250,6 +250,32 @@ def test_a_stale_baseline_gives_way_to_the_newest_card_of_develop_behind_the_ref
         == rig.home.cards / older["path"] / "card.json"
     )
     assert f"(`older` at `{OLDER[:9]}`" in gh.comments[0]["body"]
+    assert (
+        f"baseline: develop's card of {older['at']} (older at {OLDER[:9]}), the "
+        f"newest card of develop behind topic, in place of the rolling baseline "
+        f"({DEVELOP[:9]}, made {first['at']}). It is older than this PR's merge "
+        f"base {'f' * 9}: what develop merged between the two counts as the "
+        f"branch's."
+    ) in capsys.readouterr().out
+
+    # A card at the merge base itself leaves nothing of develop's out.
+    rig.instance.merge_bases[(BRANCH, "origin/develop")] = OLDER
+    rig.instance.ancestry.discard((OLDER, DEVELOP))
+    _post(rig, gh)
+    assert (
+        f"baseline: develop's card of {older['at']} (older at {OLDER[:9]}), the "
+        f"newest card of develop behind topic, at this PR's merge base."
+    ) in capsys.readouterr().out
+
+    # With no merge base found, the line says what that leaves open.
+    rig.instance.merge_bases[(BRANCH, "origin/develop")] = None
+    _post(rig, gh)
+    assert (
+        f"baseline: develop's card of {older['at']} (older at {OLDER[:9]}), the "
+        f"newest card of develop behind topic. The merge base of this PR could "
+        f"not be found, so what develop merged after that card may count as the "
+        f"branch's."
+    ) in capsys.readouterr().out
 
 
 def test_of_the_cards_behind_the_ref_the_newest_commit_s_latest_is_read(rig, gh):
