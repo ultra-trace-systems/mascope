@@ -818,6 +818,27 @@ def test_the_ledger_and_a_snapshot_serve_the_records(mechanism, served):
     )
 
 
+def test_the_ledger_and_a_snapshot_serve_one_owner_link():
+    # A stamped line's owner is the stamp's parent, the members' own link
+    # wins where they vote one, and a line with neither has none (MAS-865).
+    stamped = _ledger_anchor()
+    parent = _LINE_RECORD["batch_peak_id"]
+    assert _batch_peak_meta(stamped)["line_owner_id"] == parent
+    row = anchor_snapshot_row("run-1", stamped, [])
+    assert (
+        snapshot_anchor_meta(SimpleNamespace(**row), "sb-1")["line_owner_id"] == parent
+    )
+    voted = _ledger_anchor(isotopologue_of="own-parent")
+    assert _batch_peak_meta(voted)["line_owner_id"] == "own-parent"
+    row = anchor_snapshot_row("run-1", voted, [])
+    assert (
+        snapshot_anchor_meta(SimpleNamespace(**row), "sb-1")["line_owner_id"]
+        == "own-parent"
+    )
+    alone = _ledger_anchor(provenance={})
+    assert _batch_peak_meta(alone)["line_owner_id"] is None
+
+
 @pytest.mark.parametrize(
     "sample, parent, source",
     [("s0", "p", STAMP_PICKER), ("s1", "p", STAMP_PREDICTED), ("s5", None, None)],

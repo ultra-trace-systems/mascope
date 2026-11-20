@@ -115,7 +115,9 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     SPREAD_RED,
     SPREAD_STABLE,
     TIME_ORDER_GAP_FACTOR,
+    line_owner_of,
     resolve_candidate,
+    stamped_isotopologue_of_record,
     standing_co_variation_record,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import touch_ledger
@@ -263,24 +265,52 @@ def root_parent_id(anchor: Any, index: Mapping[str, Any]) -> Optional[str]:
     """The family root an isotope line is drawn under, or None.
 
     The batch ledger's own rule (``rootParentId`` in
-    ``PaneBrowserBatchPeaks.vue``), so a line pairs with the row it is drawn
-    under: walk ``isotopologue_of`` to an anchor that has none; a link to an
-    anchor the batch does not hold, or a cycle, ends the walk with no parent.
+    ``PaneBrowserBatchPeaks.vue``), on the one owner link both read
+    (``batch_peaks.line_owner_of``, served as ``line_owner_id``), so a line
+    pairs with the row it is drawn under, a stamped one included (MAS-865):
+    walk the owner link to an anchor that has none; a link to an anchor the
+    batch does not hold, or a cycle, ends the walk with no parent.
 
     :param anchor: The anchor.
     :param index: Batch peak id -> anchor, the whole batch.
     """
     seen = {_get(anchor, "batch_peak_id")}
-    parent_id = _get(anchor, "isotopologue_of")
+    parent_id = line_owner_of(anchor)
     while parent_id and parent_id not in seen:
         parent = index.get(parent_id)
         if parent is None:
             return None
-        if not _get(parent, "isotopologue_of"):
+        if not line_owner_of(parent):
             return parent_id
         seen.add(parent_id)
-        parent_id = _get(parent, "isotopologue_of")
+        parent_id = line_owner_of(parent)
     return None
+
+
+def line_formula(anchor: Any, index: Mapping[str, Any]) -> Optional[str]:
+    """The formula of the family an isotope line is a line of, which its root
+    has to read for the two to pair.
+
+    A line its members vote one carries its family's formula as its own
+    consensus. A stamp, though, leaves the line it stamps reading what it
+    read (``batch_isotopologues``), so where the line's owner chain passes
+    through a stamp - the line itself stamped, or a line of a stamped line -
+    the family's formula is the one the stamp predicted the line for.
+
+    :param anchor: The isotope line.
+    :param index: Batch peak id -> anchor, the whole batch.
+    """
+    seen: set = set()
+    current = anchor
+    while current is not None and _get(current, "batch_peak_id") not in seen:
+        if not _get(current, "isotopologue_of"):
+            stamp = stamped_isotopologue_of_record(current)
+            if stamp is not None and current is not None:
+                return stamp.get("formula")
+            break
+        seen.add(_get(current, "batch_peak_id"))
+        current = index.get(_get(current, "isotopologue_of"))
+    return _get(anchor, "consensus_formula")
 
 
 def _paired_tier(anchor: Any) -> bool:
@@ -314,7 +344,7 @@ def form_pairs(anchors: Iterable[Any], notation_by_id: Mapping[str, str]) -> lis
         return min(_get(a, "n_present") or 0, _get(b, "n_present") or 0)
 
     for line in anchors:
-        if not _get(line, "isotopologue_of"):
+        if not line_owner_of(line):
             continue
         root = root_parent_id(line, index)
         if root is None:
@@ -323,7 +353,7 @@ def form_pairs(anchors: Iterable[Any], notation_by_id: Mapping[str, str]) -> lis
         if (
             partition_of(parent) != partition_of(line)
             or not (_paired_tier(parent) and _paired_tier(line))
-            or _get(line, "consensus_formula") != _get(parent, "consensus_formula")
+            or line_formula(line, index) != _get(parent, "consensus_formula")
         ):
             continue
         pairs.append(

@@ -78,6 +78,14 @@ const BATCH = { sample_batch_id: 'b-1', sample_batch_name: 'Batch 1' }
 const WORKSPACE = { workspace_id: 'ws-1', workspace_name: 'Project', my_role: 'editor' }
 
 /** A batch-peak ledger row. */
+// A ledger row as the server serves it: the one owner link of an isotope
+// line (`line_owner_id`) derived as the server derives it, from the members'
+// own link and else a stamp, unless the row names one itself.
+const served = (row) => ({
+  line_owner_id: row.isotopologue_of ?? row.stamped_isotopologue_of?.batch_peak_id ?? null,
+  ...row
+})
+
 const peak = (batch_peak_id, consensus_tier, best_fit_score, extra = {}) => ({
   batch_peak_id,
   mz: 181.0708,
@@ -103,7 +111,7 @@ function makeApp({
       workspace: { focused: workspace },
       sample: { list: samples, pending: false },
       batchPeak: {
-        list: peaks,
+        list: peaks.map(served),
         pending: false,
         error: null,
         selected: [],
@@ -1060,6 +1068,20 @@ describe('PaneBrowserBatchPeaks isotopologue stamps', () => {
     expect(wrapper.vm.isotopologueCount(PARENT)).toBe(0)
     const row = wrapper.vm.decorated.find((r) => r.batch_peak_id === 'bp-line')
     expect(wrapper.vm.stampOf(row)).toBeNull()
+  })
+
+  it('folds a row under the one owner link the server names, and no other', async () => {
+    // The server states one owner per isotope line (line_owner_id, MAS-865),
+    // which the continuity pass pairs the row with too: the ledger follows it
+    // whatever the row's other links say.
+    const ELSEWHERE = peak('bp-m0', 'assigned', 0.9, { mz: 139.5, consensus_formula: 'C9H8' })
+    const line = { ...LINE, isotopologue_of: 'bp-m0', line_owner_id: 'bp-p' }
+    wrapper = await mountPane({ peaks: [line, PARENT, ELSEWHERE] })
+    expect(wrapper.vm.isotopologueCount(PARENT)).toBe(1)
+    expect(wrapper.vm.isotopologueCount(ELSEWHERE)).toBe(0)
+    const alone = { ...LINE, line_owner_id: null }
+    wrapper = await mountPane({ peaks: [alone, PARENT] })
+    expect(wrapper.vm.isotopologueCount(PARENT)).toBe(0)
   })
 
   it('names the isotope of a line stamped under a parent that is itself a line', async () => {
@@ -2871,7 +2893,7 @@ describe('PaneBrowserBatchPeaks engine tier', () => {
     await toggle('batch-engine-tier-view').trigger('click')
     await toggle('batch-engine-disagrees').trigger('click')
 
-    app.data.batchPeak.list = peaks().map(({ engine_tier, ...bp }) => bp)
+    app.data.batchPeak.list = peaks().map(({ engine_tier, ...bp }) => served(bp))
     await wrapper.vm.$nextTick()
 
     expect(chips()).not.toContain('0 not stated')

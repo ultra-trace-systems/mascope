@@ -268,9 +268,11 @@ const instrumentShown = computed({
   }
 })
 
-// The row one up the family: the members' own isotopologue link, else the
-// parent the isotopologue stamping stamped the row as a line of.
-const familyLink = (row) => row.isotopologue_of ?? stampParentId(row)
+// The row one up the family: the one owner link the server states for an
+// isotope line (`line_owner_id`) - the members' own isotopologue link, else
+// the parent a stamp names - which the continuity pass pairs the row with too
+// (MAS-865), so a badge describes the pair the row is drawn in.
+const familyLink = (row) => row.line_owner_id ?? null
 
 /**
  * The row this one folds under, or null when it stands on its own.

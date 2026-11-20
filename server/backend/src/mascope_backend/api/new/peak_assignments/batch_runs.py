@@ -57,6 +57,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     known_species_summary,
     manual_pin_of,
     merged_isotopologue_of_summary,
+    owner_link,
     persistence_summary,
     stamped_isotopologue_of_summary,
     standing_batch_checks_record,
@@ -250,6 +251,8 @@ def snapshot_anchor_meta(row: Any, sample_batch_id: str) -> dict:
         "instrument_type": instrument_type_of(row.intensity_variable),
         "max_intensity": row.max_intensity,
         "isotopologue_of": row.isotopologue_of,
+        # As the live ledger's: the members' link, else the stamp's parent.
+        "line_owner_id": owner_link(row.isotopologue_of, row.stamped_isotopologue_of),
         "curated": bool(row.curated),
         "seeded": bool(row.seeded),
         "engine_tier": row.engine_tier,

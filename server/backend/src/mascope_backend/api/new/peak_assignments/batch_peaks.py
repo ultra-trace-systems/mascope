@@ -991,6 +991,33 @@ def stamped_isotopologue_of_summary(anchor: Any) -> Optional[dict]:
     return {key: value for key, value in record.items() if key != "stamps"}
 
 
+def owner_link(isotopologue_of: Any, stamp: Optional[dict]) -> Optional[str]:
+    """The one owner link of an isotope line from its two sources: the
+    members' own isotopologue link where they vote one, else the parent a
+    standing stamp names (:func:`line_owner_of`)."""
+    if isotopologue_of:
+        return isotopologue_of
+    if isinstance(stamp, dict) and stamp.get("batch_peak_id"):
+        return stamp["batch_peak_id"]
+    return None
+
+
+def line_owner_of(anchor: Any) -> Optional[str]:
+    """The batch peak an isotope line belongs to: one owner link per line,
+    which the ledger folds the row under (``line_owner_id``), the ratio
+    stability pairs it with (``continuity.root_parent_id``) and the continuity
+    popover reads its pair through (MAS-865).
+
+    The members' own isotopologue link where their vote names one - the
+    run's envelope, the strip's rewrite, the search's claim - and else the
+    parent the isotope-line stage's stamp names, while it stands. None for a
+    batch peak no line link reaches.
+    """
+    return owner_link(
+        _member(anchor, "isotopologue_of"), stamped_isotopologue_of_record(anchor)
+    )
+
+
 def member_stamp(anchor: Any, sample_item_id: Any) -> Optional[dict]:
     """The stamp an anchor's member in one sample carries, or None: the parent
     batch peak it is the isotopologue of, the isotope line, and the stamp's
