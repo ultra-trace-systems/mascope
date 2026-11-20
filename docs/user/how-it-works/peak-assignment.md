@@ -1714,6 +1714,69 @@ never assigned, or to refresh after an import. There is no batch-wide assignment
 the untargeted search runs once per batch peak instead (below), and a species is
 curated once at its batch peak rather than sample by sample.
 
+### The batch stages
+
+The steps below that read or rewrite the batch peaks are stages of one list, run in a
+fixed order. Each reads what the stages before it wrote, so the order decides the
+ledger, not the order the buttons were pressed in:
+
+```mermaid
+flowchart LR
+  A[Water ladders] --> B[Known species]
+  B --> C[Untargeted search]
+  C --> D["Isotope lines (strip, then stamp)"]
+  D --> E[Series]
+  E --> F[Co-variation]
+  F --> G[Ratio stability]
+  G --> H[Batch checks]
+  H --> I[Probable blends]
+```
+
+Two rules give the order. A stage runs after every stage whose claims or records it reads:
+the search skips what the source's claims took, the series walks from what the search
+committed, the ratio stability grades a drift by the co-variation, the batch checks read the
+stamps and the co-variation. And every stage that rewrites members runs before every stage
+that only records a reading: a record stands only while its batch peak reads what it was
+made for.
+
+- **Each step's button starts the list at its own stage**, and every stage after it runs
+  too, on what it wrote. *Detect series* runs the series, then the co-variation, the ratio
+  stability, the batch checks and the probable blends. Where a stage before the button's
+  is stale or has never run on the batch, the list starts there instead: no stage runs on
+  what an earlier stage has not settled. So pressing *Read co-variation* right after a
+  sample is folded in runs every stage, and the order the buttons are pressed in leaves no
+  mark on the ledger. The API's `POST /api/batch-peaks/batch/{id}/run-stages` starts it at
+  a stage you name, with the same rule, or at the first stage that is not current.
+- **New members are brought up to the batch's readings.** A sample folded in after a
+  stage ran, or folded again from a new run of its own, reads its own rows. Running the
+  stages again claims the passing water-ladder rungs and the present known species in it,
+  strips its member of a row the strip already took to the parent's line, and measures the
+  reading the untargeted search assigned a batch peak on its member there that reads
+  nothing. A member that reads a reading of its own keeps it.
+- **Stale stages.** The ledger says where each stage stands (`stages` and `stale_stages` on
+  the ledger read): current, running, stale with the reason, or never run. A sample folded
+  in again, a rebuild or an import makes every stage that ran stale, since all of them read
+  the members it rewrote. A stage that runs makes the stages after it stale until they run.
+  A stage that stops partway keeps what it wrote and is stale itself, and so is one that
+  could not read every sample. Running the stages again starts at the first stale one.
+- **Judged as a run judges.** A stage that rewrites a sample's members - a water-ladder rung
+  or a known species claimed, the search's or a series' reading measured, a row stripped
+  to a parent's isotope line - then judges that sample again through the same stages a run
+  of the sample goes through, with every reading the sample's members carry proposed
+  together. Each member the batch wrote takes the tier the run's rules give its reading:
+  another channel of the same compound, the mass gate, the lone-peak rule. A listed
+  compound the batch decided present is proposed at candidate, and the run's rules may
+  lower it. A series that proposes the formula a member already reads is a second
+  observation of it, so the member is judged again too, with no new run. The members a
+  sample's own run wrote keep its tiers.
+- **Records are kept, marked stale.** When a batch peak's reading moves off what a stage's
+  record was made for, the record is kept, marked stale, and served by no reader. The stage
+  that wrote it reads it again when it runs, and a reading that comes back finds it
+  standing again. Every record carries the version of the stage's run that wrote it.
+
+Each stage still records itself as the batch run its step always made (*Batch runs*,
+below), so a pass through every stage adds up to eight runs to the history.
+
 ### Placing a target's batch peak at the target ion's m/z
 
 A batch peak's m/z is frozen when it is made, and the first sample whose peak lands
@@ -1832,7 +1895,7 @@ A batch peak that reads *assigned* because a series proposed its formula is a me
 that series, not a new start, so detecting series again on an unchanged ledger finds the
 same series and changes nothing. A detection that stops partway, for example because the
 server restarted, leaves the series on the batch peaks it had measured, so detecting series
-again finds the same series.
+again finds the same series, and measures the samples the first detection never reached.
 
 A dense batch holds peaks one unit apart by chance alone, so every kind of step is walked
 again at six masses shifted by a few hundredths of a dalton, which land on no chemistry
@@ -1850,12 +1913,14 @@ is in, as the untargeted search measures what it finds, at the tier an assignmen
 the sample gives the same reading, and a sample whose peak the formula's isotope pattern
 does not reach keeps the peak as it was. Where a sample
 already reads the peak another way, the series' formula takes it only where it measures
-at least as well. A batch peak already held at *candidate* on the proposed formula is
-not measured again; the series is recorded beside it. A row a series vouches for shows
-a stair mark beside its formula, whose tooltip names the step and the assigned compound
-the series starts at, and a sample's next assignment run counts the series as a second
+at least as well. On a batch peak that already reads the proposed formula, the series is
+recorded beside it, and only the samples that do not read the formula yet are measured. A
+row a series vouches for shows a stair mark beside its formula, whose tooltip names the
+step and the assigned compound the series starts at. The series counts as a second
 observation of that formula (*in a series*, above), which lifts it past *one peak only*
-and *rivals left standing* and nothing else. On a source with a 15N-labelled reagent a
+and *rivals left standing* and nothing else: right after the detection, every sample
+whose member reads a formula a series vouches for is judged again (*The batch stages*,
+above), and a sample's next assignment run counts it too. On a source with a 15N-labelled reagent a
 formula carrying C8S or C2F3 is not proposed: its labelled alias makes the same ion and
 takes the same steps. *Detect series* runs as a batch run, its summary listing every kind
 of step against its decoys and the batch's false discovery rate; it writes no per-sample
@@ -2238,10 +2303,11 @@ samples of its ionization mode and instrument type:
   where a member matched a formula from a list that tags it *background*. A sample's own
   test held where its run claimed the ion, or read the listed formula at candidate or
   better, on its own. A sample that reads the species on the batch's word is not one: its
-  row was rewritten by an earlier decision, or claimed by a run on the batch's decision.
-  A sample with no row to say which, folded without a run or from an imported run, counts
-  where the decision before this one counted it. So the batch's own claims never keep a
-  species present.
+  row was rewritten by an earlier decision, or claimed by a run on the batch's decision,
+  or its batch peak's member carries the mark a batch stage leaves on what it rewrote.
+  A sample with no row and no mark to say which, folded without a run or from an
+  imported run before the marks, counts where the decision before this one counted it.
+  So the batch's own claims never keep a species present.
 - **Present.** The species' peak is in two samples or more, in half the samples or more,
   and one sample's own test held. The species is the batch's.
 - **Absent.** The peak is in enough samples, and no sample's own test held. The mass alone,
@@ -2283,9 +2349,10 @@ The batch peak carries the decision: a checklist mark beside its formula, in the
 colour where the species is present, and on hover the species, the verdict, the samples
 its peak is in and those whose own test held, how many samples the claim took, and the
 samples it kept with their readings. Where the batch did not decide a species present,
-the samples whose own claim stands are listed instead, and apart from them those still
-claimed on an earlier decision: a sample's reading is recorded, never silently
-overridden. The ledger route and `batch_peaks.list` carry the decision as
+the samples whose own claim stands are listed instead. An earlier decision's claims are
+withdrawn: each member it rewrote, and each in-app row, reads again what it read before
+the claim, and the sample is judged again (*The batch stages*, above). A row a person
+assigned by hand since the claim is left as the person left it. The ledger route and `batch_peaks.list` carry the decision as
 `known_species`, which stays for as long as the batch peak reads what the decision left
 it reading. The co-variation of a species' trace with its core is recorded beside the
 verdict and decides nothing, as *Read co-variation* decides nothing: a library ion is read
@@ -2359,9 +2426,13 @@ is never rewritten, and a batch peak curated by hand is never claimed.
 
 A hydrate the measurement claimed in a sample is the batch's word there, not that
 sample's own finding. *Decide known species*, run after it, does not count such a sample
-as one whose own test held, whether or not the sample has a row of its own on the peak.
-So a hydrate that passed in one stretch is not decided present over the batch and
-claimed in the others. A sample whose own run claimed the hydrate still counts.
+as one whose own test held, whether or not the sample has a row of its own on the peak,
+and whatever became of the rung's own record since: the mark that the batch claimed the
+member lives on the member. So a hydrate that passed in one stretch is not decided
+present over the batch and claimed in the others. A sample whose own run claimed the
+hydrate still counts. A rung a later measurement no longer passes withdraws its claims:
+the members and in-app rows it rewrote read again what they read before, but for a row
+a person assigned by hand since.
 
 A batch peak at a passing rung carries a drop mark beside its formula. It is in the
 primary colour where the batch peak reads the reagent's ion, and muted where its other
@@ -2501,8 +2572,11 @@ pass reads that ratio for every pair of related batch peaks:
 
 - **An isotope line and its main peak.** Every isotopologue the ledger folds under a
   main peak pairs with it; a line folded under another line pairs with the main peak
-  it is drawn under. A line the samples split on folds under nothing and pairs with
-  nothing.
+  it is drawn under. The ledger and this pass read one owner link per line
+  (`line_owner_id` on the ledger rows): the members' own isotopologue link, else the
+  parent a stamp names, so a stamped line pairs with the main peak it is drawn under too,
+  on the formula the stamp predicted it for. A line the samples split on folds under
+  nothing and pairs with nothing.
 - **Two channels of one compound**: the pairs *Read co-variation* reads, one batch peak
   per channel, neither of them ambiguous.
 
@@ -2569,6 +2643,13 @@ co-variation* said of them. An isotope line has a grade of its own, on its pair 
 the main peak, shown on its own row while the view options unfold the isotopologues.
 The column sorts unstable first, and batch peaks without a grade last. No tier, verdict or
 filter reads it.
+
+The pass is a stage after *Read co-variation* (*The batch stages*, above), so it grades a
+drift on the co-variation the same pass read, whichever step was pressed: *Read
+co-variation* runs the ratio stability after itself, and the ratio stability's own route
+starts at the ratio stability, after a co-variation reading already stands. A rebuild of
+the ledger grades the batch at its end too, before any co-variation is read again, and
+leaves the stage stale.
 
 ### Probable blends
 
