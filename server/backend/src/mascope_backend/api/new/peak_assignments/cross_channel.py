@@ -157,6 +157,7 @@ import math
 import re
 
 from mascope_backend.api.new.peak_assignments.engine import (
+    CORROBORATION_RULE,
     PARTNER_GATE_UNMET,
     PARTNER_MARGIN,
     ROLE_ISO_CHILD,
@@ -604,9 +605,13 @@ def channels_by_neutral(
 ) -> dict[str, dict[str, str | None]]:
     """Which channels each committed neutral was seen through, and how well.
 
+    The one second-channel rule in its corroboration configuration
+    (``engine.CORROBORATION_RULE``, which says why it differs from the
+    others): any channel the run searched, at any tier, since corroboration
+    is counted here and the partner's tier is weighed, not barred.
     Monoisotopic rows only. An isotopologue is its parent's ion measured on a
-    second line of the same envelope, not a second channel, so counting it would
-    let one observation corroborate itself.
+    second line of the same envelope, not a second channel, so counting it
+    would let one observation corroborate itself.
 
     Keyed on the neutral's identity (``utils.formula_identity``), the one the
     partner gate reads, rather than on its written formula: a curated row
@@ -631,11 +636,9 @@ def channels_by_neutral(
     """
     seen: dict[str, dict[str, str | None]] = {}
     for row in assignments:
-        if not is_committed(row) or row.get("role") != ROLE_M0:
+        if not CORROBORATION_RULE.is_partner(row, notation_by_id, frozenset()):
             continue
-        notation = notation_by_id.get(str(row.get("ionization_mechanism_id")))
-        if not notation:
-            continue
+        notation = notation_by_id[str(row.get("ionization_mechanism_id"))]
         by_channel = seen.setdefault(formula_identity(row.get("assigned_formula")), {})
         tier = tier_under_ceiling(row)
         tier = tier if tier in TIER_RANK else None

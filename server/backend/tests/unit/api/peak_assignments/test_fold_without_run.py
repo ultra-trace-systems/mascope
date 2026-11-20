@@ -1108,10 +1108,10 @@ async def test_the_folds_mass_gate_reads_the_sources_lines_by_the_calibrant_cap(
 
 
 @pytest.mark.asyncio
-async def test_the_folds_partner_gate_is_told_what_the_lists_name():
+async def test_the_folds_second_channel_cap_is_told_what_the_lists_name():
     """As a run's is: the neutrals the lists Stage A read name reach the
-    partner gate, which records a swapped-in reading's corroboration by them
-    (``service.Judging.judge``)."""
+    second-channel cap, which reads them as a reading's corroboration
+    (``service.Judging.cap``), with the channels the run opened."""
     from mascope_backend.api.new.peak_assignments import service
     from mascope_backend.api.new.peak_assignments.service import (
         fold_sample_peaks_without_run,
@@ -1127,12 +1127,13 @@ async def test_the_folds_partner_gate_is_told_what_the_lists_name():
         listed,
     )
     with stack:
-        gate = stack.enter_context(
-            patch(f"{_SVC}.apply_partner_gates", wraps=service.apply_partner_gates)
+        cap = stack.enter_context(
+            patch(f"{_SVC}.cap_second_channel", wraps=service.cap_second_channel)
         )
         assert await fold_sample_peaks_without_run("si-1") == "batch-1"
 
-    assert gate.call_args.kwargs["listed_formulas"] == listed
+    assert cap.call_args.kwargs["listed_formulas"] == listed
+    assert "opened_channels" in cap.call_args.kwargs
 
 
 @pytest.mark.asyncio

@@ -143,8 +143,8 @@ from mascope_backend.api.new.peak_assignments.engine import (
     TIERING_KEY,
     apply_partner_gates,
     calibration_meta,
+    cap_second_channel,
     drop_ions_claimed_elsewhere,
-    hold_opened_channel_readings,
     invert_matches_to_peak_assignments,
     listed_formula_identities,
     reading_as_alternative,
@@ -2554,42 +2554,6 @@ def _searched_mechanisms(
     ]
 
 
-def _hold_opened_channel_readings(
-    stage_a_assignments: list[dict],
-    *,
-    searched_mechanisms: list[SimpleNamespace],
-    resolved_profile: ResolvedProfile,
-    sample_name: str,
-) -> dict:
-    """Hold a list's readings through the channels the run opened.
-
-    Shared by a run, on the rows the list election left, and the run-less
-    ingest fold, on Stage A's rows, before any pass reads them as partners or
-    rivals (``engine.hold_opened_channel_readings``).
-
-    :param stage_a_assignments: Stage A's rows, modified in place.
-    :param searched_mechanisms: :func:`_searched_mechanisms`.
-    :param resolved_profile: The sample's resolved chemistry.
-    :param sample_name: For the log line.
-    :return: How many rows were read through an opened channel, and how many
-        of them the cap lowered.
-    """
-    held = hold_opened_channel_readings(
-        stage_a_assignments,
-        notation_by_id=_notation_by_id(searched_mechanisms),
-        minor_channels=resolved_profile.minor_channels,
-        opened_channels=resolved_profile.added_channels,
-    )
-    if held["read"]:
-        runtime.logger.info(
-            f"Sample '{sample_name}': {held['read']} reference-list peaks read "
-            f"through {', '.join(sorted(resolved_profile.added_channels))}, the "
-            f"channels the run opened; {held['capped']} held at candidate for "
-            "want of an isotopologue or a second channel"
-        )
-    return held
-
-
 def _log_fragments(claims: FragmentClaims, sample_name: str) -> None:
     """Say what the fragment claim read as the source's, where it read any."""
     if claims.summary["claimed"]:
@@ -3029,6 +2993,7 @@ def judge_commits(
     artifact_peak_ids: frozenset[str] = frozenset(),
     instrument_type: str | None = None,
     listed_formulas: frozenset[str] = frozenset(),
+    opened_channels: frozenset[str] = frozenset(),
     source_line_cap: SourceLineCap | None = None,
     context: ChemistryContext | None = None,
     nox_skeleton: bool = False,
@@ -3057,10 +3022,10 @@ def judge_commits(
        say of each other (``cross_channel.read_cross_channel``), which the
        tiering pass reads. Each of the three reads "the sample shows this
        molecule" (``engine.shows_molecule``) on that one settled ledger.
-    2. **Caps**: the mass gate's (``mass_gate.cap_mass_gate``), the
-       cross-channel pass's (``cross_channel.cap_cross_channel``) and the
-       tiering pass's rules (``tiering.apply_tiering``). Each only lowers a
-       tier, and decides on the readings and records step 1 left: a bar on
+    2. **Caps**: the second-channel cap (``engine.cap_second_channel``), the
+       mass gate's (``mass_gate.cap_mass_gate``), the cross-channel pass's
+       (``cross_channel.cap_cross_channel``) and the tiering pass's rules
+       (``tiering.apply_tiering``). Each only lowers a tier, and decides on the readings and records step 1 left: a bar on
        another row's tier is read under the mass gate's ceiling
        (``engine.tier_under_ceiling``), and that gate is the only cap that
        takes a row under candidate. So their order decides which of them a
@@ -3113,9 +3078,11 @@ def judge_commits(
     :param instrument_type: The sample's instrument class, which on a TOF
         holds a bromine or chlorine reading to its own M+2 line.
     :param listed_formulas: The neutrals the sample's lists name
-        (``engine.listed_formula_identities``), which the partner gate records
-        as a swapped-in reading's corroboration, as the minor-channel policy
-        does.
+        (``engine.listed_formula_identities``), which corroborate a search's
+        reading through a secondary channel (``engine.cap_second_channel``).
+    :param opened_channels: The secondary channels the run opened
+        (``ResolvedProfile.added_channels``), a list's readings through which
+        the second-channel cap judges.
     :param source_line_cap: The calibrant cap the source's lines anchor the
         mass gate under (:func:`_source_line_cap`), or None for none.
     :param context: The run's chemistry context, whose priors the tiering
@@ -3146,6 +3113,7 @@ def judge_commits(
         artifact_peak_ids=artifact_peak_ids,
         instrument_type=instrument_type,
         listed_formulas=listed_formulas,
+        opened_channels=opened_channels,
         source_line_cap=source_line_cap,
         context=context,
         nox_skeleton=nox_skeleton,
@@ -3197,6 +3165,7 @@ class Judging:
     artifact_peak_ids: frozenset[str] = frozenset()
     instrument_type: str | None = None
     listed_formulas: frozenset[str] = frozenset()
+    opened_channels: frozenset[str] = frozenset()
     source_line_cap: SourceLineCap | None = None
     context: ChemistryContext | None = None
     nox_skeleton: bool = False
@@ -3209,6 +3178,7 @@ class Judging:
     mass_calibration: dict = field(default_factory=dict)
     partner_gate: dict = field(default_factory=dict)
     cross_channel: dict = field(default_factory=dict)
+    second_channel: dict = field(default_factory=dict)
     tiering: dict = field(default_factory=dict)
     found: list[EnvelopeClaim] = field(default_factory=list)
     held: dict = field(default_factory=dict)
@@ -3276,7 +3246,6 @@ class Judging:
                 minor_channels=self.minor_channels,
                 partner_gated_channels=self.partner_gated_channels,
                 tier_bands=self.tier_bands,
-                listed_formulas=self.listed_formulas,
             )
             found = claim_fragments(
                 self.judged,
@@ -3325,7 +3294,18 @@ class Judging:
         """The caps, which only lower a tier, in the order that decides which
         of them a row names; then the lines on an assigned neighbour's
         envelope that they left in doubt, which another round reads as that
-        neighbour's (:meth:`another_round`)."""
+        neighbour's (:meth:`another_round`).
+
+        The second-channel cap comes first (``engine.cap_second_channel``): a
+        reading through a secondary channel that nothing corroborates, read
+        on the ledger the reading changes settled, with the lists."""
+        self.second_channel = cap_second_channel(
+            self.judged,
+            notation_by_id=self.notation_by_id,
+            minor_channels=self.minor_channels,
+            opened_channels=self.opened_channels,
+            listed_formulas=self.listed_formulas,
+        )
         cap_mass_gate(self.judged, self.mass_calibration)
         cap_cross_channel(self.judged, self.cross_channel)
         self.tiering = apply_tiering(
@@ -3361,6 +3341,9 @@ class Judging:
         """
         if not self.found or self.rounds >= MAX_CLAIM_ROUNDS:
             self.tiering.update(
+                # The readings through a secondary channel the second-channel
+                # cap judged, and held.
+                second_channel=self.second_channel,
                 claim_rounds=self.rounds,
                 # Rows on an assigned neighbour's line that stayed as they were,
                 # by the reason that held each back.
@@ -5192,7 +5175,7 @@ async def _stage_a_assignments(
         the mode's own and the secondary channels the run opened
         (:func:`_searched_mechanisms`), since a list names a compound and not
         the channel it is seen through. A reading through an opened channel is
-        held as the search's are (:func:`_hold_opened_channel_readings`).
+        held as the search's are (``engine.cap_second_channel``).
     :param peak_assignment_run_id: The id stamped on every row.
     :param excluded_peak_ids: Peaks the reagent pre-pass has already claimed.
         Dropped before arbitration rather than after it: a reagent peak left in
@@ -5248,7 +5231,7 @@ async def _stage_a_assignments(
         tolerance, at the width and offset the first pass measured.
         And the neutrals the lists it read name, matched or not
         (:func:`listed_formula_identities`), which corroborate a search row
-        through a secondary channel (``engine.apply_minor_channel_policy``).
+        through a secondary channel (``engine.cap_second_channel``).
     """
     first = await _stage_a_first_pass(
         sample,

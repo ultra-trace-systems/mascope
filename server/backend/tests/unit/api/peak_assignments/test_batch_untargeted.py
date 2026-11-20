@@ -727,7 +727,7 @@ async def test_the_search_s_partner_gate_turns_tropylium_as_a_run_s_does():
     # The judging a run's rows get, the partner gate first: the tropylium ion
     # reads as toluene less a hydride here as in a run of the sample, not as
     # the protonated C7H6 the election prefers; and the lists it names reach
-    # the gate, as they reach a run's.
+    # the second-channel cap after the gate, as they reach a run's.
     peaks = _peaks(
         [
             ("p1", 91.0542, 1.0e6),
@@ -758,8 +758,8 @@ async def test_the_search_s_partner_gate_turns_tropylium_as_a_run_s_does():
     stack, mocks = _searching(
         _sample(polarity="+"), peaks, mode, finder=finder, secondary=secondary
     )
-    gate = stack.enter_context(
-        patch(f"{_SVC}.apply_partner_gates", wraps=batch_untargeted_partner_gates())
+    cap = stack.enter_context(
+        patch(f"{_SVC}.cap_second_channel", wraps=batch_untargeted_second_channel())
     )
     with stack:
         rows, _, _ = await batch_untargeted._search_sample(
@@ -770,13 +770,13 @@ async def test_the_search_s_partner_gate_turns_tropylium_as_a_run_s_does():
     assert tropylium["assigned_formula"] == "C7H8"
     assert tropylium["ionization_mechanism_id"] == "im-hydride"
     assert tropylium["provenance"]["partner_gate"]["through"] == "[M-H]+"
-    assert "listed_formulas" in gate.call_args.kwargs
+    assert "listed_formulas" in cap.call_args.kwargs
 
 
-def batch_untargeted_partner_gates():
+def batch_untargeted_second_channel():
     from mascope_backend.api.new.peak_assignments import service
 
-    return service.apply_partner_gates
+    return service.cap_second_channel
 
 
 @pytest.mark.asyncio
