@@ -13,6 +13,7 @@ current run's ``ledger_utc_modified``: the stamp a client's copy of the ledger
 is compared by, since none of these writes makes a run.
 """
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -74,6 +75,12 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     start_run,
 )
 from mascope_backend.api.new.peak_assignments.batch_series import _write_records
+from mascope_backend.api.new.peak_assignments.batch_stages import (
+    BatchStage,
+    begin_stage,
+    finish_stage,
+    stage_standing,
+)
 from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     Annotation,
     Reading,
@@ -1450,3 +1457,84 @@ async def test_a_pin_is_asked_the_spectrums_rules_as_a_hand_assignment_is(
     ]
     members = await _members(async_session_factory, anchor["batch_peak_id"])
     assert tier_name(members[anchor["s1"]].tier) == "candidate"
+
+
+# --- the batch stages --------------------------------------------------------------
+
+
+async def _stages_ran(batch_id, *stages):
+    """Record stages as run and current, as a pass leaves them."""
+    for stage in stages:
+        _, started = await begin_stage(batch_id, stage)
+        await finish_stage(batch_id, stage, started, run_id=None)
+
+
+async def _stale_reasons(batch_id):
+    standing = await stage_standing(batch_id)
+    return {
+        entry["stage"]: entry["stale_reason"]
+        for entry in standing["stages"]
+        if entry["state"] == "stale"
+    }
+
+
+async def test_a_pin_and_its_release_leave_every_stage_that_ran_stale(
+    editor_client, anchor, stubbed_scorer, assignment_enabled
+):
+    """A pin re-points members in every sample and moves its batch peak's
+    reading, and its release puts both back: every stage reads them, so each
+    leaves every stage that ran stale."""
+    batch_id = anchor["batch_id"]
+    await _stages_ran(batch_id, BatchStage.SEARCH, BatchStage.CO_VARIATION)
+    await run_batch_peak_curation(
+        batch_id,
+        anchor["batch_peak_id"],
+        anchor["other"],
+        "C6H12O6",
+        PeakAssignmentConfig(),
+    )
+    assert await _stale_reasons(batch_id) == {
+        "search": "curation",
+        "co_variation": "curation",
+    }
+
+    await _stages_ran(batch_id, BatchStage.SEARCH, BatchStage.CO_VARIATION)
+    response = await editor_client.post(
+        f"/api/batch-peaks/batch/{batch_id}/release-curation",
+        json={"batch_peak_id": anchor["batch_peak_id"]},
+    )
+    assert response.status_code == 200, response.text
+    assert await _stale_reasons(batch_id) == {
+        "search": "curation",
+        "co_variation": "curation",
+    }
+
+
+@pytest.mark.parametrize("recompute_fails", [False, True])
+async def test_an_interrupted_pin_still_leaves_every_stage_stale(
+    anchor, stubbed_scorer, monkeypatch, recompute_fails
+):
+    """The members re-pointed before the interruption are committed: the
+    stages are stale though the walk did not finish, and whether or not the
+    consensus pass on the way out did."""
+    batch_id = anchor["batch_id"]
+    await _stages_ran(batch_id, BatchStage.SERIES)
+
+    async def cancelled(*args, **kwargs):
+        raise asyncio.CancelledError()
+
+    async def fails(*args, **kwargs):
+        raise RuntimeError("the database went away")
+
+    monkeypatch.setattr(batch_curation, "_propagate_to_sample", cancelled)
+    if recompute_fails:
+        monkeypatch.setattr(batch_curation, "recompute_batch_consensus", fails)
+    with pytest.raises(asyncio.CancelledError):
+        await run_batch_peak_curation(
+            batch_id,
+            anchor["batch_peak_id"],
+            anchor["other"],
+            "C6H12O6",
+            PeakAssignmentConfig(),
+        )
+    assert await _stale_reasons(batch_id) == {"series": "curation"}

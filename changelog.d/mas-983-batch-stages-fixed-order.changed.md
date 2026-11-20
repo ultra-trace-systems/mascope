@@ -8,8 +8,9 @@
   `POST /api/batch-peaks/batch/{id}/run-stages` starts them at a named
   stage, or at the first stage that is not current, and the batch ledger
   read says where every stage stands (`stages`, `stale_stages`): a sample
-  folded in again, a rebuild or an import makes every stage that ran stale,
-  and a stage that stops partway is stale itself. While the stages run, every
+  folded in again, a rebuild, an engine's batch result imported, or a pin
+  on a batch peak and its release makes every stage that ran stale, and a
+  stage that stops partway is stale itself. While the stages run, every
   step's button, a rebuild and an import are refused, naming the stage.
   Running the stages again brings a sample folded in since up to the
   batch's readings: its rungs and

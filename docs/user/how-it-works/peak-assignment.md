@@ -1760,8 +1760,12 @@ made for.
   nothing. A member that reads a reading of its own keeps it.
 - **Stale stages.** The ledger says where each stage stands (`stages` and `stale_stages` on
   the ledger read): current, running, stale with the reason, or never run. A sample folded
-  in again, a rebuild or an import makes every stage that ran stale, since all of them read
-  the members it rewrote. A stage that runs makes the stages after it stale until they run.
+  in again, a rebuild, an engine's batch result imported (*Importing an engine's batch
+  result*, below), and a pin on a batch peak or its release make every stage that ran
+  stale, since all of them read the members these rewrite. A pin re-points the batch peak's
+  members in every sample and changes the reading the search, the series and the claims
+  start from. An import, or a pin, that stops partway still does: the samples it reached
+  keep what it wrote. A stage that runs makes the stages after it stale until they run.
   A stage that stops partway keeps what it wrote and is stale itself, and so is one that
   could not read every sample. Running the stages again starts at the first stale one.
 - **Judged as a run judges.** A stage that rewrites a sample's members - a water-ladder rung

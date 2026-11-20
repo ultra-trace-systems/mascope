@@ -87,6 +87,11 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     recompute_batch_consensus,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import touch_ledger
+from mascope_backend.api.new.peak_assignments.batch_stages import (
+    REASON_CURATION,
+    mark_batch_stale,
+    mark_every_stage_stale,
+)
 from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     Annotation,
     _propagate_to_sample,
@@ -805,6 +810,14 @@ async def run_batch_peak_curation(
                 "members it re-pointed may have no undo record; rebuilding the "
                 "ledger recomputes the anchor."
             )
+        finally:
+            # The pin re-pointed members in every sample above, committed
+            # whether or not the walk finished, and moved its batch peak's
+            # reading: every batch stage reads one or the other (the search
+            # and the series what is assigned, the claims and the readings
+            # the members' rows), so every stage is stale until it runs on
+            # them. Never raises.
+            await mark_batch_stale(sample_batch_id, REASON_CURATION)
     return counts
 
 
@@ -891,6 +904,9 @@ async def release_batch_peak_curation(sample_batch_id: str, batch_peak_id: str) 
         anchor.provenance = provenance
         anchor.batch_peak_utc_modified = dt.now(timezone.utc)
         formula = pin.get("formula")
+        # As the pin's own mark: the members put back, and the batch peak's
+        # reading the vote now decides, are read by every stage.
+        await mark_every_stage_stale(session, sample_batch_id, REASON_CURATION)
         await touch_ledger(session, sample_batch_id)
         await session.commit()
     await recompute_batch_consensus(sample_batch_id, {batch_peak_id})

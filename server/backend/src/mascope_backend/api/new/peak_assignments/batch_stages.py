@@ -38,9 +38,10 @@ and no stage runs on what an earlier one has not settled.
 is current while nothing it reads has moved since its last run finished, and
 stale once something has:
 
-- a fold (a sample's new run, an ingest, a rebuild, an import) rewrites
-  members every stage reads, so it marks every stage stale (:func:`mark_stale`
-  from the first);
+- a fold (a sample's new run, an ingest), a rebuild, an engine's batch
+  result imported, and a person's pin on a batch peak or its release rewrite
+  members every stage reads, so each marks every stage stale
+  (:func:`mark_stale` from the first);
 - a stage that runs rewrites or records what the stages after it read, so its
   end marks every later stage stale until each runs again;
 - a stage that stops partway, raised, cancelled or with samples it could not
@@ -130,6 +131,10 @@ STATE_NOT_RUN = "not_run"
 #: Why a stage is stale.
 REASON_FOLD = "fold"
 REASON_REBUILD = "rebuild"
+#: An engine's batch result imported (``batch_import.py``).
+REASON_IMPORT = "import"
+#: A person's pin on a batch peak, or its release (``batch_curation.py``).
+REASON_CURATION = "curation"
 REASON_INTERRUPTED = "interrupted"
 REASON_PARTIAL = "partial"
 REASON_CONSENSUS = "consensus"
@@ -601,7 +606,7 @@ async def mark_every_stage_stale(session, sample_batch_id: str, reason: str) -> 
 async def mark_batch_stale(sample_batch_id: str, reason: str) -> None:
     """Mark every stage of a batch stale, in a transaction of its own under
     the fold lock: the mark of a writer whose rewrites commit sample by
-    sample, a rebuild. Shielded, and logged rather than
+    sample, a rebuild, an import, a pin. Shielded, and logged rather than
     raised where it fails: it is written while an interruption unwinds too,
     and must not replace what interrupted it."""
 
