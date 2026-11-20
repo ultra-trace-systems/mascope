@@ -55,7 +55,7 @@ class FakeGh:
 
     def marked(self, number):
         return [
-            {"id": c["id"], "url": c["url"]}
+            {"id": c["id"], "url": c["url"], "body": c["body"]}
             for c in self.comments
             if c["body"].startswith(post.MARKER)
         ]
@@ -310,6 +310,9 @@ def test_the_comment_s_own_words_refuse_nothing(rig, gh):
     assert _post(rig, gh) == 0
     body = gh.comments[0]["body"]
     assert "### Bench card: PASS" in body and "the nightly run" in body
+    # run.json keeps why there is no diff, in the same words, for `bench.py post`.
+    summary = json.loads((rig.card_dir() / "run.json").read_text())
+    assert summary["no_diff"].startswith("No diff: develop's baseline")
 
 
 # ------------------------------------------------------- failures
@@ -431,6 +434,347 @@ def test_a_comparison_that_wrote_no_card_posts_its_output_s_tail(rig, gh):
     assert "**The comparison wrote no card (exit 1).**" in body
     assert "ValueError: no frame" in body
     assert "$ compare_runs.py" not in body
+
+
+# ------------------------------------------- a failure under an existing card
+
+
+def _card_then(rig, gh):
+    """A PR whose bench comment holds a card, and that comment's text."""
+    _develop_baseline(rig)
+    assert _post(rig, gh) == 0
+    (comment,) = gh.bench_comments()
+    return comment["body"]
+
+
+def _added(before, after):
+    """The one line a post added under a comment, which kept what it held."""
+    assert after.startswith(before.rstrip("\n") + "\n\n")
+    added = after[len(before.rstrip("\n")) + 2 :]
+    assert added.endswith("\n") and "\n" not in added[:-1], added
+    return added[:-1]
+
+
+def test_a_failed_run_on_a_pr_with_a_card_keeps_it_and_adds_one_line(rig, gh, capsys):
+    card = _card_then(rig, gh)
+    rig.instance.db = ["r9"]
+
+    with pytest.raises(brun.RunError, match="alembic revision r9"):
+        _post(rig, gh)
+
+    (comment,) = gh.bench_comments()
+    line = _added(card, comment["body"])
+    assert line.startswith(f"**Bench run failed on `{BRANCH[:9]}`** (")
+    assert (
+        "The run stopped: RunError. `the bench database is at alembic revision r9"
+        in line
+    )
+    assert "### Bench card: PASS" in comment["body"]
+    assert [c[0] for c in gh.calls].count("create") == 1
+    assert (
+        "added the failure under the bench comment on PR #7" in capsys.readouterr().out
+    )
+
+
+def test_a_second_failure_adds_a_second_line(rig, gh):
+    card = _card_then(rig, gh)
+    rig.instance.db = ["r9"]
+    for _ in range(2):
+        with pytest.raises(brun.RunError):
+            _post(rig, gh)
+    body = gh.bench_comments()[0]["body"]
+    assert body.startswith(card.rstrip("\n"))
+    assert body.count("**Bench run failed on") == 2
+
+
+def test_a_stopped_run_adds_its_stop_under_the_card(rig, gh):
+    card = _card_then(rig, gh)
+
+    def stopped(**kwargs):
+        raise base.stopping.Stopped(15, "SIGTERM")
+
+    rig.compare = stopped
+    with pytest.raises(base.stopping.Stopped):
+        _post(rig, gh)
+    line = _added(card, gh.bench_comments()[0]["body"])
+    assert line.endswith("The run was stopped: SIGTERM.")
+    assert rig.state()["cards"][-1]["verdict"] == "stopped"
+
+
+def test_a_stopped_run_with_no_comment_yet_posts_the_whole_failure(rig, gh):
+    def stopped(**kwargs):
+        raise base.stopping.Stopped(1, base.stopping.PARENT_GONE)
+
+    rig.compare = stopped
+    with pytest.raises(base.stopping.Stopped):
+        _post(rig, gh)
+    body = gh.bench_comments()[0]["body"]
+    assert "### Bench run failed" in body
+    assert "**The run was stopped: the process that started it went away.**" in body
+
+
+def test_a_comparison_that_wrote_no_card_under_a_card_adds_its_last_line(rig, gh):
+    card = _card_then(rig, gh)
+
+    def failing(**kwargs):
+        with open(kwargs["log"], "a") as fh:
+            fh.write("$ compare_runs.py --sets x\n")
+            fh.write("Traceback (most recent call last):\nValueError: no frame\n")
+        return 1
+
+    rig.compare = failing
+    assert _post(rig, gh) == 2
+    line = _added(card, gh.bench_comments()[0]["body"])
+    assert line.endswith(
+        "The comparison wrote no card (exit 1). `ValueError: no frame`"
+    )
+
+
+def test_a_refused_card_under_a_card_adds_its_refusal(rig, gh):
+    card = _card_then(rig, gh)
+    rig.compare.plant = ("card_Db.json", " Instrument9")
+    assert _post(rig, gh) == 2
+    line = _added(card, gh.bench_comments()[0]["body"])
+    assert "The card was refused by the scrub: card_Db.json holds a name" in line
+    assert "Instrument9" not in line
+
+
+def test_a_run_that_reads_nothing_under_a_card_adds_its_line(rig, gh):
+    card = _card_then(rig, gh)
+    for sample in ("S1", "S2", "S3"):
+        rig.server.refuse[(sample, None)] = ("sample_ineligible", "no peaks")
+    assert _post(rig, gh) == 2
+    line = _added(card, gh.bench_comments()[0]["body"])
+    assert line.endswith("No set could be read.")
+
+
+def test_a_failure_s_line_the_scrub_refuses_says_only_the_kind(rig, gh, monkeypatch):
+    card = _card_then(rig, gh)
+    line_of = post.failure_line
+    calls = []
+
+    def leaky(summary, what, text=None):
+        calls.append(what)
+        if len(calls) == 1:
+            return line_of(summary, "it broke on Instrument9", text)
+        return line_of(summary, what, text)
+
+    monkeypatch.setattr(post, "failure_line", leaky)
+    rig.instance.db = ["r9"]
+    with pytest.raises(brun.RunError):
+        _post(rig, gh)
+    line = _added(card, gh.bench_comments()[0]["body"])
+    assert "Instrument9" not in line
+    assert line.endswith(
+        "The error holds a name the bench instance holds (a workspace, dataset, "
+        "batch, instrument, ionization mode, collection or set label)."
+    )
+
+
+def test_a_failure_whose_deny_list_cannot_be_built_adds_a_line_without_text(rig, gh):
+    card = _card_then(rig, gh)
+
+    def no_database():
+        raise RuntimeError("the database at db.example is down")
+
+    rig.instance.private_names = no_database
+    with pytest.raises(RuntimeError):
+        _post(rig, gh)
+    line = _added(card, gh.bench_comments()[0]["body"])
+    assert line.endswith("The run stopped: RuntimeError.")
+    assert "db.example" not in line
+
+
+def test_a_refused_card_that_cannot_be_posted_gives_no_post_hint(rig, gh):
+    def refused(number, body):
+        raise post.PostError("gh api failed: 401")
+
+    gh.create = refused
+    rig.compare.plant = ("card_Db.json", " Instrument9")
+    with pytest.raises(post.PostError) as failed:
+        _post(rig, gh)
+    assert "bench.py post" not in str(failed.value)
+
+
+def test_a_failure_s_line_goes_under_the_first_comment_it_may_edit(rig, gh):
+    card = _card_then(rig, gh)
+    gh.comments.insert(
+        0, {"id": 9, "url": "u9", "body": post.MARKER + "\nanother identity's"}
+    )
+    gh.uneditable.add(9)
+    rig.instance.db = ["r9"]
+    with pytest.raises(brun.RunError):
+        _post(rig, gh)
+    assert gh.comments[0]["body"] == post.MARKER + "\nanother identity's"
+    _added(card, gh.comments[1]["body"])
+
+
+def test_a_failure_with_no_comment_it_may_edit_posts_the_whole_failure(rig, gh):
+    _card_then(rig, gh)
+    gh.uneditable.add(gh.comments[0]["id"])
+    rig.instance.db = ["r9"]
+    with pytest.raises(brun.RunError):
+        _post(rig, gh)
+    assert len(gh.bench_comments()) == 2
+    assert "### Bench run failed" in gh.bench_comments()[1]["body"]
+
+
+def test_a_failure_line_names_the_commit_and_the_error_s_last_line():
+    line = post.failure_line(
+        {"sha": BRANCH}, "The run stopped: X.", "first\nlast `one`\n\n"
+    )
+    assert line.startswith(f"**Bench run failed on `{BRANCH[:9]}`** (")
+    assert line.endswith("The run stopped: X. `last 'one'`")
+    assert post.failure_line({"sha": None}, "w").startswith(
+        "**Bench run failed on `?`**"
+    )
+    long = post.failure_line({"sha": BRANCH}, "w", "x" * 1000)
+    assert long.endswith("`" + "x" * post.LINE_CHARS + "`")
+
+
+# ------------------------------------------------------- posting a made card
+
+
+def test_post_posts_the_card_of_the_ref_s_head_without_running(rig, gh, capsys):
+    _develop_baseline(rig)
+    assert rig.run("topic", baseline=True) == 0
+    rig.instance.calls.clear()
+    compared = len(rig.compare.calls)
+
+    assert rig.runner().post("topic", post.Poster(gh=gh, number=7)) == 0
+
+    (comment,) = gh.bench_comments()
+    body = comment["body"]
+    assert body.startswith(post.MARKER + "\n### Bench card: PASS\n")
+    assert f"`topic` at `{BRANCH[:9]}`, the PR's head" in body
+    assert f"**Since develop's baseline** (`origin/develop` at `{DEVELOP[:9]}`" in body
+    assert "<summary>Card Db</summary>" in body
+    # Nothing ran: no build, no backend, no comparison.
+    assert rig.instance.calls == [] and len(rig.compare.calls) == compared
+    assert "posted the bench comment on PR #7" in capsys.readouterr().out
+    assert "posting the card of topic" in (rig.card_dir() / "run.log").read_text()
+
+
+def test_post_keeps_why_the_card_has_no_diff(rig, gh):
+    lost = FakeGh()
+
+    def refused(number, body):
+        raise post.PostError("gh api failed: 401")
+
+    # The run's own post failed, as it does once its starter's identity is gone.
+    lost.create = refused
+    with pytest.raises(post.PostError):
+        _post(rig, lost)
+    assert rig.runner().post("topic", post.Poster(gh=gh, number=7)) == 0
+    assert "**No diff: there is no baseline of develop yet.**" in gh.comments[0]["body"]
+
+
+def test_post_refuses_a_card_of_another_commit(rig, gh):
+    assert rig.run("topic") == 0
+    rig.instance.shas["topic"] = "c" * 40
+    with pytest.raises(
+        brun.RunError,
+        match=f"the newest card of topic is of {BRANCH[:9]}, not of its head ccccccccc",
+    ):
+        rig.runner().post("topic", post.Poster(gh=gh, number=7))
+    assert gh.comments == []
+
+
+def test_post_takes_the_newest_written_card_past_a_later_stopped_run(rig, gh):
+    assert rig.run("topic") == 0
+    rig.compare.verdict = "fail"
+    assert rig.run("topic") == 1
+
+    def stopped(**kwargs):
+        raise base.stopping.Stopped(15, "SIGTERM")
+
+    rig.compare = stopped
+    with pytest.raises(base.stopping.Stopped):
+        rig.run("topic")
+    assert [c["verdict"] for c in rig.state()["cards"]] == ["pass", "fail", "stopped"]
+
+    assert rig.runner().post("topic", post.Poster(gh=gh, number=7)) == 0
+    assert "### Bench card: FAIL" in gh.comments[0]["body"]
+
+
+def test_post_refuses_a_ref_with_no_written_card(rig, gh):
+    with pytest.raises(brun.RunError, match="no written card of topic"):
+        rig.runner().post("topic", post.Poster(gh=gh, number=7))
+    # A card of another ref is not this one's.
+    assert rig.run("origin/develop") == 0
+    with pytest.raises(brun.RunError, match="no written card of topic"):
+        rig.runner().post("topic", post.Poster(gh=gh, number=7))
+
+
+def test_post_refuses_a_card_that_was_not_written_whole(rig, gh):
+    assert rig.run("topic") == 0
+    # A run stopped once its card's files were in place, before its record.
+    state = rig.state()
+    state["cards"][-1]["verdict"] = "stopped"
+    bench.save_state(rig.home, state)
+    with pytest.raises(brun.RunError, match="no written card of topic"):
+        rig.runner().post("topic", post.Poster(gh=gh, number=7))
+
+
+@pytest.mark.parametrize("gone", ["card.json", "run.json"])
+def test_post_refuses_a_card_whose_files_are_gone(rig, gh, gone):
+    assert rig.run("topic") == 0
+    (rig.card_dir() / gone).unlink()
+    with pytest.raises(brun.RunError, match="no written card of topic"):
+        rig.runner().post("topic", post.Poster(gh=gh, number=7))
+
+
+def test_post_scrubs_the_comment_again(rig, gh):
+    assert rig.run("topic") == 0
+    # A name the instance came to hold since the card was made.
+    rig.instance.names["names"].append("Acquisitions Instrument7")
+    card = rig.card_dir() / "card_Db.md"
+    card.write_text(card.read_text() + "\nInstrument7\n")
+    assert rig.runner().post("topic", post.Poster(gh=gh, number=7)) == 0
+    body = gh.comments[0]["body"]
+    assert "### Bench card refused" in body and "Instrument7" not in body
+
+
+def test_a_card_that_could_not_be_posted_says_how_to_post_it_later(rig, gh):
+    def refused(number, body):
+        raise post.PostError("gh api failed: 401")
+
+    gh.create = refused
+    with pytest.raises(
+        post.PostError,
+        match="gh api failed: 401; the card is written: `bench.py post topic --pr 7` posts it",
+    ):
+        _post(rig, gh)
+    assert rig.state()["cards"][-1]["verdict"] == "pass"
+
+
+def test_the_command_line_posts_a_made_card(tmp_path, monkeypatch):
+    calls = []
+    gh = FakeGh()
+
+    class Runner:
+        def __init__(self, **kwargs):
+            pass
+
+        def post(self, ref, poster):
+            calls.append((ref, poster.number, poster.pr.head_sha))
+            return 0
+
+    monkeypatch.setattr(brun, "BenchRun", Runner)
+    monkeypatch.setattr(post, "GhCli", lambda: gh)
+    home = bench.Home(tmp_path / "home")
+    # It takes no lock: a run may hold it meanwhile.
+    with home.lock():
+        argv = ["--home", str(home.root), "post", "topic", "--pr", "7"]
+        assert bench.main(argv) == 0
+    assert calls == [("topic", 7, BRANCH)]
+
+
+def test_the_command_line_post_refuses_a_fork(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(post, "GhCli", lambda: FakeGh(cross=True))
+    argv = ["--home", str(tmp_path / "home"), "post", "topic", "--pr", "7"]
+    assert bench.main(argv) == 2
+    assert "comes from a fork" in capsys.readouterr().err
 
 
 def test_a_card_that_cannot_be_posted_is_a_refusal_on_the_command_line(
@@ -748,6 +1092,8 @@ def test_gh_lists_the_marked_comments_and_posts_and_edits_with_a_json_body(fake_
     argv = calls()[0]["argv"]
     assert argv[2] == "repos/{owner}/{repo}/issues/7/comments"
     assert json.dumps(post.MARKER) in argv[-1]
+    # The body comes too: a failure's line goes under it, keeping it.
+    assert "body: .body" in argv[-1]
 
     answer(**{"api -X": [0, "https://c/1\n"]})
     body = post.MARKER + '\n"quotes" and `ticks`\n'
@@ -776,6 +1122,15 @@ def test_a_gh_that_fails_is_a_post_error(fake_gh, tmp_path):
         gh.edit(5, "x")
     with pytest.raises(post.PostError, match="could not be run"):
         post.GhCli(cwd=tmp_path, gh=str(tmp_path / "no-gh")).pull(7)
+
+
+def test_a_gh_that_does_not_answer_is_a_post_error(tmp_path, monkeypatch):
+    slow = tmp_path / "slow-gh"
+    slow.write_text("#!/bin/sh\nsleep 30\n")
+    slow.chmod(0o755)
+    monkeypatch.setattr(post, "GH_TIMEOUT_S", 0.2)
+    with pytest.raises(post.PostError, match="did not answer within 0.2 s"):
+        post.GhCli(cwd=tmp_path, gh=str(slow)).pull(7)
 
 
 def test_the_dev_instance_reads_the_merge_base_and_the_history(tmp_path, monkeypatch):

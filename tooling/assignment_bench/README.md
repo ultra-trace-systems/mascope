@@ -22,6 +22,7 @@ uv run python tooling/assignment_bench/bench.py reference --pin v0.9.0
 uv run python tooling/assignment_bench/bench.py run origin/develop --baseline
 uv run python tooling/assignment_bench/bench.py run <your branch> --baseline
 uv run python tooling/assignment_bench/bench.py run <your branch> --post <pr>
+uv run python tooling/assignment_bench/bench.py post <your branch> --pr <pr>
 uv run python tooling/assignment_bench/bench.py review
 uv run python tooling/assignment_bench/bench.py review --record <sheet> --recalibrate
 uv run python tooling/assignment_bench/bench.py status
@@ -74,7 +75,9 @@ uv run python tooling/assignment_bench/bench.py status
 - **`run <ref>`** runs a ref's in-app engine on the sets and writes the
   card; **`baseline`** shows develop's rolling baseline card. Their section
   below has the detail. **`run <ref> --post <pr>`** also posts the card on
-  a pull request; "Asking for a card on a PR" below.
+  a pull request; "Asking for a card on a PR" below. **`post <ref> --pr
+  <pr>`** posts a card a run already made, running nothing; the same
+  section.
 - **`review`** writes the engines' top tier disagreements to a sheet for
   a person to fill with verdicts; **`review --record`** posts them. Its
   section below has the detail.
@@ -86,8 +89,9 @@ uv run python tooling/assignment_bench/bench.py status
   ref, commit and verdict. It needs no runtime home.
 - `--checkout DIR` names a `corpus checkout` for a manifest that names
   corpus objects. `--keep-running` leaves the backend up. `--wait` queues
-  behind another bench command. `--home` and `--env` put the bench
-  elsewhere, for a second bench on one box.
+  behind the bench commands that hold the lock or wait for it ("One run at
+  a time", below). `--home` and `--env` put the bench elsewhere, for a
+  second bench on one box.
 
 `init` takes the runtime home it finds (`MASCOPE_PATH`) and that home's
 slot registry, so the same command builds a bench on any dev stack. The
@@ -221,13 +225,16 @@ box in the caller's own session, one run at a time. In order:
    written.
 10. **The cleanup.** It stops the ref's backend, puts the database back
     from the restore point if step 2 took one, and removes the ref's
-    worktree, also when a step fails. The instance stays: its env, slot,
-    database and filestore.
+    worktree, also when a step fails and when the run is stopped ("A run
+    that is stopped", below). The instance stays: its env, slot, database
+    and filestore.
 
 It exits 0 when the card passes its gate with no sample left out, 1 when
 the gate fails or something was left out or a decoy run failed, and 2 when
 no card was written: refused by the scrub, nothing could be read, or a step
-could not go on.
+could not go on. A run that was stopped exits 128 and the signal: 143 for
+SIGTERM, 129 for SIGHUP, which is also what a run whose starter went away
+exits, 130 for Ctrl-C.
 
 **Develop's rolling baseline.** `bench run origin/develop --baseline`
 diffs the card against develop's last baseline card, then becomes the
@@ -244,8 +251,51 @@ head: a gate verdict, every set the bench holds now on the card, and
 nothing left out. The baseline records the sets the card read.
 
 **One run at a time.** A run waits for the bench's lock while another bench
-command holds it, and says so; `--no-wait` refuses instead. `init` and
-`reference` take the same lock.
+command holds it; `--no-wait` refuses instead. `init`, `reference`,
+`review --record` and `baseline <card>` take the same lock, and refuse
+unless given `--wait`. The commands that wait take the lock in the order
+they asked for it: each takes a numbered ticket in `queue/` of the bench's
+home, and only the lowest ticket asks for the lock, so a command that came
+later never takes it ahead of one that waits. A command coming to a lock
+that is free but has a queue joins the queue too. A waiter says where it
+stands, and again each time that changes:
+
+```
+waiting for the bench's lock, number 2 in the queue; ahead: run topic-a, pid 4711, since 2026-11-20T11:31:02+02:00 (holds it); run topic-b, pid 4790, waiting since 2026-11-20T11:40:17+02:00
+```
+
+A ticket whose command is gone (killed, or its pid given to another
+process since) is dropped by the next waiter that looks. The lock file,
+`bench.lock`, names the command that holds it while it is held.
+
+**A run that is stopped.** SIGTERM, SIGHUP and Ctrl-C end a run through its
+cleanup, not at once: it stops the ref's backend, puts the database back
+from the restore point, removes the worktree and frees the lock, as at a
+normal end. A run whose starter goes away, a closed tmux window or a
+session the budget watchdog ended, notices within five seconds that its
+parent process changed, and ends the same way. A signal that comes during
+the cleanup waits for it to finish, so a second one cannot leave the
+database half restored. The run then writes `run.json` with the verdict
+`stopped`, the reason and how far its sets got, records it in the state's
+card list, and, with `--post`, adds its failure under the PR's bench
+comment ("Asking for a card on a PR"). A console that closed with the
+starter does not fail the cleanup: what can no longer be printed is
+dropped, and `run.log` keeps every line. A signal that comes once the card
+is written lets the run record it first; `bench.py post` then posts it.
+The samples a stopped run had already run are not read again by the next
+run: every run of a ref off develop puts the database back from its
+restore point, which drops them (#3358).
+
+**A backend left on the port.** A run killed outright (SIGKILL, or an
+older bench that ended at once on SIGTERM) leaves its backend running and
+the bench's port held. The next command that starts a backend, and every
+run at its very start, before it checks a build out or touches the
+database, looks at who listens on the port. A listener in the process group
+of the backend pid the bench recorded (`backend.pid`), running in the
+bench's worktree, is that earlier backend: it is stopped with SIGTERM,
+waited for up to a minute, then killed, and the run goes on. Any other
+listener is refused with exit 2, naming its pid: it is another instance's
+on the bench's slot, which the bench does not stop.
 
 **What it costs.** On the agent box, with eight workers and eight samples
 at once, the engine took 8 minutes on Db and 9 on Du, the card 4 minutes
@@ -306,11 +356,11 @@ PR's CI is green:
 uv run python tooling/assignment_bench/bench.py run <branch> --post <pr>
 ```
 
-There is no queue and no trigger to set: the command runs in the caller's
-own session, and posts as the caller's own `gh` identity (on the agent box,
-the builder App for an implementer and the reviewer App for a reviewer). One
-run at a time: a second caller waits on the bench's lock and says so
-(`--no-wait` refuses instead). A run takes about 20 minutes over the demo
+There is no trigger to set: the command runs in the caller's own session,
+and posts as the caller's own `gh` identity (on the agent box, the builder
+App for an implementer and the reviewer App for a reviewer). One run at a
+time: a second caller waits its turn in the bench's queue and says where it
+stands (`--no-wait` refuses instead; "One run at a time" above). A run takes about 20 minutes over the demo
 sets, more with private sets beside them; `--sets` shortens it to the sets
 named, `--decoys` adds the arms.
 
@@ -337,6 +387,19 @@ What the comment holds:
 | its card was refused by the scrub | the file that held a denied name and the kind of name (an id, a raw file's name, a host, a name the instance holds), never the name |
 | stopped on an error, or made no card | what stopped it and the tail of the error, or of the comparison's output |
 
+**A failure does not erase a card.** A run that ends with no card (it
+stopped on an error or a signal, its comparison wrote none, nothing could
+be read, or the scrub refused its card) leaves the PR's bench comment as it
+is and adds one line under it: the commit it ran, when, what stopped it,
+and the error's last line, scrubbed. Only a PR with no bench comment yet,
+or none the caller may edit, gets the whole failure as its comment, as in
+the table. So the card of an earlier head stays readable, and the line
+says that a later head failed:
+
+```
+**Bench run failed on `1a2b3c4d5`** (2026-11-20T14:02+02:00): The run was stopped: SIGTERM.
+```
+
 **Everything posted is scrubbed again** with the run's whole deny list
 before it leaves the box. A comment the scrub refuses is replaced by the
 refusal. An error's text the scrub refuses is left out, with the kind of
@@ -344,7 +407,25 @@ name it held; the error stays on the caller's console. The comment never
 names a sample, a file or a host: those stay in `run.log`.
 
 The run exits as it would without `--post`. A comment `gh` could not post
-exits 2 and names `gh`'s error; the card is written all the same.
+exits 2 and names `gh`'s error; the card is written all the same, and the
+error says how to post it. A `gh` call that does not answer within two
+minutes is such an error.
+
+**Posting a card a run made.** A run that outlived its caller's GitHub
+identity, an agent's session that ended mid-run, writes its card and fails
+at the post. The card need not be run again:
+
+```sh
+uv run python tooling/assignment_bench/bench.py post <branch> --pr <pr>
+```
+
+It posts the newest card of `<branch>` that was written whole, named as the
+run named the ref, under the caller's identity and scrubbed again with the
+instance's names and the samples' names and ids, as a run's post is. It
+refuses when that card is of another commit than the branch's head now:
+the PR has moved on, and the card is no reading of it. It runs nothing,
+starts no backend and takes no lock, so it works while another run holds
+the bench.
 
 ## Develop's nightly baseline
 
@@ -501,7 +582,9 @@ not resolve there.
 | `bench.env` | `MASCOPE_URL` and an SDK token (`MASCOPE_ACCESS_TOKEN`) for the instance |
 | `worktree/` | the git worktree the backend runs from; a run removes it when it is done, and the next command checks its build out again |
 | `logs/` | one backend log per start |
-| `bench.lock` | held by the bench command that runs; it names its pid |
+| `bench.lock` | held by the bench command that runs; it names the command, its pid and since when |
+| `queue/` | one ticket per command waiting for the lock, numbered in the order they asked; `queue.lock` guards it |
+| `backend.pid` | the pid of the backend a command started, while it runs; how an earlier run's backend is told from a stranger on the port |
 | `cards/<ref>/<timestamp>/` | one run's card, diff, summary, run log and inputs |
 | `reviews/<timestamp>.csv` | a review sheet: the engines' top disagreements, and the verdicts given on them |
 | `reference/peaky/` | the clone of peaky the pins are installed from |

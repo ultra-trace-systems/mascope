@@ -310,6 +310,7 @@ replaced by the refusal. The nightly baseline is the user units
 | 6.6 | MAS-841 | `--post`: the PR comment, and the nightly baseline (built: `tooling/assignment_bench/post.py`, `tooling/systemd/bench-baseline.*`) |
 | 6.7 | MAS-839 | the agents' skills run the bench and read the card (the ops repository, OPS-91) |
 | 6.8 | MAS-849 | more sets after the demo set: from the fleet corpus and the gate sets (the owner's picks) |
+| 6.6 fix | MAS-1055 | the lock as a queue, a clean end on a signal or a lost starter, a stale backend stopped, a failure as a line under the card, `bench.py post` (built: `tooling/assignment_bench/stopping.py`, `bench.py`, `run.py`, `post.py`) |
 | 6.9 | MAS-955 | the authors' lists on the card: both engines read against a research set's published peak list (built: `tooling/assignment_compare/metrics.py`, `truth` in the manifest) |
 
 6.4 started on 2026-11-11 against the testbed's existing runs; 6.2 starts
@@ -363,6 +364,16 @@ to run the commands against any instance and how to ask for a card.
 - **The lock** is the folder's `bench.lock`: one bench command at a time.
   A run waits for it, naming the command that holds it; `--no-wait`
   refuses instead, and `init` and `reference` refuse unless given `--wait`.
+  The waiters take it in the order they asked, through numbered tickets in
+  the folder's `queue/` (MAS-1055: `flock` alone woke them in no order, and
+  a run waited two hours behind five later ones).
+- **A run that is stopped** (SIGTERM, SIGHUP, Ctrl-C, or its starter gone)
+  ends through its cleanup: the backend stopped, the database put back, the
+  lock freed, a `stopped` `run.json`. A backend that an earlier run killed
+  outright left on the port is stopped by the next run; a stranger there is
+  refused. A run with no card adds one line under the PR's bench comment,
+  never over its card, and `bench.py post <ref> --pr N` posts a card that a
+  run made but could not post (MAS-1055).
 - **The nightly baseline** is the user units
   `tooling/systemd/bench-baseline.service` and `.timer`, installed in the
   account the agents run as, beside the testbed's service. At 01:30 the
