@@ -27,10 +27,12 @@ from stage_stubs import (  # the tests root, on sys.path
     stub_sample_reads,
     stub_seeded_scorer,
 )
+from test_utils import captured_logs
 
 from mascope_backend.api.new.peak_assignments import (
     batch_curation,
     batch_peaks_routes,
+    batch_stages,
     batch_untargeted,
     pipeline,
     service,
@@ -1538,3 +1540,39 @@ async def test_an_interrupted_pin_still_leaves_every_stage_stale(
             PeakAssignmentConfig(),
         )
     assert await _stale_reasons(batch_id) == {"series": "curation"}
+
+
+async def test_an_interrupted_pin_whose_stale_mark_fails_stays_a_cancellation(
+    anchor, stubbed_scorer, monkeypatch
+):
+    """The database gone as the pin is cancelled: the consensus pass on the
+    way out fails, and so does the stages' mark after it. The mark's failure
+    is logged rather than raised, so the cancellation still reaches the
+    caller as what it is, not as a database error."""
+    batch_id = anchor["batch_id"]
+    await _stages_ran(batch_id, BatchStage.SERIES)
+
+    async def cancelled(*args, **kwargs):
+        raise asyncio.CancelledError()
+
+    async def fails(*args, **kwargs):
+        raise RuntimeError("the database went away")
+
+    monkeypatch.setattr(batch_curation, "_propagate_to_sample", cancelled)
+    monkeypatch.setattr(batch_curation, "recompute_batch_consensus", fails)
+    monkeypatch.setattr(batch_stages, "mark_every_stage_stale", fails)
+    with captured_logs("WARNING") as logs, pytest.raises(asyncio.CancelledError):
+        await run_batch_peak_curation(
+            batch_id,
+            anchor["batch_peak_id"],
+            anchor["other"],
+            "C6H12O6",
+            PeakAssignmentConfig(),
+        )
+    assert any(
+        record["message"].startswith("Could not mark the batch stages")
+        and "the database went away" in record["message"]
+        for record in logs
+    )
+    # Nothing could be written: the stage reads as it did.
+    assert await _stale_reasons(batch_id) == {}
