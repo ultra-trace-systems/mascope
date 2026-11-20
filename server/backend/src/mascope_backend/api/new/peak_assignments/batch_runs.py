@@ -426,8 +426,22 @@ async def running_run(session, sample_batch_id: str) -> Optional[BatchPeakRun]:
 async def check_no_run_in_flight(sample_batch_id: str) -> dict:
     """The routes' synchronous refusal: a second batch-level operation on a
     ledger one is still rewriting is refused on the request, not in a
-    notification."""
+    notification.
+
+    Refused while a batch run is in flight, and while a pass of the batch
+    stages runs: a pass holds a stage row running from its start to its end,
+    also where it holds no batch run (``batch_stages.BatchStageRunningException``).
+    """
+    # Imported here: the stages import this module.
+    from mascope_backend.api.new.peak_assignments.batch_stages import (
+        BatchStageRunningException,
+        running_stage,
+    )
+
     async with async_session() as session:
+        stage = await running_stage(session, sample_batch_id)
+        if stage is not None:
+            raise BatchStageRunningException(sample_batch_id, stage)
         running = await running_run(session, sample_batch_id)
         if running is not None:
             raise BatchRunInFlightException(sample_batch_id, running)

@@ -94,6 +94,7 @@ from mascope_backend.api.new.peak_assignments.batch_stages import (
     REASON_FOLD,
     REASON_REBUILD,
     STAGE_OF_KEY,
+    mark_batch_stale,
     mark_every_stage_stale,
     mark_stale,
 )
@@ -1748,9 +1749,7 @@ async def rebuild_batch_ledger(
     outcome = backfill_outcome(folded, failed, sample_batch_id)
     await complete_run(sample_batch_id, run_id, summary=outcome.get("data"))
     # Each fold marked the stages stale already; the rebuild says why.
-    async with async_session() as session:
-        await mark_every_stage_stale(session, sample_batch_id, REASON_REBUILD)
-        await session.commit()
+    await mark_batch_stale(sample_batch_id, REASON_REBUILD)
     return outcome
 
 
