@@ -1179,6 +1179,7 @@ CARD_WORDS = frozenset(
         "stage pass fail missed met not read gated with reference run engine",
         "since the baseline moved was now tiering rule decoy samples orbitrap",
         "tof instrument mixed readings miss ok no sample on only",
+        "for this ref new develop s fixed worse than",
     ]
     for word in re.split(r"[^A-Za-z0-9]+", text)
     if word
@@ -1453,11 +1454,96 @@ def judge(card: dict, thresholds: dict) -> dict:
     }
 
 
+def noise_of(thresholds: dict, key: str) -> float:
+    """How far a reading moves between two cards of one commit: the
+    thresholds file's ``noise`` for the metric, else none."""
+    return float((thresholds.get("noise") or {}).get(key, 0))
+
+
+def worse_than(value, was, target: dict, margin: float) -> bool:
+    """Whether a value is further from its target than ``was`` by more than
+    ``margin``: higher under a ``max``, lower under a ``min``."""
+    if "max" in target:
+        return value - was > margin
+    return was - value > margin
+
+
+def _value_on(card: dict, name: str, key: str):
+    column = (card.get("columns") or {}).get(name) or {}
+    return ((column.get("readings") or {}).get(key) or {}).get("value")
+
+
+def judge_against(card: dict, baseline: dict, thresholds: dict) -> dict:
+    """Mark the card as :func:`judge` does, then read its misses against a
+    baseline card, judged by the same thresholds.
+
+    A miss of the card is **new** where the baseline met that reading, did not
+    read it, or holds no such set, and **develop's** where the baseline missed
+    it too; a shared miss the card makes worse by more than the metric's
+    noise (:func:`noise_of`) is new, marked ``worse``. A miss of the baseline
+    the card meets is **fixed**. The verdict fails on a new miss or a set on
+    which no sample was read, never on develop's misses alone; ``absolute``
+    keeps :func:`judge`'s own verdict.
+
+    :return: :func:`judge`'s gate, its verdict the one against the baseline,
+        with ``"absolute"`` and ``"against": {"new": [...], "develops": [...],
+        "fixed": [...]}``, each miss as :func:`judge` lists it with ``"was"``,
+        the baseline's value or None, and a new one with ``"worse"``.
+    """
+    gate = judge(card, thresholds)
+    before = judge(baseline, thresholds)
+    shared = {(one["set"], one["metric"]): one for one in before["missed"]}
+    new, develops, fixed = [], [], []
+    for one in gate["missed"]:
+        was = shared.get((one["set"], one["metric"]))
+        if was is None:
+            value = _value_on(baseline, one["set"], one["metric"])
+            new.append({**one, "was": value, "worse": False})
+        elif worse_than(
+            one["value"],
+            was["value"],
+            one["target"],
+            noise_of(thresholds, one["metric"]),
+        ):
+            new.append({**one, "was": was["value"], "worse": True})
+        else:
+            develops.append({**one, "was": was["value"]})
+    for (name, key), was in shared.items():
+        if gate["marks"].get(name, {}).get(key) == "ok":
+            fixed.append(
+                {
+                    "set": name,
+                    "metric": key,
+                    "value": _value_on(card, name, key),
+                    "target": was["target"],
+                    "was": was["value"],
+                }
+            )
+    return {
+        **gate,
+        "absolute": gate["verdict"],
+        "verdict": "fail" if new or gate["unread_sets"] else "pass",
+        "against": {"new": new, "develops": develops, "fixed": fixed},
+    }
+
+
 def for_set(gate: dict, name: str) -> dict:
     """The gate's verdict on one set alone."""
     missed = [one for one in gate["missed"] if one["set"] == name]
     unread = [one for one in gate["unread_sets"] if one == name]
     marks = gate["marks"].get(name)
+    against = gate.get("against")
+    if against is not None:
+        own = {
+            part: [one for one in ones if one["set"] == name]
+            for part, ones in against.items()
+        }
+        return {
+            **for_set({k: v for k, v in gate.items() if k != "against"}, name),
+            "absolute": "fail" if missed or unread else "pass",
+            "verdict": "fail" if own["new"] or unread else "pass",
+            "against": own,
+        }
     return {
         **gate,
         "verdict": "fail" if missed or unread else "pass",
@@ -1519,9 +1605,58 @@ def format_reading(one: dict | None, unit: str) -> str:
     return f"{text} of {one['n']}" if one.get("n") is not None else text
 
 
+def _miss(one: dict) -> str:
+    """A miss as the gate line names it: ``B G9 3.1 (<= 2)``."""
+    return (
+        f"{one['set']} {one['metric']} "
+        f"{format_value(one['value'], unit_of(one['metric']))} "
+        f"({describe_target(one['target'])})"
+    )
+
+
+def _against_part(ones: list[dict], word: str, was) -> str:
+    """One of the three counts of a gate read against a baseline, with its
+    misses in brackets: ``1 fixed (Nm G9 4 (<= 5), was 5.4)``."""
+    part = f"{len(ones)} {word}"
+    if ones:
+        part += " (" + "; ".join(_miss(one) + was(one) for one in ones) + ")"
+    return part
+
+
+def _was(one: dict) -> str:
+    unit = unit_of(one["metric"])
+    if one.get("worse"):
+        return f", worse than {format_value(one['was'], unit)}"
+    if one.get("was") is None:
+        return ", not read on the baseline"
+    return f", was {format_value(one['was'], unit)}"
+
+
 def gate_line(gate: dict) -> str:
     """The pass-or-fail line: the verdict, the sets on which no sample was read,
-    every reading that missed, and the gated readings that could not be read."""
+    every reading that missed, and the gated readings that could not be read.
+
+    A gate read against a baseline (:func:`judge_against`) gives its verdict
+    for this ref and splits the misses into new, develop's and fixed."""
+    against = gate.get("against")
+    if against is not None:
+        line = f"GATE {gate['stage']}: {gate['verdict'].upper()} for this ref -"
+        if gate["unread_sets"]:
+            line += f" no sample read on {', '.join(gate['unread_sets'])};"
+        line += " " + ", ".join(
+            [
+                _against_part(against["new"], "new", _was),
+                _against_part(against["develops"], "develop's", lambda one: ""),
+                _against_part(against["fixed"], "fixed", _was),
+            ]
+        )
+        if gate["not_read"]:
+            line += (
+                f"; {len(gate['not_read'])} not read ("
+                + ", ".join(f"{one['set']} {one['metric']}" for one in gate["not_read"])
+                + ")"
+            )
+        return line
     gated = gate["met"] + len(gate["missed"])
     line = f"GATE {gate['stage']}: {gate['verdict'].upper()} -"
     if gate["unread_sets"]:
@@ -1529,12 +1664,7 @@ def gate_line(gate: dict) -> str:
     if gate["missed"]:
         line += (
             f" {len(gate['missed'])} of {gated} gated readings missed: "
-            + "; ".join(
-                f"{one['set']} {one['metric']} "
-                f"{format_value(one['value'], unit_of(one['metric']))} "
-                f"({describe_target(one['target'])})"
-                for one in gate["missed"]
-            )
+            + "; ".join(_miss(one) for one in gate["missed"])
         )
     else:
         line += f" {gated} gated readings met"
@@ -2061,7 +2191,11 @@ def run_card(args) -> int:
     card = build_card(collected, manifest, args)
     if thresholds is not None:
         card["thresholds"] = thresholds
-        card["gate"] = judge(card, thresholds)
+        card["gate"] = (
+            judge_against(card, baseline, thresholds)
+            if baseline is not None and not args.absolute_gate
+            else judge(card, thresholds)
+        )
     if baseline is not None:
         card["baseline"] = diff_cards(baseline, card)
     tokens = deny_tokens(
@@ -2162,6 +2296,12 @@ def main(argv=None) -> int:
         help="diff the card against a previous card.json, reading by reading",
     )
     parser.add_argument(
+        "--absolute-gate",
+        action="store_true",
+        help="with --baseline, judge the gate on the card alone, as with no "
+        "baseline: a card of develop's head, whose misses are its own",
+    )
+    parser.add_argument(
         "--deny",
         metavar="FILE",
         help="further names the card must not hold, one per line, beside the "
@@ -2172,8 +2312,10 @@ def main(argv=None) -> int:
         if not args.sets:
             parser.error("--card reads the sets of a --sets manifest")
         return run_card(args)
-    if args.gate or args.baseline or args.sets or args.deny:
-        parser.error("--sets, --gate, --baseline and --deny belong to --card")
+    if args.gate or args.baseline or args.sets or args.deny or args.absolute_gate:
+        parser.error(
+            "--sets, --gate, --baseline, --absolute-gate and --deny belong to --card"
+        )
     if not args.workspace:
         parser.error("give a --workspace")
     if not args.sample and not args.batch:

@@ -1065,6 +1065,131 @@ def test_the_gate_on_one_set_alone():
     assert compare_runs.for_set(gate, "B")["verdict"] == "fail"
 
 
+# ------------------------------------------- the gate against a baseline
+
+#: Develop's card: B misses G1 and G5, A meets everything.
+DEVELOP_CARD = {
+    "A": {"G1": (12.0, 100), "G5": (0, 10), "G2_formula": (90.0, 50)},
+    "B": {"G1": (32.0, 100), "G5": (3, 10), "G2_formula": (70.0, 50)},
+}
+
+
+def _against(columns, baseline=DEVELOP_CARD, thresholds=THRESHOLDS):
+    return compare_runs.judge_against(_card(columns), _card(baseline), thresholds)
+
+
+def test_develop_s_own_misses_pass_the_ref_and_are_listed():
+    gate = _against(DEVELOP_CARD)
+    assert gate["verdict"] == "pass" and gate["absolute"] == "fail"
+    assert gate["against"]["new"] == [] and gate["against"]["fixed"] == []
+    assert [(m["set"], m["metric"]) for m in gate["against"]["develops"]] == [
+        ("B", "G1"),
+        ("B", "G5"),
+        ("B", "G2_formula"),
+    ]
+    assert compare_runs.gate_line(gate) == (
+        "GATE stage2: PASS for this ref - 0 new, 3 develop's (B G1 32 (<= 20); "
+        "B G5 3 (<= 0); B G2_formula 70 (>= 75)), 0 fixed"
+    )
+
+
+def test_a_miss_develop_holds_is_new_and_fails_the_ref():
+    columns = {**DEVELOP_CARD, "A": {**DEVELOP_CARD["A"], "G5": (1, 10)}}
+    gate = _against(columns)
+    assert gate["verdict"] == "fail"
+    assert [(m["set"], m["metric"], m["was"]) for m in gate["against"]["new"]] == [
+        ("A", "G5", 0)
+    ]
+    assert len(gate["against"]["develops"]) == 3
+    assert compare_runs.gate_line(gate).startswith(
+        "GATE stage2: FAIL for this ref - 1 new (A G5 1 (<= 0), was 0), 3 develop's ("
+    )
+
+
+def test_a_miss_develop_has_that_the_ref_meets_is_fixed():
+    columns = {**DEVELOP_CARD, "B": {**DEVELOP_CARD["B"], "G1": (14.0, 100)}}
+    gate = _against(columns)
+    assert gate["verdict"] == "pass"
+    assert gate["against"]["fixed"] == [
+        {
+            "set": "B",
+            "metric": "G1",
+            "value": 14.0,
+            "target": {"max": 20, "reading": False, "stage": "stage2"},
+            "was": 32.0,
+        }
+    ]
+    assert compare_runs.gate_line(gate).endswith(
+        "2 develop's (B G5 3 (<= 0); B G2_formula 70 (>= 75)), "
+        "1 fixed (B G1 14 (<= 20), was 32)"
+    )
+
+
+def test_a_shared_miss_made_worse_beyond_the_noise_is_new():
+    # G1 has a max: higher is worse. G2_formula a min: lower is worse.
+    columns = {
+        **DEVELOP_CARD,
+        "B": {"G1": (40.0, 100), "G5": (3, 10), "G2_formula": (60.0, 50)},
+    }
+    gate = _against(columns)
+    assert gate["verdict"] == "fail"
+    assert [(m["metric"], m["worse"]) for m in gate["against"]["new"]] == [
+        ("G1", True),
+        ("G2_formula", True),
+    ]
+    assert "B G1 40 (<= 20), worse than 32" in compare_runs.gate_line(gate)
+    # Within the metric's noise, the miss is develop's still.
+    noisy = {**THRESHOLDS, "noise": {"G1": 10, "G2_formula": 10}}
+    gate = _against(columns, thresholds=noisy)
+    assert gate["verdict"] == "pass" and len(gate["against"]["develops"]) == 3
+    # A shared miss the ref makes better is develop's, not new.
+    better = {**DEVELOP_CARD, "B": {**DEVELOP_CARD["B"], "G1": (25.0, 100)}}
+    gate = _against(better)
+    assert gate["verdict"] == "pass"
+    assert ("B", "G1", 32.0) in [
+        (m["set"], m["metric"], m["was"]) for m in gate["against"]["develops"]
+    ]
+
+
+def test_a_miss_on_a_set_or_reading_the_baseline_lacks_is_new():
+    columns = {**DEVELOP_CARD, "C": {"G5": (2, 10)}}
+    gate = _against(columns)
+    assert gate["verdict"] == "fail"
+    assert "C G5 2 (<= 0), not read on the baseline" in compare_runs.gate_line(gate)
+
+
+def test_a_set_no_sample_was_read_on_fails_the_ref_against_a_baseline():
+    columns = {**DEVELOP_CARD, "A": {"samples": (0, None), "G5": (None, None)}}
+    gate = _against(columns)
+    assert gate["against"]["new"] == [] and gate["verdict"] == "fail"
+    assert compare_runs.gate_line(gate).startswith(
+        "GATE stage2: FAIL for this ref - no sample read on A; 0 new"
+    )
+
+
+def test_the_gate_against_a_baseline_on_one_set_alone():
+    columns = {**DEVELOP_CARD, "A": {**DEVELOP_CARD["A"], "G5": (1, 10)}}
+    gate = _against(columns)
+    a, b = compare_runs.for_set(gate, "A"), compare_runs.for_set(gate, "B")
+    assert a["verdict"] == "fail" and a["absolute"] == "fail"
+    assert b["verdict"] == "pass" and b["absolute"] == "fail"
+    assert [m["set"] for m in b["against"]["develops"]] == ["B", "B", "B"]
+    assert b["against"]["new"] == [] and a["against"]["develops"] == []
+    # Alone, a set that misses nothing passes either way.
+    clean = compare_runs.for_set(_against(DEVELOP_CARD), "A")
+    assert clean["absolute"] == "pass" == clean["verdict"]
+    assert compare_runs.gate_line(b).startswith(
+        "GATE stage2: PASS for this ref - 0 new, 3 develop's"
+    )
+
+
+def test_the_shipped_noise_names_every_metric_it_gates():
+    shipped = compare_runs.load_thresholds(compare_runs.DEFAULT_THRESHOLDS)
+    assert set(shipped["noise"]) == set(shipped["targets"])
+    # Two cards of develop at one commit read alike on every gated metric.
+    assert set(shipped["noise"].values()) == {0}
+
+
 def test_the_shipped_thresholds_hold_the_log_s_targets():
     shipped = compare_runs.load_thresholds(compare_runs.DEFAULT_THRESHOLDS)
     assert shipped["stage"] == "stage3"
@@ -1555,6 +1680,57 @@ def test_the_command_diffs_against_a_baseline(served, tmp_path, capsys):
     assert f"1 of {count} readings moved." in (second / "card_A.md").read_text()
 
 
+def test_the_gate_against_a_baseline_sets_the_exit_code(served, tmp_path, capsys):
+    first = tmp_path / "first"
+    # Alone, the card misses three gated readings: A G5, A G9 and G G9.
+    assert (
+        compare_runs.main(["--sets", str(served), "--card", str(first), "--gate"]) == 1
+    )
+    capsys.readouterr()
+
+    def card_against(baseline, *extra):
+        out = tmp_path / f"against-{len(list(tmp_path.iterdir()))}"
+        argv = ["--sets", str(served), "--card", str(out), "--gate"]
+        code = compare_runs.main(argv + ["--baseline", str(baseline), *extra])
+        return code, json.loads((out / "card.json").read_text()), out
+
+    # Against itself, every miss is develop's: this ref passes.
+    code, card, out = card_against(first / "card.json")
+    assert code == 0 and card["gate"]["verdict"] == "pass"
+    assert card["gate"]["absolute"] == "fail"
+    line = "GATE stage3: PASS for this ref - 0 new, 3 develop's (A G5 1 (<= 0); "
+    assert line in capsys.readouterr().out
+    assert line in (out / "card.md").read_text()
+    # Its set's card says the same of its own misses.
+    assert json.loads((out / "card_G.json").read_text())["gate"]["verdict"] == "pass"
+
+    # A baseline that meets G's G9 makes that miss the ref's own.
+    held = json.loads((first / "card.json").read_text())
+    held["columns"]["G"]["readings"]["G9"]["value"] = 0.0
+    (tmp_path / "held.json").write_text(json.dumps(held))
+    code, card, out = card_against(tmp_path / "held.json")
+    assert code == 1 and card["gate"]["verdict"] == "fail"
+    assert [(m["set"], m["metric"]) for m in card["gate"]["against"]["new"]] == [
+        ("G", "G9")
+    ]
+    assert (
+        "FAIL for this ref - 1 new (G G9 50 (<= 2), was 0)" in capsys.readouterr().out
+    )
+    assert json.loads((out / "card_A.json").read_text())["gate"]["verdict"] == "pass"
+
+    # --absolute-gate: the diff still, the gate on the card alone.
+    code, card, out = card_against(first / "card.json", "--absolute-gate")
+    assert code == 1 and "against" not in card["gate"]
+    assert card["baseline"]["moved"] == []
+    assert "GATE stage3: FAIL - 3 of" in capsys.readouterr().out
+
+
+def test_absolute_gate_belongs_to_card(capsys):
+    with pytest.raises(SystemExit):
+        compare_runs.main(["--workspace", "W", "--sample", "s1", "--absolute-gate"])
+    assert "--absolute-gate and --deny belong to --card" in capsys.readouterr().err
+
+
 def test_the_command_refuses_a_card_that_names_a_site_and_writes_nothing(
     served, tmp_path, capsys
 ):
@@ -1711,6 +1887,26 @@ def test_a_workspace_of_the_card_s_own_words_writes_a_gated_card(served, tmp_pat
     code = compare_runs.main(["--sets", str(served), "--card", str(out), "--gate"])
     assert code == 1
     assert "quality" in (out / "card.json").read_text()
+
+
+def test_a_workspace_of_the_gate_line_s_own_words_writes_a_card_against_a_baseline(
+    served, tmp_path
+):
+    first = tmp_path / "first"
+    compare_runs.main(["--sets", str(served), "--card", str(first), "--gate"])
+    held = json.loads((first / "card.json").read_text())
+    held["columns"]["A"]["readings"]["G9"]["value"] = 10.0
+    (tmp_path / "held.json").write_text(json.dumps(held))
+    manifest = json.loads(served.read_text())
+    manifest["sets"]["A"]["workspace"] = "Develop"
+    manifest["sets"]["G"]["workspace"] = "Worse than this ref"
+    served.write_text(json.dumps(manifest))
+    out = tmp_path / "card"
+    argv = ["--sets", str(served), "--card", str(out), "--gate"]
+    assert compare_runs.main(argv + ["--baseline", str(tmp_path / "held.json")]) == 1
+    text = (out / "card.md").read_text()
+    assert "FAIL for this ref - 1 new (A G9 50 (<= 2), worse than 10)" in text
+    assert "develop's" in text
 
 
 def test_the_command_denies_an_address_host(served, tmp_path, monkeypatch, capsys):

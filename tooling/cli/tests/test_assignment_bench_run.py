@@ -273,13 +273,16 @@ class FakeCompare:
         #: Exit with this and write nothing, as a refused card does.
         self.refuse = None
 
-    def __call__(self, *, sets, out, decoy, baseline, deny, env, log, stall_s):
+    def __call__(
+        self, *, sets, out, decoy, baseline, deny, env, log, stall_s, absolute=False
+    ):
         manifest = json.loads(sets.read_text())
         self.calls.append(
             {
                 "manifest": manifest,
                 "decoy": decoy,
                 "baseline": baseline,
+                "absolute": absolute,
                 "deny": deny.read_text().split("\n"),
                 "env": env,
                 "stall_s": stall_s,
@@ -1156,6 +1159,24 @@ def _comparison(tmp_path, body):
     return brun.CompareRuns(script=script, poll_s=0.05), kwargs
 
 
+def test_the_comparison_judges_the_gate_alone_only_when_asked(tmp_path):
+    compare, kwargs = _comparison(tmp_path, "print(' '.join(sys.argv[1:]))\n")
+    baseline = tmp_path / "baseline.json"
+    for given, absolute, flags in (
+        (None, True, []),
+        (baseline, False, ["--baseline"]),
+        (baseline, True, ["--baseline", "--absolute-gate"]),
+    ):
+        kwargs["log"].write_text("")
+        assert (
+            compare(**{**kwargs, "baseline": given}, stall_s=5, absolute=absolute) == 0
+        )
+        printed = kwargs["log"].read_text().split("\n")[1]
+        assert [
+            w for w in printed.split() if w in ("--baseline", "--absolute-gate")
+        ] == (flags)
+
+
 def test_a_comparison_that_keeps_writing_runs_past_the_stall_window(tmp_path):
     compare, kwargs = _comparison(
         tmp_path,
@@ -1305,11 +1326,13 @@ def test_develop_s_head_with_baseline_becomes_the_rolling_baseline(rig, capsys):
     )
     assert json.loads((rig.card_dir() / "run.json").read_text())["is_baseline"] is True
 
-    # A branch diffs against it and does not replace it.
+    # A branch diffs against it and does not replace it; its gate reads its
+    # misses against develop's.
     assert rig.run("topic", baseline=True) == 0
     assert (
         rig.compare.calls[1]["baseline"] == rig.home.cards / first["path"] / "card.json"
     )
+    assert rig.compare.calls[1]["absolute"] is False
     assert rig.state()["baseline"] == first
     out = rig.card_dir()
     diff = json.loads((out / "diff.json").read_text())
@@ -1322,11 +1345,13 @@ def test_develop_s_head_with_baseline_becomes_the_rolling_baseline(rig, capsys):
     assert rig.state()["cards"][-1]["baseline"] == first["path"]
     assert "BASELINE: 0 of 3 readings moved" in capsys.readouterr().out
 
-    # The next run of develop's head diffs against it, then replaces it.
+    # The next run of develop's head diffs against it, then replaces it; its
+    # gate is its own, whatever the last one missed.
     assert rig.run("develop", baseline=True) == 0
     assert (
         rig.compare.calls[2]["baseline"] == rig.home.cards / first["path"] / "card.json"
     )
+    assert rig.compare.calls[2]["absolute"] is True
     assert rig.state()["baseline"]["path"] == "develop/20261112-120002"
 
 
