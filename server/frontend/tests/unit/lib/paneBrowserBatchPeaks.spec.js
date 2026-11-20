@@ -2884,10 +2884,16 @@ describe('PaneBrowserBatchPeaks engine tier', () => {
       consensus_tier: 'below_assignability',
       engine_tier: 'candidate'
     })
+    // The engine's tier where it agrees, with a name that is not its key.
+    const agrees = wrapper.vm.engineTierTooltip({
+      consensus_tier: 'below_assignability',
+      engine_tier: 'below_assignability'
+    })
 
     expect(text).toContain("The importing engine's own tier: below assignability, where")
     expect(reverse).toContain("the members' measurements says below assignability")
-    expect(`${text}${reverse}`).not.toContain('below_assignability')
+    expect(agrees).toContain('own tier: below assignability (agrees with the consensus)')
+    expect(`${text}${reverse}${agrees}`).not.toContain('below_assignability')
   })
 
   it('keeps only the batch peaks where the engine disagrees, when asked', async () => {
