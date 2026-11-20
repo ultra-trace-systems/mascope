@@ -75,7 +75,12 @@ from datetime import datetime, timezone
 
 from sqlalchemy import update
 
-from mascope_backend.db import BatchPeakRun, PeakAssignmentRun, async_session
+from mascope_backend.db import (
+    BatchPeakRun,
+    BatchPeakStage,
+    PeakAssignmentRun,
+    async_session,
+)
 from mascope_backend.db.admin.peak_assignments.prune_runs import IN_FLIGHT_STATUSES
 from mascope_backend.runtime import runtime
 
@@ -193,6 +198,19 @@ async def reset_running_batch_peak_runs() -> dict:
             )
 
             reset_count = update_result.rowcount
+            # A batch stage that was running when the server stopped stopped
+            # partway: what it wrote stands, and it is stale until it runs
+            # again (``batch_stages.stop_stage``, which a hard stop never
+            # reached).
+            await session.execute(
+                update(BatchPeakStage)
+                .where(BatchPeakStage.state == "running")
+                .values(
+                    state="stale",
+                    stale_reason="interrupted",
+                    utc_stale=datetime.now(timezone.utc),
+                )
+            )
             await session.commit()
     except Exception as error:
         message = f"Could not reset interrupted batch peak runs: {error}"

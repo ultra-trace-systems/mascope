@@ -3268,6 +3268,15 @@ class BatchPeakOccurrence(Base):
     # The member's calibrated probability, as its assignment's provenance
     # recorded it; NULL when uncalibrated.
     p_correct: Mapped[Optional[float]] = mapped_column(REAL)
+    # The batch's mark on a member a batch stage rewrote: the stage, the
+    # version it wrote at, and what the member read before (``before``, the
+    # member's own fields, with an earlier stage's mark nested inside). NULL
+    # on a member that reads its sample's own run or fold. It lives on the
+    # member, so it outlives the batch peak's record of the decision: a later
+    # stage tells the batch's claim from the sample's own by it, and a
+    # withdrawn decision puts back what the member read
+    # (``batch_stages.batch_mark``). A fold replaces the member, mark and all.
+    batch_written: Mapped[Optional[dict]] = mapped_column(JSON)
 
     # Relationships. Two foreign keys point at batch_peak (membership and the
     # family link), so the membership relationship names its own.
@@ -3617,6 +3626,57 @@ class BatchPeakRun(Base):
             "status IN ('running', 'completed', 'failed')", name="status_valid"
         ),
         Index("ix_batch_peak_run_batch_current", "sample_batch_id", "is_current"),
+    )
+
+
+class BatchPeakStage(Base):
+    """Where one batch stage stands on one batch: how many times it has
+    decided, and whether the ledger has moved under its decisions since.
+
+    The batch stages (``batch_stages.py``) run in one fixed order, each reading
+    what the stages before it wrote. A row is written the first time a stage
+    runs on a batch; a stage with no row has never run there.
+
+    - ``version`` counts the stage's runs on the batch. Every record a run
+      writes carries the version it was written at (``version`` in the
+      record), so a reader can tell a decision from an older one.
+    - ``state`` is ``current`` while nothing the stage reads has moved since
+      its last run finished, ``running`` while a run of it is under way, and
+      ``stale`` once something has moved: a fold (a sample's new run, an
+      ingest, a rebuild), a stage before it that ran again, its own run
+      stopping partway, or a consensus recompute that left one of its records
+      behind its batch peak's reading. ``stale_reason`` says which, and
+      ``utc_stale`` when.
+    """
+
+    __tablename__ = "batch_peak_stage"
+
+    sample_batch_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("sample_batch.sample_batch_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    stage: Mapped[str] = mapped_column(String(32), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    state: Mapped[str] = mapped_column(String(16), server_default=text("'current'"))
+    stale_reason: Mapped[Optional[str]] = mapped_column(String(32))
+    #: When the stage's latest run started, and when its latest run that
+    #: finished did; a run that stopped partway sets only the first.
+    utc_started: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    utc_ran: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    utc_stale: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    #: The batch run the stage's latest run recorded itself as, if any. No
+    #: foreign key: runs are pruned, and the stage's standing outlives them.
+    batch_peak_run_id: Mapped[Optional[str]] = mapped_column(String(16))
+
+    __table_args__ = (
+        CheckConstraint("state IN ('current', 'running', 'stale')", name="state_valid"),
     )
 
 
@@ -3988,6 +4048,7 @@ __all__ = [
     "BatchPeakOccurrence",
     "BatchPeakVerification",
     "BatchPeakRun",
+    "BatchPeakStage",
     "BatchPeakRunAnchor",
     "AttributeTemplate",
     "Instrument",

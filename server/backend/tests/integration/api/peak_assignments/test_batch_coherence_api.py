@@ -30,7 +30,10 @@ from mascope_backend.api.new.peak_assignments import batch_peaks_routes
 from mascope_backend.api.new.peak_assignments.batch_coherence import (
     run_batch_co_variation,
 )
-from mascope_backend.api.new.peak_assignments.batch_peaks import CO_VARIATION_KEY
+from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    CO_VARIATION_KEY,
+    is_stale,
+)
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     fold_sample_into_batch_peaks,
     recompute_batch_consensus,
@@ -370,7 +373,9 @@ async def _anchors(session_factory, batch_id):
 
 
 def _record(anchor):
-    return (anchor.provenance or {}).get(CO_VARIATION_KEY)
+    record = (anchor.provenance or {}).get(CO_VARIATION_KEY)
+    # A record a consensus kept marked stale stands for nothing.
+    return None if is_stale(record) else record
 
 
 async def test_every_pair_is_read_and_recorded_on_both_anchors(
@@ -495,7 +500,12 @@ async def test_a_new_reading_replaces_the_last(async_session_factory, coherence_
 
 
 async def test_the_route_runs_it_as_a_batch_run(
-    editor_client, guest_client, async_session_factory, coherence_batch, monkeypatch
+    editor_client,
+    guest_client,
+    async_session_factory,
+    coherence_batch,
+    monkeypatch,
+    only_its_own_stage,
 ):
     monkeypatch.setenv("MASCOPE_PEAK_ASSIGNMENT", "1")
     batch_id = coherence_batch["batch_id"]
@@ -545,7 +555,7 @@ async def test_the_route_refuses_while_another_run_rewrites_the_ledger(
     async def fake_task(**kwargs):
         launched.append(kwargs)
 
-    monkeypatch.setattr(batch_peaks_routes, "read_batch_co_variation", fake_task)
+    monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
     await start_run(coherence_batch["batch_id"], ACTION_CO_VARIATION)
     response = await editor_client.post(
         f"/api/batch-peaks/batch/{coherence_batch['batch_id']}/read-co-variation"

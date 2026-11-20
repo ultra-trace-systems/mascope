@@ -718,6 +718,49 @@ def manual_pin_of(anchor: Any) -> Optional[dict]:
     return None
 
 
+#: The mark a consensus recompute leaves on a record its batch peak's reading
+#: no longer names (:func:`compute_consensus`): the record is kept, so the
+#: stage that wrote it reads it again when it re-runs, and a reading that comes
+#: back to it finds it standing again; no reader serves it meanwhile.
+STALE_KEY = "stale"
+
+
+def is_stale(record: Any) -> bool:
+    """Whether a record carries the stale mark (:data:`STALE_KEY`)."""
+    return isinstance(record, dict) and bool(record.get(STALE_KEY))
+
+
+def kept_record(record: dict, reads: bool) -> dict:
+    """A record as a consensus recompute keeps it: unmarked while the batch
+    peak's reading names what it was made for, marked stale otherwise.
+
+    Every raw reader (``*_record_of``) leaves a stale record out unless asked
+    for it (``stale=True``), so what it served before the mark it serves
+    after: nothing. The recompute itself asks, so the mark survives every
+    recompute until the reading comes back or the stage writes again.
+    """
+    if reads:
+        if STALE_KEY in record:
+            return {key: value for key, value in record.items() if key != STALE_KEY}
+        return record
+    if record.get(STALE_KEY):
+        return record
+    return {**record, STALE_KEY: True}
+
+
+def went_stale(before: Any, after: dict) -> set[str]:
+    """The provenance keys whose records a recompute marked stale: stale in
+    ``after``, the provenance it computed, and not in ``before``, the one the
+    anchor carried.
+    """
+    before = before if isinstance(before, dict) else {}
+    return {
+        key
+        for key, record in after.items()
+        if is_stale(record) and not is_stale(before.get(key))
+    }
+
+
 #: The anchor's provenance key the batch's series detection
 #: (``batch_series.py``) writes its record under: the formula a homologous
 #: series proposed for the anchor, the unit, the assigned anchor its chain
@@ -726,7 +769,7 @@ def manual_pin_of(anchor: Any) -> Optional[dict]:
 SERIES_KEY = "series"
 
 
-def series_record_of(anchor: Any) -> Optional[dict]:
+def series_record_of(anchor: Any, *, stale: bool = False) -> Optional[dict]:
     """The series record an anchor carries under ``provenance.series``, or None.
 
     A record names a formula; anything else under that key is not one.
@@ -736,7 +779,7 @@ def series_record_of(anchor: Any) -> Optional[dict]:
         return None
     record = provenance.get(SERIES_KEY)
     if isinstance(record, dict) and record.get("formula"):
-        return record
+        return record if stale or not is_stale(record) else None
     return None
 
 
@@ -765,7 +808,7 @@ def standing_series_record(anchor: Any) -> Optional[dict]:
 CO_VARIATION_KEY = "co_variation"
 
 
-def co_variation_record_of(anchor: Any) -> Optional[dict]:
+def co_variation_record_of(anchor: Any, *, stale: bool = False) -> Optional[dict]:
     """The co-variation record an anchor carries under
     ``provenance.co_variation``, or None.
 
@@ -776,7 +819,7 @@ def co_variation_record_of(anchor: Any) -> Optional[dict]:
         return None
     record = provenance.get(CO_VARIATION_KEY)
     if isinstance(record, dict) and record.get("formula"):
-        return record
+        return record if stale or not is_stale(record) else None
     return None
 
 
@@ -878,7 +921,9 @@ STAMP_PREDICTED = "predicted"
 STAMP_PICKER = "picker"
 
 
-def diagnostic_isotopologues_record_of(anchor: Any) -> Optional[dict]:
+def diagnostic_isotopologues_record_of(
+    anchor: Any, *, stale: bool = False
+) -> Optional[dict]:
     """The diagnostic isotopologues record an anchor carries under
     ``provenance.diagnostic_isotopologues``, or None. A record names a formula;
     anything else under that key is not one."""
@@ -887,7 +932,7 @@ def diagnostic_isotopologues_record_of(anchor: Any) -> Optional[dict]:
         return None
     record = provenance.get(DIAGNOSTIC_ISOTOPOLOGUES_KEY)
     if isinstance(record, dict) and record.get("formula"):
-        return record
+        return record if stale or not is_stale(record) else None
     return None
 
 
@@ -916,7 +961,9 @@ def diagnostic_isotopologues_record_reads(record: dict, anchor: Any) -> bool:
     )
 
 
-def stamped_isotopologue_of_record(anchor: Any) -> Optional[dict]:
+def stamped_isotopologue_of_record(
+    anchor: Any, *, stale: bool = False
+) -> Optional[dict]:
     """The stamp record an anchor carries under
     ``provenance.stamped_isotopologue_of``, or None. A record names its parent;
     anything else under that key is not one.
@@ -930,7 +977,7 @@ def stamped_isotopologue_of_record(anchor: Any) -> Optional[dict]:
         return None
     record = provenance.get(STAMPED_ISOTOPOLOGUE_OF_KEY)
     if isinstance(record, dict) and record.get("batch_peak_id"):
-        return record
+        return record if stale or not is_stale(record) else None
     return None
 
 
@@ -1029,7 +1076,9 @@ MERGED_ISOTOPOLOGUE_OF_KEY = "merged_isotopologue_of"
 MERGED_ISOTOPOLOGUES_KEY = "merged_isotopologues"
 
 
-def merged_isotopologue_of_record(anchor: Any) -> Optional[dict]:
+def merged_isotopologue_of_record(
+    anchor: Any, *, stale: bool = False
+) -> Optional[dict]:
     """The stripped row's record an anchor carries under
     ``provenance.merged_isotopologue_of``, or None. A record names its parent;
     anything else under that key is not one."""
@@ -1038,7 +1087,7 @@ def merged_isotopologue_of_record(anchor: Any) -> Optional[dict]:
         return None
     record = provenance.get(MERGED_ISOTOPOLOGUE_OF_KEY)
     if isinstance(record, dict) and record.get("batch_peak_id"):
-        return record
+        return record if stale or not is_stale(record) else None
     return None
 
 
@@ -1075,7 +1124,7 @@ def merged_isotopologue_of_summary(anchor: Any) -> Optional[dict]:
     return {key: value for key, value in record.items() if key != "displaced_members"}
 
 
-def merged_isotopologues_record(anchor: Any) -> Optional[dict]:
+def merged_isotopologues_record(anchor: Any, *, stale: bool = False) -> Optional[dict]:
     """The parent's record an anchor carries under
     ``provenance.merged_isotopologues``, or None. A record names a formula;
     anything else under that key is not one."""
@@ -1084,7 +1133,7 @@ def merged_isotopologues_record(anchor: Any) -> Optional[dict]:
         return None
     record = provenance.get(MERGED_ISOTOPOLOGUES_KEY)
     if isinstance(record, dict) and record.get("formula"):
-        return record
+        return record if stale or not is_stale(record) else None
     return None
 
 
@@ -1129,7 +1178,7 @@ BATCH_CHECKS_KEY = "batch_checks"
 BATCH_CHECK_FACTS = ("halogen_lock", "label_twin", "neutral_pair")
 
 
-def batch_checks_record_of(anchor: Any) -> Optional[dict]:
+def batch_checks_record_of(anchor: Any, *, stale: bool = False) -> Optional[dict]:
     """The batch checks record an anchor carries under
     ``provenance.batch_checks``, or None. A record names an ion; anything else
     under that key is not one."""
@@ -1138,7 +1187,7 @@ def batch_checks_record_of(anchor: Any) -> Optional[dict]:
         return None
     record = provenance.get(BATCH_CHECKS_KEY)
     if isinstance(record, dict) and record.get("ion_formula"):
-        return record
+        return record if stale or not is_stale(record) else None
     return None
 
 
@@ -1253,7 +1302,7 @@ _READING_KEYS = (
 )
 
 
-def known_species_record_of(anchor: Any) -> Optional[dict]:
+def known_species_record_of(anchor: Any, *, stale: bool = False) -> Optional[dict]:
     """The known-species record an anchor carries under
     ``provenance.known_species``, or None. A record names its verdict and the
     reading it was decided for; anything else under that key is not one."""
@@ -1266,7 +1315,7 @@ def known_species_record_of(anchor: Any) -> Optional[dict]:
         and record.get("verdict")
         and isinstance(record.get("reads"), dict)
     ):
-        return record
+        return record if stale or not is_stale(record) else None
     return None
 
 
@@ -1334,7 +1383,7 @@ _KNOWN_SPECIES_KEPT_BACK = frozenset({"displaced_members", "own_test_samples"})
 WATER_LADDER_KEY = "water_ladder"
 
 
-def water_ladder_record_of(anchor: Any) -> Optional[dict]:
+def water_ladder_record_of(anchor: Any, *, stale: bool = False) -> Optional[dict]:
     """The water-ladder record an anchor carries under
     ``provenance.water_ladder``, or None. A record names its rung and the
     reading it was written for; anything else under that key is not one."""
@@ -1347,7 +1396,7 @@ def water_ladder_record_of(anchor: Any) -> Optional[dict]:
         and isinstance(record.get("rung"), dict)
         and isinstance(record.get("reads"), dict)
     ):
-        return record
+        return record if stale or not is_stale(record) else None
     return None
 
 
@@ -1797,7 +1846,7 @@ def persistence_summary(anchor: Any) -> Optional[dict]:
 FLAT_SERIES_KEY = "flat_series"
 
 
-def flat_series_record_of(anchor: Any) -> Optional[dict]:
+def flat_series_record_of(anchor: Any, *, stale: bool = False) -> Optional[dict]:
     """The flat-series record an anchor carries under
     ``provenance.flat_series``, or None. A record names its verdict; anything
     else under the key is not one."""
@@ -1806,7 +1855,7 @@ def flat_series_record_of(anchor: Any) -> Optional[dict]:
         return None
     record = provenance.get(FLAT_SERIES_KEY)
     if isinstance(record, dict) and record.get("verdict"):
-        return record
+        return record if stale or not is_stale(record) else None
     return None
 
 
@@ -1953,37 +2002,37 @@ def compute_consensus(
     stamping, strip, batch checks, known-species, water-ladder, persistence
     and flat-series records carried along.
 
+    Each record stands while the consensus names what it was made for, and is
+    kept marked stale otherwise (:func:`kept_record`; MAS-983): a reader serves
+    a standing record only, while the stage that wrote it reads it again when
+    it re-runs, and a reading that comes back to it finds it standing again.
     The series record says a homologous series proposed a formula for this
-    anchor. It is about that formula and not about the peak, so it stays in the
-    consensus's provenance for as long as the consensus names the formula, and
-    comes off when a new sample's vote, a curation or a re-fold moves the
-    anchor to another reading: a series never vouches for a formula it did not
-    propose. The co-variation record is about the anchor's reading - its
-    formula through its mechanism, read against the neutral's other channels -
-    and stays for as long as the consensus names both; so does the diagnostic
-    isotopologues record, the lines predicted for that reading. A stamp record
-    is about the line's height against its parent, not about what the line's
-    own members read, so it stays whatever the line's consensus names; the
-    parent's recompute takes it off when the parent's reading moves. A row the
-    merged-isotopologue reading stripped keeps its record while its members
-    still name that parent (:func:`merged_isotopologue_of_reads`), and the
-    parent keeps its list of lines while it names the reading they were read
-    against; a row whose record comes off comes off that list too, which the
-    row's recompute does (:func:`without_merged_lines`), as the parent need
-    not be in it. The batch checks record states facts of the anchor's
-    reading - its ion, its formula and its mechanism - and stays for as long
-    as the consensus names all three (:func:`batch_checks_record_reads`). A
-    known-species record stays while the anchor reads what the decision left
-    it reading (:func:`known_species_reads`), and a water-ladder record while
-    it reads what the pass left it reading (:func:`water_ladder_reads`). A
-    persistence record is about the anchor's peak - how many of its
-    partition's spectra hold it, which is why the batch search took it - so it
-    stays whatever the anchor reads; the rule it feeds is applied once the
-    facts it reads off other batch peaks are in hand
-    (:func:`hold_persistence_only`), and asks only the reading the search
-    elected. A flat-series record is about the reading it was read on and
-    stays while the consensus names it, as a co-variation record does; nothing
-    reads it but a reader.
+    anchor, so it stands while the consensus names the formula: a series never
+    vouches for a formula it did not propose. The co-variation record is about
+    the anchor's reading - its formula through its mechanism, read against the
+    neutral's other channels - and stands while the consensus names both; so
+    does the diagnostic isotopologues record, the lines predicted for that
+    reading. A stamp record is about the line's height against its parent, not
+    about what the line's own members read, so it is kept whatever the line's
+    consensus names; the parent's recompute marks it stale when the parent's
+    reading moves. A row the merged-isotopologue reading stripped stands while
+    its members still name that parent (:func:`merged_isotopologue_of_reads`),
+    and the parent's list of lines while it names the reading they were read
+    against; a row whose record goes stale comes off that list, which the row's
+    recompute does (:func:`without_merged_lines`), as the parent need not be in
+    it. The batch checks record states facts of the anchor's reading - its ion,
+    its formula and its mechanism - and stands while the consensus names all
+    three (:func:`batch_checks_record_reads`). A known-species record stands
+    while the anchor reads what the decision left it reading
+    (:func:`known_species_reads`), and a water-ladder record while it reads
+    what the pass left it reading (:func:`water_ladder_reads`). A persistence
+    record is about the anchor's peak - how many of its partition's spectra
+    hold it, which is why the batch search took it - so it is kept whatever
+    the anchor reads; the rule it feeds is applied once the facts it reads off
+    other batch peaks are in hand (:func:`hold_persistence_only`), and asks
+    only the reading the search elected. A flat-series record is about the
+    reading it was read on and stands while the consensus names it, as a
+    co-variation record does.
 
     :param members: The batch peak's occurrences.
     :param batch_peak_id: This batch peak's own id.
@@ -2012,55 +2061,64 @@ def compute_consensus(
         (:func:`water_ladder_record_of`), or None.
     """
     consensus = vote_consensus(members, batch_peak_id=batch_peak_id, manual=manual)
-    if (
-        isinstance(series, dict)
-        and consensus.consensus_formula
-        and series.get("formula") == consensus.consensus_formula
-    ):
-        consensus.provenance[SERIES_KEY] = series
-    if isinstance(co_variation, dict) and _reads(
-        co_variation, consensus.consensus_formula, consensus.ionization_mechanism_id
-    ):
-        consensus.provenance[CO_VARIATION_KEY] = co_variation
-    if isinstance(diagnostic_isotopologues, dict) and _reads(
-        diagnostic_isotopologues,
-        consensus.consensus_formula,
-        consensus.ionization_mechanism_id,
-    ):
-        consensus.provenance[DIAGNOSTIC_ISOTOPOLOGUES_KEY] = diagnostic_isotopologues
+    formula = consensus.consensus_formula
+    mechanism = consensus.ionization_mechanism_id
+    # Each record is kept whatever the reading now names, marked stale where
+    # it no longer names what the record was made for (:func:`kept_record`):
+    # a vote, a curation or a fold that moves the reading leaves the record
+    # for its stage to read again, and a reading that comes back finds it
+    # standing again. A stage writes or takes off its own records; the
+    # recompute never does.
+    readings = (
+        (
+            SERIES_KEY,
+            series,
+            lambda r: bool(formula) and r.get("formula") == formula,
+        ),
+        (CO_VARIATION_KEY, co_variation, lambda r: _reads(r, formula, mechanism)),
+        (
+            DIAGNOSTIC_ISOTOPOLOGUES_KEY,
+            diagnostic_isotopologues,
+            lambda r: _reads(r, formula, mechanism),
+        ),
+        (
+            MERGED_ISOTOPOLOGUE_OF_KEY,
+            merged_isotopologue_of,
+            lambda r: merged_isotopologue_of_reads(r, consensus.isotopologue_of),
+        ),
+        (
+            MERGED_ISOTOPOLOGUES_KEY,
+            merged_isotopologues,
+            lambda r: _reads(r, formula, mechanism),
+        ),
+        (
+            BATCH_CHECKS_KEY,
+            batch_checks,
+            lambda r: batch_checks_record_reads(
+                r, consensus.consensus_ion_formula, formula, mechanism
+            ),
+        ),
+        (
+            KNOWN_SPECIES_KEY,
+            known_species,
+            lambda r: known_species_reads(r, consensus),
+        ),
+        (
+            WATER_LADDER_KEY,
+            water_ladder,
+            lambda r: water_ladder_reads(r, consensus),
+        ),
+        (FLAT_SERIES_KEY, flat_series, lambda r: _reads(r, formula, mechanism)),
+    )
+    for key, record, reads in readings:
+        if isinstance(record, dict):
+            consensus.provenance[key] = kept_record(record, reads(record))
     if isinstance(stamped_isotopologue_of, dict) and stamped_isotopologue_of.get(
         "batch_peak_id"
     ):
         consensus.provenance[STAMPED_ISOTOPOLOGUE_OF_KEY] = stamped_isotopologue_of
-    if isinstance(merged_isotopologue_of, dict) and merged_isotopologue_of_reads(
-        merged_isotopologue_of, consensus.isotopologue_of
-    ):
-        consensus.provenance[MERGED_ISOTOPOLOGUE_OF_KEY] = merged_isotopologue_of
-    if isinstance(merged_isotopologues, dict) and _reads(
-        merged_isotopologues,
-        consensus.consensus_formula,
-        consensus.ionization_mechanism_id,
-    ):
-        consensus.provenance[MERGED_ISOTOPOLOGUES_KEY] = merged_isotopologues
-    if isinstance(batch_checks, dict) and batch_checks_record_reads(
-        batch_checks,
-        consensus.consensus_ion_formula,
-        consensus.consensus_formula,
-        consensus.ionization_mechanism_id,
-    ):
-        consensus.provenance[BATCH_CHECKS_KEY] = batch_checks
-    if isinstance(known_species, dict) and known_species_reads(
-        known_species, consensus
-    ):
-        consensus.provenance[KNOWN_SPECIES_KEY] = known_species
-    if isinstance(water_ladder, dict) and water_ladder_reads(water_ladder, consensus):
-        consensus.provenance[WATER_LADDER_KEY] = water_ladder
     if isinstance(persistence, dict):
         consensus.provenance[PERSISTENCE_KEY] = persistence
-    if isinstance(flat_series, dict) and _reads(
-        flat_series, consensus.consensus_formula, consensus.ionization_mechanism_id
-    ):
-        consensus.provenance[FLAT_SERIES_KEY] = flat_series
     return consensus
 
 

@@ -844,7 +844,7 @@ async def test_the_route_launches_for_an_editor_and_refuses_a_guest(
 
     from mascope_backend.api.new.peak_assignments import batch_peaks_routes
 
-    monkeypatch.setattr(batch_peaks_routes, "search_batch_untargeted", fake_task)
+    monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
 
     refused = await guest_client.post(
         f"/api/batch-peaks/batch/{batch_id}/search-untargeted"
@@ -860,6 +860,8 @@ async def test_the_route_launches_for_an_editor_and_refuses_a_guest(
     assert launched["sample_batch_id"] == batch_id
     assert launched["config"].mz_precision_ppm == 2.5
     assert launched["independent_transaction"] is True
+    # The route starts the batch stages at the search (MAS-983).
+    assert launched["from_stage"] == "search"
 
 
 async def test_a_sample_that_cannot_be_measured_is_skipped_and_the_pass_finishes(

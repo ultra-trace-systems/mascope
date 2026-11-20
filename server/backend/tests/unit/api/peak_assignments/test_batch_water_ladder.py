@@ -34,6 +34,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     DEFAULT_DRIFT_MARGIN_PPM,
     WATER_LADDER_KEY,
     compute_consensus,
+    is_stale,
     reading_of,
     standing_water_ladder_record,
     water_ladder_record_of,
@@ -876,9 +877,11 @@ class TestRecords:
             }
             for _ in range(3)
         ]
-        assert (
-            WATER_LADDER_KEY
-            not in compute_consensus(moved, "r3", water_ladder=record).provenance
+        # Kept, marked stale: the stage reads it again when it re-runs.
+        assert is_stale(
+            compute_consensus(moved, "r3", water_ladder=record).provenance[
+                WATER_LADDER_KEY
+            ]
         )
 
     def test_only_a_record_with_a_rung_and_a_reading_is_one(self):

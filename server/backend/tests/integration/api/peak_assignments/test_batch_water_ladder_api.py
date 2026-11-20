@@ -695,7 +695,12 @@ async def test_a_second_measurement_keeps_the_claims_the_batchs(
 
 
 async def test_the_route_runs_it_as_a_batch_run(
-    editor_client, guest_client, async_session_factory, ladder_batch, monkeypatch
+    editor_client,
+    guest_client,
+    async_session_factory,
+    ladder_batch,
+    monkeypatch,
+    only_its_own_stage,
 ):
     monkeypatch.setenv("MASCOPE_PEAK_ASSIGNMENT", "1")
     batch_id = ladder_batch["batch_id"]
@@ -737,10 +742,122 @@ async def test_the_route_refuses_while_another_run_rewrites_the_ledger(
     async def fake_task(**kwargs):
         launched.append(kwargs)
 
-    monkeypatch.setattr(batch_peaks_routes, "measure_batch_water_ladders", fake_task)
+    monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
     await start_run(ladder_batch["batch_id"], ACTION_WATER_LADDERS)
     response = await editor_client.post(
         f"/api/batch-peaks/batch/{ladder_batch['batch_id']}/measure-water-ladders"
     )
     assert response.status_code == 409, response.text
     assert launched == []
+
+
+# --- the batch stages: one ledger whichever order the steps are pressed in ----
+
+#: What a record says of its run rather than of the ledger: which run wrote it,
+#: at which version, and what that run rewrote - whether it claimed, turned or
+#: moved anything, and what the batch peak read before it. Two click orders
+#: run a stage a different number of times, and a second measurement finds
+#: its claims already in place, so these differ while every reading agrees.
+_RUN_FIELDS = frozenset(
+    {
+        "batch_peak_run_id",
+        "stamping_run_id",
+        "version",
+        "members_rewritten",
+        "rows_rewritten",
+        "lines_rewritten",
+        "rows_kept",
+        "displaced_members",
+        "claimed",
+        "turned",
+        "moved_analyte",
+        "read_before",
+    }
+)
+
+
+def _what_it_says(record, names):
+    """A record as it reads, every id in it by the fixture's name: two copies
+    of the batch hold the same peaks and samples under other ids."""
+    if isinstance(record, dict):
+        return {
+            names.get(key, key): _what_it_says(value, names)
+            for key, value in record.items()
+            if key not in _RUN_FIELDS and "utc" not in key
+        }
+    if isinstance(record, list):
+        # In the order the copy's ids sort in, which is no order of the batch.
+        return sorted((_what_it_says(value, names) for value in record), key=repr)
+    if isinstance(record, str):
+        return names.get(record, record)
+    return record
+
+
+async def _ledger(session_factory, batch):
+    """The batch ledger by the fixture's names: each batch peak's reading,
+    its records as they read, and each member's reading and batch mark."""
+    anchors = await _anchors(session_factory, batch)
+    key_of = {anchor.batch_peak_id: key for key, anchor in anchors.items()}
+    name_of = {sample: name for name, sample in batch["samples"].items()}
+    ledger = {}
+    for key, anchor in anchors.items():
+        members = await _members(session_factory, anchor.batch_peak_id)
+        ledger[key] = {
+            "reads": (
+                anchor.consensus_role,
+                anchor.consensus_formula,
+                anchor.consensus_ion_formula,
+                anchor.consensus_tier,
+                key_of.get(anchor.isotopologue_of),
+            ),
+            "records": _what_it_says(
+                {
+                    k: v
+                    for k, v in (anchor.provenance or {}).items()
+                    if isinstance(v, dict)
+                },
+                {**key_of, **name_of},
+            ),
+            "members": sorted(
+                (
+                    name_of[m.sample_item_id],
+                    m.role,
+                    m.candidate,
+                    m.tier,
+                    (m.batch_written or {}).get("stage"),
+                )
+                for m in members.values()
+            ),
+        }
+    return ledger
+
+
+async def test_two_click_orders_leave_one_ledger(
+    async_session_factory, pa_test_data, tof
+):
+    """The steps pressed in two different orders on two copies of one batch
+    leave one ledger (MAS-983): each step's button starts the batch stages at
+    its own, or at the first stage before it that is not current, so no stage
+    ever runs on what an earlier one has not settled. Pressed alone, *Decide
+    known species* before the water ladders claimed the humid segment's rung
+    for another source ion on one file's word, and the ladder that ran after
+    it found the rung taken."""
+    from mascope_backend.api.new.peak_assignments.batch_stages import (
+        run_batch_stages,
+    )
+
+    clicked = {}
+    for order in (
+        ("co_variation", "known_species", "water_ladders"),
+        ("water_ladders", "co_variation", "known_species"),
+    ):
+        batch = await _seed(async_session_factory, pa_test_data)
+        for stage in order:
+            await run_batch_stages(sample_batch_id=batch["batch_id"], from_stage=stage)
+        clicked[order] = await _ledger(async_session_factory, batch)
+    first, second = clicked.values()
+    # The batch's own claims are there to agree on: the rungs the ladder
+    # claimed, and the source ions the decision read present.
+    assert first["r3"]["reads"][:3] == ("reagent", None, ion(3))
+    assert first["r5"]["records"]["known_species"]["verdict"] == "absent"
+    assert first == second

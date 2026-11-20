@@ -31,7 +31,10 @@ from mascope_backend.api.new.peak_assignments import (
     batch_peaks_routes,
     continuity,
 )
-from mascope_backend.api.new.peak_assignments.batch_peaks import CO_VARIATION_KEY
+from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    CO_VARIATION_KEY,
+    standing_co_variation_record,
+)
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     backfill_sample_batch_peaks,
     fold_sample_into_batch_peaks,
@@ -42,6 +45,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     current_run,
     start_run,
 )
+from mascope_backend.api.new.peak_assignments.batch_stages import run_batch_stages
 from mascope_backend.api.new.peak_assignments.continuity import (
     REASON_GAP,
     SKIPPED_CURRENT,
@@ -337,6 +341,56 @@ async def test_the_pass_grades_every_pair_off_the_folded_ledger(
         assert anchor.batch_peak_utc_modified == before[key].batch_peak_utc_modified
     async with async_session_factory() as session:
         assert (await current_run(session, batch_id)).ledger_utc_modified > stamp
+
+
+async def _grades(session_factory, batch_id):
+    """Peak id -> its grade, and per pair its partner, grade and co-variation."""
+    anchors = await _anchors(session_factory, batch_id)
+    by_id = {a.batch_peak_id: key for key, a in anchors.items()}
+    return {
+        key: (
+            anchor.continuity_grade,
+            sorted(
+                (
+                    by_id.get(pair["partner_batch_peak_id"]),
+                    pair["grade"],
+                    (pair.get("co_variation") or {}).get("verdict"),
+                )
+                for pair in (anchor.continuity or {}).get("pairs", [])
+            ),
+        )
+        for key, anchor in anchors.items()
+    }
+
+
+@pytest.mark.parametrize(
+    "order", [("co_variation", "continuity"), ("continuity", "co_variation")]
+)
+async def test_the_grades_are_the_same_whichever_step_is_pressed_first(
+    async_session_factory, continuity_batch, monkeypatch, order
+):
+    """Read co-variation and the ratio stability, each started from its own
+    button, leave the grades one pass of the stages leaves, in either order
+    (MAS-854): each starts the batch stages at its own stage, and the ratio
+    stability runs after the co-variation in both. Every pair's grade reads
+    the co-variation verdict the same ledger row serves; pressed alone, the
+    ratio pass first kept the verdict it read before the co-variation."""
+    batch_id = continuity_batch["batch_id"]
+    for stage in order:
+        await run_batch_stages(sample_batch_id=batch_id, from_stage=stage)
+    clicked = await _grades(async_session_factory, batch_id)
+    anchors = await _anchors(async_session_factory, batch_id)
+    served = standing_co_variation_record(anchors["rb"])
+    partners = {
+        p["batch_peak_id"]: p["verdict"] for p in (served or {}).get("partners", [])
+    }
+    # The reading has a verdict to agree with, whichever it is.
+    assert partners.get(anchors["m0"].batch_peak_id) is not None
+    [to_m0] = [pair for pair in clicked["rb"][1] if pair[0] == "m0"]
+    assert to_m0[2] == partners.get(anchors["m0"].batch_peak_id)
+    # One more pass from the co-variation changes no grade.
+    await run_batch_stages(sample_batch_id=batch_id, from_stage="co_variation")
+    assert await _grades(async_session_factory, batch_id) == clicked
 
 
 async def test_a_co_varying_reading_turns_the_channel_s_drift_into_drift(
@@ -643,7 +697,12 @@ async def test_a_rebuild_whose_grading_fails_is_still_a_rebuild(
 
 
 async def test_the_route_grades_the_batch_for_an_editor(
-    editor_client, guest_client, async_session_factory, continuity_batch, monkeypatch
+    editor_client,
+    guest_client,
+    async_session_factory,
+    continuity_batch,
+    monkeypatch,
+    only_its_own_stage,
 ):
     monkeypatch.setenv("MASCOPE_PEAK_ASSIGNMENT", "1")
     batch_id = continuity_batch["batch_id"]
@@ -679,7 +738,7 @@ async def test_the_route_refuses_while_a_run_rewrites_the_ledger(
     async def fake_task(**kwargs):
         launched.append(kwargs)
 
-    monkeypatch.setattr(batch_peaks_routes, "recompute_batch_continuity", fake_task)
+    monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
     await start_run(continuity_batch["batch_id"], ACTION_CO_VARIATION)
     response = await editor_client.post(
         f"/api/batch-peaks/batch/{continuity_batch['batch_id']}/recompute-continuity"

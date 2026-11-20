@@ -10,6 +10,7 @@ assignment read services rely on via `fetch_sample` and which
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
 import pytest_asyncio
 from sqlalchemy import text
 
@@ -225,3 +226,19 @@ async def pa_test_data(async_session_factory, test_users, pa_sample_view):
         "running_run_id": running_run_id,
         "m0_assignment_id": m0_assignment_id,
     }
+
+
+@pytest.fixture
+def only_its_own_stage(monkeypatch):
+    """A step's route starts the batch stages at its own stage and runs every
+    stage after it too (``batch_stages.py``). A suite that proves what one
+    stage's route does runs that stage alone: the stages after it are their
+    own suites', and a pass of all of them would prune the stage's own batch
+    run from the history before the test reads it (``BATCH_RUN_KEEP``)."""
+    from mascope_backend.api.new.peak_assignments import batch_stages
+
+    monkeypatch.setattr(
+        batch_stages,
+        "plan",
+        lambda states, from_stage: (batch_stages.BatchStage(from_stage),),
+    )

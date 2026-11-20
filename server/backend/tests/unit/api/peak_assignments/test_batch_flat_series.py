@@ -30,6 +30,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     TIER_REASONS_KEY,
     compute_consensus,
     flat_series_record_of,
+    is_stale,
     row_flat_series,
     tier_code,
 )
@@ -321,9 +322,9 @@ class TestTheConsensusKeepsTheRecord:
 
     def test_not_on_another_formula_or_mechanism(self):
         other = [_fit("B", sample="s1"), _fit("B", sample="s2")]
-        assert FLAT_SERIES_KEY not in _consensus(members=other).provenance
+        assert is_stale(_consensus(members=other).provenance[FLAT_SERIES_KEY])
         through = [_fit(mechanism="n", sample="s1")]
-        assert FLAT_SERIES_KEY not in _consensus(members=through).provenance
+        assert is_stale(_consensus(members=through).provenance[FLAT_SERIES_KEY])
 
     @pytest.mark.parametrize(
         "provenance, record",

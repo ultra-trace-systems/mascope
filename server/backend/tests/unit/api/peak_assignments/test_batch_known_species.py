@@ -57,6 +57,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     KNOWN_SPECIES_KEY,
     WATER_LADDER_KEY,
     compute_consensus,
+    is_stale,
     known_species_record_of,
     known_species_summary,
     reading_of,
@@ -1277,9 +1278,11 @@ class TestTheConsensusAndTheLedger:
             for _ in SAMPLES
         ]
 
-        assert (
-            KNOWN_SPECIES_KEY
-            not in compute_consensus(moved, "T", known_species=record).provenance
+        # Kept, marked stale: the stage reads it again when it re-runs.
+        assert is_stale(
+            compute_consensus(moved, "T", known_species=record).provenance[
+                KNOWN_SPECIES_KEY
+            ]
         )
 
     def test_only_a_record_with_a_verdict_and_a_reading_is_one(self):

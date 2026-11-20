@@ -23,6 +23,8 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     fold_in_sample,
     is_isotope_line,
     is_monoisotopic,
+    is_stale,
+    kept_record,
     max_intensity,
     mz_delta_ppm,
     mz_from_delta,
@@ -31,6 +33,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     resolve_isotopologue_of,
     series_record_of,
     standing_series_record,
+    went_stale,
 )
 
 
@@ -824,12 +827,88 @@ def test_the_consensus_carries_a_series_on_the_formula_it_proposed():
 def test_a_consensus_that_moved_to_another_formula_drops_it():
     c = compute_consensus([_fit("B"), _fit("B")], series=_SERIES)
     assert c.consensus_formula == "B"
-    assert SERIES_KEY not in c.provenance
+    assert is_stale(c.provenance[SERIES_KEY])
 
 
 def test_an_anchor_nothing_reads_drops_it():
     c = compute_consensus([_bare()], series=_SERIES)
-    assert SERIES_KEY not in c.provenance
+    assert is_stale(c.provenance[SERIES_KEY])
+
+
+def test_a_record_the_consensus_moved_off_is_kept_stale_and_stands_again():
+    # A consensus recompute keeps the record, marked stale (MAS-983): no reader
+    # serves it, the stage that wrote it reads it again, and a reading that
+    # comes back to its formula finds it standing.
+    moved = compute_consensus([_fit("B"), _fit("B")], series=_SERIES)
+    record = moved.provenance[SERIES_KEY]
+    assert is_stale(record)
+    anchor = {"provenance": moved.provenance, "consensus_formula": "B"}
+    assert series_record_of(anchor) is None
+    assert series_record_of(anchor, stale=True) == record
+    assert standing_series_record(anchor) is None
+    back = compute_consensus([_fit("A"), _fit("A")], series=record)
+    assert back.provenance[SERIES_KEY] == _SERIES
+    assert not is_stale(back.provenance[SERIES_KEY])
+
+
+RAW_READERS = [
+    ("series", "series_record_of", {"formula": "A"}),
+    ("co_variation", "co_variation_record_of", {"formula": "A"}),
+    (
+        "diagnostic_isotopologues",
+        "diagnostic_isotopologues_record_of",
+        {"formula": "A"},
+    ),
+    (
+        "stamped_isotopologue_of",
+        "stamped_isotopologue_of_record",
+        {"batch_peak_id": "p"},
+    ),
+    ("merged_isotopologue_of", "merged_isotopologue_of_record", {"batch_peak_id": "p"}),
+    ("merged_isotopologues", "merged_isotopologues_record", {"formula": "A"}),
+    ("batch_checks", "batch_checks_record_of", {"ion_formula": "A-"}),
+    (
+        "known_species",
+        "known_species_record_of",
+        {"verdict": "present", "reads": {"role": "reagent"}},
+    ),
+    (
+        "water_ladder",
+        "water_ladder_record_of",
+        {"rung": {"ion_formula": "X"}, "reads": {"role": "reagent"}},
+    ),
+    ("flat_series", "flat_series_record_of", {"verdict": "flat"}),
+]
+
+
+@pytest.mark.parametrize(("key", "reader", "record"), RAW_READERS)
+def test_a_raw_reader_leaves_a_stale_record_out_unless_asked(key, reader, record):
+    from mascope_backend.api.new.peak_assignments import batch_peaks
+
+    read = getattr(batch_peaks, reader)
+    assert read({"provenance": {key: record}}) == record
+    stale = {**record, "stale": True}
+    assert read({"provenance": {key: stale}}) is None
+    assert read({"provenance": {key: stale}}, stale=True) == stale
+
+
+def test_kept_record_marks_and_unmarks():
+    assert kept_record(_SERIES, True) is _SERIES
+    stale = kept_record(_SERIES, False)
+    assert stale == {**_SERIES, "stale": True}
+    assert kept_record(stale, False) is stale
+    assert kept_record(stale, True) == _SERIES
+
+
+def test_went_stale_names_only_the_records_a_recompute_marked():
+    before = {SERIES_KEY: _SERIES, "co_variation": {"formula": "A", "stale": True}}
+    after = {
+        SERIES_KEY: {**_SERIES, "stale": True},
+        "co_variation": {"formula": "A", "stale": True},
+        "water_ladder": {"rung": {}},
+    }
+    assert went_stale(before, after) == {SERIES_KEY}
+    assert went_stale(None, {SERIES_KEY: {"stale": True}}) == {SERIES_KEY}
 
 
 def test_no_series_leaves_the_provenance_as_the_vote_wrote_it():

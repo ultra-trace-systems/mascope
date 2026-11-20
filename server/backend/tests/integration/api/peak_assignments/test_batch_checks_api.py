@@ -36,6 +36,7 @@ from mascope_backend.api.new.peak_assignments.batch_coherence import (
 from mascope_backend.api.new.peak_assignments.batch_isotopologues import (
     run_batch_isotopologues,
 )
+from mascope_backend.api.new.peak_assignments.batch_peaks import is_stale
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     fold_sample_into_batch_peaks,
     recompute_batch_consensus,
@@ -359,7 +360,9 @@ async def _anchors(session_factory, batch_id):
 # The records are read off the stored provenance by the name a reading writes,
 # not through the constant: a renamed key orphans every record a server holds.
 def _checks(anchor):
-    return (anchor.provenance or {}).get("batch_checks")
+    record = (anchor.provenance or {}).get("batch_checks")
+    # A record a consensus kept marked stale stands for nothing.
+    return None if is_stale(record) else record
 
 
 async def test_the_facts_are_recorded_and_nothing_moves(
@@ -631,7 +634,7 @@ async def test_the_route_refuses_while_another_run_rewrites_the_ledger(
     async def fake_task(**kwargs):
         launched.append(kwargs)
 
-    monkeypatch.setattr(batch_peaks_routes, "read_batch_checks", fake_task)
+    monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
     await start_run(checks_batch["batch_id"], ACTION_BATCH_CHECKS)
     response = await editor_client.post(
         f"/api/batch-peaks/batch/{checks_batch['batch_id']}/read-batch-checks"

@@ -14,10 +14,6 @@ from mascope_backend.api.lib.api_features import api_route
 from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 from mascope_backend.api.models.base_pydantic_model import RequestBodyModel
 from mascope_backend.api.new.auth.dependencies import current_active_user
-from mascope_backend.api.new.peak_assignments.batch_checks import read_batch_checks
-from mascope_backend.api.new.peak_assignments.batch_coherence import (
-    read_batch_co_variation,
-)
 from mascope_backend.api.new.peak_assignments.batch_curation import (
     curate_batch_peak,
     measure_batch_peak_candidate,
@@ -32,15 +28,6 @@ from mascope_backend.api.new.peak_assignments.batch_export import (
 from mascope_backend.api.new.peak_assignments.batch_import import (
     import_batch_run,
     validate_batch_import,
-)
-from mascope_backend.api.new.peak_assignments.batch_isotopologues import (
-    stamp_batch_isotopologues,
-)
-from mascope_backend.api.new.peak_assignments.batch_known_species import (
-    decide_batch_known_species,
-)
-from mascope_backend.api.new.peak_assignments.batch_merged_isotopologues import (
-    strip_batch_isotopologue_rows,
 )
 from mascope_backend.api.new.peak_assignments.batch_peak_verification import (
     get_anchor_context,
@@ -63,19 +50,11 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     run_record,
     start_run,
 )
-from mascope_backend.api.new.peak_assignments.batch_series import (
-    detect_batch_series,
-)
-from mascope_backend.api.new.peak_assignments.batch_untargeted import (
-    search_batch_untargeted,
-)
-from mascope_backend.api.new.peak_assignments.batch_water_ladder import (
-    measure_batch_water_ladders,
+from mascope_backend.api.new.peak_assignments.batch_stages import (
+    BatchStage,
+    run_batch_stages,
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
-from mascope_backend.api.new.peak_assignments.continuity import (
-    recompute_batch_continuity,
-)
 from mascope_backend.api.new.peak_assignments.routes import (
     reject_oversized_import,
     require_peak_assignment_enabled,
@@ -175,6 +154,19 @@ class BatchPeakRecordsResponse(BaseModel):
     data: list[dict] = Field(
         description="Batch-peak records: series, ledger rows, or a counterpart "
         "occurrence, depending on the route"
+    )
+    stages: list[dict] | None = Field(
+        None,
+        description=(
+            "The ledger only: where each batch stage stands, in order - "
+            "``stage``, ``label``, ``phase``, ``state`` (current, running, "
+            "stale or not_run), ``version``, ``stale_reason``, ``utc_ran`` and "
+            "``utc_stale`` (``batch_stages.stage_standing``)."
+        ),
+    )
+    stale_stages: list[str] | None = Field(
+        None,
+        description="The ledger only: the stale stages by name, in order.",
     )
 
 
@@ -406,6 +398,85 @@ async def backfill_batch_peaks_route(
     }
 
 
+class RunBatchStagesBody(RequestBodyModel):
+    """Request body for a pass of the batch stages."""
+
+    from_stage: BatchStage | None = Field(
+        None,
+        description=(
+            "The stage to start at; every stage after it runs too. Omitted, the "
+            "pass starts at the first stage that is not current, and runs "
+            "nothing when every stage is."
+        ),
+    )
+    config: PeakAssignmentConfig | None = Field(
+        None,
+        description=(
+            "The untargeted search's and the series detection's settings; "
+            "engine defaults when omitted."
+        ),
+    )
+
+
+@batch_peaks_router.post(
+    "/batch/{sample_batch_id}/run-stages",
+    # A write into the batch ledger and the samples' rows, gated like each
+    # stage's own route and, like most of them, not opened to API tokens.
+    dependencies=[Depends(require_peak_assignment_enabled)],
+)
+@api_route(status_code=202)
+async def run_batch_stages_route(
+    sample_batch_id: str,
+    background_tasks: BackgroundTasks,
+    body: RunBatchStagesBody | None = None,
+    user: User = Depends(current_active_user),
+    membership=Depends(require_batch_role("editor")),
+) -> dict:
+    """Run the batch stages in their fixed order.
+
+    Water ladders, known species, the untargeted search, the isotope lines
+    (strip, then stamp), the series, the co-variation, the ratio stability,
+    the batch checks and the probable blends: each reads what the stages before
+    it wrote, so they run in that order, from ``from_stage`` to the end, or from
+    the first stage a fold or an earlier stage left stale. The ledger
+    (``GET /batch-peaks/batch/{id}``) says where each stage stands. Each stage
+    runs as the batch run its own route always made. Runs as a background
+    task and emits ``peak_assignment_reload`` on completion.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param body: Where to start, and the search's and the series' settings.
+    :param user: The current authenticated user. Requires workspace editor role.
+    :return: Acknowledgement message with the background process id.
+    """
+    sample_batch = await fetch_sample_batch(sample_batch_id)
+    config = body.config if body is not None and body.config else PeakAssignmentConfig()
+    if config.decoy is not None:
+        raise ApiException(
+            "A decoy is a run of one sample, launched on the sample; the batch "
+            "stages take none.",
+            {"sample_batch_id": sample_batch_id},
+            422,
+        )
+    await check_no_run_in_flight(sample_batch_id=sample_batch_id)
+    process_id = gen_id(8)
+    background_tasks.add_task(
+        run_batch_stages,
+        sample_batch_id=sample_batch_id,
+        from_stage=body.from_stage if body is not None else None,
+        config=config,
+        independent_transaction=True,
+        user_id=user.id,
+        process_id=process_id,
+    )
+    return {
+        "message": (
+            f"Running the batch stages of '{sample_batch.sample_batch_name}', "
+            "please wait."
+        ),
+        "process_id": process_id,
+    }
+
+
 @batch_peaks_router.post(
     "/batch/{sample_batch_id}/search-untargeted",
     # A write into the batch ledger, gated exactly like the backfill above.
@@ -450,8 +521,9 @@ async def search_untargeted_batch_peaks_route(
     await check_no_run_in_flight(sample_batch_id=sample_batch_id)
     process_id = gen_id(8)
     background_tasks.add_task(
-        search_batch_untargeted,
+        run_batch_stages,
         sample_batch_id=sample_batch_id,
+        from_stage=BatchStage.SEARCH,
         config=config,
         independent_transaction=True,
         user_id=user.id,
@@ -512,8 +584,9 @@ async def detect_series_batch_peaks_route(
     await check_no_run_in_flight(sample_batch_id=sample_batch_id)
     process_id = gen_id(8)
     background_tasks.add_task(
-        detect_batch_series,
+        run_batch_stages,
         sample_batch_id=sample_batch_id,
+        from_stage=BatchStage.SERIES,
         config=config,
         independent_transaction=True,
         user_id=user.id,
@@ -562,8 +635,9 @@ async def read_co_variation_batch_peaks_route(
     await check_no_run_in_flight(sample_batch_id=sample_batch_id)
     process_id = gen_id(8)
     background_tasks.add_task(
-        read_batch_co_variation,
+        run_batch_stages,
         sample_batch_id=sample_batch_id,
+        from_stage=BatchStage.CO_VARIATION,
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
@@ -617,8 +691,9 @@ async def recompute_continuity_batch_peaks_route(
     await check_no_run_in_flight(sample_batch_id=sample_batch_id)
     process_id = gen_id(8)
     background_tasks.add_task(
-        recompute_batch_continuity,
+        run_batch_stages,
         sample_batch_id=sample_batch_id,
+        from_stage=BatchStage.CONTINUITY,
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
@@ -671,8 +746,9 @@ async def stamp_isotopologues_batch_peaks_route(
     await check_no_run_in_flight(sample_batch_id=sample_batch_id)
     process_id = gen_id(8)
     background_tasks.add_task(
-        stamp_batch_isotopologues,
+        run_batch_stages,
         sample_batch_id=sample_batch_id,
+        from_stage=BatchStage.ISOTOPE_LINES,
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
@@ -727,8 +803,9 @@ async def strip_isotopologues_batch_peaks_route(
     await check_no_run_in_flight(sample_batch_id=sample_batch_id)
     process_id = gen_id(8)
     background_tasks.add_task(
-        strip_batch_isotopologue_rows,
+        run_batch_stages,
         sample_batch_id=sample_batch_id,
+        from_stage=BatchStage.ISOTOPE_LINES,
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
@@ -778,8 +855,9 @@ async def read_batch_checks_batch_peaks_route(
     await check_no_run_in_flight(sample_batch_id=sample_batch_id)
     process_id = gen_id(8)
     background_tasks.add_task(
-        read_batch_checks,
+        run_batch_stages,
         sample_batch_id=sample_batch_id,
+        from_stage=BatchStage.BATCH_CHECKS,
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
@@ -837,8 +915,9 @@ async def decide_known_species_batch_peaks_route(
     await check_no_run_in_flight(sample_batch_id=sample_batch_id)
     process_id = gen_id(8)
     background_tasks.add_task(
-        decide_batch_known_species,
+        run_batch_stages,
         sample_batch_id=sample_batch_id,
+        from_stage=BatchStage.KNOWN_SPECIES,
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
@@ -896,8 +975,9 @@ async def measure_water_ladders_batch_peaks_route(
     await check_no_run_in_flight(sample_batch_id=sample_batch_id)
     process_id = gen_id(8)
     background_tasks.add_task(
-        measure_batch_water_ladders,
+        run_batch_stages,
         sample_batch_id=sample_batch_id,
+        from_stage=BatchStage.WATER_LADDERS,
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
