@@ -1,0 +1,630 @@
+"""Integration tests for the batch stages' standing and the pass that runs them.
+
+Two samples in a batch of their own, folded. The stages' own work is stood in
+for here (each stage's suite covers it); what is proven is the order and the
+staleness rule: a pass runs from the stage it is started at to the end, or
+from the first stage that is not current; a stage that finishes is current
+and leaves every stage after it stale; a fold, also one that lands while a
+stage runs, leaves every stage that ran stale; a stage that raises, is
+cancelled or leaves samples unread is stale and the records it wrote carry
+its version; each step's route starts the pass at its own stage; the ledger
+says where every stage stands; a server restart leaves a running stage stale.
+See ``batch_stages.py``.
+"""
+
+import asyncio
+import dataclasses
+from datetime import datetime, timedelta, timezone
+
+import pytest
+import pytest_asyncio
+from sqlalchemy import select
+
+from mascope_backend.api.new.peak_assignments import batch_peaks_routes, batch_stages
+from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    fold_sample_into_batch_peaks,
+    rebuild_batch_ledger,
+    recompute_batch_consensus,
+)
+from mascope_backend.api.new.peak_assignments.batch_runs import (
+    ACTION_SERIES,
+    complete_run,
+    start_run,
+)
+from mascope_backend.api.new.peak_assignments.batch_stages import (
+    STAGES,
+    BatchStage,
+    begin_stage,
+    finish_stage,
+    run_batch_stages,
+    stage_standing,
+)
+from mascope_backend.db import (
+    BatchPeak,
+    BatchPeakRun,
+    BatchPeakStage,
+    PeakAssignment,
+    PeakAssignmentRun,
+    SampleBatch,
+    SampleFile,
+    SampleItem,
+)
+from mascope_backend.db.admin.peak_assignments.reset_running_runs import (
+    reset_running_batch_peak_runs,
+)
+from mascope_backend.db.id import gen_id
+
+
+pytestmark = pytest.mark.asyncio
+
+ORDER = [spec.stage.value for spec in STAGES]
+
+# (peak id, mz, formula, ion formula, tier, fit, intensity)
+_ROWS = {
+    "S1": [
+        ("p1", 181.0707, "C6H12O6", "C6H13O6+", "assigned", 0.95, 5000.0),
+        ("p3", 200.1234, None, None, "unassigned", None, 300.0),
+    ],
+    "S2": [("p1", 181.0708, "C6H12O6", "C6H13O6+", "assigned", 0.90, 4000.0)],
+}
+
+
+async def _seed_sample(session, batch_id, name, rows, now):
+    sample_file_id, sample_item_id, run_id = gen_id(), gen_id(), gen_id()
+    session.add(
+        SampleFile(
+            sample_file_id=sample_file_id,
+            filename=f"orbi-batch-stages-{name}-{sample_file_id}.zarr",
+            instrument="orbi-test",
+            datetime=datetime(2026, 7, 4, 12, 0, 0),
+            datetime_utc=now,
+            length=60.0,
+            range=[50.0, 500.0],
+            polarity="+",
+        )
+    )
+    session.add(
+        SampleItem(
+            sample_item_id=sample_item_id,
+            sample_batch_id=batch_id,
+            sample_file_id=sample_file_id,
+            sample_item_name=f"Batch stages {name}",
+            sample_item_type="sample",
+            polarity="+",
+            sample_item_utc_created=now,
+        )
+    )
+    session.add(
+        PeakAssignmentRun(
+            peak_assignment_run_id=run_id,
+            sample_item_id=sample_item_id,
+            engine_version="0.1.0-test",
+            status="completed",
+            peak_assignment_run_utc_created=now - timedelta(hours=1),
+            peak_assignment_run_utc_completed=now - timedelta(minutes=50),
+        )
+    )
+    for pid, mz, formula, ion, tier, fit, intensity in rows:
+        session.add(
+            PeakAssignment(
+                peak_assignment_id=gen_id(32),
+                peak_assignment_run_id=run_id,
+                sample_item_id=sample_item_id,
+                sample_peak_id=pid,
+                sample_peak_mz=mz,
+                sample_peak_intensity=intensity,
+                role="M0" if formula else "unassigned",
+                assigned_formula=formula,
+                ion_formula=ion,
+                source=("database" if formula else None),
+                fit_score=fit,
+                mz_error_ppm=(1.0 if formula else None),
+                tier=tier,
+            )
+        )
+    return sample_item_id
+
+
+@pytest_asyncio.fixture
+async def folded(async_session_factory, pa_test_data):
+    now = datetime.now(timezone.utc)
+    batch_id = gen_id()
+    async with async_session_factory() as session:
+        dataset_id = (
+            await session.execute(
+                select(SampleBatch.dataset_id).where(
+                    SampleBatch.sample_batch_id == pa_test_data["sample_batch_id"]
+                )
+            )
+        ).scalar_one()
+        session.add(
+            SampleBatch(
+                sample_batch_id=batch_id,
+                dataset_id=dataset_id,
+                sample_batch_name=f"Batch stages {batch_id}",
+                sample_batch_utc_created=now,
+            )
+        )
+        s1 = await _seed_sample(session, batch_id, "S1", _ROWS["S1"], now)
+        s2 = await _seed_sample(session, batch_id, "S2", _ROWS["S2"], now)
+        await session.commit()
+    assert await fold_sample_into_batch_peaks(s1) == batch_id
+    assert await fold_sample_into_batch_peaks(s2) == batch_id
+    return {"batch_id": batch_id, "s1": s1, "s2": s2}
+
+
+@pytest.fixture
+def stand_ins(monkeypatch):
+    """Every stage's work stood in for by a recorder: what ran, in order, and
+    a hook per stage that runs inside it."""
+    ran: list[str] = []
+    hooks: dict[str, object] = {}
+
+    def make(spec):
+        async def run(call):
+            ran.append(spec.stage.value)
+            hook = hooks.get(spec.stage.value)
+            if hook is not None:
+                outcome = await hook(call)
+                if outcome is not None:
+                    return [outcome]
+            return [{"status": "success", "message": f"{spec.label} ran."}]
+
+        return dataclasses.replace(spec, run=run)
+
+    monkeypatch.setattr(
+        batch_stages,
+        "STAGE_BY_NAME",
+        {spec.stage: make(spec) for spec in STAGES},
+    )
+    return {"ran": ran, "hooks": hooks}
+
+
+async def _states(batch_id) -> dict[str, dict]:
+    standing = await stage_standing(batch_id)
+    return {entry["stage"]: entry for entry in standing["stages"]}
+
+
+async def _ran(batch_id, stages):
+    """Record stages as run and finished, as a pass would, without the pass:
+    the stages before them stay as they were."""
+    for stage in stages:
+        _, started = await begin_stage(batch_id, BatchStage(stage))
+        await finish_stage(batch_id, BatchStage(stage), started, run_id=None)
+
+
+async def _run(batch_id, from_stage=None):
+    return await run_batch_stages(
+        sample_batch_id=batch_id, from_stage=from_stage, process_id="pass-1"
+    )
+
+
+async def test_a_stage_that_never_ran_is_not_run_whatever_folds(folded):
+    await fold_sample_into_batch_peaks(folded["s1"])
+    states = await _states(folded["batch_id"])
+    assert {e["state"] for e in states.values()} == {"not_run"}
+    assert (await stage_standing(folded["batch_id"]))["stale_stages"] == []
+
+
+async def test_a_pass_runs_from_its_stage_to_the_end(folded, stand_ins):
+    await _run(folded["batch_id"])
+    stand_ins["ran"].clear()
+    outcome = await _run(folded["batch_id"], "series")
+    assert stand_ins["ran"] == ORDER[4:]
+    assert outcome["status"] == "success"
+    states = await _states(folded["batch_id"])
+    for name in ORDER[4:]:
+        assert states[name]["state"] == "current"
+        assert states[name]["version"] == 2
+    for name in ORDER[:4]:
+        assert states[name]["state"] == "current"
+        assert states[name]["version"] == 1
+
+
+async def test_a_pass_asked_past_a_stage_not_current_starts_there(folded, stand_ins):
+    """A step pressed while an earlier stage has not run, or is stale, starts
+    the pass at that stage: no stage runs on what an earlier one has not
+    settled, so the order the steps are pressed in leaves no mark on the
+    ledger (MAS-983's Verify)."""
+    batch_id = folded["batch_id"]
+    outcome = await _run(batch_id, "series")
+    assert stand_ins["ran"] == ORDER
+    assert "Detect series was asked for" in outcome["message"]
+    await fold_sample_into_batch_peaks(folded["s2"])
+    stand_ins["ran"].clear()
+    await _run(batch_id, "co_variation")
+    assert stand_ins["ran"] == ORDER
+
+
+async def test_a_pass_with_no_stage_named_starts_at_the_first_not_current(
+    folded, stand_ins
+):
+    batch_id = folded["batch_id"]
+    await _run(batch_id)
+    assert stand_ins["ran"] == ORDER
+    # Every stage current: a pass runs nothing.
+    stand_ins["ran"].clear()
+    outcome = await _run(batch_id)
+    assert stand_ins["ran"] == []
+    assert outcome["status"] == "skipped"
+    # A stage run again leaves the ones after it stale, and the next pass
+    # starts at the first of them.
+    await begin_stage(batch_id, BatchStage.CO_VARIATION)
+    await finish_stage(
+        batch_id, BatchStage.CO_VARIATION, datetime.now(timezone.utc), run_id=None
+    )
+    states = await _states(batch_id)
+    assert states["co_variation"]["state"] == "current"
+    assert states["continuity"]["state"] == "stale"
+    assert states["continuity"]["stale_reason"] == "upstream:co_variation"
+    assert states["series"]["state"] == "current"
+    await _run(batch_id)
+    assert stand_ins["ran"] == ORDER[6:]
+
+
+async def test_a_fold_leaves_every_stage_that_ran_stale(folded, stand_ins):
+    batch_id = folded["batch_id"]
+    await _ran(batch_id, ORDER[5:])
+    await fold_sample_into_batch_peaks(folded["s2"])
+    standing = await stage_standing(batch_id)
+    states = {e["stage"]: e for e in standing["stages"]}
+    assert standing["stale_stages"] == ORDER[5:]
+    for name in ORDER[5:]:
+        assert states[name]["stale_reason"] == "fold"
+    for name in ORDER[:5]:
+        assert states[name]["state"] == "not_run"
+    # The pass starts again at the first stage the fold left stale, and the
+    # stages that never ran with it.
+    await _run(batch_id)
+    assert stand_ins["ran"] == ORDER
+
+
+async def test_a_fold_while_a_stage_runs_leaves_it_stale(folded, stand_ins):
+    batch_id = folded["batch_id"]
+
+    async def folds_meanwhile(call):
+        await fold_sample_into_batch_peaks(folded["s1"])
+        # Still running: the fold's mark is what its end reads.
+        assert (await _states(batch_id))["co_variation"]["state"] == "running"
+
+    stand_ins["hooks"]["co_variation"] = folds_meanwhile
+    outcome = await _run(batch_id, "co_variation")
+    states = await _states(batch_id)
+    assert states["co_variation"]["state"] == "stale"
+    assert states["co_variation"]["stale_reason"] == "fold"
+    # The stages after it ran on the folded ledger and are current.
+    for name in ORDER[6:]:
+        assert states[name]["state"] == "current"
+    assert outcome["status"] == "partial"
+    assert "Still stale: Read co-variation" in outcome["message"]
+
+
+async def test_a_stage_that_raises_stops_the_pass_and_is_stale(folded, stand_ins):
+    batch_id = folded["batch_id"]
+    await _run(batch_id)
+
+    async def raises(call):
+        raise RuntimeError("the store went away")
+
+    stand_ins["hooks"]["series"] = raises
+    stand_ins["ran"].clear()
+    with pytest.raises(Exception):  # the pass re-raises it, wrapped
+        await _run(batch_id, "search")
+    assert stand_ins["ran"] == ["search", "isotope_lines", "series"]
+    states = await _states(batch_id)
+    assert states["search"]["state"] == "current"
+    assert states["series"]["state"] == "stale"
+    assert states["series"]["stale_reason"] == "interrupted"
+    assert states["co_variation"]["stale_reason"] == "upstream:series"
+    assert states["series"]["version"] == 2
+
+
+async def test_a_cancelled_stage_is_stale(folded, stand_ins):
+    batch_id = folded["batch_id"]
+
+    async def cancelled(call):
+        raise asyncio.CancelledError()
+
+    stand_ins["hooks"]["known_species"] = cancelled
+    with pytest.raises(asyncio.CancelledError):
+        await _run(batch_id)
+    states = await _states(batch_id)
+    assert states["water_ladders"]["state"] == "current"
+    assert states["known_species"]["state"] == "stale"
+    assert states["known_species"]["stale_reason"] == "interrupted"
+    assert states["search"]["state"] == "not_run"
+
+
+async def test_a_stage_that_left_samples_unread_is_stale_and_the_pass_goes_on(
+    folded, stand_ins
+):
+    batch_id = folded["batch_id"]
+
+    async def skips_one(call):
+        return {
+            "status": "partial",
+            "message": "1 skipped.",
+            "data": {"samples_failed": 1},
+        }
+
+    stand_ins["hooks"]["search"] = skips_one
+    await _run(batch_id)
+    states = await _states(batch_id)
+    assert states["search"]["state"] == "stale"
+    assert states["search"]["stale_reason"] == "partial"
+    assert states["series"]["state"] == "current"
+    stand_ins["ran"].clear()
+    stand_ins["hooks"].clear()
+    await _run(batch_id)
+    assert stand_ins["ran"] == ORDER[2:]
+
+
+async def test_the_records_a_stage_wrote_carry_its_version(
+    folded, stand_ins, async_session_factory
+):
+    batch_id = folded["batch_id"]
+
+    async def writes_a_record(call):
+        run_id = await start_run(batch_id, ACTION_SERIES)
+        async with async_session_factory() as session:
+            # The glucose anchor, named: an anchor's update moves its row, so
+            # the first of the batch's anchors is not the same one each pass.
+            anchor = (
+                await session.execute(
+                    select(BatchPeak).where(
+                        BatchPeak.sample_batch_id == batch_id,
+                        BatchPeak.consensus_formula == "C6H12O6",
+                    )
+                )
+            ).scalar_one()
+            anchor.provenance = {
+                **(anchor.provenance or {}),
+                "series": {"formula": "C6H12O6", "batch_peak_run_id": run_id},
+                # Another stage's key, which this stage does not stamp.
+                "co_variation": {"formula": "C6H12O6", "batch_peak_run_id": run_id},
+            }
+            await session.commit()
+        await complete_run(batch_id, run_id)
+
+    stand_ins["hooks"]["series"] = writes_a_record
+
+    async def record_of(key):
+        async with async_session_factory() as session:
+            anchors = (
+                (
+                    await session.execute(
+                        select(BatchPeak).where(BatchPeak.sample_batch_id == batch_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return [a.provenance[key] for a in anchors if (a.provenance or {}).get(key)]
+
+    await _run(batch_id, "series")
+    assert [r["version"] for r in await record_of("series")] == [1]
+    assert ["version" in r for r in await record_of("co_variation")] == [False]
+    await _run(batch_id, "series")
+    assert [r["version"] for r in await record_of("series")] == [2]
+    states = await _states(batch_id)
+    assert states["series"]["version"] == 2
+
+
+async def _put_series(async_session_factory, batch_id, formula):
+    """A series record naming ``formula`` on the batch's glucose anchor."""
+    async with async_session_factory() as session:
+        anchor = (
+            await session.execute(
+                select(BatchPeak).where(
+                    BatchPeak.sample_batch_id == batch_id,
+                    BatchPeak.consensus_formula == "C6H12O6",
+                )
+            )
+        ).scalar_one()
+        anchor.provenance = {
+            **(anchor.provenance or {}),
+            "series": {"formula": formula, "batch_peak_run_id": "run-x"},
+        }
+        await session.commit()
+        return anchor.batch_peak_id
+
+
+async def test_a_record_a_recompute_leaves_behind_marks_its_stage_stale(
+    folded, stand_ins, async_session_factory
+):
+    batch_id = folded["batch_id"]
+    await _run(batch_id)
+    anchor_id = await _put_series(async_session_factory, batch_id, "C7H14O6")
+    await recompute_batch_consensus(batch_id, {anchor_id})
+    states = await _states(batch_id)
+    assert states["series"]["state"] == "stale"
+    assert states["series"]["stale_reason"] == "consensus"
+    # Only the stage that wrote the record: the others read nothing that moved.
+    assert states["co_variation"]["state"] == "current"
+    async with async_session_factory() as session:
+        anchor = await session.get(BatchPeak, anchor_id)
+    assert anchor.provenance["series"]["stale"] is True
+    # A recompute that leaves the record as it was marks nothing again.
+    await finish_stage(
+        batch_id, BatchStage.SERIES, datetime.now(timezone.utc), run_id=None
+    )
+    await recompute_batch_consensus(batch_id, {anchor_id})
+    assert (await _states(batch_id))["series"]["state"] == "current"
+
+
+async def test_a_running_stage_is_left_to_its_own_end_by_a_recompute(
+    folded, stand_ins, async_session_factory
+):
+    batch_id = folded["batch_id"]
+
+    async def leaves_a_record_behind(call):
+        anchor_id = await _put_series(async_session_factory, batch_id, "C7H14O6")
+        await recompute_batch_consensus(batch_id, {anchor_id})
+
+    stand_ins["hooks"]["series"] = leaves_a_record_behind
+    await _run(batch_id, "series")
+    assert (await _states(batch_id))["series"]["state"] == "current"
+
+
+async def test_every_stale_record_outlives_the_next_recompute(
+    folded, async_session_factory
+):
+    """Each record a recompute marked stale is read back with its mark by the
+    next one, so the mark, and the record, outlive it."""
+    batch_id = folded["batch_id"]
+    records = {
+        "series": {"formula": "X"},
+        "co_variation": {"formula": "X"},
+        "diagnostic_isotopologues": {"formula": "X"},
+        "merged_isotopologue_of": {"batch_peak_id": "elsewhere"},
+        "merged_isotopologues": {"formula": "X"},
+        "batch_checks": {"ion_formula": "X-"},
+        "known_species": {"verdict": "present", "reads": {"role": "reagent"}},
+        "water_ladder": {"rung": {}, "reads": {"role": "reagent"}},
+        "flat_series": {"verdict": "flat", "formula": "X"},
+    }
+    async with async_session_factory() as session:
+        anchor = (
+            await session.execute(
+                select(BatchPeak).where(
+                    BatchPeak.sample_batch_id == batch_id,
+                    BatchPeak.consensus_formula == "C6H12O6",
+                )
+            )
+        ).scalar_one()
+        anchor.provenance = {**(anchor.provenance or {}), **records}
+        anchor_id = anchor.batch_peak_id
+        await session.commit()
+    for _ in range(2):
+        await recompute_batch_consensus(batch_id, {anchor_id})
+        async with async_session_factory() as session:
+            provenance = (await session.get(BatchPeak, anchor_id)).provenance
+        assert {k for k in records if (provenance.get(k) or {}).get("stale")} == set(
+            records
+        )
+
+
+async def test_a_rebuild_leaves_every_stage_stale_and_says_so(folded, stand_ins):
+    batch_id = folded["batch_id"]
+    await _run(batch_id, "batch_checks")
+    await rebuild_batch_ledger(batch_id)
+    states = await _states(batch_id)
+    assert states["batch_checks"]["stale_reason"] == "rebuild"
+    assert states["blends"]["stale_reason"] == "rebuild"
+
+
+async def test_the_ledger_serves_where_the_stages_stand(
+    guest_client, folded, stand_ins, async_session_factory
+):
+    batch_id = folded["batch_id"]
+    await _ran(batch_id, ["batch_checks", "blends"])
+    await fold_sample_into_batch_peaks(folded["s1"])
+    response = await guest_client.get(
+        f"/api/batch-peaks/batch/{batch_id}", params={"min_n_present": 1}
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [e["stage"] for e in body["stages"]] == ORDER
+    assert body["stale_stages"] == ["batch_checks", "blends"]
+    by = {e["stage"]: e for e in body["stages"]}
+    assert by["search"]["state"] == "not_run"
+    assert by["blends"]["stale_reason"] == "fold"
+    # An earlier run's ledger says where the stages stand now, too.
+    async with async_session_factory() as session:
+        fold_run = (
+            await session.execute(
+                select(BatchPeakRun.batch_peak_run_id).where(
+                    BatchPeakRun.sample_batch_id == batch_id
+                )
+            )
+        ).scalar_one()
+    await complete_run(batch_id, await start_run(batch_id, ACTION_SERIES))
+    earlier = await guest_client.get(
+        f"/api/batch-peaks/batch/{batch_id}",
+        params={"min_n_present": 1, "batch_peak_run_id": fold_run},
+    )
+    assert earlier.status_code == 200, earlier.text
+    assert earlier.json()["stale_stages"] == ["batch_checks", "blends"]
+
+
+@pytest.fixture
+def assignment_enabled(monkeypatch):
+    monkeypatch.setenv("MASCOPE_PEAK_ASSIGNMENT", "1")
+
+
+ROUTES = [
+    ("search-untargeted", "search"),
+    ("detect-series", "series"),
+    ("read-co-variation", "co_variation"),
+    ("recompute-continuity", "continuity"),
+    ("stamp-isotopologues", "isotope_lines"),
+    ("strip-isotopologues", "isotope_lines"),
+    ("read-batch-checks", "batch_checks"),
+    ("decide-known-species", "known_species"),
+    ("measure-water-ladders", "water_ladders"),
+]
+
+
+@pytest.mark.parametrize(("path", "stage"), ROUTES)
+async def test_each_steps_route_starts_the_stages_at_its_own(
+    editor_client, folded, assignment_enabled, monkeypatch, path, stage
+):
+    launched = []
+
+    async def fake_task(**kwargs):
+        launched.append(kwargs)
+
+    monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
+    response = await editor_client.post(
+        f"/api/batch-peaks/batch/{folded['batch_id']}/{path}"
+    )
+    assert response.status_code == 202, response.text
+    assert [k["from_stage"] for k in launched] == [stage]
+    assert launched[0]["independent_transaction"] is True
+
+
+async def test_the_pass_route_starts_where_it_is_asked(
+    editor_client, guest_client, folded, assignment_enabled, monkeypatch
+):
+    launched = []
+
+    async def fake_task(**kwargs):
+        launched.append(kwargs)
+
+    monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
+    url = f"/api/batch-peaks/batch/{folded['batch_id']}/run-stages"
+    assert (await guest_client.post(url)).status_code == 403
+    response = await editor_client.post(url)
+    assert response.status_code == 202, response.text
+    response = await editor_client.post(
+        url, json={"from_stage": "series", "config": {"mz_precision_ppm": 2.5}}
+    )
+    assert response.status_code == 202, response.text
+    assert [k["from_stage"] for k in launched] == [None, "series"]
+    assert launched[1]["config"].mz_precision_ppm == 2.5
+    refused = await editor_client.post(url, json={"from_stage": "everything"})
+    assert refused.status_code == 422, refused.text
+    decoy = await editor_client.post(
+        url, json={"config": {"decoy": {"mz_shift_ppm": 9}}}
+    )
+    assert decoy.status_code == 422, decoy.text
+    assert len(launched) == 2
+
+
+async def test_a_server_restart_leaves_a_running_stage_stale(
+    folded, async_session_factory
+):
+    batch_id = folded["batch_id"]
+    await begin_stage(batch_id, BatchStage.SEARCH)
+    await reset_running_batch_peak_runs()
+    async with async_session_factory() as session:
+        row = (
+            await session.execute(
+                select(BatchPeakStage).where(
+                    BatchPeakStage.sample_batch_id == batch_id,
+                    BatchPeakStage.stage == "search",
+                )
+            )
+        ).scalar_one()
+    assert row.state == "stale"
+    assert row.stale_reason == "interrupted"

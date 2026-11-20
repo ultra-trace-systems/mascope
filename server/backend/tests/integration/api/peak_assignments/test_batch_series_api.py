@@ -42,6 +42,7 @@ from mascope_backend.api.new.peak_assignments import (
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     SERIES_KEY,
+    is_stale,
     resolve_candidate,
     role_name,
     tier_name,
@@ -372,7 +373,7 @@ async def test_a_proposal_the_envelope_does_not_reach_leaves_its_anchor_as_it_wa
     anchors = await _anchors(async_session_factory, batch_id)
     unreached = anchors["up-5"]
     assert unreached.consensus_tier == "unassigned"
-    assert SERIES_KEY not in (unreached.provenance or {})
+    assert not _carries(unreached)
     # Proposed, but not in a series once the consensus was taken: this one,
     # and the rival whose better measured sample keeps its consensus.
     assert counts["anchors_in_series"] == counts["anchors_proposed"] - 1 - 1
@@ -416,16 +417,25 @@ async def test_a_better_measured_reading_keeps_its_member(
     )
     assert s2["down-0"].fit_score == pytest.approx(0.85)
     # The anchor carries the series exactly when its consensus is the series'.
-    carried = SERIES_KEY in (rival.provenance or {})
+    carried = _carries(rival)
     assert carried == (rival.consensus_formula == below)
 
 
+def _carries(anchor):
+    """Whether an anchor carries a series record a consensus has not marked
+    stale: one kept stale stands for no reading."""
+    record = (anchor.provenance or {}).get(SERIES_KEY)
+    return record is not None and not is_stale(record)
+
+
 def _records(anchors):
-    """Peak id -> the series record its anchor carries, for those carrying one."""
+    """Peak id -> the series record its anchor carries, for those carrying one
+    a consensus has not marked stale."""
     return {
         peak_id: anchor.provenance[SERIES_KEY]
         for peak_id, anchor in anchors.items()
         if SERIES_KEY in (anchor.provenance or {})
+        and not is_stale(anchor.provenance[SERIES_KEY])
     }
 
 
@@ -492,6 +502,44 @@ async def test_a_fold_while_the_proposals_are_measured_keeps_the_series(
     monkeypatch.setattr(batch_series, "_propagate_to_sample", a_fold_lands_first)
     counts = await run_batch_series_detection(batch_id, PeakAssignmentConfig())
     assert counts["anchors_in_series"] == counts["anchors_proposed"] - 1 - 1
+    assert len(_records(await _anchors(async_session_factory, batch_id))) == 10
+
+
+async def test_a_fold_then_an_interruption_keeps_the_series(
+    async_session_factory, series_batch, stubbed, monkeypatch
+):
+    """A fold that lands before the first sample is measured marks the records
+    of the anchors not measured yet stale rather than taking them off
+    (MAS-772): the run that stops after it leaves the family's records for the
+    next run to find, as a run that stops with no fold does."""
+    batch_id = series_batch["batch_id"]
+    every = {
+        a.batch_peak_id
+        for a in (await _anchors(async_session_factory, batch_id)).values()
+    }
+    propagate = batch_series._propagate_to_sample
+    calls = []
+
+    async def fold_then_die(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            await recompute_batch_consensus(batch_id, every)
+        if len(calls) == 2:
+            raise asyncio.CancelledError()
+        return await propagate(*args, **kwargs)
+
+    monkeypatch.setattr(batch_series, "_propagate_to_sample", fold_then_die)
+    with pytest.raises(asyncio.CancelledError):
+        await run_batch_series_detection(batch_id, PeakAssignmentConfig())
+    anchors = await _anchors(async_session_factory, batch_id)
+    # The fold kept every record, marked stale where its anchor did not read
+    # the proposal yet; the measurement then made those it reached stand.
+    assert len(_records(anchors)) == 10
+    kept = [a for a in anchors.values() if SERIES_KEY in (a.provenance or {})]
+    assert len(kept) > 10
+    monkeypatch.setattr(batch_series, "_propagate_to_sample", propagate)
+    counts = await run_batch_series_detection(batch_id, PeakAssignmentConfig())
+    assert counts["families_committed"] == 1
     assert len(_records(await _anchors(async_session_factory, batch_id))) == 10
 
 
@@ -603,7 +651,7 @@ async def test_an_earlier_runs_record_comes_off(
         await session.commit()
     await run_batch_series_detection(batch_id, PeakAssignmentConfig())
     anchors = await _anchors(async_session_factory, batch_id)
-    assert SERIES_KEY not in anchors["src-2"].provenance
+    assert not _carries(anchors["src-2"])
     assert anchors["src-2"].consensus_formula == SOURCES[2]
 
 
@@ -656,6 +704,7 @@ async def test_the_route_runs_it_as_a_batch_run(
     series_batch,
     stubbed,
     monkeypatch,
+    only_its_own_stage,
 ):
     monkeypatch.setenv("MASCOPE_PEAK_ASSIGNMENT", "1")
     batch_id = series_batch["batch_id"]
@@ -700,7 +749,7 @@ async def test_the_route_refuses_a_decoy(editor_client, series_batch, monkeypatc
     async def fake_task(**kwargs):
         launched.append(kwargs)
 
-    monkeypatch.setattr(batch_peaks_routes, "detect_batch_series", fake_task)
+    monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
     response = await editor_client.post(
         f"/api/batch-peaks/batch/{series_batch['batch_id']}/detect-series",
         json={"config": {"decoy": {"mz_shift_ppm": 9}}},
@@ -777,7 +826,7 @@ async def test_the_route_refuses_while_another_run_rewrites_the_ledger(
     async def fake_task(**kwargs):
         launched.append(kwargs)
 
-    monkeypatch.setattr(batch_peaks_routes, "detect_batch_series", fake_task)
+    monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
     await start_run(series_batch["batch_id"], ACTION_SERIES)
     response = await editor_client.post(
         f"/api/batch-peaks/batch/{series_batch['batch_id']}/detect-series"
@@ -902,7 +951,7 @@ async def test_a_ladder_nothing_anchors_is_listed_on_the_run_and_written_nowhere
     # carries a record or a reading.
     assert stubbed == []
     assert counts["members_assigned"] == 0
-    assert all(SERIES_KEY not in (anchor.provenance or {}) for anchor in anchors)
+    assert not any(_carries(anchor) for anchor in anchors)
     assert all(anchor.consensus_formula is None for anchor in anchors)
     outcome = series_outcome(counts, batch_id)
     assert outcome["status"] == "success"

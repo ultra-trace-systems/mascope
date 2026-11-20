@@ -70,6 +70,13 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     return null
   })
 
+  // Each step below starts the batch stages at its own stage, or at an
+  // earlier one that is not up to date, and every stage after it runs again
+  // on what it wrote (MAS-983), so each tooltip says so after saying what the
+  // step itself does.
+  const LATER_STAGES =
+    ' The batch stages after it run again too, in their order, and so do the ones before it that are not up to date.'
+
   const computeTooltip = computed(
     () =>
       blockedReason.value ??
@@ -86,7 +93,8 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
   const searchTooltip = computed(
     () =>
       blockedReason.value ??
-      'Search untargeted compositions for the batch peaks nothing has assigned yet - once per species, on its brightest peak.'
+      'Search untargeted compositions for the batch peaks nothing has assigned yet - once per species, on its brightest peak.' +
+        LATER_STAGES
   )
 
   // The series detection: the batch's homologous series walked from its
@@ -99,7 +107,8 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
   const detectTooltip = computed(
     () =>
       blockedReason.value ??
-      'Detect the homologous series of the batch (CH2, O, CO2 and more) from its assigned batch peaks, and measure the formulas they propose for the ones nothing has assigned or holds only as a candidate.'
+      'Detect the homologous series of the batch (CH2, O, CO2 and more) from its assigned batch peaks, and measure the formulas they propose for the ones nothing has assigned or holds only as a candidate.' +
+        LATER_STAGES
   )
 
   // The co-variation reading: how the channels of every compound the batch
@@ -113,7 +122,8 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
   const readTooltip = computed(
     () =>
       blockedReason.value ??
-      "Read how the channels of every compound seen through two of them follow each other across the batch, and flag the compounds whose traces hold a constant ratio to the batch's reagent ions, or to the samples' total ion current where it has none, as likely background. Moves no tier."
+      "Read how the channels of every compound seen through two of them follow each other across the batch, and flag the compounds whose traces hold a constant ratio to the batch's reagent ions, or to the samples' total ion current where it has none, as likely background. Moves no tier." +
+        LATER_STAGES
   )
 
   // The isotopologue stamping: the diagnostic isotopologues of every
@@ -126,7 +136,8 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
   const stampTooltip = computed(
     () =>
       blockedReason.value ??
-      'Predict the 15N, 18O, 34S, Si, 37Cl and 81Br lines of every committed batch peak, and stamp the ones whose height holds across the batch. Moves no tier.'
+      'Predict the 15N, 18O, 34S, Si, 37Cl and 81Br lines of every committed batch peak, and stamp the ones whose height holds across the batch. Moves no tier itself, but runs as one stage with the strip of isotopologue rows, which goes first.' +
+        LATER_STAGES
   )
 
   // The merged-isotopologue reading: a batch peak whose height holds a
@@ -139,7 +150,8 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
   const stripTooltip = computed(
     () =>
       blockedReason.value ??
-      "Strip the ledger's rows that are a brighter compound's 13C, 15N, 18O, 34S, Si, 37Cl or 81Br line at its share across the batch: they become that compound's isotopologues, in the batch and in its samples."
+      "Strip the ledger's rows that are a brighter compound's 13C, 15N, 18O, 34S, Si, 37Cl or 81Br line at its share across the batch: they become that compound's isotopologues, in the batch and in its samples. The stamping of the diagnostic lines follows, as one stage." +
+        LATER_STAGES
   )
 
   // The batch checks: the facts only the batch can state of a batch peak's
@@ -152,7 +164,8 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
   const checkTooltip = computed(
     () =>
       blockedReason.value ??
-      "Read what only the batch can say of each batch peak: a chlorine or bromine line at its exact spacing, a labelled ion's 14N twin, a uronium compound's two channels moving together. Moves no tier."
+      "Read what only the batch can say of each batch peak: a chlorine or bromine line at its exact spacing, a labelled ion's 14N twin, a uronium compound's two channels moving together. Moves no tier." +
+        LATER_STAGES
   )
 
   // The known-species decision: each source ion and each compound a list
@@ -165,7 +178,8 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
   const decideTooltip = computed(
     () =>
       blockedReason.value ??
-      "Decide each source ion and each compound a list tags as background once over the batch's samples, and claim it in every sample its peak is in where the batch holds it, in the batch and in its samples."
+      "Decide each source ion and each compound a list tags as background once over the batch's samples, and claim it in every sample its peak is in where the batch holds it, in the batch and in its samples." +
+        LATER_STAGES
   )
 
   // The water ladders' measurement: each reagent core's water ladder is read
@@ -178,7 +192,8 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
   const measureTooltip = computed(
     () =>
       blockedReason.value ??
-      "Read how far each reagent ion's water ladder reaches on the batch's own samples, per stretch of acquisition, and claim the hydrates that pass as the reagent's ions in that stretch's samples, in the batch and in its samples."
+      "Read how far each reagent ion's water ladder reaches on the batch's own samples, per stretch of acquisition, and claim the hydrates that pass as the reagent's ions in that stretch's samples, in the batch and in its samples." +
+        LATER_STAGES
   )
 
   function endComputing() {
@@ -513,71 +528,34 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     endComputing()
   })
 
+  // Every step's button starts the batch stages at its own stage, and the
+  // stages after it run too (MAS-983): the task the button waits on is the
+  // pass, so the pass's own notification, run_batch_stages, is what ends the
+  // wait. Each stage still reports under its own name, but as a child of the
+  // pass, under an id of its own, so its packets end no button here.
+  const stageWaits = [
+    [searching, pendingSearchId, endSearching],
+    [detecting, pendingDetectId, endDetecting],
+    [reading, pendingReadId, endReading],
+    [stamping, pendingStampId, endStamping],
+    [stripping, pendingStripId, endStripping],
+    [checking, pendingCheckId, endChecking],
+    [deciding, pendingDecideId, endDeciding],
+    [measuring, pendingMeasureId, endMeasuring]
+  ]
+  app.ui.notification.on('run_batch_stages', (notification) => {
+    if (notification?.status === 'pending') return
+    const id = notification?.process_id
+    for (const [busy, pending, end] of stageWaits) {
+      if (!busy.value) continue
+      // As for the rebuild: a packet whose id is not this button's belongs to
+      // another pass; one with no id is accepted rather than left spinning.
+      if (pending.value && id && id !== pending.value) continue
+      end()
+    }
+  })
+
   /** Whatever was in flight or went wrong belonged to the previous batch. */
-  app.ui.notification.on('search_batch_untargeted', (notification) => {
-    if (!searching.value) return
-    if (notification?.status === 'pending') return
-    const id = notification?.process_id
-    if (pendingSearchId.value && id && id !== pendingSearchId.value) return
-    endSearching()
-  })
-
-  app.ui.notification.on('detect_batch_series', (notification) => {
-    if (!detecting.value) return
-    if (notification?.status === 'pending') return
-    const id = notification?.process_id
-    if (pendingDetectId.value && id && id !== pendingDetectId.value) return
-    endDetecting()
-  })
-
-  app.ui.notification.on('read_batch_co_variation', (notification) => {
-    if (!reading.value) return
-    if (notification?.status === 'pending') return
-    const id = notification?.process_id
-    if (pendingReadId.value && id && id !== pendingReadId.value) return
-    endReading()
-  })
-
-  app.ui.notification.on('stamp_batch_isotopologues', (notification) => {
-    if (!stamping.value) return
-    if (notification?.status === 'pending') return
-    const id = notification?.process_id
-    if (pendingStampId.value && id && id !== pendingStampId.value) return
-    endStamping()
-  })
-
-  app.ui.notification.on('strip_batch_isotopologue_rows', (notification) => {
-    if (!stripping.value) return
-    if (notification?.status === 'pending') return
-    const id = notification?.process_id
-    if (pendingStripId.value && id && id !== pendingStripId.value) return
-    endStripping()
-  })
-
-  app.ui.notification.on('read_batch_checks', (notification) => {
-    if (!checking.value) return
-    if (notification?.status === 'pending') return
-    const id = notification?.process_id
-    if (pendingCheckId.value && id && id !== pendingCheckId.value) return
-    endChecking()
-  })
-
-  app.ui.notification.on('decide_batch_known_species', (notification) => {
-    if (!deciding.value) return
-    if (notification?.status === 'pending') return
-    const id = notification?.process_id
-    if (pendingDecideId.value && id && id !== pendingDecideId.value) return
-    endDeciding()
-  })
-
-  app.ui.notification.on('measure_batch_water_ladders', (notification) => {
-    if (!measuring.value) return
-    if (notification?.status === 'pending') return
-    const id = notification?.process_id
-    if (pendingMeasureId.value && id && id !== pendingMeasureId.value) return
-    endMeasuring()
-  })
-
   function reset() {
     endComputing()
     endSearching()

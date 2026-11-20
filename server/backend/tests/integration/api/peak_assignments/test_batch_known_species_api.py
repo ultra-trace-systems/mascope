@@ -725,7 +725,12 @@ async def test_the_ledger_and_an_earlier_run_serve_the_record(
 
 
 async def test_the_route_runs_it_as_a_batch_run(
-    editor_client, guest_client, async_session_factory, known_batch, monkeypatch
+    editor_client,
+    guest_client,
+    async_session_factory,
+    known_batch,
+    monkeypatch,
+    only_its_own_stage,
 ):
     monkeypatch.setenv("MASCOPE_PEAK_ASSIGNMENT", "1")
     batch_id = known_batch["batch_id"]
@@ -767,7 +772,7 @@ async def test_the_route_refuses_while_another_run_rewrites_the_ledger(
     async def fake_task(**kwargs):
         launched.append(kwargs)
 
-    monkeypatch.setattr(batch_peaks_routes, "decide_batch_known_species", fake_task)
+    monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
     await start_run(known_batch["batch_id"], ACTION_KNOWN_SPECIES)
     response = await editor_client.post(
         f"/api/batch-peaks/batch/{known_batch['batch_id']}/decide-known-species"

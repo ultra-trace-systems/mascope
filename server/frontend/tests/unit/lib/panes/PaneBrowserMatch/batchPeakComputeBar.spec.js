@@ -402,11 +402,11 @@ describe('BatchPeakComputeBar untargeted search', () => {
     )
     expect(wrapper.find('.search-dialog').exists()).toBe(false)
     expect(compute.searching).toBe(true)
-    for (const handler of notificationHandlers['search_batch_untargeted'] ?? []) {
+    for (const handler of notificationHandlers['run_batch_stages'] ?? []) {
       handler({ status: 'pending', process_id: 'proc-s' })
     }
     expect(compute.searching).toBe(true)
-    for (const handler of notificationHandlers['search_batch_untargeted'] ?? []) {
+    for (const handler of notificationHandlers['run_batch_stages'] ?? []) {
       handler({ status: 'success', process_id: 'proc-s' })
     }
     expect(compute.searching).toBe(false)
@@ -417,12 +417,17 @@ describe('BatchPeakComputeBar series detection', () => {
   const detectButton = () =>
     wrapper.findAll('.compute-button').find((b) => b.text() === 'Detect series')
   const notifyDetect = (payload) =>
-    (notificationHandlers['detect_batch_series'] ?? []).forEach((cb) => cb(payload))
+    (notificationHandlers['run_batch_stages'] ?? []).forEach((cb) => cb(payload))
 
   it('offers the detection under the same gate', () => {
     mountBar()
     expect(detectButton().attributes('disabled')).toBeUndefined()
     expect(compute.detectTooltip).toMatch(/^Detect the homologous series of the batch/)
+    // Each step starts the batch stages at its own, and says the later ones
+    // run too, and the earlier ones that are not up to date.
+    expect(compute.detectTooltip).toMatch(
+      /The batch stages after it run again too, in their order, and so do the ones before it that are not up to date\.$/
+    )
   })
 
   it('disables it with the compute when no batch is focused, and says why', () => {
@@ -462,6 +467,19 @@ describe('BatchPeakComputeBar series detection', () => {
     notifyDetect({ status: 'pending', process_id: 'proc-d' })
     notifyDetect({ status: 'success', process_id: 'someone-else' })
     expect(compute.detecting).toBe(true)
+    notifyDetect({ status: 'success', process_id: 'proc-d' })
+    expect(compute.detecting).toBe(false)
+  })
+
+  it("waits on the pass the button starts, not on the stage's own packet", async () => {
+    // The button starts the batch stages at the series (MAS-983): the
+    // detection reports as a child of the pass, under an id of its own, and
+    // the stages after it are still to run.
+    mountBar()
+    post.mockResolvedValueOnce(ack('proc-d'))
+    await detectButton().trigger('click')
+    await Promise.resolve()
+    expect(notificationHandlers['detect_batch_series']).toBeUndefined()
     notifyDetect({ status: 'success', process_id: 'proc-d' })
     expect(compute.detecting).toBe(false)
   })
@@ -509,7 +527,7 @@ describe('BatchPeakComputeBar co-variation reading', () => {
     wrapper.findAll('.compute-button').find((b) => b.text() === 'Read co-variation')
   const button = (label) => wrapper.findAll('.compute-button').find((b) => b.text() === label)
   const notifyRead = (payload) =>
-    (notificationHandlers['read_batch_co_variation'] ?? []).forEach((cb) => cb(payload))
+    (notificationHandlers['run_batch_stages'] ?? []).forEach((cb) => cb(payload))
 
   it('offers the reading under the same gate, and says it moves no tier', () => {
     mountBar()
@@ -518,7 +536,7 @@ describe('BatchPeakComputeBar co-variation reading', () => {
     expect(compute.readTooltip).toMatch(
       /the batch's reagent ions, or to the samples' total ion current where it has none,/
     )
-    expect(compute.readTooltip).toMatch(/Moves no tier\.$/)
+    expect(compute.readTooltip).toMatch(/Moves no tier\./)
   })
 
   it('disables it with the compute when no batch is focused, and says why', () => {
@@ -609,13 +627,16 @@ describe('BatchPeakComputeBar isotopologue stamping', () => {
     wrapper.findAll('.compute-button').find((b) => b.text() === 'Stamp isotopologues')
   const button = (label) => wrapper.findAll('.compute-button').find((b) => b.text() === label)
   const notifyStamp = (payload) =>
-    (notificationHandlers['stamp_batch_isotopologues'] ?? []).forEach((cb) => cb(payload))
+    (notificationHandlers['run_batch_stages'] ?? []).forEach((cb) => cb(payload))
 
-  it('offers the stamping under the same gate, and says it moves no tier', () => {
+  it('offers the stamping under the same gate, and says its stage strips first', () => {
     mountBar()
     expect(stampButton().attributes('disabled')).toBeUndefined()
     expect(compute.stampTooltip).toMatch(/^Predict the 15N, 18O, 34S, Si, 37Cl and 81Br lines/)
-    expect(compute.stampTooltip).toMatch(/Moves no tier\.$/)
+    // The stamp moves no tier, but its stage strips the isotopologue rows first.
+    expect(compute.stampTooltip).toMatch(
+      /Moves no tier itself, but runs as one stage with the strip/
+    )
   })
 
   it('disables it with the compute when no batch is focused, and says why', () => {
@@ -706,13 +727,13 @@ describe('BatchPeakComputeBar isotopologue row strip', () => {
     wrapper.findAll('.compute-button').find((b) => b.text() === 'Strip isotopologue rows')
   const button = (label) => wrapper.findAll('.compute-button').find((b) => b.text() === label)
   const notifyStrip = (payload) =>
-    (notificationHandlers['strip_batch_isotopologue_rows'] ?? []).forEach((cb) => cb(payload))
+    (notificationHandlers['run_batch_stages'] ?? []).forEach((cb) => cb(payload))
 
   it('offers the strip under the same gate, and says what it rewrites', () => {
     mountBar()
     expect(stripButton().attributes('disabled')).toBeUndefined()
     expect(compute.stripTooltip).toMatch(/^Strip the ledger's rows that are a brighter compound's/)
-    expect(compute.stripTooltip).toMatch(/in the batch and in its samples\.$/)
+    expect(compute.stripTooltip).toMatch(/in the batch and in its samples\./)
   })
 
   it('disables it with the compute when no batch is focused, and says why', () => {
@@ -817,13 +838,13 @@ describe('BatchPeakComputeBar batch checks', () => {
     wrapper.findAll('.compute-button').find((b) => b.text() === 'Read batch checks')
   const button = (label) => wrapper.findAll('.compute-button').find((b) => b.text() === label)
   const notifyChecks = (payload) =>
-    (notificationHandlers['read_batch_checks'] ?? []).forEach((cb) => cb(payload))
+    (notificationHandlers['run_batch_stages'] ?? []).forEach((cb) => cb(payload))
 
   it('offers the checks under the same gate, and says they move no tier', () => {
     mountBar()
     expect(checksButton().attributes('disabled')).toBeUndefined()
     expect(compute.checkTooltip).toMatch(/^Read what only the batch can say of each batch peak/)
-    expect(compute.checkTooltip).toMatch(/Moves no tier\.$/)
+    expect(compute.checkTooltip).toMatch(/Moves no tier\./)
   })
 
   it('disables them with the compute when no batch is focused, and says why', () => {
@@ -931,13 +952,13 @@ describe('BatchPeakComputeBar known-species decision', () => {
     wrapper.findAll('.compute-button').find((b) => b.text() === 'Decide known species')
   const button = (label) => wrapper.findAll('.compute-button').find((b) => b.text() === label)
   const notifyDecide = (payload) =>
-    (notificationHandlers['decide_batch_known_species'] ?? []).forEach((cb) => cb(payload))
+    (notificationHandlers['run_batch_stages'] ?? []).forEach((cb) => cb(payload))
 
   it('offers the decision under the same gate, and says what it rewrites', () => {
     mountBar()
     expect(decideButton().attributes('disabled')).toBeUndefined()
     expect(compute.decideTooltip).toMatch(/^Decide each source ion and each compound a list/)
-    expect(compute.decideTooltip).toMatch(/in the batch and in its samples\.$/)
+    expect(compute.decideTooltip).toMatch(/in the batch and in its samples\./)
   })
 
   it('disables it with the compute when no batch is focused, and says why', () => {
@@ -1045,13 +1066,13 @@ describe('BatchPeakComputeBar water ladder measurement', () => {
     wrapper.findAll('.compute-button').find((b) => b.text() === 'Measure water ladders')
   const button = (label) => wrapper.findAll('.compute-button').find((b) => b.text() === label)
   const notifyMeasure = (payload) =>
-    (notificationHandlers['measure_batch_water_ladders'] ?? []).forEach((cb) => cb(payload))
+    (notificationHandlers['run_batch_stages'] ?? []).forEach((cb) => cb(payload))
 
   it('offers the measurement under the same gate, and says what it rewrites', () => {
     mountBar()
     expect(measureButton().attributes('disabled')).toBeUndefined()
     expect(compute.measureTooltip).toMatch(/^Read how far each reagent ion's water ladder/)
-    expect(compute.measureTooltip).toMatch(/in the batch and in its samples\.$/)
+    expect(compute.measureTooltip).toMatch(/in the batch and in its samples\./)
   })
 
   it('disables it with the compute when no batch is focused, and says why', () => {

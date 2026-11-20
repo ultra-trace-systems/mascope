@@ -24,6 +24,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     CO_VARIATION_KEY,
     co_variation_record_of,
     compute_consensus,
+    is_stale,
     row_co_variation,
     standing_co_variation_record,
 )
@@ -470,17 +471,17 @@ class TestTheConsensusKeepsTheRecord:
 
     def test_not_once_it_moves_to_another_formula(self):
         c = compute_consensus([_fit("B"), _fit("B")], co_variation=_RECORD)
-        assert CO_VARIATION_KEY not in c.provenance
+        assert is_stale(c.provenance[CO_VARIATION_KEY])
 
     def test_not_once_it_reads_the_formula_through_another_mechanism(self):
         c = compute_consensus([_fit("A", "n"), _fit("A", "n")], co_variation=_RECORD)
         assert c.consensus_formula == "A"
-        assert CO_VARIATION_KEY not in c.provenance
+        assert is_stale(c.provenance[CO_VARIATION_KEY])
 
     def test_not_on_an_anchor_nothing_reads(self):
         bare = {"assigned_formula": None, "role": "unassigned", "tier": "unassigned"}
         c = compute_consensus([bare], co_variation=_RECORD)
-        assert CO_VARIATION_KEY not in c.provenance
+        assert is_stale(c.provenance[CO_VARIATION_KEY])
 
     def test_beside_a_series_record(self):
         series = {"formula": "A", "unit": "CH2"}

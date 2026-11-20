@@ -50,6 +50,7 @@ from mascope_backend.api.lib.exceptions.api_exceptions import CodedHTTPException
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     ROLE_M0,
     TIER_CODES,
+    is_stale,
     mz_from_delta,
     resolve_candidate,
     role_code,
@@ -293,7 +294,9 @@ def member_detail(member: Any, anchor: Any) -> dict:
     provenance = anchor.provenance if isinstance(anchor.provenance, dict) else {}
     row["alternatives"] = alternatives
     row["provenance"] = {
-        **provenance,
+        # A record the consensus keeps marked stale stands for no reading the
+        # row could carry (``batch_peaks.kept_record``).
+        **{key: value for key, value in provenance.items() if not is_stale(value)},
         "batch_peak": {
             "batch_peak_id": anchor.batch_peak_id,
             "mz": anchor.mz,

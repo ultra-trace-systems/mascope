@@ -33,6 +33,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     STAMP_PICKER,
     STAMP_PREDICTED,
     STAMPED_ISOTOPOLOGUE_OF_KEY,
+    is_stale,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     fold_sample_into_batch_peaks,
@@ -269,11 +270,15 @@ async def _anchors(session_factory, batch_id):
 # writes, not through the constants: a renamed key orphans every record a
 # server already holds.
 def _parent(anchor):
-    return (anchor.provenance or {}).get("diagnostic_isotopologues")
+    record = (anchor.provenance or {}).get("diagnostic_isotopologues")
+    # A record a consensus kept marked stale stands for nothing.
+    return None if is_stale(record) else record
 
 
 def _line(anchor):
-    return (anchor.provenance or {}).get("stamped_isotopologue_of")
+    record = (anchor.provenance or {}).get("stamped_isotopologue_of")
+    # A record a consensus kept marked stale stands for nothing.
+    return None if is_stale(record) else record
 
 
 def _br(anchor):
@@ -445,6 +450,8 @@ async def test_a_parent_that_goes_takes_its_stamps_off(
     gone = await _anchors(async_session_factory, batch_id)
     assert gone["p2"] is None
     assert _line(gone["x"]) is None
+    # Kept, marked stale (MAS-983): the stamping reads it again.
+    assert gone["x"].provenance["stamped_isotopologue_of"]["stale"] is True
     # The line's own reading did not move; taking the stamp off stamps it.
     assert gone["x"].consensus_formula == anchors["x"].consensus_formula
     assert gone["x"].batch_peak_utc_modified > anchors["x"].batch_peak_utc_modified
@@ -657,7 +664,12 @@ async def test_the_inspector_serves_a_samples_stamp_and_the_parents_record(
 
 
 async def test_the_route_runs_it_as_a_batch_run(
-    editor_client, guest_client, async_session_factory, isotopologue_batch, monkeypatch
+    editor_client,
+    guest_client,
+    async_session_factory,
+    isotopologue_batch,
+    monkeypatch,
+    only_its_own_stage,
 ):
     monkeypatch.setenv("MASCOPE_PEAK_ASSIGNMENT", "1")
     batch_id = isotopologue_batch["batch_id"]
@@ -704,7 +716,7 @@ async def test_the_route_refuses_while_another_run_rewrites_the_ledger(
     async def fake_task(**kwargs):
         launched.append(kwargs)
 
-    monkeypatch.setattr(batch_peaks_routes, "stamp_batch_isotopologues", fake_task)
+    monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
     await start_run(isotopologue_batch["batch_id"], ACTION_ISOTOPOLOGUES)
     response = await editor_client.post(
         f"/api/batch-peaks/batch/{isotopologue_batch['batch_id']}/stamp-isotopologues"

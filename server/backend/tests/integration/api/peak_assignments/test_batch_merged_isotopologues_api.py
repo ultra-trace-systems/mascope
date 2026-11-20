@@ -31,6 +31,7 @@ from mascope_backend.api.new.peak_assignments.batch_merged_isotopologues import 
     run_batch_merged_isotopologues,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    is_stale,
     role_code,
     tier_code,
 )
@@ -39,6 +40,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     recompute_batch_consensus,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
+    ACTION_ISOTOPOLOGUES,
     ACTION_STRIP_ISOTOPOLOGUES,
     complete_run,
     start_run,
@@ -341,11 +343,15 @@ async def strip_batch(async_session_factory, pa_test_data):
 # writes, not through the constants: a renamed key orphans every record a
 # server already holds.
 def _stripped(anchor):
-    return (anchor.provenance or {}).get("merged_isotopologue_of")
+    record = (anchor.provenance or {}).get("merged_isotopologue_of")
+    # A record a consensus kept marked stale stands for nothing.
+    return None if is_stale(record) else record
 
 
 def _lines(anchor):
-    return (anchor.provenance or {}).get("merged_isotopologues")
+    record = (anchor.provenance or {}).get("merged_isotopologues")
+    # A record a consensus kept marked stale stands for nothing.
+    return None if is_stale(record) else record
 
 
 async def test_a_row_at_its_parents_line_is_stripped_and_the_ledgers_agree(
@@ -552,7 +558,12 @@ async def test_the_ledger_and_an_earlier_run_serve_the_records(
 
 
 async def test_the_route_runs_it_as_a_batch_run(
-    editor_client, guest_client, async_session_factory, strip_batch, monkeypatch
+    editor_client,
+    guest_client,
+    async_session_factory,
+    strip_batch,
+    monkeypatch,
+    only_its_own_stage,
 ):
     monkeypatch.setenv("MASCOPE_PEAK_ASSIGNMENT", "1")
     batch_id = strip_batch["batch_id"]
@@ -578,7 +589,11 @@ async def test_the_route_runs_it_as_a_batch_run(
         )
     [run] = [run for run in runs if run.action == ACTION_STRIP_ISOTOPOLOGUES]
     assert run.status == "completed"
-    assert run.is_current == 1
+    # The strip is the first step of the isotope lines' stage: the stamping
+    # runs after it, as its own batch run, and is the current one.
+    [stamp] = [r for r in runs if r.action == ACTION_ISOTOPOLOGUES]
+    assert stamp.status == "completed"
+    assert stamp.is_current == 1
     assert run.config["median_low"] == 0.4
     assert run.config["isotopes"][0] == "13C"
     assert run.summary["stripped"] == 2
@@ -595,7 +610,7 @@ async def test_the_route_refuses_while_another_run_rewrites_the_ledger(
     async def fake_task(**kwargs):
         launched.append(kwargs)
 
-    monkeypatch.setattr(batch_peaks_routes, "strip_batch_isotopologue_rows", fake_task)
+    monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
     await start_run(strip_batch["batch_id"], ACTION_STRIP_ISOTOPOLOGUES)
     response = await editor_client.post(
         f"/api/batch-peaks/batch/{strip_batch['batch_id']}/strip-isotopologues"

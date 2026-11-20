@@ -50,6 +50,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     MERGED_ISOTOPOLOGUE_OF_KEY,
     MERGED_ISOTOPOLOGUES_KEY,
     compute_consensus,
+    is_stale,
     merged_isotopologue_of_record,
     merged_isotopologue_of_summary,
     merged_isotopologues_record,
@@ -662,11 +663,10 @@ class TestTheRecords:
         assert kept.isotopologue_of == "P"
         assert kept.provenance[MERGED_ISOTOPOLOGUE_OF_KEY] is record
         moved = [{**m, "role": "M0", "owner_batch_peak_id": None} for m in line_members]
-        assert (
-            MERGED_ISOTOPOLOGUE_OF_KEY
-            not in compute_consensus(
-                moved, "X", merged_isotopologue_of=record
-            ).provenance
+        assert is_stale(
+            compute_consensus(moved, "X", merged_isotopologue_of=record).provenance[
+                MERGED_ISOTOPOLOGUE_OF_KEY
+            ]
         )
 
     def test_the_consensus_keeps_the_parents_record_while_it_reads_the_same(self):
@@ -684,18 +684,19 @@ class TestTheRecords:
         kept = compute_consensus(parent, "P", merged_isotopologues=record)
         assert kept.provenance[MERGED_ISOTOPOLOGUES_KEY] is record
         moved = [{**m, "assigned_formula": "C11H20O3"} for m in parent]
-        assert (
-            MERGED_ISOTOPOLOGUES_KEY
-            not in compute_consensus(moved, "P", merged_isotopologues=record).provenance
+        # Kept, marked stale: the stage reads it again when it re-runs.
+        assert is_stale(
+            compute_consensus(moved, "P", merged_isotopologues=record).provenance[
+                MERGED_ISOTOPOLOGUES_KEY
+            ]
         )
         other_mechanism = [
             {**m, "ionization_mechanism_id": "mech-other"} for m in parent
         ]
-        assert (
-            MERGED_ISOTOPOLOGUES_KEY
-            not in compute_consensus(
+        assert is_stale(
+            compute_consensus(
                 other_mechanism, "P", merged_isotopologues=record
-            ).provenance
+            ).provenance[MERGED_ISOTOPOLOGUES_KEY]
         )
 
     def test_the_ledger_and_a_snapshot_serve_them_without_the_member_states(self):

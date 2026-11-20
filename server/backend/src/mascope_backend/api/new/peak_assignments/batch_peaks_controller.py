@@ -59,6 +59,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     fold_in_sample,
     held_member_tiers,
     hold_persistence_only,
+    kept_record,
     known_species_record_of,
     manual_pin_of,
     measured_members,
@@ -77,6 +78,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     tier_code,
     tier_name,
     water_ladder_record_of,
+    went_stale,
     without_merged_lines,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
@@ -86,6 +88,14 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     fail_run,
     start_run,
     touch_ledger,
+)
+from mascope_backend.api.new.peak_assignments.batch_stages import (
+    REASON_CONSENSUS,
+    REASON_FOLD,
+    REASON_REBUILD,
+    STAGE_OF_KEY,
+    mark_every_stage_stale,
+    mark_stale,
 )
 from mascope_backend.api.new.peak_assignments.cross_channel import neutral_key
 from mascope_backend.api.new.peak_assignments.engine import (
@@ -616,6 +626,10 @@ async def fold_sample_into_batch_peaks(
         await session.flush()  # make occurrences visible to the consensus recompute
         if defer_consensus_to is None:
             await _recompute_consensus(session, touched, now)
+        # The members every batch stage reads were just rewritten: the
+        # sample's earlier members, with whatever the stages wrote on them,
+        # are gone, so every stage is stale until it runs again on these.
+        await mark_every_stage_stale(session, sample_batch_id, REASON_FOLD)
         await touch_ledger(session, sample_batch_id)
         await session.commit()
         committed_at = datetime.now(timezone.utc)
@@ -803,6 +817,10 @@ async def _recompute_consensus_chunk(
     # isotopologues record comes off here: its reading moved, or the anchor
     # went.
     unstamped: dict[str, set[str]] = {}
+    # The records this recompute marked stale, by key, and their batches: the
+    # stage that wrote each is stale until it runs again.
+    stale_keys: set[str] = set()
+    stale_batches: set[str] = set()
     # The rows a strip read as a parent's line whose record comes off here:
     # their members read them otherwise now, or the anchor went. Parent id ->
     # those rows.
@@ -816,8 +834,10 @@ async def _recompute_consensus_chunk(
             members_by_peak.get(bp.batch_peak_id, []), persistence
         )
         members_by_peak[bp.batch_peak_id] = members
-        diagnostic_isotopologues = diagnostic_isotopologues_record_of(bp)
-        merged_isotopologue_of = merged_isotopologue_of_record(bp)
+        # Every record read with its stale mark: the recompute keeps them
+        # all, and marks them by what the new reading names.
+        diagnostic_isotopologues = diagnostic_isotopologues_record_of(bp, stale=True)
+        merged_isotopologue_of = merged_isotopologue_of_record(bp, stale=True)
         if not members:
             if diagnostic_isotopologues is not None:
                 unstamped[bp.batch_peak_id] = stamped_lines(diagnostic_isotopologues)
@@ -829,27 +849,25 @@ async def _recompute_consensus_chunk(
             members,
             batch_peak_id=bp.batch_peak_id,
             manual=manual_pin_of(bp),
-            series=series_record_of(bp),
-            co_variation=co_variation_record_of(bp),
+            series=series_record_of(bp, stale=True),
+            co_variation=co_variation_record_of(bp, stale=True),
             diagnostic_isotopologues=diagnostic_isotopologues,
-            stamped_isotopologue_of=stamped_isotopologue_of_record(bp),
+            stamped_isotopologue_of=stamped_isotopologue_of_record(bp, stale=True),
             merged_isotopologue_of=merged_isotopologue_of,
-            merged_isotopologues=merged_isotopologues_record(bp),
-            batch_checks=batch_checks_record_of(bp),
-            known_species=known_species_record_of(bp),
+            merged_isotopologues=merged_isotopologues_record(bp, stale=True),
+            batch_checks=batch_checks_record_of(bp, stale=True),
+            known_species=known_species_record_of(bp, stale=True),
             persistence=persistence,
-            flat_series=flat_series_record_of(bp),
-            water_ladder=water_ladder_record_of(bp),
+            flat_series=flat_series_record_of(bp, stale=True),
+            water_ladder=water_ladder_record_of(bp, stale=True),
         )
-        if (
-            diagnostic_isotopologues is not None
-            and DIAGNOSTIC_ISOTOPOLOGUES_KEY not in consensus.provenance
-        ):
+        newly = went_stale(bp.provenance, consensus.provenance)
+        if newly:
+            stale_keys |= newly
+            stale_batches.add(bp.sample_batch_id)
+        if DIAGNOSTIC_ISOTOPOLOGUES_KEY in newly:
             unstamped[bp.batch_peak_id] = stamped_lines(diagnostic_isotopologues)
-        if (
-            merged_isotopologue_of is not None
-            and MERGED_ISOTOPOLOGUE_OF_KEY not in consensus.provenance
-        ):
+        if MERGED_ISOTOPOLOGUE_OF_KEY in newly:
             released[merged_isotopologue_of["batch_peak_id"]].add(bp.batch_peak_id)
         voted[bp.batch_peak_id] = (bp, consensus)
     asked = {
@@ -871,6 +889,13 @@ async def _recompute_consensus_chunk(
         _apply_consensus(bp, consensus, now)
     await _take_off_stamps(session, unstamped, now)
     await _take_off_merged_lines(session, released, now)
+    stages = {STAGE_OF_KEY[key] for key in stale_keys if key in STAGE_OF_KEY}
+    for sample_batch_id in sorted(stale_batches):
+        # A stage running now is left to its own end: a record its own run
+        # leaves behind is its run's business, not news to it.
+        await mark_stale(
+            session, sample_batch_id, stages, REASON_CONSENSUS, skip_running=True
+        )
     return set(asked)
 
 
@@ -1067,14 +1092,15 @@ async def _persistence_facts(
 async def _take_off_stamps(
     session, unstamped: dict[str, set[str]], now: datetime
 ) -> None:
-    """Take a parent's stamps off the lines it stamped, once its diagnostic
-    isotopologues record has come off.
+    """Mark a parent's stamps stale on the lines it stamped, once its
+    diagnostic isotopologues record has gone stale.
 
     A stamp says a line holds its predicted height against the parent's
-    reading, so it goes with the reading. The line's own consensus cannot see
-    that happen - the line need not be in the recompute that moved the parent
-    - so the parent's recompute does it. A line stamped since by another
-    parent keeps that one's stamp.
+    reading, so it stands with the reading, and is kept marked stale once the
+    reading moves (``batch_peaks.kept_record``), as the parent's record is.
+    The line's own consensus cannot see that happen - the line need not be in
+    the recompute that moved the parent - so the parent's recompute does it. A
+    line stamped since by another parent keeps that one's stamp.
 
     :param unstamped: Parent id -> the lines its record stamped.
     """
@@ -1097,7 +1123,7 @@ async def _take_off_stamps(
         ):
             continue
         provenance = dict(line.provenance or {})
-        provenance.pop(STAMPED_ISOTOPOLOGUE_OF_KEY, None)
+        provenance[STAMPED_ISOTOPOLOGUE_OF_KEY] = kept_record(record, False)
         line.provenance = provenance
         line.batch_peak_utc_modified = now
 
@@ -1721,6 +1747,10 @@ async def rebuild_batch_ledger(
         raise
     outcome = backfill_outcome(folded, failed, sample_batch_id)
     await complete_run(sample_batch_id, run_id, summary=outcome.get("data"))
+    # Each fold marked the stages stale already; the rebuild says why.
+    async with async_session() as session:
+        await mark_every_stage_stale(session, sample_batch_id, REASON_REBUILD)
+        await session.commit()
     return outcome
 
 

@@ -248,6 +248,19 @@ def test_the_detail_provenance_is_the_anchors_with_this_members_probability():
     assert batch["is_ambiguous"] is False
 
 
+def test_the_detail_provenance_leaves_out_a_record_kept_stale():
+    # A record the consensus keeps marked stale stands for no reading the row
+    # could carry (MAS-983).
+    provenance = {
+        "n_assigned": 3,
+        "series": {"formula": "C6H12O6", "unit": "CH2"},
+        "co_variation": {"formula": "C5H12N2O4", "stale": True},
+    }
+    detail = member_detail(_member(), _anchor(provenance=provenance))
+    assert detail["provenance"]["series"] == {"formula": "C6H12O6", "unit": "CH2"}
+    assert "co_variation" not in detail["provenance"]
+
+
 def test_an_unassigned_member_lists_every_identity_and_no_provenance_surprises():
     detail = member_detail(
         _member(candidate=None, tier=0),

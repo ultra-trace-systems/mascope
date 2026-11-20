@@ -43,6 +43,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     snapshot_rows,
     snapshot_series,
 )
+from mascope_backend.api.new.peak_assignments.batch_stages import stage_standing
 from mascope_backend.api.new.peak_assignments.identification_level import (
     LEVELS,
     members_level,
@@ -482,6 +483,9 @@ async def get_batch_peak_ledger(
                 ),
                 "results": len(data),
                 "data": data,
+                # Where the stages stand now: a snapshot is a past ledger, and
+                # what would bring the batch up to date is the live one's.
+                **await stage_standing(sample_batch_id),
             }
         query = select(BatchPeak).where(BatchPeak.sample_batch_id == sample_batch_id)
         if tier:
@@ -501,6 +505,7 @@ async def get_batch_peak_ledger(
         "message": f"Retrieved {len(data)} batch peak{'s' if len(data) != 1 else ''}",
         "results": len(data),
         "data": data,
+        **await stage_standing(sample_batch_id),
     }
 
 

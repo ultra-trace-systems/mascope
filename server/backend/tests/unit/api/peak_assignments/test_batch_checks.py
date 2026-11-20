@@ -35,6 +35,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     STAMPED_ISOTOPOLOGUE_OF_KEY,
     batch_checks_record_of,
     compute_consensus,
+    is_stale,
     resolution_adaptive_tol_ppm,
     row_batch_checks,
     standing_batch_checks_record,
@@ -1036,7 +1037,7 @@ class TestTheConsensusKeepsTheRecord:
     )
     def test_not_once_the_reading_moves(self, member):
         c = compute_consensus([member], batch_checks=RECORD)
-        assert BATCH_CHECKS_KEY not in c.provenance
+        assert is_stale(c.provenance[BATCH_CHECKS_KEY])
 
     def test_a_reagent_s_record_names_its_ion(self):
         record = {

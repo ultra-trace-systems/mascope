@@ -36,6 +36,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     STAMPED_ISOTOPOLOGUE_OF_KEY,
     compute_consensus,
     diagnostic_isotopologues_record_of,
+    is_stale,
     member_stamp,
     resolution_adaptive_tol_ppm,
     resolution_from_tol_ppm,
@@ -598,7 +599,8 @@ class TestTheConsensusKeepsTheRecords:
         c = compute_consensus(
             [_fit(formula, mechanism)], diagnostic_isotopologues=_PARENT_RECORD
         )
-        assert DIAGNOSTIC_ISOTOPOLOGUES_KEY not in c.provenance
+        # Kept, marked stale: no reader serves it, the stamping reads it again.
+        assert is_stale(c.provenance[DIAGNOSTIC_ISOTOPOLOGUES_KEY])
 
     def test_a_lines_whatever_the_line_reads(self):
         for members in (
