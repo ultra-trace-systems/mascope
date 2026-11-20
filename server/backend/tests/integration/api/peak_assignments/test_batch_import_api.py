@@ -23,9 +23,11 @@ from stage_stubs import (  # the tests root, on sys.path
     stub_sample_reads,
     stub_seeded_scorer,
 )
+from test_utils import captured_logs
 
 from mascope_backend.api.new.peak_assignments import (
     batch_import,
+    batch_stages,
     pipeline,
 )
 from mascope_backend.api.new.peak_assignments.batch_import import (
@@ -541,6 +543,43 @@ async def test_a_cancellation_mid_import_still_recomputes_and_stays_a_cancellati
     # The sample measured before the cancellation committed its members: the
     # stages read them, so they are stale whichever way the recompute went.
     assert await _stale_reasons(batch_id) == {"series": "import"}
+
+
+async def test_a_cancelled_import_whose_stale_mark_fails_stays_a_cancellation(
+    folded_batch, stubbed_scorer, monkeypatch
+):
+    """The database gone as the import is cancelled: the deferred pass fails,
+    and so does the stages' mark after it. The mark's failure is logged
+    rather than raised, so the cancellation still reaches the caller as what
+    it is, not as a database error."""
+    batch_id, samples = folded_batch["batch_id"], folded_batch["samples"]
+    scorer = pipeline.score_seeds
+
+    async def cancelled(sample, seeds, params, **kwargs):
+        if sample.sample_item_id == samples["S2"]:
+            raise asyncio.CancelledError()
+        return await scorer(sample, seeds, params)
+
+    async def fails(*args, **kwargs):
+        raise RuntimeError("the database went away")
+
+    monkeypatch.setattr(pipeline, "score_seeds", cancelled)
+    monkeypatch.setattr(batch_import, "recompute_batch_consensus", fails)
+    monkeypatch.setattr(batch_stages, "mark_every_stage_stale", fails)
+    await _stages_ran(batch_id, BatchStage.SERIES)
+
+    with captured_logs("WARNING") as logs, pytest.raises(asyncio.CancelledError):
+        await run_batch_import(
+            batch_id, "peaky", 5.0, _rows((181.0709, "C6H12O6")), POLARITY
+        )
+
+    assert any(
+        record["message"].startswith("Could not mark the batch stages")
+        and "the database went away" in record["message"]
+        for record in logs
+    )
+    # Nothing could be written: the stage reads as it did.
+    assert await _stale_reasons(batch_id) == {}
 
 
 async def _stages_ran(batch_id, *stages):
