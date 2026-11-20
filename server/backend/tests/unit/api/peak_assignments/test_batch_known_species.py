@@ -792,6 +792,28 @@ class TestTheCore:
         # The primary ion is its own core: nothing to read it against.
         assert by_id["M"].co_variation is None
 
+    def test_the_reading_divides_by_the_other_reagent_ions(self):
+        """One normalisation for every co-variation reader (MAS-983): the
+        trimer and the primary ion are read as *Read co-variation* reads a
+        pair, divided by each spectrum's signal of the partition's other
+        reagent ions. A spectrum with none of it has no reagent signal to
+        divide by and is not read, as the reading reads none there; read
+        raw, as the decision read them before, all twelve were."""
+        anchors, members, samples = _co_varying_batch()
+        dimer = "C2H9N4O2+"
+        anchors.append(
+            anchor("Q", 121.07, ion=dimer, role="reagent", max_intensity=1e8)
+        )
+        members["Q"] = {
+            s: claimed(s, ion=dimer, mz=121.07, intensity=1e6) for s in samples[2:]
+        }
+        plan = plan_batch(anchors, members, {})
+        trimer = next(d for d in plan.decisions if d.row.batch_peak_id == "T")
+
+        assert trimer.co_variation["core_batch_peak_id"] == "M"
+        assert trimer.co_variation["n_spectra"] == 10
+        assert trimer.co_variation["verdict"] == "co_varying"
+
     def test_unassigned_traces_carry_the_common_mode(self):
         """The batch's drift is read off the unassigned peaks too: with it
         removed, a trimer and a primary ion that only share the drift do not

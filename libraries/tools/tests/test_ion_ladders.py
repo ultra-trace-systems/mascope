@@ -712,3 +712,37 @@ class TestARungsLines:
 
         assert "14N" in lines(0.9)
         assert "14N" not in lines(None)
+
+
+def test_one_water_ladder_table_serves_the_spectrum_and_the_batch():
+    """The pre-pass's water ladders and the batch's are read off one table
+    (MAS-983): every core a spectrum climbs is a core the batch measures,
+    climbed as far as the table says, and the batch measures every core the
+    table names."""
+    from mascope_tools.composition.reagents import (
+        DEFAULT_REAGENT_WATER_RUNGS,
+        WATER_CORE_LABELS,
+        WATER_LADDER_CORES,
+        sample_water_ladders,
+    )
+
+    for profile, cores in WATER_LADDER_CORES.items():
+        assert WATER_CORE_LABELS[profile] == tuple(label for label, _ in cores)
+        climbed = {label: rungs for label, rungs in cores if rungs}
+        ladders = sample_water_ladders(profile)
+        assert {ladder.cores[0].cluster.label for ladder in ladders} == set(climbed)
+        for ladder in ladders:
+            assert len(ladder.rungs) == climbed[ladder.cores[0].cluster.label]
+        assert ION_LADDERS.get(profile, ()) == ladders or profile == "BR"
+    assert (
+        dict(WATER_LADDER_CORES["NO3"])["[NO3+2xHNO3]-"] == DEFAULT_REAGENT_WATER_RUNGS
+    )
+    assert sample_water_ladders("BR") == ()
+
+
+def test_a_core_the_table_climbs_with_no_builder_is_refused(monkeypatch):
+    from mascope_tools.composition import reagents
+
+    monkeypatch.setitem(reagents.WATER_LADDER_CORES, "NO3", (("[NO3+HNO3]-", 2),))
+    with pytest.raises(ValueError, match="No spectrum ladder"):
+        reagents.sample_water_ladders("NO3")

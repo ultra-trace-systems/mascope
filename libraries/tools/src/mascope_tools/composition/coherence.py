@@ -728,6 +728,40 @@ def read_flatness(
     )
 
 
+def read_pair(
+    traces: Mapping[Hashable, Mapping[str, float]],
+    a: Hashable,
+    b: Hashable,
+    *,
+    reagent_traces: Optional[Mapping[Hashable, Mapping[str, float]]] = None,
+) -> CoVariation:
+    """How two of a batch's traces co-vary, read as the batch's co-variation
+    reading reads every pair (MAS-983): both in log10, divided by each
+    spectrum's reagent signal, with the batch's common mode removed
+    (:func:`batch_residuals`), and correlated over the spectra both hold.
+
+    One normalisation for every reader: the reagent signal of every reagent
+    ion but the two read. An analyte's channels are not reagent ions, so for
+    them it is the partition's whole reagent signal, as the reading divides
+    by; a reagent ion read against its own core - a known species' library
+    ion - is not divided by itself.
+
+    :param traces: Trace key -> spectrum -> intensity: the partition's
+        traces the common mode is read off, the two read among them.
+    :param a: The one trace.
+    :param b: The other.
+    :param reagent_traces: The partition's reagent ions; None for no
+        normalisation.
+    :return: The reading.
+    """
+    reagents = (
+        None
+        if reagent_traces is None
+        else {key: trace for key, trace in reagent_traces.items() if key not in (a, b)}
+    )
+    return batch_residuals(traces, reagent_traces=reagents).co_variation(a, b)
+
+
 __all__ = [
     "CO_VARYING_R",
     "FLAT_CV",
@@ -759,6 +793,7 @@ __all__ = [
     "batch_residuals",
     "by_strength",
     "normalised_cv",
+    "read_pair",
     "read_co_variation",
     "read_flat_series",
     "read_flatness",

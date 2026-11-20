@@ -150,7 +150,7 @@ from mascope_backend.db import (
     PeakAssignmentRun,
     async_session,
 )
-from mascope_tools.composition.coherence import batch_residuals
+from mascope_tools.composition.coherence import read_pair
 from mascope_tools.composition.known_species import (
     KIND_LIBRARY,
     KIND_LISTED,
@@ -1039,11 +1039,11 @@ def read_co_variations(rows: list[Row], decisions: list[Decision]) -> None:
     source's primary ion, a listed compound as the co-variation reading left
     it against its own other channel. Display-only (decision 35).
 
-    The traces are read as the co-variation reading reads them
-    (``coherence.batch_residuals``): log10, the batch's common mode removed,
-    read off every monoisotopic, unclaimed batch peak of the partition and the
-    species' own. They are not divided by the reagent signal, which a library
-    ion is part of.
+    The pair is read by the co-variation reading's own function
+    (``coherence.read_pair``), with its one normalisation: log10, divided by
+    the reagent signal of every reagent ion of the partition but the two read,
+    the batch's common mode removed, read off every monoisotopic, unclaimed
+    batch peak of the partition and the species' own (MAS-983).
     """
     library = [d for d in decisions if d.species.kind == KIND_LIBRARY]
     for decision in decisions:
@@ -1071,19 +1071,28 @@ def read_co_variations(rows: list[Row], decisions: list[Decision]) -> None:
     keys |= {d.row.batch_peak_id for d, _ in pairs}
     keys |= {core.row.batch_peak_id for _, core in pairs}
     by_id = {row.batch_peak_id: row for row in rows}
-    residuals = batch_residuals(
-        {
-            key: {
-                sample: member.intensity
-                for sample, member in by_id[key].members.items()
-                if member.intensity
-            }
-            for key in sorted(keys)
+
+    def trace(key: str) -> dict[str, float]:
+        return {
+            sample: member.intensity
+            for sample, member in by_id[key].members.items()
+            if member.intensity
         }
-    )
+
+    traces = {key: trace(key) for key in sorted(keys)}
+    # The partition's reagent ions, as the co-variation reading's normaliser
+    # reads them (``batch_coherence.partition_anchors``).
+    reagents = {
+        row.batch_peak_id: trace(row.batch_peak_id)
+        for row in rows
+        if not is_isotope_line(row.anchor) and row.anchor.consensus_role == ROLE_REAGENT
+    }
     for decision, core in pairs:
-        reading = residuals.co_variation(
-            decision.row.batch_peak_id, core.row.batch_peak_id
+        reading = read_pair(
+            traces,
+            decision.row.batch_peak_id,
+            core.row.batch_peak_id,
+            reagent_traces=reagents,
         )
         decision.co_variation = {
             "core": "ion",
