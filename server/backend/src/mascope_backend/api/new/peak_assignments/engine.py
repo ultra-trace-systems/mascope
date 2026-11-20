@@ -618,6 +618,43 @@ def tier_under_ceiling(row: dict) -> str | None:
     return tier
 
 
+#: The tiers at which a committed row shows its molecule (:func:`shows_molecule`).
+SHOWN_TIERS = (TIER_ASSIGNED, TIER_CANDIDATE)
+
+
+def shows_molecule(
+    row: dict, notation_by_id: dict[str, str], minor_channels: frozenset[str]
+) -> bool:
+    """Whether the sample shows this row's molecule through it.
+
+    The one test of "the sample shows this molecule", which the partner gate
+    reads as a partner (:func:`apply_partner_gates`), the cross-channel pass as
+    a rival the sample bears out (``cross_channel.partner_heights``) and the
+    fragment claim as a reading shown elsewhere (``reagent_pass.
+    claim_fragments``). A monoisotopic row that commits its neutral at
+    candidate or better, under the mass gate's ceiling (:func:`
+    tier_under_ceiling`), through one of the mode's own channels: a channel
+    the run searched and did not open for itself. An opportunistic channel
+    shows nothing on its own, and neither does a channel the run cannot name.
+
+    It is read where the reading changes have settled and before any cap
+    (``service.Judging.judge``): after the mass gate has measured the ledger,
+    whose ceiling is the one cap below candidate and is read here, so the
+    other caps cannot move the answer.
+
+    :param row: A ledger row.
+    :param notation_by_id: The run's mechanisms, by the id the rows carry.
+    :param minor_channels: The run's opportunistic channels.
+    :return: Whether the row shows its molecule.
+    """
+    if row.get("role") != ROLE_M0 or not row.get("assigned_formula"):
+        return False
+    channel = notation_by_id.get(str(row.get("ionization_mechanism_id")))
+    if channel is None or channel in minor_channels:
+        return False
+    return tier_under_ceiling(row) in SHOWN_TIERS
+
+
 def evidence_for(fit_score: float | None, formula: str | None) -> float | None:
     """Evidence for a committed formula: ``fit x plausibility``.
 
@@ -3157,13 +3194,9 @@ def apply_partner_gates(
         return tier
 
     def partner_key(row: dict) -> str | None:
-        """The neutral a row commits through a mode channel, or None."""
-        if (
-            row.get("role") == ROLE_M0
-            and row.get("ionization_mechanism_id") not in minor_ids
-            and row.get("assigned_formula")
-            and tier_under_ceiling(row) in (TIER_ASSIGNED, TIER_CANDIDATE)
-        ):
+        """The neutral a row shows the sample's molecule as, or None
+        (:func:`shows_molecule`)."""
+        if shows_molecule(row, notation_by_id, minor_channels):
             return formula_identity(str(row["assigned_formula"]))
         return None
 

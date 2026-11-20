@@ -864,6 +864,19 @@ class TestThePartnerGate:
         assert formate["provenance"]["partner_gate"]["partner"] is True
         assert formate["tier"] == TIER_ASSIGNED
 
+    def test_a_row_through_a_channel_the_run_cannot_name_is_no_partner(self):
+        # A partner is a row through which the sample shows its molecule
+        # (engine.shows_molecule): one of the mode's own channels, which the
+        # run searched. A channel it cannot name shows nothing, as it does not
+        # to the cross-channel pass or the fragment claim.
+        unnamed = self._row("a1", "C2H4O2", "im-unnamed", source="database")
+        formate = self._formate("f1", "C2H4O2")
+        self._gate(
+            [unnamed, formate], self.IDS, minor={"[M+HCOO]-"}, gated={"[M+HCOO]-"}
+        )
+        assert formate["provenance"]["partner_gate"]["partner"] is False
+        assert formate["tier"] == TIER_CANDIDATE
+
     @pytest.mark.parametrize(
         ("library_formula", "formate_formula"),
         [("CH3COOH", "C2H4O2"), ("C2H4O2", "C2H4O2"), ("C1H2O1", "CH2O")],

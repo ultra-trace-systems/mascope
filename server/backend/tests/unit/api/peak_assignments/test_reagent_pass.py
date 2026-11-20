@@ -1130,6 +1130,24 @@ class TestTheFragmentClaim:
         assert claims.fragments == []
         assert claims.summary["held"]["shown_elsewhere"] == 1
 
+    def test_a_molecule_the_mass_gate_holds_under_candidate_shows_nothing(self):
+        # The one test of "the sample shows this molecule"
+        # (engine.shows_molecule) reads a row's tier under the mass gate's
+        # ceiling, as the partner gate and the cross-channel pass read it: a
+        # benzene row the gate holds below assignability shows nothing, so the
+        # ion is the ladder's.
+        protonated_benzene = committed(
+            "c6h7", "C6H6", "C6H7+", PROTON, mz=79.0542, intensity=5.0e4
+        )
+        benzene = committed(
+            "benzene", "C6H6", "C6H6+", ELECTRON, mz=78.0464, intensity=2.0e4
+        )
+        benzene["provenance"]["mass_gate"] = {"ceiling": "below_assignability"}
+        claims = claim([pinene(), protonated_benzene, benzene])
+
+        assert claims.summary["held"]["shown_elsewhere"] == 0
+        assert [f["sample_peak_id"] for f in claims.fragments] == ["peak-c6h7"]
+
     def test_so_does_a_reading_the_election_displaced(self):
         # The ion elected as C6H8 less a hydride, with protonated benzene the
         # reading it set aside: benzene shown on a peak of its own keeps the
@@ -1564,3 +1582,192 @@ class TestARungsLinesFromTheBackend:
 
         assert "14N" in self._lines(peaks, "NO3_15N", "^NO3", purity=0.9)
         assert "14N" not in self._lines(peaks, "NO3_15N", "^NO3")
+
+
+class TestTheReadingChangesSettleBeforeTheFragmentClaimIsKept:
+    """The fragment claim reads the ledger the partner gate settled, and a
+    claim takes its rows off and runs the changes again
+    (``service.Judging.judge``): a fragment read as a molecule is no partner
+    on the ledger the caps judge."""
+
+    NOTATIONS = {**CHANNELS, "nh4": "[M+NH4]+"}
+    GATED = frozenset({"[M+NH4]+"})
+
+    def _gated(self) -> dict:
+        # Benzene through an opportunistic channel, whose ion also reads as
+        # C6H9N through the mode's own proton.
+        row = committed(
+            "gated",
+            "C6H6",
+            "C6H10N+",
+            "nh4",
+            mz=96.0808,
+            intensity=3.0e4,
+            displaced=("C6H9N", PROTON),
+        )
+        row["alternatives"][0]["plausibility"] = 1.0
+        row["provenance"] = {"plausibility": 1.0, "evidence": 0.9}
+        return row
+
+    def _settle(self, rows, ladders=(LADDER,), notations=None, gated=None):
+        """A judging round's refit and reading changes over ``rows``, the mass
+        gate's measurement counting the rows it is given."""
+        notations = self.NOTATIONS if notations is None else notations
+        gated = self.GATED if gated is None else gated
+        from unittest.mock import patch
+
+        from mascope_backend.api.new.peak_assignments import service
+
+        measured = []
+        judging = service.Judging(
+            rows,
+            stage_a_accuracy=None,
+            fallback_sigma_ppm=1.0,
+            notation_by_id=notations,
+            mz_tolerance_ppm=5.0,
+            abundance_floor=0.01,
+            max_alternatives=5,
+            minor_channels=gated,
+            partner_gated_channels=gated,
+            tier_bands={"assigned": 0.75, "candidate": 0.45},
+            fragment_ladders=ladders,
+        )
+        with patch.object(
+            service,
+            "measure_mass_gate",
+            side_effect=lambda ledger, **_: measured.append(len(ledger)) or {},
+        ):
+            judging.refit()
+            judging.judge()
+        return judging, measured
+
+    def _protonated_benzene(self) -> dict:
+        # The ladder's C6H7+, read as protonated benzene: it shows benzene,
+        # until the claim reads it as the parent's fragment.
+        return committed(
+            "c6h7",
+            "C6H6",
+            "C6H7+",
+            PROTON,
+            mz=79.0542,
+            intensity=5.0e4,
+            tier="candidate",
+        )
+
+    def test_a_fragment_is_no_partner_once_it_is_claimed(self):
+        settled, measured = self._settle(
+            [pinene(), self._protonated_benzene(), self._gated()]
+        )
+
+        assert [f["sample_peak_id"] for f in settled.fragments.fragments] == [
+            "peak-c6h7"
+        ]
+        assert settled.fragments.summary["claimed"] == 1
+        assert settled.fragments.rows is settled.judged
+        (gated,) = [r for r in settled.judged if r["peak_assignment_id"] == "gated"]
+        # With the fragment gone nothing shows benzene, so the gate gives the
+        # ion the mode's own reading.
+        assert (gated["assigned_formula"], gated["ionization_mechanism_id"]) == (
+            "C6H9N",
+            PROTON,
+        )
+        assert "c6h7" not in {r["peak_assignment_id"] for r in settled.judged}
+        # Measured twice: the claimed rows leave before the second measurement.
+        assert measured == [3, 2]
+
+    def test_what_the_claim_took_is_counted_once_over_its_passes(self):
+        # The fragment's own 13C line goes with it, and the round records the
+        # claim once, whichever pass of it took the rows.
+        line = committed(
+            "c6h7-13c",
+            "C6H6",
+            "[13C]C5H7+",
+            PROTON,
+            mz=80.0576,
+            intensity=3.0e3,
+            tier="candidate",
+            role="iso_child",
+            owner="c6h7",
+            label="13C",
+        )
+        settled, measured = self._settle(
+            [pinene(), self._protonated_benzene(), line, self._gated()]
+        )
+
+        summary = settled.fragments.summary
+        assert (summary["claimed"], summary["claimed_isotopologues"]) == (1, 1)
+        assert len(summary["claims"]) == 1
+        assert {row["sample_peak_id"] for row in settled.fragments.fragments} == {
+            "peak-c6h7",
+            "peak-c6h7-13c",
+        }
+        assert measured == [4, 2]
+
+    def test_a_round_that_claims_settles_as_one_that_never_held_the_fragment(
+        self,
+    ):
+        # The changes run again from the round's rows as it began, not from
+        # the ledger the first pass settled: nothing the fragment decided
+        # while it stood as a molecule survives its claim.
+        claimed, _ = self._settle([pinene(), self._protonated_benzene(), self._gated()])
+        never, _ = self._settle([pinene(), self._gated()])
+
+        assert claimed.judged == never.judged
+        assert claimed.partner_gate == never.partner_gate
+
+    def test_a_swap_the_fragment_made_is_not_kept_once_it_is_claimed(self):
+        # An ion read through one gated channel, whose only other reading is
+        # benzene through another: while the fragment stands as protonated
+        # benzene, the gate takes benzene; once the claim reads it as the
+        # parent's, the round starts again from the row as it came, and the
+        # gate keeps the reading it was given, as on a ledger that never held
+        # the fragment.
+        notations = {**self.NOTATIONS, "g2": "[M+CH5N]+"}
+        gated = frozenset({"[M+NH4]+", "[M+CH5N]+"})
+        row = committed(
+            "r",
+            "C5H5N",
+            "C6H10N+",
+            "g2",
+            mz=96.0808,
+            intensity=3.0e4,
+            displaced=("C6H6", "nh4"),
+        )
+        row["alternatives"][0]["plausibility"] = 1.0
+        row["provenance"] = {"plausibility": 1.0, "evidence": 0.9}
+
+        claimed, _ = self._settle(
+            [pinene(), self._protonated_benzene(), copy.deepcopy(row)],
+            notations=notations,
+            gated=gated,
+        )
+        never, _ = self._settle(
+            [pinene(), copy.deepcopy(row)], notations=notations, gated=gated
+        )
+        held, _ = self._settle(
+            [pinene(), self._protonated_benzene(), copy.deepcopy(row)],
+            ladders=(),
+            notations=notations,
+            gated=gated,
+        )
+
+        # Without the claim the fragment is benzene's partner, and the swap is
+        # made: the case the restart has to undo.
+        (swapped,) = [r for r in held.judged if r["peak_assignment_id"] == "r"]
+        assert swapped["assigned_formula"] == "C6H6"
+        (kept,) = [r for r in claimed.judged if r["peak_assignment_id"] == "r"]
+        assert kept["assigned_formula"] == "C5H5N"
+        assert claimed.judged == never.judged
+
+    def test_without_a_ladder_the_rows_are_settled_once(self):
+        rows = [pinene(), self._protonated_benzene(), self._gated()]
+        settled, measured = self._settle(rows, ladders=())
+
+        # The round's own copy, measured once and not copied again.
+        assert settled.judged is settled.applied
+        assert measured == [3]
+        assert settled.fragments.fragments == []
+        # On this ledger protonated benzene shows benzene: the reading stands.
+        assert settled.judged[2]["provenance"]["partner_gate"]["partner"] is True
+        # The rows given are never modified.
+        assert "partner_gate" not in rows[2]["provenance"]

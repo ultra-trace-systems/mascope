@@ -2871,3 +2871,50 @@ class TestStageACompetesIonsNotFormulas:
             max_alternatives=0,
         )
         assert row["provenance"][RIVALS_PAST_CAP] == 1
+
+
+class TestTheSampleShowsThisMolecule:
+    """The one test the partner gate, the cross-channel pass and the fragment
+    claim read (``engine.shows_molecule``)."""
+
+    NOTATIONS = {"im-h": "[M+H]+", "im-ct": "[M]+.", "im-nh4": "[M+NH4]+"}
+    MINOR = frozenset({"[M+NH4]+"})
+
+    def _row(self, **overrides):
+        row = {
+            "role": ROLE_M0,
+            "assigned_formula": "C6H6",
+            "ionization_mechanism_id": "im-h",
+            "tier": TIER_CANDIDATE,
+            "provenance": {},
+        }
+        row.update(overrides)
+        return row
+
+    def _shows(self, row):
+        from mascope_backend.api.new.peak_assignments.engine import shows_molecule
+
+        return shows_molecule(row, self.NOTATIONS, self.MINOR)
+
+    @pytest.mark.parametrize("tier", [TIER_ASSIGNED, TIER_CANDIDATE])
+    def test_a_mode_channel_row_at_candidate_or_better_shows_it(self, tier):
+        assert self._shows(self._row(tier=tier))
+
+    def test_a_row_under_candidate_does_not(self):
+        assert not self._shows(self._row(tier=TIER_BELOW_ASSIGNABILITY))
+
+    def test_nor_one_the_mass_gate_holds_under_candidate(self):
+        row = self._row(provenance={"mass_gate": {"ceiling": TIER_BELOW_ASSIGNABILITY}})
+        assert not self._shows(row)
+
+    def test_nor_an_opportunistic_channel(self):
+        assert not self._shows(self._row(ionization_mechanism_id="im-nh4"))
+
+    def test_nor_a_channel_the_run_cannot_name(self):
+        assert not self._shows(self._row(ionization_mechanism_id="im-other"))
+
+    def test_nor_an_isotopologue(self):
+        assert not self._shows(self._row(role=ROLE_ISO_CHILD))
+
+    def test_nor_a_row_with_no_formula(self):
+        assert not self._shows(self._row(assigned_formula=None))

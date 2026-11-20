@@ -165,6 +165,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     is_target_library_row,
     outweighs,
     partner_ratio,
+    shows_molecule,
     tier_under_ceiling,
 )
 from mascope_backend.api.new.peak_assignments.mass_gate import is_committed
@@ -687,13 +688,11 @@ def partner_heights(
 ) -> dict[str, list[tuple[str, float]]]:
     """How the sample shows each neutral through the mode's own channels.
 
-    Per neutral, the peak height of every monoisotopic row that commits it at
-    candidate or better through one of the mode's own channels: the partner
-    gate's own bar for a partner (``engine.apply_partner_gates``), read under
-    the mass gate's ceiling as the gate reads it. A reading of one of these
-    names a molecule the sample itself bears out, which no prior sets aside;
-    an opportunistic channel shows nothing on its own. The bar is one that no
-    cap but the mass gate's can take a row back under, and that one is read.
+    Per neutral, the peak height of every row through which the sample shows
+    it (``engine.shows_molecule``): the partner gate's partner and the
+    fragment claim's reading shown elsewhere, by the one test. A reading of
+    one of these names a molecule the sample itself bears out, which no prior
+    sets aside; an opportunistic channel shows nothing on its own.
 
     :param assignments: Every row built for this sample.
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
@@ -704,15 +703,9 @@ def partner_heights(
     """
     heights: dict[str, list[tuple[str, float]]] = {}
     for row in assignments:
-        if (
-            not is_committed(row)
-            or row.get("role") != ROLE_M0
-            or tier_under_ceiling(row) not in (TIER_ASSIGNED, TIER_CANDIDATE)
-        ):
+        if not shows_molecule(row, notation_by_id, minor_channels):
             continue
-        notation = notation_by_id.get(str(row.get("ionization_mechanism_id")))
-        if not notation or notation in minor_channels:
-            continue
+        notation = notation_by_id[str(row.get("ionization_mechanism_id"))]
         neutral = formula_identity(row.get("assigned_formula"))
         heights.setdefault(neutral, []).append((notation, _height(row)))
     return heights

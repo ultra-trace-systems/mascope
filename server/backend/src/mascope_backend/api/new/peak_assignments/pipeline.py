@@ -113,7 +113,10 @@ from mascope_backend.api.new.peak_assignments.profiles import (
     resolve_profile,
     with_fitted_window,
 )
-from mascope_backend.api.new.peak_assignments.reagent_pass import FragmentClaims
+from mascope_backend.api.new.peak_assignments.reagent_pass import (
+    FragmentClaims,
+    fragment_ladders_for,
+)
 from mascope_backend.api.new.peak_assignments.seeded_scoring import score_seeds
 from mascope_backend.api.new.peak_assignments.tiering import LineGate, ask_absent_line
 from mascope_backend.api.new.peak_assignments.tiers import (
@@ -436,12 +439,12 @@ class RunContext:
     # -- elect
     stage_b: list[dict] = field(default_factory=list)
     same_ion_families: int = 0
-    fragments: Any = None
     series_anchored: int = 0
     # -- refit, judge, cap
     lines: SpectrumLines | None = None
     judging: service.Judging | None = None
     judged: Any = None
+    fragments: Any = None
     tiering: dict = field(default_factory=dict)
     # -- persist
     result: Any = None
@@ -1197,9 +1200,6 @@ async def elect(ctx: RunContext) -> None:
     - a list's matches carry the other readings of their ion
       (``service._record_same_ion_readings``), which reads no tier and so is
       written once however many rounds judge them;
-    - the fragments the source made of a committed analyte are read as the
-      source's before anything weighs them as molecules
-      (``service._claim_fragments``);
     - and a reading the batch's series detection proposed for its peak
       carries the series' record, which the tiering pass counts as a second
       observation (step 4.1), the detection's own measurement of it included
@@ -1304,17 +1304,11 @@ async def elect(ctx: RunContext) -> None:
         resolved_profile=ctx.resolved_profile,
         max_alternatives=config.max_alternatives,
     )
-    ctx.fragments = service._claim_fragments(
-        ctx.stage_a + ctx.stage_b,
-        resolved_profile=ctx.resolved_profile,
-        searched_mechanisms=ctx.searched_mechanisms,
-        sample_name=sample.sample_item_name,
-    )
     ctx.series_anchored = (
         0
         if ctx.decoy_plan is not None
         else service.stamp_series(
-            ctx.fragments.rows,
+            ctx.stage_a + ctx.stage_b,
             {
                 **await service.batch_series_by_peak(sample.sample_item_id),
                 **ctx.series_by_peak,
@@ -1456,7 +1450,7 @@ def _judging_for(ctx: RunContext) -> service.Judging:
     resolved_profile = ctx.resolved_profile
     plan = ctx.decoy_plan if ctx.inherits else None
     return service.Judging(
-        ctx.fragments.rows,
+        ctx.stage_a + ctx.stage_b,
         stage_a_accuracy=ctx.mass_accuracy,
         fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
         notation_by_id=service._notation_by_id(ctx.searched_mechanisms),
@@ -1483,15 +1477,19 @@ def _judging_for(ctx: RunContext) -> service.Judging:
         source_line_cap=ctx.source_line_cap,
         context=resolved_profile.context,
         nox_skeleton=resolved_profile.nox_skeleton,
+        fragment_ladders=fragment_ladders_for(resolved_profile.profile.name),
     )
 
 
 async def judge(ctx: RunContext) -> None:
-    """The reading changes: the partner gate settles which molecule each ion
-    read through a gated channel is, against the molecules the sample shows
-    through the mode's own, and the cross-channel pass records what the
-    settled readings say of each other (``service.Judging.judge``). A person's
-    choice changes no reading: its formula is the person's."""
+    """The reading changes, to their fixed point: the partner gate settles
+    which molecule each ion read through a gated channel is, against the
+    molecules the sample shows through the mode's own; the fragments the
+    source made of a committed analyte are read as the source's on the settled
+    ledger, before anything weighs them as molecules; and the cross-channel
+    pass records what the settled readings say of each other
+    (``service.Judging.judge``). A person's choice changes no reading: its
+    formula is the person's."""
     if ctx.path.rules is Rules.SPECTRUM:
         return
     ctx.judging.judge()
@@ -1514,6 +1512,8 @@ async def cap(ctx: RunContext) -> None:
     if judging.another_round():
         return
     ctx.judged = judging.result()
+    ctx.fragments = ctx.judged.fragments
+    service._log_fragments(ctx.fragments, ctx.sample.sample_item_name)
     ctx.tiering = {**ctx.judged.tiering, "series_anchored": ctx.series_anchored}
     _report_judging(ctx)
 
@@ -1568,7 +1568,7 @@ def _cap_by_the_spectrum(ctx: RunContext) -> None:
         "asked": asked,
         "capped": len(capped),
     }
-    ctx.judged = service.JudgedCommits(rows, {}, {}, ctx.tiering, {})
+    ctx.judged = service.JudgedCommits(rows, {}, {}, ctx.tiering, {}, ctx.fragments)
 
 
 def _report_judging(ctx: RunContext) -> None:

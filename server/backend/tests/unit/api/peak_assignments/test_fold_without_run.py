@@ -1111,7 +1111,7 @@ async def test_the_folds_mass_gate_reads_the_sources_lines_by_the_calibrant_cap(
 async def test_the_folds_partner_gate_is_told_what_the_lists_name():
     """As a run's is: the neutrals the lists Stage A read name reach the
     partner gate, which records a swapped-in reading's corroboration by them
-    (``service._read_other_readings``)."""
+    (``service.Judging.judge``)."""
     from mascope_backend.api.new.peak_assignments import service
     from mascope_backend.api.new.peak_assignments.service import (
         fold_sample_peaks_without_run,
@@ -1133,3 +1133,69 @@ async def test_the_folds_partner_gate_is_told_what_the_lists_name():
         assert await fold_sample_peaks_without_run("si-1") == "batch-1"
 
     assert gate.call_args.kwargs["listed_formulas"] == listed
+
+
+@pytest.mark.asyncio
+async def test_the_fold_reads_a_fragment_as_the_source_s_as_a_run_does():
+    """The fold settles its readings as a run's rounds do
+    (``service.Judging.judge``), the fragment claim among them: a list's
+    reading of a fragment of a committed parent is folded as the source's
+    ion."""
+    from mascope_backend.api.new.peak_assignments.service import (
+        fold_sample_peaks_without_run,
+    )
+    from mascope_tools.composition.reagents import FragmentIon, FragmentLadder
+
+    ladder = FragmentLadder(
+        parent="C6H12O6",
+        label="a stated parent",
+        fragments=(FragmentIon("C3H7O3", 1, "[C3H7O3]+", literature_ratio=1.0),),
+        references=("nist",),
+    )
+    parent = _stage_a_row("si-1", fold_run_id("si-1")) | {
+        "ionization_mechanism_id": "m-h"
+    }
+    fragment = _stage_a_row("si-1", fold_run_id("si-1")) | {
+        "peak_assignment_id": "b" * 32,
+        "sample_peak_id": "p2",
+        "sample_peak_mz": 91.0390,
+        "sample_peak_intensity": 3000.0,
+        "assigned_formula": "C3H6O3",
+        "ion_formula": "C3H7O3+",
+        "ionization_mechanism_id": "m-h",
+    }
+    stack, mocks = _patched()
+    mocks["stage_a"].return_value = (
+        [parent, fragment],
+        None,
+        SampleMassAccuracy(),
+        NO_ENVELOPE_FIT,
+        frozenset(),
+    )
+    mocks["peaks"].return_value = pd.DataFrame(
+        {
+            "sample_peak_id": ["p1", "p2"],
+            "mz": [181.0707, 91.0390],
+            "intensity": [5000.0, 3000.0],
+        }
+    )
+    mocks["mechanisms"].return_value = (
+        ["m-h"],
+        [
+            SimpleNamespace(
+                ionization_mechanism_id="m-h",
+                ionization_mechanism="[M+H]+",
+                ionization_mechanism_polarity="+",
+            )
+        ],
+    )
+    with stack:
+        stack.enter_context(
+            patch(f"{_PIPE}.fragment_ladders_for", return_value=(ladder,))
+        )
+        assert await fold_sample_peaks_without_run("si-1") == "batch-1"
+
+    folded = {row.sample_peak_id: row for row in mocks["fold"].call_args.kwargs["rows"]}
+    assert folded["p1"].assigned_formula == "C6H12O6"
+    assert (folded["p2"].role, folded["p2"].assigned_formula) == ("reagent", None)
+    assert folded["p2"].provenance["reagent"]["family"] == "fragment"
