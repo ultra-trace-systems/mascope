@@ -1125,6 +1125,19 @@ def test_a_miss_develop_has_that_the_ref_meets_is_fixed():
     )
 
 
+def test_a_miss_develop_has_that_the_ref_leaves_unread_is_not_fixed():
+    columns = {**DEVELOP_CARD, "B": {**DEVELOP_CARD["B"], "G1": (None, 0)}}
+    gate = _against(columns)
+    assert gate["marks"]["B"]["G1"] == "not read"
+    assert gate["against"]["fixed"] == []
+    assert [m["metric"] for m in gate["against"]["develops"]] == ["G5", "G2_formula"]
+    # The reading shows on the line's not-read tail, and nowhere else.
+    assert compare_runs.gate_line(gate) == (
+        "GATE stage2: PASS for this ref - 0 new, 2 develop's (B G5 3 (<= 0); "
+        "B G2_formula 70 (>= 75)), 0 fixed; 1 not read (B G1)"
+    )
+
+
 def test_a_shared_miss_made_worse_beyond_the_noise_is_new():
     # G1 has a max: higher is worse. G2_formula a min: lower is worse.
     columns = {
@@ -1181,6 +1194,11 @@ def test_the_gate_against_a_baseline_on_one_set_alone():
     assert compare_runs.gate_line(b).startswith(
         "GATE stage2: PASS for this ref - 0 new, 3 develop's"
     )
+    # A set no sample was read on fails alone too, with no new miss.
+    unread = {**DEVELOP_CARD, "A": {"samples": (0, None), "G5": (None, None)}}
+    alone = compare_runs.for_set(_against(unread), "A")
+    assert alone["against"]["new"] == []
+    assert alone["verdict"] == "fail" == alone["absolute"]
 
 
 def test_the_shipped_noise_names_every_metric_it_gates():
