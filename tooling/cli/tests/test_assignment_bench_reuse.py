@@ -243,6 +243,7 @@ def test_the_bench_s_holdings_are_in_the_digest(rig):
         lambda s: s["reference"].update(library="2026.11.1"),
         lambda s: s["reference"].update(block="blk2"),
         lambda s: s["reference"]["runs"]["Db"]["S1"].update(run_id="P-S1b"),
+        lambda s: s["reference"].update(unrunnable={"Db": "no build"}),
         lambda s: s["sets"]["Db"]["samples"]["k1"]["items"][0].update(
             sample_item_id="S9"
         ),
@@ -267,6 +268,19 @@ def test_the_caller_s_bench_and_comparison_are_in_the_digest(tmp_path):
     assert brun.tool_digest([root]) == first
     (root / "run.py").write_text("x = 2\n")
     assert brun.tool_digest([root]) != first
+
+
+def test_the_libraries_the_comparison_imports_are_in_the_tool_digest():
+    # The caller's own installs, as the comparison imports them: another
+    # reagent library reads G10 another way.
+    import mascope_sdk
+    import mascope_tools
+
+    for module in (mascope_tools, mascope_sdk):
+        assert Path(module.__file__).resolve().parent in [
+            root.resolve() for root in brun.TOOL
+        ]
+    assert brun.package_root("mascope_no_such_package") is None
 
 
 def test_the_engine_digest_is_its_three_parts(rig):
@@ -472,6 +486,23 @@ def test_develop_s_head_with_baseline_runs_and_its_card_serves_a_frontend_branch
     assert rig.state()["baseline"]["path"] == "origin-develop/20261112-120001"
 
 
+def test_develop_s_head_with_post_runs_and_becomes_the_baseline(rig, capsys):
+    rig.instance.revisions[BRANCH] = rig.instance.revisions[DEVELOP]
+    gh = base_post.FakeGh(head=DEVELOP)
+    assert _post(rig, gh, ref="origin/develop") == 0
+    first = rig.state()["baseline"]["path"]
+    capsys.readouterr()
+    # A --post run turns --baseline on, so develop's head runs again and
+    # makes the newer baseline rather than be served the older card.
+    poster = post.Poster(gh=gh, number=7)
+    assert rig.runner().reuse("origin/develop", post=poster) is None
+    assert "with --baseline or --post it makes the baseline" in capsys.readouterr().out
+    assert _post(rig, gh, ref="origin/develop") == 0
+    assert len(rig.compare.calls) == 2
+    assert rig.state()["cards"][-1]["reused"] is None
+    assert rig.state()["baseline"]["path"] != first
+
+
 def test_a_reused_card_on_a_pr_is_posted_with_the_reuse_line(rig):
     gh = base_post.FakeGh(head=BRANCH)
     assert _post(rig, gh) == 0
@@ -618,14 +649,43 @@ def test_a_branch_s_card_reused_at_develop_s_head_is_gated_on_its_own(rig):
     merged = _docs_head(rig, ref="origin/develop", sha="a" * 40, of=BRANCH)
     rig.instance.develop_sha = lambda: merged
     rig.instance.on_develop.add(merged)
-    gh.head = merged
-    # On develop's head the miss is its own, as a run's absolute gate says.
-    assert _post(rig, gh, ref="origin/develop") == 1
+    # On develop's head, with no baseline, the miss is its own, as a run's
+    # gate says. (With --baseline or --post develop's head runs.)
+    assert rig.run("origin/develop") == 1
     record = rig.state()["cards"][-1]
     assert record["reused"] == "topic/20261112-120001" and record["verdict"] == "fail"
     card = json.loads((rig.card_dir() / "card.json").read_text())
     assert card["gate"]["verdict"] == "fail" and "against" not in card["gate"]
-    assert card["baseline"] is not None
+    assert card["baseline"] is None
+
+
+def test_develop_s_card_gated_on_its_own_is_gated_again_for_a_branch(rig):
+    rig.compare = GatingCompare()
+    rig.instance.revisions[BRANCH] = rig.instance.revisions[DEVELOP]
+    # The rolling baseline: develop's card of every set, its miss its own.
+    assert rig.run("origin/develop", baseline=True) == 1
+    baseline = rig.state()["baseline"]["path"]
+    # Develop's head again, of one set: read against that baseline, gated on
+    # its own, and no baseline itself.
+    assert rig.run("origin/develop", baseline=True, sets=["Db"]) == 1
+    assert rig.state()["baseline"]["path"] == baseline
+    assert len(rig.compare.calls) == 2
+    # A branch that changed only the frontend, read against the same
+    # baseline: develop's card serves it, and the miss is develop's.
+    _head(
+        rig,
+        "frontend",
+        FRONTEND,
+        of=DEVELOP,
+        extra=[("server/frontend/src/New.vue", "100644 blob f1")],
+    )
+    assert rig.run("frontend", baseline=True, sets=["Db"]) == 0
+    assert len(rig.compare.calls) == 2
+    record = rig.state()["cards"][-1]
+    assert record["reused"] == "origin-develop/20261112-120001"
+    assert record["verdict"] == "pass"
+    card = json.loads((rig.card_dir() / "card.json").read_text())
+    assert card["gate"]["verdict"] == "pass" and card["gate"]["absolute"] == "fail"
 
 
 def test_post_posts_a_reused_card_with_its_line(rig):
@@ -698,7 +758,9 @@ def test_a_caller_asking_before_the_lock_is_told_why_it_runs(rig, capsys):
     )
     rig.instance.revisions[BRANCH] = rig.instance.revisions[DEVELOP]
     assert rig.runner().reuse("origin/develop", baseline=True) is None
-    assert "with --baseline it makes the baseline: it runs" in capsys.readouterr().out
+    assert "with --baseline or --post it makes the baseline: it runs" in (
+        capsys.readouterr().out
+    )
 
 
 def test_a_card_that_now_holds_a_denied_name_is_not_reused(rig, capsys):
@@ -714,15 +776,56 @@ def test_a_card_that_now_holds_a_denied_name_is_not_reused(rig, capsys):
     assert len(rig.state()["cards"]) == 1
 
 
-def test_a_baseline_of_another_card_format_is_left_to_a_run(rig):
+@pytest.mark.parametrize(
+    "columns", [{}, {"Db": {"rows": ["of another shape"]}}], ids=["empty", "shaped"]
+)
+def test_a_baseline_of_another_card_format_is_left_to_a_run(rig, capsys, columns):
+    rig.compare.edit = _thresholds
     rig.instance.revisions[BRANCH] = rig.instance.revisions[DEVELOP]
     assert rig.run("topic") == 0
     assert rig.run("origin/develop", baseline=True) == 0
     baseline = rig.home.cards / rig.state()["baseline"]["path"] / "card.json"
-    baseline.write_text(json.dumps({"format": "old", "columns": {}}))
+    # Columns of another shape: the format is read before the gate reads them.
+    baseline.write_text(json.dumps({"format": "old", "columns": columns}))
     _docs_head(rig)
+    capsys.readouterr()
     assert rig.runner().reuse("topic", baseline=True) is None
+    assert "cannot be read against the baseline (the baseline is not a card" in (
+        capsys.readouterr().out
+    )
     assert len(rig.state()["cards"]) == 2
+
+
+def test_an_error_in_the_reuse_is_posted_as_the_run_s_failure(rig):
+    gh = base_post.FakeGh(head=BRANCH)
+    with pytest.raises(brun.RunError, match="the bench has no set Zz"):
+        _post(rig, gh, sets=["Zz"])
+    [comment] = gh.bench_comments()
+    assert "**The run stopped: RunError.**" in comment["body"]
+    assert "the bench has no set Zz" in comment["body"]
+
+
+def test_a_reuse_that_cannot_read_the_database_leaves_the_ref_to_a_run(
+    rig, monkeypatch, capsys
+):
+    assert rig.run("topic") == 0
+    _docs_head(rig)
+    real = rig.instance.private_names
+
+    def restoring():
+        raise RuntimeError("cannot read the database: it is being restored")
+
+    monkeypatch.setattr(rig.instance, "private_names", restoring)
+    capsys.readouterr()
+    assert rig.runner().reuse("topic") is None
+    out = capsys.readouterr().out
+    assert "no card to reuse (RuntimeError: cannot read the database" in out
+    assert out.rstrip().endswith("; it runs")
+    assert len(rig.state()["cards"]) == 1
+    # Behind the lock, where the database answers, the same head is reused.
+    monkeypatch.setattr(rig.instance, "private_names", real)
+    assert rig.run("topic") == 0
+    assert rig.state()["cards"][-1]["reused"] == "topic/20261112-120000"
 
 
 def test_a_reused_card_whose_source_ref_names_a_held_word_is_written(rig):
