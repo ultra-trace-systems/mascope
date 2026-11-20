@@ -228,6 +228,9 @@ def test_the_command_line_names_what_takes_the_lock(tmp_path, monkeypatch):
         def __init__(self, **kwargs):
             pass
 
+        def reuse(self, ref, **kwargs):
+            return None
+
         def run(self, ref, **kwargs):
             seen.append((tmp_path / "home" / "bench.lock").read_text())
             return 0
@@ -756,6 +759,9 @@ def test_a_start_with_a_stranger_on_the_port_is_exit_2(tmp_path, monkeypatch, ca
         def __init__(self, **kwargs):
             pass
 
+        def reuse(self, ref, **kwargs):
+            return None
+
         def run(self, ref, **kwargs):
             dev, home = _dev(tmp_path, port)
             dev.free_port()
@@ -807,6 +813,9 @@ def test_the_command_line_exits_128_and_the_signal(tmp_path, monkeypatch, capsys
         def __init__(self, **kwargs):
             pass
 
+        def reuse(self, ref, **kwargs):
+            return None
+
         def run(self, ref, **kwargs):
             os.kill(os.getpid(), signal.SIGTERM)
             time.sleep(1)
@@ -831,6 +840,9 @@ def test_the_command_line_survives_a_console_that_closed(tmp_path, monkeypatch):
         def __init__(self, **kwargs):
             pass
 
+        def reuse(self, ref, **kwargs):
+            return None
+
         def run(self, ref, **kwargs):
             print("the ref's backend is stopped", flush=True)
             return 0
@@ -846,6 +858,9 @@ def test_an_error_on_the_way_out_of_a_stop_exits_as_the_stop(
     class Runner:
         def __init__(self, **kwargs):
             pass
+
+        def reuse(self, ref, **kwargs):
+            return None
 
         def run(self, ref, **kwargs):
             with stopping.STOPPER.shield():

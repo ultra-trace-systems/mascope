@@ -70,6 +70,15 @@ class FakeInstance:
         self.merge_bases = {}
         #: (ancestor, sha) pairs beside a commit being its own ancestor.
         self.ancestry = set()
+        #: Per commit, its tree as git lists it; the engine digest reads it.
+        self.trees = {
+            sha: [
+                ("server/backend/src/engine.py", f"100644 blob {sha[:8]}"),
+                ("server/frontend/src/App.vue", "100644 blob f0"),
+            ]
+            for sha in (DEVELOP, BRANCH)
+        }
+        self.trees_listed = []
         self.workspaces = {"S1": "W1", "S2": "W1", "S3": "W2", "S4": "W1"}
         self.names = {
             "names": ["Acquisitions Instrument9", "2025-08-11 Bromide acquisition"],
@@ -98,6 +107,10 @@ class FakeInstance:
         self.sha = self.shas[ref]
         self.home.worktree.mkdir(parents=True, exist_ok=True)
         return self.sha
+
+    def tree(self, sha):
+        self.trees_listed.append(sha)
+        return list(self.trees.get(sha, [("README.md", "100644 blob 0")]))
 
     def develop_sha(self):
         return DEVELOP
@@ -547,7 +560,10 @@ def test_a_run_builds_the_ref_runs_every_sample_and_writes_the_card(rig, capsys)
         "sets": ["Db", "Et"],
         "decoys": False,
         "baseline": None,
+        "digest": summary["engine"]["digest"],
+        "reused": None,
     }
+    assert summary["reused"] is None
     printed = capsys.readouterr().out
     assert "GATE stage3: PASS" in printed and f"card: {out}" in printed
 
@@ -1135,14 +1151,14 @@ def test_the_comparison_reaches_the_bench_and_not_the_caller_s_server(rig, monke
 def test_the_ref_s_backend_starts_with_the_run_s_workers(rig):
     rig.run("topic", workers=3)
     assert rig.instance.workers == 3
-    rig.run("topic")
+    rig.run("topic", fresh=True)
     assert rig.instance.workers == brun.WORKERS > 1
 
 
 def test_the_comparison_is_stopped_only_when_it_stalls(rig):
     rig.run("topic", stall_s=42.0)
     assert rig.compare.calls[0]["stall_s"] == 42.0
-    rig.run("topic")
+    rig.run("topic", fresh=True)
     assert rig.compare.calls[1]["stall_s"] == brun.COMPARE_STALL_MIN * 60
 
 
@@ -1398,8 +1414,9 @@ def test_a_card_without_arms_against_a_baseline_with_them_diffs_the_controls(
     assert run["card"]["verdict"] == "fail"
 
     # The same card with a passing gate keeps its pass: the arms are no miss.
+    # The head is unchanged, so it takes a fresh run to make the card again.
     rig.compare.verdict = "pass"
-    assert rig.run("topic", baseline=True) == 0
+    assert rig.run("topic", baseline=True, fresh=True) == 0
 
 
 def test_a_card_with_arms_diffs_its_decoy_rows_against_the_baseline(rig):
@@ -1417,7 +1434,7 @@ def test_a_card_with_arms_diffs_its_decoy_rows_against_the_baseline(rig):
 def test_without_the_flag_there_is_no_diff_and_no_baseline(rig):
     rig.run("origin/develop", baseline=True)
     first = rig.state()["baseline"]
-    rig.run("develop")
+    rig.run("develop", fresh=True)
     assert rig.compare.calls[1]["baseline"] is None
     assert not (rig.card_dir() / "diff.json").exists()
     assert rig.state()["baseline"] == first
@@ -1667,13 +1684,31 @@ def test_status_shows_the_baseline_and_each_card_s_verdict(rig):
     rig.compare.verdict = "fail"
     rig.run("develop")
     rig.compare.verdict = "pass"
+    # Develop's head with --baseline makes the baseline: it runs.
     rig.run("origin/develop", baseline=True)
+    # A branch of develop's engine inputs gets the baseline's card.
+    rig.instance.shas["frontend"] = "f" * 40
+    rig.instance.trees["f" * 40] = rig.instance.trees[DEVELOP] + [
+        ("server/frontend/src/New.vue", "100644 blob f1")
+    ]
+    rig.run("frontend")
     out = io.StringIO()
     bench.Bench(home=rig.home, instance=rig.instance, connect=rig.connect).status(out)
     text = out.getvalue()
+    digest = rig.state()["cards"][-1]["digest"][:12]
     assert "baseline  origin/develop at ddddddddd" in text
-    assert "develop at ddddddddd  fail  develop/20261112-120000" in text
-    assert "origin/develop at ddddddddd  pass  origin-develop/20261112-120001" in text
+    assert re.search(
+        r"develop at ddddddddd  fail  engine [0-9a-f]{12}  run  develop/20261112-120000",
+        text,
+    )
+    assert (
+        f"origin/develop at ddddddddd  pass  engine {digest}  run  "
+        "origin-develop/20261112-120001" in text
+    )
+    assert (
+        f"frontend at fffffffff  pass  engine {digest}  reused "
+        "origin-develop/20261112-120001  frontend/20261112-120002" in text
+    )
 
 
 # --------------------------------------------------------------- the lock
@@ -1713,7 +1748,9 @@ def test_no_wait_refuses_while_another_command_runs(tmp_path, capsys):
     home.make()
     bench.save_state(home, _state())
     with home.lock():
-        assert bench.main(["--home", str(home.root), "run", "topic", "--no-wait"]) == 2
+        # --fresh: a run that would reuse a card asks for no lock at all.
+        argv = ["--home", str(home.root), "run", "topic", "--no-wait", "--fresh"]
+        assert bench.main(argv) == 2
     err = capsys.readouterr().err
     assert "holds the lock" in err and "without --no-wait a run waits for it" in err
 
@@ -1728,14 +1765,24 @@ def test_the_command_line_runs_a_run(tmp_path, monkeypatch):
         def __init__(self, **kwargs):
             calls.append(kwargs)
 
-        def run(self, ref, sets, decoys, baseline, post):
-            calls.append((ref, sets, decoys, baseline))
+        def reuse(self, ref, sets, decoys, baseline, post):
+            # Asked before the lock is taken.
+            calls.append(("reuse", ref, sets, decoys, baseline, held()))
+            assert post is None
+            return None
+
+        def run(self, ref, sets, decoys, baseline, post, fresh):
+            calls.append((ref, sets, decoys, baseline, fresh))
             assert post is None
             return 0
 
         def baseline(self, card=None):
             calls.append(("baseline", card))
             return 0
+
+    def held():
+        lock = Path(home) / "bench.lock"
+        return lock.exists() and bool(lock.read_text().strip())
 
     monkeypatch.setattr(brun, "BenchRun", Runner)
     home = str(tmp_path / "home")
@@ -1748,14 +1795,22 @@ def test_the_command_line_runs_a_run(tmp_path, monkeypatch):
     )
     assert calls[0]["jobs"] == 2 and calls[0]["budget_s"] == 300.0
     assert calls[0]["workers"] == 6
-    assert calls[1] == ("topic", ["Db", "Et"], True, True)
+    assert calls[1] == ("reuse", "topic", ["Db", "Et"], True, True, False)
+    assert calls[2] == ("topic", ["Db", "Et"], True, True, False)
 
     assert bench.main(["--home", home, "run", "topic"]) == 0
     assert (
-        calls[2]["jobs"] == brun.JOBS and calls[2]["budget_s"] == brun.BUDGET_MIN * 60
+        calls[3]["jobs"] == brun.JOBS and calls[3]["budget_s"] == brun.BUDGET_MIN * 60
     )
-    assert calls[2]["workers"] == brun.WORKERS
-    assert calls[3] == ("topic", None, False, False)
+    assert calls[3]["workers"] == brun.WORKERS
+    assert calls[4:6] == [
+        ("reuse", "topic", None, False, False, False),
+        ("topic", None, False, False, False),
+    ]
+
+    # --fresh asks for no card to reuse, and the run is told so.
+    assert bench.main(["--home", home, "run", "topic", "--fresh"]) == 0
+    assert calls[7] == ("topic", None, False, False, True)
 
     assert bench.main(["--home", home, "baseline"]) == 0
     assert bench.main(["--home", home, "baseline", "develop/x"]) == 0
