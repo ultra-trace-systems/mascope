@@ -2170,10 +2170,16 @@ describe('PaneBrowserAssignment engine tier column', () => {
       tier: 'below_assignability',
       engine_tier: 'candidate'
     })
+    // The engine's tier where the two differ, with a name that is not its key.
+    const engineDiffers = wrapper.vm.engineTierTooltip({
+      tier: 'candidate',
+      engine_tier: 'below_assignability'
+    })
 
     expect(text).toContain("own tier: below assignability (agrees with this server's)")
     expect(differs).toContain('banding of the evidence says below assignability')
-    expect(`${text}${differs}`).not.toContain('below_assignability')
+    expect(engineDiffers).toContain("own tier: below assignability, where this server's")
+    expect(`${text}${differs}${engineDiffers}`).not.toContain('below_assignability')
   })
 })
 
