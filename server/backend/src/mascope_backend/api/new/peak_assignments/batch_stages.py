@@ -63,6 +63,11 @@ marked (:func:`begin_stage`). Every writer of the stage rows takes the
 batch's fold lock first, as a fold does, so no two lock them in different
 orders (:func:`_fold_lock`).
 
+**Settings.** The search and the series take settings. A pass given some
+runs both on them; a pass given none, which every step but the search's
+dialog starts, runs each on the settings its own last run recorded, and on
+the engine's defaults where it never ran (:func:`settings_for`).
+
 Every run of a stage counts up its version, and every record it writes carries
 the version (``version`` in the record): a batch decision is a versioned
 record, which a sample's run can name (MAS-985).
@@ -75,12 +80,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any, Optional
 
 from fastapi import status
+from pydantic import ValidationError
 from sqlalchemy import case, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -154,14 +160,16 @@ class StageCall:
 
     :param sample_batch_id: The batch.
     :param config: The pass's settings: the search's and the series' bands
-        and ranges.
+        and ranges. None where the pass was given none: a stage that takes
+        settings then runs on the ones its last run recorded
+        (:func:`settings_for`), and the rest on the engine's defaults.
     :param user_id: Who started the pass.
     :param parent_id: The pass's process id, which every stage's progress
         nests under.
     """
 
     sample_batch_id: str
-    config: PeakAssignmentConfig
+    config: Optional[PeakAssignmentConfig]
     user_id: Optional[int]
     parent_id: Optional[str]
 
@@ -179,6 +187,9 @@ class StageSpec:
     :param rewrites: Whether it rewrites members, which a sample's judging
         then reads again.
     :param run: Runs it; its answer is the outcome of each step it ran.
+    :param settings_from: The batch run action whose recorded settings it
+        runs on in a pass given none: a stage that takes settings (the
+        search's, the series'); None for one that takes none.
     """
 
     stage: BatchStage
@@ -188,6 +199,7 @@ class StageSpec:
     record_keys: tuple[str, ...]
     rewrites: bool
     run: Callable[[StageCall], Awaitable[list[dict]]]
+    settings_from: Optional[str] = None
 
 
 def _dependent(call: StageCall) -> dict:
@@ -336,6 +348,7 @@ STAGES: tuple[StageSpec, ...] = (
         ("persistence",),
         True,
         _run_search,
+        settings_from=ACTION_SEARCH,
     ),
     StageSpec(
         BatchStage.ISOTOPE_LINES,
@@ -359,6 +372,7 @@ STAGES: tuple[StageSpec, ...] = (
         ("series",),
         True,
         _run_series,
+        settings_from=ACTION_SERIES,
     ),
     StageSpec(
         BatchStage.CO_VARIATION,
@@ -933,6 +947,49 @@ async def stamp_versions(
 # --- the pass ---------------------------------------------------------------------
 
 
+async def recorded_settings(
+    sample_batch_id: str, action: str
+) -> Optional[PeakAssignmentConfig]:
+    """The settings the batch's newest run of ``action`` recorded: what its
+    step last ran with, the search's dialog's for the search. None where it
+    never ran, or where what it recorded no longer reads as settings."""
+    async with async_session() as session:
+        recorded = (
+            await session.execute(
+                select(BatchPeakRun.config)
+                .where(
+                    BatchPeakRun.sample_batch_id == sample_batch_id,
+                    BatchPeakRun.action == action,
+                    BatchPeakRun.config.is_not(None),
+                )
+                .order_by(BatchPeakRun.batch_peak_run_utc_created.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    if not isinstance(recorded, dict):
+        return None
+    try:
+        return PeakAssignmentConfig.model_validate(recorded)
+    except ValidationError as invalid:
+        runtime.logger.warning(
+            f"The settings the last '{action}' run of batch '{sample_batch_id}' "
+            f"recorded no longer read as settings; running on the defaults: "
+            f"{invalid.error_count()} error(s)."
+        )
+        return None
+
+
+async def settings_for(spec: StageSpec, call: StageCall) -> StageCall:
+    """What one stage runs with: the pass's settings where it was given
+    some; else, for a stage that takes settings, the ones its own last run
+    recorded, so a pass another step started searches with what the search's
+    dialog last set, not the engine's defaults; else the defaults."""
+    if call.config is not None or spec.settings_from is None:
+        return call
+    recorded = await recorded_settings(call.sample_batch_id, spec.settings_from)
+    return replace(call, config=recorded) if recorded is not None else call
+
+
 async def _run_stage(
     spec: StageSpec,
     call: StageCall,
@@ -948,6 +1005,7 @@ async def _run_stage(
     version, started = begun
     token = STAGE_VERSION.set(version)
     try:
+        call = await settings_for(spec, call)
         outcomes = await spec.run(call)
         run_ids = await _runs_since(call.sample_batch_id, spec.actions, started)
         await stamp_versions(call.sample_batch_id, spec.record_keys, run_ids, version)
@@ -1031,7 +1089,9 @@ async def judge_again(
             named.setdefault(sample, set()).update(anchors)
     for sample, anchors in named.items():
         samples[sample] = samples.get(sample, frozenset()) | frozenset(anchors)
-    counts = await rejudge_samples(call.sample_batch_id, samples, call.config)
+    counts = await rejudge_samples(
+        call.sample_batch_id, samples, call.config or PeakAssignmentConfig()
+    )
     judged = counts.get("samples_judged", 0)
     moved = counts.get("members_moved", 0)
     return {
@@ -1131,8 +1191,9 @@ async def run_batch_stages(
     :param sample_batch_id: The batch.
     :param from_stage: The stage to start at (:class:`BatchStage`); None
         starts at the first that is not current.
-    :param config: The search's and the series' settings; the engine's
-        defaults when None.
+    :param config: The search's and the series' settings. When None, each
+        of the two runs on the settings its own last run recorded, and on the
+        engine's defaults where it never ran (:func:`settings_for`).
     :raises BatchStageRunningException: A pass already runs on the batch.
     """
     if from_stage is not None and from_stage not in {s.stage.value for s in STAGES}:
@@ -1146,7 +1207,7 @@ async def run_batch_stages(
     stages = plan({name: row.state for name, row in rows.items()}, from_stage)
     call = StageCall(
         sample_batch_id=sample_batch_id,
-        config=config or PeakAssignmentConfig(),
+        config=config,
         user_id=user_id,
         parent_id=process_id,
     )
@@ -1182,8 +1243,10 @@ __all__ = [
     "mark_every_stage_stale",
     "mark_stale",
     "plan",
+    "recorded_settings",
     "run_batch_stages",
     "running_stage",
+    "settings_for",
     "stage_standing",
     "stage_states",
     "stages_after",

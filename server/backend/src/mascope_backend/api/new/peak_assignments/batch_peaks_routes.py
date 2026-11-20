@@ -412,8 +412,9 @@ class RunBatchStagesBody(RequestBodyModel):
     config: PeakAssignmentConfig | None = Field(
         None,
         description=(
-            "The untargeted search's and the series detection's settings; "
-            "engine defaults when omitted."
+            "The untargeted search's and the series detection's settings. "
+            "Omitted, each runs on the settings its last run on the batch "
+            "recorded, and on the engine defaults where it never ran."
         ),
     )
 
@@ -449,8 +450,10 @@ async def run_batch_stages_route(
     :return: Acknowledgement message with the background process id.
     """
     sample_batch = await fetch_sample_batch(sample_batch_id)
-    config = body.config if body is not None and body.config else PeakAssignmentConfig()
-    if config.decoy is not None:
+    # None where none was given: each stage that takes settings then runs on
+    # the ones its own last run recorded (``batch_stages.settings_for``).
+    config = body.config if body is not None and body.config else None
+    if config is not None and config.decoy is not None:
         raise ApiException(
             "A decoy is a run of one sample, launched on the sample; the batch "
             "stages take none.",
@@ -502,14 +505,17 @@ async def search_untargeted_batch_peaks_route(
 
     :param sample_batch_id: The unique identifier of the sample batch.
     :param body: Optional search settings (formula ranges, tolerance, tier
-        bands, the per-sample cap on peaks enumerated); engine defaults when
-        omitted. ``run_untargeted`` is implied.
+        bands, the per-sample cap on peaks enumerated). Omitted, the search
+        runs on the settings its last run on the batch recorded, and on the
+        engine defaults where it never ran. ``run_untargeted`` is implied.
     :param user: The current authenticated user. Requires workspace editor role.
     :return: Acknowledgement message with the background process id.
     """
     sample_batch = await fetch_sample_batch(sample_batch_id)
-    config = body.config if body is not None and body.config else PeakAssignmentConfig()
-    if config.decoy is not None:
+    # None where none was given: each stage that takes settings then runs on
+    # the ones its own last run recorded (``batch_stages.settings_for``).
+    config = body.config if body is not None and body.config else None
+    if config is not None and config.decoy is not None:
         # A decoy is a run of one sample against that sample's own last run;
         # the batch search writes the batch ledger, which no decoy may reach.
         raise ApiException(
@@ -567,14 +573,17 @@ async def detect_series_batch_peaks_route(
 
     :param sample_batch_id: The unique identifier of the sample batch.
     :param body: Optional settings; the tier bands and the m/z precision are
-        read, the rest is the search's and is ignored. Engine defaults when
-        omitted.
+        read, the rest is the search's and is ignored. Omitted, each of the
+        search and the series runs on the settings its last run on the batch
+        recorded, and on the engine defaults where it never ran.
     :param user: The current authenticated user. Requires workspace editor role.
     :return: Acknowledgement message with the background process id.
     """
     sample_batch = await fetch_sample_batch(sample_batch_id)
-    config = body.config if body is not None and body.config else PeakAssignmentConfig()
-    if config.decoy is not None:
+    # None where none was given: each stage that takes settings then runs on
+    # the ones its own last run recorded (``batch_stages.settings_for``).
+    config = body.config if body is not None and body.config else None
+    if config is not None and config.decoy is not None:
         raise ApiException(
             "A decoy is a run of one sample, launched on the sample; the series "
             "detection takes none.",
