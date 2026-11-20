@@ -128,13 +128,17 @@ The ledger's own breadcrumb goes, because the shell's says the same.
 | Plot | yes | yes | a checkbox; it plots the species in the batch chart, the same in both scopes |
 | m/z | yes | yes | Plex Mono, tabular |
 | Compound | yes | yes | the formula, with the listed name and its list under it when a list or target names it. This replaces the *Listed as* column |
-| Ion | yes | no | the mechanism, with a `×N` pill when the neutral is seen through N channels |
-| Intensity | yes | yes | a compact number (`8.31k`, `1.20M`) and a log-scale bar |
+| Ion | yes | yes | the sample scope: the mechanism. The batch scope: the ion formula the read already serves (`consensus_ion_formula`). Either way, a `×N` pill when the neutral is seen through N channels, from the groups of 3.5 |
+| Intensity | yes | yes, as *Max intensity* | a compact number (`8.31k`, `1.20M`) and a log-scale bar. The batch scope's is `max_intensity`, the brightest sample's, and its header says so in its tooltip |
 | Tier | yes | yes | the tier chip; a capping reason as a mark on the chip |
 | Level | when any row has one | when any row has one | the level chip |
 | Samples | no | yes | `n/N` |
 | Across the batch | no | yes | up to three badges (section 5), holding-back badges first, then `+n` |
 | Verdict | yes | yes | an icon only once someone has judged |
+
+Compound shows the neutral formula in both scopes. A batch peak is one ion, so two
+channels of one compound are two batch rows; the Ion column and its `×N` pill are what
+tell them apart.
 
 Imported engine tiers and levels show in the Tier and Level cells as a second, outlined
 chip when *Show › Engine readings* is on. They do not get columns of their own.
@@ -144,18 +148,25 @@ chip when *Show › Engine readings* is on. They do not get columns of their own
 - A row is 40 px; an isotopologue line is a 28 px sub-row under its parent. The sub-row
   shows the line's label, m/z and intensity; it inherits the rest and repeats none of it.
   A caret with the line count folds and unfolds a family.
-- Row actions show on hover and on the selected row only: open the brightest sample in
-  the batch scope, curate in the sample scope.
-- Clicking an m/z focuses the peak in the inspector, the same in both scopes. Plotting is
-  the checkbox.
-- The default sort is intensity, descending, in both scopes. A sort the user picked is
-  remembered per scope, as `ledgerSort.js` does now.
+- Row actions show on hover, on `:focus-within` and on the selected row: open the
+  brightest sample in the batch scope, curate in the sample scope. A keyboard user
+  reaches them without selecting first.
+- Clicking an m/z opens the peak in the inspector. In the sample scope that is the
+  sample's own row. In the batch scope a batch peak is in many samples, so the card
+  shows the batch peak in its brightest sample, the one today's jump icon opens, and
+  says which sample it is showing (4.2). Plotting is the checkbox.
+- The default sort is intensity, descending, in both scopes; in the batch scope that is
+  the brightest sample's intensity. A sort the user picked is remembered per scope, as
+  `ledgerSort.js` does now.
 - Narrow columns drop cells in order, by container query: Level, then Samples, then
   Across the batch, then Intensity's bar.
 
 ### 3.4 The filter bar
 
-- A search box: a formula, a listed name, or an m/z within the run's tolerance.
+- A search box: a formula, a listed name, or an m/z. An m/z matches within the run's
+  fitted tolerance in the sample scope. In the batch scope, whose rows come from many
+  runs, it matches within 5 ppm, the window an imported batch result is matched to batch
+  peaks at.
 - The tier bar of the design system's ledger strip: a 7 px proportion bar over the tier
   chips with their counts.
   - It is multi-select in both scopes.
@@ -176,16 +187,24 @@ Every choice persists per scope, in the pattern of `ledgerSort.js` and `ledgerLi
 Several readings are about more than one row. The user has to be able to see those rows
 together, not read about them in a tooltip.
 
-| Group | Its rows | Where it is derived |
-|---|---|---|
-| Channels of one neutral | the batch peaks, or the sample's rows, that read one neutral formula through different mechanisms | the batch scope: same consensus neutral formula, different mechanism. The sample scope: the rows `channelRows` already groups |
-| Homologous series | the root and every row whose formula is the root's plus or minus whole repeat units, through the same mechanism | the series record's `root_batch_peak_id`, `unit` and `root_formula`, plus formula arithmetic over the rows the ledger holds |
-| Co-variation partner | the batch peaks a co-variation record pairs | the record's partners |
-| Batch-check pair | the 14N twin, the halogen line, the urea pair | the check's record |
-| Isotopologue family | the main peak and its lines | the fold the ledger already does |
+| Group | Its members (the server's rule) |
+|---|---|
+| Channels of one neutral | the batch peaks with the same `consensus_formula` and a different `consensus_ion_formula`; each member names its mechanism |
+| Homologous series | the root and every batch peak whose formula is the root's plus or minus whole repeat units through the same mechanism, from the series record's `root_batch_peak_id`, `unit` and `root_formula` |
+| Co-variation partner | the batch peaks a co-variation record pairs |
+| Batch-check pair | the 14N twin, the halogen line, the urea pair the check names |
+| Isotopologue family | the main peak and its lines, the fold the ledger already does |
 
-Both ledgers hold all of their rows in the browser (the sample ledger pages until
-complete), so every group is derived client-side. No new ledger endpoint is needed.
+**One definition, served.** A group is the server's. MAS-1066 serves `batch_groups` on
+the batch-peaks read and on a sample's detail row, from one derivation, so the ledger,
+the lens and the card count the same members. The batch rows carry no mechanism today
+(the read serves `consensus_formula`, `consensus_ion_formula`, `consensus_role` and
+`consensus_tier`); the group's members carry it instead. The client only orders the
+members, labels them, and adds the gaps.
+
+**Members are batch peaks.** A series step with no batch peak is a gap. The lens draws
+it greyed and labelled *no batch peak*, and counts it apart, so "4 batch peaks, one step
+with no peak" means four members and one gap, in the ledger and in the card alike.
 
 **The lens.** Any badge or pill that names other rows applies a lens when clicked:
 
@@ -201,6 +220,9 @@ Under the lens:
   with no peak"), offers *Plot the group*, and closes with ×.
 - A Step or Channel column labels each row: root, `+1 CH2`, `−1 CH2`, or the ion.
 - A series step that has no batch peak stays in the list, greyed, so the gap shows.
+- In the sample scope the lens lists every member. Where the sample holds a member, its
+  own row shows. Where it does not, a greyed line reads *not in this sample*, labelled
+  apart from a gap.
 
 **Group by** shows every group at once, as collapsible group lines over their members. A
 group line names the compound or series and the member count, and shows the tier of its
@@ -252,8 +274,10 @@ place of C3H4O4 · Undo"); their full sentence is the tooltip.
   disabled with its reason, *Use* hidden.
 - **A decoy run:** a notice naming the arm. The decoy run selector already keeps decoys
   out unless asked.
-- **The viewer role:** checked before offering, with `canEditWorkspace` as the ledger does,
-  not discovered from a 403.
+- **The viewer role:** checked before offering, with `canEditWorkspace` as the verdict
+  popovers do, not discovered from a 403.
+- **Opened from the batch scope:** the answer names the sample the card is showing, the
+  batch peak's brightest, with *Other samples* to step through the samples that hold it.
 - **Loading:** skeleton lines in each section until the detail arrives.
 - **A focused peak with no ledger row:** the answer area says so, and *Find other
   formulas* is offered.
@@ -268,20 +292,29 @@ series. It adds:
 - the ratio-stability grade;
 - the known-species and water-ladder decisions;
 - the blend flag;
-- each group's members (batch peak id, formula, m/z, tier), so the card can list rows
-  the sample scope has not loaded.
+- each group's members (batch peak id, formula, mechanism, m/z, tier, and the sample's own
+  peak where it holds the member), from the same derivation that serves `batch_groups` on
+  the batch-peaks read (3.5), so the card can list rows the sample scope has not loaded.
 
-MAS-983 turns batch decisions into versioned records. If it has merged when this is
-built, the detail reads those records.
+MAS-983 turns batch decisions into versioned records and replaces the fields this would
+otherwise read, so MAS-1066 is blocked by it and reads those records.
 
 ## 5. One mark, one meaning
 
-**Colour says what a reading does to confidence:**
+**Colour says what a reading does to confidence.** The tones are the design system's
+state tokens, used in the meanings its section 3 records:
 
-- **teal** (`--state-info`) supports it;
-- **amber** (`--state-warning`) holds it back;
-- **grey** is read and moves nothing;
-- **a white outline** is a person's act.
+- **supports**: `--state-success`, the colour of assigned and confirmed;
+- **holds back**: `--state-warning`, the colour of candidate and unsure;
+- **drifted**: `--state-info`, which the design system already gives to "drifted";
+- **moves nothing**: `--p-text-muted-color`;
+- **a person's act**: an outline in `--p-text-color`, which reads on both grounds.
+
+A chip is a state, and a badge is a reading. The tier chip and the verdict are states,
+in the design system's sense of a `Tag`. The 22 px square badges are readings. The two
+share colours on purpose: green leans toward confidence and amber holds it back,
+whichever shape it is on. So an amber badge beside an amber candidate chip says the same
+thing twice: this reading is one of the reasons the row is a candidate.
 
 **The glyph says which reading it is.** One registry, `lib/evidence/marks.js`, holds each
 reading's id, glyph, tone rule, label and tooltip. One component,
@@ -292,7 +325,7 @@ reading's id, glyph, tone rule, label and tooltip. One component,
 | Homologous series | stairs | supports |
 | Channels co-vary | wave | supports |
 | Isotope lines stamped | three bars | supports |
-| Ratio stable | pulse | supports; holds back when it drifts or is unstable |
+| Ratio stable | pulse | supports when stable; drifted when it drifts; holds back when unstable |
 | Batch facts | check | supports; holds back when a fact refutes |
 | Persistence only | repeat | holds back |
 | Probable blend | two circles | holds back |
@@ -309,18 +342,20 @@ reading's id, glyph, tone rule, label and tooltip. One component,
   names.
 - The level keeps its three tokens.
 - A verdict shows nothing until someone judges. A batch-level verdict reaching a sample
-  is the same icon, dashed.
+  is the same icon with a small batch mark at its upper right (the `#` the breadcrumb uses
+  for a batch, at 9 px). It is never dashed.
 
 **Single meanings, enforced:**
 
-- A dashed border means *not yet known*, and nothing else.
+- A dashed border means *not yet known*, and nothing else. The unassigned tier is the one
+  place it appears.
 - The clock means history.
 - The hand means a person changed this.
 - The wave means co-variation.
 - The flask disappears: the listed name is written out instead.
 
-The design-system note's section 8 gains this grammar, and the ledger's tier help card
-gains its legend.
+The design-system note changes with it (section 8 of this note), and the ledger's tier
+help card gains its legend.
 
 ## 6. What does not change
 
@@ -353,8 +388,16 @@ Each is built as written here and raised on its PR.
   updates the part it changes.
 - `_help/assignment-tiers.md`, `_help/batch-peaks.md` and `_help/assignment-evidence.md`
   match the new layout. The tier help card carries the mark legend.
-- [`frontend_design_system.md`](frontend_design_system.md) section 8: the mark grammar
-  of section 5.
+- [`frontend_design_system.md`](frontend_design_system.md), in three sections, each row
+  carried by the step that changes it:
+  - **Section 3**, the state table: what supports and holds back add to
+    `--state-success` and `--state-warning`, and the `--role-reagent` token it already
+    promises (MAS-1063).
+  - **Section 8**: the Tag recipe's tier chips draw a dot instead of a Phosphor icon, and
+    the evidence badge's recipe is new (MAS-1063).
+  - **Section 9**: the *Ledger strip* recipe becomes the bar over the chips, with no
+    *All* or *Targets* chip and the roles set apart (MAS-1065). The *Inspector card*
+    recipe becomes the Why box and the four tiles (MAS-1067).
 - [`peak_assignment_frontend.md`](peak_assignment_frontend.md): its ledger and inspector
   paragraphs point here once the steps land.
 
@@ -365,17 +408,24 @@ relations hold the order.
 
 | Issue | Milestone | Step | Blocked by | Size |
 |---|---|---|---|---|
-| MAS-1062 | 1 · One ledger | One ledger component for both scopes; the differences converge (3.1) | none | L |
 | MAS-1063 | 1 · One ledger | One mark, one meaning: the evidence badge and its registry (5) | none | M |
+| MAS-1062 | 1 · One ledger | One ledger component for both scopes; the differences converge (3.1) | MAS-1063, MAS-1015, MAS-1016 | L |
 | MAS-1064 | 1 · One ledger | The columns and rows (3.2, 3.3) | MAS-1062, MAS-1063 | M |
 | MAS-1065 | 1 · One ledger | The filter bar (3.4) | MAS-1062 | M |
-| MAS-1069 | 1 · One ledger | Groups: the lens and Group by (3.5) | MAS-1064, MAS-1065, MAS-1067 | M |
-| MAS-1066 | 2 · The card | The card's batch readings and group members on the detail row (4.3) | none | M |
+| MAS-1069 | 1 · One ledger | Groups: the lens and Group by (3.5) | MAS-1064, MAS-1065, MAS-1066, MAS-1067 | M |
+| MAS-1066 | 2 · The card | The batch's readings and groups, served on the batch-peaks read and the detail row (3.5, 4.3) | MAS-983 | M |
 | MAS-1067 | 2 · The card | The card: answer, why, measurements, sections, verdict bar (4.1) | MAS-1063, MAS-1066 | L |
 | MAS-1068 | 2 · The card | The card's states (4.2) | MAS-1067 | S |
 
-MAS-1062, MAS-1063 and MAS-1066 can start at once. Groups come last because they join
-the ledger and the card. The issues relate to MAS-713 (the ledger as the first content
-column), MAS-1015 and MAS-1016 (the batch control in the ledger's header), MAS-160 (the
-type scale), MAS-153 (the chip legend), MAS-73 (the identification level) and MAS-983 (the
-batch's versioned records); none of those blocks them.
+MAS-1063 is the one step that can start at once. The other two roots wait on files other
+work is rewriting:
+
+- MAS-1062 waits on MAS-1063, which sweeps the marks in both ledgers, and on milestone 8's
+  batch control (MAS-1015, MAS-1016), which replaces the batch ledger's header controls in
+  the file MAS-1062 turns into a configuration.
+- MAS-1066 waits on MAS-983, which replaces the fields it would read.
+
+Groups come last because they join the ledger, the card and the server's groups. The
+issues also relate to MAS-713 (the ledger as the first content column), MAS-160 (the type
+scale), MAS-153 (the chip legend) and MAS-73 (the identification level). None of those
+four blocks them.
