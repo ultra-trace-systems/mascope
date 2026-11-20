@@ -167,11 +167,6 @@ async def test_a_searched_row_names_its_twin_s_reading_before_the_list_reading_i
         ),
         patch.object(pipeline.service, "_hold_opened_channel_readings"),
         patch.object(pipeline.service, "_record_same_ion_readings", return_value=0),
-        patch.object(
-            pipeline.service,
-            "_claim_fragments",
-            side_effect=lambda rows, **_: SimpleNamespace(rows=rows),
-        ),
         patch.object(pipeline.service, "stamp_series", return_value=0),
         patch.object(
             pipeline.service, "batch_series_by_peak", AsyncMock(return_value={})

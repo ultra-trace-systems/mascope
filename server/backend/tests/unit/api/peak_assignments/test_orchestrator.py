@@ -1117,7 +1117,7 @@ class TestTheJudgedLedger:
         )
         recorder = _Recorder()
         _start(_patches(recorder, peaks, _stage_a_rows() + [fragment]))
-        patch(f"{_MOD}.fragment_ladders_for", return_value=(ladder,)).start()
+        patch(f"{_PIPE}.fragment_ladders_for", return_value=(ladder,)).start()
 
         await _run(PeakAssignmentConfig(run_untargeted=False))
 

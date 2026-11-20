@@ -209,7 +209,6 @@ from mascope_backend.api.new.peak_assignments.reagent_pass import (
     claim_fragments,
     claim_ladder_peaks,
     claim_reagent_peaks,
-    fragment_ladders_for,
     ion_ladders_for,
     reagent_library_for,
 )
@@ -321,6 +320,7 @@ from mascope_tools.composition.profiles import (
 )
 from mascope_tools.composition.reagents import (
     REAGENT_LINE_FAMILIES,
+    FragmentLadder,
     secondary_channels,
 )
 
@@ -2590,33 +2590,8 @@ def _hold_opened_channel_readings(
     return held
 
 
-def _claim_fragments(
-    rows: list[dict],
-    *,
-    resolved_profile: ResolvedProfile,
-    searched_mechanisms: list[SimpleNamespace],
-    sample_name: str,
-) -> FragmentClaims:
-    """Read the fragments of the analytes the stages committed as the source's.
-
-    Shared by a run and the run-less ingest fold, after Stage A's rows carry
-    their ion's families and before any pass that weighs the rows as
-    molecules, so the two ledgers read one peak the same way
-    (``reagent_pass.claim_fragments``).
-
-    :param rows: The stages' committed rows, as built.
-    :param resolved_profile: The sample's resolved chemistry, whose profile
-        names the ladders.
-    :param searched_mechanisms: :func:`_searched_mechanisms`.
-    :param sample_name: For the log line.
-    :return: What the claim left and wrote.
-    """
-    claims = claim_fragments(
-        rows,
-        fragment_ladders_for(resolved_profile.profile.name),
-        notation_by_id=_notation_by_id(searched_mechanisms),
-        minor_channels=resolved_profile.minor_channels,
-    )
+def _log_fragments(claims: FragmentClaims, sample_name: str) -> None:
+    """Say what the fragment claim read as the source's, where it read any."""
     if claims.summary["claimed"]:
         runtime.logger.info(
             f"Sample '{sample_name}': {claims.summary['claimed']} committed peaks "
@@ -2624,7 +2599,6 @@ def _claim_fragments(
             f"({claims.summary['claimed_isotopologues']} of their lines with them); "
             f"held: {claims.summary['held']}"
         )
-    return claims
 
 
 def _notation_by_id(searched_mechanisms: list[SimpleNamespace]) -> dict[str, str]:
@@ -2695,6 +2669,8 @@ class JudgedCommits:
     :param cross_channel: The cross-channel pass's summary.
     :param tiering: The tiering pass's summary, with what the claims did.
     :param partner_gate: The partner gate's summary, with its margin.
+    :param fragments: What the fragment claim read as the source's
+        (:meth:`Judging.judge`).
     """
 
     rows: list[dict]
@@ -2702,6 +2678,7 @@ class JudgedCommits:
     cross_channel: dict
     tiering: dict
     partner_gate: dict
+    fragments: FragmentClaims
 
 
 async def batch_series_by_peak(sample_item_id: str) -> dict[str, dict]:
@@ -3055,6 +3032,7 @@ def judge_commits(
     source_line_cap: SourceLineCap | None = None,
     context: ChemistryContext | None = None,
     nox_skeleton: bool = False,
+    fragment_ladders: tuple[FragmentLadder, ...] = (),
 ) -> JudgedCommits:
     """Judge a sample's commits: the reading changes first, then the caps,
     which only lower a tier, and the lines the caps leave in doubt read as
@@ -3065,16 +3043,20 @@ def judge_commits(
     1. **Reading changes.** The lines earlier rounds claimed are read as their
        owners' isotopologues (``envelope_claims.apply_claims``), each at
        candidate, or lower where the round that found it held the row lower,
-       by its evidence or by a cap (``envelope_claims.claimed_tier``). The mass
-       gate measures the run (``mass_gate.measure_mass_gate``): its
+       by its evidence or by a cap (``envelope_claims.claimed_tier``). Then
+       the reading changes, to their fixed point (:meth:`Judging.judge`): the
+       mass gate measures the run (``mass_gate.measure_mass_gate``): its
        calibration, and the ceiling each line holds every reading of it under,
        lowering nothing. The partner gate (``engine.apply_partner_gates``)
        reads its partners under those ceilings and settles each gated ion's
        reading, at the tier that reading's own evidence earns; a swap keeps
        the ion, its line and its mass error, so it moves nothing the mass gate
-       measured. The cross-channel pass then records what the settled readings
+       measured. The fragment claim (``reagent_pass.claim_fragments``) reads
+       the settled ledger, and a claim takes its rows off and runs these
+       again. The cross-channel pass then records what the settled readings
        say of each other (``cross_channel.read_cross_channel``), which the
-       tiering pass reads.
+       tiering pass reads. Each of the three reads "the sample shows this
+       molecule" (``engine.shows_molecule``) on that one settled ledger.
     2. **Caps**: the mass gate's (``mass_gate.cap_mass_gate``), the
        cross-channel pass's (``cross_channel.cap_cross_channel``) and the
        tiering pass's rules (``tiering.apply_tiering``). Each only lowers a
@@ -3141,7 +3123,9 @@ def judge_commits(
     :param nox_skeleton: Whether the run reads the carbon skeleton of an
         organonitrate, whose readings the tiering pass holds at candidate
         (``tiering.nox_skeleton_reason``).
-    :return: The judged rows and each pass's summary.
+    :param fragment_ladders: The profile's fragment ladders, whose fragments
+        the reading changes read as the source's; none claims none.
+    :return: The judged rows, each pass's summary, and the fragments.
     """
     judging = Judging(
         rows,
@@ -3165,6 +3149,7 @@ def judge_commits(
         source_line_cap=source_line_cap,
         context=context,
         nox_skeleton=nox_skeleton,
+        fragment_ladders=fragment_ladders,
     )
     while True:
         judging.refit()
@@ -3184,8 +3169,12 @@ class Judging:
 
     :ivar claims: The lines earlier rounds read as their owners', by row.
     :ivar rounds: The rounds begun.
-    :ivar judged: The round's rows: a fresh copy of ``rows`` with the claims
-        applied, which the round's passes then modify.
+    :ivar applied: The round's rows as it began: a fresh copy of ``rows`` with
+        the claims applied, which nothing modifies.
+    :ivar judged: The round's rows: a copy of ``applied`` without the
+        fragments claimed so far, which the round's passes then modify.
+    :ivar fragments: What the fragment claim read as the source's in the
+        round, over every pass of it (:meth:`judge`).
     :ivar found: The claims the round's caps left, which another round
         applies; ``held`` says what held the rest back.
     """
@@ -3211,9 +3200,12 @@ class Judging:
     source_line_cap: SourceLineCap | None = None
     context: ChemistryContext | None = None
     nox_skeleton: bool = False
+    fragment_ladders: tuple[FragmentLadder, ...] = ()
     claims: dict[str, EnvelopeClaim] = field(default_factory=dict)
     rounds: int = 0
+    applied: list[dict] = field(default_factory=list)
     judged: list[dict] = field(default_factory=list)
+    fragments: FragmentClaims | None = None
     mass_calibration: dict = field(default_factory=dict)
     partner_gate: dict = field(default_factory=dict)
     cross_channel: dict = field(default_factory=dict)
@@ -3227,11 +3219,18 @@ class Judging:
         which records every row's ceiling and lowers none. A claim moves
         which rows anchor the calibration, so it is measured each round."""
         self.rounds += 1
-        self.judged = apply_claims(
+        self.applied = apply_claims(
             copy.deepcopy(self.rows),
             self.claims.values(),
             max_alternatives=self.max_alternatives,
         )
+        self._measure(
+            copy.deepcopy(self.applied) if self.fragment_ladders else self.applied
+        )
+
+    def _measure(self, ledger: list[dict]) -> None:
+        """Take ``ledger`` as the round's rows, measured by the mass gate."""
+        self.judged = ledger
         self.mass_calibration = measure_mass_gate(
             self.judged,
             stage_a_accuracy=self.stage_a_accuracy,
@@ -3243,18 +3242,79 @@ class Judging:
         )
 
     def judge(self) -> None:
-        """The reading changes, and what the caps read of them: the partner
-        gate settles each gated ion's reading, under the ceilings the refit
-        recorded, and the cross-channel pass records what the settled
-        readings say of each other."""
-        self.partner_gate = apply_partner_gates(
-            self.judged,
-            notation_by_id=self.notation_by_id,
-            minor_channels=self.minor_channels,
-            partner_gated_channels=self.partner_gated_channels,
-            tier_bands=self.tier_bands,
-            listed_formulas=self.listed_formulas,
-        )
+        """The reading changes, to their fixed point, and what the caps read
+        of them.
+
+        1. The partner gate settles each gated ion's reading against the
+           molecules the sample shows (``engine.apply_partner_gates``), under
+           the ceilings the refit recorded.
+        2. The fragment claim reads the settled ledger
+           (``reagent_pass.claim_fragments``): a reading of a fragment's ion is
+           the source's where no reading of it names a molecule the sample
+           shows elsewhere. A fragment read as a molecule is a partner, a
+           second channel and a rival to every other reading of its mass, so
+           a claim is not kept on this ledger: the claimed rows leave, the
+           round's rows are measured again without them, and the changes run
+           again, until a pass claims nothing new.
+        3. The cross-channel pass records what the settled readings say of
+           each other (``cross_channel.read_cross_channel``).
+
+        So "the sample shows this molecule" (``engine.shows_molecule``) is
+        read by the partner gate, the fragment claim and the cross-channel
+        pass on one ledger: the one these changes settled, measured, and
+        capped by nothing yet.
+        """
+        taken: set[str] = set()
+        fragments: list[dict] = []
+        peak_ids: set[str] = set()
+        records: list[dict] = []
+        claimed = claimed_isotopologues = 0
+        while True:
+            self.partner_gate = apply_partner_gates(
+                self.judged,
+                notation_by_id=self.notation_by_id,
+                minor_channels=self.minor_channels,
+                partner_gated_channels=self.partner_gated_channels,
+                tier_bands=self.tier_bands,
+                listed_formulas=self.listed_formulas,
+            )
+            found = claim_fragments(
+                self.judged,
+                self.fragment_ladders,
+                notation_by_id=self.notation_by_id,
+                minor_channels=self.minor_channels,
+            )
+            if not found.summary["claimed"]:
+                self.fragments = FragmentClaims(
+                    self.judged,
+                    fragments,
+                    peak_ids,
+                    {
+                        **found.summary,
+                        "claimed": claimed,
+                        "claimed_isotopologues": claimed_isotopologues,
+                        "claims": records,
+                    },
+                )
+                break
+            left = {id(row) for row in found.rows}
+            taken |= {
+                str(row.get("peak_assignment_id"))
+                for row in self.judged
+                if id(row) not in left
+            }
+            fragments += found.fragments
+            peak_ids |= found.peak_ids
+            records += found.summary["claims"]
+            claimed += found.summary["claimed"]
+            claimed_isotopologues += found.summary["claimed_isotopologues"]
+            self._measure(
+                [
+                    row
+                    for row in copy.deepcopy(self.applied)
+                    if str(row.get("peak_assignment_id")) not in taken
+                ]
+            )
         self.cross_channel = read_cross_channel(
             self.judged,
             notation_by_id=self.notation_by_id,
@@ -3324,6 +3384,7 @@ class Judging:
             self.cross_channel,
             self.tiering,
             self.partner_gate,
+            self.fragments,
         )
 
 

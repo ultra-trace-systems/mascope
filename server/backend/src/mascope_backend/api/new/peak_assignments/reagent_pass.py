@@ -91,11 +91,10 @@ from mascope_backend.api.new.peak_assignments.engine import (
     SOURCE_REAGENT,
     is_target_library_row,
     reading_as_alternative,
+    shows_molecule,
 )
 from mascope_backend.api.new.peak_assignments.mass_gate import is_committed
 from mascope_backend.api.new.peak_assignments.tiers import (
-    TIER_ASSIGNED,
-    TIER_CANDIDATE,
     TIER_UNASSIGNED,
 )
 from mascope_backend.db.id import gen_id
@@ -746,11 +745,6 @@ def water_rung_row(
 # stage could only bury the component whenever the parent was also there.
 
 
-#: The tiers at which a committed row shows its molecule to the claim: the bar
-#: the partner gate sets for a partner (``engine.apply_partner_gates``).
-_SHOWN_TIERS = (TIER_ASSIGNED, TIER_CANDIDATE)
-
-
 @dataclass
 class FragmentClaims:
     """What the fragment claim took from a sample's committed rows.
@@ -801,18 +795,15 @@ def _shown_on(
 ) -> dict[str, set[str]]:
     """The peaks on which the sample shows each molecule.
 
-    Per neutral, every peak whose monoisotopic row commits it at candidate or
-    better through one of the mode's own channels: what the partner gate calls a
-    partner and the cross-channel pass a molecule the sample shows
-    (``cross_channel.partner_heights``). An opportunistic channel shows nothing
-    on its own.
+    Per neutral, every peak through whose row the sample shows it
+    (``engine.shows_molecule``): what the partner gate calls a partner and the
+    cross-channel pass a molecule the sample shows, by the one test, read under
+    the mass gate's ceiling as they read it. An opportunistic channel shows
+    nothing on its own.
     """
     shown: dict[str, set[str]] = {}
     for row in rows:
-        if row.get("tier") not in _SHOWN_TIERS:
-            continue
-        channel = _channel(row, notation_by_id)
-        if channel is None or channel in minor_channels:
+        if not shows_molecule(row, notation_by_id, minor_channels):
             continue
         shown.setdefault(formula_identity(row.get("assigned_formula")), set()).add(
             str(row.get("sample_peak_id"))
