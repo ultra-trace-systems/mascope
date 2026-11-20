@@ -11,9 +11,10 @@
   folded in again, a rebuild, an engine's batch result imported, or a pin
   on a batch peak and its release makes every stage that ran stale, and a
   stage that stops partway is stale itself. While the stages run, every
-  step's button, a rebuild and an import are refused, naming the stage.
-  Running the stages again brings a sample folded in since up to the
-  batch's readings: its rungs and
+  step's button, a rebuild and an import are refused, naming the stage. A
+  pass started from another button runs the search, and the series, on the
+  settings each last ran with on the batch. Running the stages again brings
+  a sample folded in since up to the batch's readings: its rungs and
   known species claimed, its rows stripped to their parent's line, and the
   search's compositions measured on its members that read nothing.
 

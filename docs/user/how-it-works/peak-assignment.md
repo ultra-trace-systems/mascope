@@ -1752,6 +1752,12 @@ made for.
   running, and name the stage (409). That holds for the whole pass, also while it judges
   samples again or runs the ratio stability and the probable blends, which open no batch
   run of their own.
+- **The search's settings carry over.** *Search untargeted* runs on the settings its
+  dialog sends, and *Detect series* reads the m/z precision and the tier bands from the
+  same settings. A pass that another button starts sends none, so the search runs on the
+  settings its own last run on the batch recorded, and so does the series. Either runs on
+  the defaults where it never ran on the batch. Settings given to `run-stages` are what
+  both run on.
 - **New members are brought up to the batch's readings.** A sample folded in after a
   stage ran, or folded again from a new run of its own, reads its own rows. Running the
   stages again claims the passing water-ladder rungs and the present known species in it,
