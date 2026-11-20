@@ -40,8 +40,9 @@ Before any of it, unless ``--fresh``, the run hashes the head's engine inputs
 (:func:`engine_digest`) and looks for a complete card of the same digest,
 sets and arms. Finding one, it runs nothing and takes no lock: it writes that
 card as the head's, and posts it with a line that names the commit it was
-made at (``BenchRun.reuse``). A run of develop's head with ``--baseline``
-always runs.
+made at (``BenchRun.reuse``). A run of develop's head with ``--baseline`` or
+``--post`` always runs, and so does a ref the reuse stops on, which then
+meets that error as a run.
 
 Each run writes ``cards/<ref>/<timestamp>/`` in the bench's home: the card
 (``card.md``, ``card.json`` and one pair per set), the diff against the
@@ -59,6 +60,7 @@ import contextlib
 import datetime
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -165,9 +167,31 @@ IGNORED = ("server/frontend/", "docs/", "changelog.d/", ".github/", "agents/")
 #: The tooling a card is made with: the bench and the comparison.
 COUNTED_TOOLING = ("tooling/assignment_bench/", "tooling/assignment_compare/")
 
-#: The caller's own copies of that tooling, which make the card (step 8 of a
-#: run): a card made by another copy of them is not this checkout's card.
-TOOL = (REPO / "tooling" / "assignment_bench", REPO / "tooling" / "assignment_compare")
+#: The libraries the comparison imports from the caller's environment:
+#: ``mascope_tools`` (the reagent library G10 is read off, the line model)
+#: and ``mascope_sdk``, which reads the runs.
+TOOL_PACKAGES = ("mascope_tools", "mascope_sdk")
+
+
+def package_root(name: str) -> Path | None:
+    """The folder a package of the caller's environment is imported from,
+    or None where it is not installed."""
+    try:
+        spec = importlib.util.find_spec(name)
+    except (ImportError, ValueError):
+        return None
+    locations = list((spec and spec.submodule_search_locations) or [])
+    return Path(locations[0]) if locations else None
+
+
+#: The caller's own copies of that tooling and of the libraries it imports,
+#: which make the card (step 8 of a run): a card made by another copy of
+#: them is not this checkout's card.
+TOOL = (
+    REPO / "tooling" / "assignment_bench",
+    REPO / "tooling" / "assignment_compare",
+    *(root for root in map(package_root, TOOL_PACKAGES) if root is not None),
+)
 
 
 class RunError(RuntimeError):
@@ -223,8 +247,9 @@ def tree_digest(entries: Iterable[tuple[str, str]]) -> str:
 
 
 def tool_digest(roots: Iterable[Path]) -> str:
-    """The digest of the caller's own bench and comparison, as they are on
-    disk: they read the sets and make the card, whatever the ref holds."""
+    """The digest of the caller's own bench and comparison and the libraries
+    they import (:data:`TOOL`), as they are on disk: they read the sets and
+    make the card, whatever the ref holds."""
     h = hashlib.sha256()
     for root in roots:
         for path in sorted(root.rglob("*")):
@@ -1855,13 +1880,20 @@ class BenchRun:
         head's engine digest (:func:`engine_digest`) and the same sets, with
         the decoy arms where they are asked for: a card with them serves a
         request without them, not the reverse. Finding one, it takes no lock,
-        starts no backend and touches neither the database nor the worktree.
-        It writes a card folder for the head whose ``run.json`` names the
+        starts no backend, migrates nothing and checks nothing out: of the
+        database it reads only the instance's names, for the scrub. It
+        writes a card folder for the head whose ``run.json`` names the
         source, with the source's card in it (diffed afresh where the
         baseline it is read against is not the source's), records it, and
         with ``post`` posts it with a line that says whose card it is. A run
-        of develop's head with ``--baseline`` is never served so: it is the
-        run that makes the baseline.
+        of develop's head with ``--baseline`` or ``post`` is never served so:
+        it is the run that makes the baseline.
+
+        Whatever stops it before the card is written, an unknown set, a
+        database that does not answer or a baseline it cannot read, leaves
+        the ref to a run, which meets it as a run does: on the PR with
+        ``post``, and behind the lock. What it raises is a post that failed:
+        opening the PR, or posting the card once it is written.
 
         :param quiet: Say nothing when there is no card to reuse.
         :return: The exit code the source's run had, or None when the ref
@@ -1870,15 +1902,34 @@ class BenchRun:
         say = (lambda line: None) if quiet else _say
         # A card posted on a PR is diffed against develop's baseline (:meth:`run`).
         baseline = baseline or post is not None
-        state = self.load_state()
-        chosen = choose_sets(state, sets)
         if post is not None and post.pr is None:
             post.open()
+        try:
+            found = self._reusable(ref, sets, decoys, baseline, post, say)
+        except Exception as error:
+            # Whatever stops the reuse is a run's to meet: it says so, on the
+            # PR with --post, or runs once it holds the lock.
+            why = " ".join(str(error).split())[-300:]
+            say(f"no card to reuse ({type(error).__name__}: {why}); it runs")
+            return None
+        if found is None:
+            return None
+        return self._reuse(ref, post, say, **found)
+
+    def _reusable(self, ref, sets, decoys, baseline, post, say) -> dict | None:
+        """What :meth:`reuse` writes as ``ref``'s card, or None when it runs.
+
+        :raises: Whatever stops it reading the state, the ref, the baseline
+            or the deny list: the caller leaves that to a run.
+        """
+        state = self.load_state()
+        chosen = choose_sets(state, sets)
         sha = self.instance.resolve(ref)
         develop = self.instance.develop_sha()
-        if baseline and post is None and sha == develop:
+        if baseline and sha == develop:
             say(
-                f"{ref} is develop's head, and with --baseline it makes the baseline: it runs"
+                f"{ref} is develop's head, and with --baseline or --post it makes "
+                "the baseline: it runs"
             )
             return None
         engine = engine_digest(self.instance, sha, state, self.tool)
@@ -1891,7 +1942,7 @@ class BenchRun:
                 + "; it runs"
             )
             return None
-        return self._reuse(
+        return self._read_source(
             ref, sha, develop, chosen, engine, source, state, baseline, post, say
         )
 
@@ -1926,10 +1977,11 @@ class BenchRun:
             return {**record, "summary": summary}
         return None
 
-    def _reuse(
+    def _read_source(
         self, ref, sha, develop, chosen, engine, source, state, baseline, post, say
-    ) -> int | None:
-        """Write, record, report and post the source's card as ``ref``'s."""
+    ) -> dict | None:
+        """The source's card read as a run of ``ref`` would read it, scrubbed,
+        or None when it cannot stand for that run: nothing is written yet."""
         cr = _compare_module()
         src = self.home.cards / source["path"]
         was = source["summary"]
@@ -1947,14 +1999,13 @@ class BenchRun:
         read = list((was.get("card") or {}).get("sets") or [])
         made = json.loads((src / "card.json").read_text(encoding="utf-8"))
         # A card of develop's head is gated on its own, any other against
-        # its baseline (``_card``). The source's files hold for the head when
-        # both read none, or the same baseline with both develop's head or
-        # neither; else the card is read again (:func:`regate`).
-        absolute = sha == develop
+        # its baseline (``_card``). A head read against a baseline is no
+        # develop's head (:meth:`_reusable` leaves that one to a run), so the
+        # source's files hold for it when both read none, or the same
+        # baseline with the source no develop's head either; else the card
+        # is read again (:func:`regate`).
         same = (base or {}).get("path") == (was.get("baseline") or {}).get("path")
-        if same and (
-            base is None or absolute == (was.get("sha") == was.get("develop"))
-        ):
+        if same and (base is None or was.get("sha") != was.get("develop")):
             files = {
                 path.name: path.read_text(encoding="utf-8")
                 for path in sorted(src.iterdir())
@@ -1963,7 +2014,7 @@ class BenchRun:
         else:
             against = self._baseline_json(base, read) if base else None
             try:
-                regate(made, against, absolute, cr)
+                regate(made, against, cr)
             except SystemExit as why:  # a baseline of another card format
                 say(
                     f"the source card cannot be read against the baseline ({why}); "
@@ -1981,6 +2032,47 @@ class BenchRun:
                 f"{self._kind(refused.token, deny)}; it runs"
             )
             return None
+        return {
+            "sha": sha,
+            "develop": develop,
+            "chosen": chosen,
+            "engine": engine,
+            "source": source,
+            "state": state,
+            "base": base,
+            "no_diff": no_diff,
+            "said": said,
+            "made": made,
+            "files": files,
+            "deny": deny,
+            "own": own,
+        }
+
+    def _reuse(
+        self,
+        ref,
+        post,
+        say,
+        *,
+        sha,
+        develop,
+        chosen,
+        engine,
+        source,
+        state,
+        base,
+        no_diff,
+        said,
+        made,
+        files,
+        deny,
+        own,
+    ) -> int:
+        """Write, record, report and post the source's card as ``ref``'s."""
+        cr = _compare_module()
+        src = self.home.cards / source["path"]
+        was = source["summary"]
+        read = list((was.get("card") or {}).get("sets") or [])
         diff = made.get("baseline")
         gate = made.get("gate")
         verdict = gate["verdict"] if gate else was["card"]["verdict"]
@@ -2475,19 +2567,23 @@ class BenchRun:
         return 0
 
 
-def regate(made: dict, baseline: dict | None, absolute: bool, cr) -> None:
+def regate(made: dict, baseline: dict | None, cr) -> None:
     """Read a card again against another baseline, or none, as the
-    comparison would have (``compare_runs.run_card``): its gate, against the
-    baseline unless ``absolute``, and its diff.
+    comparison would have (``compare_runs.run_card``) for a head that is not
+    develop's: its gate, against the baseline where there is one, and its
+    diff.
 
     :raises SystemExit: On a baseline of another card format, as the
         comparison does.
     """
+    if baseline is not None and baseline.get("format") != cr.CARD_FORMAT:
+        # Before the gate reads it, as ``compare_runs.load_baseline`` checks.
+        sys.exit(f"the baseline is not a card of format {cr.CARD_FORMAT}")
     thresholds = made.get("thresholds")
     if thresholds:
         made["gate"] = (
             cr.judge_against(made, baseline, thresholds)
-            if baseline is not None and not absolute
+            if baseline is not None
             else cr.judge(made, thresholds)
         )
     made["baseline"] = cr.diff_cards(baseline, made) if baseline is not None else None

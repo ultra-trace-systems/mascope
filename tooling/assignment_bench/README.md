@@ -392,9 +392,11 @@ The digest hashes everything a card can depend on, in three parts:
   counts until someone lists it (`IGNORED` in `run.py`). The migrations are
   in the tree, so a new migration head is a new digest.
 - **The tool:** the bench and the comparison of the checkout `bench.py` runs
-  from, as they are on disk. They read the sets and make the card, whatever
-  the ref holds (step 8 above), so a card made by another copy of them is
-  not this checkout's card.
+  from, as they are on disk, and the two libraries the comparison imports
+  from its environment: `mascope_tools` (G10 is read off its reagent
+  library) and `mascope_sdk`, which reads the runs. They read the sets and
+  make the card, whatever the ref holds (step 8 above), so a card made by
+  another copy of them is not this checkout's card.
 - **The bench:** what the bench holds that a card reads. That is the
   manifest it was built from, each set's samples and how they are read, and
   the reference at its pin, run by run. A new manifest, `init --rebuild`, a
@@ -412,18 +414,20 @@ lost.
 
 When there is such a card, the run:
 
-1. takes no lock, starts no backend, and touches neither the database nor the
-   worktree, so it ends in seconds while another run holds the bench;
+1. takes no lock, starts no backend, migrates nothing and checks nothing
+   out, so it ends in seconds while another run holds the bench. Of the
+   database it reads only the instance's names, which the scrub denies;
 2. writes `cards/<ref>/<timestamp>/` for the head with the source's card in
    it, and a `run.json` whose `reused` names the source's folder, ref and
    commit and when it was made;
 3. reads the card as a run of the head would. With `--baseline` or
    `--post` it takes the baseline a run would take, by the same rules,
    including a card of develop standing in for a stale rolling baseline.
-   When that baseline is not the source's, or only one of the two heads is
-   develop's, it diffs the card afresh and judges its gate again: against
-   the baseline, or on its own on develop's head. Otherwise it copies the
-   source's files as they are;
+   When that baseline is not the source's, or the source is develop's head
+   gated on its own while this head is read against a baseline, it diffs
+   the card afresh and judges its gate again: against the baseline, or on
+   its own where there is none. Otherwise it copies the source's files as
+   they are;
 4. records it in the state's card list, prints the card, and exits as a
    run with that card would: as the source's run did, unless the gate
    read again says otherwise;
@@ -441,9 +445,12 @@ reuses.
 
 A run asks before it waits for the lock, and again once it has it, in case
 the run ahead of it in the queue made the card. **`--fresh`** runs
-regardless. A run of develop's head with `--baseline` always runs, since it
-is the run that makes the baseline: the nightly baseline runs with
-`--baseline --fresh`.
+regardless. A run of develop's head with `--baseline` or `--post` always
+runs, since it is the run that makes the baseline: the nightly baseline runs
+with `--baseline --fresh`. Whatever stops the reuse before it writes the
+card, such as an unknown set, a database that does not answer or a baseline
+of another card format, leaves the ref to a run, which meets the error as
+any run does: in the queue for the lock, and on the PR with `--post`.
 
 ## Asking for a card on a PR
 
