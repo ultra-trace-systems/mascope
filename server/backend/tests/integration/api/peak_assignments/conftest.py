@@ -242,3 +242,34 @@ def only_its_own_stage(monkeypatch):
         "plan",
         lambda states, from_stage: (batch_stages.BatchStage(from_stage),),
     )
+
+
+@pytest.fixture
+def only_these_stages(monkeypatch):
+    """Stand in for every batch stage but the named ones: a pass still runs
+    every stage in order and records each one's standing, but only the named
+    stages do their work. A suite proves its own stage through the pass
+    (``batch_stages.run_batch_stages``) without the stages its fixture holds
+    nothing for, which would read samples it has no spectra for."""
+    import dataclasses
+
+    from mascope_backend.api.new.peak_assignments import batch_stages
+
+    def keep(*names):
+        async def nothing(call):
+            return [{"status": "success", "message": "Stood in."}]
+
+        monkeypatch.setattr(
+            batch_stages,
+            "STAGE_BY_NAME",
+            {
+                spec.stage: (
+                    spec
+                    if spec.stage.value in names
+                    else dataclasses.replace(spec, run=nothing, rewrites=False)
+                )
+                for spec in batch_stages.STAGES
+            },
+        )
+
+    return keep

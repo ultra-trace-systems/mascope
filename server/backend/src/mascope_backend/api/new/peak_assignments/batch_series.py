@@ -64,6 +64,7 @@ from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_samp
 from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.new.cheminfo.utils import to_custom_element_format
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    MARK_SERIES,
     ROLE_M0,
     SERIES_KEY,
     is_isotope_line,
@@ -288,10 +289,12 @@ class SeriesPlan:
     :ivar evidence: Mode id -> every unit's evidence there.
     :ivar records: Anchor id -> the series record it is to carry.
     :ivar annotations: Anchor id -> the reading to measure on its members:
-        every committed target that does not already read the proposed formula.
+        every committed target. A member that already reads the proposed
+        formula is left as it is.
     :ivar corroborated: The committed targets already reading the proposed
         formula - held at candidate on it, or a member an earlier detection
-        measured - which carry the record and are not measured.
+        measured: the record corroborates their reading, and only their
+        members that do not read it yet are measured (MAS-769).
     :ivar ladders: Mode id -> every contaminant unit's links by mass alone
         there (:func:`plan_series`), which nothing measures or records on an
         anchor.
@@ -434,9 +437,13 @@ def _walk_mode(
             root_formula=anchors.formula_of[proposal.root],
             batch_peak_run_id=batch_peak_run_id,
         )
+        # A proposal its anchor already reads corroborates the reading, and is
+        # measured too: on the members that do not read it yet, which an
+        # earlier detection that stopped partway never reached, or a sample
+        # folded in since (MAS-769). A member that reads it already is left
+        # as it is (``batch_untargeted._takes_the_member``).
         if targets[key].formula == proposal.formula:
             plan.corroborated.add(key)
-            continue
         plan.annotations[key] = Annotation(
             formula=proposal.formula,
             ion_formula=ion_formula_of(proposal.formula, proposal.mechanism),
@@ -778,6 +785,7 @@ async def run_batch_series_detection(
                     source=SOURCE_SERIES,
                     prefer_better=True,
                     series=plan.records,
+                    mark=MARK_SERIES,
                 )
                 counts["samples_measured"] += 1
             except Exception:  # noqa: BLE001 - one bad sample must not abort the pass

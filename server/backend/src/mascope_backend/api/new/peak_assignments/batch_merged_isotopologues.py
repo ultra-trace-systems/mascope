@@ -79,6 +79,7 @@ from mascope_backend.api.new.peak_assignments.batch_isotopologues import (
     trace_centre,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    MARK_ISOTOPE_LINES,
     MERGED_ISOTOPOLOGUE_OF_KEY,
     MERGED_ISOTOPOLOGUES_KEY,
     ROLE_ISO_CHILD,
@@ -87,12 +88,14 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     SOURCE_ROLES,
     candidate_index,
     manual_pin_of,
+    mark_member,
     member_state,
     mz_from_delta,
     resolution_from_tol_ppm,
     resolve_candidate,
     role_code,
     role_name,
+    standing_merged_isotopologue_of_record,
     standing_merged_isotopologues_record,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
@@ -222,6 +225,9 @@ class Pair:
     """A merged row read as one parent's line.
 
     :ivar reason: None for a pair stripped, else why it was held.
+    :ivar again: Whether the row was stripped to this parent before, and the
+        pair strips its members that do not read the line yet: a sample
+        folded in, or folded again, since (:func:`strip_again`).
     """
 
     row: Row
@@ -231,6 +237,7 @@ class Pair:
     window_ppm: float
     scatter_ppm: Optional[float]
     reason: Optional[str] = None
+    again: bool = False
 
     @property
     def parent(self) -> Row:
@@ -281,6 +288,7 @@ _COUNTS = (
     "untestable",
     "held",
     "stripped",
+    "stripped_again",
 )
 
 
@@ -513,7 +521,62 @@ def plan_partition(
         counts["stripped"] += 1
         stripped.append(best)
         stripped_ids.add(row.batch_peak_id)
+    for pair in strip_again(
+        rows, window, scatter, hand_assigned, carrying_13c, carrying
+    ):
+        counts["stripped_again"] += 1
+        stripped.append(pair)
     return stripped, held
+
+
+def strip_again(
+    rows: list[Row],
+    window: float,
+    scatter: Optional[float],
+    hand_assigned: set[str],
+    carrying_13c: set[str],
+    carrying: set[tuple[str, str]],
+) -> list[Pair]:
+    """The rows stripped before whose members do not all read the line yet.
+
+    A row the strip took reads as its parent's line through its members, so
+    it is no merged ion any more, and the reading above never meets it again.
+    A sample folded in since, or folded again from a new run of its own,
+    brings a member that reads its file's reading of the peak: the strip
+    reads it as the parent's line again where the share still holds, as the
+    first strip read every member then (MAS-983, the batch stages' design
+    note 4.3). A row whose parent no longer reads as a merged ion, or a member
+    a rule keeps, is left as it is.
+    """
+    by_id = {row.batch_peak_id: row for row in rows}
+    again = []
+    for row in rows:
+        record = standing_merged_isotopologue_of_record(row.anchor)
+        if record is None:
+            continue
+        parent = by_id.get(record.get("batch_peak_id"))
+        if parent is None or not is_parent(parent.anchor):
+            continue
+        [line] = [
+            line
+            for line in lines_of(parent)
+            if line.isotopologue.label == record.get("label")
+        ] or [None]
+        if line is None:
+            continue
+        if not any(
+            sample_decision(row, parent, sample, carrying) is None
+            for sample in row.members
+        ):
+            continue
+        pair = _read_pair(row, line, window, scatter)
+        if not pair.reading.is_isotopologue:
+            continue
+        if _held_reason(pair, hand_assigned, carrying_13c, carrying) is not None:
+            continue
+        pair.again = True
+        again.append(pair)
+    return again
 
 
 def plan_batch(
@@ -754,10 +817,17 @@ class Written:
 
 
 def _still_planned(pair: Pair, anchors: dict[str, Any]) -> bool:
-    """Whether the row and the parent still read what the pair was read for."""
+    """Whether the row and the parent still read what the pair was read for:
+    a row stripped again still reads as this parent's line."""
     row = anchors.get(pair.row.batch_peak_id)
     parent = anchors.get(pair.parent.batch_peak_id)
-    if row is None or parent is None or not is_parent(row) or not is_parent(parent):
+    if row is None or parent is None or not is_parent(parent):
+        return False
+    if pair.again:
+        record = standing_merged_isotopologue_of_record(row)
+        if record is None or record.get("batch_peak_id") != parent.batch_peak_id:
+            return False
+    elif not is_parent(row):
         return False
     planned_row, planned_parent = pair.row.anchor, pair.parent.anchor
     return (
@@ -917,6 +987,7 @@ async def _write_pair(
             source=parent_identity.get("source"),
         )
         displaced[sample_item_id] = member_state(member)
+        mark_member(member, MARK_ISOTOPE_LINES)
         member.role = role_code(ROLE_ISO_CHILD)
         member.owner_batch_peak_id = parent_bp.batch_peak_id
         member.candidate = index
@@ -935,6 +1006,18 @@ async def _write_pair(
         rows_kept=dict(rows_kept),
         batch_peak_run_id=batch_peak_run_id,
     )
+    if pair.again:
+        # The row's own reading before the first strip, and every member that
+        # strip rewrote, stay on the record beside the ones stripped now.
+        earlier = standing_merged_isotopologue_of_record(row_bp) or {}
+        before = {**(earlier.get("displaced_members") or {}), **displaced}
+        record.update(
+            displaced=earlier.get("displaced", record["displaced"]),
+            displaced_members=before,
+            members_rewritten=len(before),
+            rows_rewritten=(earlier.get("rows_rewritten") or 0) + rows_rewritten,
+            line_ion_formula=earlier.get("line_ion_formula") or line_ion_formula,
+        )
     row_provenance = dict(row_bp.provenance or {})
     row_provenance[MERGED_ISOTOPOLOGUE_OF_KEY] = record
     row_bp.provenance = row_provenance
@@ -1127,7 +1210,7 @@ def summarise(plan: Plan, written: list[Written]) -> dict:
         if done.outcome == "stripped":
             continue
         counts = by_partition[partition_of(done.pair.row.anchor)]
-        counts["stripped"] -= 1
+        counts["stripped_again" if done.pair.again else "stripped"] -= 1
         if done.outcome == "moved":
             counts["moved"] = counts.get("moved", 0) + 1
         else:

@@ -22,6 +22,8 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select, update
+from stage_stubs import frame, stub_sample_reads, stub_seeded_scorer
+from stage_stubs import mechanism as mechanism_row
 
 from mascope_backend.api.new.peak_assignments import (
     batch_merged_isotopologues,
@@ -384,6 +386,9 @@ async def test_a_row_at_its_parents_line_is_stripped_and_the_ledgers_agree(
         assert record["rows_kept"] == {"imported": 1, "no_row": N_SAMPLES - 2}
         assert set(record["displaced_members"]) == set(samples.values())
         assert record["batch_peak_run_id"] == "run-strip"
+        # Each member it rewrote carries the isotope lines' mark.
+        members = await _members(async_session_factory, ids[key])
+        assert {m.batch_written["stage"] for m in members.values()} == {"isotope_lines"}
     assert anchors["x"].consensus_ion_formula == "[13C]C9H15O4-"
     # The parent keeps both lines, and reads what it read.
     assert anchors["p"].consensus_formula == "C10H16O4"
@@ -903,3 +908,80 @@ async def test_a_13c_line_folded_since_the_reading_holds_its_row(
         assert member.role == role_code("M0")
     rows = await _run_rows(async_session_factory, batch["runs"][RUN_SAMPLE])
     assert rows["x"].role == "M0"
+
+
+def _stub_the_stage_list(monkeypatch):
+    """What a sample's judging reads after the strip, canned: every peak of
+    the fixture, the suite's mechanism, and a seeded scorer that pairs each
+    parent's reading to its peak."""
+    peaks = _peaks()
+    by_formula = {formula: peak for peak, (_, formula, _, _) in peaks.items()}
+    ions = {formula: ion for _, (_, formula, ion, _) in peaks.items()}
+
+    def peaks_of(sample_item_id):
+        return frame((peak, mz, 1e6) for peak, (mz, *_) in peaks.items())
+
+    async def seeded(sample, seeds, params, **kwargs):
+        ion_by_seed, fit_by_ion, errors = {}, {}, {}
+        for formula, mechanism in seeds:
+            peak = by_formula.get(formula)
+            if peak is None:
+                continue
+            ion = f"ion-{formula}"
+            ion_by_seed[(formula, mechanism)] = ion
+            fit_by_ion[ion] = 0.9
+            errors[(ion, peak)] = {"mz_error_ppm": 0.1}
+        return ion_by_seed, fit_by_ion, errors, None
+
+    stub_sample_reads(monkeypatch, peaks_of, [mechanism_row(NOTATION, MECH)])
+    stub_seeded_scorer(
+        monkeypatch, seeded, peaks_of, ion_formula=lambda formula, _m: ions[formula]
+    )
+
+
+async def test_a_refolded_sample_is_stripped_again_by_the_next_pass(
+    async_session_factory, strip_batch, monkeypatch, only_these_stages
+):
+    """A sample folded in again reads its own rows, the strip's rewrite of its
+    line gone: every stage is stale, and the next pass strips the line in it
+    again (MAS-983's Verify)."""
+    from mascope_backend.api.new.peak_assignments.batch_stages import (
+        run_batch_stages,
+        stage_standing,
+    )
+
+    only_these_stages("isotope_lines")
+    _stub_the_stage_list(monkeypatch)
+    batch, samples, ids = strip_batch, strip_batch["samples"], strip_batch["ids"]
+    await run_batch_stages(sample_batch_id=batch["batch_id"])
+    sample = samples["S03"]
+    line = (await _members(async_session_factory, ids["x"]))[sample]
+    assert line.role == role_code("iso_child")
+    assert line.batch_written["stage"] == "isotope_lines"
+
+    await fold_sample_into_batch_peaks(
+        sample, rows=[SimpleNamespace(**r) for r in _rows(sample, 3)], persisted=False
+    )
+    refolded = (await _members(async_session_factory, ids["x"]))[sample]
+    assert refolded.role == role_code("M0")
+    assert refolded.batch_written is None
+    standing = await stage_standing(batch["batch_id"])
+    assert {e["stale_reason"] for e in standing["stages"]} == {"fold"}
+
+    outcome = await run_batch_stages(sample_batch_id=batch["batch_id"])
+    assert outcome["status"] == "success", outcome["message"]
+    restored = (await _members(async_session_factory, ids["x"]))[sample]
+    assert restored.role == role_code("iso_child")
+    assert restored.owner_batch_peak_id == ids["p"]
+    assert restored.batch_written["stage"] == "isotope_lines"
+    assert (await stage_standing(batch["batch_id"]))["stale_stages"] == []
+    # The record keeps what the row read before the first strip and every
+    # member either strip rewrote, which a withdrawal would put back.
+    record = _stripped((await _anchors(async_session_factory, batch))["x"])
+    assert record["displaced"]["formula"] == _peaks()["x"][1]
+    assert set(record["displaced_members"]) == set(samples.values())
+    assert record["members_rewritten"] == N_SAMPLES
+    [stage] = [s for s in outcome["data"]["stages"] if s["stage"] == "isotope_lines"]
+    # Both of the first parent's lines, the 13C and the 18O row.
+    assert stage["outcomes"][0]["data"]["stripped_again"] == 2
+    assert stage["outcomes"][0]["data"]["stripped"] == 0

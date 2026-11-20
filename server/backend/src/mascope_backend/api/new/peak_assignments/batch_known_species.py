@@ -78,19 +78,23 @@ from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.new.ionization.modes.versions import root_ids
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     KNOWN_SPECIES_KEY,
+    MARK_KNOWN_SPECIES,
     ROLE_ISO_CHILD,
     ROLE_M0,
     ROLE_REAGENT,
     SOURCE_ROLES,
+    batch_mark_of,
     candidate_index,
     instrument_type_of,
     is_isotope_line,
     known_species_record_of,
     manual_pin_of,
+    mark_member,
     member_state,
     mz_from_delta,
     reading_of,
     resolve_candidate,
+    restore_marked,
     role_code,
     role_name,
     standing_co_variation_record,
@@ -269,6 +273,9 @@ class Member:
         None where no row is linked.
     :ivar row_batch: Whether the linked row was written on the batch's word:
         rewritten by a decision, or claimed by a run on the batch's decision.
+    :ivar batch_stage: The batch stage whose mark the member carries
+        (``batch_peaks.batch_mark``): the member reads what a stage wrote, not
+        its file's own run or fold. None on a member no stage wrote.
     """
 
     sample_item_id: str
@@ -288,6 +295,7 @@ class Member:
     isotope_label: Optional[str] = None
     row_reading: Optional[tuple[Optional[str], ...]] = None
     row_batch: bool = False
+    batch_stage: Optional[str] = None
 
     @property
     def source_claim(self) -> bool:
@@ -382,10 +390,13 @@ class Species:
         rewrite, a run's claim on the batch's decision, or the batch's water
         ladder) is the batch's. One whose row reads the species is its
         file's. One with no row that says so - none linked, or an import's
-        the batch did not rewrite - is the batch's where its water ladder
-        claimed it, and else its file's only where the batch never decided
-        the species, or where the decision before this one read it as its
-        file's own: a batch's claim in such a member leaves no other trace.
+        the batch did not rewrite - is the batch's where a batch stage wrote
+        it, by the mark it carries (``batch_peaks.batch_mark``), which
+        outlives the record of the decision that wrote it (MAS-891), or where
+        its water ladder claimed it; else its file's only where the batch
+        never decided the species, or where the decision before this one read
+        it as its file's own: a claim from before the marks leaves no other
+        trace.
 
         :param earlier: The samples the anchor's earlier decision of this
             species read as their file's own; None where there is none.
@@ -396,7 +407,7 @@ class Species:
             return False
         if member.row_reading is not None and self._reading_reads(*member.row_reading):
             return True
-        if member.sample_item_id in claimed:
+        if member.batch_stage or member.sample_item_id in claimed:
             return False
         return earlier is None or member.sample_item_id in earlier
 
@@ -1370,6 +1381,7 @@ def _member_from(
         isotope_label=label,
         row_reading=reading,
         row_batch=batch,
+        batch_stage=(batch_mark_of(row) or {}).get("stage"),
     )
 
 
@@ -1459,6 +1471,7 @@ _MEMBER_COLUMNS = (
     BatchPeakOccurrence.candidate,
     BatchPeakOccurrence.tier,
     BatchPeakOccurrence.fit_score,
+    BatchPeakOccurrence.batch_written,
 )
 
 
@@ -1610,6 +1623,72 @@ class Written:
     rows_kept: dict[str, int] = field(default_factory=dict)
 
 
+#: The key under a rewritten row's provenance that keeps what the row read
+#: before the batch's claim: its columns as they were, so a withdrawn decision
+#: puts the row back (:func:`restore_row`).
+ROW_BEFORE_KEY = "batch_written_before"
+
+
+def with_row_before(row: Any, values: dict) -> dict:
+    """The values that rewrite a row, carrying what the row read before them
+    under its provenance (:data:`ROW_BEFORE_KEY`)."""
+    before = {key: getattr(row, key, None) for key in values}
+    provenance = dict(values.get("provenance") or {})
+    provenance[ROW_BEFORE_KEY] = before
+    return {**values, "provenance": provenance}
+
+
+def restore_row(row: Any) -> bool:
+    """Put back what a row read before the batch's claim rewrote it, where it
+    still carries the claim and no person chose its reading since: a hand
+    assignment replaces the row's reading and is left alone (MAS-874). A row
+    a newer run wrote is another row, which no member of this decision links.
+
+    :return: Whether the row was put back.
+    """
+    provenance = row.provenance if isinstance(row.provenance, dict) else {}
+    before = provenance.get(ROW_BEFORE_KEY)
+    if not isinstance(before, dict) or row.source == SOURCE_MANUAL:
+        return False
+    for key, value in before.items():
+        setattr(row, key, value)
+    return True
+
+
+def withdraw_species(
+    members: dict[str, Any],
+    lines: Iterable[Any],
+    rows: dict[str, Any],
+) -> dict[str, int]:
+    """Withdraw an earlier decision's claims at one batch peak, now that this
+    decision no longer reads the species present (MAS-874): every member the
+    known-species stage marked, and its isotope lines, read again what they
+    read before it, and so do the in-app rows it rewrote, but for those a
+    person curated since. A member a newer fold or a person wrote carries no
+    such mark and stays.
+
+    :param members: Sample -> the anchor's member row.
+    :param lines: The member rows of the anchor's isotope lines.
+    :param rows: Peak assignment id -> the rows the members link.
+    :return: How many members and rows were put back, and the samples.
+    """
+    restored_members = restored_rows = 0
+    samples: set[str] = set()
+    for member in [*members.values(), *lines]:
+        if not restore_marked(member, MARK_KNOWN_SPECIES):
+            continue
+        restored_members += 1
+        samples.add(member.sample_item_id)
+        row = rows.get(member.peak_assignment_id or "")
+        if row is not None and restore_row(row):
+            restored_rows += 1
+    return {
+        "members_restored": restored_members,
+        "rows_restored": restored_rows,
+        "samples": sorted(samples),
+    }
+
+
 async def _write_species(
     decision: Decision,
     anchor: Any,
@@ -1659,10 +1738,11 @@ async def _write_species(
                 if batch_species is not None
                 else listed_species_row(_as_dict(own_row), exemplar, species, record)
             )
-            for key, value in values.items():
+            for key, value in with_row_before(own_row, values).items():
                 setattr(own_row, key, value)
             rows_rewritten += 1
         displaced[sample] = member_state(member)
+        mark_member(member, MARK_KNOWN_SPECIES)
         if species.lifts(fresh_members[sample]):
             # Its own reading of the compound, lifted: what it measured stays.
             member.tier = tier_code(LISTED_CLAIM_TIER)
@@ -1689,6 +1769,7 @@ async def _write_species(
         # A library ion's isotope lines go with it, as the pre-pass claims them.
         for line_member, line_anchor in lines.get(sample, ()):
             line_registry = list(line_anchor.candidates or [])
+            mark_member(line_member, MARK_KNOWN_SPECIES)
             line_member.candidate = candidate_index(
                 line_registry, None, species.ion_formula, None, source=SOURCE_REAGENT
             )
@@ -1705,8 +1786,11 @@ async def _write_species(
                 and line_row.peak_assignment_run_id in in_app_runs
                 and line_row.owner_peak_assignment_id == own_row.peak_assignment_id
             ):
-                for key, value in batch_species_row(
-                    _as_dict(line_row), batch_species, exact_mz=species.exact_mz
+                for key, value in with_row_before(
+                    line_row,
+                    batch_species_row(
+                        _as_dict(line_row), batch_species, exact_mz=species.exact_mz
+                    ),
                 ).items():
                     setattr(line_row, key, value)
             lines_rewritten += 1
@@ -1845,6 +1929,8 @@ async def _write_chunk(
         written: list[Written] = []
         displaced_of: dict[str, dict[str, dict]] = {}
         touched: set[str] = set()
+        # Anchor id -> what a withdrawn decision put back there.
+        restored: dict[str, dict] = {}
         for planned in decisions:
             anchor = anchors.get(planned.row.batch_peak_id)
             if anchor is None:
@@ -1900,6 +1986,24 @@ async def _write_chunk(
                     displaced_of[anchor.batch_peak_id] = displaced
                 written.append(done)
             else:
+                if not decision.verdict.present:
+                    withdrawn = withdraw_species(
+                        members.get(anchor.batch_peak_id, {}),
+                        [
+                            line
+                            for line in line_members
+                            if line.owner_batch_peak_id == anchor.batch_peak_id
+                        ],
+                        rows,
+                    )
+                    if withdrawn["members_restored"]:
+                        touched.add(anchor.batch_peak_id)
+                        touched |= {
+                            line.batch_peak_id
+                            for line in line_members
+                            if line.owner_batch_peak_id == anchor.batch_peak_id
+                        }
+                        restored[anchor.batch_peak_id] = withdrawn
                 written.append(Written(decision, False))
         now = datetime.now(timezone.utc)
         if touched:
@@ -1919,6 +2023,12 @@ async def _write_chunk(
                 lines_rewritten=done.lines_rewritten,
                 rows_kept=done.rows_kept,
             )
+            if anchor.batch_peak_id in restored:
+                # What the withdrawn decision's claims read again: the samples
+                # are judged again from it (``batch_stages.judge_again``).
+                provenance[KNOWN_SPECIES_KEY]["restored"] = restored[
+                    anchor.batch_peak_id
+                ]
             anchor.provenance = provenance
             anchor.batch_peak_utc_modified = now
         await touch_ledger(session, sample_batch_id)
@@ -1944,7 +2054,11 @@ async def _clear_stale_records(sample_batch_id: str, kept: set[str]) -> int:
         )
         cleared = 0
         for anchor in anchors:
-            if anchor.batch_peak_id in kept or known_species_record_of(anchor) is None:
+            # Its own records, those a recompute marked stale too.
+            if (
+                anchor.batch_peak_id in kept
+                or known_species_record_of(anchor, stale=True) is None
+            ):
                 continue
             provenance = dict(anchor.provenance or {})
             provenance.pop(KNOWN_SPECIES_KEY, None)

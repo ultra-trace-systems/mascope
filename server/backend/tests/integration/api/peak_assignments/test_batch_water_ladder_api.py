@@ -32,10 +32,15 @@ from mascope_backend.api.new.peak_assignments import (
     batch_water_ladder,
 )
 from mascope_backend.api.new.peak_assignments.batch_known_species import (
+    _load_batch,
     _row_marks,
+    plan_batch,
     run_batch_known_species,
 )
-from mascope_backend.api.new.peak_assignments.batch_peaks import role_code
+from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    role_code,
+    water_ladder_record_of,
+)
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     fold_sample_into_batch_peaks,
     recompute_batch_consensus,
@@ -445,6 +450,11 @@ async def test_a_rung_in_every_segment_moves_its_analyte_to_the_reagent(
     r3b = anchors["r3b"]
     assert r3b.consensus_role == "reagent"
     assert r3b.isotopologue_of == batch["ids"]["r3"]
+    # Each line member went with its rung, marked as the ladder's.
+    lines = await _members(async_session_factory, batch["ids"]["r3b"])
+    assert {m.batch_written["stage"] for m in lines.values() if m.batch_written} == {
+        "water_ladders"
+    }
 
     (part,) = summary["partitions"]
     assert part["profile"] == "BR"
@@ -670,6 +680,134 @@ async def test_known_species_decided_after_a_measurement_spreads_no_rung(
             assert members[samples[name]].role == role_code("reagent")
 
 
+async def test_the_claims_stay_the_batchs_after_the_ladders_record_comes_off(
+    async_session_factory, ladder_batch
+):
+    """The mark that the batch claimed a member lives on the member (MAS-891):
+    with the rung's record taken off the batch peak, as a later measurement or
+    a moved reading takes it off, the decision still reads the humid
+    segment's claims as the batch's word and spreads no rung."""
+    batch, samples = ladder_batch, ladder_batch["samples"]
+    await run_batch_water_ladders(batch["batch_id"])
+    rung = (await _anchors(async_session_factory, batch))["r5"]
+    for name in HUMID:
+        if name != "H03":
+            member = (await _members(async_session_factory, batch["ids"]["r5"]))[
+                samples[name]
+            ]
+            assert member.batch_written["stage"] == "water_ladders"
+    async with async_session_factory() as session:
+        anchor = await session.get(BatchPeak, rung.batch_peak_id)
+        anchor.provenance = {
+            k: v for k, v in (anchor.provenance or {}).items() if k != "water_ladder"
+        }
+        await session.commit()
+
+    # The plan reads the mark off each member, as the write reads it again:
+    # no humid member is a file's own test of the rung.
+    loaded, by_anchor, claims = await _load_batch(batch["batch_id"])
+    assert {
+        by_anchor[rung.batch_peak_id][samples[name]].batch_stage
+        for name in HUMID
+        if name != "H03"
+    } == {"water_ladders"}
+    plan = plan_batch(loaded, by_anchor, claims)
+    [planned] = [
+        d
+        for d in plan.decisions
+        if d.row.batch_peak_id == rung.batch_peak_id and d.species.ion_formula == ion(5)
+    ]
+    assert planned.verdict.evidence.test_held == 0
+
+    anchors, members, rows = await _decided_after(async_session_factory, batch)
+    decided = (anchors["r5"].provenance or {})["known_species"]
+    assert decided["test_held"] == 0
+    assert decided["verdict"] == "absent"
+    assert decided["own_test_samples"] == []
+    for name in DRY:
+        assert members[samples[name]].role == role_code("M0")
+    assert rows["r5"].assigned_formula == F5
+
+
+async def test_a_new_measurement_takes_off_a_record_a_recompute_kept_stale(
+    async_session_factory, ladder_batch
+):
+    """A record a consensus recompute kept marked stale is still the
+    measurement's own: the next measurement that no longer passes its rung
+    takes it off, as it takes off a standing one. Eight humid samples are
+    folded again without the rung's peak, so it no longer passes, and the
+    record is then marked stale as a recompute marks one whose batch peak's
+    reading moved."""
+    batch = ladder_batch
+    await run_batch_water_ladders(batch["batch_id"])
+    gone = [name for name in HUMID if name not in batch["runs"]][-8:]
+    for name in gone:
+        await fold_sample_into_batch_peaks(
+            batch["samples"][name],
+            rows=[
+                SimpleNamespace(**r)
+                for r in _rows(batch["samples"][name], name)
+                if r["sample_peak_id"] != "r5"
+            ],
+            persisted=False,
+        )
+    rung = (await _anchors(async_session_factory, batch))["r5"]
+    async with async_session_factory() as session:
+        anchor = await session.get(BatchPeak, rung.batch_peak_id)
+        provenance = dict(anchor.provenance or {})
+        provenance["water_ladder"] = {**provenance["water_ladder"], "stale": True}
+        anchor.provenance = provenance
+        await session.commit()
+    await run_batch_water_ladders(batch["batch_id"], batch_peak_run_id="second")
+    rung = (await _anchors(async_session_factory, batch))["r5"]
+    assert "water_ladder" not in (rung.provenance or {})
+
+
+async def test_a_rung_that_no_longer_passes_withdraws_its_claims(
+    async_session_factory, ladder_batch
+):
+    """A later measurement that no longer passes Br-.(H2O)5 takes its record
+    off and withdraws its claims (MAS-983, task 8): every humid sample's
+    member the ladder rewrote reads again what it read before, and the
+    measurement names the samples it put back, which the stage judges again.
+    Eight humid samples are folded again without the rung's peak, so it is
+    present in too few of the segment's samples to pass."""
+    batch, samples = ladder_batch, ladder_batch["samples"]
+    await run_batch_water_ladders(batch["batch_id"])
+    claimed = {
+        name
+        for name in HUMID
+        if (await _members(async_session_factory, batch["ids"]["r5"])).get(
+            samples[name]
+        )
+        and (await _members(async_session_factory, batch["ids"]["r5"]))[
+            samples[name]
+        ].batch_written
+    }
+    assert claimed
+    gone = [name for name in HUMID if name not in batch["runs"]][-8:]
+    for name in gone:
+        await fold_sample_into_batch_peaks(
+            samples[name],
+            rows=[
+                SimpleNamespace(**r)
+                for r in _rows(samples[name], name)
+                if r["sample_peak_id"] != "r5"
+            ],
+            persisted=False,
+        )
+    summary = await run_batch_water_ladders(batch["batch_id"])
+    rung = (await _anchors(async_session_factory, batch))["r5"]
+    assert water_ladder_record_of(rung, stale=True) is None
+    kept = claimed - set(gone)
+    assert set(summary["restored_samples"]) == {samples[name] for name in kept}
+    members = await _members(async_session_factory, batch["ids"]["r5"])
+    for name in kept:
+        member = members[samples[name]]
+        assert member.batch_written is None
+        assert member.role == role_code("unassigned")
+
+
 async def test_a_second_measurement_keeps_the_claims_the_batchs(
     async_session_factory, ladder_batch
 ):
@@ -861,3 +999,41 @@ async def test_two_click_orders_leave_one_ledger(
     assert first["r3"]["reads"][:3] == ("reagent", None, ion(3))
     assert first["r5"]["records"]["known_species"]["verdict"] == "absent"
     assert first == second
+
+
+async def test_a_refolded_sample_leaves_the_stages_stale_and_the_pass_claims_it_again(
+    async_session_factory, ladder_batch, only_these_stages
+):
+    """A sample folded in again reads its own run's rows, the rung's claim
+    on it gone: every stage is stale, and the next pass, started where the
+    first stale stage is, claims the rung in it again (MAS-983's Verify)."""
+    from mascope_backend.api.new.peak_assignments.batch_stages import (
+        run_batch_stages,
+        stage_standing,
+    )
+
+    only_these_stages("water_ladders", "known_species")
+    batch, samples, ids = ladder_batch, ladder_batch["samples"], ladder_batch["ids"]
+    await run_batch_stages(sample_batch_id=batch["batch_id"])
+    sample = samples["H05"]
+    claimed = (await _members(async_session_factory, ids["r3"]))[sample]
+    assert claimed.role == role_code("reagent")
+    assert claimed.batch_written["stage"] == "water_ladders"
+
+    await fold_sample_into_batch_peaks(
+        sample,
+        rows=[SimpleNamespace(**r) for r in _rows(sample, "H05")],
+        persisted=False,
+    )
+    refolded = (await _members(async_session_factory, ids["r3"]))[sample]
+    assert refolded.role == role_code("M0")
+    assert refolded.batch_written is None
+    standing = await stage_standing(batch["batch_id"])
+    assert {e["stale_reason"] for e in standing["stages"]} == {"fold"}
+
+    outcome = await run_batch_stages(sample_batch_id=batch["batch_id"])
+    assert outcome["status"] == "success"
+    restored = (await _members(async_session_factory, ids["r3"]))[sample]
+    assert restored.role == role_code("reagent")
+    assert restored.batch_written["stage"] == "water_ladders"
+    assert (await stage_standing(batch["batch_id"]))["stale_stages"] == []
