@@ -152,6 +152,22 @@ def test_a_ticket_whose_process_is_gone_is_dropped(tmp_path):
     assert _tickets(home) == []
 
 
+def test_a_start_time_is_when_the_process_started_in_ticks_since_boot():
+    # A process started now started about now: read stat's field 22
+    # (starttime) and no other, which a pid reused by a later process changes.
+    hz = os.sysconf("SC_CLK_TCK")
+    child = subprocess.Popen([PYTHON, "-c", "import time; time.sleep(30)"])
+    try:
+        start = bench._start_time(child.pid)
+        uptime = float(Path("/proc/uptime").read_text().split()[0])
+    finally:
+        child.kill()
+        child.wait()
+    assert start is not None
+    assert abs(uptime - int(start) / hz) < 5
+    assert bench._start_time(child.pid) is None
+
+
 def test_a_waiter_that_is_stopped_leaves_no_ticket(tmp_path):
     home = bench.Home(tmp_path / "home")
     script = tmp_path / "waiter.py"
