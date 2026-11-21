@@ -1182,13 +1182,7 @@ def complete_same_ion_family(
         :data:`SAME_ION_ALTERNATIVES`; the candidate as given where the family
         adds nothing.
     """
-    own = {
-        "formula": candidate.get("formula"),
-        "ion": candidate.get("ion"),
-        "ionization_mechanism": candidate.get("ionization_mechanism"),
-        "neutral_mass": candidate.get("neutral_mass"),
-        "unsaturation": candidate.get("unsaturation"),
-    }
+    own = _displaced(candidate)
 
     def reading(member: dict[str, Any]) -> tuple[str, Any]:
         return (
@@ -1223,11 +1217,12 @@ def complete_same_ion_family(
     return winner
 
 
-def _ion_charge(ion_formula: str) -> int:
-    """The signed charge an ion formula ends in: one sign per charge."""
-    text = ion_formula.strip()
-    signs = len(text) - len(text.rstrip("+-"))
-    return 0 if not signs else (signs if text.endswith("+") else -signs)
+def _signed_charge(signs: str) -> int:
+    """The signed charge an ion identity's signs say (:func:`utils.
+    ion_identity`): one sign per charge, its first giving the polarity."""
+    if not signs:
+        return 0
+    return len(signs) if signs[0] == "+" else -len(signs)
 
 
 def same_ion_families(
@@ -1284,7 +1279,7 @@ def same_ion_families(
             )
         except Exception:  # noqa: BLE001 - an ion nobody can parse has no family
             ion = {}
-        charge = _ion_charge(str(ion_formula or ""))
+        charge = _signed_charge(identity[1]) if identity else 0
         if ion and charge:
             for notation, mechanism in mechanisms.items():
                 if mechanism.charge != charge:

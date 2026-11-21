@@ -3138,9 +3138,13 @@ class Judging:
     :ivar claims: The lines earlier rounds read as their owners', by row.
     :ivar rounds: The rounds begun.
     :ivar applied: The round's rows as it began: a fresh copy of ``rows`` with
-        the claims applied, which nothing modifies.
+        the claims applied. With fragment ladders nothing modifies it, since a
+        fragment claim measures the round again from it (:meth:`judge`).
+        Without them nothing reads it again, and it is ``judged`` itself: the
+        round's passes modify it.
     :ivar judged: The round's rows: a copy of ``applied`` without the
-        fragments claimed so far, which the round's passes then modify.
+        fragments claimed so far, which the round's passes then modify (with
+        no fragment ladders, ``applied`` itself).
     :ivar fragments: What the fragment claim read as the source's in the
         round, over every pass of it (:meth:`judge`).
     :ivar found: The claims the round's caps left, which another round
