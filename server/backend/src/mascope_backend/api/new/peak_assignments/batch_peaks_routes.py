@@ -19,6 +19,9 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
 )
 from mascope_backend.api.models.base_pydantic_model import RequestBodyModel
 from mascope_backend.api.new.auth.dependencies import current_active_user
+from mascope_backend.api.new.peak_assignments.batch_assignment_status import (
+    get_batch_assignment_status,
+)
 from mascope_backend.api.new.peak_assignments.batch_curation import (
     curate_batch_peak,
     measure_batch_peak_candidate,
@@ -83,6 +86,7 @@ from mascope_backend.api.new.peak_assignments.sample_status import (
 from mascope_backend.api.new.peak_assignments.schemas import (
     AssignmentTier,
     AssignSamplePeaksBody,
+    BatchAssignmentStatusResponse,
     BatchPeakCandidateMeasurementResponse,
     BatchPeakRunsResponse,
     BatchPeakVerificationsResponse,
@@ -1520,6 +1524,43 @@ async def get_batch_peak_runs_route(
     await check_batch_access(sample_batch_id, user, "guest")
     result = await list_batch_runs(sample_batch_id=sample_batch_id)
     return BatchPeakRunsResponse.model_validate(result)
+
+
+@batch_peaks_router.get(
+    "/batch/{sample_batch_id}/assignment-status",
+    response_model=BatchAssignmentStatusResponse,
+)
+@api_route(token_access=True)
+async def get_batch_assignment_status_route(
+    sample_batch_id: str,
+    user: User = Depends(current_active_user),
+) -> BatchAssignmentStatusResponse:
+    """Where the batch's assignment stands, and why it is behind its last pass.
+
+    ``state`` is the first that holds: ``running`` (a pass or another batch
+    run in flight, under ``running`` with its stage, which of how many, and
+    who started it), ``failed`` or ``cancelled`` (the newest pass stopped,
+    under ``stopped_pass``), ``none`` (no batch peaks), ``folded_only`` (no
+    pass has completed: the ledger is what the folds at ingest built),
+    ``behind`` (a reason under ``behind`` holds) or ``current``.
+
+    ``behind`` measures the batch against its newest completed pass
+    (``last_pass``): ``new_samples`` and ``removed_samples`` against the
+    samples it covered, ``resampled`` (an in-app run of a sample completed
+    since it started), ``library_changed`` (a target collection or reference
+    list since), ``engine_changed`` and ``stages_stale`` (a stage stale for
+    any other reason). A curation, a verdict or an import is none.
+    ``needs_fold`` says whether the next pass folds every sample first, and
+    ``fold_reasons`` why (``batch_stages.needs_fold``). Read-only, and open
+    like every read here where the feature is off.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param user: The current authenticated user. Requires workspace guest role.
+    :return: The batch's status.
+    """
+    await check_batch_access(sample_batch_id, user, "guest")
+    result = await get_batch_assignment_status(sample_batch_id=sample_batch_id)
+    return BatchAssignmentStatusResponse.model_validate(result)
 
 
 @batch_peaks_router.post(

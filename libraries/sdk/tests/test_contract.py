@@ -992,6 +992,32 @@ class TestLoaderContract:
         batch_samples = mascope.samples.list(batch["sample_batch_id"])
         assert set(peaks["sample_item_id"]) <= set(batch_samples["sample_item_id"])
 
+    def test_assignment_status_says_where_a_batch_stands(self, mascope):
+        _skip_unless_attr(mascope.batch_peaks, "assignment_status")
+        _, batches = _first_dataset_and_batches(mascope)
+        status = mascope.batch_peaks.assignment_status(
+            batches.iloc[0]["sample_batch_id"]
+        )
+        assert status["state"] in {
+            "none",
+            "folded_only",
+            "running",
+            "current",
+            "behind",
+            "failed",
+            "cancelled",
+        }
+        assert {
+            "last_pass",
+            "running",
+            "stale_stages",
+            "needs_fold",
+            "fold_reasons",
+            "behind",
+        } <= set(status)
+        assert isinstance(status["needs_fold"], bool)
+        assert all({"reason", "count"} <= set(r) for r in status["behind"])
+
     def test_load_peaks_reads_a_batch_in_one_request_as_its_samples_read(
         self, mascope, monkeypatch
     ):

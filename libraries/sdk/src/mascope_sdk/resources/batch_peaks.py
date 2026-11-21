@@ -856,6 +856,38 @@ class BatchPeaksResource(BaseResource):
             batch_id, run["batch_peak_run_id"], "batch pass", poll_interval, timeout
         )
 
+    def assignment_status(self, batch_id: str) -> dict[str, Any]:
+        """Where the batch's assignment stands, and why it is behind its last
+        pass: the read the app's *Assign batch* control shows.
+
+        ``state`` is ``running`` (a pass or another batch run in flight),
+        ``failed`` or ``cancelled`` (the newest pass stopped), ``none`` (no
+        batch peaks), ``folded_only`` (no pass has completed: known
+        compositions only, as the folds at ingest built the ledger),
+        ``behind`` or ``current``. ``behind`` lists the reasons, each with its
+        ``reason``, ``count`` and the first ``sample_item_ids`` or a
+        ``detail``: ``new_samples`` and ``removed_samples`` against the
+        samples the last pass covered, ``resampled`` (a sample's in-app run
+        since the pass), ``library_changed`` (a target collection or
+        reference list since), ``engine_changed`` and ``stages_stale``. A
+        curation, a verdict or an import is no reason. ``needs_fold`` says
+        whether the next pass folds every sample first, ``fold_reasons`` why.
+
+        Beside them: ``last_pass`` (the newest completed pass: its run id,
+        first stage, times, ``started_by``, engine version and
+        ``settings_hash``), ``stopped_pass`` (the newest pass where it failed
+        or was cancelled, with the stage it stopped at), ``running`` (the
+        pass in flight: its ``process_id``, ``started_by``, ``stage``,
+        ``stage_index`` of ``n_stages`` and ``progress``), ``stages`` and
+        ``stale_stages``. Requires the guest role.
+
+        :param batch_id: The ID of the sample batch.
+        :type batch_id: str
+        :return: The batch's status.
+        :rtype: dict
+        """
+        return self._get(f"batch-peaks/batch/{batch_id}/assignment-status")
+
     def cancel_assign(self, batch_id: str) -> dict[str, Any] | None:
         """Ask the batch's running pass (:meth:`assign`) to stop.
 
