@@ -4,7 +4,7 @@
   ladder that the batch passed in the stretch of acquisition the sample was
   acquired in is claimed as the reagent's ion, in a sample assigned again and
   in one folded in for the first time alike; a sample acquired outside every
-  stretch the ladder measured claims none. A listed compound the batch
+  stretch the rung passed in claims none. A listed compound the batch
   decided present is committed on its peak at candidate, the decision named
   among the row's tier reasons, where the run read the peak another way or
   not at all. A row the batch stripped as another row's isotope line is read

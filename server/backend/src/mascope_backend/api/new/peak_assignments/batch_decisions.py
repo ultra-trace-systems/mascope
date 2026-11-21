@@ -20,7 +20,7 @@ record enters the stage list at the stage that decides what it decides
   the segment the sample was acquired in (``batch_water_ladder``), are the
   source's: the claim stage claims them on the sample's corrected mass where
   its own claim did not (``reagent_pass.claim_batch_species``). A sample
-  acquired outside every segment the ladder measured reads no rung: a rung is
+  acquired outside every segment the rung passed in reads no rung: a rung is
   evidence about the segment it was measured in (decided 2026-11-17).
 - **a listed compound** the batch decided present is proposed for its peak,
   and elected as the batch's own claim takes a member
@@ -41,8 +41,11 @@ decision (MAS-983, MAS-1013).
 The listed compound and the strip are read through the sample's own members,
 so they reach a sample the batch already holds: a sample folded in for the
 first time is brought up to them by the next pass of the stages, as every
-new member is (``batch_assignment_one_action.md``, 4.3). A rung is claimed by
-mass, and reaches a sample folded in for the first time too.
+new member is (``batch_assignment_one_action.md``, 4.3). So is a sample whose
+peaks were detected again: its members name the old peaks until its next
+fold, and a decision on a peak its run does not hold is left
+(:data:`PEAK_ABSENT`). A rung is claimed by mass, and reaches a sample folded
+in for the first time too.
 
 Design: ``docs/dev/batch_assignment_one_action.md``, section 5.1, and
 ``docs/dev/assignment_quality_plan.md``, milestone 7 (MAS-974, finding 1).
@@ -149,6 +152,12 @@ MONOISOTOPIC_TRACK = "M0"
 #: own reading too.
 LISTED_ELECTED = "elected"
 LISTED_LIFTED = "lifted"
+
+#: What became of a listed compound or a strip whose peak (or, for a strip,
+#: its parent's) the run's peaks do not hold: the decision named a peak of an
+#: earlier detection of the sample, or one a time window left out, until the
+#: sample's next fold brings its members up to its peaks.
+PEAK_ABSENT = "peak_absent"
 
 #: What became of an isotopologue strip on the sample's rows: read as the
 #: parent's line, or why the row was left as it was.
@@ -307,27 +316,31 @@ def segment_of(
     in, and that segment's reading.
 
     A sample acquired inside a passing segment, its first spectrum's time to
-    its last's, is in it. So is one the ladder claimed the rung in
-    (``claimed_samples``): a sample of a segment it passed in, the segment of
-    spectra with no time among them, and one of a record from before the
-    records kept a segment's times. Any other sample - acquired after the
+    its last's, is in it. Any other sample with a time - acquired after the
     last segment, before the first, in a gap between two, or in a segment the
-    rung did not pass in - is in none: a rung is evidence about the segment
-    it was measured in.
+    rung did not pass in - is in none, even where the ladder claimed the rung
+    in it: a rung is evidence about the segment it was measured in, and
+    ``claimed_samples`` carries an earlier measurement's samples over
+    whatever segment this one puts them in. Only where the time cannot
+    decide - a sample with no time, of the segment of spectra with none, or
+    a record from before the records kept a segment's times - is a sample
+    the ladder claimed the rung in (``claimed_samples``) in one.
 
     :return: Whether it is placed, and the segment's entry where the time
         placed it (None where only the claim did).
     """
     passed = set(record.get("passed_in") or ())
-    if acquired is not None:
-        for entry in record.get("segments") or ():
-            if not isinstance(entry, dict) or entry.get("segment") not in passed:
+    segments = [one for one in record.get("segments") or () if isinstance(one, dict)]
+    if acquired is not None and any("start" in one for one in segments):
+        for entry in segments:
+            if entry.get("segment") not in passed:
                 continue
             start, end = entry.get("start"), entry.get("end")
             if start is None or end is None:
                 continue
             if float(start) <= acquired <= float(end):
                 return True, entry
+        return False, None
     if sample_item_id in (record.get("claimed_samples") or ()):
         return True, None
     return False, None
@@ -622,7 +635,8 @@ async def read_batch_decisions(
     sample: Any, *, profile: Optional[str], kinds: Iterable[str] = KINDS
 ) -> BatchDecisions:
     """The one reader of what a sample's batch decided about it: every kind of
-    record asked for, read once, with the version of each stage it read.
+    record asked for, read once, with the version of each stage it read, read
+    before its records.
 
     :param sample: The sample view row.
     :param profile: The name of the profile the sample's run resolved to,
@@ -634,11 +648,15 @@ async def read_batch_decisions(
     sample_batch_id = getattr(sample, "sample_batch_id", None)
     if not sample_batch_id:
         return BatchDecisions(kinds=kinds)
+    # The versions before the records: a stage that hands over while they are
+    # read is then recorded as running, or older than what was read, and the
+    # staleness rule reads the sample again rather than calling it current.
+    stages = await stage_versions(sample_batch_id)
     listed, strips = await member_decisions(sample, kinds)
     return BatchDecisions(
         sample_batch_id=sample_batch_id,
         kinds=kinds,
-        stages=await stage_versions(sample_batch_id),
+        stages=stages,
         species=(
             tuple(await batch_known_species.batch_species_for(sample))
             if KIND_KNOWN_SPECIES in kinds
@@ -712,7 +730,7 @@ def elect_listed(
     source_mz: Mapping[str, float],
     sample_item_id: str,
     run_id: str,
-) -> tuple[list[dict], list[dict], Counter]:
+) -> tuple[list[dict], list[dict], dict[str, str]]:
     """Elect each listed compound the batch decided present on its peak, as
     the batch's own claim writes a member's row
     (``batch_known_species.listed_species_row``): the list's reading at
@@ -724,7 +742,8 @@ def elect_listed(
     lowers any row's.
 
     :param claimed_peak_ids: The peaks the claim stage took.
-    :param peaks: The sample's peaks, for a peak no stage read.
+    :param peaks: The sample's peaks, for a peak no stage read. A decision
+        on a peak they do not hold is left (:data:`PEAK_ABSENT`).
     :param source_mz: Sample peak -> its m/z on the axis as stored, which the
         list's reading is measured against: a decoy arm's shifted axis moves
         no batch decision, so it claims what its control claims.
@@ -743,9 +762,13 @@ def elect_listed(
         for row in rows
         if row.get("owner_peak_assignment_id")
     }
+    held = set(peaks["sample_peak_id"].astype(str))
     moved: set[int] = set()
     added: list[dict] = []
     for peak_id in sorted(decided):
+        if peak_id not in held:
+            outcomes[peak_id] = PEAK_ABSENT
+            continue
         decision = decided[peak_id]
         here = on_peak.get(peak_id, [])
         outcome = listed_decision(
@@ -857,10 +880,11 @@ def read_strips(
     read is read as the line too. The judging then judges it as the parent's
     line.
 
-    :param rows: The run's committed rows after the fragment claim, written
-        into.
-    :param claimed_peak_ids: The peaks the claims and the fragment claim took.
-    :param peaks: The sample's peaks, for a peak no stage read.
+    :param rows: The run's elected rows, before the judging, written into.
+    :param claimed_peak_ids: The peaks the claim stage took.
+    :param peaks: The sample's peaks, for a peak no stage read. A strip on a
+        peak they do not hold, or whose parent's peak they do not hold, is
+        left (:data:`PEAK_ABSENT`).
     :return: The rows, a line read off an unread peak among them, and how
         many strips ended which way.
     """
@@ -875,9 +899,13 @@ def read_strips(
         for row in rows
         if row.get("owner_peak_assignment_id")
     }
+    held = set(peaks["sample_peak_id"].astype(str))
     added: list[dict] = []
     for peak_id in sorted(strips):
         strip = strips[peak_id]
+        if peak_id not in held or strip.parent_peak_id not in held:
+            counts[PEAK_ABSENT] += 1
+            continue
         parent = next(
             (
                 r
@@ -928,6 +956,7 @@ __all__ = [
     "LISTED_ELECTED",
     "LISTED_LIFTED",
     "MONOISOTOPIC_TRACK",
+    "PEAK_ABSENT",
     "STAGE_OF_KIND",
     "STRIP_KEPT_CARRIES_LINES",
     "STRIP_KEPT_CLAIMED",

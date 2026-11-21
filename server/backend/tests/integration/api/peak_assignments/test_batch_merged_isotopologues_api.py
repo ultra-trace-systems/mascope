@@ -1081,6 +1081,54 @@ async def test_a_samples_next_run_reads_the_stripped_row_as_the_parents_line(
     assert config["batch_decisions"]["applied"]["strips"] == {"read": 2}
 
 
+@pytest.mark.parametrize(
+    "redetected, applied",
+    [("x", {"read": 1, "peak_absent": 1}), ("p", {"peak_absent": 2})],
+    ids=["the stripped peak", "the parent's peak"],
+)
+async def test_a_samples_next_run_reads_on_past_a_peak_it_no_longer_has(
+    async_session_factory,
+    strip_batch,
+    monkeypatch,
+    only_these_stages,
+    redetected,
+    applied,
+):
+    """A re-detection mints the sample new peak ids, and its members name the
+    old ones until its next fold: the run that brings it up to date leaves a
+    strip whose peak, or whose parent's, it no longer has, and records it as
+    such."""
+    batch, samples, ids = strip_batch, strip_batch["samples"], strip_batch["ids"]
+    await _strip_through_the_stages(batch, monkeypatch, only_these_stages)
+    sample = samples[RUN_SAMPLE]
+    stub_known_set(
+        monkeypatch,
+        lambda sample_item_id, run_id: _rows(sample_item_id, 0, run_id=run_id),
+    )
+    async with async_session_factory() as session:
+        await session.execute(
+            update(BatchPeakOccurrence)
+            .where(
+                BatchPeakOccurrence.batch_peak_id == ids[redetected],
+                BatchPeakOccurrence.sample_item_id == sample,
+            )
+            .values(sample_peak_id=f"redetected-{redetected}")
+        )
+        await session.commit()
+
+    ctx = await run_sample(sample)
+
+    assert ctx.batch_applied["strips"] == applied
+    rows = await _run_rows(async_session_factory, ctx.run_id)
+    # No row reads a strip the run left; the other strip, on peaks the run
+    # holds, is read as the parent's line.
+    assert {
+        peak
+        for peak, row in rows.items()
+        if "batch_isotopologue" in (row.provenance or {})
+    } == ({"o"} if redetected == "x" else set())
+
+
 async def test_a_decoy_arm_reads_no_strip(
     async_session_factory, strip_batch, monkeypatch, only_these_stages
 ):

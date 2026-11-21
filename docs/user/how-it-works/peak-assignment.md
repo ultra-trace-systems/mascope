@@ -1919,16 +1919,19 @@ made for.
 
   A rung is claimed only in a sample acquired inside a stretch of the batch's acquisition
   it passed in, the stretch's first sample to its last. A sample acquired after the last
-  stretch, before the first, or in a gap between two claims none: a rung is evidence about
-  the stretch it was measured in. A listed compound and a strip are read through the
-  sample's own members, so they reach a sample the batch already holds; a sample folded in
-  for the first time is brought up to them by the next pass of the stages. The run keeps
+  stretch, before the first, in a gap between two, or in a stretch the rung did not pass
+  in claims none: a rung is evidence about the stretch it was measured in. A listed
+  compound and a strip are read through the sample's own members, so they reach a sample
+  the batch already holds; a sample folded in for the first time is brought up to them by
+  the next pass of the stages. So is a sample whose peaks were detected again: a decision
+  about a peak it no longer has is left, and the run's record counts it. The run keeps
   what the batch's own claim keeps (see each step below), and judges what it read as it
   judges every row: a cap may hold the listed compound lower, and the row then says why.
   A decoy run claims what its control claims, and its own lines decide everything else.
-  Each run records the version of each stage whose records it read, and what they did to
-  its rows, under `batch_decisions` in its configuration, so a run that read an older
-  decision than the batch now holds can be told apart.
+  Each run records the version of each stage whose records it read, read before the
+  records themselves, and what they did to its rows, under `batch_decisions` in its
+  configuration, so a run that read an older decision than the batch now holds can be told
+  apart.
 
 #### A pass is one batch run
 

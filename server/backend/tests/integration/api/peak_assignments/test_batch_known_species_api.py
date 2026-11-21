@@ -1370,6 +1370,35 @@ async def test_a_samples_next_run_commits_the_listed_compound_at_candidate(
     assert config["batch_decisions"]["applied"]["listed"] == {"elected": 1}
 
 
+async def test_a_samples_next_run_reads_on_past_a_peak_it_no_longer_has(
+    async_session_factory, known_batch, monkeypatch, only_its_own_stage
+):
+    """A re-detection mints the sample new peak ids, and its members name the
+    old ones until its next fold: the run that brings it up to date leaves
+    the decision on the old peak, records it as such, and reads the peak as
+    its own lines read it."""
+    batch, samples, ids = known_batch, known_batch["samples"], known_batch["ids"]
+    await _decided_through_the_stage(batch, monkeypatch)
+    _rerun_reads_its_own(monkeypatch, batch)
+    async with async_session_factory() as session:
+        await session.execute(
+            update(BatchPeakOccurrence)
+            .where(
+                BatchPeakOccurrence.batch_peak_id == ids["d"],
+                BatchPeakOccurrence.sample_item_id == samples["S02"],
+            )
+            .values(sample_peak_id="redetected-d")
+        )
+        await session.commit()
+
+    ctx = await run_sample(samples["S02"])
+
+    assert ctx.batch_applied["listed"] == {"peak_absent": 1}
+    row = (await _run_rows(async_session_factory, ctx.run_id))["d"]
+    assert row.assigned_formula == OTHER
+    assert "batch_known_species" not in (row.provenance or {})
+
+
 async def test_a_samples_next_run_keeps_what_the_batchs_claim_keeps(
     async_session_factory, known_batch, monkeypatch, only_its_own_stage
 ):
