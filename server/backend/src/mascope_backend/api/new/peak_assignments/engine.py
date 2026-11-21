@@ -2467,7 +2467,7 @@ def record_displaced_list_readings(
     """Give each search row that took a list hit's peak the reading it displaced.
 
     The reading goes first among the row's alternatives, and the weighing into
-    :data:`LIST_READING_RULE`: the list's formula, its identities, and the evidence
+    :data:`LIST_READING`: the list's formula, its identities, and the evidence
     the two readings were weighed on with the prior.
 
     :return: How many of the taken peaks a search row holds.
