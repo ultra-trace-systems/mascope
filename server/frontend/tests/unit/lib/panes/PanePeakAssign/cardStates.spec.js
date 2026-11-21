@@ -284,6 +284,45 @@ describe('card states: the run on view', () => {
     expect(byTestId(wrapper, 'verdict-change').exists()).toBe(false)
   })
 
+  it('names the batch ledger as the batch ledger, not as an earlier run', async () => {
+    // Listed last, with its last batch-peak write as its completion time.
+    const ledger = {
+      peak_assignment_run_id: 'fold-si-1',
+      sample_item_id: 'si-1',
+      engine: 'batch',
+      status: 'completed',
+      peak_assignment_run_utc_completed: '2026-11-21T10:00:00Z'
+    }
+    state.run = ledger
+    state.runs = [RUN_NEW, RUN_OLD, ledger]
+    const wrapper = await mountCard()
+
+    const notice = byTestId(wrapper, 'run-notice-ledger')
+    expect(notice.text()).toContain('Read only: the batch ledger, derived from the batch peaks')
+    expect(notice.text()).not.toContain('earlier')
+    expect(byTestId(wrapper, 'run-notice-earlier').exists()).toBe(false)
+    expect(buttonsLabelled(wrapper, 'Confirm')[0].attributes('disabled')).toBeDefined()
+    expect(byTestId(wrapper, 'verify-read-only').text()).toContain('not a run of this sample')
+  })
+
+  it('names a newer run that has not completed as newer, with its state', async () => {
+    const running = {
+      peak_assignment_run_id: 'run-3',
+      sample_item_id: 'si-1',
+      status: 'running',
+      peak_assignment_run_utc_created: '2026-11-21T10:00:00Z'
+    }
+    state.run = running
+    state.runs = [running, RUN_NEW, RUN_OLD]
+    const wrapper = await mountCard()
+
+    const notice = byTestId(wrapper, 'run-notice-newer')
+    expect(notice.text()).toContain('Read only: a newer run still running, run #3 of 3, started')
+    expect(byTestId(wrapper, 'run-notice-earlier').exists()).toBe(false)
+    expect(buttonsLabelled(wrapper, 'Confirm')[0].attributes('disabled')).toBeDefined()
+    expect(byTestId(wrapper, 'verify-read-only').text()).toContain('has not completed')
+  })
+
   it('marks a decoy run with its arm, and records nothing on it', async () => {
     state.run = { ...RUN_NEW, peak_assignment_run_id: 'run-3', decoy: 'mz_shift_ppm=+9' }
     const wrapper = await mountCard()
@@ -479,6 +518,18 @@ describe('card states: a focused peak with no ledger row', () => {
     expect(wrapper.vm.showSearch).toBe(true)
   })
 
+  it('names the run on view on the no-row card too', async () => {
+    state.focusedAssignment = null
+    state.run = RUN_OLD
+    const wrapper = await mountCard()
+
+    const card = byTestId(wrapper, 'no-row-card')
+    const notice = byTestId(wrapper, 'run-notice-earlier')
+    expect(notice.exists()).toBe(true)
+    expect(card.element.contains(notice.element)).toBe(true)
+    expect(notice.text()).toContain('Read only: an earlier run, run #1 of 2')
+  })
+
   it('says when no run has assigned the sample', async () => {
     state.focusedAssignment = null
     state.run = null
@@ -555,5 +606,56 @@ describe('runNotice', () => {
   it('names a run by its place and when it finished', () => {
     expect(runName(RUN_OLD, [RUN_NEW, RUN_OLD])).toMatch(/^run #1 of 2, completed /)
     expect(runName({ peak_assignment_run_id: 'x' }, [])).toBe('run')
+  })
+
+  it('says a run that has not finished started, at its creation time', () => {
+    const created = '2026-11-21T10:00:00Z'
+    const run = { peak_assignment_run_id: 'run-3', peak_assignment_run_utc_created: created }
+    expect(runName(run, [run, RUN_NEW])).toBe(
+      `run #2 of 2, started ${new Date(created).toLocaleString()}`
+    )
+  })
+
+  it('names the batch ledger by its last write, wherever it is listed', () => {
+    const written = '2026-11-21T10:00:00Z'
+    const ledger = {
+      peak_assignment_run_id: 'fold-si-1',
+      engine: 'batch',
+      status: 'completed',
+      peak_assignment_run_utc_completed: written
+    }
+    const notice = runNotice(ledger, RUN_NEW, [RUN_NEW, RUN_OLD, ledger])
+    expect(notice.kind).toBe('ledger')
+    expect(notice.text).toBe(
+      `Read only: the batch ledger, derived from the batch peaks, last written ${new Date(written).toLocaleString()}`
+    )
+    expect(notice.reason).toContain('latest completed run')
+    const undated = { ...ledger, peak_assignment_run_utc_completed: null }
+    expect(runNotice(undated, RUN_NEW, [RUN_NEW, undated]).text).toBe(
+      'Read only: the batch ledger, derived from the batch peaks'
+    )
+    // The sample's only completed run is its result, ledger or not.
+    expect(runNotice(ledger, ledger, [ledger])).toBeNull()
+  })
+
+  it('names a run listed before the latest completed one as newer, by its state', () => {
+    const newer = (status) => ({ peak_assignment_run_id: 'run-3', status })
+    const read = (status) => runNotice(newer(status), RUN_NEW, [newer(status), RUN_NEW, RUN_OLD])
+    expect(read('running').kind).toBe('newer')
+    expect(read('running').text).toBe('Read only: a newer run still running, run #3 of 3')
+    expect(read('pending').text).toContain('a newer run waiting to start')
+    expect(read('failed').text).toContain('a newer run that failed')
+    expect(read('cancelled').text).toContain('a newer run that was cancelled')
+    expect(read('mystery').text).toContain('a newer run that has not completed')
+    expect(read('failed').reason).toContain('has not completed')
+  })
+
+  it('names a run listed after the latest completed one as earlier, whatever its state', () => {
+    const failed = { peak_assignment_run_id: 'run-0', status: 'failed' }
+    const notice = runNotice(failed, RUN_NEW, [RUN_NEW, RUN_OLD, failed])
+    expect(notice.kind).toBe('earlier')
+    expect(notice.text).toBe('Read only: an earlier run, run #1 of 3')
+    // A run the list does not hold cannot be placed: it reads as earlier.
+    expect(runNotice(failed, RUN_NEW, [RUN_NEW]).kind).toBe('earlier')
   })
 })

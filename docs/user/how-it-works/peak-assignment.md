@@ -1461,16 +1461,25 @@ In a narrow column the four measurements stand one above another, and the chips 
 
 ### What the inspector shows in other states
 
-- **An earlier run.** The run selector over the ledger can show any of the sample's
-  runs. On any run but the sample's latest completed one, a notice under the answer names
-  the run: *Read only: an earlier run, run #1 of 2, completed* and the date. The verdict
-  bar's buttons are disabled, and a line under them says why: verdicts and changes are
-  recorded on the latest completed run. *Use* and *Undo* are hidden, and so is a batch
-  pin's *Release*. A verdict already recorded still shows. Select the latest run again to
-  record one.
+- **Another run than the sample's result.** The run selector over the ledger can show any
+  of the sample's runs. On any run but the sample's latest completed one, a notice under
+  the answer names the run for what it is:
+  - an earlier run: *Read only: an earlier run, run #1 of 2, completed* and the date;
+  - a newer run that has not completed: *Read only: a newer run still running, run #3 of
+    3, started* and the date. A newer run that failed, was cancelled or waits to start
+    says so instead;
+  - the batch ledger, listed as **Batch ledger** in the run selector: *Read only: the
+    batch ledger, derived from the batch peaks, last written* and the date of the last
+    change to a batch peak the sample is in. The batch ledger is not a run of the sample, so its date
+    does not make it older or newer than the sample's runs.
+
+  The verdict bar's buttons are disabled, and a line under them says why: verdicts and
+  changes are recorded on the latest completed run. *Use* and *Undo* are hidden, and so is
+  a batch pin's *Release*. A verdict already recorded still shows. Select the latest run
+  again to record one.
 - **A decoy run.** A notice names the [arm](#decoy-runs), *A decoy run, arm
   mz_shift_ppm=+9*. A decoy is never the sample's result, so the card is read only, as on
-  an earlier run.
+  any other run that is not the result.
 - **The viewer role.** The card checks your role in the workspace before it offers
   anything. A viewer sees the recorded verdict and no *Confirm*, *Reject*, *Unsure* or
   *Change*. Where no verdict is recorded, a line says verifying needs editor access.

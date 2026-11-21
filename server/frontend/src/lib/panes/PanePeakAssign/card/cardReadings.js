@@ -268,17 +268,35 @@ export function runName(run, runs) {
     : ordinal
 }
 
+// How the notice says why a run newer than the sample's result is not it yet.
+const NEWER_RUN_STATE = {
+  pending: 'waiting to start',
+  running: 'still running',
+  failed: 'that failed',
+  cancelled: 'that was cancelled'
+}
+
 /**
  * The notice the card shows over a run that is not the sample's result, and
  * why its controls are off. A decoy arm comes first: a decoy is never the
  * sample's result, whatever else is true of it. Then any run that is not the
- * sample's latest completed one. The sample's own result, and a sample with
- * no completed run to compare against, get none.
+ * sample's latest completed one, named for what it is:
+ *
+ * - the batch ledger (engine 'batch'), the ledger derived from the batch
+ *   peaks rather than a run of the sample. The runs listing puts it last, and
+ *   its completion time is the last write to a batch peak the sample sits in,
+ *   so neither its place nor its date says it is older or newer;
+ * - a run listed before the latest completed one, which is newer and has not
+ *   completed: waiting, running, failed or cancelled;
+ * - any other run, an earlier one.
+ *
+ * The sample's own result, and a sample with no completed run to compare
+ * against, get none.
  *
  * @param {object|null} run - the run the card reads
  * @param {object|null} latest - the sample's latest completed run
  * @param {Array<object>} runs - the sample's runs, newest first
- * @returns {{kind: 'decoy'|'earlier', text: string, reason: string}|null}
+ * @returns {{kind: 'decoy'|'ledger'|'newer'|'earlier', text: string, reason: string}|null}
  */
 export function runNotice(run, latest, runs) {
   if (!run) return null
@@ -291,11 +309,41 @@ export function runNotice(run, latest, runs) {
     }
   }
   if (!latest || run.peak_assignment_run_id === latest.peak_assignment_run_id) return null
+  const select = 'Select it in the run selector to record one.'
+  if (run.engine === 'batch') {
+    const written = run.peak_assignment_run_utc_completed
+      ? new Date(run.peak_assignment_run_utc_completed)
+      : null
+    const when =
+      written && !Number.isNaN(written.getTime())
+        ? `, last written ${written.toLocaleString()}`
+        : ''
+    return {
+      kind: 'ledger',
+      text: `Read only: the batch ledger, derived from the batch peaks${when}`,
+      reason:
+        'The batch ledger is not a run of this sample. Verdicts and changes are recorded on ' +
+        `the sample's latest completed run. ${select}`
+    }
+  }
+  const list = runs ?? []
+  const index = list.findIndex((r) => r.peak_assignment_run_id === run.peak_assignment_run_id)
+  const latestIndex = list.findIndex(
+    (r) => r.peak_assignment_run_id === latest.peak_assignment_run_id
+  )
+  if (index !== -1 && latestIndex !== -1 && index < latestIndex) {
+    const state = NEWER_RUN_STATE[run.status] ?? 'that has not completed'
+    return {
+      kind: 'newer',
+      text: `Read only: a newer run ${state}, ${runName(run, runs)}`,
+      reason:
+        "This run has not completed, so it is not yet the sample's result. Verdicts and " +
+        `changes are recorded on the sample's latest completed run. ${select}`
+    }
+  }
   return {
     kind: 'earlier',
     text: `Read only: an earlier run, ${runName(run, runs)}`,
-    reason:
-      "Verdicts and changes are recorded on the sample's latest completed run. Select it in the " +
-      'run selector to record one.'
+    reason: `Verdicts and changes are recorded on the sample's latest completed run. ${select}`
   }
 }
