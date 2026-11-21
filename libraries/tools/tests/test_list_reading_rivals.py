@@ -387,6 +387,73 @@ class TestTheElection:
         assert not {KNOWN_KEPT, KNOWN_DISPLACED, KNOWN_RIVALS} & set(plain.columns)
 
 
+def test_a_committed_winner_is_elected_over_its_ions_whole_family(monkeypatch):
+    """The rival that takes a list's peak is a committed winner as the main
+    loop's is, and is elected again over its ion's whole family
+    (``heuristic_filter.complete_same_ion_family``): one ion gets one reading
+    whether or not a list names its peak.
+
+    The window here leaves out C12H9N3O through ``[M+NH4]+``, a reading of
+    the rival's ion C12H13N4O+ that the election ranks first, and the record
+    of the reading the rival displaced weighs the formula the row names.
+    """
+    from mascope_tools.composition import finder
+    from mascope_tools.composition.heuristic_filter import SAME_ION_ALTERNATIVES
+
+    real = finder.find_compositions
+    monkeypatch.setattr(
+        finder,
+        "find_compositions",
+        lambda target_mz, config, grid=None: [
+            candidate
+            for candidate in real(target_mz, config, grid=grid)
+            if candidate["ionization_mechanism"] != "[M+NH4]+"
+        ],
+    )
+    # Every formula here is equally plausible; one that is not says which
+    # formula the displaced reading's record weighed.
+    monkeypatch.setattr(
+        finder,
+        "formula_plausibility",
+        lambda formula: 0.5 if formula == "C12H9N3O" else 1.0,
+    )
+    peaks = pd.DataFrame(
+        {
+            "mz": [TAKEN_MZ, LINE_MZ],
+            "intensity": [1e5, 1.4e4],
+            "signal_to_noise": [1000.0, 140.0],
+        }
+    )
+    matches, _ = assign_compositions(
+        peaks,
+        _box("[M+H]+,[M+NH4]+"),
+        HEURISTICS,
+        targets=[TAKEN_MZ],
+        scoring=RESOLVED,
+        known={TAKEN_MZ: ListReading(TAKEN_MZ, "C11H16O5", "[M+H]+", 5.8)},
+        known_prior=2.0,
+        closed_shell_rivals=True,
+    )
+    rows = {round(float(row["mz"]), 4): row for _, row in matches.iterrows()}
+
+    taken = rows[round(TAKEN_MZ, 4)]
+    assert (taken["formula"], taken["ion"], taken["ionization_mechanism"]) == (
+        "C12H9N3O",
+        "C12H13N4O+",
+        "[M+NH4]+",
+    )
+    assert [
+        (reading["formula"], reading["ionization_mechanism"])
+        for reading in taken[SAME_ION_ALTERNATIVES]
+    ] == [("C12H12N4O", "[M+H]+")]
+    assert taken[KNOWN_DISPLACED]["formula"] == "C11H16O5"
+    assert taken[KNOWN_DISPLACED]["rival_evidence"] == pytest.approx(
+        0.5 * taken["isotopic_pattern_score"]
+    )
+    # Its line names the reading its ion's row names.
+    assert rows[round(LINE_MZ, 4)]["formula"] == "C12H9N3O"
+
+
 class TestAListPeakAnEarlierEnvelopeReached:
     """A list's peak is elected on even where a lighter ion's envelope matched
     it as a line first."""
