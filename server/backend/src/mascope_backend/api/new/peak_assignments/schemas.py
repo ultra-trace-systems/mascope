@@ -1560,6 +1560,115 @@ class BatchSampleAssignmentStatusResponse(BaseModel):
     data: list[BatchSampleAssignmentStatusRecord]
 
 
+class BatchAssignmentUser(BaseModel):
+    """Who started a pass."""
+
+    id: int
+    username: str | None = None
+
+
+class BatchAssignmentLastPass(BaseModel):
+    """The batch's newest completed pass: what ``behind`` is measured against."""
+
+    batch_peak_run_id: str
+    #: assign, or the step whose own route started the pass.
+    action: str
+    #: The stage it started at: ``fold`` where it folded first.
+    first_stage: str | None = None
+    utc_started: datetime | None = None
+    utc_completed: datetime | None = None
+    started_by: BatchAssignmentUser | None = None
+    engine_version: str
+    #: Null until the batch keeps assignment settings of its own (MAS-1014).
+    settings_hash: str | None = None
+    #: The samples it covered.
+    n_samples: int
+
+
+class BatchAssignmentStoppedPass(BaseModel):
+    """The batch's newest pass, where it failed or was cancelled."""
+
+    batch_peak_run_id: str
+    action: str
+    #: failed | cancelled
+    status: str
+    first_stage: str | None = None
+    #: The stage it stopped in; null where it stopped before any.
+    stopped_at: str | None = None
+    error: str | None = None
+    utc_started: datetime | None = None
+    utc_completed: datetime | None = None
+    started_by: BatchAssignmentUser | None = None
+
+
+class BatchAssignmentRunning(BaseModel):
+    """The pass, or the batch run, in flight."""
+
+    batch_peak_run_id: str | None = None
+    action: str | None = None
+    #: The process its progress packets go out as; null for a run that sends
+    #: none of its own, or before its first stage starts.
+    process_id: str | None = None
+    started_by: BatchAssignmentUser | None = None
+    utc_started: datetime | None = None
+    #: The stage it is in (``fold`` while it folds), its label, which of how
+    #: many, and when it started.
+    stage: str | None = None
+    label: str | None = None
+    stage_index: int | None = None
+    n_stages: int | None = None
+    utc_stage_started: datetime | None = None
+    #: The share of its stages finished, 0 to 1.
+    progress: float | None = None
+    cancel_requested_utc: datetime | None = None
+
+
+class BatchAssignmentBehindReason(BaseModel):
+    """One reason the batch is behind its last pass."""
+
+    #: new_samples | removed_samples | resampled | library_changed |
+    #: engine_changed | stages_stale
+    reason: str
+    count: int
+    #: The sample reasons: the first of the samples, by id.
+    sample_item_ids: list[str] | None = None
+    #: library_changed: the collections and lists by id; engine_changed: the
+    #: pass's version and today's; stages_stale: each stage and its mark.
+    detail: dict | list | None = None
+
+
+class BatchAssignmentStatus(BaseModel):
+    """Where a batch's assignment stands (``batch_assignment_status``)."""
+
+    sample_batch_id: str
+    #: none | folded_only | running | current | behind | failed | cancelled
+    state: str
+    #: The engine version a pass would run under now.
+    engine_version: str
+    n_samples: int
+    n_batch_peaks: int
+    last_pass: BatchAssignmentLastPass | None = None
+    stopped_pass: BatchAssignmentStoppedPass | None = None
+    running: BatchAssignmentRunning | None = None
+    #: Every stage in order, as the ledger serves them.
+    stages: list[dict]
+    #: The stale stages, first first: the next pass starts at the first.
+    stale_stages: list[str]
+    #: Whether the next pass folds every sample first, and why.
+    needs_fold: bool
+    fold_reasons: list[str]
+    behind: list[BatchAssignmentBehindReason]
+
+
+class BatchAssignmentStatusResponse(BaseModel):
+    """Where a batch's assignment stands, and why it is behind."""
+
+    status: str = "success"
+    message: str
+    results: int
+    data: BatchAssignmentStatus
+
+
 class BatchPeakRunRecord(BaseModel):
     """One batch run: a batch-level operation that rewrote the batch ledger."""
 

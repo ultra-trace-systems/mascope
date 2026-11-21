@@ -134,6 +134,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     complete_run,
     current_run,
     fail_run,
+    record_progress,
     start_run,
 )
 from mascope_backend.api.new.peak_assignments.config import (
@@ -1803,6 +1804,20 @@ async def assign_batch(
         n_stages = len(record.planned)
 
         async def announce(stage: str, label: str, phase: str, index: int) -> None:
+            # On the run first, for the batch's assignment status; then the
+            # packet, for whoever follows the process.
+            await record_progress(
+                run_id,
+                {
+                    "process_id": process_id,
+                    "stage": stage,
+                    "label": label,
+                    "phase": phase,
+                    "stage_index": index,
+                    "n_stages": n_stages,
+                    "utc_stage_started": record.entries[stage]["utc_started"],
+                },
+            )
             if process_id is None:
                 return
             await send_progress_user_notification(

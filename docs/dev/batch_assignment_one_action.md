@@ -387,6 +387,32 @@ The bar reads it on focus and on every `peak_assignment_reload`. A curation, a v
 an import is not a reason: each acts on the current run by design, and an import shows as
 its own run. The SDK gets `assignment_status()`.
 
+As built (`batch_assignment_status.py`):
+
+- `state` is the first that holds: `running` (a batch run in flight, or a stage row
+  running), `failed` or `cancelled` (the newest pass, served as `stopped_pass` with the
+  stage it stopped at), `none`, `folded_only` (no pass has completed), `behind`, `current`.
+  A rebuild or an import completed after a stopped pass does not clear `failed`.
+- The reasons are measured against the newest completed pass (`batch_stages.last_pass`),
+  as `needs_fold` is, and `needs_fold` is `fold_reasons` on the same reads, so the two
+  never disagree. A failed or cancelled pass is compared with nothing.
+- `resampled` until MAS-985 merges: the samples the pass covered with an in-app run of
+  their own completed after the pass started; decoy runs and imported runs are not
+  counted, and a new sample is new, not resampled.
+- `stages_stale` leaves out the marks that are not reasons: `curation` and `import`, a
+  `consensus` mark made after the pass ended (the recompute of a fold, a pin or an
+  import), and a `fold` mark where a sample reason holds. A `consensus` mark made inside
+  the pass is its own leftover and counts.
+- `running` comes from the pass itself: `assign_batch` writes its progress into its
+  run's `summary` under `progress` as each stage starts (`batch_runs.record_progress`):
+  the process id, the stage, its index of the planned stages, the fold counted first. Its
+  end writes the summary whole. `progress` is the share of stages finished; a stage's own
+  progress stays in its packets. A rebuild or import on its own serves no stage.
+- `settings_hash` is null and `settings_changed` is not a reason yet: the batch keeps no
+  settings until MAS-1014.
+- About a dozen queries whatever the batch's size: the read of a 5,000-sample batch sends
+  the statements a two-sample one does.
+
 ### 5.4 Settings on the batch (MAS-1014, decided in MAS-1012)
 
 A nullable `assignment_settings` JSON on `sample_batch`, validated as a
