@@ -357,6 +357,44 @@ class PeakAssignmentDetailRecord(PeakAssignmentRecord):
     #: formula and mechanism the record was predicted for; None otherwise.
     #: Display-only: no tier reads it.
     batch_diagnostic_isotopologues: dict | None = None
+    #: The batch's series record (step 4.1, ``batch_series``) of the batch peak
+    #: this row's peak sits in, as the ledger serves it (``series``): the
+    #: ``formula`` proposed, its ``ionization_mechanism_id``, the ``unit``,
+    #: ``step`` and ``depth``, the ``root_batch_peak_id`` and ``root_formula``
+    #: its chain starts at and the stage's ``version``, with the ``root`` as
+    #: a group member (``batch_groups``' shape; None where no group lists
+    #: it). None where no series record stands.
+    batch_series: dict | None = None
+    #: The ratio-stability reading (``continuity``) of that batch peak: its
+    #: ``grade``, whether the pass left some of its pairs ungraded
+    #: (``partial``), whether the ledger has moved past it since (``stale``),
+    #: and the pass's ``detail`` (the ledger's ``continuity``). None where the
+    #: pass never graded nor withdrew it.
+    batch_continuity: dict | None = None
+    #: The batch's known-species decision on that batch peak
+    #: (``batch_known_species``), as the ledger serves it (``known_species``);
+    #: None where no decision stands.
+    batch_known_species: dict | None = None
+    #: The water-ladder rung that batch peak sits at (``batch_water_ladder``),
+    #: as the ledger serves it (``water_ladder``); None where no reading
+    #: stands.
+    batch_water_ladder: dict | None = None
+    #: The probable-blend flag of that batch peak (``batch_blend``), as the
+    #: ledger serves it (``blend``); None where its members do not separate.
+    batch_blend: dict | None = None
+    #: The groups that batch peak is a member of (``batch_series.batch_groups``,
+    #: the same the batch-peaks read serves as ``batch_groups``): each with
+    #: ``group_id``, ``kind`` (``series``, ``channels``, ``co_variation``,
+    #: ``check_pair``) and ``members``, each member with its
+    #: ``batch_peak_id``, ``formula``, ``ion_formula``,
+    #: ``ionization_mechanism_id``, ``mechanism`` (the notation), ``mz``,
+    #: ``consensus_tier``, and ``sample_peak_id``, this sample's own peak at
+    #: it (None where the sample holds none); a series member also its
+    #: ``step`` from the root. A step with no batch peak is no member. Empty
+    #: where it is in none, None where the peak sits in no batch peak. These
+    #: six, from ``batch_series`` on, are about the batch peak, whatever the
+    #: row reads its peak as.
+    batch_groups: list | None = None
 
 
 class PeakAssignmentsResponse(BaseModel):

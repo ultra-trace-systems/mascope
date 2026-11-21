@@ -75,12 +75,15 @@ from mascope_backend.api.new.peak_assignments.artifact_pass import (
     build_artifact_assignments,
     claim_artifact_peaks,
 )
+from mascope_backend.api.new.peak_assignments.batch_blend import blend_record_of
 from mascope_backend.api.new.peak_assignments.batch_peak_verification import (
     claim_of,
     is_stale,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     SERIES_KEY,
+    continuity_reading,
+    known_species_summary,
     mz_from_delta,
     resolve_candidate,
     row_batch_checks,
@@ -90,6 +93,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     row_persistence,
     row_stamped_isotopologue_of,
     standing_series_record,
+    water_ladder_summary,
 )
 from mascope_backend.api.new.peak_assignments.calibration_store import (
     load_calibration,
@@ -1081,6 +1085,67 @@ async def _with_isotopologue_records(
     row["batch_diagnostic_isotopologues"] = row_diagnostic_isotopologues(row, anchor)
 
 
+async def _with_batch_readings(
+    session, row: dict, anchor: BatchPeak | None, sample_item_id: str
+) -> None:
+    """Put the batch's readings of the batch peak a sample's row sits in on its
+    detail, as the batch ledger serves them (the ``standing_*`` readers), and
+    the groups that batch peak is a member of.
+
+    ``batch_series``: the standing series record, with its ``root`` as a group
+    member (None where no group lists it). ``batch_continuity``: the
+    ratio-stability grade, ``partial`` and ``stale``
+    (``batch_peaks.continuity_reading``). ``batch_known_species``,
+    ``batch_water_ladder`` and ``batch_blend``: the ledger's records.
+    ``batch_groups``: the batch's groups the batch peak is in
+    (``batch_series.batch_groups``), each member with the sample's own peak
+    at it (``sample_peak_id``). All are about the batch peak, whatever the row
+    reads its peak as, and None where the peak sits in none.
+
+    Three reads whatever the groups hold: the batch's anchors, the members'
+    mechanisms and the sample's peaks at them.
+    """
+    # Imported here: the series detection imports this module.
+    from mascope_backend.api.new.peak_assignments.batch_series import (
+        read_batch_groups,
+        with_sample_peaks,
+    )
+
+    if anchor is None:
+        for key in (
+            "batch_series",
+            "batch_continuity",
+            "batch_known_species",
+            "batch_water_ladder",
+            "batch_blend",
+            "batch_groups",
+        ):
+            row[key] = None
+        return
+    groups = await read_batch_groups(
+        session, anchor.sample_batch_id, member=anchor.batch_peak_id
+    )
+    await with_sample_peaks(session, groups, sample_item_id)
+    series = standing_series_record(anchor)
+    if series is not None:
+        root = next(
+            (
+                member
+                for group in groups
+                for member in group["members"]
+                if member["batch_peak_id"] == series.get("root_batch_peak_id")
+            ),
+            None,
+        )
+        series = {**series, "root": root}
+    row["batch_series"] = series
+    row["batch_continuity"] = continuity_reading(anchor)
+    row["batch_known_species"] = known_species_summary(anchor)
+    row["batch_water_ladder"] = water_ladder_summary(anchor)
+    row["batch_blend"] = blend_record_of(anchor)
+    row["batch_groups"] = groups
+
+
 @api_controller()
 async def get_peak_assignment_detail(
     sample_item_id: str,
@@ -1116,6 +1181,7 @@ async def get_peak_assignment_detail(
             derived["batch_persistence"] = row_persistence(derived, found[1])
             derived["batch_flat_series"] = row_flat_series(derived, found[1])
             await _with_isotopologue_records(session, derived, found[1])
+            await _with_batch_readings(session, derived, found[1], sample_item_id)
             await with_target_listings(
                 session, [derived], lambda _row: member_target_id(*found)
             )
@@ -1136,6 +1202,7 @@ async def get_peak_assignment_detail(
             record["batch_persistence"] = row_persistence(record, anchor)
             record["batch_flat_series"] = row_flat_series(record, anchor)
             await _with_isotopologue_records(session, record, anchor)
+            await _with_batch_readings(session, record, anchor, sample_item_id)
             run = await session.get(
                 PeakAssignmentRun, assignment.peak_assignment_run_id
             )

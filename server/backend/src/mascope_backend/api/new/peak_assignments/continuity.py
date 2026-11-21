@@ -98,6 +98,7 @@ from mascope_backend.api.new.peak_assignments.batch_coherence import (
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     CONTINUITY_GRADES,
+    CONTINUITY_PARTIAL,
     DRIFT_LOG_RED,
     GRADE_DRIFT,
     GRADE_INCONCLUSIVE,
@@ -163,7 +164,7 @@ REASON_BETWEEN = "between"
 
 #: The warning an anchor carries when the batch had more pairs than one pass
 #: grades and some of its own were left ungraded.
-WARNING_PARTIAL = "partial"
+WARNING_PARTIAL = CONTINUITY_PARTIAL
 
 #: What the pass reports when it did not run.
 SKIPPED_IN_PROGRESS = "in_progress"

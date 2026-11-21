@@ -604,6 +604,37 @@ separated from a neighbour and no other channel commits its neutral on a
 separated peak). Each is null where the row holds no such record. The details
 behind them stay in `detail()`'s `provenance`.
 
+`detail()` also carries what the batch reads of the batch peak the row's peak
+sits in, as the batch ledger (`batch_peaks.list`) serves it:
+
+- `batch_series`: the homologous series record, with its `root` batch peak;
+- `batch_continuity`: the ratio-stability `grade`, whether it is `partial`
+  (some pairs left ungraded) and whether it is `stale`;
+- `batch_known_species`, `batch_water_ladder` and `batch_blend`: the
+  known-species decision, the water-ladder rung and the probable-blend flag;
+- `batch_groups`: every group the batch peak is in, the rows one reading spans.
+  A group's `kind` is `series`, `channels` (one neutral through several ions),
+  `co_variation` (the partners a co-variation reading paired) or `check_pair`
+  (a batch check and the batch peak it names). Each member has its
+  `batch_peak_id`, `formula`, `ion_formula`, `mechanism`, `mz`,
+  `consensus_tier` and `sample_peak_id`, this sample's own peak at it (None
+  where the sample holds none). A series member also has its `step` from the
+  root; a step with no batch peak is no member.
+
+The five readings are each None where the batch holds no such reading.
+`batch_groups` is an empty list where the batch peak is in no group, and None
+only where the row's peak sits in no batch peak. All six are absent from a
+server that predates them. The server's batch-peaks read
+(`GET /api/batch-peaks/batch/{sample_batch_id}`) serves the same groups for the
+whole batch, under `batch_groups` beside its rows.
+
+```python
+full = mascope.peak_assignments.detail(sample_id, peak_assignment_id)
+for group in full.get("batch_groups") or []:
+    held = [m for m in group["members"] if m["sample_peak_id"] is not None]
+    print(group["kind"], len(group["members"]), "batch peaks,", len(held), "here")
+```
+
 ### Hand-curated rows (`source: manual`)
 
 A person can overrule the engine on a single row from the app's peak

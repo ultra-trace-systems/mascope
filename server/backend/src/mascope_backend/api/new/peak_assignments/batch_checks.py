@@ -71,6 +71,7 @@ from mascope_backend.api.new.peak_assignments.batch_isotopologues import (
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     BATCH_CHECK_FACTS,
     BATCH_CHECKS_KEY,
+    CHECK_PARTNER_KEYS,
     ROLE_REAGENT,
     batch_checks_record_reads,
     is_monoisotopic,
@@ -853,11 +854,7 @@ async def _load_batch(
 
 
 #: Where a fact names another batch peak, the key it names it under.
-_NAMED = {
-    "halogen_lock": "batch_peak_id",
-    "label_twin": "batch_peak_id",
-    "neutral_pair": "partner_batch_peak_id",
-}
+_NAMED = CHECK_PARTNER_KEYS
 
 
 def still_read(anchors: Iterable[Any], records: dict[str, dict]) -> dict[str, dict]:
