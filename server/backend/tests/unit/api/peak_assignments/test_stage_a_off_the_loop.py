@@ -20,6 +20,7 @@ from mascope_backend.api.new.peak_assignments import service
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import SampleMassAccuracy
 from mascope_backend.api.new.peak_assignments.envelope_fit import RunEnvelopeFit
+from mascope_tools.composition.calibration import Calibration
 from mascope_tools.composition.envelope_tolerance import (
     FORM_CURVE,
     EnvelopeLines,
@@ -42,7 +43,9 @@ def _recording(threads: dict, name: str, result):
     return MagicMock(side_effect=run)
 
 
-def _first_pass_patches(threads: dict, rows: list[dict]):
+def _first_pass_patches(
+    threads: dict, rows: list[dict], calibration: Calibration | None = None
+):
     return [
         patch(f"{_SVC}._fetch_known_isotopes", AsyncMock(return_value=FRAME.copy())),
         patch(f"{_SVC}.compute_match_isotopes", AsyncMock(return_value=FRAME.copy())),
@@ -54,7 +57,7 @@ def _first_pass_patches(threads: dict, rows: list[dict]):
         patch(f"{_SVC}.score_ions_by_fit", side_effect=lambda df, **_kwargs: df),
         patch(f"{_SVC}.sample_mass_accuracy", return_value=SampleMassAccuracy()),
         patch(f"{_SVC}.get_instrument_type", return_value="orbi"),
-        patch(f"{_SVC}.load_calibration", AsyncMock(return_value=None)),
+        patch(f"{_SVC}.load_calibration", AsyncMock(return_value=calibration)),
         patch(
             f"{_SVC}.invert_matches_to_peak_assignments",
             _recording(threads, "arbitrate", rows),
@@ -62,8 +65,10 @@ def _first_pass_patches(threads: dict, rows: list[dict]):
     ]
 
 
-async def _first_pass(threads: dict, rows: list[dict]):
-    patches = _first_pass_patches(threads, rows)
+async def _first_pass(
+    threads: dict, rows: list[dict], calibration: Calibration | None = None
+):
+    patches = _first_pass_patches(threads, rows, calibration)
     for started in patches:
         started.start()
     try:
@@ -98,6 +103,18 @@ async def test_the_first_pass_drops_claimed_ions_and_arbitrates_off_the_loop():
 
 
 @pytest.mark.asyncio
+async def test_the_first_pass_keeps_the_curve_its_rows_were_read_off():
+    # A re-score at v2 reads the rows' P(correct) again off the same curve.
+    calibration = Calibration(a=5.74, b=-3.36, instrument="orbi")
+
+    first = await _first_pass({}, [{"role": "M0"}], calibration)
+    none = await _first_pass({}, [{"role": "M0"}])
+
+    assert first.curve.calibration is calibration
+    assert none.curve is None
+
+
+@pytest.mark.asyncio
 async def test_the_rescore_at_the_fitted_tolerance_arbitrates_off_the_loop():
     threads: dict = {}
     rescored = [{"role": "M0", "sample_peak_id": "p1", "fit_score": 0.9}]
@@ -109,6 +126,7 @@ async def test_the_rescore_at_the_fitted_tolerance_arbitrates_off_the_loop():
         confidence_calibration=None,
         listed_formulas=frozenset(),
         assignments_of=_recording(threads, "arbitrate", rescored),
+        curve=service.ConfidenceCurve(Calibration(a=1.0, b=0.0), {}),
     )
     fitted = RunEnvelopeFit(
         fit_envelope_tolerance(
@@ -121,7 +139,7 @@ async def test_the_rescore_at_the_fitted_tolerance_arbitrates_off_the_loop():
         patch(f"{_SVC}.gate_lines", side_effect=lambda df, *_args, **_kwargs: df),
         patch(f"{_SVC}.score_ions_by_fit", side_effect=lambda df, **_kwargs: df),
     ):
-        rows, _, _, envelope, _ = await service._stage_a_assignments(
+        rows, _, _, envelope, _, _, curve = await service._stage_a_assignments(
             SimpleNamespace(sample_item_id="si-1", filename="orbi-sample.raw"),
             PeakAssignmentConfig(),
             SimpleNamespace(isotope_abundance_threshold=0.01),
@@ -133,4 +151,6 @@ async def test_the_rescore_at_the_fitted_tolerance_arbitrates_off_the_loop():
         )
 
     assert (rows, envelope) == (rescored, fitted)
+    # The curve the rows' P(correct) was read off goes on to the run.
+    assert curve is first.curve
     assert threads["arbitrate"] is not threading.main_thread()

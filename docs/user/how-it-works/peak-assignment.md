@@ -587,29 +587,54 @@ isotope-pattern matching of **SIRIUS** ([Böcker et al. 2009][bo09]; [Dührkop e
 awareness. The full mathematical model is in the developer reference,
 `libraries/tools/docs/fit_score.md`.
 
-The Gaussian's width and centre are the sample's own where it can measure them, from
-the lines of your target library that it matched. That takes at least eight lines, of
-at least eight different ions. A bright ion can match many lines alone, but they all
-share its own mass error: counted as lines, a few such ions would put the sample's
-centre at their own error and its width at how well their lines agree. Below either
-count, the width is the instrument class's, and the centre is the median mass error of
-the reagent ions the run claimed, if it claimed at least three and their offset exceeds
-that width; otherwise the sample is scored on its nominal masses. The reagent ions
-stand in only there: they sit at the low end of the mass range and need not agree with the
-offset your library measures. A formula measured on its own - a batch peak's *Use
-this*, the inspector's measured evidence and its alternatives - is held to the same
-counts, and holds too few ions to measure either. It is scored at the instrument
-class's width and at the centre the sample's latest run in Mascope scored at, whether
-that was your library's offset or the reagent ions'. An imported run does not count. A
-sample with no such run is centred on its own reagent ions, as a run would be. The
-batch's *Search untargeted* (below) ranks the candidates it finds in a sample at that
-same centre, as a run's own search ranks at the centre the run scores the sample at. It
-does not rank them at the class's width, though: a run's own search ranks at the width
-the run measured, so the batch search ranks at the width the sample's latest run
-measured, and at the class's only where that run measured none or the sample has no run.
-The formulas it chose are then held to the same counts, as a run's are: eight or more
-ions in the sample measure a width and centre of their own, and fewer are measured at
-the instrument class's width and the centre they were ranked at.
+The Gaussian's width and centre come from the run's **measurement model**: where the
+sample's masses sit and how widely they scatter, and how closely a line's height follows
+its share (below). One run has one model, and every part of it reads that model: Stage
+A's scores, the composition search's ranking, the re-score of the search's readings, the
+mass gate's *mass z* and its caps, and the identification level. The run measures the
+model at two points.
+
+- **After Stage A.** The model is fitted on the lines of your target library that the
+  run matched. That takes at least eight lines, of at least eight different ions. A
+  bright ion can match many lines alone, but they all share its own mass error: counted
+  as lines, a few such ions would put the sample's centre at their own error and its
+  width at how well their lines agree. Below either count, the width is the instrument
+  class's, and the centre is the median mass error of the reagent ions the run claimed,
+  if it claimed at least three and their offset exceeds that width; otherwise the
+  sample is scored on its nominal masses. The reagent ions stand in only there: they sit
+  at the low end of the mass range and need not agree with the offset your library
+  measures. The composition search ranks its candidates at this model, and the re-score
+  of its readings measures them there too: they fit no width or centre of their own.
+- **After the readings are elected.** The model is fitted again on the readings the run
+  has more than a mass fit for, and on the source's own ions, as the mass gate always
+  measured the run (*off calibration*, below). There the centre can follow the mass
+  range. Where this second fit moves the centre or the width by more than a quarter of
+  the first one's width anywhere over the masses the run assigned, or where the first
+  one stood in for a measurement the second one makes, every row is scored again at the
+  second model, before any cap. A row scored again takes its new fit score, evidence and
+  tier, its P(correct) read again off the curve at that evidence, and the fits of the
+  alternatives it stores. A secondary channel's cap comes after this, so it reads the new
+  evidence (*What lets a secondary channel's reading reach assigned*, above): a reading
+  that now reaches *assigned* with nothing behind it stays at *candidate*. So does a peak
+  read as a neighbour's line (*read as a neighbour's line*,
+  below): it takes the neighbour's new evidence, but not a tier above *candidate*, and it
+  falls with the neighbour. A reading a batch decision proposed at *candidate* (the batch stages,
+  below) falls no lower at its new evidence: only a cap takes it lower. Which formula
+  won the peak, and how many formulas its evidence could not separate, stay as the
+  first model ranked them, as the search's ranking does.
+  Otherwise the run stays at the first. Either way a row's
+  fit score and its *mass z* are read at the same centre and width. A run whose readings
+  are too few to fit the second model scores and caps at the first.
+
+The run records its model once, with the version it scored and capped at
+(`measurement_model` in the run's configuration). A formula measured on its own - a
+batch peak's *Use this*, the inspector's measured evidence and its alternatives, the
+batch's *Search untargeted* (below) and what it propagates - is scored at the model the
+sample's latest run in Mascope recorded, its width, centre and line tolerance from that
+one run. The inspector's alternatives for a row read the model of the row's own run. An
+imported run does not count, and a decoy run (below) is never that run. A sample with no
+such run is read as a run whose library matched too little: at the instrument class's
+width and its own reagent ions' centre.
 
 How closely a line's height must follow its predicted share is the run's own, too. By
 default a clean line is held to 5% of its share, and a missing line counts against the
@@ -642,9 +667,9 @@ each gave and the time they span. On a TOF the run measures one offset and one
 spread of how its lines read against their shares, since a TOF's signal-to-noise column
 is not read that way yet. The run records which of these it used, and a formula measured
 on its own afterwards - *Use this*, the inspector's evidence - is read at the tolerance
-the sample's latest run in Mascope recorded. A decoy run (below) is never that run. A
-sample with no such run, one only folded into the batch ledger, is measured at the
-defaults, though its folded rows were scored at a tolerance fitted on the spot.
+in the model the sample's latest run in Mascope recorded. A sample with no such run, one
+only folded into the batch ledger, is measured at the defaults, though its folded rows
+were scored at a tolerance fitted on the spot.
 
 An Orbitrap file whose peaks record the scans they are present in (*Scan Presence* on
 [Peak Detection](peak-detection.md)) needs no such measurement for its lines: it
@@ -1231,9 +1256,10 @@ measurements the reasons read.
   as, in full**, in the view menu, writes the name and the list out in the column, in
   this ledger and in the *Batch peaks* ledger both, and keeps the setting across a
   reload. A lead is not shown there - it is looked up when a row is inspected.
-- ***mass z*** sits beside the m/z error. It is the row's distance from the run's own
-  mass calibration at its m/z, counted in the calibration's widths. Hovering it gives
-  the run's centre and width, and the distances at which *off calibration* caps a row.
+- ***mass z*** sits beside the m/z error. It is the row's distance from the centre of
+  the run's measurement model at its m/z, counted in the model's widths: the centre and
+  width the row's fit score was read at too. Hovering it gives the run's centre and
+  width, and the distances at which *off calibration* caps a row.
   The value is marked when it is past the distance that caps a row at *candidate*.
 - ***Same ion, read another way*** sits under the reasons. It lists the other neutrals
   the committed ion reads as through the run's other channels, which *ambiguous
@@ -1632,12 +1658,14 @@ A decoy run takes one of three arms:
 
 Every stage of a decoy run reads the arm: the peak table, the targeted
 matcher, the untargeted search, the mass gate and the tiering. And every stage
-scores at the control's calibration, the centre and width the control
-recorded, rather than measuring its own: fitted on rows that are wrong on
-purpose, the run would measure the shift back out of the spectrum, or fail to
-calibrate and judge with its mass gate off. A line's height is read at the
-control's envelope tolerance for the same reason: the few envelopes a decoy
-confirms are wrong formulas, and too few to measure one of its own.
+scores and caps at the control's measurement model, as the control recorded it,
+rather than measuring its own: fitted on rows that are wrong on purpose, the run
+would measure the shift back out of the spectrum, or fail to calibrate and judge
+with its mass gate off. A line's height is read at the control's envelope
+tolerance for the same reason: the few envelopes a decoy confirms are wrong
+formulas, and too few to measure one of its own. A control recorded before the
+model was one record has none to give, and a decoy of it is refused: run the
+sample again first.
 
 A decoy searches under its control's chemistry context. A run on *Auto* takes the
 context its batch or dataset names, read when the run starts. A decoy reads what they
@@ -1799,10 +1827,11 @@ made for.
   of the sample goes through, with every reading the sample's members carry proposed
   together. Each member the batch wrote takes the tier the run's rules give its reading:
   another channel of the same compound, the mass gate, the lone-peak rule. A listed
-  compound the batch decided present is proposed at candidate, and the run's rules may
-  lower it. A series that proposes the formula a member already reads is a second
-  observation of it, so the member is judged again too, with no new run. The members a
-  sample's own run wrote keep its tiers.
+  compound the batch decided present is proposed at candidate, and the run's caps may
+  lower it; its evidence alone does not, even where the sample's own commits refit the
+  measurement model. A series that proposes the formula a member already reads is a
+  second observation of it, so the member is judged again too, with no new run. The
+  members a sample's own run wrote keep its tiers.
 - **Records are kept, marked stale.** When a batch peak's reading moves off what a stage's
   record was made for, the record is kept, marked stale, and served by no reader. The stage
   that wrote it reads it again when it runs, and a reading that comes back finds it
@@ -1895,9 +1924,10 @@ chemistry, sets aside the peaks the source made (its reagent lines and the detec
 ringing), searches, reads a chlorine or bromine twin again (*Chlorine and bromine from
 their twin line*, above), measures every reading it commits, and then asks each reading
 every rule a run asks: the mass calibration, the partner and second-channel checks, and
-the rules under *Why a row holds its tier*. It reads the mass calibration, the width and
-the line tolerance the sample's latest assignment run recorded; a sample no run has
-assigned is read at its instrument's width and its reagent lines' centre. A peak the
+the rules under *Why a row holds its tier*. It reads the measurement model the sample's
+latest assignment run recorded, its width, centre and line tolerance read together from
+that one run even where another run completes meanwhile; a sample no run has assigned is
+read at its instrument's width and its reagent lines' centre. A peak the
 batch ledger already explains is neither searched nor read as a twin. Measuring the
 composition in the other samples does the same: each sample's peak takes the tier an
 assignment run of that sample gives the same reading, not its fit alone. A run finds

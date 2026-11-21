@@ -2030,7 +2030,8 @@ class TestRunWidthIsServed:
 
     An external engine comparing itself to a run should read the width that
     run judged a mass error against rather than measure it again. An in-app
-    run recorded it in its config's ``pattern_scoring`` snapshot; an imported
+    run recorded it in its config's ``measurement_model`` record (a run from
+    before it, in its ``pattern_scoring`` snapshot); an imported
     one says it in ``scoring_width`` beside its calibration.
     """
 
@@ -2103,8 +2104,40 @@ class TestRunWidthIsServed:
         assert response.status_code == 422
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "config",
+        [
+            # The run's measurement model: the width it judged in, widened.
+            {
+                "measurement_model": {
+                    "version": 2,
+                    "sigma_ppm": 0.9,
+                    "width_ppm": 1.2345,
+                    "mu_ppm": 0.5,
+                    "sigma_source": "instrument_class",
+                    "mu_source": "reagent",
+                }
+            },
+            # A run from before the one record: its scoring snapshot.
+            {
+                "pattern_scoring": {
+                    "sigma_ppm": 1.2345,
+                    "mu_ppm": 0.5,
+                    "sigma_source": "instrument_class",
+                    "mu_source": "reagent",
+                    "fitted_anchors": 3,
+                }
+            },
+        ],
+        ids=["model", "scoring snapshot"],
+    )
     async def test_an_in_app_run_serves_the_width_its_snapshot_recorded(
-        self, editor_client, import_sample, feature_enabled, async_session_factory
+        self,
+        editor_client,
+        import_sample,
+        feature_enabled,
+        async_session_factory,
+        config,
     ):
         async with async_session_factory() as session:
             session.add(
@@ -2114,15 +2147,7 @@ class TestRunWidthIsServed:
                     engine="mascope",
                     engine_version="test",
                     status="completed",
-                    config={
-                        "pattern_scoring": {
-                            "sigma_ppm": 1.2345,
-                            "mu_ppm": 0.5,
-                            "sigma_source": "instrument_class",
-                            "mu_source": "reagent",
-                            "fitted_anchors": 3,
-                        }
-                    },
+                    config=config,
                     peak_assignment_run_utc_created=datetime.now(timezone.utc),
                 )
             )

@@ -32,6 +32,7 @@ from mascope_tools.composition.envelope_tolerance import (
     EnvelopeLines,
     fit_envelope_tolerance,
 )
+from mascope_tools.composition.measurement_model import MeasurementModel
 
 
 _SVC = "mascope_backend.api.new.peak_assignments.service"
@@ -180,8 +181,8 @@ class TestANeighbourIsReadByItsOwnFirstPass:
         frame, rows = read.call_args.args
         assert list(frame["frame"]) == [1] and rows == [{"role": "M0"}]
         assert read.call_args.kwargs == {
-            "mass_accuracy": SampleMassAccuracy(sigma_ppm=0.4),
-            "fallback_sigma_ppm": 0.61,
+            # The v1 model its own first pass fitted, at its own class width.
+            "model": MeasurementModel.v1(SampleMassAccuracy(sigma_ppm=0.4), 0.61),
             "form": FORM_CURVE,
         }
         # Labelled lines predicted at its own setup's purity, while it is read.
@@ -268,7 +269,7 @@ class TestStageAReadsItsNeighboursUnderItsOwnInputs:
                 AsyncMock(return_value=EnvelopeLines()),
             ) as read,
         ):
-            _rows, _, _, envelope, _ = await service._stage_a_assignments(
+            _rows, _, _, envelope, _, _, _ = await service._stage_a_assignments(
                 _neighbour(sample_item_id="si-1"),
                 config,
                 match_params,

@@ -11,9 +11,9 @@ to commit them under.
 
 ``score_row_alternatives`` measures them for one peak when somebody is looking at
 it. The heavy edges are faked (the database session, the sample fetch, the
-mechanism list and the seeded scoring chain itself), but the selection, the
-M0-only pairing rule, the evidence ranking and the blocked reasons are the
-production ones.
+mechanism list, the recorded measurement model and the seeded scoring chain
+itself), but the selection, the M0-only pairing rule, the evidence ranking and
+the blocked reasons are the production ones.
 """
 
 from types import SimpleNamespace
@@ -50,6 +50,10 @@ _SVC = "mascope_backend.api.new.peak_assignments.service"
 
 #: The peak the row under test sits on.
 PEAK_ID = "sp-1"
+
+#: The model the row's run recorded, which the alternatives are scored at; any
+#: object will do, since a test reads back that it was handed on.
+RECORDED = SimpleNamespace(version=2, width_ppm=0.58, scoring_mu_ppm=-0.2)
 
 
 def _mechanism(mechanism_id, notation):
@@ -115,17 +119,19 @@ async def _run(
     scored_rows=(),
     run=None,
     opened=(),
+    recorded_model=None,
 ):
     """Call the controller with every heavy edge faked.
 
     The seeded chain is replaced by whatever this call declares it found, so a
     test states the measurement outcome directly rather than through a peak
-    file.
+    file, and the recorded model by :data:`RECORDED`.
     """
     scored_df = pd.DataFrame(list(scored_rows))
     score_seeds = AsyncMock(
         return_value=(ion_by_seed or {}, fit_by_ion or {}, {}, scored_df)
     )
+    recorded_model = recorded_model or AsyncMock(return_value=RECORDED)
     with (
         patch(
             f"{_MOD}.async_session",
@@ -157,6 +163,7 @@ async def _run(
             AsyncMock(return_value=SimpleNamespace(isotope_abundance_threshold=0.01)),
         ),
         patch(f"{_MOD}.score_seeds", score_seeds),
+        patch(f"{_MOD}.recorded_model", recorded_model),
     ):
         result = await score_row_alternatives(
             sample_item_id="si-1", peak_assignment_id="pa-1"
@@ -313,6 +320,44 @@ class TestScoring:
         assert entry["ionization_mechanism_id"] == "im-na"
         assert entry["adducts_tried"] == 2
         assert "blocked_reason" not in entry
+
+    @pytest.mark.asyncio
+    async def test_scores_at_the_model_the_rows_run_recorded(self):
+        # MAS-982: the row and its alternatives are read on one scale, the
+        # model its own run scored and capped it at, never one fitted off a
+        # shortlist of mostly wrong formulas.
+        config = {"measurement_model": {"version": 2}, "envelope_tolerance": {}}
+        run = SimpleNamespace(engine="mascope", config=config)
+        recorded = AsyncMock(return_value=RECORDED)
+
+        _, score_seeds = await _run(
+            [{"assigned_formula": "C6H12O6"}], run=run, recorded_model=recorded
+        )
+
+        recorded.assert_awaited_once()
+        assert recorded.await_args.kwargs == {"recorded": config}
+        assert score_seeds.await_args.kwargs == {"model": RECORDED}
+
+    @pytest.mark.parametrize(
+        "run",
+        [
+            None,
+            # An import's config is its client's own, and says nothing of
+            # where the in-app scorer centred.
+            SimpleNamespace(engine="peaky", config={"measurement_model": {}}),
+        ],
+        ids=["no run", "imported run"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_row_with_no_in_app_record_reads_the_samples(self, run):
+        recorded = AsyncMock(return_value=RECORDED)
+
+        _, score_seeds = await _run(
+            [{"assigned_formula": "C6H12O6"}], run=run, recorded_model=recorded
+        )
+
+        assert recorded.await_args.kwargs == {"recorded": None}
+        assert score_seeds.await_args.kwargs == {"model": RECORDED}
 
     @pytest.mark.asyncio
     async def test_a_channel_the_mode_declares_is_seeded_once(self):
@@ -520,11 +565,9 @@ def _winner(peak_id, intensity, alternatives=None, *, formula="C5H10O2", fit=0.9
     }
 
 
-#: The run's own measurement, which the pass is scored at; any object will do,
-#: since the test reads back that it was handed on.
-ACCURACY = SimpleNamespace(sigma_ppm=0.4, scoring_mu_ppm=0.1)
-CENTRE = SimpleNamespace(mu_ppm=0.1)
-TOLERANCE = SimpleNamespace(share=0.05)
+#: The run's measurement model, which the pass is scored at; any object will
+#: do, since the test reads back that it was handed on.
+MODEL = SimpleNamespace(version=1, width_ppm=0.4, scoring_mu_ppm=0.1)
 
 
 async def _measure(
@@ -552,9 +595,7 @@ async def _measure(
             list(mechanisms),
             SimpleNamespace(isotope_abundance_threshold=0.01),
             peak_budget=peak_budget,
-            reagent_offset=CENTRE,
-            envelope_tolerance=TOLERANCE,
-            accuracy=ACCURACY,
+            model=MODEL,
         )
     return summary, score_seeds
 
@@ -885,10 +926,10 @@ class TestTheRunMeasuresItsWinners:
             [_winner("p1", 10.0, [{"assigned_formula": "C4H8N2O3"}])]
         )
 
-        kwargs = score_seeds.await_args.kwargs
-        assert kwargs["inherited_accuracy"] is ACCURACY
-        assert kwargs["reagent_offset"] is CENTRE
-        assert kwargs["envelope_tolerance"] is TOLERANCE
+        # The model the winners were scored and capped at, whole: its centre,
+        # its width and its line-share tolerance, and nothing fitted off the
+        # seeds beside it.
+        assert score_seeds.await_args.kwargs == {"model": MODEL}
 
     @pytest.mark.asyncio
     async def test_the_budget_goes_to_the_brightest_winners_first(self):

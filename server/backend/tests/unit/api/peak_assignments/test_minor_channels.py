@@ -49,6 +49,8 @@ from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
     TIER_CANDIDATE,
 )
+from mascope_tools.composition.mass_accuracy import SampleMassAccuracy
+from mascope_tools.composition.measurement_model import MeasurementModel
 from mascope_tools.composition.utils import formula_identity
 
 
@@ -2086,7 +2088,7 @@ def test_the_folds_reading_records_a_list_as_a_run_does(listed, corroboration):
 
     judging = service_module.Judging(
         [benzyl, partner, seen],
-        stage_a_accuracy=None,
+        model=MeasurementModel.v1(SampleMassAccuracy(), 1.0),
         fallback_sigma_ppm=1.0,
         notation_by_id={mid: notation for notation, mid in CT_IDS.items()},
         mz_tolerance_ppm=3.0,

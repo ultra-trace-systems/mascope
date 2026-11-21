@@ -462,15 +462,21 @@ class PeakAssignmentsResource(BaseResource):
                    ``provenance.engine_provenance`` and is not read into this
                    column, because it is a different measurement.
                  - ``mass_z``: how far the row's mass error sits from the
-                   centre the run fitted over its own corroborated
-                   assignments and the source's own lines its reagent
-                   pre-pass claimed, in the widths it fitted there. Where the
-                   run's commits follow the mass range the centre does too,
-                   and is read at the row's own m/z. The run's
-                   ``config.mass_calibration`` holds that fit, its ``centre``
-                   and any ``trend``; a row beyond three widths with nothing
-                   but the mass fit behind it is capped, and says so in its
-                   detail provenance.
+                   centre of the run's measurement model, in its width: the
+                   model the row's fit was scored at too. That is the model
+                   Stage A fitted on the target library's lines (version 1),
+                   or the one the run refitted over its own corroborated
+                   assignments and the source's own lines (version 2) where
+                   that moved the centre or the width. Where the run's
+                   commits follow the mass range the centre does too, and is
+                   read at the row's own m/z. The run's
+                   ``config.measurement_model`` holds the model, its
+                   ``version``, ``centre`` and any ``trend``, and under
+                   ``gate`` what the mass gate capped (a run from before it
+                   kept these in ``config.pattern_scoring`` and
+                   ``config.mass_calibration``); a row beyond three widths
+                   with nothing but the mass fit behind it is capped, and
+                   says so in its detail provenance.
                  - ``reference_listing``: what a reference list calls the
                    formula, where the run matched it from one - a dict with
                    the first compound's ``name``, the list it comes from

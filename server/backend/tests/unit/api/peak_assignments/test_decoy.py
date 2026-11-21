@@ -43,25 +43,21 @@ from mascope_backend.api.new.peak_assignments.decoy import (
     DecoyPlan,
     DecoyRefused,
     declared_channels,
-    inherited_accuracy,
-    inherited_calibration,
     plan_decoy,
     swap_channels,
     wrong_adducts,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
     ENVELOPE_TOLERANCE_KEY,
-    MASS_CALIBRATION_KEY,
-    PATTERN_SCORING_KEY,
+    MEASUREMENT_MODEL_KEY,
+    measurement_model_record,
     pattern_scoring_for,
-    pattern_scoring_snapshot,
     score_ions_by_fit,
 )
 from mascope_backend.api.new.peak_assignments.envelope_fit import (
     inherited_envelope_fit,
 )
 from mascope_backend.api.new.peak_assignments.mass_gate import (
-    MassCalibration,
     apply_mass_gate,
     measure_mass_gate,
 )
@@ -70,10 +66,7 @@ from mascope_backend.api.new.peak_assignments.profiles import (
     NamedContext,
     resolve_profile,
 )
-from mascope_backend.api.new.peak_assignments.service import (
-    _run_scoring_centre,
-    load_sample_peaks,
-)
+from mascope_backend.api.new.peak_assignments.service import load_sample_peaks
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
     TIER_BELOW_ASSIGNABILITY,
@@ -93,6 +86,7 @@ from mascope_tools.composition.mass_accuracy import (
     SampleMassAccuracy,
     scoring_sigma_ppm,
 )
+from mascope_tools.composition.measurement_model import MeasurementModel
 
 
 SHIFT = PeakAssignmentDecoy(mz_shift_ppm=9.0)
@@ -187,15 +181,40 @@ class TestTheShiftedAxis:
         assert shifted["sample_peak_id"].tolist() == ["1", "2"]
 
 
-def _accuracy_round_trip(accuracy: SampleMassAccuracy) -> SampleMassAccuracy:
-    """A measurement, recorded as a control records it and read back."""
-    match_params = SimpleNamespace(mz_tolerance=5.0, isotope_abundance_threshold=0.01)
-    scoring = pattern_scoring_for(match_params, accuracy, "orbi")
-    return inherited_accuracy(pattern_scoring_snapshot(scoring, accuracy))
+MATCH_PARAMS = SimpleNamespace(mz_tolerance=5.0, isotope_abundance_threshold=0.01)
+
+
+def _round_trip(model: MeasurementModel) -> MeasurementModel:
+    """A model, recorded as a control records it and read back as a decoy
+    reads it."""
+    return MeasurementModel.from_record(
+        measurement_model_record(model, scoring={"mz_tolerance_ppm": 5.0}, gate={})
+    )
+
+
+#: A control that ended at v2: a centre that follows m/z, floored at v1.
+CONTROL_V2 = MeasurementModel.v1(
+    SampleMassAccuracy(mu_ppm=-0.3, sigma_ppm=0.25, anchors=40, anchor_ions=12), 0.3
+).v2(
+    mu_ppm=-0.2,
+    sigma_ppm=0.12,
+    commits=134,
+    source_lines=6,
+    source_capped=1,
+    trend=MassTrend(
+        intercept_ppm=0.1,
+        offset_mda=-0.12,
+        sigma_ppm=0.2,
+        points=120,
+        mz_lo=60.0,
+        mz_hi=480.0,
+    ),
+    trend_rows=130,
+)
 
 
 class TestTheControlsMeasurementIsInherited:
-    """A decoy scores where its control scored, from what the control recorded."""
+    """A decoy scores and caps at the model its control recorded, unchanged."""
 
     @pytest.mark.parametrize(
         "accuracy",
@@ -216,32 +235,31 @@ class TestTheControlsMeasurementIsInherited:
         ],
     )
     def test_every_number_a_stage_reads_is_the_control_s(self, accuracy):
-        inherited = _accuracy_round_trip(accuracy)
-        match_params = SimpleNamespace(
-            mz_tolerance=5.0, isotope_abundance_threshold=0.01
-        )
+        model = MeasurementModel.v1(accuracy, 0.3)
+        inherited = _round_trip(model)
 
-        original = pattern_scoring_for(match_params, accuracy, "orbi")
-        again = pattern_scoring_for(match_params, inherited, "orbi")
+        original = pattern_scoring_for(MATCH_PARAMS, model)
+        again = pattern_scoring_for(MATCH_PARAMS, inherited)
         assert again.sigma_ppm == pytest.approx(original.sigma_ppm, abs=1e-4)
         assert again.mu_ppm == pytest.approx(original.mu_ppm, abs=1e-4)
-        assert inherited.mu_source == accuracy.mu_source
-        assert inherited.scoring_mu_ppm == pytest.approx(accuracy.scoring_mu_ppm)
-        # The seeded re-score's centre, and Stage A's own width.
-        centre, inherited_centre = (
-            _run_scoring_centre(accuracy),
-            _run_scoring_centre(inherited),
-        )
-        if centre is None:
-            assert inherited_centre is None
-        else:
-            assert inherited_centre.mu_ppm == pytest.approx(centre.mu_ppm)
-            assert inherited_centre.beyond_width == centre.beyond_width
-        if accuracy.sigma_ppm is None:
+        assert inherited.mu_source == model.mu_source
+        assert inherited.measured == model.measured
+        assert inherited.reagent == model.reagent
+        if model.sigma_ppm is None:
             assert inherited.sigma_ppm is None
         else:
-            assert inherited.sigma_ppm == pytest.approx(accuracy.sigma_ppm, abs=1e-3)
-        assert inherited.anchors == accuracy.anchors
+            assert inherited.sigma_ppm == pytest.approx(model.sigma_ppm, abs=1e-3)
+        assert dict(inherited.anchors) == dict(model.anchors)
+
+    def test_a_v2_control_is_read_back_with_its_trend(self):
+        inherited = _round_trip(CONTROL_V2)
+
+        assert inherited.version == 2
+        for error, mz in ((-1.2, 61.0), (0.3, 250.0), (2.0, 600.0), (1.0, None)):
+            assert inherited.z_of(error, mz) == pytest.approx(
+                CONTROL_V2.z_of(error, mz), abs=1e-3
+            )
+        assert inherited.record() == CONTROL_V2.record()
 
     def test_stage_a_scores_a_shifted_frame_at_the_inherited_centre(self):
         # Ten library ions 9 ppm out, as Stage A meets them on a shifted axis.
@@ -253,71 +271,46 @@ class TestTheControlsMeasurementIsInherited:
             )
             for i in range(10)
         ]
-        control = SampleMassAccuracy(mu_ppm=0.0, sigma_ppm=0.2, anchors=40)
+        control = MeasurementModel.v1(
+            SampleMassAccuracy(mu_ppm=0.0, sigma_ppm=0.2, anchors=40), 0.3
+        )
 
         fitted = score_ions_by_fit(pd.DataFrame(rows), fallback_sigma_ppm=0.3)
-        inherited = score_ions_by_fit(
-            pd.DataFrame(rows), fallback_sigma_ppm=0.3, inherited_accuracy=control
-        )
+        inherited = score_ions_by_fit(pd.DataFrame(rows), model=control)
 
         assert fitted["match_score"].min() > 0.5
         assert inherited["match_score"].max() < fitted["match_score"].min()
 
     def test_the_mass_gate_judges_a_shifted_ledger_at_the_control_s_centre(self):
-        # Every commit 9 ppm out. Fitted over its own anchors the gate centres
-        # on the shift and caps nothing; at the control's calibration the
+        # Every commit 9 ppm out. Refitted over its own anchors the gate
+        # centres on the shift and caps nothing; at the control's model the
         # uncorroborated commit is far below assignability.
         def ledger():
             return _anchors(12, ppm=9.0) + [_row("off", ppm=9.0)]
 
+        stand_in = MeasurementModel.v1(SampleMassAccuracy(), PRECISION)
         own = ledger()
-        apply_mass_gate(own, fallback_sigma_ppm=PRECISION)
+        apply_mass_gate(own, model=stand_in, fallback_sigma_ppm=PRECISION)
         decoy = ledger()
-        summary = apply_mass_gate(
+        control = stand_in.v2(mu_ppm=0.0, sigma_ppm=0.15, commits=12, source_lines=0)
+        summary, judged_at = apply_mass_gate(
             decoy,
+            model=control,
             fallback_sigma_ppm=PRECISION,
-            calibration=MassCalibration(
-                mu_ppm=0.0, sigma_ppm=0.15, anchors=12, gate_sigma_ppm=0.58
-            ),
+            refit=False,
         )
 
         assert own[-1]["tier"] == TIER_ASSIGNED
         assert decoy[-1]["tier"] == TIER_BELOW_ASSIGNABILITY
         assert summary["inherited"] is True
-        assert summary["mu_ppm"] == 0.0
-        assert "inherited" not in apply_mass_gate(ledger(), fallback_sigma_ppm=0.3)
-
-    def test_the_gate_s_calibration_is_read_back_with_its_trend(self):
-        calibration = MassCalibration(
-            mu_ppm=-0.2,
-            sigma_ppm=0.12,
-            anchors=140,
-            reagent_anchors=6,
-            reagent_capped=1,
-            gate_sigma_ppm=0.58,
-            trend=MassTrend(
-                intercept_ppm=0.1,
-                offset_mda=-0.12,
-                sigma_ppm=0.2,
-                points=120,
-                mz_lo=60.0,
-                mz_hi=480.0,
-            ),
-            trend_rows=130,
+        assert judged_at is control
+        assert (
+            "inherited"
+            not in apply_mass_gate(ledger(), model=stand_in, fallback_sigma_ppm=0.3)[0]
         )
 
-        inherited = inherited_calibration(calibration.snapshot())
-
-        for error, mz in ((-1.2, 61.0), (0.3, 250.0), (2.0, 600.0), (1.0, None)):
-            assert inherited.z_of(error, mz) == pytest.approx(
-                calibration.z_of(error, mz), abs=1e-3
-            )
-        assert inherited.snapshot() == calibration.snapshot()
-
-    def test_a_control_whose_gate_measured_nothing_gives_a_gate_that_stands_down(
-        self,
-    ):
-        inherited = inherited_calibration(MassCalibration(anchors=3).snapshot())
+    def test_a_control_whose_model_measured_nothing_caps_nothing(self):
+        inherited = _round_trip(MeasurementModel.v1(SampleMassAccuracy(anchors=3), 0.3))
 
         assert not inherited.measured
         assert inherited.z_of(9.0, 200.0) is None
@@ -347,20 +340,15 @@ def _control(
         config[ENVELOPE_TOLERANCE_KEY] = envelope
     config[RESOLVED_PROFILE_KEY] = {"profile": profile, "mz_precision_ppm": precision}
     if scoring:
-        accuracy = SampleMassAccuracy(mu_ppm=-0.2, sigma_ppm=0.2, anchors=30)
-        config[PATTERN_SCORING_KEY] = pattern_scoring_snapshot(
-            pattern_scoring_for(
-                SimpleNamespace(
-                    mz_tolerance=tolerance, isotope_abundance_threshold=0.01
-                ),
-                accuracy,
-                "orbi",
-            ),
-            accuracy,
+        v1 = MeasurementModel.v1(
+            SampleMassAccuracy(mu_ppm=-0.2, sigma_ppm=0.2, anchors=30), 0.3
         )
-        config[MASS_CALIBRATION_KEY] = MassCalibration(
-            mu_ppm=-0.2, sigma_ppm=0.1, anchors=200, gate_sigma_ppm=0.54
-        ).snapshot()
+        config[MEASUREMENT_MODEL_KEY] = measurement_model_record(
+            v1.v2(mu_ppm=-0.2, sigma_ppm=0.1, commits=200, source_lines=0),
+            ranked_at=v1,
+            scoring={"mz_tolerance_ppm": float(tolerance)},
+            gate={"cap_z": 3.0},
+        )
     return config
 
 
@@ -373,15 +361,20 @@ class TestPlanningADecoy:
         plan = plan_decoy(SHIFT, PeakAssignmentConfig(decoy=SHIFT), "run-c", control)
 
         assert plan.control_run_id == "run-c"
-        assert plan.accuracy.mu_ppm == pytest.approx(-0.2)
-        assert plan.calibration.mu_ppm == pytest.approx(-0.2)
-        assert plan.calibration.gate_sigma_ppm == pytest.approx(0.54)
+        # The model the control scored and capped at: its v2, whose width is
+        # floored at the v1 its search ranked at.
+        assert plan.model.version == 2
+        assert plan.model.scoring_mu_ppm == pytest.approx(-0.2)
+        assert plan.model.width_ppm == pytest.approx(
+            scoring_sigma_ppm(0.2, 0.3), abs=1e-4
+        )
         # The wider of the search's 3 ppm and the 5 ppm lines are matched in.
         assert plan.window_ppm == 5.0
         assert plan.record() == {
             "arm": "mz_shift_ppm=+9",
             "control_run_id": "run-c",
             "calibration": "control",
+            "model_version": 2,
             "source_ions": "stored_axis",
             "window_ppm": 5.0,
             "swapped_channels": None,
@@ -457,6 +450,22 @@ class TestPlanningADecoy:
                 "run-c",
                 _control(scoring=False),
             )
+
+    def test_a_control_from_before_the_one_record_is_refused(self):
+        # Such a control scored at one model and capped at another; a decoy
+        # scores and caps at one, so it has none to inherit.
+        control = _control(scoring=False)
+        control["pattern_scoring"] = {
+            "sigma_ppm": 0.54,
+            "mu_ppm": -0.2,
+            "sigma_source": "fitted",
+            "mu_source": "fitted",
+            "mz_tolerance_ppm": 5.0,
+        }
+        control["mass_calibration"] = {"mu_ppm": -0.2, "sigma_ppm": 0.1}
+
+        with pytest.raises(DecoyRefused, match=re.escape(REFUSED_NO_SCORING)):
+            plan_decoy(SHIFT, PeakAssignmentConfig(decoy=SHIFT), "run-c", control)
 
     def test_a_ppm_shift_inside_the_control_s_window_is_no_decoy(self):
         # A TOF searches 10 ppm and matches lines at 15: 9 ppm leaves the true
@@ -579,14 +588,17 @@ class TestSwappingAdducts:
 
 
 def _plan(decoy=SHIFT, **fields) -> DecoyPlan:
+    """A plan, its model reading the control's tolerance as ``plan_decoy``
+    reads it beside the model's own record."""
     fields.setdefault("envelope", inherited_envelope_fit(None))
     return DecoyPlan(
         decoy=decoy,
         control_run_id="run-control",
-        accuracy=SampleMassAccuracy(mu_ppm=0.05, sigma_ppm=0.2, anchors=30),
-        calibration=MassCalibration(
-            mu_ppm=0.05, sigma_ppm=0.1, anchors=200, gate_sigma_ppm=0.54
-        ),
+        model=MeasurementModel.v1(
+            SampleMassAccuracy(mu_ppm=0.05, sigma_ppm=0.2, anchors=30),
+            0.3,
+            fields["envelope"].tolerance,
+        ).v2(mu_ppm=0.05, sigma_ppm=0.1, commits=200, source_lines=0),
         window_ppm=5.0 if decoy.mz_shift_ppm is not None else None,
         **fields,
     )
@@ -686,11 +698,17 @@ class TestADecoyRun:
 
         await _run(PeakAssignmentConfig(decoy=SHIFT))
 
-        assert mocks["fit"].call_args.kwargs["inherited_accuracy"] is plan.accuracy
-        assert mocks["seeded"].call_args.kwargs["inherited_accuracy"] is plan.accuracy
+        # Stage A, the search's re-score and the gate read the control's
+        # model unchanged, and the gate refits none of its own.
+        assert mocks["fit"].call_args.kwargs["model"] is plan.model
+        assert mocks["seeded"].call_args.kwargs["model"] is plan.model
         assert {
-            id(call.kwargs["calibration"]) for call in mocks["gate"].call_args_list
-        } == {id(plan.calibration)}
+            (id(call.kwargs["model"]), call.kwargs["refit"])
+            for call in mocks["gate"].call_args_list
+        } == {(id(plan.model), False)}
+        scoring = mocks["compositions"].call_args.kwargs["scoring"]
+        assert scoring.sigma_ppm == pytest.approx(plan.model.width_ppm)
+        assert scoring.mu_ppm == pytest.approx(plan.model.scoring_mu_ppm)
 
     @pytest.mark.asyncio
     async def test_the_judging_is_told_what_the_lists_name(self):
@@ -725,11 +743,14 @@ class TestADecoyRun:
         tolerance = EnvelopeTolerance.from_record(record)
         fitted.assert_not_awaited()
         assert [
-            call.kwargs["envelope_tolerance"] for call in mocks["fit"].call_args_list
+            call.kwargs["model"].envelope_tolerance
+            for call in mocks["fit"].call_args_list
         ] == [tolerance]
         scoring = mocks["compositions"].call_args.kwargs["scoring"]
         assert scoring.envelope_tolerance == tolerance
-        assert mocks["seeded"].await_args.kwargs["envelope_tolerance"] == tolerance
+        assert mocks["seeded"].await_args.kwargs["model"].envelope_tolerance == (
+            tolerance
+        )
         assert self.recorder.recorded_configs()[-1][ENVELOPE_TOLERANCE_KEY] == {
             **record,
             "inherited": True,
@@ -748,12 +769,21 @@ class TestADecoyRun:
         assert configs[0][DECOY_ARM_KEY] == plan.record()
         assert configs[-1][DECOY_ARM_KEY] == plan.record()
         assert configs[-1]["decoy"] == SHIFT.model_dump()
-        assert configs[-1][MASS_CALIBRATION_KEY]["inherited"] is True
-        # The search scored at the control's centre and width, not at what
-        # this sample's two library lines would have measured (nothing).
-        scoring = configs[-1][PATTERN_SCORING_KEY]
-        assert (scoring["mu_ppm"], scoring["mu_source"]) == (0.05, "fitted")
-        assert scoring["sigma_ppm"] == pytest.approx(
+        model = configs[-1][MEASUREMENT_MODEL_KEY]
+        assert model["gate"]["inherited"] is True
+        # The run scored and capped at the control's model, not at what this
+        # sample's two library lines would have measured (nothing).
+        assert model == {
+            **plan.model.record(),
+            "scoring": model["scoring"],
+            "gate": model["gate"],
+        }
+        assert (model["version"], model["mu_ppm"], model["mu_source"]) == (
+            2,
+            0.05,
+            "fitted",
+        )
+        assert model["width_ppm"] == pytest.approx(
             scoring_sigma_ppm(0.2, 0.3), abs=1e-4
         )
         mocks["fold"].assert_not_awaited()
@@ -862,15 +892,14 @@ class TestADecoyRun:
 
         mocks["plan"].assert_not_awaited()
         assert self.axes == {"peaks": None, "matcher": None}
-        assert mocks["fit"].call_args.kwargs["inherited_accuracy"] is None
-        assert mocks["seeded"].call_args.kwargs["inherited_accuracy"] is None
-        assert {
-            call.kwargs["calibration"] for call in mocks["gate"].call_args_list
-        } == {None}
+        assert mocks["fit"].call_args.kwargs["model"] is None
+        seeded = mocks["seeded"].call_args.kwargs["model"]
+        assert seeded.version == 1
+        assert {call.kwargs["refit"] for call in mocks["gate"].call_args_list} == {True}
         assert DECOY_ARM_KEY not in self.recorder.recorded_configs()[-1]
         assert (
             "inherited"
-            not in self.recorder.recorded_configs()[-1][MASS_CALIBRATION_KEY]
+            not in self.recorder.recorded_configs()[-1][MEASUREMENT_MODEL_KEY]["gate"]
         )
         assert (
             "inherited"

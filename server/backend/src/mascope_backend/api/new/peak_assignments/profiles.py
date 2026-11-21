@@ -28,6 +28,7 @@ from mascope_backend.api.new.peak_assignments.config import (
     DEFAULT_PROFILE,
     PeakAssignmentConfig,
 )
+from mascope_tools.composition.measurement_model import MeasurementModel
 from mascope_tools.composition.mechanism_notation import mechanism_key
 from mascope_tools.composition.models import (
     CompositionSearchConfig,
@@ -327,32 +328,35 @@ class ResolvedProfile:
 def with_fitted_window(
     resolved: ResolvedProfile,
     *,
-    sigma_ppm: float | None,
-    mu_ppm: float,
+    model: MeasurementModel,
     sigmas: float,
     instrument_type: str | None,
 ) -> ResolvedProfile:
-    """Bound a TOF's untargeted window by the sample's own fitted width.
+    """Bound a TOF's untargeted window by the sample's measurement model.
 
     Step 3.6 of the assignment quality plan: on a TOF the 10 ppm class window
     is ten to fourteen of the sample's own widths, and a candidate that far
     from the sample's centre is one the run's mass gate would never let
-    stand. Where Stage A fitted the sample's width, the window is
-    ``|mu| + sigmas * sigma`` (``profiles.fitted_window_ppm``), never wider
-    than the class's.
+    stand. Where the model's width is the sample's own fit, the window is
+    ``|mu| + sigmas * width`` (``profiles.fitted_window_ppm``), never wider
+    than the class's: the model's width, and its centre's farthest distance
+    from zero, so a centre that follows m/z is reached at either end. The
+    mass gate reads the same model.
 
     Only the class's own window is bounded: a window the run config names, or
     one a profile pins (the identity profile's 10 ppm), is the run's choice and
     stands.
 
     :param resolved: The profile resolution.
-    :param sigma_ppm: The width the sample's fit is scored at, where Stage A
-        fitted one; None where it fitted none, which leaves the window alone.
-    :param mu_ppm: The centre the sample is scored at.
+    :param model: The measurement model the search ranks at
+        (``measurement_model.MeasurementModel``); one whose width is the
+        class's leaves the window alone.
     :param sigmas: How many widths from the centre a right formula may sit.
     :param instrument_type: The sample's instrument class.
     :return: The resolution with the bounded window, or ``resolved`` itself.
     """
+    sigma_ppm = model.width_ppm if model.sigma_ppm is not None else None
+    mu_ppm = model.max_abs_centre_ppm()
     if (
         sigma_ppm is None
         or resolved.mz_precision_source != SOURCE_PROFILE
@@ -370,8 +374,13 @@ def with_fitted_window(
         fitted_window={
             "class_mz_precision_ppm": resolved.mz_precision_ppm,
             "sigma_ppm": round(float(sigma_ppm), 4),
-            "mu_ppm": round(float(mu_ppm), 4),
+            "mu_ppm": round(model.scoring_mu_ppm, 4),
+            # How far from zero the centre reaches anywhere, which the window
+            # reaches before any width: the constant centre's distance, or a
+            # trend's at the farther end of its coverage.
+            "centre_reach_ppm": round(float(mu_ppm), 4),
             "sigmas": float(sigmas),
+            "model_version": int(model.version),
         },
     )
 

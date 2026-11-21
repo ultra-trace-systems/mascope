@@ -69,7 +69,6 @@ from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_ISO_CHILD,
     ROLE_M0,
     ROLE_REAGENT,
-    SampleMassAccuracy,
     is_target_library_row,
 )
 from mascope_backend.api.new.peak_assignments.envelope_claims import is_claimed
@@ -80,12 +79,13 @@ from mascope_backend.api.new.peak_assignments.tiers import (
 )
 from mascope_tools.composition.line_model import TRACKING_WIDTHS, tracks
 from mascope_tools.composition.mass_accuracy import (
-    MASS_TREND_ABS_FLOOR_MDA,
     MassTrend,
     fit_mass_accuracy,
     fit_mass_trend,
-    scoring_sigma_ppm,
-    trend_width_floor_ppm,
+)
+from mascope_tools.composition.measurement_model import (
+    MeasurementModel,
+    refit_adopts,
 )
 
 
@@ -189,16 +189,16 @@ CORROBORATED_ISOTOPOLOGUE = "isotopologue"
 
 @dataclass(frozen=True)
 class MassCalibration:
-    """What a run measured of its own mass accuracy, from its own commits.
+    """What the run's corroborated commits and its source's lines measure of
+    its mass axis: the fit the measurement model's v2 is made of
+    (:meth:`as_model`).
 
-    Distinct from :class:`engine.SampleMassAccuracy`, which is what STAGE A
-    measured before the untargeted stage ran and is what that stage was scored
-    at. This is measured afterwards, over everything the run went on to commit
-    and corroborate and the source's own lines the reagent pre-pass claimed, and
-    it is what a committed row's distance is expressed in.
-    The two answer different questions and a run records both: on a sample whose
-    curated library holds two targets the first has nothing to say and the
-    second has thousands of rows.
+    Distinct from Stage A's measurement (``engine.SampleMassAccuracy``, the
+    model's v1), which is fitted before the search on the target library's
+    lines. This is measured afterwards, over everything the run went on to
+    commit and corroborate and the source's own lines the reagent pre-pass
+    claimed: on a sample whose curated library holds two targets the first has
+    nothing to say and the second has thousands of rows.
 
     The centre is :attr:`mu_ppm` unless the run's commits demanded one that
     follows the mass range, which is then :attr:`trend`.
@@ -214,17 +214,6 @@ class MassCalibration:
     #: The source's monoisotopic lines left out of :attr:`anchors` for being
     #: brighter than the calibrant cap (:class:`SourceLineCap`).
     reagent_capped: int = 0
-    #: The width a row's distance is actually judged in, which is this fit's
-    #: own width or the width the SEARCH scored at, whichever is wider. They
-    #: differ because the two describe different populations: the anchors are
-    #: the run's best-corroborated rows and are intrinsically its best measured
-    #: ones (0.06-0.17 ppm on the sparse Orbitrap set), while the rows the gate
-    #: judges rest on the mass fit alone and spread wider (0.36 ppm on the same
-    #: set). Judging the second population by the first condemns its tails by
-    #: construction - measured, it demoted 105 rows the reference confirms on
-    #: that set alone. A row cannot be off calibration for a distance its own
-    #: search was told to accept, so the search's width is the floor.
-    gate_sigma_ppm: float | None = None
     #: The centre as a function of m/z, where the run's commits demanded one.
     trend: MassTrend | None = None
     #: Why the run judged at the constant centre instead, once it had one.
@@ -234,95 +223,36 @@ class MassCalibration:
 
     @property
     def measured(self) -> bool:
-        """Whether a row's distance from this can be stated at all.
-
-        Both numbers are needed and neither substitutes: without a width there
-        is no scale to divide by, and without an offset the distance would be
-        measured from a centre the run never established - which on a sample
-        sitting 1.2 ppm out condemns every row it has.
-        """
+        """Whether both the centre and the width were fitted. Neither
+        substitutes: without a width there is no scale to divide by, and
+        without an offset the distance would be measured from a centre the
+        run never established - which on a sample sitting 1.2 ppm out
+        condemns every row it has."""
         return self.mu_ppm is not None and self.sigma_ppm is not None
 
-    def z_of(self, mz_error_ppm: float | None, mz: float | None = None) -> float | None:
-        """Where a mass error sits in this run's own distribution, in sigma.
+    def as_model(self, v1: MeasurementModel) -> MeasurementModel:
+        """The run's v1 model refitted on this: the v2 model.
 
-        In :attr:`gate_sigma_ppm`, not in the fitted width, so that one number
-        on the row means one thing: a row reads beyond 3 exactly when the gate
-        would cap it for being there.
-
-        Measured from the centre at the row's own m/z where the run has a
-        :attr:`trend`, in that width floored by the trend's absolute floor
-        (:data:`MASS_TREND_ABS_FLOOR_MDA`); from the constant centre otherwise,
-        and for a row whose m/z is unknown.
+        Its width is floored at v1's, the width the search ranked at
+        (``MeasurementModel.width_floor_ppm``): the anchors are the run's best
+        corroborated rows, intrinsically its best measured (0.06-0.17 ppm on
+        the sparse Orbitrap set), while the rows the gate judges rest on the
+        mass fit alone and spread wider (0.36 ppm on the same set). Judged by
+        the first population the second loses its tails by construction - it
+        demoted 105 rows the reference confirms on that set alone - and a row
+        cannot be off calibration for a distance its own search was told to
+        accept.
         """
-        if not self.measured or mz_error_ppm is None:
-            return None
-        error = float(mz_error_ppm)
-        if not np.isfinite(error):
-            return None
-        centre = float(self.mu_ppm)
-        width = float(self.gate_sigma_ppm or self.sigma_ppm)
-        if self.trend is not None and mz is not None:
-            centre = self.trend.centre_ppm(mz)
-            width = max(width, trend_width_floor_ppm(mz))
-        return (error - centre) / width
-
-    def snapshot(self) -> dict:
-        """What the run records about the calibration it judged its rows at."""
-        return {
-            "mu_ppm": None if self.mu_ppm is None else round(float(self.mu_ppm), 4),
-            "sigma_ppm": (
-                None if self.sigma_ppm is None else round(float(self.sigma_ppm), 4)
-            ),
-            "anchors": int(self.anchors),
-            # Of those, the reagent pre-pass's lines: counted apart because they
-            # are not the run's commits, and a source's brightest lines can sit
-            # off its analytes' axis.
-            "reagent_anchors": int(self.reagent_anchors),
-            # And the source's lines left out for their brightness, which
-            # read high (SourceLineCap)
-            "reagent_capped": int(self.reagent_capped),
-            # What the fit measured, and what a row was judged in. Recorded
-            # apart because a reader comparing two runs needs to know whether a
-            # row escaped the cap on its own accuracy or on the search's.
-            "gate_sigma_ppm": (
-                None
-                if self.gate_sigma_ppm is None
-                else round(float(self.gate_sigma_ppm), 4)
-            ),
-            # As on the scoring snapshot: "none" means the run measured nothing,
-            # which is a different statement from measuring zero.
-            "mu_source": "fitted" if self.mu_ppm is not None else "none",
-            "sigma_source": "fitted" if self.sigma_ppm is not None else "none",
-            # Which centre a row's distance was measured from: the line below,
-            # or the constant one, with the rule that refused the line.
-            "centre": (
-                "trend"
-                if self.trend is not None
-                else "constant"
-                if self.measured
-                else "none"
-            ),
-            "trend": None if self.trend is None else _trend_snapshot(self),
-            "trend_refused": self.trend_refused,
-        }
-
-
-def _trend_snapshot(calibration: MassCalibration) -> dict:
-    """The run's record of the line its centre followed."""
-    trend = calibration.trend
-    return {
-        "intercept_ppm": round(trend.intercept_ppm, 4),
-        # The absolute offset, the same at every mass: the centre at an m/z is
-        # intercept_ppm + offset_mda * 1000 / mz, held at mz_lo and mz_hi.
-        "offset_mda": round(trend.offset_mda, 4),
-        "sigma_ppm": round(trend.sigma_ppm, 4),
-        "rows": int(calibration.trend_rows),
-        "kept": int(trend.points),
-        "mz_lo": round(trend.mz_lo, 4),
-        "mz_hi": round(trend.mz_hi, 4),
-        "abs_floor_mda": MASS_TREND_ABS_FLOOR_MDA,
-    }
+        return v1.v2(
+            mu_ppm=self.mu_ppm,
+            sigma_ppm=self.sigma_ppm,
+            commits=self.anchors - self.reagent_anchors,
+            source_lines=self.reagent_anchors,
+            source_capped=self.reagent_capped,
+            trend=self.trend,
+            trend_refused=self.trend_refused,
+            trend_rows=self.trend_rows,
+        )
 
 
 def peak_mz(row: dict) -> float | None:
@@ -945,45 +875,64 @@ def fit_run_mass_accuracy(
 def apply_mass_gate(
     assignments: list[dict],
     *,
-    stage_a_accuracy: SampleMassAccuracy | None = None,
+    model: MeasurementModel,
     fallback_sigma_ppm: float,
     lines: SpectrumLines | None = None,
     reagent_lines: Sequence[dict] = (),
-    calibration: MassCalibration | None = None,
     source_line_cap: SourceLineCap | None = None,
-) -> dict:
+    refit: bool = True,
+    rescore: Callable[[MeasurementModel], int] | None = None,
+) -> tuple[dict, MeasurementModel]:
     """Record every commit's ``mass_z`` and cap the outliers no envelope confirms.
 
     :func:`measure_mass_gate` and then :func:`cap_mass_gate`, for a ledger no
     pass changes the readings of in between. The parameters are
     :func:`measure_mass_gate`'s.
 
-    :return: A JSON-serializable summary for the run's config.
+    :return: A JSON-serializable summary for the run's config, and the model
+        the rows were judged at.
     """
-    summary = measure_mass_gate(
+    summary, judged_at = measure_mass_gate(
         assignments,
-        stage_a_accuracy=stage_a_accuracy,
+        model=model,
         fallback_sigma_ppm=fallback_sigma_ppm,
         lines=lines,
         reagent_lines=reagent_lines,
-        calibration=calibration,
         source_line_cap=source_line_cap,
+        refit=refit,
+        rescore=rescore,
     )
-    return cap_mass_gate(assignments, summary)
+    return cap_mass_gate(assignments, summary), judged_at
+
+
+def committed_mz(
+    assignments: Sequence[dict], corroboration: Mapping[str, str | None]
+) -> list[float]:
+    """The m/z of every committed monoisotopic row, over which a refitted
+    model's centre is compared with the one the rows were scored at."""
+    return [
+        mz
+        for row in assignments
+        if row.get("role") == ROLE_M0
+        and str(row.get("peak_assignment_id")) in corroboration
+        and (mz := peak_mz(row)) is not None
+    ]
 
 
 def measure_mass_gate(
     assignments: list[dict],
     *,
-    stage_a_accuracy: SampleMassAccuracy | None = None,
+    model: MeasurementModel,
     fallback_sigma_ppm: float,
     lines: SpectrumLines | None = None,
     reagent_lines: Sequence[dict] = (),
-    calibration: MassCalibration | None = None,
     source_line_cap: SourceLineCap | None = None,
-) -> dict:
-    """Fit the run's calibration, and record every commit's ``mass_z`` and the
-    strongest tier it may hold on it, lowering none (:func:`cap_mass_gate`).
+    refit: bool = True,
+    rescore: Callable[[MeasurementModel], int] | None = None,
+) -> tuple[dict, MeasurementModel]:
+    """Refit the run's measurement model on its corroborated commits (v2),
+    and record every commit's ``mass_z`` and the strongest tier it may hold on
+    it, lowering none (:func:`cap_mass_gate`).
 
     Modifies the rows' provenance in place, and runs after both stages and both
     pre-passes have built them: the corroboration it reads is a property of the
@@ -997,13 +946,22 @@ def measure_mass_gate(
     nothing it measured, and can run after it and read its ceilings, before
     any cap is applied.
 
-    Nothing is capped for its distance when the run measured no calibration - a
-    sample with too few corroborated commits and source lines to fit an offset
-    and a width has not earned the right to demote anything on it, and standing
-    down is recorded rather than being indistinguishable from a run that found
-    nothing to demote. An isotopologue that does not track its parent is held at
-    ``candidate`` either way, since that compares two of the run's own lines
-    and needs no calibration.
+    The rows are judged at the model they were scored at. Where the refit
+    moves the centre or the width beyond the bound
+    (``measurement_model.refit_adopts``), or the model the rows were scored
+    at was no measurement of the sample's own and the refit is, the run takes
+    v2: ``rescore`` scores every row again at it before any distance is read,
+    so a row's fit score and its ``mass_z`` are read at one centre and one
+    width. Otherwise the model stands, and a run whose commits are too few for
+    v2 is judged at v1.
+
+    Nothing is capped for its distance where the model judged at is not the
+    sample's own (``MeasurementModel.measured``): a sample with too few
+    anchors to fit a centre and a width has not earned the right to demote
+    anything on it, and standing down is recorded rather than being
+    indistinguishable from a run that found nothing to demote. An isotopologue
+    that does not track its parent is held at ``candidate`` either way, since
+    that compares two of the run's own lines and needs no calibration.
 
     Every judged row's record names the strongest tier it may hold here
     (``ceiling``) and why; :func:`cap_mass_gate` lowers the row to it and
@@ -1012,62 +970,57 @@ def measure_mass_gate(
     bar holds whether or not the cap has run yet.
 
     :param assignments: Every row built for this sample, modified in place.
-    :param stage_a_accuracy: What Stage A measured, for the run's record. It is
-        reported beside this fit rather than folded into it: the two are
-        measured over different rows and a reader comparing a run's scoring to
-        its gating needs to see both. It is also half of the width the search
-        scored at, which is the floor on the width this gate judges in.
-    :param fallback_sigma_ppm: The instrument class's width, which is both the
-        other half of that floor and the precision an isotopologue has to track
-        its parent within (``profiles.resolve_fallback_sigma_ppm``).
+    :param model: The measurement model the rows were scored at: the run's v1,
+        or for a path that fits none of its own a decoy's control's or the
+        sample's recorded one.
+    :param fallback_sigma_ppm: The instrument class's width, the precision an
+        isotopologue has to track its parent within
+        (``profiles.resolve_fallback_sigma_ppm``).
     :param lines: The sample's peaks, read for how well each places its line.
         Without them every line is one the class's precision describes, so no
         isotopologue is in doubt: it tracks or it does not.
     :param reagent_lines: The rows the reagent pre-pass built, whose
-        monoisotopic lines anchor the calibration beside the corroborated
-        commits (:func:`fit_run_mass_accuracy`). Read only: a reagent row is
-        no commit, so it is neither judged nor modified.
+        monoisotopic lines anchor the refit beside the corroborated commits
+        (:func:`fit_run_mass_accuracy`). Read only: a reagent row is no
+        commit, so it is neither judged nor modified.
     :param source_line_cap: The calibrant cap those lines are read by
         (:class:`SourceLineCap`), or None for none.
-    :param calibration: A calibration to judge every commit against instead of
-        fitting the run's own: a decoy run's, which is its control's
-        (``decoy.inherited_calibration``), recorded with its gate width. A
-        decoy's commits are wrong formulas on a moved axis, and fitted over
-        them the gate would centre on the shift, or measure nothing and stand
-        down. None fits the run's own, as every other run does.
-    :return: A JSON-serializable summary for the run's config, whose counts
-        of capped rows :func:`cap_mass_gate` fills in.
+    :param refit: Whether the model is refitted on the commits. A decoy's
+        commits are wrong formulas on a moved axis, and fitted over them the
+        model would centre on the shift: a decoy is judged at its control's,
+        and a path that reads the sample's recorded model at that one.
+    :param rescore: Scores every row again at a model the refit adopts, in
+        place, and answers how many it scored; None scores none.
+    :return: A JSON-serializable summary for the run's record, whose counts of
+        capped rows :func:`cap_mass_gate` fills in; and the model the rows
+        were judged at.
     """
-    # The width the untargeted search actually scored a mass error at, rebuilt
-    # from the same two numbers `pattern_scoring_for` builds it from, so the
-    # floor below is the search's own width rather than an approximation of it.
-    search_sigma = scoring_sigma_ppm(
-        None if stage_a_accuracy is None else stage_a_accuracy.sigma_ppm,
-        float(fallback_sigma_ppm),
-    )
     corroboration = corroboration_of(assignments, precision_ppm=fallback_sigma_ppm)
     tracking = isotopologue_tracking(
         assignments, precision_ppm=fallback_sigma_ppm, lines=lines
     )
-    inherited = calibration is not None
-    if calibration is None:
-        calibration = fit_run_mass_accuracy(
+    judged_at = model
+    refit_record: dict | None = None
+    if refit:
+        v2 = fit_run_mass_accuracy(
             assignments, corroboration, reagent_lines, source_line_cap
+        ).as_model(model)
+        adopted, refit_record = refit_adopts(
+            model, v2, committed_mz(assignments, corroboration)
         )
-        if calibration.sigma_ppm is not None:
-            calibration = replace(
-                calibration,
-                gate_sigma_ppm=max(float(calibration.sigma_ppm), float(search_sigma)),
-            )
+        # What the refit measured, adopted or not, so a run that stayed at v1
+        # shows how close v2 came.
+        refit_record["anchors"] = dict(v2.anchors)
+        if v2.measured and not adopted:
+            refit_record["model"] = v2.record()
+        if adopted:
+            judged_at = v2
+            refit_record["rescored"] = 0 if rescore is None else int(rescore(v2))
     summary = {
-        **calibration.snapshot(),
         "cap_z": OFF_CALIBRATION_Z,
         "floor_z": BELOW_ASSIGNABILITY_Z,
-        # What the search judged a mass error at, recorded so the gate width
-        # above can be read as the max of the two it is.
-        "search_sigma_ppm": round(float(search_sigma), 4),
         "precision_ppm": float(fallback_sigma_ppm),
-        "applied": calibration.measured,
+        "applied": judged_at.measured,
         "committed": len(corroboration),
         "corroborated": sum(1 for value in corroboration.values() if value),
         # Rows capped for their distance from the centre.
@@ -1086,17 +1039,12 @@ def measure_mass_gate(
         "capped_in_doubt": 0,
         "capped_untracked": 0,
     }
-    if inherited:
-        # Said only where it holds, so a run that fitted its own records what
-        # it always has.
+    if refit_record is not None:
+        summary["refit"] = refit_record
+    else:
+        # Said only where it holds, so a run that refitted records what it
+        # always has.
         summary["inherited"] = True
-    if stage_a_accuracy is not None:
-        # What Stage A had to score the untargeted search with, beside what the
-        # run went on to be able to measure for itself. On the gate sets these
-        # differ by an order of magnitude in anchor count. The Stage A count is
-        # the target library's matched lines alone, whether or not a reference
-        # mirror is loaded (`engine.target_library_rows`).
-        summary["stage_a_anchors"] = int(stage_a_accuracy.anchors)
 
     for row in assignments:
         row_id = str(row.get("peak_assignment_id"))
@@ -1107,7 +1055,7 @@ def measure_mass_gate(
         followed = tracking.get(row_id)
         if followed is not None:
             gate["tracking"] = followed
-        z = calibration.z_of(row.get("mz_error_ppm"), peak_mz(row))
+        z = judged_at.z_of(row.get("mz_error_ppm"), peak_mz(row))
         provenance = row.setdefault("provenance", {})
         if z is not None:
             provenance["mass_z"] = round(z, 2)
@@ -1118,7 +1066,7 @@ def measure_mass_gate(
             gate["ceiling"] = ceiling
             gate["reason"] = reason
         provenance["mass_gate"] = gate
-    return summary
+    return summary, judged_at
 
 
 def cap_mass_gate(assignments: list[dict], summary: dict | None = None) -> dict:

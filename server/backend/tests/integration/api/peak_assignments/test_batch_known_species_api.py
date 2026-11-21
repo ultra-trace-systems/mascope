@@ -59,8 +59,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     start_run,
 )
 from mascope_backend.api.new.peak_assignments.batch_stages import assign_batch
-from mascope_backend.api.new.peak_assignments.engine import MASS_CALIBRATION_KEY
-from mascope_backend.api.new.peak_assignments.mass_gate import MassCalibration
+from mascope_backend.api.new.peak_assignments.engine import MEASUREMENT_MODEL_KEY
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
@@ -439,7 +438,7 @@ async def test_a_claim_on_a_reading_below_candidate_goes_through_the_caps(
     """Run as a batch stage, the decision's claims are judged again as a run
     judges them (MAS-983): proposed at candidate, the batch's word, and then
     asked every rule a run's reading is asked. Measured 40 ppm off against the
-    mass calibration its sample's run recorded, the gate holds S02's claim
+    measurement model its sample's run recorded, the gate holds S02's claim
     below assignability, where a step that set the tier directly put it at
     candidate; S04, whose run recorded none, keeps the batch's candidate."""
     samples, ids = known_batch["samples"], known_batch["ids"]
@@ -451,9 +450,13 @@ async def test_a_claim_on_a_reading_below_candidate_goes_through_the_caps(
             )
             .values(
                 config={
-                    MASS_CALIBRATION_KEY: MassCalibration(
-                        mu_ppm=0.0, sigma_ppm=0.1, anchors=120, gate_sigma_ppm=0.54
-                    ).snapshot()
+                    MEASUREMENT_MODEL_KEY: {
+                        "version": 2,
+                        "mu_ppm": 0.0,
+                        "mu_source": "fitted",
+                        "sigma_ppm": 0.1,
+                        "fallback_sigma_ppm": 0.54,
+                    }
                 }
             )
         )

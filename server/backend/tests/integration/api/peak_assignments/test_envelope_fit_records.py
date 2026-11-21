@@ -4,9 +4,9 @@ A thin Orbitrap file pools the lines of the files of its batch nearest it in
 acquisition time that share its acquisition settings, each read fresh and never
 from a run of theirs (``envelope_fit.read_pool``), so the curve is the same
 whichever of them ran before it, or at once with it; a formula measured outside
-any run reads the tolerance the sample's latest completed in-app run recorded
-(``envelope_fit.recorded_envelope_tolerance``); the settings are the sample's
-stream's where it points at one, else its file's ``.props``
+any run reads the tolerance the sample's latest completed in-app run recorded,
+with the rest of its model (``service.recorded_measurement``); the settings are
+the sample's stream's where it points at one, else its file's ``.props``
 (``envelope_fit.acquisition_settings``). A decoy run is the sample's for no
 reader: it scored at its control's tolerance (step 5.2).
 """
@@ -21,7 +21,7 @@ import pytest
 import pytest_asyncio
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
-from mascope_backend.api.new.peak_assignments import envelope_fit
+from mascope_backend.api.new.peak_assignments import envelope_fit, service
 from mascope_backend.api.new.peak_assignments.config import IN_APP_ENGINE
 from mascope_backend.api.new.peak_assignments.engine import SampleMassAccuracy
 from mascope_backend.db import (
@@ -41,6 +41,7 @@ from mascope_tools.composition.envelope_tolerance import (
     EnvelopeTolerance,
     fit_envelope_tolerance,
 )
+from mascope_tools.composition.measurement_model import MeasurementModel
 from mascope_tools.composition.profiles import INSTRUMENT_FALLBACK_SIGMA_PPM
 
 
@@ -339,8 +340,9 @@ async def _fit(sample_item_id: str, read_neighbour) -> envelope_fit.RunEnvelopeF
         await fetch_sample(sample_item_id),
         pd.DataFrame(),
         [],
-        mass_accuracy=SampleMassAccuracy(),
-        fallback_sigma_ppm=INSTRUMENT_FALLBACK_SIGMA_PPM["orbi"],
+        model=MeasurementModel.v1(
+            SampleMassAccuracy(), INSTRUMENT_FALLBACK_SIGMA_PPM["orbi"]
+        ),
         read_neighbour=read_neighbour,
     )
 
@@ -428,13 +430,23 @@ async def test_a_thin_file_pools_alike_whatever_order_its_batch_ran_in(sequence)
     } == {False}
 
 
+async def _recorded_tolerance(sample_item_id: str) -> EnvelopeTolerance:
+    """The tolerance a reader outside a run reads a sample's lines at: its
+    model's, the reagent lines claimed as none."""
+    sample = SimpleNamespace(
+        sample_item_id=sample_item_id, filename="sample.raw", polarity="+"
+    )
+    model = await service.recorded_model(sample, reagent_offset=None)
+    return model.envelope_tolerance
+
+
 async def test_outside_a_run_a_line_is_read_at_the_latest_runs_tolerance(batch):
     fitted = _record(0.8, TEN, lines=25)
     await batch.run("S", _record(0.5, TEN, lines=25), minutes_ago=60)
     await batch.run("S", fitted, minutes_ago=30)
     await batch.run("S", _record(0.2, TEN, lines=25), minutes_ago=5, status="running")
 
-    tolerance = await envelope_fit.recorded_envelope_tolerance(batch.samples["S"])
+    tolerance = await _recorded_tolerance(batch.samples["S"])
 
     assert tolerance == EnvelopeTolerance.from_record(fitted)
     assert tolerance.lower[1] == pytest.approx(0.8)
@@ -447,16 +459,13 @@ async def test_outside_a_run_a_decoy_run_s_tolerance_is_never_read(batch):
         "S", _record(0.2, TEN, lines=25), minutes_ago=5, decoy="swap_adducts"
     )
 
-    tolerance = await envelope_fit.recorded_envelope_tolerance(batch.samples["S"])
+    tolerance = await _recorded_tolerance(batch.samples["S"])
 
     assert tolerance == EnvelopeTolerance.from_record(control)
 
 
 async def test_a_sample_no_run_fitted_is_read_at_today_s_numbers(batch):
-    assert (
-        await envelope_fit.recorded_envelope_tolerance(batch.samples["A"])
-        == EnvelopeTolerance()
-    )
+    assert await _recorded_tolerance(batch.samples["A"]) == EnvelopeTolerance()
 
 
 async def test_the_settings_are_the_sample_s_stream_s(batch, monkeypatch):

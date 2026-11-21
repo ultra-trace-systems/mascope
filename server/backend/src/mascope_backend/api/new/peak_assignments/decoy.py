@@ -19,12 +19,15 @@ validates its own releases with the same two arms (its ``scripts/scorecard.py``)
   off them is wrong, except where the swap re-splits an ion the control already
   reads, which the comparison counts apart (``tooling/assignment_compare``).
 
-Every arm runs at the control's calibration, as the reference's do: Stage A's
-fit, the untargeted search, the seeded re-score and the mass gate are scored at
-the centre and width the control recorded, and every fit score at the envelope
-tolerance it recorded, never fitted again on the decoy's own rows. Those rows are wrong formulas on a moved axis, and fitted on them a
-run would measure the shift back out of the spectrum it was put into, or fail
-to calibrate and judge with its mass gate off.
+Every arm runs at the control's measurement model, as the reference's run at
+its calibration: Stage A, the untargeted search, the seeded re-score and the
+mass gate read the model the control recorded, unchanged - the version it
+scored and capped at, its centre, its width and its line-share tolerance -
+never fitted again on the decoy's own rows
+(``measurement_model.MeasurementModel.from_run_config``). Those rows are
+wrong formulas on a moved axis, and fitted on them a run would measure the
+shift back out of the spectrum it was put into, or fail to calibrate and
+judge with its mass gate off.
 
 A shift moves the axis off every formula of the sample, not off the source
 that made the spectrum. The two passes that look for the source's own ions,
@@ -55,26 +58,20 @@ from mascope_backend.api.new.peak_assignments.config import (
 )
 from mascope_backend.api.new.peak_assignments.engine import (
     ENVELOPE_TOLERANCE_KEY,
-    MASS_CALIBRATION_KEY,
-    PATTERN_SCORING_KEY,
+    MEASUREMENT_MODEL_KEY,
 )
 from mascope_backend.api.new.peak_assignments.envelope_fit import (
     RunEnvelopeFit,
     inherited_envelope_fit,
 )
-from mascope_backend.api.new.peak_assignments.mass_gate import MassCalibration
 from mascope_backend.api.new.peak_assignments.profiles import (
     RESOLVED_PROFILE_KEY,
     NamedContext,
     ResolvedProfile,
 )
-from mascope_tools.composition.mass_accuracy import (
-    MU_SOURCE_FITTED,
-    MU_SOURCE_REAGENT,
-    MassTrend,
-    ReagentOffset,
-    SampleMassAccuracy,
-    unwiden_sigma_ppm,
+from mascope_tools.composition.measurement_model import (
+    LEGACY_SCORING_KEY,
+    MeasurementModel,
 )
 from mascope_tools.composition.mechanism_notation import mechanism_key
 from mascope_tools.composition.profiles import get_reagent_profile
@@ -105,8 +102,8 @@ DECOY_ADDUCTS: dict[str, tuple[str, ...]] = {
 #: Why a decoy cannot run, as the refusal names it.
 REFUSED_NO_CONTROL = "the sample has no completed run of this engine to be a decoy of"
 REFUSED_NO_SCORING = (
-    "its control recorded no scoring to inherit (a run with no untargeted "
-    "stage, or one from before the record)"
+    "its control recorded no measurement model to inherit (a run from before "
+    "the one record)"
 )
 
 
@@ -120,10 +117,9 @@ class DecoyPlan:
 
     :param decoy: The arm, as the request named it.
     :param control_run_id: The run it is a decoy of.
-    :param accuracy: Stage A's measurement as the control made it, which every
-        stage of the decoy scores at instead of fitting its own.
-    :param calibration: The mass gate's calibration as the control measured
-        it, which the decoy's gate judges every commit against.
+    :param model: The measurement model the control scored and capped at,
+        which every stage of the decoy scores and caps at instead of fitting
+        its own.
     :param envelope: The envelope tolerance the control scored a line's share
         at, which every fit score of the decoy reads instead of one fitted on
         its own commits (``envelope_fit.inherited_envelope_fit``).
@@ -141,8 +137,7 @@ class DecoyPlan:
 
     decoy: PeakAssignmentDecoy
     control_run_id: str
-    accuracy: SampleMassAccuracy
-    calibration: MassCalibration
+    model: MeasurementModel
     envelope: RunEnvelopeFit
     window_ppm: float | None = None
     mechanisms: tuple[SimpleNamespace, ...] = ()
@@ -154,10 +149,11 @@ class DecoyPlan:
         return {
             "arm": self.decoy.arm,
             "control_run_id": self.control_run_id,
-            # What every stage was scored at: always the control's, so a
-            # reader comparing the arm with its control compares one
+            # What every stage was scored at: always the control's model, so
+            # a reader comparing the arm with its control compares one
             # calibration with itself.
             "calibration": "control",
+            "model_version": int(self.model.version),
             # Where the channels' carriers and the reagent lines were looked
             # for: on the axis as stored, so the arm opens and claims what its
             # control did. A decoy recorded without it looked on the moved one.
@@ -262,92 +258,22 @@ def decoy_window_ppm(control_config: dict) -> float | None:
     """
     windows = [
         (control_config.get(RESOLVED_PROFILE_KEY) or {}).get("mz_precision_ppm"),
-        (control_config.get(PATTERN_SCORING_KEY) or {}).get("mz_tolerance_ppm"),
+        _recorded_window(control_config),
     ]
     known = [float(window) for window in windows if window is not None]
     return max(known) if known else None
 
 
-def inherited_accuracy(scoring: dict) -> SampleMassAccuracy:
-    """Stage A's measurement as a control's ``pattern_scoring`` recorded it.
-
-    Rebuilt so that every number a stage reads off it is the control's: the
-    offset it scored at and where that came from (the target library's fit,
-    the reagent lines', or none), the width, and the anchors it counted.
-
-    :param scoring: The control's ``pattern_scoring`` snapshot.
-    :return: The measurement, as the decoy's stages take it.
-    """
-    mu_source = scoring.get("mu_source")
-    mu_ppm = scoring.get("mu_ppm")
-    reagent = None
-    if mu_source == MU_SOURCE_REAGENT:
-        # The control scored at the reagent lines' offset: it stood in beyond
-        # the width, which is the one case a run takes it.
-        reagent = ReagentOffset(
-            mu_ppm=float(mu_ppm),
-            lines=int(scoring.get("reagent_lines") or 0),
-            beyond_width=True,
-        )
-    elif "reagent_lines" in scoring:
-        # Recorded, and not scored at: inside the width, or too few to read.
-        reagent_mu = scoring.get("reagent_mu_ppm")
-        reagent = ReagentOffset(
-            mu_ppm=None if reagent_mu is None else float(reagent_mu),
-            lines=int(scoring.get("reagent_lines") or 0),
-        )
-    sigma = scoring.get("sigma_ppm")
-    return SampleMassAccuracy(
-        mu_ppm=float(mu_ppm) if mu_source == MU_SOURCE_FITTED else None,
-        sigma_ppm=(
-            unwiden_sigma_ppm(sigma)
-            if scoring.get("sigma_source") == "fitted" and sigma is not None
-            else None
-        ),
-        anchors=int(scoring.get("fitted_anchors") or 0),
-        reagent=reagent,
-        anchor_ions=int(scoring.get("fitted_anchor_ions") or 0),
+def _recorded_window(control_config: dict) -> float | None:
+    """The window the control matched every predicted line in, as its model's
+    record says (``engine.scoring_snapshot``), or its older scoring snapshot."""
+    model = control_config.get(MEASUREMENT_MODEL_KEY)
+    scoring = (
+        model.get("scoring")
+        if isinstance(model, dict)
+        else control_config.get(LEGACY_SCORING_KEY)
     )
-
-
-def inherited_calibration(snapshot: dict) -> MassCalibration:
-    """The mass gate's calibration as a control's ``mass_calibration`` recorded it.
-
-    The centre, the widths and the line the centre followed, so a commit of
-    the decoy sits where it would have sat in the control. A control whose gate
-    measured nothing gives a calibration that measures nothing, and the decoy's
-    gate stands down as the control's did.
-
-    :param snapshot: The control's ``mass_calibration`` record.
-    :return: The calibration, as the decoy's gate takes it.
-    """
-
-    def number(key: str, source: dict = snapshot) -> float | None:
-        value = source.get(key)
-        return None if value is None else float(value)
-
-    trend_record = snapshot.get("trend")
-    trend = None
-    if isinstance(trend_record, dict):
-        trend = MassTrend(
-            intercept_ppm=float(trend_record["intercept_ppm"]),
-            offset_mda=float(trend_record["offset_mda"]),
-            sigma_ppm=float(trend_record["sigma_ppm"]),
-            points=int(trend_record.get("kept") or 0),
-            mz_lo=float(trend_record["mz_lo"]),
-            mz_hi=float(trend_record["mz_hi"]),
-        )
-    return MassCalibration(
-        mu_ppm=number("mu_ppm"),
-        sigma_ppm=number("sigma_ppm"),
-        anchors=int(snapshot.get("anchors") or 0),
-        reagent_anchors=int(snapshot.get("reagent_anchors") or 0),
-        reagent_capped=int(snapshot.get("reagent_capped") or 0),
-        gate_sigma_ppm=number("gate_sigma_ppm"),
-        trend=trend,
-        trend_refused=snapshot.get("trend_refused"),
-        trend_rows=int((trend_record or {}).get("rows") or 0),
-    )
+    return (scoring or {}).get("mz_tolerance_ppm")
 
 
 def declared_channels(profile_name: str, mode_notations: Iterable[str]) -> set[str]:
@@ -457,9 +383,14 @@ def plan_decoy(
             f"a decoy runs at its control's settings, and {', '.join(differ)} "
             f"differ from run '{control_run_id}'"
         )
-    scoring = control_config.get(PATTERN_SCORING_KEY)
-    calibration = control_config.get(MASS_CALIBRATION_KEY)
-    if not isinstance(scoring, dict) or not isinstance(calibration, dict):
+    # Its own record alone: a control from before the one record kept the
+    # model it capped at apart from the one it scored at, and a decoy scores
+    # and caps at one.
+    model = MeasurementModel.from_record(
+        control_config.get(MEASUREMENT_MODEL_KEY),
+        control_config.get(ENVELOPE_TOLERANCE_KEY),
+    )
+    if model is None:
         raise DecoyRefused(REFUSED_NO_SCORING)
     window = None
     if decoy.mz_shift_ppm is not None:
@@ -475,8 +406,7 @@ def plan_decoy(
     return DecoyPlan(
         decoy=decoy,
         control_run_id=control_run_id,
-        accuracy=inherited_accuracy(scoring),
-        calibration=inherited_calibration(calibration),
+        model=model,
         envelope=inherited_envelope_fit(control_config.get(ENVELOPE_TOLERANCE_KEY)),
         window_ppm=window,
         named_context=recorded_named_context(control_config),

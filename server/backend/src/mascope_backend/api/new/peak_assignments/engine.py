@@ -73,12 +73,16 @@ from mascope_tools.composition.mass_accuracy import (
     fit_sample_mass_accuracy,
     mass_accuracy_anchors,
 )
+from mascope_tools.composition.measurement_model import (
+    RECORD_KEY as MODEL_RECORD_KEY,
+)
+from mascope_tools.composition.measurement_model import MeasurementModel
 from mascope_tools.composition.models import (
     CompositionSearchConfig,
     HeuristicFilterConfig,
     PatternScoring,
 )
-from mascope_tools.composition.scoring import pattern_scoring_for_sample
+from mascope_tools.composition.scoring import pattern_scoring_for_model
 from mascope_tools.composition.utils import (
     calculate_mass,
     formula_identity,
@@ -139,28 +143,22 @@ UNTARGETED_NO_MATCH = "---"
 # stays as the backstop for a source whose profile has no library.
 UNTARGETED_IONIZATION = "()"
 
-#: Key under which a run records what the untargeted stage judged a mass error
-#: against: the width, the offset, whether each was fitted on this sample or
-#: taken from a stand-in, and how many known ions they were fitted from. On the
-#: run's config beside the resolved profile, because it is the
-#: difference between a candidate a whole ppm off being refused and being
-#: elected, and nothing else on a row would ever say which happened.
-PATTERN_SCORING_KEY = "pattern_scoring"
-
-#: Key under which a run records the mass calibration it fitted from its own
-#: corroborated commits and its source's own lines, and what that gating cost:
-#: the offset and width every committed row's ``mass_z`` is measured in, how
-#: many rows anchored them, and how many uncorroborated rows the distance
-#: capped. Separate from :data:`PATTERN_SCORING_KEY` because the two are
-#: measured over different rows at different points - that one is what Stage A
-#: had to score the search with, this one is what the finished ledger turned
-#: out to be able to measure.
-MASS_CALIBRATION_KEY = "mass_calibration"
+#: Key under which a run records its measurement model
+#: (``measurement_model.MeasurementModel``): the version it scored and capped
+#: at, its centre (a line that follows m/z where the commits demanded one), the
+#: width a mass error was judged in and where it came from, the anchors it was
+#: fitted on by kind, what the refit on the commits measured and whether the
+#: run took it, the v1 the search ranked at, how a line was matched, and what
+#: the mass gate capped (:func:`measurement_model_record`). One record, because
+#: the score and the caps read one model: a row's fit and its ``mass_z`` are
+#: read at one centre and one width. The line-share tolerance the model reads is
+#: recorded beside it, under :data:`ENVELOPE_TOLERANCE_KEY`.
+MEASUREMENT_MODEL_KEY = MODEL_RECORD_KEY
 
 #: Key under which a run records what its own channels corroborated: the
 #: mechanisms it searched, which of them could be donating a reported nitrogen,
 #: how many committed neutrals a second channel confirmed, and what the reagent-N
-#: rule capped. Separate from :data:`MASS_CALIBRATION_KEY` because the evidence
+#: rule capped. Separate from :data:`MEASUREMENT_MODEL_KEY` because the evidence
 #: is of a different kind - that one is where a row sits on the mass axis, this
 #: one is how many independent chemistries saw the same neutral.
 CROSS_CHANNEL_KEY = "cross_channel"
@@ -320,8 +318,8 @@ def is_reference_mirror_row(assignment: dict) -> bool:
 #: lines each - a large carbon count, S, Cl, Br - would calibrate the run on
 #: themselves: their error the offset, their lines' agreement the width, and
 #: every other row of both stages judged there. As many ions as the fit asks
-#: for lines, which is what the seeded chain asks too
-#: (``seeded_scoring.SEEDED_FIT_MIN_IONS``).
+#: for lines. Stage A is the only frame a model is fitted on before the
+#: commits (``measurement_model.MODEL_V1``); the seeded chain fits none.
 #:
 #: Measured on the gate before it was set. Two sets fitted on fewer: the dense
 #: uronium Orbitrap set on lines of five ions in each of its six samples, and
@@ -358,8 +356,7 @@ def sample_mass_accuracy(
         however many lines they matched. One ion's lines share that ion's own
         mass error, so a bright ion matching eight of them alone would fit its
         own error as the offset and the floor as the width. Stage A asks for
-        :data:`STAGE_A_FIT_MIN_IONS` and the seeded chain for
-        ``seeded_scoring.SEEDED_FIT_MIN_IONS``. None counts lines alone.
+        :data:`STAGE_A_FIT_MIN_IONS`. None counts lines alone.
     :return: The fitted offset and width, how many of the target library's
         matched lines they were fitted from and of how many ions, and the
         reagent lines' reading.
@@ -387,61 +384,42 @@ def sample_mass_accuracy(
 
 def pattern_scoring_for(
     match_params,
-    mass_accuracy: SampleMassAccuracy,
-    instrument_type: str | None,
+    model: MeasurementModel,
     resolution: Callable[[float], float] | None = None,
-    envelope_tolerance: EnvelopeTolerance | None = None,
 ) -> PatternScoring:
-    """How the untargeted stage scores this sample's isotope envelopes.
+    """How the untargeted stage scores this sample's isotope envelopes: at
+    the run's measurement model.
 
     Everything the composition finder needs to judge a candidate as a
     measurement of THIS sample rather than of a generic Orbitrap: the width its
-    mass errors actually have, the offset they sit at, the window a line may be
+    mass errors actually have, the centre they sit at (read at each line's m/z
+    where it follows one), the line-share tolerance, the window a line may be
     matched in, and how deep an envelope may be predicted. The derivation is
-    the library's (:func:`scoring.pattern_scoring_for_sample`), so an outside
+    the library's (:func:`scoring.pattern_scoring_for_model`), so an outside
     engine reading the sample through the SDK computes the same object from
-    the same numbers; this names what the engine hands it.
+    the run's record; this names what the engine hands it.
 
-    The width comes from Stage A: the fitted spread of the target library's own
-    matched isotopologues, which is the instrument's measured accuracy on this
-    sample. A reference mirror's lines are not part of that fit
-    (:func:`target_library_rows`), because on a TOF they measure the match
-    window. It is widened by ``PRED_SIGMA_PPM`` exactly as Stage A's own fit
-    widens it, so a Stage B row and a Stage A row are judged at one width.
-
-    Where Stage A matched too few known ions to fit anything, the instrument
-    class's own accuracy stands in (``profiles.resolve_fallback_sigma_ppm``).
-    That is a weak substitute for a measurement and the only honest one
-    available: judging a bromide set whose curated library holds two targets at
-    the 5 ppm match tolerance instead measures nothing, because on a spectrum
-    accurate to 0.3 ppm every candidate the search enumerated is then equally
-    good and the election falls to the envelope alone. The offset has a
-    stand-in of its own there, the reagent pre-pass's lines
-    (:attr:`SampleMassAccuracy.scoring_mu_ppm`), and no offset where nothing
-    measured one - the same rule `ion_scores_v2` applies to Stage A, so both
-    stages of one sample are corrected by the same amount or by neither.
+    In a run the model is its v1 (``measurement_model.MODEL_V1``): the fitted
+    spread of the target library's own matched isotopologues, which is the
+    instrument's measured accuracy on this sample, and its centre, with the
+    instrument class's width and the reagent lines' centre standing in where
+    the library matched too few ions. A reference mirror's lines are not part
+    of that fit (:func:`target_library_rows`), because on a TOF they measure
+    the match window. Judging a bromide set whose curated library holds two
+    targets at the 5 ppm match tolerance instead would measure nothing: on a
+    spectrum accurate to 0.3 ppm every candidate the search enumerated is then
+    equally good and the election falls to the envelope alone. A decoy ranks
+    at its control's model, a batch search at the sample's recorded one.
 
     :param match_params: The sample's resolved match parameters.
-    :param mass_accuracy: What Stage A measured of this sample's mass error.
-    :param instrument_type: The sample's instrument class (``"orbi"``,
-        ``"tof"``), whose width stands in where Stage A measured none.
+    :param model: The measurement model the run scores at.
     :param resolution: The file's resolving power as a function of m/z, or None
         where the run could not read one. With it, the predicted lines one peak
         of the file cannot separate are scored as one line, the sum of their
         shares: on a TOF the 13C peak also holds the 15N, 2H and 17O lines.
-    :param envelope_tolerance: How well the run measures an isotope line's
-        share, which Stage A fitted on its committed envelopes, so the search
-        ranks a candidate's lines at the tolerance its row is then tiered at;
-        None scores at today's numbers.
     :return: The scoring parameters for this sample's search.
     """
-    return pattern_scoring_for_sample(
-        mass_accuracy,
-        instrument_type,
-        match_params,
-        resolution,
-        envelope_tolerance=envelope_tolerance,
-    )
+    return pattern_scoring_for_model(model, match_params, resolution)
 
 
 #: The fewest peaks with a signal-to-noise over which the run records how the
@@ -496,45 +474,18 @@ def signal_to_noise_snapshot(peaks: pd.DataFrame) -> dict:
     }
 
 
-def pattern_scoring_snapshot(
-    scoring: PatternScoring,
-    mass_accuracy: "SampleMassAccuracy",
-    peaks: pd.DataFrame | None = None,
+def scoring_snapshot(
+    scoring: PatternScoring, peaks: pd.DataFrame | None = None
 ) -> dict:
-    """What a run records about the width it judged a mass error against.
-
-    The first gate round of step 2.1 turned on exactly this and the run could
-    not answer it: whether the width was the sample's own or the instrument
-    class's is the difference between a candidate a whole ppm off being refused
-    and being elected, and the row it decided says nothing about it.
+    """What a run records about how it matched a line, beside its model.
 
     :param scoring: The scoring parameters the search actually used.
-    :param mass_accuracy: What Stage A measured, and from how many anchors.
     :param peaks: The peak frame the search scored over, whose
         signal-to-noise is recorded (:func:`signal_to_noise_snapshot`);
         None records nothing about it.
-    :return: A JSON-serializable dict for the run's config.
+    :return: A JSON-serializable dict for the run's model record.
     """
     snapshot = {
-        "sigma_ppm": round(float(scoring.sigma_ppm), 4),
-        "mu_ppm": round(float(scoring.mu_ppm), 4),
-        # "fitted" means this sample measured its own width; "instrument_class"
-        # means too few known ions matched to fit one and the class stood in.
-        "sigma_source": (
-            "fitted" if mass_accuracy.sigma_ppm is not None else "instrument_class"
-        ),
-        # And the same question about the offset, which has a stand-in of its
-        # own: "reagent" means the library fitted none and the reagent
-        # pre-pass's lines showed one beyond the width; "none" means the run
-        # corrected by zero because it measured nothing, not because it
-        # measured zero.
-        "mu_source": mass_accuracy.mu_source,
-        # The target library's matched lines the width was fitted over; a
-        # reference mirror's are never counted, whether or not one is loaded.
-        "fitted_anchors": int(mass_accuracy.anchors),
-        # And the ions those lines belong to, which is why a sample with enough
-        # lines can still have fitted nothing: they came from too few ions.
-        "fitted_anchor_ions": int(mass_accuracy.anchor_ions),
         "mz_tolerance_ppm": float(scoring.mz_tolerance_ppm),
         "abundance_floor": float(scoring.abundance_floor),
         # Whether the envelope was predicted at the file's resolving power, one
@@ -542,18 +493,46 @@ def pattern_scoring_snapshot(
         # the run could read no resolution for the file.
         "lines_merged_at_resolution": scoring.resolution is not None,
     }
-    reagent = mass_accuracy.reagent
-    if reagent is not None:
-        # What the reagent lines said whether or not the run scored at it, so a
-        # sample left uncorrected shows whether its lines were inside the width
-        # or too few to read.
-        snapshot["reagent_lines"] = int(reagent.lines)
-        snapshot["reagent_mu_ppm"] = (
-            None if reagent.mu_ppm is None else round(float(reagent.mu_ppm), 4)
-        )
     if peaks is not None:
         snapshot.update(signal_to_noise_snapshot(peaks))
     return snapshot
+
+
+def measurement_model_record(
+    model: MeasurementModel,
+    *,
+    ranked_at: MeasurementModel | None = None,
+    scoring: dict | None = None,
+    gate: dict | None = None,
+) -> dict:
+    """The run's one record of its measurement model (:data:`MEASUREMENT_MODEL_KEY`).
+
+    The model the rows were scored and capped at
+    (``MeasurementModel.record``), which a reader outside the run rebuilds
+    (``MeasurementModel.from_run_config``); where that is v2, the v1 the
+    search ranked at beside it; how a line was matched
+    (:func:`scoring_snapshot`); and what the mass gate measured and capped at
+    it, with what its refit on the commits measured (``mass_gate``).
+
+    The first gate round of step 2.1 turned on exactly this and the run could
+    not answer it: whether the width was the sample's own or the instrument
+    class's is the difference between a candidate a whole ppm off being refused
+    and being elected, and the row it decided says nothing about it.
+
+    :param model: The model the rows were scored and capped at.
+    :param ranked_at: The model the search ranked at, where it is not ``model``.
+    :param scoring: How the run matched a line; None where it recorded none.
+    :param gate: The mass gate's summary; None for a pass with no gate.
+    :return: A JSON-serializable record.
+    """
+    record = model.record()
+    if ranked_at is not None and ranked_at.version != model.version:
+        record["ranked_at"] = ranked_at.record()
+    if scoring is not None:
+        record["scoring"] = scoring
+    if gate is not None:
+        record["gate"] = gate
+    return record
 
 
 def tier_for_evidence(
@@ -1159,7 +1138,7 @@ def score_ions_by_fit(
     reagent_offset: ReagentOffset | None = None,
     min_anchor_ions: int | None = None,
     envelope_tolerance: EnvelopeTolerance | None = None,
-    inherited_accuracy: SampleMassAccuracy | None = None,
+    model: MeasurementModel | None = None,
 ) -> pd.DataFrame:
     """Set each isotopologue's ``match_score`` to its ion's fit score (Stage A).
 
@@ -1240,15 +1219,15 @@ def score_ions_by_fit(
         (:mod:`~mascope_backend.api.new.peak_assignments.envelope_fit`); None
         scores at today's 5% and threshold of 3, as Stage A's first pass does
         before the fit exists.
-    :param inherited_accuracy: A measurement the frame is scored at instead of
-        one fitted off it. A decoy run's, which is its control's
-        (:mod:`decoy`): its own rows are wrong formulas on a moved axis, and
-        fitted on them the score would centre on the shift. And Stage A's
-        second pass's, which is its first pass's
-        (``service._stage_a_assignments``): the fitted tolerance can admit
-        lines the first pass's gate turned away, and fitted on them the
-        width and offset would move off the ones the run records. None fits
-        the frame, as every other pass does.
+    :param model: The measurement model the frame is scored at instead of
+        one fitted off it (:func:`score_frame_at`): its centre at each line's
+        m/z, its width and its line-share tolerance, which then replaces
+        ``envelope_tolerance``. Every pass but Stage A's first hands one: the
+        run's v1 to Stage A's second pass and the seeded re-score, a decoy's
+        control's (:mod:`decoy`), whose own rows are wrong formulas on a moved
+        axis, and the recorded one to every reader outside a run. None fits
+        the frame: Stage A's first pass, which is where v1 is fitted
+        (``measurement_model.MODEL_V1``).
     :return: The gated frame with every ion's fit as its rows' ``match_score``.
     """
     if match_isotope_df.empty or not _FIT_SCORE_COLS.issubset(match_isotope_df.columns):
@@ -1269,23 +1248,51 @@ def score_ions_by_fit(
     # the width.
     # The offset is None where neither measured one; the scorer reads that as
     # an uncorrected sample rather than a centred one.
-    accuracy = (
-        inherited_accuracy
-        if inherited_accuracy is not None
-        else sample_mass_accuracy(
-            df, reagent=reagent_offset, min_anchor_ions=min_anchor_ions
+    if model is None:
+        model = MeasurementModel.v1(
+            sample_mass_accuracy(
+                df, reagent=reagent_offset, min_anchor_ions=min_anchor_ions
+            ),
+            fallback_sigma_ppm,
+            envelope_tolerance,
         )
-    )
-    sigma = accuracy.sigma_ppm if accuracy.sigma_ppm is not None else fallback_sigma_ppm
-    mu = accuracy.scoring_mu_ppm
-    # Every ion at once, the fit `ion_score_v2` gives each one alone.
     # Return the GATED frame (not a fresh copy of the input): the zeroed intensities
     # are the record of which pairings this scoring counted as absent, and the
     # ownership guard downstream reads exactly that.
-    df["match_score"] = ion_scores_v2(
-        df, "target_ion_id", sigma_ppm=sigma, mu=mu, tolerance=envelope_tolerance
-    )
+    df["match_score"] = score_frame_at(df, model)
     return df
+
+
+def score_frame_at(scored_df: pd.DataFrame, model: MeasurementModel) -> pd.Series:
+    """Every ion's fit in a gated frame, at a measurement model.
+
+    Every ion at once, the fit ``ion_score_v2`` gives each one alone: each
+    line's mass error read from the model's centre at the line's predicted
+    m/z, in the model's width (``MeasurementModel.fit_sigma_ppm``, which the
+    fit widens back to ``MeasurementModel.width_ppm``), and its share at the
+    model's tolerance. The mass gate reads a row's distance from the same
+    centre in the same width (``MeasurementModel.z_of``).
+
+    :param scored_df: A gated frame, an isotopologue the gate turned away
+        already at zero intensity (:func:`score_ions_by_fit`).
+    :param model: The model.
+    :return: Each row's ion's fit, on the frame's index.
+    """
+    if scored_df.empty:
+        return pd.Series(dtype=float, index=scored_df.index)
+    mz_column = "mz" if "mz" in scored_df.columns else "sample_peak_mz"
+    centres = (
+        model.centres_ppm(pd.to_numeric(scored_df[mz_column], errors="coerce"))
+        if model.trend is not None and mz_column in scored_df.columns
+        else model.scoring_mu_ppm
+    )
+    return ion_scores_v2(
+        scored_df,
+        "target_ion_id",
+        sigma_ppm=model.fit_sigma_ppm,
+        mu=centres,
+        tolerance=model.envelope_tolerance,
+    )
 
 
 def _row_reference_identities(row) -> list | None:
@@ -1978,6 +1985,7 @@ def invert_matches_to_peak_assignments(
 def _fold_adduct_corroboration(
     m0_items: list[tuple[dict, str, str]],
     weights: "dict | None",
+    tier_of: Callable[[dict], str] | None = None,
 ) -> None:
     """Fold adduct co-occurrence into each M0 winner's ``p_correct`` in place (P3).
 
@@ -1985,14 +1993,19 @@ def _fold_adduct_corroboration(
     we add the measured log-odds of the OTHER adducts its compound was seen via (see
     ``apply_corroboration``). Only confident (assigned/candidate) winners count toward the
     co-occurrence set, so a low-confidence sibling can't manufacture corroboration. No-op when the
-    calibration carries no weights. Records the co-occurrence + boost in provenance for the UI."""
+    calibration carries no weights. Records the co-occurrence + boost in provenance for the UI.
+
+    ``tier_of`` reads the tier a winner counts at; left out, the tier it was built at, which is
+    the band its evidence earned (:func:`read_p_correct_again` passes that band at the moved
+    evidence)."""
     if not weights or not m0_items:
         return
     # Keyed by mechanism once for the fold rather than once per winner.
     weights = corroboration_by_mechanism(weights)
+    tier_of = tier_of or (lambda assignment: assignment["tier"])
     adducts_by_compound: dict[str, set[str]] = {}
     for assignment, compound_id, notation in m0_items:
-        if assignment["tier"] in (TIER_ASSIGNED, TIER_CANDIDATE):
+        if tier_of(assignment) in (TIER_ASSIGNED, TIER_CANDIDATE):
             adducts_by_compound.setdefault(compound_id, set()).add(notation)
     for assignment, compound_id, notation in m0_items:
         all_adducts = adducts_by_compound.get(compound_id, set())
@@ -2008,6 +2021,84 @@ def _fold_adduct_corroboration(
             "n_adducts": len(all_adducts),
             "boost": round(p1 - p0, 4) if (p0 is not None and p1 is not None) else None,
         }
+
+
+def read_p_correct_again(
+    rows: list[dict],
+    moved_ids: set[str],
+    calibration: Calibration,
+    notation_by_mechanism: dict[str, str],
+    *,
+    candidate_threshold: float,
+    assigned_threshold: float,
+) -> int:
+    """Read the rows' ``p_correct`` again where a re-score moved their
+    evidence, in place, as Stage A reads it
+    (:func:`invert_matches_to_peak_assignments`), the one stage that writes
+    one.
+
+    A moved row's ``p_correct`` is the curve's at its new evidence. The adduct
+    corroboration is then folded again over every monoisotopic row of each
+    compound a moved row names (:func:`_fold_adduct_corroboration`), each one
+    counting at the band its evidence now earns, as Stage A counts it at the
+    band it was built at: a sibling that fell out of the confident bands no
+    longer corroborates, and one that rose into them does. A row of another
+    compound keeps its number as Stage A wrote it.
+
+    :param rows: The run's rows.
+    :param moved_ids: The rows whose evidence the re-score moved.
+    :param calibration: The curve Stage A read the rows' ``p_correct`` off.
+    :param notation_by_mechanism: The notation each mechanism's adduct was
+        folded under, as Stage A's frame names it.
+    :param candidate_threshold: The run's candidate band.
+    :param assigned_threshold: The run's assigned band.
+    :return: How many rows took a new ``p_correct``.
+    """
+    stage_a = [
+        row
+        for row in rows
+        if row.get("role") in (ROLE_M0, ROLE_ISO_CHILD)
+        and isinstance(row.get("provenance"), dict)
+        and row["provenance"].get("p_correct") is not None
+        and row["provenance"].get("evidence") is not None
+    ]
+
+    def compound(row: dict) -> str | None:
+        return _str_or_none(row.get("target_compound_id"))
+
+    touched = {
+        compound(row)
+        for row in stage_a
+        if str(row.get("peak_assignment_id")) in moved_ids
+        and row["role"] == ROLE_M0
+        and compound(row) is not None
+    }
+    read: list[dict] = []
+    folded: list[tuple[dict, str, str]] = []
+    for row in stage_a:
+        moved = str(row.get("peak_assignment_id")) in moved_ids
+        refold = row["role"] == ROLE_M0 and compound(row) in touched
+        if not (moved or refold):
+            continue
+        provenance = row["provenance"]
+        provenance["p_correct"] = round(
+            float(apply_calibration(float(provenance["evidence"]), calibration)), 4
+        )
+        provenance.pop("corroboration", None)
+        read.append(row)
+        notation = notation_by_mechanism.get(str(row.get("ionization_mechanism_id")))
+        if refold and notation:
+            folded.append((row, str(compound(row)), notation))
+
+    def earned(row: dict) -> str:
+        return tier_for_evidence(
+            float(row["provenance"]["evidence"]),
+            candidate_threshold=candidate_threshold,
+            assigned_threshold=assigned_threshold,
+        )
+
+    _fold_adduct_corroboration(folded, calibration.corroboration_weights, earned)
+    return len(read)
 
 
 def record_stage_a_same_ion_readings(

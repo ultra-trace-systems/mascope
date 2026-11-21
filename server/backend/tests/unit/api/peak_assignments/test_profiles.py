@@ -30,6 +30,8 @@ from mascope_backend.api.new.peak_assignments.profiles import (
 )
 from mascope_backend.api.new.peak_assignments.schemas import ProfilePreviewQueryParams
 from mascope_tools.composition import profiles as presets
+from mascope_tools.composition.mass_accuracy import MassTrend, unwiden_sigma_ppm
+from mascope_tools.composition.measurement_model import MeasurementModel
 
 
 UREA = ["[M+H]+", "[M+CH4N2O+H]+"]
@@ -302,9 +304,18 @@ class TestTheFittedWindow:
             polarity="-",
         )
 
-    def bound(self, resolved, sigma=1.0, mu=-1.0, instrument="tof"):
+    def bound(self, resolved, sigma=1.0, mu=-1.0, instrument="tof", trend=None):
+        """Bound at a model whose width is ``sigma`` (None: the class's stands
+        in) and whose centre is ``mu``."""
+        model = MeasurementModel(
+            mu_ppm=mu,
+            mu_source="fitted",
+            sigma_ppm=None if sigma is None else unwiden_sigma_ppm(sigma),
+            fallback_sigma_ppm=5.0,
+            trend=trend,
+        )
         return with_fitted_window(
-            resolved, sigma_ppm=sigma, mu_ppm=mu, sigmas=6.0, instrument_type=instrument
+            resolved, model=model, sigmas=6.0, instrument_type=instrument
         )
 
     def test_a_tofs_window_is_bounded_and_says_so(self):
@@ -316,8 +327,27 @@ class TestTheFittedWindow:
             "class_mz_precision_ppm": 10.0,
             "sigma_ppm": 1.0,
             "mu_ppm": -1.0,
+            "centre_reach_ppm": 1.0,
             "sigmas": 6.0,
+            "model_version": 1,
         }
+
+    def test_a_centre_that_follows_mz_is_reached_at_either_end(self):
+        # A centre at -0.5 ppm at m/z 400 and -2.0 at m/z 100: the window
+        # reaches the farther end before it reaches any width.
+        trend = MassTrend(
+            intercept_ppm=0.0,
+            offset_mda=-0.2,
+            sigma_ppm=0.5,
+            points=40,
+            mz_lo=100.0,
+            mz_hi=400.0,
+        )
+        bounded = self.bound(self.resolve(), sigma=1.0, mu=-0.8, trend=trend)
+        assert bounded.mz_precision_ppm == pytest.approx(2.0 + 6.0)
+        assert bounded.snapshot()["fitted_window"]["centre_reach_ppm"] == pytest.approx(
+            2.0
+        )
 
     def test_nothing_fitted_leaves_the_class_window(self):
         resolved = self.resolve()

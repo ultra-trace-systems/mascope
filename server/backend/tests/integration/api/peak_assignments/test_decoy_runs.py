@@ -12,7 +12,6 @@ decoy they cannot run before any run exists.
 """
 
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -27,22 +26,19 @@ from mascope_backend.api.new.peak_assignments.config import (
     PeakAssignmentDecoy,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
-    MASS_CALIBRATION_KEY,
-    PATTERN_SCORING_KEY,
-    pattern_scoring_for,
-    pattern_scoring_snapshot,
+    MEASUREMENT_MODEL_KEY,
+    measurement_model_record,
 )
-from mascope_backend.api.new.peak_assignments.mass_gate import MassCalibration
 from mascope_backend.api.new.peak_assignments.profiles import RESOLVED_PROFILE_KEY
 from mascope_backend.api.new.peak_assignments.sample_status import (
     get_batch_sample_assignment_status,
 )
 from mascope_backend.api.new.peak_assignments.service import (
     _create_run,
-    _latest_run_pattern_scoring,
     get_peak_assignment_runs,
     get_peak_assignments,
     plan_sample_decoy,
+    recorded_model,
 )
 from mascope_backend.db import (
     AssignmentVerification,
@@ -59,6 +55,7 @@ from mascope_backend.db import (
 )
 from mascope_backend.db.id import gen_id
 from mascope_tools.composition.mass_accuracy import SampleMassAccuracy
+from mascope_tools.composition.measurement_model import MeasurementModel
 
 
 pytestmark = pytest.mark.asyncio
@@ -74,16 +71,17 @@ def feature_enabled(monkeypatch):
 
 def _stored_config(mu_ppm: float, **settings) -> dict:
     """A completed in-app run's stored config, with the calibration it recorded."""
-    accuracy = SampleMassAccuracy(mu_ppm=mu_ppm, sigma_ppm=0.2, anchors=30)
-    match_params = SimpleNamespace(mz_tolerance=5.0, isotope_abundance_threshold=0.01)
+    v1 = MeasurementModel.v1(
+        SampleMassAccuracy(mu_ppm=mu_ppm, sigma_ppm=0.2, anchors=30), 0.3
+    )
     config = PeakAssignmentConfig(**settings).model_dump()
     config[RESOLVED_PROFILE_KEY] = {"profile": "ESI_POS", "mz_precision_ppm": 3.0}
-    config[PATTERN_SCORING_KEY] = pattern_scoring_snapshot(
-        pattern_scoring_for(match_params, accuracy, "orbi"), accuracy
+    config[MEASUREMENT_MODEL_KEY] = measurement_model_record(
+        v1.v2(mu_ppm=mu_ppm, sigma_ppm=0.1, commits=120, source_lines=0),
+        ranked_at=v1,
+        scoring={"mz_tolerance_ppm": 5.0},
+        gate={"cap_z": 3.0},
     )
-    config[MASS_CALIBRATION_KEY] = MassCalibration(
-        mu_ppm=mu_ppm, sigma_ppm=0.1, anchors=120, gate_sigma_ppm=0.54
-    ).snapshot()
     return config
 
 
@@ -330,9 +328,9 @@ async def test_the_batch_s_sample_status_reads_the_control(decoyed):
 
 
 async def test_a_reader_outside_a_run_centres_where_the_control_scored(decoyed):
-    scoring = await _latest_run_pattern_scoring(decoyed["sample"])
+    model = await recorded_model(await fetch_sample(decoyed["sample"]))
 
-    assert scoring["mu_ppm"] == pytest.approx(-0.2)
+    assert model.scoring_mu_ppm == pytest.approx(-0.2)
 
 
 async def test_a_decoy_is_planned_against_the_control_and_not_another_decoy(
@@ -343,7 +341,7 @@ async def test_a_decoy_is_planned_against_the_control_and_not_another_decoy(
     plan = await plan_sample_decoy(sample, PeakAssignmentConfig(decoy=ARM))
 
     assert plan.control_run_id == decoyed["control"]
-    assert plan.calibration.mu_ppm == pytest.approx(-0.2)
+    assert plan.model.scoring_mu_ppm == pytest.approx(-0.2)
 
 
 async def test_a_decoy_run_is_marked_on_its_row(async_session_factory, decoyed):

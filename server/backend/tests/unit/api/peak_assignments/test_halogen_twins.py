@@ -10,6 +10,7 @@ the certified cylinder's chlorinated component, with the real finder.
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -311,6 +312,37 @@ class TestTheReread:
             ]
             == 1
         )
+
+    @pytest.mark.parametrize(
+        ("constant", "trended", "reread_count"),
+        [
+            # The trend puts the centre on the reading where the constant
+            # centre sits five widths off: the trend admits it.
+            (1.5, 0.0, 1),
+            # And the other way: the constant centre is on it, the trend
+            # five widths off at its m/z, and the trend refuses it.
+            (0.0, 1.5, 0),
+        ],
+    )
+    def test_a_trended_centre_gates_the_reading_at_its_mz(
+        self, constant, trended, reread_count
+    ):
+        # A model with a trend: its constant centre stands where the trend
+        # has no reading, and every line is read off the trend at its m/z,
+        # as the finder reads the fit's.
+        frame = peaks()
+        rows = matches(frame)
+        twins = find_twins(rows, frame, halogens=("Cl",), searched_mzs=[M0])
+        at_mz: list[float] = []
+
+        def centre(mz):
+            at_mz.extend(np.atleast_1d(mz).tolist())
+            return np.full(np.shape(mz), trended)
+
+        scoring = PatternScoring(sigma_ppm=0.3, mu_ppm=constant, centre=centre)
+        result = reread(frame, rows, twins, scoring=scoring, candidate_threshold=0.0)
+        assert result.summary["reread"] == reread_count
+        assert M0 in at_mz
 
     def test_a_twin_the_reading_does_not_claim_leaves_the_peak(self, monkeypatch):
         # The twin is there; the halogen reading the search elects claims some
