@@ -335,7 +335,7 @@ read this way on a charge-transfer source, whose grid holds no chlorine.
 two presets. Each says what *Auto* resolves to: for the sample, or for each group of the
 batch's samples, since a batch can hold more than one ionization mode. Where the samples
 share them, the formula range and m/z precision fields show the grid and the window the
-run would search at, and *Find more* - the composition search in the Sample tab - starts
+run would search at, and *Find other formulas for this peak* - the composition search in the Sample tab - starts
 from the same two for the sample in view.
 
 A named profile applies to every sample it reaches. The launcher warns when that profile
@@ -667,7 +667,7 @@ the measurements they have in common. The run records which files it pooled, the
 each gave and the time they span. On a TOF the run measures one offset and one
 spread of how its lines read against their shares, since a TOF's signal-to-noise column
 is not read that way yet. The run records which of these it used, and a formula measured
-on its own afterwards - *Use this*, the inspector's evidence - is read at the tolerance
+on its own afterwards - *Use*, the inspector's evidence - is read at the tolerance
 in the model the sample's latest run in Mascope recorded, or the one its fold kept.
 
 An Orbitrap file whose peaks record the scans they are present in (*Scan Presence* on
@@ -908,9 +908,9 @@ one. So the order its checks run in decides which of them a row names, never the
 row ends on. The one thing it does besides is to read a peak as another compound's isotope
 line, which replaces the row's reading rather than raising it: the line is *candidate* at
 most (below). The peak inspector lists
-its answers under **Why this tier**: every committed row carries at least one, naming
-either what capped it at *candidate* or what it kept its tier on. The sentence under each
-is the run's own, about that row.
+its answers in its **Why** box ([the peak inspector](#the-peak-inspector)): every committed
+row carries at least one, naming either what capped it at *candidate* or what it kept its
+tier on. A click on a reason shows the run's own sentence about that row.
 
 A row whose evidence is under the top band says so first: **evidence band** gives its
 evidence, the fit and plausibility it is the product of, and the band it falls short of -
@@ -1206,9 +1206,10 @@ the neutral's other readings in this ledger, strongest first: each names its cha
 its m/z and its tier, and clicking one focuses its peak. A focused isotopologue opens its
 M0's. The badge counts what the run recorded, and the links are the ledger's rows of
 that neutral, so a ledger that holds none of them, such as one the batch serves, leaves
-the badge as a count only. Below it, where the batch has read how the neutral's channels
-follow each other across the batch, the inspector says so in one line
-([reading co-variation](#reading-co-variation)).
+the badge as a count only. Where the batch has read how the neutral's channels follow
+each other across the batch, the inspector says so in its *Across the batch* section
+([reading co-variation](#reading-co-variation)), and the *second channel* reason lists the
+batch's channels of the neutral.
 
 A run keeps the peaks it read. Finding a sample's peaks gives every peak a new id, so
 when they are found again after a run - peak detection run again, an operator's refit of
@@ -1223,10 +1224,11 @@ without a link. Run the assignment again to read the current peaks.
 **Beside the reasons.** The peak inspector also names what the row is, and shows two
 measurements the reasons read.
 
-- The ***ionization*** follows the formula at the head of the card: the mechanism the ion
-  was read through (*[M+H]+*, *[M+NH4]+*, *[M-H]-* ...). The neutral and the ion formula under it
-  imply it, but it is half of the assignment, and hovering it spells out the reaction.
-- ***reference list***, above the evidence, is what a reference list calls the formula,
+- The ***ionization*** leads the ion line under the formula: the mechanism the ion was
+  read through (*[M+H]+*, *[M+NH4]+*, *[M-H]-* ...), then the ion it made. The neutral and
+  the ion formula imply it, but it is half of the assignment, and hovering it spells out
+  the reaction.
+- ***reference list***, above the formula, is what a reference list calls the formula,
   with the list it comes from: the compound the run matched it from, or - marked
   *potential* - a compound a list holds for a formula the run reached through the formula
   search, which is a lead to check rather than a match the run made. A list names a
@@ -1273,7 +1275,7 @@ The close alternatives mark three kinds of entry that are not simply runners-up:
   line claimed it;
 - *list compound*: a list's compound that a formula from the search took the peak from.
 
-*Use this* on either of the last two puts that reading back.
+*Use* on either of the last two puts that reading back.
 
 A reason can name a rule that lowered nothing: a row its evidence already put below
 *candidate* keeps that tier, and the rule still says what it found. The run records the
@@ -1372,8 +1374,8 @@ together across a batch. **On an Orbitrap** a rival left by the resolution is de
 by its isotope lines where they are testable; where they are under the file's detection
 threshold the row stays 5a, and its lift says *more signal*.
 
-**Where it shows.** The peak inspector's **Identification level** section shows the
-level as a chip, with **why** it holds it, what **would lift it** and the **rivals**, each
+**Where it shows.** The peak inspector shows the level as a chip beside the tier, and its
+**Identification level** section, folded until you open it, shows **why** the row holds it, what **would lift it** and the **rivals**, each
 with its test or *open*. The sample ledger has a **level** column, with a filter in its
 header. The *Batch peaks* ledger's **Level** column shows the level most of a batch
 peak's members' runs stated for its formula (a tie reads as the weaker level) until the
@@ -1389,6 +1391,72 @@ batch peak's `engine_level`), the SDK's ledger frames and the API carry the same
 fields. The run records the version of the rules that read its facts into a level with its
 configuration, because a level, like a tier, is only comparable between two runs
 together with the rules that stated it.
+
+## The peak inspector
+
+Select a peak in the spectrum or in the **Assignments** ledger, and the peak inspector
+beside the spectrum shows its assignment as one card. The card answers first and explains
+after, so its first screen holds the answer, why the row holds its tier, and the verdict.
+
+```mermaid
+flowchart TD
+  A[The answer] --> B[Why its tier]
+  B --> C[Four measurements]
+  C --> D[A change by hand, in one line]
+  D --> E[Folded sections]
+  E --> F[The verdict bar, at the foot]
+```
+
+- **The answer.** What a reference list or your target library calls the formula, and the
+  list it comes from; the formula, large; then the ion line: the mechanism, the ion it
+  made, the peak's m/z and which line of the ion the peak is, as in
+  *[M+HCOO]- → C3H3O4- · m/z 103.0035 · M0*. One row of chips follows: the tier, the
+  [identification level](#identification-level) and the verdict, once there is one. A
+  caption under them, *tier rules provisional*, says the tiering is still being built.
+- **Why its tier.** A box titled for the tier: *Why assigned*, *Why candidate*, *Why below*.
+  A bar draws the row's evidence against the run's own two bands, marked where *candidate*
+  and *assigned* begin (45 % and 75 % unless the run set others). Under it the product
+  line, *fit 30 % × plausibility 100 % = 30 %*, gives the two numbers the evidence is made
+  of. Then one line per [reason](#why-a-row-holds-its-tier): the rule's name with the
+  number or formula it turned on. Click a reason to read the run's own sentence about the
+  row. What holds the tier back comes first, in the warning colour; what the row kept its
+  tier on follows, in the support colour. A reason that spans other rows lists them: a
+  *second channel* lists the neutral's other channels, and *in a series* the series'
+  members, each by its step from the root. Each m/z there focuses its peak where the
+  sample holds one. The ***Supported by N channels*** badge and the other readings of the
+  same ion are in this box too.
+- **Four measurements**, each a value with a caption in words:
+  - the **mass error**, in ppm, and under it how many widths of the run's own mass
+    calibration it sits from the run's centre;
+  - the **isotope lines**, found of those predicted, with the abundance error and the lines
+    not found or not tested;
+  - the **confidence**, the formula's share of the evidence among the peak's candidates,
+    with a tie written out;
+  - the **batch**: the samples its batch peak is in, and how many of the batch's readings
+    the card lists for it.
+- **A change by hand** is one line with its action: *Assigned by hand in place of C3H4O4 ·
+  Undo*, or *Curated for the batch in place of C3H4O4 · Release*. Hover the line for the
+  whole account of what changed and what undoing it brings back. *Undo* is *Use* on the
+  assignment the change replaced, the first of the alternatives.
+- **Sections**, folded until you open them, each with a summary on its folded line:
+  - **Isotope pattern**: a stick plot of each line's predicted share, drawn as an outline,
+    against its measured share, filled beside it. A line the run asked for and did not
+    find, or could not test, is drawn hollow. The list under it gives each line's m/z,
+    m/z error and predicted share ([the fit score](#the-fit-score-a-pure-measurement)).
+  - **Alternatives**: the close alternatives with their fit, mass error and kind, and
+    *Use* on each one that can be committed ([assigning a peak
+    yourself](#assigning-a-peak-yourself)).
+  - **Across the batch**: what the [batch stages](#the-batch-stages) read of the peak's
+    batch peak, each reading as the badge the *Batch peaks* ledger draws, with its line in
+    words. The badges show on the folded line.
+  - **Identification level**: the level, why it holds it, what would lift it, and the
+    rivals.
+- **The verdict bar** stays at the foot of the card while the rest scrolls: *Confirm*,
+  *Reject* and *Unsure* ([verifying assignments](#verifying-assignments)), or the recorded
+  verdict with *Change*. Under them, *Find other formulas for this peak* opens the
+  composition search ([searching one peak](#searching-one-peak)).
+
+In a narrow column the four measurements stand one above another, and the chips wrap.
 
 ## Assigning a peak yourself
 
@@ -1412,7 +1480,8 @@ re-assignment and an override does not.
 
 ### Searching one peak
 
-*Find more* searches the focused peak on its own: every formula of the grid whose ion,
+*Find other formulas for this peak*, at the foot of the inspector, searches the focused
+peak on its own: every formula of the grid whose ion,
 under one of the chosen ionization mechanisms, puts a line within the m/z window of the
 peak, each matched against the sample and scored as a run scores it. A peak with very
 many candidates lists the 500 that fit it best; the count beside the peak still says
@@ -1438,13 +1507,13 @@ ranks low.
 
 In a sample served from the batch ledger (its runs list shows *Batch ledger*), the
 inspector's close alternatives are the other identities the batch has seen at that
-peak, each with the share of the batch's evidence behind it. *Use this* on one of them
+peak, each with the share of the batch's evidence behind it. *Use* on one of them
 acts on the batch peak rather than on the sample: the chosen identity is pinned as the
 species for the whole batch, then measured in every sample that holds the peak. A sample
 where it can be measured now reads it with a fit of its own; one where it cannot keeps
 what it had. The batch peak claims the pinned formula whatever the samples' vote says -
 and says so when the two disagree - and a hand badge beside the formula in the *Batch
-peaks* ledger marks it, an outline in the text colour, as every change a person made is. *Release*, in the inspector's note, undoes it: the samples that
+peaks* ledger marks it, an outline in the text colour, as every change a person made is. *Release*, on the inspector's one-line note of the pin, undoes it: the samples that
 were re-measured go back to what they read before, and the batch decides again.
 
 Each of those identities was measured in the sample that brought it, not in the one
@@ -1469,7 +1538,7 @@ before it was made.
 
 An identity that reads the peak as an isotope line of a compound, such as its 13C line,
 cannot be pinned there. The line is part of the compound's envelope, not an ion of its
-own. *Use this* on it says which batch peak holds the compound's monoisotopic line;
+own. *Use* on it says which batch peak holds the compound's monoisotopic line;
 pin the compound on that batch peak instead.
 
 ## Verifying assignments
@@ -1715,7 +1784,7 @@ such a peak - the family's composition is scored against the sample's own peaks,
 its M0 - and fills them in a moment later. They are computed for the view and never stored;
 run an assignment on the sample to persist a full ledger of its own.
 
-The inspector's *confidence* row stays in place for such a sample, so the card reads the
+The inspector's *confidence* tile stays in place for such a sample, so the card reads the
 same whichever way a sample is served. The arbitration confidence, which only a run of the
 sample computes by weighing the peak's candidates against each other, reads as a dash with
 that explanation.
@@ -2276,7 +2345,7 @@ A stripped row leaves the ledger as a compound of its own. In each sample that h
 both, the row's member becomes the compound's isotope line, and so does the sample's
 row on that peak in its latest in-app run: an isotopologue of the sample's row on the
 compound's peak, at that row's tier and fit, with the reading it displaced kept first
-among its alternatives (**earlier reading**, which *use this* puts back). Both rows of
+among its alternatives (**earlier reading**, which *Use* puts back). Both rows of
 the sample record the rewrite. A sample is left as it was where the compound's peak
 reads another formula there, where the reagent or artifact pass claimed the row's peak,
 or where the row carries isotope lines of its own in that sample. A run imported from
@@ -2422,7 +2491,7 @@ commit it. A sample whose run read the compound's own formula below candidate ke
 reading, its fit and its isotope lines, and is lifted to *candidate*. In a batch folded
 without runs the reading comes off the batch peak's own record of the list's identity, at
 the ion's exact mass. The reading a row carried is kept first among its alternatives (**earlier
-reading**, which *use this* puts back).
+reading**, which *Use* puts back).
 
 A sample is kept as it is where a person assigned the peak there, where the workspace's
 target library named it, where the peak is another ion's isotope line or another source
@@ -2506,7 +2575,7 @@ A batch peak at a passing rung is the reagent's ion in the samples of the stretc
 passed in. There its member becomes the rung, and so does the sample's row on that peak
 in its latest in-app run. The row reads the ion and no compound, at tier *unassigned*,
 with the batch's reading of the rung as its reason. The reading it carried is kept first
-among its alternatives (**earlier reading**, which *use this* puts back). The row's
+among its alternatives (**earlier reading**, which *Use* puts back). The row's
 isotope lines go with it. A peak at the rung's 81Br line, read on its own, becomes that
 line, owned by the rung's peak. Where the rung's peak is not the rung in that sample, the
 81Br line's peak keeps its reading: with no peak to belong to, it would read as the

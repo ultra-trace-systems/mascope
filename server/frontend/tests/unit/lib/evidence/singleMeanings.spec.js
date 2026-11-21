@@ -73,7 +73,7 @@ describe('the retired double meanings', () => {
     expect(uses('ph-hand-pointing')).toEqual({
       'lib/evidence/marks.js': 1,
       'lib/base/BaseTierTag.vue': 1,
-      'lib/panes/PanePeakAssign/PanePeakAssign.vue': 2
+      'lib/panes/PanePeakAssign/card/CardNotes.vue': 2
     })
   })
 

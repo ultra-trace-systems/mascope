@@ -1,20 +1,21 @@
 When the engine's winner is not the right answer, you can assign a peak
-yourself: **use this** on a close alternative in the peak inspector, or the
-**hand button** on a result of **Find more**, the composition search. The close
+yourself: **Use** on a close alternative in the peak inspector, or the
+**hand button** on a result of **Find other formulas for this peak**, the
+composition search. The close
 alternatives are the other candidates that fit the peak but lost: a scored
 runner-up shows its fit, an entry from the formula search's shortlist its
 plausibility until it is measured. A shortlist entry is measured through every
 channel the run searched, the secondary channels it opened included, as the
 search proposed it. One that names no adduct cannot be used, as
 an assignment without its adduct could not be verified; search the peak with
-*Find more* instead and assign the hit, which names its adduct.
+*Find other formulas for this peak* instead and assign the hit, which names its adduct.
 
 The peak's row is edited in place and marked as assigned by hand, and the
-assignment it replaced becomes its first close alternative, so *use this* on it
-puts it back. The tier is recalculated from the new formula's own evidence under
+assignment it replaced becomes its first close alternative, so *Use* on it, or
+*Undo* on the card's note of the change, puts it back. The tier is recalculated from the new formula's own evidence under
 the run's thresholds, and the spectrum is asked for the isotope lines the formula
 predicts, as the run asked its own rows: a missing one holds the assignment at
-*candidate* at most (*expected line absent*). *Use this* on a batch peak asks a pin
+*candidate* at most (*expected line absent*). *Use* on a batch peak asks a pin
 the same in each sample, at what that sample's assignment run asked: a sample with no
 run, one only folded into the batch ledger, is asked no line. A peak you assign as one
 of a compound's isotopologues is not asked, since the lines are read from the

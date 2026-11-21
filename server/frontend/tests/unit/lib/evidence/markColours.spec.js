@@ -144,7 +144,7 @@ describe('the marks drawn outside the badge', () => {
   })
 
   it('draws the card’s hand in the human tone, never the accent', () => {
-    const card = sfc('lib', 'panes', 'PanePeakAssign', 'PanePeakAssign.vue')
+    const card = sfc('lib', 'panes', 'PanePeakAssign', 'card', 'CardNotes.vue')
     expect(colourOf(card, '.manual-note > .manual-icon')).toBe(TONES.human.color)
   })
 })

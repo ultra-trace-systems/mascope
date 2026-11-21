@@ -183,3 +183,41 @@ export function reasonTooltip(reason, tier, { viaM0 = false } = {}) {
   }
   return viaM0 ? `${text}. Recorded on the M0, which this isotopologue follows.` : text
 }
+
+// A share or a percentage the sentence names: "evidence 30%", "21 %".
+const PERCENT = /[-+−]?\d+(?:\.\d+)?\s?%/
+// A distance in the run's calibration widths: "sits 4.2 widths off".
+const WIDTHS = /[-+−]?\d+(?:\.\d+)?\s+widths?\b/
+// A count the sentence opens on: "3 formulas this peak's evidence could not
+// separate".
+const LEADING_COUNT = /^(\d+)\s+(\w+)/
+// A formula: two element symbols or more with a count among them (C3H4O4,
+// Br2Cl), so a capitalised word of the sentence never reads as one.
+const FORMULA = /\b(?:[A-Z][a-z]?\d*){2,}\b/g
+
+/**
+ * The number or the formula a reason turns on, read off the server's
+ * sentence, to stand beside the rule's name on the reason's one line: the
+ * evidence a band names, the widths an off-calibration row sits off, the count
+ * of rivals left standing, the formula a rule read. '' where the sentence
+ * names none of them; the sentence itself is one click away.
+ *
+ * The share first, then the widths, then a count the sentence opens on, then a
+ * formula, because a sentence that names a number names it as what it turned
+ * on, and a formula it names is usually the row's own.
+ *
+ * @param {object} reason - one entry of `tierReasonsOf`
+ * @returns {string}
+ */
+export function reasonFigure(reason) {
+  const detail = typeof reason?.detail === 'string' ? reason.detail : ''
+  if (!detail) return ''
+  const percent = detail.match(PERCENT)
+  if (percent) return percent[0].replace(/\s/g, '')
+  const widths = detail.match(WIDTHS)
+  if (widths) return widths[0]
+  const count = detail.match(LEADING_COUNT)
+  if (count) return `${count[1]} ${count[2]}`
+  const formula = (detail.match(FORMULA) ?? []).find((token) => /\d/.test(token))
+  return formula ?? ''
+}
