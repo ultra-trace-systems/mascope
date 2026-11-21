@@ -168,6 +168,16 @@ jobs:
               python3 tooling/changelog.py check ;;
           esac
 
+      - name: Code structure
+        # The assignment packages' import cycles, imports made inside a
+        # function, and modules over 1,500 lines and functions over 100 may
+        # not grow past tooling/structure_baseline.json, and a reading that
+        # got better must be written into it. A PR that has to make one worse
+        # rewrites the baseline and says why under `## Structure` in its body
+        # (tooling/structure.py). Run even when a lint step failed, as above.
+        if: ${{ !cancelled() }}
+        run: python3 tooling/structure.py check
+
   nginx-config:
     name: nginx config validation
     runs-on: ubuntu-latest
