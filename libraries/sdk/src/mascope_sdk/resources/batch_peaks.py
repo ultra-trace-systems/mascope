@@ -7,8 +7,9 @@ species was seen in, with that sample's own reading of the peak.
 
 This is the batch-primary picture of peak assignment: every processed sample
 folds into the ledger as it arrives, so the ledger is the complete record of a
-batch without a per-sample run in sight. Read-only; the ledger is built and
-curated from the Mascope app.
+batch without a per-sample run in sight. The ledger is curated from the Mascope
+app; :meth:`BatchPeaksResource.assign` runs a pass of the batch stages on it,
+and :meth:`BatchPeaksResource.import_run` lands an external engine's result.
 """
 
 import io
@@ -20,6 +21,7 @@ from typing import Any
 import pandas as pd
 from loguru import logger
 
+from ..exceptions import NotFoundError
 from ._base import BaseResource, _coerce_utc_columns
 
 
@@ -93,6 +95,10 @@ class BatchPeaksResource(BaseResource):
         run = mascope.batch_peaks.import_run(
             "batch-123", rows, engine="peaky", engine_version="0.7.0"
         )
+
+        # Assign the batch: one pass of the batch stages, as one run
+        run = mascope.batch_peaks.assign("batch-123")
+        run["summary"]["stages"]
     """
 
     def list(
@@ -744,7 +750,23 @@ class BatchPeaksResource(BaseResource):
         run = data[0] if data else None
         if run is None or not wait:
             return run
-        run_id = run["batch_peak_run_id"]
+        return self._wait_for_run(
+            sample_batch_id,
+            run["batch_peak_run_id"],
+            "batch import run",
+            poll_interval,
+            timeout,
+        )
+
+    def _wait_for_run(
+        self,
+        sample_batch_id: str,
+        run_id: str,
+        what: str,
+        poll_interval: float,
+        timeout: float,
+    ) -> dict[str, Any]:
+        """Poll the batch's runs until ``run_id`` is no longer running."""
         deadline = time.monotonic() + timeout
         while True:
             runs = self._get(f"batch-peaks/batch/{sample_batch_id}/runs") or []
@@ -752,7 +774,107 @@ class BatchPeaksResource(BaseResource):
             if latest is not None and latest.get("status") != "running":
                 return latest
             if time.monotonic() > deadline:
-                raise TimeoutError(
-                    f"batch import run '{run_id}' still running after {timeout} s"
-                )
+                raise TimeoutError(f"{what} '{run_id}' still running after {timeout} s")
             time.sleep(poll_interval)
+
+    def assign(
+        self,
+        batch_id: str,
+        from_stage: str | None = None,
+        fold: str = "auto",
+        wait: bool = True,
+        *,
+        config: dict[str, Any] | None = None,
+        poll_interval: float = 5.0,
+        timeout: float = 7200.0,
+    ) -> dict[str, Any] | None:
+        """Assign a batch: run a pass of the batch stages, as one batch run.
+
+        The stages run in their fixed order - water ladders, known species,
+        the untargeted search, the isotope lines, the series, the
+        co-variation, the ratio stability, the batch checks, the probable
+        blends - from ``from_stage`` to the end, or from the first stage that
+        is not current. The pass folds every sample first, as a rebuild does,
+        where ``fold`` is ``"always"``, or ``"auto"`` and the ledger cannot be
+        a starting point: no batch peaks, an import current, a target
+        collection or reference list changed since the last pass, or the last
+        pass ran under another engine version.
+
+        The pass is one run of :meth:`runs`, action ``assign``. Its
+        ``summary`` holds ``stages``: one entry per stage, the fold first,
+        with its ``status`` (``done``, ``failed``, ``cancelled`` or
+        ``not_run``), ``utc_started``, ``utc_ended`` and the ``outcomes`` of
+        its steps; and ``first_stage``, ``fold`` (whether it ran, and why),
+        the ``samples`` it covered and the ``library`` it read. Requires the
+        editor role on the batch's workspace.
+
+        :param batch_id: The ID of the sample batch.
+        :type batch_id: str
+        :param from_stage: The stage to start at: ``water_ladders``,
+            ``known_species``, ``search``, ``isotope_lines``, ``series``,
+            ``co_variation``, ``continuity``, ``batch_checks`` or ``blends``.
+            None starts at the first stage that is not current.
+        :type from_stage: str, optional
+        :param fold: ``"auto"`` or ``"always"``.
+        :type fold: str
+        :param wait: Poll until the pass completes, fails or is cancelled.
+            Defaults to True.
+        :type wait: bool
+        :param config: The untargeted search's and the series detection's
+            settings, as ``peak_assignments`` takes them. None runs each on
+            the settings its last run on the batch recorded.
+        :type config: dict, optional
+        :param poll_interval: Seconds between polls.
+        :type poll_interval: float
+        :param timeout: Seconds to wait before giving up on the poll.
+        :type timeout: float
+        :return: The pass's run record - ``status`` completed with its
+                 ``summary``, failed with its ``error``, or cancelled - or,
+                 when ``wait`` is False, the run as the server opened it,
+                 ``status`` running. None when every stage is current and
+                 nothing needs folding, so nothing ran.
+        :rtype: dict | None
+        :raises ConflictError: Another pass or batch run is rewriting the
+            ledger.
+        :raises TimeoutError: When the pass is still running after
+            ``timeout``.
+        """
+        body: dict[str, Any] = {"fold": fold}
+        if from_stage is not None:
+            body["from_stage"] = from_stage
+        if config is not None:
+            body["config"] = config
+        # Sent once: a second send after a lost answer would be refused while
+        # the first pass runs, or start a second one after it.
+        data = self._post(
+            f"batch-peaks/batch/{batch_id}/assign", body, idempotent=False
+        )
+        run = data[0] if data else None
+        if run is None or not wait:
+            return run
+        return self._wait_for_run(
+            batch_id, run["batch_peak_run_id"], "batch pass", poll_interval, timeout
+        )
+
+    def cancel_assign(self, batch_id: str) -> dict[str, Any] | None:
+        """Ask the batch's running pass (:meth:`assign`) to stop.
+
+        The pass stops between its stages, or inside the untargeted search
+        between samples, and ends ``cancelled``. Nothing is rolled back: what
+        its stages wrote stands, and the stages it did not finish are stale,
+        so the next pass starts at the first of them. Requires the editor
+        role.
+
+        :param batch_id: The ID of the sample batch.
+        :type batch_id: str
+        :return: The running pass's record, with ``cancel_requested_utc`` set;
+                 None when no pass is running on the batch.
+        :rtype: dict | None
+        """
+        try:
+            data = self._post(
+                f"batch-peaks/batch/{batch_id}/assign/cancel", {}, idempotent=True
+            )
+        except NotFoundError:
+            return None
+        return data[0] if data else None
