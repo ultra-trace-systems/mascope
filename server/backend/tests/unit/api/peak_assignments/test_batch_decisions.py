@@ -9,6 +9,7 @@ reads over a real ledger are the integration suites' (the water ladder's,
 the known species', the strip's).
 """
 
+from copy import deepcopy
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -877,6 +878,71 @@ class TestTheElectStageReadsThem:
         assert ctx.batch_applied == {
             "listed": {PEAK_ABSENT: 1},
             "strips": {PEAK_ABSENT: 1},
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_listed_compound_holds_candidate_through_the_re_score(self):
+        # The refit's re-score moves a row's evidence and its tier with it
+        # (``service.rescore_rows``). A row the decision put at candidate,
+        # elected or lifted, falls no lower: only a cap takes it lower. A
+        # reading the decision kept keeps its own tier.
+        ctx = _context(
+            listed={
+                "d": DECIDED,
+                "x": replace(DECIDED, sample_peak_id="x"),
+                "p": replace(DECIDED, sample_peak_id="p"),
+            }
+        )
+        ctx.decided = dict(ctx.batch.listed)
+        own = _row(
+            "d",
+            D4,
+            tier="below_assignability",
+            source="database",
+            fit_score=0.4,
+            provenance={"evidence": 0.4},
+        )
+        library = _row(
+            "p",
+            "C10H16O4",
+            tier="below_assignability",
+            source="database",
+            target_compound_id="tc-9",
+            fit_score=0.4,
+            provenance={"evidence": 0.4},
+            sample_peak_mz=199.0976,
+        )
+        ctx.stage_a = [own, library]
+        ctx.stage_b = [_row("x", OTHER, sample_peak_mz=200.101)]
+        with patch.object(
+            pipeline.service, "_record_same_ion_readings", return_value=0
+        ):
+            await pipeline.elect(ctx)
+        assert ctx.listed_outcomes == {
+            "d": LISTED_LIFTED,
+            "p": KEPT_TARGET_LIBRARY,
+            "x": LISTED_ELECTED,
+        }
+        assert ctx.floors == {"d": "candidate", "x": "candidate"}
+
+        fits = {
+            "database": {(D4, "m-h"): 0.1, ("C10H16O4", "m-h"): 0.1},
+        }
+        bands = {"candidate": 0.45, "assigned": 0.75}
+        rows = ctx.stage_a + ctx.stage_b
+        # The premise: the new fit alone puts the lifted reading below.
+        unheld = {r["sample_peak_id"]: r for r in deepcopy(rows)}
+        pipeline.service.rescore_rows(list(unheld.values()), fits, bands)
+        assert unheld["d"]["tier"] == "below_assignability"
+
+        pipeline.service.rescore_rows(rows, fits, bands, floors=ctx.floors)
+
+        tiers = {r["sample_peak_id"]: r["tier"] for r in rows}
+        assert own["provenance"]["evidence"] == pytest.approx(0.1)
+        assert tiers == {
+            "d": "candidate",
+            "x": "candidate",
+            "p": "below_assignability",
         }
 
     @pytest.mark.asyncio

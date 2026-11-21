@@ -65,6 +65,8 @@ from mascope_backend.api.new.peak_assignments.batch_decisions import (
     KIND_LISTED_COMPOUND,
     KIND_SERIES,
     KIND_WATER_RUNG,
+    LISTED_ELECTED,
+    LISTED_LIFTED,
     BatchDecisions,
     ListedDecision,
     cite_listed,
@@ -1415,7 +1417,10 @@ async def elect(ctx: RunContext) -> None:
 def _elect_batch_listed(ctx: RunContext) -> None:
     """The listed compounds the batch decided present, elected on their peaks
     (``batch_decisions.elect_listed``), measured on the axis as stored: a
-    decoy arm claims what its control claims."""
+    decoy arm claims what its control claims. Each elected or lifted row
+    stands at candidate on the decision (:attr:`RunContext.floors`), which
+    the refit's re-score lowers no row below and only a cap does, as the
+    batch's own judging holds its members (``batch_rejudge.floors_of``)."""
     source = service._source_axis(ctx.peaks_df)
     ctx.stage_a, ctx.stage_b, ctx.listed_outcomes = elect_listed(
         ctx.stage_a,
@@ -1433,6 +1438,9 @@ def _elect_batch_listed(ctx: RunContext) -> None:
         sample_item_id=ctx.sample.sample_item_id,
         run_id=ctx.run_id,
     )
+    for peak_id, outcome in ctx.listed_outcomes.items():
+        if outcome in (LISTED_ELECTED, LISTED_LIFTED):
+            ctx.floors[peak_id] = TIER_CANDIDATE
     outcomes = Counter(ctx.listed_outcomes.values())
     ctx.batch_applied["listed"] = dict(sorted(outcomes.items()))
     runtime.logger.info(
