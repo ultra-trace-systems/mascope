@@ -738,8 +738,8 @@ def elect_listed(
     its alternatives and the decision as its tier reason; or, where the run
     read the compound below candidate, that reading lifted. A row the claim
     would keep is kept (:func:`listed_decision`). The elected row is a list's
-    row, among Stage A's; the judging after it may lower its tier, as it
-    lowers any row's.
+    row, among Stage A's; a cap after it may lower its tier, as it lowers any
+    row's, but the refit's re-score does not (``pipeline.RunContext.floors``).
 
     :param claimed_peak_ids: The peaks the claim stage took.
     :param peaks: The sample's peaks, for a peak no stage read. A decision
