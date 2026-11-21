@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest'
 import {
   TIER_REASON_LABELS,
   holdsTierDown,
+  reasonFigure,
   reasonIcon,
   reasonTooltip,
   tierReasonLabel,
@@ -240,5 +241,41 @@ describe('reasonTooltip', () => {
     expect(text).toContain('Holds the M0 at candidate')
     expect(text).toContain('Recorded on the M0, which this isotopologue follows.')
     expect(text).not.toContain('this row')
+  })
+})
+
+// The number or formula a reason turns on, beside the rule's name on the card's
+// one line; the sentence is a click away (docs/dev/assignment_ledger_and_card.md,
+// section 4.1).
+describe('reasonFigure', () => {
+  const figure = (detail) => reasonFigure({ rule: 'x', detail })
+
+  it('reads the share a sentence names first', () => {
+    expect(figure('evidence 30% (fit 30% x plausibility 100%) is under the candidate band')).toBe(
+      '30%'
+    )
+    expect(figure('an abundance 12.5 % off its prediction')).toBe('12.5%')
+  })
+
+  it('reads the widths an off-calibration row sits off', () => {
+    expect(figure("mass error sits 4.2 widths off the run's own fitted centre")).toBe('4.2 widths')
+  })
+
+  it('reads a count the sentence opens on', () => {
+    expect(figure("3 formulas this peak's evidence could not separate")).toBe('3 formulas')
+  })
+
+  it('reads a formula, never a capitalised word', () => {
+    expect(figure('C3H4O4 is an odd-electron neutral - a radical rather than a molecule')).toBe(
+      'C3H4O4'
+    )
+    expect(figure('It names no number at all')).toBe('')
+    expect(figure('the NOx skeleton of its groups')).toBe('')
+    expect(figure('one peak is all that saw Br2Cl: a lone line')).toBe('Br2Cl')
+  })
+
+  it('names nothing for a reason with no sentence', () => {
+    expect(reasonFigure({ rule: 'x' })).toBe('')
+    expect(reasonFigure(null)).toBe('')
   })
 })

@@ -651,7 +651,7 @@ watch(
     <header class="search-head">
       <div class="search-title">
         <span class="pi ph ph-magnifying-glass" />
-        <span>{{ embedded ? 'Peak Assign' : 'Re-search' }}</span>
+        <span>{{ embedded ? 'Peak Assign' : 'Find other formulas for this peak' }}</span>
         <span v-if="app.data.peak.focused" class="search-sub">
           peak {{ num.mz.format(app.data.peak.focused.mz) }} &middot; showing
           {{ displayedMatches }} / {{ totalMatches }}
