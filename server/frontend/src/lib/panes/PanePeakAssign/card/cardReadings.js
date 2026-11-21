@@ -142,11 +142,14 @@ const REASON_GROUP_KINDS = Object.freeze({
  * where the reason spans none or the batch serves no such group.
  *
  * A batch peak can sit in several series: its formula lattice can reach a
- * CH2 series of its own root and an O series of another. The series a
- * `series_anchor` reason is about is the row's own, the detail's
- * `batch_series`, so its group is the one with that root, unit and
- * mechanism. Without that record the group is read only when the batch
- * serves one series group, never guessed among several.
+ * CH2 series and an O series. The series a `series_anchor` reason is about
+ * is the row's own, the detail's `batch_series`, so its group is the one
+ * with that unit and mechanism. The root is not matched: the batch serves
+ * one group per lattice, rooted at its lightest root, so a record naming
+ * another root of the same lattice still reads that group. Every served
+ * group holds the peak, and the peak's own lattice fixes it among those of
+ * one unit and mechanism. Without that record the group is read only when
+ * the batch serves one series group, never guessed among several.
  *
  * @param {object} reason - one entry of `tierReasonsOf`
  * @param {Array<object>|null} groups - the detail's `batch_groups`
@@ -163,7 +166,6 @@ export function reasonGroup(reason, groups, series = null) {
     served.find(
       (group) =>
         group.unit === series.unit &&
-        String(group.root_batch_peak_id ?? '') === String(series.root_batch_peak_id ?? '') &&
         (series.ionization_mechanism_id == null ||
           group.ionization_mechanism_id == null ||
           String(group.ionization_mechanism_id) === String(series.ionization_mechanism_id))

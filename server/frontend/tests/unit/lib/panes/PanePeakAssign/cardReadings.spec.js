@@ -128,12 +128,11 @@ describe('reasonGroup', () => {
       ionization_mechanism_id: 'm1',
       members: member
     }
-    const CH2_OTHER_ROOT = { ...CH2_SERIES, root_batch_peak_id: 'r3' }
     const CH2_OTHER_MECHANISM = { ...CH2_SERIES, ionization_mechanism_id: 'm2' }
     const series = (record) => reasonGroup({ rule: 'series_anchor' }, groups, record)
-    const groups = [O_SERIES, CH2_OTHER_ROOT, CH2_OTHER_MECHANISM, CH2_SERIES]
+    const groups = [O_SERIES, CH2_OTHER_MECHANISM, CH2_SERIES]
 
-    it("finds the row's own by root, unit and mechanism", () => {
+    it("finds the row's own by unit and mechanism", () => {
       expect(series({ unit: 'CH2', root_batch_peak_id: 'r2', ionization_mechanism_id: 'm1' })).toBe(
         CH2_SERIES
       )
@@ -145,9 +144,29 @@ describe('reasonGroup', () => {
       )
     })
 
+    // The batch serves one group per lattice, rooted at its lightest root
+    // (`batch_series._distinct`): a record naming the lattice's second root
+    // still reads that group.
+    it("finds the lattice's group where the record names another root of it", () => {
+      const LATTICE = {
+        kind: 'series',
+        unit: 'CH2',
+        root_batch_peak_id: 'R1',
+        ionization_mechanism_id: 'm1',
+        members: [
+          { batch_peak_id: 'R1', step: 0 },
+          { batch_peak_id: 'A', step: 1 },
+          { batch_peak_id: 'R2', step: 3 },
+          { batch_peak_id: 'B', step: 4 }
+        ]
+      }
+      const record = { unit: 'CH2', root_batch_peak_id: 'R2', ionization_mechanism_id: 'm1' }
+      expect(reasonGroup({ rule: 'series_anchor' }, [O_SERIES, LATTICE], record)).toBe(LATTICE)
+    })
+
     it('finds none where the batch serves no group of that series', () => {
       expect(series({ unit: 'H2O', root_batch_peak_id: 'r2' })).toBeNull()
-      expect(series({ unit: 'O', root_batch_peak_id: 'r2' })).toBeNull()
+      expect(series({ unit: 'O', ionization_mechanism_id: 'm2' })).toBeNull()
     })
 
     it("guesses none among several without the row's series", () => {
