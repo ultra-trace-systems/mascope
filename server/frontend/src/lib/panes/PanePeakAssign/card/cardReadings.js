@@ -1,0 +1,249 @@
+/**
+ * What the inspector card reads off a row, its run and its detail, as plain
+ * functions: the bands its evidence is drawn against, the order and tone of
+ * its reasons, the batch's groups a reason spans, and the four measurement
+ * tiles. The card's sections show them (docs/dev/assignment_ledger_and_card.md,
+ * section 4.1); here they can be tested without mounting anything.
+ */
+
+import { num } from '@/lib/formatters'
+import { holdsTierDown, reasonIcon } from '@/lib/tierReasons'
+import { TIER_META } from '@/lib/tiers'
+import { LINE_UNTESTABLE } from '@/lib/predictedEnvelope'
+
+/**
+ * The bands the engine tiers with when a run records none: evidence at or
+ * over 75 % is assigned, at or over 45 % a candidate
+ * (`PeakAssignmentConfig.tier_bands`).
+ */
+export const DEFAULT_TIER_BANDS = Object.freeze({ candidate: 0.45, assigned: 0.75 })
+
+const isFraction = (value) => typeof value === 'number' && Number.isFinite(value)
+
+/**
+ * The run's evidence bands, as fractions, with whether they are the run's own
+ * or the engine's defaults.
+ *
+ * @param {object|null} bands - the run's `tier_bands`
+ * @returns {{candidate: number, assigned: number, own: boolean}}
+ */
+export function bandsOf(bands) {
+  if (bands && isFraction(bands.candidate) && isFraction(bands.assigned)) {
+    return { candidate: bands.candidate, assigned: bands.assigned, own: true }
+  }
+  return { ...DEFAULT_TIER_BANDS, own: false }
+}
+
+/**
+ * Where on the bar, in percent of its width, a fraction of evidence sits:
+ * clamped to the bar.
+ *
+ * @param {number} value
+ * @returns {number}
+ */
+export const barPosition = (value) => Math.max(0, Math.min(100, value * 100))
+
+/**
+ * The edge of the band a row's evidence falls short of: the assigned band's
+ * for evidence between the two, the candidate band's below both, none at or
+ * above the assigned band.
+ *
+ * @param {number|null} evidence
+ * @param {{candidate: number, assigned: number}} bands - `bandsOf`'s bands
+ * @returns {number|null}
+ */
+export function bandMissed(evidence, bands) {
+  if (!isFraction(evidence) || evidence >= bands.assigned) return null
+  return evidence >= bands.candidate ? bands.assigned : bands.candidate
+}
+
+/**
+ * A share as a percentage to `digits` decimals ("74.6%"), rounded as the
+ * server's sentences round it; '-' where there is no number.
+ *
+ * @param {number|null} value
+ * @param {number} [digits]
+ * @returns {string}
+ */
+export function formatShare(value, digits = 0) {
+  return isFraction(value) ? `${(value * 100).toFixed(digits)}%` : '-'
+}
+
+/**
+ * How many decimals a share needs not to read as the band edge it misses,
+ * the server's rule (`tiering._digits`): evidence of 0.746 under a band of
+ * 0.75 reads "74.6%", never "75%", which would put it on the band.
+ *
+ * @param {number|null} value
+ * @param {number|null} against - the band edge, or null where it misses none
+ * @returns {number}
+ */
+export function shareDigits(value, against) {
+  if (!isFraction(value) || !isFraction(against)) return 0
+  for (const digits of [0, 1]) {
+    if (formatShare(value, digits) !== formatShare(against, digits)) return digits
+  }
+  return 2
+}
+
+/**
+ * The Why box's title: "Why assigned", "Why candidate", "Why below",
+ * "Why unassigned" - the tier's short label, as its chip says it.
+ *
+ * @param {string|null} tier
+ * @returns {string}
+ */
+export function whyTitle(tier) {
+  const label = TIER_META[tier]?.label ?? 'unassigned'
+  return `Why ${label}`
+}
+
+/** The tones a reason's line takes: what it does to the row's tier. */
+export const REASON_HOLDS = 'holds-back'
+export const REASON_SUPPORTS = 'supports'
+export const REASON_NEUTRAL = 'neutral'
+
+/**
+ * What a reason does to the row: holds the tier back, supports it (what a row
+ * kept its tier on), or neither (a reason that claims nothing, a grouping, an
+ * isotopologue that follows its M0 without being taken down).
+ *
+ * @param {object} reason - one entry of `tierReasonsOf`
+ * @returns {string} one of the `REASON_*` tones
+ */
+export function reasonTone(reason) {
+  if (holdsTierDown(reason)) return REASON_HOLDS
+  return reasonIcon(reason) === 'ph-check' ? REASON_SUPPORTS : REASON_NEUTRAL
+}
+
+/**
+ * The reasons in the order the Why box lists them: those that hold the tier
+ * back first, then the rest, each group in the order the run wrote it.
+ *
+ * @param {Array<object>} reasons - `tierReasonsOf`'s list
+ * @returns {Array<object>}
+ */
+export function orderedReasons(reasons) {
+  const list = Array.isArray(reasons) ? reasons : []
+  return [...list.filter(holdsTierDown), ...list.filter((reason) => !holdsTierDown(reason))]
+}
+
+/**
+ * The batch group a supporting reason spans: a second channel is the
+ * neutral's other channels, a series anchor the series.
+ */
+const REASON_GROUP_KINDS = Object.freeze({
+  corroborated: 'channels',
+  series_anchor: 'series'
+})
+
+/**
+ * The batch's group a reason spans, from the detail's `batch_groups`, or null
+ * where the reason spans none or the batch serves no such group.
+ *
+ * A batch peak can sit in several series: its formula lattice can reach a
+ * CH2 series and an O series. The series a `series_anchor` reason is about
+ * is the row's own, the detail's `batch_series`, so its group is the one
+ * with that unit and mechanism. The root is not matched: the batch serves
+ * one group per lattice, rooted at its lightest root, so a record naming
+ * another root of the same lattice still reads that group. Every served
+ * group holds the peak, and the peak's own lattice fixes it among those of
+ * one unit and mechanism. Without that record the group is read only when
+ * the batch serves one series group, never guessed among several.
+ *
+ * @param {object} reason - one entry of `tierReasonsOf`
+ * @param {Array<object>|null} groups - the detail's `batch_groups`
+ * @param {object|null} [series] - the detail's `batch_series`
+ * @returns {object|null}
+ */
+export function reasonGroup(reason, groups, series = null) {
+  const kind = REASON_GROUP_KINDS[reason?.rule]
+  if (!kind || !Array.isArray(groups)) return null
+  const served = groups.filter((group) => group?.kind === kind && group.members?.length)
+  if (kind !== 'series') return served[0] ?? null
+  if (!series?.unit) return served.length === 1 ? served[0] : null
+  return (
+    served.find(
+      (group) =>
+        group.unit === series.unit &&
+        (series.ionization_mechanism_id == null ||
+          group.ionization_mechanism_id == null ||
+          String(group.ionization_mechanism_id) === String(series.ionization_mechanism_id))
+    ) ?? null
+  )
+}
+
+const signed = new Intl.NumberFormat('en-US', { signDisplay: 'always' })
+
+/**
+ * How a group's member is labelled beside its m/z: a series member by its
+ * step from the root in the group's own unit ("root", "+1 CH2", "-2 CH2"),
+ * any other by its channel, else its formula.
+ *
+ * @param {object} member - one of a group's `members`
+ * @param {object} group - the group
+ * @returns {string}
+ */
+export function memberLabel(member, group) {
+  if (group?.kind === 'series' && Number.isInteger(member?.step)) {
+    if (member.step === 0) return 'root'
+    return `${signed.format(member.step)} ${group.unit || 'unit'}`
+  }
+  return member?.mechanism || member?.ion_formula || member?.formula || 'another row'
+}
+
+/**
+ * The isotope tile: the lines found of those predicted, from the family the
+ * card lists and the lines the run asked for and did not find.
+ *
+ * @param {object} options
+ * @param {Array<object>} options.family - the family's rows, the head included
+ * @param {Array<object>} options.missing - `notFoundLines` of the head
+ * @param {number|null} options.abundanceError - the row's abundance error
+ * @returns {{value: string, caption: string, found: number, predicted: number}}
+ */
+export function isotopeTile({ family, missing, abundanceError }) {
+  const found = Math.max(0, (family?.length ?? 0) - 1)
+  const absent = (missing ?? []).filter((line) => line?.state !== LINE_UNTESTABLE).length
+  const untested = (missing ?? []).length - absent
+  const predicted = found + (missing ?? []).length
+  const parts = []
+  if (abundanceError != null) {
+    parts.push(`abundance off by ${num.relativeAbundanceError.format(Math.abs(abundanceError))}`)
+  }
+  if (absent) parts.push(`${absent} not found`)
+  if (untested) parts.push(`${untested} not tested`)
+  if (!predicted) {
+    return { value: 'M0 only', caption: 'no isotope line found or asked for', found, predicted }
+  }
+  return {
+    value: `${found} of ${predicted}`,
+    caption: parts.length ? parts.join(' · ') : 'isotope lines found of those predicted',
+    found,
+    predicted
+  }
+}
+
+/**
+ * The batch tile: the samples the peak's batch peak is in, and how many of the
+ * batch's readings the card lists for it.
+ *
+ * @param {object} options
+ * @param {number|null} options.present - samples the batch peak is in
+ * @param {number|null} options.total - samples in the batch, where known
+ * @param {number} options.readings - the batch readings the card lists
+ * @param {boolean} options.inBatch - whether the peak sits in a batch peak
+ * @returns {{value: string, caption: string}}
+ */
+export function batchTile({ present, total, readings, inBatch }) {
+  const readingsWord = `${readings} batch reading${readings === 1 ? '' : 's'}`
+  if (Number.isInteger(present)) {
+    const of = Number.isInteger(total) ? ` of ${total}` : ''
+    return {
+      value: `${present}${of}`,
+      caption: `sample${present === 1 && !of ? '' : 's'} it is in · ${readingsWord}`
+    }
+  }
+  if (inBatch || readings) return { value: '—', caption: readingsWord }
+  return { value: '—', caption: 'in no batch peak' }
+}

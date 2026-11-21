@@ -778,3 +778,13 @@ describe('PanePeakSearch curation help card', () => {
     expect(wrapper.find('.dt-head .curate-header').exists()).toBe(true)
   })
 })
+
+// The search the inspector's *Find other formulas for this peak* opens is
+// titled the same, so the button and the pane name one thing.
+describe('PanePeakSearch title', () => {
+  it('names itself as the button that opens it does', async () => {
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.search-title').text()).toContain('Find other formulas for this peak')
+  })
+})

@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { flushPromises, mount } from '@vue/test-utils'
 import { ref } from 'vue'
 
@@ -273,6 +275,8 @@ const VERDICT = {
 }
 
 const mz = (value) => `m/z ${num.mz.format(value)}`
+// A note of a change by hand is one line; its whole sentence is its tooltip.
+const noteSentence = (wrapper) => wrapper.find('.manual-note').attributes('data-tooltip')
 const intensity = (value) => `intensity ${num.peakIntensity.format(value)}`
 
 beforeEach(() => {
@@ -744,12 +748,15 @@ describe('PanePeakAssign unassigned card', () => {
     expect(text).toContain(intensity(4200))
   })
 
+  // The formula names an assigned card, and its ion line says where the peak
+  // sits; the peak's own summary line is the unassigned card's.
   it('leaves an assigned card alone - its formula already names it', async () => {
     focusedAssignment = assignment({ formula: 'C10H12', tier: 'assigned' })
     const wrapper = await mountPane()
 
     expect(wrapper.text()).toContain('C10H12')
-    expect(wrapper.text()).not.toContain(mz(200.12345))
+    expect(wrapper.find('[data-testid="peak-summary"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="ion-line"]').text()).toContain(mz(200.12345))
     expect(wrapper.text()).not.toContain(intensity(12345))
   })
 
@@ -2112,8 +2119,10 @@ describe('PanePeakAssign close alternatives', () => {
     const wrapper = await mountPane()
 
     expect(alts(wrapper)).toEqual(['C7H16O5'])
-    // The count in the label is the shown list, not the stored one.
-    expect(wrapper.find('.alts-count').text()).toBe('1')
+    // The count on the folded line is the shown list, not the stored one.
+    expect(wrapper.find('[data-testid="section-alternatives"] .section-summary').text()).toMatch(
+      /^1 rival · C7H16O5 fit 70%$/
+    )
   })
 
   // The untargeted shortlist is formula-only, so a missing `ion_formula` is not
@@ -2231,7 +2240,7 @@ describe('PanePeakAssign manual curation', () => {
     // alone would seldom be reachable.
     const reason = wrapper.vm.altTooltip(ALTERNATIVES[3])
     expect(reason).toContain('Not assignable to this peak')
-    expect(reason).toContain('Find more searches wider')
+    expect(reason).toContain('Find other formulas for this peak searches wider')
     expect(wrapper.vm.altTooltip(ALTERNATIVES[0])).not.toContain('Not assignable')
   })
 
@@ -2319,12 +2328,12 @@ describe('PanePeakAssign manual curation', () => {
       alternatives: ALTERNATIVES,
       provenance: { manual: { action: 'promote_alternative', previous_formula: 'C6H12O6' } }
     }
-    const wrapper = await mountPane()
+    const wrapper = await mountPane({ recordTooltips: true })
 
-    const note = wrapper.find('.manual-note').text()
+    const note = noteSentence(wrapper)
     expect(note).toContain('Assigned by hand')
     expect(note).toContain('C6H12O6')
-    expect(note).toContain('use this')
+    expect(note).toContain('Undo puts it back')
   })
 
   /**
@@ -2359,9 +2368,9 @@ describe('PanePeakAssign manual curation', () => {
       alternatives: ALTERNATIVES,
       provenance: override([{}, {}])
     }
-    const wrapper = await mountPane()
+    const wrapper = await mountPane({ recordTooltips: true })
 
-    const note = wrapper.find('.manual-note').text()
+    const note = noteSentence(wrapper)
     expect(note).toContain('puts back the 2 isotopologues unassigned with it')
     // The restore skips an isotopologue someone has curated since, so the note must
     // not promise all of them come back.
@@ -2375,17 +2384,17 @@ describe('PanePeakAssign manual curation', () => {
       alternatives: ALTERNATIVES,
       provenance: override()
     }
-    const wrapper = await mountPane()
+    const wrapper = await mountPane({ recordTooltips: true })
 
-    expect(wrapper.find('.manual-note').text()).not.toContain('isotopologue')
+    expect(noteSentence(wrapper)).not.toContain('isotopologue')
   })
 
   it('counts one restored isotopologue in the singular', async () => {
     focusedAssignment = { ...focusedAssignment, source: 'manual' }
     detailRecord = { ...focusedAssignment, provenance: override([{}]) }
-    const wrapper = await mountPane()
+    const wrapper = await mountPane({ recordTooltips: true })
 
-    expect(wrapper.find('.manual-note').text()).toContain('the 1 isotopologue ')
+    expect(noteSentence(wrapper)).toContain('the 1 isotopologue ')
   })
 
   // Curating one row twice carries the first override's archive forward, so the
@@ -2402,9 +2411,9 @@ describe('PanePeakAssign manual curation', () => {
         { owner_ionization_mechanism_id: 'im-na' }
       ])
     }
-    const wrapper = await mountPane()
+    const wrapper = await mountPane({ recordTooltips: true })
 
-    expect(wrapper.find('.manual-note').text()).toContain('the 1 isotopologue ')
+    expect(noteSentence(wrapper)).toContain('the 1 isotopologue ')
   })
 
   // `source` rides on the slim ledger row while provenance waits on the detail
@@ -2412,10 +2421,10 @@ describe('PanePeakAssign manual curation', () => {
   it('says so before the detail carrying the replaced formula lands', async () => {
     focusedAssignment = { ...focusedAssignment, source: 'manual' }
     detailRecord = null
-    const wrapper = await mountPane()
+    const wrapper = await mountPane({ recordTooltips: true })
 
     expect(wrapper.find('.manual-note').exists()).toBe(true)
-    expect(wrapper.find('.manual-note').text()).toContain('Assigned by hand')
+    expect(noteSentence(wrapper)).toContain('Assigned by hand')
   })
 
   it('leaves an engine-assigned row unmarked', async () => {
@@ -2454,16 +2463,20 @@ describe('PanePeakAssign an isotopologue stripped by an override', () => {
   })
 
   it('does not read as a formula somebody chose', async () => {
-    const wrapper = await mountPane()
-    const note = wrapper.find('.manual-note').text()
+    const wrapper = await mountPane({ recordTooltips: true })
+    const note = noteSentence(wrapper)
 
+    // One line, naming the compound it was a line of.
+    expect(wrapper.find('.manual-note .note-text').text()).toBe(
+      'Unassigned by hand: a line of C6H12O6'
+    )
     expect(note).not.toContain('Assigned by hand')
     expect(note).not.toContain('in place of')
   })
 
   it('says what happened to the row and names the compound it belonged to', async () => {
-    const wrapper = await mountPane()
-    const note = wrapper.find('.manual-note').text()
+    const wrapper = await mountPane({ recordTooltips: true })
+    const note = noteSentence(wrapper)
 
     expect(note).toContain('Unassigned by hand')
     expect(note).toContain('this peak was an isotopologue of C6H12O6')
@@ -2477,9 +2490,9 @@ describe('PanePeakAssign an isotopologue stripped by an override', () => {
       ...DEMOTED,
       provenance: { manual: { action: 'demote_isotopologue', previous_formula: 'C6H12O6' } }
     }
-    const wrapper = await mountPane()
+    const wrapper = await mountPane({ recordTooltips: true })
 
-    expect(wrapper.find('.manual-note').text()).toContain('isotopologue of C6H12O6')
+    expect(noteSentence(wrapper)).toContain('isotopologue of C6H12O6')
   })
 
   // Rows demoted by earlier builds carry the action's retired name, and are no
@@ -2490,8 +2503,8 @@ describe('PanePeakAssign an isotopologue stripped by an override', () => {
       ...DEMOTED,
       provenance: { manual: { ...PROVENANCE.manual, action: 'demote_satellite' } }
     }
-    const wrapper = await mountPane()
-    const note = wrapper.find('.manual-note').text()
+    const wrapper = await mountPane({ recordTooltips: true })
+    const note = noteSentence(wrapper)
 
     expect(note).toContain('Unassigned by hand')
     expect(note).not.toContain('in place of')
@@ -2502,8 +2515,8 @@ describe('PanePeakAssign an isotopologue stripped by an override', () => {
   // it, which makes a formula-less 'manual' row a demotion.
   it('reads as a demotion before the detail arrives, without naming a compound', async () => {
     detailRecord = null
-    const wrapper = await mountPane()
-    const note = wrapper.find('.manual-note').text()
+    const wrapper = await mountPane({ recordTooltips: true })
+    const note = noteSentence(wrapper)
 
     expect(note).toContain(
       'Unassigned by hand when the compound this peak was an isotopologue of was replaced'
@@ -2519,9 +2532,9 @@ describe('PanePeakAssign an isotopologue stripped by an override', () => {
       ...focusedAssignment,
       provenance: { manual: { action: 'set_assignment' } }
     }
-    const wrapper = await mountPane()
+    const wrapper = await mountPane({ recordTooltips: true })
 
-    expect(wrapper.find('.manual-note').text()).toContain('Assigned by hand')
+    expect(noteSentence(wrapper)).toContain('Assigned by hand')
   })
 })
 
@@ -2647,7 +2660,7 @@ describe('PanePeakAssign an override whose previous winner named no adduct', () 
     const reason = wrapper.vm.altTooltip(SHORTLIST, 1)
 
     expect(reason).toContain('Not assignable to this peak')
-    expect(reason).toContain('Find more searches wider than this shortlist')
+    expect(reason).toContain('Find other formulas for this peak searches wider than this shortlist')
     expect(reason).not.toContain('Cannot be undone here')
   })
 
@@ -2662,13 +2675,13 @@ describe('PanePeakAssign an override whose previous winner named no adduct', () 
   })
 
   it('does not promise an undo the card cannot perform', async () => {
-    const wrapper = await mountPane()
-    const note = wrapper.find('.manual-note').text()
+    const wrapper = await mountPane({ recordTooltips: true })
+    const note = noteSentence(wrapper)
 
     expect(note).toContain('in place of C6H12O6')
     expect(note).toContain('cannot be put back by hand')
     expect(note).toContain('the 1 isotopologue unassigned with it stays unassigned')
-    expect(note).not.toContain('on it to undo')
+    expect(note).not.toContain('Undo puts it back')
   })
 
   it('keeps the undo wording when the archived winner did name an adduct', async () => {
@@ -2678,10 +2691,10 @@ describe('PanePeakAssign an override whose previous winner named no adduct', () 
       alternatives: [previous, SHORTLIST],
       provenance: override([{}], previous)
     }
-    const wrapper = await mountPane()
-    const note = wrapper.find('.manual-note').text()
+    const wrapper = await mountPane({ recordTooltips: true })
+    const note = noteSentence(wrapper)
 
-    expect(note).toContain('on it to undo')
+    expect(note).toContain('Undo puts it back')
     expect(note).toContain('puts back the 1 isotopologue ')
     expect(note).not.toContain('cannot be put back')
   })
@@ -2715,13 +2728,13 @@ describe('PanePeakAssign an override whose previous winner named no adduct', () 
         isotope_label: 'M0'
       }
     ]
-    const wrapper = await mountPane()
+    const wrapper = await mountPane({ recordTooltips: true })
 
     expect(useButtons(wrapper)).toHaveLength(0)
     expect(wrapper.vm.alternatives[0].scored).toBeNull()
     expect(wrapper.vm.altTooltip(wrapper.vm.alternatives[0], 0)).toContain('Cannot be undone here')
     // The note and the control still agree with each other.
-    expect(wrapper.find('.manual-note').text()).toContain('cannot be put back by hand')
+    expect(noteSentence(wrapper)).toContain('cannot be put back by hand')
   })
 
   // The same measurement on an ordinary shortlist entry lower down is used
@@ -2770,9 +2783,9 @@ describe('PanePeakAssign an override whose previous winner named no adduct', () 
       ...CURATED,
       provenance: { manual: { action: 'promote_alternative', previous_formula: 'C6H12O6' } }
     }
-    const wrapper = await mountPane()
+    const wrapper = await mountPane({ recordTooltips: true })
 
-    expect(wrapper.find('.manual-note').text()).toContain('on it to undo')
+    expect(noteSentence(wrapper)).toContain('Undo puts it back')
   })
 })
 
@@ -2940,7 +2953,7 @@ describe('PanePeakAssign scoring the formula-only shortlist', () => {
     const reason = wrapper.vm.noAdductHint(wrapper.vm.alternatives[1], 1)
 
     expect(reason).toContain('None of this sample')
-    expect(reason).toContain('Find more searches wider than this shortlist')
+    expect(reason).toContain('Find other formulas for this peak searches wider than this shortlist')
     expect(blockedButtons(wrapper)).toHaveLength(2)
   })
 
@@ -3172,9 +3185,9 @@ describe('PanePeakAssign batch curation on a derived row', () => {
       previous: { consensus_formula: 'C6H12O6' },
       measured: MEASURED
     }
-    const wrapper = await mountPane()
+    const wrapper = await mountPane({ recordTooltips: true })
 
-    expect(wrapper.find('.pin-measured').text()).toBe(
+    expect(wrapper.find('[data-testid="batch-pin-note"]').attributes('data-tooltip')).toContain(
       'Measured before the pin: fit 81%, candidate, 2 of 3 lines.'
     )
   })
@@ -3186,12 +3199,14 @@ describe('PanePeakAssign batch curation on a derived row', () => {
       formula: 'C7H14O7',
       previous: { consensus_formula: 'C6H12O6' }
     }
-    const wrapper = await mountPane()
+    const wrapper = await mountPane({ recordTooltips: true })
 
+    // One line, its whole sentence on hover.
     const note = wrapper.find('.manual-note')
     expect(note.exists()).toBe(true)
-    expect(note.text()).toContain('Curated by hand for the whole batch')
-    expect(note.text()).toContain('in place of C6H12O6')
+    expect(note.find('.note-text').text()).toBe('Curated for the batch in place of C6H12O6')
+    expect(note.attributes('data-tooltip')).toContain('Curated by hand for the whole batch')
+    expect(note.attributes('data-tooltip')).toContain('in place of C6H12O6')
 
     await note.find('.release-link').trigger('click')
     await settle(wrapper)
@@ -3364,13 +3379,12 @@ describe('PanePeakAssign on-demand evidence for a derived row', () => {
     focusedAssignment = { ...derivedM0(), p_correct: 0.87, source: 'database' }
     const wrapper = await mountPane({ recordTooltips: true })
 
-    const rows = Object.fromEntries(
-      wrapper.findAll('.evidence .ev').map((ev) => [ev.find('.k').text(), ev.find('.v')])
-    )
-    expect(rows).not.toHaveProperty('P(correct)')
-    expect(wrapper.find('.evidence').text()).not.toContain('87')
-    expect(rows.confidence.text()).toBe('—')
-    expect(rows.confidence.attributes('data-tooltip')).toMatch(/assignment run/)
+    const confidence = wrapper.find('[data-testid="tile-confidence"]')
+    expect(wrapper.text()).not.toContain('P(correct)')
+    expect(wrapper.find('[data-testid="measurements"]').text()).not.toContain('87')
+    expect(confidence.find('.tile-value').text()).toBe('—')
+    expect(confidence.find('.tile-value').attributes('data-tooltip')).toMatch(/assignment run/)
+    expect(confidence.find('.tile-caption').text()).toMatch(/batch ledger/)
   })
 
   // The isotopologue table is where the focused peak's m/z is read, so it is
@@ -3397,12 +3411,13 @@ describe('PanePeakAssign on-demand evidence for a derived row', () => {
     expect(loadEvidence).toHaveBeenCalledWith(
       expect.objectContaining({ peak_assignment_id: 'fold-bp-1' })
     )
-    const grid = wrapper.find('.evidence').text()
-    expect(grid).toContain('m/z error')
-    expect(grid).toContain(num.mzError.format(0.4))
-    expect(grid).toContain('plausibility')
-    expect(grid).toContain('evidence')
-    expect(grid).not.toContain('measuring')
+    const grid = wrapper.find('[data-testid="measurements"]').text()
+    expect(wrapper.find('[data-testid="tile-mass"]').text()).toContain(
+      `${num.mzError.format(0.4)} ppm`
+    )
+    expect(wrapper.find('[data-testid="product-line"]').text()).toContain('plausibility')
+    expect(wrapper.find('[data-testid="evidence-bar"]').exists()).toBe(true)
+    expect(grid).not.toMatch(/measuring/i)
 
     const rows = wrapper.findAll('.iso-row').map((row) => row.text())
     expect(rows).toHaveLength(2)
@@ -3422,10 +3437,10 @@ describe('PanePeakAssign on-demand evidence for a derived row', () => {
     expect(loadEvidence).toHaveBeenCalledWith(
       expect.objectContaining({ peak_assignment_id: 'fold-bp-1' })
     )
-    const grid = wrapper.find('.evidence').text()
+    const grid = wrapper.find('[data-testid="tile-mass"]').text()
     expect(grid).toContain(num.mzError.format(1.1))
     // The row names no isotope of its own; the measurement labels it.
-    expect(wrapper.find('.insp-sub').text()).toContain('M+1')
+    expect(wrapper.find('[data-testid="ion-line"]').text()).toContain('M+1')
   })
 
   it('asks nothing for a run of its own, whose rows carry their numbers', async () => {
@@ -3466,7 +3481,7 @@ describe('PanePeakAssign on-demand evidence for a derived row', () => {
     evidenceKey = 'fold-bp-1'
     measuringNow = true
     let wrapper = await mountPane()
-    expect(wrapper.find('.evidence').text()).toContain('measuring')
+    expect(wrapper.find('[data-testid="measurements"]').text()).toMatch(/measuring/i)
 
     measuringNow = false
     evidenceRecord = {
@@ -3475,7 +3490,9 @@ describe('PanePeakAssign on-demand evidence for a derived row', () => {
       blocked_reason: 'the ion did not land on this peak'
     }
     wrapper = await mountPane()
-    expect(wrapper.find('.evidence').text()).toContain('the ion did not land on this peak')
+    expect(wrapper.find('[data-testid="measurements"]').text()).toContain(
+      'the ion did not land on this peak'
+    )
   })
 
   // The pattern was measured but nothing predicted paired with the family's
@@ -3496,10 +3513,10 @@ describe('PanePeakAssign on-demand evidence for a derived row', () => {
     }
     const wrapper = await mountPane()
 
-    const grid = wrapper.find('.evidence').text()
-    expect(grid).toContain('main peak')
+    const grid = wrapper.find('[data-testid="measurements"]').text()
+    expect(grid).toMatch(/main peak/i)
     expect(grid).toContain('M+2 predicted at m/z 238.7537')
-    expect(grid).not.toContain('not measured')
+    expect(grid).not.toMatch(/not measured/i)
   })
 })
 
@@ -3695,16 +3712,16 @@ describe('PanePeakAssign mass z', () => {
     config: { mass_calibration: calibration }
   })
 
-  it('shows the distance right after the ppm error, from the ledger row', async () => {
+  it('shows the distance under the ppm error, from the ledger row', async () => {
     focusedAssignment = ROW
     runRecord = withCalibration(CALIBRATION)
     const wrapper = await mountPane({ recordTooltips: true })
 
-    expect(massZ(wrapper).find('.v').text()).toBe('+1.3')
-    expect(massZ(wrapper).find('.v').classes()).not.toContain('far')
-    const keys = wrapper.findAll('.evidence .ev .k').map((key) => key.text())
-    expect(keys.indexOf('mass z')).toBe(keys.indexOf('m/z error') + 1)
-    expect(massZ(wrapper).find('.k').attributes('data-tooltip')).toBe(
+    // The mass tile's caption, under the ppm error it puts on the run's scale.
+    expect(massZ(wrapper).text()).toBe("+1.3 widths from the run's centre")
+    expect(massZ(wrapper).classes()).not.toContain('far')
+    expect(wrapper.find('[data-testid="tile-mass"] .tile-value').text()).toBe('0.42 ppm')
+    expect(massZ(wrapper).attributes('data-tooltip')).toBe(
       [
         "The m/z error in widths of the run's own mass calibration at this m/z.",
         'The run measured a centre of 0.12 ppm and a width of 0.30 ppm.',
@@ -3720,8 +3737,8 @@ describe('PanePeakAssign mass z', () => {
     runRecord = withCalibration(CALIBRATION)
     const wrapper = await mountPane()
 
-    expect(massZ(wrapper).find('.v').text()).toBe('-3.4')
-    expect(massZ(wrapper).find('.v').classes()).toContain('far')
+    expect(massZ(wrapper).text()).toBe("-3.4 widths from the run's centre")
+    expect(massZ(wrapper).classes()).toContain('far')
   })
 
   it('names a centre that follows m/z rather than a number', async () => {
@@ -3729,7 +3746,7 @@ describe('PanePeakAssign mass z', () => {
     runRecord = withCalibration({ ...CALIBRATION, centre: 'trend' })
     const wrapper = await mountPane({ recordTooltips: true })
 
-    expect(massZ(wrapper).find('.k').attributes('data-tooltip')).toContain(
+    expect(massZ(wrapper).attributes('data-tooltip')).toContain(
       'The run measured a centre that follows m/z and a width of 0.30 ppm.'
     )
   })
@@ -3740,8 +3757,8 @@ describe('PanePeakAssign mass z', () => {
     const wrapper = await mountPane({ recordTooltips: true })
 
     // No cap to be past: nothing on the run says where it is.
-    expect(massZ(wrapper).find('.v').classes()).not.toContain('far')
-    expect(massZ(wrapper).find('.k').attributes('data-tooltip')).toBe(
+    expect(massZ(wrapper).classes()).not.toContain('far')
+    expect(massZ(wrapper).attributes('data-tooltip')).toBe(
       "The m/z error in widths of the run's own mass calibration at this m/z."
     )
   })
@@ -3771,8 +3788,8 @@ describe('PanePeakAssign mass z', () => {
     runRecord = withModel(MODEL)
     const wrapper = await mountPane({ recordTooltips: true })
 
-    expect(massZ(wrapper).find('.v').classes()).toContain('far')
-    expect(massZ(wrapper).find('.k').attributes('data-tooltip')).toBe(
+    expect(massZ(wrapper).classes()).toContain('far')
+    expect(massZ(wrapper).attributes('data-tooltip')).toBe(
       [
         "The m/z error in widths of the run's own mass calibration at this m/z.",
         'The run measured a centre of -0.21 ppm and a width of 0.58 ppm.',
@@ -3790,7 +3807,7 @@ describe('PanePeakAssign mass z', () => {
     }
     const wrapper = await mountPane()
 
-    expect(massZ(wrapper).find('.v').classes()).toContain('far')
+    expect(massZ(wrapper).classes()).toContain('far')
   })
 })
 
@@ -3817,8 +3834,9 @@ describe('PanePeakAssign the same ion read another way', () => {
   }
   const RIVAL = { assigned_formula: 'C2H5N3', ion_formula: 'C2H6N3+', fit_score: 0.4 }
   const readings = (wrapper) => wrapper.findAll('[data-testid="same-ion"] .reading')
+  // The Why box's blocks, in order.
   const blocks = (wrapper) =>
-    [...wrapper.find('section.inspector').element.children].map((node) => node.classList[0])
+    [...wrapper.find('[data-testid="why"]').element.children].map((node) => node.classList[0])
 
   beforeEach(() => {
     focusedAssignment = COMMITTED
@@ -3914,12 +3932,15 @@ describe('PanePeakAssign ionization and reference lists', () => {
     ]
   })
 
-  it('names the ionization after the formula, and says on hover what it made of it', async () => {
+  // The ion line opens on the mechanism, as a chemist writes the pair, then the
+  // ion it made: "[M+H]+ → C3H8NO+".
+  it('leads the ion line with the ionization, and says on hover what it made of it', async () => {
     const wrapper = await mountPane({ recordTooltips: true })
-    const title = [...wrapper.find('.insp-head .insp-title').element.children]
+    const line = field(wrapper, 'ion-line')
 
-    expect(title.map((node) => node.textContent)).toEqual(['C3H7NO', '[M+H]+'])
-    expect(title[1].dataset.testid).toBe('ionization')
+    expect(wrapper.find('.insp-formula').text()).toBe('C3H7NO')
+    expect(line.text()).toMatch(/^\[M\+H\]\+\s*→\s*C3H8NO\+\s*·/)
+    expect(line.element.firstElementChild.dataset.testid).toBe('ionization')
     expect(field(wrapper, 'ionization').attributes('data-tooltip')).toBe(
       'Ionization mechanism: C3H7NO [M+H]+ → C3H8NO+'
     )
@@ -3928,11 +3949,15 @@ describe('PanePeakAssign ionization and reference lists', () => {
   it('stands above the evidence, the list line with the list name alone', async () => {
     detailRecord = { provenance: { reference_identities: [LISTED] }, known_compounds: [] }
     const wrapper = await mountPane()
-    const order = [...wrapper.find('section.inspector').element.children].map(
+    const answer = [...field(wrapper, 'answer').element.children].map((node) => node.classList[0])
+    const card = [...wrapper.find('section.inspector').element.children].map(
       (node) => node.classList[0]
     )
 
-    expect(order.indexOf('identity')).toBe(order.indexOf('evidence') - 1)
+    // The list's name leads the answer, over the formula; the answer leads the
+    // card, over the reasons and the measurements.
+    expect(answer.indexOf('identity')).toBe(answer.indexOf('insp-title') - 1)
+    expect(card.indexOf('answer')).toBeLessThan(card.indexOf('measurements'))
     expect(field(wrapper, 'identity').findAll('.ev').length).toBe(1)
     expect(wrapper.findAll('[data-testid="ionization"]').length).toBe(1)
   })
@@ -3944,8 +3969,10 @@ describe('PanePeakAssign ionization and reference lists', () => {
     focusedAssignment = { ...DMF, isotope_label: 'M0' }
     const wrapper = await mountPane()
 
-    expect(wrapper.find('.insp-sub').text()).toMatch(/^C3H8NO\+\s*·\s*M0\s*·\s*list match$/)
-    expect(wrapper.findAll('.evidence .ev .k').map((key) => key.text())).not.toContain('isotope')
+    expect(field(wrapper, 'ion-line').text()).toMatch(
+      /^\[M\+H\]\+\s*→\s*C3H8NO\+\s*·\s*m\/z 200\.1235\s*·\s*M0\s*·\s*list match$/
+    )
+    expect(wrapper.findAll('[data-part="isotope"]')).toHaveLength(1)
   })
 
   it('leaves the ionization out where the deployment does not list the mechanism', async () => {
@@ -4313,8 +4340,6 @@ describe('PanePeakAssign hover text', () => {
     abundance_error: 0.04
   }
   const tip = (element) => element.attributes('data-tooltip')
-  const key = (wrapper, name) =>
-    wrapper.findAll('.evidence .ev .k').find((element) => element.text() === name)
 
   beforeEach(() => {
     focusedAssignment = ROW
@@ -4322,11 +4347,12 @@ describe('PanePeakAssign hover text', () => {
 
   it('names the neutral, the ion, its isotope line and how it was found', async () => {
     const wrapper = await mountPane({ recordTooltips: true })
-    const parts = wrapper.findAll('.insp-sub span')
+    const parts = wrapper.findAll('[data-testid="ion-line"] [data-part]')
 
     expect(tip(wrapper.find('.insp-formula'))).toBe('Neutral formula')
     expect(parts.map(tip)).toEqual([
       'Ion formula',
+      'Measured m/z',
       'The isotope line of the ion this peak is; M0 is the monoisotopic line',
       'Found by the formula search'
     ])
@@ -4337,11 +4363,13 @@ describe('PanePeakAssign hover text', () => {
   it('says what fit, m/z error and abundance error measure', async () => {
     const wrapper = await mountPane({ recordTooltips: true })
 
-    expect(tip(key(wrapper, 'fit'))).toBe(
+    expect(tip(wrapper.find('[data-testid="product-line"] [data-part="fit"]'))).toBe(
       "How well the peak and its isotope lines match the formula's predicted pattern"
     )
-    expect(tip(key(wrapper, 'm/z error'))).toBe('Measured minus predicted m/z of the peak, in ppm')
-    expect(tip(key(wrapper, 'abund. error'))).toBe(
+    expect(tip(wrapper.find('[data-testid="tile-mass"] .tile-value'))).toBe(
+      'Measured minus predicted m/z of the peak, in ppm'
+    )
+    expect(tip(wrapper.find('[data-testid="tile-isotopes"] .tile-value'))).toBe(
       'How far the measured isotope abundances are from the predicted ones'
     )
   })
@@ -4356,9 +4384,8 @@ describe('PanePeakAssign hover text', () => {
     ]) {
       detailRecord = { provenance }
       const wrapper = await mountPane({ recordTooltips: true })
-      const keys = wrapper.findAll('.evidence .ev .k').map((element) => element.text())
-
-      expect(keys).not.toContain('P(correct)')
+      expect(wrapper.find('[data-testid="measurements"]').exists()).toBe(true)
+      expect(wrapper.text()).not.toContain('P(correct)')
       expect(wrapper.text()).not.toMatch(/uncalibrated|prov\.|91%/)
     }
   })
@@ -4366,10 +4393,12 @@ describe('PanePeakAssign hover text', () => {
   // The tier row says the tiering is still being built, beside the chips.
   it('marks the tier row provisional', async () => {
     const wrapper = await mountPane({ recordTooltips: true })
-    const mark = wrapper.find('.insp-tiers [data-testid="tiering-provisional"]')
+    // A caption under the chips, not a chip of its own.
+    const mark = wrapper.find('[data-testid="answer"] .caption[data-testid="tiering-provisional"]')
 
     expect(mark.exists()).toBe(true)
-    expect(mark.text()).toBe(TIERING_PROVISIONAL.label)
+    expect(wrapper.find('.insp-tiers [data-testid="tiering-provisional"]').exists()).toBe(false)
+    expect(mark.text()).toBe(`tier rules ${TIERING_PROVISIONAL.label}`)
     expect(tip(mark)).toBe(TIERING_PROVISIONAL.tooltip)
   })
 
@@ -4445,10 +4474,11 @@ describe('PanePeakAssign hover text', () => {
     }
     const wrapper = await mountPane({ recordHelp: true })
 
-    expect(wrapper.find('.tier-reasons').attributes('data-help')).toBe('assignment-tier-reasons')
-    expect(wrapper.find('[data-testid="same-ion"]').attributes('data-help')).toBe(
+    // The Why box opens it, and holds the same ion's readings.
+    expect(wrapper.find('[data-testid="why"]').attributes('data-help')).toBe(
       'assignment-tier-reasons'
     )
+    expect(wrapper.find('[data-testid="why"] [data-testid="same-ion"]').exists()).toBe(true)
   })
 })
 
@@ -4501,8 +4531,9 @@ describe('PanePeakAssign a peak the source made', () => {
     const headline = wrapper.find('.insp-formula')
     expect(headline.text()).toBe('Br2-')
     expect(headline.attributes('data-tooltip')).toMatch(/names an ion, and no compound/)
-    const subs = wrapper.findAll('.insp-sub').map((node) => node.text())
-    expect(subs.at(-1)).toBe('reagent')
+    const line = wrapper.find('[data-testid="ion-line"]').text()
+    expect(line).toMatch(/^m\/z 157\.8367\s*·\s*M0\s*·\s*reagent$/)
+    expect(line).not.toContain('Br2-')
   })
 
   it("names a line's isotope in brackets beside where it came from", async () => {
@@ -4511,7 +4542,9 @@ describe('PanePeakAssign a peak the source made', () => {
     const wrapper = await mountPane()
 
     expect(wrapper.find('.insp-formula').text()).toBe('Br2-')
-    expect(wrapper.findAll('.insp-sub').at(-1).text()).toMatch(/^\[81Br\]\s*·\s*reagent$/)
+    expect(wrapper.find('[data-testid="ion-line"]').text()).toMatch(
+      /^m\/z 159\.8347\s*·\s*\[81Br\]\s*·\s*reagent$/
+    )
   })
 
   it("lists the ion's lines as its isotopologues, against their predictions", async () => {
@@ -4535,7 +4568,9 @@ describe('PanePeakAssign a peak the source made', () => {
     const wrapper = await mountPane()
 
     expect(wrapper.find('.insp-formula').text()).toBe('C3H7NO')
-    expect(wrapper.findAll('.insp-sub').at(-1).text()).toMatch(/^C3H8NO\+\s*·\s*list match$/)
+    expect(wrapper.find('[data-testid="ion-line"]').text()).toMatch(
+      /^C3H8NO\+\s*·\s*m\/z 200\.1235\s*·\s*M0\s*·\s*list match$/
+    )
   })
 })
 
@@ -4551,5 +4586,689 @@ describe("PanePeakAssign the engine's own tier", () => {
 
     expect(wrapper.vm.engineTierTooltip).toContain('Engine tier: below assignability,')
     expect(wrapper.vm.engineTierTooltip).not.toContain('below_assignability')
+  })
+})
+
+// The card answers before it explains (docs/dev/assignment_ledger_and_card.md,
+// section 4.1): the answer, why its tier, four measurements, folded sections
+// and a verdict bar pinned at its foot.
+describe('PanePeakAssign the card, answer first', () => {
+  const ROW = {
+    ...assignment({ formula: 'C3H4O4', tier: 'candidate' }),
+    ion_formula: 'C3H3O4-',
+    ionization_mechanism_id: 'm-hcoo',
+    isotope_label: 'M0',
+    evidence: 0.3,
+    mz_error_ppm: 0.42,
+    abundance_error: 0.12,
+    level: '4b',
+    level_evidence: 'a formula with its isotope pattern'
+  }
+  const LISTED = { name: 'Malonic acid', source: 'organics-list' }
+  const field = (wrapper, id) => wrapper.find(`[data-testid="${id}"]`)
+  // Folded, by `v-show`: in the page, not on screen.
+  const hidden = (node) => node.element.style.display === 'none'
+  const flush = async (wrapper) => {
+    await flushPromises()
+    await wrapper.vm.$nextTick()
+  }
+
+  beforeEach(() => {
+    focusedAssignment = ROW
+    mechanisms = [{ ionization_mechanism_id: 'm-hcoo', ionization_mechanism: '[M+HCOO]-' }]
+  })
+
+  describe('the answer', () => {
+    it('names a listed row by its list, then the formula, the ion line and the chips', async () => {
+      detailRecord = { provenance: { reference_identities: [LISTED] }, known_compounds: [] }
+      verdictRecord = VERDICT
+      const wrapper = await mountPane()
+      const answer = field(wrapper, 'answer')
+
+      expect(answer.find('[data-testid="listed-as"] .v').text()).toBe('Malonic acid')
+      expect(answer.find('[data-testid="listed-as"] .list-source').text()).toBe('organics-list')
+      expect(answer.find('.insp-formula').text()).toBe('C3H4O4')
+      expect(field(wrapper, 'ion-line').text()).toMatch(
+        /^\[M\+HCOO\]-\s*→\s*C3H3O4-\s*·\s*m\/z 200\.1235\s*·\s*M0$/
+      )
+      // One row: the tier, the level and the verdict.
+      const chips = field(wrapper, 'chips')
+      expect(chips.find('.tier-tag').exists()).toBe(true)
+      expect(chips.find('.level-tag').attributes('data-level')).toBe('4b')
+      expect(chips.find('.verdict-badge').exists()).toBe(true)
+    })
+
+    it('heads an unlisted row with its formula alone', async () => {
+      detailRecord = { provenance: {}, known_compounds: [] }
+      const wrapper = await mountPane()
+      const answer = field(wrapper, 'answer')
+
+      expect(answer.find('[data-testid="identity"]').exists()).toBe(false)
+      expect(answer.element.firstElementChild.classList).toContain('insp-title')
+      expect(field(wrapper, 'chips').find('.verdict-badge').exists()).toBe(false)
+    })
+
+    it('comes first, and the verdict bar last', async () => {
+      const wrapper = await mountPane()
+      const children = [...wrapper.find('section.inspector').element.children]
+
+      expect(children[0].dataset.testid).toBe('answer')
+      expect(children[1].dataset.testid).toBe('why')
+      expect(children.at(-1).dataset.testid).toBe('verdict-bar')
+    })
+  })
+
+  describe('the Why box', () => {
+    it.each([
+      ['assigned', 'Why assigned'],
+      ['candidate', 'Why candidate'],
+      ['below_assignability', 'Why below']
+    ])('is titled for a %s row', async (tier, title) => {
+      focusedAssignment = { ...ROW, tier }
+      const wrapper = await mountPane()
+
+      expect(field(wrapper, 'why-title').text()).toBe(title)
+    })
+
+    it("draws the evidence against the run's own bands, with the product line", async () => {
+      runRecord = { engine: 'mascope', tier_bands: { candidate: 0.5, assigned: 0.8 } }
+      detailRecord = { provenance: { plausibility: 1 } }
+      const wrapper = await mountPane()
+      const markers = wrapper.findAll('[data-testid="band-marker"]')
+
+      expect(
+        markers.map((marker) => [marker.attributes('data-band'), marker.element.style.left])
+      ).toEqual([
+        ['candidate', '50%'],
+        ['assigned', '80%']
+      ])
+      expect(field(wrapper, 'evidence-fill').element.style.width).toBe('30%')
+      expect(field(wrapper, 'product-line').text()).toMatch(
+        /^fit 90%\s*×\s*plausibility 100%\s*=\s*30%$/
+      )
+    })
+
+    // Evidence just under a band reads as finely as it takes not to read as
+    // the band, as the evidence-band reason's sentence does (tiering._digits):
+    // 0.746 under 0.75 is "74.6%", never "75%" beside the 75 % marker.
+    it('writes evidence just under a band finely enough not to read as it', async () => {
+      focusedAssignment = { ...ROW, tier: 'candidate', fit_score: 0.746, evidence: 0.746 }
+      detailRecord = { provenance: { plausibility: 1 } }
+      const wrapper = await mountPane()
+
+      expect(field(wrapper, 'product-line').text()).toMatch(
+        /^fit 74\.6%\s*×\s*plausibility 100\.0%\s*=\s*74\.6%$/
+      )
+      expect(field(wrapper, 'evidence-bar').find('[role="img"]').attributes('aria-label')).toMatch(
+        /^Evidence 74\.6%;/
+      )
+    })
+
+    it('reads the band it misses, the candidate band below both', async () => {
+      runRecord = { engine: 'mascope', tier_bands: { candidate: 0.5, assigned: 0.8 } }
+      focusedAssignment = {
+        ...ROW,
+        tier: 'below_assignability',
+        fit_score: 0.4996,
+        evidence: 0.4996
+      }
+      detailRecord = { provenance: { plausibility: 1 } }
+      const wrapper = await mountPane()
+
+      // 0.4996 reads "50.0%" at one decimal, as the candidate band does.
+      expect(field(wrapper, 'product-line').text()).toMatch(/=\s*49\.96%$/)
+    })
+
+    it('marks the engine defaults where the run recorded no bands', async () => {
+      const wrapper = await mountPane()
+      const markers = wrapper.findAll('[data-testid="band-marker"]')
+
+      expect(markers.map((marker) => marker.element.style.left)).toEqual(['45%', '75%'])
+    })
+
+    it('lists what holds the tier back first, each with the number it turned on', async () => {
+      detailRecord = {
+        provenance: {
+          tier_reasons: [
+            { rule: 'no_close_rival', detail: 'no rival within reach', caps: false },
+            {
+              rule: 'candidate_density',
+              detail: "3 formulas this peak's evidence could not separate",
+              caps: true
+            }
+          ]
+        }
+      }
+      const wrapper = await mountPane()
+      const reasons = wrapper.findAll('[data-testid="reason"]')
+
+      expect(reasons.map((reason) => reason.find('.reason-rule').text())).toEqual([
+        'rivals left standing',
+        'no close rival'
+      ])
+      expect(reasons[0].classes()).toContain('tone-holds-back')
+      expect(reasons[1].classes()).toContain('tone-supports')
+      expect(reasons[0].find('[data-testid="reason-figure"]').text()).toBe('3 formulas')
+    })
+
+    it("unfolds a reason to the server's sentence", async () => {
+      detailRecord = {
+        provenance: {
+          tier_reasons: [
+            { rule: 'evidence_band', detail: 'evidence 30% is under the candidate band of 45%' }
+          ]
+        }
+      }
+      const wrapper = await mountPane()
+      const reason = wrapper.find('[data-testid="reason"]')
+      const toggle = reason.find('[data-testid="reason-toggle"]')
+
+      expect(reason.find('[data-testid="reason-figure"]').text()).toBe('30%')
+      expect(toggle.attributes('aria-expanded')).toBe('false')
+      expect(hidden(reason.find('[data-testid="reason-detail"]'))).toBe(true)
+
+      await toggle.trigger('click')
+
+      expect(toggle.attributes('aria-expanded')).toBe('true')
+      expect(hidden(reason.find('[data-testid="reason-detail"]'))).toBe(false)
+      expect(reason.find('[data-testid="reason-detail"]').text()).toBe(
+        'evidence 30% is under the candidate band of 45%'
+      )
+    })
+
+    it('folds every reason again for the next peak', async () => {
+      detailRecord = { provenance: { tier_reasons: [{ rule: 'lone_peak', detail: 'one peak' }] } }
+      const wrapper = await mountPane()
+      const toggle = () => wrapper.find('[data-testid="reason-toggle"]')
+      await toggle().trigger('click')
+      expect(toggle().attributes('aria-expanded')).toBe('true')
+
+      focusedAssignment = { ...ROW, peak_assignment_id: 'pa-2', sample_peak_id: 'p-9' }
+      focusedPeak.value = { ...PEAK, peak_id: 'p-9' }
+      await wrapper.vm.$nextTick()
+
+      expect(toggle().attributes('aria-expanded')).toBe('false')
+    })
+
+    it('stands for a row seen through other channels, with no number of its own', async () => {
+      focusedAssignment = { ...ROW, fit_score: null, evidence: null, corroboration_channels: 2 }
+      const wrapper = await mountPane()
+
+      expect(field(wrapper, 'why').find('[data-testid="corroboration"]').text()).toContain(
+        'Supported by 2 channels'
+      )
+    })
+
+    describe('a reason that spans rows', () => {
+      const OTHER_PEAK = { peak_id: 'p-7', mz: 245.0105, height: 900 }
+      const channels = {
+        group_id: 'channels:C3H4O4',
+        kind: 'channels',
+        members: [
+          {
+            batch_peak_id: 'bp-1',
+            formula: 'C3H4O4',
+            mechanism: '[M+HCOO]-',
+            mz: 200.12345,
+            sample_peak_id: 'p-1'
+          },
+          {
+            batch_peak_id: 'bp-2',
+            formula: 'C3H4O4',
+            mechanism: '[M+NO3]-',
+            mz: 245.0105,
+            sample_peak_id: 'p-7'
+          },
+          {
+            batch_peak_id: 'bp-3',
+            formula: 'C3H4O4',
+            mechanism: '[M+Cl]-',
+            mz: 138.9803,
+            sample_peak_id: null
+          }
+        ]
+      }
+
+      beforeEach(() => {
+        peakList = [PEAK, OTHER_PEAK]
+      })
+
+      it('lists the channels a second channel names, each m/z a link to its peak', async () => {
+        detailRecord = {
+          provenance: {
+            tier_reasons: [{ rule: 'corroborated', detail: 'seen through 2 channels' }]
+          },
+          batch_groups: [channels]
+        }
+        const wrapper = await mountPane()
+        const members = wrapper.findAll('[data-testid="group-member"]')
+
+        expect(
+          members.map((member) => [
+            member.find('.member-label').text(),
+            member.find('.member-mz').text()
+          ])
+        ).toEqual([
+          ['[M+HCOO]-', mz(200.12345)],
+          ['[M+NO3]-', mz(245.0105)],
+          ['[M+Cl]-', mz(138.9803)]
+        ])
+        // This peak, and a member this sample holds no peak for, are no links.
+        expect(members.map((member) => member.attributes('disabled') !== undefined)).toEqual([
+          true,
+          false,
+          true
+        ])
+        await members[1].trigger('click')
+        expect(peakFocus).toHaveBeenCalledWith(OTHER_PEAK)
+      })
+
+      it("labels a series' members by their step from the root", async () => {
+        detailRecord = {
+          provenance: { tier_reasons: [{ rule: 'series_anchor', detail: 'in the O series' }] },
+          batch_series: { unit: 'O', root_formula: 'C3H4O3', root_batch_peak_id: 'bp-r' },
+          batch_groups: [
+            channels,
+            {
+              group_id: 'series:bp-r:O:im-1',
+              kind: 'series',
+              unit: 'O',
+              root_batch_peak_id: 'bp-r',
+              members: [
+                { batch_peak_id: 'bp-r', mz: 184.1, step: 0, sample_peak_id: null },
+                { batch_peak_id: 'bp-1', mz: 200.12345, step: 1, sample_peak_id: 'p-1' }
+              ]
+            }
+          ]
+        }
+        const wrapper = await mountPane()
+        const labels = wrapper.findAll('[data-testid="group-member"] .member-label')
+
+        expect(labels.map((label) => label.text())).toEqual(['root', '+1 O'])
+      })
+
+      // A batch peak's formula lattice can reach more than one series: here an
+      // O series of a lighter root, served first by root m/z, and the row's
+      // own CH2 series. The reason is about the row's own (`batch_series`),
+      // and each group's steps are in its own unit.
+      it("lists the row's own series where the peak sits in several", async () => {
+        detailRecord = {
+          provenance: { tier_reasons: [{ rule: 'series_anchor', detail: 'in the CH2 series' }] },
+          batch_series: { unit: 'CH2', root_formula: 'C2H2O4', root_batch_peak_id: 'bp-c' },
+          batch_groups: [
+            {
+              group_id: 'series:bp-r:O:im-1',
+              kind: 'series',
+              unit: 'O',
+              root_batch_peak_id: 'bp-r',
+              members: [
+                { batch_peak_id: 'bp-r', mz: 184.1, step: 0, sample_peak_id: null },
+                { batch_peak_id: 'bp-1', mz: 200.12345, step: 1, sample_peak_id: 'p-1' }
+              ]
+            },
+            {
+              group_id: 'series:bp-c:CH2:im-1',
+              kind: 'series',
+              unit: 'CH2',
+              root_batch_peak_id: 'bp-c',
+              members: [
+                { batch_peak_id: 'bp-c', mz: 186.1, step: 0, sample_peak_id: null },
+                { batch_peak_id: 'bp-1', mz: 200.12345, step: 1, sample_peak_id: 'p-1' },
+                { batch_peak_id: 'bp-5', mz: 214.13, step: 2, sample_peak_id: null }
+              ]
+            }
+          ]
+        }
+        const wrapper = await mountPane()
+        const members = wrapper.findAll('[data-testid="group-member"]')
+
+        expect(
+          members.map((member) => [
+            member.find('.member-label').text(),
+            member.find('.member-mz').text()
+          ])
+        ).toEqual([
+          ['root', mz(186.1)],
+          ['+1 CH2', mz(200.12345)],
+          ['+2 CH2', mz(214.13)]
+        ])
+      })
+
+      // The batch serves one group per series lattice, rooted at its lightest
+      // root: a row whose record names the lattice's second root lists that
+      // group's members all the same.
+      it("lists the lattice's members where the row's record names another root", async () => {
+        detailRecord = {
+          provenance: { tier_reasons: [{ rule: 'series_anchor', detail: 'in the CH2 series' }] },
+          batch_series: { unit: 'CH2', root_formula: 'C11H22O2', root_batch_peak_id: 'bp-r2' },
+          batch_groups: [
+            {
+              group_id: 'series:bp-r1:CH2:im-1',
+              kind: 'series',
+              unit: 'CH2',
+              root_batch_peak_id: 'bp-r1',
+              members: [
+                { batch_peak_id: 'bp-r1', mz: 160.1, step: 0, sample_peak_id: null },
+                { batch_peak_id: 'bp-a', mz: 174.12, step: 1, sample_peak_id: null },
+                { batch_peak_id: 'bp-r2', mz: 202.15, step: 3, sample_peak_id: null },
+                { batch_peak_id: 'bp-1', mz: 216.16, step: 4, sample_peak_id: 'p-1' }
+              ]
+            }
+          ]
+        }
+        const wrapper = await mountPane()
+        const labels = wrapper.findAll('[data-testid="group-member"] .member-label')
+
+        expect(labels.map((label) => label.text())).toEqual(['root', '+1 CH2', '+3 CH2', '+4 CH2'])
+      })
+
+      it('lists nothing where the batch serves no such group', async () => {
+        detailRecord = {
+          provenance: {
+            tier_reasons: [{ rule: 'corroborated', detail: 'seen through 2 channels' }]
+          },
+          batch_groups: []
+        }
+        const wrapper = await mountPane()
+
+        expect(wrapper.find('[data-testid="group-members"]').exists()).toBe(false)
+      })
+    })
+  })
+
+  describe('the four measurements', () => {
+    const tile = (wrapper, name) => ({
+      value: wrapper.find(`[data-testid="tile-${name}"] .tile-value`).text(),
+      caption: wrapper.find(`[data-testid="tile-${name}"] .tile-caption`).text()
+    })
+
+    it('says each value in words: mass error, isotope lines, confidence, batch', async () => {
+      const child = { ...isotopologue(ROW), mz_error_ppm: 1.1, abundance_error: 0.12 }
+      familyRows = [ROW, child]
+      runRecord = { engine: 'mascope', config: { mass_calibration: { cap_z: 3 } } }
+      focusedAssignment = { ...ROW, mass_z: 1.26 }
+      detailRecord = {
+        provenance: {
+          confidence: 0.62,
+          predicted_envelope: {
+            lines: [{ line: 'M+2', predicted_mz: 202.1, predicted_share: 0.08, state: 'absent' }]
+          }
+        },
+        batch_persistence: { n_present: 7, n_samples: 9, share: 0.78 }
+      }
+      const wrapper = await mountPane()
+
+      expect(tile(wrapper, 'mass')).toEqual({
+        value: '0.42 ppm',
+        caption: "+1.3 widths from the run's centre"
+      })
+      expect(tile(wrapper, 'isotopes')).toEqual({
+        value: '1 of 2',
+        caption: 'abundance off by 12.00% · 1 not found'
+      })
+      expect(tile(wrapper, 'confidence')).toEqual({
+        value: '62%',
+        caption: 'its share of the evidence among the candidates'
+      })
+      expect(tile(wrapper, 'batch')).toEqual({
+        value: '7 of 9',
+        caption: 'samples it is in · 1 batch reading'
+      })
+    })
+
+    it('writes the tie out', async () => {
+      detailRecord = { provenance: { confidence: 0.51, is_tie: true } }
+      const wrapper = await mountPane()
+
+      expect(tile(wrapper, 'confidence')).toEqual({
+        value: '51%',
+        caption: 'a tie: the runner-up is too close to call'
+      })
+      expect(wrapper.find('[data-testid="tile-confidence"] .tile-caption').classes()).toContain(
+        'tie'
+      )
+    })
+
+    it('reads a batch-served row off its batch peak, with no contest to weigh', async () => {
+      runRecord = { engine: 'batch' }
+      focusedAssignment = { ...ROW, peak_assignment_id: 'fold-bp-1', batch_peak_id: 'bp-1' }
+      detailRecord = { provenance: { batch_peak: { batch_peak_id: 'bp-1', n_present: 5 } } }
+      const wrapper = await mountPane()
+
+      expect(tile(wrapper, 'batch')).toEqual({
+        value: '5',
+        caption: 'samples it is in · 0 batch readings'
+      })
+      expect(tile(wrapper, 'confidence').value).toBe('—')
+    })
+  })
+
+  describe('the folded sections', () => {
+    it('folds each section, with a summary on its folded line', async () => {
+      detailRecord = {
+        alternatives: [
+          { assigned_formula: 'C4H8O3', ionization_mechanism_id: 'm-hcoo', fit_score: 0.4 }
+        ],
+        batch_flat_series: { verdict: 'flat', normaliser: 'tic' }
+      }
+      const wrapper = await mountPane()
+      const sections = wrapper.findAll('.card-section')
+
+      expect(sections.map((section) => section.find('.section-title').text())).toEqual([
+        'Isotope pattern',
+        'Alternatives',
+        'Across the batch',
+        'Identification level'
+      ])
+      for (const section of sections) {
+        expect(section.find('[data-testid="section-toggle"]').attributes('aria-expanded')).toBe(
+          'false'
+        )
+        expect(hidden(section.find('.section-body'))).toBe(true)
+      }
+      expect(sections[1].find('.section-summary').text()).toBe('1 rival · C4H8O3 fit 40%')
+      expect(sections[3].find('.section-summary').text()).toMatch(/^4b · /)
+
+      await sections[1].find('[data-testid="section-toggle"]').trigger('click')
+      expect(hidden(sections[1].find('.section-body'))).toBe(false)
+    })
+
+    it('draws the isotope pattern with a line not found hollow', async () => {
+      const child = { ...isotopologue(ROW), abundance_error: 0 }
+      familyRows = [ROW, child]
+      detailRecord = {
+        provenance: {
+          predicted_envelope: {
+            lines: [{ line: 'M+2', predicted_mz: 202.1, predicted_share: 0.08, state: 'absent' }]
+          }
+        }
+      }
+      const wrapper = await mountPane()
+      const plot = wrapper.find('[data-testid="stick-plot"]')
+
+      expect(plot.findAll('[data-testid="stick-measured"]')).toHaveLength(2)
+      expect(plot.findAll('[data-testid="stick-predicted"]')).toHaveLength(2)
+      const absent = plot.findAll('[data-testid="stick-absent"]')
+      expect(absent).toHaveLength(1)
+      expect(absent[0].classes()).toContain('hollow')
+      expect(absent[0].element.parentElement.dataset.line).toBe('M+2')
+      expect(wrapper.find('[data-testid="section-isotopes"] .section-summary').text()).toBe(
+        '1 of 2 lines found'
+      )
+    })
+
+    it('shows Use on every alternative it can commit, not only on hover', async () => {
+      detailRecord = {
+        alternatives: [
+          { assigned_formula: 'C4H8O3', ionization_mechanism_id: 'm-hcoo', fit_score: 0.4 }
+        ]
+      }
+      const wrapper = await mountPane()
+
+      expect(wrapper.find('.alt .alt-use').text()).toBe('Use')
+      // Nothing in the card's styles hides it until the row is hovered.
+      const source = readFileSync(
+        join(
+          import.meta.dirname,
+          '..',
+          '..',
+          '..',
+          'src',
+          'lib',
+          'panes',
+          'PanePeakAssign',
+          'card',
+          'CardAlternatives.vue'
+        ),
+        'utf8'
+      )
+      expect(source).not.toMatch(/\.alt-use\s*\{[^}]*opacity:\s*0;/)
+      expect(source).not.toMatch(/:hover\s+\.alt-use/)
+    })
+
+    it("lists the batch's series, ratio, reagent and blend readings as badges", async () => {
+      detailRecord = {
+        batch_series: { unit: 'CH2', root_formula: 'C2H4O2', depth: 1, step: 1 },
+        batch_continuity: { grade: 'stable', partial: false, stale: false, detail: {} },
+        batch_known_species: { verdict: 'kept', formula: 'C3H4O4' },
+        batch_blend: { formulas: ['C3H4O4', 'C4H8O3'], axis: 'intensity', p: 0.01 }
+      }
+      const wrapper = await mountPane()
+      const badges = wrapper.findAll('[data-testid="batch-badges"] .evidence-badge')
+
+      expect(badges.map((badge) => badge.attributes('data-mark'))).toEqual([
+        'series',
+        'ratio',
+        'reagent',
+        'blend'
+      ])
+      // Each in the registry's tone: a stable ratio supports the reading.
+      expect(badges[1].attributes('data-tone')).toBe('supports')
+      expect(field(wrapper, 'batch-series').text()).toContain("In the batch's CH2 series")
+      expect(field(wrapper, 'tile-batch').text()).toContain('4 batch readings')
+    })
+  })
+
+  describe('the verdict bar', () => {
+    it('offers Confirm, Reject and Unsure on a row no one has judged', async () => {
+      const wrapper = await mountPane()
+      const bar = field(wrapper, 'verdict-bar')
+
+      expect(bar.findAll('.verdict-button').map((button) => button.text())).toEqual([
+        'Confirm',
+        'Reject',
+        'Unsure'
+      ])
+      expect(bar.find('[data-testid="verdict-recorded"]').exists()).toBe(false)
+    })
+
+    it('shows the recorded verdict with Change', async () => {
+      verdictRecord = VERDICT
+      const wrapper = await mountPane()
+      const bar = field(wrapper, 'verdict-bar')
+
+      expect(bar.find('[data-testid="verdict-recorded"] .verdict-badge').exists()).toBe(true)
+      expect(bar.find('[data-testid="verdict-change"]').text()).toBe('Change')
+      expect(bar.find('.verdict-button').exists()).toBe(false)
+    })
+
+    it('turns to the three verdicts and Cancel on Change, and back on Cancel', async () => {
+      verdictRecord = VERDICT
+      const wrapper = await mountPane()
+      const bar = () => field(wrapper, 'verdict-bar')
+
+      await bar().find('[data-testid="verdict-change"]').trigger('click')
+      expect(
+        bar()
+          .findAll('.verify-buttons button')
+          .map((button) => button.text())
+      ).toEqual(['Confirm', 'Reject', 'Unsure', 'Cancel'])
+
+      await bar().findAll('.verify-buttons button').at(-1).trigger('click')
+      expect(bar().find('[data-testid="verdict-recorded"]').exists()).toBe(true)
+    })
+
+    it('opens the search under its new name', async () => {
+      const wrapper = await mountPane()
+      const find = field(wrapper, 'find-other-formulas')
+
+      expect(find.text()).toBe('Find other formulas for this peak')
+      await find.trigger('click')
+      expect(wrapper.emitted('update:showSearch')).toEqual([[true]])
+    })
+  })
+
+  describe('a note of a change by hand', () => {
+    const ALTERNATIVES = [
+      { assigned_formula: 'C6H12O6', ionization_mechanism_id: 'im-h', fit_score: 0.7 },
+      { assigned_formula: 'C7H16O5', ionization_mechanism_id: 'im-h', fit_score: 0.6 }
+    ]
+
+    beforeEach(() => {
+      focusedAssignment = { ...ROW, source: 'manual' }
+      detailRecord = {
+        alternatives: ALTERNATIVES,
+        provenance: { manual: { action: 'promote_alternative', previous_formula: 'C6H12O6' } }
+      }
+    })
+
+    it('is one line with its action, the whole sentence on hover', async () => {
+      const wrapper = await mountPane({ recordTooltips: true })
+      const note = field(wrapper, 'manual-note')
+
+      expect(note.find('.note-text').text()).toBe('Assigned by hand in place of C6H12O6')
+      expect(note.find('[data-testid="manual-undo"]').text()).toBe('Undo')
+      expect(note.attributes('data-tooltip')).toMatch(/^Assigned by hand in place of C6H12O6, /)
+    })
+
+    it('undoes through the same action as Use on the replaced assignment', async () => {
+      const wrapper = await mountPane()
+
+      await field(wrapper, 'manual-undo').trigger('click')
+      await flush(wrapper)
+      await wrapper.findAll('.alt .alt-use')[0].trigger('click')
+      await flush(wrapper)
+
+      const expected = [
+        'pa-1',
+        { action: 'promote_alternative', alternative_index: 0, expected_formula: 'C6H12O6' }
+      ]
+      expect(curate.mock.calls).toEqual([expected, expected])
+    })
+
+    // Undo commits the head alternative, so it is offered only where the head
+    // is the formula the override replaced: never another entry under its name.
+    it('offers no Undo where the head alternative is not the replaced formula', async () => {
+      detailRecord = {
+        alternatives: [...ALTERNATIVES].reverse(),
+        provenance: { manual: { action: 'promote_alternative', previous_formula: 'C6H12O6' } }
+      }
+      const wrapper = await mountPane()
+
+      expect(field(wrapper, 'manual-note').exists()).toBe(true)
+      expect(field(wrapper, 'manual-undo').exists()).toBe(false)
+    })
+
+    it('offers no Undo where the override replaced no formula', async () => {
+      detailRecord = {
+        alternatives: ALTERNATIVES,
+        provenance: { manual: { action: 'promote_alternative' } }
+      }
+      const wrapper = await mountPane()
+
+      expect(field(wrapper, 'manual-note').exists()).toBe(true)
+      expect(field(wrapper, 'manual-undo').exists()).toBe(false)
+    })
+
+    it('offers no Undo where the replaced assignment cannot be committed again', async () => {
+      detailRecord = {
+        alternatives: [{ assigned_formula: 'C6H12O6' }],
+        provenance: { manual: { action: 'promote_alternative', previous_formula: 'C6H12O6' } }
+      }
+      const wrapper = await mountPane()
+
+      expect(field(wrapper, 'manual-note').exists()).toBe(true)
+      expect(field(wrapper, 'manual-undo').exists()).toBe(false)
+    })
   })
 })

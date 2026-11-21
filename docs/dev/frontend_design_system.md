@@ -330,7 +330,7 @@ move them, and then this table moves with it.
 | Ledger strip | the filter chips (All, Assigned, Candidate, Unassigned, Targets, Reagent) with counts, then a 7px tier bar whose segments take the state colours in the tiers' order |
 | Scope switch | a two-option `SelectButton` (*This sample*, *Whole batch*) in the ledger header |
 | Sample strip | a 30px vertical tab on the second surface, its text rotated, bold count and the focused sample's name; expands to the full sample table in place |
-| Inspector card | the compound line at `--text-lg` with its tier tag, then a four-column grid of label and `--font-mono` value pairs at `--text-sm` |
+| Inspector card | the answer: a listed name over the formula at `--text-lg` in `--font-mono`, the ion line at `--text-sm` in the muted colour, one wrapping row of chips (tier, level, verdict) and a *tier rules provisional* caption; then the Why box, a hairline-bordered box titled for the tier at weight 700, an 8px evidence bar on `--p-content-hover-background` with 2px band markers in the text colour, the product line in `--font-mono`, and one line per reason, holding-back reasons first in `--state-warning` and supporting ones in `--state-success`; then the four tiles, a two-column grid of boxes on `--p-content-hover-background`, a `--font-mono` value at weight 700 over a muted `--text-sm` caption, one column under a 340px container; folded sections behind a caret and a one-line summary; the verdict bar sticky at the foot on the card's own ground. Built by MAS-1067 under `PanePeakAssign/card/` with three local sizes (`--card-text-lg`, `--card-text-base`, `--card-text-sm`) until the tokens of section 1 land |
 
 ## 10. Departures from the brand guidelines
 
