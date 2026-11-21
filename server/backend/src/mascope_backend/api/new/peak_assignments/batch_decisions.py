@@ -68,10 +68,12 @@ from mascope_backend.api.new.peak_assignments.batch_known_species import (
     KEPT_CARRIES_LINES,
     KEPT_CLAIMED_OTHERWISE,
     KEPT_LINE_OF_ANOTHER,
+    KEPT_ON_TWIN,
     KEPT_TARGET_LIBRARY,
     Species,
     _registry_exemplar,
     listed_species_row,
+    partition_of,
     sample_partition,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
@@ -181,12 +183,17 @@ class ListedDecision:
         target off the batch peak's registry, at the ion's own mass
         (``batch_known_species._registry_exemplar``).
     :param record: The decision, as a row cites it.
+    :param twin_peak_ids: The sample's peaks in the decision's twins: the
+        other batch peaks of the compound's trace in its partition
+        (:func:`twin_peaks`), where a sample that reads the compound is kept
+        (``batch_known_species.KEPT_ON_TWIN``).
     """
 
     sample_peak_id: str
     species: Species
     exemplar: dict
     record: dict
+    twin_peak_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -454,7 +461,10 @@ async def rungs_for(sample: Any, profile: Optional[str]) -> tuple[BatchSpecies, 
 
 
 def listed_from(
-    anchor: Any, sample_peak_id: str, record: dict
+    anchor: Any,
+    sample_peak_id: str,
+    record: dict,
+    twin_peak_ids: Iterable[str] = (),
 ) -> Optional[ListedDecision]:
     """The listed compound a batch peak's known-species record decided present
     on the sample's peak, or None where the record is another kind's, did not
@@ -462,6 +472,7 @@ def listed_from(
 
     :param record: The batch peak's standing record
         (``batch_peaks.standing_known_species_record``).
+    :param twin_peak_ids: The sample's peaks in its twins (:func:`twin_peaks`).
     """
     species = record.get("species") if isinstance(record, dict) else None
     if (
@@ -492,7 +503,41 @@ def listed_from(
             "batch_peak_run_id": record.get("batch_peak_run_id"),
             "version": record.get("version"),
         },
+        twin_peak_ids=tuple(sorted(twin_peak_ids)),
     )
+
+
+def _species_key(record: dict) -> Optional[tuple]:
+    """What makes two records' species one, as the batch groups them
+    (``batch_known_species.species_key``): its kind, ion and formula."""
+    species = record.get("species")
+    if not isinstance(species, dict):
+        return None
+    return (species.get("kind"), species.get("ion_formula"), species.get("formula"))
+
+
+def twin_peaks(
+    anchor: Any, record: dict, known: Iterable[tuple[str, Any, dict]]
+) -> list[str]:
+    """The sample's peaks in a decision's twins: the other batch peaks whose
+    standing record is of the same species, in the same partition. The batch
+    decides each partition's species together, and where the fold split a
+    species' trace over two batch peaks, the one that claims it keeps a sample
+    that reads it on any other (``batch_known_species.settle_twins``): one
+    held for it (``twin_of``), and one decided otherwise too.
+
+    :param known: (sample peak, batch peak, its standing known-species
+        record) for each of the sample's members that carries one.
+    """
+    key = _species_key(record)
+    partition = partition_of(anchor)
+    return [
+        peak_id
+        for peak_id, other, other_record in known
+        if other.batch_peak_id != anchor.batch_peak_id
+        and _species_key(other_record) == key
+        and partition_of(other) == partition
+    ]
 
 
 def strip_from(
@@ -608,9 +653,15 @@ async def member_decisions(
             }
     listed: dict[str, ListedDecision] = {}
     if KIND_LISTED_COMPOUND in kinds:
-        for peak_id, anchor in rows:
-            record = standing_known_species_record(anchor)
-            one = listed_from(anchor, str(peak_id), record) if record else None
+        known = [
+            (str(peak_id), anchor, record)
+            for peak_id, anchor in rows
+            if (record := standing_known_species_record(anchor)) is not None
+        ]
+        for peak_id, anchor, record in known:
+            one = listed_from(
+                anchor, peak_id, record, twin_peaks(anchor, record, known)
+            )
             if one is not None:
                 listed[one.sample_peak_id] = one
     strips: dict[str, StripDecision] = {}
@@ -682,20 +733,27 @@ def listed_decision(
     *,
     claimed: bool,
     owners: set[str],
+    on_twins: Iterable[dict] = (),
 ) -> Optional[str]:
     """What becomes of a listed compound decided present on the run's rows of
     its peak, as the batch's own claim decides a member
-    (``batch_known_species.sample_decision``): None where its reading is
-    elected, :data:`LISTED_LIFTED` where the run's own reading of the
-    compound is lifted to candidate, :data:`batch_known_species.ALREADY`
-    where the run committed it on its own, else why the run's reading is
-    kept: the target library named the peak, the peak is another row's
-    isotope line, a claim took it for the source, or its reading carries
-    isotope lines of another formula.
+    (``batch_known_species.sample_decision``, then ``decide_row``'s twins):
+    None where its reading is elected, :data:`LISTED_LIFTED` where the run's
+    own reading of the compound is lifted to candidate,
+    :data:`batch_known_species.ALREADY` where the run committed it on its
+    own, else why the run's reading is kept: the target library named the
+    peak, the peak is another row's isotope line, a claim took it for the
+    source, its reading carries isotope lines of another formula, or the run
+    reads the compound on a twin (``batch_known_species.KEPT_ON_TWIN``), so
+    the election would write a second copy of it.
 
     :param rows_on_peak: The run's elected rows on the peak.
     :param claimed: Whether the claim stage took the peak.
     :param owners: The ids of the rows some row names as the owner of its line.
+    :param on_twins: The run's elected rows on the sample's peaks in the
+        decision's twins (:attr:`ListedDecision.twin_peak_ids`). One reads
+        the compound where it reads its formula at any tier, as a twin's
+        member does (``batch_known_species.reads_on_twin``).
     """
     formula = decision.species.formula
     m0 = next((r for r in rows_on_peak if r.get("role") == ROLE_M0), None)
@@ -717,6 +775,11 @@ def listed_decision(
     lifts = m0 is not None and m0.get("assigned_formula") == formula
     if m0 is not None and str(m0.get("peak_assignment_id")) in owners and not lifts:
         return KEPT_CARRIES_LINES
+    if any(
+        row.get("role") == ROLE_M0 and row.get("assigned_formula") == formula
+        for row in on_twins
+    ):
+        return KEPT_ON_TWIN
     return LISTED_LIFTED if lifts else None
 
 
@@ -772,7 +835,13 @@ def elect_listed(
         decision = decided[peak_id]
         here = on_peak.get(peak_id, [])
         outcome = listed_decision(
-            decision, here, claimed=peak_id in claimed_peak_ids, owners=owners
+            decision,
+            here,
+            claimed=peak_id in claimed_peak_ids,
+            owners=owners,
+            on_twins=[
+                row for twin in decision.twin_peak_ids for row in on_peak.get(twin, [])
+            ],
         )
         outcomes[peak_id] = outcome or LISTED_ELECTED
         if outcome not in (None, LISTED_LIFTED):
@@ -785,6 +854,8 @@ def elect_listed(
                 peak_assignment_run_id=run_id,
             )
             added.append(m0)
+            # So a twin's decision, read after this one, sees the compound here.
+            on_peak[peak_id].append(m0)
         else:
             moved.add(id(m0))
         measured = {

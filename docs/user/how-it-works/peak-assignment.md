@@ -2604,7 +2604,9 @@ first among the row's alternatives and the decision among its tier reasons. A ru
 reads the compound below candidate on its own is lifted to candidate and keeps what it
 measured. The run keeps its own reading where the decision's claim keeps a sample's: the
 target library named the peak, the peak is another reading's isotope line or a source
-ion's claim, or its reading carries isotope lines of another formula. A run that commits
+ion's claim, its reading carries isotope lines of another formula, or it reads the
+compound's formula, at any tier, on another batch peak of the compound's split trace:
+committing it here too would give the sample a second copy. A run that commits
 the compound on its own names no decision, and the next *Decide known species* counts it
 as that sample's own test; a row the decision wrote it never counts. Each run replaces every decision
 before it. It runs as a batch run, whose summary counts the species read, present,
