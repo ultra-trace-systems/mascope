@@ -34,6 +34,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_IMPORT,
     complete_run,
     fail_run,
+    record_progress,
     request_cancel,
     start_run,
 )
@@ -369,6 +370,11 @@ async def test_a_rebuild_on_its_own_in_flight_is_running(folded, test_users):
     running = status["running"]
     assert running["batch_peak_run_id"] == run_id
     assert running["action"] == "rebuild"
+    # The running run is no pass, so its user is read from the run itself.
+    assert running["started_by"] == {
+        "id": test_users["editor"].id,
+        "username": test_users["editor"].username,
+    }
     # A rebuild keeps no progress of its own.
     assert running["stage"] is None
     assert running["process_id"] is None
@@ -388,6 +394,29 @@ async def test_a_stage_running_with_no_run_is_running(folded):
     assert status["running"]["batch_peak_run_id"] is None
     assert status["running"]["stage"] == "co_variation"
     assert status["running"]["label"] == "Read co-variation"
+
+
+async def test_a_progress_write_onto_a_closed_run_leaves_it(
+    guest_client, folded, stand_ins, async_session_factory
+):
+    """A late progress write, onto a pass already completed or failed, keeps
+    the summary its end wrote: the batch still reads that pass."""
+    batch_id = folded["batch_id"]
+    await _pass(batch_id)
+    run = await _newest_run(async_session_factory, batch_id)
+    await record_progress(run.batch_peak_run_id, {"stage": "series"})
+    assert (await _newest_run(async_session_factory, batch_id)).summary == run.summary
+    status = await _status(guest_client, batch_id)
+    assert status["state"] == "current"
+    assert status["last_pass"]["batch_peak_run_id"] == run.batch_peak_run_id
+
+    failed_id = await start_run(batch_id, ACTION_ASSIGN)
+    await fail_run(batch_id, failed_id, "broke")
+    failed = await _newest_run(async_session_factory, batch_id)
+    await record_progress(failed_id, {"stage": "series"})
+    assert (
+        await _newest_run(async_session_factory, batch_id)
+    ).summary == failed.summary
 
 
 async def test_a_pass_whose_stage_raises_is_failed(guest_client, folded, stand_ins):
@@ -536,6 +565,29 @@ async def test_a_samples_run_newer_than_the_pass_is_resampled(
     reasons = _reasons(status)
     assert set(reasons) == {"resampled"}
     assert reasons["resampled"]["count"] == 1
+    assert reasons["resampled"]["sample_item_ids"] == [folded["s1"]]
+
+
+async def test_a_samples_run_completed_during_the_pass_is_resampled(
+    guest_client, folded, stand_ins, async_session_factory
+):
+    """Measured from the pass's start: a run that completed while the pass
+    was going may have folded what the pass's stages had already read."""
+    batch_id = folded["batch_id"]
+    entered, release = _hold(stand_ins, "continuity")
+    task = asyncio.create_task(_pass(batch_id))
+    try:
+        await asyncio.wait_for(entered.wait(), 30)
+        await _add_run(async_session_factory, folded["s1"])
+    finally:
+        release.set()
+        await task
+    run = await _newest_run(async_session_factory, batch_id)
+    assert run.status == "completed"
+    status = await _status(guest_client, batch_id)
+    assert status["state"] == "behind"
+    reasons = _reasons(status)
+    assert set(reasons) == {"resampled"}
     assert reasons["resampled"]["sample_item_ids"] == [folded["s1"]]
 
 
