@@ -902,11 +902,16 @@ def claim_fragments(
 ) -> FragmentClaims:
     """Claim the peaks that are fragments of an analyte the stages committed.
 
-    Read over both stages' committed rows as they built them, before the passes
-    that judge them: a fragment read as a molecule is a partner, a second
-    channel and a rival to every other reading of its mass, and the partner
-    gate and the cross-channel pass must not weigh it as one. A fragment row is
-    claimed where three things hold:
+    Read at the one point the reading changes settle, in step 1 of the
+    judging round (``service.Judging.judge``, ``service.judge_commits``): on
+    both stages' committed rows as the partner gate settled them, under the
+    ceilings the mass gate measured on them, and before any cap. A claim is
+    not kept on that ledger: the claimed rows leave it, the mass gate
+    measures the rest again, the partner gate settles them again, and the
+    claim reads them again, until it claims nothing new. A fragment read as a
+    molecule is a partner, a second channel and a rival to every other reading
+    of its mass, and the partner gate and the cross-channel pass must not
+    weigh it as one. A fragment row is claimed where three things hold:
 
     - **The parent is committed.** A monoisotopic row commits the ladder's
       neutral through one of the mode's own channels, at any tier: a parent
@@ -931,7 +936,8 @@ def claim_fragments(
     of the fragment owned by the fragment's row, as they were owned by the
     reading it replaces.
 
-    :param rows: Both stages' committed rows, as built.
+    :param rows: Both stages' committed rows, as the partner gate settled
+        them.
     :param ladders: The profile's fragment ladders.
     :param notation_by_id: The searched mechanisms, by the id the rows carry.
     :param minor_channels: The run's opportunistic channels.

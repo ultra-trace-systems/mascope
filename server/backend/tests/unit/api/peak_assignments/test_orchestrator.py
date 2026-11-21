@@ -1079,8 +1079,9 @@ class TestTheJudgedLedger:
 
     @pytest.mark.asyncio
     async def test_a_fragment_of_a_committed_parent_is_persisted_as_the_sources(self):
-        # The fragment claim reads the stages' commits before anything judges
-        # them, and the peak it takes is written once, as the source's ion.
+        # The fragment claim reads the stages' commits as the judging round's
+        # reading changes settle them, before any cap, and the peak it takes
+        # is written once, as the source's ion.
         from mascope_backend.api.new.peak_assignments.config import (
             PeakAssignmentConfig,
         )
