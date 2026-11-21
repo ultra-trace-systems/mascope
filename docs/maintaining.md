@@ -2717,15 +2717,24 @@ at a time, and an operator runs it on the plan owner's word, in three steps.
 **1. Read what it would do.** The default, which writes nothing:
 
 ```sh
-TOF_RECAL_INSTRUMENT=<name> mascope prod db script run recalibrate_tof
+TOF_RECAL_INSTRUMENT=<name> mascope prod db script run recalibrate_tof --skip-backup
 TOF_RECAL_INSTRUMENT=<name> TOF_RECAL_JSON=1 \
-    mascope prod db script run recalibrate_tof > dry-run.txt
+    mascope prod db script run recalibrate_tof --skip-backup > dry-run.txt
 ```
+
+`--skip-backup`, because the script runner cannot tell a dry run from a run:
+without it, it takes a dump of the whole database first, as before any script
+that writes. On a large database that is a long pass, a file the database's
+size, and load the run's pacing knows nothing of; and the dump gives up after
+two hours, which aborts the script. The runner asks once more before it goes
+on without one (`--yes` answers for it).
 
 For every file it says whether a run would apply an `ok` or a `poor` fit, keep
 the file's `ok` record, or fail, and how far the fit would move the file's m/z
 axis in each mass band; the summary gives each band's median over the files.
-That is what the customer note before a run quotes. The dry run refits as the
+That is what the customer note before a run quotes, with what analysis
+batches go through during the run (*What users of analysis batches see*,
+below). The dry run refits as the
 [audit](#auditing-a-tof-instruments-mass-calibration) does, with the audit's
 read-only handler, so the two report the same fit for a file, but it also goes
 through the wider tolerances ingest retries with when a fit warns. Like the
@@ -2733,12 +2742,19 @@ audit it never computes a peak timeseries a store lacks; the run does, as
 ingest would, so on the odd file the run keeps other calibrants than the dry
 run reported. The ledger has what the run did.
 
-**2. Run it**, inside `tmux` or `screen`: thousands of files take hours.
+**2. Run it**, inside `tmux` or `screen`: thousands of files take hours, and
+the terminal is where its output goes.
 
 ```sh
 TOF_RECAL_INSTRUMENT=<name> TOF_RECAL_ACTION=run \
     mascope prod db script run recalibrate_tof
 ```
+
+The first run takes the pre-script dump: a restore point from before anything
+was written. A run that goes on after a `STOP` can be given `--skip-backup`.
+The dump is not what a run is undone from: the live ingest goes on for the
+days a run takes, and restoring the dump would lose what it added. The ledger
+is what undoes a run (step 3).
 
 - **What it applies.** What ingest would: the node's fit, through the same
   widening tolerance, judged by the same quality bar under the server's
@@ -2749,8 +2765,12 @@ TOF_RECAL_INSTRUMENT=<name> TOF_RECAL_ACTION=run \
 - **Which files.** The instrument's TOF files that ingest calibrates, newest
   first: those whose one acquisition sample is in a mode with a calibration
   collection. A file whose record this version of the node fitted from the
-  collection as it is now is already on target, and is skipped. Files in a
-  mode without calibrants are counted and left for calibration transfer. A
+  collection as it is now is already on target, and is skipped. A file the
+  live ingest is still processing is left to it, counted as `being processed
+  by the ingest`: one in progress for less than the 24 hours after which
+  processing counts as stalled. The ingest puts it on target itself, and a
+  later run offers it again if it is not. Files in a mode without
+  calibrants are counted and left for calibration transfer. A
   blank, a file with more than one sample to calibrate, and a file without the
   stores a refit reads are listed, not refitted. A file's turn can come a day
   after the run chose it, so its record is read again then. One calibrated
@@ -2766,21 +2786,35 @@ TOF_RECAL_INSTRUMENT=<name> TOF_RECAL_ACTION=run \
   lists those on the files it applied, and the summary counts them.
 - **Stopping.** Create a file `STOP` in the ledger's directory (below): the
   run ends before its next file, once what it applied is matched. Remove the
-  file and run it again to go on; it skips what is done. Ctrl+C ends it at
-  once, and can cut off the apply of the file it is on. So a run, and a
-  rollback, first closes every apply the ledger has open, by what the file's
+  file and run it again to go on; it skips what is done. **Ctrl+C does not
+  end a run**: the script runs in the backend container through `docker
+  exec`, which passes no signal on. Ctrl+C, or the terminal or SSH session
+  going away, ends the command and leaves the run going on in the
+  container, with its output lost. The ledger's last lines then say how far
+  it is, and `STOP` still ends it.
+- **One at a time.** A run and a rollback hold the ledger for as long as they
+  go on. Another started meanwhile refuses, with a message naming the one
+  that holds it; the file `lock` in the ledger's directory says the same.
+  So a run left going after a Ctrl+C is never joined by a second one: end it
+  with `STOP`, and start again once it has ended. The lock goes with the
+  process, so a run that was killed leaves nothing to clear. A dry run takes
+  no lock, and can read beside a run.
+- **Cut off.** A run ended any other way - the backend container restarted,
+  or the script killed in it (`docker exec <backend container> pkill -f
+  recalibrate_tof`) - can cut off the apply of the file it is on. So a run,
+  and a rollback, first closes every apply the ledger has open, by what the file's
   record holds. An apply that reached the database is finished: its samples'
   matches removed and its batches set to `rematch`, then matched as any other.
   One that did not has the axes it may have written put back, and the file
   is offered again. One that another apply has rewritten since is left to
   that one. An apply that fails part-way during a run is closed at once the
   same way: finished when it reached the database, put back when it did not.
-  The summary counts each kind. Then the run matches what was
-  left unmatched. A file the
-  ledger has an outcome for - kept, failed, not refit-ready, rolled back - is
-  not offered again under the same target; `TOF_RECAL_RETRY=1` offers it
-  again. An error that is not the file's own, such as a database fault or the
-  runner failing to write its ledger, is tried again by the next run.
+  The summary counts each kind. Then the run matches what was left
+  unmatched. A file the ledger has an outcome for - kept, failed, not
+  refit-ready, rolled back - is not offered again under the same target;
+  `TOF_RECAL_RETRY=1` offers it again. An error that is not the file's own,
+  such as a database fault or the runner failing to write its ledger, is
+  tried again by the next run.
 - **An apply left open.** The summary can count files as `an apply left
   open`: an apply the run could not close. Either closing it raised, as on a
   database fault, or the file's axes could not be put back; the log and the
@@ -2794,6 +2828,20 @@ TOF_RECAL_INSTRUMENT=<name> TOF_RECAL_ACTION=run \
   ingest, whose files keep ending `done`. Error tracking sees only the
   acquisition-drift warning a drifting instrument raises anyway, at most once
   a day per instrument, and nothing per file.
+- **What users of analysis batches see.** This is the part of a run a site
+  notices. Every batch other than an acquisition one that holds a sample of
+  the instrument's files goes to `processing` and back to `rematch` at each
+  apply of one of its files, and is rematched after each of the run's
+  batches. One with 2,000 of the instrument's files goes through that about
+  80 times over the run, at 25 files a batch, and while it is at
+  `processing` a user's own refresh of it is refused as locked. Between a
+  file's apply and the end of the run's batch it is in, the file's samples
+  have no matches. And a rematch moves the batch to the current versions of
+  its ionization modes and brings its target collections current before it
+  matches, as **Process → Refresh matches** on a batch does. So a batch's
+  results can change for a reason other than the m/z shift: a collection
+  edited since the batch was last matched now applies to it. The customer
+  note says so.
 
 **3. Roll back** a batch or a file, if a run did harm:
 
@@ -2829,8 +2877,12 @@ set to `rematch` and the assignment runs on the file, a few kB a file. Where
 the old record does not give the file's axes back by itself - the converter's
 record counts samples from the start of the raw file's axis, and its peaks sit
 where detection found them - what it cannot give back is kept beside the
-ledger in `axes/`, about 10 kB a file. A run and a rollback take the
-pre-script database dump the runner makes for any script that writes.
+ledger in `axes/`, about 10 kB a file. A run holds in memory only what says
+what happened to each file, about 70 MB for a ledger of 50,000 files, and
+reads the rest back from the ledger for the files it acts on. The script
+runner takes its pre-script database dump before a dry run, a run and a
+rollback alike, unless it is given `--skip-backup`: steps 1 and 2 say when
+to give it.
 
 Everything is set through the environment:
 

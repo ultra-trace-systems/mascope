@@ -39,7 +39,9 @@ target - its record fitted by this node version from the mode's collection as
 it is now (``quality.node_version``, ``quality.collection``) - is skipped, so a
 run that stopped resumes where it stopped. So is a file the ledger already
 has an outcome for under the same target: kept, failed, not refit-ready or
-rolled back (``TOF_RECAL_RETRY=1`` tries those again). Files of a mode
+rolled back (``TOF_RECAL_RETRY=1`` tries those again). So is a file the live
+ingest is processing, in progress and not stalled, when the run chooses it or
+when its turn comes: the ingest puts it on the target itself. Files of a mode
 without calibrants are left for calibration transfer (MAS-187) and counted.
 
 **Pacing**, the pattern of the composite cut's re-processing (MAS-90):
@@ -49,7 +51,17 @@ rematch while the live ingest has more than ``TOF_RECAL_BACKLOG`` files in
 progress. A file ``STOP`` in the ledger's directory ends the run at the next
 file; the next run rematches what is left first.
 
-**An apply cut off** - Ctrl+C, a restart, a fault part-way - leaves an
+**One at a time.** A run and a rollback hold an exclusive lock on the file
+``lock`` in the ledger's directory for as long as they go on, and refuse to
+start while another holds it: two on one ledger would number their events
+and batches over each other, and one could put back an apply the other is in
+the middle of. The lock goes with the process, so one that was killed leaves
+nothing to clear. ``mascope prod db script run`` starts the script through
+``docker exec`` with no terminal, which passes no signal on: Ctrl+C, or the
+terminal going away, ends the command but not the script, which goes on in
+the backend container. ``STOP`` is what ends a run. A dry run takes no lock.
+
+**An apply cut off** - a restart, the script killed, a fault part-way - leaves an
 ``apply`` event with no outcome. A run and a rollback first close each one by
 what the file's record holds (:func:`close_open_apply`): the apply's fit, and
 the apply is finished and ``applied``; what the file had before, and what the
@@ -66,7 +78,10 @@ keeps it. Per file it holds the records before and after, the parameters, the
 record version, the residuals and the axis change per band. Where the old
 record does not give the file's stored axes back bit for bit, the axes it
 cannot give are kept beside it in ``axes/``: the peaks' m/z of a file still on
-the converter's axis, a few kB.
+the converter's axis, a few kB. In memory a run holds of each event only what
+says what happened to which file (:data:`HELD`), and reads an event back from
+the file whole for the few files a rollback or the closing of an open apply
+acts on.
 
 Configuration, all through the environment:
 
@@ -104,7 +119,8 @@ import os
 import sys
 import time
 from collections import Counter, defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as day_time
@@ -203,6 +219,31 @@ LEDGER_FILE = "ledger.jsonl"
 SNAPSHOTS = "axes"
 #: The file in the ledger's directory that ends a run.
 STOP_FILE = "STOP"
+#: The file in the ledger's directory a run or a rollback holds locked.
+LOCK_FILE = "lock"
+
+#: What a run holds in memory of each ledger event: what happened to which
+#: file, under which target, in which batch, and what that touched. All the
+#: ledger's questions over every file read; the rest - the records before
+#: and after, with their calibrant lines and residuals, the restore plan, the
+#: axis change per band - is read back from the file for a file acted on. A
+#: ledger of 50,000 files held whole is about 2 GB.
+HELD = (
+    "event",
+    "seq",
+    "sample_file_id",
+    "batch",
+    "mode_id",
+    "target",
+    "apply_seq",
+    "batches",
+)
+#: The key of an event held in memory that says where its line starts in the
+#: ledger's file, from which :meth:`Ledger.read_back` reads it whole.
+LINE_AT = "_line_at"
+
+#: How many of the instrument's files the selection reads at a time.
+SELECT_ROWS = 2000
 
 #: The points of a file's axis its change per band is read at: evenly over
 #: its samples. Ample for a change that moves smoothly with the index.
@@ -211,6 +252,10 @@ BAND_POINTS = 2000
 #: The modes whose axis has a closed inverse, which finds the index the
 #: converter's axis starts at (:func:`_index_of`).
 _INVERTIBLE_MODES = (0, 1, 2)
+
+#: What the report counts a file the live ingest is processing as: left to
+#: the ingest, and offered again by a later run if it is not on target then.
+BEING_PROCESSED = "being processed by the ingest"
 
 #: Ledger events that settle a file under its target until a retry.
 _SETTLED = ("applied", "kept", "failed", "skipped", "rollback")
@@ -316,11 +361,75 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+class LedgerHeld(RuntimeError):
+    """Another run or rollback holds the ledger's directory."""
+
+
+def _try_lock(handle) -> bool:
+    """Take an exclusive lock on an open file without waiting for it."""
+    if os.name == "nt":
+        import msvcrt
+
+        handle.seek(0)
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+        return True
+    import fcntl
+
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    return True
+
+
+@contextmanager
+def hold_ledger(directory: str, action: str) -> Iterator[None]:
+    """The ledger's directory to this run or rollback alone, until it ends.
+
+    An exclusive lock on :data:`LOCK_FILE`, which the system lets go of with
+    the process: a run that was killed leaves nothing stale. The file says
+    who holds it, for the refusal another gets meanwhile.
+
+    :raises LedgerHeld: When another run or rollback holds it.
+    """
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, LOCK_FILE)
+    with open(path, "a+", encoding="utf-8") as handle:
+        if not _try_lock(handle):
+            try:
+                handle.seek(0)
+                holder = handle.read().strip()
+            except OSError:
+                holder = ""
+            raise LedgerHeld(
+                f"Another run or rollback holds the ledger in {directory}"
+                + (f" ({holder})" if holder else "")
+                + ". One goes on after the terminal that started it was "
+                "interrupted or closed: create the file STOP in that "
+                "directory to end a run, and start this once it has ended."
+            )
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"{action}, process {os.getpid()}, since {_utc_now()}\n")
+        handle.flush()
+        # Closing the file at the end lets the lock go
+        yield
+
+
 class Ledger:
     """The run's record, one JSON event per line, appended and synced.
 
     Every event carries ``event``, ``at`` and its place in the ledger,
     ``seq``. The events about a file carry its ``sample_file_id``.
+
+    In memory each event is held as far as :data:`HELD` goes, with where its
+    line starts (:data:`LINE_AT`): what the ledger's questions over every
+    file need. A value many events repeat, such as a target, is held once.
+    What answers for one file - :meth:`open_apply`, :meth:`last_applied` - is
+    read back whole, and :meth:`read_back` reads any other whole.
     """
 
     def __init__(self, directory: str, writable: bool):
@@ -328,20 +437,27 @@ class Ledger:
         self.path = os.path.join(directory, LEDGER_FILE)
         self.writable = writable
         self.events: list[dict] = []
+        self._of_file: dict[str, list[dict]] = defaultdict(list)
+        self._shared: dict[str, object] = {}
         if os.path.exists(self.path):
-            with open(self.path, encoding="utf-8") as ledger:
-                lines = ledger.read().split("\n")
-            for number, line in enumerate(lines, 1):
-                if not line.strip():
-                    continue
-                try:
-                    self.events.append(json.loads(line))
-                except json.JSONDecodeError:
-                    # A line cut short by a run that died while writing it:
-                    # only ever the last one, which the next write ends
-                    runtime.logger.warning(
-                        f"Ledger line {number} is not whole; it is passed over."
-                    )
+            with open(self.path, "rb") as ledger:
+                end = 0
+                for number, line in enumerate(ledger, 1):
+                    start, end = end, end + len(line)
+                    if not line.strip():
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except ValueError:
+                        event = None
+                    if not isinstance(event, dict):
+                        # A line cut short by a run that died while writing
+                        # it: only ever the last one, which the next write ends
+                        runtime.logger.warning(
+                            f"Ledger line {number} is not whole; it is passed over."
+                        )
+                        continue
+                    self._hold(event, start)
         if writable:
             os.makedirs(os.path.join(directory, SNAPSHOTS), exist_ok=True)
             if os.path.exists(self.path) and os.path.getsize(self.path):
@@ -352,24 +468,61 @@ class Ledger:
                     with open(self.path, "a", encoding="utf-8") as ledger:
                         ledger.write("\n")
 
+    def _share(self, value):
+        """One object for every event that holds the same value."""
+        if isinstance(value, str):
+            return sys.intern(value)
+        if isinstance(value, (dict, list)):
+            key = json.dumps(value, sort_keys=True, default=_json_default)
+            return self._shared.setdefault(key, copy.deepcopy(value))
+        return value
+
+    def _hold(self, event: dict, line_at: int) -> None:
+        held = {key: self._share(event[key]) for key in HELD if key in event}
+        held[LINE_AT] = line_at
+        self.events.append(held)
+        if held.get("sample_file_id"):
+            self._of_file[held["sample_file_id"]].append(held)
+
     def write(self, event: dict) -> dict:
-        """Append an event and sync it to disk before going on."""
+        """Append an event and sync it to disk before going on.
+
+        :return: The event whole, as written.
+        """
         if not self.writable:
             raise RuntimeError("A dry run writes no ledger.")
         event = {"event": event.pop("event"), "at": _utc_now(), **event}
         event["seq"] = (self.events[-1].get("seq", 0) if self.events else 0) + 1
-        with open(self.path, "a", encoding="utf-8") as ledger:
-            ledger.write(json.dumps(event, default=_json_default) + "\n")
+        line = (json.dumps(event, default=_json_default) + "\n").encode("utf-8")
+        with open(self.path, "ab") as ledger:
+            line_at = ledger.seek(0, os.SEEK_END)
+            ledger.write(line)
             ledger.flush()
             os.fsync(ledger.fileno())
-        self.events.append(event)
+        self._hold(event, line_at)
         return event
+
+    def read_back(self, events: Iterable[dict]) -> Iterator[dict]:
+        """Each of the events whole, read from its line in the file."""
+        events = list(events)
+        if not events:
+            return
+        with open(self.path, "rb") as ledger:
+            for event in events:
+                ledger.seek(event[LINE_AT])
+                yield json.loads(ledger.readline())
+
+    def whole(self, event: dict | None) -> dict | None:
+        """One event whole (:meth:`read_back`)."""
+        if event is None:
+            return None
+        return next(self.read_back([event]))
 
     def next_batch(self) -> int:
         return 1 + max((e.get("batch") or 0 for e in self.events), default=0)
 
     def of_file(self, sample_file_id: str) -> list[dict]:
-        return [e for e in self.events if e.get("sample_file_id") == sample_file_id]
+        return list(self._of_file.get(sample_file_id, ()))
 
     def settled(self, target_of: Callable[[str], dict | None]) -> set[str]:
         """The files with an outcome under the target they would be run to.
@@ -397,7 +550,9 @@ class Ledger:
         """Each file's apply event that nothing closed since (``applied``, a
         rollback, a put-back, or another apply over it): one a run that was
         cut off, or an apply that failed part-way, left. Such an apply may have
-        written the file's axes, its ``.props``, its record, or all of them."""
+        written the file's axes, its ``.props``, its record, or all of them.
+
+        As held in memory: :meth:`read_back` reads them whole."""
         still_open: dict[str, dict] = {}
         for event in self.events:
             kind, sample_file_id = event.get("event"), event.get("sample_file_id")
@@ -408,7 +563,8 @@ class Ledger:
         return still_open
 
     def open_apply(self, sample_file_id: str) -> dict | None:
-        """The file's open apply, if it has one (:meth:`open_applies`)."""
+        """The file's open apply, if it has one (:meth:`open_applies`),
+        whole."""
         open_event = None
         for event in self.of_file(sample_file_id):
             kind = event.get("event")
@@ -416,11 +572,11 @@ class Ledger:
                 open_event = event
             elif kind in _CLOSES_APPLY:
                 open_event = None
-        return open_event
+        return self.whole(open_event)
 
     def last_applied(self, sample_file_id: str) -> dict | None:
         """The apply event of the file's last completed apply, if no rollback
-        undid it since."""
+        undid it since, whole."""
         applies: dict[int, dict] = {}
         last = None
         for event in self.of_file(sample_file_id):
@@ -431,7 +587,7 @@ class Ledger:
                 last = applies.get(event.get("apply_seq"))
             elif kind == "rollback":
                 last = None
-        return last
+        return self.whole(last)
 
     def unmatched(self) -> list[dict]:
         """The applied or rolled-back files whose acquisition samples were not
@@ -479,6 +635,11 @@ class Candidate:
     sample_file_id: str
     filename: str
     acquired: datetime
+    #: What the selection keeps of the file's record (:func:`record_summary`):
+    #: its ``status``, its ``verified`` and its stamp (``quality.collection``
+    #: and ``quality.node_version``), all that :func:`on_target` and
+    #: :func:`record_status` read; None where it holds no record. Not the
+    #: record itself, with its calibrant lines: the file's turn reads that.
     record: dict | None
     range: list | None
     #: None for a blank: no instrument functions, no peaks
@@ -486,6 +647,9 @@ class Candidate:
     #: The acquisition samples of the file: id, name, current mode id, and
     #: whether that mode has a calibration collection.
     samples: tuple[dict, ...]
+    #: How far the file's processing got, and when that was written
+    processing_status: str | None = None
+    processing_updated: datetime | None = None
 
     @property
     def calibrating(self) -> list[dict]:
@@ -497,9 +661,42 @@ class Candidate:
         return calibrating[0]["mode_id"] if len(calibrating) == 1 else None
 
 
+def being_processed(
+    status: str | None, updated: datetime | None, now: datetime | None = None
+) -> bool:
+    """Whether the live ingest is processing the file: in progress, and not
+    stalled, as :func:`fresh_in_progress` counts it."""
+    if status not in {str(stage) for stage in IN_PROGRESS} or updated is None:
+        return False
+    return updated >= (now or datetime.now(UTC)) - STALLED_AFTER
+
+
+def record_summary(record: dict | None) -> dict | None:
+    """The parts of a file's record :class:`Candidate` holds: what
+    :func:`on_target` and :func:`record_status` read of it, which they read
+    of the summary the same."""
+    if not isinstance(record, dict):
+        return None
+    summary = {key: record[key] for key in ("status", "verified") if key in record}
+    quality = record.get("quality")
+    if isinstance(quality, dict):
+        summary["quality"] = {
+            key: quality.get(key) for key in ("collection", "node_version")
+        }
+    return summary
+
+
 async def select_candidates(config: Config) -> list[Candidate]:
     """The instrument's TOF files in the range, newest first, each with its
-    acquisition samples under the current versions of their modes."""
+    acquisition samples under the current versions of their modes.
+
+    Each file's record is kept only as far as choosing the file needs
+    (:func:`record_summary`): over tens of thousands of files, the records
+    whole would hold a gigabyte for the length of the run. They are read a
+    few thousand rows at a time, so only those are ever held whole; Postgres
+    would parse a ``json`` record once for each part of it selected, which
+    takes longer than reading it whole.
+    """
     conditions = [
         SampleFile.instrument == config.instrument,
         SampleFile.instrument_type == "tof",
@@ -517,20 +714,34 @@ async def select_candidates(config: Config) -> list[Candidate]:
             )
         )
     async with async_session() as session:
-        files = (
-            await session.execute(
-                select(
-                    SampleFile.sample_file_id,
-                    SampleFile.filename,
-                    SampleFile.datetime_utc,
-                    SampleFile.mz_calibration,
-                    SampleFile.range,
-                    SampleFile.instrument_function_id,
-                )
-                .where(*conditions)
-                .order_by(SampleFile.datetime_utc.desc(), SampleFile.filename)
+        rows = await session.stream(
+            select(
+                SampleFile.sample_file_id,
+                SampleFile.filename,
+                SampleFile.datetime_utc,
+                SampleFile.mz_calibration,
+                SampleFile.range,
+                SampleFile.instrument_function_id,
+                SampleFile.processing_status,
+                SampleFile.processing_updated_utc,
             )
-        ).all()
+            .where(*conditions)
+            .order_by(SampleFile.datetime_utc.desc(), SampleFile.filename)
+            .execution_options(yield_per=SELECT_ROWS)
+        )
+        files = [
+            {
+                "sample_file_id": row.sample_file_id,
+                "filename": row.filename,
+                "acquired": row.datetime_utc,
+                "record": record_summary(row.mz_calibration),
+                "range": row.range,
+                "instrument_function_id": row.instrument_function_id,
+                "processing_status": row.processing_status,
+                "processing_updated": row.processing_updated_utc,
+            }
+            async for row in rows
+        ]
         items = (
             await session.execute(
                 select(
@@ -583,16 +794,8 @@ async def select_candidates(config: Config) -> list[Candidate]:
             }
         )
     return [
-        Candidate(
-            sample_file_id=row.sample_file_id,
-            filename=row.filename,
-            acquired=row.datetime_utc,
-            record=row.mz_calibration,
-            range=row.range,
-            instrument_function_id=row.instrument_function_id,
-            samples=tuple(samples_of.get(row.sample_file_id, ())),
-        )
-        for row in files
+        Candidate(**file, samples=tuple(samples_of.get(file["sample_file_id"], ())))
+        for file in files
     ]
 
 
@@ -1044,11 +1247,14 @@ async def run_file(
 
     The file is read again at its turn, which can come a day after the run
     chose it: what it holds then is what the ``ok`` rule judges and what the
-    ledger records as before. A file calibrated onto the target since is left.
+    ledger records as before. A file calibrated onto the target since is left,
+    and so is one the live ingest is processing now, which it calibrates.
     """
     stored = await _file_state(candidate.sample_file_id)
     if stored is None:
         return Outcome("gone")
+    if being_processed(stored.processing_status, stored.processing_updated_utc):
+        return Outcome(BEING_PROCESSED)
     if on_target(stored.mz_calibration, target.target):
         return Outcome("on target already")
     candidate = replace(candidate, record=stored.mz_calibration, range=stored.range)
@@ -1678,7 +1884,7 @@ async def reconcile(ledger: Ledger) -> Counter:
     """Close every apply the ledger has open (:func:`close_open_apply`), as
     the first thing a run or a rollback does."""
     counts = Counter()
-    for event in list(ledger.open_applies().values()):
+    for event in list(ledger.read_back(ledger.open_applies().values())):
         try:
             counts[await close_open_apply(event, ledger)] += 1
         except Exception as error:  # noqa: BLE001 - one file's failure
@@ -1805,8 +2011,16 @@ def _refit_ready(filename: str) -> str | None:
 
 
 async def run_runner(config: Config) -> Report:
-    """A dry run or a run over the instrument's files."""
-    writable = config.action == RUN
+    """A dry run or a run over the instrument's files; a run holds the
+    ledger's directory (:func:`hold_ledger`) from before it reads the ledger
+    until it ends."""
+    if config.action != RUN:
+        return await _run_files(config, writable=False)
+    with hold_ledger(config.ledger_dir, config.action):
+        return await _run_files(config, writable=True)
+
+
+async def _run_files(config: Config, writable: bool) -> Report:
     ledger = Ledger(config.ledger_dir, writable=writable)
     report = Report(action=config.action, instrument=config.instrument)
     log = runtime.logger.info
@@ -1852,6 +2066,9 @@ async def run_runner(config: Config) -> Report:
         if candidate.sample_file_id in still_open:
             # One the run could not close: the log and the ledger say why
             report.counts["an apply left open"] += 1
+            continue
+        if being_processed(candidate.processing_status, candidate.processing_updated):
+            report.counts[BEING_PROCESSED] += 1
             continue
         if on_target(candidate.record, target.target):
             report.counts["on target already"] += 1
@@ -1925,11 +2142,17 @@ async def run_runner(config: Config) -> Report:
             break
 
     if writable:
-        for event in ledger.events:
-            if event.get("event") == "apply" and event.get("batch") in report.batches:
-                report.assignment_runs += len(event.get("assignment_runs") or [])
-                for band in event.get("bands") or []:
-                    report.bands[band["band"]].append(band["median"])
+        applies = [
+            event
+            for event in ledger.events
+            if event.get("event") == "apply" and event.get("batch") in report.batches
+        ]
+        # One at a time from the file, so the run's applies are never all
+        # held whole at once
+        for event in ledger.read_back(applies):
+            report.assignment_runs += len(event.get("assignment_runs") or [])
+            for band in event.get("bands") or []:
+                report.bands[band["band"]].append(band["median"])
     return report
 
 
@@ -2011,6 +2234,12 @@ async def _dry_one(candidate, target, config, report) -> Outcome:
 
 
 async def run_rollback(config: Config) -> Report:
+    """A rollback, holding the ledger's directory as a run does."""
+    with hold_ledger(config.ledger_dir, config.action):
+        return await _roll_back(config)
+
+
+async def _roll_back(config: Config) -> Report:
     ledger = Ledger(config.ledger_dir, writable=True)
     report = Report(action=ROLLBACK, instrument=config.instrument)
     # A file a run left half-applied is closed first, so the last completed
@@ -2102,6 +2331,10 @@ def main() -> None:
         asyncio.run(run())
     except KeyboardInterrupt:
         runtime.logger.info("Cancelled by user (Ctrl+C)")
+    except LedgerHeld as held:
+        # A refusal, not a failure: nothing was read or written
+        runtime.logger.error(str(held))
+        sys.exit(1)
     except Exception as e:
         runtime.logger.exception(f"Script failed: {e}")
         raise
