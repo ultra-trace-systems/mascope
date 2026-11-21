@@ -23,14 +23,17 @@ say so: its rules are still being developed, and a peak's tier can change betwee
 engine versions, so read a tier as the engine's current reading of the evidence
 rather than a settled verdict. The mark goes when the rules are settled.
 
-A tier chip names the tier alone; hovering it gives the evidence, which says how
-well the formula explains the peak, not the chance it is right. A *batch peak*'s
+A tier chip names the tier alone, with a dot in its colour: filled for
+*assigned*, half for *candidate*, a ring for *below* and a dashed ring for
+*unassigned*, the one dashed mark there is, for the one outcome not yet known.
+Hovering it gives the evidence, which says how well the formula explains the
+peak, not the chance it is right. A *batch peak*'s
 tier is a vote across the samples it appears in, so its chip names no evidence.
 A batch peak the batch's untargeted search took only because its peak recurs
 across the batch, not for its height, holds the formula it found at
 *candidate* at most (**persistence only**, a down arrow beside the chip) until
 an isotope line, another channel or a series of the batch sees it too. A
-**flat series** mark is not a tier: it flags a batch peak whose trace holds a
+**flat series** badge is not a tier: it flags a batch peak whose trace holds a
 constant ratio to the batch's reagent ions or total ion current, which says
 where the ion likely comes from, not whether its formula is right.
 
@@ -55,3 +58,37 @@ charge, where an assignment names its formula, and its isotope lines fold under
 it as a compound's isotopologues do. A tier count counts a compound once, with its
 isotopologues folded in; a role count counts peaks, so a reagent ion's isotope
 lines count with it.
+
+**The marks beside a formula.** Each of the batch's readings of a peak is a
+small square badge. The **Batch peaks** ledger draws them beside the formula,
+and each batch line in the inspector opens with one. Co-variation and the
+batch facts keep their own **Co-variation** and **Facts** columns in the
+ledger, and ratio stability is the grade in its **Continuity** column, in the
+same colours. A badge's glyph says which reading it is, and no two readings
+share one. Its colour says what the reading does to confidence, in the colours
+the tiers use:
+
+| Colour | What it does |
+|---|---|
+| green | supports the reading, as the *assigned* chip is green |
+| amber | holds it back: one of the reasons the peak is not more confident |
+| teal | drifted: the ratio moves while the channels co-vary, and the assignment stands |
+| grey | moves nothing: it says something of the peak, not of its formula |
+| an outline | a person changed this |
+
+| Glyph | Reading | Colour |
+|---|---|---|
+| <span class="ph ph-stairs" aria-hidden="true"></span> stairs | in a homologous series of the batch | green |
+| <span class="ph ph-wave-sine" aria-hidden="true"></span> wave | its ionization channels co-vary | green, grey where they do not or cannot be read |
+| <span class="ph ph-chart-bar" aria-hidden="true"></span> three bars | its isotope lines, stamped or stripped to it | green once one holds, grey otherwise |
+| <span class="ph ph-pulse" aria-hidden="true"></span> pulse | ratio stability: no badge yet, it is the **Continuity** column's grade | green when stable, teal when it drifts, amber when unstable |
+| <span class="ph ph-check" aria-hidden="true"></span> check | the batch facts | green, amber where a fact refutes the reading |
+| <span class="ph ph-repeat" aria-hidden="true"></span> repeat | searched on persistence alone | amber, grey where something else has seen the reading |
+| <span class="ph ph-intersect" aria-hidden="true"></span> two circles | a probable blend of two compounds | amber |
+| <span class="ph ph-equals" aria-hidden="true"></span> equals | a flat series | grey |
+| <span class="ph ph-drop" aria-hidden="true"></span> drop | a reagent decided: a water-ladder rung or a known species | grey |
+| <span class="ph ph-hand-pointing" aria-hidden="true"></span> hand | changed by hand | an outline |
+
+A verdict shows nothing until someone records one. A batch-level verdict that
+reaches a sample is the same icon with a small **#**, the batch's mark, at its
+corner.

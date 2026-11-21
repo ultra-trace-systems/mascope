@@ -13,7 +13,7 @@ The same run reads each compound's trace on its own against the batch's reagent
 ions, or the samples' total ion current where the batch has none. A trace that
 holds a **constant ratio** to them, its coefficient of variation under **0.25**
 in half the batch's samples or more, likely comes from the source or the inlet:
-it is flagged **flat series** (a level mark beside the formula), with the ion
+it is flagged **flat series** (a grey equals badge beside the formula), with the ion
 where the source's own list names it. The flag says where an ion comes from,
 not whether its formula is right, so it moves no tier either. A batch that holds
 still throughout is not read so.

@@ -113,25 +113,45 @@ written, none of them orange:
 
 | Token | Light | Dark | Means |
 |---|---|---|---|
-| `--state-success` | `#1f7a46` | `#3fa96b` | assigned, confirmed, calibration ok |
-| `--state-warning` | `#8a6200` | `#e9b33b` | candidate, unsure, calibration poor or accepted with a warning |
+| `--state-success` | `#1f7a46` | `#3fa96b` | assigned, confirmed, calibration ok; a reading that supports an assignment |
+| `--state-warning` | `#8a6200` | `#e9b33b` | candidate, unsure, calibration poor or accepted with a warning; a reading that holds an assignment back |
 | `--state-error` | `#b0281a` | `#e2503f` | rejected, failed, a destructive action |
 | `--state-info` | `#0b7e8e` | `#16b0c4` | drifted, an engine or provenance note |
 
+The evidence badges (section 8) read in these tokens on purpose: a tier chip
+is a state and a badge is a reading, and green leans toward confidence and
+amber holds it back whichever shape it is on. A reading that moves nothing
+takes `--p-text-muted-color`, and a person's act an outline in
+`--p-text-color`, which reads on both grounds and is never the accent.
+[`lib/evidence/marks.js`](../../server/frontend/src/lib/evidence/marks.js)
+holds the tones.
+
 For text and icons use the `--state-*` token; for a PrimeVue `Tag`, `Button`
 or `Message` use the matching severity (`success`, `warn`, `danger`, `info`,
-`secondary` for neutral). Neutral is `--p-text-muted-color`, dashed or at
-reduced opacity for *not yet known* (the unassigned tier). The same word always
+`secondary` for neutral). Neutral is `--p-text-muted-color`, at
+reduced opacity or, for *not yet known*, dashed. A dashed border means that
+and nothing else, and the unassigned tier's ring is the one place the
+assignment views draw one. The same word always
 takes the same colour across tiers
 ([`lib/tiers.js`](../../server/frontend/src/lib/tiers.js)), verdicts
 ([`lib/verification.js`](../../server/frontend/src/lib/verification.js)) and
-calibration badges (`.browser .calibration-*` in `style.css`). Two corrections
-are owed: `BaseMatchTag` maps the probable match to `danger`, so the best
-matches read as alarms (QW6, MAS-153); and the reagent and artifact role in
-`BaseTierTag` is a hard-coded purple `#8a5ed0` that appears in no palette,
-which becomes a `--role-reagent` token beside the state tokens, taking the
-guide's Series 3 purple `#8266EA`, the approved colour nearest to it, unless a
-swatch on both grounds says it cannot carry the role. The identification level
+calibration badges (`.browser .calibration-*` in `style.css`). One correction
+is owed: `BaseMatchTag` maps the probable match to `danger`, so the best
+matches read as alarms (QW6, MAS-153). The reagent and artifact role in
+`BaseTierTag` takes `--role-reagent`, beside the state tokens. It was a
+hard-coded purple `#8a5ed0` that appeared in no palette. The guide's Series 3
+purple `#8266EA`, the approved colour nearest to it, cannot carry the role's
+text itself: it reads 4.2:1 on the light ground and 4.1:1 on the dark one. So
+the token is that hue darkened and lightened per theme, as the state tokens
+are: 5.5:1 to 6.4:1 as text on the content ground, and no less than 4.8:1 on
+the chip's 10 % tint of it over the raised surface (MAS-1063, measured in
+`tests/unit/lib/evidence/markColours.spec.js`):
+
+| Token | Light | Dark | Means |
+|---|---|---|---|
+| `--role-reagent` | `#6448c8` | `#a08cf2` | a peak the source or the instrument made: the reagent and artifact roles |
+
+The identification level
 (the assignment quality plan's step 5.8) takes three tokens of its own beside
 these, `--level-mass`, `--level-formula` and `--level-structure`, one per band
 of its scale, in hues no state token uses: a level chip sits beside a tier
@@ -249,7 +269,7 @@ step.
 
 ## 8. Chips, tags and badges
 
-Three things that look alike and mean differently:
+Four things that look alike and mean differently:
 
 - **A `Tag` is a state** and is not removable: `value`, `severity`, a Phosphor
   `icon`, `--text-sm`, a tooltip naming the state in full.
@@ -257,7 +277,29 @@ Three things that look alike and mean differently:
   [`BaseMatchTag.vue`](../../server/frontend/src/lib/base/BaseMatchTag.vue) and
   [`BaseVerdictBadge.vue`](../../server/frontend/src/lib/base/BaseVerdictBadge.vue)
   are the models. Wherever a tag's colour carries meaning, the pane offers a
-  legend (QW6).
+  legend (QW6). The tier chips are the one exception to the icon: they draw a
+  dot in the tier's colour instead, filled for assigned, half for candidate,
+  a ring for below and a dashed ring for unassigned, so that no glyph stands
+  for a tier and a reading at once. The reagent and artifact role chips draw
+  their label alone, in `--role-reagent`. A verdict nobody has recorded draws
+  nothing; a batch-level verdict that reaches a sample is the verdict's own
+  icon with the batch's mark (the breadcrumb's `#`, at 9 px) at its upper
+  right, never dashed.
+- **An evidence badge is a reading**: one of the batch's or the run's
+  readings of an assignment, drawn by
+  [`BaseEvidenceBadge.vue`](../../server/frontend/src/lib/base/BaseEvidenceBadge.vue)
+  from the registry in
+  [`lib/evidence/marks.js`](../../server/frontend/src/lib/evidence/marks.js).
+  A 22 px square, 4 px radius, with the reading's Phosphor glyph at 13 px. The
+  glyph says which reading it is and no two readings share one. The tone
+  says what the reading does to confidence: glyph and 1 px border in the
+  tone's token (section 3), the border at 55 % and a 10 % tint of it as the
+  ground; a person's act is the outline alone, in the text colour. Its
+  accessible name is the reading in a sentence and its tooltip the
+  registry's. Beside a line that already says the reading in words, the badge
+  is `quiet`: glyph and tone only, hidden from assistive technology. The same
+  component in the ledgers and the inspector card, and a new reading is a new
+  registry entry, never a glyph set by hand.
 - **A `Chip` is a filter** and is removable: the app filter chips in
   `ToolbarAppFilters/` and the keyword chips of the dataset metadata. The
   finder's clause chips and the ledger's tier chips are this kind; an active
