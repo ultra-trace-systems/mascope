@@ -30,6 +30,10 @@ const {
   promoteAlternative,
   curating,
   curateDenied,
+  canEdit,
+  canChange,
+  readOnly,
+  readOnlyReason,
   derivedRun,
   measuredCurrent
 } = useCard()
@@ -102,7 +106,7 @@ const summary = computed(() => {
             <span v-else class="no-stats"><span class="pi ph ph-info" /></span>
           </span>
           <Button
-            v-if="(canPromote(alt) || promoteBlocked(alt)) && !curateDenied"
+            v-if="(canPromote(alt) || promoteBlocked(alt)) && !curateDenied && canChange"
             :class="['alt-use', { busy: curating === i, blocked: promoteBlocked(alt) }]"
             label="Use"
             size="small"
@@ -122,15 +126,18 @@ const summary = computed(() => {
           />
         </div>
       </div>
-      <div v-if="derivedRun && !curateDenied" class="note">
+      <div v-if="derivedRun && !curateDenied && canChange" class="note">
         <span class="pi ph ph-info" /> Derived from the batch ledger: <b>Use</b> pins the identity
         on the batch peak for the whole batch and measures it in every sample. Each alternative
         shows what the pin would read in this sample<template v-if="measuredCurrent"
           >, beside what it reads now: {{ measuredCurrent }}</template
         >.
       </div>
-      <div v-if="curateDenied" class="note">
+      <div v-if="curateDenied || !canEdit" class="note" data-testid="curate-denied">
         <span class="pi ph ph-lock-simple" /> Editor access is required to change an assignment.
+      </div>
+      <div v-else-if="readOnly" class="note" data-testid="curate-read-only">
+        <span class="pi ph ph-lock-simple" /> {{ readOnlyReason }}
       </div>
     </div>
   </CardSection>

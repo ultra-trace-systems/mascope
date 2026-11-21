@@ -1,6 +1,8 @@
 <script setup>
 import { computed } from 'vue'
 
+import Skeleton from 'primevue/skeleton'
+
 import { num } from '@/lib/formatters'
 import { useCard } from './useCard.js'
 
@@ -78,7 +80,15 @@ const confidence = computed(() => {
     <div v-else-if="measured?.main_peak_note" class="measure-note" data-testid="measure-note">
       Main peak: {{ measured.main_peak_note }}
     </div>
-    <div class="tiles">
+    <!-- Until the measurement lands its tiles are skeletons, not dashes that
+         read as "nothing measured". -->
+    <div v-if="measuring" class="tiles" aria-busy="true" data-testid="measurements-loading">
+      <div v-for="n in 4" :key="n" class="tile">
+        <Skeleton width="50%" height="1rem" />
+        <Skeleton width="80%" height="0.7rem" />
+      </div>
+    </div>
+    <div v-else class="tiles">
       <div class="tile" data-testid="tile-mass">
         <span class="tile-value" v-tooltip.top="EVIDENCE_TOOLTIPS.mzError">{{
           evidenceRow.mz_error_ppm != null

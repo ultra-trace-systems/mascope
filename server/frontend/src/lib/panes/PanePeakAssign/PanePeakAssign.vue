@@ -1,12 +1,14 @@
 <script setup>
-import { BaseTierTag } from '@/lib/base'
 import CardAcrossBatch from './card/CardAcrossBatch.vue'
 import CardAlternatives from './card/CardAlternatives.vue'
 import CardAnswer from './card/CardAnswer.vue'
+import CardFindFormulas from './card/CardFindFormulas.vue'
 import CardIsotopePattern from './card/CardIsotopePattern.vue'
 import CardLevel from './card/CardLevel.vue'
 import CardMeasurements from './card/CardMeasurements.vue'
 import CardNotes from './card/CardNotes.vue'
+import CardRunNotice from './card/CardRunNotice.vue'
+import CardSkeleton from './card/CardSkeleton.vue'
 import CardVerdictBar from './card/CardVerdictBar.vue'
 import CardWhy from './card/CardWhy.vue'
 import { useAssignmentCard } from './card/useAssignmentCard.js'
@@ -17,7 +19,10 @@ import { provideCard } from './card/useCard.js'
 // From the top: the answer; why its tier; the four measurements; the notes of
 // a change by hand; the sections, folded; and the verdict bar, pinned at the
 // foot. Each part is a component under card/, and all of them read the one
-// model this file makes (card/useAssignmentCard.js).
+// model this file makes (card/useAssignmentCard.js). Its states are section
+// 4.2's: a notice under the answer on a run that is not the sample's result,
+// skeletons while the detail loads, and a card of its own for a focused peak
+// with no ledger row.
 
 // Toggles the Sample view's pane under the spectrum between the time series
 // (default) and the composition search. Owned by the parent (PaneTabSample);
@@ -29,7 +34,7 @@ provideCard(card)
 // The model's state, read and set by a parent or a test as the card's own
 // (its refs unwrap on the component's public instance).
 defineExpose(card)
-const { app, focusedAssignment, peakSummary, showWhy, showMeasurements } = card
+const { app, focusedAssignment, peakSummary, showWhy, showMeasurements, loading, noRowLine } = card
 </script>
 
 <template>
@@ -55,23 +60,31 @@ const { app, focusedAssignment, peakSummary, showWhy, showMeasurements } = card
   >
     <section v-if="focusedAssignment" class="inspector">
       <CardAnswer />
-      <CardWhy v-if="showWhy" />
-      <CardMeasurements v-if="showMeasurements" />
-      <CardNotes />
-      <div class="sections">
-        <CardIsotopePattern />
-        <CardAlternatives />
-        <CardAcrossBatch />
-        <CardLevel />
-      </div>
+      <CardRunNotice />
+      <CardSkeleton v-if="loading" />
+      <template v-else>
+        <CardWhy v-if="showWhy" />
+        <CardMeasurements v-if="showMeasurements" />
+        <CardNotes />
+        <div class="sections">
+          <CardIsotopePattern />
+          <CardAlternatives />
+          <CardAcrossBatch />
+          <CardLevel />
+        </div>
+      </template>
       <CardVerdictBar />
     </section>
-    <section v-else-if="app.data.peak.focused" class="inspector">
+    <!-- A focused peak the run on view has no row for: said in words, with
+         the peak it is, and the search that can still look for its formula. -->
+    <section v-else-if="app.data.peak.focused" class="inspector" data-testid="no-row-card">
       <div class="answer">
-        <div class="insp-formula">Unassigned</div>
-        <div class="chips"><BaseTierTag tier="unassigned" /></div>
+        <div class="insp-formula">No assignment</div>
+        <div class="no-row-line" data-testid="no-row-line">{{ noRowLine }}</div>
         <div class="insp-sub" data-testid="peak-summary">{{ peakSummary }}</div>
       </div>
+      <CardRunNotice />
+      <CardFindFormulas />
     </section>
     <div v-else class="center no-peak">
       <div class="col no-peak-text">
@@ -125,6 +138,9 @@ const { app, focusedAssignment, peakSummary, showWhy, showMeasurements } = card
   font-family: var(--font-mono);
   font-size: var(--card-text-lg);
   font-weight: 700;
+}
+.no-row-line {
+  font-size: var(--card-text-sm);
 }
 .insp-sub {
   color: var(--p-text-muted-color);

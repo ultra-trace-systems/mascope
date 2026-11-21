@@ -1,6 +1,8 @@
 <script setup>
 import { computed } from 'vue'
 
+import Button from 'primevue/button'
+
 import { BaseLevelTag, BaseTierTag, BaseVerdictBadge } from '@/lib/base'
 import { num } from '@/lib/formatters'
 import { formatIsotopeLabel } from '@/lib/chem'
@@ -36,8 +38,22 @@ const {
   identificationLevel,
   verification,
   verifiable,
-  anchorConflict
+  anchorConflict,
+  batchOpened,
+  nextSample
 } = useCard()
+
+// Which sample the card shows when the batch ledger opened the peak: the
+// brightest of those that hold it, or the one *Other samples* stepped to.
+const batchOpenedLine = computed(() => {
+  const opened = batchOpened.value
+  if (!opened) return ''
+  const place =
+    opened.index === 0
+      ? `the brightest of ${opened.count} samples`
+      : `${opened.index + 1} of ${opened.count} samples, by intensity`
+  return `In ${opened.name}: ${place} that hold this batch peak`
+})
 
 // The ion line: how the ion was made and what it is, where its peak sits, and
 // which line of the ion the peak is - "[M+HCOO]- → C3H3O4- · m/z 103.0035 · M0" -
@@ -212,6 +228,24 @@ const provisional = TIERING_PROVISIONAL
         compact
       />
     </div>
+    <!-- Opened from the batch ledger: the sample this is, and the way to the
+         next one that holds the batch peak. -->
+    <div v-if="batchOpened" class="batch-opened" data-testid="batch-opened">
+      <span class="pi ph ph-stack" aria-hidden="true" />
+      <span class="batch-opened-text">{{ batchOpenedLine }}</span>
+      <Button
+        v-if="batchOpened.next"
+        label="Other samples"
+        size="small"
+        text
+        icon="pi ph ph-arrow-right"
+        icon-pos="right"
+        class="batch-step"
+        data-testid="batch-other-samples"
+        v-tooltip.top="`Open the next sample that holds this batch peak: ${batchOpened.next}`"
+        @click="nextSample"
+      />
+    </div>
     <!-- The tiering is still being built: said as a caption under the chips,
          not as a chip of its own. -->
     <div
@@ -297,6 +331,20 @@ const provisional = TIERING_PROVISIONAL
   flex-wrap: wrap;
   align-items: center;
   gap: 0.35rem;
+}
+/* One run of text: the icon, the sentence and its action wrap as words do. */
+.batch-opened {
+  font-size: var(--card-text-sm);
+  overflow-wrap: anywhere;
+}
+.batch-opened > .pi {
+  margin-right: 0.35rem;
+}
+.batch-step {
+  display: inline-flex;
+  padding: 0 0.25rem;
+  font-size: inherit;
+  vertical-align: baseline;
 }
 .caption {
   color: var(--p-text-muted-color);

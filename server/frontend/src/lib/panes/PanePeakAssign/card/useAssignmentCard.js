@@ -16,6 +16,8 @@ import { ROLE_BUCKETS, bucketRank, tierName } from '@/lib/tiers'
 import { isLevel, isOpenRival, levelMeta, unlistedRivalsLine } from '@/lib/levels'
 import { sourceLabel } from '@/lib/assignmentSources'
 import { EVIDENCE_LEVELS, VERDICT_META, claimCandidates } from '@/lib/verification'
+import { canEditWorkspace } from '@/lib/permissions'
+import { useBatchPeakJump } from '@/lib/panes/PaneBrowserMatch/stores/batchPeakJump.js'
 import { useBatchPeakCuration } from '../stores/batchPeakCuration.js'
 import {
   bandMissed,
@@ -26,6 +28,7 @@ import {
   isotopeTile,
   orderedReasons,
   reasonGroup,
+  runNotice,
   shareDigits,
   whyTitle
 } from './cardReadings.js'
@@ -49,6 +52,7 @@ import {
 export function useAssignmentCard({ showSearch }) {
   const app = useApp()
   const curation = useBatchPeakCuration()
+  const jump = useBatchPeakJump()
 
   // The committed assignment for the focused peak (from the latest run).
   const focusedAssignment = computed(() =>
@@ -78,14 +82,91 @@ export function useAssignmentCard({ showSearch }) {
   const focusedDetail = computed(() =>
     app.data.peakAssignment.peak.detailOf(focusedAssignment.value?.peak_assignment_id)
   )
+  // The row whose detail is on its way, so the card can draw its sections as
+  // skeletons until it lands rather than let them pop in one by one.
+  const detailLoadingId = ref(null)
   watch(
     focusedAssignment,
     (assignment) => {
+      if (!assignment) return
+      const id = assignment.peak_assignment_id
+      if (!app.data.peakAssignment.peak.detailOf(id)) detailLoadingId.value = id
       // Failures already toast via the http layer; the inspector just stays slim.
-      if (assignment) app.data.peakAssignment.peak.loadDetail(assignment).catch(() => {})
+      app.data.peakAssignment.peak
+        .loadDetail(assignment)
+        .catch(() => {})
+        .finally(() => {
+          if (detailLoadingId.value === id) detailLoadingId.value = null
+        })
     },
     { immediate: true }
   )
+  const loading = computed(
+    () =>
+      detailLoadingId.value != null &&
+      detailLoadingId.value === focusedAssignment.value?.peak_assignment_id
+  )
+
+  // --- The card's states (docs/dev/assignment_ledger_and_card.md, 4.2) ---------
+  // The run the card reads is the one the run store focuses, which the run
+  // selector can set to an earlier run or, asked for, a decoy. Neither is the
+  // sample's result: the card says which run it is, and offers nothing that
+  // would record a verdict or a change on it.
+  const viewedRun = computed(() => app.data.peakAssignment.peak.run ?? null)
+  const notice = computed(() =>
+    runNotice(
+      viewedRun.value,
+      app.data.peakAssignment.run?.latestCompleted ?? null,
+      app.data.peakAssignment.run?.list ?? []
+    )
+  )
+  const readOnly = computed(() => notice.value != null)
+  const readOnlyReason = computed(() => notice.value?.reason ?? '')
+
+  // Whether the account may write in the workspace, checked before anything
+  // is offered, as the ledger's verdict popovers check it. A viewer sees the
+  // recorded verdict and no controls; the 403 a refused write earns stays the
+  // fallback (`denied`, `curateDenied`).
+  const canEdit = computed(() =>
+    canEditWorkspace(app.data.workspace?.focused ?? null, app.auth?.user ?? null)
+  )
+  // What the verdict bar and the changes by hand both need: an editor, on
+  // the sample's own result.
+  const canChange = computed(() => canEdit.value && !readOnly.value)
+
+  // --- Opened from the batch scope ----------------------------------------------
+  // The batch ledger opens a batch peak in its brightest sample
+  // (`useBatchPeakJump`). While the card shows one of that peak's samples, on
+  // the peak the batch named there, it says which sample, and steps through
+  // the others.
+  const batchOpened = computed(() => {
+    const opened = jump.opened
+    if (!opened?.members?.length || opened.sample_batch_id !== app.data.batch?.focusedId) {
+      return null
+    }
+    const sampleId = app.data.sample.focusedId
+    const peakId = app.data.peak.focused?.peak_id
+    const index = opened.members.findIndex(
+      (member) =>
+        member.sample_item_id === sampleId &&
+        (member.sample_peak_id == null || String(member.sample_peak_id) === String(peakId))
+    )
+    if (index === -1) return null
+    const nameOf = (id) =>
+      (app.data.sample.list ?? []).find((s) => s.sample_item_id === id)?.sample_item_name ?? id
+    const count = opened.members.length
+    return {
+      index,
+      count,
+      name: nameOf(sampleId),
+      next: count > 1 ? nameOf(opened.members[(index + 1) % count].sample_item_id) : null
+    }
+  })
+  function nextSample() {
+    const opened = batchOpened.value
+    if (!opened || opened.count < 2) return
+    jump.stepTo((opened.index + 1) % opened.count)
+  }
 
   // A row that names an ion and no compound - a peak the source made - is headed
   // by its ion, known exactly, rather than by the word "Unassigned": the role chip
@@ -112,6 +193,16 @@ export function useAssignmentCard({ showSearch }) {
       .filter(Boolean)
       .join(' · ')
   })
+
+  // What the card says of a focused peak the run on view has no row for. A
+  // run writes a row for every peak it read, an unexplained one included, so
+  // a peak without one is a peak no run on view has read: the sample has no
+  // run yet, or its peaks were found again after the run.
+  const noRowLine = computed(() =>
+    viewedRun.value
+      ? 'The run on view has no row for this peak.'
+      : 'No run has assigned this sample yet.'
+  )
 
   // --- Verification (labelling) capture -------------------------------------
   // The current verdict for the focused assignment (by stable identity), plus a
@@ -185,8 +276,12 @@ export function useAssignmentCard({ showSearch }) {
 
   // Show the verdict buttons when there is no verdict yet, or the user chose to
   // change it.
+  //
+  // Never for a viewer, who is offered no control at all. On a run that is not
+  // the sample's result the buttons show, disabled, beside the reason.
   const showVerifyForm = computed(
-    () => verifiable.value && !denied.value && (!verification.value || editing.value)
+    () =>
+      verifiable.value && canEdit.value && !denied.value && (!verification.value || editing.value)
   )
 
   function startEdit() {
@@ -234,7 +329,7 @@ export function useAssignmentCard({ showSearch }) {
 
   function openVerdict(verdict, event) {
     const dialog = verdictDialog.value
-    if (!dialog) return
+    if (!dialog || !canChange.value) return
     const wasOpen = dialog.visible
     dialogVerdict.value = verdict
     dialog.show(event)
@@ -254,6 +349,7 @@ export function useAssignmentCard({ showSearch }) {
     // Confirm requires an evidence level, and a structure on structure evidence
     // (both also enforced server-side).
     if (confirm && !canConfirm.value) return false
+    if (!canChange.value) return false
     submitting.value = true
     pendingVerdict.value = verdict
     try {
@@ -1284,7 +1380,7 @@ export function useAssignmentCard({ showSearch }) {
         }
 
   async function promoteAlternative(alt, index) {
-    if (!canPromote(alt) || curating.value !== null) return
+    if (!canPromote(alt) || curating.value !== null || !canChange.value) return
     if (derivedRun.value && alt.candidate == null) return
     curating.value = index
     try {
@@ -1347,7 +1443,7 @@ export function useAssignmentCard({ showSearch }) {
   })
   const releasing = ref(false)
   async function releaseOverride() {
-    if (releasing.value || !focusedAssignment.value?.batch_peak_id) return
+    if (releasing.value || !focusedAssignment.value?.batch_peak_id || !canChange.value) return
     releasing.value = true
     try {
       await curation.release({ batch_peak_id: focusedAssignment.value.batch_peak_id })
@@ -1683,6 +1779,16 @@ export function useAssignmentCard({ showSearch }) {
     app,
     curation,
     focusedAssignment,
+    loading,
+    viewedRun,
+    notice,
+    readOnly,
+    readOnlyReason,
+    canEdit,
+    canChange,
+    batchOpened,
+    nextSample,
+    noRowLine,
     engineTierTooltip,
     focusedDetail,
     headlineIsIon,

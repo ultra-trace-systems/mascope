@@ -247,3 +247,55 @@ export function batchTile({ present, total, readings, inBatch }) {
   if (inBatch || readings) return { value: '—', caption: readingsWord }
   return { value: '—', caption: 'in no batch peak' }
 }
+
+/**
+ * A run as the card names it: its place among the sample's runs, as the run
+ * selector numbers them (oldest #1), and when it finished.
+ *
+ * @param {object|null} run - the run record
+ * @param {Array<object>} runs - the sample's runs, newest first
+ * @returns {string} "run #2 of 3, completed 20/11/2026, 14:05:00", or '' for no run
+ */
+export function runName(run, runs) {
+  if (!run) return ''
+  const list = runs ?? []
+  const index = list.findIndex((r) => r.peak_assignment_run_id === run.peak_assignment_run_id)
+  const ordinal = index === -1 ? 'run' : `run #${list.length - index} of ${list.length}`
+  const finished = run.peak_assignment_run_utc_completed ?? run.peak_assignment_run_utc_created
+  const date = finished ? new Date(finished) : null
+  return date && !Number.isNaN(date.getTime())
+    ? `${ordinal}, ${run.peak_assignment_run_utc_completed ? 'completed' : 'started'} ${date.toLocaleString()}`
+    : ordinal
+}
+
+/**
+ * The notice the card shows over a run that is not the sample's result, and
+ * why its controls are off. A decoy arm comes first: a decoy is never the
+ * sample's result, whatever else is true of it. Then any run that is not the
+ * sample's latest completed one. The sample's own result, and a sample with
+ * no completed run to compare against, get none.
+ *
+ * @param {object|null} run - the run the card reads
+ * @param {object|null} latest - the sample's latest completed run
+ * @param {Array<object>} runs - the sample's runs, newest first
+ * @returns {{kind: 'decoy'|'earlier', text: string, reason: string}|null}
+ */
+export function runNotice(run, latest, runs) {
+  if (!run) return null
+  if (run.decoy) {
+    return {
+      kind: 'decoy',
+      text: `A decoy run, arm ${run.decoy}: the engine re-run with its chemistry made wrong on purpose`,
+      reason:
+        "A decoy run is never the sample's result: verdicts and changes are not recorded on it"
+    }
+  }
+  if (!latest || run.peak_assignment_run_id === latest.peak_assignment_run_id) return null
+  return {
+    kind: 'earlier',
+    text: `Read only: an earlier run, ${runName(run, runs)}`,
+    reason:
+      "Verdicts and changes are recorded on the sample's latest completed run. Select it in the " +
+      'run selector to record one.'
+  }
+}

@@ -6,6 +6,7 @@ import RadioButton from 'primevue/radiobutton'
 
 import { BaseClaimStructure, BaseVerdictBadge } from '@/lib/base'
 import { EVIDENCE_LEVELS, VERDICT_META } from '@/lib/verification'
+import CardFindFormulas from './CardFindFormulas.vue'
 import { useCard } from './useCard.js'
 
 // The verdict bar, pinned at the card's foot so it is on the first screen
@@ -13,10 +14,15 @@ import { useCard } from './useCard.js'
 // recorded verdict with Change; under it, the composition search
 // (docs/dev/assignment_ledger_and_card.md, section 4.1). What a verdict
 // records, and through which endpoint, is as it was.
+//
+// A viewer is offered none of it: the recorded verdict, and a line that says
+// editing needs editor access. On a run that is not the sample's result the
+// buttons show disabled, with the reason under them (section 4.2).
 const {
   app,
-  showSearch,
-  toggleSearch,
+  canEdit,
+  readOnly,
+  readOnlyReason,
   verifiable,
   verification,
   anchorVerdict,
@@ -79,7 +85,7 @@ const {
       <div v-if="verification && !editing" class="verify-current" data-testid="verdict-recorded">
         <BaseVerdictBadge :record="verification" :conflict="anchorConflict" />
         <Button
-          v-if="!denied"
+          v-if="!denied && canEdit && !readOnly"
           label="Change"
           size="small"
           text
@@ -98,7 +104,7 @@ const {
           severity="success"
           class="verdict-button"
           aria-haspopup="dialog"
-          :disabled="submitting"
+          :disabled="submitting || readOnly"
           :loading="submitting && pendingVerdict === 'confirmed'"
           v-tooltip.top="'The assignment is right'"
           @click="openVerdict('confirmed', $event)"
@@ -110,7 +116,7 @@ const {
           severity="danger"
           class="verdict-button"
           aria-haspopup="dialog"
-          :disabled="submitting"
+          :disabled="submitting || readOnly"
           :loading="submitting && pendingVerdict === 'rejected'"
           v-tooltip.top="'The assignment is wrong'"
           @click="openVerdict('rejected', $event)"
@@ -122,7 +128,7 @@ const {
           severity="secondary"
           class="verdict-button"
           aria-haspopup="dialog"
-          :disabled="submitting"
+          :disabled="submitting || readOnly"
           :loading="submitting && pendingVerdict === 'unsure'"
           v-tooltip.top="'The evidence at hand cannot tell'"
           @click="openVerdict('unsure', $event)"
@@ -137,8 +143,15 @@ const {
           @click="cancelEdit"
         />
       </div>
-      <div v-else-if="denied" class="verify-denied">
+      <div v-else-if="denied || !canEdit" class="verify-denied" data-testid="verify-denied">
         <span class="pi ph ph-lock-simple" /> Editor access is required to verify.
+      </div>
+      <div
+        v-if="readOnly && canEdit && !denied"
+        class="verify-denied"
+        data-testid="verify-read-only"
+      >
+        <span class="pi ph ph-lock-simple" /> {{ readOnlyReason }}
       </div>
       <!-- No help card in here: the card above covers it, and one inside a
            popover re-registers on every open. Radio buttons rather than a
@@ -206,18 +219,7 @@ const {
         </div>
       </Popover>
     </div>
-    <div class="insp-actions">
-      <Button
-        :label="showSearch ? 'Hide the formula search' : 'Find other formulas for this peak'"
-        size="small"
-        text
-        :severity="showSearch ? 'primary' : 'secondary'"
-        icon="pi ph ph-magnifying-glass"
-        data-testid="find-other-formulas"
-        v-tooltip.top="'Search other compositions for this peak'"
-        @click="toggleSearch"
-      />
-    </div>
+    <CardFindFormulas />
   </div>
 </template>
 
@@ -326,9 +328,5 @@ const {
   gap: 0.35rem;
   color: var(--p-text-muted-color);
   font-size: var(--card-text-sm);
-}
-.insp-actions {
-  display: flex;
-  justify-content: flex-start;
 }
 </style>

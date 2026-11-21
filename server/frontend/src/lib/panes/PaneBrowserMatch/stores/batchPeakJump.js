@@ -36,6 +36,32 @@ export function brightestMember(record) {
 }
 
 /**
+ * Every measured member of a batch peak's series, brightest first: the
+ * samples the inspector card steps through once the batch ledger has opened
+ * the peak in its brightest one.
+ *
+ * Pure. A member without an intensity is not measured and is left out; equal
+ * intensities keep the series' order, so the first is the one
+ * `brightestMember` picks.
+ *
+ * @param {object|null|undefined} record - a series record
+ * @returns {Array<{sample_item_id: string, sample_peak_id: string|null, intensity: number}>}
+ */
+export function measuredMembers(record) {
+  const series = record?.peak_series
+  const ids = series?.sample_item_ids ?? []
+  const intensities = series?.intensities ?? []
+  return ids
+    .map((id, index) => ({
+      sample_item_id: id,
+      sample_peak_id: series.sample_peak_ids?.[index] ?? null,
+      intensity: intensities[index]
+    }))
+    .filter((member) => member.intensity != null)
+    .sort((a, b) => b.intensity - a.intensity)
+}
+
+/**
  * The batch ledger's row action: open the brightest sample that holds the
  * batch peak, with that peak focused, in the Sample tab.
  *
@@ -50,6 +76,14 @@ export const useBatchPeakJump = defineStore('browser.match.batchPeakJump', () =>
 
   /** The batch peak whose jump is in flight, or null. */
   const pendingId = ref(null)
+
+  /**
+   * The batch peak the ledger last opened, for the inspector card: the batch
+   * it is in, and its measured members among the loaded samples, brightest
+   * first. The card names the sample it is showing and steps through the
+   * others (`stepTo`). Null until a jump lands.
+   */
+  const opened = ref(null)
 
   const notify = (message, status = 'warning') =>
     app.ui.notification.push({ type: 'batch_peak_jump', message, status })
@@ -79,6 +113,11 @@ export const useBatchPeakJump = defineStore('browser.match.batchPeakJump', () =>
         notify('This batch peak has no measured member among the loaded samples.')
         return
       }
+      // The samples the card steps through: the measured members the sample
+      // list holds, brightest first, so the one opened here is the first.
+      const loaded = new Set(app.data.sample.list.map((s) => s.sample_item_id))
+      const members = measuredMembers(records?.[0]).filter((m) => loaded.has(m.sample_item_id))
+      opened.value = { batch_peak_id: row.batch_peak_id, sample_batch_id: batchId, members }
       const outcome = await focusSamplePeak(app, sample, member.sample_peak_id)
       if (outcome === 'missing') {
         notify("The peak is not in the sample's loaded peak list, so only the sample was opened.")
@@ -90,5 +129,25 @@ export const useBatchPeakJump = defineStore('browser.match.batchPeakJump', () =>
     }
   }
 
-  return { pendingId, jumpToBrightest }
+  /**
+   * Open another member of the batch peak the ledger opened: its sample, with
+   * its peak in focus, as the jump opened the brightest.
+   *
+   * @param {number} index - the member's place in `opened.members`
+   * @returns {Promise<string|null>} what `focusSamplePeak` focused, or null
+   *   when there is no such member
+   */
+  async function stepTo(index) {
+    const member = opened.value?.members?.[index]
+    const sample =
+      member && app.data.sample.list.find((s) => s.sample_item_id === member.sample_item_id)
+    if (!sample) return null
+    const outcome = await focusSamplePeak(app, sample, member.sample_peak_id)
+    if (outcome === 'missing') {
+      notify("The peak is not in the sample's loaded peak list, so only the sample was opened.")
+    }
+    return outcome
+  }
+
+  return { pendingId, opened, jumpToBrightest, stepTo }
 })

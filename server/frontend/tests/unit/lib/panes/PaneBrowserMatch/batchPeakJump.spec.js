@@ -12,7 +12,7 @@ vi.mock('@/lib/panes/PaneBrowserSample/stores/focusSamplePeak.js', () => ({
   focusSamplePeak: (...args) => focusSamplePeak(...args)
 }))
 
-const { brightestMember, useBatchPeakJump } =
+const { brightestMember, measuredMembers, useBatchPeakJump } =
   await import('@/lib/panes/PaneBrowserMatch/stores/batchPeakJump.js')
 
 const SAMPLES = [
@@ -70,6 +70,22 @@ describe('brightestMember', () => {
   })
 })
 
+describe('measuredMembers', () => {
+  it('lists the measured members brightest first, equals in series order', () => {
+    expect(
+      measuredMembers(series(['s-1', 's-2', 's-3', 's-4'], [7, null, 300, 7], ['a', 'b', 'c', 'd']))
+    ).toEqual([
+      { sample_item_id: 's-3', sample_peak_id: 'c', intensity: 300 },
+      { sample_item_id: 's-1', sample_peak_id: 'a', intensity: 7 },
+      { sample_item_id: 's-4', sample_peak_id: 'd', intensity: 7 }
+    ])
+  })
+
+  it('answers no members for an absent series', () => {
+    expect(measuredMembers(null)).toEqual([])
+  })
+})
+
 describe('useBatchPeakJump', () => {
   it('reads the series of the one anchor and opens its brightest sample on that peak', async () => {
     post.mockResolvedValue([series(['s-1', 's-2'], [10, 300], ['p1', 'p2'])])
@@ -85,6 +101,46 @@ describe('useBatchPeakJump', () => {
     expect(focusSamplePeak).toHaveBeenCalledWith(app, SAMPLES[1], 'p2')
     expect(app.ui.notification.push).not.toHaveBeenCalled()
     expect(jump.pendingId).toBeNull()
+  })
+
+  it('keeps the loaded members it opened, brightest first, for the card to step through', async () => {
+    post.mockResolvedValue([
+      series(['s-1', 's-9', 's-2', 's-3'], [10, 50, 300, null], ['p1', 'p9', 'p2', 'p3'])
+    ])
+    const jump = useBatchPeakJump()
+    expect(jump.opened).toBeNull()
+
+    await jump.jumpToBrightest({ batch_peak_id: 'bp-1' })
+
+    // s-9 is not among the loaded samples, and s-3 was not measured.
+    expect(jump.opened).toEqual({
+      batch_peak_id: 'bp-1',
+      sample_batch_id: 'b-1',
+      members: [
+        { sample_item_id: 's-2', sample_peak_id: 'p2', intensity: 300 },
+        { sample_item_id: 's-1', sample_peak_id: 'p1', intensity: 10 }
+      ]
+    })
+  })
+
+  it('opens another member of the batch peak it opened, on its peak', async () => {
+    post.mockResolvedValue([series(['s-1', 's-2'], [10, 300], ['p1', 'p2'])])
+    const jump = useBatchPeakJump()
+    await jump.jumpToBrightest({ batch_peak_id: 'bp-1' })
+    focusSamplePeak.mockClear()
+
+    expect(await jump.stepTo(1)).toBe('peak')
+    expect(focusSamplePeak).toHaveBeenCalledWith(app, SAMPLES[0], 'p1')
+
+    focusSamplePeak.mockResolvedValueOnce('missing')
+    await jump.stepTo(0)
+    expect(app.ui.notification.push).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('only the sample') })
+    )
+
+    focusSamplePeak.mockClear()
+    expect(await jump.stepTo(5)).toBeNull()
+    expect(focusSamplePeak).not.toHaveBeenCalled()
   })
 
   it('reads the run on screen, so an earlier run opens where it was brightest then', async () => {
