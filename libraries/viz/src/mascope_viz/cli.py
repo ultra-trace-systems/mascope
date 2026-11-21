@@ -1151,11 +1151,12 @@ def _view_lines(name: str, payload: dict[str, Any], status: StoreStatus) -> list
     if "normalise" in _TAKES[name]:
         normalise = attrs.get("normalise")
         named = attrs.get("normalise_name")
-        how.append(
-            "normalise "
-            + (normalise if normalise in ("none", views.TIC) else quoted(normalise))
-            + (f" ({quoted(named)})" if named else "")
-        )
+        if isinstance(normalise, list):
+            # A sum of keys
+            normalise = " + ".join(quoted(key) for key in normalise)
+        elif normalise not in ("none", views.TIC):
+            normalise = quoted(normalise)
+        how.append("normalise " + normalise + (f" ({quoted(named)})" if named else ""))
     how.append(f"times in {zone}")
     lines.append("  " + ", ".join(how))
     span = payload["span"]
@@ -1373,11 +1374,14 @@ def view(
         ),
     ] = None,
     normalise: Annotated[
-        Optional[str],
+        Optional[list[str]],
         typer.Option(
             "--normalise",
             help="none (the default), tic, or a series key such as "
-            "a reagent ion's: each value is divided by it, sample by sample.",
+            "a reagent ion's: each value is divided by it, sample by sample. "
+            "Repeat it with series keys to divide by their sum, as by the "
+            "ions a reagent is spread over (the bare ion and its water "
+            "cluster): a sample's sum is that of the keys with a value in it.",
         ),
     ] = None,
     stat: Annotated[
@@ -1474,7 +1478,7 @@ def view(
     given = {
         "keys": bool(keys),
         "cadence": cadence is not None,
-        "normalise": normalise is not None,
+        "normalise": bool(normalise),
         "stat": stat is not None,
         "by": by is not None,
         "period": period is not None,
@@ -1493,7 +1497,12 @@ def view(
     if not store.exists():
         raise NotSynced(store.path)
 
-    shared = {"normalise": normalise or "none", "tz": tz}
+    # Given once it is none, tic or a key; repeated, a sum of keys
+    if not normalise:
+        normalise = "none"
+    elif len(normalise) == 1:
+        normalise = normalise[0]
+    shared = {"normalise": normalise, "tz": tz}
     window = {"start": window_from, "end": window_to}
     try:
         if name == "series":

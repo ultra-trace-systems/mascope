@@ -127,6 +127,8 @@ from mascope_viz.data import views
 
 views.series(store, ["ion:...", "tic"])  # each key over time, at the auto cadence
 views.series(store, keys, cadence="1h", normalise="ion:...")  # by a reagent ion
+views.diurnal(store, keys, normalise=["ion:...", "ion:..."])  # by the reagent's sum
+views.series(store, [("ion:...", "ion:...")])  # the reagent's total as one series
 views.diurnal(store, keys, by="weekday")  # the hour-of-day cycle
 views.periods(store, keys, "week")  # the distribution per week
 views.coverage(store).gaps  # stretches without a sample, and the files in them
@@ -163,19 +165,39 @@ What every view does the same way:
   At `raw`, a NaN row breaks the line where a bin would be empty.
 - **A sample's value of a key** is the sum of its values: two batch peaks
   can carry one formula, and the SDK notebooks sum per sample the same way.
-- **Normalisation** is `none` by default, `tic`, or a series key such as a
-  reagent ion. Each value is divided by its own sample's normaliser before
-  any binning; a sample whose normaliser is missing or 0 is NaN.
+- **Normalisation** is `none` by default, `tic`, a series key such as a
+  reagent ion, or a list of series keys, divided by their sum. Each value
+  is divided by its own sample's normaliser before any binning; a sample
+  whose normaliser is missing or 0 is NaN.
+- **Normalise by the sum when the reagent is spread over clusters.** In
+  iodide and bromide chemistry the reagent is the bare ion and its water
+  cluster; in nitrate chemistry the monomer, dimer and trimer. Their
+  shares move with humidity and temperature while their total does not,
+  so dividing by one of them leaves that one's share in every species: a
+  diurnal cycle that is the instrument's, not the air's. Name every ion
+  the reagent is spread over: `normalise=["ion:<bare>", "ion:<cluster>"]`.
+  A sample's sum is that of the ions with a value in it, so where one is
+  below detection the others divide; `attrs["normalise_complete"]` is the
+  share of the samples in which every ion had a value. A list of one key
+  is that key. A key twice, a key the store does not hold, or ions read in
+  two polarities are refused: a normalisation never spans chemistries.
+- **A sum is a series too.** A tuple among the keys, such as
+  `[("ion:<bare>", "ion:<cluster>")]`, is the per-sample sum of its keys,
+  by the same rule, keyed by them joined with `+` and named by their names
+  joined with ` + `. The reagent's total is then drawn and binned like any
+  other key. A sum has no m/z, so `spectrum` does not take one.
 - **Time** is UTC in the store. A view shows it in the instrument's
   acquisition zone, or the zone the scope named; `tz=` names another, and
   `tz="instrument"` asks for the instrument's. Bins, hours of day, days,
   weeks (Monday to Sunday) and months are that zone's, clock changes
   included. `start=` and `end=` keep the samples in a window.
 - **Every frame says what it is** in its `attrs`: `view`, `tz`, `cadence`,
-  `normalise` and `normalise_name`, `keys`, the window, the store's
-  `provenance`, and `mixed_runs` and `run_changes`: whether the window's
-  formulas, the keys' or the one normalised by, come from more than one
-  engine run, and where the run changes. They are over the batches whose
+  `normalise` and `normalise_name` (a list of keys and their names joined
+  with ` + ` for a sum), `normalise_members` (the keys divided by: none for
+  `none` and `tic`) and `normalise_complete`, `keys`, the window, the
+  store's `provenance`, and `mixed_runs` and `run_changes`: whether the
+  window's formulas, the keys', a sum's or the ones normalised by, come
+  from more than one engine run, and where the run changes. They are over the batches whose
   samples the view draws, in the polarity the formulas are read in: a
   change between the other polarity's batches is not flagged.
   A chart prints them; a run change is flagged, never joined silently. A
@@ -186,7 +208,7 @@ What every view does the same way:
   from the store's hourly and daily rollups rather than every sample's
   values, and gives the same frame. It bins the rows instead, as fast as
   before, where the rollups would give another answer: with a
-  normalisation, a `stat` other than median or mean, a `band` other than
+  normalisation or a sum among the keys, a `stat` other than median or mean, a `band` other than
   (10, 90) or None, a window whose first or last bin reaches outside it,
   a formula two batch peaks of one batch carry (`n_shared_keys`), two
   engine readings of a formula in one bin, or rollup days the last sync
@@ -223,7 +245,8 @@ the zone times are shown in. The same scope finds the same store: give
 
 `view` takes `--keys` (repeated; `series`, `diurnal` and `periods` need
 them, the other views take every key of the store without), `--cadence`,
-`--normalise`, `--stat`, `--by`, `--period`, `-n`, `--min-gap`,
+`--normalise` (repeated, the sum of the keys it names), `--stat`, `--by`,
+`--period`, `-n`, `--min-gap`,
 `--window-from` and `--window-to` (the samples it reads; for `spectrum`,
 the period), and `--other-from` and `--other-to` (the period `spectrum`
 compares with). An option the view does not take is refused, not ignored.
