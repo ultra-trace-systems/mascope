@@ -9,6 +9,7 @@ reads over a real ledger are the integration suites' (the water ladder's,
 the known species', the strip's).
 """
 
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -25,6 +26,7 @@ from mascope_backend.api.new.peak_assignments.batch_decisions import (
     KINDS,
     LISTED_ELECTED,
     LISTED_LIFTED,
+    PEAK_ABSENT,
     STRIP_KEPT_CARRIES_LINES,
     STRIP_KEPT_CLAIMED,
     STRIP_KEPT_PARENT,
@@ -110,6 +112,14 @@ class TestTheSegmentASampleIsIn:
     )
     def test_a_sample_anywhere_else_is_in_none(self, acquired):
         assert segment_of(_rung_record(), "s", acquired) == (False, None)
+
+    @pytest.mark.parametrize("acquired", [50.0, 300.0, 700.0, -10.0])
+    def test_a_claimed_sample_s_own_time_decides_alone(self, acquired):
+        # ``claimed_samples`` carries an earlier measurement's samples over,
+        # whatever segment this one puts them in.
+        assert segment_of(_rung_record(), "claimed", acquired) == (False, None)
+        placed, entry = segment_of(_rung_record(), "claimed", 550.0)
+        assert (placed, entry["segment"]) == (True, 1)
 
     def test_a_sample_the_ladder_claimed_is_in_one(self):
         # The untimed segment's samples, and those of a record from before
@@ -512,6 +522,21 @@ class TestTheListedCompoundElected:
             "tier": "below_assignability"
         }
 
+    def test_a_decision_on_a_peak_the_run_does_not_hold_is_left(self):
+        # The decision names a peak of an earlier detection of the sample: its
+        # members name it until the sample's next fold.
+        searched = _row("d", OTHER)
+        gone = replace(DECIDED, sample_peak_id="gone")
+
+        stage_a, stage_b, outcomes = _elect(
+            [], [searched], decided={"d": DECIDED, "gone": gone}
+        )
+
+        assert outcomes == {"d": LISTED_ELECTED, "gone": PEAK_ABSENT}
+        assert [row["sample_peak_id"] for row in stage_a] == ["d"]
+        assert stage_b == []
+        assert cite_listed(stage_a, {"d": DECIDED, "gone": gone}, outcomes) == 1
+
     def test_a_reading_the_claim_keeps_is_left_as_it_is(self):
         searched = _row("d", OTHER)
         line = _row("d13", OTHER, role="iso_child", owner_peak_assignment_id="id-d")
@@ -533,6 +558,12 @@ class TestTheListedCompoundElected:
         ]
         assert cite_listed(stage_a, {"d": DECIDED}, outcomes) == 1
         assert len(searched["provenance"]["tier_reasons"]) == 2
+        # A row on the peak that reads the compound with no decision of the
+        # batch's on it was not put there by the decision, and cites nothing.
+        unread = _row("d", D4, tier="candidate")
+        unread["provenance"]["tier_reasons"] = [{"rule": "on_a_list"}]
+        assert cite_listed([unread], {"d": DECIDED}, outcomes) == 0
+        assert unread["provenance"]["tier_reasons"] == [{"rule": "on_a_list"}]
         # A reading the judging turned to another formula cites nothing.
         searched["assigned_formula"] = OTHER
         assert cite_listed(stage_a, {"d": DECIDED}, outcomes) == 0
@@ -543,16 +574,17 @@ LINE = BatchLine("13C", 1.00336, 0.11, "bp-x", "bp-p", {"spectra": 6}, "run-2", 
 STRIP = StripDecision("x", "p", "C10H16O4", "m-h", LINE)
 
 
-def _strip(rows, *, claimed=frozenset()):
+def _strip(rows, *, claimed=frozenset(), peaks=("p", "x")):
+    held = {"p": (199.0976, 1e6), "x": (200.101, 1.1e5)}
     return read_strips(
         rows,
         {"x": STRIP},
         claimed_peak_ids=set(claimed),
         peaks=pd.DataFrame(
             {
-                "sample_peak_id": ["p", "x"],
-                "mz": [199.0976, 200.101],
-                "intensity": [1e6, 1.1e5],
+                "sample_peak_id": list(peaks),
+                "mz": [held[peak][0] for peak in peaks],
+                "intensity": [held[peak][1] for peak in peaks],
             }
         ),
         sample_item_id="s",
@@ -588,6 +620,21 @@ class TestTheStripReadOnTheRows:
         assert (line["sample_peak_id"], line["role"]) == ("x", "iso_child")
         assert line["owner_peak_assignment_id"] == "id-p"
         assert line["peak_assignment_run_id"] == "run"
+
+    @pytest.mark.parametrize(
+        "rows, peaks",
+        [
+            ([_row("p", "C10H16O4", sample_peak_mz=199.0976)], ("p",)),
+            ([], ("x",)),
+        ],
+        ids=["the stripped peak", "the parent's peak"],
+    )
+    def test_a_strip_on_a_peak_the_run_does_not_hold_is_left(self, rows, peaks):
+        # The strip names a peak of an earlier detection of the sample.
+        before = [dict(row) for row in rows]
+        after, outcomes = _strip(rows, peaks=peaks)
+        assert outcomes == {PEAK_ABSENT: 1}
+        assert after == before
 
     @pytest.mark.parametrize(
         "rows, claimed, expected",
@@ -811,6 +858,28 @@ class TestTheElectStageReadsThem:
         }
 
     @pytest.mark.asyncio
+    async def test_a_decision_on_a_peak_the_run_does_not_hold_is_recorded(self):
+        # After a re-detection the sample's members name peaks its run no
+        # longer has, until its next fold: the run reads on, and says so.
+        gone = replace(STRIP, sample_peak_id="gone-x")
+        ctx = _context(
+            listed={"gone-d": replace(DECIDED, sample_peak_id="gone-d")},
+            strips={"gone-x": gone},
+        )
+        ctx.decided = dict(ctx.batch.listed)
+        ctx.stage_a = [_row("p", "C10H16O4", sample_peak_mz=199.0976)]
+        with patch.object(
+            pipeline.service, "_record_same_ion_readings", return_value=0
+        ):
+            await pipeline.elect(ctx)
+
+        assert [r["sample_peak_id"] for r in ctx.stage_a + ctx.stage_b] == ["p"]
+        assert ctx.batch_applied == {
+            "listed": {PEAK_ABSENT: 1},
+            "strips": {PEAK_ABSENT: 1},
+        }
+
+    @pytest.mark.asyncio
     async def test_a_path_that_proposes_no_known_set_proposes_no_listed_compound(self):
         ctx = _context(listed={"d": DECIDED})
         ctx.path = pipeline.PROPAGATION
@@ -894,6 +963,47 @@ class TestTheReaderReadsWhatItIsAsked:
         species.assert_awaited_once()
         rungs.assert_awaited_once_with(sample, "BR")
         series.assert_awaited_once_with("s")
+
+    @pytest.mark.asyncio
+    async def test_the_stage_versions_are_read_before_the_records(self):
+        # A stage that hands over while the records are read then shows as
+        # running or older than them, never as current with the older records.
+        read = []
+
+        def reading(name, value):
+            async def one(*args, **kwargs):
+                read.append(name)
+                return value
+
+            return one
+
+        with (
+            patch.object(
+                batch_decisions.batch_known_species,
+                "batch_species_for",
+                reading("species", []),
+            ),
+            patch.object(batch_decisions, "rungs_for", reading("rungs", ())),
+            patch.object(
+                batch_decisions.service, "batch_series_by_peak", reading("series", {})
+            ),
+            patch.object(
+                batch_decisions, "member_decisions", reading("members", ({}, {}))
+            ),
+            patch.object(
+                batch_decisions,
+                "stage_versions",
+                reading("stages", {"series": {"version": 2, "state": "current"}}),
+            ),
+        ):
+            decisions = await batch_decisions.read_batch_decisions(
+                SimpleNamespace(sample_item_id="s", sample_batch_id="b"),
+                profile="BR",
+            )
+
+        assert read[0] == "stages"
+        assert sorted(read[1:]) == ["members", "rungs", "series", "species"]
+        assert decisions.stages == {"series": {"version": 2, "state": "current"}}
 
     @pytest.mark.asyncio
     async def test_a_sample_in_no_batch_reads_nothing(self):

@@ -318,9 +318,12 @@ As built (`batch_stages.py`):
   propose stage (elected after the search, as the known-species claim takes a member), a
   strip and a series at the judging. A rung reaches a sample acquired inside a stretch it
   passed in, which the ladder's record now bounds by its first and last spectrum's times;
-  a strip's record now keeps the line's m/z offset. A decoy arm reads the source ions and
-  the listed compounds and no strip or series. The run records, under
-  `config.batch_decisions`, each stage's version and state when it read the records, how
+  `claimed_samples` places only a sample the times cannot (no time, or a record from
+  before them). A strip's record now keeps the line's m/z offset. A listed compound or a
+  strip on a peak the run's frame does not hold (an earlier detection's peak id, which a
+  member names until the sample's next fold) is left, as `peak_absent`. A decoy arm reads
+  the source ions and the listed compounds and no strip or series. The run records, under
+  `config.batch_decisions`, each stage's version and state, read before the records, how
   many it read at which versions, and what they did to its rows.
 
 ### 5.2 One run per pass (MAS-1011)
