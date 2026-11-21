@@ -387,6 +387,7 @@ RESULT_STATUS_NOTIFICATION = {
     "parked": "warning",  # waits for a person to decide; nothing failed
     "failed": "error",
     "error": "error",  # the same outcome under the name the API layer uses
+    "cancelled": "warning",  # a person stopped it; what it did stands
 }
 
 

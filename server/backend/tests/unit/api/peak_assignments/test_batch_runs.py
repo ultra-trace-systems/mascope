@@ -2,8 +2,10 @@
 series and ledger shapes read back off them, the run record, and which runs a
 completion prunes. No DB. See ``batch_runs.py``."""
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -230,3 +232,48 @@ def test_a_snapshot_keeps_the_persistence_admission_and_the_batch_s_reasons():
     assert (live["persistence"], live["tier_reasons"]) == (record, reasons)
     bare = _batch_peak_meta(_anchor(sample_batch_id="sb-1"))
     assert (bare["persistence"], bare["tier_reasons"]) == (None, None)
+
+
+# --- a step inside a run, or as one ---------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raised", [RuntimeError("gone"), asyncio.CancelledError()])
+async def test_a_step_run_on_its_own_closes_its_run_however_it_stops(raised):
+    """A step opens a run of its own outside a pass, and closes it as failed
+    whatever stopped it, a cancelled task included: a run left running holds
+    the ledger until the startup reaper runs."""
+    from mascope_backend.api.new.peak_assignments import batch_runs
+
+    async def work(run_id):
+        raise raised
+
+    with (
+        patch.object(batch_runs, "start_run", AsyncMock(return_value="run-1")),
+        patch.object(batch_runs, "complete_run", AsyncMock()) as complete,
+        patch.object(batch_runs, "fail_run", AsyncMock()) as fail,
+    ):
+        with pytest.raises(type(raised)):
+            await batch_runs.in_batch_run("b", "detect_series", work)
+    fail.assert_awaited_once()
+    assert fail.await_args.args[:2] == ("b", "run-1")
+    complete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_step_inside_a_pass_writes_into_the_passs_run():
+    from mascope_backend.api.new.peak_assignments import batch_runs
+
+    seen = []
+
+    async def work(run_id):
+        seen.append(run_id)
+        return {"n": 1}
+
+    with patch.object(batch_runs, "start_run", AsyncMock()) as start:
+        answer = await batch_runs.in_batch_run(
+            "b", "detect_series", work, batch_peak_run_id="pass-1"
+        )
+    assert answer == {"n": 1}
+    assert seen == ["pass-1"]
+    start.assert_not_awaited()

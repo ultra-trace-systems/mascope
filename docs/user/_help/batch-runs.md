@@ -1,8 +1,9 @@
 A **batch run** is one batch-level operation that rewrote the batch ledger
-&mdash; *Rebuild batch ledger*, *Search untargeted* with the parameters it was
-given, *Detect series*, *Read co-variation*, *Stamp isotopologues*, *Strip isotopologue
-rows*, *Read batch checks*, *Decide known species*, *Measure water ladders*, or an import &mdash; or the folding of samples that built the ledger in
-the first place. Exactly one run is **current**: the live ledger, which every
+&mdash; a pass of the batch stages, *Rebuild batch ledger*, or an import &mdash;
+or the folding of samples that built the ledger in the first place. A **pass**
+is one run however many stages it runs: each step's button starts one at its
+own stage, and the run is named after that step (*Untargeted search*, *Series
+detection*, ...), with every stage it ran inside it. Exactly one run is **current**: the live ledger, which every
 new sample folds into and every curation and verdict edits. When a new run
 starts, the ledger as the current run left it is kept as a **snapshot**, so
 any earlier run can be viewed read-only from the run selector and its settings

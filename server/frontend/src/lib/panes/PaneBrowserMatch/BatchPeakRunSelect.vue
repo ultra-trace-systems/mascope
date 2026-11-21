@@ -32,7 +32,8 @@ const ACTION_LABELS = {
   strip_isotopologues: 'Isotopologue row strip',
   read_batch_checks: 'Batch checks',
   decide_known_species: 'Known-species decision',
-  measure_water_ladders: 'Water ladder measurement'
+  measure_water_ladders: 'Water ladder measurement',
+  assign: 'Assignment'
 }
 const IN_FLIGHT_STATUSES = ['running']
 

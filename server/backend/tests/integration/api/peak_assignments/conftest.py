@@ -249,7 +249,7 @@ def only_these_stages(monkeypatch):
     """Stand in for every batch stage but the named ones: a pass still runs
     every stage in order and records each one's standing, but only the named
     stages do their work. A suite proves its own stage through the pass
-    (``batch_stages.run_batch_stages``) without the stages its fixture holds
+    (``batch_stages.assign_batch``) without the stages its fixture holds
     nothing for, which would read samples it has no spectra for."""
     import dataclasses
 

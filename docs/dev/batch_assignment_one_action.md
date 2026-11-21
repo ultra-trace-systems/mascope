@@ -298,8 +298,8 @@ As built (`batch_stages.py`):
   (`batch_untargeted._readings_to_measure_again`). The water ladders and known species
   claim per member already, and the series measures a corroborated proposal on the
   members that do not read it (MAS-769).
-- Each stage still records itself as its step's batch run, so a pass makes up to eight
-  runs; MAS-1011 makes it one.
+- Each stage recorded itself as its step's batch run, so a pass made up to eight runs;
+  MAS-1011 made it one (5.2).
 - `batch_peak_stage` holds each stage's `version` (its runs) and `state` (current,
   running, stale) with `stale_reason` (`fold`, `rebuild`, `upstream:<stage>`,
   `interrupted`, `partial`, `consensus`). The ledger read serves `stages` and
@@ -332,6 +332,38 @@ one pending packet per stage start with `stage`, `stage_index`, `n_stages`, `pha
 today send at least their start. A cancel route sets a flag the pass reads between stages,
 and the pass catches `asyncio.CancelledError`. The SDK gets
 `mascope.batch_peaks.assign()` and `cancel_assign()`.
+
+As built (`batch_stages.assign_batch`, `batch_runs.in_batch_run`):
+
+- Every step's controller takes the run it writes into (`batch_peak_run_id`) and opens a
+  run of its own only when called outside a pass. The run's `summary` lists the fold and
+  the nine stages in order, each with `status` (`done`, `failed`, `cancelled`,
+  `not_run`), `utc_started`, `utc_ended`, the stage row's `state` and `version`, and each
+  step's outcome: its message, counts and the thresholds or settings it ran on. Beside
+  them: `from_stage`, `first_stage`, `fold` (`ran`, `reasons`), `samples` and `library`.
+  The run's `config` is what the pass was asked for: `from_stage`, `fold` and the
+  `settings` given.
+- A pass a step's own route starts keeps that step's action (`search_untargeted`, ...;
+  the ratio stability, which never had one, is an `assign`). Run history can label it
+  by its first stage either way.
+- The library is a digest of each target collection the batch names (its compounds and
+  their ions: a collection keeps no modification time) and each active reference list's
+  load (id, name, version, `ingested_at`). `needs_fold` compares it with the newest
+  *completed* pass's: a failed or cancelled pass need not have folded what it read. No
+  pass yet compares nothing, and the ledger the folds at ingest built is the start.
+- A pass with nothing to fold and every stage current opens no run, so it prunes no pass
+  from the history. The `assign` route answers so at once; otherwise it opens the run
+  itself, as the import route does, and hands it to the pass. A second press is then
+  refused with a 409 on the request, and the run the answer names exists when the SDK
+  polls for it.
+- The cancel flag is `batch_peak_run.cancel_requested_utc`, in the database, since the
+  request can reach another backend process. The pass reads it before each stage hands
+  over to the next (a stage asked to stop begins no next stage, and the stages after it
+  are marked `upstream:<stage>` stale) and before each of the search's samples (the
+  search stops there, marked `interrupted`). A task the event loop cancels is closed as
+  `cancelled` with an `error` saying it was interrupted, shielded as the stage rows are.
+- The routes `POST /batch-peaks/batch/{id}/assign` and `.../assign/cancel` are opened to
+  API tokens for the SDK, editor role as every batch-stage route.
 
 ### 5.3 The status read (MAS-1013)
 

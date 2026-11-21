@@ -85,9 +85,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_CO_VARIATION,
-    complete_run,
-    fail_run,
-    start_run,
+    in_batch_run,
     touch_ledger,
 )
 from mascope_backend.api.new.peak_assignments.cross_channel import neutral_key
@@ -847,10 +845,12 @@ async def read_batch_co_variation(
     user_id: int | None = None,
     process_id: str | None = None,
     parent_id: str | None = None,
+    batch_peak_run_id: str | None = None,
 ) -> dict:
     """Read the co-variation of the batch's channels and the flatness of its
-    readings, as a batch run. Writes no member and no per-sample run; emits
-    ``peak_assignment_reload`` so the ledgers refresh."""
+    readings, as a batch run: the pass's ``batch_peak_run_id`` where it runs
+    in one, else a run of its own. Writes no member and no per-sample run;
+    emits ``peak_assignment_reload`` so the ledgers refresh."""
     config = {
         "co_varying_r": CO_VARYING_R,
         "min_spectra": MIN_SPECTRA,
@@ -859,16 +859,17 @@ async def read_batch_co_variation(
         "flat_min_share": FLAT_MIN_SHARE,
         "min_varying_share": MIN_VARYING_SHARE,
     }
-    run_id = await start_run(
-        sample_batch_id, ACTION_CO_VARIATION, config=config, user_id=user_id
+    counts = await in_batch_run(
+        sample_batch_id,
+        ACTION_CO_VARIATION,
+        lambda run_id: run_batch_co_variation(
+            sample_batch_id, batch_peak_run_id=run_id
+        ),
+        batch_peak_run_id=batch_peak_run_id,
+        config=config,
+        user_id=user_id,
     )
-    try:
-        counts = await run_batch_co_variation(sample_batch_id, batch_peak_run_id=run_id)
-    except Exception as exc:
-        await fail_run(sample_batch_id, run_id, f"{type(exc).__name__}: {exc}")
-        raise
-    await complete_run(sample_batch_id, run_id, summary=counts)
-    return co_variation_outcome(counts, sample_batch_id)
+    return {**co_variation_outcome(counts, sample_batch_id), "config": config}
 
 
 __all__ = [

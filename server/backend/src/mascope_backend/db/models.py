@@ -3613,17 +3613,25 @@ class BatchPeakRun(Base):
     ledger_utc_modified: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
+    #: When a person asked the running pass to stop (the cancel route): the
+    #: flag the pass reads between its stages, and between the search's
+    #: samples. On the run, in the database, because the request can reach
+    #: another backend process than the one running the pass.
+    cancel_requested_utc: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
 
     __table_args__ = (
         CheckConstraint(
             "action IN ('fold', 'rebuild', 'search_untargeted', 'import', "
             "'detect_series', 'read_co_variation', 'stamp_isotopologues', "
             "'strip_isotopologues', 'read_batch_checks', 'decide_known_species', "
-            "'measure_water_ladders')",
+            "'measure_water_ladders', 'assign')",
             name="action_valid",
         ),
         CheckConstraint(
-            "status IN ('running', 'completed', 'failed')", name="status_valid"
+            "status IN ('running', 'completed', 'failed', 'cancelled')",
+            name="status_valid",
         ),
         Index("ix_batch_peak_run_batch_current", "sample_batch_id", "is_current"),
     )

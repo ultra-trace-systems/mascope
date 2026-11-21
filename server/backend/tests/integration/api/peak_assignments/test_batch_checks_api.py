@@ -22,6 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
+from pass_runs import step_outcome  # the tests root, on sys.path
 from sqlalchemy import select, update
 
 from mascope_backend.api.new.peak_assignments import (
@@ -618,8 +619,9 @@ async def test_the_route_runs_it_as_a_batch_run(
     [run] = [run for run in runs if run.action == ACTION_BATCH_CHECKS]
     assert run.status == "completed"
     assert run.is_current == 1
-    assert run.config["absent_share"] == 0.8
-    assert run.summary["locked"] == 1
+    step = step_outcome(run, "batch_checks")
+    assert step["config"]["absent_share"] == 0.8
+    assert step["data"]["locked"] == 1
     anchors = await _anchors(async_session_factory, batch_id)
     assert _checks(anchors["p"])["batch_peak_run_id"] == run.batch_peak_run_id
     assert len(members) == N_SAMPLES * len(_peaks())
@@ -634,7 +636,7 @@ async def test_the_route_refuses_while_another_run_rewrites_the_ledger(
     async def fake_task(**kwargs):
         launched.append(kwargs)
 
-    monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
+    monkeypatch.setattr(batch_peaks_routes, "assign_batch", fake_task)
     await start_run(checks_batch["batch_id"], ACTION_BATCH_CHECKS)
     response = await editor_client.post(
         f"/api/batch-peaks/batch/{checks_batch['batch_id']}/read-batch-checks"

@@ -99,6 +99,17 @@ describe('BatchPeakRunSelect', () => {
     expect(wrapper.findAll('.option')[0].text()).toBe('#4 · Water ladder measurement · current')
   })
 
+  it('names a pass of the batch stages, and one that was cancelled', () => {
+    const wrapper = mountSelect([
+      run('r5', 'assign', { status: 'cancelled' }),
+      run('r4', 'assign', { current: true }),
+      ...RUNS
+    ])
+    const labels = wrapper.findAll('.option').map((o) => o.text())
+    expect(labels[0]).toBe('#5 · Assignment · cancelled')
+    expect(labels[1]).toBe('#4 · Assignment · current')
+  })
+
   it('marks a running run as such', () => {
     const wrapper = mountSelect([run('r4', 'rebuild', { status: 'running' }), ...RUNS])
     expect(wrapper.findAll('.option')[0].text()).toBe('#4 · Rebuild · running…')

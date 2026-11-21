@@ -83,6 +83,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_REBUILD,
+    close_shielded,
     complete_run,
     ensure_current_run,
     fail_run,
@@ -1426,6 +1427,7 @@ async def backfill_sample_batch_peaks(
     user_id: int | None = None,
     process_id: str | None = None,
     parent_id: str | None = None,
+    grade_continuity: bool = True,
 ) -> tuple[int, int]:
     """Fold every sample of a batch into the batch peaks, in acquisition-time
     order: from its latest completed assignment run where it has one, otherwise
@@ -1458,6 +1460,9 @@ async def backfill_sample_batch_peaks(
         generated one would open a new bar per packet -- so the stream is
         skipped entirely rather than emitted anonymously.
     :param parent_id: The owning process, when this backfill is nested in one.
+    :param grade_continuity: Grade the batch's ratio stability once the batch
+        is folded. False inside a pass of the batch stages, whose ratio
+        stability stage grades it after the co-variation it reads.
     :return: ``(folded, failed)`` sample counts.
     :rtype: tuple[int, int]
     """
@@ -1610,9 +1615,10 @@ async def backfill_sample_batch_peaks(
     # Reached only once the batch is walked and its consensus written: the
     # pass grades the whole batch, so it runs once here rather than after
     # each of the deferred folds above.
-    await _grade_continuity_after_backfill(
-        sample_batch_id, total_samples, user_id, process_id, parent_id
-    )
+    if grade_continuity:
+        await _grade_continuity_after_backfill(
+            sample_batch_id, total_samples, user_id, process_id, parent_id
+        )
     return folded, failed
 
 
@@ -1729,25 +1735,45 @@ async def rebuild_batch_ledger(
     user_id: int | None = None,
     process_id: str | None = None,
     parent_id: str | None = None,
+    batch_peak_run_id: str | None = None,
 ) -> dict:
     """The rebuild as a batch run: opened before the first fold (refused if one
     is in flight; the current run's state is snapshotted), closed as completed
     with the outcome's counts - or as failed, the live ledger then being
-    whatever the folds left."""
-    run_id = await start_run(sample_batch_id, ACTION_REBUILD, user_id=user_id)
-    try:
+    whatever the folds left.
+
+    Inside a pass of the batch stages (``batch_peak_run_id``, the pass's run)
+    it is the pass's first stage, *Fold the samples*: it opens no run, and
+    leaves the ratio stability to the pass's own stage, which grades it after
+    the co-variation it reads."""
+
+    async def fold(run_id: str) -> tuple[int, int]:
         await clear_engine_verdicts(sample_batch_id)
-        folded, failed = await backfill_sample_batch_peaks(
+        return await backfill_sample_batch_peaks(
             sample_batch_id,
             user_id=user_id,
             process_id=process_id,
             parent_id=parent_id,
+            grade_continuity=batch_peak_run_id is None,
         )
-    except Exception as exc:
-        await fail_run(sample_batch_id, run_id, f"{type(exc).__name__}: {exc}")
-        raise
-    outcome = backfill_outcome(folded, failed, sample_batch_id)
-    await complete_run(sample_batch_id, run_id, summary=outcome.get("data"))
+
+    if batch_peak_run_id is not None:
+        folded, failed = await fold(batch_peak_run_id)
+        outcome = backfill_outcome(folded, failed, sample_batch_id)
+    else:
+        run_id = await start_run(sample_batch_id, ACTION_REBUILD, user_id=user_id)
+        try:
+            folded, failed = await fold(run_id)
+        except BaseException as exc:
+            # BaseException: a cancelled rebuild left running would hold the
+            # ledger until the startup reaper runs.
+            await close_shielded(
+                fail_run(sample_batch_id, run_id, f"{type(exc).__name__}: {exc}"),
+                f"rebuild run '{run_id}' as failed",
+            )
+            raise
+        outcome = backfill_outcome(folded, failed, sample_batch_id)
+        await complete_run(sample_batch_id, run_id, summary=outcome.get("data"))
     # Each fold marked the stages stale already; the rebuild says why.
     await mark_batch_stale(sample_batch_id, REASON_REBUILD)
     return outcome

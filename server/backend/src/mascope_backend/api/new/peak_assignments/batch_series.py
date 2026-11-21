@@ -78,9 +78,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_SERIES,
-    complete_run,
-    fail_run,
-    start_run,
+    in_batch_run,
     touch_ledger,
 )
 from mascope_backend.api.new.peak_assignments.batch_untargeted import (
@@ -943,28 +941,27 @@ async def detect_batch_series(
     user_id: int | None = None,
     process_id: str | None = None,
     parent_id: str | None = None,
+    batch_peak_run_id: str | None = None,
 ) -> dict:
     """Detect the batch's homologous series and measure what they propose, as
-    a batch run. Writes no per-sample run; emits ``peak_assignment_reload`` so
-    the ledgers refresh."""
+    a batch run: the pass's ``batch_peak_run_id`` where it runs in one, else a
+    run of its own. Writes no per-sample run; emits ``peak_assignment_reload``
+    so the ledgers refresh."""
     detection_config = config or PeakAssignmentConfig()
-    run_id = await start_run(
+    settings = detection_config.model_dump(mode="json")
+    counts = await in_batch_run(
         sample_batch_id,
         ACTION_SERIES,
-        config=detection_config.model_dump(mode="json"),
-        user_id=user_id,
-    )
-    try:
-        counts = await run_batch_series_detection(
+        lambda run_id: run_batch_series_detection(
             sample_batch_id,
             detection_config,
             batch_peak_run_id=run_id,
             user_id=user_id,
             process_id=process_id,
             parent_id=parent_id,
-        )
-    except Exception as exc:
-        await fail_run(sample_batch_id, run_id, f"{type(exc).__name__}: {exc}")
-        raise
-    await complete_run(sample_batch_id, run_id, summary=counts)
-    return series_outcome(counts, sample_batch_id)
+        ),
+        batch_peak_run_id=batch_peak_run_id,
+        config=settings,
+        user_id=user_id,
+    )
+    return {**series_outcome(counts, sample_batch_id), "config": settings}

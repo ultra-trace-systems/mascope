@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 from stage_stubs import seeded_frame  # the tests root, on sys.path
 
-from mascope_backend.api.new.peak_assignments import batch_untargeted
+from mascope_backend.api.new.peak_assignments import batch_runs, batch_untargeted
 from mascope_backend.api.new.peak_assignments.batch_peaks import role_code
 from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     MIN_PERSISTENCE_SPECTRA,
@@ -1959,14 +1959,21 @@ async def test_the_search_names_its_run_on_the_records_it_writes():
         seen.update(kwargs)
         return {"anchors_searched": 0}
 
+    start = AsyncMock(return_value="run-7")
     with (
-        patch.object(batch_untargeted, "start_run", AsyncMock(return_value="run-7")),
-        patch.object(batch_untargeted, "complete_run", AsyncMock()),
+        patch.object(batch_runs, "start_run", start),
+        patch.object(batch_runs, "complete_run", AsyncMock()),
         patch.object(batch_untargeted, "run_batch_untargeted_search", search),
     ):
         await batch_untargeted.search_batch_untargeted.__wrapped__("sb-1")
-
-    assert seen["batch_peak_run_id"] == "run-7"
+        assert seen["batch_peak_run_id"] == "run-7"
+        # Inside a pass it writes into the pass's run and opens none.
+        start.reset_mock()
+        await batch_untargeted.search_batch_untargeted.__wrapped__(
+            "sb-1", batch_peak_run_id="pass-run"
+        )
+        assert seen["batch_peak_run_id"] == "pass-run"
+        start.assert_not_called()
 
 
 def test_a_judged_row_reads_an_annotation_in_its_formula_mechanism_and_role():

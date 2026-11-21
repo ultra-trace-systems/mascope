@@ -832,13 +832,13 @@ async def test_a_refolded_sample_is_measured_again_by_the_next_pass(
     reading on the member that reads nothing (MAS-983's Verify, the batch
     stages' design note 4.3)."""
     from mascope_backend.api.new.peak_assignments.batch_stages import (
-        run_batch_stages,
+        assign_batch,
         stage_standing,
     )
 
     only_these_stages("search")
     batch_id, samples = folded_batch["batch_id"], folded_batch["samples"]
-    await run_batch_stages(sample_batch_id=batch_id)
+    await assign_batch(sample_batch_id=batch_id)
     assert (await _members(async_session_factory, samples["S2"]))["p1"].batch_written[
         "stage"
     ] == "search"
@@ -857,7 +857,7 @@ async def test_a_refolded_sample_is_measured_again_by_the_next_pass(
     standing = await stage_standing(batch_id)
     assert {e["stale_reason"] for e in standing["stages"]} == {"fold"}
 
-    outcome = await run_batch_stages(sample_batch_id=batch_id)
+    outcome = await assign_batch(sample_batch_id=batch_id)
     assert outcome["status"] == "success", outcome["message"]
     [search] = [s for s in outcome["data"]["stages"] if s["stage"] == "search"]
     assert search["outcomes"][0]["data"]["anchors_measured_again"] == 1
@@ -940,7 +940,7 @@ async def test_the_route_launches_for_an_editor_and_refuses_a_guest(
 
     from mascope_backend.api.new.peak_assignments import batch_peaks_routes
 
-    monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
+    monkeypatch.setattr(batch_peaks_routes, "assign_batch", fake_task)
 
     refused = await guest_client.post(
         f"/api/batch-peaks/batch/{batch_id}/search-untargeted"

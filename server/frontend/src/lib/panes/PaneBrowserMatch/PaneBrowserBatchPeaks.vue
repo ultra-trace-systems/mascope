@@ -144,7 +144,8 @@ const RUN_ACTION_LABELS = {
   strip_isotopologues: 'a strip of isotopologue rows',
   read_batch_checks: 'a batch checks reading',
   decide_known_species: 'a known-species decision',
-  measure_water_ladders: 'a water ladder measurement'
+  measure_water_ladders: 'a water ladder measurement',
+  assign: 'an assignment'
 }
 const viewedRunLabel = computed(() => {
   const run = runs.value.viewing

@@ -346,6 +346,24 @@ async def send_progress_user_notification(
         if total_samples and item_index is not None:
             inc = increment if increment is not None else 0.0
             notification_copy.progress = ((item_index + inc) / total_samples) * 100
+    # The series detection reports per sample as it measures what it
+    # proposes, the message naming the sample - the bar only, as above.
+    if notification_copy.type == "detect_batch_series":
+        if total_samples and item_index is not None:
+            inc = increment if increment is not None else 0.0
+            notification_copy.progress = ((item_index + inc) / total_samples) * 100
+    # A pass of the batch stages is one bar across its stages: each stage's
+    # start packet says which of how many it is, and how far into it the pass
+    # is (``batch_stages.stage_packet``); these keys stay in the data, which
+    # the progress strip reads.
+    if notification_copy.type == "assign_batch" and notification_copy.data:
+        stage_index = notification_copy.data.get("stage_index")
+        n_stages = notification_copy.data.get("n_stages")
+        if n_stages and stage_index is not None:
+            share = notification_copy.data.get("stage_progress") or 0.0
+            notification_copy.progress = min(
+                100.0, ((stage_index + share) / n_stages) * 100
+            )
     # A batch peak's manual curation measures the pinned identity in every
     # sample holding the peak, one message per sample - the bar only, again.
     if notification_copy.type == "curate_batch_peak":

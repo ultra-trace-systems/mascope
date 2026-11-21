@@ -34,10 +34,20 @@ stamp a client compares, as it compares a batch's modified time.
 
 A run that fails is kept, marked, and never becomes current; the live ledger is
 whatever the failed operation left, which the record says.
+
+**A pass of the batch stages is one run** (``batch_stages.assign_batch``): one
+start, one snapshot, one end, with every stage's outcome in its ``summary``
+under ``stages``. Each stage's step writes into the pass's run
+(:func:`in_batch_run`) instead of opening its own, so :data:`BATCH_RUN_KEEP`
+counts passes, not the clicks of one. A pass a person cancels
+(:func:`request_cancel`) stops between stages, keeps what it wrote and is
+recorded ``cancelled``, never current, as a failed one.
 """
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import datetime as dt
 from datetime import timezone
 from typing import Any, Iterable, Optional
@@ -83,6 +93,7 @@ from mascope_backend.db import (
     async_session,
 )
 from mascope_backend.db.id import gen_id
+from mascope_backend.runtime import runtime
 
 
 #: What a batch run did.
@@ -97,6 +108,9 @@ ACTION_STRIP_ISOTOPOLOGUES = "strip_isotopologues"
 ACTION_BATCH_CHECKS = "read_batch_checks"
 ACTION_KNOWN_SPECIES = "decide_known_species"
 ACTION_WATER_LADDERS = "measure_water_ladders"
+#: A pass of the batch stages, started as one (``batch_stages.assign_batch``).
+#: A pass a step's own route starts keeps that step's action.
+ACTION_ASSIGN = "assign"
 ACTIONS = (
     ACTION_FOLD,
     ACTION_REBUILD,
@@ -109,11 +123,20 @@ ACTIONS = (
     ACTION_BATCH_CHECKS,
     ACTION_KNOWN_SPECIES,
     ACTION_WATER_LADDERS,
+    ACTION_ASSIGN,
 )
+
+#: The runs no pass is: the folds that built a ledger, a rebuild started on its
+#: own, an engine's result imported. A cancel is never theirs.
+NOT_A_PASS = frozenset({ACTION_FOLD, ACTION_REBUILD, ACTION_IMPORT})
 
 STATUS_RUNNING = "running"
 STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
+#: A pass that stopped before its end without failing: a person cancelled it,
+#: or its task was cancelled (``error`` then says so). It kept what it wrote
+#: and never became current.
+STATUS_CANCELLED = "cancelled"
 
 #: Runs kept per batch beyond the current one, snapshots and all. The rest are
 #: pruned when a run completes, oldest first.
@@ -593,16 +616,147 @@ async def complete_run(
         await session.commit()
 
 
-async def fail_run(sample_batch_id: str, batch_peak_run_id: str, error: str) -> None:
-    """Close a run as failed; the current run stays what it was."""
+async def _close_run(
+    sample_batch_id: str,
+    batch_peak_run_id: str,
+    status: str,
+    error: Optional[str],
+    summary: Optional[dict],
+) -> None:
     async with async_session() as session:
         run = await session.get(BatchPeakRun, batch_peak_run_id)
         if run is None or run.sample_batch_id != sample_batch_id:
             return
-        run.status = STATUS_FAILED
-        run.error = error[:2000]
+        run.status = status
+        if error is not None:
+            run.error = error[:2000]
+        if summary is not None:
+            run.summary = summary
         run.batch_peak_run_utc_completed = dt.now(timezone.utc)
         await session.commit()
+
+
+async def fail_run(
+    sample_batch_id: str,
+    batch_peak_run_id: str,
+    error: str,
+    summary: Optional[dict] = None,
+) -> None:
+    """Close a run as failed; the current run stays what it was. ``summary``,
+    where given, is what it did before it failed: a pass's stages."""
+    await _close_run(sample_batch_id, batch_peak_run_id, STATUS_FAILED, error, summary)
+
+
+async def cancel_run(
+    sample_batch_id: str,
+    batch_peak_run_id: str,
+    summary: Optional[dict] = None,
+    reason: Optional[str] = None,
+) -> None:
+    """Close a pass as cancelled: what it wrote stands, and, as a failed run,
+    it never becomes current, so the snapshot taken when it started still
+    holds the ledger as it was before it."""
+    await _close_run(
+        sample_batch_id, batch_peak_run_id, STATUS_CANCELLED, reason, summary
+    )
+
+
+async def close_shielded(close: Awaitable[None], what: str) -> None:
+    """A run's closing write, made while an interruption unwinds: shielded,
+    so a cancellation does not stop it halfway (it goes on in its own task
+    when the cancellation is level-triggered, as anyio's is), and logged
+    rather than raised where it fails, so it never replaces what interrupted
+    it."""
+    try:
+        await asyncio.shield(close)
+    except asyncio.CancelledError:
+        # The write goes on in its own task; the caller re-raises what
+        # interrupted it.
+        pass
+    except Exception as exc:  # noqa: BLE001 - never replace what interrupted it
+        runtime.logger.warning(f"Could not close {what}: {exc}")
+
+
+async def in_batch_run(
+    sample_batch_id: str,
+    action: str,
+    work: Callable[[str], Awaitable[Any]],
+    *,
+    batch_peak_run_id: Optional[str] = None,
+    config: Optional[dict] = None,
+    user_id: Optional[int] = None,
+) -> Any:
+    """Run one step's ``work`` inside a batch run: the one it is given, a
+    pass's, which its start and end are the pass's business; else a run of its
+    own, opened as ``action`` with ``config`` and closed with what ``work``
+    answers as its summary, or as failed where it raises or is cancelled.
+
+    :param work: The step, called with the run's id, which every record it
+        writes names.
+    :return: What ``work`` answers.
+    """
+    if batch_peak_run_id is not None:
+        return await work(batch_peak_run_id)
+    run_id = await start_run(sample_batch_id, action, config=config, user_id=user_id)
+    try:
+        result = await work(run_id)
+    except BaseException as exc:
+        # BaseException: a cancelled task escapes ``except Exception``, and a
+        # run left running holds the ledger until the startup reaper runs.
+        await close_shielded(
+            fail_run(sample_batch_id, run_id, f"{type(exc).__name__}: {exc}"),
+            f"batch run '{run_id}' as failed",
+        )
+        raise
+    await complete_run(sample_batch_id, run_id, summary=result)
+    return result
+
+
+# --- cancelling a pass ------------------------------------------------------------
+
+
+async def request_cancel(sample_batch_id: str) -> Optional[BatchPeakRun]:
+    """Ask the batch's running pass to stop: the flag it reads between its
+    stages, and between the search's samples. A rebuild, an import and a fold
+    are no pass and read no flag.
+
+    :return: The pass asked, or None where none runs.
+    """
+    async with async_session() as session:
+        run = (
+            (
+                await session.execute(
+                    select(BatchPeakRun)
+                    .where(
+                        BatchPeakRun.sample_batch_id == sample_batch_id,
+                        BatchPeakRun.status == STATUS_RUNNING,
+                        BatchPeakRun.action.not_in(sorted(NOT_A_PASS)),
+                    )
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if run is None:
+            return None
+        if run.cancel_requested_utc is None:
+            run.cancel_requested_utc = dt.now(timezone.utc)
+        await session.commit()
+        await session.refresh(run)
+        return run
+
+
+async def cancel_requested(batch_peak_run_id: str) -> bool:
+    """Whether a person asked the pass to stop."""
+    async with async_session() as session:
+        return (
+            await session.execute(
+                select(BatchPeakRun.cancel_requested_utc).where(
+                    BatchPeakRun.batch_peak_run_id == batch_peak_run_id
+                )
+            )
+        ).scalar_one_or_none() is not None
 
 
 # --- reads ------------------------------------------------------------------------
@@ -678,6 +832,7 @@ async def snapshot_rows(
 
 __all__ = [
     "ACTIONS",
+    "ACTION_ASSIGN",
     "ACTION_BATCH_CHECKS",
     "ACTION_CO_VARIATION",
     "ACTION_FOLD",
@@ -690,19 +845,26 @@ __all__ = [
     "BATCH_RUN_KEEP",
     "BatchRunInFlightException",
     "MEMBER_FIELDS",
+    "NOT_A_PASS",
     "RUN_IN_FLIGHT_CODE",
+    "STATUS_CANCELLED",
     "STATUS_COMPLETED",
     "STATUS_FAILED",
     "STATUS_RUNNING",
     "anchor_snapshot_row",
+    "cancel_requested",
+    "cancel_run",
     "check_no_run_in_flight",
+    "close_shielded",
     "complete_run",
     "current_run",
     "engine_tier_filters",
     "ensure_current_run",
     "fail_run",
+    "in_batch_run",
     "list_batch_runs",
     "member_arrays",
+    "request_cancel",
     "resolve_run",
     "run_record",
     "running_run",

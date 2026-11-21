@@ -40,16 +40,17 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_SERIES,
     RUN_IN_FLIGHT_CODE,
     complete_run,
+    fail_run,
     start_run,
 )
 from mascope_backend.api.new.peak_assignments.batch_stages import (
     STAGES,
     BatchStage,
+    assign_batch,
     begin_stage,
     finish_stage,
     hand_over,
     mark_batch_stale,
-    run_batch_stages,
     running_stage,
     stage_standing,
     stop_stage,
@@ -210,7 +211,7 @@ async def _ran(batch_id, stages):
 
 
 async def _run(batch_id, from_stage=None):
-    return await run_batch_stages(
+    return await assign_batch(
         sample_batch_id=batch_id, from_stage=from_stage, process_id="pass-1"
     )
 
@@ -381,7 +382,9 @@ async def test_the_records_a_stage_wrote_carry_its_version(
     batch_id = folded["batch_id"]
 
     async def writes_a_record(call):
-        run_id = await start_run(batch_id, ACTION_SERIES)
+        # Into the pass's run, as every step of a pass writes.
+        run_id = call.batch_peak_run_id
+        assert run_id is not None
         async with async_session_factory() as session:
             # The glucose anchor, named: an anchor's update moves its row, so
             # the first of the batch's anchors is not the same one each pass.
@@ -396,11 +399,14 @@ async def test_the_records_a_stage_wrote_carry_its_version(
             anchor.provenance = {
                 **(anchor.provenance or {}),
                 "series": {"formula": "C6H12O6", "batch_peak_run_id": run_id},
-                # Another stage's key, which this stage does not stamp.
-                "co_variation": {"formula": "C6H12O6", "batch_peak_run_id": run_id},
+                # Another stage's key, of another run: no stage of this pass
+                # wrote it, so none stamps it.
+                "co_variation": {
+                    "formula": "C6H12O6",
+                    "batch_peak_run_id": "another-run",
+                },
             }
             await session.commit()
-        await complete_run(batch_id, run_id)
 
     stand_ins["hooks"]["series"] = writes_a_record
 
@@ -568,34 +574,38 @@ def assignment_enabled(monkeypatch):
     monkeypatch.setenv("MASCOPE_PEAK_ASSIGNMENT", "1")
 
 
+#: Each step's route, the stage it starts the pass at, and the action its pass
+#: is recorded under: the step's own, which its run always had (the ratio
+#: stability made none, so its pass is an ``assign``).
 ROUTES = [
-    ("search-untargeted", "search"),
-    ("detect-series", "series"),
-    ("read-co-variation", "co_variation"),
-    ("recompute-continuity", "continuity"),
-    ("stamp-isotopologues", "isotope_lines"),
-    ("strip-isotopologues", "isotope_lines"),
-    ("read-batch-checks", "batch_checks"),
-    ("decide-known-species", "known_species"),
-    ("measure-water-ladders", "water_ladders"),
+    ("search-untargeted", "search", "search_untargeted"),
+    ("detect-series", "series", "detect_series"),
+    ("read-co-variation", "co_variation", "read_co_variation"),
+    ("recompute-continuity", "continuity", "assign"),
+    ("stamp-isotopologues", "isotope_lines", "stamp_isotopologues"),
+    ("strip-isotopologues", "isotope_lines", "strip_isotopologues"),
+    ("read-batch-checks", "batch_checks", "read_batch_checks"),
+    ("decide-known-species", "known_species", "decide_known_species"),
+    ("measure-water-ladders", "water_ladders", "measure_water_ladders"),
 ]
 
 
-@pytest.mark.parametrize(("path", "stage"), ROUTES)
+@pytest.mark.parametrize(("path", "stage", "action"), ROUTES)
 async def test_each_steps_route_starts_the_stages_at_its_own(
-    editor_client, folded, assignment_enabled, monkeypatch, path, stage
+    editor_client, folded, assignment_enabled, monkeypatch, path, stage, action
 ):
     launched = []
 
     async def fake_task(**kwargs):
         launched.append(kwargs)
 
-    monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
+    monkeypatch.setattr(batch_peaks_routes, "assign_batch", fake_task)
     response = await editor_client.post(
         f"/api/batch-peaks/batch/{folded['batch_id']}/{path}"
     )
     assert response.status_code == 202, response.text
     assert [k["from_stage"] for k in launched] == [stage]
+    assert launched[0]["action"] == action
     assert launched[0]["independent_transaction"] is True
     # No settings given: the pass reads each stage's own last ones.
     assert launched[0].get("config") is None
@@ -610,7 +620,7 @@ async def test_a_steps_route_hands_the_settings_it_was_given_to_the_pass(
     async def fake_task(**kwargs):
         launched.append(kwargs)
 
-    monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
+    monkeypatch.setattr(batch_peaks_routes, "assign_batch", fake_task)
     url = f"/api/batch-peaks/batch/{folded['batch_id']}/{path}"
     response = await editor_client.post(url, json={"config": {"mz_precision_ppm": 2.5}})
     assert response.status_code == 202, response.text
@@ -630,15 +640,18 @@ async def test_the_pass_route_starts_where_it_is_asked(
     async def fake_task(**kwargs):
         launched.append(kwargs)
 
-    monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
+    monkeypatch.setattr(batch_peaks_routes, "assign_batch", fake_task)
     url = f"/api/batch-peaks/batch/{folded['batch_id']}/run-stages"
     assert (await guest_client.post(url)).status_code == 403
     response = await editor_client.post(url)
     assert response.status_code == 202, response.text
+    # The route opened the pass's run; the stand-in task closes nothing.
+    await fail_run(folded["batch_id"], launched[0]["batch_peak_run_id"], "stood in")
     response = await editor_client.post(
         url, json={"from_stage": "series", "config": {"mz_precision_ppm": 2.5}}
     )
     assert response.status_code == 202, response.text
+    await fail_run(folded["batch_id"], launched[1]["batch_peak_run_id"], "stood in")
     assert [k["from_stage"] for k in launched] == [None, "series"]
     assert launched[1]["config"].mz_precision_ppm == 2.5
     refused = await editor_client.post(url, json={"from_stage": "everything"})
@@ -684,7 +697,11 @@ def _hold(stand_ins, stage):
     return entered, release
 
 
-REFUSED_WHILE_A_PASS_RUNS = [path for path, _ in ROUTES] + ["run-stages", "backfill"]
+REFUSED_WHILE_A_PASS_RUNS = [path for path, _, _ in ROUTES] + [
+    "run-stages",
+    "assign",
+    "backfill",
+]
 
 
 @pytest.mark.parametrize("path", REFUSED_WHILE_A_PASS_RUNS)
@@ -704,7 +721,7 @@ async def test_every_steps_route_is_refused_while_a_pass_runs(
     first = asyncio.create_task(_run(batch_id))
     try:
         await asyncio.wait_for(entered.wait(), 30)
-        monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
+        monkeypatch.setattr(batch_peaks_routes, "assign_batch", fake_task)
         monkeypatch.setattr(batch_peaks_routes, "compute_batch_peaks", fake_task)
         url = f"/api/batch-peaks/batch/{batch_id}/{path}"
         refused = await editor_client.post(url)
@@ -715,23 +732,26 @@ async def test_every_steps_route_is_refused_while_a_pass_runs(
     finally:
         release.set()
         await first
-    admitted = await editor_client.post(url)
+    # Every stage is current after the pass: the whole pass's routes are
+    # asked to start somewhere, or they answer that nothing is to run.
+    body = {"from_stage": "blends"} if path in ("run-stages", "assign") else None
+    admitted = await editor_client.post(url, json=body)
     assert admitted.status_code == 202, admitted.text
     assert len(launched) == 1
 
 
-async def test_a_second_pass_past_the_routes_refusal_is_refused_at_its_first_stage(
+async def test_a_second_pass_past_the_routes_refusal_is_refused_at_its_start(
     folded, stand_ins
 ):
-    """A press that reached the route before the first pass marked its first
-    stage is refused when its own first stage begins, and changes nothing."""
+    """A press that reached the route before the first pass opened its run is
+    refused when its own run would open, and changes nothing."""
     batch_id = folded["batch_id"]
     entered, release = _hold(stand_ins, "continuity")
     first = asyncio.create_task(_run(batch_id))
     try:
         await asyncio.wait_for(entered.wait(), 30)
         before = await _states(batch_id)
-        with pytest.raises(Exception, match="running on this batch"):
+        with pytest.raises(Exception, match="still rewriting this batch's ledger"):
             # Bounded: a second pass let through would plan from the held
             # stage and wait on the same hold.
             await asyncio.wait_for(_run(batch_id, "batch_checks"), 10)
@@ -954,7 +974,7 @@ async def test_a_pass_given_no_settings_runs_each_stage_on_its_last_ones(
 
     # Settings given to the pass are what both run on.
     seen.clear()
-    await run_batch_stages(
+    await assign_batch(
         sample_batch_id=batch_id,
         from_stage="search",
         config=PeakAssignmentConfig(mz_precision_ppm=1.5),
