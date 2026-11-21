@@ -218,6 +218,17 @@ Feature) carries the kind. Milestones are not used.
 - **Lint Python before committing** - CI's "Lint and format" job runs
   `ruff check .` and `ruff format --check .` and fails the PR on any violation.
   Run `uv run ruff check --fix . && uv run ruff format .` before you commit.
+- **The assignment packages' shape may not get worse.** The "Lint and
+  format" job runs `tooling/structure.py check` over the backend's
+  `peak_assignments` package and `mascope_tools/composition`: no new import
+  cycle and none that takes in another module, no more imports of the
+  package made inside a function, no module over 1,500 lines growing by more
+  than 2 % and none crossing it, no function over 100 lines growing and none
+  crossing it. A reading that got better fails too, as a stale baseline:
+  `uv run python tooling/structure.py baseline` writes it down. A PR that has
+  to make a reading worse runs the same command, commits
+  `tooling/structure_baseline.json`, and says why under a `## Structure`
+  heading in its body. `structure.py measure` prints the readings.
 - **Dependency licences are gated**, both ecosystems - CI fails if any package
   declares a licence outside the allowlist in `tooling/check-licenses.py`,
   including non-SPDX free text such as "SEE LICENSE IN LICENSE.md". It checks
