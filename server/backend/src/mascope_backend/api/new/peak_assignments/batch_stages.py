@@ -78,10 +78,17 @@ marked (:func:`begin_stage`). Every writer of the stage rows takes the
 batch's fold lock first, as a fold does, so no two lock them in different
 orders (:func:`_fold_lock`).
 
-**Settings.** The search and the series take settings. A pass given some
-runs both on them; a pass given none, which every step but the search's
-dialog starts, runs each on the settings its own last run recorded, and on
-the engine's defaults where it never ran (:func:`settings_for`).
+**Settings.** The search and the series take settings, and every stage that
+rewrites members judges its samples again under their tier bands. They are
+the batch's own (``SampleBatch.assignment_settings``, MAS-1014): a pass runs
+every stage on them, the engine's defaults where the batch saved none
+(:func:`batch_settings`). A step's own route given settings in its request
+runs its pass on those instead, and the run records that it did
+(``settings_source`` in its ``config``). A pass records the settings in its
+run's ``config`` and their hash in its ``summary``; a pass run under other
+settings than the last pass's starts at the first stage, as the batch's
+assignment status says ``settings_changed`` until one has
+(:func:`plan_pass`).
 
 Every run of a stage counts up its version, and every record it writes carries
 the version (``version`` in the record): a batch decision is a versioned
@@ -97,7 +104,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any, Optional
@@ -127,7 +134,6 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_WATER_LADDERS,
     RUN_IN_FLIGHT_CODE,
     STATUS_COMPLETED,
-    STATUS_RUNNING,
     cancel_requested,
     cancel_run,
     close_shielded,
@@ -140,6 +146,8 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
 from mascope_backend.api.new.peak_assignments.config import (
     PEAK_ASSIGNMENT_ENGINE_VERSION,
     PeakAssignmentConfig,
+    batch_settings_config,
+    settings_hash,
 )
 from mascope_backend.db import (
     BatchPeak,
@@ -147,6 +155,7 @@ from mascope_backend.db import (
     BatchPeakStage,
     ReferenceSource,
     Sample,
+    SampleBatch,
     TargetCollectionInSampleBatch,
     TargetCompound,
     TargetCompoundInTargetCollection,
@@ -209,9 +218,9 @@ class StageCall:
 
     :param sample_batch_id: The batch.
     :param config: The pass's settings: the search's and the series' bands
-        and ranges. None where the pass was given none: a stage that takes
-        settings then runs on the ones its last run recorded
-        (:func:`settings_for`), and the rest on the engine's defaults.
+        and ranges, and the tier bands every rewriting stage judges its
+        samples again under. The batch's own, or those a step's route was
+        given; None runs on the engine's defaults.
     :param user_id: Who started the pass.
     :param parent_id: The pass's process id, which every stage's progress
         nests under.
@@ -242,9 +251,9 @@ class StageSpec:
     :param rewrites: Whether it rewrites members, which a sample's judging
         then reads again.
     :param run: Runs it; its answer is the outcome of each step it ran.
-    :param settings_from: The batch run action whose recorded settings it
-        runs on in a pass given none: a stage that takes settings (the
-        search's, the series'); None for one that takes none.
+    :param takes_settings: Whether its steps run on the pass's settings
+        (the search's, the series'), which its entry in the pass's summary
+        then records.
     """
 
     stage: BatchStage
@@ -254,7 +263,7 @@ class StageSpec:
     record_keys: tuple[str, ...]
     rewrites: bool
     run: Callable[[StageCall], Awaitable[list[dict]]]
-    settings_from: Optional[str] = None
+    takes_settings: bool = False
 
 
 class PassCancelled(BaseException):
@@ -430,7 +439,7 @@ STAGES: tuple[StageSpec, ...] = (
         ("persistence",),
         True,
         _run_search,
-        settings_from=ACTION_SEARCH,
+        takes_settings=True,
     ),
     StageSpec(
         BatchStage.ISOTOPE_LINES,
@@ -454,7 +463,7 @@ STAGES: tuple[StageSpec, ...] = (
         ("series",),
         True,
         _run_series,
-        settings_from=ACTION_SERIES,
+        takes_settings=True,
     ),
     StageSpec(
         BatchStage.CO_VARIATION,
@@ -1004,108 +1013,69 @@ async def stamp_versions(
 # --- the pass ---------------------------------------------------------------------
 
 
-def is_pass_config(config: Any) -> bool:
-    """Whether a run's ``config`` is a pass's (:func:`pass_config`), not the
-    settings a step's own run recorded before a pass was one run."""
-    return isinstance(config, dict) and "fold" in config and "settings" in config
+#: Where a pass's settings came from: the batch's own, or the request that
+#: started a step's own route, which overrides them for that pass.
+SETTINGS_FROM_BATCH = "batch"
+SETTINGS_FROM_REQUEST = "request"
 
 
 def pass_config(
-    from_stage: Optional[str], fold: str, config: Optional[PeakAssignmentConfig]
+    from_stage: Optional[str],
+    fold: str,
+    config: Optional[PeakAssignmentConfig],
+    settings_source: str = SETTINGS_FROM_BATCH,
 ) -> dict:
     """What a pass records it was asked for: where to start, whether to fold,
-    and the settings it was given (None where it was given none, and each
-    stage that takes settings ran on its own last ones)."""
+    the settings it runs on, and where they came from (``batch``, or
+    ``request`` where a step's route was given settings that override the
+    batch's)."""
     return {
         "from_stage": from_stage,
         "fold": fold,
-        "settings": config.model_dump(mode="json") if config is not None else None,
+        "settings": (config or PeakAssignmentConfig()).model_dump(
+            mode="json", exclude={"decoy"}
+        ),
+        "settings_source": settings_source,
     }
 
 
-def settings_recorded_by(
-    run_action: str, config: Any, summary: Any, stage: BatchStage, action: str
-) -> tuple[bool, Optional[dict]]:
-    """The settings one batch run recorded for ``stage``, newest first being
-    the caller's business.
-
-    A pass records each stage's settings on the stage's entry in its summary
-    (``settings``), where the stage ran; a step's own run before passes were
-    one run recorded them as its ``config``, under the step's ``action``.
-
-    :return: Whether the run says anything of the stage's settings, and what.
-    """
-    stages = summary.get("stages") if isinstance(summary, dict) else None
-    if isinstance(stages, list):
-        for entry in stages:
-            if (
-                isinstance(entry, dict)
-                and entry.get("stage") == stage.value
-                and isinstance(entry.get("settings"), dict)
-            ):
-                return True, entry["settings"]
-        return False, None
-    if run_action == action and isinstance(config, dict) and not is_pass_config(config):
-        return True, config
-    return False, None
-
-
-async def recorded_settings(
-    sample_batch_id: str, stage: BatchStage | str, action: str
-) -> Optional[PeakAssignmentConfig]:
-    """The settings the batch's newest run of ``stage`` recorded: what it last
-    ran with, the search's dialog's for the search. None where it never ran,
-    or where what it recorded no longer reads as settings. A pass still
-    running records nothing yet."""
-    stage = BatchStage(stage)
-    async with async_session() as session:
-        runs = (
-            await session.execute(
-                select(BatchPeakRun.action, BatchPeakRun.config, BatchPeakRun.summary)
-                .where(
-                    BatchPeakRun.sample_batch_id == sample_batch_id,
-                    BatchPeakRun.status != STATUS_RUNNING,
-                )
-                .order_by(BatchPeakRun.batch_peak_run_utc_created.desc())
+async def batch_settings(session, sample_batch_id: str) -> PeakAssignmentConfig:
+    """The batch's own assignment settings, as a run config: the engine's
+    defaults where it saved none, or where what it saved no longer reads as
+    settings (a field since removed or bounded tighter), which is logged."""
+    stored = (
+        await session.execute(
+            select(SampleBatch.assignment_settings).where(
+                SampleBatch.sample_batch_id == sample_batch_id
             )
-        ).all()
-    recorded = None
-    for run in runs:
-        found, recorded = settings_recorded_by(
-            run.action, run.config, run.summary, stage, action
         )
-        if found:
-            break
-    if not isinstance(recorded, dict):
-        return None
+    ).scalar_one_or_none()
     try:
-        return PeakAssignmentConfig.model_validate(recorded)
+        return batch_settings_config(stored)
     except ValidationError as invalid:
         runtime.logger.warning(
-            f"The settings the last '{stage.value}' run of batch "
-            f"'{sample_batch_id}' recorded no longer read as settings; running "
-            f"on the defaults: {invalid.error_count()} error(s)."
+            f"The assignment settings batch '{sample_batch_id}' saved no longer "
+            f"read as settings; running on the defaults: "
+            f"{invalid.error_count()} error(s)."
         )
-        return None
+        return PeakAssignmentConfig()
 
 
-async def settings_for(spec: StageSpec, call: StageCall) -> StageCall:
-    """What one stage runs with: the pass's settings where it was given
-    some; else, for a stage that takes settings, the ones its own last run
-    recorded, so a pass another step started searches with what the search's
-    dialog last set, not the engine's defaults; else the defaults."""
-    if call.config is not None or spec.settings_from is None:
-        return call
-    recorded = await recorded_settings(
-        call.sample_batch_id, spec.stage, spec.settings_from
-    )
-    return replace(call, config=recorded) if recorded is not None else call
+async def pass_settings(
+    sample_batch_id: str, config: Optional[PeakAssignmentConfig]
+) -> tuple[PeakAssignmentConfig, str]:
+    """The settings a pass runs on, and where they came from: ``config``
+    where a step's route was given some, else the batch's own."""
+    if config is not None:
+        return config, SETTINGS_FROM_REQUEST
+    async with async_session() as session:
+        return await batch_settings(session, sample_batch_id), SETTINGS_FROM_BATCH
 
 
 def _settings_of(spec: StageSpec, call: StageCall) -> Optional[dict]:
     """The settings a stage that takes some ran on, as its entry records
     them: the engine's defaults where it ran on none."""
-    if spec.settings_from is None:
+    if not spec.takes_settings:
         return None
     return (call.config or PeakAssignmentConfig()).model_dump(mode="json")
 
@@ -1128,7 +1098,6 @@ async def _run_stage(
     version, started = begun
     token = STAGE_VERSION.set(version)
     try:
-        call = await settings_for(spec, call)
         outcomes = await spec.run(call)
         run_ids = [call.batch_peak_run_id] if call.batch_peak_run_id else []
         await stamp_versions(call.sample_batch_id, spec.record_keys, run_ids, version)
@@ -1396,6 +1365,9 @@ async def last_pass(session, sample_batch_id: str) -> Optional[dict]:
                 "engine_version": run.engine_version,
                 "samples": run.summary.get("samples"),
                 "library": run.summary.get("library"),
+                # None for a pass from before the batch kept settings
+                # (MAS-1014): nothing to compare.
+                "settings_hash": run.summary.get("settings_hash"),
             }
     return None
 
@@ -1471,6 +1443,7 @@ class PassRecord:
         self.fold: dict = {"ran": False, "reasons": []}
         self.samples: list[str] = []
         self.library: Optional[dict] = None
+        self.settings_hash: Optional[str] = None
         self.entries: dict[str, dict] = {}
         for name, label, phase in [(FOLD_STAGE, FOLD_LABEL, PHASE_GATHER)] + [
             (spec.stage.value, spec.label, spec.phase) for spec in STAGES
@@ -1531,6 +1504,7 @@ class PassRecord:
             "fold": self.fold,
             "samples": self.samples,
             "library": self.library,
+            "settings_hash": self.settings_hash,
             "stages": list(self.entries.values()),
         }
 
@@ -1666,12 +1640,31 @@ INTERRUPTED_ERROR = (
 )
 
 
+def settings_moved(last: Optional[dict], hash_now: Optional[str]) -> bool:
+    """Whether a pass on settings of hash ``hash_now`` runs on other settings
+    than the batch's last completed pass did. No: where either says nothing,
+    as a pass from before the batch kept settings records no hash."""
+    recorded = last.get("settings_hash") if last is not None else None
+    return recorded is not None and hash_now is not None and recorded != hash_now
+
+
 async def plan_pass(
-    sample_batch_id: str, from_stage: Optional[str], fold: str
+    sample_batch_id: str,
+    from_stage: Optional[str],
+    fold: str,
+    settings: Optional[PeakAssignmentConfig] = None,
 ) -> tuple[list[str], tuple]:
     """What a pass would do now: why it folds first (none where it does
     not), and the stages it runs, every one after a fold.
 
+    A pass on other settings than the last pass's runs every stage, from
+    the first: the search and the series read them, and every stage that
+    rewrites members judges its samples again under their tier bands. Its
+    stages may all be current: saving settings marks none stale, and the
+    batch's assignment status says ``settings_changed`` instead.
+
+    :param settings: The settings the pass runs on (:func:`pass_settings`);
+        None compares nothing.
     :return: The fold's reasons, and the stages in order.
     """
     reasons = await needs_fold(sample_batch_id)
@@ -1681,6 +1674,11 @@ async def plan_pass(
         return reasons, stages_from(STAGES[0].stage)
     async with async_session() as session:
         rows = await stage_states(session, sample_batch_id)
+        last = (
+            await last_pass(session, sample_batch_id) if settings is not None else None
+        )
+    if settings is not None and settings_moved(last, settings_hash(settings)):
+        return reasons, stages_from(STAGES[0].stage)
     return reasons, plan({name: row.state for name, row in rows.items()}, from_stage)
 
 
@@ -1695,6 +1693,7 @@ async def assign_batch(
     from_stage: Optional[str] = None,
     fold: str = FOLD_AUTO,
     config: Optional[PeakAssignmentConfig] = None,
+    settings_source: Optional[str] = None,
     action: str = ACTION_ASSIGN,
     batch_peak_run_id: str | None = None,
     independent_transaction: bool = False,
@@ -1722,9 +1721,13 @@ async def assign_batch(
     :param from_stage: The stage to start at (:class:`BatchStage`); None
         starts at the first that is not current.
     :param fold: ``auto`` or ``always``.
-    :param config: The search's and the series' settings. When None, each
-        of the two runs on the settings its own last run recorded, and on the
-        engine's defaults where it never ran (:func:`settings_for`).
+    :param config: The settings to run on in place of the batch's own: the
+        ones a step's route was given. None runs on the batch's
+        (:func:`pass_settings`).
+    :param settings_source: Where ``config`` came from, as the run records
+        it; None: ``request`` where ``config`` is given. The route that
+        opens the run reads the batch's settings itself and hands them on
+        as ``batch``, so the pass runs what its run records.
     :param action: The run's action: ``assign``, or the step whose own route
         started the pass.
     :param batch_peak_run_id: The run the route that started the pass opened
@@ -1756,22 +1759,25 @@ async def assign_batch(
             )
         raise
     asked = BatchStage(from_stage) if from_stage is not None else None
+    if config is None or settings_source is None:
+        config, settings_source = await pass_settings(sample_batch_id, config)
 
     if batch_peak_run_id is not None:
         run_id = batch_peak_run_id
     else:
         # Nothing to fold and every stage current: no run, so a press that
         # has nothing to do prunes no pass from the history.
-        reasons, stages = await plan_pass(sample_batch_id, from_stage, fold)
+        reasons, stages = await plan_pass(sample_batch_id, from_stage, fold, config)
         if not reasons and not stages:
             return pass_outcome(sample_batch_id, None, None)
         run_id = await start_run(
             sample_batch_id,
             action,
-            config=pass_config(from_stage, fold, config),
+            config=pass_config(from_stage, fold, config, settings_source),
             user_id=user_id,
         )
     record = PassRecord(from_stage)
+    record.settings_hash = settings_hash(config)
     call = StageCall(
         sample_batch_id=sample_batch_id,
         config=config,
@@ -1795,7 +1801,7 @@ async def assign_batch(
     try:
         # Read again under the run, which no second pass, rebuild or import
         # gets past: what the pass does is what it records.
-        reasons, stages = await plan_pass(sample_batch_id, from_stage, fold)
+        reasons, stages = await plan_pass(sample_batch_id, from_stage, fold, config)
         async with async_session() as session:
             record.samples = await batch_samples(session, sample_batch_id)
             record.library = await library_read(session, sample_batch_id)
@@ -1934,14 +1940,16 @@ __all__ = [
     "STAGE_OF_KEY",
     "StageCall",
     "StageSpec",
+    "SETTINGS_FROM_BATCH",
+    "SETTINGS_FROM_REQUEST",
     "assign_batch",
+    "batch_settings",
     "batch_samples",
     "begin_stage",
     "finish_stage",
     "first_not_current",
     "fold_reasons",
     "hand_over",
-    "is_pass_config",
     "is_pass_summary",
     "last_pass",
     "library_read",
@@ -1951,12 +1959,11 @@ __all__ = [
     "needs_fold",
     "pass_config",
     "pass_outcome",
+    "pass_settings",
     "plan",
     "plan_pass",
-    "recorded_settings",
+    "settings_moved",
     "running_stage",
-    "settings_for",
-    "settings_recorded_by",
     "stage_standing",
     "stage_states",
     "stages_after",

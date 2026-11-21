@@ -252,6 +252,24 @@ REQUESTS = [
         {"chemistry_context": None},
         None,
     ),
+    # The batch's assignment settings: a mapping replaces them, None puts
+    # the batch back on the defaults; left out (above), they are not sent.
+    (
+        lambda r: r["batches"].update(
+            "b-1", assignment_settings={"mz_precision_ppm": 3.0}
+        ),
+        "PATCH",
+        "sample/batches/b-1",
+        {"assignment_settings": {"mz_precision_ppm": 3.0}},
+        None,
+    ),
+    (
+        lambda r: r["batches"].update("b-1", assignment_settings=None),
+        "PATCH",
+        "sample/batches/b-1",
+        {"assignment_settings": None},
+        None,
+    ),
     (
         lambda r: r["batches"].copy("b-1", "ds-2", "b2"),
         "POST",
@@ -857,6 +875,8 @@ RETRIED = [
     ("PATCH", "sample/batches/b-1", {"sample_batch_description": "about"}),
     ("PATCH", "sample/batches/b-1", {"chemistry_context": "chamber"}),
     ("PATCH", "sample/batches/b-1", {"chemistry_context": None}),
+    ("PATCH", "sample/batches/b-1", {"assignment_settings": {"mz_precision_ppm": 3}}),
+    ("PATCH", "sample/batches/b-1", {"assignment_settings": None}),
     ("PATCH", "workspaces/ws-1/datasets/ds-1", {"chemistry_context": "ambient-air"}),
     ("PATCH", "workspaces/ws-1/datasets/ds-1", {"chemistry_context": None}),
     ("PATCH", "sample/items/s-1", {"sample_item": {"sample_item_name": "n"}}),

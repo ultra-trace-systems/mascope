@@ -12,8 +12,10 @@ says where every stage stands; a server restart leaves a running stage stale.
 And one pass at a time: while a pass runs, every step's route and a second
 pass are refused, also between two stages; a stage whose end fails is
 stopped, not left running; every writer of the stage rows takes the batch's
-fold lock first; a pass given no settings searches with what the search last
-ran with. See ``batch_stages.py``.
+fold lock first; a pass runs every stage on the batch's own settings, the
+defaults where it saved none, unless a step's route was given some, and a
+pass on other settings than the last pass's runs from the first stage. See
+``batch_stages.py``.
 """
 
 import asyncio
@@ -36,7 +38,6 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     recompute_batch_consensus,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
-    ACTION_SEARCH,
     ACTION_SERIES,
     RUN_IN_FLIGHT_CODE,
     complete_run,
@@ -55,7 +56,10 @@ from mascope_backend.api.new.peak_assignments.batch_stages import (
     stage_standing,
     stop_stage,
 )
-from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+from mascope_backend.api.new.peak_assignments.config import (
+    PeakAssignmentConfig,
+    settings_hash,
+)
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakRun,
@@ -607,7 +611,7 @@ async def test_each_steps_route_starts_the_stages_at_its_own(
     assert [k["from_stage"] for k in launched] == [stage]
     assert launched[0]["action"] == action
     assert launched[0]["independent_transaction"] is True
-    # No settings given: the pass reads each stage's own last ones.
+    # No settings given: the pass reads the batch's own.
     assert launched[0].get("config") is None
 
 
@@ -633,7 +637,12 @@ async def test_a_steps_route_hands_the_settings_it_was_given_to_the_pass(
 
 
 async def test_the_pass_route_starts_where_it_is_asked(
-    editor_client, guest_client, folded, assignment_enabled, monkeypatch
+    editor_client,
+    guest_client,
+    folded,
+    assignment_enabled,
+    monkeypatch,
+    async_session_factory,
 ):
     launched = []
 
@@ -653,7 +662,19 @@ async def test_the_pass_route_starts_where_it_is_asked(
     assert response.status_code == 202, response.text
     await fail_run(folded["batch_id"], launched[1]["batch_peak_run_id"], "stood in")
     assert [k["from_stage"] for k in launched] == [None, "series"]
+    # The route reads the batch's settings, records them on the run it
+    # opens and hands them on; settings in the request override them.
+    assert launched[0]["config"] == PeakAssignmentConfig()
+    assert launched[0]["settings_source"] == "batch"
     assert launched[1]["config"].mz_precision_ppm == 2.5
+    assert launched[1]["settings_source"] == "request"
+    async with async_session_factory() as session:
+        configs = [
+            (await session.get(BatchPeakRun, k["batch_peak_run_id"])).config
+            for k in launched
+        ]
+    assert [c["settings_source"] for c in configs] == ["batch", "request"]
+    assert configs[1]["settings"]["mz_precision_ppm"] == 2.5
     refused = await editor_client.post(url, json={"from_stage": "everything"})
     assert refused.status_code == 422, refused.text
     decoy = await editor_client.post(
@@ -913,22 +934,36 @@ async def test_a_rebuild_marks_the_stages_under_the_fold_lock(
 # --- settings ----------------------------------------------------------------------
 
 
-async def _ran_with(batch_id, action, **settings):
-    """A batch run of ``action`` that recorded these settings, as the step's
-    own run does."""
-    config = PeakAssignmentConfig(**settings).model_dump(mode="json")
-    await complete_run(batch_id, await start_run(batch_id, action, config=config))
+async def _save_settings(async_session_factory, batch_id, stored):
+    """The batch's assignment settings saved as the batch's PATCH stores them."""
+    async with async_session_factory() as session:
+        batch = await session.get(SampleBatch, batch_id)
+        batch.assignment_settings = stored
+        await session.commit()
 
 
-async def test_a_pass_given_no_settings_runs_each_stage_on_its_last_ones(
-    folded, stand_ins, monkeypatch
-):
-    """A pass another step starts searches with what the search's dialog last
-    set, and detects series with what the series last ran with; a stage that
-    never ran, and one that takes no settings, run on the defaults."""
-    batch_id = folded["batch_id"]
+async def _newest_run(async_session_factory, batch_id):
+    async with async_session_factory() as session:
+        return (
+            (
+                await session.execute(
+                    select(BatchPeakRun)
+                    .where(BatchPeakRun.sample_batch_id == batch_id)
+                    .order_by(BatchPeakRun.batch_peak_run_utc_created.desc())
+                    .limit(1)
+                )
+            )
+            .scalars()
+            .one()
+        )
+
+
+@pytest.fixture
+def seen_settings(stand_ins, monkeypatch):
+    """What each stage, and each judging of a rewriting stage's samples, ran
+    on: stage -> its call's config, and the judgings' configs in order."""
     seen: dict[str, object] = {}
-    judged: dict[str, object] = {}
+    judged: list[object] = []
 
     def capture(name):
         async def hook(call):
@@ -936,70 +971,132 @@ async def test_a_pass_given_no_settings_runs_each_stage_on_its_last_ones(
 
         return hook
 
-    for name in ("search", "series", "co_variation"):
+    for name in ORDER:
         stand_ins["hooks"][name] = capture(name)
     rejudge = batch_rejudge.rejudge_samples
 
     async def recording(sample_batch_id, samples, config):
-        judged[len(judged)] = config
+        judged.append(config)
         return await rejudge(sample_batch_id, samples, config)
 
     monkeypatch.setattr(batch_rejudge, "rejudge_samples", recording)
+    return {"seen": seen, "judged": judged}
 
-    # Nothing ran yet: the defaults, which each step reads None as.
+
+async def test_a_batch_with_no_settings_passes_at_the_defaults(
+    folded, seen_settings, async_session_factory
+):
+    """Nothing saved: every stage, and every judging, runs on the engine's
+    defaults, and the run records them, from the batch, with their hash."""
+    batch_id = folded["batch_id"]
     await _run(batch_id)
-    assert seen == {"search": None, "series": None, "co_variation": None}
+    defaults = PeakAssignmentConfig()
+    assert seen_settings["seen"] == dict.fromkeys(ORDER, defaults)
+    assert len(seen_settings["judged"]) == 5
+    assert all(c == defaults for c in seen_settings["judged"])
+    run = await _newest_run(async_session_factory, batch_id)
+    assert run.config["settings"] == defaults.model_dump(mode="json", exclude={"decoy"})
+    assert run.config["settings_source"] == "batch"
+    assert run.summary["settings_hash"] == settings_hash(defaults)
+    entries = {e["stage"]: e for e in run.summary["stages"]}
+    assert entries["search"]["settings"] == defaults.model_dump(mode="json")
+    assert entries["co_variation"].get("settings") is None
 
-    await _ran_with(batch_id, ACTION_SEARCH, mz_precision_ppm=7.0)
-    # The newest of the search's runs is what its dialog last set.
-    await _ran_with(batch_id, ACTION_SEARCH, mz_precision_ppm=2.5)
-    await _ran_with(batch_id, ACTION_SERIES, mz_precision_ppm=4.0)
-    await fold_sample_into_batch_peaks(folded["s1"])
-    seen.clear()
-    judged.clear()
+
+async def test_a_pass_runs_every_stage_on_the_batchs_settings(
+    folded, seen_settings, async_session_factory
+):
+    """Saved settings are what every stage of the next pass runs on, whoever
+    starts it and from whichever stage: a pass on other settings than the
+    last pass's runs from the first stage, though every stage is current,
+    since every rewriting stage judges its samples under their bands."""
+    batch_id = folded["batch_id"]
+    await _run(batch_id)
+    await _save_settings(
+        async_session_factory,
+        batch_id,
+        {"mz_precision_ppm": 2.5, "assigned_threshold": 0.8},
+    )
+    saved = PeakAssignmentConfig(mz_precision_ppm=2.5, assigned_threshold=0.8)
+    seen_settings["seen"].clear()
+    seen_settings["judged"].clear()
     await _run(batch_id, "co_variation")
-    assert seen["search"].mz_precision_ppm == 2.5
-    assert seen["series"].mz_precision_ppm == 4.0
-    assert seen["co_variation"] is None
-    # The search's samples are judged again on the settings it ran with: the
-    # rejudge of the water ladders, known species, search, isotope lines,
-    # series, in order.
-    assert [c.mz_precision_ppm for c in judged.values()] == [
-        PeakAssignmentConfig().mz_precision_ppm,
-        PeakAssignmentConfig().mz_precision_ppm,
-        2.5,
-        PeakAssignmentConfig().mz_precision_ppm,
-        4.0,
-    ]
+    assert seen_settings["seen"] == dict.fromkeys(ORDER, saved)
+    assert seen_settings["judged"] == [saved] * 5
+    run = await _newest_run(async_session_factory, batch_id)
+    assert run.summary["first_stage"] == ORDER[0]
+    assert run.config["settings"]["mz_precision_ppm"] == 2.5
+    assert run.config["settings"]["assigned_threshold"] == 0.8
+    assert run.config["settings_source"] == "batch"
+    assert run.summary["settings_hash"] == settings_hash(saved)
 
-    # Settings given to the pass are what both run on.
-    seen.clear()
+    # Ran on them, every stage current: a pass has nothing left to do.
+    assert (await _run(batch_id))["status"] == "skipped"
+    # Saved again as they are, they hash alike: still nothing to do.
+    await _save_settings(
+        async_session_factory,
+        batch_id,
+        {"assigned_threshold": 0.8, "mz_precision_ppm": 2.5, "context": "auto"},
+    )
+    assert (await _run(batch_id))["status"] == "skipped"
+
+
+async def test_settings_given_to_a_pass_override_the_batchs_and_say_so(
+    folded, seen_settings, async_session_factory
+):
+    """A step's route given settings runs its pass on them in place of the
+    batch's, and its run records that they came from the request. The next
+    pass on the batch's own runs from the first stage again."""
+    batch_id = folded["batch_id"]
+    await _save_settings(async_session_factory, batch_id, {"mz_precision_ppm": 2.5})
+    await _run(batch_id)
+    seen_settings["seen"].clear()
+    given = PeakAssignmentConfig(mz_precision_ppm=1.5)
     await assign_batch(
         sample_batch_id=batch_id,
         from_stage="search",
-        config=PeakAssignmentConfig(mz_precision_ppm=1.5),
+        config=given,
         process_id="pass-2",
     )
-    assert seen["search"].mz_precision_ppm == 1.5
-    assert seen["series"].mz_precision_ppm == 1.5
+    assert seen_settings["seen"]["search"] == given
+    assert seen_settings["seen"]["series"] == given
+    run = await _newest_run(async_session_factory, batch_id)
+    assert run.config["settings_source"] == "request"
+    assert run.config["settings"]["mz_precision_ppm"] == 1.5
+    assert run.summary["settings_hash"] == settings_hash(given)
+    # The override ran from the first stage: the last pass ran on others.
+    assert run.summary["first_stage"] == ORDER[0]
+
+    seen_settings["seen"].clear()
+    await _run(batch_id)
+    assert seen_settings["seen"]["water_ladders"].mz_precision_ppm == 2.5
+    run = await _newest_run(async_session_factory, batch_id)
+    assert run.config["settings_source"] == "batch"
 
 
-async def test_settings_a_run_recorded_that_no_longer_read_are_the_defaults(
+async def test_a_pass_from_before_the_batch_kept_settings_compares_nothing(
     folded, stand_ins, async_session_factory
 ):
+    """A pass that recorded no settings hash says nothing of the settings it
+    ran on: saving some starts no pass from the first stage."""
     batch_id = folded["batch_id"]
-    run_id = await start_run(batch_id, ACTION_SEARCH)
-    async with async_session_factory() as session:
-        run = await session.get(BatchPeakRun, run_id)
-        run.config = {"mz_precision_ppm": "a few"}
-        await session.commit()
-    await complete_run(batch_id, run_id)
-    seen = {}
-
-    async def hook(call):
-        seen["search"] = call.config
-
-    stand_ins["hooks"]["search"] = hook
     await _run(batch_id)
-    assert seen == {"search": None}
+    run = await _newest_run(async_session_factory, batch_id)
+    async with async_session_factory() as session:
+        stored = await session.get(BatchPeakRun, run.batch_peak_run_id)
+        summary = dict(stored.summary)
+        summary.pop("settings_hash")
+        stored.summary = summary
+        await session.commit()
+    await _save_settings(async_session_factory, batch_id, {"mz_precision_ppm": 2.5})
+    assert (await _run(batch_id))["status"] == "skipped"
+
+
+async def test_settings_a_batch_saved_that_no_longer_read_are_the_defaults(
+    folded, seen_settings, async_session_factory
+):
+    batch_id = folded["batch_id"]
+    await _save_settings(async_session_factory, batch_id, {"mz_precision_ppm": "a few"})
+    await _run(batch_id)
+    assert seen_settings["seen"]["search"] == PeakAssignmentConfig()
     assert (await _states(batch_id))["search"]["state"] == "current"

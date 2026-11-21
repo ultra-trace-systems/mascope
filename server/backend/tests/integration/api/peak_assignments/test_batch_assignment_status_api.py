@@ -5,8 +5,8 @@ for: what is proven is the read. Each ``state`` is reached and returned for
 its fixture - no batch peaks, folded only, running, current, failed,
 cancelled, behind; each reason in ``behind`` holds where its change was made
 after the pass and nowhere else - a sample folded in, a sample moved out, a
-sample's in-app run, a collection attached, an engine version, a rebuild - and
-a curation, a verdict and an import leave the batch ``current``; a pass in
+sample's in-app run, a collection attached, the batch's settings saved, an
+engine version, a rebuild - and a curation, a verdict and an import leave the batch ``current``; a pass in
 flight is served with its process, stage and who started it, to another
 user's read too; and the read costs the same queries for 5,000 samples as for
 two, in under a second. See ``batch_assignment_status.py``.
@@ -50,6 +50,10 @@ from mascope_backend.api.new.peak_assignments.batch_stages import (
     library_read,
     mark_batch_stale,
     mark_stale,
+)
+from mascope_backend.api.new.peak_assignments.config import (
+    PeakAssignmentConfig,
+    settings_hash,
 )
 from mascope_backend.db import (
     BatchPeak,
@@ -293,7 +297,9 @@ async def test_a_completed_pass_leaves_the_batch_current(
     assert last["first_stage"] == ORDER[0]
     assert last["started_by"] == {"id": editor.id, "username": editor.username}
     assert last["engine_version"] == status["engine_version"]
-    assert last["settings_hash"] is None
+    # The defaults: the batch saved no settings.
+    assert last["settings_hash"] == settings_hash(PeakAssignmentConfig())
+    assert status["settings_hash"] == last["settings_hash"]
     assert last["n_samples"] == 2
     assert last["utc_completed"] is not None
     # Its end wrote the summary whole: the progress it kept as it went is gone.
@@ -714,6 +720,63 @@ async def test_a_pass_under_another_engine_version_is_engine_changed(
         "now": status["engine_version"],
     }
     assert status["fold_reasons"] == ["engine_changed"]
+
+
+async def _save_settings(editor_client, batch_id, settings):
+    response = await editor_client.patch(
+        f"/api/sample/batches/{batch_id}", json={"assignment_settings": settings}
+    )
+    assert response.status_code == 200, response.text
+
+
+async def test_settings_saved_after_a_pass_are_settings_changed(
+    guest_client, editor_client, folded, stand_ins
+):
+    """Saving changed settings turns the batch behind with
+    ``settings_changed``, and nothing else; a pass on them turns it back to
+    current. Saving the settings it ran on again, or putting a batch back on
+    the defaults it ran on, changes nothing."""
+    batch_id = folded["batch_id"]
+    await _pass(batch_id)
+    defaults = settings_hash(PeakAssignmentConfig())
+    await _save_settings(editor_client, batch_id, {"mz_precision_ppm": 2.5})
+    status = await _status(guest_client, batch_id)
+    assert status["state"] == "behind"
+    reasons = _reasons(status)
+    assert set(reasons) == {"settings_changed"}
+    now = settings_hash(PeakAssignmentConfig(mz_precision_ppm=2.5))
+    assert reasons["settings_changed"]["detail"] == {"pass": defaults, "now": now}
+    assert status["settings_hash"] == now
+    assert status["last_pass"]["settings_hash"] == defaults
+    # No fold: the settings are read by the stages, not by the fold.
+    assert status["needs_fold"] is False
+
+    await _pass(batch_id)
+    status = await _status(guest_client, batch_id)
+    assert status["state"] == "current"
+    assert status["behind"] == []
+    assert status["last_pass"]["settings_hash"] == now
+
+    await _save_settings(editor_client, batch_id, {"mz_precision_ppm": 2.5})
+    assert (await _status(guest_client, batch_id))["state"] == "current"
+    await _save_settings(editor_client, batch_id, None)
+    assert set(_reasons(await _status(guest_client, batch_id))) == {"settings_changed"}
+    await _pass(batch_id)
+    await _save_settings(editor_client, batch_id, {})
+    assert (await _status(guest_client, batch_id))["state"] == "current"
+
+
+async def test_a_pass_on_a_requests_own_settings_leaves_it_settings_changed(
+    guest_client, folded, stand_ins
+):
+    """A pass a step's route ran on settings of its own did not run on the
+    batch's: the batch stays behind until a pass on its own has."""
+    batch_id = folded["batch_id"]
+    await _pass(batch_id, config=PeakAssignmentConfig(mz_precision_ppm=1.5))
+    status = await _status(guest_client, batch_id)
+    assert set(_reasons(status)) == {"settings_changed"}
+    await _pass(batch_id)
+    assert (await _status(guest_client, batch_id))["state"] == "current"
 
 
 async def test_a_rebuild_after_a_pass_leaves_its_stages_stale(

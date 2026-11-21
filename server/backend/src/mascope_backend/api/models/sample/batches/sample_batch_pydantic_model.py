@@ -15,7 +15,10 @@ from mascope_backend.api.models.sample.batches.config import sample_batch_config
 from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
     SampleItemCreate,
 )
-from mascope_backend.api.new.peak_assignments.config import named_chemistry_context
+from mascope_backend.api.new.peak_assignments.config import (
+    BatchAssignmentSettings,
+    named_chemistry_context,
+)
 
 
 #: What the chemistry context field says, on every model that carries it.
@@ -138,6 +141,17 @@ _SEED_BATCH_PEAKS = (
 )
 
 
+_ASSIGNMENT_SETTINGS = (
+    "The batch's assignment settings: the untargeted search's and the series "
+    "detection's settings that every pass of the batch stages runs on, "
+    "whoever starts it (the fields of a peak assignment run config but its "
+    "decoy). Stored as the fields that were set; a field left out takes the "
+    "engine's default, and null means the defaults throughout. A change marks "
+    "the batch's assignment behind (``settings_changed``) until a pass runs "
+    "on the new settings."
+)
+
+
 class SampleBatchCreate(SampleBatchValidator, SampleBatchBase):
     """Model used for sample batch creation requests."""
 
@@ -172,6 +186,7 @@ class SampleBatchRead(SampleBatchBase):
         None, description="Timestamp when sample batch was last modified"
     )
     seed_batch_peaks: bool = Field(False, description=_SEED_BATCH_PEAKS)
+    assignment_settings: dict | None = Field(None, description=_ASSIGNMENT_SETTINGS)
 
 
 class SampleBatchListed(SampleBatchRead):
@@ -237,6 +252,14 @@ class SampleBatchUpdate(SampleBatchBaseValidator, BaseModel):
     seed_batch_peaks: bool | None = Field(
         None,
         description=_SEED_BATCH_PEAKS + " Absent, it stays as it is; null is refused.",
+    )
+    assignment_settings: BatchAssignmentSettings | None = Field(
+        None,
+        description=(
+            _ASSIGNMENT_SETTINGS + " Absent, they stay as they are; an object "
+            "replaces them whole; null, or an empty object, puts the batch back "
+            "on the defaults."
+        ),
     )
 
     model_config = ConfigDict(from_attributes=True)

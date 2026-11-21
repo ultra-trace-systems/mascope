@@ -82,6 +82,7 @@ from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
 from mascope_backend.api.new.ionization.modes.util import (
     resolve_ionization_modes_by_tokens,
 )
+from mascope_backend.api.new.peak_assignments.config import stored_batch_settings
 from mascope_backend.api.new.temp.storage import download_name, user_temp_path
 from mascope_backend.api.new.workspaces.dependencies import ALL_WORKSPACES
 from mascope_backend.db import (
@@ -653,11 +654,18 @@ async def update_sample_batch(
 
         # Step 4: Update batch data
         basic_fields = sample_batch_update.model_dump(
-            exclude={"target_collection_ids"}, exclude_unset=True
+            exclude={"target_collection_ids", "assignment_settings"},
+            exclude_unset=True,
         )
         for field, value in basic_fields.items():
             if hasattr(batch, field):
                 setattr(batch, field, value)
+        if "assignment_settings" in sample_batch_update.model_fields_set:
+            # The fields that were set, so one left out follows the engine's
+            # default; none set is null, the defaults.
+            batch.assignment_settings = stored_batch_settings(
+                sample_batch_update.assignment_settings
+            )
 
         # Update complex fields only when changed
         if changes["collections"]:

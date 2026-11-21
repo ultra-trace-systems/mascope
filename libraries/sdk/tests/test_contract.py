@@ -1677,6 +1677,24 @@ class TestWriteContract:
         cleared = batches.update(batch_id, chemistry_context=None)
         assert cleared["chemistry_context"] is None
 
+    def test_a_batchs_assignment_settings_are_set_kept_and_cleared(self, scratch):
+        batches = scratch.client.batches
+        # The installed SDK may predate a batch's assignment settings.
+        _skip_unless_param(batches.update, "assignment_settings")
+        from mascope_sdk.exceptions import ValidationError
+
+        batch_id = _scratch_batch(scratch, "settings batch")
+
+        saved = batches.update(batch_id, assignment_settings={"mz_precision_ppm": 3.0})
+        assert saved["assignment_settings"] == {"mz_precision_ppm": 3.0}
+        # Left out, they stay; None puts the batch back on the defaults.
+        kept = batches.update(batch_id, name="settings batch renamed")
+        assert kept["assignment_settings"] == {"mz_precision_ppm": 3.0}
+        with pytest.raises(ValidationError):
+            batches.update(batch_id, assignment_settings={"mz_precision": 3.0})
+        cleared = batches.update(batch_id, assignment_settings=None)
+        assert cleared["assignment_settings"] is None
+
     def test_batch_update_copy_delete(self, scratch):
         batches = scratch.client.batches
         _skip_unless_attr(batches, "copy")

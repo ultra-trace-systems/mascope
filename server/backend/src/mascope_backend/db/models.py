@@ -875,6 +875,16 @@ class SampleBatch(Base):
     # dataset, and read before the dataset's: a chamber batch in a dataset of
     # ambient campaigns names its own. NULL names none.
     chemistry_context: Mapped[Optional[str]] = mapped_column(String(64))
+    # The batch's assignment settings: the untargeted search's and the
+    # series' settings every pass of the batch stages runs on
+    # (``batch_stages.assign_batch``), validated as a peak assignment config
+    # without its decoy block (``config.BatchAssignmentSettings``) and stored
+    # as the fields that were set. NULL means the engine's defaults.
+    # Edited through the batch's PATCH; a pass records what it ran on in its
+    # own run, and the batch's assignment status compares their hash.
+    assignment_settings: Mapped[Optional[dict]] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
 
     # Relationships
     dataset = relationship("Dataset", back_populates="sample_batch")

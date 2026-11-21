@@ -1620,7 +1620,8 @@ class BatchAssignmentLastPass(BaseModel):
     utc_completed: datetime | None = None
     started_by: BatchAssignmentUser | None = None
     engine_version: str
-    #: Null until the batch keeps assignment settings of its own (MAS-1014).
+    #: The hash of the settings it ran on; null for a pass from before the
+    #: batch kept assignment settings of its own (MAS-1014).
     settings_hash: str | None = None
     #: The samples it covered.
     n_samples: int
@@ -1668,13 +1669,14 @@ class BatchAssignmentBehindReason(BaseModel):
     """One reason the batch is behind its last pass."""
 
     #: new_samples | removed_samples | resampled | library_changed |
-    #: engine_changed | stages_stale
+    #: settings_changed | engine_changed | stages_stale
     reason: str
     count: int
     #: The sample reasons: the first of the samples, by id.
     sample_item_ids: list[str] | None = None
-    #: library_changed: the collections and lists by id; engine_changed: the
-    #: pass's version and today's; stages_stale: each stage and its mark.
+    #: library_changed: the collections and lists by id; settings_changed:
+    #: the pass's settings hash and the batch's; engine_changed: the pass's
+    #: version and today's; stages_stale: each stage and its mark.
     detail: dict | list | None = None
 
 
@@ -1686,6 +1688,10 @@ class BatchAssignmentStatus(BaseModel):
     state: str
     #: The engine version a pass would run under now.
     engine_version: str
+    #: The hash of the batch's assignment settings, the defaults where it
+    #: saved none: what a pass would record now, unless a step's route is
+    #: given settings of its own.
+    settings_hash: str | None = None
     n_samples: int
     n_batch_peaks: int
     last_pass: BatchAssignmentLastPass | None = None

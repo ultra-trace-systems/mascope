@@ -408,8 +408,8 @@ As built (`batch_assignment_status.py`):
   the process id, the stage, its index of the planned stages, the fold counted first. Its
   end writes the summary whole. `progress` is the share of stages finished; a stage's own
   progress stays in its packets. A rebuild or import on its own serves no stage.
-- `settings_hash` is null and `settings_changed` is not a reason yet: the batch keeps no
-  settings until MAS-1014.
+- `settings_changed` compares the hash of the batch's settings with the one the last pass
+  recorded (MAS-1014, 5.4). A pass from before then recorded none and compares nothing.
 - About a dozen queries whatever the batch's size: the read of a 5,000-sample batch sends
   the statements a two-sample one does.
 
@@ -419,6 +419,28 @@ A nullable `assignment_settings` JSON on `sample_batch`, validated as a
 `PeakAssignmentConfig` without its decoy block. Null means the defaults. It is edited
 through `PATCH /api/sample/batches/{id}`, as `seed_batch_peaks` is. The pass records the
 settings it ran under in its run's `config`, and the status read compares their hash.
+
+As built (`config.BatchAssignmentSettings`, `batch_stages.pass_settings`):
+
+- The column stores the fields that were set, so a field left out follows the engine's
+  default; null, or an empty object, is the defaults. A field the model does not know is
+  refused rather than dropped, and each refusal names its field in the message, since the
+  API's 422 body carries the validators' messages alone.
+- Every stage of a pass runs on the batch's settings, not the search and the series
+  alone: every stage that rewrites members judges its samples again under their tier
+  bands. The fallback MAS-983 built, each stage on the settings its own last run recorded,
+  is gone: it was the per-user settings by another road.
+- The run's `config` holds `settings` (the whole config the pass ran on) and
+  `settings_source`, `batch` or `request`. `request` is a pass whose route was given a
+  `config`: a step's own route, `run-stages` or `assign`. The summary holds
+  `settings_hash`, a digest of that config, equal for a field sent as its default and one
+  left out.
+- Saving marks no stage stale. A pass whose settings hash otherwise than the last
+  completed pass's runs from the first stage instead (`plan_pass`), by the test the status
+  read's `settings_changed` makes (`settings_moved`), so the two agree. A pass on a
+  request's settings leaves the batch behind until a pass on its own.
+- Settings the batch saved that no longer validate (a field since removed or bounded
+  tighter) run as the defaults, logged.
 
 ### 5.5 What stays
 

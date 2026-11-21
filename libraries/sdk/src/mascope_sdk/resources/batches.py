@@ -2,7 +2,7 @@
 
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import pandas as pd
@@ -260,9 +260,10 @@ class BatchesResource(BaseResource):
         name: str | None = None,
         description: str | None = None,
         chemistry_context: str | None = UNSET,
+        assignment_settings: Mapping[str, Any] | None = UNSET,
     ) -> dict[str, Any]:
-        """Rename a batch, change its description or chemistry context, or set
-        its collections.
+        """Rename a batch, change its description, chemistry context or
+        assignment settings, or set its collections.
 
         Left out, ``target_collection_ids`` is not sent and the batch keeps
         its target collections, so ``update(batch_id, name=...)`` only
@@ -287,6 +288,20 @@ class BatchesResource(BaseResource):
             default, and the dataset's after it. Left out, it stays as it
             is; ``None`` clears it, and the dataset's applies.
         :type chemistry_context: str, optional
+        :param assignment_settings: The batch's assignment settings: the
+            untargeted search's and the series detection's settings every
+            pass of the batch stages runs on, whoever starts it
+            (:meth:`BatchPeaksResource.assign`), as the fields of a peak assignment
+            run config but its decoy, such as ``{"mz_precision_ppm": 3.0,
+            "formula_ranges": "C0-40 H0-80 O0-20 N0-4"}``. A mapping
+            replaces them whole, and a field it leaves out takes the
+            engine's default. A change marks the batch's assignment behind
+            (``settings_changed`` in
+            :meth:`BatchPeaksResource.assignment_status`)
+            until a pass runs on them. Left out, they stay as they are;
+            ``None`` puts the batch back on the defaults. A setting the
+            server does not know is refused (``ValidationError``).
+        :type assignment_settings: Mapping[str, Any], optional
         :return: The updated batch.
         :rtype: dict[str, Any]
         :raises PermissionDeniedError: Without the editor role on the batch,
@@ -301,6 +316,10 @@ class BatchesResource(BaseResource):
             body["sample_batch_description"] = description
         if chemistry_context is not UNSET:
             body["chemistry_context"] = chemistry_context
+        if assignment_settings is not UNSET:
+            body["assignment_settings"] = (
+                dict(assignment_settings) if assignment_settings is not None else None
+            )
         return self._write(
             "PATCH",
             f"sample/batches/{batch_id}",

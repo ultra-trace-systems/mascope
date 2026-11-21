@@ -822,9 +822,12 @@ async def test_a_pass_whose_scope_is_cancelled_again_and_again_closes_its_run(
 # --- settings ----------------------------------------------------------------------
 
 
-async def test_the_settings_a_passs_stage_ran_on_are_what_the_next_pass_reads(
+async def test_a_passs_own_settings_are_not_what_the_next_pass_reads(
     folded, stand_ins, async_session_factory
 ):
+    """Settings one pass was given are recorded on its stages, and the next
+    pass given none runs on the batch's own, not on them (MAS-1014): the
+    batch saved none here, so the defaults."""
     batch_id = folded["batch_id"]
     await _pass(batch_id, config=PeakAssignmentConfig(mz_precision_ppm=1.5))
     run = (await _runs(async_session_factory, batch_id))[-1]
@@ -833,8 +836,8 @@ async def test_the_settings_a_passs_stage_ran_on_are_what_the_next_pass_reads(
     assert _stages(run)["co_variation"].get("settings") is None
     await fold_sample_into_batch_peaks(folded["s1"])
     await _pass(batch_id)
-    assert stand_ins["calls"]["search"].config.mz_precision_ppm == 1.5
-    assert stand_ins["calls"]["series"].config.mz_precision_ppm == 1.5
+    assert stand_ins["calls"]["search"].config == PeakAssignmentConfig()
+    assert stand_ins["calls"]["series"].config == PeakAssignmentConfig()
 
 
 # --- routes ------------------------------------------------------------------------
