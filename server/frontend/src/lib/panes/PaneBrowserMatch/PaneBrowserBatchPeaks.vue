@@ -15,6 +15,7 @@ import { FilterMatchMode, FilterOperator, FilterService } from '@primevue/core/a
 
 import {
   BaseCopyableField,
+  BaseEvidenceBadge,
   BaseLevelTag,
   BaseProvisionalMark,
   BaseTabbedPanel,
@@ -32,45 +33,19 @@ import {
   targetName,
   targetOf
 } from '@/lib/referenceListings'
-import { seriesTooltip } from '@/lib/batchSeries'
+import { FORMULA_CELL_MARKS, ledgerMarks } from '@/lib/evidence/marks'
 import { coVariationLabel, coVariationRank, coVariationTooltip } from '@/lib/batchCoVariation'
 import { checkTags, checksRank, checksTooltip } from '@/lib/batchChecks'
-import {
-  isPredicted,
-  stampLabel,
-  stampParentId,
-  isotopologuesSummary,
-  isotopologuesTooltip,
-  stampTooltip
-} from '@/lib/batchIsotopologues'
+import { isPredicted, stampLabel, stampParentId, stampTooltip } from '@/lib/batchIsotopologues'
 import {
   strippedLabel,
   strippedLinesCount,
-  strippedLinesSummary,
-  strippedLinesTooltip,
   strippedParentId,
   strippedTooltip
 } from '@/lib/batchMergedIsotopologues'
-import {
-  knownSpeciesSummary,
-  knownSpeciesTooltip,
-  knownSpeciesVerdict
-} from '@/lib/batchKnownSpecies'
-import { blendOf, blendSummary, blendTooltip } from '@/lib/batchBlend'
-import { waterLadderSummary, waterLadderTooltip } from '@/lib/batchWaterLadder'
-import {
-  flatSeriesKind,
-  flatSeriesOf,
-  flatSeriesSummary,
-  flatSeriesTooltip
-} from '@/lib/batchFlatSeries'
-import {
-  holdingReasons,
-  holdingTooltip,
-  persistenceHold,
-  persistenceSummary,
-  persistenceTooltip
-} from '@/lib/batchPersistence'
+import { blendOf } from '@/lib/batchBlend'
+import { flatSeriesOf } from '@/lib/batchFlatSeries'
+import { holdingReasons, holdingTooltip } from '@/lib/batchPersistence'
 import {
   CLAIM_GRADES,
   continuityLabel,
@@ -341,6 +316,11 @@ const hasStrips = computed(() =>
 // hold the rows they took.
 const onlyStripped = ref(false)
 const tookLines = (row) => strippedLinesCount(row.merged_isotopologues) > 0
+
+// The one reading a folded isotope line carries a badge for: the heavier line
+// of a water-ladder rung, as its rung's own row does. Its other readings are
+// its family's, on the family's row.
+const CHILD_CELL_MARKS = ['reagent']
 
 // --- Probable blends ------------------------------------------------------------
 
@@ -1183,9 +1163,9 @@ watch(
               </p>
               <p>
               <b>Listed as, in full</b> writes out what a reference list calls
-              each consensus formula; folded, the default, the column is a
-              flask with the list's tags beside it, and the name is in its
-              tooltip.
+              each consensus formula with its list; folded, the default, the
+              column is the name cut short with the list's tags beside it,
+              and the whole name and its list are in its tooltip.
               </p>
               <p>
               The link is derived: a batch peak is an m/z anchor and carries no
@@ -1264,7 +1244,7 @@ watch(
             <div
               class="unfold-toggle"
               v-tooltip.top="
-                'Write out what a reference list calls each formula, rather than a mark that says it on hover'
+                'Write out what a reference list calls each formula in full, with its list, rather than the name cut short'
               "
             >
               <ToggleSwitch v-model="listingColumn.full" inputId="batch-listing-full" />
@@ -1435,8 +1415,8 @@ watch(
                 childLabel(data)
               }}</span>
               <!-- A line the batch stamped as this family's isotopologue: its
-                   isotope, and a dashed outline where the stamping predicted
-                   it rather than the samples' runs finding it. -->
+                   isotope, in italics where the stamping predicted it rather
+                   than the samples' runs finding it. -->
               <span
                 v-if="stampOf(data)"
                 class="stamp-tag"
@@ -1455,15 +1435,13 @@ watch(
                 >{{ strippedLabel(data) }}</span
               >
               <!-- A heavier line of a water-ladder rung, folded under the
-                   rung: the same mark as on the rung's own row. -->
-              <span
-                v-if="data.water_ladder"
-                class="pi ph ph-drop water-ladder-mark"
-                :class="{ claimed: data.water_ladder.reads?.role === 'reagent' }"
-                role="img"
-                data-testid="water-ladder-mark"
-                :aria-label="waterLadderSummary(data.water_ladder)"
-                v-tooltip.top="waterLadderTooltip(data.water_ladder)"
+                   rung: the same badge as on the rung's own row. -->
+              <BaseEvidenceBadge
+                v-for="reading in ledgerMarks(data, CHILD_CELL_MARKS)"
+                :key="reading.id"
+                :mark="reading.id"
+                :record="reading.record"
+                :data-testid="`mark-${reading.id}`"
               />
             </span>
             <!-- The isotopologue count rides in the slot, outside what gets
@@ -1474,102 +1452,15 @@ watch(
               :field="formulaOf(data)"
               :tooltip="data.consensus_formula ? null : ION_TOOLTIP"
             >
-              <span
-                v-if="data.curated"
-                class="pi ph ph-hand-pointing curated"
-                v-tooltip.top="'Curated by hand for the whole batch'"
-              />
-              <!-- A homologous series of the batch proposed this formula
-                   (Detect series); the tooltip names the step and the
-                   assigned peak its chain starts at. -->
-              <span
-                v-if="data.series"
-                class="pi ph ph-stairs series-mark"
-                role="img"
-                :aria-label="seriesTooltip(data.series)"
-                v-tooltip.top="seriesTooltip(data.series)"
-              />
-              <!-- The diagnostic isotopologues a "Stamp isotopologues" run
-                   predicted for this formula, where the batch shows one:
-                   predicted, found and stamped, on hover. -->
-              <span
-                v-if="data.diagnostic_isotopologues?.n_found"
-                class="pi ph ph-stamp isotopologues-mark"
-                :class="{ stamped: data.diagnostic_isotopologues.n_stamped > 0 }"
-                role="img"
-                data-testid="isotopologues-mark"
-                :aria-label="isotopologuesSummary(data.diagnostic_isotopologues)"
-                v-tooltip.top="isotopologuesTooltip(data.diagnostic_isotopologues)"
-              />
-              <!-- The rows a "Strip isotopologue rows" run took from the
-                   ledger as this compound's isotope lines. -->
-              <span
-                v-if="tookLines(data)"
-                class="pi ph ph-scissors strips-mark"
-                role="img"
-                data-testid="strips-mark"
-                :aria-label="strippedLinesSummary(data.merged_isotopologues)"
-                v-tooltip.top="strippedLinesTooltip(data.merged_isotopologues)"
-              />
-              <!-- The batch's decision on the known species this row is: a
-                   source ion or a compound a list tags as background, decided
-                   once over the batch's samples. -->
-              <span
-                v-if="knownSpeciesVerdict(data)"
-                class="pi ph ph-list-checks known-species-mark"
-                :class="knownSpeciesVerdict(data)"
-                role="img"
-                data-testid="known-species-mark"
-                :aria-label="knownSpeciesSummary(data.known_species)"
-                v-tooltip.top="knownSpeciesTooltip(data.known_species)"
-              />
-              <!-- A probable blend: the samples split between two formulas
-                   along intensity or acquisition time. -->
-              <span
-                v-if="blendOf(data)"
-                class="pi ph ph-intersect blend-mark"
-                role="img"
-                data-testid="blend-mark"
-                :aria-label="blendSummary(blendOf(data))"
-                v-tooltip.top="blendTooltip(blendOf(data))"
-              />
-              <!-- The trace holds a constant ratio to the batch's
-                   normaliser: an origin flag, likely background, and on hover
-                   the ion of the source's list where one names it. -->
-              <span
-                v-if="flatSeriesOf(data)"
-                class="pi ph ph-equals flat-series-mark"
-                :class="flatSeriesKind(flatSeriesOf(data))"
-                role="img"
-                data-testid="flat-series-mark"
-                :aria-label="flatSeriesSummary(flatSeriesOf(data))"
-                v-tooltip.top="flatSeriesTooltip(flatSeriesOf(data))"
-              />
-              <!-- The batch search took this peak because it recurs across
-                   the batch, not for its height: the share on hover, and
-                   whether the reading it elected is held at candidate, or
-                   already below it on the samples' vote. -->
-              <span
-                v-if="data.persistence"
-                class="pi ph ph-repeat persistence-mark"
-                :class="persistenceHold(data.tier_reasons, data.consensus_tier)"
-                role="img"
-                data-testid="persistence-mark"
-                :aria-label="persistenceSummary(data.persistence)"
-                v-tooltip.top="
-                  persistenceTooltip(data.persistence, data.tier_reasons, data.consensus_tier)
-                "
-              />
-              <!-- A rung of a reagent ion's water ladder, as the batch's own
-                   series passed it in a stretch of its acquisition. -->
-              <span
-                v-if="data.water_ladder"
-                class="pi ph ph-drop water-ladder-mark"
-                :class="{ claimed: data.water_ladder.reads?.role === 'reagent' }"
-                role="img"
-                data-testid="water-ladder-mark"
-                :aria-label="waterLadderSummary(data.water_ladder)"
-                v-tooltip.top="waterLadderTooltip(data.water_ladder)"
+              <!-- The batch's readings of the row, one badge each, as the
+                   registry draws them (lib/evidence/marks.js): the glyph says
+                   which reading, the colour what it does to confidence. -->
+              <BaseEvidenceBadge
+                v-for="reading in ledgerMarks(data, FORMULA_CELL_MARKS)"
+                :key="reading.id"
+                :mark="reading.id"
+                :record="reading.record"
+                :data-testid="`mark-${reading.id}`"
               />
               <span
                 v-if="isotopologueCount(data)"
@@ -1599,22 +1490,16 @@ watch(
 
         <!-- What a reference list calls the consensus formula, as the sample
              ledger shows it; an isotopologue anchor is its family's formula
-             again, so it shows none of its own. Folded, a flask stands for
-             the name and the list. -->
+             again, so it shows none of its own. Folded, the name is cut
+             short and the list is left to the tooltip. -->
         <Column
           field="listingName"
           sortable
-          :style="{ minWidth: listingColumn.full ? '8rem' : '3rem' }"
+          :style="{ minWidth: listingColumn.full ? '8rem' : '5rem' }"
         >
           <template #header>
             <span v-if="listingColumn.full" v-tooltip.top="HEADER_TOOLTIPS.listing">Listed as</span>
-            <span
-              v-else
-              class="pi ph ph-flask"
-              role="img"
-              aria-label="Listed as"
-              v-tooltip.top="HEADER_TOOLTIPS.listing"
-            />
+            <span v-else v-tooltip.top="HEADER_TOOLTIPS.listing">Listed</span>
           </template>
           <template #body="{ data }">
             <span
@@ -1657,12 +1542,9 @@ watch(
                     listingSource(data.listing)
                   }}</span>
                 </template>
-                <span
-                  v-else
-                  class="pi ph ph-flask listing-mark"
-                  role="img"
-                  :aria-label="listingName(data.listing)"
-                />
+                <span v-else class="listing-name folded" data-testid="listing-folded">{{
+                  listingName(data.listing)
+                }}</span>
               </template>
               <span
                 v-for="tag in listingTags(data.listing)"
@@ -1905,9 +1787,9 @@ watch(
 
         <!-- Ratio stability: after Samples, since it is evidence about the
              trace that column counts. The cell is a button that opens the
-             pairs behind the grade. A grade the pass left partial is drawn
-             dashed, and one the ledger has moved past since outlined in the
-             warning colour with a clock. Display-only: the tier column is
+             pairs behind the grade. A grade the pass left partial says so
+             beside it, and one the ledger has moved past since is outlined in
+             the warning colour with the out-of-date arrows. Display-only: the tier column is
              what the table sorts, filters and folds on. -->
         <Column v-if="hasContinuity" field="continuityRank" sortable style="min-width: 7rem">
           <template #header>
@@ -1941,10 +1823,18 @@ watch(
             >
               <span
                 v-if="continuityStale(data)"
-                class="pi ph ph-clock-counter-clockwise"
+                class="pi ph ph-arrows-clockwise"
                 data-testid="continuity-stale"
               />
               {{ continuityLabel(data) }}
+              <!-- On a grade only: an anchor none of whose pairs were graded
+                   already reads "Not graded". -->
+              <span
+                v-if="continuityPartial(data) && data.continuity_grade"
+                class="partial-mark"
+                data-testid="continuity-partial"
+                >partial</span
+              >
             </button>
             <span v-else-if="!data.parentId" class="no-continuity">&mdash;</span>
           </template>
@@ -1980,8 +1870,9 @@ watch(
               v-tooltip.top="verdictTooltip(data)"
               @click.stop="openVerdict($event, data)"
             >
-              <BaseVerdictBadge v-if="verdictFor(data)" :record="verdictFor(data)" compact />
-              <span v-else class="pi ph ph-seal-check" />
+              <!-- Nothing for a row nobody has judged: the cell is still the
+                   button that judges it, and shows itself on hover. -->
+              <BaseVerdictBadge :record="verdictFor(data)" compact />
             </button>
           </template>
         </Column>
@@ -2018,7 +1909,7 @@ watch(
   max-width: 18rem;
   white-space: nowrap;
 }
-/* Folded, the flask stands for the name and the list, in the tooltip. */
+/* Folded, the target's mark stands for its name, in the tooltip. */
 .listing-mark {
   opacity: 0.75;
 }
@@ -2026,6 +1917,10 @@ watch(
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+}
+/* Folded, the name alone, cut short: the hover gives it whole with its list. */
+.listing-name.folded {
+  max-width: 6rem;
 }
 .listing-source {
   font-size: 0.72rem;
@@ -2039,22 +1934,26 @@ watch(
 }
 .listing-tag {
   padding: 0 0.3rem;
-  border: 1px dashed var(--p-content-border-color, #e3e6ec);
+  border: 1px solid var(--p-content-border-color, #e3e6ec);
   border-radius: 0.25rem;
   font-size: 0.7rem;
   opacity: 0.8;
 }
 
 /* The verdict cell is a button so an unjudged cell opens the popover too; the
-   badge - or the faint seal for "none yet" - is its whole content. Named
+   badge is its whole content, and "none yet" draws nothing. Named
    `unjudged` rather than `empty`, which is the browser panes' empty-state
    panel class and carries a height. Stale: the judgment is about a formula the
    consensus has since left, outlined in the warning colour until re-judged or
    retracted. */
+/* Sized to hold its badge whether or not it has one: an unjudged row draws
+   nothing, and the empty cell is still where it is judged. */
 .verdict-cell {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  min-width: 1.6rem;
+  min-height: 1.4rem;
   padding: 0.1rem 0.3rem;
   border: 1px solid transparent;
   border-radius: 4px;
@@ -2062,9 +1961,6 @@ watch(
   color: inherit;
   font: inherit;
   cursor: pointer;
-}
-.verdict-cell.unjudged .pi {
-  opacity: 0.25;
 }
 /* History is read-only: the cell keeps its badge and loses its hand. */
 .verdict-cell:disabled {
@@ -2076,7 +1972,6 @@ watch(
 }
 .verdict-cell.stale {
   border-color: var(--state-warning);
-  border-style: dashed;
 }
 
 .unassigned {
@@ -2144,8 +2039,9 @@ watch(
 /* The continuity grade. A claim - stable, drift, unstable - is a small outlined
    badge in a state colour; inconclusive and insufficient, which say the
    ratio could not be read, are muted text, as is a batch whose grades were
-   withdrawn. Partial: dashed, the pass left some of the pairs. Stale: the
-   warning outline and a clock, the ledger has moved since. */
+   withdrawn. Partial: outlined, with the word, the pass left some of the
+   pairs ungraded. Stale: the warning outline and the out-of-date arrows, the
+   ledger has moved since. Never dashed, which means not yet known. */
 .continuity {
   display: inline-flex;
   align-items: center;
@@ -2169,8 +2065,11 @@ watch(
 .continuity.drift {
   color: var(--state-info);
 }
+/* Unstable holds the reading back, in the warning colour the evidence
+   badges give it (lib/evidence/marks.js): an alarm about the pair, not a
+   failure of the ledger's. */
 .continuity.red {
-  color: var(--state-error);
+  color: var(--state-warning);
 }
 .continuity.inconclusive,
 .continuity.insufficient,
@@ -2179,11 +2078,14 @@ watch(
   opacity: 0.55;
 }
 .continuity.partial {
-  border-style: dashed;
   border-color: currentColor;
 }
+.partial-mark {
+  font-size: 0.62rem;
+  opacity: 0.75;
+}
 .continuity.stale {
-  outline: 1px dashed var(--state-warning);
+  outline: 1px solid var(--state-warning);
   outline-offset: 1px;
 }
 .continuity.stale .pi {
@@ -2217,18 +2119,9 @@ watch(
 .check-tag.unread {
   opacity: 0.55;
 }
-/* The isotope lines predicted for a row's formula; coloured once one is
-   stamped. */
-.isotopologues-mark {
-  margin-left: 0.25rem;
-  font-size: 0.8rem;
-  color: var(--p-text-muted-color);
-}
-.isotopologues-mark.stamped {
-  color: var(--p-primary-color);
-}
-/* A stamped line's isotope beside its offset; dashed where the stamping
-   predicted it rather than the samples' runs finding it. */
+/* A stamped line's isotope beside its offset; in italics where the stamping
+   predicted it rather than the samples' runs finding it. Not dashed: a dashed
+   border means not yet known, and a predicted line is a reading. */
 .stamp-tag {
   margin-left: 0.35rem;
   padding: 0 0.25rem;
@@ -2237,52 +2130,11 @@ watch(
   font-size: 0.7rem;
 }
 .stamp-tag.predicted {
-  border-style: dashed;
+  font-style: italic;
 }
 /* A row stripped to its family's isotope line. */
 .stamp-tag.stripped {
   border-color: var(--p-primary-color);
-}
-.strips-mark {
-  margin-left: 0.25rem;
-  font-size: 0.8rem;
-  color: var(--p-primary-color);
-}
-/* A known species the batch decided: present in the primary colour, the
-   other verdicts muted. */
-.known-species-mark {
-  margin-left: 0.25rem;
-  font-size: 0.8rem;
-  opacity: 0.6;
-}
-.known-species-mark.present {
-  color: var(--p-primary-color);
-  opacity: 1;
-}
-/* A probable blend: a caution, so in the warning colour. */
-.blend-mark {
-  margin-left: 0.25rem;
-  font-size: 0.8rem;
-  color: var(--state-warning);
-}
-.persistence-mark {
-  margin-left: 0.25rem;
-  font-size: 0.8rem;
-  opacity: 0.6;
-}
-.persistence-mark.held,
-.persistence-mark.lower {
-  opacity: 1;
-}
-/* A flat series: likely background, in the muted text colour; an ion the
-   source's list names, at full strength. */
-.flat-series-mark {
-  margin-left: 0.25rem;
-  font-size: 0.8rem;
-  color: var(--p-text-muted-color);
-}
-.flat-series-mark.source {
-  color: var(--p-text-color);
 }
 .tier-reason-mark {
   margin-left: 0.3rem;
@@ -2290,23 +2142,10 @@ watch(
   opacity: 0.75;
   vertical-align: middle;
 }
-/* A rung of a reagent ion's water ladder: in the primary colour where the
-   batch peak reads the reagent's ion, muted where its samples' vote kept
-   another reading. */
-.water-ladder-mark {
+/* The row's readings beside its formula, each a badge (BaseEvidenceBadge). */
+.formula .evidence-badge,
+.child-cell .evidence-badge {
   margin-left: 0.25rem;
-  font-size: 0.8rem;
-  opacity: 0.6;
-}
-.water-ladder-mark.claimed {
-  color: var(--p-primary-color);
-  opacity: 1;
-}
-.curated,
-.series-mark {
-  font-size: 0.8rem;
-  margin-right: 0.25rem;
-  opacity: 0.8;
 }
 .iso-count {
   margin-left: 0.35rem;

@@ -64,6 +64,20 @@
     --level-structure: #e08abf;
   }
 
+  /* The reagent and artifact roles: a peak the source or the instrument made,
+     accounted for and not the sample's. The hue of the guide's Series 3 purple
+     #8266EA, which itself reads 4.2:1 on the light ground and 4.1:1 on the
+     dark one, darkened and lightened per theme as the state tokens are so the
+     role chip's text clears 4.5:1 on both (frontend_design_system.md,
+     "States"). */
+  :root {
+    --role-reagent: #6448c8;
+  }
+
+  :root.darkmode {
+    --role-reagent: #a08cf2;
+  }
+
   * {
     --p-listbox-background: var(--p-panel-background);
     /* form input */

@@ -49,7 +49,9 @@ vi.mock('@/lib/base', async () => ({
   },
   BaseVerdictBadge: true,
   // Real: the tier header's provisional mark is read off what it draws.
-  BaseProvisionalMark: (await vi.importActual('@/lib/base/BaseProvisionalMark.vue')).default
+  BaseProvisionalMark: (await vi.importActual('@/lib/base/BaseProvisionalMark.vue')).default,
+  // Real: the formula cell's badges are read off the reading and tone they draw.
+  BaseEvidenceBadge: (await vi.importActual('@/lib/base/BaseEvidenceBadge.vue')).default
 }))
 vi.mock('@/lib/panes/PaneBrowserMatch/BatchPeakContinuityPopover.vue', () => ({
   default: {
@@ -701,7 +703,7 @@ describe('PaneBrowserBatchPeaks tier ordering', () => {
       'm/z',
       'Intensity',
       'Formula',
-      '', // the listing header is a flask while the column is folded
+      'Listed', // the listing header, the column folded
       'Tier',
       // The tiering is still being built, and the tier header says so.
       TIERING_PROVISIONAL.label,
@@ -908,18 +910,21 @@ describe('PaneBrowserBatchPeaks reference-list column', () => {
   const listingColumn = () =>
     wrapper.findAll('.column-stub').find((col) => col.attributes('data-field') === 'listingName')
 
-  it('folds to a flask and the tags by default', async () => {
+  // No flask: the name is written out, cut short, and the list is left to
+  // the hover.
+  it('folds to the name, cut short, and the tags by default', async () => {
     wrapper = await renderedCells([
       peak('bp-1', 'assigned', 0.9, { reference_listing: LISTING }),
       peak('bp-2', 'assigned', 0.8, { mz: 200.1 })
     ])
     const [listed, unlisted] = listingColumn().findAll('.stub-cell')
 
-    expect(listingColumn().find('[aria-label="Listed as"]').exists()).toBe(true)
-    expect(listed.find('.listing-name').exists()).toBe(false)
-    expect(listed.find('.listing-mark').attributes('aria-label')).toBe(
+    expect(listingColumn().find('.ph-flask').exists()).toBe(false)
+    expect(listed.find('[data-testid="listing-folded"]').text()).toBe(
       'decamethylcyclopentasiloxane +1'
     )
+    expect(listed.find('[data-testid="listing-folded"]').classes()).toContain('folded')
+    expect(listed.find('.listing-source').exists()).toBe(false)
     expect(listed.find('[data-testid="list-tag-background"]').exists()).toBe(true)
     expect(unlisted.text()).toBe('')
   })
@@ -1080,12 +1085,51 @@ describe('PaneBrowserBatchPeaks series mark', () => {
       peak('bp-1', 'candidate', 0.7, { series: SERIES }),
       peak('bp-2', 'assigned', 0.9, { mz: 200.1, series: null })
     ])
-    const marks = cells.map((cell) => cell.find('.series-mark')).filter((m) => m.exists())
+    const marks = cells
+      .map((cell) => cell.find('[data-testid="mark-series"]'))
+      .filter((m) => m.exists())
     expect(cells).toHaveLength(2)
     expect(marks).toHaveLength(1)
     expect(marks[0].attributes('aria-label')).toBe(
       "In the batch's CH2 series: one CH2 heavier than C5H10O6, which the batch assigns."
     )
+    expect(marks[0].attributes('data-tone')).toBe('supports')
+    expect(marks[0].find('.ph-stairs').exists()).toBe(true)
+  })
+
+  // A row curated for the whole batch: the hand, in the human tone - an
+  // outline in the text colour, never the accent.
+  it('marks a row curated by hand with the hand, in the human tone', async () => {
+    const cells = await formulaCells([
+      peak('bp-1', 'assigned', 0.9, { curated: true }),
+      peak('bp-2', 'assigned', 0.9, { mz: 200.1 })
+    ])
+    const hand = cells[0].find('[data-testid="mark-manual"]')
+    expect(hand.attributes('aria-label')).toBe('Curated by hand for the whole batch')
+    expect(hand.attributes('data-tone')).toBe('human')
+    expect(hand.find('.ph-hand-pointing').exists()).toBe(true)
+    expect(cells[1].find('[data-testid="mark-manual"]').exists()).toBe(false)
+  })
+
+  // The co-variation, facts and ratio-stability readings keep their columns;
+  // beside the formula they would say the same thing twice. The others line
+  // up in the registry's order: what supports, what holds back, what moves
+  // nothing, a person's act.
+  it("draws the formula cell's readings in the registry's order, and not the columns'", async () => {
+    const cells = await formulaCells([
+      peak('bp-1', 'candidate', 0.7, {
+        curated: true,
+        series: SERIES,
+        blend: { formulas: ['C6H12O6', 'C7H16O5'], axis: 'time', time: null, intensity: null },
+        co_variation: { verdict: 'co_varying', r: 0.8, n_spectra: 20 },
+        batch_checks: { halogen_lock: { element: 'Br', verdict: 'locked' } },
+        continuity: { pairs: [] },
+        continuity_grade: 'stable'
+      })
+    ])
+    expect(
+      cells[0].findAll('.evidence-badge').map((badge) => badge.attributes('data-mark'))
+    ).toEqual(['series', 'blend', 'manual'])
   })
 })
 
@@ -1223,7 +1267,7 @@ describe('PaneBrowserBatchPeaks isotopologue stamps', () => {
     )
   }
 
-  it('tags an unfolded stamped line with its isotope, dashed where the stamping predicted it', async () => {
+  it('tags an unfolded stamped line with its isotope, in italics where the stamping predicted it', async () => {
     const PICKED = peak('bp-picked', 'assigned', 0.8, {
       mz: 140.9,
       isotopologue_of: 'bp-p',
@@ -1239,7 +1283,7 @@ describe('PaneBrowserBatchPeaks isotopologue stamps', () => {
     expect(cells['bp-other'].find('[data-testid="stamp-tag"]').exists()).toBe(false)
   })
 
-  it('marks a parent the batch shows an isotopologue of, coloured once one is stamped', async () => {
+  it('marks a parent the batch shows an isotopologue of, supporting once one is stamped', async () => {
     const FOUND = peak('bp-found', 'assigned', 0.9, {
       mz: 250.1,
       diagnostic_isotopologues: isotopologues({ n_found: 1, n_stamped: 0 })
@@ -1249,15 +1293,16 @@ describe('PaneBrowserBatchPeaks isotopologue stamps', () => {
       diagnostic_isotopologues: isotopologues({ n_found: 0, n_stamped: 0 })
     })
     const cells = await formulaCells([PARENT, LINE, FOUND, NONE, OTHER])
-    const mark = cells['bp-p'].find('[data-testid="isotopologues-mark"]')
+    const mark = cells['bp-p'].find('[data-testid="mark-isotopes"]')
     expect(mark.attributes('aria-label')).toBe('1 of 2 isotope lines stamped')
-    expect(mark.classes()).toContain('stamped')
-    const found = cells['bp-found'].find('[data-testid="isotopologues-mark"]')
+    expect(mark.attributes('data-tone')).toBe('supports')
+    const found = cells['bp-found'].find('[data-testid="mark-isotopes"]')
     expect(found.exists()).toBe(true)
-    expect(found.classes()).not.toContain('stamped')
+    // Found, none held: shown, and it supports nothing.
+    expect(found.attributes('data-tone')).toBe('neutral')
     // Nothing found: the record says so on hover elsewhere, no mark here.
-    expect(cells['bp-none'].find('[data-testid="isotopologues-mark"]').exists()).toBe(false)
-    expect(cells['bp-other'].find('[data-testid="isotopologues-mark"]').exists()).toBe(false)
+    expect(cells['bp-none'].find('[data-testid="mark-isotopes"]').exists()).toBe(false)
+    expect(cells['bp-other'].find('[data-testid="mark-isotopes"]').exists()).toBe(false)
   })
 })
 
@@ -1318,12 +1363,13 @@ describe('PaneBrowserBatchPeaks probable blends', () => {
 
   it('marks a blended batch peak beside its formula, and no other', async () => {
     const cells = await formulaCells([BLENDED, OTHER])
-    const mark = cells['bp-b'].find('[data-testid="blend-mark"]')
+    const mark = cells['bp-b'].find('[data-testid="mark-blend"]')
     expect(mark.exists()).toBe(true)
     expect(mark.attributes('aria-label')).toBe(
       'Probable blend of C10H16O4 and C9H12N2O2, parted by acquisition time'
     )
-    expect(cells['bp-other'].find('[data-testid="blend-mark"]').exists()).toBe(false)
+    expect(mark.attributes('data-tone')).toBe('holds-back')
+    expect(cells['bp-other'].find('[data-testid="mark-blend"]').exists()).toBe(false)
   })
 
   it('keeps only the probable blends under the filter', async () => {
@@ -1442,16 +1488,17 @@ describe('PaneBrowserBatchPeaks flat series', () => {
 
   it('marks a flat batch peak beside its formula, and moves no tier', async () => {
     const { formula, tier } = await formulaCells([FLAT, SOURCE, VARYING, OTHER])
-    const mark = formula['bp-f'].find('[data-testid="flat-series-mark"]')
+    const mark = formula['bp-f'].find('[data-testid="mark-flatSeries"]')
     expect(mark.attributes('aria-label')).toBe('Flat series: cv 0.08 in 92 % of the samples')
-    expect(mark.classes()).not.toContain('source')
+    // It moves nothing, and its colour says so.
+    expect(mark.attributes('data-tone')).toBe('neutral')
     expect(mark.attributes('data-tooltip')).toMatch(/the tier stands\.$/)
-    const source = formula['bp-s'].find('[data-testid="flat-series-mark"]')
-    expect(source.classes()).toContain('source')
+    const source = formula['bp-s'].find('[data-testid="mark-flatSeries"]')
+    expect(source.attributes('aria-label')).toMatch(/a \[NO2\]- ion of the source$/)
     expect(source.attributes('data-tooltip')).toMatch(/The source's list names its ion, \[NO2\]-/)
     // A varying trace, and none read, carry no mark.
-    expect(formula['bp-v'].find('[data-testid="flat-series-mark"]').exists()).toBe(false)
-    expect(formula['bp-other'].find('[data-testid="flat-series-mark"]').exists()).toBe(false)
+    expect(formula['bp-v'].find('[data-testid="mark-flatSeries"]').exists()).toBe(false)
+    expect(formula['bp-other'].find('[data-testid="mark-flatSeries"]').exists()).toBe(false)
     // No reason by the tier: the flag is not one.
     expect(tier['bp-f'].find('[data-testid="tier-reason-mark"]').exists()).toBe(false)
   })
@@ -1588,14 +1635,17 @@ describe('PaneBrowserBatchPeaks merged isotopologue rows', () => {
     const tag = cells['bp-x'].find('[data-testid="strip-tag"]')
     expect(tag.text()).toBe('13C')
     expect(tag.classes()).toContain('stripped')
-    const mark = cells['bp-p'].find('[data-testid="strips-mark"]')
+    // The rows it took are its isotope lines, the same reading as the stamp's.
+    const mark = cells['bp-p'].find('[data-testid="mark-isotopes"]')
     expect(mark.attributes('aria-label')).toBe("2 rows stripped to this compound's isotope lines")
-    expect(cells['bp-other'].find('[data-testid="strips-mark"]').exists()).toBe(false)
+    expect(mark.attributes('data-tone')).toBe('supports')
+    expect(cells['bp-other'].find('[data-testid="mark-isotopes"]').exists()).toBe(false)
     expect(cells['bp-other'].find('[data-testid="strip-tag"]').exists()).toBe(false)
   })
 
-  // The known-species decision's mark sits beside the strip's in the same cell.
-  it('marks a known species with the batch verdict, present ones in the primary colour', async () => {
+  // The known-species decision's mark sits beside the strip's in the same cell:
+  // a reagent decided, which moves nothing, whatever the verdict.
+  it('marks a known species with the batch verdict, as a reagent decided', async () => {
     const decided = (verdict) => ({
       species: { kind: 'library', label: '[(CH4N2O)3+H]+', ion_formula: 'C3H13N6O3+' },
       verdict,
@@ -1608,13 +1658,16 @@ describe('PaneBrowserBatchPeaks merged isotopologue rows', () => {
       { ...OTHER, known_species: decided('unpooled') },
       LINE
     ])
-    const present = cells['bp-p'].find('[data-testid="known-species-mark"]')
+    const present = cells['bp-p'].find('[data-testid="mark-reagent"]')
     expect(present.attributes('aria-label')).toBe('[(CH4N2O)3+H]+: present across the batch')
-    expect(present.classes()).toContain('present')
-    const unpooled = cells['bp-other'].find('[data-testid="known-species-mark"]')
-    expect(unpooled.classes()).toContain('unpooled')
-    expect(unpooled.classes()).not.toContain('present')
-    expect(cells['bp-x'].find('[data-testid="known-species-mark"]').exists()).toBe(false)
+    expect(present.attributes('data-tone')).toBe('neutral')
+    expect(present.find('.ph-drop').exists()).toBe(true)
+    const unpooled = cells['bp-other'].find('[data-testid="mark-reagent"]')
+    expect(unpooled.attributes('aria-label')).toBe(
+      '[(CH4N2O)3+H]+: in too few samples to decide for the batch'
+    )
+    expect(unpooled.attributes('data-tone')).toBe('neutral')
+    expect(cells['bp-x'].find('[data-testid="mark-reagent"]').exists()).toBe(false)
   })
 
   // The search's persistence admission marks the formula, and the tier cell
@@ -1647,22 +1700,22 @@ describe('PaneBrowserBatchPeaks merged isotopologue rows', () => {
       LINE
     ]
     const cells = await formulaCells(peaks, 'consensus_formula', { tooltips: true })
-    const mark = cells['bp-p'].find('[data-testid="persistence-mark"]')
+    const mark = cells['bp-p'].find('[data-testid="mark-persistence"]')
     expect(mark.attributes('aria-label')).toBe(
       'Searched on persistence: in 11 of 12 spectra (92 %)'
     )
-    expect(mark.classes()).toContain('held')
+    expect(mark.attributes('data-tone')).toBe('holds-back')
     expect(mark.attributes('data-tooltip')).toMatch(/is held at candidate until/)
-    const below = cells['bp-below'].find('[data-testid="persistence-mark"]')
-    expect(below.classes()).toContain('lower')
-    expect(below.classes()).not.toContain('held')
+    const below = cells['bp-below'].find('[data-testid="mark-persistence"]')
+    expect(below.attributes('data-tone')).toBe('holds-back')
     expect(below.attributes('data-tooltip')).toMatch(/would be held at candidate/)
     expect(below.attributes('data-tooltip')).not.toMatch(/is held at candidate/)
-    const kept = cells['bp-other'].find('[data-testid="persistence-mark"]')
+    // Something besides its peak saw the reading: the admission holds nothing back.
+    const kept = cells['bp-other'].find('[data-testid="mark-persistence"]')
     expect(kept.exists()).toBe(true)
-    expect(kept.classes()).not.toContain('held')
-    expect(cells['bp-x'].find('[data-testid="persistence-mark"]').exists()).toBe(false)
-    expect(cells['bp-plain'].find('[data-testid="persistence-mark"]').exists()).toBe(false)
+    expect(kept.attributes('data-tone')).toBe('neutral')
+    expect(cells['bp-x'].find('[data-testid="mark-persistence"]').exists()).toBe(false)
+    expect(cells['bp-plain'].find('[data-testid="mark-persistence"]').exists()).toBe(false)
 
     wrapper.unmount()
     const tiers = await formulaCells(peaks, 'consensus_tier', { tooltips: true })
@@ -1680,7 +1733,7 @@ describe('PaneBrowserBatchPeaks merged isotopologue rows', () => {
   })
 
   // The water ladder's mark sits beside them in the same cell.
-  it('marks a rung of a water ladder, claimed ones in the primary colour', async () => {
+  it('marks a rung of a water ladder as a reagent decided, claimed or not', async () => {
     const rung = (role) => ({
       rung: { core: '[Br]-', ion: '[Br+16xH2O]-', track: 'M0', waters: 16 },
       segments: [
@@ -1694,14 +1747,14 @@ describe('PaneBrowserBatchPeaks merged isotopologue rows', () => {
       { ...OTHER, water_ladder: rung(null) },
       LINE
     ])
-    expect(cells['bp-x'].find('[data-testid="water-ladder-mark"]').exists()).toBe(false)
-    const claimed = cells['bp-p'].find('[data-testid="water-ladder-mark"]')
+    expect(cells['bp-x'].find('[data-testid="mark-reagent"]').exists()).toBe(false)
+    const claimed = cells['bp-p'].find('[data-testid="mark-reagent"]')
     expect(claimed.attributes('aria-label')).toBe(
       '[Br+16xH2O]-: a water-ladder rung in 1 of 1 stretch of acquisition'
     )
-    expect(claimed.classes()).toContain('claimed')
-    const kept = cells['bp-other'].find('[data-testid="water-ladder-mark"]')
-    expect(kept.classes()).not.toContain('claimed')
+    expect(claimed.attributes('data-tone')).toBe('neutral')
+    const kept = cells['bp-other'].find('[data-testid="mark-reagent"]')
+    expect(kept.attributes('data-tone')).toBe('neutral')
   })
 
   it('marks a heavier line of a rung folded under it', async () => {
@@ -1712,9 +1765,9 @@ describe('PaneBrowserBatchPeaks merged isotopologue rows', () => {
       reads: { role: 'reagent' }
     }
     const cells = await formulaCells([PARENT, { ...LINE, water_ladder: line }, OTHER])
-    const mark = cells['bp-x'].find('.child-cell [data-testid="water-ladder-mark"]')
+    const mark = cells['bp-x'].find('.child-cell [data-testid="mark-reagent"]')
     expect(mark.attributes('aria-label')).toMatch(/^\[Br\+16xH2O\]- \(81Br line\): /)
-    expect(mark.classes()).toContain('claimed')
+    expect(mark.attributes('data-tone')).toBe('neutral')
   })
 })
 
@@ -2018,20 +2071,28 @@ describe('PaneBrowserBatchPeaks continuity column', () => {
     }
   })
 
-  it('draws a partial grade dashed and a grade behind the ledger with a clock', async () => {
+  // The out-of-date arrows, not the clock, which means history alone; and no
+  // dashed border, which means not yet known.
+  it('marks a partial grade and a grade behind the ledger, with the out-of-date arrows', async () => {
     const cells = await cellsOf('continuityRank', peaks())
     const partial = continuityCell(cells, 'bp-partial')
     expect(partial.classes()).toContain('partial')
+    expect(partial.find('[data-testid="continuity-partial"]').text()).toBe('partial')
     expect(partial.classes()).not.toContain('stale')
     const stale = continuityCell(cells, 'bp-stale')
     expect(stale.classes()).toContain('stale')
     expect(stale.classes()).not.toContain('partial')
-    expect(stale.find('[data-testid="continuity-stale"]').exists()).toBe(true)
+    expect(stale.find('[data-testid="continuity-stale"]').classes()).toContain(
+      'ph-arrows-clockwise'
+    )
+    expect(stale.find('.ph-clock-counter-clockwise').exists()).toBe(false)
     // A current, complete grade is neither.
     const plain = continuityCell(cells, 'bp-stable')
     expect(plain.classes()).not.toContain('partial')
     expect(plain.classes()).not.toContain('stale')
     expect(plain.find('[data-testid="continuity-stale"]').exists()).toBe(false)
+    expect(plain.find('[data-testid="continuity-partial"]').exists()).toBe(false)
+    expect(stale.find('[data-testid="continuity-partial"]').exists()).toBe(false)
   })
 
   it('says a batch that is not time-ordered was not graded, and dashes an ungraded peak', async () => {
@@ -2043,10 +2104,12 @@ describe('PaneBrowserBatchPeaks continuity column', () => {
     expect(cells['bp-none'].find('.no-continuity').exists()).toBe(true)
   })
 
-  it('says an anchor whose pairs all fell past the cap was not graded, dashed', async () => {
+  it('says an anchor whose pairs all fell past the cap was not graded, outlined', async () => {
     const cells = await cellsOf('continuityRank', peaks())
     const ungraded = continuityCell(cells, 'bp-ungraded')
+    // "Not graded" says it all: no "partial" beside it.
     expect(ungraded.text()).toBe('Not graded')
+    expect(ungraded.find('[data-testid="continuity-partial"]').exists()).toBe(false)
     expect(ungraded.attributes('aria-label')).toBe('Ratio stability: Not graded')
     expect(ungraded.classes()).toContain('partial')
     expect(ungraded.classes()).not.toContain('claim')
@@ -2125,6 +2188,21 @@ describe('PaneBrowserBatchPeaks continuity column', () => {
     popoverCalls.length = 0
     await verdictCell().trigger('click')
     expect(popoverCalls).toContainEqual(['Ratio stability', 'hide'])
+  })
+
+  // A batch peak nobody has judged draws no mark in its verdict cell: the cell
+  // is still the button that records one.
+  it('draws nothing in an unjudged verdict cell, and keeps it the button that judges', async () => {
+    await cellsOf('continuityRank', peaks())
+    const cell = wrapper
+      .findAll('.column-stub')
+      .find((col) => col.attributes('data-field') === 'verdictRank')
+      .findAll('.stub-cell')
+      .find((c) => c.attributes('data-row') === 'bp-red')
+      .find('.verdict-cell')
+    expect(cell.attributes('aria-label')).toBe('Record a batch-level verdict')
+    expect(cell.classes()).toContain('unjudged')
+    expect(cell.find('.pi').exists()).toBe(false)
   })
 
   it("opens an isotope line's pairs as the main peak's partner", async () => {

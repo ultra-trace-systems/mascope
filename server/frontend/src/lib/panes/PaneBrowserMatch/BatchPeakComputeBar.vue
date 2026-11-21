@@ -303,7 +303,7 @@ async function launchSearch() {
     <span v-tooltip.left="compute.checkTooltip">
       <Button
         label="Read batch checks"
-        icon="pi ph ph-seal-check"
+        icon="pi ph ph-check"
         size="small"
         severity="secondary"
         :loading="compute.checking"

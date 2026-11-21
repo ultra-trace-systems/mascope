@@ -273,7 +273,7 @@ async function retract() {
    colour, with the sentence that says what to do about it. */
 .current.stale {
   padding: 0.25rem 0.4rem;
-  border: 1px dashed var(--state-warning);
+  border: 1px solid var(--state-warning);
   border-radius: 4px;
 }
 .stale-text {

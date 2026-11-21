@@ -14,7 +14,7 @@ import { VERDICT_META } from '@/lib/verification'
 
 // reason -> what the ledger's queue column shows.
 export const QUEUE_REASONS = Object.freeze({
-  stale: { label: 'Judge again', icon: 'ph ph-clock-counter-clockwise' },
+  stale: { label: 'Judge again', icon: 'ph ph-arrows-clockwise' },
   band_edge: { label: 'Near a tier edge', icon: 'ph ph-arrows-in-line-horizontal' },
   spot_check: { label: 'Spot check', icon: 'ph ph-shuffle' }
 })

@@ -1276,18 +1276,21 @@ describe('PaneBrowserAssignment reference-list column', () => {
 
   // The plan owner's notes of 2026-09-26: the ledger was too wide with the
   // column written out. Folded, the name and its list are in the tooltip.
-  it('folds to a flask and the tags by default, the rest on hover', async () => {
+  // No flask: folded, the name is written out and cut short, the list left
+  // to the hover.
+  it('folds to the name, cut short, and the tags by default, the rest on hover', async () => {
     const wrapper = await renderedListing(listedFamily())
     const column = listingColumn(wrapper)
     const listed = column.findAll('.stub-cell')[0].find('[data-testid="listed-as"]')
 
-    expect(column.find('[aria-label="listed as"]').exists()).toBe(true)
+    expect(column.find('.ph-flask').exists()).toBe(false)
     expect(column.text()).not.toContain('listed as')
-    expect(listed.find('.listing-name').exists()).toBe(false)
+    expect(column.text()).toContain('listed')
     expect(listed.find('.listing-source').exists()).toBe(false)
-    expect(listed.find('.listing-mark').attributes('aria-label')).toBe(
+    expect(listed.find('[data-testid="listing-folded"]').text()).toBe(
       'decamethylcyclopentasiloxane +1'
     )
+    expect(listed.find('[data-testid="listing-folded"]').classes()).toContain('folded')
     expect(listed.find('[data-testid="list-tag-background"]').exists()).toBe(true)
     // The tooltip carries the name, the list, the tag and the further name.
     const tip = listed.attributes('data-tooltip')
@@ -1304,6 +1307,8 @@ describe('PaneBrowserAssignment reference-list column', () => {
     expect(toggle.text()).toBe('false')
     await toggle.trigger('click')
     expect(cell().find('.listing-name').text()).toBe('decamethylcyclopentasiloxane +1')
+    expect(cell().find('.listing-name').classes()).not.toContain('folded')
+    expect(cell().find('.listing-source').exists()).toBe(true)
     expect(listingColumn(wrapper).text()).toContain('listed as')
     // One setting for both ledgers, and kept across a reload.
     expect(JSON.parse(localStorage.getItem('mascope.browser.match.ledgerListing'))).toEqual({
@@ -1311,8 +1316,8 @@ describe('PaneBrowserAssignment reference-list column', () => {
     })
 
     await toggle.trigger('click')
-    expect(cell().find('.listing-name').exists()).toBe(false)
-    expect(cell().find('.listing-mark').exists()).toBe(true)
+    expect(cell().find('[data-testid="listing-folded"]').exists()).toBe(true)
+    expect(cell().find('.listing-source').exists()).toBe(false)
   })
 
   it('marks a row no list names with a recessive dash', async () => {
@@ -2692,6 +2697,17 @@ describe('PaneBrowserAssignment row actions', () => {
     expect(cell.exists()).toBe(true)
     expect(cell.classes()).toContain('unjudged')
     expect(cell.classes()).not.toContain('empty')
+  })
+
+  // A row nobody has judged draws no mark - no faint seal - and its cell is
+  // still the button that judges it, named for what it does.
+  it('draws nothing in an unjudged verdict cell, and keeps it the button that judges', async () => {
+    const wrapper = await renderedCells(FAMILY_A)
+    const cell = wrapper.find('.verdict-cell')
+    expect(cell.element.tagName).toBe('BUTTON')
+    expect(cell.attributes('aria-label')).toBe('Record a verdict')
+    expect(cell.find('.pi').exists()).toBe(false)
+    expect(cell.find('[class*="ph-"]').exists()).toBe(false)
   })
 })
 

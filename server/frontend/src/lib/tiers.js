@@ -23,6 +23,12 @@ export const FALLBACK_TIER = 'unassigned'
 // shown on its own (a filter menu, a chart's hover), and `description` the
 // tier's meaning in one line, as its chip says it on hover. The key is the API's
 // value and is never shown.
+//
+// `dot` is the chip's face beside its label: filled for assigned, half for
+// candidate, a ring for below and a dashed ring for unassigned. A dot rather
+// than a glyph, so no icon stands for a tier and a reading at once
+// (docs/dev/assignment_ledger_and_card.md, section 5); and the dashed ring is
+// the one dashed mark there is, for the one outcome not yet known.
 const TIER_DEFINITIONS = [
   {
     key: 'assigned',
@@ -30,7 +36,7 @@ const TIER_DEFINITIONS = [
     name: 'assigned',
     description: 'Assigned: strong evidence for this formula',
     severity: 'success',
-    icon: 'ph ph-seal-check'
+    dot: 'filled'
   },
   {
     key: 'candidate',
@@ -38,7 +44,7 @@ const TIER_DEFINITIONS = [
     name: 'candidate',
     description: 'Candidate: a plausible formula with weaker support',
     severity: 'warn',
-    icon: 'ph ph-circle-half'
+    dot: 'half'
   },
   {
     // Labelled short to keep the chip small; the full name is what the
@@ -48,7 +54,7 @@ const TIER_DEFINITIONS = [
     name: 'below assignability',
     description: 'Below assignability: a formula was found, but the evidence is too weak to trust',
     severity: 'secondary',
-    icon: 'ph ph-minus-circle'
+    dot: 'ring'
   },
   {
     key: FALLBACK_TIER,
@@ -56,7 +62,7 @@ const TIER_DEFINITIONS = [
     name: 'unassigned',
     description: 'Unassigned: no composition explained the peak',
     severity: 'secondary',
-    icon: 'ph ph-circle-dashed'
+    dot: 'dashed'
   }
 ]
 
@@ -83,7 +89,7 @@ export const TIERS = TIER_DEFINITIONS.map(({ key }) => key)
 /** Tier -> sort rank; ascending rank is descending confidence. */
 export const TIER_RANK = Object.fromEntries(TIER_DEFINITIONS.map(({ key }, index) => [key, index]))
 
-/** Tier -> chip label, full name, PrimeVue Tag severity, phosphor icon. */
+/** Tier -> chip label, full name, PrimeVue Tag severity, dot. */
 export const TIER_META = Object.fromEntries(TIER_DEFINITIONS.map((tier) => [tier.key, tier]))
 
 /**
@@ -184,7 +190,7 @@ export const bucketRank = (tier, role) =>
  * Chip presentation for a tier.
  *
  * @param {string} tier the tier as stored on the record
- * @returns {{key: string, label: string, name: string, severity: string, icon: string}}
+ * @returns {{key: string, label: string, name: string, severity: string, dot: string}}
  */
 export const tierMeta = (tier) => TIER_META[tierBucket(tier)]
 

@@ -246,7 +246,7 @@ defineExpose({ resize: () => plot.value?.resize?.() })
     </BaseChartPlotly>
     <div v-if="!loading && !traces.length" class="ts-empty">
       <div class="col" style="gap: 0.5rem; text-align: center; opacity: 0.6">
-        <span class="pi ph ph-wave-sine" style="font-size: 1.4rem" />
+        <span class="pi ph ph-cursor-click" style="font-size: 1.4rem" />
         <i>Select a peak to see its time series.</i>
       </div>
     </div>
