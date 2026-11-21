@@ -1974,8 +1974,10 @@ version = "2026.10.21"
 source = { editable = "libraries/viz" }
 dependencies = [
     { name = "mascope-sdk" },
+    { name = "matplotlib" },
     { name = "numpy" },
     { name = "pandas" },
+    { name = "plotly" },
     { name = "pyarrow" },
     { name = "python-dotenv" },
     { name = "typer" },
@@ -1984,8 +1986,10 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "mascope-sdk", editable = "libraries/sdk" },
+    { name = "matplotlib", specifier = ">=3.8.0" },
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "pandas", specifier = ">=2.0.0" },
+    { name = "plotly", specifier = ">=5.18.0" },
     { name = "pyarrow", specifier = ">=14.0.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "typer", specifier = ">=0.27.1,<0.29" },
