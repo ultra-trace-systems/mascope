@@ -1,4 +1,4 @@
-Each **Assign peaks** launch creates a run &mdash; an immutable snapshot of the
+Each **Assign sample** launch creates a run &mdash; an immutable snapshot of the
 sample's assignments, numbered in launch order and listed newest first. The
 ledger shows the selected run; pick an older one to revisit it. A run marked
 with &hellip; is still in progress.

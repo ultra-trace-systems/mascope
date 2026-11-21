@@ -1890,9 +1890,9 @@ volume, and grows with everything you acquire; on most instruments it is a
 fraction of the raw data the sample itself brings. Targeted matching is
 unaffected - assignment is an addition, not a replacement - and samples
 processed before it was switched on are not assigned retroactively; use
-*Rebuild batch ledger* on their batch for those.
+*Assign batch* on their batch for those.
 
-An **explicit** assignment run - *Assign peaks* on a sample, or an import from
+An **explicit** assignment run - *Assign sample* on a sample, or an import from
 an external engine - writes a per-sample ledger as well: one row per detected
 peak, about 0.8 KB each, with the per-peak alternatives, error figures and
 provenance the batch ledger does not keep. Those runs are what the retention

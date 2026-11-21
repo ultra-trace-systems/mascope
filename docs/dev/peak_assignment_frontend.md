@@ -85,8 +85,8 @@ focus trap `Tab` cannot leave either. Both settings are refs in the pane, not in
 the menu cannot discard a choice made in it, and the panel carries no help card (a card behind its
 `v-if` is unreachable in help mode while closed and leaks a `cards` entry per open — see
 `stores/ui/help.js`); one merged card sits on the always-mounted trigger instead. The run selector and
-the toolbar **Assign peaks** button are not here: they belong to the paradigm rather than to one of its
-ledgers, and live a row up in the switch bar (below). The ledger keeps one *Assign peaks* button of its
+the toolbar **Assign sample** button are not here: they belong to the paradigm rather than to one of its
+ledgers, and live a row up in the switch bar (below). The ledger keeps one *Assign sample* button of its
 own, the call to action in its no-runs empty state, which is why the bar hides its copy in exactly that
 state. The batch-peak ledger
 ([`PaneBrowserBatchPeaks.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/PaneBrowserBatchPeaks.vue))
@@ -108,24 +108,26 @@ is one row holding everything that outlives a single ledger: the Targets/Assignm
 and — in the assignments paradigm — the action that fills whichever ledger is below it, pushed to the
 right. Which action that is swaps on the same `sample.focused` the ledgers themselves swap on, so the
 two are never both on screen: for a focused sample the **run selector** (which **auto-selects the latest
-completed run**, on load and on sample switch) beside the **Assign peaks** button
+completed run**, on load and on sample switch) beside the **Assign sample** button
 ([`AssignmentRunBar.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/AssignmentRunBar.vue)),
-and at batch level **Rebuild batch ledger**
-([`BatchPeakComputeBar.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/BatchPeakComputeBar.vue)).
+and at batch level **Assign batch** and where the batch stands
+([`BatchAssignControl.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/BatchAssignControl.vue);
+the design is [`batch_assignment_one_action.md`](batch_assignment_one_action.md)).
 Both render *inside* the flag-gated bar rather than beside it, so the `peakAssignmentEnabled`
 gate and the column's height arithmetic (`.browser-switch > :not(.switch-bar)` takes what is left)
-keep covering them without a second rule each. The bar shows *Assign peaks* in exactly the states the
+keep covering them without a second rule each. The bar shows *Assign sample* in exactly the states the
 ledger's empty state does not, so there is never a second copy of it a row below; the dialog it opens,
 the run configuration and any refusal stay with the ledger, sharing only an open/closed flag
 ([`stores/assignmentLauncher.js`](../../server/frontend/src/lib/panes/PaneBrowserMatch/stores/assignmentLauncher.js)).
-*Rebuild batch ledger* shares more, because it launches directly instead of opening a dialog: its
-disabled reason, its loading state and the refusal it can return live in
-([`stores/batchPeakCompute.js`](../../server/frontend/src/lib/panes/PaneBrowserMatch/stores/batchPeakCompute.js)),
-which the batch ledger reads to render that refusal below the table it is about. Registering the
-task's completion notification in that store rather than in a pane is also what lets a compute survive
-the user focusing a sample mid-run. It is imported by path rather than through the folder's `./stores`
-barrel: it is the only store there that reaches the HTTP client, and the barrel is imported by panes
-whose specs mount without one.
+*Assign batch* shares more, because it launches directly instead of opening a dialog: the
+batch's assignment status, the pass it follows by process id, its disabled reason and the refusal it
+can return live in
+([`stores/batchAssign.js`](../../server/frontend/src/lib/panes/PaneBrowserMatch/stores/batchAssign.js)),
+which the batch ledger reads to render that refusal below the table and to offer *Assign batch* in
+its empty state, where the bar then hides its own copy. Registering the pass's notifications in that
+store rather than in a pane is also what lets a pass survive the user focusing a sample mid-run. It is
+imported by path rather than through the folder's `./stores` barrel: it reaches the HTTP client, and
+the barrel is imported by panes whose specs mount without one.
 
 **The switch.** One control picks the paradigm, app-wide.
 Its value is [`app.ui.matchMode`](../../server/frontend/src/stores/ui/matchMode.js) — a small
