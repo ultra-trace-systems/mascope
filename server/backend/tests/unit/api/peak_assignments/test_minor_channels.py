@@ -19,11 +19,14 @@ from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.cross_channel import (
     REASON_AMBIGUOUS_ADDUCT,
     apply_cross_channel,
+    channels_by_neutral,
     read_cross_channel,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
+    PARTNER_ANY_CHANNEL,
     PARTNER_GATE_KEPT,
     PARTNER_GATE_LIST,
+    SecondChannelRule,
     apply_partner_gates,
     cap_second_channel,
     listed_formula_identities,
@@ -2124,7 +2127,8 @@ def test_the_folds_reading_records_a_list_as_a_run_does(listed, corroboration):
 
 class TestEachSecondChannelConfigurationLiftsWhatItsTableSays:
     """One rule (``engine.SecondChannelRule``), four configurations, each
-    lifted by exactly what its row says:
+    lifted by exactly what its row says, read through the code that applies
+    it:
 
     | configuration | isotopologue | list | partner |
     | -- | -- | -- | -- |
@@ -2133,28 +2137,43 @@ class TestEachSecondChannelConfigurationLiftsWhatItsTableSays:
     | PARTNER_RULE | no | no | mode channel, candidate or better |
     | CORROBORATION_RULE | no | no | any channel, any tier |
 
-    A partner's tier is read under the mass gate's ceiling, and a channel the
-    run cannot name is no channel of any configuration.
+    The first two through the second-channel cap (``cap_second_channel``),
+    on a search's reading and on a list's reading through a channel the run
+    opened; the partner configuration through ``shows_molecule``, which the
+    partner gate, the cross-channel pass and the fragment claim read; the
+    corroboration configuration through ``cross_channel.channels_by_neutral``.
+    A partner's tier is read under the mass gate's ceiling, a channel the run
+    cannot name is no channel of any configuration, and a row through the
+    reading's own channel is no second channel.
     """
 
-    NOTATIONS = {"im-h": "[M+H]+", "im-ct": "[M]+.", "im-nh4": "[M+NH4]+"}
-    MINOR = frozenset({"[M+NH4]+"})
+    NOTATIONS = {
+        "im-h": "[M+H]+",
+        "im-ct": "[M]+.",
+        "im-nh4": "[M+NH4]+",
+        "im-na": "[M+Na]+",
+    }
+    MINOR = frozenset({"[M+NH4]+", "[M+Na]+"})
     NEUTRAL = "C6H12O6"
 
-    def _reading(self):
+    def _reading(self, source="untargeted"):
         return {
+            "peak_assignment_id": "reading",
             "role": "M0",
             "assigned_formula": self.NEUTRAL,
             "ionization_mechanism_id": "im-nh4",
+            "source": source,
             "tier": TIER_ASSIGNED,
             "provenance": {},
         }
 
     def _partner(self, mechanism="im-ct", tier=TIER_CANDIDATE, ceiling=None):
         row = {
+            "peak_assignment_id": "partner",
             "role": "M0",
             "assigned_formula": "H12C6O6",
             "ionization_mechanism_id": mechanism,
+            "source": "untargeted",
             "tier": tier,
             "provenance": {},
         }
@@ -2172,6 +2191,7 @@ class TestEachSecondChannelConfigurationLiftsWhatItsTableSays:
             "partner the mass gate holds under candidate": False,
             "opportunistic partner": False,
             "unnamed channel": False,
+            "the reading's own channel": False,
         },
         "LIST_READING_RULE": {
             "isotopologue": True,
@@ -2181,6 +2201,7 @@ class TestEachSecondChannelConfigurationLiftsWhatItsTableSays:
             "partner the mass gate holds under candidate": False,
             "opportunistic partner": False,
             "unnamed channel": False,
+            "the reading's own channel": False,
         },
         "PARTNER_RULE": {
             "isotopologue": False,
@@ -2190,6 +2211,7 @@ class TestEachSecondChannelConfigurationLiftsWhatItsTableSays:
             "partner the mass gate holds under candidate": False,
             "opportunistic partner": False,
             "unnamed channel": False,
+            "the reading's own channel": False,
         },
         "CORROBORATION_RULE": {
             "isotopologue": False,
@@ -2199,6 +2221,7 @@ class TestEachSecondChannelConfigurationLiftsWhatItsTableSays:
             "partner the mass gate holds under candidate": True,
             "opportunistic partner": True,
             "unnamed channel": False,
+            "the reading's own channel": False,
         },
     }
 
@@ -2218,10 +2241,60 @@ class TestEachSecondChannelConfigurationLiftsWhatItsTableSays:
         elif evidence == "partner the mass gate holds under candidate":
             partners = [self._partner(ceiling="below_assignability")]
         elif evidence == "opportunistic partner":
-            partners = [self._partner(mechanism="im-nh4")]
+            partners = [self._partner(mechanism="im-na")]
         elif evidence == "unnamed channel":
             partners = [self._partner(mechanism="im-unnamed")]
+        elif evidence == "the reading's own channel":
+            partners = [self._partner(mechanism="im-nh4")]
         return partners, listed, isotopologue
+
+    def _capped(self, evidence, source, **rules):
+        """Whether the cap corroborates the reading on this evidence, and its
+        verdict."""
+        partners, listed, isotopologue = self._offered(evidence)
+        reading = self._reading(source)
+        lines = (
+            [
+                {
+                    "peak_assignment_id": "reading-iso",
+                    "role": "iso_child",
+                    "owner_peak_assignment_id": "reading",
+                    "tier": TIER_ASSIGNED,
+                }
+            ]
+            if isotopologue
+            else []
+        )
+        cap_second_channel(
+            [reading, *partners, *lines],
+            notation_by_id=self.NOTATIONS,
+            minor_channels=self.MINOR,
+            opened_channels=self.MINOR,
+            listed_formulas=listed,
+            **rules,
+        )
+        return reading
+
+    def _lifted(self, configuration, evidence):
+        """Whether the code that applies a configuration lifts a reading
+        through ``[M+NH4]+`` on this evidence."""
+        if configuration in ("SEARCH_READING_RULE", "LIST_READING_RULE"):
+            source = (
+                "untargeted" if configuration == "SEARCH_READING_RULE" else ("database")
+            )
+            verdict = self._capped(evidence, source)["provenance"]["minor_channel"]
+            assert verdict["capped"] is (verdict["corroborated_by"] is None)
+            return verdict["corroborated_by"] is not None
+        partners, _, _ = self._offered(evidence)
+        if configuration == "PARTNER_RULE":
+            return any(
+                engine_module.shows_molecule(row, self.NOTATIONS, self.MINOR)
+                for row in partners
+            )
+        channels = channels_by_neutral(
+            [self._reading(), *partners], self.NOTATIONS
+        ).get(formula_identity(self.NEUTRAL), {})
+        return bool(set(channels) - {"[M+NH4]+"})
 
     @pytest.mark.parametrize(
         ("configuration", "evidence"),
@@ -2232,20 +2305,47 @@ class TestEachSecondChannelConfigurationLiftsWhatItsTableSays:
         ],
     )
     def test_the_configuration_lifts_what_its_row_says(self, configuration, evidence):
-        rule = getattr(engine_module, configuration)
-        partners, listed, isotopologue = self._offered(evidence)
-        neutrals = {
-            formula_identity(row["assigned_formula"])
-            for row in partners
-            if rule.is_partner(row, self.NOTATIONS, self.MINOR)
-        }
-        found = rule.corroboration(
-            self._reading(),
-            partners=neutrals,
-            listed_formulas=listed,
-            isotopologue=isotopologue,
+        assert (
+            self._lifted(configuration, evidence) is self.TABLE[configuration][evidence]
         )
-        assert (found is not None) is self.TABLE[configuration][evidence]
+
+    @pytest.mark.parametrize(
+        ("kind", "source", "other"),
+        [
+            ("search_rule", "untargeted", "database"),
+            ("list_rule", "database", "untargeted"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("evidence", "lifted"),
+        [
+            ("partner under candidate", True),
+            ("opportunistic partner", True),
+            ("unnamed channel", False),
+            ("the reading's own channel", False),
+        ],
+    )
+    def test_the_cap_reads_its_configurations_partner_bar(
+        self, kind, source, other, evidence, lifted
+    ):
+        """The cap's partner is its configuration's: a rule that takes a
+        partner at any tier through any channel lifts a reading the default
+        one holds, and still not on the reading's own channel, while the
+        other kind of reading keeps its own configuration's bar."""
+        wide = SecondChannelRule(
+            isotopologue=kind == "list_rule",
+            listed=kind == "search_rule",
+            partner_tiers=None,
+            partner_channels=PARTNER_ANY_CHANNEL,
+        )
+        verdict = self._capped(evidence, source, **{kind: wide})["provenance"][
+            "minor_channel"
+        ]
+        assert (verdict["corroborated_by"] is not None) is lifted
+        held = self._capped(evidence, other, **{kind: wide})["provenance"][
+            "minor_channel"
+        ]
+        assert held["corroborated_by"] is None
 
     def test_the_sample_shows_its_molecule_by_the_partner_configuration(self):
         for row in (
