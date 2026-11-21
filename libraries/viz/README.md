@@ -226,7 +226,7 @@ HTML dashboard.
 
 ```python
 import pandas as pd
-from mascope_viz.charts import Figure, Panel, subtitle
+from mascope_viz.charts import Context, Figure, Panel
 from mascope_viz.data import views
 from mascope_viz import render
 
@@ -234,12 +234,19 @@ frame = views.series(store, ["ion:...", "tic"], cadence="1h")
 fig = Figure(
     "species_series",
     "Species over time",
-    subtitle(cadence="1h", stat="median", normalise="none", tz=frame.attrs["tz"]),
+    context=Context.from_attrs(frame.attrs),  # the subtitle is written from it
     panels=[
         Panel(
             "series",
             axes={"x": {"label": f"Time ({frame.attrs['tz']})"}, "y": {"scale": "log"}},
-            encodings={"x": "t", "y": "value", "group": "key", "lo": "lo", "hi": "hi"},
+            encodings={
+                "x": "t",
+                "y": "value",
+                "group": "key",  # a series' identity: its colour, its legend entry
+                "name": "name",  # what its legend entry and hover text say
+                "lo": "lo",
+                "hi": "hi",
+            },
             options={
                 "spans": [
                     {
@@ -263,30 +270,64 @@ render.plotly(fig)  # a plotly.graph_objects.Figure
 
 | Primitive | Draws | Encodings (needed; optional) | Options |
 |---|---|---|---|
-| `series` | lines over time or a number, a band, gaps as gaps | `x`, `y` (one column or a list); `group`, `lo`, `hi` | `mode`, `markers`, `colours`, `spans`, `rules` |
+| `series` | lines over time or a number, a band, gaps as gaps | `x`, `y` (one column or a list); `group`, `name`, `lo`, `hi` | `mode`, `markers`, `colours`, `names`, `spans`, `rules` |
 | `strip` | categorical rows by time, a cell where a row has a value | `x` (time), `y`; `value`, `mark` | `width`, `mark_label`, `spans`, `rules` |
-| `heatmap` | an x by y grid of cells coloured by value | `x`, `y`, `value` | `mode`, `palette`, `centre` |
-| `scatter` | points, size and colour by column, the top N labelled | `x`, `y`; `size`, `colour`, `label` | `top_n`, `palette`, `colours` |
-| `sticks` | a spectrum: lines from zero, the top N labelled | `x`, `y`; `group`, `label` | `top_n`, `colours` |
-| `bars` | bars per category, side by side or stacked, error bars | `x`, `y`; `group`, `lo`, `hi` | `stack`, `colours` |
-| `box` | a box per category from its quartiles | `x`, `q1`, `median`, `q3`, `lo`, `hi`; `group`, `mean` | `colours` |
-| `table` | rows of the frame, formatted | `columns` (a list) | `headers`, `formats`, `max_rows` |
+| `heatmap` | an x by y grid of cells coloured by value | `x`, `y`, `value`; `gap` | `mode`, `palette`, `centre`, `gap_label` |
+| `scatter` | points, area by size, colour by column, the top N labelled | `x`, `y`; `size`, `colour`, `name`, `label`, `hollow` | `top_n`, `palette`, `colours`, `hollow_label` |
+| `sticks` | a spectrum: lines from zero, signed, the top N labelled | `x`, `y`; `group`, `name`, `label`, `mark` | `top_n`, `colours`, `by_sign`, `mark_label` |
+| `bars` | bars per category, side by side or stacked, an interval | `x`, `y`; `group`, `name`, `lo`, `hi` | `stack`, `colours` |
+| `box` | a box per category from its quartiles | `x`, `q1`, `median`, `q3`, `lo`, `hi`; `group`, `name`, `mean`, `hollow` | `colours`, `hollow_label` |
+| `table` | rows of the frame, formatted | `columns` (a list); `mark` | `headers`, `formats`, `max_rows`, `mark_label` |
 
 `mascope_viz.charts.PRIMITIVES` holds the same, with the column types each
 encoding takes and each option's default. What every figure shares:
 
-- **The subtitle** of a chart over time names its cadence, its
-  normalisation and its time zone; `subtitle()` writes it from what a
-  view's `attrs` say. A time axis' label names the zone too.
+- **The context** is what the view behind a figure says of its values,
+  as fields of `Figure.context`: `cadence`, `stat`, `band`, `tz`,
+  `start`, `end`, `normalise` (`none`, `tic`, a key, or a list of keys
+  whose sum divides), `normalise_name`, `normalise_members`,
+  `normalise_complete`, `mixed_runs` and `run_changes`.
+  `Context.from_attrs(frame.attrs)` takes them from a view frame. Whatever
+  reads a figure later reads these fields, never the subtitle's text.
+- **The subtitle** is written from the context when a figure is given
+  none: the cadence with its statistic and band, the normalisation by
+  name, the window and the time zone (`1h medians, p10-p90 band;
+  normalised to I- + IH2O-; from 2026-07-01 00:00 to 2026-07-03 00:00;
+  times in Europe/Helsinki`). `subtitle(context)` writes the same. Both
+  renderers wrap it, matplotlib beside its legend, and neither cuts it
+  off. A time axis' label names the zone too.
+- **Display names.** A `group` column is a series' identity: its colour
+  and its one legend entry. A `name` column gives what its legend entry
+  and hover text say, so a key such as `ion:12+ion:14` is never shown for
+  a name; `names` does the same for the lines of a list of `y`.
 - **Gaps stay gaps.** A NaN breaks a line on both renderers, a value alone
   between two gaps is drawn as a point, and a value that is not positive
-  is a gap on a log axis. A cell without a value is not drawn.
+  is a gap on a log axis. A heatmap cell whose `gap` is true (no samples)
+  is drawn in the gap style; a cell with samples and no value is blank.
 - **A group keeps its colour** in every panel of a figure, and appears
   once in its legend. Groups take the categorical palette in the order
-  they first appear; `colours` names a group's colour by token instead.
+  they first appear; `colours` names a group's colour by token instead,
+  the diverging ramp's ends (`diverging.low`, `diverging.high`) among
+  them. A categorical column's values are drawn in the order of its
+  categories, any other column's in the order they first appear.
+- **Marks.** `mark` flags a strip's cells, a stick at its tip (such as a
+  peak seen in one period only) and a table's rows (shaded, and a note
+  says what the shading means), each named by `mark_label`. `hollow`
+  draws a scatter's points as rings and a box without its fill (too few
+  samples), named by `hollow_label`. `by_sign` colours a stick above zero
+  in the diverging ramp's high end and one below in its low end.
+- **Sizes.** A scatter point's area is in proportion to its `size`, the
+  largest at the theme's largest marker; a value too small to see is drawn
+  at the smallest. The larger points are drawn behind the smaller and the
+  points are translucent, and a size legend titled by the `size` axis'
+  label gives two or three round values.
+- **Intervals.** A bar's interval runs from `lo` to `hi` whether or not it
+  holds the bar's top, the same on both renderers.
 - **`spans`** shade stretches of a time panel (`kind` `event` or `gap`),
   and **`rules`** mark a moment, such as a change of engine run, each with
   a label. A time without a zone is in the x column's zone.
+- **`share_x`** joins the x axis of every plotted panel, zoom included,
+  on both renderers. They must all draw times or all numbers.
 - **`where`** keeps the rows of the figure's frame a panel draws, so small
   multiples share one frame: `Panel(..., where={"key": "ion:..."})`.
 - **`mode="raster"`** on `series` and `heatmap` is reserved for the
@@ -300,12 +341,13 @@ encoding takes and each option's default. What every figure shares:
 
 **The spec is a document.** `fig.to_json()` writes a JSON document of
 version `figure_spec_version` (1): the panels, each with its primitive,
-axes, encodings and options; the summary; the notes; and the frame column
-by column, each column with its type (`time` with its zone, `number`,
-`integer`, `boolean`, `text` or `category` with its categories in order).
-`Figure.from_json()` reads it back to an equal figure, which renders the
-same, and refuses a document of a later version or with a field it does not
-know: a primitive has no escape hatch to one renderer's settings. A panel
+axes, encodings and options; the context; the summary; the notes; and the
+frame column by column, each column with its type (`time` with its zone,
+`number`, `integer`, `boolean`, `text` or `category` with its categories in
+order). `Figure.from_json()` reads it back to an equal figure (two figures
+are equal when their documents are), which renders the same, and refuses a
+document of a later version or with a field it does not know: a primitive
+has no escape hatch to one renderer's settings. A panel
 names colours, palettes and span kinds by token, and the theme gives them
 values, so the web app can draw the same document with its own tokens.
 
@@ -330,6 +372,13 @@ plotly (`plotlyjs="cdn"` for a small file that loads plotly.js from its
 CDN), `.json` the document. A PNG and an HTML file are the same bytes on
 every run; an SVG and a PDF are once `SOURCE_DATE_EPOCH` pins the date
 they record.
+
+**The chart kinds** register in `mascope_viz.charts.registry`: a
+`ChartKind` says what it answers, its tier, the series it draws, its
+parameters (`Param`: name, type, default, choices, help) and its summary's
+fields, and holds the function that builds its figures. `register` adds a
+kind, `get` finds one by id, and `all` lists them, for the command line's
+`list` and `describe`. The registry is empty until the chart kinds land.
 
 **The import boundary.** `mascope_viz.data` and `mascope_viz.charts`
 import pandas, NumPy and pyarrow, never matplotlib or plotly, so a server
