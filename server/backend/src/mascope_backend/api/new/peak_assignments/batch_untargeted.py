@@ -46,6 +46,7 @@ section 5.3.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
@@ -76,9 +77,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_SEARCH,
-    complete_run,
-    fail_run,
-    start_run,
+    in_batch_run,
     touch_ledger,
 )
 from mascope_backend.api.new.peak_assignments.config import (
@@ -1292,6 +1291,7 @@ async def run_batch_untargeted_search(
     process_id: Optional[str] = None,
     parent_id: Optional[str] = None,
     batch_peak_run_id: Optional[str] = None,
+    stop: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> dict:
     """Search every unassigned anchor of a batch once, then propagate.
 
@@ -1395,6 +1395,11 @@ async def run_batch_untargeted_search(
     step = 0
 
     async def report(message: str) -> None:
+        # Before each sample: where a person asked the pass to stop, the stop
+        # raises here, between two samples, and the finally below still
+        # writes the consensus of what the samples before it committed.
+        if stop is not None:
+            await stop()
         if reports:
             await send_progress_user_notification(
                 _progress(
@@ -1691,33 +1696,39 @@ async def search_batch_untargeted(
     user_id: int | None = None,
     process_id: str | None = None,
     parent_id: str | None = None,
+    batch_peak_run_id: str | None = None,
+    stop: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> dict:
     """Run the untargeted composition search once per unassigned anchor of a
     batch, on each anchor's brightest member, and measure the result against
     the anchor's other members. Writes no per-sample run; emits
-    ``peak_assignment_reload`` so the ledgers refresh."""
+    ``peak_assignment_reload`` so the ledgers refresh.
+
+    :param batch_peak_run_id: The run of the pass of the batch stages it runs
+        in, which it writes into instead of opening a run of its own.
+    :param stop: Awaited before each sample: the pass's cancel check, which
+        raises where a person asked the pass to stop.
+    """
     search_config = config or PeakAssignmentConfig()
+    settings = search_config.model_dump(mode="json")
     # A batch run: the search's parameters go on the record, the current
     # run's state is snapshotted before the first anchor is touched, and the
     # run becomes current on completion - or is marked failed, the live
     # ledger then holding whatever the search wrote before it stopped.
-    run_id = await start_run(
+    counts = await in_batch_run(
         sample_batch_id,
         ACTION_SEARCH,
-        config=search_config.model_dump(mode="json"),
-        user_id=user_id,
-    )
-    try:
-        counts = await run_batch_untargeted_search(
+        lambda run_id: run_batch_untargeted_search(
             sample_batch_id,
             search_config,
             user_id=user_id,
             process_id=process_id,
             parent_id=parent_id,
             batch_peak_run_id=run_id,
-        )
-    except Exception as exc:
-        await fail_run(sample_batch_id, run_id, f"{type(exc).__name__}: {exc}")
-        raise
-    await complete_run(sample_batch_id, run_id, summary=counts)
-    return search_outcome(counts, sample_batch_id)
+            stop=stop,
+        ),
+        batch_peak_run_id=batch_peak_run_id,
+        config=settings,
+        user_id=user_id,
+    )
+    return {**search_outcome(counts, sample_batch_id), "config": settings}

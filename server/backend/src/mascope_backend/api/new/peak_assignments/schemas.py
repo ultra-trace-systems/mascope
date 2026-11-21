@@ -1565,18 +1565,25 @@ class BatchPeakRunRecord(BaseModel):
 
     batch_peak_run_id: str
     sample_batch_id: str
-    #: fold | rebuild | search_untargeted | import | detect_series |
-    #: read_co_variation | stamp_isotopologues | strip_isotopologues |
-    #: read_batch_checks
+    #: fold | rebuild | import | assign (a pass of the batch stages) | the
+    #: step whose own route started a pass: search_untargeted | detect_series
+    #: | read_co_variation | stamp_isotopologues | strip_isotopologues |
+    #: read_batch_checks | decide_known_species | measure_water_ladders
     action: str
     engine: str
     engine_version: str
-    #: running | completed | failed
+    #: running | completed | failed | cancelled (a pass a person stopped)
     status: str
     #: The run whose state the live ledger holds; exactly one per batch.
     current: bool
     is_current: bool
+    #: A pass: ``from_stage``, ``fold`` and the ``settings`` it was given.
     config: dict | None = None
+    #: A pass: ``stages``, one entry per stage in order with its ``status``
+    #: (done, failed, cancelled, not_run), start, end and the outcome of each
+    #: of its steps; the ``first_stage``; the ``fold`` and why; the
+    #: ``samples`` it covered and the ``library`` it read
+    #: (``batch_stages.assign_batch``). Another run: its counts.
     summary: dict | None = None
     error: str | None = None
     created_by: int | None = None
@@ -1588,6 +1595,8 @@ class BatchPeakRunRecord(BaseModel):
     #: fold, a curation, or a search's or an import's rows, which make no run
     #: of their own. Null until the first such write.
     ledger_utc_modified: datetime | None = None
+    #: When a person asked the pass to stop; null where nobody did.
+    cancel_requested_utc: datetime | None = None
 
 
 class BatchPeakRunsResponse(BaseModel):

@@ -24,6 +24,7 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
+from pass_runs import step_outcome  # the tests root, on sys.path
 from sqlalchemy import select, update
 
 from mascope_backend.api.new.peak_assignments import (
@@ -865,8 +866,9 @@ async def test_the_route_runs_it_as_a_batch_run(
     [run] = [run for run in runs if run.action == ACTION_WATER_LADDERS]
     assert run.status == "completed"
     assert run.is_current == 1
-    assert run.config["presence_share"] == 0.5
-    assert run.summary["rows_moved"] == 2
+    step = step_outcome(run, "water_ladders")
+    assert step["config"]["presence_share"] == 0.5
+    assert step["data"]["rows_moved"] == 2
     anchors = await _anchors(async_session_factory, ladder_batch)
     assert _record(anchors["r3"])["batch_peak_run_id"] == run.batch_peak_run_id
 
@@ -880,7 +882,7 @@ async def test_the_route_refuses_while_another_run_rewrites_the_ledger(
     async def fake_task(**kwargs):
         launched.append(kwargs)
 
-    monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
+    monkeypatch.setattr(batch_peaks_routes, "assign_batch", fake_task)
     await start_run(ladder_batch["batch_id"], ACTION_WATER_LADDERS)
     response = await editor_client.post(
         f"/api/batch-peaks/batch/{ladder_batch['batch_id']}/measure-water-ladders"
@@ -981,7 +983,7 @@ async def test_two_click_orders_leave_one_ledger(
     for another source ion on one file's word, and the ladder that ran after
     it found the rung taken."""
     from mascope_backend.api.new.peak_assignments.batch_stages import (
-        run_batch_stages,
+        assign_batch,
     )
 
     clicked = {}
@@ -991,7 +993,7 @@ async def test_two_click_orders_leave_one_ledger(
     ):
         batch = await _seed(async_session_factory, pa_test_data)
         for stage in order:
-            await run_batch_stages(sample_batch_id=batch["batch_id"], from_stage=stage)
+            await assign_batch(sample_batch_id=batch["batch_id"], from_stage=stage)
         clicked[order] = await _ledger(async_session_factory, batch)
     first, second = clicked.values()
     # The batch's own claims are there to agree on: the rungs the ladder
@@ -1008,13 +1010,13 @@ async def test_a_refolded_sample_leaves_the_stages_stale_and_the_pass_claims_it_
     on it gone: every stage is stale, and the next pass, started where the
     first stale stage is, claims the rung in it again (MAS-983's Verify)."""
     from mascope_backend.api.new.peak_assignments.batch_stages import (
-        run_batch_stages,
+        assign_batch,
         stage_standing,
     )
 
     only_these_stages("water_ladders", "known_species")
     batch, samples, ids = ladder_batch, ladder_batch["samples"], ladder_batch["ids"]
-    await run_batch_stages(sample_batch_id=batch["batch_id"])
+    await assign_batch(sample_batch_id=batch["batch_id"])
     sample = samples["H05"]
     claimed = (await _members(async_session_factory, ids["r3"]))[sample]
     assert claimed.role == role_code("reagent")
@@ -1031,7 +1033,7 @@ async def test_a_refolded_sample_leaves_the_stages_stale_and_the_pass_claims_it_
     standing = await stage_standing(batch["batch_id"])
     assert {e["stale_reason"] for e in standing["stages"]} == {"fold"}
 
-    outcome = await run_batch_stages(sample_batch_id=batch["batch_id"])
+    outcome = await assign_batch(sample_batch_id=batch["batch_id"])
     assert outcome["status"] == "success"
     restored = (await _members(async_session_factory, ids["r3"]))[sample]
     assert restored.role == role_code("reagent")

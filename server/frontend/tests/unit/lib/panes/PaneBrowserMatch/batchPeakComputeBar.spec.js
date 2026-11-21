@@ -402,11 +402,11 @@ describe('BatchPeakComputeBar untargeted search', () => {
     )
     expect(wrapper.find('.search-dialog').exists()).toBe(false)
     expect(compute.searching).toBe(true)
-    for (const handler of notificationHandlers['run_batch_stages'] ?? []) {
+    for (const handler of notificationHandlers['assign_batch'] ?? []) {
       handler({ status: 'pending', process_id: 'proc-s' })
     }
     expect(compute.searching).toBe(true)
-    for (const handler of notificationHandlers['run_batch_stages'] ?? []) {
+    for (const handler of notificationHandlers['assign_batch'] ?? []) {
       handler({ status: 'success', process_id: 'proc-s' })
     }
     expect(compute.searching).toBe(false)
@@ -417,7 +417,7 @@ describe('BatchPeakComputeBar series detection', () => {
   const detectButton = () =>
     wrapper.findAll('.compute-button').find((b) => b.text() === 'Detect series')
   const notifyDetect = (payload) =>
-    (notificationHandlers['run_batch_stages'] ?? []).forEach((cb) => cb(payload))
+    (notificationHandlers['assign_batch'] ?? []).forEach((cb) => cb(payload))
 
   it('offers the detection under the same gate', () => {
     mountBar()
@@ -527,7 +527,7 @@ describe('BatchPeakComputeBar co-variation reading', () => {
     wrapper.findAll('.compute-button').find((b) => b.text() === 'Read co-variation')
   const button = (label) => wrapper.findAll('.compute-button').find((b) => b.text() === label)
   const notifyRead = (payload) =>
-    (notificationHandlers['run_batch_stages'] ?? []).forEach((cb) => cb(payload))
+    (notificationHandlers['assign_batch'] ?? []).forEach((cb) => cb(payload))
 
   it('offers the reading under the same gate, and says it moves no tier', () => {
     mountBar()
@@ -627,7 +627,7 @@ describe('BatchPeakComputeBar isotopologue stamping', () => {
     wrapper.findAll('.compute-button').find((b) => b.text() === 'Stamp isotopologues')
   const button = (label) => wrapper.findAll('.compute-button').find((b) => b.text() === label)
   const notifyStamp = (payload) =>
-    (notificationHandlers['run_batch_stages'] ?? []).forEach((cb) => cb(payload))
+    (notificationHandlers['assign_batch'] ?? []).forEach((cb) => cb(payload))
 
   it('offers the stamping under the same gate, and says its stage strips first', () => {
     mountBar()
@@ -727,7 +727,7 @@ describe('BatchPeakComputeBar isotopologue row strip', () => {
     wrapper.findAll('.compute-button').find((b) => b.text() === 'Strip isotopologue rows')
   const button = (label) => wrapper.findAll('.compute-button').find((b) => b.text() === label)
   const notifyStrip = (payload) =>
-    (notificationHandlers['run_batch_stages'] ?? []).forEach((cb) => cb(payload))
+    (notificationHandlers['assign_batch'] ?? []).forEach((cb) => cb(payload))
 
   it('offers the strip under the same gate, and says what it rewrites', () => {
     mountBar()
@@ -838,7 +838,7 @@ describe('BatchPeakComputeBar batch checks', () => {
     wrapper.findAll('.compute-button').find((b) => b.text() === 'Read batch checks')
   const button = (label) => wrapper.findAll('.compute-button').find((b) => b.text() === label)
   const notifyChecks = (payload) =>
-    (notificationHandlers['run_batch_stages'] ?? []).forEach((cb) => cb(payload))
+    (notificationHandlers['assign_batch'] ?? []).forEach((cb) => cb(payload))
 
   it('offers the checks under the same gate, and says they move no tier', () => {
     mountBar()
@@ -952,7 +952,7 @@ describe('BatchPeakComputeBar known-species decision', () => {
     wrapper.findAll('.compute-button').find((b) => b.text() === 'Decide known species')
   const button = (label) => wrapper.findAll('.compute-button').find((b) => b.text() === label)
   const notifyDecide = (payload) =>
-    (notificationHandlers['run_batch_stages'] ?? []).forEach((cb) => cb(payload))
+    (notificationHandlers['assign_batch'] ?? []).forEach((cb) => cb(payload))
 
   it('offers the decision under the same gate, and says what it rewrites', () => {
     mountBar()
@@ -1066,7 +1066,7 @@ describe('BatchPeakComputeBar water ladder measurement', () => {
     wrapper.findAll('.compute-button').find((b) => b.text() === 'Measure water ladders')
   const button = (label) => wrapper.findAll('.compute-button').find((b) => b.text() === label)
   const notifyMeasure = (payload) =>
-    (notificationHandlers['run_batch_stages'] ?? []).forEach((cb) => cb(payload))
+    (notificationHandlers['assign_batch'] ?? []).forEach((cb) => cb(payload))
 
   it('offers the measurement under the same gate, and says what it rewrites', () => {
     mountBar()

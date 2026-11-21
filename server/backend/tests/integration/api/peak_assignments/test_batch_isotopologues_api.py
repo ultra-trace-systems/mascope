@@ -22,6 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
+from pass_runs import step_outcome  # the tests root, on sys.path
 from sqlalchemy import select, update
 
 from mascope_backend.api.new.peak_assignments import batch_peaks_routes
@@ -696,13 +697,14 @@ async def test_the_route_runs_it_as_a_batch_run(
     [run] = [run for run in runs if run.action == ACTION_ISOTOPOLOGUES]
     assert run.status == "completed"
     assert run.is_current == 1
-    assert run.config == {
+    step = step_outcome(run, "isotope_lines", 1)
+    assert step["config"] == {
         "hold_widths": 2.0,
         "max_span": 0.5,
         "min_judged": 3,
         "track_share": 0.8,
     }
-    assert run.summary["lines_stamped"] == 2
+    assert step["data"]["lines_stamped"] == 2
     anchors = await _anchors(async_session_factory, batch_id)
     assert _parent(anchors["p"])["batch_peak_run_id"] == run.batch_peak_run_id
 
@@ -716,7 +718,7 @@ async def test_the_route_refuses_while_another_run_rewrites_the_ledger(
     async def fake_task(**kwargs):
         launched.append(kwargs)
 
-    monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
+    monkeypatch.setattr(batch_peaks_routes, "assign_batch", fake_task)
     await start_run(isotopologue_batch["batch_id"], ACTION_ISOTOPOLOGUES)
     response = await editor_client.post(
         f"/api/batch-peaks/batch/{isotopologue_batch['batch_id']}/stamp-isotopologues"

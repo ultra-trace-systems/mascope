@@ -111,9 +111,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_KNOWN_SPECIES,
-    complete_run,
-    fail_run,
-    start_run,
+    in_batch_run,
     touch_ledger,
 )
 from mascope_backend.api.new.peak_assignments.config import (
@@ -2200,22 +2198,24 @@ async def decide_batch_known_species(
     user_id: int | None = None,
     process_id: str | None = None,
     parent_id: str | None = None,
+    batch_peak_run_id: str | None = None,
 ) -> dict:
-    """Decide the batch's known species, as a batch run. Rewrites the members
-    and the samples' in-app rows of each species claimed; emits
-    ``peak_assignment_reload`` so the ledgers refresh."""
-    run_id = await start_run(
-        sample_batch_id, ACTION_KNOWN_SPECIES, config=thresholds(), user_id=user_id
-    )
-    try:
-        summary = await run_batch_known_species(
+    """Decide the batch's known species, as a batch run: the pass's
+    ``batch_peak_run_id`` where it runs in one, else a run of its own.
+    Rewrites the members and the samples' in-app rows of each species
+    claimed; emits ``peak_assignment_reload`` so the ledgers refresh."""
+    config = thresholds()
+    summary = await in_batch_run(
+        sample_batch_id,
+        ACTION_KNOWN_SPECIES,
+        lambda run_id: run_batch_known_species(
             sample_batch_id, batch_peak_run_id=run_id
-        )
-    except Exception as exc:
-        await fail_run(sample_batch_id, run_id, f"{type(exc).__name__}: {exc}")
-        raise
-    await complete_run(sample_batch_id, run_id, summary=summary)
-    return deciding_outcome(summary, sample_batch_id)
+        ),
+        batch_peak_run_id=batch_peak_run_id,
+        config=config,
+        user_id=user_id,
+    )
+    return {**deciding_outcome(summary, sample_batch_id), "config": config}
 
 
 # --- a sample's run takes the batch's word ----------------------------------------

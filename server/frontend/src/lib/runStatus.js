@@ -2,8 +2,8 @@
 //
 // The values are the API's: a sample's assignment run is 'pending', 'running',
 // 'importing', 'completed', 'failed' or 'cancelled' (PeakAssignmentRun in the
-// backend's db/models.py), a batch run 'running', 'completed' or 'failed'
-// (batch_runs.py). Both selectors printed them as they came. Most are words
+// backend's db/models.py), a batch run 'running', 'completed', 'failed' or
+// 'cancelled' (batch_runs.py). Both selectors printed them as they came. Most are words
 // already and keep them; 'pending' is a run the server has created and no task
 // has taken up yet, which a reader knows as queued.
 const RUN_STATUS_LABELS = Object.freeze({

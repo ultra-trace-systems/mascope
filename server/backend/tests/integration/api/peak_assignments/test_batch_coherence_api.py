@@ -24,6 +24,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import pytest_asyncio
+from pass_runs import step_outcome  # the tests root, on sys.path
 from sqlalchemy import select, update
 
 from mascope_backend.api.new.peak_assignments import batch_peaks_routes
@@ -532,7 +533,8 @@ async def test_the_route_runs_it_as_a_batch_run(
     [run] = [run for run in runs if run.action == ACTION_CO_VARIATION]
     assert run.status == "completed"
     assert run.is_current == 1
-    assert run.config == {
+    step = step_outcome(run, "co_variation")
+    assert step["config"] == {
         "co_varying_r": 0.6,
         "min_spectra": 10,
         "flat_spread": 0.02,
@@ -540,8 +542,8 @@ async def test_the_route_runs_it_as_a_batch_run(
         "flat_min_share": 0.5,
         "min_varying_share": 0.2,
     }
-    assert run.summary["pairs"] == 5
-    assert run.summary["co_varying"] == 1
+    assert step["data"]["pairs"] == 5
+    assert step["data"]["co_varying"] == 1
     anchors = await _anchors(async_session_factory, batch_id)
     assert _record(anchors["p-a"])["batch_peak_run_id"] == run.batch_peak_run_id
 
@@ -555,7 +557,7 @@ async def test_the_route_refuses_while_another_run_rewrites_the_ledger(
     async def fake_task(**kwargs):
         launched.append(kwargs)
 
-    monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
+    monkeypatch.setattr(batch_peaks_routes, "assign_batch", fake_task)
     await start_run(coherence_batch["batch_id"], ACTION_CO_VARIATION)
     response = await editor_client.post(
         f"/api/batch-peaks/batch/{coherence_batch['batch_id']}/read-co-variation"

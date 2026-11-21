@@ -86,9 +86,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_BATCH_CHECKS,
-    complete_run,
-    fail_run,
-    start_run,
+    in_batch_run,
     touch_ledger,
 )
 from mascope_backend.api.new.peak_assignments.cross_channel import neutral_key
@@ -1023,19 +1021,22 @@ async def read_batch_checks(
     user_id: int | None = None,
     process_id: str | None = None,
     parent_id: str | None = None,
+    batch_peak_run_id: str | None = None,
 ) -> dict:
-    """Read the batch's isotope checks, as a batch run. Writes no member and no
-    per-sample run; emits ``peak_assignment_reload`` so the ledgers refresh."""
-    run_id = await start_run(
-        sample_batch_id, ACTION_BATCH_CHECKS, config=thresholds(), user_id=user_id
+    """Read the batch's isotope checks, as a batch run: the pass's
+    ``batch_peak_run_id`` where it runs in one, else a run of its own. Writes
+    no member and no per-sample run; emits ``peak_assignment_reload`` so the
+    ledgers refresh."""
+    config = thresholds()
+    counts = await in_batch_run(
+        sample_batch_id,
+        ACTION_BATCH_CHECKS,
+        lambda run_id: run_batch_checks(sample_batch_id, batch_peak_run_id=run_id),
+        batch_peak_run_id=batch_peak_run_id,
+        config=config,
+        user_id=user_id,
     )
-    try:
-        counts = await run_batch_checks(sample_batch_id, batch_peak_run_id=run_id)
-    except Exception as exc:
-        await fail_run(sample_batch_id, run_id, f"{type(exc).__name__}: {exc}")
-        raise
-    await complete_run(sample_batch_id, run_id, summary=counts)
-    return checks_outcome(counts, sample_batch_id)
+    return {**checks_outcome(counts, sample_batch_id), "config": config}
 
 
 __all__ = [

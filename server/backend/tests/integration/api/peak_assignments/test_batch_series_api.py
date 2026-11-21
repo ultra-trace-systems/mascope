@@ -27,6 +27,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 import pytest_asyncio
+from pass_runs import step_outcome  # the tests root, on sys.path
 from sqlalchemy import select, update
 from stage_stubs import (  # the tests root, on sys.path
     frame,
@@ -65,7 +66,7 @@ from mascope_backend.api.new.peak_assignments.batch_series import (
     run_batch_series_detection,
     series_outcome,
 )
-from mascope_backend.api.new.peak_assignments.batch_stages import run_batch_stages
+from mascope_backend.api.new.peak_assignments.batch_stages import assign_batch
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import evidence_for
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
@@ -406,7 +407,7 @@ async def test_a_candidate_the_series_corroborates_is_judged_again_at_once(
     their sample gives the reading now, with no new run. What they measured
     stays."""
     batch_id, samples = series_batch["batch_id"], series_batch["samples"]
-    outcome = await run_batch_stages(sample_batch_id=batch_id, from_stage="series")
+    outcome = await assign_batch(sample_batch_id=batch_id, from_stage="series")
     [stage] = outcome["data"]["stages"]
     judged = stage["outcomes"][-1]["data"]
     assert judged["samples_judged"] == 2
@@ -842,8 +843,10 @@ async def test_the_route_runs_it_as_a_batch_run(
     assert len(series) == 1
     assert series[0].status == "completed"
     assert series[0].is_current == 1
-    assert series[0].config["mz_precision_ppm"] == 2.5
-    assert series[0].summary["anchors_proposed"] == 12
+    step = step_outcome(series[0], "series")
+    assert series[0].config["settings"]["mz_precision_ppm"] == 2.5
+    assert step["config"]["mz_precision_ppm"] == 2.5
+    assert step["data"]["anchors_proposed"] == 12
     anchors = await _anchors(async_session_factory, batch_id)
     assert (
         anchors["up-1"].provenance[SERIES_KEY]["batch_peak_run_id"]
@@ -858,7 +861,7 @@ async def test_the_route_refuses_a_decoy(editor_client, series_batch, monkeypatc
     async def fake_task(**kwargs):
         launched.append(kwargs)
 
-    monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
+    monkeypatch.setattr(batch_peaks_routes, "assign_batch", fake_task)
     response = await editor_client.post(
         f"/api/batch-peaks/batch/{series_batch['batch_id']}/detect-series",
         json={"config": {"decoy": {"mz_shift_ppm": 9}}},
@@ -935,7 +938,7 @@ async def test_the_route_refuses_while_another_run_rewrites_the_ledger(
     async def fake_task(**kwargs):
         launched.append(kwargs)
 
-    monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
+    monkeypatch.setattr(batch_peaks_routes, "assign_batch", fake_task)
     await start_run(series_batch["batch_id"], ACTION_SERIES)
     response = await editor_client.post(
         f"/api/batch-peaks/batch/{series_batch['batch_id']}/detect-series"

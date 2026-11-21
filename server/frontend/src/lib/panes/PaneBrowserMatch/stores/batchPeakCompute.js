@@ -530,7 +530,7 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
 
   // Every step's button starts the batch stages at its own stage, and the
   // stages after it run too (MAS-983): the task the button waits on is the
-  // pass, so the pass's own notification, run_batch_stages, is what ends the
+  // pass, so the pass's own notification, assign_batch, is what ends the
   // wait. Each stage still reports under its own name, but as a child of the
   // pass, under an id of its own, so its packets end no button here.
   const stageWaits = [
@@ -543,7 +543,7 @@ export const useBatchPeakCompute = defineStore('browser.match.batchPeaks.compute
     [deciding, pendingDecideId, endDeciding],
     [measuring, pendingMeasureId, endMeasuring]
   ]
-  app.ui.notification.on('run_batch_stages', (notification) => {
+  app.ui.notification.on('assign_batch', (notification) => {
     if (notification?.status === 'pending') return
     const id = notification?.process_id
     for (const [busy, pending, end] of stageWaits) {

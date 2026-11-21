@@ -28,11 +28,26 @@ while its batch peak's consensus names the reading it was made for.
    **probable blends** (the consensus of every batch peak recomputed): the
    readings, which move no member.
 
-One entry runs them (:func:`run_batch_stages`): from a given stage to the end,
-or from the first stage that is not current, whichever comes first. Each
-per-stage route starts it at its own stage, or at an earlier one that is not
-current, so a click on any of them leaves every stage after it current too,
-and no stage runs on what an earlier one has not settled.
+One entry runs them (:func:`assign_batch`, a *pass*): from a given stage to
+the end, or from the first stage that is not current, whichever comes first.
+Each per-stage route starts it at its own stage, or at an earlier one that is
+not current, so a click on any of them leaves every stage after it current
+too, and no stage runs on what an earlier one has not settled.
+
+**A pass is one batch run** (MAS-1011): one ``start_run``, one snapshot, one
+end. Each stage's steps write into the pass's run instead of opening their
+own (``batch_runs.in_batch_run``), and the run's ``summary`` holds every
+stage under ``stages`` with its status, start, end and outcome, beside what
+the pass read: the samples it covered and the library (:func:`library_read`).
+A pass started as one is action ``assign``; one a step's own route starts
+keeps that step's action. A pass folds every sample first, today's rebuild,
+when asked to (``fold="always"``) or when the ledger cannot be a starting
+point (:func:`needs_fold`). It reports one ``assign_batch`` process, one
+pending packet at each stage's start, each stage's own packets nested under
+it, and a ``peak_assignment_reload`` after each stage that rewrites members.
+A person's cancel (``batch_runs.request_cancel``) is read between stages and
+between the search's samples: the pass ends ``cancelled``, keeps what it
+wrote, and the stages it did not finish are stale.
 
 **Staleness** (:data:`batch_peak_stage`, one row per batch and stage): a stage
 is current while nothing it reads has moved since its last run finished, and
@@ -79,6 +94,8 @@ and ``docs/dev/assignment_quality_plan.md``, milestone 7 (MAS-983).
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -87,7 +104,7 @@ from typing import Any, Optional
 
 from fastapi import status
 from pydantic import ValidationError
-from sqlalchemy import case, select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from mascope_backend.api.lib.api_features import api_controller_background_task
@@ -95,10 +112,13 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     ApiException,
     CodedHTTPException,
 )
+from mascope_backend.api.lib.utils import handle_reloads
 from mascope_backend.api.new.peak_assignments.batch_peaks import STAGE_VERSION
 from mascope_backend.api.new.peak_assignments.batch_runs import (
+    ACTION_ASSIGN,
     ACTION_BATCH_CHECKS,
     ACTION_CO_VARIATION,
+    ACTION_IMPORT,
     ACTION_ISOTOPOLOGUES,
     ACTION_KNOWN_SPECIES,
     ACTION_SEARCH,
@@ -106,11 +126,38 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_STRIP_ISOTOPOLOGUES,
     ACTION_WATER_LADDERS,
     RUN_IN_FLIGHT_CODE,
+    STATUS_COMPLETED,
+    STATUS_RUNNING,
+    cancel_requested,
+    cancel_run,
+    close_shielded,
+    complete_run,
+    current_run,
+    fail_run,
+    start_run,
 )
-from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
-from mascope_backend.db import BatchPeak, BatchPeakRun, BatchPeakStage, async_session
+from mascope_backend.api.new.peak_assignments.config import (
+    PEAK_ASSIGNMENT_ENGINE_VERSION,
+    PeakAssignmentConfig,
+)
+from mascope_backend.db import (
+    BatchPeak,
+    BatchPeakRun,
+    BatchPeakStage,
+    ReferenceSource,
+    Sample,
+    TargetCollectionInSampleBatch,
+    TargetCompound,
+    TargetCompoundInTargetCollection,
+    TargetIon,
+    async_session,
+)
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
+from mascope_backend.socket.notifications.schemas import UserNotification
+from mascope_backend.socket.notifications.service import (
+    send_progress_user_notification,
+)
 
 
 class BatchStage(StrEnum):
@@ -149,6 +196,7 @@ REASON_UPSTREAM = "upstream"
 
 #: The phases the app groups the stages under (``batch_assignment_one_action.md``,
 #: 3.7): words of the app, not of the order.
+PHASE_GATHER = "Gather samples"
 PHASE_SOURCE = "Recognise source ions"
 PHASE_COMPOSITIONS = "Find compositions"
 PHASE_CROSS_CHECK = "Cross-check across the batch"
@@ -166,12 +214,18 @@ class StageCall:
     :param user_id: Who started the pass.
     :param parent_id: The pass's process id, which every stage's progress
         nests under.
+    :param batch_peak_run_id: The pass's batch run, which every step writes
+        into and every record it writes names.
+    :param cancelled: Whether a person asked the pass to stop; None where
+        nobody can (``batch_runs.cancel_requested``).
     """
 
     sample_batch_id: str
     config: Optional[PeakAssignmentConfig]
     user_id: Optional[int]
     parent_id: Optional[str]
+    batch_peak_run_id: Optional[str] = None
+    cancelled: Optional[Callable[[], Awaitable[bool]]] = None
 
 
 @dataclass(frozen=True)
@@ -202,15 +256,33 @@ class StageSpec:
     settings_from: Optional[str] = None
 
 
+class PassCancelled(BaseException):
+    """A person asked the pass to stop, and it stops here.
+
+    A BaseException, as a cancellation is: it has to pass the ``except
+    Exception`` arms that keep one bad sample from stopping a step, and the
+    background-task decorator, which would report it as the step's failure.
+    The pass catches it (:func:`assign_batch`)."""
+
+
+async def stop_if_cancelled(call: StageCall) -> None:
+    """Raise :class:`PassCancelled` where a person asked the pass to stop: the
+    search's check between two samples."""
+    if call.cancelled is not None and await call.cancelled():
+        raise PassCancelled()
+
+
 def _dependent(call: StageCall) -> dict:
     """The keyword arguments a stage's controller runs under inside a pass:
-    a dependent task whose packets nest under the pass's process."""
+    a dependent task whose packets nest under the pass's process, writing
+    into the pass's run."""
     return {
         "sample_batch_id": call.sample_batch_id,
         "independent_transaction": False,
         "user_id": call.user_id,
         "process_id": gen_id(8),
         "parent_id": call.parent_id,
+        "batch_peak_run_id": call.batch_peak_run_id,
     }
 
 
@@ -239,7 +311,13 @@ async def _run_search(call: StageCall) -> list[dict]:
         search_batch_untargeted,
     )
 
-    return [await search_batch_untargeted(config=call.config, **_dependent(call))]
+    return [
+        await search_batch_untargeted(
+            config=call.config,
+            stop=lambda: stop_if_cancelled(call),
+            **_dependent(call),
+        )
+    ]
 
 
 async def _run_isotope_lines(call: StageCall) -> list[dict]:
@@ -280,7 +358,10 @@ async def _run_continuity(call: StageCall) -> list[dict]:
         recompute_batch_continuity,
     )
 
-    return [await recompute_batch_continuity(**_dependent(call))]
+    # It opens no batch run and records nothing that names one.
+    kwargs = _dependent(call)
+    kwargs.pop("batch_peak_run_id")
+    return [await recompute_batch_continuity(**kwargs)]
 
 
 async def _run_batch_checks(call: StageCall) -> list[dict]:
@@ -871,31 +952,6 @@ async def stage_standing(sample_batch_id: str) -> dict:
 # --- versions ---------------------------------------------------------------------
 
 
-async def _runs_since(
-    sample_batch_id: str, actions: tuple[str, ...], since: datetime
-) -> list[str]:
-    """The batch runs of these actions started since ``since``: the runs one
-    stage's run recorded itself as."""
-    if not actions:
-        return []
-    async with async_session() as session:
-        return list(
-            (
-                await session.execute(
-                    select(BatchPeakRun.batch_peak_run_id)
-                    .where(
-                        BatchPeakRun.sample_batch_id == sample_batch_id,
-                        BatchPeakRun.action.in_(actions),
-                        BatchPeakRun.batch_peak_run_utc_created >= since,
-                    )
-                    .order_by(BatchPeakRun.batch_peak_run_utc_created)
-                )
-            )
-            .scalars()
-            .all()
-        )
-
-
 async def stamp_versions(
     sample_batch_id: str, keys: tuple[str, ...], run_ids: list[str], version: int
 ) -> int:
@@ -947,34 +1003,87 @@ async def stamp_versions(
 # --- the pass ---------------------------------------------------------------------
 
 
+def is_pass_config(config: Any) -> bool:
+    """Whether a run's ``config`` is a pass's (:func:`pass_config`), not the
+    settings a step's own run recorded before a pass was one run."""
+    return isinstance(config, dict) and "fold" in config and "settings" in config
+
+
+def pass_config(
+    from_stage: Optional[str], fold: str, config: Optional[PeakAssignmentConfig]
+) -> dict:
+    """What a pass records it was asked for: where to start, whether to fold,
+    and the settings it was given (None where it was given none, and each
+    stage that takes settings ran on its own last ones)."""
+    return {
+        "from_stage": from_stage,
+        "fold": fold,
+        "settings": config.model_dump(mode="json") if config is not None else None,
+    }
+
+
+def settings_recorded_by(
+    run_action: str, config: Any, summary: Any, stage: BatchStage, action: str
+) -> tuple[bool, Optional[dict]]:
+    """The settings one batch run recorded for ``stage``, newest first being
+    the caller's business.
+
+    A pass records each stage's settings on the stage's entry in its summary
+    (``settings``), where the stage ran; a step's own run before passes were
+    one run recorded them as its ``config``, under the step's ``action``.
+
+    :return: Whether the run says anything of the stage's settings, and what.
+    """
+    stages = summary.get("stages") if isinstance(summary, dict) else None
+    if isinstance(stages, list):
+        for entry in stages:
+            if (
+                isinstance(entry, dict)
+                and entry.get("stage") == stage.value
+                and isinstance(entry.get("settings"), dict)
+            ):
+                return True, entry["settings"]
+        return False, None
+    if run_action == action and isinstance(config, dict) and not is_pass_config(config):
+        return True, config
+    return False, None
+
+
 async def recorded_settings(
-    sample_batch_id: str, action: str
+    sample_batch_id: str, stage: BatchStage | str, action: str
 ) -> Optional[PeakAssignmentConfig]:
-    """The settings the batch's newest run of ``action`` recorded: what its
-    step last ran with, the search's dialog's for the search. None where it
-    never ran, or where what it recorded no longer reads as settings."""
+    """The settings the batch's newest run of ``stage`` recorded: what it last
+    ran with, the search's dialog's for the search. None where it never ran,
+    or where what it recorded no longer reads as settings. A pass still
+    running records nothing yet."""
+    stage = BatchStage(stage)
     async with async_session() as session:
-        recorded = (
+        runs = (
             await session.execute(
-                select(BatchPeakRun.config)
+                select(BatchPeakRun.action, BatchPeakRun.config, BatchPeakRun.summary)
                 .where(
                     BatchPeakRun.sample_batch_id == sample_batch_id,
-                    BatchPeakRun.action == action,
-                    BatchPeakRun.config.is_not(None),
+                    BatchPeakRun.status != STATUS_RUNNING,
                 )
                 .order_by(BatchPeakRun.batch_peak_run_utc_created.desc())
-                .limit(1)
             )
-        ).scalar_one_or_none()
+        ).all()
+    recorded = None
+    for run in runs:
+        found, recorded = settings_recorded_by(
+            run.action, run.config, run.summary, stage, action
+        )
+        if found:
+            break
     if not isinstance(recorded, dict):
         return None
     try:
         return PeakAssignmentConfig.model_validate(recorded)
     except ValidationError as invalid:
         runtime.logger.warning(
-            f"The settings the last '{action}' run of batch '{sample_batch_id}' "
-            f"recorded no longer read as settings; running on the defaults: "
-            f"{invalid.error_count()} error(s)."
+            f"The settings the last '{stage.value}' run of batch "
+            f"'{sample_batch_id}' recorded no longer read as settings; running "
+            f"on the defaults: {invalid.error_count()} error(s)."
         )
         return None
 
@@ -986,8 +1095,18 @@ async def settings_for(spec: StageSpec, call: StageCall) -> StageCall:
     dialog last set, not the engine's defaults; else the defaults."""
     if call.config is not None or spec.settings_from is None:
         return call
-    recorded = await recorded_settings(call.sample_batch_id, spec.settings_from)
+    recorded = await recorded_settings(
+        call.sample_batch_id, spec.stage, spec.settings_from
+    )
     return replace(call, config=recorded) if recorded is not None else call
+
+
+def _settings_of(spec: StageSpec, call: StageCall) -> Optional[dict]:
+    """The settings a stage that takes some ran on, as its entry records
+    them: the engine's defaults where it ran on none."""
+    if spec.settings_from is None:
+        return None
+    return (call.config or PeakAssignmentConfig()).model_dump(mode="json")
 
 
 async def _run_stage(
@@ -998,26 +1117,31 @@ async def _run_stage(
 ) -> tuple[dict, Optional[tuple[int, datetime]]]:
     """Run one stage, already begun: its steps run, its records stamped, and
     its standing written whichever way it ends. Its end begins ``then``, the
-    pass's next stage, in the same transaction (:func:`hand_over`).
+    pass's next stage, in the same transaction (:func:`hand_over`), unless a
+    person asked the pass to stop meanwhile: then nothing begins, and every
+    stage after it is left stale.
 
-    :return: What it ran, and ``then``'s version and start.
+    :return: What it ran, and ``then``'s version and start; None where
+        ``then`` did not begin.
     """
     version, started = begun
     token = STAGE_VERSION.set(version)
     try:
         call = await settings_for(spec, call)
         outcomes = await spec.run(call)
-        run_ids = await _runs_since(call.sample_batch_id, spec.actions, started)
+        run_ids = [call.batch_peak_run_id] if call.batch_peak_run_id else []
         await stamp_versions(call.sample_batch_id, spec.record_keys, run_ids, version)
         if spec.rewrites:
             outcomes.append(await judge_again(spec.stage, call, version, outcomes))
+        if then is not None and call.cancelled is not None and await call.cancelled():
+            then = None
         # In the guard: a finish that fails leaves the stage stopped, not
         # running.
         state, after = await hand_over(
             call.sample_batch_id,
             spec.stage,
             started,
-            run_id=run_ids[-1] if run_ids else None,
+            run_id=call.batch_peak_run_id,
             stale_reason=(
                 REASON_PARTIAL if any(stopped_partway(o) for o in outcomes) else None
             ),
@@ -1034,6 +1158,7 @@ async def _run_stage(
         "version": version,
         "state": state,
         "outcomes": outcomes,
+        "settings": _settings_of(spec, call),
     }
     return entry, after
 
@@ -1105,37 +1230,354 @@ async def judge_again(
     }
 
 
-def stages_outcome(
+# --- folding first ----------------------------------------------------------------
+
+#: The pass's first stage, which no stage row tracks: every sample folded again,
+#: today's rebuild (``batch_peaks_controller.rebuild_batch_ledger``).
+FOLD_STAGE = "fold"
+FOLD_LABEL = "Fold the samples"
+
+#: When a pass folds every sample first: where the ledger cannot be a
+#: starting point (:func:`needs_fold`), or always.
+FOLD_AUTO = "auto"
+FOLD_ALWAYS = "always"
+FOLD_MODES = (FOLD_AUTO, FOLD_ALWAYS)
+
+#: Why a pass folds first.
+FOLD_NO_BATCH_PEAKS = "no_batch_peaks"
+FOLD_IMPORTED = "import"
+FOLD_LIBRARY_CHANGED = "library_changed"
+FOLD_ENGINE_CHANGED = "engine_changed"
+#: ``fold="always"``: the person asked for it.
+FOLD_ASKED = "asked"
+
+
+def fold_reasons(
+    *,
+    n_batch_peaks: int,
+    current_action: Optional[str],
+    last_pass: Optional[dict],
+    library: dict,
+    engine_version: str = PEAK_ASSIGNMENT_ENGINE_VERSION,
+) -> list[str]:
+    """Why the ledger cannot be a starting point for a pass, which then folds
+    every sample first; none where it can.
+
+    - The batch has no batch peaks: there is nothing to start from.
+    - The current run is an import: the pass puts Mascope's own view back.
+    - A target collection or reference list changed since the last pass:
+      only a fold reads them. Not the batch's ``rematch`` status, which
+      belongs to the targeted matcher and which a rematch clears, not a fold.
+    - The last pass ran under another engine version.
+
+    :param last_pass: The batch's last completed pass (:func:`last_pass`):
+        its ``library`` and ``engine_version``; None where no pass completed,
+        and the ledger is what the folds at ingest built.
+    :param library: The library as it reads now (:func:`library_read`).
+    """
+    reasons = []
+    if not n_batch_peaks:
+        reasons.append(FOLD_NO_BATCH_PEAKS)
+    if current_action == ACTION_IMPORT:
+        reasons.append(FOLD_IMPORTED)
+    if last_pass is not None:
+        read = last_pass.get("library")
+        if isinstance(read, dict) and read != library:
+            reasons.append(FOLD_LIBRARY_CHANGED)
+        if last_pass.get("engine_version") not in (None, engine_version):
+            reasons.append(FOLD_ENGINE_CHANGED)
+    return reasons
+
+
+def _digest(rows: Iterable[tuple]) -> str:
+    text = json.dumps(
+        sorted([["" if v is None else str(v) for v in row] for row in rows])
+    )
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+async def library_read(session, sample_batch_id: str) -> dict:
+    """What a fold of the batch reads besides the samples: each target
+    collection the batch names, as a digest of its compounds and their ions
+    (a collection keeps no modification time), and each active reference
+    list, by its load.
+
+    Plain JSON values, so a pass's record compares equal to a read of the
+    same library.
+    """
+    rows = (
+        await session.execute(
+            select(
+                TargetCollectionInSampleBatch.target_collection_id,
+                TargetCompound.target_compound_id,
+                TargetCompound.target_compound_formula,
+                TargetIon.target_ion_id,
+                TargetIon.target_ion_formula,
+                TargetIon.ionization_mechanism_id,
+            )
+            .select_from(TargetCollectionInSampleBatch)
+            .outerjoin(
+                TargetCompoundInTargetCollection,
+                TargetCompoundInTargetCollection.target_collection_id
+                == TargetCollectionInSampleBatch.target_collection_id,
+            )
+            .outerjoin(
+                TargetCompound,
+                TargetCompound.target_compound_id
+                == TargetCompoundInTargetCollection.target_compound_id,
+            )
+            .outerjoin(
+                TargetIon,
+                TargetIon.target_compound_id == TargetCompound.target_compound_id,
+            )
+            .where(TargetCollectionInSampleBatch.sample_batch_id == sample_batch_id)
+        )
+    ).all()
+    by_collection: dict[str, list[tuple]] = {}
+    for row in rows:
+        by_collection.setdefault(row.target_collection_id, []).append(tuple(row[1:]))
+    sources = (
+        await session.execute(
+            select(
+                ReferenceSource.reference_source_id,
+                ReferenceSource.name,
+                ReferenceSource.version,
+                ReferenceSource.ingested_at,
+            ).where(
+                ReferenceSource.is_active.is_(True),
+                ReferenceSource.kind == "compound",
+            )
+        )
+    ).all()
+    return {
+        "target_collections": {
+            collection: _digest(members)
+            for collection, members in sorted(by_collection.items())
+        },
+        "reference_lists": {
+            str(source.reference_source_id): {
+                "name": source.name,
+                "version": source.version,
+                "ingested_at": _iso(source.ingested_at),
+            }
+            for source in sources
+        },
+    }
+
+
+def is_pass_summary(summary: Any) -> bool:
+    """Whether a run's summary is a pass's: one that lists its stages."""
+    return isinstance(summary, dict) and isinstance(summary.get("stages"), list)
+
+
+async def last_pass(session, sample_batch_id: str) -> Optional[dict]:
+    """The batch's newest completed pass: its run id, engine version, the
+    samples it covered and the library it read. A pass that failed or was
+    cancelled is not one: what it left need not agree with what it read."""
+    runs = (
+        (
+            await session.execute(
+                select(BatchPeakRun)
+                .where(
+                    BatchPeakRun.sample_batch_id == sample_batch_id,
+                    BatchPeakRun.status == STATUS_COMPLETED,
+                )
+                .order_by(BatchPeakRun.batch_peak_run_utc_created.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for run in runs:
+        if is_pass_summary(run.summary):
+            return {
+                "batch_peak_run_id": run.batch_peak_run_id,
+                "engine_version": run.engine_version,
+                "samples": run.summary.get("samples"),
+                "library": run.summary.get("library"),
+            }
+    return None
+
+
+async def needs_fold(sample_batch_id: str) -> list[str]:
+    """Why a pass of the batch has to fold every sample first
+    (:func:`fold_reasons`); empty where the ledger can be its starting point.
+    The one rule the pass and the batch's assignment status read."""
+    async with async_session() as session:
+        n_batch_peaks = (
+            await session.execute(
+                select(func.count())
+                .select_from(BatchPeak)
+                .where(BatchPeak.sample_batch_id == sample_batch_id)
+            )
+        ).scalar_one()
+        current = await current_run(session, sample_batch_id)
+        last = await last_pass(session, sample_batch_id)
+        library = await library_read(session, sample_batch_id)
+    return fold_reasons(
+        n_batch_peaks=n_batch_peaks,
+        current_action=current.action if current is not None else None,
+        last_pass=last,
+        library=library,
+    )
+
+
+async def batch_samples(session, sample_batch_id: str) -> list[str]:
+    """The batch's samples, by id: what a pass covers."""
+    return list(
+        (
+            await session.execute(
+                select(Sample.sample_item_id)
+                .where(Sample.sample_batch_id == sample_batch_id)
+                .order_by(Sample.sample_item_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+# --- the pass's record ------------------------------------------------------------
+
+#: What a pass's summary says of each of its stages.
+ENTRY_DONE = "done"
+ENTRY_FAILED = "failed"
+ENTRY_CANCELLED = "cancelled"
+ENTRY_NOT_RUN = "not_run"
+
+
+def _outcome_record(outcome: Any) -> Optional[dict]:
+    """One step's outcome as a pass's summary keeps it: its status, its
+    result line, its counts, and the settings or thresholds it ran on."""
+    if not isinstance(outcome, dict):
+        return None
+    record = {
+        "status": outcome.get("status"),
+        "message": outcome.get("message"),
+        "data": outcome.get("data"),
+    }
+    if outcome.get("config") is not None:
+        record["config"] = outcome["config"]
+    return record
+
+
+class PassRecord:
+    """A pass's summary as it goes: every stage in order, the fold first,
+    each with its status, start, end and outcome."""
+
+    def __init__(self, from_stage: Optional[str]):
+        self.from_stage = from_stage
+        self.fold: dict = {"ran": False, "reasons": []}
+        self.samples: list[str] = []
+        self.library: Optional[dict] = None
+        self.entries: dict[str, dict] = {}
+        for name, label, phase in [(FOLD_STAGE, FOLD_LABEL, PHASE_GATHER)] + [
+            (spec.stage.value, spec.label, spec.phase) for spec in STAGES
+        ]:
+            self.entries[name] = {
+                "stage": name,
+                "label": label,
+                "phase": phase,
+                "status": ENTRY_NOT_RUN,
+                "utc_started": None,
+                "utc_ended": None,
+            }
+        self.planned: list[str] = []
+        self.running: Optional[str] = None
+
+    def plan(self, stages: Iterable[str]) -> None:
+        """The stages the pass runs, in order, the fold first where it folds."""
+        self.planned = list(stages)
+
+    def start(self, stage: str, at: Optional[datetime] = None) -> None:
+        self.running = stage
+        self.entries[stage]["utc_started"] = _iso(at or _now())
+
+    def done(self, stage: str, outcomes: list, **extra: Any) -> None:
+        entry = self.entries[stage]
+        entry.update(extra)
+        entry["status"] = ENTRY_DONE
+        entry["utc_ended"] = _iso(_now())
+        entry["outcomes"] = [r for r in map(_outcome_record, outcomes) if r]
+        self.running = None
+
+    def _unfinished(self) -> list[str]:
+        return [s for s in self.planned if self.entries[s]["status"] == ENTRY_NOT_RUN]
+
+    def stop(self, status: str, error: Optional[str] = None) -> None:
+        """The pass stopped: the stage it was in ends ``status``; a cancel
+        leaves every planned stage it did not reach cancelled too, a failure
+        leaves them not run."""
+        if self.running is not None:
+            entry = self.entries[self.running]
+            entry["status"] = status
+            entry["utc_ended"] = _iso(_now())
+            if error is not None:
+                entry["error"] = error[:2000]
+            self.running = None
+        if status == ENTRY_CANCELLED:
+            for stage in self._unfinished():
+                self.entries[stage]["status"] = ENTRY_CANCELLED
+
+    @property
+    def first_stage(self) -> Optional[str]:
+        return self.planned[0] if self.planned else None
+
+    def summary(self) -> dict:
+        return {
+            "from_stage": self.from_stage,
+            "first_stage": self.first_stage,
+            "fold": self.fold,
+            "samples": self.samples,
+            "library": self.library,
+            "stages": list(self.entries.values()),
+        }
+
+
+def pass_outcome(
     sample_batch_id: str,
-    ran: list[dict],
-    first: Optional[BatchStage],
+    record: Optional[PassRecord],
+    run_id: Optional[str],
     asked: Optional[BatchStage] = None,
 ) -> dict:
     """The controller result the background-task decorator reports from.
 
+    :param record: The pass's record; None where nothing was to run, and no
+        run was opened.
     :param asked: The stage the pass was asked to start at, where it started
         at an earlier one that was not current.
     """
     notification_data = {"sample_batch_id": sample_batch_id}
+    ran = (
+        [e for e in record.entries.values() if e["status"] != ENTRY_NOT_RUN]
+        if record is not None
+        else []
+    )
     if not ran:
         return {
             "status": "skipped",
             "message": "Every batch stage is current; nothing ran.",
-            "data": {"stages": []},
+            "data": {"batch_peak_run_id": run_id, "stages": []},
             "_notification_data": notification_data,
         }
-    stale = [entry["label"] for entry in ran if entry["state"] != STATE_CURRENT]
+    done = [e for e in ran if e["status"] == ENTRY_DONE]
+    cancelled = any(e["status"] == ENTRY_CANCELLED for e in ran)
+    stale = [
+        e["label"]
+        for e in done
+        if e["stage"] != FOLD_STAGE and e.get("state") != STATE_CURRENT
+    ]
     messages = " ".join(
         f"{entry['label']}: {outcome.get('message')}"
-        for entry in ran
-        for outcome in entry["outcomes"]
-        if isinstance(outcome, dict) and outcome.get("message")
+        for entry in done
+        for outcome in entry.get("outcomes", [])
+        if outcome.get("message")
     )
     head = (
-        f"Ran {len(ran)} batch stage{'s' if len(ran) != 1 else ''} from "
-        f"{STAGE_BY_NAME[first].label}."
+        f"Ran {len(done)} batch stage{'s' if len(done) != 1 else ''} from "
+        f"{ran[0]['label']}."
     )
-    if asked is not None and asked != first:
+    if asked is not None and record.first_stage not in (asked.value, FOLD_STAGE):
         head += (
             f" {STAGE_BY_NAME[asked].label} was asked for; the stages before it "
             "were not current, so the pass started at the first of them."
@@ -1145,115 +1587,369 @@ def stages_outcome(
         if stale
         else ""
     )
+    if cancelled:
+        tail += (
+            " Cancelled: what the stages before the cancel wrote stands, and the "
+            "stages the pass did not finish are stale."
+        )
     return {
-        "status": "partial" if stale else "success",
+        "status": "cancelled" if cancelled else "partial" if stale else "success",
         "message": f"{head} {messages}{tail}".strip(),
         "data": {
+            "batch_peak_run_id": run_id,
+            "first_stage": record.first_stage,
             "stages": [
                 {
                     "stage": entry["stage"],
-                    "version": entry["version"],
-                    "state": entry["state"],
+                    "status": entry["status"],
+                    "version": entry.get("version"),
+                    "state": entry.get("state"),
                     "outcomes": [
                         {"status": o.get("status"), "data": o.get("data")}
-                        for o in entry["outcomes"]
-                        if isinstance(o, dict)
+                        for o in entry.get("outcomes", [])
                     ],
                 }
                 for entry in ran
-            ]
+            ],
         },
         "_notification_data": notification_data,
     }
+
+
+# --- the pass ---------------------------------------------------------------------
+
+#: The pass's notification type: its progress packets and its end.
+NOTIFICATION_TYPE = "assign_batch"
+
+
+def stage_packet(
+    sample_batch_id: str,
+    run_id: str,
+    *,
+    stage: str,
+    label: str,
+    phase: str,
+    stage_index: int,
+    n_stages: int,
+    user_id: Optional[int],
+    process_id: str,
+    parent_id: Optional[str],
+) -> UserNotification:
+    """The pending packet a pass sends as one of its stages starts: one
+    progress entry for the whole pass, the stage's own packets nested under
+    it."""
+    return UserNotification(
+        process_id=process_id,
+        parent_id=parent_id,
+        type=NOTIFICATION_TYPE,
+        status="pending",
+        message=f"Assigning the batch: {label} ({stage_index + 1}/{n_stages}).",
+        data={
+            "sample_batch_id": sample_batch_id,
+            "batch_peak_run_id": run_id,
+            "stage": stage,
+            "stage_index": stage_index,
+            "n_stages": n_stages,
+            "phase": phase,
+            "stage_progress": 0.0,
+            "_room_ids": [sample_batch_id],
+            "_user_id": user_id,
+        },
+    )
+
+
+#: The error a pass interrupted by its task's cancellation is closed with.
+INTERRUPTED_ERROR = (
+    "Interrupted: the pass's task was cancelled (a server shutdown, or a "
+    "dropped connection); what its stages wrote stands."
+)
+
+
+async def plan_pass(
+    sample_batch_id: str, from_stage: Optional[str], fold: str
+) -> tuple[list[str], tuple]:
+    """What a pass would do now: why it folds first (none where it does
+    not), and the stages it runs, every one after a fold.
+
+    :return: The fold's reasons, and the stages in order.
+    """
+    reasons = await needs_fold(sample_batch_id)
+    if fold == FOLD_ALWAYS:
+        reasons = [FOLD_ASKED, *reasons]
+    if reasons:
+        return reasons, stages_from(STAGES[0].stage)
+    async with async_session() as session:
+        rows = await stage_states(session, sample_batch_id)
+    return reasons, plan({name: row.state for name, row in rows.items()}, from_stage)
 
 
 @api_controller_background_task(
     success_notification_rooms=["sample_batch_id"],
     success_reload=[("peak_assignment", "sample_batch_id")],
     error_notification_rooms=["sample_batch_id"],
+    error_reload=[("peak_assignment", "sample_batch_id")],
 )
-async def run_batch_stages(
+async def assign_batch(
     sample_batch_id: str,
     from_stage: Optional[str] = None,
+    fold: str = FOLD_AUTO,
     config: Optional[PeakAssignmentConfig] = None,
+    action: str = ACTION_ASSIGN,
+    batch_peak_run_id: str | None = None,
     independent_transaction: bool = False,
     user_id: int | None = None,
     process_id: str | None = None,
     parent_id: str | None = None,
 ) -> dict:
-    """Run the batch stages in order: from ``from_stage`` to the end, or from
-    the first stage that is not current where that is earlier or no stage is
-    named (:func:`plan`). Each stage runs as the batch run its
-    step always was; a stage that raises stops the pass there, marked stale,
-    with every stage before it kept. Emits ``peak_assignment_reload`` at the
-    end.
+    """A pass of the batch stages, as one batch run.
+
+    Folds every sample first where ``fold`` is ``always``, or ``auto`` and the
+    ledger cannot be a starting point (:func:`needs_fold`); then runs the
+    stages in order: from ``from_stage`` to the end, or from the first stage
+    that is not current where that is earlier or no stage is named
+    (:func:`plan`); after a fold, from the first. A stage that raises stops
+    the pass there, marked stale, with every stage before it kept; a cancel
+    asked for stops it between stages, or between the search's samples.
+
+    One ``start_run`` (one snapshot), one end: completed, failed, or
+    cancelled, never left running, whatever stops it. Its summary lists every
+    stage with its status, start, end and outcome, and the samples and
+    library it read. Nothing to do, no run: every stage current and nothing
+    to fold.
 
     :param sample_batch_id: The batch.
     :param from_stage: The stage to start at (:class:`BatchStage`); None
         starts at the first that is not current.
+    :param fold: ``auto`` or ``always``.
     :param config: The search's and the series' settings. When None, each
         of the two runs on the settings its own last run recorded, and on the
         engine's defaults where it never ran (:func:`settings_for`).
+    :param action: The run's action: ``assign``, or the step whose own route
+        started the pass.
+    :param batch_peak_run_id: The run the route that started the pass opened
+        (:func:`start_run`) and answered with: the pass runs it and closes it,
+        whatever there is to do by then, so a client waiting on it sees it
+        end. None: the pass opens its own, or none where there is nothing to
+        do.
     :raises BatchStageRunningException: A pass already runs on the batch.
     """
-    if from_stage is not None and from_stage not in {s.stage.value for s in STAGES}:
-        raise ApiException(
-            f"No batch stage is named '{from_stage}'.",
-            {"from_stage": from_stage, "stages": [s.stage.value for s in STAGES]},
-            422,
+    try:
+        if from_stage is not None and from_stage not in {s.stage.value for s in STAGES}:
+            raise ApiException(
+                f"No batch stage is named '{from_stage}'.",
+                {"from_stage": from_stage, "stages": [s.stage.value for s in STAGES]},
+                422,
+            )
+        if fold not in FOLD_MODES:
+            raise ApiException(
+                f"A pass folds 'auto' or 'always', not '{fold}'.",
+                {"fold": fold, "modes": list(FOLD_MODES)},
+                422,
+            )
+    except ApiException as exc:
+        if batch_peak_run_id is not None:
+            # The route opened the run: refused, it is closed all the same,
+            # never left running to hold the batch.
+            await fail_run(
+                sample_batch_id, batch_peak_run_id, f"{type(exc).__name__}: {exc}"
+            )
+        raise
+    asked = BatchStage(from_stage) if from_stage is not None else None
+
+    if batch_peak_run_id is not None:
+        run_id = batch_peak_run_id
+    else:
+        # Nothing to fold and every stage current: no run, so a press that
+        # has nothing to do prunes no pass from the history.
+        reasons, stages = await plan_pass(sample_batch_id, from_stage, fold)
+        if not reasons and not stages:
+            return pass_outcome(sample_batch_id, None, None)
+        run_id = await start_run(
+            sample_batch_id,
+            action,
+            config=pass_config(from_stage, fold, config),
+            user_id=user_id,
         )
-    async with async_session() as session:
-        rows = await stage_states(session, sample_batch_id)
-    stages = plan({name: row.state for name, row in rows.items()}, from_stage)
+    record = PassRecord(from_stage)
     call = StageCall(
         sample_batch_id=sample_batch_id,
         config=config,
         user_id=user_id,
         parent_id=process_id,
+        batch_peak_run_id=run_id,
+        cancelled=lambda: cancel_requested(run_id),
     )
-    ran: list[dict] = []
-    # The first stage begins here, refused while another pass runs; each
-    # later one as the stage before it ends.
-    begun = await begin_stage(sample_batch_id, stages[0]) if stages else None
-    for index, stage in enumerate(stages):
-        then = stages[index + 1] if index + 1 < len(stages) else None
-        entry, begun = await _run_stage(STAGE_BY_NAME[stage], call, begun, then)
-        ran.append(entry)
-    return stages_outcome(
-        sample_batch_id,
-        ran,
-        stages[0] if stages else None,
-        BatchStage(from_stage) if from_stage is not None else None,
-    )
+
+    async def reload() -> None:
+        # After each stage that rewrites members; the decorator sends the
+        # one at the end, as it sends the pass's own notification.
+        if independent_transaction:
+            await handle_reloads(
+                f"Stage reload {NOTIFICATION_TYPE}",
+                [("peak_assignment", "sample_batch_id")],
+                {"sample_batch_id": sample_batch_id},
+                None,
+            )
+
+    try:
+        # Read again under the run, which no second pass, rebuild or import
+        # gets past: what the pass does is what it records.
+        reasons, stages = await plan_pass(sample_batch_id, from_stage, fold)
+        async with async_session() as session:
+            record.samples = await batch_samples(session, sample_batch_id)
+            record.library = await library_read(session, sample_batch_id)
+        record.fold = {"ran": bool(reasons), "reasons": reasons}
+        record.plan(([FOLD_STAGE] if reasons else []) + [s.value for s in stages])
+        n_stages = len(record.planned)
+
+        async def announce(stage: str, label: str, phase: str, index: int) -> None:
+            if process_id is None:
+                return
+            await send_progress_user_notification(
+                stage_packet(
+                    sample_batch_id,
+                    run_id,
+                    stage=stage,
+                    label=label,
+                    phase=phase,
+                    stage_index=index,
+                    n_stages=n_stages,
+                    user_id=user_id,
+                    process_id=process_id,
+                    parent_id=parent_id,
+                )
+            )
+
+        index = 0
+        if reasons:
+            # Imported here: the controller imports the fold, which imports
+            # this module.
+            from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+                rebuild_batch_ledger,
+            )
+
+            record.start(FOLD_STAGE)
+            await announce(FOLD_STAGE, FOLD_LABEL, PHASE_GATHER, index)
+            outcome = await rebuild_batch_ledger(
+                sample_batch_id,
+                user_id=user_id,
+                process_id=gen_id(8),
+                parent_id=process_id,
+                batch_peak_run_id=run_id,
+            )
+            record.done(FOLD_STAGE, [outcome], reasons=reasons)
+            await reload()
+            index += 1
+            await stop_if_cancelled(call)
+
+        # The first stage begins here, refused while another pass runs; each
+        # later one as the stage before it ends.
+        begun = await begin_stage(sample_batch_id, stages[0]) if stages else None
+        for position, stage in enumerate(stages):
+            spec = STAGE_BY_NAME[stage]
+            then = stages[position + 1] if position + 1 < len(stages) else None
+            record.start(stage.value, begun[1])
+            await announce(stage.value, spec.label, spec.phase, index)
+            entry, begun = await _run_stage(spec, call, begun, then)
+            record.done(
+                stage.value,
+                entry["outcomes"],
+                version=entry["version"],
+                state=entry["state"],
+                settings=entry["settings"],
+            )
+            if spec.rewrites:
+                await reload()
+            index += 1
+            if then is not None and begun is None:
+                # Asked to stop as this stage ended: nothing began, and the
+                # stages after it are stale (:func:`hand_over`).
+                raise PassCancelled()
+        await complete_run(sample_batch_id, run_id, summary=record.summary())
+    except PassCancelled:
+        record.stop(ENTRY_CANCELLED)
+        await close_shielded(
+            cancel_run(sample_batch_id, run_id, record.summary()),
+            f"pass '{run_id}' as cancelled",
+        )
+        return pass_outcome(sample_batch_id, record, run_id, asked)
+    except asyncio.CancelledError:
+        # Not a person's cancel: the task's, a shutdown's. The run is closed
+        # all the same, never left running to hold the batch until the
+        # startup reaper runs.
+        record.stop(ENTRY_CANCELLED, INTERRUPTED_ERROR)
+        await close_shielded(
+            cancel_run(sample_batch_id, run_id, record.summary(), INTERRUPTED_ERROR),
+            f"pass '{run_id}' as cancelled",
+        )
+        raise
+    except BaseException as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        record.stop(ENTRY_FAILED, error)
+        await close_shielded(
+            fail_run(sample_batch_id, run_id, error, record.summary()),
+            f"pass '{run_id}' as failed",
+        )
+        raise
+    return pass_outcome(sample_batch_id, record, run_id, asked)
 
 
 __all__ = [
+    "ENTRY_CANCELLED",
+    "ENTRY_DONE",
+    "ENTRY_FAILED",
+    "ENTRY_NOT_RUN",
+    "FOLD_ALWAYS",
+    "FOLD_ASKED",
+    "FOLD_AUTO",
+    "FOLD_ENGINE_CHANGED",
+    "FOLD_IMPORTED",
+    "FOLD_LABEL",
+    "FOLD_LIBRARY_CHANGED",
+    "FOLD_MODES",
+    "FOLD_NO_BATCH_PEAKS",
+    "FOLD_STAGE",
+    "NOTIFICATION_TYPE",
     "BatchStage",
     "BatchStageRunningException",
+    "PassCancelled",
+    "PassRecord",
     "STAGES",
     "STAGE_BY_NAME",
     "STAGE_OF_KEY",
     "StageCall",
     "StageSpec",
+    "assign_batch",
+    "batch_samples",
     "begin_stage",
     "finish_stage",
     "first_not_current",
+    "fold_reasons",
     "hand_over",
+    "is_pass_config",
+    "is_pass_summary",
+    "last_pass",
+    "library_read",
     "mark_batch_stale",
     "mark_every_stage_stale",
     "mark_stale",
+    "needs_fold",
+    "pass_config",
+    "pass_outcome",
     "plan",
+    "plan_pass",
     "recorded_settings",
-    "run_batch_stages",
     "running_stage",
     "settings_for",
+    "settings_recorded_by",
     "stage_standing",
     "stage_states",
     "stages_after",
+    "stage_packet",
     "stages_from",
-    "stages_outcome",
     "stamp_versions",
     "standing_entries",
+    "stop_if_cancelled",
     "stop_stage",
     "stopped_partway",
     "upstream_reason",

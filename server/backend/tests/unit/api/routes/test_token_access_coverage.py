@@ -227,6 +227,10 @@ OTHER_TOKEN_ROUTES = {
     # The batch peak ledger: the SDK's reads (test_batch_peaks_routes_token_access)
     # and the engine's writes.
     ("GET", "/api/batch-peaks/batch/{sample_batch_id}"),
+    # A pass of the batch stages and its cancel: batch_peaks.assign and
+    # batch_peaks.cancel_assign (editor, as every batch-stage route).
+    ("POST", "/api/batch-peaks/batch/{sample_batch_id}/assign"),
+    ("POST", "/api/batch-peaks/batch/{sample_batch_id}/assign/cancel"),
     ("POST", "/api/batch-peaks/batch/{sample_batch_id}/backfill"),
     ("POST", "/api/batch-peaks/batch/{sample_batch_id}/curate"),
     ("POST", "/api/batch-peaks/batch/{sample_batch_id}/export"),

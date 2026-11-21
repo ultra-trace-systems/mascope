@@ -1,5 +1,7 @@
 """Batch-peak read routes -- the batch overview's peak-centric data feed."""
 
+from typing import Literal
+
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response
 from pydantic import BaseModel, Field, model_validator
 
@@ -11,7 +13,10 @@ from mascope_backend.api.controllers.samples.batch_peak_table import (
     build_batch_peak_table,
 )
 from mascope_backend.api.lib.api_features import api_route
-from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+from mascope_backend.api.lib.exceptions.api_exceptions import (
+    ApiException,
+    NotFoundException,
+)
 from mascope_backend.api.models.base_pydantic_model import RequestBodyModel
 from mascope_backend.api.new.auth.dependencies import current_active_user
 from mascope_backend.api.new.peak_assignments.batch_curation import (
@@ -44,15 +49,28 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_records import (
     get_batch_peak_series,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
+    ACTION_ASSIGN,
+    ACTION_BATCH_CHECKS,
+    ACTION_CO_VARIATION,
     ACTION_IMPORT,
+    ACTION_ISOTOPOLOGUES,
+    ACTION_KNOWN_SPECIES,
+    ACTION_SEARCH,
+    ACTION_SERIES,
+    ACTION_STRIP_ISOTOPOLOGUES,
+    ACTION_WATER_LADDERS,
     check_no_run_in_flight,
     list_batch_runs,
+    request_cancel,
     run_record,
     start_run,
 )
 from mascope_backend.api.new.peak_assignments.batch_stages import (
+    FOLD_AUTO,
     BatchStage,
-    run_batch_stages,
+    assign_batch,
+    pass_config,
+    plan_pass,
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.routes import (
@@ -398,7 +416,7 @@ async def backfill_batch_peaks_route(
     }
 
 
-class RunBatchStagesBody(RequestBodyModel):
+class AssignBatchBody(RequestBodyModel):
     """Request body for a pass of the batch stages."""
 
     from_stage: BatchStage | None = Field(
@@ -406,7 +424,17 @@ class RunBatchStagesBody(RequestBodyModel):
         description=(
             "The stage to start at; every stage after it runs too. Omitted, the "
             "pass starts at the first stage that is not current, and runs "
-            "nothing when every stage is."
+            "nothing when every stage is and nothing needs folding."
+        ),
+    )
+    fold: Literal["auto", "always"] = Field(
+        FOLD_AUTO,
+        description=(
+            "Whether the pass folds every sample first, as a rebuild does: "
+            "``always``, or ``auto`` where the ledger cannot be a starting "
+            "point - no batch peaks, an import current, a target collection "
+            "or reference list changed since the last pass, or the last pass "
+            "ran under another engine version (``batch_stages.needs_fold``)."
         ),
     )
     config: PeakAssignmentConfig | None = Field(
@@ -419,36 +447,13 @@ class RunBatchStagesBody(RequestBodyModel):
     )
 
 
-@batch_peaks_router.post(
-    "/batch/{sample_batch_id}/run-stages",
-    # A write into the batch ledger and the samples' rows, gated like each
-    # stage's own route and, like most of them, not opened to API tokens.
-    dependencies=[Depends(require_peak_assignment_enabled)],
-)
-@api_route(status_code=202)
-async def run_batch_stages_route(
+async def _launch_pass(
     sample_batch_id: str,
     background_tasks: BackgroundTasks,
-    body: RunBatchStagesBody | None = None,
-    user: User = Depends(current_active_user),
-    membership=Depends(require_batch_role("editor")),
+    body: AssignBatchBody | None,
+    user: User,
 ) -> dict:
-    """Run the batch stages in their fixed order.
-
-    Water ladders, known species, the untargeted search, the isotope lines
-    (strip, then stamp), the series, the co-variation, the ratio stability,
-    the batch checks and the probable blends: each reads what the stages before
-    it wrote, so they run in that order, from ``from_stage`` to the end, or from
-    the first stage a fold or an earlier stage left stale. The ledger
-    (``GET /batch-peaks/batch/{id}``) says where each stage stands. Each stage
-    runs as the batch run its own route always made. Runs as a background
-    task and emits ``peak_assignment_reload`` on completion.
-
-    :param sample_batch_id: The unique identifier of the sample batch.
-    :param body: Where to start, and the search's and the series' settings.
-    :param user: The current authenticated user. Requires workspace editor role.
-    :return: Acknowledgement message with the background process id.
-    """
+    """Refuse or launch a pass of the batch stages, as action ``assign``."""
     sample_batch = await fetch_sample_batch(sample_batch_id)
     # None where none was given: each stage that takes settings then runs on
     # the ones its own last run recorded (``batch_stages.settings_for``).
@@ -461,22 +466,161 @@ async def run_batch_stages_route(
             422,
         )
     await check_no_run_in_flight(sample_batch_id=sample_batch_id)
+    from_stage = body.from_stage if body is not None else None
+    fold = body.fold if body is not None else FOLD_AUTO
+    reasons, stages = await plan_pass(sample_batch_id, from_stage, fold)
+    if not reasons and not stages:
+        # Answered here with no run, so a press with nothing to do prunes no
+        # pass from the history.
+        return {
+            "status": "success",
+            "message": (
+                "Every batch stage is current and nothing needs folding; nothing "
+                "to run."
+            ),
+            "results": 0,
+            "data": [],
+        }
+    # Opened here, as the import's run is: a second press refused by
+    # ``start_run`` gets the 409 itself, and a run this answers with exists
+    # by the time a client polls for it. The pass runs it and closes it.
+    run_id = await start_run(
+        sample_batch_id,
+        ACTION_ASSIGN,
+        config=pass_config(from_stage, fold, config),
+        user_id=user.id,
+    )
     process_id = gen_id(8)
     background_tasks.add_task(
-        run_batch_stages,
+        assign_batch,
         sample_batch_id=sample_batch_id,
-        from_stage=body.from_stage if body is not None else None,
+        from_stage=from_stage,
+        fold=fold,
         config=config,
+        action=ACTION_ASSIGN,
+        batch_peak_run_id=run_id,
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
     )
+    async with async_session() as session:
+        record = run_record(await session.get(BatchPeakRun, run_id))
     return {
+        "status": "success",
         "message": (
-            f"Running the batch stages of '{sample_batch.sample_batch_name}', "
-            "please wait."
+            f"Assigning the batch '{sample_batch.sample_batch_name}', please wait."
         ),
+        "results": 1,
+        "data": [record],
         "process_id": process_id,
+    }
+
+
+@batch_peaks_router.post(
+    "/batch/{sample_batch_id}/assign",
+    # A write into the batch ledger and the samples' rows, gated like each
+    # stage's own route. Opened to API tokens for the SDK's
+    # ``batch_peaks.assign``, as the search's route is.
+    dependencies=[Depends(require_peak_assignment_enabled)],
+)
+@api_route(status_code=202, token_access=True)
+async def assign_batch_route(
+    sample_batch_id: str,
+    background_tasks: BackgroundTasks,
+    body: AssignBatchBody | None = None,
+    user: User = Depends(current_active_user),
+    membership=Depends(require_batch_role("editor")),
+) -> dict:
+    """Assign the batch: run a pass of the batch stages in their fixed order.
+
+    Folds every sample first where ``fold`` asks for it or the ledger cannot
+    be a starting point; then water ladders, known species, the untargeted
+    search, the isotope lines (strip, then stamp), the series, the
+    co-variation, the ratio stability, the batch checks and the probable
+    blends: each reads what the stages before it wrote, so they run in that
+    order, from ``from_stage`` to the end, or from the first stage a fold or
+    an earlier stage left stale. The ledger (``GET /batch-peaks/batch/{id}``)
+    says where each stage stands.
+
+    The pass is one batch run, action ``assign``: one snapshot, every stage's
+    outcome in its ``summary`` under ``stages`` (``GET .../runs``). Runs as a
+    background task, reporting one ``assign_batch`` process with a pending
+    packet at each stage's start, and emits ``peak_assignment_reload`` after
+    each stage that rewrites members and at the end. ``POST .../assign/cancel``
+    stops it between stages.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param body: Where to start, whether to fold first, and the search's and
+        the series' settings.
+    :param user: The current authenticated user. Requires workspace editor role.
+    :return: The pass's run, opened here and running, with the background
+        process id; no run where every stage is current and nothing needs
+        folding.
+    :raises 409: A pass or another batch run is rewriting this ledger.
+    """
+    return await _launch_pass(sample_batch_id, background_tasks, body, user)
+
+
+@batch_peaks_router.post(
+    "/batch/{sample_batch_id}/run-stages",
+    # MAS-983's entry, now the same pass as ``assign``; not opened to tokens.
+    dependencies=[Depends(require_peak_assignment_enabled)],
+)
+@api_route(status_code=202)
+async def run_batch_stages_route(
+    sample_batch_id: str,
+    background_tasks: BackgroundTasks,
+    body: AssignBatchBody | None = None,
+    user: User = Depends(current_active_user),
+    membership=Depends(require_batch_role("editor")),
+) -> dict:
+    """Run the batch stages in their fixed order: the pass ``POST
+    .../assign`` runs, under the name MAS-983 gave it.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param body: Where to start, whether to fold first, and the search's and
+        the series' settings.
+    :param user: The current authenticated user. Requires workspace editor role.
+    :return: Acknowledgement message with the background process id.
+    """
+    return await _launch_pass(sample_batch_id, background_tasks, body, user)
+
+
+@batch_peaks_router.post(
+    "/batch/{sample_batch_id}/assign/cancel",
+    # Stops a write; gated like the pass it stops, and opened to tokens with
+    # it for the SDK's ``batch_peaks.cancel_assign``.
+    dependencies=[Depends(require_peak_assignment_enabled)],
+    response_model=BatchPeakRunsResponse,
+)
+@api_route(token_access=True)
+async def cancel_assign_batch_route(
+    sample_batch_id: str,
+    user: User = Depends(current_active_user),
+    membership=Depends(require_batch_role("editor")),
+) -> dict:
+    """Ask the batch's running pass to stop.
+
+    Sets a flag the pass reads between its stages, and inside the untargeted
+    search between samples. It does not roll back: the pass ends
+    ``cancelled``, keeps what its stages wrote, and the stages it did not
+    finish are stale, so the next pass starts at the first of them. A new
+    pass can start as soon as it has ended.
+
+    :param sample_batch_id: The unique identifier of the sample batch.
+    :param user: The current authenticated user. Requires workspace editor role.
+    :return: The running pass, with ``cancel_requested_utc`` set.
+    :raises 404: No pass is running on the batch.
+    """
+    await fetch_sample_batch(sample_batch_id)
+    run = await request_cancel(sample_batch_id)
+    if run is None:
+        raise NotFoundException("No pass of the batch stages is running on this batch")
+    return {
+        "status": "success",
+        "message": "Asked the pass to stop; it stops at its next stage or sample.",
+        "results": 1,
+        "data": [run_record(run)],
     }
 
 
@@ -527,9 +671,10 @@ async def search_untargeted_batch_peaks_route(
     await check_no_run_in_flight(sample_batch_id=sample_batch_id)
     process_id = gen_id(8)
     background_tasks.add_task(
-        run_batch_stages,
+        assign_batch,
         sample_batch_id=sample_batch_id,
         from_stage=BatchStage.SEARCH,
+        action=ACTION_SEARCH,
         config=config,
         independent_transaction=True,
         user_id=user.id,
@@ -593,9 +738,10 @@ async def detect_series_batch_peaks_route(
     await check_no_run_in_flight(sample_batch_id=sample_batch_id)
     process_id = gen_id(8)
     background_tasks.add_task(
-        run_batch_stages,
+        assign_batch,
         sample_batch_id=sample_batch_id,
         from_stage=BatchStage.SERIES,
+        action=ACTION_SERIES,
         config=config,
         independent_transaction=True,
         user_id=user.id,
@@ -644,9 +790,10 @@ async def read_co_variation_batch_peaks_route(
     await check_no_run_in_flight(sample_batch_id=sample_batch_id)
     process_id = gen_id(8)
     background_tasks.add_task(
-        run_batch_stages,
+        assign_batch,
         sample_batch_id=sample_batch_id,
         from_stage=BatchStage.CO_VARIATION,
+        action=ACTION_CO_VARIATION,
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
@@ -700,9 +847,10 @@ async def recompute_continuity_batch_peaks_route(
     await check_no_run_in_flight(sample_batch_id=sample_batch_id)
     process_id = gen_id(8)
     background_tasks.add_task(
-        run_batch_stages,
+        assign_batch,
         sample_batch_id=sample_batch_id,
         from_stage=BatchStage.CONTINUITY,
+        action=ACTION_ASSIGN,
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
@@ -755,9 +903,10 @@ async def stamp_isotopologues_batch_peaks_route(
     await check_no_run_in_flight(sample_batch_id=sample_batch_id)
     process_id = gen_id(8)
     background_tasks.add_task(
-        run_batch_stages,
+        assign_batch,
         sample_batch_id=sample_batch_id,
         from_stage=BatchStage.ISOTOPE_LINES,
+        action=ACTION_ISOTOPOLOGUES,
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
@@ -812,9 +961,10 @@ async def strip_isotopologues_batch_peaks_route(
     await check_no_run_in_flight(sample_batch_id=sample_batch_id)
     process_id = gen_id(8)
     background_tasks.add_task(
-        run_batch_stages,
+        assign_batch,
         sample_batch_id=sample_batch_id,
         from_stage=BatchStage.ISOTOPE_LINES,
+        action=ACTION_STRIP_ISOTOPOLOGUES,
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
@@ -864,9 +1014,10 @@ async def read_batch_checks_batch_peaks_route(
     await check_no_run_in_flight(sample_batch_id=sample_batch_id)
     process_id = gen_id(8)
     background_tasks.add_task(
-        run_batch_stages,
+        assign_batch,
         sample_batch_id=sample_batch_id,
         from_stage=BatchStage.BATCH_CHECKS,
+        action=ACTION_BATCH_CHECKS,
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
@@ -924,9 +1075,10 @@ async def decide_known_species_batch_peaks_route(
     await check_no_run_in_flight(sample_batch_id=sample_batch_id)
     process_id = gen_id(8)
     background_tasks.add_task(
-        run_batch_stages,
+        assign_batch,
         sample_batch_id=sample_batch_id,
         from_stage=BatchStage.KNOWN_SPECIES,
+        action=ACTION_KNOWN_SPECIES,
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
@@ -984,9 +1136,10 @@ async def measure_water_ladders_batch_peaks_route(
     await check_no_run_in_flight(sample_batch_id=sample_batch_id)
     process_id = gen_id(8)
     background_tasks.add_task(
-        run_batch_stages,
+        assign_batch,
         sample_batch_id=sample_batch_id,
         from_stage=BatchStage.WATER_LADDERS,
+        action=ACTION_WATER_LADDERS,
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,

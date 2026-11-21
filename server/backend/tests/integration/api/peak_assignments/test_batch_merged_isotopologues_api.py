@@ -21,6 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
+from pass_runs import step_outcome  # the tests root, on sys.path
 from sqlalchemy import delete, select, update
 from stage_stubs import frame, stub_sample_reads, stub_seeded_scorer
 from stage_stubs import mechanism as mechanism_row
@@ -594,14 +595,15 @@ async def test_the_route_runs_it_as_a_batch_run(
         )
     [run] = [run for run in runs if run.action == ACTION_STRIP_ISOTOPOLOGUES]
     assert run.status == "completed"
-    # The strip is the first step of the isotope lines' stage: the stamping
-    # runs after it, as its own batch run, and is the current one.
-    [stamp] = [r for r in runs if r.action == ACTION_ISOTOPOLOGUES]
-    assert stamp.status == "completed"
-    assert stamp.is_current == 1
-    assert run.config["median_low"] == 0.4
-    assert run.config["isotopes"][0] == "13C"
-    assert run.summary["stripped"] == 2
+    # The strip is the first step of the isotope lines' stage, the stamping
+    # the second, both inside the pass's one run, which is the current one.
+    assert run.is_current == 1
+    assert not [r for r in runs if r.action == ACTION_ISOTOPOLOGUES]
+    strip = step_outcome(run, "isotope_lines", 0)
+    assert step_outcome(run, "isotope_lines", 1)["data"] is not None
+    assert strip["config"]["median_low"] == 0.4
+    assert strip["config"]["isotopes"][0] == "13C"
+    assert strip["data"]["stripped"] == 2
     anchors = await _anchors(async_session_factory, strip_batch)
     assert _stripped(anchors["x"])["batch_peak_run_id"] == run.batch_peak_run_id
 
@@ -615,7 +617,7 @@ async def test_the_route_refuses_while_another_run_rewrites_the_ledger(
     async def fake_task(**kwargs):
         launched.append(kwargs)
 
-    monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
+    monkeypatch.setattr(batch_peaks_routes, "assign_batch", fake_task)
     await start_run(strip_batch["batch_id"], ACTION_STRIP_ISOTOPOLOGUES)
     response = await editor_client.post(
         f"/api/batch-peaks/batch/{strip_batch['batch_id']}/strip-isotopologues"
@@ -946,14 +948,14 @@ async def test_a_refolded_sample_is_stripped_again_by_the_next_pass(
     line gone: every stage is stale, and the next pass strips the line in it
     again (MAS-983's Verify)."""
     from mascope_backend.api.new.peak_assignments.batch_stages import (
-        run_batch_stages,
+        assign_batch,
         stage_standing,
     )
 
     only_these_stages("isotope_lines")
     _stub_the_stage_list(monkeypatch)
     batch, samples, ids = strip_batch, strip_batch["samples"], strip_batch["ids"]
-    await run_batch_stages(sample_batch_id=batch["batch_id"])
+    await assign_batch(sample_batch_id=batch["batch_id"])
     sample = samples["S03"]
     line = (await _members(async_session_factory, ids["x"]))[sample]
     assert line.role == role_code("iso_child")
@@ -968,7 +970,7 @@ async def test_a_refolded_sample_is_stripped_again_by_the_next_pass(
     standing = await stage_standing(batch["batch_id"])
     assert {e["stale_reason"] for e in standing["stages"]} == {"fold"}
 
-    outcome = await run_batch_stages(sample_batch_id=batch["batch_id"])
+    outcome = await assign_batch(sample_batch_id=batch["batch_id"])
     assert outcome["status"] == "success", outcome["message"]
     restored = (await _members(async_session_factory, ids["x"]))[sample]
     assert restored.role == role_code("iso_child")

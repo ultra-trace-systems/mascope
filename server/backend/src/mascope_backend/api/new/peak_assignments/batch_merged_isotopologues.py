@@ -104,9 +104,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_STRIP_ISOTOPOLOGUES,
-    complete_run,
-    fail_run,
-    start_run,
+    in_batch_run,
     touch_ledger,
 )
 from mascope_backend.api.new.peak_assignments.config import IN_APP_ENGINE
@@ -1308,25 +1306,24 @@ async def strip_batch_isotopologue_rows(
     user_id: int | None = None,
     process_id: str | None = None,
     parent_id: str | None = None,
+    batch_peak_run_id: str | None = None,
 ) -> dict:
-    """Strip the batch's merged isotopologue rows, as a batch run. Rewrites the
-    members and the samples' in-app rows of each row stripped; emits
-    ``peak_assignment_reload`` so the ledgers refresh."""
-    run_id = await start_run(
+    """Strip the batch's merged isotopologue rows, as a batch run: the pass's
+    ``batch_peak_run_id`` where it runs in one, else a run of its own.
+    Rewrites the members and the samples' in-app rows of each row stripped;
+    emits ``peak_assignment_reload`` so the ledgers refresh."""
+    config = thresholds()
+    summary = await in_batch_run(
         sample_batch_id,
         ACTION_STRIP_ISOTOPOLOGUES,
-        config=thresholds(),
+        lambda run_id: run_batch_merged_isotopologues(
+            sample_batch_id, batch_peak_run_id=run_id
+        ),
+        batch_peak_run_id=batch_peak_run_id,
+        config=config,
         user_id=user_id,
     )
-    try:
-        summary = await run_batch_merged_isotopologues(
-            sample_batch_id, batch_peak_run_id=run_id
-        )
-    except Exception as exc:
-        await fail_run(sample_batch_id, run_id, f"{type(exc).__name__}: {exc}")
-        raise
-    await complete_run(sample_batch_id, run_id, summary=summary)
-    return stripping_outcome(summary, sample_batch_id)
+    return {**stripping_outcome(summary, sample_batch_id), "config": config}
 
 
 __all__ = [

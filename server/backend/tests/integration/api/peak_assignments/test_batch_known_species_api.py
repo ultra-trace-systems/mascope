@@ -24,6 +24,7 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
+from pass_runs import step_outcome  # the tests root, on sys.path
 from sqlalchemy import delete, select, update
 from stage_stubs import (  # the tests root, on sys.path
     frame,
@@ -57,7 +58,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     complete_run,
     start_run,
 )
-from mascope_backend.api.new.peak_assignments.batch_stages import run_batch_stages
+from mascope_backend.api.new.peak_assignments.batch_stages import assign_batch
 from mascope_backend.api.new.peak_assignments.engine import MASS_CALIBRATION_KEY
 from mascope_backend.api.new.peak_assignments.mass_gate import MassCalibration
 from mascope_backend.db import (
@@ -458,7 +459,7 @@ async def test_a_claim_on_a_reading_below_candidate_goes_through_the_caps(
         )
         await session.commit()
     _stub_the_stage_list(monkeypatch, {"d": 40.0})
-    outcome = await run_batch_stages(
+    outcome = await assign_batch(
         sample_batch_id=known_batch["batch_id"], from_stage="known_species"
     )
     [stage] = outcome["data"]["stages"]
@@ -479,7 +480,7 @@ async def test_a_claim_the_caps_let_stand_is_proposed_at_candidate(
     evidence, is what puts it at candidate, and only a cap takes it lower."""
     samples, ids = known_batch["samples"], known_batch["ids"]
     _stub_the_stage_list(monkeypatch, {}, fits_by_peak={"d": 0.05})
-    await run_batch_stages(
+    await assign_batch(
         sample_batch_id=known_batch["batch_id"], from_stage="known_species"
     )
     members = await _members(async_session_factory, ids["d"])
@@ -866,8 +867,9 @@ async def test_the_route_runs_it_as_a_batch_run(
     [run] = [run for run in runs if run.action == ACTION_KNOWN_SPECIES]
     assert run.status == "completed"
     assert run.is_current == 1
-    assert run.config["min_present_share"] == 0.5
-    assert run.summary["present"] == 3
+    step = step_outcome(run, "known_species")
+    assert step["config"]["min_present_share"] == 0.5
+    assert step["data"]["present"] == 3
     anchors = await _anchors(async_session_factory, known_batch)
     assert _record(anchors["t"])["batch_peak_run_id"] == run.batch_peak_run_id
 
@@ -881,7 +883,7 @@ async def test_the_route_refuses_while_another_run_rewrites_the_ledger(
     async def fake_task(**kwargs):
         launched.append(kwargs)
 
-    monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
+    monkeypatch.setattr(batch_peaks_routes, "assign_batch", fake_task)
     await start_run(known_batch["batch_id"], ACTION_KNOWN_SPECIES)
     response = await editor_client.post(
         f"/api/batch-peaks/batch/{known_batch['batch_id']}/decide-known-species"
@@ -1104,7 +1106,7 @@ async def test_a_withdrawn_decision_judges_its_samples_again(
         return await real(ctx)
 
     monkeypatch.setattr(batch_rejudge, "run_stages", spy)
-    outcome = await run_batch_stages(
+    outcome = await assign_batch(
         sample_batch_id=batch["batch_id"], from_stage="known_species"
     )
     [stage] = outcome["data"]["stages"]

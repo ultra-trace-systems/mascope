@@ -45,7 +45,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     current_run,
     start_run,
 )
-from mascope_backend.api.new.peak_assignments.batch_stages import run_batch_stages
+from mascope_backend.api.new.peak_assignments.batch_stages import assign_batch
 from mascope_backend.api.new.peak_assignments.continuity import (
     REASON_GAP,
     SKIPPED_CURRENT,
@@ -377,7 +377,7 @@ async def test_the_grades_are_the_same_whichever_step_is_pressed_first(
     ratio pass first kept the verdict it read before the co-variation."""
     batch_id = continuity_batch["batch_id"]
     for stage in order:
-        await run_batch_stages(sample_batch_id=batch_id, from_stage=stage)
+        await assign_batch(sample_batch_id=batch_id, from_stage=stage)
     clicked = await _grades(async_session_factory, batch_id)
     anchors = await _anchors(async_session_factory, batch_id)
     served = standing_co_variation_record(anchors["rb"])
@@ -389,7 +389,7 @@ async def test_the_grades_are_the_same_whichever_step_is_pressed_first(
     [to_m0] = [pair for pair in clicked["rb"][1] if pair[0] == "m0"]
     assert to_m0[2] == partners.get(anchors["m0"].batch_peak_id)
     # One more pass from the co-variation changes no grade.
-    await run_batch_stages(sample_batch_id=batch_id, from_stage="co_variation")
+    await assign_batch(sample_batch_id=batch_id, from_stage="co_variation")
     assert await _grades(async_session_factory, batch_id) == clicked
 
 
@@ -713,20 +713,21 @@ async def test_the_route_grades_the_batch_for_an_editor(
     assert "please wait" in accepted.json()["message"]
     anchors = await _anchors(async_session_factory, batch_id)
     assert anchors["m0"].continuity_grade == "red"
-    # Not a batch run: the ledger's history is the folds' alone.
+    # The ratio stability opens no run of its own, but a pass is one: the
+    # pass its route starts is recorded as one, from that stage.
     async with async_session_factory() as session:
         actions = (
             (
                 await session.execute(
-                    select(BatchPeakRun.action).where(
-                        BatchPeakRun.sample_batch_id == batch_id
-                    )
+                    select(BatchPeakRun.action)
+                    .where(BatchPeakRun.sample_batch_id == batch_id)
+                    .order_by(BatchPeakRun.batch_peak_run_utc_created)
                 )
             )
             .scalars()
             .all()
         )
-    assert actions == ["fold"]
+    assert actions == ["fold", "assign"]
 
 
 async def test_the_route_refuses_while_a_run_rewrites_the_ledger(
@@ -738,7 +739,7 @@ async def test_the_route_refuses_while_a_run_rewrites_the_ledger(
     async def fake_task(**kwargs):
         launched.append(kwargs)
 
-    monkeypatch.setattr(batch_peaks_routes, "run_batch_stages", fake_task)
+    monkeypatch.setattr(batch_peaks_routes, "assign_batch", fake_task)
     await start_run(continuity_batch["batch_id"], ACTION_CO_VARIATION)
     response = await editor_client.post(
         f"/api/batch-peaks/batch/{continuity_batch['batch_id']}/recompute-continuity"

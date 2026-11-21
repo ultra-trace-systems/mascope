@@ -1748,10 +1748,9 @@ made for.
   mark on the ledger. The API's `POST /api/batch-peaks/batch/{id}/run-stages` starts it at
   a stage you name, with the same rule, or at the first stage that is not current.
 - **One pass at a time.** While the stages run, every step's button, the API's
-  `run-stages`, *Rebuild batch ledger* and an import answer that the batch stages are
-  running, and name the stage (409). That holds for the whole pass, also while it judges
-  samples again or runs the ratio stability and the probable blends, which open no batch
-  run of their own.
+  `run-stages` and `assign`, *Rebuild batch ledger* and an import answer that the batch
+  stages are running, and name the stage (409). That holds for the whole pass, from its
+  first stage to its end.
 - **The search's settings carry over.** *Search untargeted* runs on the settings its
   dialog sends, and *Detect series* reads the m/z precision and the tier bands from the
   same settings. A pass that another button starts sends none, so the search runs on the
@@ -1789,8 +1788,36 @@ made for.
   that wrote it reads it again when it runs, and a reading that comes back finds it
   standing again. Every record carries the version of the stage's run that wrote it.
 
-Each stage still records itself as the batch run its step always made (*Batch runs*,
-below), so a pass through every stage adds up to eight runs to the history.
+#### A pass is one batch run
+
+A pass through the stages is recorded as one batch run (*Batch runs*, below), however
+many stages it runs: one snapshot of the ledger as it found it, and one entry in the
+history.
+
+- **Its stages are inside it.** The run's summary lists every stage in order, with its
+  status - done, failed, cancelled, or not run - when it started and ended, and the
+  result line and counts of each of its steps. A pass started at a later stage lists the
+  stages before it as not run. A pass a step's button starts is named after that step;
+  one started as a whole (the API's `POST /api/batch-peaks/batch/{id}/assign`, the SDK's
+  `mascope.batch_peaks.assign`) is an *Assignment*.
+- **It folds every sample first where the ledger cannot be a starting point**, as
+  *Rebuild batch ledger* does: where the batch has no batch peaks, where an engine's
+  imported result is the current run, where a target collection or reference list the
+  batch reads changed since the last pass, or where the last pass ran under another
+  engine version. Only a fold reads the libraries, so only a fold brings a changed one
+  in. The pass then runs every stage from the first. It can be asked to fold whatever the
+  ledger holds (`fold: always`). The fold's own ratio stability is left to the pass's stage,
+  which grades it after the co-variation. The run records what it read: the samples it
+  covered, the engine version, and the target collections and reference lists.
+- **One entry in the progress strip.** The pass reports one process, with each stage's
+  start as a step of it (*Assigning the batch: Detect series (5/9)*), and the ledger
+  reloads after each stage that rewrites members and at the end.
+- **Cancel stops it between stages.** The API's `POST .../assign/cancel` (the SDK's
+  `cancel_assign`) stops the pass at its next stage, or inside the untargeted search at
+  its next sample. Nothing is rolled back: the pass is recorded as cancelled, what its
+  stages wrote stands, and the stages it did not finish are stale, so the next pass starts
+  at the first of them. A pass whose task the server stopped, at a shutdown, is closed
+  the same way, never left running.
 
 ### Placing a target's batch peak at the target ion's m/z
 
@@ -2736,11 +2763,13 @@ carries its `level_step`.
 --8<-- "_help/batch-runs.md"
 
 The run selector beside *Rebuild batch ledger* lists the batch's runs newest first, each
-with what it did and, for a search, the parameters it was given. The current run is the
-live ledger; picking an earlier one shows the *Batch peaks* ledger and the chart as that
-run left them, read-only - verdicts and curation act on the current run, so the Verdict
-column waits until you pick it again. A run that fails is kept and marked, and never
-becomes current. The same history is one call away in the SDK
+with what it did. A run is a pass of the batch stages, with every stage it ran inside it
+(*A pass is one batch run*, above), a rebuild or an import. The newest five runs before
+the current one are kept, so the history holds the last passes, not the clicks of one.
+The current run is the live ledger; picking an earlier one shows the *Batch peaks* ledger
+and the chart as that run left them, read-only - verdicts and curation act on the current
+run, so the Verdict column waits until you pick it again. A run that fails, or a pass that
+is cancelled, is kept and marked, and never becomes current. The same history is one call away in the SDK
 (`mascope.batch_peaks.runs(batch_id)`, and `list(batch_id, run_id=...)` for the species
 table as an earlier run left it). A sample folded in again or a batch peak curated by hand
 changes the live ledger without making a run of its own. The current run's

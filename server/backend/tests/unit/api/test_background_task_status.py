@@ -64,6 +64,8 @@ async def _announce(result, **kwargs) -> UserNotification:
         ("locked", "warning"),
         ("failed", "error"),
         ("error", "error"),
+        # A pass of the batch stages a person stopped: what it did stands.
+        ("cancelled", "warning"),
     ],
 )
 async def test_the_outcome_decides_how_the_run_is_announced(outcome, expected):

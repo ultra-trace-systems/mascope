@@ -165,3 +165,58 @@ async def test_rematch_batches_bar_climbs_across_unequal_batches():
 
     assert progress == pytest.approx([18.0, 72.0, 92.0, 98.0])
     assert progress == sorted(progress)
+
+
+@pytest.mark.asyncio
+async def test_a_series_detection_sets_progress_per_sample():
+    """The series detection's ticks carry a percent, as the search's do."""
+    notification = UserNotification(
+        process_id="series-proc",
+        type="detect_batch_series",
+        status="pending",
+        message="Measuring the proposed compositions, sample 2/4.",
+        data={
+            "sample_batch_id": "b1",
+            "_room_ids": ["b1"],
+            "_user_id": 1,
+            "_total_samples": 4,
+            "_item_index": 1,
+        },
+    )
+    emitted = await _emit_and_capture(notification, increment=None)
+    assert emitted.progress == pytest.approx(25.0)
+
+
+@pytest.mark.asyncio
+async def test_a_pass_of_the_batch_stages_is_one_bar_across_its_stages():
+    """A pass's stage start fills the bar by the stages before it, and keeps
+    which stage of how many it is in the data the progress strip reads."""
+    notification = UserNotification(
+        process_id="pass-proc",
+        type="assign_batch",
+        status="pending",
+        message="Assigning the batch: Detect series (5/10).",
+        data={
+            "sample_batch_id": "b1",
+            "stage": "series",
+            "stage_index": 4,
+            "n_stages": 10,
+            "phase": "Find compositions",
+            "stage_progress": 0.0,
+            "_room_ids": ["b1"],
+            "_user_id": 1,
+        },
+    )
+    emitted = await _emit_and_capture(notification, increment=None)
+    assert emitted.progress == pytest.approx(40.0)
+    assert emitted.data == {
+        "sample_batch_id": "b1",
+        "stage": "series",
+        "stage_index": 4,
+        "n_stages": 10,
+        "phase": "Find compositions",
+        "stage_progress": 0.0,
+    }
+    notification.data["stage_progress"] = 0.5
+    emitted = await _emit_and_capture(notification, increment=None)
+    assert emitted.progress == pytest.approx(45.0)
