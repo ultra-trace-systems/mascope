@@ -138,6 +138,10 @@ STATUS_FAILED = "failed"
 #: and never became current.
 STATUS_CANCELLED = "cancelled"
 
+#: The key a running pass keeps its progress under in its run's summary
+#: (:func:`record_progress`), until its end writes the summary whole.
+PROGRESS_KEY = "progress"
+
 #: Runs kept per batch beyond the current one, snapshots and all. The rest are
 #: pruned when a run completes, oldest first.
 BATCH_RUN_KEEP = 5
@@ -710,6 +714,35 @@ async def in_batch_run(
         raise
     await complete_run(sample_batch_id, run_id, summary=result)
     return result
+
+
+async def record_progress(batch_peak_run_id: str, progress: dict) -> None:
+    """Keep a running pass's progress on its run, as each of its stages
+    starts: the process its packets go out as, the stage, which of how many.
+    The batch's assignment status reads it, so another user's tab, or one
+    that missed the packets, shows the pass rather than meeting a 409
+    (``batch_assignment_status``). Kept in ``summary`` under ``progress``,
+    which the pass's end replaces with its whole summary; a run already
+    closed is left alone.
+
+    Logged rather than raised where it fails: the pass's work does not hang
+    on the status line.
+    """
+    try:
+        async with async_session() as session:
+            await session.execute(
+                update(BatchPeakRun)
+                .where(
+                    BatchPeakRun.batch_peak_run_id == batch_peak_run_id,
+                    BatchPeakRun.status == STATUS_RUNNING,
+                )
+                .values(summary={PROGRESS_KEY: progress})
+            )
+            await session.commit()
+    except Exception as exc:  # noqa: BLE001 - the status line is not the pass
+        runtime.logger.warning(
+            f"Could not record the progress of batch run '{batch_peak_run_id}': {exc}"
+        )
 
 
 # --- cancelling a pass ------------------------------------------------------------

@@ -231,6 +231,8 @@ OTHER_TOKEN_ROUTES = {
     # batch_peaks.cancel_assign (editor, as every batch-stage route).
     ("POST", "/api/batch-peaks/batch/{sample_batch_id}/assign"),
     ("POST", "/api/batch-peaks/batch/{sample_batch_id}/assign/cancel"),
+    # Where the batch's assignment stands: batch_peaks.assignment_status.
+    ("GET", "/api/batch-peaks/batch/{sample_batch_id}/assignment-status"),
     ("POST", "/api/batch-peaks/batch/{sample_batch_id}/backfill"),
     ("POST", "/api/batch-peaks/batch/{sample_batch_id}/curate"),
     ("POST", "/api/batch-peaks/batch/{sample_batch_id}/export"),

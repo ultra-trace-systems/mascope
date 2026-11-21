@@ -1867,6 +1867,44 @@ history.
   at the first of them. A pass whose task the server stopped, at a shutdown, is closed
   the same way, never left running.
 
+#### Where the batch stands
+
+One read says where a batch's assignment stands, so two users, or two tabs, see the same
+thing: the API's `GET /api/batch-peaks/batch/{id}/assignment-status`, the SDK's
+`mascope.batch_peaks.assignment_status`. Any member of the workspace can read it, also
+where the feature is off. Its `state` is the first of these that holds:
+
+| State | What it means |
+|---|---|
+| `running` | A pass, or a rebuild or an import, is rewriting the ledger. The read names its stage, which of how many, when it started and who started it. |
+| `failed`, `cancelled` | The newest pass stopped, and the read names the stage it stopped at. What its stages wrote stands. |
+| `none` | The batch has no batch peaks. |
+| `folded_only` | No pass has completed: the ledger holds known compositions only, as the folds at ingest built it. |
+| `behind` | Something the last completed pass read has changed since. The reasons are listed. |
+| `current` | Nothing has. |
+
+A batch is *behind* its last completed pass for these reasons. Each is listed with how many
+it counts, and the samples or the collections it names:
+
+- **New samples.** Samples the batch holds now that the pass did not cover, such as
+  samples processed after it. They hold known compositions only.
+- **Removed samples.** Samples the pass covered that are no longer in the batch.
+- **Re-run samples** (`resampled`). Samples the pass covered with an assignment run of
+  their own completed since it started. Each such run folds the sample in again.
+  Decoy runs and imported runs do not count.
+- **Library changed.** A target collection attached to the batch, detached or edited, or
+  a reference list loaded or dropped, since the pass. Only a fold reads the libraries, so
+  the next pass folds every sample first: the read's `needs_fold` says so, and
+  `fold_reasons` says why.
+- **Engine changed.** The pass ran under another engine version than the server's.
+- **Stages stale.** A stage stale for any other reason, such as a rebuild since the pass,
+  or a stage the pass itself left stale.
+
+A curation, a verdict and an import are not reasons. Each acts on the current run by
+design, and an import is a run of its own. A pin on a batch peak, or its release, still
+marks the stages stale, so `stale_stages` lists them, and the next pass starts at the
+first.
+
 ### Placing a target's batch peak at the target ion's m/z
 
 A batch peak's m/z is frozen when it is made, and the first sample whose peak lands
