@@ -84,6 +84,9 @@ MARGIN = pd.Timedelta(hours=6)
 DIGESTS = {
     "halide_negative": "036e29ed7c8319e8eadbfe71b405fda7ebb4b942e717ec1e2cd50ff9cc6cb8e8",
     "positive": "001d3c8b4b101401b59786c0dcb15b41b8a9108f2d78854cbbed1198067c4871",
+    "halide_clusters": (
+        "bda27c1f6dde5829ff882a8a973f95a1c5c285a7a0c79726b2a41024ae57acef"
+    ),
 }
 
 
@@ -184,6 +187,17 @@ def test_same_seed_same_parquet_bytes(campaign):
 
 def test_content_is_pinned(campaign):
     assert content_digest(campaign) == DIGESTS[campaign.params.name]
+
+
+def test_the_cluster_set_is_pinned_and_leaves_the_halide_set_alone(
+    cluster_campaign, halide_campaign
+):
+    assert HALIDE_NEGATIVE.cluster is None
+    assert halide_campaign.truth.shares is None
+    assert content_digest(cluster_campaign) == DIGESTS["halide_clusters"]
+    # Everything but the reagent ions is the halide month's
+    for name in ("samples", "files", "peak_series"):
+        assert cluster_campaign.tables[name].equals(halide_campaign.tables[name]), name
 
 
 def test_parquet_round_trip(campaign, tmp_path):
@@ -328,6 +342,86 @@ def test_species_sensitivity_follows_the_reagent(halide_campaign):
     assert normalised[last].median() / normalised[first].median() == pytest.approx(
         1.0, abs=0.03
     )
+
+
+def _reagents(campaign: Campaign) -> tuple[pd.Series, pd.Series]:
+    bare, cluster = campaign.truth.shares.series_keys
+    return (
+        _series(campaign, "ion_series", bare),
+        _series(campaign, "ion_series", cluster),
+    )
+
+
+def test_reagent_shares_follow_their_cycle_while_their_sum_drifts(cluster_campaign):
+    truth = cluster_campaign.truth
+    shares = truth.shares
+    bare, cluster = _reagents(cluster_campaign)
+    both = (bare + cluster).dropna()
+    share = (bare / (bare + cluster)).dropna()
+    hour = share.index.tz_convert(truth.timezone).hour
+    by_hour = share.groupby(hour).median()
+
+    assert _circular_distance(int(by_hour.idxmax()), shares.peak_hour) <= 1
+    assert by_hour.max() == pytest.approx(shares.peak, abs=0.01)
+    assert by_hour.min() == pytest.approx(shares.trough, abs=0.01)
+    # Twelve hours from the peak is the trough
+    assert _circular_distance(int(by_hour.idxmin()), shares.peak_hour) >= 11
+    days = (both.index - truth.start) / pd.Timedelta(days=1)
+    slope, intercept = np.polyfit(days, both.to_numpy(), 1)
+    assert slope == pytest.approx(truth.drift.slope_per_day, rel=0.02)
+    assert intercept == pytest.approx(truth.drift.intercept, rel=0.005)
+    species = cluster_campaign.tables["species"]
+    reagent = species[species["mechanism"] == "reagent"]
+    assert list(reagent["series_key"]) == list(shares.series_keys)
+    assert list(reagent["ion_formula"]) == ["I-", "H2IO-"]
+
+
+def test_species_sensitivity_follows_the_reagents_sum(cluster_campaign):
+    """A flat species divided by the sum is flat by day and by hour; divided
+    by the bare ion, it carries the inverse of the bare ion's share."""
+    truth = cluster_campaign.truth
+    bare, cluster = _reagents(cluster_campaign)
+    flat = next(
+        k
+        for k, c in truth.cycles.items()
+        if k.startswith("formula:")
+        and c.kind == "flat"
+        and all(k not in e.series_keys for e in truth.episodes)
+        and all(k not in pair for pair in truth.run_change.readings)
+    )
+    series = _series(cluster_campaign, "peak_series", flat)
+    first = slice(truth.start, truth.start + pd.Timedelta(days=3))
+    last = slice(truth.end - pd.Timedelta(days=3), truth.end)
+
+    by_sum = series / (bare + cluster)
+    by_bare = series / bare
+    assert by_sum[last].median() / by_sum[first].median() == pytest.approx(
+        1.0, abs=0.03
+    )
+    hour = series.index.tz_convert(truth.timezone).hour
+    hourly_sum = by_sum.groupby(hour).median()
+    hourly_bare = by_bare.groupby(hour).median()
+    assert hourly_sum.max() / hourly_sum.min() < 1.1
+    assert hourly_bare.max() / hourly_bare.min() == pytest.approx(
+        truth.shares.peak / truth.shares.trough, rel=0.1
+    )
+
+
+def test_the_cluster_is_below_detection_in_its_stretch(cluster_campaign):
+    truth = cluster_campaign.truth
+    lo, hi = truth.shares.lost
+    bare, cluster = _reagents(cluster_campaign)
+    samples = cluster_campaign.tables["samples"]
+    in_stretch = samples["t_mid_utc"].between(lo, hi, inclusive="left")
+
+    assert hi - lo == pd.Timedelta(hours=6)
+    assert truth.shares.lost_samples == in_stretch.sum() == 360
+    missing = cluster.index[cluster.isna()]
+    gap = truth.gap
+    assert set(missing[(missing < gap.start) | (missing >= gap.end)]) == set(
+        samples.loc[in_stretch, "t_mid_utc"]
+    )
+    assert bare[lo:hi].notna().all()
 
 
 def test_positive_chemistry_has_no_reagent(positive_campaign):
@@ -496,6 +590,13 @@ def test_parameter_sets_are_replaceable():
             "does not exist",
         ),
         ({"n_renamed": 60}, "rename"),
+        ({"cluster": "H2BrO-"}, "water"),
+        ({"cluster": "H2IO-", "reagent": None}, "water"),
+        ({"cluster": "H2IO-", "share_trough": 0.8}, "trough < peak"),
+        ({"cluster": "H2IO-", "share_peak_hour": 24}, "hour"),
+        ({"cluster_lost": (pd.Timedelta(0), DAY)}, "needs a cluster"),
+        ({"cluster": "H2IO-", "cluster_lost": (DAY, DAY * 31)}, "outside"),
+        ({"cluster": "H2IO-", "cluster_lost": (DAY * 20, DAY * 21)}, "gap day"),
     ],
 )
 def test_parameters_are_checked(change, message):
