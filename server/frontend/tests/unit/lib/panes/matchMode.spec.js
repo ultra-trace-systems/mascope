@@ -36,7 +36,7 @@ vi.mock('@/stores', () => ({ useApp: () => hold.makeApp() }))
 vi.mock('@/lib/panes/PaneBrowserMatch/AssignmentRunBar.vue', () => ({
   default: { template: '<div class="assignment-run-bar" />' }
 }))
-vi.mock('@/lib/panes/PaneBrowserMatch/BatchPeakComputeBar.vue', () => ({
+vi.mock('@/lib/panes/PaneBrowserMatch/BatchAssignControl.vue', () => ({
   default: { template: '<div class="assignment-run-bar" />' }
 }))
 vi.mock('@/lib/panes/PaneBrowserMatch/MatchCollectionTable.vue', () => ({

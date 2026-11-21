@@ -39,7 +39,11 @@ export const TOAST_TITLES = {
   compute_sample_file_peaks: 'Processing',
   process_sample_item: 'Processing',
   reprocess_sample_files: 'Processing',
-  import_sample_items: 'Processing'
+  import_sample_items: 'Processing',
+  // A pass of the batch stages, and the one message the Assign batch control
+  // sends when it ends (stores/batchAssign.js).
+  assign_batch: 'Batch assignment',
+  batch_assignment: 'Batch assignment'
 }
 
 // What follows a mapped heading. A success or an info needs no word for it:
@@ -110,12 +114,18 @@ export function notificationSeverity(notification) {
  * search can finish before that: the pane says "No results found" all the
  * same, and an info toast on top of it would be the same news twice.
  *
+ * A pass of the batch stages that the Assign batch control claimed is left
+ * out whatever its outcome, a failure included: the control reports every
+ * end of it itself, a stop as a warning naming the stage, so the server's
+ * own outcome would be the same news twice.
+ *
  * Anything else is shown.
  *
  * @param {object} notification The notification, as the store hands it on.
  * @returns {boolean}
  */
 export function toastWanted({ type, status, data, claimed } = {}) {
+  if (type === 'assign_batch' && claimed) return false
   if (status === 'error') return true
   if (type === 'match_compositions_by_mz' && status === 'success' && data?.results === 0) {
     return false

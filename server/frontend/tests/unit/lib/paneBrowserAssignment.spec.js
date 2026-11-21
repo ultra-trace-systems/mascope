@@ -1906,14 +1906,14 @@ describe('PaneBrowserAssignment header and controls', () => {
   // the switch bar's copy (AssignmentRunBar) and this pane's empty-state copy.
   // This is the ledger's half - the bar shows one in exactly the states the
   // ledger shows none, asserted in assignmentRunBar.spec.js.
-  it('carries an "Assign peaks" control only in the empty state', async () => {
+  it('carries an "Assign sample" control only in the empty state', async () => {
     const withRuns = await mountPane()
-    expect(withRuns.findAll('[label="Assign peaks"]')).toHaveLength(0)
+    expect(withRuns.findAll('[label="Assign sample"]')).toHaveLength(0)
 
     // No runs, nothing to select: the empty state is the only call to action.
     runList = []
     const withoutRuns = await mountPane()
-    expect(withoutRuns.findAll('[label="Assign peaks"]')).toHaveLength(1)
+    expect(withoutRuns.findAll('[label="Assign sample"]')).toHaveLength(1)
 
     // A run list that failed to load reads nothing like "this sample has none",
     // so it gets the load error rather than the empty state - and the bar keeps
@@ -1921,14 +1921,14 @@ describe('PaneBrowserAssignment header and controls', () => {
     runList = []
     runError = new Error('nope')
     const withError = await mountPane()
-    expect(withError.findAll('[label="Assign peaks"]')).toHaveLength(0)
+    expect(withError.findAll('[label="Assign sample"]')).toHaveLength(0)
   })
 
   it('opens the shared config dialog from the empty state', async () => {
     runList = []
     const wrapper = await mountPane()
 
-    await wrapper.find('[label="Assign peaks"]').trigger('click')
+    await wrapper.find('[label="Assign sample"]').trigger('click')
 
     // The same flag the switch bar's button sets, so whichever button the user
     // reached for opens the one dialog this pane owns.
@@ -1962,7 +1962,7 @@ describe('PaneBrowserAssignment view options menu', () => {
     expect(wrapper.find('.tier-strip .view-menu-button').exists()).toBe(true)
     expect(wrapper.find('.menu-row').exists()).toBe(false)
     // The run selector and the launch button are a row up now.
-    expect(wrapper.find('[label="Assign peaks"]').exists()).toBe(false)
+    expect(wrapper.find('[label="Assign sample"]').exists()).toBe(false)
     expect(wrapper.find('[placeholder="Select run"]').exists()).toBe(false)
   })
 

@@ -45,11 +45,12 @@ describe('the retired double meanings', () => {
     })
   })
 
-  // History: the banner over a ledger an earlier run left, and the record of
-  // deleted datasets. A grade or a verdict the ledger has moved past wears the
-  // out-of-date arrows.
+  // History: the banner over a ledger an earlier run left, Assign batch's
+  // Run history, and the record of deleted datasets. A grade or a verdict the
+  // ledger has moved past wears the out-of-date arrows.
   it('keeps the clock for history alone', () => {
     expect(uses('ph-clock-counter-clockwise')).toEqual({
+      'lib/panes/PaneBrowserMatch/BatchAssignControl.vue': 1,
       'lib/panes/PaneBrowserMatch/PaneBrowserBatchPeaks.vue': 1,
       'lib/dialogs/DialogDeletedDatasets.vue': 1,
       'lib/toolbars/ToolbarAppFilters/SidebarMenu/UserSettingsPane.vue': 1
@@ -77,12 +78,12 @@ describe('the retired double meanings', () => {
     })
   })
 
-  // Co-variation: the registry's reading and the step that reads it. The
-  // artifact role is its colour, and the chart's empty state the cursor.
+  // Co-variation: the registry's reading. The step that reads it is a stage
+  // of Assign batch now, with no button of its own; the artifact role is its
+  // colour, and the chart's empty state the cursor.
   it('keeps the wave for co-variation', () => {
     expect(uses('ph-wave-sine')).toEqual({
-      'lib/evidence/marks.js': 1,
-      'lib/panes/PaneBrowserMatch/BatchPeakComputeBar.vue': 1
+      'lib/evidence/marks.js': 1
     })
   })
 

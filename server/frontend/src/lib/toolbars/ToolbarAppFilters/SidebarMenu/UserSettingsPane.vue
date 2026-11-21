@@ -22,6 +22,7 @@ import {
 import { useMfaReauth } from '@/lib/dialogs/useMfaReauth'
 import { deviceMetaLabel } from '@/lib/devices'
 import { prettyRoleName, ROLES } from '@/lib/roles'
+import { peakAssignmentEnabled } from '@/lib/features'
 
 import { useSidebarMenu } from './state.js'
 
@@ -112,9 +113,7 @@ const currentServiceConfig = computed(() =>
 
 // Available token types based on user role
 const availableTokenTypes = computed(() =>
-  SERVICE_CONFIGS.filter(
-    (config) => !config.pairedOnly && app.auth.user.role_id >= config.minRole
-  )
+  SERVICE_CONFIGS.filter((config) => !config.pairedOnly && app.auth.user.role_id >= config.minRole)
 )
 
 const tokenItems = computed(() =>
@@ -203,9 +202,7 @@ const revokeDevice = async (device) => {
 }
 
 const lastSeenLabel = (device) =>
-  device.last_seen_at
-    ? `last seen ${new Date(device.last_seen_at).toLocaleString()}`
-    : 'never seen'
+  device.last_seen_at ? `last seen ${new Date(device.last_seen_at).toLocaleString()}` : 'never seen'
 
 // What the machine says about itself, next to what the server knows.
 const deviceMeta = (device) =>
@@ -303,6 +300,32 @@ const vHelpLayer = app.ui.help.directive(layer)
       <span>Dark</span>
     </div>
   </section>
+  <!-- Off by default: who sees the batch stages one by one is the plan
+       owner's call (docs/dev/batch_assignment_one_action.md, 7.2), and until
+       it is made they are behind this switch. -->
+  <section
+    v-if="peakAssignmentEnabled"
+    v-help-layer.right="
+      `
+    <b>Assignment</b>
+    <p>
+      <b>Show assignment stages</b> adds Advanced &rsaquo; Run from a stage to
+      the Assign batch menu: the batch's stages one by one, each starting the
+      pass at that stage. For checking a stage; Assign batch runs them all.
+    </p>
+  `
+    "
+  >
+    <h3>Assignment</h3>
+    <div class="row" style="width: fit-content">
+      <ToggleSwitch
+        v-model="app.ui.assignmentStages.show"
+        inputId="show-assignment-stages"
+        data-testid="show-assignment-stages"
+      />
+      <label for="show-assignment-stages">Show assignment stages</label>
+    </div>
+  </section>
   <section
     v-help-layer.right="{
       message: `
@@ -381,10 +404,7 @@ const vHelpLayer = app.ui.help.directive(layer)
         <h4>Paired machines</h4>
         <ul>
           <li v-for="device in devices" :key="device.device_id" class="device-row">
-            <BaseEditableField
-              :field="device.name"
-              :save="(name) => renameDevice(device, name)"
-            />
+            <BaseEditableField :field="device.name" :save="(name) => renameDevice(device, name)" />
             <span class="device-meta">{{ deviceMeta(device) }}</span>
             <Button
               :label="confirmRevokeId === device.device_id ? 'Confirm revoke' : 'Revoke'"

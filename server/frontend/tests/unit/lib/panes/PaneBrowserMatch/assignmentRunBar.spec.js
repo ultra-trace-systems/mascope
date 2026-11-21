@@ -55,7 +55,7 @@ vi.mock('@/lib/base', async () => ({
 
 const GLOBAL_STUBS = {
   // No declared props, so `label` falls through as a DOM attribute and the
-  // `[label="Assign peaks"]` selector matches - the same shape the ledger's
+  // `[label="Assign sample"]` selector matches - the same shape the ledger's
   // spec uses, so the two halves of the "never two buttons" rule are counted
   // the same way.
   Button: { template: '<button><slot /></button>' },
@@ -251,7 +251,7 @@ describe('AssignmentRunBar stale-peaks mark', () => {
 // per-sample one - so what it offers has to be right in a state the ledger's
 // own spec never sees: no focused sample, and so no runs at all.
 describe('AssignmentRunBar states', () => {
-  const assignButton = (wrapper) => wrapper.find('[label="Assign peaks"]')
+  const assignButton = (wrapper) => wrapper.find('[label="Assign sample"]')
 
   it('collapses to nothing at batch level', async () => {
     // The run store only loads for a focused sample, so at batch level there is

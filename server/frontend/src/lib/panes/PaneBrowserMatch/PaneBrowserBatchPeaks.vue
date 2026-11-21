@@ -15,6 +15,7 @@ import { FilterMatchMode, FilterOperator, FilterService } from '@primevue/core/a
 
 import {
   BaseCopyableField,
+  BaseEmptyState,
   BaseEvidenceBadge,
   BaseLevelTag,
   BaseProvisionalMark,
@@ -81,7 +82,7 @@ import { useBatchPeakJump } from './stores/batchPeakJump.js'
 import { INSTRUMENT_TYPE_LABELS } from '@/lib/batchChart'
 import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger'
 
-import { useBatchPeakCompute } from './stores/batchPeakCompute.js'
+import { useBatchAssign } from './stores/batchAssign.js'
 import { useLedgerListing } from './stores/ledgerListing.js'
 import { useLedgerSort } from './stores/ledgerSort.js'
 import BatchPeakVerdictPopover from './BatchPeakVerdictPopover.vue'
@@ -97,11 +98,12 @@ const app = useApp()
 // The row action that opens the brightest sample on this peak.
 const jump = useBatchPeakJump()
 
-// The button that launches this lives a row up, in the browser's switch bar
-// (BatchPeakComputeBar.vue), so the launch and its state are shared through a
-// store. Only the refusal is read back here, to be reported below the table it
-// is about rather than in a toast that has scrolled away.
-const compute = useBatchPeakCompute()
+// Assign batch lives a row up, in the browser's switch bar
+// (BatchAssignControl.vue), so the launch and its state are shared through a
+// store. The refusal is read back here, to be reported below the table it is
+// about rather than in a toast that has scrolled away, and the empty ledger
+// offers the action itself.
+const assign = useBatchAssign()
 
 const ledger = computed(() => app.data.batchPeak)
 const verdicts = computed(() => app.data.batchPeakVerification)
@@ -1002,7 +1004,7 @@ const HEADER_TOOLTIPS = {
 watch(
   () => app.data.batch.focusedId,
   () => {
-    compute.reset()
+    assign.reset()
     overflowFrom.value = 0
     selectionAtCapacity.value = false
   }
@@ -1034,8 +1036,8 @@ watch(
         The rows selected here are what the Assignments chart plots &mdash;
         Ctrl+A selects all filtered rows, up to the
         ${MAX_SELECTED_BATCH_PEAKS} the chart draws at once. Filter first to
-        choose which ones. <b>Rebuild batch ledger</b> in the bar above
-        rebuilds the rows. Focus a sample to switch to its per-sample
+        choose which ones. <b>Assign batch</b> in the bar above
+        runs the batch's pass. Focus a sample to switch to its per-sample
         assignment ledger.
         </p>`,
         { doc: app.ui.help.docUrl('how-it-works/peak-assignment/#batch-peaks') }
@@ -1046,12 +1048,12 @@ watch(
       <!-- A launch that was refused or failed reports itself here rather than in
            a toast that has scrolled away by the time the user looks up. -->
       <Message
-        v-if="compute.launchError"
-        :severity="compute.launchRefused ? 'warn' : 'error'"
+        v-if="assign.launchError"
+        :severity="assign.launchRefused ? 'warn' : 'error'"
         closable
-        @close="compute.launchError = null"
+        @close="assign.launchError = null"
       >
-        {{ compute.launchError }}
+        {{ assign.launchError }}
       </Message>
 
       <!-- Said here, where the gesture was made, rather than left for the user
@@ -1068,7 +1070,7 @@ watch(
            have their reason. -->
       <Message v-if="!runs.viewingCurrent" severity="info" icon="pi ph ph-clock-counter-clockwise">
         Showing the ledger as {{ viewedRunLabel }} left it, read-only. Verdicts and curation act on
-        the current run; pick it in the run selector to judge.
+        the current run; pick it under Run history, in Assign batch's menu, to judge.
       </Message>
 
       <!-- Only on a batch of both instrument types: which one's batch peaks
@@ -1310,12 +1312,12 @@ watch(
               size="small"
               text
               severity="secondary"
-              :disabled="!parents.length || compute.exporting"
-              :loading="compute.exporting"
+              :disabled="!parents.length || assign.exporting"
+              :loading="assign.exporting"
               v-tooltip.top="
                 'Download the whole ledger as CSV: one row per member peak, with the batch peak it folded into'
               "
-              @click="compute.exportLedger()"
+              @click="assign.exportLedger()"
             />
           </div>
         </Popover>
@@ -1354,7 +1356,33 @@ watch(
           )
         "
       >
-        <template #empty> No batch peaks yet - run "Rebuild batch ledger" to populate. </template>
+        <template #empty>
+          <!-- The empty ledger carries Assign batch, and the bar hides its own
+               copy then (BatchAssignControl), so one button is on screen. A
+               ledger whose rows the filters hide says so instead. -->
+          <BaseEmptyState
+            v-if="assign.ledgerOffersAssign"
+            icon="pi ph ph-magic-wand"
+            title="Not assigned"
+            hint="Assign the batch to fold its samples into batch peaks, search what the known compositions leave, and cross-check it across the batch."
+          >
+            <template #actions>
+              <span v-tooltip.top="assign.blockedReason">
+                <Button
+                  class="empty-assign"
+                  label="Assign batch"
+                  icon="pi ph ph-magic-wand"
+                  size="small"
+                  :loading="assign.launching"
+                  :disabled="Boolean(assign.blockedReason)"
+                  @click="assign.assign()"
+                />
+              </span>
+            </template>
+          </BaseEmptyState>
+          <BaseEmptyState v-else-if="!ledger.list.length" title="No batch peaks yet" />
+          <BaseEmptyState v-else title="No batch peaks match these filters" />
+        </template>
 
         <Column selectionMode="multiple" style="width: 3rem" />
 
