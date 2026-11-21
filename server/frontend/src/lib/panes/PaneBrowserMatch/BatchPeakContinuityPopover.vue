@@ -104,7 +104,7 @@ const warning = computed(() => continuityWarning(props.row))
 }
 .warning {
   padding: 0.25rem 0.4rem;
-  border: 1px dashed var(--state-warning);
+  border: 1px solid var(--state-warning);
   border-radius: 4px;
 }
 .pairs {

@@ -85,10 +85,10 @@ const resultsHelp = {
     Candidate compositions whose ions land within the m/z window.
     <b>DBE</b> is the degree of unsaturation.${
       peakAssignmentEnabled
-        ? ` The seal column shows each
+        ? ` The <b>tier</b> column shows each
     candidate's confidence tier and sorts by its fit score, the atom column its
-    chemical plausibility, and a flask names a match in a public reference
-    database.`
+    chemical plausibility, and the <b>known</b> column names a match in a public
+    reference database.`
         : ` The seal column shows each candidate's match score.`
     }
     A database icon marks formulas that already exist among your target compounds.
@@ -835,10 +835,9 @@ watch(
       </Column>
       <Column v-if="peakAssignmentEnabled" field="fit_score" sortable>
         <template #header>
-          <span
-            class="pi ph ph-seal-check"
-            v-tooltip="{ value: 'Confidence tier, sorted by fit score', showDelay: 500 }"
-          />
+          <span v-tooltip="{ value: 'Confidence tier, sorted by fit score', showDelay: 500 }"
+            >tier</span
+          >
         </template>
         <template #body="{ data }">
           <!-- A line has no tier of its own: it shows how well it matched. -->
@@ -912,12 +911,12 @@ watch(
       <Column v-if="peakAssignmentEnabled">
         <template #header>
           <span
-            class="pi ph ph-flask"
             v-tooltip.left="{
               value: 'Known compound (public reference database)',
               showDelay: 500
             }"
-          />
+            >known</span
+          >
         </template>
         <template #body="{ data }">
           <span
@@ -928,7 +927,6 @@ watch(
               showDelay: 300
             }"
           >
-            <span class="pi ph ph-flask" />
             {{ knownCompoundLabel(data.cheminfo.known_compounds) }}
           </span>
         </template>
@@ -950,7 +948,7 @@ watch(
           <span v-if="peakAssignmentEnabled" class="curate-header" v-help.left="curationHelp">
             <span
               v-if="!assignDenied"
-              class="pi ph ph-hand-pointing"
+              class="pi ph ph-push-pin"
               v-tooltip.left="{ value: 'Assign to the selected peak', showDelay: 500 }"
             />
           </span>
@@ -969,7 +967,7 @@ watch(
               v-tooltip.left="{ value: assignTooltip, showDelay: 300 }"
             >
               <Button
-                icon="pi ph ph-hand-pointing"
+                icon="pi ph ph-push-pin"
                 size="small"
                 text
                 severity="secondary"

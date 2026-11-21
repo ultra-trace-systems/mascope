@@ -45,25 +45,30 @@ const props = defineProps({
   }
 })
 
-// Label, severity and icon come from the shared tier module, which also fixes
+// Label, severity and dot come from the shared tier module, which also fixes
 // the confidence order the ledgers sort by - the chip and the sort must name
 // the same four tiers or a "below" chip can outrank an "assigned" one.
+//
+// The chip's face is a dot, not a glyph: filled for assigned, half for
+// candidate, a ring for below, a dashed ring for unassigned. A glyph is a
+// reading's (lib/evidence/marks.js), and the seal-check, half circle and minus
+// circle the tiers used to wear were each a second meaning of a mark.
 const meta = computed(() => tierMeta(props.tier))
 
 // A reagent or an artifact peak is accounted for by what made it, not by a
 // formula. The engine writes such a row at tier `unassigned`, which is true -
 // no compound was assigned - but a chip reading "unassigned" says nothing
 // explained the peak, the opposite of what the role says. So the role is the
-// chip, and it shows no evidence: none was measured.
+// chip, and it shows no evidence: none was measured. It wears no glyph and no
+// dot: the flask and the wave it once wore meant a listing and co-variation
+// too, and a dot would read as a tier. Its colour, --role-reagent, says it.
 const ROLE_CHIPS = Object.freeze({
   reagent: {
     label: 'reagent',
-    icon: 'ph ph-flask',
     line: 'Reagent: an ion the ionization source made, of its reagent, the air or its calibrant, or by breaking an analyte'
   },
   artifact: {
     label: 'artifact',
-    icon: 'ph ph-wave-sine',
     line: 'Artifact: a ringing side lobe of a very intense neighbouring peak'
   }
 })
@@ -155,12 +160,29 @@ const autoTooltip = computed(() => {
 <template>
   <span class="tier-tag" v-tooltip.top="autoTooltip">
     <Tag
+      v-if="roleChip"
       :value="label"
-      :severity="roleChip ? 'secondary' : meta.severity"
-      :icon="`pi ${roleChip ? roleChip.icon : meta.icon}`"
-      :class="roleChip ? ['role', role] : ['tier', tier]"
+      severity="secondary"
+      :class="['role', role]"
+      data-testid="role-chip"
       style="font-size: 11px"
     />
+    <Tag
+      v-else
+      :value="label"
+      :severity="meta.severity"
+      :class="['tier', meta.key]"
+      style="font-size: 11px"
+    >
+      <template #icon>
+        <span
+          :class="['tier-dot', meta.dot]"
+          data-testid="tier-dot"
+          :data-dot="meta.dot"
+          aria-hidden="true"
+        />
+      </template>
+    </Tag>
     <span v-if="roleIcon" :class="[roleIcon, 'role-icon']" />
     <span v-if="isDemoted" class="pi ph ph-eraser demoted-icon" data-testid="demoted-mark" />
     <span
@@ -179,18 +201,39 @@ const autoTooltip = computed(() => {
   white-space: nowrap;
 }
 
-/* The source's and the instrument's peaks, in the colour the spectrum draws
-   them in: accounted for, and not the sample's. */
+/* The source's and the instrument's peaks, in the role's own token: accounted
+   for, and not the sample's. */
 .role {
-  color: #8a5ed0;
-  border: 1px solid color-mix(in srgb, #8a5ed0 45%, transparent);
-  background: color-mix(in srgb, #8a5ed0 10%, transparent);
+  color: var(--role-reagent);
+  border: 1px solid color-mix(in srgb, var(--role-reagent) 45%, transparent);
+  background: color-mix(in srgb, var(--role-reagent) 10%, transparent);
 }
 
-/* Unassigned is a first-class outcome but visually recessive: dashed + pale. */
+/* The tier's face, in the chip's own colour: filled, half, a ring, and the
+   one dashed mark of the assignment views, the ring of the outcome not yet
+   known. */
+.tier-dot {
+  display: inline-block;
+  box-sizing: border-box;
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+}
+.tier-dot.filled {
+  background: currentColor;
+}
+.tier-dot.half {
+  background: linear-gradient(90deg, currentColor 50%, transparent 50%);
+}
+.tier-dot.dashed {
+  border-style: dashed;
+}
+
+/* Unassigned is a first-class outcome but visually recessive: pale, with no
+   ground; its dashed ring says it is not yet known. */
 .tier.unassigned {
   opacity: 0.55;
-  border: 1px dashed var(--p-tag-secondary-color, currentColor);
   background: transparent;
 }
 
@@ -200,10 +243,12 @@ const autoTooltip = computed(() => {
 }
 
 /* Not recessive like the role marker: "a person decided this" is the least
-   guessable thing about a row, so it reads at full strength. */
+   guessable thing about a row, so it reads at full strength - in the human
+   tone of the evidence badges, the text colour, never the accent, which means
+   Mascope and the one primary action (lib/evidence/marks.js, TONES). */
 .manual-icon {
   font-size: 12px;
-  color: var(--p-primary-color, currentColor);
+  color: var(--p-text-color);
 }
 
 /* Recessive where the hand is not: a demoted row is the consequence of a

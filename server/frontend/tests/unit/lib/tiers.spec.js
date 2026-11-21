@@ -47,9 +47,17 @@ describe('TIERS', () => {
         label: expect.any(String),
         name: expect.any(String),
         severity: expect.any(String),
-        icon: expect.any(String)
+        dot: expect.any(String)
       })
     }
+  })
+
+  // A tier's face is a dot of its own, never a glyph a reading also uses: the
+  // four are told apart by their fill, and the dashed ring, the one dashed
+  // mark, is the outcome not yet known.
+  it('gives each tier a dot of its own, dashed only for unassigned', () => {
+    expect(TIERS.map((tier) => TIER_META[tier].dot)).toEqual(['filled', 'half', 'ring', 'dashed'])
+    for (const tier of TIERS) expect(TIER_META[tier]).not.toHaveProperty('icon')
   })
 
   // A filter menu or a chart hover shows the name on its own, where the API's

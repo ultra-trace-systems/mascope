@@ -9,6 +9,7 @@ import RadioButton from 'primevue/radiobutton'
 import { useApp } from '@/stores'
 import {
   BaseClaimStructure,
+  BaseEvidenceBadge,
   BaseLevelTag,
   BaseProvisionalMark,
   BaseTierTag,
@@ -1604,7 +1605,7 @@ const demotedCount = computed(() => {
               &middot; potential</span
             ></span
           >
-          <span class="v"><span class="pi ph ph-flask" /> {{ listingName(listedAs) }}</span>
+          <span class="v">{{ listingName(listedAs) }}</span>
           <span v-if="listingSource(listedAs)" class="list-source">{{
             listingSource(listedAs)
           }}</span>
@@ -1734,7 +1735,7 @@ const demotedCount = computed(() => {
         v-tooltip.top="sampleStampTooltip(batchStamp, { linked: true })"
         @click="focusStampParent"
       >
-        <span class="pi ph ph-stamp" />
+        <BaseEvidenceBadge mark="isotopes" :record="{ stampedAs: batchStamp }" quiet />
         <span>{{ sampleStampSummary(batchStamp) }}</span>
       </button>
       <div
@@ -1744,7 +1745,7 @@ const demotedCount = computed(() => {
         data-testid="batch-stamp"
         v-tooltip.top="sampleStampTooltip(batchStamp)"
       >
-        <span class="pi ph ph-stamp" />
+        <BaseEvidenceBadge mark="isotopes" :record="{ stampedAs: batchStamp }" quiet />
         <span>{{ sampleStampSummary(batchStamp) }}</span>
       </div>
       <!-- The isotope lines the batch predicted for this reading: how many it
@@ -1756,7 +1757,7 @@ const demotedCount = computed(() => {
         data-testid="batch-isotopologues"
         v-tooltip.top="isotopologuesTooltip(batchIsotopologues)"
       >
-        <span class="pi ph ph-stamp" />
+        <BaseEvidenceBadge mark="isotopes" :record="{ stamping: batchIsotopologues }" quiet />
         <span>{{ sampleIsotopologuesSummary(batchIsotopologues) }}</span>
       </div>
       <!-- The batch's reading of how this compound's channels follow each
@@ -1768,7 +1769,7 @@ const demotedCount = computed(() => {
         data-testid="co-variation"
         v-tooltip.top="coVariationTooltip(batchCoVariation)"
       >
-        <span class="pi ph ph-wave-sine" />
+        <BaseEvidenceBadge mark="coVariation" :record="batchCoVariation" quiet />
         <!-- One text run, so the r wraps with the sentence it ends. -->
         <span
           >{{ coVariationSummary(batchCoVariation)
@@ -1785,7 +1786,7 @@ const demotedCount = computed(() => {
         data-testid="batch-checks"
         v-tooltip.top="checksTooltip(batchChecks)"
       >
-        <span class="pi ph ph-seal-check" />
+        <BaseEvidenceBadge mark="facts" :record="batchChecks" quiet />
         <span>{{ checksSummary(batchChecks) }}</span>
       </div>
       <!-- Why the batch search took this peak: the share of the batch's
@@ -1797,7 +1798,7 @@ const demotedCount = computed(() => {
         data-testid="batch-persistence"
         v-tooltip.top="persistenceTooltip(batchPersistence)"
       >
-        <span class="pi ph ph-repeat" />
+        <BaseEvidenceBadge mark="persistence" :record="batchPersistence" quiet />
         <span
           >{{ persistenceSummary(batchPersistence)
           }}<span v-if="batchPersistenceNote">, {{ batchPersistenceNote }}</span></span
@@ -1812,7 +1813,7 @@ const demotedCount = computed(() => {
         data-testid="batch-flat-series"
         v-tooltip.top="flatSeriesTooltip(batchFlatSeries)"
       >
-        <span class="pi ph ph-equals" />
+        <BaseEvidenceBadge mark="flatSeries" :record="batchFlatSeries" quiet />
         <span>{{ flatSeriesSummary(batchFlatSeries) }}</span>
       </div>
       <Popover ref="channelsMenu" aria-label="The other channels' peaks">
@@ -1948,7 +1949,7 @@ const demotedCount = computed(() => {
               class="reading-listed"
               v-tooltip.left="listingTooltip(listingOf(reading))"
             >
-              <span class="pi ph ph-flask" /> {{ listingName(listingOf(reading)) }}
+              {{ listingName(listingOf(reading)) }}
             </span>
           </li>
         </ul>
@@ -2194,14 +2195,20 @@ const demotedCount = computed(() => {
         }"
       >
         <div class="alts-label">Verification</div>
-        <!-- Borrowed from the batch level: the dashed pill is this pane's grammar
-             for evidence read off another row, as on the inherited corroboration. -->
+        <!-- Borrowed from the batch level: the verdict's own icon with the
+             batch's mark at its upper right, as the ledger draws it. Never
+             dashed: a dashed border means not yet known. -->
         <div
           v-if="anchorVerdict && !verification"
           class="anchor-verdict"
           v-tooltip.top="anchorVerdictTooltip"
         >
-          <span :class="['pi', VERDICT_META[anchorVerdict.verdict].icon]" />
+          <span class="anchor-verdict-face"
+            ><span :class="['pi', VERDICT_META[anchorVerdict.verdict].icon]" /><span
+              class="pi pi-hashtag batch-mark"
+              data-testid="batch-mark"
+              aria-hidden="true"
+          /></span>
           <span
             >{{ anchorVerdictLabel }} at batch level &mdash; a verdict here records a per-sample
             exception</span
@@ -2360,9 +2367,9 @@ const demotedCount = computed(() => {
               }}<span v-if="alternativeKind(alt)" class="alt-kind">{{
                 alternativeKind(alt).label
               }}</span
-              ><span v-if="listingOf(alt)" class="alt-listed"
-                ><span class="pi ph ph-flask" /> {{ listingName(listingOf(alt)) }}</span
-              ></span
+              ><span v-if="listingOf(alt)" class="alt-listed">{{
+                listingName(listingOf(alt))
+              }}</span></span
             >
             <span class="s">
               <span v-if="altFit(alt) != null"
@@ -2393,7 +2400,7 @@ const demotedCount = computed(() => {
               size="small"
               text
               severity="secondary"
-              icon="pi ph ph-hand-pointing"
+              icon="pi ph ph-push-pin"
               :disabled="curating !== null || promoteBlocked(alt)"
               :loading="curating === i"
               v-tooltip.top="
@@ -2615,9 +2622,9 @@ const demotedCount = computed(() => {
   margin-top: 0.1rem;
 }
 /* "A person chose this" reads at full strength, as the same mark does on the
-   tier chip. */
+   tier chip: in the human tone, the text colour, never the accent. */
 .manual-note > .manual-icon {
-  color: var(--p-primary-color, currentColor);
+  color: var(--p-text-color);
 }
 /* The eraser does not. A demoted row is the consequence of a decision taken on
    another peak, not a decision about this one, so it must not be coloured like
@@ -2655,8 +2662,20 @@ const demotedCount = computed(() => {
   border-radius: 100px;
   color: var(--state-info);
   background: color-mix(in srgb, var(--state-info) 12%, transparent);
-  border: 1px dashed color-mix(in srgb, var(--state-info) 45%, transparent);
+  border: 1px solid color-mix(in srgb, var(--state-info) 45%, transparent);
   cursor: default;
+}
+.anchor-verdict-face {
+  position: relative;
+  display: inline-flex;
+  margin-right: 4px;
+}
+.anchor-verdict-face .batch-mark {
+  position: absolute;
+  top: -4px;
+  right: -6px;
+  font-size: 9px;
+  line-height: 1;
 }
 .anchor-verdict .pi {
   font-size: 0.8rem;
@@ -2819,19 +2838,17 @@ const demotedCount = computed(() => {
 .corroboration .pi {
   font-size: 0.8rem;
 }
-/* Corroboration read off the family's M0 rather than measured on this peak. The
-   badge says so in words too - dimming it instead would borrow the "no value
-   here" idiom the placeholder values use, and cost contrast the pill needs. */
-.corroboration.inherited {
-  border-style: dashed;
-}
+/* Corroboration read off the family's M0 rather than measured on this peak
+   says so in words, and only in words: dimming it would borrow the "no value
+   here" idiom the placeholder values use and cost contrast the pill needs, and
+   a dashed border means not yet known. */
 /* The batch's co-variation reading: a plain line, not a badge, as it is shown
    and never weighed. A pair that does not co-vary, or cannot be read, is
    muted rather than coloured: it demotes nothing. */
 .co-variation {
   align-self: start;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0.35rem;
   font-size: 0.74rem;
   cursor: default;
@@ -2853,7 +2870,7 @@ const demotedCount = computed(() => {
 .batch-checks {
   align-self: start;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0.35rem;
   font-size: 0.74rem;
   cursor: default;
@@ -2865,7 +2882,7 @@ const demotedCount = computed(() => {
 .batch-persistence {
   align-self: start;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0.35rem;
   font-size: 0.74rem;
   cursor: default;
@@ -2877,7 +2894,7 @@ const demotedCount = computed(() => {
 .batch-flat-series {
   align-self: start;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0.35rem;
   font-size: 0.74rem;
   cursor: default;
@@ -2892,7 +2909,7 @@ const demotedCount = computed(() => {
 .batch-isotopologues {
   align-self: start;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0.35rem;
   font-size: 0.74rem;
   cursor: default;
@@ -3036,11 +3053,11 @@ button.reason-neighbour:focus-visible {
   opacity: 0.6;
   cursor: default;
 }
-/* Read off the M0 rather than recorded on this peak: dashed, as the pane marks
-   every piece of evidence it borrows from another row. */
+/* Read off the M0 rather than recorded on this peak: set in under a rule, as
+   the words beside it say. Not dashed, which means not yet known. */
 .reason.inherited {
   padding-left: 0.5rem;
-  border-left: 1px dashed var(--p-content-border-color, #e3e6ec);
+  border-left: 1px solid var(--p-content-border-color, #e3e6ec);
 }
 .reason .via {
   font-weight: 400;
@@ -3177,8 +3194,8 @@ button.reason-neighbour:focus-visible {
 .reading-channel {
   opacity: 0.65;
 }
-/* A list's name for a formula, wherever the card shows one: the flask the
-   search panel marks known compounds with, in the reading's own size. */
+/* A list's name for a formula, wherever the card shows one, in the reading's
+   own size. */
 .reading-listed,
 .alt-listed {
   opacity: 0.75;
@@ -3193,7 +3210,7 @@ button.reason-neighbour:focus-visible {
 .alt-kind {
   margin-left: 0.4rem;
   padding: 0 0.3rem;
-  border: 1px dashed var(--p-content-border-color, #e3e6ec);
+  border: 1px solid var(--p-content-border-color, #e3e6ec);
   border-radius: 0.25rem;
   font-size: 0.7rem;
   opacity: 0.7;
@@ -3223,7 +3240,7 @@ button.reason-neighbour:focus-visible {
 }
 .identity .list-tag {
   padding: 0 0.3rem;
-  border: 1px dashed var(--p-content-border-color, #e3e6ec);
+  border: 1px solid var(--p-content-border-color, #e3e6ec);
   border-radius: 0.25rem;
   font-size: 0.7rem;
   opacity: 0.8;

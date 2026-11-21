@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 import BaseTierTag from '@/lib/base/BaseTierTag.vue'
 
@@ -13,7 +15,12 @@ const mountTag = (props) =>
   mount(BaseTierTag, {
     props,
     global: {
-      stubs: { Tag: { props: ['value'], template: '<span class="tag">{{ value }}</span>' } },
+      stubs: {
+        Tag: {
+          props: ['value'],
+          template: '<span class="tag"><slot name="icon" />{{ value }}</span>'
+        }
+      },
       directives: { tooltip: {} }
     }
   })
@@ -173,8 +180,11 @@ describe('BaseTierTag reagent and artifact peaks', () => {
 
       expect(wrapper.find('.tag').text()).toBe(role)
       expect(wrapper.find('.tag').text()).not.toContain('unassigned')
-      // The chip is the role, so no second mark repeats it.
+      // The chip is the role, so no second mark repeats it, and it wears no
+      // dot: a dot is a tier's face.
       expect(roleIcon(wrapper).exists()).toBe(false)
+      expect(wrapper.find('[data-testid="tier-dot"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="role-chip"]').exists()).toBe(true)
     }
   })
 
@@ -228,5 +238,52 @@ describe('BaseTierTag reagent and artifact peaks', () => {
   it('yields to an explicit tooltip here too', () => {
     const wrapper = mountTag({ tier: 'unassigned', role: 'reagent', tooltip: 'say this' })
     expect(wrapper.vm.autoTooltip).toBe('say this')
+  })
+})
+
+// The tier's face is a dot, not a glyph: a glyph is a reading's
+// (lib/evidence/marks.js), and the tiers' seal-check, half circle and minus
+// circle were each a second meaning of a mark.
+describe('BaseTierTag faces', () => {
+  const dotOf = (wrapper) => wrapper.find('[data-testid="tier-dot"]')
+
+  it('draws each tier as a dot of its own, and no glyph', () => {
+    const faces = {
+      assigned: 'filled',
+      candidate: 'half',
+      below_assignability: 'ring',
+      unassigned: 'dashed'
+    }
+    for (const [tier, dot] of Object.entries(faces)) {
+      const wrapper = mountTag({ tier })
+      expect(dotOf(wrapper).attributes('data-dot'), tier).toBe(dot)
+      expect(dotOf(wrapper).classes(), tier).toEqual(['tier-dot', dot])
+      expect(wrapper.find('.tag [class*="ph-"]').exists(), tier).toBe(false)
+    }
+  })
+
+  // The bucketed tier, as the label: a tier this build does not know reads
+  // "unassigned", and its face must not say anything else.
+  it('draws an unknown tier as the dashed ring its label names', () => {
+    const wrapper = mountTag({ tier: 'identified_v0' })
+    expect(dotOf(wrapper).attributes('data-dot')).toBe('dashed')
+    expect(wrapper.find('.tag').classes()).toEqual(expect.arrayContaining(['tier', 'unassigned']))
+  })
+
+  // Every colour the chip draws is a token: the tiers' through the Tag's
+  // severity, the roles' through --role-reagent, the hand through the text
+  // colour. A hex or rgb() literal is a colour that reads on one ground only.
+  it('hard-codes no colour', () => {
+    const source = readFileSync(
+      join(import.meta.dirname, '..', '..', '..', '..', 'src', 'lib', 'base', 'BaseTierTag.vue'),
+      'utf8'
+    )
+    const style = source.slice(source.indexOf('<style'))
+    expect(style).not.toMatch(/#[0-9a-f]{3,8}\b/i)
+    expect(style).not.toMatch(/\brgba?\(|\bhsla?\(/)
+    expect(style).toMatch(/\.role \{[^}]*color: var\(--role-reagent\)/)
+    // The hand is a person's act: the text colour, never the accent.
+    expect(style).toMatch(/\.manual-icon \{[^}]*color: var\(--p-text-color\)/)
+    expect(style).not.toMatch(/--p-primary-color/)
   })
 })

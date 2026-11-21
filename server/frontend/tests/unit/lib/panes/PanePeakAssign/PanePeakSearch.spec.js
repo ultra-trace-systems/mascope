@@ -748,7 +748,9 @@ describe('PanePeakSearch isotope lines under an expanded candidate', () => {
 // store's list, attached to an element no longer in the document, for the rest
 // of the session.
 describe('PanePeakSearch curation help card', () => {
-  const glyph = (wrapper) => wrapper.find('.dt-head .ph-hand-pointing')
+  // A pin, not the hand: the hand marks what a person changed, and this is
+  // the control that makes the change.
+  const glyph = (wrapper) => wrapper.find('.dt-head .ph-push-pin')
 
   it('registers one card on the results header', async () => {
     const wrapper = await mountPane()

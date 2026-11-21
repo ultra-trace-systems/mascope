@@ -24,7 +24,7 @@ const tooltip = {
 }
 const TagStub = {
   props: ['value', 'severity', 'icon'],
-  template: '<span class="tag">{{ value }}</span>'
+  template: '<span class="tag"><slot name="icon" />{{ value }}</span>'
 }
 const mountBadge = (props) =>
   mount(BaseVerdictBadge, {
@@ -41,11 +41,24 @@ describe('BaseVerdictBadge', () => {
     expect(icon.attributes('data-tooltip')).toContain('Verified by you')
   })
 
-  it('parenthesises a borrowed verdict and says where it came from', () => {
+  // A row nobody has judged carries no mark at all: not a faint seal, not an
+  // empty pill. The ledgers' cells stay the buttons that judge it.
+  it('draws nothing for an unjudged row, compact or not', () => {
+    for (const props of [{ record: null }, { record: null, compact: true }]) {
+      const wrapper = mountBadge(props)
+      expect(wrapper.html()).toBe('<!--v-if-->')
+    }
+  })
+
+  // Borrowed from the batch level: the same icon with the batch's mark - the
+  // breadcrumb's - at its upper right. Not parenthesised and not dashed.
+  it("draws a borrowed verdict as its own icon with the batch's mark, and says where it came from", () => {
     const wrapper = mountBadge({ record: RECORD, compact: true, inherited: true })
     const icon = wrapper.find('.verdict-icon.inherited')
     expect(icon.exists()).toBe(true)
-    expect(icon.text()).toBe('()')
+    expect(icon.text()).toBe('')
+    expect(icon.find('.ph-check-circle').exists()).toBe(true)
+    expect(icon.find('[data-testid="batch-mark"]').classes()).toContain('pi-hashtag')
     const tip = icon.attributes('data-tooltip')
     expect(tip).toContain('Confirmed · MS/MS · batch')
     expect(tip).toContain('Batch-level verdict on C6H12O6, by you')
@@ -59,11 +72,19 @@ describe('BaseVerdictBadge', () => {
     expect(icon.attributes('data-tooltip')).toContain('Batch-level verdict differs: Rejected')
   })
 
-  it('marks a borrowed tag as inherited', () => {
+  it('marks a borrowed tag as inherited, with the batch mark on its icon', () => {
     const wrapper = mountBadge({ record: RECORD, inherited: true })
     const tag = wrapper.find('.tag')
     expect(tag.classes()).toContain('inherited')
     expect(tag.text()).toBe('Confirmed · MS/MS · batch')
+    expect(tag.find('.ph-check-circle').exists()).toBe(true)
+    expect(tag.find('[data-testid="batch-mark"]').exists()).toBe(true)
+  })
+
+  it('draws an owned verdict without the batch mark', () => {
+    expect(mountBadge({ record: RECORD }).find('[data-testid="batch-mark"]').exists()).toBe(false)
+    const compact = mountBadge({ record: RECORD, compact: true })
+    expect(compact.find('[data-testid="batch-mark"]').exists()).toBe(false)
   })
 
   it('shows the level and the structure a claim names', () => {

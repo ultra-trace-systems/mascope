@@ -24,7 +24,7 @@ const mark = TIERING_PROVISIONAL
 .provisional-mark {
   margin-left: 0.35rem;
   padding: 0 0.3rem;
-  border: 1px dashed var(--state-warning);
+  border: 1px solid var(--state-warning);
   border-radius: 3px;
   color: var(--state-warning);
   font-size: 0.62rem;

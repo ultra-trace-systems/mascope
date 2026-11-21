@@ -504,9 +504,9 @@ const LISTING_HEADER_TOOLTIP =
   "that list, and the list's tags. A formula match names candidate compounds; it is not an " +
   'identification.'
 
-// The column rests folded to a mark - a flask, and the list's tags beside it -
-// whose tooltip says the rest: written out, it made the ledger too wide for the
-// column the browser has. The view menu's switch shows it in full, in this
+// The column rests folded - the name cut short, and the list's tags beside it -
+// with a tooltip that says the rest: written out, it made the ledger too wide
+// for the column the browser has. The view menu's switch shows it in full, in this
 // ledger and the batch ledger both (stores/ledgerListing.js).
 const listingColumn = useLedgerListing()
 
@@ -907,7 +907,7 @@ const breadcrumb = computed(() => {
 
     <div v-if="!app.data.sample.focused" class="center empty">
       <div class="col" style="gap: 0.5rem; text-align: center; max-width: 40ch">
-        <strong><span class="pi ph ph-hand-pointing" /> No sample selected</strong>
+        <strong><span class="pi ph ph-cursor-click" /> No sample selected</strong>
         <i style="opacity: 0.6"> Select a sample to view or run its peak assignments. </i>
       </div>
     </div>
@@ -1043,8 +1043,9 @@ const breadcrumb = computed(() => {
               ionization channels one row, headed by its strongest reading; the
               arrow beside its ionization shows the others under it.
               <b>Listed as, in full</b> writes out what a reference list calls
-              each formula; folded, the default, the column is a flask with the
-              list's tags beside it, and the name is in its tooltip.
+              each formula with its list; folded, the default, the column is the
+              name cut short with the list's tags beside it, and the whole name
+              and its list are in its tooltip.
               <b>Verdict</b> narrows the table to one verification verdict.
               </p>
               <p>
@@ -1100,7 +1101,7 @@ const breadcrumb = computed(() => {
             <div
               class="unfold-toggle"
               v-tooltip.top="
-                'Write out what a reference list calls each formula, rather than a mark that says it on hover'
+                'Write out what a reference list calls each formula in full, with its list, rather than the name cut short'
               "
             >
               <ToggleSwitch v-model="listingColumn.full" inputId="listing-full" />
@@ -1275,22 +1276,16 @@ const breadcrumb = computed(() => {
         <!-- What a reference list calls the formula: the name, its list, and
              the list's tags (background for the siloxanes), all in one line so
              the row keeps its height. The tooltip names every name the run
-             matched, as the inspector's does. Folded, the name and the list
-             give way to a flask and only the tags stay written. -->
+             matched, as the inspector's does. Folded, the name is cut short
+             and the list is left to the tooltip. -->
         <Column
           field="listing"
           sortable
-          :style="{ minWidth: listingColumn.full ? '8rem' : '3rem' }"
+          :style="{ minWidth: listingColumn.full ? '8rem' : '5rem' }"
         >
           <template #header>
             <span v-if="listingColumn.full" v-tooltip.top="LISTING_HEADER_TOOLTIP">listed as</span>
-            <span
-              v-else
-              class="pi ph ph-flask"
-              role="img"
-              aria-label="listed as"
-              v-tooltip.top="LISTING_HEADER_TOOLTIP"
-            />
+            <span v-else v-tooltip.top="LISTING_HEADER_TOOLTIP">listed</span>
           </template>
           <template #body="{ data }">
             <span
@@ -1333,12 +1328,9 @@ const breadcrumb = computed(() => {
                     listingSource(data.listing)
                   }}</span>
                 </template>
-                <span
-                  v-else
-                  class="pi ph ph-flask listing-mark"
-                  role="img"
-                  :aria-label="listingName(data.listing)"
-                />
+                <span v-else class="listing-name folded" data-testid="listing-folded">{{
+                  listingName(data.listing)
+                }}</span>
               </template>
               <span
                 v-for="tag in listingTags(data.listing)"
@@ -1538,7 +1530,6 @@ const breadcrumb = computed(() => {
                 inherited
                 compact
               />
-              <span v-else class="pi ph ph-seal-check" />
             </button>
           </template>
         </Column>
@@ -1600,7 +1591,7 @@ const breadcrumb = computed(() => {
   cursor: default;
 }
 
-/* Folded, the flask stands for the name and the list, in the tooltip. */
+/* Folded, the target's mark stands for its name, in the tooltip. */
 .listing-mark {
   opacity: 0.75;
 }
@@ -1608,6 +1599,10 @@ const breadcrumb = computed(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+}
+/* Folded, the name alone, cut short: the hover gives it whole with its list. */
+.listing-name.folded {
+  max-width: 6rem;
 }
 .listing-source {
   font-size: 0.72rem;
@@ -1621,7 +1616,7 @@ const breadcrumb = computed(() => {
 }
 .listing-tag {
   padding: 0 0.3rem;
-  border: 1px dashed var(--p-content-border-color, #e3e6ec);
+  border: 1px solid var(--p-content-border-color, #e3e6ec);
   border-radius: 0.25rem;
   font-size: 0.7rem;
   opacity: 0.8;
@@ -1893,15 +1888,19 @@ const breadcrumb = computed(() => {
 }
 
 /* The verdict cell is a button so an unjudged cell opens the form too, as in
-   the batch ledger; the badge - or the faint seal for "none yet" - is its
-   whole content. The "none yet" state is `unjudged`, not `empty`: `.empty`
+   the batch ledger; the badge is its whole content, and "none yet" draws
+   nothing. The "none yet" state is `unjudged`, not `empty`: `.empty`
    above is the pane's empty-state panel, 220px tall, and a scoped class
    selector styles every element that carries the class - a button called
    `empty` would take that height and hand it to its row. */
+/* Sized to hold its badge whether or not it has one: an unjudged row draws
+   nothing, and the empty cell is still where it is judged. */
 .verdict-cell {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  min-width: 1.6rem;
+  min-height: 1.4rem;
   padding: 0.1rem 0.3rem;
   border: 1px solid transparent;
   border-radius: 4px;
@@ -1909,9 +1908,6 @@ const breadcrumb = computed(() => {
   color: inherit;
   font: inherit;
   cursor: pointer;
-}
-.verdict-cell.unjudged .pi {
-  opacity: 0.25;
 }
 .verdict-cell:hover {
   background: var(--p-content-hover-background);

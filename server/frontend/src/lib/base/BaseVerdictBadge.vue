@@ -6,12 +6,15 @@ import { useApp } from '@/stores'
 import { VERDICT_META, evidenceLabel, levelLabel } from '@/lib/verification'
 
 /**
- * A verification verdict, as a tag or - compact - as a bare icon.
+ * A verification verdict, as a tag or - compact - as a bare icon. With no
+ * record it draws nothing: a row nobody has judged carries no mark at all.
  *
  * `inherited` marks a verdict the row borrows from the batch level rather than
- * owns: the compact icon is parenthesised, the ledger's idiom for a value read
- * off another row, and the tooltip names the batch-level verdict and says that
- * verifying this row records an exception. `conflict` is a batch-level verdict
+ * owns: the same icon, with the batch's own mark - the `#` the breadcrumb names
+ * a batch by - small at its upper right, and the tooltip names the batch-level
+ * verdict and says that verifying this row records an exception. Never
+ * dashed: a dashed border means *not yet known*, and a batch-level verdict is
+ * known (docs/dev/assignment_ledger_and_card.md, section 5). `conflict` is a batch-level verdict
  * that disagrees with the owned one shown; the tooltip gets a line for it.
  *
  * A confirmation that names a structure (an identification claim) shows the
@@ -109,10 +112,11 @@ const tooltip = computed(() => {
     v-if="meta && compact && inherited"
     :class="['verdict-icon', 'inherited', record.verdict]"
     v-tooltip.top="`${label}\n${tooltip}`"
-    ><span class="paren">(</span><span :class="['pi', meta.icon]" /><span class="paren"
-      >)</span
-    ></span
-  >
+    ><span :class="['pi', meta.icon]" /><span
+      class="pi pi-hashtag batch-mark"
+      data-testid="batch-mark"
+      aria-hidden="true"
+  /></span>
   <span
     v-else-if="meta && compact"
     :class="['verdict-icon', record.verdict, 'pi', meta.icon, { conflict: Boolean(conflict) }]"
@@ -122,35 +126,50 @@ const tooltip = computed(() => {
     v-else-if="meta"
     :value="label"
     :severity="meta.severity"
-    :icon="`pi ${meta.icon}`"
     :class="['verdict', record.verdict, { inherited }]"
     style="font-size: 11px"
     v-tooltip.top="tooltip"
-  />
+  >
+    <template #icon>
+      <span :class="['verdict-face', { inherited }]"
+        ><span :class="['pi', meta.icon]" /><span
+          v-if="inherited"
+          class="pi pi-hashtag batch-mark"
+          data-testid="batch-mark"
+          aria-hidden="true"
+      /></span>
+    </template>
+  </Tag>
 </template>
 
 <style scoped>
 .verdict {
   white-space: nowrap;
 }
-/* Borrowed from the batch level: dashed, the inspector's grammar for evidence
-   read off another row. */
-.verdict.inherited {
-  border: 1px dashed currentColor;
-}
 .verdict-icon {
   font-size: 1rem;
   cursor: default;
 }
-.verdict-icon.inherited {
+/* Borrowed from the batch level: the batch's mark at the icon's upper right,
+   at 9 px, the one difference from a verdict the row owns. */
+.verdict-icon.inherited,
+.verdict-face.inherited {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  font-size: 0.95rem;
 }
-.verdict-icon.inherited .paren {
-  font-size: 0.85rem;
+.verdict-face {
+  display: inline-flex;
+}
+.batch-mark {
+  position: absolute;
+  top: -4px;
+  right: -6px;
+  font-size: 9px;
   line-height: 1;
-  opacity: 0.55;
+}
+.verdict-face.inherited {
+  margin-right: 4px;
 }
 .verdict-icon.confirmed {
   color: var(--state-success);

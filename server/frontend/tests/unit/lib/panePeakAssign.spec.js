@@ -165,7 +165,9 @@ vi.mock('@/lib/base', async () => ({
   },
   BaseVerdictBadge: { props: ['record', 'compact'], template: '<span class="verdict-badge" />' },
   // Real: the tier row's provisional mark is read off what it draws.
-  BaseProvisionalMark: (await vi.importActual('@/lib/base/BaseProvisionalMark.vue')).default
+  BaseProvisionalMark: (await vi.importActual('@/lib/base/BaseProvisionalMark.vue')).default,
+  // Real: the batch lines' badges are read off the reading and tone they draw.
+  BaseEvidenceBadge: (await vi.importActual('@/lib/base/BaseEvidenceBadge.vue')).default
 }))
 
 // The verdict dialog renders its content only while shown, as Popover does, so
@@ -304,6 +306,19 @@ afterEach(() => vi.clearAllMocks())
 
 // The batch's co-variation reading, served on the detail read where the row
 // reads its peak as the batch did: shown on its own line, and never weighed.
+// The badge a batch line opens with: the registry's reading and its tone,
+// drawn quiet, since the line beside it says the reading in words.
+const badgeOf = (line) => {
+  const badge = line.find('.evidence-badge')
+  return badge.exists()
+    ? {
+        mark: badge.attributes('data-mark'),
+        tone: badge.attributes('data-tone'),
+        hidden: badge.attributes('aria-hidden')
+      }
+    : null
+}
+
 describe('PanePeakAssign co-variation', () => {
   const ROW = {
     peak_assignment_id: 'pa-cov',
@@ -335,6 +350,11 @@ describe('PanePeakAssign co-variation', () => {
 
     expect(line(wrapper).text()).toBe('Co-varies with [M+NO3]- across the batch, r 0.82')
     expect(line(wrapper).classes()).toContain('co_varying')
+    expect(badgeOf(line(wrapper))).toEqual({
+      mark: 'coVariation',
+      tone: 'supports',
+      hidden: 'true'
+    })
     expect(line(wrapper).attributes('data-tooltip')).toBe(
       'Co-varies with its [M+NO3]- channel across the batch: r 0.82 over 412 spectra. ' +
         "Log intensities, divided by each spectrum's reagent signal, with the batch's common " +
@@ -352,6 +372,7 @@ describe('PanePeakAssign co-variation', () => {
 
     expect(line(wrapper).text()).toBe('Co-variation with [M+NO3]- cannot be read')
     expect(line(wrapper).classes()).toContain('untestable')
+    expect(badgeOf(line(wrapper))).toMatchObject({ mark: 'coVariation', tone: 'neutral' })
   })
 
   it('shows nothing where the batch read no co-variation for the row', async () => {
@@ -397,6 +418,7 @@ describe('PanePeakAssign batch checks', () => {
     const wrapper = await mountPane({ recordTooltips: true })
 
     expect(line(wrapper).text()).toBe('Batch facts: Br lock')
+    expect(badgeOf(line(wrapper))).toMatchObject({ mark: 'facts', tone: 'supports' })
     expect(line(wrapper).attributes('data-tooltip')).toMatch(
       /^Halogen lock: its 81Br line holds the share of 1 bromine at the exact spacing/
     )
@@ -452,6 +474,7 @@ describe('PanePeakAssign persistence admission', () => {
       'Searched on persistence: in 11 of 12 spectra (92 %), held at candidate'
     )
     expect(line(wrapper).classes()).toContain('held')
+    expect(badgeOf(line(wrapper))).toMatchObject({ mark: 'persistence', tone: 'holds-back' })
     expect(line(wrapper).attributes('data-tooltip')).toMatch(
       /above the batch's split at 46 %, not because of its height\./
     )
@@ -471,6 +494,7 @@ describe('PanePeakAssign persistence admission', () => {
     )
     expect(line(wrapper).classes()).toContain('lower')
     expect(line(wrapper).classes()).not.toContain('held')
+    expect(badgeOf(line(wrapper))).toMatchObject({ mark: 'persistence', tone: 'holds-back' })
     expect(line(wrapper).attributes('data-tooltip')).toMatch(/would be held at candidate/)
   })
 
@@ -485,6 +509,9 @@ describe('PanePeakAssign persistence admission', () => {
     expect(line(wrapper).text()).toBe('Searched on persistence: in 11 of 12 spectra (92 %)')
     expect(line(wrapper).classes()).not.toContain('held')
     expect(line(wrapper).classes()).not.toContain('lower')
+    // Something besides its peak has seen the reading: the admission holds
+    // nothing back.
+    expect(badgeOf(line(wrapper))).toMatchObject({ mark: 'persistence', tone: 'neutral' })
   })
 
   it('shows nothing where the search took the peak on its height', async () => {
@@ -531,6 +558,7 @@ describe('PanePeakAssign flat series', () => {
 
     expect(line(wrapper).text()).toBe('Flat series: cv 0.08 in 92 % of the samples')
     expect(line(wrapper).classes()).not.toContain('source')
+    expect(badgeOf(line(wrapper))).toMatchObject({ mark: 'flatSeries', tone: 'neutral' })
     expect(line(wrapper).attributes('data-tooltip')).toMatch(
       /read against the batch's reagent ions, over 22 of the batch's 24 samples/
     )
@@ -614,6 +642,8 @@ describe('PanePeakAssign isotopologue stamping', () => {
     const line = stampLine(wrapper)
     expect(line.text()).toBe('Stamped by the batch as the 81Br isotopologue of C2H4O2 (predicted)')
     expect(line.element.tagName).toBe('BUTTON')
+    // Another peak's isotope line says nothing of this row's formula.
+    expect(badgeOf(line)).toMatchObject({ mark: 'isotopes', tone: 'neutral' })
     expect(line.attributes('data-tooltip')).toMatch(/Click to focus its main peak\.$/)
     await line.trigger('click')
     expect(peakFocus).toHaveBeenCalledWith(PARENT_PEAK)
@@ -661,6 +691,7 @@ describe('PanePeakAssign isotopologue stamping', () => {
 
     expect(recordLine(wrapper).text()).toBe('1 of 2 isotope lines stamped by the batch')
     expect(recordLine(wrapper).classes()).toContain('stamped')
+    expect(badgeOf(recordLine(wrapper))).toMatchObject({ mark: 'isotopes', tone: 'supports' })
     expect(recordLine(wrapper).attributes('data-tooltip')).toMatch(
       /81Br: stamped, held in 6 of 6 samples .*18O: predicted, no batch peak at its mass\./
     )
@@ -2951,6 +2982,10 @@ describe('PanePeakAssign batch-level verdict overlay', () => {
     expect(pill.exists()).toBe(true)
     expect(pill.text()).toContain('Confirmed at batch level')
     expect(pill.text()).toContain('records a per-sample exception')
+    // The verdict's own icon with the batch's mark at its corner: borrowed,
+    // and known, so never drawn dashed.
+    expect(pill.find('.ph-check-circle').exists()).toBe(true)
+    expect(pill.find('[data-testid="batch-mark"]').classes()).toContain('pi-hashtag')
     expect(wrapper.vm.anchorVerdictTooltip).toContain('Batch-level verdict on C10H12, by user #3')
     // The form still offers the exception.
     expect(wrapper.vm.showVerifyForm).toBe(true)
