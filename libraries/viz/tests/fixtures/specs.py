@@ -1,17 +1,20 @@
 """One Figure spec per primitive, for the renderer tests.
 
 Each draws a small frame shaped as the views give theirs (a categorical
-``key``, times in an instrument's zone, a NaN bin where no sample fell),
-with what the primitive can say switched on: a band, a log axis, event
-and gap spans, a run-change rule, top-N labels, groups, error bars. The
-frames are built from fixed numbers, so a spec is the same on every run
-and every platform. :func:`everything` puts all eight in one figure.
+``key`` with a display ``name``, times in an instrument's zone, a NaN bin
+where no sample fell, the view's attrs as the figure's context), with
+what the primitive can say switched on: a band, a log axis, event and gap
+spans, a run-change rule, top-N labels, groups, error bars, gap cells,
+hollow marks, sticks by sign, marked rows. The frames are built from fixed
+numbers, so a spec is the same on every run and every platform.
+:func:`everything` puts all eight in one figure, and :func:`reagent_sum`
+is a chart normalised by a sum of reagent ions.
 """
 
 import numpy as np
 import pandas as pd
 
-from mascope_viz.charts import Figure, Panel, subtitle
+from mascope_viz.charts import Context, Figure, Panel
 
 
 #: The zone the fixtures' times are in: one with a clock change, and a
@@ -62,7 +65,14 @@ def series() -> Figure:
             "x": {"label": f"Time ({ZONE})"},
             "y": {"label": "Intensity (counts)", "scale": "log"},
         },
-        encodings={"x": "t", "y": "value", "group": "name", "lo": "lo", "hi": "hi"},
+        encodings={
+            "x": "t",
+            "y": "value",
+            "group": "key",
+            "name": "name",
+            "lo": "lo",
+            "hi": "hi",
+        },
         options={
             "spans": [
                 {
@@ -89,7 +99,26 @@ def series() -> Figure:
     return Figure(
         "species_series",
         "Species over time",
-        subtitle(cadence="1h", stat="median", normalise="none", tz=ZONE),
+        context=Context(
+            cadence="1h",
+            stat="median",
+            band=[10, 90],
+            tz=ZONE,
+            start="2026-06-30T21:00:00+00:00",
+            end="2026-07-02T21:00:00+00:00",
+            normalise="none",
+            normalise_members=[],
+            mixed_runs=True,
+            run_changes=[
+                {
+                    "at": "2026-07-02T09:00:00+00:00",
+                    "sample_batch_id": "batch-2",
+                    "polarity": "-",
+                    "before": "run 1",
+                    "after": "run 2",
+                }
+            ],
+        ),
         panels=[panel],
         summary={
             "median": {
@@ -143,7 +172,7 @@ def strip() -> Figure:
     return Figure(
         "coverage",
         "Coverage",
-        subtitle(cadence="1h", tz=ZONE),
+        context=Context(cadence="1h", tz=ZONE),
         panels=[panel],
         summary={"coverage_fraction": 0.92},
         data=data,
@@ -157,12 +186,18 @@ def heatmap() -> Figure:
     mz = np.array([100.0, 101.0, 102.5, 104.0, 110.0, 120.0])
     times, masses = np.meshgrid(np.arange(24), mz)
     intensity = 10.0 ** (1 + 3 * np.abs(np.sin(times / 7.0 + masses / 30.0)))
+    # A cell with samples and no value (blank), and an hour without
+    # samples (a gap) across every m/z.
     intensity[2, 5] = np.nan
+    intensity[:, 9] = np.nan
+    no_samples = np.zeros(intensity.shape, dtype=bool)
+    no_samples[:, 9] = True
     spectrogram = pd.DataFrame(
         {
             "t": np.tile(t, len(mz)),
             "mz": masses.ravel(),
             "intensity": intensity.ravel(),
+            "empty": no_samples.ravel(),
             "part": "spectrogram",
         }
     )
@@ -174,6 +209,7 @@ def heatmap() -> Figure:
             "hour": hours.ravel().astype("int64"),
             "weekday": [days[d] for d in weekday.ravel()],
             "change": change.ravel(),
+            "empty": False,
             "part": "weekly",
         }
     )
@@ -181,7 +217,7 @@ def heatmap() -> Figure:
     return Figure(
         "spectrogram",
         "Spectrogram and weekly cycle",
-        subtitle(cadence="1h", stat="median", tz=ZONE),
+        context=Context(cadence="1h", stat="median", tz=ZONE),
         panels=[
             Panel(
                 "heatmap",
@@ -190,7 +226,7 @@ def heatmap() -> Figure:
                     "y": {"label": "m/z"},
                     "colour": {"label": "Intensity", "scale": "log"},
                 },
-                encodings={"x": "t", "y": "mz", "value": "intensity"},
+                encodings={"x": "t", "y": "mz", "value": "intensity", "gap": "empty"},
                 options={"mode": "raster"},
                 title="Time by m/z",
                 where={"part": "spectrogram"},
@@ -212,8 +248,9 @@ def heatmap() -> Figure:
 
 
 def scatter() -> Figure:
-    """A Van Krevelen coloured by carbon number with the three brightest
-    labelled, and one coloured by class."""
+    """A Van Krevelen sized by median intensity and coloured by carbon
+    number, the three brightest labelled, and one coloured by class with
+    the candidate formulas hollow."""
     n_c = np.array([3, 4, 5, 6, 8, 10, 12, 15, 4, 7], dtype="int64")
     o_c = np.array([1.3, 1.0, 0.8, 0.5, 0.4, 0.3, 0.25, 0.2, 0.75, 0.6])
     h_c = np.array([1.3, 1.5, 1.6, 1.4, 1.75, 1.6, 1.5, 1.9, 1.0, 1.3])
@@ -237,6 +274,18 @@ def scatter() -> Figure:
                 "CHON",
                 "CHOS",
             ],
+            "candidate": [
+                False,
+                False,
+                True,
+                False,
+                False,
+                True,
+                False,
+                False,
+                True,
+                False,
+            ],
         }
     )
     axes = {"x": {"label": "O/C", "range": (0.0, 1.5)}, "y": {"label": "H/C"}}
@@ -247,7 +296,11 @@ def scatter() -> Figure:
         panels=[
             Panel(
                 "scatter",
-                axes={**axes, "colour": {"label": "Carbon number"}},
+                axes={
+                    **axes,
+                    "colour": {"label": "Carbon number"},
+                    "size": {"label": "Median intensity"},
+                },
                 encodings={
                     "x": "o_c",
                     "y": "h_c",
@@ -261,8 +314,13 @@ def scatter() -> Figure:
             Panel(
                 "scatter",
                 axes=axes,
-                encodings={"x": "o_c", "y": "h_c", "colour": "class"},
-                options={"colours": {"CHOS": "warning"}},
+                encodings={
+                    "x": "o_c",
+                    "y": "h_c",
+                    "colour": "class",
+                    "hollow": "candidate",
+                },
+                options={"colours": {"CHOS": "warning"}, "hollow_label": "candidate"},
                 title="By class",
             ),
         ],
@@ -273,18 +331,21 @@ def scatter() -> Figure:
 
 def sticks() -> Figure:
     """A period's spectrum with the four tallest labelled, and its
-    difference to another period, up and down in two colours."""
+    difference to another period coloured by sign on the diverging ramp,
+    the peaks seen in one period only marked."""
     mz = np.array([62.0, 97.0, 126.9, 145.0, 175.0, 190.9, 210.0, 254.8])
     mean = np.array([3e4, 1.2e4, 8e4, 4e3, 6e3, 2.5e4, 1e3, 9e3])
     difference = np.array([5e3, -2e3, 1.5e4, -6e2, 1e3, -8e3, 2e2, 3e3])
     names = [f"m{int(m)}" for m in mz]
+    only = np.zeros(8, dtype=bool)
+    only[[3, 6]] = True
     data = pd.DataFrame(
         {
             "mz": np.concatenate([mz, mz]),
             "intensity": np.concatenate([mean, difference]),
             "formula": names + names,
             "part": ["mean"] * 8 + ["difference"] * 8,
-            "direction": ["mean"] * 8 + ["up" if d > 0 else "down" for d in difference],
+            "only": np.concatenate([np.zeros(8, dtype=bool), only]),
         }
     )
     return Figure(
@@ -306,10 +367,14 @@ def sticks() -> Figure:
                 encodings={
                     "x": "mz",
                     "y": "intensity",
-                    "group": "direction",
                     "label": "formula",
+                    "mark": "only",
                 },
-                options={"colours": {"up": "success", "down": "error"}, "top_n": 3},
+                options={
+                    "by_sign": True,
+                    "top_n": 3,
+                    "mark_label": "only in one period",
+                },
                 where={"part": "difference"},
                 title="Difference",
             ),
@@ -384,15 +449,18 @@ def box() -> Figure:
                     "p75": median * 1.25,
                     "p95": median * 1.9,
                     "mean": median * 1.05,
+                    "n": np.array([40, 42, 38, 6]),
                 }
             )
         )
     data = pd.concat(frames, ignore_index=True)
+    data["key"] = pd.Categorical([k for k in KEYS for _ in weeks], categories=KEYS)
+    data["few"] = data["n"] < 10
     data.loc[3, "p25"] = np.nan
     return Figure(
         "period_boxes",
         "Weekly distributions",
-        subtitle(cadence="week", normalise="none", tz=ZONE),
+        context=Context(cadence="week", normalise="none", tz=ZONE),
         panels=[
             Panel(
                 "box",
@@ -404,9 +472,12 @@ def box() -> Figure:
                     "q3": "p75",
                     "lo": "p5",
                     "hi": "p95",
-                    "group": "name",
+                    "group": "key",
+                    "name": "name",
                     "mean": "mean",
+                    "hollow": "few",
                 },
+                options={"hollow_label": "fewer than 10 samples"},
             )
         ],
         data=data,
@@ -431,6 +502,7 @@ def table() -> Figure:
             "n": np.array([120, 80, 60, 40, 20, 10], dtype="int64"),
             "first": pd.date_range("2026-07-01T08:00", periods=6, freq="1D", tz=ZONE),
             "new": [False, True, False, False, True, False],
+            "reread": [False, True, False, False, False, False],
         }
     )
     return Figure(
@@ -440,8 +512,12 @@ def table() -> Figure:
         panels=[
             Panel(
                 "table",
-                encodings={"columns": ["name", "median", "ratio", "n", "first", "new"]},
+                encodings={
+                    "columns": ["name", "median", "ratio", "n", "first", "new"],
+                    "mark": "reread",
+                },
                 options={
+                    "mark_label": "read differently after the run change",
                     "headers": {
                         "median": "Median",
                         "ratio": "Last / first",
@@ -504,3 +580,90 @@ def everything() -> Figure:
         data=data,
         columns=2,
     )
+
+
+#: A nitrate chemistry's reagent ions, as a view keys them, their names,
+#: and the key a view gives their sum drawn as a series.
+REAGENTS = ["ion:11", "ion:12", "ion:13"]
+REAGENT_NAMES = ["NO3-", "HNO3NO3-", "(HNO3)2NO3-"]
+SUM_KEY = "+".join(REAGENTS)
+SUM_NAME = " + ".join(REAGENT_NAMES)
+
+
+def reagent_sum() -> Figure:
+    """Two species normalised by the sum of a nitrate reagent's three
+    ions, on a linear axis, over the reagent ions and their sum on a log
+    one, the two panels sharing the time axis: a list for ``normalise``, a
+    three-member name, a ``+``-joined key, two y scales."""
+    t = pd.date_range("2026-07-01", periods=24, freq="1h", tz=ZONE)
+    hours = np.arange(24)
+    cycle = np.sin(2 * np.pi * hours / 24)
+    shares = np.vstack([0.6 + 0.1 * cycle, 0.3 - 0.06 * cycle, 0.1 - 0.04 * cycle])
+    total = 1e6 * (1 - 0.01 * hours)
+    frames = []
+    for key, name, share in zip(REAGENTS, REAGENT_NAMES, shares):
+        frames.append(
+            pd.DataFrame({"t": t, "key": key, "name": name, "value": total * share})
+        )
+    frames.append(
+        pd.DataFrame({"t": t, "key": SUM_KEY, "name": SUM_NAME, "value": total})
+    )
+    reagents = pd.concat(frames, ignore_index=True).assign(part="reagents")
+    species = pd.concat(
+        [
+            pd.DataFrame(
+                {
+                    "t": t,
+                    "key": key,
+                    "name": NAMES[key],
+                    "value": (i + 1) * 1e-3 * (1.5 + np.cos(2 * np.pi * hours / 24)),
+                }
+            )
+            for i, key in enumerate(KEYS)
+        ],
+        ignore_index=True,
+    ).assign(part="species")
+    data = pd.concat([species, reagents], ignore_index=True)
+    data["key"] = pd.Categorical(data["key"], categories=[*KEYS, *REAGENTS, SUM_KEY])
+    time = {"label": f"Time ({ZONE})"}
+    return Figure(
+        "reagent_normalised",
+        "Species normalised by the reagent",
+        context=Context(
+            cadence="1h",
+            stat="median",
+            band=[10, 90],
+            tz=ZONE,
+            start="2026-06-30T21:00:00+00:00",
+            end="2026-07-01T21:00:00+00:00",
+            normalise=list(REAGENTS),
+            normalise_name=SUM_NAME,
+            normalise_members=list(REAGENTS),
+            normalise_complete=0.92,
+            mixed_runs=False,
+            run_changes=[],
+        ),
+        panels=[
+            Panel(
+                "series",
+                axes={"x": time, "y": {"label": f"signal / {SUM_NAME}"}},
+                encodings={"x": "t", "y": "value", "group": "key", "name": "name"},
+                where={"part": "species"},
+                title="Species",
+            ),
+            Panel(
+                "series",
+                axes={"x": time, "y": {"label": "Peak area", "scale": "log"}},
+                encodings={"x": "t", "y": "value", "group": "key", "name": "name"},
+                where={"part": "reagents"},
+                title="Reagent ions and their sum",
+            ),
+        ],
+        data=data,
+        notes=["The denominator was a partial sum in 8 % of the samples."],
+        share_x=True,
+    )
+
+
+#: Fixtures beside one per primitive.
+EXTRA = {"reagent_sum": reagent_sum}

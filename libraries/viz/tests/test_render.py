@@ -26,17 +26,19 @@ from matplotlib.path import Path as MplPath
 from matplotlib.table import Table
 
 from mascope_viz import render
-from mascope_viz.charts import FIGURE_SPEC_VERSION, PRIMITIVES, Figure, Panel, subtitle
+from mascope_viz.charts import FIGURE_SPEC_VERSION, PRIMITIVES, Figure, Panel
 from mascope_viz.render import common, theme
 
 
 TESTS = Path(__file__).parent
 
-ALL = [*specs.FIGURES, "everything"]
+ALL = [*specs.FIGURES, *specs.EXTRA, "everything"]
 
 
 def _figure(name: str) -> Figure:
-    return specs.everything() if name == "everything" else specs.FIGURES[name]()
+    if name == "everything":
+        return specs.everything()
+    return {**specs.FIGURES, **specs.EXTRA}[name]()
 
 
 def _png(fig: Figure, theme_name: str = "light") -> bytes:
@@ -79,15 +81,17 @@ def test_every_primitive_renders_on_both_backends(name, theme_name):
     assert len(plotted.data) >= len(fig.panels)
 
 
-#: The trace types each primitive draws with plotly.
+#: The trace types each primitive's fixture draws with plotly: a legend
+#: entry with no data of its own (a gap, a hollow box) is a scatter, and so
+#: are the bars' intervals.
 TRACES = {
     "series": {"scatter"},
     "strip": {"bar", "scatter"},
-    "heatmap": {"heatmap"},
+    "heatmap": {"heatmap", "scatter"},
     "scatter": {"scatter"},
     "sticks": {"scatter"},
-    "bars": {"bar"},
-    "box": {"box"},
+    "bars": {"bar", "scatter"},
+    "box": {"box", "scatter"},
     "table": {"table"},
 }
 
@@ -133,7 +137,7 @@ def test_the_eight_primitives_draw_the_same_counts_on_both_backends():
     )
     assert plotly_bars == mpl_bars == 12
     box = specs.box()
-    plotly_boxes = sum(len(t.x) for t in render.plotly(box).data)
+    plotly_boxes = sum(len(t.x) for t in render.plotly(box).data if t.type == "box")
     mpl_boxes = sum(
         isinstance(c, PathPatch) for c in render.matplotlib(box).axes[0].get_children()
     )
@@ -158,7 +162,7 @@ def test_the_eight_primitives_draw_the_same_counts_on_both_backends():
 
 def test_a_nan_bin_breaks_the_line_on_both_backends():
     fig = specs.series()
-    rows = fig.data[fig.data["name"] == "Malonic acid"]
+    rows = fig.data[fig.data["key"] == "ion:1"]
     gaps = np.flatnonzero(rows["value"].isna().to_numpy())
     assert list(gaps) == [20, 21, 30, 32]
     ax = render.matplotlib(fig).axes[0]
@@ -262,8 +266,9 @@ def test_time_axes_show_the_columns_zone_on_both_backends():
 def test_a_group_keeps_its_colour_in_every_panel_and_on_both_backends():
     fig = specs.everything()
     colours = common.colours(fig, theme.LIGHT)
-    assert colours.groups["Malonic acid"] == theme.LIGHT.categorical[0]
-    assert colours.groups["C3H4O4 $I$ <b>"] == theme.LIGHT.categorical[1]
+    assert colours.groups["ion:1"] == theme.LIGHT.categorical[0]
+    assert colours.groups["formula:C3H4O4|[M+I]-"] == theme.LIGHT.categorical[1]
+    assert colours.name("ion:1") == "Malonic acid"
     drawn = render.matplotlib(fig)
     legend = drawn.legends[0]
     handles = dict(
@@ -280,6 +285,8 @@ def test_a_group_keeps_its_colour_in_every_panel_and_on_both_backends():
 
 
 def test_a_group_is_one_legend_entry_on_both_backends():
+    """One entry per group across the panels, under the group's display
+    name, then one per mark, gap style, size and hollow style."""
     fig = specs.everything()
     plotted = render.plotly(fig)
     shown = [t.name for t in plotted.data if getattr(t, "showlegend", None)]
@@ -287,20 +294,27 @@ def test_a_group_is_one_legend_entry_on_both_backends():
         "Malonic acid",
         "C3H4O4 $I$ &lt;b&gt;",
         "acquired, in no batch",
+        "no samples",
+        "50000",
+        "10000",
         "assigned",
         "candidate",
+        "fewer than 10 samples",
     ]
-    malonic = [
-        t for t in plotted.data if getattr(t, "legendgroup", None) == "Malonic acid"
-    ]
+    malonic = [t for t in plotted.data if getattr(t, "legendgroup", None) == "ion:1"]
     assert {t.type for t in malonic} >= {"scatter", "box"}
     legend = render.matplotlib(fig).legends[0]
     assert [t.get_text() for t in legend.get_texts()] == [
         "Malonic acid",
         "C3H4O4 \\$I\\$ <b>",
         "acquired, in no batch",
+        "no samples",
+        "Median intensity",
+        "50000",
+        "10000",
         "assigned",
         "candidate",
+        "fewer than 10 samples",
     ]
 
 
@@ -329,18 +343,17 @@ def test_a_panel_draws_only_the_rows_where_keeps():
     frame = fig.frame(fig.panels[1])
     assert set(frame["part"]) == {"difference"} and len(frame) == 8
     assert list(frame.index) == list(range(8))
-    assert fig.panels[1].columns() == ["mz", "intensity", "direction", "formula"]
+    assert fig.panels[1].columns() == ["mz", "intensity", "formula", "only"]
 
 
 def test_a_colours_option_names_a_groups_colour_by_token():
-    fig = specs.sticks()
+    fig = specs.scatter()
     for name in theme.THEMES:
         palette = theme.get(name)
         colours = common.colours(fig, palette)
-        assert colours.groups["up"] == palette.success
-        assert colours.groups["down"] == palette.error
-        lines = {t.name: t for t in render.plotly(fig, theme=name).data if t.name}
-        assert lines["up"].line.color == palette.success
+        assert colours.groups["CHOS"] == palette.warning
+        entries = {t.name: t for t in render.plotly(fig, theme=name).data if t.name}
+        assert entries["CHOS"].marker.color == palette.warning
 
 
 def test_top_n_labels_the_largest_on_both_backends():
@@ -505,7 +518,8 @@ def test_the_document_says_what_each_panel_draws():
     assert panel["encodings"] == {
         "x": "t",
         "y": "value",
-        "group": "name",
+        "group": "key",
+        "name": "name",
         "lo": "lo",
         "hi": "hi",
     }
@@ -528,8 +542,8 @@ def test_the_document_says_what_each_panel_draws():
     assert columns["key"]["categories"] == specs.KEYS
     assert columns["value"]["values"][20] is None
     assert columns["n"]["type"] == "integer"
-    colours = json.loads(specs.sticks().to_json())["panels"][1]["options"]["colours"]
-    assert colours == {"up": "success", "down": "error"}
+    colours = json.loads(specs.scatter().to_json())["panels"][1]["options"]["colours"]
+    assert colours == {"CHOS": "warning"}
 
 
 def test_every_column_type_round_trips():
@@ -704,7 +718,9 @@ def test_a_table_formats_its_columns_and_shows_max_rows():
 def test_the_colour_scales_match_on_both_backends():
     fig = specs.heatmap()
     plotted = render.plotly(fig)
-    spectrogram, weekly = (t for t in plotted.data if t.type == "heatmap")
+    spectrogram, weekly = (
+        t for t in plotted.data if t.type == "heatmap" and t.showscale
+    )
     scale = common.colour_scale(
         common.grid(fig, fig.panels[0]).values.ravel(), fig.panels[0], theme.LIGHT
     )
@@ -717,7 +733,7 @@ def test_the_colour_scales_match_on_both_backends():
         for ax in render.matplotlib(fig).axes
         if ax.get_label() != "<colorbar>"
         for c in ax.get_children()
-        if isinstance(c, QuadMesh)
+        if isinstance(c, QuadMesh) and c.get_cmap().name == "mascope_viz"
     ]
     assert len(meshes) == 2
     assert meshes[0].norm.vmin == pytest.approx(scale.low)
@@ -892,10 +908,779 @@ def test_span_times_are_read_in_the_axis_zone():
     assert span["end"].isoformat() == "2026-07-01T05:00:00+03:00"
 
 
-def test_subtitle_names_the_cadence_the_normalisation_and_the_zone():
-    assert subtitle(cadence="1h", stat="median", normalise="none", tz="UTC") == (
-        "1h medians; raw values; times in UTC"
+# --- the owner's notes of 2026-11-21: the reagent sum and the tier-1 charts -----------
+
+
+def _subtitle_text(drawn):
+    """The matplotlib figure's subtitle: the header text drawn in the
+    muted colour."""
+    from matplotlib.colors import to_hex
+
+    muted = {theme.LIGHT.muted, theme.DARK.muted}
+    return next(
+        t for t in drawn.texts if t.get_text() and to_hex(t.get_color()) in muted
     )
-    assert subtitle(cadence="raw", normalise="the TIC", tz="Europe/Helsinki") == (
-        "every sample; normalised to the TIC; times in Europe/Helsinki"
+
+
+def test_a_reagent_sum_round_trips_and_draws_on_both_backends():
+    """The note's suggested check: a list for normalise, a three-member
+    name, a '+'-joined key and two panels of different y scale round-trip
+    through JSON and draw on both backends, the subtitle whole in each."""
+    fig = specs.reagent_sum()
+    document = json.loads(fig.to_json())
+    assert document["context"]["normalise"] == specs.REAGENTS
+    assert document["context"]["normalise_name"] == specs.SUM_NAME
+    assert specs.SUM_KEY in document["data"]["columns"][1]["categories"]
+    assert [p["axes"]["y"]["scale"] for p in document["panels"]] == ["linear", "log"]
+    parsed = Figure.from_json(fig.to_json())
+    assert parsed == fig
+    assert _png(parsed) == _png(fig)
+    assert render.plotly(parsed).to_json() == render.plotly(fig).to_json()
+    assert specs.SUM_NAME in fig.subtitle
+
+    drawn = render.matplotlib(fig)
+    text = _subtitle_text(drawn)
+    lines = text.get_text().split("\n")
+    assert len(lines) > 1
+    assert " ".join(lines) == fig.subtitle
+    # Measured where the layout puts things, as a save would.
+    drawn.draw_without_rendering()
+    renderer = drawn._get_renderer()
+    box = text.get_window_extent(renderer)
+    legend = drawn.legends[0].get_window_extent(renderer)
+    assert box.x1 < legend.x0, "the subtitle runs under the legend"
+    assert box.x1 <= drawn.bbox.x1
+    # The layout leaves the subtitle its room: it ends above every panel,
+    # in a figure as tall as its header of that many lines makes it.
+    tops = [ax.get_tightbbox(renderer).y1 for ax in drawn.axes]
+    assert box.y0 > max(tops)
+    total = common.arrange(fig, theme.LIGHT, subtitle=len(lines)).total
+    assert drawn.get_size_inches()[1] * 96 == pytest.approx(total)
+    assert len(lines) > len(common.subtitle_lines(fig, theme.LIGHT))
+    axes = [ax for ax in drawn.axes if ax.get_label() != "<colorbar>"]
+    assert ax_scales(axes) == ["linear", "log"]
+
+    plotted = render.plotly(fig)
+    title = plotted.layout.title.text
+    parts = [
+        part.split(">", 1)[1].rsplit("</span>", 1)[0]
+        for part in title.split("<br>")[1:]
+    ]
+    assert len(parts) > 1
+    assert " ".join(parts) == fig.subtitle.replace("<", "&lt;").replace(">", "&gt;")
+    chars = int(
+        (theme.LIGHT.layout.width - common.TEXT_MARGINS)
+        / (theme.LIGHT.type.subtitle * common.CHAR_WIDTH)
     )
+    assert all(len(part) <= chars for part in parts)
+    assert plotted.layout.yaxis.type is None and plotted.layout.yaxis2.type == "log"
+    assert plotted.layout.xaxis.matches == "x2" or plotted.layout.xaxis2.matches == "x"
+
+
+def ax_scales(axes) -> list[str]:
+    return [ax.get_yscale() for ax in axes]
+
+
+def test_a_long_subtitle_grows_the_header_on_both_backends():
+    short = specs.reagent_sum()
+    short.subtitle = "one line"
+    fig = specs.reagent_sum()
+    lines = len(common.subtitle_lines(fig, theme.LIGHT))
+    assert lines >= 2
+    grown = (lines - 1) * theme.LIGHT.type.subtitle * common.LINE_HEIGHT
+    assert common.arrange(fig, theme.LIGHT).header == pytest.approx(
+        common.arrange(short, theme.LIGHT).header + grown
+    )
+    assert render.plotly(fig).layout.margin.t > render.plotly(short).layout.margin.t
+    taller = render.matplotlib(fig).get_size_inches()[1]
+    assert taller > render.matplotlib(short).get_size_inches()[1]
+    # A word longer than a line is broken inside, never cut off.
+    long = "x" * 300
+    assert "".join(common.wrap(long, 13, theme.LIGHT)) == long
+
+
+def test_a_legend_names_a_series_by_its_display_name_never_its_key():
+    fig = specs.reagent_sum()
+    legend = render.matplotlib(fig).legends[0]
+    texts = [t.get_text() for t in legend.get_texts()]
+    assert specs.SUM_NAME in texts
+    assert not any(key in text for text in texts for key in specs.REAGENTS)
+    plotted = render.plotly(fig)
+    shown = {t.name: t for t in plotted.data if t.showlegend}
+    assert shown[specs.SUM_NAME].legendgroup == specs.SUM_KEY
+    assert not any(
+        t.name and t.name.startswith(("ion:", "formula:")) for t in plotted.data
+    )
+
+
+def test_a_list_of_y_takes_its_names_from_the_option():
+    data = pd.DataFrame({"t": [0.0, 1.0], "a": [1.0, 2.0], "b": [2.0, 1.0]})
+    fig = Figure(
+        "names",
+        "Names",
+        panels=[
+            Panel(
+                "series",
+                encodings={"x": "t", "y": ["a", "b"]},
+                options={"names": {"a": "First"}},
+            )
+        ],
+        data=data,
+    )
+    legend = render.matplotlib(fig).legends[0]
+    assert [t.get_text() for t in legend.get_texts()] == ["First", "b"]
+    assert [t.name for t in render.plotly(fig).data if t.showlegend] == ["First", "b"]
+
+
+def _categorical_figure() -> Figure:
+    order = ["Mon", "Tue", "Wed"]
+    days = pd.Categorical(["Wed", "Mon", "Tue"], categories=order, ordered=True)
+    data = pd.DataFrame(
+        {
+            "day": days,
+            "count": [3.0, 1.0, 2.0],
+            "t": pd.date_range("2026-07-01", periods=3, freq="1h", tz="UTC"),
+            "hour": [0, 1, 2],
+        }
+    )
+    return Figure(
+        "order",
+        "Order",
+        panels=[
+            Panel("bars", encodings={"x": "day", "y": "count"}),
+            Panel("strip", encodings={"x": "t", "y": "day"}),
+            Panel("heatmap", encodings={"x": "hour", "y": "day", "value": "count"}),
+        ],
+        data=data,
+    )
+
+
+def test_the_renderers_draw_a_categoricals_values_in_their_order():
+    fig = _categorical_figure()
+    order = ["Mon", "Tue", "Wed"]
+    assert common.places(fig, fig.panels[0], theme.LIGHT).categories == order
+    assert common.strip(fig, fig.panels[1], theme.LIGHT).rows == order
+    assert common.grid(fig, fig.panels[2]).ys == order
+    bars, strip, heatmap = (
+        ax for ax in render.matplotlib(fig).axes if ax.get_label() != "<colorbar>"
+    )
+    assert [t.get_text() for t in bars.get_xticklabels()] == order
+    assert [t.get_text() for t in strip.get_yticklabels()] == order
+    assert [t.get_text() for t in heatmap.get_yticklabels()] == order
+    plotted = render.plotly(fig)
+    assert list(plotted.layout.xaxis.ticktext) == order
+    assert list(plotted.layout.yaxis2.categoryarray) == order
+    assert list(plotted.layout.yaxis3.categoryarray) == order
+    bar = next(t for t in plotted.data if t.type == "bar")
+    # Wed, the frame's first row, stands third.
+    assert list(bar.x) == [0.0, 1.0, 2.0] and list(bar.y) == [1.0, 2.0, 3.0]
+
+
+def test_share_x_joins_every_plotted_panel_on_both_backends():
+    fig = specs.reagent_sum()
+    fig = Figure.from_dict({**fig.to_dict(), "columns": 2})
+    first, second = (
+        ax for ax in render.matplotlib(fig).axes if ax.get_label() != "<colorbar>"
+    )
+    assert first.get_shared_x_axes().joined(first, second)
+    layout = render.plotly(fig).layout
+    assert {layout.xaxis.matches, layout.xaxis2.matches} - {None} in ({"x"}, {"x2"})
+
+
+# --- bugs of round 1 -----------------------------------------------------------------------
+
+
+def test_a_float_count_formatted_d_draws_rounded():
+    data = pd.DataFrame({"v": [1.0, 2.5, np.nan, 1234.0]})
+    fig = Figure(
+        "d",
+        "D",
+        panels=[
+            Panel(
+                "table",
+                encodings={"columns": ["v", "v"]},
+                options={"formats": {"v": ",d"}},
+            )
+        ],
+        data=data,
+    )
+    table = common.table(fig, fig.panels[0])
+    assert [row[0] for row in table.rows] == ["1", "2", "", "1,234"]
+    assert list(render.plotly(fig).data[0].cells.values[0]) == ["1", "2", "", "1,234"]
+    assert _png(fig).startswith(b"\x89PNG")
+
+
+def test_an_interval_that_misses_the_bar_draws_the_same_on_both_backends():
+    data = pd.DataFrame(
+        {
+            "x": ["a", "b", "c", "d"],
+            "y": [1.0, 2.0, 1.0, 1.0],
+            "lo": [1.5, 1.0, np.nan, 3.0],
+            "hi": [2.0, 3.0, 2.0, 2.5],
+        }
+    )
+    fig = Figure(
+        "b",
+        "B",
+        panels=[Panel("bars", encodings={"x": "x", "y": "y", "lo": "lo", "hi": "hi"})],
+        data=data,
+    )
+    spans = common.intervals(common.bars(fig, fig.panels[0], theme.LIGHT)[1])
+    # c has no lo, so no interval; d's lo is above its hi.
+    assert list(spans["middle"] - spans["half"]) == [1.5, 1.0, 2.5]
+    assert list(spans["middle"] + spans["half"]) == [2.0, 3.0, 3.0]
+    drawn = render.matplotlib(fig)
+    segments = [
+        sorted(y for _, y in segment)
+        for c in drawn.axes[0].collections
+        for segment in c.get_segments()
+    ]
+    assert segments == [[1.5, 2.0], [1.0, 3.0], [2.5, 3.0]]
+    assert _png(fig).startswith(b"\x89PNG")
+    error = next(t for t in render.plotly(fig).data if t.type == "scatter")
+    ends = [(m - h, m + h) for m, h in zip(error.y, error.error_y.array, strict=True)]
+    assert ends == [(1.5, 2.0), (1.0, 3.0), (2.5, 3.0)]
+    assert error.error_y.symmetric is True
+
+
+def test_a_bar_without_a_height_is_not_drawn():
+    data = pd.DataFrame({"x": ["a", "b", "c"], "y": [1.0, np.nan, 3.0]})
+    fig = Figure(
+        "b", "B", panels=[Panel("bars", encodings={"x": "x", "y": "y"})], data=data
+    )
+    assert list(common.bars(fig, fig.panels[0], theme.LIGHT)[1]["category"]) == [
+        "a",
+        "c",
+    ]
+    assert list(render.plotly(fig).data[0].x) == [0.0, 2.0]
+    assert len(render.matplotlib(fig).axes[0].patches) == 2
+
+
+def test_whiskers_end_at_lo_and_hi_on_both_backends():
+    fig = specs.box()
+    place, boxes = common.boxes(fig, fig.panels[0], theme.LIGHT)
+    ends = sorted(boxes["lo"]) + sorted(boxes["hi"])
+    ax = render.matplotlib(fig).axes[0]
+    whiskers = [
+        line.get_ydata()
+        for line in ax.get_lines()
+        if len(line.get_ydata()) == 2 and line.get_ydata()[0] != line.get_ydata()[1]
+    ]
+    drawn = sorted(y[1] for y in whiskers if y[1] < y[0]) + sorted(
+        y[1] for y in whiskers if y[1] > y[0]
+    )
+    assert drawn == pytest.approx(ends)
+    traces = [t for t in render.plotly(fig).data if t.type == "box"]
+    assert sorted(v for t in traces for v in t.lowerfence) == pytest.approx(
+        sorted(boxes["lo"])
+    )
+    assert sorted(v for t in traces for v in t.upperfence) == pytest.approx(
+        sorted(boxes["hi"])
+    )
+
+
+def test_a_box_with_few_samples_is_hollow_on_both_backends():
+    from matplotlib.colors import to_rgba
+
+    fig = specs.box()
+    place, boxes = common.boxes(fig, fig.panels[0], theme.LIGHT)
+    assert boxes["hollow"].tolist().count(True) == 1
+    ax = render.matplotlib(fig).axes[0]
+    fills = [
+        to_rgba(c.get_facecolor())[3] for c in ax.patches if isinstance(c, PathPatch)
+    ]
+    assert fills.count(0.0) == 1 and len(fills) == 7
+    plotted = render.plotly(fig)
+    hollow = [
+        t for t in plotted.data if t.type == "box" and t.fillcolor == "rgba(0,0,0,0)"
+    ]
+    assert len(hollow) == 1 and len(hollow[0].x) == 1
+    assert hollow[0].showlegend is False
+    shown = [t.name for t in plotted.data if t.showlegend]
+    assert shown[-1] == "fewer than 10 samples"
+    legend = render.matplotlib(fig).legends[0]
+    assert legend.get_texts()[-1].get_text() == "fewer than 10 samples"
+
+
+def test_a_heatmap_draws_a_gap_and_a_blank_cell_apart_on_both_backends():
+    fig = specs.heatmap()
+    # A gap cell is a gap whatever its value.
+    fig.data.loc[fig.data["empty"], "intensity"] = 5.0
+    fig = Figure.from_json(fig.to_json())
+    cells = common.grid(fig, fig.panels[0])
+    assert np.isnan(cells.values[cells.gaps]).all()
+    gap_column = cells.gaps.any(axis=0)
+    assert gap_column.sum() == 1 and cells.gaps[:, gap_column].all()
+    blank = np.isnan(cells.values) & ~cells.gaps
+    assert blank.sum() == 1
+    ax = render.matplotlib(fig).axes[0]
+    meshes = [c for c in ax.collections if isinstance(c, QuadMesh)]
+    gap_mesh = next(m for m in meshes if m.get_cmap().name != "mascope_viz")
+    drawn_gaps = ~np.ma.getmaskarray(gap_mesh.get_array()).reshape(cells.gaps.shape)
+    assert (drawn_gaps == cells.gaps).all()
+    plotted = render.plotly(fig)
+    gap_trace = next(t for t in plotted.data if t.type == "heatmap" and not t.showscale)
+    assert (np.array(gap_trace.z, dtype=float) == 1).sum() == cells.gaps.sum()
+    assert "no samples" in [t.name for t in plotted.data if t.showlegend]
+
+
+def test_sticks_by_sign_take_the_diverging_ends_on_both_backends():
+    fig = specs.sticks()
+    for name in theme.THEMES:
+        palette = theme.get(name)
+        sticks = common.sticks(
+            fig, fig.panels[1], palette, common.colours(fig, palette)
+        )
+        up = sticks["y"] >= 0
+        assert set(sticks.loc[up, "colour"]) == {palette.diverging[-1]}
+        assert set(sticks.loc[~up, "colour"]) == {palette.diverging[0]}
+        plotted = render.plotly(fig, theme=name)
+        lines = [t for t in plotted.data if t.mode == "lines" and t.xaxis == "x2"]
+        colours = {t.line.color: sum(v is not None for v in t.y) // 2 for t in lines}
+        assert colours == {
+            palette.diverging[-1]: int(up.sum()),
+            palette.diverging[0]: int((~up).sum()),
+        }
+    from matplotlib.colors import to_hex
+
+    light = common.sticks(
+        fig, fig.panels[1], theme.LIGHT, common.colours(fig, theme.LIGHT)
+    )
+    ax = [a for a in render.matplotlib(fig).axes if a.get_label() != "<colorbar>"][1]
+    drawn = [to_hex(c) for c in ax.collections[0].get_colors()]
+    assert drawn == list(light["colour"])
+
+
+def test_a_marked_stick_is_marked_at_its_tip_on_both_backends():
+    fig = specs.sticks()
+    tips = fig.frame(fig.panels[1]).query("only")[["mz", "intensity"]].to_numpy()
+    ax = [a for a in render.matplotlib(fig).axes if a.get_label() != "<colorbar>"][1]
+    marks = next(line for line in ax.get_lines() if line.get_marker() == "D")
+    assert np.column_stack([marks.get_xdata(), marks.get_ydata()]) == pytest.approx(
+        tips
+    )
+    plotted = render.plotly(fig)
+    trace = next(t for t in plotted.data if t.mode == "markers" and t.name)
+    assert trace.name == "only in one period" and trace.marker.symbol == "diamond"
+    assert np.column_stack([trace.x, trace.y]) == pytest.approx(tips)
+
+
+def test_a_markers_area_is_in_proportion_to_its_value():
+    marks = theme.LIGHT.marks
+    values = np.array([100.0, 25.0, 1.0, 0.0, np.nan, -3.0])
+    sizes = common.sizes(values, theme.LIGHT)
+    assert sizes[0] == marks.size_max
+    assert sizes[1] == pytest.approx(marks.size_max / 2)
+    # Too small to see, missing, zero or negative: the smallest size.
+    assert list(sizes[2:]) == [marks.size_min] * 4
+    legend = common.size_legend(np.array([80000.0, 3.0]), theme.LIGHT)
+    assert [value for value, _ in legend] == [50000.0, 10000.0]
+    assert legend[0][1] == pytest.approx(marks.size_max * np.sqrt(50000 / 80000))
+    assert common.size_legend(np.array([np.nan, -1.0]), theme.LIGHT) == []
+
+
+def test_scatter_draws_the_larger_behind_on_both_backends():
+    fig = specs.scatter()
+    points = common.points(
+        fig, fig.panels[0], theme.LIGHT, common.colours(fig, theme.LIGHT)
+    )
+    diameters = points.points["diameter"].to_numpy()
+    assert (np.diff(diameters) <= 0).all() and diameters[0] > diameters[-1]
+    ax = render.matplotlib(fig).axes[0]
+    drawn = ax.collections[0].get_sizes()
+    assert (np.diff(drawn) <= 0).all()
+    alphas = ax.collections[0].get_facecolors()[:, 3]
+    assert alphas == pytest.approx([theme.LIGHT.marks.point_opacity] * len(alphas))
+    trace = render.plotly(fig).data[0]
+    assert list(trace.marker.size) == pytest.approx(list(diameters))
+    assert all(
+        c.endswith(f",{theme.LIGHT.marks.point_opacity})") for c in trace.marker.color
+    )
+
+
+def test_hollow_points_are_drawn_as_rings_on_both_backends():
+    from matplotlib.colors import to_hex
+
+    fig = specs.scatter()
+    panel = fig.panels[1]
+    points = common.points(fig, panel, theme.LIGHT, common.colours(fig, theme.LIGHT))
+    hollow = points.points["hollow"].to_numpy()
+    assert hollow.sum() == 3
+    ax = [a for a in render.matplotlib(fig).axes if a.get_label() != "<colorbar>"][1]
+    scatter = ax.collections[0]
+    faces = scatter.get_facecolors()
+    assert (faces[hollow][:, 3] == 0).all() and (faces[~hollow][:, 3] > 0).all()
+    edges = [to_hex(e) for e in scatter.get_edgecolors()[hollow]]
+    assert edges == list(points.points.loc[hollow, "colour"])
+    rings = np.asarray(scatter.get_linewidths())
+    assert (rings[hollow] > 0).all() and (rings[~hollow] == 0).all()
+    trace = next(t for t in render.plotly(fig).data if t.xaxis == "x2")
+    widths = np.array(trace.marker.line.width)
+    assert (widths[hollow] > 0).all() and (widths[~hollow] == 0).all()
+    assert [trace.marker.color[i] for i in np.flatnonzero(hollow)] == [
+        "rgba(0,0,0,0)"
+    ] * 3
+    shown = [t.name for t in render.plotly(fig).data if t.showlegend]
+    assert "candidate" in shown
+
+
+def test_scatter_hover_names_the_point_and_its_group():
+    fig = specs.scatter()
+    trace = render.plotly(fig).data[0]
+    labelled = common.points(
+        fig, fig.panels[0], theme.LIGHT, common.colours(fig, theme.LIGHT)
+    )
+    assert list(trace.text) == list(labelled.points["text"])
+    assert "C6HxOy" in trace.text and "x+y+text" == trace.hoverinfo
+    second = next(
+        t
+        for t in render.plotly(fig).data
+        if t.xaxis == "x2" and t.mode == "markers" and len(t.x) > 1
+    )
+    assert set(second.text) == {"CHO", "CHON", "CHOS"}
+
+
+def test_a_strip_draws_no_cell_for_an_hour_without_samples():
+    fig = specs.strip()
+    strip = common.strip(fig, fig.panels[0], theme.LIGHT)
+    samples = fig.frame(fig.panels[0])["samples"].to_numpy()
+    drawn = strip.cells["colour"].notna().to_numpy()
+    # The fixture's hours 10 to 13 have no samples in either row.
+    assert (drawn == (samples > 0)).all() and (~drawn).sum() >= 8
+    ax = render.matplotlib(fig).axes[0]
+    cells = sum(
+        len(c.get_paths()) for c in ax.collections if isinstance(c, PolyCollection)
+    )
+    assert cells == drawn.sum()
+    bar = next(t for t in render.plotly(fig).data if t.type == "bar")
+    assert len(bar.x) == drawn.sum()
+
+
+def test_a_strips_rows_run_top_to_bottom_on_both_backends():
+    fig = specs.strip()
+    ax = render.matplotlib(fig).axes[0]
+    bottom, top = ax.get_ylim()
+    assert top < bottom
+    assert ax.get_yticklabels()[0].get_text() == "negative / mode A"
+    assert render.plotly(fig).layout.yaxis.autorange == "reversed"
+
+
+def test_a_strip_cell_is_as_wide_as_the_smallest_step():
+    times = pd.to_datetime(
+        ["2026-07-01T00:00", "2026-07-01T03:00", "2026-07-01T03:30"], utc=True
+    )
+    fig = Figure(
+        "w",
+        "W",
+        panels=[Panel("strip", encodings={"x": "t", "y": "row"})],
+        data=pd.DataFrame({"t": times, "row": ["a", "a", "a"]}),
+    )
+    assert common.strip(fig, fig.panels[0], theme.LIGHT).width == pd.Timedelta("30min")
+
+
+def test_a_colour_range_sets_the_scale_on_both_backends():
+    fig = specs.heatmap()
+    document = fig.to_dict()
+    document["panels"][0]["axes"]["colour"]["range"] = [10.0, 1e5]
+    document["panels"][1]["axes"]["colour"]["range"] = [-2.0, 2.0]
+    fig = Figure.from_dict(document)
+    plotted = render.plotly(fig)
+    spectrogram, weekly = (
+        t for t in plotted.data if t.type == "heatmap" and t.showscale
+    )
+    assert (spectrogram.zmin, spectrogram.zmax) == (1.0, 5.0)
+    assert (weekly.zmin, weekly.zmax) == (-2.0, 2.0)
+    meshes = [
+        c
+        for ax in render.matplotlib(fig).axes
+        if ax.get_label() != "<colorbar>"
+        for c in ax.get_children()
+        if isinstance(c, QuadMesh) and c.get_cmap().name == "mascope_viz"
+    ]
+    assert [(m.norm.vmin, m.norm.vmax) for m in meshes] == [(1.0, 5.0), (-2.0, 2.0)]
+
+
+def test_a_log_colour_scale_ticks_twice_and_five_times_its_powers_when_few():
+    """Two powers of ten or more inside: the powers alone; fewer: 2 and 5
+    times them too."""
+    assert [text for _, text in common._log_ticks(0.0, 3.0)] == [
+        "1",
+        "10",
+        "100",
+        "1000",
+    ]
+    assert [text for _, text in common._log_ticks(1.0, 2.0)] == ["10", "100"]
+    assert [text for _, text in common._log_ticks(1.0, 1.9)] == ["10", "20", "50"]
+    assert [text for _, text in common._log_ticks(1.1, 1.9)] == ["20", "50"]
+
+
+def test_a_top_point_without_a_label_is_passed_over():
+    data = pd.DataFrame(
+        {"x": [1.0, 2.0, 3.0], "y": [3.0, 2.0, 1.0], "who": [None, "b", "c"]}
+    )
+    fig = Figure(
+        "l",
+        "L",
+        panels=[
+            Panel(
+                "scatter",
+                encodings={"x": "x", "y": "y", "label": "who"},
+                options={"top_n": 2},
+            )
+        ],
+        data=data,
+    )
+    assert list(common.labelled(fig, fig.panels[0])["text"]) == ["b"]
+
+
+def test_the_first_panel_to_name_a_groups_colour_wins():
+    data = pd.DataFrame({"x": ["a", "b"], "y": [1.0, 2.0]})
+    panels = [
+        Panel(
+            "bars",
+            encodings={"x": "x", "y": "y", "group": "x"},
+            options={"colours": {"a": "error"}},
+        ),
+        Panel(
+            "bars",
+            encodings={"x": "x", "y": "y", "group": "x"},
+            options={"colours": {"a": "success"}},
+        ),
+    ]
+    fig = Figure("c", "C", panels=panels, data=data)
+    assert common.colours(fig, theme.LIGHT).groups["a"] == theme.LIGHT.error
+
+
+def test_a_table_shows_seconds_when_a_time_has_them():
+    data = pd.DataFrame(
+        {"t": pd.to_datetime(["2026-07-01T08:00:00", "2026-07-01T08:00:30"], utc=True)}
+    )
+    fig = Figure(
+        "s", "S", panels=[Panel("table", encodings={"columns": ["t"]})], data=data
+    )
+    assert [row[0] for row in common.table(fig, fig.panels[0]).rows] == [
+        "2026-07-01 08:00:00",
+        "2026-07-01 08:00:30",
+    ]
+
+
+def test_a_table_is_as_tall_as_the_rows_it_shows():
+    fig = specs.table()
+    height = common.arrange(fig, theme.LIGHT).heights[0]
+    layout = theme.LIGHT.layout
+    assert height == layout.table_row * (4 + 1) + 12
+
+
+def test_a_marked_row_is_shaded_on_both_backends():
+    fig = specs.table()
+    table = common.table(fig, fig.panels[0])
+    assert table.marked == [False, True, False, False]
+    assert (
+        "Panel 1 shades the rows read differently after the run change."
+        in common.notes(fig)
+    )
+    shade = theme.blend(
+        theme.LIGHT.warning, theme.LIGHT.paper, theme.LIGHT.marks.span_opacity
+    )
+    fills = render.plotly(fig).data[0].cells.fill.color
+    assert all(
+        list(column) == [theme.LIGHT.paper, shade, theme.LIGHT.paper, theme.LIGHT.paper]
+        for column in fills
+    )
+    from matplotlib.colors import to_hex
+
+    drawn = next(
+        c for c in render.matplotlib(fig).axes[0].get_children() if isinstance(c, Table)
+    )
+    assert to_hex(drawn[2, 0].get_facecolor()) == shade
+    assert to_hex(drawn[1, 0].get_facecolor()) == theme.LIGHT.paper
+
+
+@pytest.mark.parametrize(
+    "change, problem",
+    [
+        (
+            lambda t: {"sequential": (*t.sequential[:-1], t.plot)},
+            "the sequential ramp's high end",
+        ),
+        (
+            lambda t: {"sequential": (t.paper, *t.sequential[1:])},
+            "the sequential ramp's low end",
+        ),
+        (
+            lambda t: {"diverging": (t.plot, *t.diverging[1:])},
+            "the diverging ramp's low end",
+        ),
+        (
+            lambda t: {"diverging": (*t.diverging[:-1], t.plot)},
+            "the diverging ramp's high end",
+        ),
+        (
+            lambda t: {"diverging": (*t.diverging[:4], t.paper, *t.diverging[5:])},
+            "the diverging ramp's centre",
+        ),
+        (
+            lambda t: {"diverging": (t.diverging[3], *t.diverging[1:])},
+            "does not move away from its centre",
+        ),
+    ],
+)
+def test_the_contrast_check_finds_each_kind_of_miss(change, problem):
+    from dataclasses import replace
+
+    for name in theme.THEMES:
+        palette = theme.get(name)
+        problems = theme.check(replace(palette, **change(palette)))
+        assert any(problem in p for p in problems), problems
+
+
+def test_sticks_by_group_are_coloured_and_named_on_both_backends():
+    data = pd.DataFrame(
+        {
+            "mz": [62.0, 97.0, 126.9, 145.0],
+            "y": [3.0, -1.0, 2.0, 1.0],
+            "key": ["ion:1", "ion:2", "ion:1", None],
+            "name": ["Nitrate", "Iodide", "Nitrate", None],
+        }
+    )
+    fig = Figure(
+        "s",
+        "S",
+        panels=[
+            Panel(
+                "sticks",
+                encodings={"x": "mz", "y": "y", "group": "key", "name": "name"},
+                options={"colours": {"ion:2": "error"}},
+            )
+        ],
+        data=data,
+    )
+    colours = common.colours(fig, theme.LIGHT)
+    sticks = common.sticks(fig, fig.panels[0], theme.LIGHT, colours)
+    assert list(sticks["colour"]) == [
+        theme.LIGHT.categorical[0],
+        theme.LIGHT.error,
+        theme.LIGHT.categorical[0],
+        theme.LIGHT.muted,
+    ]
+    from matplotlib.colors import to_hex
+
+    drawn = render.matplotlib(fig)
+    assert [to_hex(c) for c in drawn.axes[0].collections[0].get_colors()] == list(
+        sticks["colour"]
+    )
+    assert [t.get_text() for t in drawn.legends[0].get_texts()] == ["Nitrate", "Iodide"]
+    plotted = render.plotly(fig)
+    shown = {t.name: t.line.color for t in plotted.data if t.showlegend}
+    assert shown == {"Nitrate": theme.LIGHT.categorical[0], "Iodide": theme.LIGHT.error}
+    unnamed = [t for t in plotted.data if t.line.color == theme.LIGHT.muted]
+    assert len(unnamed) == 1 and unnamed[0].showlegend is False
+
+
+def test_a_point_without_a_colour_group_is_drawn_muted():
+    data = pd.DataFrame({"x": [1.0, 2.0], "y": [1.0, 2.0], "c": ["a", None]})
+    fig = Figure(
+        "p",
+        "P",
+        panels=[Panel("scatter", encodings={"x": "x", "y": "y", "colour": "c"})],
+        data=data,
+    )
+    points = common.points(
+        fig, fig.panels[0], theme.LIGHT, common.colours(fig, theme.LIGHT)
+    )
+    assert list(points.points["colour"]) == [
+        theme.LIGHT.categorical[0],
+        theme.LIGHT.muted,
+    ]
+    assert points.groups == ["a"]
+
+
+def test_the_first_panel_to_name_a_group_names_it():
+    data = pd.DataFrame(
+        {"x": ["a", "a"], "y": [1.0, 2.0], "first": ["One", "Uno"], "part": [1, 2]}
+    )
+    fig = Figure(
+        "n",
+        "N",
+        panels=[
+            Panel(
+                "bars",
+                encodings={"x": "x", "y": "y", "group": "x", "name": "first"},
+                where={"part": part},
+            )
+            for part in (1, 2)
+        ],
+        data=data,
+    )
+    assert common.colours(fig, theme.LIGHT).name("a") == "One"
+    bar = render.plotly(fig).data[0]
+    assert bar.name == "One" and bar.hovertemplate.endswith("<extra>One</extra>")
+
+
+def test_the_size_legend_and_the_hollow_entry_on_both_backends():
+    fig = specs.scatter()
+    legend = render.matplotlib(fig).legends[0]
+    texts = [t.get_text() for t in legend.get_texts()]
+    assert texts == [
+        "Median intensity",
+        "50000",
+        "10000",
+        "CHO",
+        "CHON",
+        "CHOS",
+        "candidate",
+    ]
+    plotted = render.plotly(fig)
+    sizes = [t for t in plotted.data if t.legendgroup == "size:0"]
+    assert [t.name for t in sizes] == ["50000", "10000"]
+    assert sizes[0].legendgrouptitle.text == "Median intensity"
+    assert [t.marker.size for t in sizes] == pytest.approx(
+        [d for _, d in common.size_legend(fig.data["median"].to_numpy(), theme.LIGHT)]
+    )
+
+
+def test_blend_tints_a_colour_over_its_ground():
+    assert theme.blend("#ffffff", "#000000", 0.5) == "#808080"
+    assert theme.blend("#a23f00", "#ffffff", 0.0) == "#ffffff"
+    assert theme.blend("#a23f00", "#ffffff", 1.0) == "#a23f00"
+
+
+def test_a_flag_column_reads_a_missing_value_as_false():
+    column = pd.Series([True, None, False], dtype="boolean")
+    assert list(common.flags(column)) == [True, False, False]
+
+
+def test_a_group_is_named_by_its_first_name_that_is_there():
+    data = pd.DataFrame(
+        {"x": ["a", "a", "b"], "y": [1.0, 2.0, 3.0], "name": [None, "Alpha", None]}
+    )
+    fig = Figure(
+        "n",
+        "N",
+        panels=[
+            Panel("bars", encodings={"x": "x", "y": "y", "group": "x", "name": "name"})
+        ],
+        data=data,
+    )
+    colours = common.colours(fig, theme.LIGHT)
+    assert colours.name("a") == "Alpha"
+    # A group without a name is called by its own value.
+    assert colours.name("b") == "b"
+
+
+def test_a_log_axis_range_is_drawn_in_its_powers_on_both_backends():
+    data = pd.DataFrame({"x": [2.0, 20.0], "y": [1.0, 2.0]})
+    fig = Figure(
+        "r",
+        "R",
+        panels=[
+            Panel(
+                "scatter",
+                axes={"x": {"scale": "log", "range": (1, 100)}},
+                encodings={"x": "x", "y": "y"},
+            )
+        ],
+        data=data,
+    )
+    assert list(render.plotly(fig).layout.xaxis.range) == [0.0, 2.0]
+    assert render.matplotlib(fig).axes[0].get_xlim() == pytest.approx((1, 100))
