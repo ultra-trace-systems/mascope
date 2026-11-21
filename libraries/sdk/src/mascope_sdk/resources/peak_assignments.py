@@ -799,6 +799,24 @@ class PeakAssignmentsResource(BaseResource):
                  predicted, found and stamped), on a monoisotopic row that
                  reads its formula and mechanism; None otherwise, and absent
                  from a server that predates it.
+                 The batch's readings of that batch peak, as the ledger
+                 serves them and on any row: ``batch_series`` (the series
+                 record, with its ``root`` as a group member),
+                 ``batch_continuity`` (the ratio-stability ``grade``,
+                 ``partial``, ``stale`` and its ``detail``),
+                 ``batch_known_species``, ``batch_water_ladder`` and
+                 ``batch_blend``; and ``batch_groups``, every group the batch
+                 peak is a member of - ``group_id``, ``kind`` (``series``,
+                 ``channels``, ``co_variation``, ``check_pair``) and
+                 ``members``, each with ``batch_peak_id``, ``formula``,
+                 ``ion_formula``, ``ionization_mechanism_id``, ``mechanism``,
+                 ``mz``, ``consensus_tier`` and ``sample_peak_id`` (this
+                 sample's own peak at it, None where it holds none), a series
+                 member also its ``step``. The five readings are each None
+                 where the batch holds no such reading; ``batch_groups`` is
+                 an empty list where the batch peak is in no group, and None
+                 only where the row's peak sits in no batch peak. All six are
+                 absent from a server that predates them.
                  Returns None if the response carries no record.
         :rtype: dict | None
         :raises AuthenticationError: If authentication fails.

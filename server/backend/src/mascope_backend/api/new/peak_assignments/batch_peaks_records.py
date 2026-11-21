@@ -44,6 +44,10 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     snapshot_rows,
     snapshot_series,
 )
+from mascope_backend.api.new.peak_assignments.batch_series import (
+    read_batch_groups,
+    snapshot_group_row,
+)
 from mascope_backend.api.new.peak_assignments.batch_stages import stage_standing
 from mascope_backend.api.new.peak_assignments.identification_level import (
     LEVELS,
@@ -455,6 +459,12 @@ async def get_batch_peak_ledger(
     ``engine_tier`` and ``tier_disagrees`` filter on an importing engine's own
     tier as the sample ledger's read does (:func:`batch_runs.engine_tier_filters`).
 
+    ``batch_groups`` are the rows each of the batch's readings spans - a
+    series, the channels of one neutral, a co-variation record's partners, a
+    batch check's pair - over the whole batch or snapshot whatever the filters
+    keep (``batch_series.batch_groups``): the same groups a sample's detail
+    row serves its batch peak's.
+
     ``member_level`` and ``member_levels`` are the identification levels the
     anchor's members' runs stated for its consensus formula
     (:func:`_with_member_levels`): the one grouped read over the members this
@@ -474,6 +484,14 @@ async def get_batch_peak_ledger(
             )
             data = [snapshot_anchor_meta(row, sample_batch_id) for row in rows]
             await _with_consensus_targets(session, data, rows)
+            # The groups span the whole snapshot, whatever the rows' filters.
+            filtered = bool(tier or engine_tier or tier_disagrees is not None) or (
+                bool(min_n_present) and min_n_present > 1
+            )
+            whole = await snapshot_rows(session, run) if filtered else rows
+            groups = await read_batch_groups(
+                session, sample_batch_id, [snapshot_group_row(row) for row in whole]
+            )
             # A snapshot keeps no link from its members to the rows of their
             # runs, so it serves no member levels: they are the live ledger's.
             for record in data:
@@ -487,6 +505,7 @@ async def get_batch_peak_ledger(
                 ),
                 "results": len(data),
                 "data": data,
+                "batch_groups": groups,
                 # Where the stages stand now: a snapshot is a past ledger, and
                 # what would bring the batch up to date is the live one's.
                 **await stage_standing(sample_batch_id),
@@ -503,12 +522,16 @@ async def get_batch_peak_ledger(
         data = [_batch_peak_meta(bp) for bp in bp_rows]
         await _with_consensus_targets(session, data, bp_rows)
         await _with_member_levels(session, data, sample_batch_id)
+        # The groups span the whole batch, whatever the rows' filters: a
+        # sample's detail row reads the same (``batch_series.batch_groups``).
+        groups = await read_batch_groups(session, sample_batch_id)
 
     return {
         "status": "success",
         "message": f"Retrieved {len(data)} batch peak{'s' if len(data) != 1 else ''}",
         "results": len(data),
         "data": data,
+        "batch_groups": groups,
         **await stage_standing(sample_batch_id),
     }
 

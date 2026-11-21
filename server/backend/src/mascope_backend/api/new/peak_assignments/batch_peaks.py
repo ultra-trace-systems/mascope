@@ -903,6 +903,40 @@ def continuity_stale(anchor: Any) -> bool:
     )
 
 
+#: The warning a continuity detail carries when the batch had more pairs than
+#: one pass grades and some of the anchor's own were left ungraded
+#: (``continuity.py``).
+CONTINUITY_PARTIAL = "partial"
+
+
+def continuity_reading(anchor: Any) -> Optional[dict]:
+    """The ratio-stability reading of an anchor, as the inspector serves it:
+    the ``grade``, whether the pass left some of its pairs ungraded
+    (``partial``), whether the ledger has moved past it since
+    (``stale``, :func:`continuity_stale`), and the pass's ``detail``.
+
+    The same columns the ledger serves as ``continuity_grade``,
+    ``continuity`` and ``continuity_stale``. None where the pass never graded
+    nor withdrew the anchor.
+
+    :param anchor: A ``BatchPeak`` row or a snapshot of one, or None.
+    """
+    if anchor is None:
+        return None
+    grade = _member(anchor, "continuity_grade")
+    detail = _member(anchor, "continuity")
+    if not isinstance(detail, dict):
+        detail = None
+    if grade is None and detail is None:
+        return None
+    return {
+        "grade": grade,
+        "partial": CONTINUITY_PARTIAL in ((detail or {}).get("warnings") or []),
+        "stale": continuity_stale(anchor),
+        "detail": detail,
+    }
+
+
 #: The anchor's provenance key the batch's isotopologue stamping
 #: (``batch_isotopologues.py``) writes a parent's record under: the diagnostic
 #: isotopologues predicted for its formula, which of them a batch peak stands
@@ -1204,6 +1238,14 @@ BATCH_CHECKS_KEY = "batch_checks"
 #: The facts a batch checks record carries, each a typed reading of its own:
 #: the halogen lock, the label twin and the neutral pair.
 BATCH_CHECK_FACTS = ("halogen_lock", "label_twin", "neutral_pair")
+
+#: Where a fact names another batch peak, the key it names it under: the
+#: halogen lock its line, the label twin the twin, the neutral pair its partner.
+CHECK_PARTNER_KEYS = {
+    "halogen_lock": "batch_peak_id",
+    "label_twin": "batch_peak_id",
+    "neutral_pair": "partner_batch_peak_id",
+}
 
 
 def batch_checks_record_of(anchor: Any, *, stale: bool = False) -> Optional[dict]:

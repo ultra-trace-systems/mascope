@@ -56,7 +56,8 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Optional
+from types import SimpleNamespace
+from typing import Any, Iterable, Mapping, Optional
 
 from sqlalchemy import select
 
@@ -64,12 +65,19 @@ from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_samp
 from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.new.cheminfo.utils import to_custom_element_format
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    BATCH_CHECK_FACTS,
+    BATCH_CHECKS_KEY,
+    CHECK_PARTNER_KEYS,
+    CO_VARIATION_KEY,
+    DIAGNOSTIC_ISOTOPOLOGUES_KEY,
     MARK_SERIES,
     ROLE_M0,
     SERIES_KEY,
     is_isotope_line,
     manual_pin_of,
     series_record_of,
+    standing_batch_checks_record,
+    standing_co_variation_record,
     standing_series_record,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
@@ -124,6 +132,7 @@ from mascope_tools.composition.series import (
 )
 from mascope_tools.composition.utils import (
     combine_formula_and_ionization,
+    parse_formula_tokens,
     parse_ionization,
 )
 
@@ -965,3 +974,502 @@ async def detect_batch_series(
         user_id=user_id,
     )
     return {**series_outcome(counts, sample_batch_id), "config": settings}
+
+
+# --- groups: the rows a reading spans ------------------------------------------
+#
+# Several of the batch's readings are about more than one batch peak: a series'
+# steps, the channels of one neutral, a co-variation record's partners, the
+# line, twin or partner a batch check names. The ledger's lens, its *Group by*
+# and the inspector card list those rows together, and they count the same
+# members only when one derivation names them: :func:`batch_groups`, which the
+# batch-peaks read serves for the whole batch and a sample's detail row serves
+# for the batch peak its peak sits in (``docs/dev/assignment_ledger_and_card.md``,
+# section 3.5).
+
+#: The kinds of group, in the order a read lists them.
+GROUP_SERIES = "series"
+GROUP_CHANNELS = "channels"
+GROUP_CO_VARIATION = "co_variation"
+GROUP_CHECK_PAIR = "check_pair"
+GROUP_KINDS = (GROUP_SERIES, GROUP_CHANNELS, GROUP_CO_VARIATION, GROUP_CHECK_PAIR)
+
+#: The batch peak columns a group reads.
+_GROUP_COLUMNS = (
+    "batch_peak_id",
+    "mz",
+    "consensus_formula",
+    "consensus_ion_formula",
+    "ionization_mechanism_id",
+    "consensus_tier",
+    "consensus_role",
+    "isotopologue_of",
+)
+
+#: The provenance records a group reads: the three that name other batch peaks,
+#: and the one a batch check's halogen lock stands on.
+_GROUP_RECORD_KEYS = (
+    SERIES_KEY,
+    CO_VARIATION_KEY,
+    BATCH_CHECKS_KEY,
+    DIAGNOSTIC_ISOTOPOLOGUES_KEY,
+)
+
+
+def group_row(anchor: Any) -> dict:
+    """What :func:`batch_groups` reads of a live anchor: its reading, and its
+    series, co-variation and batch checks records where they stand (the
+    ``standing_*`` readers the ledger serves them through).
+
+    A run's snapshot row is read by :func:`snapshot_group_row` instead.
+
+    :param anchor: A ``BatchPeak`` row, or an object with its columns as
+        attributes and its ``provenance``.
+    """
+    return {
+        **{column: getattr(anchor, column) for column in _GROUP_COLUMNS},
+        "series": standing_series_record(anchor),
+        "co_variation": standing_co_variation_record(anchor),
+        "batch_checks": standing_batch_checks_record(anchor),
+    }
+
+
+def snapshot_group_row(row: Any) -> dict:
+    """What :func:`batch_groups` reads of a run's snapshot row, whose records
+    were captured standing (``batch_runs.anchor_snapshot_row``)."""
+    return {
+        **{column: getattr(row, column) for column in _GROUP_COLUMNS},
+        "series": row.series,
+        "co_variation": row.co_variation,
+        "batch_checks": row.batch_checks,
+    }
+
+
+def series_lattice_key(
+    unit: Mapping[str, int], counts: Mapping[str, int]
+) -> Optional[tuple[frozenset, int]]:
+    """Where ``counts`` sits on the lattice ``unit`` spans: its residual and
+    its index. Two formulas are whole units apart exactly when their residuals
+    are equal, and then their indices differ by that many units.
+
+    The index is ``counts[p] // unit[p]`` for a pivot element ``p`` (the first
+    of the unit's elements, in sorted order), and the residual is ``counts``
+    less that many units, so a formula's key is one parse and one subtraction
+    whatever the size of the batch.
+
+    :param unit: The unit's element counts.
+    :param counts: The formula's element counts.
+    :return: None for a unit with no element.
+    """
+    pivots = sorted(symbol for symbol, per in unit.items() if per)
+    if not pivots:
+        return None
+    pivot = pivots[0]
+    index = counts.get(pivot, 0) // unit[pivot]
+    residual = {
+        symbol: counts.get(symbol, 0) - index * unit.get(symbol, 0)
+        for symbol in set(unit) | set(counts)
+    }
+    return frozenset(residual.items()), index
+
+
+def series_step(
+    root: Mapping[str, int], unit: Mapping[str, int], counts: Mapping[str, int]
+) -> Optional[int]:
+    """How many whole units ``counts`` is from ``root``, signed, or None where
+    it is no whole number of them (:func:`series_lattice_key`).
+
+    :param root: The root formula's element counts.
+    :param unit: The unit's element counts.
+    :param counts: The formula's element counts.
+    :return: 0 for the root's own formula.
+    """
+    root_key = series_lattice_key(unit, root)
+    key = series_lattice_key(unit, counts)
+    if root_key is None or key is None or root_key[0] != key[0]:
+        return None
+    return key[1] - root_key[1]
+
+
+def _is_line(row: Mapping) -> bool:
+    """Whether a row reads an isotope line (``batch_peaks.is_isotope_line``)."""
+    ion = row.get("consensus_ion_formula")
+    return bool(row.get("isotopologue_of")) or (bool(ion) and "[" in ion)
+
+
+def _distinct(groups: list[dict], key) -> list[dict]:
+    """The groups less the ones whose ``key`` an earlier one already has: two
+    records that name the same rows are one group."""
+    seen: set = set()
+    kept = []
+    for group in groups:
+        found = key(group)
+        if found in seen:
+            continue
+        seen.add(found)
+        kept.append(group)
+    return kept
+
+
+def _series_groups(by_id: dict[str, Mapping]) -> list[dict]:
+    """One group per series a standing record names: the root, and every
+    batch peak whose formula is the root's plus or minus whole units through
+    the record's mechanism. A step no batch peak stands at is no member.
+
+    Members are what a series is about - molecules - so a claimed batch peak
+    or an isotope line is none, as the walk reaches neither
+    (:func:`series_anchors`); the root is one by its id.
+    """
+    keys: dict[tuple, Mapping] = {}
+    for row in by_id.values():
+        record = row.get("series")
+        if not isinstance(record, dict) or not record.get("unit"):
+            continue
+        key = (
+            record.get("root_batch_peak_id"),
+            record["unit"],
+            record.get("ionization_mechanism_id"),
+        )
+        keys.setdefault(key, record)
+    # Each candidate's formula is parsed once, and its members are found by
+    # one lookup per series in an index of the candidates by mechanism, unit
+    # and lattice residual (:func:`series_lattice_key`).
+    by_mechanism: dict[Any, list[tuple[Mapping, dict[str, int]]]] = defaultdict(list)
+    for row in by_id.values():
+        formula = row.get("consensus_formula")
+        if formula and not row.get("consensus_role") and not _is_line(row):
+            by_mechanism[row.get("ionization_mechanism_id")].append(
+                (row, parse_formula_tokens(formula))
+            )
+    lattices: dict[tuple, dict[frozenset, list[tuple[int, Mapping]]]] = {}
+
+    def lattice(unit: str, mechanism_id: Any) -> dict:
+        found = lattices.get((unit, mechanism_id))
+        if found is None:
+            unit_counts = parse_formula_tokens(unit)
+            found = defaultdict(list)
+            for row, counts in by_mechanism.get(mechanism_id, ()):
+                key = series_lattice_key(unit_counts, counts)
+                if key is not None:
+                    found[key[0]].append((key[1], row))
+            lattices[(unit, mechanism_id)] = found
+        return found
+
+    groups = []
+    for (root_id, unit, mechanism_id), record in keys.items():
+        root_formula = record.get("root_formula")
+        root_row = by_id.get(root_id or "")
+        if not root_formula:
+            continue
+        root_key = series_lattice_key(
+            parse_formula_tokens(unit), parse_formula_tokens(root_formula)
+        )
+        if root_key is None:
+            continue
+        residual, root_index = root_key
+        members: list[tuple[int, Mapping]] = [(0, root_row)] if root_row else []
+        for index, row in lattice(unit, mechanism_id).get(residual, ()):
+            step = index - root_index
+            if step and row is not root_row:
+                members.append((step, row))
+        if len(members) < 2:
+            continue
+        members.sort(key=lambda pair: (pair[0], pair[1]["mz"]))
+        groups.append(
+            {
+                "group_id": f"{GROUP_SERIES}:{root_id}:{unit}:{mechanism_id}",
+                "kind": GROUP_SERIES,
+                "unit": unit,
+                "ionization_mechanism_id": mechanism_id,
+                "root_batch_peak_id": root_id,
+                "root_formula": root_formula,
+                "members": [(row, {"step": step}) for step, row in members],
+            }
+        )
+    groups.sort(
+        key=lambda group: (
+            (by_id.get(group["root_batch_peak_id"] or "") or {}).get("mz") or 0.0,
+            group["group_id"],
+        )
+    )
+    return _distinct(
+        groups,
+        lambda group: (
+            group["unit"],
+            group["ionization_mechanism_id"],
+            frozenset(row["batch_peak_id"] for row, _ in group["members"]),
+        ),
+    )
+
+
+def _channel_groups(by_id: dict[str, Mapping]) -> list[dict]:
+    """One group per neutral the batch reads through more than one ion: the
+    batch peaks with the same ``consensus_formula`` and a different
+    ``consensus_ion_formula``. An isotope line carries its parent's formula
+    and is no channel of it."""
+    by_formula: dict[str, list[Mapping]] = defaultdict(list)
+    for row in by_id.values():
+        if row.get("consensus_formula") and row.get("consensus_ion_formula"):
+            if not _is_line(row):
+                by_formula[row["consensus_formula"]].append(row)
+    groups = []
+    for formula, rows in by_formula.items():
+        if len({row["consensus_ion_formula"] for row in rows}) < 2:
+            continue
+        rows = sorted(rows, key=lambda row: (row["mz"], row["batch_peak_id"]))
+        groups.append(
+            {
+                "group_id": f"{GROUP_CHANNELS}:{formula}",
+                "kind": GROUP_CHANNELS,
+                "formula": formula,
+                "members": [(row, {}) for row in rows],
+            }
+        )
+    groups.sort(key=lambda group: group["members"][0][0]["mz"])
+    return groups
+
+
+def _co_variation_groups(by_id: dict[str, Mapping]) -> list[dict]:
+    """One group per standing co-variation record: the batch peak that
+    carries it and the partners it pairs, strongest first. Two records that
+    pair the same batch peaks are one group."""
+    groups = []
+    for row in sorted(by_id.values(), key=lambda row: row["mz"]):
+        record = row.get("co_variation")
+        if not isinstance(record, dict):
+            continue
+        members = [row]
+        for partner in record.get("partners") or []:
+            other = by_id.get((partner or {}).get("batch_peak_id") or "")
+            if other is not None and other not in members:
+                members.append(other)
+        if len(members) < 2:
+            continue
+        groups.append(
+            {
+                "group_id": f"{GROUP_CO_VARIATION}:{row['batch_peak_id']}",
+                "kind": GROUP_CO_VARIATION,
+                "anchor_batch_peak_id": row["batch_peak_id"],
+                "members": [(member, {}) for member in members],
+            }
+        )
+    return _distinct(
+        groups,
+        lambda group: frozenset(row["batch_peak_id"] for row, _ in group["members"]),
+    )
+
+
+def _check_pair_groups(by_id: dict[str, Mapping]) -> list[dict]:
+    """One group per batch check that names another batch peak: the halogen
+    lock its line, the label twin the twin, the neutral pair its partner,
+    each beside the batch peak whose record states it. A pair both of whose
+    batch peaks state it is one group."""
+    groups = []
+    for row in sorted(by_id.values(), key=lambda row: row["mz"]):
+        record = row.get("batch_checks")
+        if not isinstance(record, dict):
+            continue
+        for check in BATCH_CHECK_FACTS:
+            fact = record.get(check)
+            if not isinstance(fact, dict):
+                continue
+            other = by_id.get(fact.get(CHECK_PARTNER_KEYS[check]) or "")
+            if other is None or other is row:
+                continue
+            groups.append(
+                {
+                    "group_id": (f"{GROUP_CHECK_PAIR}:{check}:{row['batch_peak_id']}"),
+                    "kind": GROUP_CHECK_PAIR,
+                    "check": check,
+                    "anchor_batch_peak_id": row["batch_peak_id"],
+                    "members": [(row, {}), (other, {})],
+                }
+            )
+    return _distinct(
+        groups,
+        lambda group: (
+            group["check"],
+            frozenset(row["batch_peak_id"] for row, _ in group["members"]),
+        ),
+    )
+
+
+def group_member(row: Mapping, notation_by_id: Mapping[str, str]) -> dict:
+    """One member of a group as a read serves it: the batch peak, its reading
+    and the mechanism's notation, which the ledger's rows do not carry.
+    ``sample_peak_id`` is the sample's own peak at the member, filled in by a
+    sample's detail row (:func:`with_sample_peaks`) and None on the batch's
+    read."""
+    mechanism_id = row.get("ionization_mechanism_id")
+    return {
+        "batch_peak_id": row["batch_peak_id"],
+        "formula": row.get("consensus_formula"),
+        "ion_formula": row.get("consensus_ion_formula"),
+        "ionization_mechanism_id": mechanism_id,
+        "mechanism": notation_by_id.get(mechanism_id or ""),
+        "mz": row.get("mz"),
+        "consensus_tier": row.get("consensus_tier"),
+        "sample_peak_id": None,
+    }
+
+
+def batch_groups(
+    rows: Iterable[Mapping], notation_by_id: Mapping[str, str]
+) -> list[dict]:
+    """Every group of a batch: the rows each of its readings spans.
+
+    - ``series``: the root and every batch peak whose formula is the root's
+      plus or minus whole units through the same mechanism, from a standing
+      series record's ``root_batch_peak_id``, ``unit`` and ``root_formula``;
+      each member carries its ``step`` (0 for the root). A step with no batch
+      peak is never a member: the client draws it as a gap.
+    - ``channels``: the batch peaks with the same ``consensus_formula`` and a
+      different ``consensus_ion_formula``.
+    - ``co_variation``: the batch peaks a co-variation record pairs.
+    - ``check_pair``: a batch check's batch peak and the line, twin or
+      partner it names (``check``).
+
+    A group has its ``group_id``, its ``kind`` and its ``members``
+    (:func:`group_member`), and lists at least two. Kinds come in
+    :data:`GROUP_KINDS` order.
+
+    :param rows: The batch's anchors as :func:`group_row` or
+        :func:`snapshot_group_row` reads them: the whole batch, whatever a read filters, so every reader counts the same
+        members.
+    :param notation_by_id: Mechanism id -> its notation.
+    """
+    by_id = {row["batch_peak_id"]: row for row in rows}
+    groups = (
+        _series_groups(by_id)
+        + _channel_groups(by_id)
+        + _co_variation_groups(by_id)
+        + _check_pair_groups(by_id)
+    )
+    return [
+        {
+            **group,
+            "members": [
+                {**group_member(row, notation_by_id), **extra}
+                for row, extra in group["members"]
+            ],
+        }
+        for group in groups
+    ]
+
+
+def groups_of(groups: Iterable[dict], batch_peak_id: Optional[str]) -> list[dict]:
+    """The groups a batch peak is a member of, in the read's order."""
+    return [
+        group
+        for group in groups
+        if any(member["batch_peak_id"] == batch_peak_id for member in group["members"])
+    ]
+
+
+async def mechanism_notations(session, mechanism_ids: Iterable[str]) -> dict[str, str]:
+    """Mechanism id -> its notation, in one read."""
+    ids = sorted(set(mechanism_ids))
+    if not ids:
+        return {}
+    return {
+        mechanism_id: notation
+        for mechanism_id, notation in (
+            await session.execute(
+                select(
+                    IonizationMechanism.ionization_mechanism_id,
+                    IonizationMechanism.ionization_mechanism,
+                ).where(IonizationMechanism.ionization_mechanism_id.in_(ids))
+            )
+        ).all()
+        if notation
+    }
+
+
+async def live_group_rows(session, sample_batch_id: str) -> list[dict]:
+    """Every live anchor of a batch as :func:`batch_groups` reads it, in one
+    read of the columns and records it needs rather than whole rows."""
+    result = await session.execute(
+        select(
+            *(getattr(BatchPeak, column) for column in _GROUP_COLUMNS),
+            *(BatchPeak.provenance[key].label(key) for key in _GROUP_RECORD_KEYS),
+        )
+        .where(BatchPeak.sample_batch_id == sample_batch_id)
+        .order_by(BatchPeak.mz)
+    )
+    rows = []
+    for found in result.mappings():
+        anchor = SimpleNamespace(
+            **{column: found[column] for column in _GROUP_COLUMNS},
+            provenance={
+                key: found[key] for key in _GROUP_RECORD_KEYS if found[key] is not None
+            },
+        )
+        rows.append(group_row(anchor))
+    return rows
+
+
+async def with_sample_peaks(
+    session, groups: list[dict], sample_item_id: Optional[str]
+) -> list[dict]:
+    """Put the sample's own peak at each member on a sample's groups
+    (``sample_peak_id``), in one read for every member; None where the sample
+    holds none."""
+    member_ids = sorted(
+        {member["batch_peak_id"] for group in groups for member in group["members"]}
+    )
+    if not member_ids or sample_item_id is None:
+        return groups
+    peak_of: dict[str, str] = {}
+    for batch_peak_id, sample_peak_id in (
+        await session.execute(
+            select(
+                BatchPeakOccurrence.batch_peak_id, BatchPeakOccurrence.sample_peak_id
+            )
+            .where(
+                BatchPeakOccurrence.sample_item_id == sample_item_id,
+                BatchPeakOccurrence.batch_peak_id.in_(member_ids),
+            )
+            .order_by(
+                BatchPeakOccurrence.batch_peak_id, BatchPeakOccurrence.sample_peak_id
+            )
+        )
+    ).all():
+        peak_of.setdefault(batch_peak_id, sample_peak_id)
+    for group in groups:
+        for member in group["members"]:
+            member["sample_peak_id"] = peak_of.get(member["batch_peak_id"])
+    return groups
+
+
+async def read_batch_groups(
+    session,
+    sample_batch_id: str,
+    rows: Optional[list[Mapping]] = None,
+    *,
+    member: Optional[str] = None,
+) -> list[dict]:
+    """A batch's groups (:func:`batch_groups`), from its live anchors or from
+    the ``rows`` given (a run's snapshot), with one read of the members'
+    mechanisms.
+
+    :param member: Only the groups this batch peak is a member of
+        (:func:`groups_of`), as a sample's detail row serves them.
+    """
+    if rows is None:
+        rows = await live_group_rows(session, sample_batch_id)
+    groups = batch_groups(rows, {})
+    if member is not None:
+        groups = groups_of(groups, member)
+    notations = await mechanism_notations(
+        session,
+        {
+            member["ionization_mechanism_id"]
+            for group in groups
+            for member in group["members"]
+            if member["ionization_mechanism_id"]
+        },
+    )
+    for group in groups:
+        for member in group["members"]:
+            member["mechanism"] = notations.get(member["ionization_mechanism_id"] or "")
+    return groups

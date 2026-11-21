@@ -186,6 +186,18 @@ class BatchPeakRecordsResponse(BaseModel):
         None,
         description="The ledger only: the stale stages by name, in order.",
     )
+    batch_groups: list[dict] | None = Field(
+        None,
+        description=(
+            "The ledger only: the rows each of the batch's readings spans, over "
+            "the whole batch whatever the filters keep - ``group_id``, ``kind`` "
+            "(series, channels, co_variation, check_pair) and its ``members``, "
+            "each with ``batch_peak_id``, ``formula``, ``ion_formula``, "
+            "``ionization_mechanism_id``, ``mechanism``, ``mz`` and "
+            "``consensus_tier`` (a series member also its ``step``) "
+            "(``batch_series.batch_groups``)."
+        ),
+    )
 
 
 @batch_peaks_router.post("/records/series", response_model=BatchPeakRecordsResponse)
