@@ -8,17 +8,23 @@ beside it; here they are answered, and the runner is tested around them. The
 axes are real stores on disk: what a rollback has to give back bit for bit.
 """
 
+import copy
 import json
 import os
+import subprocess
+import sys
 from contextlib import ExitStack
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
+import pytest_asyncio
 import xarray as xr
+from sqlalchemy import delete, null
+from test_utils import gen_test_id
 
 import mascope_file.io as m_io
 import mascope_file.name as m_name
@@ -31,6 +37,15 @@ from mascope_backend.api.controllers.sample.files.process.service import (
 )
 from mascope_backend.api.models.calibration.calibration_pydantic_model import (
     CalibrationFitParams,
+)
+from mascope_backend.db import (
+    Dataset,
+    IonizationMode,
+    SampleBatch,
+    SampleFile,
+    SampleItem,
+    TargetCollection,
+    Workspace,
 )
 from mascope_backend.db.scripts import recalibrate_tof as script
 from mascope_tofwerk.calibration import tof_to_mass
@@ -279,6 +294,11 @@ def _ledger(tmp_path, *events) -> script.Ledger:
     return ledger
 
 
+def _whole(ledger) -> list[dict]:
+    """Every event of the ledger whole, as its file has it."""
+    return list(ledger.read_back(ledger.events))
+
+
 def test_an_outcome_under_the_same_target_settles_a_file(tmp_path):
     other = {**TARGET, "node_version": TOF_CALIBRATION_NODE_VERSION - 1}
     ledger = _ledger(
@@ -392,6 +412,209 @@ def test_a_stop_file_asks_the_run_to_stop(tmp_path):
     assert not ledger.stop_requested()
     (tmp_path / script.STOP_FILE).touch()
     assert ledger.stop_requested()
+
+
+#: What an apply event carries that the ledger leaves in its file
+HEAVY_PARTS = {
+    "before": {"record": {"mode": 0, "par": [1, 2]}, "range": [1, 2], "props": {}},
+    "restore": {"offset": 0.0, "kept": []},
+    "old": {"mode": 0, "par": [1, 2], "residuals": [["NO3-", 61.99, 0.1, True]]},
+    "new": {"mode": 0, "par": [3, 4], "residuals": [["NO3-", 61.99, 0.2, True]]},
+    "bands": [{"band": "40-100", "median": 1.5, "min": 1.0, "max": 2.0}],
+}
+
+
+def test_the_ledger_holds_its_events_without_their_records(tmp_path):
+    """A run over tens of thousands of files holds every event of the
+    ledger; the records, plans and bands stay in the file until a file is
+    acted on, and are read back from it whole."""
+    target = copy.deepcopy(TARGET)
+    ledger = _ledger(
+        tmp_path,
+        {"event": "apply", "sample_file_id": "a", "batch": 1, "batches": ["b1"]}
+        | {"mode_id": "mode-1", "target": target, "mode": "Nitrate"}
+        | HEAVY_PARTS,
+        {"event": "superseded", "sample_file_id": "x", "record": {"mode": 0}},
+        {"event": "applied", "sample_file_id": "a", "apply_seq": 1}
+        | {"mode_id": "mode-1", "target": target},
+        {"event": "apply", "sample_file_id": "b", "batch": 1} | HEAVY_PARTS,
+    )
+    target["node_version"] = 0
+    again = script.Ledger(str(tmp_path), writable=False)
+
+    for held in (ledger, again):
+        assert all(set(e) <= {*script.HELD, script.LINE_AT} for e in held.events)
+        assert {
+            key: held.events[0][key] for key in ("mode_id", "batch", "batches")
+        } == {
+            "mode_id": "mode-1",
+            "batch": 1,
+            "batches": ["b1"],
+        }
+        # A value many events repeat is held once, as it was written
+        assert held.events[0]["mode_id"] is held.events[2]["mode_id"]
+        assert held.events[0]["target"] is held.events[2]["target"]
+        assert held.events[0]["target"] == TARGET
+        assert held.events[2]["apply_seq"] == 1
+        assert [e["seq"] for e in held.of_file("a")] == [1, 3]
+        whole = list(held.read_back(held.events))
+        assert [e["seq"] for e in whole] == [1, 2, 3, 4]
+        assert {key: whole[0][key] for key in HEAVY_PARTS} == HEAVY_PARTS
+        assert whole[1]["record"] == {"mode": 0}
+        assert script.LINE_AT not in whole[0]
+        # What answers for one file is whole
+        assert held.last_applied("a")["before"] == HEAVY_PARTS["before"]
+        assert held.open_apply("b")["new"] == HEAVY_PARTS["new"]
+        assert held.touched_batches() == {"b1"}
+        assert held.whole(None) is None
+
+
+def test_each_event_is_read_back_from_its_own_line(tmp_path):
+    ledger = _ledger(tmp_path, {"event": "apply", "sample_file_id": "a", "new": [1]})
+    with open(ledger.path, "a") as cut:
+        cut.write("7\n" + '{"event": "app')
+
+    again = script.Ledger(str(tmp_path), writable=True)
+    written = again.write({"event": "apply", "sample_file_id": "b", "new": [2]})
+    third = script.Ledger(str(tmp_path), writable=False)
+
+    # A line that is no event is passed over as one cut short is
+    assert [e["sample_file_id"] for e in again.events] == ["a", "b"]
+    assert again.whole(again.events[-1])["seq"] == written["seq"]
+    assert [e["new"] for e in third.read_back(third.events)] == [[1], [2]]
+
+
+# --- One at a time ---
+
+
+def test_a_run_holds_the_ledger_alone_until_it_ends(tmp_path):
+    directory = str(tmp_path / "ledger")
+
+    with script.hold_ledger(directory, "run"):
+        with pytest.raises(
+            script.LedgerHeld, match=r"\(run, process \d+, since [^)]+\)\..*STOP"
+        ):
+            with script.hold_ledger(directory, "rollback"):
+                pytest.fail("held twice")
+    with pytest.raises(ZeroDivisionError):
+        with script.hold_ledger(directory, "rollback"):
+            assert (
+                (tmp_path / "ledger" / script.LOCK_FILE)
+                .read_text()
+                .startswith("rollback, process ")
+            )
+            1 / 0
+
+    # Let go when it ends, whichever way
+    with script.hold_ledger(directory, "run"):
+        pass
+
+
+#: A process that holds a lock on the file it is given until it is killed
+_HOLD = """
+import fcntl, sys, time
+handle = open(sys.argv[1], "a+")
+fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+print("held", flush=True)
+time.sleep(120)
+"""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="flock is the lock off Windows")
+def test_a_run_in_another_process_holds_the_ledger_until_it_dies(tmp_path):
+    """As one left in the backend container by an operator's Ctrl+C does:
+    and when it is killed, nothing stale is left to clear."""
+    directory = tmp_path / "ledger"
+    directory.mkdir()
+    holder = subprocess.Popen(
+        [sys.executable, "-c", _HOLD, str(directory / script.LOCK_FILE)],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        with pytest.raises(script.LedgerHeld):
+            with script.hold_ledger(str(directory), "run"):
+                pytest.fail("held twice")
+    finally:
+        holder.kill()
+        holder.wait()
+
+    with script.hold_ledger(str(directory), "run"):
+        pass
+
+
+@pytest.mark.parametrize("action", [script.RUN, script.ROLLBACK])
+@pytest.mark.asyncio
+async def test_a_run_or_rollback_is_refused_while_another_holds_the_ledger(
+    tmp_path, action
+):
+    config = _run_config(
+        tmp_path,
+        action=action,
+        rollback=("batch:1",) if action == script.ROLLBACK else (),
+    )
+    start = script.run_rollback if action == script.ROLLBACK else script.run_runner
+    probed = []
+
+    async def reconcile(ledger):
+        # Its own lock, held while it goes on
+        with pytest.raises(script.LedgerHeld):
+            with script.hold_ledger(ledger.directory, "run"):
+                pass
+        probed.append(True)
+        return script.Counter()
+
+    select = AsyncMock(return_value=[])
+    with (
+        patch.object(script, "reconcile", reconcile),
+        patch.object(script, "select_candidates", select),
+        patch.object(script, "_targets", AsyncMock(return_value={})),
+        patch.object(script, "settle", AsyncMock(return_value={})),
+    ):
+        with script.hold_ledger(config.ledger_dir, "run"):
+            with pytest.raises(script.LedgerHeld):
+                await start(config)
+        # Refused before it read anything
+        assert probed == [] and select.await_count == 0
+
+        await start(config)
+
+    assert probed == [True]
+    # And let go when it ended
+    with script.hold_ledger(config.ledger_dir, "run"):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_a_dry_run_reads_beside_a_run(tmp_path):
+    config = _run_config(tmp_path, action=script.DRY_RUN)
+    with (
+        patch.object(script, "select_candidates", AsyncMock(return_value=[])),
+        patch.object(script, "_targets", AsyncMock(return_value={})),
+    ):
+        with script.hold_ledger(config.ledger_dir, "run"):
+            report = await script.run_runner(config)
+
+    assert report.action == script.DRY_RUN
+    # It took no lock of its own, so the run's still says who holds it
+    lock = tmp_path / "ledger" / script.LOCK_FILE
+    assert lock.read_text().startswith("run, process ")
+
+
+def test_a_refused_run_says_why_and_ends_without_a_traceback(monkeypatch):
+    async def refused():
+        raise script.LedgerHeld("held by another run")
+
+    logger = MagicMock()
+    monkeypatch.setattr(script, "run", refused)
+    monkeypatch.setattr(script, "runtime", SimpleNamespace(logger=logger))
+    with pytest.raises(SystemExit) as ended:
+        script.main()
+
+    assert ended.value.code == 1
+    logger.error.assert_called_once_with("held by another run")
+    logger.exception.assert_not_called()
 
 
 # --- The target and the record ---
@@ -729,9 +952,14 @@ def _target() -> script.ModeTarget:
 FIT_OK = {"mode": 0, "par": list(APPLIED["par"]), "quality": {"n_points": 5}}
 
 
-def _row(record, range_=(10.0, 300.0)):
+def _row(record, range_=(10.0, 300.0), processing_status=None, updated=None):
     """A sample file's row as ``_file_state`` reads it."""
-    return SimpleNamespace(mz_calibration=record, range=list(range_))
+    return SimpleNamespace(
+        mz_calibration=record,
+        range=list(range_),
+        processing_status=processing_status,
+        processing_updated_utc=updated,
+    )
 
 
 def _node(fit, stored, outcome=None, issues=(), turn=None, batches=None):
@@ -814,7 +1042,7 @@ async def test_a_poor_fit_never_replaces_an_ok_record(filestore, tmp_path):
 
     assert outcome.kind == "kept"
     assert seen["applied"] is False
-    (event,) = ledger.events
+    (event,) = _whole(ledger)
     assert event["event"] == "kept"
     assert event["old"]["status"] == "ok"
     assert event["new"]["status"] == "poor"
@@ -840,7 +1068,7 @@ async def test_a_poor_fit_replaces_any_other_record(filestore, tmp_path, old_sta
 
     assert seen["applied"] is True
     assert outcome.kind == "poor"
-    assert [e["event"] for e in ledger.events] == ["apply", "applied"]
+    assert [e["event"] for e in _whole(ledger)] == ["apply", "applied"]
 
 
 @pytest.mark.asyncio
@@ -851,7 +1079,7 @@ async def test_the_ledger_has_what_the_file_had_before_the_apply(filestore, tmp_
 
     outcome, ledger, seen = await _run_file(tmp_path, _candidate(old), FIT_OK, stored)
 
-    apply, applied = ledger.events
+    apply, applied = _whole(ledger)
     assert outcome.kind == "ok"
     assert apply["event"] == "apply" and apply["batch"] == 7
     assert apply["before"] == {
@@ -881,7 +1109,7 @@ async def test_a_converter_file_keeps_its_peaks_beside_the_ledger(filestore, tmp
         tmp_path, _candidate({**CONVERTER, "status": "unfitted"}), FIT_OK, stored
     )
 
-    plan = ledger.events[0]["restore"]
+    plan = _whole(ledger)[0]["restore"]
     assert plan["offset"] == CUT
     assert plan["snapshot"] == os.path.join(script.SNAPSHOTS, "f1.1.npz")
     with np.load(os.path.join(ledger.directory, plan["snapshot"])) as kept:
@@ -907,7 +1135,7 @@ async def test_a_retried_apply_keeps_what_the_file_had_before_the_first(
         tmp_path, _candidate(old), [FIT_OK, FIT_AGAIN], stored, batches=batches
     )
 
-    first, second, applied = ledger.events
+    first, second, applied = _whole(ledger)
     assert seen["offered"] == [True, True]
     assert outcome.kind == "ok"
     assert (first["event"], second["event"], applied["event"]) == (
@@ -960,9 +1188,9 @@ async def test_an_attempt_after_an_apply_that_did_not_land_puts_the_file_back(
         )
 
     assert seen["offered"] == [True, False]
-    assert [e["event"] for e in ledger.events] == events
-    assert ledger.events[-1]["apply_incomplete"] is True
-    assert ledger.events[-1]["error"] == error
+    assert [e["event"] for e in _whole(ledger)] == events
+    assert _whole(ledger)[-1]["apply_incomplete"] is True
+    assert _whole(ledger)[-1]["error"] == error
     assert outcome.kind == "error"
     close.assert_awaited_once()
     assert close.await_args.args[0]["seq"] == 1
@@ -978,7 +1206,7 @@ async def test_a_fit_that_fails_is_listed_and_the_record_left_to_the_node(
     outcome, ledger, _ = await _run_file(tmp_path, _candidate(old), None, old)
 
     assert outcome.kind == "failed"
-    (event,) = ledger.events
+    (event,) = _whole(ledger)
     assert (event["event"], event["reason"], event["record"]) == (
         "failed",
         "no peaks",
@@ -996,7 +1224,7 @@ async def test_a_fault_is_an_error_the_next_run_tries_again(filestore, tmp_path)
     )
 
     assert outcome.kind == "error"
-    assert ledger.events[0]["event"] == "error"
+    assert _whole(ledger)[0]["event"] == "error"
     assert ledger.settled({"m1": TARGET}.get) == set()
 
 
@@ -1017,11 +1245,14 @@ async def test_an_apply_that_did_not_land_is_put_back_at_once(filestore, tmp_pat
         )
 
     assert outcome.kind == "error"
-    assert [e["event"] for e in ledger.events] == ["apply", "error"]
-    assert ledger.events[1]["apply_incomplete"] is True
-    assert ledger.events[1]["error"] == "lock"
+    assert [e["event"] for e in _whole(ledger)] == ["apply", "error"]
+    assert _whole(ledger)[1]["apply_incomplete"] is True
+    assert _whole(ledger)[1]["error"] == "lock"
     close.assert_awaited_once()
-    assert close.await_args.args[0] is ledger.events[0]
+    # The apply as written, whole: closing it reads what the file had
+    closed = close.await_args.args[0]
+    assert closed["seq"] == _whole(ledger)[0]["seq"]
+    assert closed["before"] == _whole(ledger)[0]["before"]
 
 
 @pytest.mark.asyncio
@@ -1044,7 +1275,7 @@ async def test_an_apply_that_did_not_land_is_told_by_its_stamp_too(filestore, tm
         )
 
     assert outcome.kind == "error"
-    assert [e["event"] for e in ledger.events] == ["apply", "error"]
+    assert [e["event"] for e in _whole(ledger)] == ["apply", "error"]
     close.assert_awaited_once()
 
 
@@ -1066,8 +1297,8 @@ async def test_an_apply_that_cannot_be_put_back_is_left_to_the_next_run(
         )
 
     assert outcome.kind == "error"
-    assert [e["event"] for e in ledger.events] == ["apply", "error", "error"]
-    assert ledger.events[2]["open_apply"] == 1
+    assert [e["event"] for e in _whole(ledger)] == ["apply", "error", "error"]
+    assert _whole(ledger)[2]["open_apply"] == 1
     assert ledger.open_apply("f1")["seq"] == 1
 
 
@@ -1106,7 +1337,7 @@ async def test_a_fault_after_the_record_landed_finishes_the_apply(
 
     assert outcome.kind == status
     assert outcome.detail == {"error": "statement timeout"}
-    apply, error, applied = ledger.events
+    apply, error, applied = _whole(ledger)
     assert (error["event"], error["apply_incomplete"]) == ("error", True)
     assert (applied["event"], applied["apply_seq"]) == ("applied", apply["seq"])
     assert _removed(mocks) == [("s1", True), ("s2", True)]
@@ -1145,7 +1376,7 @@ async def test_the_runner_failing_before_an_apply_is_its_own_error(
     # The fit is withheld, so the node applies and records nothing
     assert seen["applied"] is False
     assert outcome.kind == "error"
-    (event,) = ledger.events
+    (event,) = _whole(ledger)
     assert event["event"] == "error"
     assert event["error"] == "OSError: disk full"
     assert "apply_incomplete" not in event
@@ -1172,7 +1403,7 @@ async def test_the_file_is_read_again_at_its_turn(filestore, tmp_path):
 
     # The ok rule judges what the file holds now
     assert outcome.kind == "kept"
-    assert ledger.events[0]["old"]["status"] == "ok"
+    assert _whole(ledger)[0]["old"]["status"] == "ok"
 
     stored = {**FIT_OK, "status": "ok", "verified": True}
     outcome, ledger, _ = await _run_file(
@@ -1185,8 +1416,8 @@ async def test_the_file_is_read_again_at_its_turn(filestore, tmp_path):
 
     # And the ledger records it as what the file had before
     assert outcome.kind == "ok"
-    assert ledger.events[0]["before"]["record"] == now
-    assert ledger.events[0]["before"]["range"] == [11.0, 299.0]
+    assert _whole(ledger)[0]["before"]["record"] == now
+    assert _whole(ledger)[0]["before"]["range"] == [11.0, 299.0]
 
 
 @pytest.mark.asyncio
@@ -1199,7 +1430,7 @@ async def test_a_file_put_on_target_since_it_was_chosen_is_left(tmp_path):
 
     assert outcome.kind == "on target already"
     assert "sample" not in seen
-    assert ledger.events == []
+    assert _whole(ledger) == []
 
 
 @pytest.mark.asyncio
@@ -1210,10 +1441,108 @@ async def test_a_file_gone_since_it_was_chosen_is_left(tmp_path):
 
     assert outcome.kind == "gone"
     assert "sample" not in seen
-    assert ledger.events == []
+    assert _whole(ledger) == []
+
+
+@pytest.mark.asyncio
+async def test_a_file_the_ingest_took_up_since_it_was_chosen_is_left(tmp_path):
+    busy = _row(None, processing_status="calibrated", updated=datetime.now(UTC))
+
+    outcome, ledger, seen = await _run_file(
+        tmp_path, _candidate(None), FIT_OK, None, turn=busy
+    )
+
+    # With no outcome in the ledger, a later run offers it again
+    assert outcome.kind == script.BEING_PROCESSED
+    assert "sample" not in seen
+    assert _whole(ledger) == []
 
 
 # --- Which files a run takes ---
+
+
+_NOW = datetime(2026, 11, 21, 12, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("status", "updated", "processing"),
+    [
+        *[
+            (str(stage), _NOW - timedelta(minutes=5), True)
+            for stage in script.IN_PROGRESS
+        ],
+        ("calibrated", _NOW - script.STALLED_AFTER, True),
+        ("calibrated", _NOW - script.STALLED_AFTER - timedelta(seconds=1), False),
+        ("queued", None, False),
+        ("done", _NOW, False),
+        ("failed", _NOW, False),
+        ("needs_chemistry", _NOW, False),
+        (None, _NOW, False),
+    ],
+)
+def test_a_file_is_being_processed_while_in_progress_and_not_stalled(
+    status, updated, processing
+):
+    assert script.being_processed(status, updated, _NOW) is processing
+
+
+@pytest.mark.asyncio
+async def test_a_file_the_ingest_is_processing_is_left_to_it(tmp_path):
+    now = datetime.now(UTC)
+    stalled = now - script.STALLED_AFTER - timedelta(hours=1)
+    candidates = [
+        _candidate(
+            sample_file_id="busy", processing_status="queued", processing_updated=now
+        ),
+        _candidate(
+            sample_file_id="stalled",
+            processing_status="queued",
+            processing_updated=stalled,
+        ),
+        _candidate(
+            sample_file_id="done", processing_status="done", processing_updated=now
+        ),
+    ]
+
+    report, done, _ = await _runner(tmp_path, candidates)
+
+    assert [name for name, _ in done] == ["stalled", "done"]
+    assert report.counts[script.BEING_PROCESSED] == 1
+    # No outcome in the ledger: a later run offers it again
+    assert script.Ledger(str(tmp_path / "ledger"), writable=False).of_file("busy") == []
+
+
+@pytest.mark.asyncio
+async def test_the_report_has_the_bands_and_runs_of_its_own_applies(tmp_path):
+    earlier = {
+        "event": "apply",
+        "sample_file_id": "z",
+        "batch": 1,
+        "bands": [{"band": "40-100", "median": 9.0}],
+        "assignment_runs": ["r0"],
+    }
+
+    report, _, _ = await _runner(
+        tmp_path,
+        [_candidate(sample_file_id="a"), _candidate(sample_file_id="b")],
+        ledger_events=[earlier],
+        write=lambda candidate: {
+            "event": "apply",
+            "sample_file_id": candidate.sample_file_id,
+            "bands": [
+                {
+                    "band": "40-100",
+                    "median": {"a": 1.5, "b": 2.5}[candidate.sample_file_id],
+                }
+            ],
+            "assignment_runs": ["r1", "r2"],
+        },
+    )
+
+    # Read back from the ledger's file: an earlier run's are not this one's
+    assert report.batches == [2]
+    assert dict(report.bands) == {"40-100": [1.5, 2.5]}
+    assert report.assignment_runs == 4
 
 
 def _run_config(tmp_path, **update) -> script.Config:
@@ -1257,7 +1586,12 @@ async def _runner(
     stop_after=0,
     not_ready=None,
     reconciled=None,
+    write=None,
 ):
+    """A run over the candidates, each file's turn answered ``ok``.
+
+    :param write: What each file's turn writes in the ledger, by the file
+    """
     config = config or _run_config(tmp_path)
     if ledger_events:
         _ledger(tmp_path / "ledger", *ledger_events)
@@ -1265,6 +1599,8 @@ async def _runner(
 
     async def run_one(candidate, target, ledger, batch, config):
         done.append((candidate.sample_file_id, batch))
+        if write:
+            ledger.write({**write(candidate), "batch": batch})
         if stop_after and len(done) == stop_after:
             Path(ledger.directory, script.STOP_FILE).touch()
         return script.Outcome("ok")
@@ -1473,6 +1809,193 @@ async def test_a_file_without_stores_is_listed_and_takes_no_turn(tmp_path):
     assert [(e["event"], e["sample_file_id"], e["target"]) for e in events] == [
         ("skipped", "gone", TARGET)
     ]
+
+
+#: A record of each kind, as a file in the database holds it, newest first:
+#: ``null`` is SQL NULL, ``None`` JSON null
+RECORDS = {
+    "on target": {
+        "mode": 0,
+        "par": [10850.0, -18500.0],
+        "status": "ok",
+        "verified": True,
+        "quality": {**TARGET, "points": [{"ion": "NO3-", "residual_ppm": 0.1}]},
+    },
+    "an older node's": {
+        "status": "poor",
+        "quality": {**TARGET, "node_version": TOF_CALIBRATION_NODE_VERSION - 1},
+    },
+    "failed": {"status": "failed", "quality": TARGET},
+    "legacy": {"mode": 0, "par": [1.0, 2.0], "verified": True},
+    "legacy, verified null": {"mode": 0, "par": [1.0, 2.0], "verified": None},
+    "the converter's": {"mode": 0, "par": [1.0, 2.0]},
+    "a quality not a block": {"status": "ok", "quality": "x"},
+    "json null": None,
+    "sql null": null,
+    "not an object": [1.0, 2.0],
+}
+
+
+@pytest_asyncio.fixture
+async def recal_site(async_session_factory):
+    """An instrument's TOF files in an acquisition batch, in a mode with a
+    calibration collection: one for each kind of record, one a day, and
+    three of them in progress, two of those for minutes and one for days."""
+    instrument = f"RecalTof{gen_test_id()[:6]}"
+    workspace_id, dataset_id, batch_id = gen_test_id(), gen_test_id(), gen_test_id()
+    collection_id, mode_id = gen_test_id(), gen_test_id()
+    now = datetime.now(UTC)
+    processing = {
+        "legacy": ("queued", now - timedelta(minutes=3)),
+        "the converter's": ("calibrated", now - timedelta(minutes=1)),
+        "failed": ("bound", now - script.STALLED_AFTER - timedelta(hours=1)),
+        "on target": ("done", now),
+    }
+    async with async_session_factory() as session:
+        session.add_all(
+            [
+                Workspace(
+                    workspace_id=workspace_id,
+                    workspace_name=f"recal {workspace_id}",
+                    workspace_status="active",
+                ),
+                TargetCollection(
+                    target_collection_id=collection_id,
+                    target_collection_name=f"recal calibrants {collection_id}",
+                    target_collection_type="CALIBRATION",
+                ),
+            ]
+        )
+        await session.flush()
+        session.add_all(
+            [
+                Dataset(
+                    dataset_id=dataset_id,
+                    workspace_id=workspace_id,
+                    dataset_name="recal",
+                    dataset_type="ACQUISITION",
+                    instrument=instrument,
+                ),
+                IonizationMode(
+                    ionization_mode_id=mode_id,
+                    ionization_mode_name=f"Nitrate {mode_id}",
+                    ionization_mode_polarity="-",
+                    ionization_mechanism_ids=[],
+                    calibration_collection_id=collection_id,
+                ),
+            ]
+        )
+        await session.flush()
+        session.add(
+            SampleBatch(
+                sample_batch_id=batch_id,
+                dataset_id=dataset_id,
+                sample_batch_name="recal",
+                sample_batch_type="ACQUISITION",
+                status="ready",
+                polarity="-",
+            )
+        )
+        await session.flush()
+        files = {}
+        for day, (key, record) in enumerate(reversed(RECORDS.items()), 1):
+            status, updated = processing.get(key, (None, None))
+            sample_file = SampleFile(
+                sample_file_id=gen_test_id(),
+                filename=f"{instrument}_2026.10.{day:02d}_12h00m00s_{day}",
+                instrument=instrument,
+                instrument_type="tof",
+                datetime=datetime(2026, 10, day, 12),
+                datetime_utc=datetime(2026, 10, day, 12, tzinfo=UTC),
+                length=1.0,
+                range=[10.0, 500.0],
+                polarity="-",
+                mz_calibration=null() if record is null else record,
+                processing_status=status,
+                processing_updated_utc=updated,
+            )
+            session.add(sample_file)
+            await session.flush()
+            session.add(
+                SampleItem(
+                    sample_item_id=gen_test_id(),
+                    sample_batch_id=batch_id,
+                    sample_file_id=sample_file.sample_file_id,
+                    sample_item_name=key,
+                    sample_item_type="ACQUISITION",
+                    ionization_mode_id=mode_id,
+                )
+            )
+            files[key] = sample_file.sample_file_id
+        await session.commit()
+
+    yield {"instrument": instrument, "files": files, "mode_id": mode_id}
+
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(SampleItem).where(SampleItem.sample_batch_id == batch_id)
+        )
+        await session.execute(
+            delete(SampleFile).where(SampleFile.instrument == instrument)
+        )
+        await session.execute(
+            delete(SampleBatch).where(SampleBatch.sample_batch_id == batch_id)
+        )
+        await session.execute(
+            delete(IonizationMode).where(IonizationMode.ionization_mode_id == mode_id)
+        )
+        await session.execute(delete(Dataset).where(Dataset.dataset_id == dataset_id))
+        await session.execute(
+            delete(TargetCollection).where(
+                TargetCollection.target_collection_id == collection_id
+            )
+        )
+        await session.execute(
+            delete(Workspace).where(Workspace.workspace_id == workspace_id)
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_the_selection_reads_of_a_record_what_choosing_the_file_needs(
+    recal_site, tmp_path, monkeypatch
+):
+    """Not the record itself, with its calibrant lines, for every file of the
+    instrument: only what tells whether it is on target and what kind it is,
+    as the whole record tells it. Read a few rows at a time."""
+    files = recal_site["files"]
+    monkeypatch.setattr(script, "SELECT_ROWS", 3)
+
+    candidates = await script.select_candidates(
+        _run_config(tmp_path, instrument=recal_site["instrument"])
+    )
+
+    assert [c.sample_file_id for c in candidates] == [files[key] for key in RECORDS]
+    for candidate, (key, whole) in zip(candidates, RECORDS.items(), strict=True):
+        whole = None if whole is null else whole
+        summary = candidate.record
+        assert script.record_status(summary) == script.record_status(whole), key
+        assert script.on_target(summary, TARGET) == script.on_target(whole, TARGET), key
+        assert summary is None or set(summary) <= {"status", "verified", "quality"}
+        assert candidate.samples[0]["mode_id"] == recal_site["mode_id"]
+    by_key = dict(zip(RECORDS, candidates, strict=True))
+    assert by_key["on target"].record == {
+        "status": "ok",
+        "verified": True,
+        "quality": {
+            "collection": TARGET["collection"],
+            "node_version": TARGET["node_version"],
+        },
+    }
+    assert by_key["on target"].range == [10.0, 500.0]
+    # What the ingest is doing to each, for the run to leave it the files it has
+    busy = {
+        key
+        for key, c in by_key.items()
+        if script.being_processed(c.processing_status, c.processing_updated)
+    }
+    assert busy == {"legacy", "the converter's"}
+    assert by_key["failed"].processing_status == "bound"
 
 
 def test_what_a_refit_reads(filestore):
@@ -1734,7 +2257,7 @@ async def test_settling_matches_the_files_and_rematches_the_batches(tmp_path):
     assert result["left_at_rematch"] == []
     assert result["files"] == 2 and result["samples"] == 2
     assert ledger.unmatched() == []
-    matched = [e for e in ledger.events if e["event"] == "matched"]
+    matched = [e for e in _whole(ledger) if e["event"] == "matched"]
     assert matched[1]["unverified"] is True
 
 
@@ -1754,7 +2277,7 @@ async def test_a_batch_still_at_rematch_is_reported(tmp_path):
         result = await script.settle(_run_config(tmp_path), ledger)
 
     assert result["left_at_rematch"] == ["b1"]
-    assert ledger.events[-1] == {**ledger.events[-1], "status": "locked"}
+    assert _whole(ledger)[-1] == {**_whole(ledger)[-1], "status": "locked"}
 
 
 # --- Rollback ---
@@ -1907,7 +2430,7 @@ async def test_a_rollback_writes_back_the_record_and_rebuilds_the_matches(
         ("recalibrate", ["b2"], False),
         ("rematch", ["b1", "b2"], True),
     ]
-    rollback = ledger.events[-1]
+    rollback = _whole(ledger)[-1]
     assert rollback["event"] == "rollback"
     assert (rollback["apply_seq"], rollback["of_batch"]) == (event["seq"], 3)
     assert rollback["batches"] == ["b1", "b2"]
@@ -1936,8 +2459,8 @@ async def test_a_rollback_that_cannot_give_the_axes_back_touches_nothing(
         outcome = await script.rollback_file(event, ledger)
 
     assert outcome.kind == "refused"
-    assert ledger.events[-1]["event"] == "rollback_refused"
-    assert ledger.events[-1]["reason"] == "no axis"
+    assert _whole(ledger)[-1]["event"] == "rollback_refused"
+    assert _whole(ledger)[-1]["reason"] == "no axis"
     assert mocks["update_sample_batch_status"].await_count == 0
     assert mocks["update_sample_file"].await_count == 0
 
@@ -1957,10 +2480,10 @@ async def test_a_record_changed_since_the_apply_is_not_rolled_back(tmp_path):
         filename=FILENAME, mz_calibration={"mode": 0, "par": [3, 4]}
     )
     with patch.object(script, "fetch_sample_file", AsyncMock(return_value=changed)):
-        outcome = await script.rollback_file(ledger.events[0], ledger)
+        outcome = await script.rollback_file(_whole(ledger)[0], ledger)
 
     assert outcome.kind == "refused"
-    assert ledger.events[-1]["event"] == "rollback_refused"
+    assert _whole(ledger)[-1]["event"] == "rollback_refused"
 
 
 def _applied_file(ledger, event):
@@ -2016,7 +2539,7 @@ async def test_a_rollback_that_fails_writing_back_lets_the_batches_go(
 
     assert _statuses(mocks) == _HELD_AND_LET_GO
     assert _removed(mocks) == []
-    assert ledger.events[-1]["event"] == "applied"
+    assert _whole(ledger)[-1]["event"] == "applied"
 
 
 @pytest.mark.asyncio
@@ -2045,7 +2568,7 @@ async def test_a_rollback_cut_off_after_its_record_is_finished_by_the_next(
     assert row.mz_calibration == event["before"]["record"]
     assert _removed(mocks) == [("s1", True), ("s2", True)] * 2
     assert _statuses(mocks) == _HELD_AND_LET_GO * 2
-    assert ledger.events[-1]["event"] == "rollback"
+    assert _whole(ledger)[-1]["event"] == "rollback"
     assert [e["sample_file_id"] for e in ledger.unmatched()] == ["f1"]
     assert script.rollback_events(ledger, ("file:f1",)) == []
 
@@ -2078,7 +2601,7 @@ async def test_an_apply_that_landed_before_the_run_was_cut_off_is_finished(
         closed = await script.close_open_apply(event, ledger)
 
     assert closed == "applied"
-    applied = ledger.events[-1]
+    applied = _whole(ledger)[-1]
     assert applied["event"] == "applied" and applied["reconciled"] is True
     assert (applied["apply_seq"], applied["status"]) == (event["seq"], "ok")
     # What the apply left undone after its record is done
@@ -2125,7 +2648,7 @@ async def test_an_apply_that_did_not_land_is_put_back_and_offered_again(
         ("recalibrate", ["b2"], False),
         ("rematch", ["b1", "b2"], True),
     ]
-    restored = ledger.events[-1]
+    restored = _whole(ledger)[-1]
     assert (restored["event"], restored["apply_seq"]) == ("restored", event["seq"])
     assert ledger.open_apply("f1") is None
     assert ledger.unmatched() == []
@@ -2182,7 +2705,7 @@ async def test_an_apply_another_rewrote_over_is_superseded(
         closed = await script.close_open_apply(event, ledger)
 
     assert closed == "superseded"
-    assert ledger.events[-1]["reason"] == reason
+    assert _whole(ledger)[-1]["reason"] == reason
     assert ledger.open_apply("f1") is None
     assert mocks["update_sample_batch_status"].await_count == 0
     assert mocks["update_sample_file"].await_count == 0
@@ -2203,7 +2726,7 @@ async def test_an_apply_whose_axes_cannot_be_put_back_is_left_open(filestore, tm
         closed = await script.close_open_apply(event, ledger)
 
     assert closed == "left open"
-    assert ledger.events[-1]["event"] == "restore_refused"
+    assert _whole(ledger)[-1]["event"] == "restore_refused"
     assert ledger.open_apply("f1")["seq"] == event["seq"]
     assert mocks["update_sample_batch_status"].await_count == 0
 
@@ -2214,10 +2737,10 @@ async def test_reconciling_closes_each_open_apply_and_goes_on_past_a_failure(
 ):
     ledger = _ledger(
         tmp_path,
-        {"event": "apply", "sample_file_id": "a"},
+        {"event": "apply", "sample_file_id": "a", "before": {"record": "a's"}},
         {"event": "apply", "sample_file_id": "b"},
         {"event": "applied", "sample_file_id": "b", "apply_seq": 2},
-        {"event": "apply", "sample_file_id": "c"},
+        {"event": "apply", "sample_file_id": "c", "before": {"record": "c's"}},
     )
 
     async def close(event, ledger):
@@ -2228,13 +2751,14 @@ async def test_reconciling_closes_each_open_apply_and_goes_on_past_a_failure(
     with patch.object(script, "close_open_apply", side_effect=close) as closing:
         counts = await script.reconcile(ledger)
 
-    assert [c.args[0]["sample_file_id"] for c in closing.await_args_list] == [
-        "a",
-        "c",
+    # Each whole, as closing it reads what the file had before
+    assert [c.args[0]["before"] for c in closing.await_args_list] == [
+        {"record": "a's"},
+        {"record": "c's"},
     ]
     assert counts == {"left open": 1, "restored": 1}
-    assert ledger.events[-1]["open_apply"] == 1
-    assert ledger.events[-1]["error"] == "OSError: database down"
+    assert _whole(ledger)[-1]["open_apply"] == 1
+    assert _whole(ledger)[-1]["error"] == "OSError: database down"
 
 
 @pytest.mark.parametrize("action", [script.DRY_RUN, script.ROLLBACK])

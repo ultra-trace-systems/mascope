@@ -993,7 +993,12 @@ batch the runner touched is left at `rematch`.
 
 **What customers hear** (MAS-197): per instrument, a short note through the plan owner before the
 run, from its dry run: what changes, over which acquisition dates, how far each mass band moves,
-the run window during which matches are rebuilt, and what to re-check. After the run, one line
+the run window during which matches are rebuilt, and what to re-check. That includes the analysis
+batches that hold the instrument's files: during the run each is rematched again and again, its
+samples are without matches for minutes at a time, a user's own rematch of it waits, and each
+rematch brings its modes and collections current, so a collection edited since it was last
+matched shows in its results too (`docs/maintaining.md`, "What users of analysis batches see").
+After the run, one line
 that it is done, with the ledger's numbers where they differ from the dry run.
 
 **Decided** (MAS-192, 2026-11-05):
