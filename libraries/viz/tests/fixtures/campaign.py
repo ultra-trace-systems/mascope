@@ -19,10 +19,15 @@ numbers rather than against whatever the code computed last time:
   read as other formulas (the formula keys change, the ion keys do not);
 - for the halide-negative chemistry, a reagent ion falling at a known slope,
   the species' sensitivity following it;
+- with :data:`HALIDE_CLUSTERS`, the reagent spread over two ions, the bare
+  ion and its water cluster, whose shares follow a known diurnal cycle while
+  their sum falls at that slope, and a known stretch in which the cluster is
+  below detection;
 - below-detection values as NaN, never zero.
 
 The two chemistries are two parameter sets, :data:`HALIDE_NEGATIVE` and
-:data:`POSITIVE`; :func:`dataclasses.replace` derives others.
+:data:`POSITIVE`; :func:`dataclasses.replace` derives others, as
+:data:`HALIDE_CLUSTERS` is.
 
 Determinism: the same parameters and seed give the same tables, and
 :func:`parquet_bytes` the same bytes, on every platform. The generator
@@ -37,7 +42,7 @@ reason. Keep it that way when extending it.
 import hashlib
 import io
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -94,6 +99,19 @@ class CampaignParams:
     reagent: str | None
     reagent_level: float = 2.0e6
     reagent_slope: float = -0.012  # fraction of reagent_level per day
+    # A second reagent ion, the reagent's water cluster (an ion formula), or
+    # None. With it the reagent is spread over the two: their sum is the
+    # drifting reagent level the species' sensitivity follows, and the bare
+    # ion's share of it follows a diurnal cycle, from ``share_trough`` to
+    # ``share_peak`` at ``share_peak_hour`` local (the drier air before dawn
+    # holds fewer clusters). So dividing by the bare ion leaves the inverse
+    # of its share's cycle in every species, and dividing by the sum does not.
+    cluster: str | None = None
+    share_peak: float = 0.75
+    share_trough: float = 0.45
+    share_peak_hour: int = 4
+    # Offsets from ``start`` between which the cluster is below detection.
+    cluster_lost: tuple[pd.Timedelta, pd.Timedelta] | None = None
     tic_level: float = 5.0e7
     start: pd.Timestamp = pd.Timestamp("2026-06-01T00:00:00Z")
     days: int = 30
@@ -149,6 +167,16 @@ POSITIVE = CampaignParams(
 
 CHEMISTRIES = {p.name: p for p in (HALIDE_NEGATIVE, POSITIVE)}
 
+#: The halide-negative campaign with its reagent spread over the bare ion
+#: and its water cluster, the cluster below detection for six hours of the
+#: fourth day. :data:`HALIDE_NEGATIVE` itself is untouched.
+HALIDE_CLUSTERS = replace(
+    HALIDE_NEGATIVE,
+    name="halide_clusters",
+    cluster="H2IO-",
+    cluster_lost=(pd.Timedelta(days=3, hours=6), pd.Timedelta(days=3, hours=12)),
+)
+
 
 # --- Known answers ----------------------------------------------------------
 
@@ -184,11 +212,36 @@ class Gap:
 
 @dataclass(frozen=True)
 class Drift:
-    """The reagent ion's noiseless intensity: ``intercept + slope * days``."""
+    """The reagent's noiseless intensity: ``intercept + slope * days``.
+
+    ``series_key`` is the reagent ion's; with :class:`Shares` the line is
+    the sum of the bare ion and its cluster, and the bare ion's key named.
+    """
 
     series_key: str
     intercept: float
     slope_per_day: float
+
+
+@dataclass(frozen=True)
+class Shares:
+    """The reagent spread over two ions, ``series_keys`` (the bare ion, its
+    water cluster).
+
+    The bare ion's noiseless share of their sum is ``trough + (peak -
+    trough) * shape``, where ``shape`` is the species' cycle shape peaking
+    at ``peak_hour`` local (1 there, 0 twelve hours away); the cluster's is
+    the rest. From ``lost[0]`` to ``lost[1]`` the cluster is below detection
+    (NaN), and ``lost_samples`` samples fall in that stretch; None for no
+    such stretch.
+    """
+
+    series_keys: tuple[str, str]
+    peak: float
+    trough: float
+    peak_hour: int
+    lost: tuple[pd.Timestamp, pd.Timestamp] | None
+    lost_samples: int
 
 
 @dataclass(frozen=True)
@@ -226,6 +279,7 @@ class Truth:
     tic_step: Step
     run_change: RunChange
     drift: Drift | None
+    shares: Shares | None = None
 
 
 @dataclass(frozen=True)
@@ -362,6 +416,7 @@ def generate(params: CampaignParams = HALIDE_NEGATIVE, seed: int = 0) -> Campaig
     new_keys = [formula_key(renamed.get(j, f)) for j, f in enumerate(formulas)]
     ion_keys = [f"ion:ti{j + 1:04d}" for j in range(params.n_targets)]
     reagent_key = "ion:ti0000" if params.reagent else None
+    cluster_key = "ion:tw0000" if params.cluster else None
 
     # Time: one sample a minute, ``file_minutes`` samples to a file; the gap
     # day keeps its files and loses its samples.
@@ -412,6 +467,25 @@ def generate(params: CampaignParams = HALIDE_NEGATIVE, seed: int = 0) -> Campaig
     step_at = start + params.tic_step_at
     step = np.where(np.asarray(t_mid >= step_at), params.tic_step_factor, 1.0)
     tic = params.tic_level * step * _noise(rng, (n,), 0.02)
+
+    # The cluster's noise is drawn last, so a campaign without one draws
+    # what it always did
+    cluster = None
+    lost = None
+    if params.cluster:
+        d = (local_sec - params.share_peak_hour * 3600 + 43200) % 86400 - 43200
+        s = d / 43200.0
+        shape = (1.0 - s * s) * (1.0 - s * s)
+        share = params.share_trough + (params.share_peak - params.share_trough) * shape
+        level = params.reagent_level * (1.0 + params.reagent_slope * days_in)
+        reagent = reagent * share
+        cluster = level * (1.0 - share) * _noise(rng, (n,), 0.02)
+        if params.cluster_lost:
+            lost = np.asarray(
+                (t_mid >= start + params.cluster_lost[0])
+                & (t_mid < start + params.cluster_lost[1])
+            )
+            cluster[lost] = np.nan
 
     # Batches: one per UTC day, the gap day none.
     batch_days = [d for d in range(params.days) if d != params.gap_day]
@@ -498,6 +572,9 @@ def generate(params: CampaignParams = HALIDE_NEGATIVE, seed: int = 0) -> Campaig
     # the same peaks as their batch peaks do.
     ion_columns = [intensity[:, j] for j in range(params.n_targets)]
     keys = list(ion_keys)
+    if cluster is not None:
+        ion_columns.insert(0, cluster)
+        keys.insert(0, cluster_key)
     if reagent is not None:
         ion_columns.insert(0, reagent)
         keys.insert(0, reagent_key)
@@ -518,6 +595,12 @@ def generate(params: CampaignParams = HALIDE_NEGATIVE, seed: int = 0) -> Campaig
     rows = []
     if reagent_key:
         rows.append(_species_row(reagent_key, "reagent ion", None, params))
+    if cluster_key:
+        rows.append(
+            _species_row(
+                cluster_key, "reagent water cluster", None, params, cluster=True
+            )
+        )
     for j in range(params.n_targets):
         rows.append(
             _species_row(ion_keys[j], f"compound {j + 1:02d}", formulas[j], params)
@@ -592,6 +675,22 @@ def generate(params: CampaignParams = HALIDE_NEGATIVE, seed: int = 0) -> Campaig
             if reagent_key
             else None
         ),
+        shares=(
+            Shares(
+                series_keys=(reagent_key, cluster_key),
+                peak=params.share_peak,
+                trough=params.share_trough,
+                peak_hour=params.share_peak_hour,
+                lost=(
+                    (start + params.cluster_lost[0], start + params.cluster_lost[1])
+                    if params.cluster_lost
+                    else None
+                ),
+                lost_samples=0 if lost is None else int(lost.sum()),
+            )
+            if cluster_key
+            else None
+        ),
     )
     tables = {
         "samples": samples,
@@ -604,15 +703,23 @@ def generate(params: CampaignParams = HALIDE_NEGATIVE, seed: int = 0) -> Campaig
 
 
 def _species_row(
-    key: str, name: str, counts: dict[str, int] | None, params: CampaignParams
+    key: str,
+    name: str,
+    counts: dict[str, int] | None,
+    params: CampaignParams,
+    *,
+    cluster: bool = False,
 ) -> dict:
-    if counts is None:  # the reagent ion
+    if counts is None:  # a reagent ion: the bare ion, or its water cluster
+        ion = params.cluster if cluster else params.reagent
         mz = _MASS["I"] + _ELECTRON
+        if cluster:
+            mz = mz + 2 * _MASS["H"] + _MASS["O"]
         return {
             "series_key": key,
             "name": name,
-            "formula": params.reagent.rstrip("+-"),
-            "ion_formula": params.reagent,
+            "formula": ion.rstrip("+-"),
+            "ion_formula": ion,
             "mechanism": "reagent",
             "class": "reagent",
             "mz": mz,
@@ -641,6 +748,13 @@ def _species_row(
 def _validate(params: CampaignParams) -> None:
     if params.reagent not in (None, "I-"):
         raise ValueError("the only reagent ion modelled is iodide, 'I-'")
+    if params.cluster is not None:
+        if params.cluster != "H2IO-" or params.reagent is None:
+            raise ValueError("the only cluster modelled is iodide's water, 'H2IO-'")
+        if not 0 < params.share_trough < params.share_peak < 1:
+            raise ValueError("the bare ion's shares must be 0 < trough < peak < 1")
+        if not 0 <= params.share_peak_hour < 24:
+            raise ValueError("share_peak_hour is no hour of the day")
     if 1440 % params.file_minutes:
         raise ValueError("file_minutes must divide a day")
     if not 0 <= params.gap_day < params.days:
@@ -657,6 +771,14 @@ def _validate(params: CampaignParams) -> None:
             raise ValueError("an episode overlaps the gap day")
         if any(not 0 <= j < params.n_species for j in e.species):
             raise ValueError("an episode names a species that does not exist")
+    if params.cluster_lost is not None:
+        lo, hi = params.cluster_lost
+        if params.cluster is None:
+            raise ValueError("cluster_lost needs a cluster")
+        if not pd.Timedelta(0) <= lo < hi <= params.days * DAY:
+            raise ValueError("cluster_lost is outside the campaign")
+        if lo < gap[1] and hi > gap[0]:
+            raise ValueError("cluster_lost overlaps the gap day")
 
 
 # --- Parquet ----------------------------------------------------------------
