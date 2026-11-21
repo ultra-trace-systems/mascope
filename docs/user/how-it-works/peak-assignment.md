@@ -331,12 +331,12 @@ there is an analyte clustered with the reagent, which the search reads through t
 mode's own channel. The replaced reading leads the row's alternatives. A certified cylinder's chlorobenzene is
 read this way on a charge-transfer source, whose grid holds no chlorine.
 
-**In the launchers.** *Assign peaks* and the batch's *Search untargeted* both offer the
-two presets. Each says what *Auto* resolves to: for the sample, or for each group of the
-batch's samples, since a batch can hold more than one ionization mode. Where the samples
-share them, the formula range and m/z precision fields show the grid and the window the
-run would search at, and *Find other formulas for this peak* - the composition search in the Sample tab - starts
-from the same two for the sample in view.
+**In the launcher.** *Assign sample* offers the two presets, and says what *Auto*
+resolves to for the sample. The formula range and m/z precision fields show the grid and
+the window the run would search at, and *Find other formulas for this peak* - the
+composition search in the Sample tab - starts from the same two for the sample in view.
+A batch's untargeted search, a stage of *Assign batch*, runs on the settings its last run
+on the batch recorded (*The batch stages*, below).
 
 A named profile applies to every sample it reaches. The launcher warns when that profile
 belongs to the other polarity from the samples. The choice is remembered with the other
@@ -1859,19 +1859,75 @@ table-controls cog moves or hides it like any other column.
 
 Every processed sample folds into the batch peaks as it arrives - assigned from the
 known compositions, without a per-sample run of its own - and so does every completed
-assignment run. *Rebuild batch ledger* does the same for a whole batch on demand: a
-sample with an assignment run folds from it, one without is assigned from the known
-compositions and folded without a run (a blank, or a sample whose m/z calibration is
-not verified, is skipped). Use it to populate a batch that predates the ledger or was
-never assigned, or to refresh after an import. There is no batch-wide assignment run:
-the untargeted search runs once per batch peak instead (below), and a species is
-curated once at its batch peak rather than sample by sample.
+assignment run. A batch built that way holds *known compositions only*: the stages that
+read the batch as a whole have not run. **Assign batch** runs them, as one pass
+(*Assigning a batch*, below). It folds every sample again where the ledger cannot be a
+starting point (a blank, or a sample whose m/z calibration is not verified, is skipped),
+then runs the batch stages in their fixed order: it recognises the source's own ions,
+finds the compositions, and cross-checks them across the batch. There is no batch-wide
+assignment run: the untargeted search runs once per batch peak instead, and a species
+is curated once at its batch peak rather than sample by sample. The sections after
+*The batch stages* take the stages one by one, in the order a pass runs them.
+
+### Assigning a batch
+
+--8<-- "_help/batch-assignment.md"
+
+At batch level, with **Assignments** chosen in the switch above the ledger, the right
+end of that bar says where the batch stands and offers **Assign batch**. What it says
+is the server's (*Where the batch stands*, below), so two people, or two tabs, see the
+same state. The button is filled when the batch needs a pass and outlined when it does
+not:
+
+| Where the batch stands | The bar says | The button |
+|---|---|---|
+| No batch peaks | *Not assigned* | **Assign batch**. The empty ledger offers it too, and the bar then leaves it to the ledger. |
+| Folded at ingest, no pass yet | *Known compositions only*, with a grey dot: the untargeted search and the batch checks have not run | **Assign batch** |
+| Your pass is running | the phase it is in, and *Step 3 of 4* | **Cancel** |
+| Another person's pass is running | *Another user is assigning this batch*, its step and when it started | none: the server would refuse a second pass |
+| Up to date | when the last pass ended, *up to date*, the samples it covered, and the change in assigned rows where this tab saw the pass | **Re-assign**, outlined: every stage again |
+| Behind | the first reason, in words: *12 samples added since the last assignment*, *Target collections or reference lists changed since the last assignment*, *Assigned by an older engine (0.7.0)* | **Update assignment** when new samples are the only reason, else **Re-assign** |
+| Stopped | *Stopped at* the stage: the stages before it were applied | **Retry**: the pass again from that stage |
+
+A viewer of the workspace sees the same status. The button is disabled, and says what
+enables it: *Ask an editor of this workspace to assign it*.
+
+*Known compositions only* is grey, not the colour of *behind*: every batch the folds at
+ingest build starts there, and marking them all would mark nothing.
+
+The four phases group the stages without reordering them:
+
+| Phase | Stages |
+|---|---|
+| Gather samples | the fold of every sample, only when it is needed (*A pass is one batch run*, below) |
+| Recognise source ions | water ladders, known species |
+| Find compositions | untargeted search, isotope lines, homologous series |
+| Cross-check across the batch | co-variation, ratio stability, batch checks, probable blends |
+
+The arrow beside the button opens its menu:
+
+- **Re-assign from scratch** folds every sample again before the pass. It is slower; use
+  it for an imported ledger, an old one, or a ledger you suspect is wrong.
+- **Run history** opens the run selector (*Batch runs*, below).
+- **Export ledger** downloads the whole ledger as CSV, as the ledger's view menu does
+  (*Reading the ledger*, below).
+- **Advanced › Run from a stage** lists the stages under their phases. Each starts the
+  pass at that stage and runs it to the end. It shows only with **Show assignment
+  stages** on, under **Assignment** in **Settings**, which is off by default: it is for
+  checking a stage. A stage is never run alone from the app, because the stages after
+  it read what it writes.
+
+A pass is one entry in the progress strip. When it ends, the status line and the
+ledger's tier chips change in place, and nothing else is said while the bar is on
+screen. If you have moved on, to a sample or another batch, one toast titled *Batch
+assignment* gives the samples and the change in assigned rows. A pass that stops is a
+warning naming the stage, unless you stopped it yourself.
 
 ### The batch stages
 
 The steps below that read or rewrite the batch peaks are stages of one list, run in a
-fixed order. Each reads what the stages before it wrote, so the order decides the
-ledger, not the order the buttons were pressed in:
+fixed order, as one pass. Each reads what the stages before it wrote, so the order decides
+the ledger, not the order anything was asked for in:
 
 ```mermaid
 flowchart LR
@@ -1892,18 +1948,22 @@ stamps and the co-variation. And every stage that rewrites members runs before e
 that only records a reading: a record stands only while its batch peak reads what it was
 made for.
 
-- **Each step's button starts the list at its own stage**, and every stage after it runs
-  too, on what it wrote. *Detect series* runs the series, then the co-variation, the ratio
-  stability, the batch checks and the probable blends. Where a stage before the button's
-  is stale or has never run on the batch, the list starts there instead: no stage runs on
-  what an earlier stage has not settled. So pressing *Read co-variation* right after a
-  sample is folded in runs every stage, and the order the buttons are pressed in leaves no
-  mark on the ledger. The API's `POST /api/batch-peaks/batch/{id}/run-stages` starts it at
-  a stage you name, with the same rule, or at the first stage that is not current.
-- **One pass at a time.** While the stages run, every step's button, the API's
-  `run-stages` and `assign`, *Rebuild batch ledger* and an import answer that the batch
-  stages are running, and name the stage (409). That holds for the whole pass, from its
-  first stage to its end.
+- **Assign batch starts the list at its first stage that is not current**, and every
+  stage after it runs too, on what it wrote. On a batch that is up to date, *Re-assign*
+  runs them all from the first. A pass started at a stage - *Advanced › Run from a
+  stage*, or each step's own API route - runs that stage and every stage after it: one
+  started at the series runs the series, then the co-variation, the ratio stability, the
+  batch checks and the probable blends. Where a stage before it is stale or has never
+  run on the batch, the list starts there instead: no stage runs on what an earlier
+  stage has not settled. So a pass started at the co-variation right after a sample is
+  folded in runs every stage, and the order stages are asked for in leaves no mark on the
+  ledger. The API's `POST /api/batch-peaks/batch/{id}/assign` and `.../run-stages` start
+  it at a stage you name, with the same rule, or at the first stage that is not current.
+- **One pass at a time.** While the stages run, a second pass, each step's route, a
+  rebuild of the ledger and an import answer that the batch stages are running, and name
+  the stage (409). That holds for the whole pass, from its first stage to its end.
+  *Assign batch* offers no second pass meanwhile: its menu holds nothing that starts one,
+  and for another person's pass the button is gone.
 - **The settings belong to the batch.** The search's settings - m/z precision, formula
   ranges, the peak ceiling, the intensity threshold, the alternatives kept, the profile
   and the context - and the tier bands are saved on the batch, so a pass runs on the
@@ -1916,11 +1976,12 @@ made for.
   refused, naming the setting. Saving does not start a pass. It marks the batch behind:
   the batch's assignment status (`GET /api/batch-peaks/batch/{id}/assignment-status`)
   names `settings_changed`, and the next pass runs every stage, from the first, on the
-  new settings. Settings given to one request instead - the *Search untargeted* dialog's,
-  or a `config` sent to `run-stages`, `assign` or a step's own route - are what that pass
-  runs on in place of the batch's. Its run records that they came from the request, and
-  the batch stays behind until a pass runs on its own settings again. A pass made before
-  batches kept settings counts as one on the defaults.
+  new settings. A pass *Assign batch* starts sends no settings, so it runs on the batch's.
+  Settings given to one request instead - a `config` sent to `run-stages`, `assign` or a
+  step's own route - are what that pass runs on in place of the batch's. Its run records
+  that they came from the request, and the batch stays behind until a pass runs on its
+  own settings again. A pass made before batches kept settings counts as one on the
+  defaults.
 - **New members are brought up to the batch's readings.** A sample folded in after a
   stage ran, or folded again from a new run of its own, reads its own rows. Running the
   stages again claims the passing water-ladder rungs and the present known species in it,
@@ -1989,23 +2050,24 @@ history.
 - **Its stages are inside it.** The run's summary lists every stage in order, with its
   status - done, failed, cancelled, or not run - when it started and ended, and the
   result line and counts of each of its steps. A pass started at a later stage lists the
-  stages before it as not run. A pass a step's button starts is named after that step;
-  one started as a whole (the API's `POST /api/batch-peaks/batch/{id}/assign`, the SDK's
-  `mascope.batch_peaks.assign`) is an *Assignment*.
-- **It folds every sample first where the ledger cannot be a starting point**, as
-  *Rebuild batch ledger* does: where the batch has no batch peaks, where an engine's
+  stages before it as not run. A pass a step's own API route starts is named after that
+  step; one started as a whole (*Assign batch*, the API's
+  `POST /api/batch-peaks/batch/{id}/assign`, the SDK's `mascope.batch_peaks.assign`) is
+  an *Assignment*.
+- **It folds every sample first where the ledger cannot be a starting point**, the
+  *Gather samples* phase: where the batch has no batch peaks, where an engine's
   imported result is the current run, where a target collection or reference list the
   batch reads changed since the last pass, or where the last pass ran under another
   engine version. Only a fold reads the libraries, so only a fold brings a changed one
   in. The pass then runs every stage from the first. It can be asked to fold whatever the
-  ledger holds (`fold: always`). The fold's own ratio stability is left to the pass's stage,
+  ledger holds: *Re-assign from scratch*, the API's `fold: always`. The fold's own ratio stability is left to the pass's stage,
   which grades it after the co-variation. The run records what it read: the samples it
   covered, the engine version, and the target collections and reference lists.
 - **One entry in the progress strip.** The pass reports one process, with each stage's
   start as a step of it (*Assigning the batch: Detect series (5/9)*), and the ledger
   reloads after each stage that rewrites members and at the end.
-- **Cancel stops it between stages.** The API's `POST .../assign/cancel` (the SDK's
-  `cancel_assign`) stops the pass at its next stage, or inside the untargeted search at
+- **Cancel stops it between stages.** *Cancel* in the bar, the API's
+  `POST .../assign/cancel` and the SDK's `cancel_assign` stop the pass at its next stage, or inside the untargeted search at
   its next sample. Nothing is rolled back: the pass is recorded as cancelled, what its
   stages wrote stands, and the stages it did not finish are stale, so the next pass starts
   at the first of them. A pass whose task the server stopped, at a shutdown, is closed
@@ -2014,7 +2076,9 @@ history.
 #### Where the batch stands
 
 One read says where a batch's assignment stands, so two users, or two tabs, see the same
-thing: the API's `GET /api/batch-peaks/batch/{id}/assignment-status`, the SDK's
+thing. The bar beside *Assign batch* says what it reads (*Assigning a batch*, above), and
+reads it again as the ledger reloads and, while a pass runs, every half minute. It is the
+API's `GET /api/batch-peaks/batch/{id}/assignment-status`, the SDK's
 `mascope.batch_peaks.assignment_status`. Any member of the workspace can read it, also
 where the feature is off. Its `state` is the first of these that holds:
 
@@ -2079,13 +2143,192 @@ Seeding is off by default. It is a setting of the batch, `seed_batch_peaks`, set
 the batch is created or edited through the API (`PATCH /api/sample/batches/{id}`).
 Turning it on for a batch whose ledger already exists moves no batch peak, because
 batch peaks are never moved once made: only the batch peaks made from then on are
-placed this way, by a new sample or by *Rebuild batch ledger*.
+placed this way, by a new sample or by a pass that folds every sample.
 
-*Search untargeted*, beside *Rebuild batch ledger*, first asks for the search's parameters
-- m/z precision, formula ranges, the peak ceiling, the intensity threshold and the number
-of alternatives kept, the same settings as a per-sample run's untargeted stage, applied
-to the whole search, in place of the batch's own for this pass (*The settings belong to
-the batch*, above) - and then runs the untargeted composition search
+### Measuring water ladders
+
+A soft-ionization source carries its reagent ions hydrated: Br-.(H2O)n, NO3-.(H2O)n,
+HNO3.NO3-.(H2O)n. How far a ladder reaches moves with the source and the humidity. On a
+long TOF batch a ladder that ends at a few waters before an instrument restart can run
+past fifteen after it. A sample's reagent pass claims a hydrate only as far as a work
+names it, and one water above a peak is no evidence on its own: a humid source hydrates
+every ion it makes [Good et al. 1970a][good70], [Sunner et al. 1988][sun88] (*The ions a
+source makes of itself*, above). So on a humid stretch the high rungs read as organics,
+or as nothing at all. The water ladders stage, *Measure water ladders*, the first of the
+list, reads each ladder on the batch's own samples instead, per ionization mode and instrument type:
+
+- **The cores.** The profile a sample of the partition resolves to names the cores whose
+  ladder is read. On a bromide source these are Br-, its dimer and trimer, and its cluster
+  with HBr. On a nitrate source they are NO3-, its two acid clusters and nitrite, and on a
+  15N-nitrate source its labelled cores. A positive source names none: its hydrates are the
+  solvents' and the air's, which the reagent pass climbs. Each core is read on each bright
+  line of its own envelope: a bromide on its 79Br and its 81Br line, a trimer on its four
+  lines. Each line is a ladder of its own.
+- **The stretches.** The samples are put in acquisition order and cut where two of them
+  are more than an hour apart and more than five times the batch's usual spacing: an
+  instrument restart, a night off. A stretch of fewer than ten samples joins the one it
+  is closer to in time. Every rung is read per stretch.
+- **A rung passes** where it, its core and every rung between them are each in half the
+  stretch's samples or more, so the ladder is unbroken from its core. Each rung is
+  core.(H2O)n, up to 45 waters, and the ladder ends at its first rung in fewer. It must
+  also be in its samples at least three times as often as at the masses beside it, where
+  only chance puts a peak: 0.02, 0.035 and 0.05 Da either side on an Orbitrap, two to five
+  line widths either side on a TOF, whose picker reports weak satellites within a width
+  of a bright line. A mass at another ladder's line is that ladder's, and is not read. On
+  a TOF a hydrated cluster and an organic share a nominal mass, and the line one mass
+  unit up tells them apart. Where the rung is bright enough that a five-carbon ion's 13C
+  line would clear the sample's local floor, the line one unit up is no taller than the
+  cluster's own 2H, 17O and 15N lines and five carbons' 13C. That is not asked where the
+  line blends with another ladder's line the stretch shows.
+
+A batch peak at a passing rung is the reagent's ion in the samples of the stretches it
+passed in. There its member becomes the rung, and so does the sample's row on that peak
+in its latest in-app run. The row reads the ion and no compound, at tier *unassigned*,
+with the batch's reading of the rung as its reason. The reading it carried is kept first
+among its alternatives (**earlier reading**, which *Use* puts back). The row's
+isotope lines go with it. A peak at the rung's 81Br line, read on its own, becomes that
+line, owned by the rung's peak. Where the rung's peak is not the rung in that sample, the
+81Br line's peak keeps its reading: with no peak to belong to, it would read as the
+hydrate itself at the wrong mass. The samples of other stretches keep their readings:
+the same mass there can be another ion. The batch peak then reads what its samples' vote
+reads.
+
+A sample is kept as it is where a person assigned the peak, where the target library or a
+reference list named its reading, where the peak is another ion's isotope line or another
+source ion's claim, and where its reading carries an isotope line the hydrate cannot
+have, such as a 13C line under a carbon-free cluster. A run imported from another engine
+is never rewritten, and a batch peak curated by hand is never claimed.
+
+A hydrate the measurement claimed in a sample is the batch's word there, not that
+sample's own finding. *Decide known species*, run after it, does not count such a sample
+as one whose own test held, whether or not the sample has a row of its own on the peak,
+and whatever became of the rung's own record since: the mark that the batch claimed the
+member lives on the member. So a hydrate that passed in one stretch is not decided
+present over the batch and claimed in the others. A sample whose own run claimed the
+hydrate still counts. A rung a later measurement no longer passes withdraws its claims:
+the members and in-app rows it rewrote read again what they read before, but for a row
+a person assigned by hand since.
+
+A batch peak at a passing rung carries a drop badge beside its formula, the one a known
+species decided wears, in grey. On hover it shows the rung, the stretches
+it passed in out of the batch's stretches, how often it and the masses beside it were
+seen there, how many samples the claim took, what the batch peak read before, and the
+samples kept with their readings.
+The ledger route and `batch_peaks.list` carry it as `water_ladder` for as long as the
+batch peak reads what the measurement left it reading. Each measurement replaces every
+one before it. A sample assigned again, and one folded in after the measurement, claims
+the rungs that passed in the stretch it was acquired in, on the sample's corrected mass
+and with the rung's isotope lines, where its own reagent pass did not; each row names the
+measurement and the stretch. A sample acquired outside every stretch the measurement read
+claims none until a measurement reads it. Its summary, in the pass's run, gives per ionization mode and
+instrument type the stretches, how far each core's ladder reached in each, the rungs
+tested and passed, the batch peaks claimed, the samples they were claimed in, and the
+analyte rows that left the ledger. It also gives the share of the batch's signal that no
+committed reading, source role or isotope line explains, before and after.
+
+### Deciding known species
+
+Some species a run knows before it reads the sample: the ions of the source's own
+library (the reagent's ladder, the air's ions, an Orbitrap's calibrant beam, a solvent
+ladder's rungs; *The ions a source makes of itself*, above) and the compounds a reference
+list tags as background, the cyclic siloxanes first. Each sample's run decides on its own
+whether such a species is there. The reagent pass claims a library ion where that
+sample's spectrum puts it on its corrected mass above the pass's height floor, or where
+the ladder below it holds; the stages read a listed compound where that sample's lines
+commit it. So a species present across a batch is claimed in some samples and read as an
+analyte, or left unread, in the others. The known species stage, *Decide known
+species*, decides each such species once, on the evidence of all the batch's
+samples of its ionization mode and instrument type:
+
+- **The species.** A batch peak is a library species where a sample's reagent pass
+  claimed it as an ion of the library. A fragment of an analyte is not one: it is claimed
+  only where its parent is committed in the same sample. A batch peak is a listed species
+  where a member matched a formula from a list that tags it *background*. A sample's own
+  test held where its run claimed the ion, or read the listed formula at candidate or
+  better, on its own. A sample that reads the species on the batch's word is not one: its
+  row was rewritten by an earlier decision, or claimed by a run on the batch's decision,
+  or its batch peak's member carries the mark a batch stage leaves on what it rewrote.
+  A sample with no row and no mark to say which, folded without a run or from an
+  imported run before the marks, counts where the decision before this one counted it.
+  So the batch's own claims never keep a species present.
+- **Present.** The species' peak is in two samples or more, in half the samples or more,
+  and one sample's own test held. The species is the batch's.
+- **Absent.** The peak is in enough samples, and no sample's own test held. The mass alone,
+  at the batch's tolerance, does not say the peak is the species.
+- **Unpooled.** The peak is in fewer samples than that. A species seen in one sample is
+  that sample's own reading, and each sample keeps its own.
+
+Where the batch decides a species present, it claims it in every sample its peak is in.
+The sample's member becomes the species, and so does the sample's row on that peak in its
+latest in-app run. A library ion's row becomes the reagent pass's claim: the ion and no
+compound, its tier *unassigned*, with the batch's decision as its reason, and the ion's
+isotope lines go with it. A listed compound's row reads the list's formula, through the
+ion and ionization the samples that committed it read it through, at *candidate* and with
+no fit: the batch's samples say the compound is there, and this sample's own lines did not
+commit it. A sample whose run read the compound's own formula below candidate keeps its
+reading, its fit and its isotope lines, and is lifted to *candidate*. In a batch folded
+without runs the reading comes off the batch peak's own record of the list's identity, at
+the ion's exact mass. The reading a row carried is kept first among its alternatives (**earlier
+reading**, which *Use* puts back).
+
+A sample is kept as it is where a person assigned the peak there, where the workspace's
+target library named it, where the peak is another ion's isotope line or another source
+ion's claim, and where the sample's reading carries isotope lines of its own that the
+species cannot have: for a listed compound any of another formula, for a library ion one
+of an element it does not hold, or of more atoms of it than the ion holds, such as a 13C
+line under a carbon-free ion, or a 13C2 line under an ion of one carbon. A run imported
+from another engine is that engine's record and is never rewritten. A batch peak curated
+by hand is never claimed, and neither is one whose reading the samples the claim may take
+would not turn. Where the fold split a species' trace over two batch peaks and both are
+decided present, only one claims it, and the other is held: its mark names the m/z of the
+batch peak that claims. A sample that reads the species on the other batch peak is kept,
+so no sample gets a second copy of it. The batch peak in the most samples claims, or on
+a tie the first by its id. Where keeping those samples leaves its claim unable to turn
+its reading, the other claims in its place; where neither can, neither claims.
+Nothing else is claimed: an analyte
+that is no known species is never read as one through the batch.
+
+The batch peak carries the decision: a drop badge beside its formula, in grey, as a
+reagent decided moves no tier, and on hover the species, the verdict, the samples
+its peak is in and those whose own test held, how many samples the claim took, and the
+samples it kept with their readings. Where the batch did not decide a species present,
+the samples whose own claim stands are listed instead. An earlier decision's claims are
+withdrawn: each member it rewrote, and each in-app row, reads again what it read before
+the claim, and the sample is judged again (*The batch stages*, above). A row a person
+assigned by hand since the claim is left as the person left it. The ledger route and `batch_peaks.list` carry the decision as
+`known_species`, which stays for as long as the batch peak reads what the decision left
+it reading. The co-variation of a species' trace with its core is recorded beside the
+verdict and decides nothing, as *Read co-variation* decides nothing: a library ion is read
+against the ion its ladder grew from, else against the source's brightest reagent or
+calibrant ion, and a listed compound carries its own *Read co-variation* reading.
+
+A sample's next run takes the batch's word for a library ion: its reagent pass claims a
+present ion on the sample's corrected mass where its own claim did not, with no height
+floor and no ladder below it, and the row names the batch's decision as its reason. Where
+the fold split an ion's trace over two batch peaks decided present, the run claims the ion
+once, as the batch peak in the most samples. A
+listed compound decided present is committed on its peak by a sample's next run, as the
+decision's claim writes it: the list's reading at candidate, the reading it displaced
+first among the row's alternatives and the decision among its tier reasons. A run that
+reads the compound below candidate on its own is lifted to candidate and keeps what it
+measured. The run keeps its own reading where the decision's claim keeps a sample's: the
+target library named the peak, the peak is another reading's isotope line or a source
+ion's claim, its reading carries isotope lines of another formula, or it reads the
+compound's formula, at any tier, on another batch peak of the compound's split trace:
+committing it here too would give the sample a second copy. A run that commits
+the compound on its own names no decision, and the next *Decide known species* counts it
+as that sample's own test; a row the decision wrote it never counts. Each run replaces every decision
+before it. Its summary, in the pass's run, counts the species read, present,
+absent, unpooled, held and claimed per ionization mode and instrument type, lists each
+species with its verdict, and names the thresholds.
+
+### Searching untargeted
+
+The untargeted search, *Search untargeted*, is the first stage that finds compositions.
+It runs on the search's settings - m/z precision, formula ranges, the peak ceiling, the
+intensity threshold and the number of alternatives kept, the same settings as a
+per-sample run's untargeted stage, applied to the whole search (*The settings belong to
+the batch*, above) - the untargeted composition search
 for the batch peaks nothing has assigned yet &mdash; once per species, on its brightest
 peak in that sample's own spectrum &mdash; and then measures the composition it found
 against every other sample the species was seen in, so each carries a fit of its own.
@@ -2151,6 +2394,165 @@ the reason that holds it, and a sample's inspector shows the share under the row
 With the threshold at 0 and no ceiling set, the defaults, every batch peak is taken
 by height and none on persistence alone.
 
+### Stripping isotopologue rows
+
+Each sample's run reads its peaks on its own. Where a run does not read a dim isotope
+line as its compound's, it can commit the line as a compound of its own, and the fold
+merges that reading into a row of the *Batch peaks* ledger that is no compound. The run
+itself reads such a line as its neighbour's where the neighbour is assigned and the
+line no taller than its envelope allows (**read as a neighbour's line**, in *Why a row
+holds its tier*); a dim line it cannot tell from noise in one file stays as it was. The batch can tell. A true isotope line sits at its compound's predicted mass and
+holds its predicted share of the compound's height in nearly every sample that shows
+both; another compound at that mass does so in few. The isotope lines stage reads every
+row so, in its first half, *Strip isotopologue rows*:
+
+- **The lines.** Every batch peak whose consensus commits a formula predicts its 13C
+  line and its diagnostic lines (15N, 18O, 34S, 29Si, 30Si, 37Cl, 81Br), at the
+  median m/z of its members and its anchor's resolving power, as the stamping predicts
+  them [Łącki et al. 2017][lac17] [Meija et al. 2016][mei16]. A line a peak of that
+  width cannot show on its own is not read.
+- **At the line.** A row that commits a formula of its own is read against a brighter
+  compound below it where its median m/z is within four times the batch's mass scatter
+  of the compound's line, and never under 1 ppm. The mass scatter is how far the batch's
+  members sit from their rows' median m/z: the scaled median absolute deviation over the
+  rows of five or more members [Rousseeuw and Croux 1993][rc93]. A bromine or chlorine
+  line can be taller than its compound, and such a compound counts as brighter as far as
+  its line's share allows.
+- **At its share.** In every sample that holds both, the row's height over the
+  compound's is read as a factor of the line's predicted share, by area on a TOF and by
+  height on an Orbitrap. The row is the compound's isotope line where the median factor
+  over three or more samples is 0.4 to 1.4, with fewer than one sample in ten above
+  twice the share. The band reaches further below one than above: near the detection
+  floor an Orbitrap scan keeps a dim line only where it clears that scan's noise, so the
+  summed peak list reads it low. A row whose factor is often twice its share is another
+  compound sitting at the line's mass, and stays.
+- **Never stripped.** A row curated by hand for the whole batch, a row any sample of
+  which was assigned by hand, a row whose own 13C line the batch already folds under it,
+  and a row too few of whose samples hold the compound's reading for its samples to
+  follow. Each is listed in the run's summary with its reason.
+
+The rows are read from the lowest m/z up. A row stripped is no compound for the rows
+above it, and a row two compounds' lines reach goes to the one whose median factor is
+nearest one.
+
+A stripped row leaves the ledger as a compound of its own. In each sample that holds
+both, the row's member becomes the compound's isotope line, and so does the sample's
+row on that peak in its latest in-app run: an isotopologue of the sample's row on the
+compound's peak, at that row's tier and fit, with the reading it displaced kept first
+among its alternatives (**earlier reading**, which *Use* puts back). Both rows of
+the sample record the rewrite. A sample is left as it was where the compound's peak
+reads another formula there, where the reagent or artifact pass claimed the row's peak,
+or where the row carries isotope lines of its own in that sample. A run imported from
+another engine is that engine's record and is never rewritten. The batch peak then
+folds under the compound as any isotopologue does, with its line outlined beside the
+offset (**M+1 13C**); its tooltip says what the samples' runs had read it as. The
+compound carries the three-bars badge of its isotope lines, which also lists the rows it
+took. **Stripped rows**, in the
+view menu behind the cog, keeps only those compounds.
+
+The ledger route and `batch_peaks.list` carry the stripped row's record as
+`merged_isotopologue_of` (its compound, the line, the share read and what the row was)
+and the compound's as `merged_isotopologues`. The row keeps its record for as long as
+its members read it as the compound's line. The compound lists the row for as long as
+the row keeps its record, and keeps its list for as long as its consensus names the
+formula and ionization the lines were read against. A row released from the compound
+(its samples assigned again, folded again or curated) leaves the list, and a compound
+with no row left loses them from its badge and leaves **Stripped rows**. The rewrite
+stays: a later *Strip isotopologue rows* reads the rows not yet stripped, and a
+sample assigned again reads the strip. Its run reads its row on the row's peak as the
+compound's isotope line, where its own row on the compound's peak reads the compound,
+and the row carries no isotope line of its own (*A sample's run reads what the batch
+decided*, above). Its summary, in the pass's run,
+counts the rows read, at a line, stripped, held, off their share and on too few
+samples per ionization mode and instrument type, lists the stripped and the held pairs,
+and names the thresholds.
+
+### Stamping isotopologues
+
+A compound's heavier isotope lines say which elements it holds and how many. The 15N,
+18O, 34S, 29Si, 30Si, 37Cl and 81Br lines are the diagnostic ones: each is one atom of
+the element in its heavier isotope, at a mass defect no carbon line shares, at a height
+that grows with the element's count [Kind and Fiehn 2007][kf07]. Most are dim. One
+nitrogen's 15N line is 0.37 % of its parent, one oxygen's 18O line 0.2 %. In most files
+of a batch they sit below the peak picker's edge and stand only where a plume lifts the
+parent, so a sample's own run seldom reads them as the compound's lines. The batch still
+holds them: wherever one stood, it folded into a batch peak, unassigned or read as some
+other compound. The isotope lines stage reads them there, in its second half, *Stamp
+isotopologues*:
+
+- **Predicted.** For every batch peak whose consensus commits a formula, the ion's
+  envelope is predicted to its faintest diagnostic line [Łącki et al. 2017][lac17], with
+  the isotope masses and abundances of the IUPAC tables [Meija et al. 2016][mei16]. Each
+  diagnostic line sits its predicted offset above the parent's m/z: the median of the
+  parent's members across the batch. A labelled reagent's atom, the 15N of a 15N-nitrate
+  adduct, is the label's: it adds no 15N line, and the offsets are measured from the
+  labelled line.
+- **Resolved.** A line that a peak of the file's width cannot show on its own is not
+  read. On a TOF the 15N line sits inside the 13C peak. On an Orbitrap at a low resolution
+  the 18O line of a large ion merges with its 13C2 line. A line is read on its own where
+  it carries at least half of the peak it falls in, at that peak's height.
+- **Found.** The batch peak whose members sit within its own m/z tolerance of the
+  predicted mass is the line.
+- **Judged in each sample.** In every sample that holds both peaks, the line's height
+  over its parent's is read against the predicted ratio, the way the fit score reads an
+  isotope line: inside the band the sample's run fitted for its envelope (see *The fit
+  score*), the two peaks' noise read off the sample's peak list. The ratio holds within
+  two of the line's widths. A sample where two widths reach past half the predicted ratio
+  cannot tell the line from another peak, and is left out: a 15N line read at a low
+  signal-to-noise holds anything from nothing to twice its height.
+- **Never told apart under 0.4 %.** A line's width never falls under 0.1 % of its
+  parent's height, the fit score's floor, however high the signal. So no sample can
+  tell a line under 0.4 % of its parent, and it always ends *untestable*: one
+  nitrogen's 15N line and one oxygen's 18O line among them. A 15N or 18O line is read
+  only where the formula holds two or more of its atoms.
+- **Stamped across the batch.** A line whose ratio holds in at least eight of every ten
+  samples that can tell, over three or more such samples, is stamped as the parent's
+  isotope line, in each sample where it held. Fewer than three is *untestable*.
+
+The numbers are measured. On twenty batches of real data, each predicted line was read
+beside a decoy: the same parent and ratio, but the mass below the parent, where no line of
+its envelope is. Of the lines the samples' own runs had already found, 78 to 88 % were
+stamped. Of the decoys, under 1 % were, over three or four samples or ten and more. The
+exception is bromine: its line is as tall as its parent, so a real 79Br and 81Br pair can
+look like a decoy pair. Counting every sample, the samples that cannot tell included,
+half the decoys on six-sample sets would pass. That is why those samples are left out.
+
+A stamp is a recorded fact, not evidence any tier reads yet; the later batch isotope
+checks count it. A line two compounds both predict goes to the one whose ratio holds in
+the larger share of its samples, then in more of them. The parent's row in the
+*Batch peaks* ledger carries a three-bars badge where the batch shows one of its isotope
+lines, green once one of them holds its ratio and grey before. On hover it lists every isotope line: stamped, found and not holding its ratio,
+predicted with no batch peak at its mass, or not separated from another line. A stamped
+line folds under its parent like an isotopologue, with the isotope beside its offset
+(**M+2 81Br**). The tag is set in italics where the stamping predicted the line, and
+upright where every sample's own run had already read it as the parent's isotopologue. A
+stamped line keeps its own tier and formula.
+
+The member rows of the ledger's CSV export and of the SDK's `batch_peaks.members` say,
+per sample, which parent a member was stamped for (`stamped_isotopologue_of`) and where
+the stamp came from (`stamp_source`: `predicted` or `picker`). The ledger route and
+`batch_peaks.list` carry the parent's record as `diagnostic_isotopologues` and the
+line's as `stamped_isotopologue_of`. A parent keeps its record for as long as its
+consensus names the formula and ionization the isotope lines were predicted for. A vote,
+a curation or a rebuild that moves the parent's reading takes its stamps off its lines,
+and the next *Stamp isotopologues* replaces every stamp. A parent whose reading moves
+while the stamping runs gets no record, and its lines no stamp. *Stamp isotopologues*
+writes its summary into the pass's run: it counts the isotope lines predicted, found and stamped
+per ionization mode and instrument type, the parents that moved while it ran, and names
+the thresholds. It changes no tier, no member and no per-sample run.
+
+A sample's own view shows the stamp too. Select a peak the batch stamped in that sample,
+and the peak inspector says so in one line under the channel badge: *Stamped by the
+batch as the 81Br isotopologue of C2H4O2 (predicted)*, or *(found by the peak picker)*
+where the sample's own run had read the peak as that line. It shows whatever the row
+reads the peak as, its own formula or none. Click the line to select the parent's peak
+in the sample. On the parent's monoisotopic row, where the batch shows one of its
+isotope lines and the row reads the formula and ionization the lines were predicted for,
+a line counts its stamped isotope lines, and lists each one on hover as the ledger's
+badge does. The assignment detail route and the SDK's `peak_assignments.detail`
+carry both, as `batch_stamped_isotopologue_of` and `batch_diagnostic_isotopologues`.
+Neither moves the row's tier.
+
 ### Detecting series
 
 A batch that holds a compound at a confident reading often holds its homologues too: the
@@ -2160,7 +2562,7 @@ series, the rows of constant mass defect on the Kendrick scale
 own, and often a dim one, which the formula search alone either reads some other way or
 holds at *candidate* because one peak is all that saw it.
 
-*Detect series*, beside *Search untargeted*, walks those series. From every batch peak the
+The series stage, *Detect series*, walks those series. From every batch peak the
 batch holds at *assigned* it steps one unit up and one down - CH2, O, H2O, CO, CO2 and
 C2H2O, and the siloxane (C2H6OSi) and CF2 ladders from a compound that carries silicon
 or fluorine - and wherever a batch peak nothing assigned, or one held only at
@@ -2199,7 +2601,7 @@ and *rivals left standing* and nothing else: right after the detection, every sa
 whose member reads a formula a series vouches for is judged again (*The batch stages*,
 above), and a sample's next assignment run counts it too. On a source with a 15N-labelled reagent a
 formula carrying C8S or C2F3 is not proposed: its labelled alias makes the same ion and
-takes the same steps. *Detect series* runs as a batch run, its summary listing every kind
+takes the same steps. *Detect series* writes its summary into the pass's run, listing every kind
 of step against its decoys and the batch's false discovery rate; it writes no per-sample
 runs. When the chemistry of an ionization mode cannot be resolved, for example because a
 sample's file has moved, that mode is not walked, the run says so, and its batch peaks
@@ -2234,7 +2636,7 @@ A compound the batch sees through two channels is two batch peaks at two masses,
 is a trace across the batch's spectra: its height in every sample, or its area on a TOF.
 Where both readings are one molecule, the two traces rise and fall with that molecule's
 abundance. Where a formula coincidence put two different compounds under one neutral,
-they need not. *Read co-variation*, beside *Detect series*, reads every such pair, per
+they need not. The co-variation stage, *Read co-variation*, reads every such pair, per
 ionization mode and instrument type:
 
 - **In log intensity.** A source state that favours one channel over the other
@@ -2317,7 +2719,7 @@ moves on it. Where the source's own list of its ions - its reagent ladder, the i
 makes of the air, the calibrant beam (*The ions a source makes of itself*, above), read
 for the profile the batch's own runs resolved - names a flat reading's ion, the flag
 names that ion too. The flag claims nothing: a source ion is claimed by each sample's
-reagent pass, and across the batch by *Decide known species* (below).
+reagent pass, and across the batch by *Decide known species* (above).
 
 The batch peak's formula carries an equals badge, in grey, since the flag moves nothing:
 hover it for the coefficient of
@@ -2329,173 +2731,110 @@ co-variation* replaces every flag. The run's summary counts each verdict per ion
 mode and instrument type, with the normaliser, how much of the batch varies and the
 profiles whose lists were read.
 
-### Stamping isotopologues
+### Ratio stability
 
-A compound's heavier isotope lines say which elements it holds and how many. The 15N,
-18O, 34S, 29Si, 30Si, 37Cl and 81Br lines are the diagnostic ones: each is one atom of
-the element in its heavier isotope, at a mass defect no carbon line shares, at a height
-that grows with the element's count [Kind and Fiehn 2007][kf07]. Most are dim. One
-nitrogen's 15N line is 0.37 % of its parent, one oxygen's 18O line 0.2 %. In most files
-of a batch they sit below the peak picker's edge and stand only where a plume lifts the
-parent, so a sample's own run seldom reads them as the compound's lines. The batch still
-holds them: wherever one stood, it folded into a batch peak, unassigned or read as some
-other compound. *Stamp isotopologues*, beside *Read co-variation*, reads them there:
+--8<-- "_help/batch-continuity.md"
 
-- **Predicted.** For every batch peak whose consensus commits a formula, the ion's
-  envelope is predicted to its faintest diagnostic line [Łącki et al. 2017][lac17], with
-  the isotope masses and abundances of the IUPAC tables [Meija et al. 2016][mei16]. Each
-  diagnostic line sits its predicted offset above the parent's m/z: the median of the
-  parent's members across the batch. A labelled reagent's atom, the 15N of a 15N-nitrate
-  adduct, is the label's: it adds no 15N line, and the offsets are measured from the
-  labelled line.
-- **Resolved.** A line that a peak of the file's width cannot show on its own is not
-  read. On a TOF the 15N line sits inside the 13C peak. On an Orbitrap at a low resolution
-  the 18O line of a large ion merges with its 13C2 line. A line is read on its own where
-  it carries at least half of the peak it falls in, at that peak's height.
-- **Found.** The batch peak whose members sit within its own m/z tolerance of the
-  predicted mass is the line.
-- **Judged in each sample.** In every sample that holds both peaks, the line's height
-  over its parent's is read against the predicted ratio, the way the fit score reads an
-  isotope line: inside the band the sample's run fitted for its envelope (see *The fit
-  score*), the two peaks' noise read off the sample's peak list. The ratio holds within
-  two of the line's widths. A sample where two widths reach past half the predicted ratio
-  cannot tell the line from another peak, and is left out: a 15N line read at a low
-  signal-to-noise holds anything from nothing to twice its height.
-- **Never told apart under 0.4 %.** A line's width never falls under 0.1 % of its
-  parent's height, the fit score's floor, however high the signal. So no sample can
-  tell a line under 0.4 % of its parent, and it always ends *untestable*: one
-  nitrogen's 15N line and one oxygen's 18O line among them. A 15N or 18O line is read
-  only where the formula holds two or more of its atoms.
-- **Stamped across the batch.** A line whose ratio holds in at least eight of every ten
-  samples that can tell, over three or more such samples, is stamped as the parent's
-  isotope line, in each sample where it held. Fewer than three is *untestable*.
+Every effect that scales a whole spectrum - the source's strength, its drift, the
+number of scans, a dilution - scales both peaks of a related pair alike, so their
+ratio within one sample cancels it. An isotope line's ratio to its main peak is fixed
+by isotopic abundance, and a compound's ratio between two channels by the source's
+chemistry. A species that is what the ledger says therefore holds a flat ratio across
+the batch, even while its own trace swings by orders of magnitude. The ratio-stability
+pass reads that ratio for every pair of related batch peaks:
 
-The numbers are measured. On twenty batches of real data, each predicted line was read
-beside a decoy: the same parent and ratio, but the mass below the parent, where no line of
-its envelope is. Of the lines the samples' own runs had already found, 78 to 88 % were
-stamped. Of the decoys, under 1 % were, over three or four samples or ten and more. The
-exception is bromine: its line is as tall as its parent, so a real 79Br and 81Br pair can
-look like a decoy pair. Counting every sample, the samples that cannot tell included,
-half the decoys on six-sample sets would pass. That is why those samples are left out.
+- **An isotope line and its main peak.** Every isotopologue the ledger folds under a
+  main peak pairs with it; a line folded under another line pairs with the main peak
+  it is drawn under. The ledger and this pass read one owner link per line
+  (`line_owner_id` on the ledger rows): the members' own isotopologue link, else the
+  parent a stamp names, so a stamped line pairs with the main peak it is drawn under too,
+  on the formula the stamp predicted it for. A line the samples split on folds under
+  nothing and pairs with nothing.
+- **Two channels of one compound**: the pairs *Read co-variation* reads, one batch peak
+  per channel, neither of them ambiguous.
 
-A stamp is a recorded fact, not evidence any tier reads yet; the later batch isotope
-checks count it. A line two compounds both predict goes to the one whose ratio holds in
-the larger share of its samples, then in more of them. The parent's row in the
-*Batch peaks* ledger carries a three-bars badge where the batch shows one of its isotope
-lines, green once one of them holds its ratio and grey before. On hover it lists every isotope line: stamped, found and not holding its ratio,
-predicted with no batch peak at its mass, or not separated from another line. A stamped
-line folds under its parent like an isotopologue, with the isotope beside its offset
-(**M+2 81Br**). The tag is set in italics where the stamping predicted the line, and
-upright where every sample's own run had already read it as the parent's isotopologue. A
-stamped line keeps its own tier and formula.
+Both peaks must be *assigned* or *candidate*. A sample counts for a pair where both
+peaks are in it with an intensity above zero, both read the batch peak's formula, and
+it is no blank: labelled *BLANK*, or from a file with no instrument function. A sample
+missing either peak is a gap, never a point against the formula. Over those samples,
+in acquisition order, the pass reads the natural log of the ratio:
 
-The member rows of the ledger's CSV export and of the SDK's `batch_peaks.members` say,
-per sample, which parent a member was stamped for (`stamped_isotopologue_of`) and where
-the stamp came from (`stamp_source`: `predicted` or `picker`). The ledger route and
-`batch_peaks.list` carry the parent's record as `diagnostic_isotopologues` and the
-line's as `stamped_isotopologue_of`. A parent keeps its record for as long as its
-consensus names the formula and ionization the isotope lines were predicted for. A vote,
-a curation or a rebuild that moves the parent's reading takes its stamps off its lines,
-and the next *Stamp isotopologues* replaces every stamp. A parent whose reading moves
-while the stamping runs gets no record, and its lines no stamp. *Stamp isotopologues*
-runs as a batch run, whose summary counts the isotope lines predicted, found and stamped
-per ionization mode and instrument type, the parents that moved while it ran, and names
-the thresholds. It changes no tier, no member and no per-sample run.
+- **Its spread**: 1.4826 times the median absolute deviation, which one spiked sample
+  cannot move [Hampel 1974][ham74], [Rousseeuw and Croux 1993][rc93].
+- **Its drift**, which needs a trend and a size together. The trend is Spearman's rho
+  against the acquisition order, 0.6 or more either way [Spearman 1904][spe04]. The size
+  is the Theil-Sen slope against time [Theil 1950][the50], [Sen 1968][sen68] times the
+  pair's span, at least ln 1.5 for an isotope ratio and ln 2 for a channel ratio,
+  rising or falling.
 
-A sample's own view shows the stamp too. Select a peak the batch stamped in that sample,
-and the peak inspector says so in one line under the channel badge: *Stamped by the
-batch as the 81Br isotopologue of C2H4O2 (predicted)*, or *(found by the peak picker)*
-where the sample's own run had read the peak as that line. It shows whatever the row
-reads the peak as, its own formula or none. Click the line to select the parent's peak
-in the sample. On the parent's monoisotopic row, where the batch shows one of its
-isotope lines and the row reads the formula and ionization the lines were predicted for,
-a line counts its stamped isotope lines, and lists each one on hover as the ledger's
-badge does. The assignment detail route and the SDK's `peak_assignments.detail`
-carry both, as `batch_stamped_isotopologue_of` and `batch_diagnostic_isotopologues`.
-Neither moves the row's tier.
+Each pair is graded in this order:
 
-### Stripping isotopologue rows
+| Grade | When |
+| --- | --- |
+| insufficient | fewer than 6 samples, or fewer than 5 distinct acquisition times: the segments of one file share its time |
+| drift | it drifts, and *Read co-variation* read the two channels as co-varying: the source's chemistry moved and the assignment stands |
+| unstable | it drifts with nothing saying the two traces co-vary, which an isotope ratio never has, or its spread is 0.5 or more: a ratio that jumps |
+| stable | a spread of at most 0.15 for an isotope ratio or 0.25 for a channel ratio, over 8 samples or more, the deviation above zero |
+| inconclusive | anything else |
 
-Each sample's run reads its peaks on its own. Where a run does not read a dim isotope
-line as its compound's, it can commit the line as a compound of its own, and the fold
-merges that reading into a row of the *Batch peaks* ledger that is no compound. The run
-itself reads such a line as its neighbour's where the neighbour is assigned and the
-line no taller than its envelope allows (**read as a neighbour's line**, in *Why a row
-holds its tier*); a dim line it cannot tell from noise in one file stays as it was. The batch can tell. A true isotope line sits at its compound's predicted mass and
-holds its predicted share of the compound's height in nearly every sample that shows
-both; another compound at that mass does so in few. *Strip isotopologue rows*, beside
-*Stamp isotopologues*, reads every row so:
+A batch peak takes its most alarming pair's grade, in that order of alarm: unstable, drift,
+stable, inconclusive, insufficient. Only a time-ordered batch is graded: an
+acquisition batch, or an analysis batch whose largest gap between acquisition times is
+at most ten times the median gap. A batch that is not keeps no grades, and its batch
+peaks say why. One pass grades up to 20,000 pairs, the best supported first, and marks
+a batch peak whose other pairs it left as partial.
 
-- **The lines.** Every batch peak whose consensus commits a formula predicts its 13C
-  line and its diagnostic lines (15N, 18O, 34S, 29Si, 30Si, 37Cl, 81Br), at the
-  median m/z of its members and its anchor's resolving power, as the stamping predicts
-  them [Łącki et al. 2017][lac17] [Meija et al. 2016][mei16]. A line a peak of that
-  width cannot show on its own is not read.
-- **At the line.** A row that commits a formula of its own is read against a brighter
-  compound below it where its median m/z is within four times the batch's mass scatter
-  of the compound's line, and never under 1 ppm. The mass scatter is how far the batch's
-  members sit from their rows' median m/z: the scaled median absolute deviation over the
-  rows of five or more members [Rousseeuw and Croux 1993][rc93]. A bromine or chlorine
-  line can be taller than its compound, and such a compound counts as brighter as far as
-  its line's share allows.
-- **At its share.** In every sample that holds both, the row's height over the
-  compound's is read as a factor of the line's predicted share, by area on a TOF and by
-  height on an Orbitrap. The row is the compound's isotope line where the median factor
-  over three or more samples is 0.4 to 1.4, with fewer than one sample in ten above
-  twice the share. The band reaches further below one than above: near the detection
-  floor an Orbitrap scan keeps a dim line only where it clears that scan's noise, so the
-  summed peak list reads it low. A row whose factor is often twice its share is another
-  compound sitting at the line's mass, and stays.
-- **Never stripped.** A row curated by hand for the whole batch, a row any sample of
-  which was assigned by hand, a row whose own 13C line the batch already folds under it,
-  and a row too few of whose samples hold the compound's reading for its samples to
-  follow. Each is listed in the run's summary with its reason.
+The grade is shown, never weighed. It says two peaks behave as one species, never
+which species, and no tier reads it. The thresholds have been read on real
+time-ordered batches and still stand, with one known blind spot: the drift test reads
+time, and most ratios that drift follow the main peak's own level instead. An isotope
+line read near the detection floor rises or falls with its main peak, and a channel
+ratio moves with the compound's amount. Where that amount trends over the batch, the
+pair grades *unstable* on a drift that says nothing of two species. Read an unstable
+isotope pair on a dim main peak with that in mind.
 
-The rows are read from the lowest m/z up. A row stripped is no compound for the rows
-above it, and a row two compounds' lines reach goes to the one whose median factor is
-nearest one.
+A rebuild of the ledger through its API route (`POST /api/batch-peaks/batch/{id}/backfill`)
+grades the batch when it has folded the last sample, and
+`POST /api/batch-peaks/batch/{id}/recompute-continuity` grades it on request. A sample
+folding in later does not regrade the batch, because on the largest batches a pass
+costs more than the fold itself. The ledger's records carry the grade as `continuity_grade`, the
+pairs under `continuity` (each with its ratio, spread, drift and the co-variation
+reading it was graded with), and `continuity_stale` where a sample folded since, a
+curation or a re-fold has moved the batch peak. The API names each grade as the
+table does, except *unstable*, whose value there is `red`.
 
-A stripped row leaves the ledger as a compound of its own. In each sample that holds
-both, the row's member becomes the compound's isotope line, and so does the sample's
-row on that peak in its latest in-app run: an isotopologue of the sample's row on the
-compound's peak, at that row's tier and fit, with the reading it displaced kept first
-among its alternatives (**earlier reading**, which *Use* puts back). Both rows of
-the sample record the rewrite. A sample is left as it was where the compound's peak
-reads another formula there, where the reagent or artifact pass claimed the row's peak,
-or where the row carries isotope lines of its own in that sample. A run imported from
-another engine is that engine's record and is never rewritten. The batch peak then
-folds under the compound as any isotopologue does, with its line outlined beside the
-offset (**M+1 13C**); its tooltip says what the samples' runs had read it as. The
-compound carries the three-bars badge of its isotope lines, which also lists the rows it
-took. **Stripped rows**, in the
-view menu behind the cog, keeps only those compounds.
+The *Batch peaks* ledger shows the grade in its **Continuity** column, after *Samples*,
+once the pass has graded the batch. Stable, drift and unstable are drawn as a badge, in
+green, teal and amber: the colours of a reading that supports, drifted and holds back;
+inconclusive and insufficient read muted, and a batch that is not time-ordered reads
+*Not graded*, its tooltip saying why. A badge that says *partial* beside its grade is
+partial: the pass left some of the batch peak's pairs ungraded, and where it left all
+of them the badge reads *Not graded*. The pair counts it gives are of the graded pairs.
+A badge outlined in the warning colour, with the out-of-date arrows, is behind the ledger: a sample folded in since, or the consensus formula moved,
+and the next pass grades it again. Clicking the cell lists the pairs behind the grade -
+the most alarming first, up to four - each with its grade, the samples both peaks are
+in, the median ratio, its spread and its drift, and for two channels what *Read
+co-variation* said of them. An isotope line has a grade of its own, on its pair with
+the main peak, shown on its own row while the view options unfold the isotopologues.
+The column sorts unstable first, and batch peaks without a grade last. No tier, verdict or
+filter reads it.
 
-The ledger route and `batch_peaks.list` carry the stripped row's record as
-`merged_isotopologue_of` (its compound, the line, the share read and what the row was)
-and the compound's as `merged_isotopologues`. The row keeps its record for as long as
-its members read it as the compound's line. The compound lists the row for as long as
-the row keeps its record, and keeps its list for as long as its consensus names the
-formula and ionization the lines were read against. A row released from the compound
-(its samples assigned again, folded again or curated) leaves the list, and a compound
-with no row left loses them from its badge and leaves **Stripped rows**. The rewrite
-stays: a later *Strip isotopologue rows* reads the rows not yet stripped, and a
-sample assigned again reads the strip. Its run reads its row on the row's peak as the
-compound's isotope line, where its own row on the compound's peak reads the compound,
-and the row carries no isotope line of its own (*A sample's run reads what the batch
-decided*, above). It runs as a batch run, whose
-summary counts the rows read, at a line, stripped, held, off their share and on too few
-samples per ionization mode and instrument type, lists the stripped and the held pairs,
-and names the thresholds.
+The pass is a stage after *Read co-variation* (*The batch stages*, above), so it grades a
+drift on the co-variation the same pass read, whichever stage the pass started at: a pass
+from the co-variation runs the ratio stability after it, and the ratio stability's own route
+starts at the ratio stability, after a co-variation reading already stands. A rebuild of
+the ledger grades the batch at its end too, before any co-variation is read again, and
+leaves the stage stale.
 
 ### Reading batch checks
 
 --8<-- "_help/batch-checks.md"
 
-Some things an ion's lines say hold only across a batch. *Read batch checks*, beside
-*Strip isotopologue rows*, reads three of them off what the ledger already holds: the
+Some things an ion's lines say hold only across a batch. The batch checks stage, *Read
+batch checks*, reads three of them off what the ledger already holds: the
 lines *Stamp isotopologues* stamped, every batch peak's members, and the co-variation
-*Read co-variation* read. Run those two first; a fact whose source has not run is not
-read, and the run's summary says which to run.
+*Read co-variation* read. Both run before it in a pass; a fact whose source has not run is
+not read, and the run's summary says which.
 
 - **The halogen lock.** A compound holding chlorine or bromine carries its heavier
   isotope line two units up: one 37Cl atom at 32 % of a monochloride's height, one 81Br
@@ -2561,390 +2900,9 @@ batch peak keeps its facts for as long as its consensus names the ion, formula a
 ionization they were read for. A lock stands only beside the stamping it read and a pair
 beside the co-variation reading: a later *Stamp isotopologues* or *Read co-variation*
 takes them off until the next *Read batch checks*, which replaces every fact. A batch
-peak whose reading moves while the checks run gets none. It runs as a batch run, whose
-summary counts each verdict per ionization mode and instrument type, with the position
+peak whose reading moves while the checks run gets none. Its summary, in the pass's run,
+counts each verdict per ionization mode and instrument type, with the position
 window it read at; it changes no tier, no member and no per-sample run.
-
-### Deciding known species
-
-Some species a run knows before it reads the sample: the ions of the source's own
-library (the reagent's ladder, the air's ions, an Orbitrap's calibrant beam, a solvent
-ladder's rungs; *The ions a source makes of itself*, above) and the compounds a reference
-list tags as background, the cyclic siloxanes first. Each sample's run decides on its own
-whether such a species is there. The reagent pass claims a library ion where that
-sample's spectrum puts it on its corrected mass above the pass's height floor, or where
-the ladder below it holds; the stages read a listed compound where that sample's lines
-commit it. So a species present across a batch is claimed in some samples and read as an
-analyte, or left unread, in the others. *Decide known species*, beside *Read batch
-checks*, decides each such species once, on the evidence of all the batch's
-samples of its ionization mode and instrument type:
-
-- **The species.** A batch peak is a library species where a sample's reagent pass
-  claimed it as an ion of the library. A fragment of an analyte is not one: it is claimed
-  only where its parent is committed in the same sample. A batch peak is a listed species
-  where a member matched a formula from a list that tags it *background*. A sample's own
-  test held where its run claimed the ion, or read the listed formula at candidate or
-  better, on its own. A sample that reads the species on the batch's word is not one: its
-  row was rewritten by an earlier decision, or claimed by a run on the batch's decision,
-  or its batch peak's member carries the mark a batch stage leaves on what it rewrote.
-  A sample with no row and no mark to say which, folded without a run or from an
-  imported run before the marks, counts where the decision before this one counted it.
-  So the batch's own claims never keep a species present.
-- **Present.** The species' peak is in two samples or more, in half the samples or more,
-  and one sample's own test held. The species is the batch's.
-- **Absent.** The peak is in enough samples, and no sample's own test held. The mass alone,
-  at the batch's tolerance, does not say the peak is the species.
-- **Unpooled.** The peak is in fewer samples than that. A species seen in one sample is
-  that sample's own reading, and each sample keeps its own.
-
-Where the batch decides a species present, it claims it in every sample its peak is in.
-The sample's member becomes the species, and so does the sample's row on that peak in its
-latest in-app run. A library ion's row becomes the reagent pass's claim: the ion and no
-compound, its tier *unassigned*, with the batch's decision as its reason, and the ion's
-isotope lines go with it. A listed compound's row reads the list's formula, through the
-ion and ionization the samples that committed it read it through, at *candidate* and with
-no fit: the batch's samples say the compound is there, and this sample's own lines did not
-commit it. A sample whose run read the compound's own formula below candidate keeps its
-reading, its fit and its isotope lines, and is lifted to *candidate*. In a batch folded
-without runs the reading comes off the batch peak's own record of the list's identity, at
-the ion's exact mass. The reading a row carried is kept first among its alternatives (**earlier
-reading**, which *Use* puts back).
-
-A sample is kept as it is where a person assigned the peak there, where the workspace's
-target library named it, where the peak is another ion's isotope line or another source
-ion's claim, and where the sample's reading carries isotope lines of its own that the
-species cannot have: for a listed compound any of another formula, for a library ion one
-of an element it does not hold, or of more atoms of it than the ion holds, such as a 13C
-line under a carbon-free ion, or a 13C2 line under an ion of one carbon. A run imported
-from another engine is that engine's record and is never rewritten. A batch peak curated
-by hand is never claimed, and neither is one whose reading the samples the claim may take
-would not turn. Where the fold split a species' trace over two batch peaks and both are
-decided present, only one claims it, and the other is held: its mark names the m/z of the
-batch peak that claims. A sample that reads the species on the other batch peak is kept,
-so no sample gets a second copy of it. The batch peak in the most samples claims, or on
-a tie the first by its id. Where keeping those samples leaves its claim unable to turn
-its reading, the other claims in its place; where neither can, neither claims.
-Nothing else is claimed: an analyte
-that is no known species is never read as one through the batch.
-
-The batch peak carries the decision: a drop badge beside its formula, in grey, as a
-reagent decided moves no tier, and on hover the species, the verdict, the samples
-its peak is in and those whose own test held, how many samples the claim took, and the
-samples it kept with their readings. Where the batch did not decide a species present,
-the samples whose own claim stands are listed instead. An earlier decision's claims are
-withdrawn: each member it rewrote, and each in-app row, reads again what it read before
-the claim, and the sample is judged again (*The batch stages*, above). A row a person
-assigned by hand since the claim is left as the person left it. The ledger route and `batch_peaks.list` carry the decision as
-`known_species`, which stays for as long as the batch peak reads what the decision left
-it reading. The co-variation of a species' trace with its core is recorded beside the
-verdict and decides nothing, as *Read co-variation* decides nothing: a library ion is read
-against the ion its ladder grew from, else against the source's brightest reagent or
-calibrant ion, and a listed compound carries its own *Read co-variation* reading.
-
-A sample's next run takes the batch's word for a library ion: its reagent pass claims a
-present ion on the sample's corrected mass where its own claim did not, with no height
-floor and no ladder below it, and the row names the batch's decision as its reason. Where
-the fold split an ion's trace over two batch peaks decided present, the run claims the ion
-once, as the batch peak in the most samples. A
-listed compound decided present is committed on its peak by a sample's next run, as the
-decision's claim writes it: the list's reading at candidate, the reading it displaced
-first among the row's alternatives and the decision among its tier reasons. A run that
-reads the compound below candidate on its own is lifted to candidate and keeps what it
-measured. The run keeps its own reading where the decision's claim keeps a sample's: the
-target library named the peak, the peak is another reading's isotope line or a source
-ion's claim, its reading carries isotope lines of another formula, or it reads the
-compound's formula, at any tier, on another batch peak of the compound's split trace:
-committing it here too would give the sample a second copy. A run that commits
-the compound on its own names no decision, and the next *Decide known species* counts it
-as that sample's own test; a row the decision wrote it never counts. Each run replaces every decision
-before it. It runs as a batch run, whose summary counts the species read, present,
-absent, unpooled, held and claimed per ionization mode and instrument type, lists each
-species with its verdict, and names the thresholds.
-
-### Measuring water ladders
-
-A soft-ionization source carries its reagent ions hydrated: Br-.(H2O)n, NO3-.(H2O)n,
-HNO3.NO3-.(H2O)n. How far a ladder reaches moves with the source and the humidity. On a
-long TOF batch a ladder that ends at a few waters before an instrument restart can run
-past fifteen after it. A sample's reagent pass claims a hydrate only as far as a work
-names it, and one water above a peak is no evidence on its own: a humid source hydrates
-every ion it makes [Good et al. 1970a][good70], [Sunner et al. 1988][sun88] (*The ions a
-source makes of itself*, above). So on a humid stretch the high rungs read as organics,
-or as nothing at all. *Measure water ladders*, beside *Decide known species*, reads each
-ladder on the batch's own samples instead, per ionization mode and instrument type:
-
-- **The cores.** The profile a sample of the partition resolves to names the cores whose
-  ladder is read. On a bromide source these are Br-, its dimer and trimer, and its cluster
-  with HBr. On a nitrate source they are NO3-, its two acid clusters and nitrite, and on a
-  15N-nitrate source its labelled cores. A positive source names none: its hydrates are the
-  solvents' and the air's, which the reagent pass climbs. Each core is read on each bright
-  line of its own envelope: a bromide on its 79Br and its 81Br line, a trimer on its four
-  lines. Each line is a ladder of its own.
-- **The stretches.** The samples are put in acquisition order and cut where two of them
-  are more than an hour apart and more than five times the batch's usual spacing: an
-  instrument restart, a night off. A stretch of fewer than ten samples joins the one it
-  is closer to in time. Every rung is read per stretch.
-- **A rung passes** where it, its core and every rung between them are each in half the
-  stretch's samples or more, so the ladder is unbroken from its core. Each rung is
-  core.(H2O)n, up to 45 waters, and the ladder ends at its first rung in fewer. It must
-  also be in its samples at least three times as often as at the masses beside it, where
-  only chance puts a peak: 0.02, 0.035 and 0.05 Da either side on an Orbitrap, two to five
-  line widths either side on a TOF, whose picker reports weak satellites within a width
-  of a bright line. A mass at another ladder's line is that ladder's, and is not read. On
-  a TOF a hydrated cluster and an organic share a nominal mass, and the line one mass
-  unit up tells them apart. Where the rung is bright enough that a five-carbon ion's 13C
-  line would clear the sample's local floor, the line one unit up is no taller than the
-  cluster's own 2H, 17O and 15N lines and five carbons' 13C. That is not asked where the
-  line blends with another ladder's line the stretch shows.
-
-A batch peak at a passing rung is the reagent's ion in the samples of the stretches it
-passed in. There its member becomes the rung, and so does the sample's row on that peak
-in its latest in-app run. The row reads the ion and no compound, at tier *unassigned*,
-with the batch's reading of the rung as its reason. The reading it carried is kept first
-among its alternatives (**earlier reading**, which *Use* puts back). The row's
-isotope lines go with it. A peak at the rung's 81Br line, read on its own, becomes that
-line, owned by the rung's peak. Where the rung's peak is not the rung in that sample, the
-81Br line's peak keeps its reading: with no peak to belong to, it would read as the
-hydrate itself at the wrong mass. The samples of other stretches keep their readings:
-the same mass there can be another ion. The batch peak then reads what its samples' vote
-reads.
-
-A sample is kept as it is where a person assigned the peak, where the target library or a
-reference list named its reading, where the peak is another ion's isotope line or another
-source ion's claim, and where its reading carries an isotope line the hydrate cannot
-have, such as a 13C line under a carbon-free cluster. A run imported from another engine
-is never rewritten, and a batch peak curated by hand is never claimed.
-
-A hydrate the measurement claimed in a sample is the batch's word there, not that
-sample's own finding. *Decide known species*, run after it, does not count such a sample
-as one whose own test held, whether or not the sample has a row of its own on the peak,
-and whatever became of the rung's own record since: the mark that the batch claimed the
-member lives on the member. So a hydrate that passed in one stretch is not decided
-present over the batch and claimed in the others. A sample whose own run claimed the
-hydrate still counts. A rung a later measurement no longer passes withdraws its claims:
-the members and in-app rows it rewrote read again what they read before, but for a row
-a person assigned by hand since.
-
-A batch peak at a passing rung carries a drop badge beside its formula, the one a known
-species decided wears, in grey. On hover it shows the rung, the stretches
-it passed in out of the batch's stretches, how often it and the masses beside it were
-seen there, how many samples the claim took, what the batch peak read before, and the
-samples kept with their readings.
-The ledger route and `batch_peaks.list` carry it as `water_ladder` for as long as the
-batch peak reads what the measurement left it reading. Each measurement replaces every
-one before it. A sample assigned again, and one folded in after the measurement, claims
-the rungs that passed in the stretch it was acquired in, on the sample's corrected mass
-and with the rung's isotope lines, where its own reagent pass did not; each row names the
-measurement and the stretch. A sample acquired outside every stretch the measurement read
-claims none until a measurement reads it. It runs as a batch run. Its summary gives per ionization mode and
-instrument type the stretches, how far each core's ladder reached in each, the rungs
-tested and passed, the batch peaks claimed, the samples they were claimed in, and the
-analyte rows that left the ledger. It also gives the share of the batch's signal that no
-committed reading, source role or isotope line explains, before and after.
-
-The whole ledger leaves the app as a CSV from the view menu behind the cog: *Export
-ledger (CSV)* writes one row per member peak - every sample's reading of every batch
-peak, with the batch peak's consensus beside it - and the browser downloads the file
-when it is ready. The same rows are one call away in the SDK
-(`mascope.load_batch_ledger(...)`, or `mascope.batch_peaks.members(batch_id)` per
-batch), which is the shortest way from a batch's assignment to any other format.
-
-A batch peak the source accounts for reads as the sample ledger reads it. Where more
-of its members are peaks the reagent or artifact pass claimed - the reagent's ions, the
-air's, the calibrant beam's, or an intense peak's ringing - than peaks a formula was
-assigned to, the row shows the ion in the Formula column, written with its charge, and
-the *reagent* or *artifact* chip in place of a tier; it counts under that chip in the strip above the
-ledger, after the tiers, rather than as unassigned. An ion's isotope lines fold under it
-as a compound's isotopologues do. A few samples reading the ion as a neutral - a dim
-file the claim missed, or a sample assigned by an older engine - do not outvote the rest,
-and a tie stays with the formula. The untargeted search leaves these peaks alone, as a
-run does. A batch ledger folded before the ledger learned this reads its reagent peaks
-as unassigned until its samples are folded again (*Rebuild batch ledger*).
-
-A batch that holds files of both instrument types keeps a ledger of each. An
-Orbitrap's intensities are peak heights and a TOF's are peak areas, so the two
-cannot share a trace: each instrument type's samples fold into batch peaks of their
-own, even at an m/z the other type also saw. The ledger then shows a picker above the
-tier chips, **Orbitrap** or **TOF**, and lists, counts and selects one type's batch
-peaks at a time; the batch chart draws only that type's selection. A batch opens
-on **Orbitrap** once its batch peaks load, whatever type the batch before it showed.
-Until they load, or if they fail to, the ledger keeps the batch before it, its rows,
-type and selection together. One that gains its second type while you look at it
-stays on the type of the rows you selected. Switching type
-clears the other type's rows from the selection. The chart icon on a sample ledger row
-of the other type switches the ledger to that type and says so. A batch of one
-instrument type shows no picker. A batch folded before the ledger kept the two apart
-holds mixed batch peaks until *Rebuild batch ledger* folds its samples again, which
-separates them. This is the rule batch alignment keeps too: it
-refuses a batch of two instrument types, since one alignment has one intensity unit.
-The ledger route and the SDK's `batch_peaks.list` name each batch peak's type in
-`instrument_type` (`orbi` or `tof`). So does every row of *Export ledger (CSV)* and of
-the SDK's member rows, beside `intensity_variable`, the unit of the row's
-`max_intensity` and `intensity` (`sum_peak_heights` or `sum_peak_areas`). Group by
-`instrument_type` before summing an intensity, or heights and areas add together. A
-verdict or a pin is on one batch peak, so on
-such a batch it covers one instrument type's samples: the Orbitrap and the TOF row of
-one species each take their own.
-
-The *Verdict* column, last in the ledger, records and shows a
-[batch-level verdict](#batch-level-verdicts) on the species: one judgment that covers
-every sample of the batch peak's instrument type without a verdict of its own.
-
-The rows you tick in the *Batch peaks* ledger are what the batch chart draws, one
-trace per batch peak. The ledger lists every anchor in the batch, which on a large
-batch is far more than a chart can usefully show, so a selection is capped at 300 —
-select all on a bigger ledger takes the first 300 rows and tells you so. Which 300 is
-up to you: filter the ledger first, with the tier chips or the Formula column's
-filter, and then select.
-
-One row per species, not per peak: a compound's isotopologue peaks are
-folded under its main peak and counted in the **+N** marker beside the formula, the
-same way the per-sample assignment ledger folds them. The *Isotopologues* toggle,
-behind the cog at the end of the tier-chip row, unfolds them as indented rows
-underneath. The link is derived rather than given — a
-batch peak is an m/z anchor and carries no compound of its own — so a peak is folded
-only when its per-sample assignments agree, across most of the samples that assigned
-it, that it belongs to another anchor's compound. One that is an isotopologue in one
-sample and a species in its own right in the rest stays a row of its own, unless a
-*Stamp isotopologues* run stamped it as one of the compound's diagnostic lines, or a
-*Strip isotopologue rows* run read it as one of the compound's isotope lines (above).
-
-The *Intensity* column is the highest intensity the species reaches in any sample of
-the batch, in the instrument's own unit (summed peak heights on an Orbitrap, summed
-peak areas on a TOF). It is a property of the trace rather than of the assignment, so
-unassigned anchors carry one too — sorting by it is how you find the largest thing in
-the batch that nothing was assigned to.
-
-Hover a column header for a one-line reminder of what the column holds at batch level:
-the m/z is the anchor's bin, the intensity the brightest sample's, the formula and tier a
-consensus over the members. *Listed as* is what a reference list calls the consensus
-formula, where a sample's run matched it from a list: the ledger keeps the listing of each
-identity a member brought matched from a list, through whichever channel, and shows the
-consensus formula's. It is folded to the name cut short and the list's tags, the whole
-name and its list on hover,
-as in a sample's ledger, and **Listed as, in full** in the view menu writes it out. A batch ledger folded before this column existed shows it once its
-samples are folded again (*Rebuild batch ledger*). The column also names the target
-compound a member was matched to, off the consensus as a sample's ledger does: *target*
-and its name, shown once with the list's where both name the same structure. A batch
-ledger folded before the target was recorded shows it once its samples are folded again. The column a ledger is sorted by is kept per ledger - it
-survives the switch between the *Batch peaks* ledger and a sample's ledger, and a reload.
-
-Because a batch peak is one identity for a species across the batch, the focused peak
-follows you between samples: pick another sample and the inspector and the spectrum
-stay on the same species rather than on nothing. It is the batch peak that decides
-what "the same" means here, not the nearest m/z — so a peak follows only where that
-species was actually observed. Move to a sample where it was not, and the selection
-clears the way it always did. The same is true in a batch whose batch peaks have not
-been computed yet: there is no anchor to follow, so nothing does. Picking a peak
-yourself always wins over this — it will not overwrite a choice you just made, or
-refill a selection you cleared.
-
-To see how an assignment looks in a spectrum, use the arrow beside a row's intensity: it
-opens the brightest sample that holds the batch peak, with that peak focused, in the
-*Sample* tab - the same click-through as a data point in the batch chart, without having
-to tell which trace to click when several are plotted. When an earlier run is on screen,
-the jump reads that run's members.
-
-The sample ledger reaches the batch chart too: the chart icon at the start of a row puts that species
-into the chart (it selects the batch peak the row's peak folded into, in the *Batch peaks*
-ledger) or takes it out, without leaving the sample. The chart draws at most as many species
-as the *Batch peaks* selection allows, and a peak the ledger does not hold cannot be plotted.
-And a peak focused from the batch side - the chart, the arrow beside a batch peak's intensity
-- scrolls its row into view in the sample ledger.
-
-### Ratio stability
-
---8<-- "_help/batch-continuity.md"
-
-Every effect that scales a whole spectrum - the source's strength, its drift, the
-number of scans, a dilution - scales both peaks of a related pair alike, so their
-ratio within one sample cancels it. An isotope line's ratio to its main peak is fixed
-by isotopic abundance, and a compound's ratio between two channels by the source's
-chemistry. A species that is what the ledger says therefore holds a flat ratio across
-the batch, even while its own trace swings by orders of magnitude. The ratio-stability
-pass reads that ratio for every pair of related batch peaks:
-
-- **An isotope line and its main peak.** Every isotopologue the ledger folds under a
-  main peak pairs with it; a line folded under another line pairs with the main peak
-  it is drawn under. The ledger and this pass read one owner link per line
-  (`line_owner_id` on the ledger rows): the members' own isotopologue link, else the
-  parent a stamp names, so a stamped line pairs with the main peak it is drawn under too,
-  on the formula the stamp predicted it for. A line the samples split on folds under
-  nothing and pairs with nothing.
-- **Two channels of one compound**: the pairs *Read co-variation* reads, one batch peak
-  per channel, neither of them ambiguous.
-
-Both peaks must be *assigned* or *candidate*. A sample counts for a pair where both
-peaks are in it with an intensity above zero, both read the batch peak's formula, and
-it is no blank: labelled *BLANK*, or from a file with no instrument function. A sample
-missing either peak is a gap, never a point against the formula. Over those samples,
-in acquisition order, the pass reads the natural log of the ratio:
-
-- **Its spread**: 1.4826 times the median absolute deviation, which one spiked sample
-  cannot move [Hampel 1974][ham74], [Rousseeuw and Croux 1993][rc93].
-- **Its drift**, which needs a trend and a size together. The trend is Spearman's rho
-  against the acquisition order, 0.6 or more either way [Spearman 1904][spe04]. The size
-  is the Theil-Sen slope against time [Theil 1950][the50], [Sen 1968][sen68] times the
-  pair's span, at least ln 1.5 for an isotope ratio and ln 2 for a channel ratio,
-  rising or falling.
-
-Each pair is graded in this order:
-
-| Grade | When |
-| --- | --- |
-| insufficient | fewer than 6 samples, or fewer than 5 distinct acquisition times: the segments of one file share its time |
-| drift | it drifts, and *Read co-variation* read the two channels as co-varying: the source's chemistry moved and the assignment stands |
-| unstable | it drifts with nothing saying the two traces co-vary, which an isotope ratio never has, or its spread is 0.5 or more: a ratio that jumps |
-| stable | a spread of at most 0.15 for an isotope ratio or 0.25 for a channel ratio, over 8 samples or more, the deviation above zero |
-| inconclusive | anything else |
-
-A batch peak takes its most alarming pair's grade, in that order of alarm: unstable, drift,
-stable, inconclusive, insufficient. Only a time-ordered batch is graded: an
-acquisition batch, or an analysis batch whose largest gap between acquisition times is
-at most ten times the median gap. A batch that is not keeps no grades, and its batch
-peaks say why. One pass grades up to 20,000 pairs, the best supported first, and marks
-a batch peak whose other pairs it left as partial.
-
-The grade is shown, never weighed. It says two peaks behave as one species, never
-which species, and no tier reads it. The thresholds have been read on real
-time-ordered batches and still stand, with one known blind spot: the drift test reads
-time, and most ratios that drift follow the main peak's own level instead. An isotope
-line read near the detection floor rises or falls with its main peak, and a channel
-ratio moves with the compound's amount. Where that amount trends over the batch, the
-pair grades *unstable* on a drift that says nothing of two species. Read an unstable
-isotope pair on a dim main peak with that in mind.
-
-*Rebuild batch ledger* grades the batch when it has folded the last sample, and
-`POST /api/batch-peaks/batch/{id}/recompute-continuity` grades it on request. A sample
-folding in later does not regrade the batch, because on the largest batches a pass
-costs more than the fold itself. The ledger's records carry the grade as `continuity_grade`, the
-pairs under `continuity` (each with its ratio, spread, drift and the co-variation
-reading it was graded with), and `continuity_stale` where a sample folded since, a
-curation or a re-fold has moved the batch peak. The API names each grade as the
-table does, except *unstable*, whose value there is `red`.
-
-The *Batch peaks* ledger shows the grade in its **Continuity** column, after *Samples*,
-once the pass has graded the batch. Stable, drift and unstable are drawn as a badge, in
-green, teal and amber: the colours of a reading that supports, drifted and holds back;
-inconclusive and insufficient read muted, and a batch that is not time-ordered reads
-*Not graded*, its tooltip saying why. A badge that says *partial* beside its grade is
-partial: the pass left some of the batch peak's pairs ungraded, and where it left all
-of them the badge reads *Not graded*. The pair counts it gives are of the graded pairs.
-A badge outlined in the warning colour, with the out-of-date arrows, is behind the ledger: a sample folded in since, or the consensus formula moved,
-and the next pass grades it again. Clicking the cell lists the pairs behind the grade -
-the most alarming first, up to four - each with its grade, the samples both peaks are
-in, the median ratio, its spread and its drift, and for two channels what *Read
-co-variation* said of them. An isotope line has a grade of its own, on its pair with
-the main peak, shown on its own row while the view options unfold the isotopologues.
-The column sorts unstable first, and batch peaks without a grade last. No tier, verdict or
-filter reads it.
-
-The pass is a stage after *Read co-variation* (*The batch stages*, above), so it grades a
-drift on the co-variation the same pass read, whichever step was pressed: *Read
-co-variation* runs the ratio stability after itself, and the ratio stability's own route
-starts at the ratio stability, after a co-variation reading already stands. A rebuild of
-the ledger grades the batch at its end too, before any co-variation is read again, and
-leaves the stage stale.
 
 ### Probable blends
 
@@ -3006,18 +2964,131 @@ could not be told and three that were not. With them, a fresh ten read four, two
 most of the misses were an isotope line of a brighter neighbouring peak read two ways. So
 splitting a blend into two traces still waits for a sharper test
 ([#3323](https://github.com/ultra-trace-systems/mascope/issues/3323)). Every recompute of
-a batch peak's consensus tests it: a sample folding in, *Rebuild batch ledger*, a curation.
+a batch peak's consensus tests it: a sample folding in, a pass that folds every sample, a curation.
 A batch folded before a rule changed shows the new flags after a rebuild. The ledger's
 records carry the reason as `blend`, with `formulas`, `ions`, `n`, `shares` (`minority`
 and `pair`), `axis` and each axis' reading under `intensity` and `time`; the time reading
 carries its `level_step`.
 
+### Reading the ledger
+
+The whole ledger leaves the app as a CSV from the view menu behind the cog: *Export
+ledger (CSV)* writes one row per member peak - every sample's reading of every batch
+peak, with the batch peak's consensus beside it - and the browser downloads the file
+when it is ready. The same rows are one call away in the SDK
+(`mascope.load_batch_ledger(...)`, or `mascope.batch_peaks.members(batch_id)` per
+batch), which is the shortest way from a batch's assignment to any other format.
+
+A batch peak the source accounts for reads as the sample ledger reads it. Where more
+of its members are peaks the reagent or artifact pass claimed - the reagent's ions, the
+air's, the calibrant beam's, or an intense peak's ringing - than peaks a formula was
+assigned to, the row shows the ion in the Formula column, written with its charge, and
+the *reagent* or *artifact* chip in place of a tier; it counts under that chip in the strip above the
+ledger, after the tiers, rather than as unassigned. An ion's isotope lines fold under it
+as a compound's isotopologues do. A few samples reading the ion as a neutral - a dim
+file the claim missed, or a sample assigned by an older engine - do not outvote the rest,
+and a tie stays with the formula. The untargeted search leaves these peaks alone, as a
+run does. A batch ledger folded before the ledger learned this reads its reagent peaks
+as unassigned until its samples are folded again (*Re-assign from scratch*).
+
+A batch that holds files of both instrument types keeps a ledger of each. An
+Orbitrap's intensities are peak heights and a TOF's are peak areas, so the two
+cannot share a trace: each instrument type's samples fold into batch peaks of their
+own, even at an m/z the other type also saw. The ledger then shows a picker above the
+tier chips, **Orbitrap** or **TOF**, and lists, counts and selects one type's batch
+peaks at a time; the batch chart draws only that type's selection. A batch opens
+on **Orbitrap** once its batch peaks load, whatever type the batch before it showed.
+Until they load, or if they fail to, the ledger keeps the batch before it, its rows,
+type and selection together. One that gains its second type while you look at it
+stays on the type of the rows you selected. Switching type
+clears the other type's rows from the selection. The chart icon on a sample ledger row
+of the other type switches the ledger to that type and says so. A batch of one
+instrument type shows no picker. A batch folded before the ledger kept the two apart
+holds mixed batch peaks until *Re-assign from scratch* folds its samples again, which
+separates them. This is the rule batch alignment keeps too: it
+refuses a batch of two instrument types, since one alignment has one intensity unit.
+The ledger route and the SDK's `batch_peaks.list` name each batch peak's type in
+`instrument_type` (`orbi` or `tof`). So does every row of *Export ledger (CSV)* and of
+the SDK's member rows, beside `intensity_variable`, the unit of the row's
+`max_intensity` and `intensity` (`sum_peak_heights` or `sum_peak_areas`). Group by
+`instrument_type` before summing an intensity, or heights and areas add together. A
+verdict or a pin is on one batch peak, so on
+such a batch it covers one instrument type's samples: the Orbitrap and the TOF row of
+one species each take their own.
+
+The *Verdict* column, last in the ledger, records and shows a
+[batch-level verdict](#batch-level-verdicts) on the species: one judgment that covers
+every sample of the batch peak's instrument type without a verdict of its own.
+
+The rows you tick in the *Batch peaks* ledger are what the batch chart draws, one
+trace per batch peak. The ledger lists every anchor in the batch, which on a large
+batch is far more than a chart can usefully show, so a selection is capped at 300 —
+select all on a bigger ledger takes the first 300 rows and tells you so. Which 300 is
+up to you: filter the ledger first, with the tier chips or the Formula column's
+filter, and then select.
+
+One row per species, not per peak: a compound's isotopologue peaks are
+folded under its main peak and counted in the **+N** marker beside the formula, the
+same way the per-sample assignment ledger folds them. The *Isotopologues* toggle,
+behind the cog at the end of the tier-chip row, unfolds them as indented rows
+underneath. The link is derived rather than given — a
+batch peak is an m/z anchor and carries no compound of its own — so a peak is folded
+only when its per-sample assignments agree, across most of the samples that assigned
+it, that it belongs to another anchor's compound. One that is an isotopologue in one
+sample and a species in its own right in the rest stays a row of its own, unless a
+*Stamp isotopologues* run stamped it as one of the compound's diagnostic lines, or a
+*Strip isotopologue rows* run read it as one of the compound's isotope lines
+(*Stamping isotopologues* and *Stripping isotopologue rows*, above).
+
+The *Intensity* column is the highest intensity the species reaches in any sample of
+the batch, in the instrument's own unit (summed peak heights on an Orbitrap, summed
+peak areas on a TOF). It is a property of the trace rather than of the assignment, so
+unassigned anchors carry one too — sorting by it is how you find the largest thing in
+the batch that nothing was assigned to.
+
+Hover a column header for a one-line reminder of what the column holds at batch level:
+the m/z is the anchor's bin, the intensity the brightest sample's, the formula and tier a
+consensus over the members. *Listed as* is what a reference list calls the consensus
+formula, where a sample's run matched it from a list: the ledger keeps the listing of each
+identity a member brought matched from a list, through whichever channel, and shows the
+consensus formula's. It is folded to the name cut short and the list's tags, the whole
+name and its list on hover,
+as in a sample's ledger, and **Listed as, in full** in the view menu writes it out. A batch ledger folded before this column existed shows it once its
+samples are folded again (*Re-assign from scratch*). The column also names the target
+compound a member was matched to, off the consensus as a sample's ledger does: *target*
+and its name, shown once with the list's where both name the same structure. A batch
+ledger folded before the target was recorded shows it once its samples are folded again. The column a ledger is sorted by is kept per ledger - it
+survives the switch between the *Batch peaks* ledger and a sample's ledger, and a reload.
+
+Because a batch peak is one identity for a species across the batch, the focused peak
+follows you between samples: pick another sample and the inspector and the spectrum
+stay on the same species rather than on nothing. It is the batch peak that decides
+what "the same" means here, not the nearest m/z — so a peak follows only where that
+species was actually observed. Move to a sample where it was not, and the selection
+clears the way it always did. The same is true in a batch whose batch peaks have not
+been computed yet: there is no anchor to follow, so nothing does. Picking a peak
+yourself always wins over this — it will not overwrite a choice you just made, or
+refill a selection you cleared.
+
+To see how an assignment looks in a spectrum, use the arrow beside a row's intensity: it
+opens the brightest sample that holds the batch peak, with that peak focused, in the
+*Sample* tab - the same click-through as a data point in the batch chart, without having
+to tell which trace to click when several are plotted. When an earlier run is on screen,
+the jump reads that run's members.
+
+The sample ledger reaches the batch chart too: the chart icon at the start of a row puts that species
+into the chart (it selects the batch peak the row's peak folded into, in the *Batch peaks*
+ledger) or takes it out, without leaving the sample. The chart draws at most as many species
+as the *Batch peaks* selection allows, and a peak the ledger does not hold cannot be plotted.
+And a peak focused from the batch side - the chart, the arrow beside a batch peak's intensity
+- scrolls its row into view in the sample ledger.
+
 ### Batch runs
 
 --8<-- "_help/batch-runs.md"
 
-The run selector beside *Rebuild batch ledger* lists the batch's runs newest first, each
-with what it did. A run is a pass of the batch stages, with every stage it ran inside it
+**Run history**, in *Assign batch*'s menu, opens the run selector. It lists the batch's
+runs newest first, each with what it did. A run is a pass of the batch stages, with every stage it ran inside it
 (*A pass is one batch run*, above), a rebuild or an import. The newest five runs before
 the current one are kept, so the history holds the last passes, not the clicks of one.
 The current run is the live ledger; picking an earlier one shows the *Batch peaks* ledger
