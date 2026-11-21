@@ -192,6 +192,13 @@ ENVELOPE_TOLERANCE_KEY = "envelope_tolerance"
 #: different results, and nothing else on the row would ever say which happened.
 SEARCH_SCOPE_KEY = "search_scope"
 
+#: Key under which a run records what it read of its sample's batch decisions
+#: (``batch_decisions.BatchDecisions.record``): the version and state of every
+#: batch stage whose records it read, how many records of each it read and at
+#: which versions, and what they did to its rows. A run that read an older
+#: decision than the batch now holds is told apart by it (MAS-985, MAS-1013).
+BATCH_DECISIONS_KEY = "batch_decisions"
+
 #: Key under which a run records what its fragment claim took
 #: (``reagent_pass.claim_fragments``): the ladders its profile names, the parents
 #: it found committed, the peaks it read as their fragments and those it left,

@@ -28,6 +28,12 @@ model comes from, and it runs every stage from its start to the end
 (:func:`run_stages`). Where it keeps what it judged is the caller's
 (:attr:`RunContext.keep`).
 
+What the sample's batch decided about it is a declared input of the list:
+read once, in the resolve stage (``batch_decisions.read_batch_decisions``),
+each kind entering at the stage that decides what it decides, and read by a
+decoy arm only where the arm claims what its control claims
+(:data:`BATCH_INPUTS`). A run records the versions it read (MAS-985).
+
 Design: ``docs/dev/assignment_quality_plan.md``, milestone 7 (MAS-974,
 finding 1).
 """
@@ -36,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -52,8 +59,18 @@ from mascope_backend.api.new.ionization.modes.versions import (
 )
 from mascope_backend.api.new.match.params import default_match_params
 from mascope_backend.api.new.peak_assignments import service
-from mascope_backend.api.new.peak_assignments.batch_known_species import (
-    batch_species_for,
+from mascope_backend.api.new.peak_assignments.batch_decisions import (
+    KIND_ISOTOPOLOGUE_STRIP,
+    KIND_KNOWN_SPECIES,
+    KIND_LISTED_COMPOUND,
+    KIND_SERIES,
+    KIND_WATER_RUNG,
+    BatchDecisions,
+    ListedDecision,
+    cite_listed,
+    elect_listed,
+    read_batch_decisions,
+    read_strips,
 )
 from mascope_backend.api.new.peak_assignments.config import (
     MAX_UNTARGETED_PEAKS_CEILING,
@@ -108,6 +125,8 @@ from mascope_backend.api.new.peak_assignments.profiles import (
     with_fitted_window,
 )
 from mascope_backend.api.new.peak_assignments.reagent_pass import (
+    REASON_BATCH_KNOWN_SPECIES,
+    REASON_BATCH_WATER_LADDER,
     FragmentClaims,
     fragment_ladders_for,
 )
@@ -282,6 +301,63 @@ PATHS: tuple[AssignmentPath, ...] = (
 )
 
 
+@dataclass(frozen=True)
+class BatchInput:
+    """A kind of batch decision a pass reads (``batch_decisions``).
+
+    :param kind: The kind (``batch_decisions.KINDS``).
+    :param stage: The stage it enters at: the one that decides what the
+        decision decides.
+    :param decoy: Whether a decoy arm reads it. A source ion and a listed
+        compound are claimed by an arm as its control claims them; a strip and
+        a series are the control's chemistry, and an arm's own lines decide.
+    """
+
+    kind: str
+    stage: Stage
+    decoy: bool
+
+
+#: What a pass reads of its batch's decisions, the stage each enters at, and
+#: what a decoy arm does with it.
+BATCH_INPUTS: tuple[BatchInput, ...] = (
+    # A library ion the batch decided present: claimed as the source's.
+    BatchInput(KIND_KNOWN_SPECIES, Stage.CLAIM, decoy=True),
+    # A rung the water ladder passed in the sample's segment: claimed so too.
+    BatchInput(KIND_WATER_RUNG, Stage.CLAIM, decoy=True),
+    # A listed compound decided present: proposed at candidate, citing it.
+    BatchInput(KIND_LISTED_COMPOUND, Stage.PROPOSE, decoy=True),
+    # A stripped row: read as the parent's line, which the judging reads.
+    BatchInput(KIND_ISOTOPOLOGUE_STRIP, Stage.JUDGE, decoy=False),
+    # A series: stamped on its reading, a second observation of it
+    # (``tiering.series_anchor``).
+    BatchInput(KIND_SERIES, Stage.JUDGE, decoy=False),
+)
+
+
+def batch_kinds(path: AssignmentPath, *, decoy: bool) -> frozenset[str]:
+    """The kinds of batch decision a pass reads: each one whose stage the path
+    runs as a run runs it, and on a decoy arm only those an arm reads.
+
+    Every path claims the source's peaks. A listed compound is proposed only
+    where the propose stage proposes the known set, which it stands beside;
+    the inputs the judging reads, only where the judging asks a run's rules.
+    """
+    kinds = set()
+    for one in BATCH_INPUTS:
+        if decoy and not one.decoy:
+            continue
+        if one.stage is Stage.PROPOSE and path.proposal not in (
+            Proposal.KNOWN_AND_SEARCH,
+            Proposal.KNOWN,
+        ):
+            continue
+        if one.stage is Stage.JUDGE and path.rules is not Rules.RUN:
+            continue
+        kinds.add(one.kind)
+    return frozenset(kinds)
+
+
 @dataclass
 class SearchProposal:
     """What the formula search proposed, for the stages after it.
@@ -394,6 +470,9 @@ class RunContext:
     #: The stages run so far, in order, a round's once per round.
     ran: list[Stage] = field(default_factory=list)
     # -- resolve
+    #: What the sample's batch decided about it, read once
+    #: (:data:`BATCH_INPUTS`).
+    batch: BatchDecisions = field(default_factory=BatchDecisions)
     match_params: Any = None
     peaks_df: pd.DataFrame | None = None
     ionization_setup: dict | None = None
@@ -427,6 +506,9 @@ class RunContext:
     line_gate: Any = None
     search: SearchProposal | None = None
     seeds: set[tuple[str, str]] = field(default_factory=set)
+    #: The listed compounds the batch decided present, proposed for their
+    #: peaks beside the known set's readings, by the sample's peak.
+    decided: dict[str, ListedDecision] = field(default_factory=dict)
     # -- score
     seeded: Any = None
     unsearched: int = 0
@@ -437,6 +519,11 @@ class RunContext:
     # -- elect
     stage_b: list[dict] = field(default_factory=list)
     same_ion_families: int = 0
+    #: What became of each listed compound the batch decided present, by its
+    #: peak (``batch_decisions.elect_listed``).
+    listed_outcomes: dict[str, str] = field(default_factory=dict)
+    #: What the batch's decisions did to the rows, by kind and outcome.
+    batch_applied: dict = field(default_factory=dict)
     # -- refit, judge, cap
     lines: SpectrumLines | None = None
     judging: service.Judging | None = None
@@ -477,7 +564,9 @@ async def resolve(ctx: RunContext) -> None:
     names, and the secondary channels its spectrum opens. A decoy that swaps
     adducts swaps them here, after the chemistry is resolved through the mode's
     own. A run records the resolution on its run before any stage after this
-    one, so a run that fails still says what it would have searched.
+    one, so a run that fails still says what it would have searched. What the
+    sample's batch decided about it is read here, once, with the versions of
+    the stages that wrote it (:attr:`RunContext.batch`).
     """
     sample = ctx.sample
     if ctx.match_params is None:
@@ -541,6 +630,14 @@ async def resolve(ctx: RunContext) -> None:
                 f"{own} as {wrong or 'nothing'}" for own, wrong in plan.swapped.items()
             )
         )
+    # What the batch decided about the sample, read once for every stage after
+    # this one: the kinds this pass's stages read (:data:`BATCH_INPUTS`), the
+    # rungs against the ladders of the profile the sample resolved to.
+    ctx.batch = await read_batch_decisions(
+        sample,
+        profile=ctx.resolved_profile.profile.name,
+        kinds=batch_kinds(ctx.path, decoy=plan is not None),
+    )
     if ctx.resolved_profile.unavailable_channels:
         # Once per pass, and only for a channel the sample actually shows: an
         # operator can act on this by adding the mechanism.
@@ -556,6 +653,7 @@ async def resolve(ctx: RunContext) -> None:
             ctx.resolved_profile,
             ionization_setup=ctx.ionization_setup,
             decoy_arm=None if plan is None else plan.record(),
+            batch_decisions=ctx.batch.record(),
         )
     # The mechanisms a sample's channels are searched and read through: Stage A
     # reads the reference lists through them, the search enumerates through
@@ -610,8 +708,10 @@ async def claim(ctx: RunContext) -> None:
     sample chemistry, so they are claimed here and taken out of what any later
     stage may propose. Ordering is the whole mechanism: nothing downstream is
     offered the peak, so nothing can overwrite it. The library ions the
-    sample's batch decided present (step 4.2h) are claimed on the batch's
-    word where the file's own claim does not take them.
+    sample's batch decided present (step 4.2h), and the rungs its water
+    ladder passed in the sample's acquisition segment (step 4.2j), are
+    claimed on the batch's word where the file's own claim does not take
+    them, each row naming the decision.
 
     Then the artifact pre-pass on the same footing: ringing around a very
     intense centroid is the detector's answer to a neighbour, not a species.
@@ -629,8 +729,17 @@ async def claim(ctx: RunContext) -> None:
         resolution=ctx.resolution,
         own_mechanisms=ctx.own_mechanisms,
         sample_name=sample.sample_item_name,
-        batch_species=await batch_species_for(sample),
+        batch_species=ctx.batch.source_ions(),
     )
+    batch_claims = Counter(
+        row["provenance"]["reagent"]["reason"]
+        for row in ctx.reagent_rows
+        if not row.get("owner_peak_assignment_id")
+        and (row.get("provenance") or {}).get("reagent", {}).get("reason")
+        in (REASON_BATCH_KNOWN_SPECIES, REASON_BATCH_WATER_LADDER)
+    )
+    if batch_claims:
+        ctx.batch_applied["claimed"] = dict(sorted(batch_claims.items()))
     if ctx.reagent_rows:
         runtime.logger.info(
             f"Reagent pre-pass claimed {len(ctx.reagent_rows)} of "
@@ -660,11 +769,17 @@ async def propose(ctx: RunContext) -> None:
 
     The known set, then the search where the config asks for it: what the
     search enumerates is what the known set left, and the measurement it ranks
-    at is the one the known set's lines fitted.
+    at is the one the known set's lines fitted. Beside the known set, each
+    listed compound the sample's batch decided present is proposed for its
+    peak (:attr:`RunContext.decided`).
     """
     proposal = ctx.path.proposal
     if proposal in (Proposal.KNOWN_AND_SEARCH, Proposal.KNOWN):
         await _propose_known_set(ctx)
+        # Beside the known set: each listed compound the batch decided present,
+        # for its peak, which the elect stage elects as the batch's own claim
+        # takes a member (``batch_decisions.elect_listed``).
+        ctx.decided = dict(ctx.batch.listed)
     if proposal is Proposal.KNOWN_AND_SEARCH and ctx.config.run_untargeted:
         await _propose_by_search(ctx)
     if proposal is Proposal.SEARCH:
@@ -1184,6 +1299,15 @@ async def elect(ctx: RunContext) -> None:
       observation (step 4.1), the detection's own measurement of it included
       (:attr:`RunContext.series_by_peak`). Not on a decoy arm: the batch
       ledger is the control's chemistry, not the arm's.
+
+    The batch's decisions enter here as :data:`BATCH_INPUTS` says. Before
+    any of the above, each listed compound the batch decided present is
+    elected on its peak as the batch's own claim takes a member
+    (``batch_decisions.elect_listed``). After the same-ion readings, and
+    before the series' records, each row the batch stripped as a parent's
+    isotope line is read as that line (``batch_decisions.read_strips``): the
+    judging then reads the line, and the series, as the batch decided them,
+    and its fragment claim reads the ledger the strips left.
     """
     sample = ctx.sample
     config = ctx.config
@@ -1270,20 +1394,75 @@ async def elect(ctx: RunContext) -> None:
                 f"lost it to one ({held} held by the search) "
                 f"({time.perf_counter() - search.started:.1f} s)"
             )
+    if ctx.decided:
+        _elect_batch_listed(ctx)
     ctx.same_ion_families = service._record_same_ion_readings(
         ctx.stage_a,
         searched_mechanisms=ctx.searched_mechanisms,
         resolved_profile=ctx.resolved_profile,
         max_alternatives=config.max_alternatives,
     )
+    if ctx.batch.strips:
+        _read_batch_strips(ctx)
+    # A decoy arm reads no series of the batch's (:data:`BATCH_INPUTS`), and
+    # stamps none of its own.
     if ctx.decoy_plan is None:
         service.stamp_series(
-            ctx.stage_a + ctx.stage_b,
-            {
-                **await service.batch_series_by_peak(sample.sample_item_id),
-                **ctx.series_by_peak,
-            },
+            ctx.stage_a + ctx.stage_b, {**ctx.batch.series, **ctx.series_by_peak}
         )
+
+
+def _elect_batch_listed(ctx: RunContext) -> None:
+    """The listed compounds the batch decided present, elected on their peaks
+    (``batch_decisions.elect_listed``), measured on the axis as stored: a
+    decoy arm claims what its control claims."""
+    source = service._source_axis(ctx.peaks_df)
+    ctx.stage_a, ctx.stage_b, ctx.listed_outcomes = elect_listed(
+        ctx.stage_a,
+        ctx.stage_b,
+        ctx.decided,
+        claimed_peak_ids=ctx.claimed_peak_ids,
+        peaks=ctx.peaks_df,
+        source_mz=dict(
+            zip(
+                source["sample_peak_id"].astype(str),
+                source["mz"].astype(float),
+                strict=True,
+            )
+        ),
+        sample_item_id=ctx.sample.sample_item_id,
+        run_id=ctx.run_id,
+    )
+    outcomes = Counter(ctx.listed_outcomes.values())
+    ctx.batch_applied["listed"] = dict(sorted(outcomes.items()))
+    runtime.logger.info(
+        f"Sample '{ctx.sample.sample_item_name}' read {len(ctx.decided)} listed "
+        "compounds its batch decided present: "
+        + ", ".join(f"{count} {why}" for why, count in sorted(outcomes.items()))
+    )
+
+
+def _read_batch_strips(ctx: RunContext) -> None:
+    """The rows the batch stripped as a parent's isotope line, read as that
+    line on the elected rows (``batch_decisions.read_strips``), before the
+    judging reads the ledger: no peak the claim stage took is read so. A line
+    read off a peak no stage read joins Stage A's rows."""
+    elected = len(ctx.stage_a) + len(ctx.stage_b)
+    rows, outcomes = read_strips(
+        ctx.stage_a + ctx.stage_b,
+        ctx.batch.strips,
+        claimed_peak_ids=ctx.claimed_peak_ids,
+        peaks=ctx.peaks_df,
+        sample_item_id=ctx.sample.sample_item_id,
+        run_id=ctx.run_id,
+    )
+    ctx.stage_a = [*ctx.stage_a, *rows[elected:]]
+    ctx.batch_applied["strips"] = dict(sorted(outcomes.items()))
+    runtime.logger.info(
+        f"Sample '{ctx.sample.sample_item_name}' read {len(ctx.batch.strips)} rows "
+        "its batch stripped as a parent's isotope line: "
+        + ", ".join(f"{count} {why}" for why, count in sorted(outcomes.items()))
+    )
 
 
 def _read_as_a_run_reads(
@@ -1467,12 +1646,15 @@ async def cap(ctx: RunContext) -> None:
     ctx.judged = judging.result()
     ctx.fragments = ctx.judged.fragments
     service._log_fragments(ctx.fragments, ctx.sample.sample_item_name)
+    # The judging rewrote every row's tier reasons; a row elected on the
+    # batch's decision names it again among them.
+    cite_listed(ctx.judged.rows, ctx.decided, ctx.listed_outcomes)
     # Counted on the judged ledger, not at the stamp (``elect``): a row the
     # fragment claim took leaves the ledger with its record.
-    ctx.tiering = {
-        **ctx.judged.tiering,
-        "series_anchored": service.series_anchored(ctx.judged.rows),
-    }
+    anchored = service.series_anchored(ctx.judged.rows)
+    if anchored:
+        ctx.batch_applied["series"] = anchored
+    ctx.tiering = {**ctx.judged.tiering, "series_anchored": anchored}
     _report_judging(ctx)
 
 
@@ -1799,6 +1981,7 @@ async def keep_run(ctx: RunContext) -> dict:
         ctx.ionization_setup,
         ctx.envelope.record(),
         None if plan is None else plan.record(),
+        ctx.batch.record(ctx.batch_applied),
     )
     await ctx.progress(0.8)
     all_assignments, committed_rows, unassigned_assignments = ledger_rows(ctx)

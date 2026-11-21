@@ -631,6 +631,9 @@ def row_record(
         "label": isotopologue.label,
         "line_ion_formula": line_ion_formula,
         "ratio": round(isotopologue.ratio, 6),
+        # Where the line sits above the parent's monoisotopic line, which a
+        # sample's run reads the row's peak against (``batch_decisions``).
+        "mz_offset": round(isotopologue.mz_offset, 6),
         "mz": round(pair.line.mz, 6),
         "centre": round(pair.row.centre, 6),
         "distance_ppm": round(pair.distance_ppm, 3),

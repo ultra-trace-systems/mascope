@@ -1,0 +1,919 @@
+"""The batch's decisions a sample's run reads (``batch_decisions.py``, MAS-985).
+
+The pure parts: where a rung's record places a sample, what each record
+decides for it, what the run records of what it read, and how a listed
+compound and a strip are read on the run's rows as the batch's own claims
+read a member. The stage list's side: which decisions each path reads, the
+stage each enters at, and that the elect stage reads them in that order. The
+reads over a real ledger are the integration suites' (the water ladder's,
+the known species', the strip's).
+"""
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import pandas as pd
+import pytest
+
+from mascope_backend.api.new.peak_assignments import batch_decisions, pipeline
+from mascope_backend.api.new.peak_assignments.batch_decisions import (
+    KIND_ISOTOPOLOGUE_STRIP,
+    KIND_KNOWN_SPECIES,
+    KIND_LISTED_COMPOUND,
+    KIND_SERIES,
+    KIND_WATER_RUNG,
+    KINDS,
+    LISTED_ELECTED,
+    LISTED_LIFTED,
+    STRIP_KEPT_CARRIES_LINES,
+    STRIP_KEPT_CLAIMED,
+    STRIP_KEPT_PARENT,
+    STRIP_READ,
+    BatchDecisions,
+    ListedDecision,
+    StripDecision,
+    cite_listed,
+    elect_listed,
+    listed_decision,
+    listed_from,
+    read_strips,
+    rung_from,
+    segment_of,
+    strip_from,
+)
+from mascope_backend.api.new.peak_assignments.batch_known_species import (
+    ALREADY,
+    KEPT_CARRIES_LINES,
+    KEPT_CLAIMED_OTHERWISE,
+    KEPT_LINE_OF_ANOTHER,
+    KEPT_TARGET_LIBRARY,
+)
+from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+from mascope_backend.api.new.peak_assignments.reagent_pass import (
+    REASON_BATCH_KNOWN_SPECIES,
+    REASON_BATCH_WATER_LADDER,
+    BatchSpecies,
+)
+from mascope_backend.api.new.peak_assignments.service import BatchLine
+from mascope_tools.composition.reagents import ReagentCluster, ion_mz, water_ladders
+
+
+BROMIDE = water_ladders("BR")[0]
+LADDERS = {BROMIDE.core.label: BROMIDE}
+
+
+def _rung_record(**extra) -> dict:
+    """A water-ladder record of Br-.(H2O)4's monoisotopic line, passed in the
+    second of two segments: seconds 0-100 and 500-600."""
+    return {
+        "rung": {
+            "core": BROMIDE.core.label,
+            "waters": 4,
+            "track": "M0",
+            "ion_formula": BROMIDE.rung(4).formula + "-",
+        },
+        "segments": [
+            {"segment": 0, "start": 0.0, "end": 100.0, "presence": 0.2},
+            {
+                "segment": 1,
+                "start": 500.0,
+                "end": 600.0,
+                "presence": 0.9,
+                "decoy_presence": 0.1,
+            },
+        ],
+        "passed_in": [1],
+        "claimed_samples": ["claimed"],
+        "held": None,
+        "batch_peak_run_id": "run-1",
+        "version": 3,
+        **extra,
+    }
+
+
+class TestTheSegmentASampleIsIn:
+    @pytest.mark.parametrize("acquired", [500.0, 550.0, 600.0])
+    def test_a_sample_acquired_inside_a_passing_segment_is_in_it(self, acquired):
+        placed, entry = segment_of(_rung_record(), "s", acquired)
+        assert placed is True
+        assert entry["segment"] == 1
+
+    @pytest.mark.parametrize(
+        "acquired",
+        [
+            50.0,  # in a segment the rung did not pass in
+            300.0,  # in the gap between two
+            700.0,  # after the last
+            -10.0,  # before the first
+            None,  # at no time
+        ],
+    )
+    def test_a_sample_anywhere_else_is_in_none(self, acquired):
+        assert segment_of(_rung_record(), "s", acquired) == (False, None)
+
+    def test_a_sample_the_ladder_claimed_is_in_one(self):
+        # The untimed segment's samples, and those of a record from before
+        # the records kept a segment's times.
+        assert segment_of(_rung_record(), "claimed", None) == (True, None)
+        old = _rung_record()
+        for entry in old["segments"]:
+            del entry["start"], entry["end"]
+        assert segment_of(old, "claimed", 550.0) == (True, None)
+        assert segment_of(old, "s", 550.0) == (False, None)
+
+
+class TestARungForASample:
+    def test_a_rung_its_segment_passed_is_claimed_on_the_ladders_word(self):
+        one = rung_from(_rung_record(), "bp-4", "s", 550.0, LADDERS)
+
+        assert one.cluster == BROMIDE.rung(4)
+        assert one.reason == REASON_BATCH_WATER_LADDER
+        assert one.record == {
+            "batch_peak_id": "bp-4",
+            "core": BROMIDE.core.label,
+            "waters": 4,
+            "track": "M0",
+            "segment": 1,
+            "presence": 0.9,
+            "decoy_presence": 0.1,
+            "references": one.record["references"],
+            "batch_peak_run_id": "run-1",
+            "version": 3,
+        }
+        assert one.record["references"]
+
+    @pytest.mark.parametrize(
+        "record, acquired",
+        [
+            (_rung_record(held="curated"), 550.0),
+            (_rung_record(rung={**_rung_record()["rung"], "track": "81Br"}), 550.0),
+            (_rung_record(rung={**_rung_record()["rung"], "core": "[I]-"}), 550.0),
+            (_rung_record(rung={**_rung_record()["rung"], "waters": 99}), 550.0),
+            (_rung_record(), 700.0),
+        ],
+        ids=["held", "heavier track", "no such core", "past the ladder", "outside"],
+    )
+    def test_no_rung_is_claimed_otherwise(self, record, acquired):
+        assert rung_from(record, "bp-4", "s", acquired, LADDERS) is None
+
+
+def _species(formula: str, charge: int = -1, **record) -> BatchSpecies:
+    return BatchSpecies(ReagentCluster(formula, charge, formula, "cluster"), record)
+
+
+class TestWhatARunReadsAndRecords:
+    def test_a_known_species_speaks_for_its_ion_before_a_rung(self):
+        species = _species("BrH2O", version=2)
+        rung = _species("BrH2O", reason=REASON_BATCH_WATER_LADDER)
+        other = _species("BrH4O2")
+        decisions = BatchDecisions(
+            sample_batch_id="b", species=(species,), rungs=(rung, other)
+        )
+        assert decisions.source_ions() == [species, other]
+
+    def test_the_run_records_each_stage_it_read_and_the_versions(self):
+        listed = ListedDecision("p", None, {}, {"version": 2})
+        strip = StripDecision(
+            "x", "p", "C", "m", BatchLine("13C", 1.0, 0.1, "bx", "bp", {}, version=5)
+        )
+        decisions = BatchDecisions(
+            sample_batch_id="b",
+            kinds=frozenset(KINDS),
+            stages={
+                "known_species": {"version": 2, "state": "current"},
+                "isotope_lines": {"version": 5, "state": "stale"},
+                "series": {"version": 4, "state": "current"},
+            },
+            species=(_species("A", version=2),),
+            listed={"p": listed},
+            strips={"x": strip},
+            series={"p1": {"version": 4}, "p2": {"version": None}},
+        )
+
+        record = decisions.record({"strips": {"read": 1}})
+
+        assert record == {
+            "stages": {
+                "known_species": {
+                    "version": 2,
+                    "state": "current",
+                    "records": 2,
+                    "record_versions": [2],
+                },
+                "water_ladders": {
+                    "version": 0,
+                    "state": "not_run",
+                    "records": 0,
+                    "record_versions": [],
+                },
+                "isotope_lines": {
+                    "version": 5,
+                    "state": "stale",
+                    "records": 1,
+                    "record_versions": [5],
+                },
+                "series": {
+                    "version": 4,
+                    "state": "current",
+                    "records": 2,
+                    "record_versions": [4, None],
+                },
+            },
+            "applied": {"strips": {"read": 1}},
+        }
+
+    def test_a_decoy_records_only_what_it_read(self):
+        decisions = BatchDecisions(
+            sample_batch_id="b",
+            kinds=pipeline.batch_kinds(pipeline.DECOY, decoy=True),
+        )
+        assert set(decisions.record()["stages"]) == {"known_species", "water_ladders"}
+
+    def test_a_sample_in_no_batch_records_nothing(self):
+        assert BatchDecisions(kinds=frozenset(KINDS)).record() is None
+
+
+D4, D4_ION, OTHER = "C8H24O4Si4", "C8H25O4Si4+", "C9H24N2O4Si3"
+
+
+def _listed_record(**extra) -> dict:
+    return {
+        "species": {
+            "kind": "listed",
+            "formula": D4,
+            "ion_formula": D4_ION,
+            "ionization_mechanism_id": "m-h",
+            "listing": {"tags": ["background"]},
+        },
+        "verdict": "present",
+        "held": None,
+        "files": 6,
+        "present": 5,
+        "test_held": 2,
+        "batch_peak_run_id": "run-1",
+        "version": 4,
+        **extra,
+    }
+
+
+ANCHOR = SimpleNamespace(
+    batch_peak_id="bp-d",
+    candidates=[
+        {
+            "formula": D4,
+            "ion_formula": D4_ION,
+            "ionization_mechanism_id": "m-h",
+            "source": "database",
+            "target_compound_id": "tc-1",
+        }
+    ],
+)
+
+
+class TestAListedCompoundForASample:
+    def test_a_listed_compound_decided_present_is_read_with_its_registry(self):
+        one = listed_from(ANCHOR, "p", _listed_record())
+
+        assert one.sample_peak_id == "p"
+        assert (one.species.formula, one.species.ion_formula) == (D4, D4_ION)
+        assert one.species.ionization_mechanism_id == "m-h"
+        assert one.exemplar["source"] == "database"
+        assert one.exemplar["target_compound_id"] == "tc-1"
+        assert one.exemplar["sample_peak_mz"] == pytest.approx(ion_mz("C8H25O4Si4", 1))
+        assert one.record == {
+            "batch_peak_id": "bp-d",
+            "verdict": "present",
+            "files": 6,
+            "present": 5,
+            "test_held": 2,
+            "batch_peak_run_id": "run-1",
+            "version": 4,
+        }
+
+    @pytest.mark.parametrize(
+        "record",
+        [
+            _listed_record(verdict="absent"),
+            _listed_record(held="vote_holds"),
+            _listed_record(species={"kind": "library", "ion_formula": "Br-"}),
+        ],
+        ids=["absent", "held", "a library ion"],
+    )
+    def test_no_other_record_proposes_a_compound(self, record):
+        assert listed_from(ANCHOR, "p", record) is None
+
+
+STRIP_RECORD = {
+    "batch_peak_id": "bp-p",
+    "formula": "C10H16O4",
+    "ionization_mechanism_id": "m",
+    "label": "13C",
+    "ratio": 0.11,
+    "mz_offset": 1.00336,
+    "mz": 200.101,
+    "spectra": 6,
+    "median_factor": 1.0,
+    "above": 0,
+    "verdict": "held",
+    "batch_peak_run_id": "run-2",
+    "version": 7,
+}
+
+
+class TestAStripForASample:
+    def test_a_strip_reads_the_sample_s_two_peaks(self):
+        one = strip_from(
+            SimpleNamespace(batch_peak_id="bp-x"), "x", STRIP_RECORD, "p", 199.0
+        )
+
+        assert (one.sample_peak_id, one.parent_peak_id) == ("x", "p")
+        assert (one.formula, one.ionization_mechanism_id) == ("C10H16O4", "m")
+        assert one.line == BatchLine(
+            label="13C",
+            mz_offset=1.00336,
+            share=0.11,
+            batch_peak_id="bp-x",
+            parent_batch_peak_id="bp-p",
+            reading={"spectra": 6, "median_factor": 1.0, "above": 0, "verdict": "held"},
+            batch_peak_run_id="run-2",
+            version=7,
+        )
+
+    def test_a_record_without_the_offset_reads_it_off_the_parent(self):
+        old = {k: v for k, v in STRIP_RECORD.items() if k != "mz_offset"}
+        one = strip_from(SimpleNamespace(batch_peak_id="bp-x"), "x", old, "p", 199.0)
+        assert one.line.mz_offset == pytest.approx(1.101)
+        no_mz = {k: v for k, v in old.items() if k != "mz"}
+        assert (
+            strip_from(SimpleNamespace(batch_peak_id="bp-x"), "x", no_mz, "p", 1.0)
+            is None
+        )
+
+    def test_a_sample_without_the_parent_reads_none(self):
+        assert (
+            strip_from(
+                SimpleNamespace(batch_peak_id="bp-x"), "x", STRIP_RECORD, None, None
+            )
+            is None
+        )
+
+
+def _row(peak, formula=None, *, row_id=None, role="M0", tier="assigned", **extra):
+    return {
+        "peak_assignment_id": row_id or f"id-{peak}",
+        "peak_assignment_run_id": "run",
+        "sample_item_id": "s",
+        "sample_peak_id": peak,
+        "sample_peak_mz": 297.08246,
+        "sample_peak_intensity": 1e5,
+        "role": role,
+        "assigned_formula": formula,
+        "ion_formula": None if formula is None else f"{formula}+",
+        "ionization_mechanism_id": "m-h",
+        "isotope_label": None,
+        "source": "untargeted",
+        "fit_score": 0.8,
+        "tier": tier,
+        "target_compound_id": None,
+        "owner_peak_assignment_id": None,
+        "alternatives": None,
+        "provenance": {"evidence": 0.8},
+        **extra,
+    }
+
+
+DECIDED = listed_from(ANCHOR, "d", _listed_record())
+
+
+class TestWhatBecomesOfAListedCompound:
+    @pytest.mark.parametrize(
+        "rows, claimed, owners, expected",
+        [
+            ([_row("d", D4, tier="candidate")], False, set(), ALREADY),
+            (
+                [
+                    _row(
+                        "d",
+                        D4,
+                        tier="below_assignability",
+                        source="database",
+                        target_compound_id="tc-9",
+                    )
+                ],
+                False,
+                set(),
+                KEPT_TARGET_LIBRARY,
+            ),
+            (
+                [_row("d", OTHER, role="iso_child", owner_peak_assignment_id="id-q")],
+                False,
+                set(),
+                KEPT_LINE_OF_ANOTHER,
+            ),
+            ([], True, set(), KEPT_CLAIMED_OTHERWISE),
+            ([_row("d", OTHER)], False, {"id-d"}, KEPT_CARRIES_LINES),
+            (
+                [_row("d", D4, tier="below_assignability")],
+                False,
+                {"id-d"},
+                LISTED_LIFTED,
+            ),
+            ([_row("d", OTHER)], False, set(), None),
+            ([], False, set(), None),
+        ],
+        ids=[
+            "committed on its own",
+            "the target library's",
+            "another's line",
+            "claimed",
+            "another formula with its lines",
+            "its own reading below candidate",
+            "another formula",
+            "unread",
+        ],
+    )
+    def test_as_the_batch_s_claim_decides_a_member(
+        self, rows, claimed, owners, expected
+    ):
+        assert (
+            listed_decision(DECIDED, rows, claimed=claimed, owners=owners) == expected
+        )
+
+
+PEAKS = pd.DataFrame(
+    {"sample_peak_id": ["d", "e"], "mz": [297.08246, 310.0], "intensity": [1e5, 2e4]}
+)
+
+
+def _elect(stage_a, stage_b, *, decided=None, source_mz=None, claimed=frozenset()):
+    return elect_listed(
+        stage_a,
+        stage_b,
+        {"d": DECIDED} if decided is None else decided,
+        claimed_peak_ids=set(claimed),
+        peaks=PEAKS,
+        source_mz=source_mz or {},
+        sample_item_id="s",
+        run_id="run",
+    )
+
+
+class TestTheListedCompoundElected:
+    def test_another_reading_is_displaced_by_the_list_s_at_candidate(self):
+        searched = _row("d", OTHER)
+        kept = _row("e", "C9H10O5")
+
+        stage_a, stage_b, outcomes = _elect([], [searched, kept])
+
+        assert outcomes == {"d": LISTED_ELECTED}
+        # Elected as a list's row, among Stage A's.
+        assert stage_a == [searched] and stage_b == [kept]
+        assert searched["peak_assignment_id"] == "id-d"
+        assert (searched["assigned_formula"], searched["ion_formula"]) == (D4, D4_ION)
+        assert searched["ionization_mechanism_id"] == "m-h"
+        assert searched["source"] == "database"
+        assert searched["target_compound_id"] == "tc-1"
+        assert (searched["tier"], searched["fit_score"]) == ("candidate", None)
+        assert searched["alternatives"][0]["assigned_formula"] == OTHER
+        cited = searched["provenance"][REASON_BATCH_KNOWN_SPECIES]
+        assert cited["batch_peak_id"] == "bp-d" and cited["version"] == 4
+        assert cited["read_as"]["formula"] == OTHER
+
+    def test_a_peak_no_stage_read_takes_the_reading_too(self):
+        stage_a, _, outcomes = _elect([], [])
+
+        assert outcomes == {"d": LISTED_ELECTED}
+        [row] = stage_a
+        assert (row["sample_peak_id"], row["assigned_formula"]) == ("d", D4)
+        assert (row["sample_item_id"], row["peak_assignment_run_id"]) == ("s", "run")
+        assert row["sample_peak_intensity"] == 1e5
+        assert row["peak_assignment_id"]
+
+    def test_it_is_measured_on_the_axis_as_stored(self):
+        # A decoy's shifted axis moves no batch decision: the error is read off
+        # the peak where the source put it, which a control reads it at.
+        exact = ion_mz("C8H25O4Si4", 1)
+        stage_a, _, _ = _elect(
+            [], [_row("d", OTHER)], source_mz={"d": exact * (1 + 2e-6)}
+        )
+        assert stage_a[0]["mz_error_ppm"] == pytest.approx(2.0, abs=1e-3)
+        assert stage_a[0]["sample_peak_mz"] == 297.08246
+
+    def test_its_own_reading_below_candidate_is_lifted_and_keeps_its_fit(self):
+        own = _row("d", D4, tier="below_assignability", source="database")
+        line = _row("d13", D4, role="iso_child", owner_peak_assignment_id="id-d")
+
+        stage_a, _, outcomes = _elect([own, line], [])
+
+        assert outcomes == {"d": LISTED_LIFTED}
+        assert stage_a == [own, line]
+        assert (own["tier"], own["fit_score"]) == ("candidate", 0.8)
+        assert own["provenance"][REASON_BATCH_KNOWN_SPECIES]["read_as"] == {
+            "tier": "below_assignability"
+        }
+
+    def test_a_reading_the_claim_keeps_is_left_as_it_is(self):
+        searched = _row("d", OTHER)
+        line = _row("d13", OTHER, role="iso_child", owner_peak_assignment_id="id-d")
+        stage_a, stage_b, outcomes = _elect([], [searched, line])
+        assert outcomes == {"d": KEPT_CARRIES_LINES}
+        assert stage_b == [searched, line] and stage_a == []
+        assert searched["assigned_formula"] == OTHER
+
+    def test_the_decision_is_cited_once_the_judging_has_written(self):
+        searched = _row("d", OTHER)
+        stage_a, _, outcomes = _elect([], [searched])
+        # The judging rewrites every row's reasons.
+        searched["provenance"]["tier_reasons"] = [{"rule": "on_a_list", "caps": False}]
+
+        assert cite_listed(stage_a, {"d": DECIDED}, outcomes) == 1
+        assert [r["rule"] for r in searched["provenance"]["tier_reasons"]] == [
+            "on_a_list",
+            REASON_BATCH_KNOWN_SPECIES,
+        ]
+        assert cite_listed(stage_a, {"d": DECIDED}, outcomes) == 1
+        assert len(searched["provenance"]["tier_reasons"]) == 2
+        # A reading the judging turned to another formula cites nothing.
+        searched["assigned_formula"] = OTHER
+        assert cite_listed(stage_a, {"d": DECIDED}, outcomes) == 0
+        assert cite_listed(stage_a, {"d": DECIDED}, {"d": ALREADY}) == 0
+
+
+LINE = BatchLine("13C", 1.00336, 0.11, "bp-x", "bp-p", {"spectra": 6}, "run-2", 7)
+STRIP = StripDecision("x", "p", "C10H16O4", "m-h", LINE)
+
+
+def _strip(rows, *, claimed=frozenset()):
+    return read_strips(
+        rows,
+        {"x": STRIP},
+        claimed_peak_ids=set(claimed),
+        peaks=pd.DataFrame(
+            {
+                "sample_peak_id": ["p", "x"],
+                "mz": [199.0976, 200.101],
+                "intensity": [1e6, 1.1e5],
+            }
+        ),
+        sample_item_id="s",
+        run_id="run",
+    )
+
+
+class TestTheStripReadOnTheRows:
+    def test_the_row_is_read_as_the_parent_s_line(self):
+        parent = _row("p", "C10H16O4", sample_peak_mz=199.0976)
+        analyte = _row("x", "C9H12N2O2", tier="candidate", sample_peak_mz=200.101)
+
+        rows, outcomes = _strip([parent, analyte])
+
+        assert outcomes == {STRIP_READ: 1}
+        assert rows == [parent, analyte]
+        assert analyte["role"] == "iso_child"
+        assert analyte["owner_peak_assignment_id"] == "id-p"
+        assert analyte["assigned_formula"] == "C10H16O4"
+        assert analyte["tier"] == "assigned"
+        assert analyte["isotope_label"]
+        record = analyte["provenance"]["batch_isotopologue"]
+        assert (record["batch_peak_id"], record["version"]) == ("bp-x", 7)
+        assert analyte["alternatives"][0]["assigned_formula"] == "C9H12N2O2"
+        [entry] = parent["provenance"]["batch_isotopologues"]
+        assert (entry["sample_peak_id"], entry["version"]) == ("x", 7)
+
+    def test_an_unread_peak_is_read_as_the_line_too(self):
+        parent = _row("p", "C10H16O4", sample_peak_mz=199.0976)
+        rows, outcomes = _strip([parent])
+        assert outcomes == {STRIP_READ: 1}
+        [_, line] = rows
+        assert (line["sample_peak_id"], line["role"]) == ("x", "iso_child")
+        assert line["owner_peak_assignment_id"] == "id-p"
+        assert line["peak_assignment_run_id"] == "run"
+
+    @pytest.mark.parametrize(
+        "rows, claimed, expected",
+        [
+            ([_row("p", "C9H10O5"), _row("x", "C9H12N2O2")], (), STRIP_KEPT_PARENT),
+            (
+                [
+                    _row("p", "C10H16O4", ionization_mechanism_id="m-other"),
+                    _row("x", "C9H12N2O2"),
+                ],
+                (),
+                STRIP_KEPT_PARENT,
+            ),
+            (
+                [_row("p", "C10H16O4", role="iso_child"), _row("x", "C9H12N2O2")],
+                (),
+                STRIP_KEPT_PARENT,
+            ),
+            ([_row("p", "C10H16O4")], ("x",), STRIP_KEPT_CLAIMED),
+            (
+                [
+                    _row("p", "C10H16O4"),
+                    _row("x", "C9H12N2O2"),
+                    _row(
+                        "x13",
+                        "C9H12N2O2",
+                        role="iso_child",
+                        owner_peak_assignment_id="id-x",
+                    ),
+                ],
+                (),
+                STRIP_KEPT_CARRIES_LINES,
+            ),
+            (
+                [
+                    _row("p", "C10H16O4"),
+                    _row(
+                        "x",
+                        "C10H16O4",
+                        role="iso_child",
+                        owner_peak_assignment_id="id-p",
+                    ),
+                ],
+                (),
+                ALREADY,
+            ),
+        ],
+        ids=[
+            "the parent reads another formula",
+            "through another mechanism",
+            "the parent's peak is no monoisotopic row",
+            "claimed",
+            "the row carries its own lines",
+            "already the parent's line",
+        ],
+    )
+    def test_a_row_the_batch_s_strip_keeps_is_left(self, rows, claimed, expected):
+        before = [dict(row) for row in rows]
+        after, outcomes = _strip(rows, claimed=claimed)
+        assert outcomes == {expected: 1}
+        assert after == before
+
+
+class TestTheStageListsInputs:
+    def test_each_kind_enters_at_its_stage_and_a_decoy_reads_the_claims(self):
+        assert {one.kind: (one.stage, one.decoy) for one in pipeline.BATCH_INPUTS} == {
+            KIND_KNOWN_SPECIES: (pipeline.Stage.CLAIM, True),
+            KIND_WATER_RUNG: (pipeline.Stage.CLAIM, True),
+            KIND_LISTED_COMPOUND: (pipeline.Stage.PROPOSE, True),
+            KIND_ISOTOPOLOGUE_STRIP: (pipeline.Stage.JUDGE, False),
+            KIND_SERIES: (pipeline.Stage.JUDGE, False),
+        }
+        assert {one.kind for one in pipeline.BATCH_INPUTS} == set(KINDS)
+
+    @pytest.mark.parametrize(
+        "path, decoy, kinds",
+        [
+            (pipeline.RUN, False, set(KINDS)),
+            (pipeline.INGEST_FOLD, False, set(KINDS)),
+            (
+                pipeline.DECOY,
+                True,
+                {KIND_KNOWN_SPECIES, KIND_WATER_RUNG, KIND_LISTED_COMPOUND},
+            ),
+            (
+                pipeline.BATCH_SEARCH,
+                False,
+                {
+                    KIND_KNOWN_SPECIES,
+                    KIND_WATER_RUNG,
+                    KIND_ISOTOPOLOGUE_STRIP,
+                    KIND_SERIES,
+                },
+            ),
+            (
+                pipeline.PROPAGATION,
+                False,
+                {
+                    KIND_KNOWN_SPECIES,
+                    KIND_WATER_RUNG,
+                    KIND_ISOTOPOLOGUE_STRIP,
+                    KIND_SERIES,
+                },
+            ),
+            (pipeline.PERSONS_CHOICE, False, {KIND_KNOWN_SPECIES, KIND_WATER_RUNG}),
+        ],
+        ids=lambda value: getattr(value, "name", None),
+    )
+    def test_a_path_reads_what_its_stages_read(self, path, decoy, kinds):
+        assert pipeline.batch_kinds(path, decoy=decoy) == kinds
+
+    @pytest.mark.asyncio
+    async def test_a_pass_reads_its_batch_once_in_the_resolve_stage(self):
+        read = []
+
+        async def reader(sample, *, profile, kinds):
+            read.append((sample.sample_item_id, profile, kinds))
+            return BatchDecisions(sample_batch_id="b", kinds=kinds)
+
+        ctx = pipeline.RunContext(
+            path=pipeline.RUN,
+            sample=SimpleNamespace(
+                sample_item_id="si-1",
+                sample_item_name="s",
+                sample_batch_id="b",
+                polarity="-",
+                filename="f.zarr",
+            ),
+            config=PeakAssignmentConfig(profile="BR"),
+            run_id="r-1",
+        )
+        ctx.match_params, ctx.peaks_df = object(), PEAKS
+        resolved = SimpleNamespace(
+            profile=SimpleNamespace(name="BR"), unavailable_channels=()
+        )
+        with (
+            patch.object(pipeline, "read_batch_decisions", side_effect=reader),
+            patch.object(pipeline, "sample_setup", return_value=None),
+            patch.object(pipeline, "_mechanisms_of", return_value=([], [])),
+            patch.object(pipeline, "_instrument_type", return_value="tof"),
+            patch.object(pipeline, "resolve_profile", return_value=resolved),
+            patch.object(pipeline, "named_context_for", return_value=None),
+            patch.object(
+                pipeline.service,
+                "_resolve_secondary_channels",
+                return_value=(resolved, []),
+            ),
+            patch.object(pipeline.service, "_searched_mechanisms", return_value=[]),
+            patch.object(pipeline.service, "_resolution_of", return_value=None),
+        ):
+            await pipeline.resolve(ctx)
+
+        assert read == [("si-1", "BR", frozenset(KINDS))]
+        assert ctx.batch.kinds == frozenset(KINDS)
+
+
+def _context(**batch) -> pipeline.RunContext:
+    ctx = pipeline.RunContext(
+        path=pipeline.RUN,
+        sample=SimpleNamespace(sample_item_id="s", sample_item_name="s"),
+        config=PeakAssignmentConfig(run_untargeted=False),
+        run_id="run",
+    )
+    ctx.batch = BatchDecisions(sample_batch_id="b", **batch)
+    ctx.peaks_df = pd.DataFrame(
+        {
+            "sample_peak_id": ["d", "p", "x"],
+            "mz": [297.08246, 199.0976, 200.101],
+            "intensity": [1e5, 1e6, 1.1e5],
+        }
+    )
+    return ctx
+
+
+class TestTheElectStageReadsThem:
+    @pytest.mark.asyncio
+    async def test_a_listed_compound_before_the_passes_a_strip_before_the_series(
+        self,
+    ):
+        ctx = _context(
+            listed={"d": DECIDED},
+            strips={"x": STRIP},
+            series={"p": {"formula": "C10H16O4", "ionization_mechanism_id": "m-h"}},
+        )
+        ctx.stage_a = [
+            _row("p", "C10H16O4", sample_peak_mz=199.0976),
+            _row("x", "C9H12N2O2", sample_peak_mz=200.101),
+        ]
+        ctx.decided = dict(ctx.batch.listed)
+        same_ion = []
+
+        def families(rows, **_):
+            same_ion.append(
+                {r["sample_peak_id"]: (r["assigned_formula"], r["role"]) for r in rows}
+            )
+            return 0
+
+        with patch.object(
+            pipeline.service, "_record_same_ion_readings", side_effect=families
+        ):
+            await pipeline.elect(ctx)
+
+        # The same-ion readings read the listed compound, and the analyte's
+        # reading before the strip...
+        assert same_ion == [
+            {
+                "p": ("C10H16O4", "M0"),
+                "x": ("C9H12N2O2", "M0"),
+                "d": (D4, "M0"),
+            }
+        ]
+        # ...which the judging then reads as the parent's line, beside the
+        # series' record.
+        rows = {r["sample_peak_id"]: r for r in ctx.stage_a + ctx.stage_b}
+        assert rows["x"]["role"] == "iso_child"
+        assert rows["p"]["provenance"]["series"]["formula"] == "C10H16O4"
+        assert ctx.listed_outcomes == {"d": LISTED_ELECTED}
+        assert ctx.batch_applied == {
+            "listed": {LISTED_ELECTED: 1},
+            "strips": {STRIP_READ: 1},
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_path_that_proposes_no_known_set_proposes_no_listed_compound(self):
+        ctx = _context(listed={"d": DECIDED})
+        ctx.path = pipeline.PROPAGATION
+        with patch.object(pipeline, "_propose_given") as given:
+            await pipeline.propose(ctx)
+        given.assert_awaited_once()
+        assert ctx.decided == {}
+
+    @pytest.mark.asyncio
+    async def test_the_known_set_s_paths_propose_it(self):
+        ctx = _context(listed={"d": DECIDED})
+        with patch.object(pipeline, "_propose_known_set") as known:
+            await pipeline.propose(ctx)
+        known.assert_awaited_once()
+        assert ctx.decided == {"d": DECIDED}
+
+
+class TestWhatTheStagesTookIsNoReadings:
+    @pytest.mark.asyncio
+    async def test_a_listed_compound_is_measured_on_the_axis_as_stored(self):
+        # On a shifted decoy arm the source's peaks are read where the source
+        # put them (``service._source_axis``): the arm claims what its control
+        # claims.
+        exact = ion_mz("C8H25O4Si4", 1)
+        ctx = _context(listed={"d": DECIDED})
+        ctx.decided = dict(ctx.batch.listed)
+        stored = ctx.peaks_df.assign(mz=[exact * (1 - 3e-6), 199.0976, 200.101])
+        with (
+            patch.object(pipeline.service, "_source_axis", return_value=stored),
+            patch.object(pipeline.service, "_record_same_ion_readings", return_value=0),
+        ):
+            await pipeline.elect(ctx)
+        [row] = ctx.stage_a
+        assert row["mz_error_ppm"] == pytest.approx(-3.0, abs=1e-3)
+        assert row["sample_peak_mz"] == 297.08246
+
+    @pytest.mark.asyncio
+    async def test_no_strip_is_read_on_a_peak_the_claim_stage_took(self):
+        ctx = _context(strips={"x": STRIP})
+        ctx.reagent_peak_ids = {"x"}
+        ctx.stage_a = [_row("p", "C10H16O4", sample_peak_mz=199.0976)]
+        with (
+            patch.object(pipeline.service, "_record_same_ion_readings", return_value=0),
+        ):
+            await pipeline.elect(ctx)
+        assert [r["sample_peak_id"] for r in ctx.stage_a + ctx.stage_b] == ["p"]
+        assert ctx.batch_applied == {"strips": {STRIP_KEPT_CLAIMED: 1}}
+
+
+class TestTheReaderReadsWhatItIsAsked:
+    @pytest.mark.asyncio
+    async def test_a_kind_not_asked_for_is_not_read(self):
+        species = AsyncMock(return_value=[_species("Br")])
+        rungs = AsyncMock(return_value=(_species("BrH2O"),))
+        series = AsyncMock(return_value={"p": {"version": 1}})
+        members = AsyncMock(return_value=({}, {}))
+        with (
+            patch.object(
+                batch_decisions.batch_known_species, "batch_species_for", species
+            ),
+            patch.object(batch_decisions, "rungs_for", rungs),
+            patch.object(batch_decisions.service, "batch_series_by_peak", series),
+            patch.object(batch_decisions, "member_decisions", members),
+            patch.object(batch_decisions, "stage_versions", AsyncMock(return_value={})),
+        ):
+            sample = SimpleNamespace(sample_item_id="s", sample_batch_id="b")
+            only_series = await batch_decisions.read_batch_decisions(
+                sample, profile="BR", kinds={KIND_SERIES}
+            )
+            only_claims = await batch_decisions.read_batch_decisions(
+                sample, profile="BR", kinds={KIND_KNOWN_SPECIES, KIND_WATER_RUNG}
+            )
+
+        assert (only_series.species, only_series.rungs) == ((), ())
+        assert dict(only_series.series) == {"p": {"version": 1}}
+        assert [one.cluster.formula for one in only_claims.source_ions()] == [
+            "Br",
+            "BrH2O",
+        ]
+        assert only_claims.series == {}
+        species.assert_awaited_once()
+        rungs.assert_awaited_once_with(sample, "BR")
+        series.assert_awaited_once_with("s")
+
+    @pytest.mark.asyncio
+    async def test_a_sample_in_no_batch_reads_nothing(self):
+        decisions = await batch_decisions.read_batch_decisions(
+            SimpleNamespace(sample_item_id="s", sample_batch_id=None), profile="BR"
+        )
+        assert decisions == BatchDecisions(kinds=frozenset(KINDS))
+
+
+class TestALineOffAnUnreadPeak:
+    @pytest.mark.asyncio
+    async def test_the_elect_stage_keeps_the_line_it_read_off_a_peak_no_stage_read(
+        self,
+    ):
+        ctx = _context(strips={"x": STRIP})
+        ctx.stage_a = [_row("p", "C10H16O4", sample_peak_mz=199.0976)]
+        with (
+            patch.object(pipeline.service, "_record_same_ion_readings", return_value=0),
+        ):
+            await pipeline.elect(ctx)
+        rows = {r["sample_peak_id"]: r for r in ctx.stage_a}
+        assert rows["x"]["role"] == "iso_child"
+        assert rows["x"]["owner_peak_assignment_id"] == "id-p"

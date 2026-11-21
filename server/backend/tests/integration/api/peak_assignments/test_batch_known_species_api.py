@@ -28,6 +28,8 @@ from pass_runs import step_outcome  # the tests root, on sys.path
 from sqlalchemy import delete, select, update
 from stage_stubs import (  # the tests root, on sys.path
     frame,
+    run_sample,
+    stub_known_set,
     stub_sample_reads,
     stub_seeded_scorer,
 )
@@ -1291,3 +1293,118 @@ async def test_a_split_trace_is_claimed_once_and_its_twin_is_held(
     species = await batch_species_for(await fetch_sample(samples["S05"]))
     trimers = [one for one in species if one.cluster.formula == "C3H13N6O3"]
     assert [one.record["batch_peak_id"] for one in trimers] == [ids["t"]]
+
+
+# --- a sample's run reads the listed compound (MAS-985) ----------------------------
+
+
+def _rerun_reads_its_own(monkeypatch, batch):
+    """A sample assigned again reads its peaks as its first run did: the
+    known set proposes its own analyte rows again."""
+    names = {sample: name for name, sample in batch["samples"].items()}
+    stub_known_set(
+        monkeypatch,
+        lambda sample_item_id, run_id: [
+            row
+            for row in _rows(sample_item_id, names[sample_item_id], run_id=run_id)
+            if row["role"] in ("M0", "iso_child")
+        ],
+    )
+
+
+async def _decided_through_the_stage(batch, monkeypatch):
+    """The decision run as its batch stage; the stage's version."""
+    from mascope_backend.api.new.peak_assignments.batch_stages import stage_standing
+
+    _stub_the_stage_list(monkeypatch, {})
+    await assign_batch(sample_batch_id=batch["batch_id"], from_stage="known_species")
+    [stage] = [
+        e
+        for e in (await stage_standing(batch["batch_id"]))["stages"]
+        if e["stage"] == "known_species"
+    ]
+    return stage["version"]
+
+
+async def test_a_samples_next_run_commits_the_listed_compound_at_candidate(
+    async_session_factory, known_batch, monkeypatch, only_its_own_stage
+):
+    """A sample assigned again reads the siloxane's peak as another compound
+    again; its run reads the batch's decision and commits the listed compound
+    there at candidate, citing the decision, so the ledger it folds agrees
+    with the batch's (MAS-871's and MAS-985's Verify)."""
+    batch, samples, ids = known_batch, known_batch["samples"], known_batch["ids"]
+    version = await _decided_through_the_stage(batch, monkeypatch)
+    _rerun_reads_its_own(monkeypatch, batch)
+
+    ctx = await run_sample(samples["S02"])
+
+    row = (await _run_rows(async_session_factory, ctx.run_id))["d"]
+    assert (row.role, row.assigned_formula, row.ion_formula) == ("M0", D4, D4_ION)
+    assert row.ionization_mechanism_id == MECH
+    assert row.tier == "candidate"
+    assert row.source == "database"
+    decision = row.provenance["batch_known_species"]
+    assert decision["batch_peak_id"] == ids["d"]
+    assert decision["verdict"] == "present"
+    assert decision["version"] == version
+    assert decision["read_as"]["formula"] == OTHER
+    assert row.alternatives[0]["assigned_formula"] == OTHER
+    assert "batch_known_species" in {
+        reason["rule"] for reason in row.provenance["tier_reasons"]
+    }
+    member = (await _members(async_session_factory, ids["d"]))[samples["S02"]]
+    assert member.tier == tier_code("candidate")
+    assert (
+        resolve_candidate(
+            (await _anchors(async_session_factory, batch))["d"].candidates,
+            member.candidate,
+        )["formula"]
+        == D4
+    )
+    async with async_session_factory() as session:
+        config = (await session.get(PeakAssignmentRun, ctx.run_id)).config
+    read = config["batch_decisions"]["stages"]["known_species"]
+    assert read["version"] == version
+    assert read["record_versions"] == [version]
+    assert config["batch_decisions"]["applied"]["listed"] == {"elected": 1}
+
+
+async def test_a_samples_next_run_keeps_what_the_batchs_claim_keeps(
+    async_session_factory, known_batch, monkeypatch, only_its_own_stage
+):
+    """The run elects the decision as the batch's claim takes a member: its
+    own reading of the compound below candidate is lifted, what it measured
+    kept; a reading with isotope lines of another formula is kept; one that
+    commits the compound on its own cites nothing, and stays the file's own
+    test of the next decision."""
+    batch, samples = known_batch, known_batch["samples"]
+    await _decided_through_the_stage(batch, monkeypatch)
+    _rerun_reads_its_own(monkeypatch, batch)
+
+    lifted = await run_sample(samples["S04"])
+    kept = await run_sample(samples["S05"])
+    own = await run_sample(samples["S00"])
+
+    row = (await _run_rows(async_session_factory, lifted.run_id))["d"]
+    assert (row.assigned_formula, row.tier) == (D4, "candidate")
+    assert row.fit_score == pytest.approx(0.4)
+    assert row.provenance["batch_known_species"]["read_as"] == {
+        "tier": "below_assignability"
+    }
+    assert lifted.batch_applied["listed"] == {"lifted": 1}
+    row = (await _run_rows(async_session_factory, kept.run_id))["d"]
+    assert row.assigned_formula == OTHER
+    assert "batch_known_species" not in (row.provenance or {})
+    assert kept.batch_applied["listed"] == {"carries_lines": 1}
+    row = (await _run_rows(async_session_factory, own.run_id))["d"]
+    assert row.assigned_formula == D4
+    assert "batch_known_species" not in (row.provenance or {})
+    assert own.batch_applied["listed"] == {"already": 1}
+
+    # Decided again, the files whose own test held are the same two: the
+    # run's claim on the batch's word is never a file's own test.
+    await run_batch_known_species(batch["batch_id"])
+    record = _record((await _anchors(async_session_factory, batch))["d"])
+    assert record["verdict"] == "present"
+    assert record["test_held"] == 2

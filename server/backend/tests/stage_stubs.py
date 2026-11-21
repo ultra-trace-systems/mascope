@@ -9,6 +9,11 @@ for its peaks and its mechanisms, and for the seeded scorer, whose canned
 pairings are turned into the scored frame Stage A's election reads
 (``engine.invert_matches_to_peak_assignments``). Everything between them is
 the stage list's own: the election, the judging and the level.
+
+A sample's own run and its ingest fold read the batch's decisions too
+(MAS-985): :func:`stub_known_set` stands in for the known set they propose,
+and :func:`run_sample` and :func:`fold_sample` drive the two paths over the
+test database, each kept as it keeps what it judged.
 """
 
 from collections.abc import Callable
@@ -17,8 +22,18 @@ from unittest.mock import AsyncMock
 
 import pandas as pd
 
+from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.new.peak_assignments import pipeline, service
+from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+from mascope_backend.api.new.peak_assignments.envelope_fit import RunEnvelopeFit
+from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
+from mascope_tools.composition.envelope_tolerance import (
+    FORM_DEFAULT,
+    EnvelopeLines,
+    fit_envelope_tolerance,
+)
 from mascope_tools.composition.heuristic_filter import element_counts
+from mascope_tools.composition.mass_accuracy import SampleMassAccuracy
 from mascope_tools.composition.utils import to_hill_order
 
 
@@ -159,11 +174,102 @@ def stub_seeded_scorer(
     monkeypatch.setattr(pipeline, "score_seeds", score)
 
 
+def stub_known_set(
+    monkeypatch, rows_of: Callable[[str, str], list[dict]]
+) -> list[set[str]]:
+    """The known set a run or a fold proposes (``service._stage_a_assignments``),
+    canned: the rows ``rows_of(sample_item_id, run_id)`` gives, but for those
+    on a peak the claim stage took, at a measurement of nothing fitted and
+    today's line-share tolerance, with no frame to score again at a refit's
+    model and no confidence curve.
+
+    :return: The peaks each call was told the claim stage took, in order.
+    """
+    excluded: list[set[str]] = []
+
+    async def stage_a(
+        sample,
+        config,
+        match_params,
+        mechanism_ids,
+        mechanisms,
+        run_id,
+        excluded_peak_ids=None,
+        **kwargs,
+    ):
+        taken = set(excluded_peak_ids or ())
+        excluded.append(taken)
+        rows = [
+            row
+            for row in rows_of(sample.sample_item_id, run_id)
+            if str(row["sample_peak_id"]) not in taken
+        ]
+        return (
+            rows,
+            None,
+            SampleMassAccuracy(),
+            RunEnvelopeFit(fit_envelope_tolerance(FORM_DEFAULT, EnvelopeLines())),
+            frozenset(),
+            None,
+            None,
+        )
+
+    monkeypatch.setattr(service, "_stage_a_assignments", stage_a)
+    return excluded
+
+
+async def run_sample(
+    sample_item_id: str, config: PeakAssignmentConfig | None = None
+) -> pipeline.RunContext:
+    """A sample assigned again: a run of it through the stage list
+    (``pipeline.RUN``), kept as a run keeps its ledger - its rows written, the
+    run completed and folded into the batch ledger. The known set alone, unless
+    the config asks for the search.
+
+    :return: The pass, the run's id its ``run_id``.
+    """
+    config = config or PeakAssignmentConfig(run_untargeted=False)
+    run = await service._create_run(sample_item_id, config)
+    return await pipeline.run_stages(
+        pipeline.RunContext(
+            path=pipeline.RUN,
+            sample=await fetch_sample(sample_item_id),
+            config=config,
+            run_id=run.peak_assignment_run_id,
+            keep=pipeline.keep_run,
+            run=run,
+        )
+    )
+
+
+async def fold_sample(
+    sample_item_id: str, config: PeakAssignmentConfig | None = None
+) -> pipeline.RunContext:
+    """A sample folded in without a run (``pipeline.INGEST_FOLD``): the known
+    set alone, folded into its batch's ledger as the ingest fold folds it.
+
+    :return: The pass.
+    """
+    return await pipeline.run_stages(
+        pipeline.RunContext(
+            path=pipeline.INGEST_FOLD,
+            sample=await fetch_sample(sample_item_id),
+            config=config or PeakAssignmentConfig(run_untargeted=False),
+            run_id=fold_run_id(sample_item_id),
+            keep=pipeline.keep_fold,
+            strict_instrument=False,
+        )
+    )
+
+
 __all__ = [
+    "fold_sample",
     "frame",
     "mechanism",
     "protonated",
+    "run_sample",
     "seeded_frame",
+    "stub_known_set",
     "stub_sample_reads",
     "stub_seeded_scorer",
 ]

@@ -26,11 +26,20 @@ import pytest
 import pytest_asyncio
 from pass_runs import step_outcome  # the tests root, on sys.path
 from sqlalchemy import select, update
+from stage_stubs import (  # the tests root, on sys.path
+    fold_sample,
+    frame,
+    run_sample,
+    stub_known_set,
+    stub_sample_reads,
+)
+from stage_stubs import mechanism as mechanism_row
 
 from mascope_backend.api.new.peak_assignments import (
     batch_peaks_controller,
     batch_peaks_routes,
     batch_water_ladder,
+    pipeline,
 )
 from mascope_backend.api.new.peak_assignments.batch_known_species import (
     _load_batch,
@@ -53,6 +62,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
 from mascope_backend.api.new.peak_assignments.batch_water_ladder import (
     run_batch_water_ladders,
 )
+from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
@@ -1039,3 +1049,252 @@ async def test_a_refolded_sample_leaves_the_stages_stale_and_the_pass_claims_it_
     assert restored.role == role_code("reagent")
     assert restored.batch_written["stage"] == "water_ladders"
     assert (await stage_standing(batch["batch_id"]))["stale_stages"] == []
+
+
+# --- a sample's run reads the rungs (MAS-985) --------------------------------------
+
+#: A sample's run of the bromide source, the known set alone.
+BROMIDE_RUN = PeakAssignmentConfig(run_untargeted=False, profile="BR")
+
+
+def _stub_a_run(monkeypatch):
+    """What a sample's run reads of its file, canned: every peak of the fixture
+    at the height its rows give, the suite's mechanism, a TOF's file, and a
+    known set that commits nothing, so every rung a run claims is its own
+    pre-pass's or its batch's."""
+    heights = {
+        row["sample_peak_id"]: row["sample_peak_intensity"] for row in _rows("s", "H04")
+    }
+
+    def peaks_of(sample_item_id):
+        return frame((peak, mz, heights[peak]) for peak, mz in MZ.items())
+
+    stub_sample_reads(monkeypatch, peaks_of, [mechanism_row(NOTATION, MECH)])
+    stub_known_set(monkeypatch, lambda sample_item_id, run_id: [])
+    monkeypatch.setattr(pipeline, "get_instrument_type", lambda filename: "tof")
+
+
+async def _add_sample(async_session_factory, batch, name, acquired):
+    """A sample of the batch acquired at ``acquired``, not folded yet."""
+    sample_file_id, sample_item_id = gen_id(), gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            SampleFile(
+                sample_file_id=sample_file_id,
+                filename=f"tof-ladder-{name}-{sample_file_id}.zarr",
+                instrument="tof-test",
+                datetime=acquired.replace(tzinfo=None),
+                datetime_utc=acquired,
+                length=60.0,
+                range=[30.0, 500.0],
+                polarity="-",
+            )
+        )
+        session.add(
+            SampleItem(
+                sample_item_id=sample_item_id,
+                sample_batch_id=batch["batch_id"],
+                sample_file_id=sample_file_id,
+                sample_item_name=f"Water ladders {name}",
+                sample_item_type="sample",
+                polarity="-",
+                sample_item_utc_created=datetime.now(timezone.utc),
+            )
+        )
+        await session.commit()
+    return sample_item_id
+
+
+def _claimed_on_the_ladder(ctx):
+    """Peak -> what a pass's row of a rung it claimed on the batch's water
+    ladder records; a rung's line, which cites the ladder too, is left out."""
+    return {
+        row["sample_peak_id"]: row["provenance"]["reagent"]["batch_water_ladder"]
+        for row in ctx.reagent_rows
+        if row["provenance"]["reagent"].get("reason") == "batch_water_ladder"
+        and row["owner_peak_assignment_id"] is None
+    }
+
+
+async def test_a_samples_next_run_claims_the_rungs_its_segment_passed(
+    async_session_factory, ladder_batch, monkeypatch, only_these_stages
+):
+    """A sample assigned again claims the rungs its batch passed in the
+    segment it was acquired in, where its own pre-pass did not, each row
+    citing the measurement; a sample of the other segment claims only the
+    rungs that passed there; and the run records the version it read
+    (MAS-887's and MAS-985's Verify)."""
+    from mascope_backend.api.new.peak_assignments.batch_stages import (
+        assign_batch,
+        stage_standing,
+    )
+
+    only_these_stages("water_ladders")
+    _stub_a_run(monkeypatch)
+    batch, samples = ladder_batch, ladder_batch["samples"]
+    await assign_batch(sample_batch_id=batch["batch_id"])
+    [ladder] = [
+        e
+        for e in (await stage_standing(batch["batch_id"]))["stages"]
+        if e["stage"] == "water_ladders"
+    ]
+
+    humid = await run_sample(samples["H04"], BROMIDE_RUN)
+    dry = await run_sample(samples["D04"], BROMIDE_RUN)
+
+    claimed = _claimed_on_the_ladder(humid)
+    # Its own pre-pass claims Br- and the hydrates the library names; the
+    # batch's word the rest of the humid segment's ladder.
+    assert {"r3", "r4", "r5"} <= set(claimed)
+    assert not {"core", "r1", "r2"} & set(claimed)
+    rows = {row["sample_peak_id"]: row for row in humid.reagent_rows}
+    assert rows["r4"]["ion_formula"] == ion(4)
+    assert rows["r4"]["provenance"]["reagent"]["ion"] == "[Br+4xH2O]-"
+    assert claimed["r4"]["segment"] == 1
+    assert claimed["r4"]["batch_peak_id"] == batch["ids"]["r4"]
+    assert claimed["r4"]["version"] == ladder["version"]
+    # A rung's 81Br line is claimed with it, owned by its row.
+    assert rows["r4b"]["owner_peak_assignment_id"] == rows["r4"]["peak_assignment_id"]
+    assert rows["r4b"]["isotope_label"] == "81Br"
+    # The dry segment passed its ladder to the third hydrate.
+    assert set(_claimed_on_the_ladder(dry)) == {"r3"}
+    assert _claimed_on_the_ladder(dry)["r3"]["segment"] == 0
+
+    # The run records the version it read; the ledger reads the rungs too.
+    async with async_session_factory() as session:
+        config = (await session.get(PeakAssignmentRun, humid.run_id)).config
+    read = config["batch_decisions"]["stages"]["water_ladders"]
+    assert read["version"] == ladder["version"]
+    assert read["records"] >= 3
+    assert read["record_versions"] == [ladder["version"]]
+    assert config["batch_decisions"]["applied"]["claimed"]["batch_water_ladder"] >= 3
+    members = await _members(async_session_factory, batch["ids"]["r4"])
+    assert members[samples["H04"]].role == role_code("reagent")
+
+
+async def test_a_sample_folded_in_claims_the_rungs_of_its_segment_and_one_outside_none(
+    async_session_factory, ladder_batch, monkeypatch, only_these_stages
+):
+    """A sample folded in after the measurement, acquired inside the humid
+    segment, claims its rungs; one acquired between the two segments, or after
+    the last, claims none: a rung is evidence about the segment it was
+    measured in (decided 2026-11-17)."""
+    from mascope_backend.api.new.peak_assignments.batch_stages import (
+        assign_batch,
+    )
+
+    only_these_stages("water_ladders")
+    _stub_a_run(monkeypatch)
+    batch = ladder_batch
+    await assign_batch(sample_batch_id=batch["batch_id"])
+    humid_start = datetime(2026, 11, 12, 13, 0, tzinfo=timezone.utc)
+    inside = await _add_sample(
+        async_session_factory, batch, "N-in", humid_start + timedelta(minutes=35)
+    )
+    between = await _add_sample(
+        async_session_factory,
+        batch,
+        "N-gap",
+        humid_start - timedelta(hours=1, minutes=30),
+    )
+    after = await _add_sample(
+        async_session_factory, batch, "N-after", humid_start + timedelta(hours=6)
+    )
+
+    folded = await fold_sample(inside, BROMIDE_RUN)
+    assert {"r3", "r4", "r5"} <= set(_claimed_on_the_ladder(folded))
+    members = await _members(async_session_factory, batch["ids"]["r5"])
+    assert members[inside].role == role_code("reagent")
+    for outside in (between, after):
+        ctx = await fold_sample(outside, BROMIDE_RUN)
+        assert _claimed_on_the_ladder(ctx) == {}
+        members = await _members(async_session_factory, batch["ids"]["r4"])
+        assert members[outside].role != role_code("reagent")
+
+
+async def test_a_samples_run_claims_a_rung_once_where_the_fold_split_its_trace(
+    async_session_factory, ladder_batch, monkeypatch, only_these_stages
+):
+    """Two batch peaks of one rung's trace both carry its record: the run
+    claims the ion once, read off the one its segment's spectra hold most,
+    whichever comes first or last by id."""
+    from mascope_backend.api.controllers.samples.lib.samples_fetch import (
+        fetch_sample,
+    )
+    from mascope_backend.api.new.peak_assignments.batch_decisions import rungs_for
+    from mascope_backend.api.new.peak_assignments.batch_stages import (
+        assign_batch,
+    )
+
+    only_these_stages("water_ladders")
+    batch = ladder_batch
+    await assign_batch(sample_batch_id=batch["batch_id"])
+    async with async_session_factory() as session:
+        rung = await session.get(BatchPeak, batch["ids"]["r4"])
+        record = _record(rung)
+        faint = [
+            {**entry, "presence": 0.01} if entry["segment"] == 1 else entry
+            for entry in record["segments"]
+        ]
+        for i, key in enumerate(("!" + gen_id(15), "~" + gen_id(15))):
+            twin = BatchPeak(
+                **{
+                    column.name: getattr(rung, column.name)
+                    for column in BatchPeak.__table__.columns
+                }
+            )
+            twin.batch_peak_id = key
+            twin.mz = rung.mz * (1 + (i + 1) * 3e-6)
+            twin.provenance = {
+                **(rung.provenance or {}),
+                "water_ladder": {**record, "segments": faint},
+            }
+            session.add(twin)
+        await session.commit()
+
+    rungs = await rungs_for(await fetch_sample(batch["samples"]["H04"]), "BR")
+
+    fourth = [one for one in rungs if one.cluster == BROMIDE.rung(4)]
+    assert [one.record["batch_peak_id"] for one in fourth] == [batch["ids"]["r4"]]
+
+
+async def test_a_samples_run_reads_no_rung_of_another_partition(
+    async_session_factory, ladder_batch, only_these_stages
+):
+    """A rung recorded on a batch peak of another partition - another
+    ionization mode, or another intensity variable - is another source's
+    measurement: the sample's run reads only its own partition's."""
+    from mascope_backend.api.controllers.samples.lib.samples_fetch import (
+        fetch_sample,
+    )
+    from mascope_backend.api.new.peak_assignments.batch_decisions import rungs_for
+    from mascope_backend.api.new.peak_assignments.batch_stages import (
+        assign_batch,
+    )
+
+    only_these_stages("water_ladders")
+    batch = ladder_batch
+    await assign_batch(sample_batch_id=batch["batch_id"])
+    async with async_session_factory() as session:
+        rung = await session.get(BatchPeak, batch["ids"]["r4"])
+        record = _record(rung)
+        brighter = [{**entry, "presence": 1.0} for entry in record["segments"]]
+        twin = BatchPeak(
+            **{
+                column.name: getattr(rung, column.name)
+                for column in BatchPeak.__table__.columns
+            }
+        )
+        twin.batch_peak_id = "!" + gen_id(15)
+        twin.intensity_variable = "another_variable"
+        twin.provenance = {
+            **(rung.provenance or {}),
+            "water_ladder": {**record, "segments": brighter},
+        }
+        session.add(twin)
+        await session.commit()
+
+    rungs = await rungs_for(await fetch_sample(batch["samples"]["H04"]), "BR")
+
+    fourth = [one for one in rungs if one.cluster == BROMIDE.rung(4)]
+    assert [one.record["batch_peak_id"] for one in fourth] == [batch["ids"]["r4"]]

@@ -49,11 +49,13 @@ its partition and decides it once (``mascope_tools.composition.known_species``):
    and each rewritten row says what it read. The run's summary counts per
    partition and lists the species.
 
-A sample's next run takes the batch's word for a library ion
-(``reagent_pass.claim_batch_species``, :func:`batch_species_for`): the file
-claims it where its own claim did not. A listed compound is the stages' to
-read, so a sample assigned again reads it afresh, and a later decision reads
-its rows again.
+A sample's next run takes the batch's word for both (``batch_decisions``,
+MAS-985). Its reagent pass claims a library ion where its own claim did not
+(``reagent_pass.claim_batch_species``, :func:`batch_species_for`), and its
+elect stage elects a listed compound on its peak by the rules the claim here
+takes a member by (``batch_decisions.elect_listed``), naming the decision; a
+run that commits the compound on its own names none, and stays its file's own
+test of the next decision.
 
 The reading runs outside the fold lock (and off the event loop) and the
 writes under it, a chunk of species per transaction, each species' files
@@ -2221,6 +2223,17 @@ async def decide_batch_known_species(
 # --- a sample's run takes the batch's word ----------------------------------------
 
 
+async def sample_partition(session, sample: Any) -> Partition:
+    """The partition of its batch a sample's peaks fold into: its ionization
+    mode's root and the intensity variable its file names.
+
+    :param sample: The sample (``ionization_mode_id``, ``filename``).
+    """
+    mode_id = getattr(sample, "ionization_mode_id", None)
+    mode = (await root_ids(session, [mode_id])).get(mode_id) if mode_id else None
+    return mode, _intensity_variable(getattr(sample, "filename", "") or "")
+
+
 async def batch_species_for(sample: Any) -> list[BatchSpecies]:
     """The library ions a sample's batch decided present, in the sample's
     partition: what its run's reagent pre-pass claims on the batch's word
@@ -2241,16 +2254,14 @@ async def batch_species_for(sample: Any) -> list[BatchSpecies]:
     if not sample_batch_id:
         return []
     async with async_session() as session:
-        mode_id = getattr(sample, "ionization_mode_id", None)
-        mode = (await root_ids(session, [mode_id])).get(mode_id) if mode_id else None
+        mode, variable = await sample_partition(session, sample)
         anchors = (
             (
                 await session.execute(
                     select(BatchPeak).where(
                         BatchPeak.sample_batch_id == sample_batch_id,
                         BatchPeak.ionization_mode_id == mode,
-                        BatchPeak.intensity_variable
-                        == _intensity_variable(getattr(sample, "filename", "") or ""),
+                        BatchPeak.intensity_variable == variable,
                         BatchPeak.consensus_role == ROLE_REAGENT,
                     )
                 )
@@ -2308,6 +2319,7 @@ __all__ = [
     "plan_batch",
     "run_batch_known_species",
     "sample_decision",
+    "sample_partition",
     "settle_twins",
     "species_of",
     "species_record",
