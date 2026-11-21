@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { reactive, ref } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 
@@ -9,15 +9,22 @@ import { LEVELS } from '@/lib/levels'
 
 // The tier strip and the tier column's sort: both read the confidence order out
 // of @/lib/tiers, and both used to be wrong in the same direction (alphabetical,
-// worst tier first). The button that builds the batch peaks is no longer here -
-// it moved to the browser's switch bar, and its own spec is
-// panes/PaneBrowserMatch/batchPeakComputeBar.spec.js - but the refusal it can
-// come back with is still rendered below this table, so what that leaves behind
-// is covered under "compute refusal" below.
+// worst tier first). Assign batch is no longer here - it is in the browser's
+// switch bar, and its own spec is
+// panes/PaneBrowserMatch/batchAssignControl.spec.js - but the refusal it can
+// come back with is still rendered below this table, and the empty ledger
+// offers the action itself, so those are covered under "assign refusal" and
+// "empty ledger" below.
 
 const post = vi.fn()
 
-vi.mock('@/api', () => ({ api: { http: { post: (...args) => post(...args) } } }))
+// The status read the assign store makes on batch focus: none by default,
+// since most of this file is about the table.
+const get = vi.fn()
+
+vi.mock('@/api', () => ({
+  api: { http: { post: (...args) => post(...args), get: (...args) => get(...args) } }
+}))
 
 let app
 // Callbacks the compute store registered through app.ui.notification.on, by
@@ -29,6 +36,11 @@ vi.mock('@/stores', () => ({ useApp: () => app }))
 
 vi.mock('@/lib/base', async () => ({
   BaseTabbedPanel: { template: '<div><slot name="menu" /><slot /></div>' },
+  // Rendered, so the empty ledger's title and its Assign batch can be read.
+  BaseEmptyState: {
+    props: ['title', 'hint', 'icon'],
+    template: '<div class="empty-state">{{ title }}<slot name="actions" /></div>'
+  },
   // Rendered, so a test that renders the cells can read the chip's role and
   // the formula a cell would copy.
   BaseTierTag: {
@@ -147,7 +159,8 @@ function makeApp({
           notificationHandlers[type] = [...(notificationHandlers[type] ?? []), callback]
           return { remove: () => {} }
         },
-        push: vi.fn()
+        push: vi.fn(),
+        claim: vi.fn()
       }
     }
   })
@@ -254,11 +267,10 @@ const GLOBAL_STUBS = {
 // first test it lands on that one test's clock.
 const { default: PaneBrowserBatchPeaks } =
   await import('@/lib/panes/PaneBrowserMatch/PaneBrowserBatchPeaks.vue')
-const { useBatchPeakCompute } =
-  await import('@/lib/panes/PaneBrowserMatch/stores/batchPeakCompute.js')
+const { useBatchAssign } = await import('@/lib/panes/PaneBrowserMatch/stores/batchAssign.js')
 
 async function mountPane(options = {}) {
-  // The app facade first: the compute store the pane reads its refusal off is
+  // The app facade first: the assign store the pane reads its refusal off is
   // created during that mount, and it reads the facade while being created.
   app = makeApp(options)
   // The ledger's sort store writes through to localStorage and reads it back on
@@ -293,6 +305,8 @@ beforeEach(() => {
   notificationHandlers = {}
   post.mockReset()
   post.mockResolvedValue(ack())
+  get.mockReset()
+  get.mockResolvedValue(null)
 })
 
 afterEach(() => {
@@ -341,7 +355,7 @@ async function cellsOf(field, rows) {
   )
 }
 
-describe('PaneBrowserBatchPeaks compute refusal', () => {
+describe('PaneBrowserBatchPeaks assign refusal', () => {
   // The button is a row up, in the switch bar, but the refusal it comes back
   // with is reported here - below the table it is about, rather than in a toast
   // that has scrolled away by the time the user looks up.
@@ -349,7 +363,7 @@ describe('PaneBrowserBatchPeaks compute refusal', () => {
     post.mockRejectedValue(apiError(403, 'You do not have permission.'))
     wrapper = await mountPane()
 
-    await useBatchPeakCompute().compute()
+    await useBatchAssign().assign()
     await wrapper.vm.$nextTick()
 
     expect(wrapper.findAll('.pane-message')).toHaveLength(1)
@@ -361,18 +375,84 @@ describe('PaneBrowserBatchPeaks compute refusal', () => {
   it('clears the launch state when the focused batch changes', async () => {
     post.mockRejectedValue(apiError(500, 'boom'))
     wrapper = await mountPane()
-    const compute = useBatchPeakCompute()
+    const assign = useBatchAssign()
 
-    await compute.compute()
+    await assign.assign()
     await wrapper.vm.$nextTick()
     expect(wrapper.findAll('.pane-message')).toHaveLength(1)
 
     app.data.batch.focusedId = 'b-2'
     await wrapper.vm.$nextTick()
 
-    expect(compute.launchError).toBeNull()
-    expect(compute.computing).toBe(false)
+    expect(assign.launchError).toBeNull()
+    expect(assign.launching).toBe(false)
     expect(wrapper.findAll('.pane-message')).toHaveLength(0)
+  })
+})
+
+describe('PaneBrowserBatchPeaks empty ledger', () => {
+  // The table's #empty slot, rendered where the table has no rows.
+  const EmptyTable = {
+    ...DataTableStub,
+    template: '<div class="datatable"><slot v-if="!value?.length" name="empty" /><slot /></div>'
+  }
+  const ButtonStub = {
+    props: ['label', 'disabled', 'loading'],
+    template: '<button :class="$attrs.class" :disabled="disabled">{{ label }}</button>'
+  }
+  async function mountEmpty(options = {}) {
+    app = makeApp(options)
+    localStorage.clear()
+    setActivePinia(createPinia())
+    wrapper = mount(PaneBrowserBatchPeaks, {
+      global: {
+        stubs: { ...GLOBAL_STUBS, DataTable: EmptyTable, Button: ButtonStub },
+        directives: { tooltip: {}, help: {} }
+      }
+    })
+    await flushPromises()
+    return wrapper
+  }
+
+  // A ledger with no batch peaks offers Assign batch itself, and the bar
+  // hides its own copy then (BatchAssignControl reads the same computed).
+  it('offers Assign batch, and posts the pass from it', async () => {
+    await mountEmpty({ peaks: [] })
+
+    const button = wrapper.find('.empty-assign')
+    expect(button.exists()).toBe(true)
+    expect(button.text()).toBe('Assign batch')
+    expect(wrapper.text()).toContain('Not assigned')
+    expect(wrapper.text()).not.toContain('Rebuild batch ledger')
+
+    await button.trigger('click')
+    await flushPromises()
+    expect(post).toHaveBeenCalledWith(
+      '/batch-peaks/batch/b-1/assign',
+      {},
+      expect.objectContaining({ type: 'assign_batch' })
+    )
+  })
+
+  it('disables it for a viewer', async () => {
+    await mountEmpty({ peaks: [], workspace: { ...WORKSPACE, my_role: 'guest' } })
+
+    expect(wrapper.find('.empty-assign').attributes('disabled')).toBeDefined()
+  })
+
+  it('offers no Assign batch while a pass runs on the empty ledger', async () => {
+    get.mockResolvedValue({ sample_batch_id: 'b-1', state: 'running', running: {}, stages: [] })
+    await mountEmpty({ peaks: [] })
+
+    expect(wrapper.find('.empty-assign').exists()).toBe(false)
+  })
+
+  // A ledger with rows offers it in the bar, never here: a table the filters
+  // emptied is not an unassigned batch.
+  it('leaves Assign batch to the bar once the ledger holds batch peaks', async () => {
+    await mountEmpty({ peaks: [peak('bp-1', 'assigned', 0.9)] })
+
+    expect(useBatchAssign().ledgerOffersAssign).toBe(false)
   })
 })
 
@@ -2857,7 +2937,7 @@ describe('PaneBrowserBatchPeaks batch runs', () => {
     const notice = wrapper.findAll('.pane-message').map((message) => message.text())
     expect(notice).toHaveLength(1)
     expect(notice[0]).toContain('as an untargeted search left it, read-only')
-    expect(notice[0]).toContain('pick it in the run selector')
+    expect(notice[0]).toContain('pick it under Run history')
   })
 
   it('describes each kind of run in words rather than by its code', async () => {
@@ -2907,11 +2987,11 @@ describe('PaneBrowserBatchPeaks ledger export', () => {
       expect.objectContaining({ type: 'export_batch_ledger' })
     )
     // Busy until the task's own notification says it ended.
-    expect(useBatchPeakCompute().exporting).toBe(true)
+    expect(useBatchAssign().exporting).toBe(true)
     notificationHandlers.export_batch_ledger?.forEach((cb) =>
       cb({ status: 'success', process_id: 'proc-1' })
     )
-    expect(useBatchPeakCompute().exporting).toBe(false)
+    expect(useBatchAssign().exporting).toBe(false)
   })
 
   it('offers no export on an empty ledger', async () => {

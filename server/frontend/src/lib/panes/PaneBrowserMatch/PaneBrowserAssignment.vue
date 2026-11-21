@@ -884,7 +884,7 @@ const breadcrumb = computed(() => {
         <p>
         Click a row to focus the peak in the spectrum and inspector. Use the
         tier chips to filter by confidence, the view-options button for
-        isotopologue rows and the verdict filter, and <b>Assign peaks</b> in the
+        isotopologue rows and the verdict filter, and <b>Assign sample</b> in the
         bar above to launch a new run.
         </p>
         <p>
@@ -939,7 +939,7 @@ const breadcrumb = computed(() => {
           then via untargeted composition search.
         </i>
         <Button
-          label="Assign peaks"
+          label="Assign sample"
           icon="pi ph ph-magic-wand"
           size="small"
           @click="configVisible = true"
@@ -1546,7 +1546,12 @@ const breadcrumb = computed(() => {
       </Popover>
     </div>
 
-    <Dialog v-model:visible="configVisible" modal header="Assign peaks" :style="{ width: '26rem' }">
+    <Dialog
+      v-model:visible="configVisible"
+      modal
+      header="Assign sample"
+      :style="{ width: '26rem' }"
+    >
       <PeakAssignConfigForm :sample-item-id="app.data.sample.focusedId" />
       <template #footer>
         <Button label="Cancel" text severity="secondary" @click="configVisible = false" />

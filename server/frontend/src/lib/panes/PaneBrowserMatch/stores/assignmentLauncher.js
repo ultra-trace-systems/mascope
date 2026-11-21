@@ -2,7 +2,7 @@ import { ref } from 'vue'
 import { defineStore } from 'pinia'
 
 /**
- * Whether the per-sample "Assign peaks" configuration dialog is open.
+ * Whether the per-sample "Assign sample" configuration dialog is open.
  *
  * The button that opens it now sits in the browser's switch bar
  * (AssignmentRunBar.vue), while the dialog, the run configuration, the launch

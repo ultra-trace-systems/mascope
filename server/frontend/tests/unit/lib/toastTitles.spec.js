@@ -125,6 +125,23 @@ describe('whether a toast is shown at all', () => {
     expect(toastWanted({ type: 'calibration_mz_fit', status: 'error', claimed: true })).toBe(true)
   })
 
+  // A pass the Assign batch control claimed is reported by the control at
+  // every end, a stop as a warning naming the stage: the server's own
+  // outcome, a failure included, would be the same news twice. Unclaimed - a
+  // pass another tab started - it toasts as anything else.
+  it('leaves a claimed batch assignment to the control, a failure included', () => {
+    for (const status of ['success', 'warning', 'error']) {
+      expect(toastWanted({ type: 'assign_batch', status, claimed: true })).toBe(false)
+    }
+    expect(toastWanted({ type: 'assign_batch', status: 'error' })).toBe(true)
+    expect(toastWanted({ type: 'assign_batch', status: 'success' })).toBe(true)
+  })
+
+  it('heads a batch assignment as one, the pass and the control alike', () => {
+    expect(toastTitle('assign_batch', 'success')).toBe('Batch assignment')
+    expect(toastTitle('batch_assignment', 'warning')).toBe('Batch assignment warning')
+  })
+
   // The pane claims its search once the launch is acknowledged, and an empty
   // search can finish first; it says "No results found" all the same.
   it('spares an empty composition search even unclaimed', () => {

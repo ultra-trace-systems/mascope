@@ -24,7 +24,7 @@ import { useAssignmentLauncher } from './stores'
  * Rendered inside PaneBrowserMatch's switch bar, so it inherits the bar's
  * feature-flag gate rather than carrying a second copy of it, and only for a
  * focused sample: the batch level takes the same corner for its own action
- * (BatchPeakComputeBar).
+ * (BatchAssignControl).
  */
 const app = useApp()
 const launcher = useAssignmentLauncher()
@@ -66,7 +66,7 @@ const selectedRun = computed({
 })
 
 // The parent only renders this bar for a focused sample - the batch level gets
-// BatchPeakComputeBar in the same corner instead - so what is left to decide
+// BatchAssignControl in the same corner instead - so what is left to decide
 // here is the sample that has no runs yet: nothing to select and nothing to
 // show, rather than a dead "Select run" box over an empty ledger.
 //
@@ -146,7 +146,7 @@ const canAssign = computed(() => runs.value.list.length > 0 || Boolean(runs.valu
 
     <Button
       v-if="canAssign"
-      label="Assign peaks"
+      label="Assign sample"
       icon="pi ph ph-magic-wand"
       size="small"
       :disabled="!app.data.sample.focused"
@@ -154,7 +154,7 @@ const canAssign = computed(() => runs.value.list.length > 0 || Boolean(runs.valu
       :pt="
         app.ui.help.bottom(
           `
-          <h1>Assign Peaks</h1>
+          <h1>Assign Sample</h1>
           <p>
           Launches an assignment run for this sample: every peak is matched
           against the known target library first, then optionally through the

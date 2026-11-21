@@ -9,10 +9,17 @@ import { createPinia, setActivePinia } from 'pinia'
 // lists dialog sits beside it, open to everyone too: the lists are the
 // deployment's, not a workspace's.
 
-const mocks = vi.hoisted(() => ({ app: null }))
+const mocks = vi.hoisted(() => ({ app: null, peakAssignment: false }))
 
 vi.mock('@/api', () => ({ api: { http: { get: vi.fn(), post: vi.fn() } } }))
 vi.mock('@/stores', () => ({ useApp: () => mocks.app }))
+// The Assignment section is the peak-assignment feature's; off unless a test
+// turns it on.
+vi.mock('@/lib/features', () => ({
+  get peakAssignmentEnabled() {
+    return mocks.peakAssignment
+  }
+}))
 vi.mock('@/lib/base', () => ({ BaseCopyableField: true, BaseEditableField: true }))
 vi.mock('@/lib/dialogs', () => {
   const dialog = (name) => ({
@@ -59,11 +66,13 @@ const mountPane = () =>
 
 beforeEach(() => {
   setActivePinia(createPinia())
+  mocks.peakAssignment = false
   mocks.app = {
     auth: { user: { id: 1, email: 'guest@example.org', role_id: 100, role_name: 'guest' } },
     data: { user: { update: vi.fn() } },
     ui: {
       darkmode: { active: false },
+      assignmentStages: { show: false },
       notification: { push: vi.fn() },
       help: {
         set: vi.fn(),
@@ -125,5 +134,44 @@ describe('UserSettingsPane', () => {
     const account = section('Account')
     expect(account.text()).not.toContain('Deleted datasets')
     expect(account.element.dataset.help).not.toContain('Deleted datasets')
+  })
+
+  // Who sees Assign batch's Advanced group is the plan owner's call; until it
+  // is made it is behind this switch, off by default, and only where the
+  // feature is on.
+  it('offers Show assignment stages where peak assignment is on, bound to the setting', async () => {
+    expect(
+      mountPane()
+        .findAll('section h3')
+        .map((h) => h.text())
+    ).not.toContain('Assignment')
+
+    mocks.peakAssignment = true
+    const wrapper = mount(UserSettingsPane, {
+      global: {
+        stubs: {
+          Button: ButtonStub,
+          Message: true,
+          Select: true,
+          ToggleSwitch: {
+            props: ['modelValue', 'inputId'],
+            emits: ['update:modelValue'],
+            template:
+              '<button class="toggle" :id="inputId" :data-on="String(modelValue)" @click="$emit(\'update:modelValue\', !modelValue)" />'
+          }
+        },
+        directives: { helpLayer: {} }
+      }
+    })
+    const titles = wrapper.findAll('section h3').map((h) => h.text())
+    expect(titles.slice(0, 3)).toEqual(['Account', 'Theme', 'Assignment'])
+    const toggle = wrapper.find('#show-assignment-stages')
+    expect(wrapper.find('label[for="show-assignment-stages"]').text()).toBe(
+      'Show assignment stages'
+    )
+    expect(toggle.attributes('data-on')).toBe('false')
+
+    await toggle.trigger('click')
+    expect(mocks.app.ui.assignmentStages.show).toBe(true)
   })
 })

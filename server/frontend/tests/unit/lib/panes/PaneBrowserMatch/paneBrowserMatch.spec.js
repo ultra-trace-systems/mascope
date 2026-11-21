@@ -64,10 +64,8 @@ const paneStub = (name) => ({ default: { name, template: `<div class="${name}" /
 // assignmentRunBar.spec.js; what matters here is where it renders.
 vi.mock('@/lib/panes/PaneBrowserMatch/AssignmentRunBar.vue', () => paneStub('AssignmentRunBar'))
 // The batch-level counterpart, in the same corner of the bar: it reaches the
-// HTTP client through its compute store, which this file has no runtime for.
-vi.mock('@/lib/panes/PaneBrowserMatch/BatchPeakComputeBar.vue', () =>
-  paneStub('BatchPeakComputeBar')
-)
+// HTTP client through its store, which this file has no runtime for.
+vi.mock('@/lib/panes/PaneBrowserMatch/BatchAssignControl.vue', () => paneStub('BatchAssignControl'))
 vi.mock('@/lib/panes/PaneBrowserMatch/MatchCollectionTable.vue', () =>
   paneStub('MatchCollectionTable')
 )
@@ -126,8 +124,8 @@ describe('PaneBrowserMatch', () => {
     expect(wrapper.find('.PaneBrowserBatchPeaks').exists()).toBe(false)
   })
 
-  // The ledger's own action - the run selector and Assign-peaks for a sample,
-  // Compute-batch-peaks for the batch - sits in the bar rather than in the
+  // The ledger's own action - the run selector and Assign sample for a sample,
+  // Assign batch for the batch - sits in the bar rather than in the
   // ledger's header. That only keeps the flag-off layout if they are INSIDE the
   // flag-gated bar: a row of their own beside it would survive the v-if above
   // and put assignment controls in the legacy view.
@@ -135,7 +133,7 @@ describe('PaneBrowserMatch', () => {
     flagOn = false
     initialMode = 'assignments'
 
-    expect(mountSwitch().find('.BatchPeakComputeBar').exists()).toBe(false)
+    expect(mountSwitch().find('.BatchAssignControl').exists()).toBe(false)
 
     focusedSample = { sample_item_id: 1 }
     expect(mountSwitch().find('.AssignmentRunBar').exists()).toBe(false)
@@ -144,11 +142,11 @@ describe('PaneBrowserMatch', () => {
   it('offers an action bar only in the assignments paradigm', () => {
     const targets = mountSwitch()
     expect(targets.find('.AssignmentRunBar').exists()).toBe(false)
-    expect(targets.find('.BatchPeakComputeBar').exists()).toBe(false)
+    expect(targets.find('.BatchAssignControl').exists()).toBe(false)
 
     initialMode = 'assignments'
     const wrapper = mountSwitch()
-    const bar = wrapper.find('.BatchPeakComputeBar')
+    const bar = wrapper.find('.BatchAssignControl')
 
     expect(bar.exists()).toBe(true)
     // One row, not two: the bar is a child of the switch bar, so the column
@@ -169,7 +167,7 @@ describe('PaneBrowserMatch', () => {
     const wrapper = mountSwitch()
 
     expect(wrapper.find('.AssignmentRunBar').exists()).toBe(true)
-    expect(wrapper.find('.BatchPeakComputeBar').exists()).toBe(false)
+    expect(wrapper.find('.BatchAssignControl').exists()).toBe(false)
     expect([...wrapper.find('.browser-switch').element.children].map((el) => el.className)).toEqual(
       ['switch-bar', 'PaneBrowserAssignment']
     )

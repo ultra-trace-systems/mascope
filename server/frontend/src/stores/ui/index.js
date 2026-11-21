@@ -6,6 +6,7 @@ import { useHelp } from './help'
 import { useNotification } from './notification'
 import { useInbox } from './inbox'
 import { useMatchMode } from './matchMode'
+import { useAssignmentStages } from './assignmentStages'
 
 export const useUi = () => ({
   chart: useChart(),
@@ -15,5 +16,6 @@ export const useUi = () => ({
   help: useHelp(),
   notification: useNotification(),
   inbox: useInbox(),
-  matchMode: useMatchMode()
+  matchMode: useMatchMode(),
+  assignmentStages: useAssignmentStages()
 })

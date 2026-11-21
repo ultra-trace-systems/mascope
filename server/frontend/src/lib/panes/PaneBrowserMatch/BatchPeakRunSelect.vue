@@ -15,8 +15,9 @@ import { useApp } from '@/stores'
  * first, the current one being the live ledger. Picking an earlier run shows
  * the ledger as that run left it, read-only, from its snapshot.
  *
- * Rendered inside BatchPeakComputeBar, beside the actions that create runs, so
- * the thing the ledger is reading and the ways to change it sit together.
+ * Opened from Assign batch's menu, as Run history, in a popover beside the
+ * action that creates runs (BatchAssignControl), until the Details popover
+ * takes its place (MAS-1016).
  */
 const app = useApp()
 const runs = computed(() => app.data.batchPeakRun)
