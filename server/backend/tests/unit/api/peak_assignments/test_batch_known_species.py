@@ -1660,7 +1660,9 @@ class TestTheFilesClaim:
         }
 
     def test_a_present_library_ion_is_taken(self):
-        species = batch_species_from(self._record(), "T")
+        # The decision's version rides along, so a row claimed on it names
+        # which run of the stage it read (MAS-985).
+        species = batch_species_from(self._record(version=3), "T")
 
         assert species.cluster.formula == "C3H13N6O3"
         assert species.cluster.charge == 1
@@ -1673,6 +1675,7 @@ class TestTheFilesClaim:
             "present": 6,
             "test_held": 1,
             "batch_peak_run_id": "run-1",
+            "version": 3,
         }
 
     @pytest.mark.parametrize(
@@ -1768,7 +1771,7 @@ class TestTheFilesClaim:
             mz_error_ppm=0,
         )
         [row] = build_reagent_assignments(
-            [hit], peaks, "s", "run", batch={"C3H13N6O3": species.record}
+            [hit], peaks, "s", "run", batch={"C3H13N6O3": species}
         )
         [own] = build_reagent_assignments([hit], peaks, "s", "run")
 

@@ -130,7 +130,11 @@ def _patched(
         # What the sample's batch decided, which a fold reads as a run does: no
         # known species and no series, unless a test says.
         "batch_species": stack.enter_context(
-            patch(f"{_PIPE}.batch_species_for", new_callable=AsyncMock, return_value=[])
+            patch(
+                "mascope_backend.api.new.peak_assignments.batch_known_species.batch_species_for",
+                new_callable=AsyncMock,
+                return_value=[],
+            )
         ),
         "series": stack.enter_context(
             patch(
@@ -1126,7 +1130,7 @@ async def test_the_fold_takes_its_batchs_word_as_a_run_does():
     stack, mocks = _patched()
     batch_species = stack.enter_context(
         patch(
-            f"{_PIPE}.batch_species_for",
+            "mascope_backend.api.new.peak_assignments.batch_known_species.batch_species_for",
             new_callable=AsyncMock,
             return_value=[species],
         )

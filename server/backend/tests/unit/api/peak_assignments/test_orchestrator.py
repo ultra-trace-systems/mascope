@@ -270,7 +270,16 @@ def _patches(
         # What the sample's batch decided of its known species lives with its
         # batch ledger in the database; these samples' batches decided none.
         "batch_species": patch(
-            f"{_PIPE}.batch_species_for", new_callable=AsyncMock, return_value=[]
+            "mascope_backend.api.new.peak_assignments.batch_known_species.batch_species_for",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        # The rungs its batch's water ladder passed live with its batch ledger
+        # too; these samples' batches measured none.
+        "batch_rungs": patch(
+            "mascope_backend.api.new.peak_assignments.batch_decisions.rungs_for",
+            new_callable=AsyncMock,
+            return_value=(),
         ),
         # What the file was acquired at, which a thin Orbitrap file's pooled
         # curve is matched on, is read off its stream row and its .props:
@@ -1316,6 +1325,11 @@ class TestAListHitMeetsTheGrid:
         assert "candidate_density" not in rules
         assert row["tier"] == "assigned"
         assert recorder.recorded_configs()[-1]["tiering"]["series_anchored"] == 1
+        # The run's record of what the batch's decisions did counts it too, on
+        # the judged ledger (MAS-985).
+        assert recorder.recorded_configs()[-1]["batch_decisions"]["applied"] == {
+            "series": 1
+        }
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -3418,7 +3432,7 @@ class TestTheRunTakesItsBatchsWord:
             ),
         )
         patches["batch_species"] = patch(
-            f"{_PIPE}.batch_species_for",
+            "mascope_backend.api.new.peak_assignments.batch_known_species.batch_species_for",
             new_callable=AsyncMock,
             return_value=[species] if decided else [],
         )
@@ -3437,6 +3451,51 @@ class TestTheRunTakesItsBatchsWord:
         # The file's own claims are its own either way.
         assert by_peak["monomer"]["role"] == "reagent"
         assert "reason" not in by_peak["monomer"]["provenance"]["reagent"]
+
+
+class TestTheBatchsDecisions:
+    """The run reads what its sample's batch decided once, and records the
+    versions it read on its run: before any stage after the resolve, so a run
+    that fails still says what it read, and again with what they did
+    (MAS-985)."""
+
+    @pytest.mark.asyncio
+    async def test_the_run_records_the_versions_it_read(self):
+        from mascope_backend.api.new.peak_assignments.batch_decisions import (
+            KINDS,
+            BatchDecisions,
+        )
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        recorder = _Recorder()
+        patches = _patches(recorder, peaks, _stage_a_rows())
+        decisions = BatchDecisions(
+            sample_batch_id="sb-1",
+            kinds=frozenset(KINDS),
+            stages={"series": {"version": 3, "state": "current"}},
+            series={"p1": {"formula": "C6H12O6", "version": 3}},
+        )
+        patches["decisions"] = patch(
+            f"{_PIPE}.read_batch_decisions",
+            new_callable=AsyncMock,
+            return_value=decisions,
+        )
+        mocks = _start(patches)
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        assert mocks["decisions"].await_args.kwargs["kinds"] == frozenset(KINDS)
+        first, last = recorder.recorded_configs()[0], recorder.recorded_configs()[-1]
+        assert first["batch_decisions"] == decisions.record()
+        assert last["batch_decisions"]["stages"]["series"] == {
+            "version": 3,
+            "state": "current",
+            "records": 1,
+            "record_versions": [3],
+        }
 
 
 class TestStageBWinnerConfidence:

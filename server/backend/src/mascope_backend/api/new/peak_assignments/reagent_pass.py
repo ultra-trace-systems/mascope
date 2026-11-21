@@ -68,7 +68,9 @@ the files it has already folded writes the same row over the reading a file's
 run made (:func:`batch_species_row`). So does its water ladder: where the
 batch's own series passes a rung of a reagent ion's water ladder in an
 acquisition segment (step 4.2j, ``batch_water_ladder``), the files of that
-segment read the rung's peak as the reagent's ion (:func:`water_rung_row`).
+segment read the rung's peak as the reagent's ion (:func:`water_rung_row`), and
+a file's next run, or the fold of a file acquired in that segment, claims the
+rung on the same word (:func:`claim_batch_species`, MAS-985).
 """
 
 from __future__ import annotations
@@ -188,14 +190,16 @@ def _signed_ion(formula: str, charge: int) -> str:
     return formula + ("+" * charge if charge > 0 else "-" * -charge)
 
 
-def _provenance(hit: ReagentHit, batch: dict | None = None) -> dict:
+def _provenance(hit: ReagentHit, batch: BatchSpecies | None = None) -> dict:
     """What a reagent row records about why it was claimed.
 
     The ion's family and the literature that names it travel with every row, so
     a reader checks a claim against a paper rather than against the table.
 
     :param batch: Where the file claimed the ion on its batch's word
-        (:func:`claim_batch_species`), what the batch decided; None otherwise.
+        (:func:`claim_batch_species`), the batch's decision and why it is the
+        batch's: a known species decided present, or a rung its water ladder
+        passed in the sample's segment; None otherwise.
     """
     record: dict = {
         "reagent": {
@@ -221,8 +225,8 @@ def _provenance(hit: ReagentHit, batch: dict | None = None) -> dict:
         # the rung's ion also reads as, which it displaced.
         record["reagent"]["ladder"] = dict(hit.ladder)
     if batch is not None:
-        record["reagent"]["reason"] = REASON_BATCH_KNOWN_SPECIES
-        record["reagent"][REASON_BATCH_KNOWN_SPECIES] = dict(batch)
+        record["reagent"]["reason"] = batch.reason
+        record["reagent"][batch.reason] = dict(batch.record)
     return record
 
 
@@ -231,7 +235,7 @@ def build_reagent_assignments(
     peaks_df: pd.DataFrame,
     sample_item_id: str,
     peak_assignment_run_id: str,
-    batch: dict[str, dict] | None = None,
+    batch: dict[str, BatchSpecies] | None = None,
 ) -> list[dict]:
     """Turn claimed peaks into ledger rows.
 
@@ -248,7 +252,7 @@ def build_reagent_assignments(
     :param peak_assignment_run_id: The run they belong to.
     :param batch: Ion formula -> the batch's decision, for the ions the file
         claimed on its batch's word (:func:`claim_batch_species`); their rows,
-        lines included, record it as their reason.
+        lines included, record it and why it is the batch's as their reason.
     :return: One row per claimed peak.
     """
     batch = batch or {}
@@ -410,18 +414,32 @@ def claim_ladder_peaks(
 #: ``provenance.reagent.reason``, with the decision beside it under the same key.
 REASON_BATCH_KNOWN_SPECIES = "batch_known_species"
 
+#: The reason a row claimed as a rung of its batch's water ladder names, under
+#: ``provenance.reagent.reason``, with the batch's reading of the rung beside it
+#: under the same key: the batch's own claim on a file it folded
+#: (:func:`water_rung_row`), and a file's claim on the rung its batch passed in
+#: the file's segment (:func:`claim_batch_species`).
+REASON_BATCH_WATER_LADDER = "batch_water_ladder"
+
 
 @dataclass(frozen=True)
 class BatchSpecies:
-    """A library ion a file's batch decided present.
+    """A source ion a file's batch decided is there: a library ion it decided
+    present (step 4.2h), or a rung its water ladder passed in the acquisition
+    segment the file falls in (step 4.2j).
 
-    :param cluster: The ion, as the library names it.
+    :param cluster: The ion, as the library or the ladder's grammar names it.
     :param record: What the batch decided, as a row records it: the batch
-        peak, the verdict and the evidence it was read on, and the batch run.
+        peak, the reading it was decided on, the batch run and the version of
+        the batch stage that wrote it.
+    :param reason: Why the batch says so, which a row claimed on it names
+        under ``provenance.reagent.reason``: :data:`REASON_BATCH_KNOWN_SPECIES`
+        or :data:`REASON_BATCH_WATER_LADDER`.
     """
 
     cluster: ReagentCluster
     record: dict
+    reason: str = REASON_BATCH_KNOWN_SPECIES
 
 
 def _unsigned(ion_formula: str) -> tuple[str, int]:
@@ -472,6 +490,7 @@ def batch_species_from(record: dict, batch_peak_id: str) -> BatchSpecies | None:
             "present": record.get("present"),
             "test_held": record.get("test_held"),
             "batch_peak_run_id": record.get("batch_peak_run_id"),
+            "version": record.get("version"),
         },
     )
 
@@ -512,15 +531,21 @@ def claim_batch_species(
     purity: float | None = None,
     resolution: Callable[[float], float] | None = None,
 ) -> list[ReagentHit]:
-    """Claim the library ions the file's batch decided present, where the
-    file's own claims did not (``reagents.match_batch_species``).
+    """Claim the source ions the file's batch decided are there, where the
+    file's own claims did not (``reagents.match_batch_species``): the library
+    ions it decided present, and the rungs its water ladder passed in the
+    file's acquisition segment.
 
     Made after :func:`claim_reagent_peaks` and :func:`claim_ladder_peaks`, on
     the masses their anchors corrected and the peaks they left. An ion either
     claim already took is the file's own, and its batch's word adds nothing.
+    A rung's isotope lines are claimed with it, as a library ion's are: the
+    file's own lines, at its own envelope, whichever of the ladder's tracks
+    passed.
 
     :param peaks_df: The sample's peaks, as for :func:`claim_reagent_peaks`.
-    :param species: The ions the batch decided present (:func:`batch_species_from`).
+    :param species: The ions the batch decided are there, one entry per ion
+        (:func:`batch_species_from`, ``batch_decisions.rung_from``).
     :param calibration: What the cluster claim's anchors said; None where it
         had nothing to match, and then nothing is claimed.
     :param claimed: The file's own claims, whose peaks and ions are left.
@@ -626,12 +651,6 @@ def batch_species_row(
         "level": None,
         "provenance": {"reagent": record},
     }
-
-
-#: The reason a row claimed as a rung of its batch's water ladder names, under
-#: ``provenance.reagent.reason``, with the batch's reading of the rung beside it
-#: under the same key.
-REASON_BATCH_WATER_LADDER = "batch_water_ladder"
 
 
 def water_rung_row(

@@ -23,7 +23,13 @@ import pytest
 import pytest_asyncio
 from pass_runs import step_outcome  # the tests root, on sys.path
 from sqlalchemy import delete, select, update
-from stage_stubs import frame, stub_sample_reads, stub_seeded_scorer
+from stage_stubs import (  # the tests root, on sys.path
+    frame,
+    run_sample,
+    stub_known_set,
+    stub_sample_reads,
+    stub_seeded_scorer,
+)
 from stage_stubs import mechanism as mechanism_row
 
 from mascope_backend.api.new.peak_assignments import (
@@ -987,3 +993,178 @@ async def test_a_refolded_sample_is_stripped_again_by_the_next_pass(
     # Both of the first parent's lines, the 13C and the 18O row.
     assert stage["outcomes"][0]["data"]["stripped_again"] == 2
     assert stage["outcomes"][0]["data"]["stripped"] == 0
+
+
+# --- a sample's run reads the strip (MAS-985) --------------------------------------
+
+
+async def _strip_through_the_stages(batch, monkeypatch, only_these_stages):
+    """The strip run as its batch stage, its records stamped with the stage's
+    version; that version."""
+    from mascope_backend.api.new.peak_assignments.batch_stages import (
+        assign_batch,
+        stage_standing,
+    )
+
+    only_these_stages("isotope_lines")
+    _stub_the_stage_list(monkeypatch)
+    await assign_batch(sample_batch_id=batch["batch_id"])
+    [stage] = [
+        e
+        for e in (await stage_standing(batch["batch_id"]))["stages"]
+        if e["stage"] == "isotope_lines"
+    ]
+    return stage["version"]
+
+
+async def test_a_samples_next_run_reads_the_stripped_row_as_the_parents_line(
+    async_session_factory, strip_batch, monkeypatch, only_these_stages
+):
+    """A sample assigned again reads its peaks afresh, the analyte reading the
+    strip displaced among them; its run reads the batch's strip and judges the
+    row as its parent's isotope line, so the ledger it folds agrees with the
+    batch's (MAS-868's and MAS-985's Verify). The rows the strip held are read
+    as the run reads them."""
+    batch, samples, ids = strip_batch, strip_batch["samples"], strip_batch["ids"]
+    version = await _strip_through_the_stages(batch, monkeypatch, only_these_stages)
+    stripped = _stripped((await _anchors(async_session_factory, batch))["x"])
+    assert stripped["mz_offset"] == pytest.approx(C13_P, abs=1e-6)
+    sample = samples[RUN_SAMPLE]
+    stub_known_set(
+        monkeypatch,
+        lambda sample_item_id, run_id: _rows(sample_item_id, 0, run_id=run_id),
+    )
+
+    ctx = await run_sample(sample)
+
+    rows = await _run_rows(async_session_factory, ctx.run_id)
+    parent = rows["p"]
+    for peak, label in (("x", "13C"), ("o", "18O")):
+        line = rows[peak]
+        assert line.role == "iso_child"
+        assert line.owner_peak_assignment_id == parent.peak_assignment_id
+        assert line.assigned_formula == "C10H16O4"
+        assert line.isotope_label == label
+        record = line.provenance["batch_isotopologue"]
+        # Read at the parent's own peak and the line's offset the strip kept.
+        offset = {"x": C13_P, "o": O18_P}[peak]
+        assert record["predicted_mz"] == pytest.approx(
+            parent.sample_peak_mz + offset, abs=1e-5
+        )
+        assert record["batch_peak_id"] == ids[peak]
+        assert record["parent_batch_peak_id"] == ids["p"]
+        assert record["version"] == version
+        assert record["displaced"]["assigned_formula"] == _peaks()[peak][1]
+        assert line.alternatives[0]["assigned_formula"] == _peaks()[peak][1]
+    assert {e["sample_peak_id"] for e in parent.provenance["batch_isotopologues"]} == {
+        "x",
+        "o",
+    }
+    # The rows the strip held are the run's own to read: no other row reads
+    # the batch's strip.
+    assert {
+        peak
+        for peak, row in rows.items()
+        if "batch_isotopologue" in (row.provenance or {})
+    } == {"x", "o"}
+    assert rows["z"].role == "M0"
+    # The ledger the run folds reads the line as the batch does.
+    member = (await _members(async_session_factory, ids["x"]))[sample]
+    assert member.role == role_code("iso_child")
+    assert member.owner_batch_peak_id == ids["p"]
+    # And the run records the version of the strip it read.
+    async with async_session_factory() as session:
+        config = (await session.get(PeakAssignmentRun, ctx.run_id)).config
+    read = config["batch_decisions"]["stages"]["isotope_lines"]
+    assert (read["version"], read["records"]) == (version, 2)
+    assert read["record_versions"] == [version]
+    assert config["batch_decisions"]["applied"]["strips"] == {"read": 2}
+
+
+@pytest.mark.parametrize(
+    "redetected, applied",
+    [("x", {"read": 1, "peak_absent": 1}), ("p", {"peak_absent": 2})],
+    ids=["the stripped peak", "the parent's peak"],
+)
+async def test_a_samples_next_run_reads_on_past_a_peak_it_no_longer_has(
+    async_session_factory,
+    strip_batch,
+    monkeypatch,
+    only_these_stages,
+    redetected,
+    applied,
+):
+    """A re-detection mints the sample new peak ids, and its members name the
+    old ones until its next fold: the run that brings it up to date leaves a
+    strip whose peak, or whose parent's, it no longer has, and records it as
+    such."""
+    batch, samples, ids = strip_batch, strip_batch["samples"], strip_batch["ids"]
+    await _strip_through_the_stages(batch, monkeypatch, only_these_stages)
+    sample = samples[RUN_SAMPLE]
+    stub_known_set(
+        monkeypatch,
+        lambda sample_item_id, run_id: _rows(sample_item_id, 0, run_id=run_id),
+    )
+    async with async_session_factory() as session:
+        await session.execute(
+            update(BatchPeakOccurrence)
+            .where(
+                BatchPeakOccurrence.batch_peak_id == ids[redetected],
+                BatchPeakOccurrence.sample_item_id == sample,
+            )
+            .values(sample_peak_id=f"redetected-{redetected}")
+        )
+        await session.commit()
+
+    ctx = await run_sample(sample)
+
+    assert ctx.batch_applied["strips"] == applied
+    rows = await _run_rows(async_session_factory, ctx.run_id)
+    # No row reads a strip the run left; the other strip, on peaks the run
+    # holds, is read as the parent's line.
+    assert {
+        peak
+        for peak, row in rows.items()
+        if "batch_isotopologue" in (row.provenance or {})
+    } == ({"o"} if redetected == "x" else set())
+
+
+async def test_a_decoy_arm_reads_no_strip(
+    async_session_factory, strip_batch, monkeypatch, only_these_stages
+):
+    """A decoy arm claims what its control claims and reads none of the
+    batch's judging: its own lines decide whether a row is a line
+    (``pipeline.BATCH_INPUTS``)."""
+    from mascope_backend.api.controllers.samples.lib.samples_fetch import (
+        fetch_sample,
+    )
+    from mascope_backend.api.new.peak_assignments import pipeline
+    from mascope_backend.api.new.peak_assignments.batch_decisions import (
+        read_batch_decisions,
+    )
+
+    batch, samples, ids = strip_batch, strip_batch["samples"], strip_batch["ids"]
+    await _strip_through_the_stages(batch, monkeypatch, only_these_stages)
+    # A record of a decision a decoy does read on the same batch peak - here a
+    # known-species decision the strip left behind, marked stale - reads no
+    # strip into the arm with it.
+    async with async_session_factory() as session:
+        row = await session.get(BatchPeak, ids["x"])
+        row.provenance = {
+            **row.provenance,
+            "known_species": {"verdict": "present", "reads": {}, "stale": True},
+        }
+        await session.commit()
+    sample = await fetch_sample(samples["S03"])
+
+    run = await read_batch_decisions(
+        sample, profile=None, kinds=pipeline.batch_kinds(pipeline.RUN, decoy=False)
+    )
+    decoy = await read_batch_decisions(
+        sample, profile=None, kinds=pipeline.batch_kinds(pipeline.DECOY, decoy=True)
+    )
+
+    assert set(run.strips) == {"x", "o"}
+    assert {strip.parent_peak_id for strip in run.strips.values()} == {"p"}
+    assert decoy.strips == {}
+    assert "isotope_lines" not in decoy.record()["stages"]

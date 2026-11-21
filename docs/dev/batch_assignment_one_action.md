@@ -312,6 +312,19 @@ As built (`batch_stages.py`):
 - After a rewriting stage, every sample it wrote in is judged again through the stage
   list (`batch_rejudge.py`), and after the series every sample whose member a series
   record corroborates.
+- A sample's own run reads the records (MAS-985, `batch_decisions.py`): once, in its
+  resolve stage, as a declared input of the stage list (`pipeline.BATCH_INPUTS`). A known
+  species and a water-ladder rung enter at the claim stage, a listed compound at the
+  propose stage (elected after the search, as the known-species claim takes a member), a
+  strip and a series at the judging. A rung reaches a sample acquired inside a stretch it
+  passed in, which the ladder's record now bounds by its first and last spectrum's times;
+  `claimed_samples` places only a sample the times cannot (no time, or a record from
+  before them). A strip's record now keeps the line's m/z offset. A listed compound or a
+  strip on a peak the run's frame does not hold (an earlier detection's peak id, which a
+  member names until the sample's next fold) is left, as `peak_absent`. A decoy arm reads
+  the source ions and the listed compounds and no strip or series. The run records, under
+  `config.batch_decisions`, each stage's version and state, read before the records, how
+  many it read at which versions, and what they did to its rows.
 
 ### 5.2 One run per pass (MAS-1011)
 
@@ -379,7 +392,7 @@ As built (`batch_stages.assign_batch`, `batch_runs.in_batch_run`):
   - `new_samples` and `removed_samples`: the batch's samples against the set the last
     pass covered;
   - `resampled`: samples whose run read older batch decisions than the current ones
-    (MAS-985 records the versions a run read);
+    (MAS-985 records the versions a run read, `config.batch_decisions.stages`);
   - `library_changed`, `settings_changed` and `engine_changed`;
   - `stages_stale`, for any other stale mark.
 

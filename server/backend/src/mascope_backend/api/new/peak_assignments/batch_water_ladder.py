@@ -50,8 +50,10 @@ each ladder on the batch's own series instead (``mascope_tools.composition
    committed reading, source role or isotope line explains, before and
    after.
 
-A sample's next run reads its peaks afresh; the next measurement reads them
-again. The reading runs outside the fold lock (and off the event loop) and the
+A sample's next run, and the fold of a sample acquired inside a segment a
+rung passed in, claims the rung on the batch's word (``batch_decisions``,
+MAS-985), which is why each segment's record keeps its first and last time; a
+sample acquired outside every segment claims none. The reading runs outside the fold lock (and off the event loop) and the
 writes under it, a chunk of rungs per transaction, each rung's members read
 again as the ledger stands then.
 
@@ -726,12 +728,24 @@ def files_recorded(claim: Claim) -> tuple[list[dict], dict[str, int]]:
 
 
 def segment_readings(claim: Claim, segments: list[Segment]) -> list[dict]:
-    """The rung's reading in each segment its ladder reached it in."""
-    sizes = {segment.index: len(segment.spectra) for segment in segments}
-    return [
-        {"segment": index, "spectra": sizes.get(index), **reading.to_json()}
-        for index, reading in sorted(claim.line.readings.items())
-    ]
+    """The rung's reading in each segment its ladder reached it in, with when
+    the segment's first and last spectra were acquired (None for the segment
+    of spectra with no time): a sample's run reads the rung where the sample
+    was acquired inside a segment it passed in (``batch_decisions``)."""
+    by_index = {segment.index: segment for segment in segments}
+    entries = []
+    for index, reading in sorted(claim.line.readings.items()):
+        segment = by_index.get(index)
+        entries.append(
+            {
+                "segment": index,
+                "spectra": None if segment is None else len(segment.spectra),
+                "start": None if segment is None else segment.start,
+                "end": None if segment is None else segment.end,
+                **reading.to_json(),
+            }
+        )
+    return entries
 
 
 def claimed_samples(
