@@ -1223,9 +1223,9 @@ measurements the reasons read.
   candidate. Hovering says which candidate is
   which. The tier does not weigh either, and the row's level does not move with it.
   The ledger shows the run's own match in its **listed as**
-  column, beside the formula, folded to a flask with the list's tags beside it; hovering
-  the flask gives the first name, its list, the tags and how many more names the run
-  matched, so a row's list reading is there without opening the inspector. A row matched
+  column, beside the formula, folded to the first name cut short, with the list's tags
+  beside it; hovering it gives the first name whole, its list, the tags and how many more
+  names the run matched, so a row's list reading is there without opening the inspector. A row matched
   to a target shows the target's mark there, or *target* and its name written out, and
   *unlisted* where no list carries its key. **Listed
   as, in full**, in the view menu, writes the name and the list out in the column, in
@@ -1418,8 +1418,8 @@ acts on the batch peak rather than on the sample: the chosen identity is pinned 
 species for the whole batch, then measured in every sample that holds the peak. A sample
 where it can be measured now reads it with a fit of its own; one where it cannot keeps
 what it had. The batch peak claims the pinned formula whatever the samples' vote says -
-and says so when the two disagree - and a hand icon beside the formula in the *Batch
-peaks* ledger marks it. *Release*, in the inspector's note, undoes it: the samples that
+and says so when the two disagree - and a hand badge beside the formula in the *Batch
+peaks* ledger marks it, an outline in the text colour, as every change a person made is. *Release*, in the inspector's note, undoes it: the samples that
 were re-measured go back to what they read before, and the batch decides again.
 
 Each of those identities was measured in the sample that brought it, not in the one
@@ -1460,7 +1460,8 @@ so the labelled record stays informative for recalibration.
 Verdicts are recorded from the peak inspector, or from the ledger's Verdict column. In the
 inspector, each verdict opens a small dialog for an optional note, and *Confirm*'s also
 asks for the evidence level. In the ledger the cell is a button, as in the *Batch peaks*
-ledger, so an unverified row shows a faint seal that opens a verdict form in place. A
+ledger, so an unverified row's cell, which shows nothing until someone judges it, opens a
+verdict form in place. A
 verdict is about the compound, so it is recorded on the family's M0 whichever member the
 row is.
 
@@ -1552,8 +1553,9 @@ calibration is fit on: a confirmation counts once, with or without one.
 
 The *Verdict* column of the *Batch peaks* ledger is where a batch-level verdict is
 recorded: click the cell to judge the species, change the verdict or retract it. The
-samples it covers show it as a borrowed badge - in parentheses in the assignment
-ledger, as a dashed pill in the inspector - and the assignment ledger's verdict filter
+samples it covers show it as a borrowed badge - the verdict's own icon with a small
+**#**, the batch's mark, at its corner, in the assignment ledger and the inspector both -
+and the assignment ledger's verdict filter
 counts them under it, so *Unverified* lists only rows that show no badge at all. A
 per-sample verdict always wins: verifying one of those samples yourself records an
 exception, and where the two disagree the per-sample badge says so.
@@ -1929,8 +1931,9 @@ reason is still named. Something
 besides the peak lifts it: a line of its isotope pattern committed in a sample, the
 same neutral through another channel of the batch, or a homologous series of the
 batch (*Detecting series*, below). A better fit does not. The batch peak's formula
-carries a repeat mark: hover it for the share of the spectra the peak is in, the
-split it cleared and what the reading stands on. A down arrow beside its tier names
+carries a repeat badge, amber where persistence alone holds the reading at candidate and
+grey where something else has seen it: hover it for the share of the spectra the peak is
+in, the split it cleared and what the reading stands on. A down arrow beside its tier names
 the reason that holds it, and a sample's inspector shows the share under the row.
 With the threshold at 0 and no ceiling set, the defaults, every batch peak is taken
 by height and none on persistence alone.
@@ -1975,7 +1978,8 @@ does not reach keeps the peak as it was. Where a sample
 already reads the peak another way, the series' formula takes it only where it measures
 at least as well. On a batch peak that already reads the proposed formula, the series is
 recorded beside it, and only the samples that do not read the formula yet are measured. A
-row a series vouches for shows a stair mark beside its formula, whose tooltip names the
+row a series vouches for shows a stairs badge beside its formula, in green as a reading
+that supports it, whose tooltip names the
 step and the assigned compound the series starts at. The series counts as a second
 observation of that formula (*in a series*, above), which lifts it past *one peak only*
 and *rivals left standing* and nothing else: right after the detection, every sample
@@ -2102,7 +2106,8 @@ for the profile the batch's own runs resolved - names a flat reading's ion, the 
 names that ion too. The flag claims nothing: a source ion is claimed by each sample's
 reagent pass, and across the batch by *Decide known species* (below).
 
-The batch peak's formula carries a level mark: hover it for the coefficient of
+The batch peak's formula carries an equals badge, in grey, since the flag moves nothing:
+hover it for the coefficient of
 variation, the share of the samples and the source ion where one is named. The **Flat
 series** switch keeps only those batch peaks, the ledger's CSV carries the flag on every
 member (`flat_series`, `flat_series_cv`, `flat_series_source_ion`), so background can be
@@ -2163,12 +2168,12 @@ half the decoys on six-sample sets would pass. That is why those samples are lef
 A stamp is a recorded fact, not evidence any tier reads yet; the later batch isotope
 checks count it. A line two compounds both predict goes to the one whose ratio holds in
 the larger share of its samples, then in more of them. The parent's row in the
-*Batch peaks* ledger carries a stamp mark where the batch shows one of its isotope
-lines. On hover it lists every isotope line: stamped, found and not holding its ratio,
+*Batch peaks* ledger carries a three-bars badge where the batch shows one of its isotope
+lines, green once one of them holds its ratio and grey before. On hover it lists every isotope line: stamped, found and not holding its ratio,
 predicted with no batch peak at its mass, or not separated from another line. A stamped
 line folds under its parent like an isotopologue, with the isotope beside its offset
-(**M+2 81Br**). The tag is outlined dashed where the stamping predicted the line, and
-solid where every sample's own run had already read it as the parent's isotopologue. A
+(**M+2 81Br**). The tag is set in italics where the stamping predicted the line, and
+upright where every sample's own run had already read it as the parent's isotopologue. A
 stamped line keeps its own tier and formula.
 
 The member rows of the ledger's CSV export and of the SDK's `batch_peaks.members` say,
@@ -2192,7 +2197,7 @@ reads the peak as, its own formula or none. Click the line to select the parent'
 in the sample. On the parent's monoisotopic row, where the batch shows one of its
 isotope lines and the row reads the formula and ionization the lines were predicted for,
 a line counts its stamped isotope lines, and lists each one on hover as the ledger's
-stamp mark does. The assignment detail route and the SDK's `peak_assignments.detail`
+badge does. The assignment detail route and the SDK's `peak_assignments.detail`
 carry both, as `batch_stamped_isotopologue_of` and `batch_diagnostic_isotopologues`.
 Neither moves the row's tier.
 
@@ -2248,7 +2253,8 @@ or where the row carries isotope lines of its own in that sample. A run imported
 another engine is that engine's record and is never rewritten. The batch peak then
 folds under the compound as any isotopologue does, with its line outlined beside the
 offset (**M+1 13C**); its tooltip says what the samples' runs had read it as. The
-compound carries a scissors mark listing the rows it took. **Stripped rows**, in the
+compound carries the three-bars badge of its isotope lines, which also lists the rows it
+took. **Stripped rows**, in the
 view menu behind the cog, keeps only those compounds.
 
 The ledger route and `batch_peaks.list` carry the stripped row's record as
@@ -2258,7 +2264,7 @@ its members read it as the compound's line. The compound lists the row for as lo
 the row keeps its record, and keeps its list for as long as its consensus names the
 formula and ionization the lines were read against. A row released from the compound
 (its samples assigned again, folded again or curated) leaves the list, and a compound
-with no row left loses its scissors mark and leaves **Stripped rows**. The rewrite
+with no row left loses them from its badge and leaves **Stripped rows**. The rewrite
 stays: a later *Strip isotopologue rows* reads the rows not yet stripped, and a
 sample assigned again is read afresh by its own run. It runs as a batch run, whose
 summary counts the rows read, at a line, stripped, held, off their share and on too few
@@ -2405,8 +2411,8 @@ its reading, the other claims in its place; where neither can, neither claims.
 Nothing else is claimed: an analyte
 that is no known species is never read as one through the batch.
 
-The batch peak carries the decision: a checklist mark beside its formula, in the primary
-colour where the species is present, and on hover the species, the verdict, the samples
+The batch peak carries the decision: a drop badge beside its formula, in grey, as a
+reagent decided moves no tier, and on hover the species, the verdict, the samples
 its peak is in and those whose own test held, how many samples the claim took, and the
 samples it kept with their readings. Where the batch did not decide a species present,
 the samples whose own claim stands are listed instead. An earlier decision's claims are
@@ -2494,9 +2500,8 @@ hydrate still counts. A rung a later measurement no longer passes withdraws its 
 the members and in-app rows it rewrote read again what they read before, but for a row
 a person assigned by hand since.
 
-A batch peak at a passing rung carries a drop mark beside its formula. It is in the
-primary colour where the batch peak reads the reagent's ion, and muted where its other
-samples' readings kept the batch peak's own. On hover it shows the rung, the stretches
+A batch peak at a passing rung carries a drop badge beside its formula, the one a known
+species decided wears, in grey. On hover it shows the rung, the stretches
 it passed in out of the batch's stretches, how often it and the masses beside it were
 seen there, how many samples the claim took, what the batch peak read before, and the
 samples kept with their readings.
@@ -2587,7 +2592,8 @@ the m/z is the anchor's bin, the intensity the brightest sample's, the formula a
 consensus over the members. *Listed as* is what a reference list calls the consensus
 formula, where a sample's run matched it from a list: the ledger keeps the listing of each
 identity a member brought matched from a list, through whichever channel, and shows the
-consensus formula's. It is folded to a flask and the list's tags, the name on hover,
+consensus formula's. It is folded to the name cut short and the list's tags, the whole
+name and its list on hover,
 as in a sample's ledger, and **Listed as, in full** in the view menu writes it out. A batch ledger folded before this column existed shows it once its
 samples are folded again (*Rebuild batch ledger*). The column also names the target
 compound a member was matched to, off the consensus as a sample's ledger does: *target*
@@ -2690,12 +2696,13 @@ curation or a re-fold has moved the batch peak. The API names each grade as the
 table does, except *unstable*, whose value there is `red`.
 
 The *Batch peaks* ledger shows the grade in its **Continuity** column, after *Samples*,
-once the pass has graded the batch. Stable, drift and unstable are drawn as a badge;
+once the pass has graded the batch. Stable, drift and unstable are drawn as a badge, in
+green, teal and amber: the colours of a reading that supports, drifted and holds back;
 inconclusive and insufficient read muted, and a batch that is not time-ordered reads
-*Not graded*, its tooltip saying why. A badge drawn dashed is partial: the pass left
-some of the batch peak's pairs ungraded, and where it left all of them the dashed badge
-reads *Not graded*. The pair counts it gives are of the graded pairs. A badge outlined in the warning colour, with a
-clock, is behind the ledger: a sample folded in since, or the consensus formula moved,
+*Not graded*, its tooltip saying why. A badge that says *partial* beside its grade is
+partial: the pass left some of the batch peak's pairs ungraded, and where it left all
+of them the badge reads *Not graded*. The pair counts it gives are of the graded pairs.
+A badge outlined in the warning colour, with the out-of-date arrows, is behind the ledger: a sample folded in since, or the consensus formula moved,
 and the next pass grades it again. Clicking the cell lists the pairs behind the grade -
 the most alarming first, up to four - each with its grade, the samples both peaks are
 in, the median ratio, its spread and its drift, and for two channels what *Read
@@ -2753,7 +2760,8 @@ three or more. Two formulas are not tested when:
 
 A batch peak that is parted on either axis is a probable blend.
 
-A probable blend carries an intersect mark beside its formula in the *Batch peaks* ledger.
+A probable blend carries a two-circles badge beside its formula in the *Batch peaks*
+ledger, in amber, since it is a reason to doubt the consensus.
 Its tooltip names the two formulas with their ions and how many samples read each, and
 says which holds the bright samples, or the early ones where the order switches once.
 Where it switches more often, the tooltip says the two come in blocks.

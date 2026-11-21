@@ -6,8 +6,9 @@ channels co-vary, so the source's chemistry moved. **Unstable**: it drifts with 
 saying the traces co-vary, or it jumps, so two species may share a trace.
 **Inconclusive** and **insufficient**: the ratio could not be read either way. A
 batch peak shows its most alarming pair's grade; click it for the pairs, each with its
-ratio, spread and drift. A dashed badge is partial, some pairs left ungraded, or all of them where it reads
-*Not graded*; a clock
-means samples folded in or the formula moved since it was graded. The grade
+ratio, spread and drift. Stable reads green, drift teal and unstable amber. A badge
+that says *partial* left some pairs ungraded, and one that reads *Not graded* left all
+of them; the out-of-date arrows mean samples folded in or the formula moved since it
+was graded. The grade
 corroborates internal consistency only: it never identifies a species, and no tier
 or verdict moves on it.
