@@ -845,6 +845,50 @@ def test_a_sum_across_polarities_is_refused(short_clusters, tmp_path):
     views.series(store, key, normalise=cluster)
 
 
+def test_a_sum_stands_over_samples_of_both_polarities_read_in_one(
+    short_clusters, tmp_path
+):
+    """The second batch's samples are positive and hold neither ion's
+    value: both ions are read in the negative samples alone, so the sum
+    over the whole campaign stands, and that batch, whose rows hold no
+    value, still counts against its completeness."""
+    client = FakeClient(short_clusters)
+    _, middle, _ = client.batch_ids
+    bare, cluster = short_clusters.truth.shares.series_keys
+    client.by_batch[middle] = client.by_batch[middle].assign(polarity="+")
+    ions = client.ions[middle]
+    at = ions["target_ion_id"].isin([k.removeprefix("ion:") for k in (bare, cluster)])
+    ions.loc[at, ["intensity", "match_category"]] = 0
+    store = _sync(client, tmp_path)
+    key = _flat(short_clusters)[0]
+    samples = store.table("samples")
+    assert set(samples["polarity"].astype(str)) == {"+", "-"}
+    in_middle = samples["sample_batch_id"].astype(str) == middle
+    # Its rows are there, without a value
+    rows = store.table("ion_series", batches=[middle])
+    rows = rows[rows["series_key"].astype(str).isin([bare, cluster])]
+    assert len(rows) and rows["intensity"].isna().all()
+    expected = 1 - in_middle.sum() / len(samples)
+    assert expected == pytest.approx(2 / 3)
+
+    by_sum = views.series(store, key, cadence="raw", normalise=[bare, cluster])
+    summed = views.series(store, [(bare, cluster)], cadence="raw")
+
+    assert by_sum.attrs["normalise_complete"] == pytest.approx(expected)
+    got = _by_sample(by_sum, store)
+    ids = samples["sample_item_id"].astype(str)
+    assert got.loc[ids[in_middle]].isna().all()
+    assert got.loc[ids[~in_middle]].notna().all()
+    # The sum as a series: no value in the batch whose rows hold none,
+    # whose samples it still reads
+    alone = _by_sample(summed, store)
+    assert alone.loc[ids[in_middle]].isna().all()
+    assert alone.loc[ids[~in_middle]].notna().all()
+    assert summed["n_samples"].sum() == len(samples)
+    top = views.top(store, 2, "median", normalise=[bare, cluster])
+    assert top.attrs["normalise_complete"] == pytest.approx(expected)
+
+
 def test_a_tuple_of_keys_is_their_sum_as_one_series(clusters, cluster_values):
     campaign, store = clusters
     bare, cluster = campaign.truth.shares.series_keys
