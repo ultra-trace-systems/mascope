@@ -2,9 +2,11 @@
 import { useCard } from './useCard.js'
 
 // The notice under the answer when the card reads a run that is not the
-// sample's result: an earlier run, named, or a decoy, with its arm. The
-// verdict bar and the changes by hand are off on both, and the notice's
-// tooltip says why (docs/dev/assignment_ledger_and_card.md, section 4.2).
+// sample's result, named for what it is: an earlier run, a newer run that has
+// not completed, the batch ledger, or a decoy with its arm (runNotice in
+// cardReadings.js). The verdict bar and the changes by hand are off on each,
+// and the notice's tooltip says why (docs/dev/assignment_ledger_and_card.md,
+// section 4.2).
 const { notice } = useCard()
 </script>
 
