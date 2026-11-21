@@ -7,7 +7,8 @@ report (PDF), for the long time series the app does not draw. The design is
 [`docs/dev/visual_digest.md`](../../docs/dev/visual_digest.md).
 
 The package is young: it has its data layer, the scope, the campaign store
-and the views, a command line over them, and its test backbone.
+and the views, a command line over them, the Figure spec charts are drawn
+from and its two renderers, and its test backbone.
 
 ## Scope
 
@@ -192,6 +193,126 @@ What every view does the same way:
   engine readings of a formula in one bin, or rollup days the last sync
   left pending. The TIC is binned from the samples. `attrs["source"]`
   says which drew the frame: `rollups` or `rows`.
+
+## Charts: the Figure spec and its renderers
+
+A chart is a `Figure`: what every renderer draws, and the numbers behind it.
+Its panels draw columns of one frame, each panel with one of eight
+primitives. The renderers draw the spec, never the code that made it, so a
+figure reads the same as a PNG in a report and as an interactive plot in an
+HTML dashboard.
+
+```python
+import pandas as pd
+from mascope_viz.charts import Figure, Panel, subtitle
+from mascope_viz.data import views
+from mascope_viz import render
+
+frame = views.series(store, ["ion:...", "tic"], cadence="1h")
+fig = Figure(
+    "species_series",
+    "Species over time",
+    subtitle(cadence="1h", stat="median", normalise="none", tz=frame.attrs["tz"]),
+    panels=[
+        Panel(
+            "series",
+            axes={"x": {"label": f"Time ({frame.attrs['tz']})"}, "y": {"scale": "log"}},
+            encodings={"x": "t", "y": "value", "group": "key", "lo": "lo", "hi": "hi"},
+            options={
+                "spans": [
+                    {
+                        "start": "2026-07-01 06:00",
+                        "end": "2026-07-01 10:00",
+                        "label": "Episode 1",
+                        "kind": "event",
+                    }
+                ]
+            },
+        )
+    ],
+    summary={"bins": len(frame)},
+    data=frame,
+)
+render.save(fig, "species.png")  # matplotlib
+render.save(fig, "species.html", theme="dark")  # plotly, one self-contained file
+render.matplotlib(fig)  # a matplotlib.figure.Figure
+render.plotly(fig)  # a plotly.graph_objects.Figure
+```
+
+| Primitive | Draws | Encodings (needed; optional) | Options |
+|---|---|---|---|
+| `series` | lines over time or a number, a band, gaps as gaps | `x`, `y` (one column or a list); `group`, `lo`, `hi` | `mode`, `markers`, `colours`, `spans`, `rules` |
+| `strip` | categorical rows by time, a cell where a row has a value | `x` (time), `y`; `value`, `mark` | `width`, `mark_label`, `spans`, `rules` |
+| `heatmap` | an x by y grid of cells coloured by value | `x`, `y`, `value` | `mode`, `palette`, `centre` |
+| `scatter` | points, size and colour by column, the top N labelled | `x`, `y`; `size`, `colour`, `label` | `top_n`, `palette`, `colours` |
+| `sticks` | a spectrum: lines from zero, the top N labelled | `x`, `y`; `group`, `label` | `top_n`, `colours` |
+| `bars` | bars per category, side by side or stacked, error bars | `x`, `y`; `group`, `lo`, `hi` | `stack`, `colours` |
+| `box` | a box per category from its quartiles | `x`, `q1`, `median`, `q3`, `lo`, `hi`; `group`, `mean` | `colours` |
+| `table` | rows of the frame, formatted | `columns` (a list) | `headers`, `formats`, `max_rows` |
+
+`mascope_viz.charts.PRIMITIVES` holds the same, with the column types each
+encoding takes and each option's default. What every figure shares:
+
+- **The subtitle** of a chart over time names its cadence, its
+  normalisation and its time zone; `subtitle()` writes it from what a
+  view's `attrs` say. A time axis' label names the zone too.
+- **Gaps stay gaps.** A NaN breaks a line on both renderers, a value alone
+  between two gaps is drawn as a point, and a value that is not positive
+  is a gap on a log axis. A cell without a value is not drawn.
+- **A group keeps its colour** in every panel of a figure, and appears
+  once in its legend. Groups take the categorical palette in the order
+  they first appear; `colours` names a group's colour by token instead.
+- **`spans`** shade stretches of a time panel (`kind` `event` or `gap`),
+  and **`rules`** mark a moment, such as a change of engine run, each with
+  a label. A time without a zone is in the x column's zone.
+- **`where`** keeps the rows of the figure's frame a panel draws, so small
+  multiples share one frame: `Panel(..., where={"key": "ion:..."})`.
+- **`mode="raster"`** on `series` and `heatmap` is reserved for the
+  datashader path of the `[big]` extra, which does not exist yet: the
+  panel is drawn as marks, and a note under the figure says so.
+- **Notes** print under the figure, with a line for a table that shows
+  only its first `max_rows` rows.
+- **Names are data.** A sample or a species name in a title, a legend or a
+  table is drawn as written: plotly gets it HTML-escaped and matplotlib
+  with its `$` escaped, so neither reads it as markup or mathtext.
+
+**The spec is a document.** `fig.to_json()` writes a JSON document of
+version `figure_spec_version` (1): the panels, each with its primitive,
+axes, encodings and options; the summary; the notes; and the frame column
+by column, each column with its type (`time` with its zone, `number`,
+`integer`, `boolean`, `text` or `category` with its categories in order).
+`Figure.from_json()` reads it back to an equal figure, which renders the
+same, and refuses a document of a later version or with a field it does not
+know: a primitive has no escape hatch to one renderer's settings. A panel
+names colours, palettes and span kinds by token, and the theme gives them
+values, so the web app can draw the same document with its own tokens.
+
+**Time.** matplotlib places each value at its instant and labels the axis
+in the column's zone. plotly.js has no zones, so the plotly renderer draws
+the wall-clock time in the column's zone: the same labels, except around a
+clock change, where plotly shows the repeated hour twice at one place.
+
+**The theme** (`mascope_viz.render.theme`) has a light and a dark variant
+of the web app's look: its grounds, IBM Plex Sans (DejaVu Sans where it is
+not installed), and its five-series palette first, then five more hues.
+The sequential ramp is magma, light to dark on the light ground and dark to
+light on the dark one; the diverging ramp runs from blue through grey to
+the accent. `theme.check("light")` is the contrast check both themes pass:
+every categorical colour at 3:1 or more on every ground (WCAG 2.2, 1.4.11),
+any two of them apart, and the ramps ordered and apart from the ground.
+`theme.get("dark").tokens()` lists every token's colour.
+
+**Saving.** `render.save(fig, path, theme=..., plotlyjs="inline")` writes
+by the extension: `.png`, `.svg` and `.pdf` with matplotlib, `.html` with
+plotly (`plotlyjs="cdn"` for a small file that loads plotly.js from its
+CDN), `.json` the document. A PNG and an HTML file are the same bytes on
+every run; an SVG and a PDF are once `SOURCE_DATE_EPOCH` pins the date
+they record.
+
+**The import boundary.** `mascope_viz.data` and `mascope_viz.charts`
+import pandas, NumPy and pyarrow, never matplotlib or plotly, so a server
+can build and send specs without the renderers (the note's section 2.8).
+`mascope_viz.render` imports each renderer only when it draws.
 
 ## The command line
 
