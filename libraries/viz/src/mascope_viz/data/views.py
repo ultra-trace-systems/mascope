@@ -21,17 +21,27 @@ What the views share:
 
 - **Keys** are series keys as the store spells them (``ion:<target_ion_id>``,
   ``formula:<formula>|<mechanism>``), or ``tic`` for the samples' TIC. A key
-  the store does not hold is an error.
+  the store does not hold is an error. A tuple of series keys among them is
+  a **sum**: their per-sample sum as one series, keyed by the members joined
+  by ``+`` and named by their names joined by `` + ``, so a reagent's total
+  is drawn and binned like any other key. A sample's sum is that of the
+  members with a value in it, NaN when none has. Its members must be read in
+  one polarity, and no member twice.
 - **A sample's value of a key** is the sum of the key's values in it (two
   batch peaks can carry one formula; the SDK notebooks sum a label's peaks
   per sample the same way). A key read in a batch is NaN in the batch's
   samples where it was not matched or not detected: below detection is NaN,
   never zero, and no view fills it in.
 - **Normalisation** (decision 7) is ``none``; ``tic``, each value divided by
-  its sample's TIC; or a series key such as a reagent ion's ``ion:<id>``,
-  each value divided by that key's value in the same sample. It is applied
-  per sample, before any binning; a sample whose normaliser is NaN or 0 has
-  NaN values.
+  its sample's TIC; a series key such as a reagent ion's ``ion:<id>``, each
+  value divided by that key's value in the same sample; or a sequence of
+  series keys, divided by their sum in the sample, as a sum key is summed. A
+  reagent spread over clusters whose shares move with humidity (the bare ion
+  and its water cluster, nitrate's monomer, dimer and trimer) is normalised
+  by the sum of its ions: dividing by one of them leaves that one's share's
+  cycle in every species. A sequence of one key is that key. Normalisation
+  is applied per sample, before any binning; a sample whose normaliser is NaN
+  or 0 has NaN values.
 - **Time** (decision 6): the store is UTC, and a view shows times in a zone,
   ``tz``: None for the store's display zone (the instrument's acquisition
   zone, unless the scope named another), ``"instrument"`` for the
@@ -42,13 +52,18 @@ What the views share:
 - **attrs**: every frame says what it is, for a chart to print: ``view``,
   ``tz``, ``cadence`` (what one row stands for: ``1min``, ``raw``, ``hour of
   day``, ``week``, ...), ``normalise`` and ``normalise_name`` (what the
-  values are divided by, by name), ``keys``, ``start`` and ``end`` (the
+  values are divided by, by name: a list of keys for a sum, its members'
+  names joined by `` + ``), ``normalise_members`` (the keys divided by, in
+  the order given: one for a single key, none for ``none`` and ``tic``),
+  ``normalise_complete`` (the fraction of the window's samples, of the
+  batches that read a member, in which every member has a value; None
+  without a member or such a sample), ``keys``, ``start`` and ``end`` (the
   window, ISO in UTC), ``mixed_runs`` and ``run_changes`` (whether the
   batches of the window's samples carry more than one ledger reading in a
   polarity the formulas are read in, and where the reading changes between
   them: a run change is flagged, never silently joined; both empty without
-  a formula key or a formula to normalise by) and the store's
-  ``provenance``. A formula is read in one polarity only, so a change in
+  a formula key or a formula to normalise by, a sum's members included)
+  and the store's ``provenance``. A formula is read in one polarity only, so a change in
   the other polarity's batches is none of its keys'.
 """
 
@@ -386,33 +401,91 @@ def _positions(index: pd.Index, column: pd.Series) -> np.ndarray:
     return index.get_indexer(column.astype(str))
 
 
-def _check_keys(store: CampaignStore, keys: Any, *, tic: bool = True) -> list[str]:
-    """*keys* checked against the store, duplicates dropped, order kept."""
+#: A key as a view takes it: a series key (or ``tic``), or a sum's members.
+Key = str | tuple[str, ...]
+
+#: A normaliser: ``none``, ``tic``, a series key, or a sum's members.
+Normaliser = str | tuple[str, ...]
+
+
+def _key_name(key: Key) -> str:
+    """A key's name in a frame: a sum's members joined by ``+``."""
+    return key if isinstance(key, str) else "+".join(key)
+
+
+def _members(key: Key) -> tuple[str, ...]:
+    """The series keys a key reads: itself, or a sum's members."""
+    return (key,) if isinstance(key, str) else key
+
+
+def _sum_members(given: Any, what: str) -> tuple[str, ...]:
+    """A sum's members, checked for series keys and repeats; *what* says
+    where the sum was given, for the error."""
+    members = tuple(str(m) for m in given)
+    if not members:
+        raise ValueError(f"{what} is an empty sum: name at least one series key")
+    for member in members:
+        if not member.startswith(("ion:", "formula:")):
+            raise ValueError(
+                f"{what}: a sum's member {member!r} is no series key such as "
+                "'ion:<target_ion_id>'"
+            )
+    seen: set[str] = set()
+    for member in members:
+        if member in seen:
+            raise ValueError(f"{what} names {member!r} twice: a sum counts it once")
+        seen.add(member)
+    return members
+
+
+def _check_keys(store: CampaignStore, keys: Any, *, tic: bool = True) -> list[Key]:
+    """*keys* checked against the store, duplicates dropped, order kept.
+
+    A key is a series key, or a tuple of them in the list (a sum; one of one
+    key is that key). The keys themselves given as a tuple are several keys,
+    as any other sequence of them is.
+    """
     if isinstance(keys, str):
         keys = [keys]
-    keys = list(dict.fromkeys(str(k) for k in (() if keys is None else keys)))
-    if not keys:
+    items: dict[str, Key] = {}
+    for given in () if keys is None else keys:
+        if isinstance(given, tuple):
+            key: Key = _sum_members(given, f"The sum {given!r}")
+            if len(key) == 1:
+                key = key[0]
+        else:
+            key = str(given)
+        items.setdefault(_key_name(key), key)
+    if not items:
         raise ValueError("No keys: name at least one series key")
     held = set(store.table("species")["series_key"].astype(str))
-    for key in keys:
-        if key == TIC and tic:
-            continue
-        if key not in held:
-            raise ValueError(
-                f"The store holds no series {key!r}: a key is "
-                "ion:<target_ion_id> or formula:<formula>|<mechanism> as "
-                "store.table('species') lists them" + (", or tic" if tic else "")
-            )
-    return keys
+    for key in items.values():
+        for member in _members(key):
+            if member == TIC and tic:
+                continue
+            if member not in held:
+                raise ValueError(
+                    f"The store holds no series {member!r}: a key is "
+                    "ion:<target_ion_id> or formula:<formula>|<mechanism> as "
+                    "store.table('species') lists them" + (", or tic" if tic else "")
+                )
+    return list(items.values())
 
 
-def _check_normalise(normalise: Any) -> str:
+def _check_normalise(normalise: Any) -> Normaliser:
+    """*normalise* as a view takes it: ``none``, ``tic``, a series key, or a
+    sum's members (a sequence of one key is that key)."""
+    if not isinstance(normalise, str) and isinstance(
+        normalise, (Sequence, np.ndarray, pd.Index, pd.Series)
+    ):
+        members = _sum_members(normalise, f"normalise={list(normalise)!r}")
+        return members[0] if len(members) == 1 else members
     if not isinstance(normalise, str) or not (
         normalise in ("none", TIC) or normalise.startswith(("ion:", "formula:"))
     ):
         raise ValueError(
-            f"normalise={normalise!r} is none of 'none', 'tic' or a series key "
-            "such as 'ion:<target_ion_id>'"
+            f"normalise={normalise!r} is none of 'none', 'tic', a series key "
+            "such as 'ion:<target_ion_id>' or a list of them to divide by their sum"
         )
     return normalise
 
@@ -462,36 +535,132 @@ def _per_sample(
     return codes // n_keys, codes % n_keys, summed.to_numpy("float64")
 
 
-def _normaliser_name(store: CampaignStore, normalise: str) -> str | None:
-    """What the values are divided by, by name; None for ``none``.
+def _names(store: CampaignStore, keys: Sequence[str]) -> dict[str, str]:
+    """The series keys' names; a key the store names none of is its own."""
+    named: dict[str, str] = {}
+    wanted = [k for k in keys if k != TIC]
+    if wanted:
+        species = store.table("species", keys=wanted)
+        named = {
+            str(key): str(name)
+            for key, name in zip(species["series_key"], species["name"])
+            if not pd.isna(name)
+        }
+    return {k: named.get(k, k) for k in keys}
 
-    :raises ValueError: When *normalise* is a key the store does not hold.
+
+def _normaliser_name(store: CampaignStore, normalise: Normaliser) -> str | None:
+    """What the values are divided by, by name: a sum's members' names
+    joined by `` + ``; None for ``none``.
+
+    :raises ValueError: When *normalise* is or holds a key the store does
+        not hold.
     """
     if normalise == "none":
         return None
     if normalise == TIC:
         return "TIC"
-    keys = _check_keys(store, [normalise], tic=False)
-    named = store.table("species", keys=keys)["name"].dropna()
-    return str(named.iloc[0]) if not named.empty else normalise
+    members = _members(normalise)
+    _check_keys(store, list(members), tic=False)
+    names = _names(store, members)
+    return " + ".join(names[m] for m in members)
+
+
+def _one_polarity(
+    what: str,
+    members: Sequence[str],
+    pos: np.ndarray,
+    member: np.ndarray,
+    value: np.ndarray,
+    samples: pd.DataFrame,
+) -> None:
+    """Refuse a sum whose members are read in more than one polarity: in
+    the samples where they have a value, by each sample's own polarity, so
+    a polarity-switching batch reads each ion in its own.
+
+    :param pos: Rows' sample positions in *samples*,
+    :param member: their members' positions in *members*,
+    :param value: and their values.
+    :raises ValueError: Naming each member's polarities.
+    """
+    if len(members) < 2:
+        return
+    polarity = samples["polarity"].astype(object).to_numpy()
+    found = np.isfinite(value)
+    read = {
+        name: sorted(
+            {str(p) for p in polarity[pos[found & (member == i)]] if not pd.isna(p)}
+        )
+        for i, name in enumerate(members)
+    }
+    if len(set().union(*read.values())) > 1:
+        spans = "; ".join(
+            f"{name} is read in {', '.join(read[name]) or 'no sample'}"
+            for name in members
+        )
+        raise ValueError(
+            f"{what} spans polarities ({spans}): a sum never spans "
+            "chemistries; sum the ions of one polarity"
+        )
+
+
+@dataclass(frozen=True)
+class _Divisor:
+    """What each sample's values are divided by.
+
+    :ivar value: Per sample; NaN where it is missing or 0.
+    :ivar formula: ``[batch]``: the batches in which a formula member has a
+        value, which a run reads; None without a formula member.
+    :ivar complete: The samples of the batches that read a member in which
+        every member has a value,
+    :ivar reading: and all those batches' samples, in the window.
+    """
+
+    value: np.ndarray
+    formula: np.ndarray | None = None
+    complete: int = 0
+    reading: int = 0
 
 
 def _normaliser(
-    store: CampaignStore, normalise: str, samples: pd.DataFrame, index: pd.Index
-) -> tuple[np.ndarray | None, str | None]:
-    """What each sample's values are divided by, and its name; None for
-    ``none``."""
-    name = _normaliser_name(store, normalise)
-    if name is None:
-        return None, None
+    store: CampaignStore, values: "_Values", index: pd.Index
+) -> _Divisor | None:
+    """What each sample of *values* is divided by; None for ``none``.
+
+    A key's or a sum's divisor is the sum of the members with a value in
+    the sample, NaN when none has.
+    """
+    normalise, samples = values.normalise, values.samples
+    if normalise == "none":
+        return None
     if normalise == TIC:
         divisor = samples["tic"].to_numpy("float64").copy()
-    else:
-        pos, _, value = _per_sample(*_key_rows(store, [normalise], samples, index), 1)
-        divisor = np.full(len(index), np.nan)
-        divisor[pos] = value
+        divisor[divisor == 0] = np.nan
+        return _Divisor(divisor)
+    members = _members(normalise)
+    pos, member, value = _key_rows(store, list(members), samples, index)
+    _one_polarity(f"normalise={list(members)!r}", members, pos, member, value, samples)
+    read = np.zeros(len(values.present), dtype=bool)
+    read[values.batch[pos]] = True
+    pos, member, value = _per_sample(pos, member, value, len(members))
+    matrix = np.full((len(members), len(samples)), np.nan)
+    matrix[member, pos] = value
+    has = np.isfinite(matrix)
+    divisor = np.where(has, matrix, 0.0).sum(axis=0)
+    # A sample in which no member has a value sums to 0, and divides nothing
     divisor[divisor == 0] = np.nan
-    return divisor, name
+    formula = [i for i, m in enumerate(members) if m.startswith("formula:")]
+    divided = None
+    if formula:
+        divided = np.zeros(len(values.present), dtype=bool)
+        divided[values.batch[has[formula].any(axis=0)]] = True
+    reading = read[values.batch]
+    return _Divisor(
+        divisor,
+        divided,
+        complete=int((has.all(axis=0) & reading).sum()),
+        reading=int(reading.sum()),
+    )
 
 
 def _run_attrs(
@@ -549,7 +718,7 @@ def _attrs(
     zone: str,
     *,
     keys: Sequence[str] = (),
-    normalise: str = "none",
+    normalise: Normaliser = "none",
     normalise_name: str | None = None,
     start: pd.Timestamp | None = None,
     end: pd.Timestamp | None = None,
@@ -559,8 +728,13 @@ def _attrs(
     return {
         "view": view,
         "tz": zone,
-        "normalise": normalise,
+        # JSON-safe: a sum's members as a list
+        "normalise": normalise if isinstance(normalise, str) else list(normalise),
         "normalise_name": normalise_name,
+        "normalise_members": []
+        if normalise in ("none", TIC)
+        else list(_members(normalise)),
+        "normalise_complete": None,
         "keys": list(keys),
         "start": None if start is None else start.isoformat(),
         "end": None if end is None else end.isoformat(),
@@ -589,6 +763,11 @@ class _Values:
     :ivar window: The window, in UTC; None for an open bound.
     :ivar reading: The batches that read a formula key, or the formula
         normalised by, in the window.
+    :ivar members: Each key's series keys: itself, or a sum's members.
+    :ivar normalise: What the values are divided by (:func:`_check_normalise`).
+    :ivar complete: Of the window's samples of the batches that read a
+        member of the normaliser: those in which every member has a value,
+        and all of them.
     """
 
     zone: str
@@ -604,6 +783,14 @@ class _Values:
     batch_ids: tuple[str, ...] = ()
     window: Window = (None, None)
     reading: frozenset[str] = frozenset()
+    members: tuple[tuple[str, ...], ...] = ()
+    normalise: Normaliser = "none"
+    complete: tuple[int, int] = (0, 0)
+
+    @property
+    def items(self) -> list[Key]:
+        """The keys as :func:`_check_keys` gives them: a sum as its tuple."""
+        return [m[0] if len(m) == 1 else m for m in self.members]
 
     def reads(self, k: int) -> np.ndarray:
         """Which samples are of a batch that reads key *k*."""
@@ -643,7 +830,7 @@ def _read(
         view=view,
         window=window,
     )
-    return _with_rows(store, values, values.attrs["normalise"])
+    return _with_rows(store, values)
 
 
 def _sampled(
@@ -662,7 +849,8 @@ def _sampled(
     normalise = _check_normalise(normalise)
     zone = display_zone(store, tz)
     lo, hi = window if window is not None else (_bound(start, zone), _bound(end, zone))
-    keys = _check_keys(store, keys)
+    items = _check_keys(store, keys)
+    keys = [_key_name(k) for k in items]
 
     samples = store.table("samples")
     when = samples["t_mid_utc"]
@@ -701,44 +889,91 @@ def _sampled(
         ),
         batch_ids=tuple(batches.categories),
         window=(lo, hi),
+        members=tuple(_members(k) for k in items),
+        normalise=normalise,
     )
 
 
-def _with_rows(store: CampaignStore, values: _Values, normalise: str) -> _Values:
+def _with_rows(store: CampaignStore, values: _Values) -> _Values:
     """*values* with the store's rows of its keys in its samples: which
-    batches read each key, and one value per (sample, key), normalised."""
+    batches read each key (a sum: any of its members), and one value per
+    (sample, key), normalised."""
     samples = values.samples
     index = pd.Index(samples["sample_item_id"].astype(str))
-    pos, key, value = _key_rows(store, values.keys, samples, index)
+    raw = list(dict.fromkeys(m for members in values.members for m in members))
+    pos, member, value = _key_rows(store, raw, samples, index)
+    read = np.zeros((len(values.present), len(raw)), dtype=bool)
+    read[values.batch[pos], member] = True
     present = np.zeros_like(values.present)
-    present[values.batch[pos], key] = True
-    pos, key, value = _per_sample(pos, key, value, len(values.keys))
-    divisor, _ = _normaliser(store, normalise, samples, index)
-    divided = None
+    of = {name: i for i, name in enumerate(raw)}
+    plain = np.full(len(raw), -1, dtype="int64")
+    parts = []
+    for k, members in enumerate(values.members):
+        at = [of[m] for m in members]
+        present[:, k] = read[:, at].any(axis=1)
+        if len(members) == 1:
+            plain[at[0]] = k
+            continue
+        local = np.full(len(raw), -1, dtype="int64")
+        local[at] = np.arange(len(at))
+        kept = local[member] >= 0
+        _one_polarity(
+            f"The sum {values.keys[k]!r}",
+            members,
+            pos[kept],
+            local[member[kept]],
+            value[kept],
+            samples,
+        )
+        parts.append((pos[kept], np.full(int(kept.sum()), k), value[kept]))
+    kept = plain[member] >= 0
+    parts.insert(0, (pos[kept], plain[member[kept]], value[kept]))
+    pos, key, value = (np.concatenate(column) for column in zip(*parts))
+    pos, key, value = _per_sample(
+        pos.astype("int64"), key.astype("int64"), value, len(values.keys)
+    )
+    # A run reads every formula member, of a sum or not
+    formula = [i for i, name in enumerate(raw) if name.startswith("formula:")]
+    reads = read[:, formula].any(axis=1)
+    divisor = _normaliser(store, values, index)
+    attrs = values.attrs
     if divisor is not None:
-        value = value / divisor[pos]
-        if normalise.startswith("formula:"):
+        value = value / divisor.value[pos]
+        if divisor.formula is not None:
             # A formula normaliser divides every value by what a run reads
-            divided = np.zeros(len(present), dtype=bool)
-            divided[values.batch[np.isfinite(divisor)]] = True
-    values = replace(values, pos=pos, key=key, value=value)
-    return _with_present(store, values, present, divided)
+            reads |= divisor.formula
+        # None for the TIC, which no batch reads as a member
+        complete = divisor.complete / divisor.reading if divisor.reading else None
+        attrs = dict(attrs, normalise_complete=complete)
+    values = replace(
+        values,
+        pos=pos,
+        key=key,
+        value=value,
+        attrs=attrs,
+        complete=(divisor.complete, divisor.reading) if divisor else (0, 0),
+    )
+    return _with_present(store, values, present, reads)
 
 
 def _with_present(
     store: CampaignStore,
     values: _Values,
     present: np.ndarray,
-    divided: np.ndarray | None = None,
+    reads: np.ndarray | None = None,
 ) -> _Values:
     """*values* with *present*, and the run flags (:func:`_run_attrs`) over
     its batches in the polarities a formula is read in: by the batches that
-    read a formula key, and with *divided* (``[batch]``), by those that hold
-    the formula normalised by."""
-    formula = [k for k, name in enumerate(values.keys) if name.startswith("formula:")]
-    reads = present[:, formula].any(axis=1)
-    if divided is not None:
-        reads |= divided
+    *reads* marks (``[batch]``: those that read a formula key, a sum's
+    member or the normaliser's), or without it, those *present* says read a
+    formula key."""
+    if reads is None:
+        formula = [
+            k
+            for k, members in enumerate(values.members)
+            if any(m.startswith("formula:") for m in members)
+        ]
+        reads = present[:, formula].any(axis=1)
     reading = frozenset(values.batch_ids[c] for c in np.flatnonzero(reads))
     attrs = dict(values.attrs, **_run_attrs(store, reading, values.batch_ids))
     return replace(values, present=present, attrs=attrs, reading=reading)
@@ -833,7 +1068,8 @@ def series(
 ) -> pd.DataFrame:
     """Each key's values over time, binned at a cadence.
 
-    :param keys: The series keys (``tic`` for the TIC); a string is one.
+    :param keys: The series keys (``tic`` for the TIC); a string is one, and
+        a tuple of keys among them is their sum.
     :param cadence: ``auto`` (the widest of the keys' :func:`auto_cadence`,
         each over the samples of the batches reading it), ``raw`` (a row
         per sample), or a pandas offset (``10min``, ``1h``, ``1D``, ``W``,
@@ -846,7 +1082,8 @@ def series(
         ``W`` weeks run Monday to Sunday, as in :func:`periods`, and
         ``ME``, ``QE`` and ``YE`` are calendar months, quarters and years,
         as ``MS``, ``QS`` and ``YS`` are.
-    :param normalise: ``none``, ``tic`` or a series key.
+    :param normalise: ``none``, ``tic``, a series key, or a sequence of
+        them to divide by their sum.
     :param stat: A bin's ``value``: one of :data:`STATS` of its values.
     :param band: The percentiles of a bin's values that ``lo`` and ``hi``
         are; None for none.
@@ -872,7 +1109,8 @@ def series(
     give, values and counts alike: at a cadence named (not ``auto``) whose
     bins are UTC hours (``1h`` in a zone a whole number of hours from UTC)
     or UTC days (``1D`` in UTC), with the window's first and last bins
-    inside the window, no normalisation, ``stat`` median or mean, ``band``
+    inside the window, no normalisation and no sum, ``stat`` median or
+    mean, ``band``
     (10, 90) or None, every rollup day computed (``status().pending_rollups``
     empty), no batch of the window with two batch peaks of one formula
     (``n_shared_keys``) when a key is a formula's, and no bin where a
@@ -890,7 +1128,7 @@ def series(
         frame = _rolled_series(store, values, offset, stat, extra)
         if frame is not None:
             return frame
-    values = _with_rows(store, values, values.attrs["normalise"])
+    values = _with_rows(store, values)
     attrs = dict(values.attrs, **extra, source="rows")
     reads_any = values.reads_any
     if not reads_any.any():
@@ -996,11 +1234,14 @@ def _rollable(
     """Whether the store's rollups may give :func:`series` of *values* at
     *offset*, as far as is known before reading which batches read the
     keys: bins of UTC hours or days over the window's samples, no
-    normalisation, a statistic and a band the rollups hold, every rollup
-    day computed, and no batch of the window with two batch peaks of one
-    formula when a key is a formula's (a sample's value is their sum, the
-    rollups count each)."""
-    if values.attrs["normalise"] != "none" or stat not in ("median", "mean"):
+    normalisation, no sum among the keys, a statistic and a band the
+    rollups hold, every rollup day computed, and no batch of the window
+    with two batch peaks of one formula when a key is a formula's (a
+    sample's value is their sum, the rollups count each; a sum's bins are
+    of its per-sample sums, which no rollup holds)."""
+    if values.normalise != "none" or stat not in ("median", "mean"):
+        return False
+    if any(len(members) > 1 for members in values.members):
         return False
     if band not in (None, _ROLLUP_BAND) or not len(values.t):
         return False
@@ -1222,7 +1463,8 @@ def diurnal(
         years together), ``season`` (``DJF``, ``MAM``, ``JJA``, ``SON``) or
         ``weekday`` (``weekday`` and ``weekend``, Saturday and Sunday); None
         for no split.
-    :param normalise: ``none``, ``tic`` or a series key.
+    :param normalise: ``none``, ``tic``, a series key, or a sequence of
+        them to divide by their sum.
     :param tz: The zone whose hours they are.
     :return: One row per group (when *by* splits), key and hour 0 to 23:
         ``group`` (with *by*), ``key``, ``hour``, ``value`` (the median),
@@ -1293,7 +1535,8 @@ def periods(
     :param keys: The series keys.
     :param period: ``day``, ``week`` (Monday to Sunday) or ``month``, in
         *tz*.
-    :param normalise: ``none``, ``tic`` or a series key.
+    :param normalise: ``none``, ``tic``, a series key, or a sequence of
+        them to divide by their sum.
     :return: One row per period and key, key by key, from the first
         sample's period to the last's: ``period`` (its start in *tz*),
         ``key``, ``n``, ``mean``, ``min``, ``p5``, ``p25``, ``median``,
@@ -1627,15 +1870,25 @@ def _formula_keys(store: CampaignStore) -> list[str]:
     return sorted(keys[keys.str.startswith("formula:")])
 
 
-def _species(store: CampaignStore, keys: list[str]) -> pd.DataFrame:
-    """The species columns of *keys*, indexed by key."""
-    wanted = [k for k in keys if k != TIC]
-    if wanted:
-        species = store.table("species", keys=wanted)
+def _species(store: CampaignStore, keys: Sequence[Key]) -> pd.DataFrame:
+    """The species columns of *keys*, indexed by key name: a sum's row has
+    its members' names joined by `` + `` and no other column."""
+    members = list(dict.fromkeys(m for k in keys for m in _members(k) if m != TIC))
+    if members:
+        species = store.table("species", keys=members)
     else:
         # The parquet filter takes no empty list of keys
         species = store.table("species").iloc[:0]
-    return species.set_index(species["series_key"].astype(str))[list(SPECIES_COLUMNS)]
+    species = species.set_index(species["series_key"].astype(str))[
+        list(SPECIES_COLUMNS)
+    ]
+    sums = [k for k in keys if not isinstance(k, str)]
+    if not sums:
+        return species
+    names = _names(store, members)
+    rows = species.iloc[:0].reindex([_key_name(k) for k in sums])
+    rows["name"] = [" + ".join(names[m] for m in k) for k in sums]
+    return pd.concat([species, rows])
 
 
 def composition(
@@ -1657,7 +1910,8 @@ def composition(
     :param keys: The series keys; None for every formula key of the store.
     :param by: None for a row per key, or ``class`` or ``n_c`` to sum the
         keys of each compound class or carbon number.
-    :param normalise: ``none``, ``tic`` or a series key.
+    :param normalise: ``none``, ``tic``, a series key, or a sequence of
+        them to divide by their sum.
     :return: With *by* None, one row per period and key with a value in
         it, key order within a period: ``period`` (its start), ``key``,
         ``median``, ``mean`` and ``n`` of its sample values, ``share`` (its
@@ -1671,18 +1925,19 @@ def composition(
     if period != "all" and period not in PERIODS:
         raise ValueError(f"period={period!r} is none of all, {', '.join(PERIODS)}")
     normalise = _check_normalise(normalise)
-    keys = _formula_keys(store) if keys is None else _check_keys(store, keys)
-    if keys:
+    items = _formula_keys(store) if keys is None else _check_keys(store, keys)
+    keys = []
+    if items:
         values = _read(
             store,
-            keys,
+            items,
             normalise=normalise,
             tz=tz,
             start=start,
             end=end,
             view="composition",
         )
-        zone, attrs, keys = values.zone, values.attrs, values.keys
+        zone, attrs, items = values.zone, values.attrs, values.items
         frame = _composed(values, period)
     else:
         # A store without a batch ledger has no formula to compose
@@ -1701,7 +1956,7 @@ def composition(
         columns = {"period": "time", "key": "object", "median": "float64"}
         frame = _empty(dict(columns, mean="float64", n="int64"), zone)
     frame["share"] = frame["mean"] / frame.groupby("period")["mean"].transform("sum")
-    species = _species(store, keys)
+    species = _species(store, items)
     for column in SPECIES_COLUMNS:
         frame[column] = frame["key"].map(species[column]).to_numpy()
     if by is not None:
@@ -1756,7 +2011,8 @@ def spectrum(
         against its background, a night against its day.
     :param keys: The series keys, each with an m/z; None for every formula
         key of the store.
-    :param normalise: ``none``, ``tic`` or a series key.
+    :param normalise: ``none``, ``tic``, a series key, or a sequence of
+        them to divide by their sum.
     :return: One row per key with a value in *period* or *other*, by m/z:
         ``key``, ``mz``, ``name``, ``formula``, ``ion_formula``, ``value``
         (the mean of its sample values in *period*) and ``n``; with
@@ -1778,14 +2034,16 @@ def spectrum(
         species = _species(store, keys)
         # The grid is the batch peaks': a formula key without one has no place
         keys = [k for k in keys if not pd.isna(species.loc[k, "mz"])]
+        items = keys
     else:
-        keys = _check_keys(store, keys, tic=False)
-        species = _species(store, keys)
+        items = _check_keys(store, keys, tic=False)
+        species = _species(store, items)
+        keys = [_key_name(k) for k in items]
         without = [k for k in keys if pd.isna(species.loc[k, "mz"])]
         if without:
             raise ValueError(
                 f"No m/z to draw a spectrum on for {', '.join(without)}: the "
-                "batch peaks' formula keys have one, target ions do not"
+                "batch peaks' formula keys have one, target ions and sums do not"
             )
 
     attrs = _attrs(
@@ -1809,12 +2067,13 @@ def spectrum(
         return _stamp(_empty(columns, zone), attrs)
 
     means = {}
+    complete = [0, 0]
     reading: set[str] = set()
     drawn: set[str] = set()
     for name, window in windows.items():
         values = _read(
             store,
-            keys,
+            items,
             normalise=normalise,
             tz=tz,
             start=None,
@@ -1822,6 +2081,7 @@ def spectrum(
             view="spectrum",
             window=window,
         )
+        complete = [a + b for a, b in zip(complete, values.complete)]
         reading |= values.reading
         drawn.update(values.batch_ids)
         grouped = _grouped(values.key, values.value)
@@ -1850,6 +2110,9 @@ def spectrum(
     # A comparison of two windows joins what each reads: flag a run change
     # over the batches of both, and between them
     attrs.update(_run_attrs(store, reading, drawn, between=True))
+    if complete[1]:
+        # Over the samples of both windows
+        attrs["normalise_complete"] = complete[0] / complete[1]
     return _stamp(frame, attrs)
 
 
@@ -1881,7 +2144,8 @@ def top(
         highest last first.
     :param keys: The series keys; None for every key of the store.
     :param period: ``day``, ``week`` or ``month``.
-    :param normalise: ``none``, ``tic`` or a series key.
+    :param normalise: ``none``, ``tic``, a series key, or a sequence of
+        them to divide by their sum.
     :return: Up to *n* rows, best first: ``rank``, ``key``, ``value`` (what
         it is ranked by: the median, the ratio, the last), ``median``,
         ``first`` and ``last`` (the medians in the first and last periods),
@@ -1930,7 +2194,7 @@ def top(
     before = np.zeros(n_keys, dtype=bool)
     np.logical_or.at(before, values.key[detected & (of_value < last)], True)
     frame["new"] = (last > 0) & frame["last"].notna().to_numpy() & ~before
-    species = _species(store, values.keys)
+    species = _species(store, values.items)
     frame["name"] = frame["key"].map(species["name"])
     frame["formula"] = frame["key"].map(species["formula"])
 

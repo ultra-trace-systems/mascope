@@ -806,6 +806,12 @@ def test_the_views_options_reach_the_views(synced, short_campaign):
     assert attrs("series", "-k", ion, "--cadence", "raw")["cadence"] == "raw"
     assert attrs("diurnal", "-k", ion, "--by", "weekday")["by"] == "weekday"
     assert attrs("diurnal", "-k", ion, "--normalise", ion)["normalise"] == ion
+    # Repeated, it is a sum
+    other = sorted(
+        k for k in short_campaign.truth.cycles if k.startswith("ion:") and k != ion
+    )[0]
+    got = attrs("diurnal", "-k", ion, "--normalise", ion, "--normalise", other)
+    assert (got["normalise"], got["normalise_members"]) == ([ion, other], [ion, other])
     assert attrs("periods", "-k", ion)["period"] == "day"
     assert attrs("periods", "-k", ion, "--period", "week")["period"] == "week"
     got = attrs("coverage")
@@ -1246,6 +1252,17 @@ def test_the_view_says_how_it_was_computed(synced, short_campaign):
         f'  cadence 1h, max per bin, p10-p90 band, normalise "{ion}" '
         f'("{name["attrs"]["normalise_name"]}"), times in {zone}'
     )
+    other = sorted(
+        k for k in short_campaign.truth.cycles if k.startswith("ion:") and k != ion
+    )[0]
+    summed = ("--normalise", ion, "--normalise", other)
+    shown = text("view", "periods", *DATASET, "-k", "tic", *summed).splitlines()
+    name = payload("view", "periods", *DATASET, "-k", "tic", *summed)
+    assert shown[1] == (
+        f'  cadence day, normalise "{ion}" + "{other}" '
+        f'("{name["attrs"]["normalise_name"]}"), times in {zone}'
+    )
+    assert " + " in name["attrs"]["normalise_name"]
     shown = text("view", "diurnal", *DATASET, "-k", ion, "--by", "season")
     assert f"  cadence hour of day, by season, normalise none, times in {zone}" in shown
     shown = text("view", "coverage", *DATASET, "--min-gap", "90min")
