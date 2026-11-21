@@ -276,6 +276,7 @@ def assign_compositions(
                     assigned_mzs,
                     prior=known_prior,
                     closed_shell_rivals=closed_shell_rivals,
+                    notations=notations,
                 )
             )
             continue
@@ -1180,11 +1181,19 @@ def _elect_on_known_peak(
     *,
     prior: float,
     closed_shell_rivals: bool,
+    notations: Sequence[str],
 ) -> list[dict]:
     """The rows a list reading's peak gets: a kept marker, or a rival's envelope.
 
+    A rival that takes the peak is a committed winner as the main loop's is,
+    and is elected again over its ion's whole family the same way
+    (:func:`heuristic_filter.complete_same_ion_family`), so one ion gets one
+    reading whether or not a list names its peak.
+
     :param assigned_mzs: The m/z the search has claimed so far, updated in
         place.
+    :param notations: Every mechanism the search runs, which the rival's
+        family is enumerated through.
     :return: The rows to report for the peak and any lines a rival claimed.
     """
     measured = _score_reading(
@@ -1233,6 +1242,14 @@ def _elect_on_known_peak(
             for candidate in candidates
         ],
         around=main_candidate["formula"],
+    )
+    # Before the displaced reading's record weighs the rival's formula: it is
+    # the reading the row names that the record weighs.
+    main_candidate = complete_same_ion_family(
+        main_candidate,
+        same_ion_family(
+            str(main_candidate.get("ion") or ""), notations, config, heuristics
+        ),
     )
     own_fit = measured.rivals.fit_score
     main_candidate[KNOWN_DISPLACED] = {
