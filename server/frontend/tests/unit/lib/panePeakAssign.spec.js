@@ -4934,6 +4934,34 @@ describe('PanePeakAssign the card, answer first', () => {
         ])
       })
 
+      // The batch serves one group per series lattice, rooted at its lightest
+      // root: a row whose record names the lattice's second root lists that
+      // group's members all the same.
+      it("lists the lattice's members where the row's record names another root", async () => {
+        detailRecord = {
+          provenance: { tier_reasons: [{ rule: 'series_anchor', detail: 'in the CH2 series' }] },
+          batch_series: { unit: 'CH2', root_formula: 'C11H22O2', root_batch_peak_id: 'bp-r2' },
+          batch_groups: [
+            {
+              group_id: 'series:bp-r1:CH2:im-1',
+              kind: 'series',
+              unit: 'CH2',
+              root_batch_peak_id: 'bp-r1',
+              members: [
+                { batch_peak_id: 'bp-r1', mz: 160.1, step: 0, sample_peak_id: null },
+                { batch_peak_id: 'bp-a', mz: 174.12, step: 1, sample_peak_id: null },
+                { batch_peak_id: 'bp-r2', mz: 202.15, step: 3, sample_peak_id: null },
+                { batch_peak_id: 'bp-1', mz: 216.16, step: 4, sample_peak_id: 'p-1' }
+              ]
+            }
+          ]
+        }
+        const wrapper = await mountPane()
+        const labels = wrapper.findAll('[data-testid="group-member"] .member-label')
+
+        expect(labels.map((label) => label.text())).toEqual(['root', '+1 CH2', '+3 CH2', '+4 CH2'])
+      })
+
       it('lists nothing where the batch serves no such group', async () => {
         detailRecord = {
           provenance: {
