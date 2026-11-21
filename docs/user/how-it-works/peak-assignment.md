@@ -1905,6 +1905,30 @@ made for.
   record was made for, the record is kept, marked stale, and served by no reader. The stage
   that wrote it reads it again when it runs, and a reading that comes back finds it
   standing again. Every record carries the version of the stage's run that wrote it.
+- **A sample's run reads what the batch decided.** A sample assigned again, and one folded
+  in at ingest, reads the batch's decisions about it once, before its first stage, and
+  each enters the run where it decides something:
+
+  | Decision | Where the run reads it | A decoy run |
+  | -- | -- | -- |
+  | A known species, a library ion decided present | its reagent pass claims the ion | claims it, as its control does |
+  | A water-ladder rung | its reagent pass claims the rung | claims it, as its control does |
+  | A listed compound decided present | committed on its peak at candidate | commits it, as its control does |
+  | A row stripped as another row's isotope line | read as that row's line before the run judges it | does not read it |
+  | A series | a second observation of the reading it proposed | does not read it |
+
+  A rung is claimed only in a sample acquired inside a stretch of the batch's acquisition
+  it passed in, the stretch's first sample to its last. A sample acquired after the last
+  stretch, before the first, or in a gap between two claims none: a rung is evidence about
+  the stretch it was measured in. A listed compound and a strip are read through the
+  sample's own members, so they reach a sample the batch already holds; a sample folded in
+  for the first time is brought up to them by the next pass of the stages. The run keeps
+  what the batch's own claim keeps (see each step below), and judges what it read as it
+  judges every row: a cap may hold the listed compound lower, and the row then says why.
+  A decoy run claims what its control claims, and its own lines decide everything else.
+  Each run records the version of each stage whose records it read, and what they did to
+  its rows, under `batch_decisions` in its configuration, so a run that read an older
+  decision than the batch now holds can be told apart.
 
 #### A pass is one batch run
 
@@ -2404,7 +2428,10 @@ formula and ionization the lines were read against. A row released from the comp
 (its samples assigned again, folded again or curated) leaves the list, and a compound
 with no row left loses them from its badge and leaves **Stripped rows**. The rewrite
 stays: a later *Strip isotopologue rows* reads the rows not yet stripped, and a
-sample assigned again is read afresh by its own run. It runs as a batch run, whose
+sample assigned again reads the strip. Its run reads its row on the row's peak as the
+compound's isotope line, where its own row on the compound's peak reads the compound,
+and the row carries no isotope line of its own (*A sample's run reads what the batch
+decided*, above). It runs as a batch run, whose
 summary counts the rows read, at a line, stripped, held, off their share and on too few
 samples per ionization mode and instrument type, lists the stripped and the held pairs,
 and names the thresholds.
@@ -2568,8 +2595,15 @@ present ion on the sample's corrected mass where its own claim did not, with no 
 floor and no ladder below it, and the row names the batch's decision as its reason. Where
 the fold split an ion's trace over two batch peaks decided present, the run claims the ion
 once, as the batch peak in the most samples. A
-listed compound is the stages' to read, so a sample assigned again reads it afresh, and
-the next *Decide known species* reads its rows again. Each run replaces every decision
+listed compound decided present is committed on its peak by a sample's next run, as the
+decision's claim writes it: the list's reading at candidate, the reading it displaced
+first among the row's alternatives and the decision among its tier reasons. A run that
+reads the compound below candidate on its own is lifted to candidate and keeps what it
+measured. The run keeps its own reading where the decision's claim keeps a sample's: the
+target library named the peak, the peak is another reading's isotope line or a source
+ion's claim, or its reading carries isotope lines of another formula. A run that commits
+the compound on its own names no decision, and the next *Decide known species* counts it
+as that sample's own test; a row the decision wrote it never counts. Each run replaces every decision
 before it. It runs as a batch run, whose summary counts the species read, present,
 absent, unpooled, held and claimed per ionization mode and instrument type, lists each
 species with its verdict, and names the thresholds.
@@ -2645,8 +2679,11 @@ seen there, how many samples the claim took, what the batch peak read before, an
 samples kept with their readings.
 The ledger route and `batch_peaks.list` carry it as `water_ladder` for as long as the
 batch peak reads what the measurement left it reading. Each measurement replaces every
-one before it. A sample assigned again reads its peaks afresh, and the next measurement
-reads them again. It runs as a batch run. Its summary gives per ionization mode and
+one before it. A sample assigned again, and one folded in after the measurement, claims
+the rungs that passed in the stretch it was acquired in, on the sample's corrected mass
+and with the rung's isotope lines, where its own reagent pass did not; each row names the
+measurement and the stretch. A sample acquired outside every stretch the measurement read
+claims none until a measurement reads it. It runs as a batch run. Its summary gives per ionization mode and
 instrument type the stretches, how far each core's ladder reached in each, the rungs
 tested and passed, the batch peaks claimed, the samples they were claimed in, and the
 analyte rows that left the ledger. It also gives the share of the batch's signal that no
