@@ -4688,6 +4688,37 @@ describe('PanePeakAssign the card, answer first', () => {
       )
     })
 
+    // Evidence just under a band reads as finely as it takes not to read as
+    // the band, as the evidence-band reason's sentence does (tiering._digits):
+    // 0.746 under 0.75 is "74.6%", never "75%" beside the 75 % marker.
+    it('writes evidence just under a band finely enough not to read as it', async () => {
+      focusedAssignment = { ...ROW, tier: 'candidate', fit_score: 0.746, evidence: 0.746 }
+      detailRecord = { provenance: { plausibility: 1 } }
+      const wrapper = await mountPane()
+
+      expect(field(wrapper, 'product-line').text()).toMatch(
+        /^fit 74\.6%\s*×\s*plausibility 100\.0%\s*=\s*74\.6%$/
+      )
+      expect(field(wrapper, 'evidence-bar').find('[role="img"]').attributes('aria-label')).toMatch(
+        /^Evidence 74\.6%;/
+      )
+    })
+
+    it('reads the band it misses, the candidate band below both', async () => {
+      runRecord = { engine: 'mascope', tier_bands: { candidate: 0.5, assigned: 0.8 } }
+      focusedAssignment = {
+        ...ROW,
+        tier: 'below_assignability',
+        fit_score: 0.4996,
+        evidence: 0.4996
+      }
+      detailRecord = { provenance: { plausibility: 1 } }
+      const wrapper = await mountPane()
+
+      // 0.4996 reads "50.0%" at one decimal, as the candidate band does.
+      expect(field(wrapper, 'product-line').text()).toMatch(/=\s*49\.96%$/)
+    })
+
     it('marks the engine defaults where the run recorded no bands', async () => {
       const wrapper = await mountPane()
       const markers = wrapper.findAll('[data-testid="band-marker"]')
@@ -4835,12 +4866,14 @@ describe('PanePeakAssign the card, answer first', () => {
       it("labels a series' members by their step from the root", async () => {
         detailRecord = {
           provenance: { tier_reasons: [{ rule: 'series_anchor', detail: 'in the O series' }] },
-          batch_series: { unit: 'O', root_formula: 'C3H4O3' },
+          batch_series: { unit: 'O', root_formula: 'C3H4O3', root_batch_peak_id: 'bp-r' },
           batch_groups: [
             channels,
             {
-              group_id: 'series:1',
+              group_id: 'series:bp-r:O:im-1',
               kind: 'series',
+              unit: 'O',
+              root_batch_peak_id: 'bp-r',
               members: [
                 { batch_peak_id: 'bp-r', mz: 184.1, step: 0, sample_peak_id: null },
                 { batch_peak_id: 'bp-1', mz: 200.12345, step: 1, sample_peak_id: 'p-1' }
@@ -4852,6 +4885,53 @@ describe('PanePeakAssign the card, answer first', () => {
         const labels = wrapper.findAll('[data-testid="group-member"] .member-label')
 
         expect(labels.map((label) => label.text())).toEqual(['root', '+1 O'])
+      })
+
+      // A batch peak's formula lattice can reach more than one series: here an
+      // O series of a lighter root, served first by root m/z, and the row's
+      // own CH2 series. The reason is about the row's own (`batch_series`),
+      // and each group's steps are in its own unit.
+      it("lists the row's own series where the peak sits in several", async () => {
+        detailRecord = {
+          provenance: { tier_reasons: [{ rule: 'series_anchor', detail: 'in the CH2 series' }] },
+          batch_series: { unit: 'CH2', root_formula: 'C2H2O4', root_batch_peak_id: 'bp-c' },
+          batch_groups: [
+            {
+              group_id: 'series:bp-r:O:im-1',
+              kind: 'series',
+              unit: 'O',
+              root_batch_peak_id: 'bp-r',
+              members: [
+                { batch_peak_id: 'bp-r', mz: 184.1, step: 0, sample_peak_id: null },
+                { batch_peak_id: 'bp-1', mz: 200.12345, step: 1, sample_peak_id: 'p-1' }
+              ]
+            },
+            {
+              group_id: 'series:bp-c:CH2:im-1',
+              kind: 'series',
+              unit: 'CH2',
+              root_batch_peak_id: 'bp-c',
+              members: [
+                { batch_peak_id: 'bp-c', mz: 186.1, step: 0, sample_peak_id: null },
+                { batch_peak_id: 'bp-1', mz: 200.12345, step: 1, sample_peak_id: 'p-1' },
+                { batch_peak_id: 'bp-5', mz: 214.13, step: 2, sample_peak_id: null }
+              ]
+            }
+          ]
+        }
+        const wrapper = await mountPane()
+        const members = wrapper.findAll('[data-testid="group-member"]')
+
+        expect(
+          members.map((member) => [
+            member.find('.member-label').text(),
+            member.find('.member-mz').text()
+          ])
+        ).toEqual([
+          ['root', mz(186.1)],
+          ['+1 CH2', mz(200.12345)],
+          ['+2 CH2', mz(214.13)]
+        ])
       })
 
       it('lists nothing where the batch serves no such group', async () => {
@@ -5126,6 +5206,30 @@ describe('PanePeakAssign the card, answer first', () => {
         { action: 'promote_alternative', alternative_index: 0, expected_formula: 'C6H12O6' }
       ]
       expect(curate.mock.calls).toEqual([expected, expected])
+    })
+
+    // Undo commits the head alternative, so it is offered only where the head
+    // is the formula the override replaced: never another entry under its name.
+    it('offers no Undo where the head alternative is not the replaced formula', async () => {
+      detailRecord = {
+        alternatives: [...ALTERNATIVES].reverse(),
+        provenance: { manual: { action: 'promote_alternative', previous_formula: 'C6H12O6' } }
+      }
+      const wrapper = await mountPane()
+
+      expect(field(wrapper, 'manual-note').exists()).toBe(true)
+      expect(field(wrapper, 'manual-undo').exists()).toBe(false)
+    })
+
+    it('offers no Undo where the override replaced no formula', async () => {
+      detailRecord = {
+        alternatives: ALTERNATIVES,
+        provenance: { manual: { action: 'promote_alternative' } }
+      }
+      const wrapper = await mountPane()
+
+      expect(field(wrapper, 'manual-note').exists()).toBe(true)
+      expect(field(wrapper, 'manual-undo').exists()).toBe(false)
     })
 
     it('offers no Undo where the replaced assignment cannot be committed again', async () => {

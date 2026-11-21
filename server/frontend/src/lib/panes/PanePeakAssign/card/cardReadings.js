@@ -44,6 +44,49 @@ export function bandsOf(bands) {
 export const barPosition = (value) => Math.max(0, Math.min(100, value * 100))
 
 /**
+ * The edge of the band a row's evidence falls short of: the assigned band's
+ * for evidence between the two, the candidate band's below both, none at or
+ * above the assigned band.
+ *
+ * @param {number|null} evidence
+ * @param {{candidate: number, assigned: number}} bands - `bandsOf`'s bands
+ * @returns {number|null}
+ */
+export function bandMissed(evidence, bands) {
+  if (!isFraction(evidence) || evidence >= bands.assigned) return null
+  return evidence >= bands.candidate ? bands.assigned : bands.candidate
+}
+
+/**
+ * A share as a percentage to `digits` decimals ("74.6%"), rounded as the
+ * server's sentences round it; '-' where there is no number.
+ *
+ * @param {number|null} value
+ * @param {number} [digits]
+ * @returns {string}
+ */
+export function formatShare(value, digits = 0) {
+  return isFraction(value) ? `${(value * 100).toFixed(digits)}%` : '-'
+}
+
+/**
+ * How many decimals a share needs not to read as the band edge it misses,
+ * the server's rule (`tiering._digits`): evidence of 0.746 under a band of
+ * 0.75 reads "74.6%", never "75%", which would put it on the band.
+ *
+ * @param {number|null} value
+ * @param {number|null} against - the band edge, or null where it misses none
+ * @returns {number}
+ */
+export function shareDigits(value, against) {
+  if (!isFraction(value) || !isFraction(against)) return 0
+  for (const digits of [0, 1]) {
+    if (formatShare(value, digits) !== formatShare(against, digits)) return digits
+  }
+  return 2
+}
+
+/**
  * The Why box's title: "Why assigned", "Why candidate", "Why below",
  * "Why unassigned" - the tier's short label, as its chip says it.
  *
@@ -98,34 +141,51 @@ const REASON_GROUP_KINDS = Object.freeze({
  * The batch's group a reason spans, from the detail's `batch_groups`, or null
  * where the reason spans none or the batch serves no such group.
  *
+ * A batch peak can sit in several series: its formula lattice can reach a
+ * CH2 series of its own root and an O series of another. The series a
+ * `series_anchor` reason is about is the row's own, the detail's
+ * `batch_series`, so its group is the one with that root, unit and
+ * mechanism. Without that record the group is read only when the batch
+ * serves one series group, never guessed among several.
+ *
  * @param {object} reason - one entry of `tierReasonsOf`
  * @param {Array<object>|null} groups - the detail's `batch_groups`
+ * @param {object|null} [series] - the detail's `batch_series`
  * @returns {object|null}
  */
-export function reasonGroup(reason, groups) {
+export function reasonGroup(reason, groups, series = null) {
   const kind = REASON_GROUP_KINDS[reason?.rule]
   if (!kind || !Array.isArray(groups)) return null
-  return groups.find((group) => group?.kind === kind && group.members?.length) ?? null
+  const served = groups.filter((group) => group?.kind === kind && group.members?.length)
+  if (kind !== 'series') return served[0] ?? null
+  if (!series?.unit) return served.length === 1 ? served[0] : null
+  return (
+    served.find(
+      (group) =>
+        group.unit === series.unit &&
+        String(group.root_batch_peak_id ?? '') === String(series.root_batch_peak_id ?? '') &&
+        (series.ionization_mechanism_id == null ||
+          group.ionization_mechanism_id == null ||
+          String(group.ionization_mechanism_id) === String(series.ionization_mechanism_id))
+    ) ?? null
+  )
 }
 
 const signed = new Intl.NumberFormat('en-US', { signDisplay: 'always' })
 
 /**
  * How a group's member is labelled beside its m/z: a series member by its
- * step from the root ("root", "+1 CH2", "-2 CH2"), any other by its channel,
- * else its formula.
+ * step from the root in the group's own unit ("root", "+1 CH2", "-2 CH2"),
+ * any other by its channel, else its formula.
  *
  * @param {object} member - one of a group's `members`
  * @param {object} group - the group
- * @param {object|null} [series] - the detail's `batch_series`, whose `unit`
- *   names a series step
  * @returns {string}
  */
-export function memberLabel(member, group, series = null) {
+export function memberLabel(member, group) {
   if (group?.kind === 'series' && Number.isInteger(member?.step)) {
     if (member.step === 0) return 'root'
-    const unit = series?.unit ?? 'unit'
-    return `${signed.format(member.step)} ${unit}`
+    return `${signed.format(member.step)} ${group.unit || 'unit'}`
   }
   return member?.mechanism || member?.ion_formula || member?.formula || 'another row'
 }

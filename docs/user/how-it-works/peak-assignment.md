@@ -1417,12 +1417,13 @@ flowchart TD
   A bar draws the row's evidence against the run's own two bands, marked where *candidate*
   and *assigned* begin (45 % and 75 % unless the run set others). Under it the product
   line, *fit 30 % × plausibility 100 % = 30 %*, gives the two numbers the evidence is made
-  of. Then one line per [reason](#why-a-row-holds-its-tier): the rule's name with the
+  of. Evidence just under a band takes a decimal more, *74.6 %* under 75 %, so it never
+  reads as the band it misses. Then one line per [reason](#why-a-row-holds-its-tier): the rule's name with the
   number or formula it turned on. Click a reason to read the run's own sentence about the
   row. What holds the tier back comes first, in the warning colour; what the row kept its
   tier on follows, in the support colour. A reason that spans other rows lists them: a
-  *second channel* lists the neutral's other channels, and *in a series* the series'
-  members, each by its step from the root. Each m/z there focuses its peak where the
+  *second channel* lists the neutral's other channels, and *in a series* the members of
+  the row's own series, each by its step from the root in the series' unit. Each m/z there focuses its peak where the
   sample holds one. The ***Supported by N channels*** badge and the other readings of the
   same ion are in this box too.
 - **Four measurements**, each a value with a caption in words:
