@@ -18,7 +18,7 @@ import copy
 import math
 import re
 import weakref
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime as dt
@@ -131,6 +131,7 @@ from mascope_backend.api.new.peak_assignments.decoy import (
     wrong_adducts,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
+    BATCH_DECISIONS_KEY,
     CROSS_CHANNEL_KEY,
     DISPLACED_BY_CLAIM,
     ENVELOPE_TOLERANCE_KEY,
@@ -2842,6 +2843,9 @@ class BatchLine:
     :param reading: What the batch read of the share over its spectra
         (``merged_isotopologues.ShareReading.to_json``).
     :param batch_peak_run_id: The batch run that read it.
+    :param version: The version of the batch stage whose record a sample's
+        run read the line off (``batch_decisions``), which the row cites;
+        None for the batch's own rewrite, whose run names it.
     """
 
     label: str
@@ -2851,6 +2855,7 @@ class BatchLine:
     parent_batch_peak_id: str
     reading: dict
     batch_peak_run_id: str | None = None
+    version: int | None = None
 
 
 def read_as_batch_isotopologue(row: dict, owner: dict, line: BatchLine) -> dict:
@@ -2901,6 +2906,7 @@ def read_as_batch_isotopologue(row: dict, owner: dict, line: BatchLine) -> dict:
         "observed_share": None if observed is None else round(observed, 6),
         "reading": dict(line.reading),
         "batch_peak_run_id": line.batch_peak_run_id,
+        **({} if line.version is None else {"version": line.version}),
         "displaced": {
             "role": row.get("role"),
             "assigned_formula": row.get("assigned_formula"),
@@ -2980,6 +2986,7 @@ def with_batch_isotopologue_line(owner: dict, row: dict, line: BatchLine) -> dic
             "batch_peak_id": line.batch_peak_id,
             "parent_batch_peak_id": line.parent_batch_peak_id,
             "batch_peak_run_id": line.batch_peak_run_id,
+            **({} if line.version is None else {"version": line.version}),
         }
     )
     provenance[BATCH_ISOTOPOLOGUES] = entries
@@ -4160,6 +4167,7 @@ def _stored_run_config(
     ionization_setup: dict | None = None,
     envelope_tolerance: dict | None = None,
     decoy_arm: dict | None = None,
+    batch_decisions: dict | None = None,
 ) -> dict:
     """The blob persisted on a run: the requested config plus server-side state.
 
@@ -4220,6 +4228,11 @@ def _stored_run_config(
     the calibration it inherited from it and what it made wrong. The request
     names the arm; which run it bounds is the server's to say.
 
+    The batch's decisions are the twelfth, on a run of a sample in a batch:
+    which versions of the batch stages' records it read, and what they did to
+    its rows. A run that read an older decision than its batch now holds is
+    otherwise indistinguishable from one that read the current one.
+
     :param config: The validated client-supplied run configuration.
     :param resolved_profile: The chemistry the run resolved to, when known.
     :param search_scope: What the untargeted stage was offered, once it is known.
@@ -4236,6 +4249,8 @@ def _stored_run_config(
     :param envelope_tolerance: What the run fitted of a line's share
         (:meth:`envelope_fit.RunEnvelopeFit.record`), once Stage A has run.
     :param decoy_arm: A decoy run's record of its control (``DecoyPlan.record``).
+    :param batch_decisions: What it read of its sample's batch decisions
+        (``batch_decisions.BatchDecisions.record``).
     :return: A JSON-serializable dict for ``PeakAssignmentRun.config``.
     """
     stored = config.model_dump()
@@ -4259,6 +4274,8 @@ def _stored_run_config(
         stored[ENVELOPE_TOLERANCE_KEY] = envelope_tolerance
     if decoy_arm is not None:
         stored[DECOY_ARM_KEY] = decoy_arm
+    if batch_decisions is not None:
+        stored[BATCH_DECISIONS_KEY] = batch_decisions
     return stored
 
 
@@ -4275,6 +4292,7 @@ async def _record_resolved_profile(
     ionization_setup: dict | None = None,
     envelope_tolerance: dict | None = None,
     decoy_arm: dict | None = None,
+    batch_decisions: dict | None = None,
 ) -> None:
     """Write the resolved chemistry onto a run that is about to use it.
 
@@ -4301,6 +4319,7 @@ async def _record_resolved_profile(
         run was created with it.
     :param envelope_tolerance: What the run fitted of a line's share.
     :param decoy_arm: A decoy run's record of its control.
+    :param batch_decisions: What it read of its sample's batch decisions.
     """
     async with async_session() as session:
         await session.execute(
@@ -4319,6 +4338,7 @@ async def _record_resolved_profile(
                     ionization_setup,
                     envelope_tolerance,
                     decoy_arm,
+                    batch_decisions,
                 )
             )
         )
@@ -4926,10 +4946,13 @@ def _reagent_assignments(
         source's lines are the sample's, so a decoy claims what its control
         claims.
     :param sample_name: For the log line.
-    :param batch_species: The library ions the sample's batch decided present
-        (step 4.2h, ``batch_known_species.batch_species_for``): claimed where
-        the file's own claims did not take them, on its corrected mass
-        (:func:`reagent_pass.claim_batch_species`). The offset is read off the
+    :param batch_species: The source ions the sample's batch decided are
+        there, one entry per ion (``batch_decisions.BatchDecisions
+        .source_ions``): the library ions it decided present (step 4.2h) and
+        the rungs its water ladder passed in the sample's acquisition segment
+        (step 4.2j). Claimed where the file's own claims did not take them, on
+        its corrected mass (:func:`reagent_pass.claim_batch_species`), each
+        row naming the decision as its reason. The offset is read off the
         file's own claims alone.
     :return: The reagent rows, the peaks they take out of both stages, and where
         the claimed lines put the mass axis, which Stage A scores at where the
@@ -4986,12 +5009,21 @@ def _reagent_assignments(
         purity=_reagent_purity(resolved_profile),
         resolution=resolution,
     )
+    decided = {one.cluster.formula: one for one in batch_species}
     if pooled:
+        reasons = Counter(
+            decided[hit.cluster.formula].reason
+            for hit in pooled
+            if hit.cluster.formula in decided
+        )
         runtime.logger.info(
             f"Sample '{sample_name}': {len(pooled)} peaks claimed on the batch's "
-            "known-species decision"
+            "decisions ("
+            + ", ".join(
+                f"{count} {reason}" for reason, count in sorted(reasons.items())
+            )
+            + ")"
         )
-    decided = {one.cluster.formula: one.record for one in batch_species}
     rows = build_reagent_assignments(
         hits + rungs + pooled,
         source,

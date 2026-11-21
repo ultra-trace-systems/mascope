@@ -634,7 +634,10 @@ def _searching(
         "purity": stand_in(
             f"{_PIPE}.sample_label_purity", AsyncMock(return_value=None)
         ),
-        "species": stand_in(f"{_PIPE}.batch_species_for", AsyncMock(return_value=[])),
+        "species": stand_in(
+            "mascope_backend.api.new.peak_assignments.batch_known_species.batch_species_for",
+            AsyncMock(return_value=[]),
+        ),
         "series": stand_in(f"{_SVC}.batch_series_by_peak", AsyncMock(return_value={})),
         "resolution": stand_in(
             f"{_SVC}._resolution_of", AsyncMock(return_value=resolution)
