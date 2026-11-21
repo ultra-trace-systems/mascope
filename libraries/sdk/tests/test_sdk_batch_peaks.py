@@ -106,6 +106,14 @@ class FakeServer:
                 "batch_peak_run_utc_created": "2026-09-04T09:00:00Z",
             },
         ]
+        self.status = {
+            "state": "behind",
+            "behind": [
+                {"reason": "new_samples", "count": 1, "sample_item_ids": ["s-3"]}
+            ],
+            "needs_fold": False,
+        }
+        self.status_calls: list[str] = []
         self.page_cap = page_cap
         self.member_calls: list[dict[str, Any]] = []
         self.list_calls: list[dict[str, Any]] = []
@@ -142,6 +150,16 @@ class FakeServer:
                     "message": "ok",
                     "results": len(runs),
                     "data": runs,
+                }
+            )
+        if path.endswith("/assignment-status"):
+            self.status_calls.append(path)
+            return _FakeResponse(
+                {
+                    "status": "success",
+                    "message": "The batch's assignment is behind",
+                    "results": 1,
+                    "data": self.status,
                 }
             )
         if path.endswith("/verdicts"):
@@ -833,3 +851,13 @@ class TestAssign:
     def test_cancel_with_no_pass_running_is_none(self, resource, posting):
         posting["cancel"] = None
         assert resource.cancel_assign(BATCH_ID) is None
+
+
+class TestAssignmentStatus:
+    def test_reads_where_the_batch_stands(self, server, resource):
+        status = resource.assignment_status(BATCH_ID)
+        assert server.status_calls == [
+            f"batch-peaks/batch/{BATCH_ID}/assignment-status"
+        ]
+        assert status["state"] == "behind"
+        assert status["behind"][0]["reason"] == "new_samples"
