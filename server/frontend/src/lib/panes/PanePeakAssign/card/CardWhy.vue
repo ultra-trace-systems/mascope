@@ -23,15 +23,13 @@ const {
   evidenceBar,
   productParts,
   productLine,
-  evidenceValue,
-  formatFit,
+  evidenceText,
   whyReasons,
   whyOwnerReasons,
   reasonsOwner,
   neighbourPeak,
   focusNeighbour,
   groupOf,
-  batchSeries,
   memberPeak,
   isOwnMember,
   focusMember,
@@ -84,7 +82,7 @@ const memberTooltip = (member) =>
       <div
         class="bar"
         role="img"
-        :aria-label="`Evidence ${pct(evidenceBar.fill)}; candidate from ${pct(evidenceBar.candidate)}, assigned from ${pct(evidenceBar.assigned)}`"
+        :aria-label="`Evidence ${evidenceText}; candidate from ${pct(evidenceBar.candidate)}, assigned from ${pct(evidenceBar.assigned)}`"
         v-tooltip.top="EVIDENCE_TOOLTIPS.evidence"
       >
         <span
@@ -114,9 +112,7 @@ const memberTooltip = (member) =>
       <template v-for="(part, index) in productParts" :key="part.key"
         ><template v-if="index"> × </template
         ><span :data-part="part.key" v-tooltip.top="part.tooltip">{{ part.text }}</span></template
-      ><template v-if="productParts.length === 2 && evidenceBar">
-        = {{ formatFit(evidenceValue) }}</template
-      >
+      ><template v-if="productParts.length === 2 && evidenceText"> = {{ evidenceText }}</template>
     </div>
     <div v-if="whyReasons.length || whyOwnerReasons.length" class="tier-reasons">
       <ul class="reasons">
@@ -200,9 +196,7 @@ const memberTooltip = (member) =>
                   :disabled="!memberPeak(member) || isOwnMember(member)"
                   @click="focusMember(member)"
                 >
-                  <span class="member-label">{{
-                    memberLabel(member, groupOf(item.reason), batchSeries)
-                  }}</span>
+                  <span class="member-label">{{ memberLabel(member, groupOf(item.reason)) }}</span>
                   <span class="member-mz">m/z {{ num.mz.format(member.mz) }}</span>
                 </button>
               </li>

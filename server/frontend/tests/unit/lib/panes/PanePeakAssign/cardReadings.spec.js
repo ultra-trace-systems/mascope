@@ -2,14 +2,17 @@ import { describe, it, expect } from 'vitest'
 
 import {
   DEFAULT_TIER_BANDS,
+  bandMissed,
   bandsOf,
   barPosition,
   batchTile,
+  formatShare,
   isotopeTile,
   memberLabel,
   orderedReasons,
   reasonGroup,
   reasonTone,
+  shareDigits,
   whyTitle
 } from '@/lib/panes/PanePeakAssign/card/cardReadings.js'
 
@@ -70,9 +73,31 @@ describe('the reasons', () => {
   })
 })
 
+describe('the evidence against the band it misses', () => {
+  const BANDS = { candidate: 0.45, assigned: 0.75 }
+
+  it('finds the edge of the band the evidence falls short of', () => {
+    expect(bandMissed(0.746, BANDS)).toBe(0.75)
+    expect(bandMissed(0.45, BANDS)).toBe(0.75)
+    expect(bandMissed(0.3, BANDS)).toBe(0.45)
+    expect(bandMissed(0.75, BANDS)).toBeNull()
+    expect(bandMissed(null, BANDS)).toBeNull()
+  })
+
+  it('takes as many decimals as it needs not to read as the band (tiering._digits)', () => {
+    expect(shareDigits(0.3, 0.45)).toBe(0)
+    expect(shareDigits(0.746, 0.75)).toBe(1)
+    expect(shareDigits(0.7496, 0.75)).toBe(2)
+    expect(shareDigits(0.9, null)).toBe(0)
+    expect(formatShare(0.746, 1)).toBe('74.6%')
+    expect(formatShare(0.3)).toBe('30%')
+    expect(formatShare(null)).toBe('-')
+  })
+})
+
 describe('reasonGroup', () => {
   const CHANNELS = { kind: 'channels', members: [{ batch_peak_id: 'a' }] }
-  const SERIES = { kind: 'series', members: [{ batch_peak_id: 'b' }] }
+  const SERIES = { kind: 'series', unit: 'CH2', members: [{ batch_peak_id: 'b' }] }
 
   it('finds the group a second channel or a series spans', () => {
     expect(reasonGroup({ rule: 'corroborated' }, [SERIES, CHANNELS])).toBe(CHANNELS)
@@ -85,11 +110,57 @@ describe('reasonGroup', () => {
     expect(reasonGroup({ rule: 'corroborated' }, null)).toBeNull()
   })
 
-  it('labels a series member by its step and another by its channel', () => {
-    const series = { unit: 'CH2' }
-    expect(memberLabel({ step: 0 }, SERIES, series)).toBe('root')
-    expect(memberLabel({ step: 2 }, SERIES, series)).toBe('+2 CH2')
-    expect(memberLabel({ step: -1 }, SERIES, series)).toBe('-1 CH2')
+  // A peak's formula lattice can reach several series; the reason is about
+  // the row's own, the detail's `batch_series`.
+  describe('where the peak sits in several series', () => {
+    const member = [{ batch_peak_id: 'b' }]
+    const O_SERIES = {
+      kind: 'series',
+      unit: 'O',
+      root_batch_peak_id: 'r1',
+      ionization_mechanism_id: 'm1',
+      members: member
+    }
+    const CH2_SERIES = {
+      kind: 'series',
+      unit: 'CH2',
+      root_batch_peak_id: 'r2',
+      ionization_mechanism_id: 'm1',
+      members: member
+    }
+    const CH2_OTHER_ROOT = { ...CH2_SERIES, root_batch_peak_id: 'r3' }
+    const CH2_OTHER_MECHANISM = { ...CH2_SERIES, ionization_mechanism_id: 'm2' }
+    const series = (record) => reasonGroup({ rule: 'series_anchor' }, groups, record)
+    const groups = [O_SERIES, CH2_OTHER_ROOT, CH2_OTHER_MECHANISM, CH2_SERIES]
+
+    it("finds the row's own by root, unit and mechanism", () => {
+      expect(series({ unit: 'CH2', root_batch_peak_id: 'r2', ionization_mechanism_id: 'm1' })).toBe(
+        CH2_SERIES
+      )
+      expect(series({ unit: 'O', root_batch_peak_id: 'r1', ionization_mechanism_id: 'm1' })).toBe(
+        O_SERIES
+      )
+      expect(series({ unit: 'CH2', root_batch_peak_id: 'r2', ionization_mechanism_id: 'm2' })).toBe(
+        CH2_OTHER_MECHANISM
+      )
+    })
+
+    it('finds none where the batch serves no group of that series', () => {
+      expect(series({ unit: 'H2O', root_batch_peak_id: 'r2' })).toBeNull()
+      expect(series({ unit: 'O', root_batch_peak_id: 'r2' })).toBeNull()
+    })
+
+    it("guesses none among several without the row's series", () => {
+      expect(series(null)).toBeNull()
+      expect(reasonGroup({ rule: 'series_anchor' }, [CHANNELS, O_SERIES], null)).toBe(O_SERIES)
+    })
+  })
+
+  it("labels a series member by its step in the group's unit, another by its channel", () => {
+    expect(memberLabel({ step: 0 }, SERIES)).toBe('root')
+    expect(memberLabel({ step: 2 }, SERIES)).toBe('+2 CH2')
+    expect(memberLabel({ step: -1 }, SERIES)).toBe('-1 CH2')
+    expect(memberLabel({ step: 1 }, { ...SERIES, unit: 'O' })).toBe('+1 O')
     expect(memberLabel({ mechanism: '[M+NO3]-', formula: 'X' }, CHANNELS)).toBe('[M+NO3]-')
     expect(memberLabel({ formula: 'C3H4O4' }, CHANNELS)).toBe('C3H4O4')
   })

@@ -14,16 +14,19 @@ import { checksSummary } from '@/lib/batchChecks'
 import { persistenceHold, persistenceHoldNote } from '@/lib/batchPersistence'
 import { ROLE_BUCKETS, bucketRank, tierName } from '@/lib/tiers'
 import { isLevel, isOpenRival, levelMeta, unlistedRivalsLine } from '@/lib/levels'
-import { sourceLabel, sourceLine } from '@/lib/assignmentSources'
+import { sourceLabel } from '@/lib/assignmentSources'
 import { EVIDENCE_LEVELS, VERDICT_META, claimCandidates } from '@/lib/verification'
 import { useBatchPeakCuration } from '../stores/batchPeakCuration.js'
 import {
+  bandMissed,
   barPosition,
   bandsOf,
   batchTile,
+  formatShare,
   isotopeTile,
   orderedReasons,
   reasonGroup,
+  shareDigits,
   whyTitle
 } from './cardReadings.js'
 import {
@@ -1053,36 +1056,6 @@ export function useAssignmentCard({ showSearch }) {
     confidence: "This formula's share of the evidence among all candidates for the peak"
   })
 
-  // The line under the headline: the ion (unless it is the headline), the isotope
-  // line the peak is, and where the row came from, each saying what it is on
-  // hover. The source is named in words (assignmentSources.js), not as the API's
-  // value.
-  const subParts = computed(() => {
-    const row = focusedAssignment.value
-    if (!row) return []
-    const isotope = evidenceRow.value?.isotope_label
-    return [
-      row.ion_formula && !headlineIsIon.value
-        ? { key: 'ion', text: row.ion_formula, tooltip: 'Ion formula' }
-        : null,
-      isotope
-        ? {
-            key: 'isotope',
-            text: formatIsotopeLabel(isotope),
-            tooltip: 'The isotope line of the ion this peak is; M0 is the monoisotopic line'
-          }
-        : null,
-      row.source
-        ? {
-            key: 'source',
-            text: sourceLabel(row.source),
-            tooltip: sourceLine(row.source),
-            class: 'src'
-          }
-        : null
-    ].filter(Boolean)
-  })
-
   // An isotopologue row's hover text: its full isotope formula, how it matched,
   // and what a click does.
   const isoRowTooltip = (iso) =>
@@ -1468,18 +1441,28 @@ export function useAssignmentCard({ showSearch }) {
       bands
     }
   })
+  // One precision for the product line's numbers, as fine as it takes for the
+  // evidence not to read as the band it misses, as the evidence-band reason's
+  // sentence has it (tiering.band_reason).
+  const evidenceDigits = computed(() =>
+    shareDigits(evidenceValue.value, bandMissed(evidenceValue.value, tierBands.value))
+  )
+  const evidenceText = computed(() =>
+    evidenceValue.value != null ? formatShare(evidenceValue.value, evidenceDigits.value) : ''
+  )
   // The product line, "fit 30 % × plausibility 100 % = 30 %": its factors,
   // each saying on hover what it measures, and the evidence they make.
   const productParts = computed(() => {
     const fit = focusedAssignment.value?.fit_score
+    const digits = evidenceDigits.value
     return [
       fit != null
-        ? { key: 'fit', text: `fit ${formatFit(fit)}`, tooltip: EVIDENCE_TOOLTIPS.fit }
+        ? { key: 'fit', text: `fit ${formatShare(fit, digits)}`, tooltip: EVIDENCE_TOOLTIPS.fit }
         : null,
       plausibility.value != null
         ? {
             key: 'plausibility',
-            text: `plausibility ${formatFit(plausibility.value)}`,
+            text: `plausibility ${formatShare(plausibility.value, digits)}`,
             tooltip: EVIDENCE_TOOLTIPS.plausibility
           }
         : null
@@ -1488,10 +1471,7 @@ export function useAssignmentCard({ showSearch }) {
   const productLine = computed(() => {
     const parts = productParts.value
     if (!parts.length) return ''
-    const product =
-      parts.length === 2 && evidenceValue.value != null
-        ? ` = ${formatFit(evidenceValue.value)}`
-        : ''
+    const product = parts.length === 2 && evidenceText.value ? ` = ${evidenceText.value}` : ''
     return `${parts.map((part) => part.text).join(' × ')}${product}`
   })
   const whyReasons = computed(() => orderedReasons(tierReasons.value))
@@ -1512,7 +1492,7 @@ export function useAssignmentCard({ showSearch }) {
   // sample where the sample holds one.
   const batchGroups = computed(() => focusedDetail.value?.batch_groups ?? null)
   const batchSeries = computed(() => focusedDetail.value?.batch_series ?? null)
-  const groupOf = (reason) => reasonGroup(reason, batchGroups.value)
+  const groupOf = (reason) => reasonGroup(reason, batchGroups.value, batchSeries.value)
   const memberPeak = (member) =>
     member?.sample_peak_id != null ? peakOf({ sample_peak_id: member.sample_peak_id }) : null
   const isOwnMember = (member) =>
@@ -1813,7 +1793,6 @@ export function useAssignmentCard({ showSearch }) {
     massCalibration,
     massZFar,
     EVIDENCE_TOOLTIPS,
-    subParts,
     isoRowTooltip,
     zFormat,
     massZTooltip,
@@ -1855,6 +1834,7 @@ export function useAssignmentCard({ showSearch }) {
     evidenceBar,
     productParts,
     productLine,
+    evidenceText,
     whyReasons,
     whyOwnerReasons,
     showWhy,

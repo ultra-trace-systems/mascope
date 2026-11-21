@@ -261,6 +261,24 @@ describe('reasonFigure', () => {
     expect(figure("mass error sits 4.2 widths off the run's own fitted centre")).toBe('4.2 widths')
   })
 
+  it("reads the widths of an unresolved peak, not its neighbour's height", () => {
+    // The server's sentence (tiering.unresolved_peak_reason) names both; the
+    // distance decides the reason. A taller neighbour's sentence has no share.
+    const unresolved = (detail) => reasonFigure({ rule: 'unresolved_peak', detail })
+    expect(
+      unresolved(
+        'its peak sits 0.80 widths from a peak at m/z 301.1234 at 45.0% of its height, ' +
+          'short of the 1.10 widths two lines of these heights need to show as two peaks'
+      )
+    ).toBe('0.80 widths')
+    expect(
+      unresolved(
+        'its peak sits 0.65 widths from a peak at m/z 301.1234 1.5 times as tall, ' +
+          'short of the 1.20 widths two lines of these heights need to show as two peaks'
+      )
+    ).toBe('0.65 widths')
+  })
+
   it('reads a count the sentence opens on', () => {
     expect(figure("3 formulas this peak's evidence could not separate")).toBe('3 formulas')
   })
