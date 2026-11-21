@@ -730,3 +730,106 @@ class TestSeries:
         assert series.attrs["provenance"] == {"deployment_id": "example-lab"}
         # The stamp sits beside the run id, it does not replace it.
         assert series.attrs["run_id"] == "run-2"
+
+
+class TestAssign:
+    @pytest.fixture
+    def posting(self, server, monkeypatch):
+        """The resource's POSTs captured, answering as the routes do: the pass's
+        run, running; the runs list then reports it completed on the second
+        poll."""
+        from mascope_sdk.exceptions import NotFoundError
+        from mascope_sdk.resources import batch_peaks as module
+
+        state = {"n": 0, "calls": [], "answer": "run", "cancel": "running"}
+
+        def fake_post(url, path, access_token, data, **kwargs):
+            state["calls"].append((path, data, kwargs.get("once")))
+            if path.endswith("/assign/cancel"):
+                if state["cancel"] is None:
+                    raise NotFoundError("No pass is running", status_code=404)
+                record = {"batch_peak_run_id": "pass-1", "status": "running"}
+                return _FakeResponse({"status": "success", "data": [record]})
+            data_out = (
+                [{"batch_peak_run_id": "pass-1", "status": "running"}]
+                if state["answer"] == "run"
+                else []
+            )
+            return _FakeResponse(
+                {"status": "success", "message": "ok", "data": data_out}
+            )
+
+        def runs_after_polls():
+            state["n"] += 1
+            status = "running" if state["n"] < 2 else "completed"
+            return [
+                {
+                    "batch_peak_run_id": "pass-1",
+                    "action": "assign",
+                    "status": status,
+                    "current": status == "completed",
+                    "summary": {"stages": [{"stage": "fold", "status": "not_run"}]}
+                    if status == "completed"
+                    else None,
+                }
+            ]
+
+        monkeypatch.setattr(
+            "mascope_sdk.resources._base.http_post", fake_post, raising=False
+        )
+        monkeypatch.setattr(module.time, "sleep", lambda s: None)
+        server.runs_provider = runs_after_polls
+        return state
+
+    def test_starts_a_pass_and_waits_for_its_run(self, resource, posting):
+        run = resource.assign(BATCH_ID)
+        path, body, once = posting["calls"][-1]
+        assert path == f"batch-peaks/batch/{BATCH_ID}/assign"
+        assert body == {"fold": "auto"}
+        # Sent once: a second send would start a second pass.
+        assert once is True
+        assert run["status"] == "completed"
+        assert run["summary"]["stages"][0]["stage"] == "fold"
+        assert posting["n"] == 2
+
+    def test_forwards_the_stage_the_fold_and_the_settings(self, resource, posting):
+        run = resource.assign(
+            BATCH_ID,
+            from_stage="series",
+            fold="always",
+            wait=False,
+            config={"mz_precision_ppm": 2.5},
+        )
+        _, body, _ = posting["calls"][-1]
+        assert body == {
+            "fold": "always",
+            "from_stage": "series",
+            "config": {"mz_precision_ppm": 2.5},
+        }
+        # Not waited on: the run as the route answered it.
+        assert run == {"batch_peak_run_id": "pass-1", "status": "running"}
+        assert posting["n"] == 0
+
+    def test_nothing_to_run_is_none(self, resource, posting):
+        posting["answer"] = None
+        assert resource.assign(BATCH_ID) is None
+        assert posting["n"] == 0
+
+    def test_a_pass_still_running_past_the_timeout_raises(
+        self, server, resource, posting
+    ):
+        server.runs_provider = lambda: [
+            {"batch_peak_run_id": "pass-1", "action": "assign", "status": "running"}
+        ]
+        with pytest.raises(TimeoutError, match="batch pass 'pass-1'"):
+            resource.assign(BATCH_ID, timeout=-1)
+
+    def test_cancel_asks_the_running_pass_to_stop(self, resource, posting):
+        run = resource.cancel_assign(BATCH_ID)
+        path, _, _ = posting["calls"][-1]
+        assert path == f"batch-peaks/batch/{BATCH_ID}/assign/cancel"
+        assert run == {"batch_peak_run_id": "pass-1", "status": "running"}
+
+    def test_cancel_with_no_pass_running_is_none(self, resource, posting):
+        posting["cancel"] = None
+        assert resource.cancel_assign(BATCH_ID) is None
