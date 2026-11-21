@@ -101,6 +101,26 @@ def test_an_unchanged_tree_passes(root, capsys):
     assert "structure: ok" in capsys.readouterr().out
 
 
+def test_an_unchanged_cycle_passes(tmp_path, capsys):
+    _tree(tmp_path, **{"b.py": "from . import a\n"})
+    _take_baseline(tmp_path)
+    assert structure.main(["check"], root=tmp_path, packages=PACKAGES) == 0
+    assert "structure: ok" in capsys.readouterr().out
+
+
+def test_an_async_function_is_measured_as_a_function_is(tmp_path):
+    async_long = "async " + _function("handler", 120)
+    late = "async def late():\n    from . import a\n"
+    _tree(tmp_path, **{"b.py": async_long + "\n" + late})
+    _take_baseline(tmp_path)
+    data = json.loads((tmp_path / structure.BASELINE).read_text())
+    held = data["packages"][PACKAGE]
+    assert held["functions"]["b.py:handler"] == 120
+    assert held["function_imports"] == 1
+    # The import inside the async def closes the cycle a.py -> b.py -> a.py.
+    assert held["cycles"] == [["a.py", "b.py"]]
+
+
 def test_the_baseline_records_each_held_reading(root):
     data = json.loads((root / structure.BASELINE).read_text())
     assert data["packages"][PACKAGE] == {
