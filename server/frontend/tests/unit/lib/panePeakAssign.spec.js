@@ -136,6 +136,13 @@ let anchorVerdictRecord = null
 
 vi.mock('@/stores', () => ({ useApp: () => makeApp() }))
 
+// The batch ledger's jump into a sample, which the card reads to name the
+// sample it shows; null here, as for a card opened in the sample scope.
+// cardStates.spec.js covers the batch scope.
+vi.mock('@/lib/panes/PaneBrowserMatch/stores/batchPeakJump.js', () => ({
+  useBatchPeakJump: () => ({ opened: null, stepTo: vi.fn() })
+}))
+
 // The batch curation a derived row's "use this" goes through.
 const batchCurate = vi.fn()
 const batchRelease = vi.fn()
@@ -734,7 +741,7 @@ describe('PanePeakAssign unassigned card', () => {
     const wrapper = await mountPane()
     const text = wrapper.find('.insp-sub').text()
 
-    expect(wrapper.text()).toContain('Unassigned')
+    expect(wrapper.find('[data-testid="no-row-card"]').text()).toContain('No assignment')
     expect(text).toContain(mz(PEAK.mz))
     expect(text).toContain(intensity(PEAK.height))
   })

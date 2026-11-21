@@ -16,6 +16,7 @@ const {
   undoOverride,
   curating,
   curateDenied,
+  canChange,
   batchOverride,
   batchPinLine,
   batchPinSentence,
@@ -44,7 +45,7 @@ const {
   >
     <span class="pi ph ph-hand-pointing manual-icon" />
     <span class="note-text">{{ manualLine }}</span>
-    <template v-if="undoEntry && !curateDenied">
+    <template v-if="undoEntry && !curateDenied && canChange">
       <span class="sep">&middot;</span>
       <Button
         label="Undo"
@@ -67,8 +68,9 @@ const {
   >
     <span class="pi ph ph-hand-pointing manual-icon" />
     <span class="note-text">{{ batchPinLine }}</span>
-    <span class="sep">&middot;</span>
+    <span v-if="canChange" class="sep">&middot;</span>
     <Button
+      v-if="canChange"
       label="Release"
       size="small"
       text

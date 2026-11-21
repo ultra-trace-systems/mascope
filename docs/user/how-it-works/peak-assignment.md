@@ -1459,6 +1459,33 @@ flowchart TD
 
 In a narrow column the four measurements stand one above another, and the chips wrap.
 
+### What the inspector shows in other states
+
+- **An earlier run.** The run selector over the ledger can show any of the sample's
+  runs. On any run but the sample's latest completed one, a notice under the answer names
+  the run: *Read only: an earlier run, run #1 of 2, completed* and the date. The verdict
+  bar's buttons are disabled, and a line under them says why: verdicts and changes are
+  recorded on the latest completed run. *Use* and *Undo* are hidden, and so is a batch
+  pin's *Release*. A verdict already recorded still shows. Select the latest run again to
+  record one.
+- **A decoy run.** A notice names the [arm](#decoy-runs), *A decoy run, arm
+  mz_shift_ppm=+9*. A decoy is never the sample's result, so the card is read only, as on
+  an earlier run.
+- **The viewer role.** The card checks your role in the workspace before it offers
+  anything. A viewer sees the recorded verdict and no *Confirm*, *Reject*, *Unsure* or
+  *Change*. Where no verdict is recorded, a line says verifying needs editor access.
+  *Use*, *Undo* and *Release* are not offered either.
+- **Loading.** While the row's detail is on its way, the Why box, the four measurements
+  and the folded sections are grey placeholder lines. The answer and the verdict bar show
+  at once. A row from the batch ledger draws its measurement tiles the same way while its
+  isotope pattern is measured against the sample.
+- **A peak with no ledger row.** A peak the run on view has no row for reads *No
+  assignment*, with its m/z and intensity, and offers *Find other formulas for this peak*.
+- **Opened from the batch.** The button on a *Batch peaks* row that opens the brightest sample opens the batch peak in
+  its brightest sample. The answer then names that sample, *In sample A: the brightest of
+  12 samples that hold this batch peak*. *Other samples* opens the next one, by intensity,
+  with its peak in focus, and wraps round from the dimmest to the brightest.
+
 ## Assigning a peak yourself
 
 --8<-- "_help/assignment-curation.md"
