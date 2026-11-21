@@ -14,7 +14,7 @@ import json
 import numpy as np
 import pandas as pd
 import pytest
-from fixtures.campaign import HALIDE_NEGATIVE, Campaign, generate
+from fixtures.campaign import HALIDE_CLUSTERS, HALIDE_NEGATIVE, Campaign, generate
 from fixtures.server import SCOPE, FakeClient
 
 from mascope_sdk.exceptions import AuthenticationError
@@ -566,6 +566,350 @@ def test_two_batch_peaks_of_one_formula_are_summed_per_sample(short_campaign, tm
     twin = points.loc[points["batch_peak_id"] == f"{batch}-twin", "sample_item_id"]
     assert len(twin) == 50
     np.testing.assert_allclose(got.loc[want.index], want)
+
+
+# --- a sum of keys ----------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def clusters(cluster_campaign, tmp_path_factory) -> tuple[Campaign, CampaignStore]:
+    """The month whose reagent is spread over the bare ion and its water
+    cluster, synced."""
+    return cluster_campaign, _sync(
+        cluster_campaign, tmp_path_factory.mktemp("clusters")
+    )
+
+
+@pytest.fixture(scope="module")
+def cluster_values(clusters) -> pd.DataFrame:
+    return _values(clusters[0])
+
+
+#: Four days of the two reagent ions, the cluster lost for six hours of the
+#: second.
+SHORT_CLUSTERS = dataclasses.replace(
+    HALIDE_CLUSTERS,
+    days=4,
+    gap_day=2,
+    run_change_day=1,
+    n_species=8,
+    n_targets=3,
+    episodes=(),
+    cluster_lost=(pd.Timedelta(days=1, hours=6), pd.Timedelta(days=1, hours=12)),
+)
+
+
+@pytest.fixture(scope="module")
+def short_clusters() -> Campaign:
+    return generate(SHORT_CLUSTERS, seed=2)
+
+
+def _flat(campaign: Campaign) -> list[str]:
+    """The flat formulas outside the episodes and the run change: their
+    values carry the reagent's drift alone."""
+    return sorted(
+        k
+        for k, cycle in campaign.truth.cycles.items()
+        if k.startswith("formula:")
+        and cycle.peak_hour is None
+        and k not in _episode_keys(campaign)
+        and k not in _renamed(campaign)
+    )
+
+
+def _of(values: pd.DataFrame, key: str) -> pd.Series:
+    """One key's values by sample."""
+    return values[values["key"] == key].set_index("sample_item_id")["value"]
+
+
+def test_the_sum_of_a_reagents_ions_takes_their_shares_cycle_out(clusters):
+    campaign, store = clusters
+    truth = campaign.truth
+    bare, cluster = truth.shares.series_keys
+    keys = _flat(campaign)
+
+    by_bare = views.diurnal(store, keys, normalise=bare)
+    by_sum = views.diurnal(store, keys, normalise=[bare, cluster])
+
+    for key in keys:
+        hourly = by_bare[by_bare["key"] == key]["value"]
+        # The inverse of the bare ion's share: 0.75 / 0.45 from top to bottom
+        assert hourly.max() / hourly.min() > 1.4, key
+        hourly = by_sum[by_sum["key"] == key]["value"]
+        assert (hourly / hourly.mean()).between(0.9, 1.1).all(), key
+    attrs = by_sum.attrs
+    assert attrs["normalise"] == [bare, cluster]
+    assert attrs["normalise_members"] == [bare, cluster]
+    assert attrs["normalise_name"] == "reagent ion + reagent water cluster"
+    assert by_bare.attrs["normalise_members"] == [bare]
+    json.dumps({k: v for k, v in attrs.items() if k != "provenance"})
+    # By day, the sum takes the drift out as the bare ion does
+    known = truth.drift.slope_per_day / truth.drift.intercept
+    raw = views.series(store, keys, cadence="1D", tz="UTC")
+    summed = views.series(
+        store, keys, cadence="1D", normalise=[bare, cluster], tz="UTC"
+    )
+    for slope in _relative_slopes(raw, truth.start):
+        assert slope == pytest.approx(known, abs=0.001)
+    for slope in _relative_slopes(summed, truth.start):
+        assert abs(slope) < 0.0005
+    assert summed.attrs["source"] == "rows"
+
+
+def test_where_a_member_has_no_value_the_sum_is_of_the_others(clusters, cluster_values):
+    campaign, store = clusters
+    shares = campaign.truth.shares
+    bare, cluster = shares.series_keys
+    lo, hi = shares.lost
+    key = _flat(campaign)[0]
+    raw = _of(cluster_values, key)
+    divisor = (
+        pd.concat([_of(cluster_values, bare), _of(cluster_values, cluster)], axis=1)
+        .sum(axis=1, min_count=1)
+        .reindex(raw.index)
+    )
+    day = pd.Timedelta(days=1)
+    start = lo.floor("D")
+
+    frame = views.series(
+        store,
+        key,
+        cadence="raw",
+        normalise=[bare, cluster],
+        start=start,
+        end=start + day,
+    )
+
+    got = _by_sample(frame, store)
+    np.testing.assert_allclose(got, (raw / divisor).loc[got.index])
+    samples = store.table("samples").set_index("sample_item_id")["t_mid_utc"]
+    inside = samples.loc[got.index].between(lo, hi, inclusive="left").to_numpy()
+    assert inside.sum() == shares.lost_samples == 360
+    # In the stretch the cluster is lost, the bare ion alone divides
+    np.testing.assert_allclose(
+        got[inside], (raw / _of(cluster_values, bare)).loc[got.index[inside]]
+    )
+    assert np.isfinite(got[inside]).all()
+    assert frame.attrs["normalise_complete"] == pytest.approx(1 - 360 / 1440)
+    whole = views.series(store, key, cadence="1D", normalise=[bare, cluster])
+    n_samples = len(store.table("samples"))
+    assert whole.attrs["normalise_complete"] == pytest.approx(1 - 360 / n_samples)
+    lost = views.periods(store, key, "day", normalise=[bare, cluster], start=lo, end=hi)
+    assert lost.attrs["normalise_complete"] == 0.0
+    # Each member alone is complete where it has a value
+    assert views.diurnal(store, key, normalise=bare).attrs["normalise_complete"] == 1.0
+    assert views.diurnal(
+        store, key, normalise=cluster, start=start, end=start + day
+    ).attrs["normalise_complete"] == pytest.approx(1 - 360 / 1440)
+    # Over a spectrum's two windows
+    spectrum = views.spectrum(
+        store, (lo, hi), (start - day, start), normalise=[bare, cluster]
+    )
+    assert spectrum.attrs["normalise_complete"] == pytest.approx(1440 / (1440 + 360))
+
+
+def test_a_sample_with_no_member_is_nan_and_a_batch_reading_none_is_not_counted(
+    short_clusters, tmp_path
+):
+    bare, cluster = short_clusters.truth.shares.series_keys
+    tables = dict(short_clusters.tables)
+    ions = tables["ion_series"].copy()
+    keys = ions["series_key"].astype(str)
+    first = set(tables["samples"]["sample_item_id"].astype(str)[:5])
+    gone = ions["sample_item_id"].astype(str).isin(first) & keys.isin([bare, cluster])
+    ions.loc[gone, "intensity"] = np.nan
+    ions.loc[gone, "match_category"] = 0
+    tables["ion_series"] = ions
+    store = _sync(dataclasses.replace(short_clusters, tables=tables), tmp_path)
+    # The middle batch reads the bare ion alone, the last neither ion
+    _, middle, last = store.batch_ids()
+    for batch, dropped in ((middle, [cluster]), (last, [bare, cluster])):
+        for table in ("ion_series", "species"):
+            path = store.path / table / f"{batch}.parquet"
+            rows = store.table(table, batches=[batch])
+            rows = rows[~rows["series_key"].astype(str).isin(dropped)]
+            store_module._write(path, rows, table, {"sample_batch_id": batch})
+    samples = store.table("samples")
+    batch_of = samples["sample_batch_id"].astype(str)
+    reading = (batch_of != last).sum()
+    alone = (batch_of == middle).sum()
+
+    frame = views.series(store, views.TIC, cadence="raw", normalise=[bare, cluster])
+
+    got = _by_sample(frame, store)
+    ids = samples["sample_item_id"].astype(str)
+    read = ids[samples["sample_batch_id"].astype(str) != last]
+    assert got.loc[sorted(first)].isna().all()
+    assert got.loc[read].drop(sorted(first)).notna().all()
+    assert got.loc[ids[~ids.isin(read)]].isna().all()
+    # The middle batch's samples have the bare ion alone
+    assert frame.attrs["normalise_complete"] == pytest.approx(
+        (reading - 5 - alone) / reading
+    )
+    summed = views.series(store, [(bare, cluster)], cadence="raw")
+    assert summed["value"].iloc[:5].isna().all()
+    assert summed["n_samples"].sum() == reading
+
+
+def test_a_sequence_of_one_key_is_that_key(clusters):
+    campaign, store = clusters
+    bare = campaign.truth.shares.series_keys[0]
+    key = _flat(campaign)[0]
+    calls = [
+        lambda n: views.series(store, key, cadence="1D", normalise=n),
+        lambda n: views.diurnal(store, key, normalise=n),
+        lambda n: views.periods(store, key, "week", normalise=n),
+        lambda n: views.composition(store, "week", keys=[key], normalise=n),
+        lambda n: views.spectrum(store, normalise=n),
+        lambda n: views.top(store, 3, "median", normalise=n),
+    ]
+
+    for call in calls:
+        bare_key, listed = call(bare), call([bare])
+        pd.testing.assert_frame_equal(listed, bare_key)
+        assert listed.attrs == bare_key.attrs
+        assert bare_key.attrs["normalise"] == bare
+        assert bare_key.attrs["normalise_members"] == [bare]
+    pd.testing.assert_frame_equal(
+        views.series(store, [(key,)], cadence="1D"),
+        views.series(store, key, cadence="1D"),
+    )
+    pd.testing.assert_frame_equal(
+        views.top(store, 2, "median", keys=[(key,), (bare,)]),
+        views.top(store, 2, "median", keys=[key, bare]),
+    )
+    pd.testing.assert_frame_equal(
+        views.spectrum(store, keys=[(key,)]), views.spectrum(store, keys=[key])
+    )
+    for normalise in ("none", "tic"):
+        attrs = views.series(store, key, cadence="1D", normalise=normalise).attrs
+        assert attrs["normalise_members"] == []
+        assert attrs["normalise_complete"] is None
+    assert views.coverage(store).bins.attrs["normalise_members"] == []
+
+
+def test_a_sum_names_what_it_refuses(clusters):
+    campaign, store = clusters
+    bare, cluster = campaign.truth.shares.series_keys
+    key = _flat(campaign)[0]
+
+    with pytest.raises(ValueError, match="holds no series 'ion:nothing'"):
+        views.series(store, key, normalise=[bare, "ion:nothing"])
+    with pytest.raises(ValueError, match="holds no series 'ion:nothing'"):
+        views.series(store, [(bare, "ion:nothing")])
+    with pytest.raises(ValueError, match=f"names '{bare}' twice"):
+        views.diurnal(store, key, normalise=[bare, cluster, bare])
+    with pytest.raises(ValueError, match=f"names '{bare}' twice"):
+        views.series(store, [(bare, bare)])
+    with pytest.raises(ValueError, match="member 'tic' is no series key"):
+        views.series(store, key, normalise=[bare, "tic"])
+    with pytest.raises(ValueError, match="member 'tic' is no series key"):
+        views.series(store, [("tic", bare)])
+    with pytest.raises(ValueError, match="empty sum"):
+        views.series(store, key, normalise=[])
+    with pytest.raises(ValueError, match="No m/z to draw a spectrum on"):
+        views.spectrum(store, keys=[(bare, cluster)])
+
+
+def test_a_sum_across_polarities_is_refused(short_clusters, tmp_path):
+    """The bare ion is read in the negative samples, the cluster also in
+    the second batch's, which are positive."""
+    client = FakeClient(short_clusters)
+    first, middle, _ = client.batch_ids
+    bare, cluster = short_clusters.truth.shares.series_keys
+    client.by_batch[middle] = client.by_batch[middle].assign(polarity="+")
+    for batch, dropped in ((first, cluster), (middle, bare)):
+        ions = client.ions[batch]
+        at = ions["target_ion_id"] == dropped.removeprefix("ion:")
+        ions.loc[at, ["intensity", "match_category"]] = 0
+    store = _sync(client, tmp_path)
+    key = _flat(short_clusters)[0]
+    day = pd.Timedelta(days=1)
+    start = short_clusters.truth.start
+
+    for call in (
+        lambda: views.series(store, key, normalise=[bare, cluster]),
+        lambda: views.top(store, 2, "median", normalise=[bare, cluster]),
+        lambda: views.series(store, [(bare, cluster)]),
+    ):
+        with pytest.raises(ValueError, match="spans polarities") as refused:
+            call()
+        assert f"{bare} is read in -" in str(refused.value)
+        assert f"{cluster} is read in +, -" in str(refused.value)
+    # Inside one polarity's samples, the sum stands
+    frame = views.series(
+        store, key, normalise=[bare, cluster], start=start, end=start + day
+    )
+    assert frame.attrs["normalise_complete"] == 0.0
+    # A single key across both polarities is no sum
+    views.series(store, key, normalise=cluster)
+
+
+def test_a_tuple_of_keys_is_their_sum_as_one_series(clusters, cluster_values):
+    campaign, store = clusters
+    bare, cluster = campaign.truth.shares.series_keys
+    joined = f"{bare}+{cluster}"
+    start = campaign.truth.shares.lost[0].floor("D")
+    window = {"start": start, "end": start + pd.Timedelta(days=1)}
+
+    frame = views.series(store, [bare, (bare, cluster)], cadence="raw", **window)
+
+    assert list(frame["key"].cat.categories) == [bare, joined]
+    assert frame.attrs["keys"] == [bare, joined]
+    summed = _by_sample(frame[frame["key"] == joined], store)
+    alone = {k: _of(cluster_values, k).loc[summed.index] for k in (bare, cluster)}
+    both = alone[cluster].notna()
+    assert (~both).sum() == 360
+    np.testing.assert_allclose(summed[both], (alone[bare] + alone[cluster])[both])
+    np.testing.assert_allclose(summed[~both], alone[bare][~both])
+    pd.testing.assert_frame_equal(
+        frame[frame["key"] == bare].reset_index(drop=True),
+        views.series(store, bare, cadence="raw", **window).astype(
+            {"key": frame["key"].dtype}
+        ),
+        check_categorical=False,
+    )
+    # Binned like any other key, from the rows: the rollups hold no sum,
+    # alone or beside a key they do hold
+    for keys in ([(bare, cluster)], [bare, (bare, cluster)]):
+        hourly, read = _read_tables(
+            store, lambda: views.series(store, keys, cadence="1h", tz="UTC")
+        )
+        assert hourly.attrs["source"] == "rows"
+        assert "rollups" not in {name for name, _ in read}
+        summed = hourly[hourly["key"] == joined]
+        assert summed["n"].sum() == len(store.table("samples"))
+    top = views.top(store, 2, "median", keys=[(bare, cluster), cluster])
+    assert list(top["key"]) == [joined, cluster]
+    assert top["name"].iloc[0] == "reagent ion + reagent water cluster"
+    composed = views.composition(store, "all", keys=[(bare, cluster)])
+    assert composed["name"].tolist() == ["reagent ion + reagent water cluster"]
+
+
+def test_a_sum_flags_a_run_change_of_any_member(clusters):
+    campaign, store = clusters
+    change = campaign.truth.run_change
+    bare, cluster = campaign.truth.shares.series_keys
+    formula = _flat(campaign)[0]
+    day = pd.Timedelta(days=1)
+    window = {"start": change.at - day, "end": change.at + day}
+
+    for flagged in (
+        views.series(store, [(bare, formula)], **window),
+        views.series(store, [(formula, bare)], **window),
+        views.series(store, views.TIC, normalise=[bare, formula], **window),
+        views.diurnal(store, views.TIC, normalise=[formula, cluster], **window),
+    ):
+        assert flagged.attrs["mixed_runs"]
+        assert [c["at"] for c in flagged.attrs["run_changes"]] == [
+            change.at.isoformat()
+        ]
+    for unflagged in (
+        views.series(store, [(bare, cluster)], **window),
+        views.series(store, views.TIC, normalise=[bare, cluster], **window),
+    ):
+        assert not unflagged.attrs["mixed_runs"]
+        assert unflagged.attrs["run_changes"] == []
 
 
 # --- series from the rollups ------------------------------------------------------
