@@ -438,7 +438,6 @@ class RunContext:
     # -- elect
     stage_b: list[dict] = field(default_factory=list)
     same_ion_families: int = 0
-    series_anchored: int = 0
     # -- refit, judge, cap
     lines: SpectrumLines | None = None
     judging: service.Judging | None = None
@@ -1293,17 +1292,14 @@ async def elect(ctx: RunContext) -> None:
         resolved_profile=ctx.resolved_profile,
         max_alternatives=config.max_alternatives,
     )
-    ctx.series_anchored = (
-        0
-        if ctx.decoy_plan is not None
-        else service.stamp_series(
+    if ctx.decoy_plan is None:
+        service.stamp_series(
             ctx.stage_a + ctx.stage_b,
             {
                 **await service.batch_series_by_peak(sample.sample_item_id),
                 **ctx.series_by_peak,
             },
         )
-    )
 
 
 def raise_to_floors(rows: list[dict], floors: dict[str, str]) -> int:
@@ -1498,7 +1494,12 @@ async def cap(ctx: RunContext) -> None:
     ctx.judged = judging.result()
     ctx.fragments = ctx.judged.fragments
     service._log_fragments(ctx.fragments, ctx.sample.sample_item_name)
-    ctx.tiering = {**ctx.judged.tiering, "series_anchored": ctx.series_anchored}
+    # Counted on the judged ledger, not at the stamp (``elect``): a row the
+    # fragment claim took leaves the ledger with its record.
+    ctx.tiering = {
+        **ctx.judged.tiering,
+        "series_anchored": service.series_anchored(ctx.judged.rows),
+    }
     _report_judging(ctx)
 
 

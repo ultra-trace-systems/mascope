@@ -2720,6 +2720,20 @@ def stamp_series(rows: Iterable[dict], series_by_peak: dict[str, dict]) -> int:
     return stamped
 
 
+def series_anchored(rows: Iterable[dict]) -> int:
+    """How many rows carry a batch series' record (:func:`stamp_series`, which
+    stamps monoisotopic rows alone): the count a run's tiering record keeps.
+
+    Read on the judged ledger rather than at the stamp, since the stamp comes
+    before the judging: a row the fragment claim then reads as the source's
+    leaves the ledger, and its record with it.
+
+    :param rows: The judged rows.
+    :return: The count.
+    """
+    return sum(1 for row in rows if SERIES_KEY in (row.get("provenance") or {}))
+
+
 #: The provenance block a sample's row carries once the batch's
 #: merged-isotopologue reading rewrote it as an owner's line (step 4.2f): the
 #: line, the batch peaks of the row and of its parent, the share the batch read

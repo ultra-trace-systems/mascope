@@ -1338,6 +1338,62 @@ class TestAListHitMeetsTheGrid:
         assert recorder.recorded_configs()[-1]["tiering"]["series_anchored"] == 0
 
     @pytest.mark.asyncio
+    async def test_a_series_reading_the_fragment_claim_takes_is_not_counted(self):
+        # The series records are stamped on the rows as elected, before the
+        # judging round reads the fragments: the reading of p3 carries one and
+        # then leaves the ledger as the source's fragment, so the run's record
+        # counts the series-anchored rows the judged ledger holds, p1's alone.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_tools.composition.reagents import FragmentIon, FragmentLadder
+
+        ladder = FragmentLadder(
+            parent="C6H12O6",
+            label="a stated parent",
+            fragments=(FragmentIon("C3H7O3", 1, "[C3H7O3]+", literature_ratio=1.0),),
+            references=("nist",),
+        )
+        fragment = _isotope_row(
+            target_isotope_id="ti-3",
+            target_ion_id="ion-2",
+            target_compound_id=None,
+            compound_formula="C3H6O3",
+            ion_formula="C3H7O3+",
+            mz=91.0390,
+            relative_abundance=1.0,
+            sample_peak_id="p3",
+            sample_peak_intensity=5000.0,
+        )
+        fragment["reference_identities"] = [{"name": "lactic acid", "source": "a list"}]
+        peaks = _peaks_df(
+            [
+                ("p1", 181.0707, 10000.0),
+                ("p2", 182.0741, 660.0),
+                ("p3", 91.0390, 5000.0),
+            ]
+        )
+        recorder = _Recorder()
+        _start(_patches(recorder, peaks, _stage_a_rows() + [fragment]))
+        patch(f"{_PIPE}.fragment_ladders_for", return_value=(ladder,)).start()
+        patch(
+            f"{_MOD}.batch_series_by_peak",
+            new_callable=AsyncMock,
+            return_value={
+                "p1": self.SERIES,
+                "p3": {**self.SERIES, "formula": "C3H6O3", "root_formula": "C2H4O3"},
+            },
+        ).start()
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        by_peak = {row["sample_peak_id"]: row for row in recorder.rows}
+        assert by_peak["p1"]["provenance"]["series"] == self.SERIES
+        assert by_peak["p3"]["role"] == "reagent"
+        assert "series" not in by_peak["p3"]["provenance"]
+        assert recorder.recorded_configs()[-1]["tiering"]["series_anchored"] == 1
+
+    @pytest.mark.asyncio
     async def test_a_kept_reading_counts_its_rivals_and_keeps_its_row(self):
         from mascope_backend.api.new.peak_assignments.config import (
             PeakAssignmentConfig,
