@@ -13,7 +13,7 @@ persistence.
 
 import math
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -686,20 +686,44 @@ class SecondChannelRule:
             tier_under_ceiling(row) in self.partner_tiers
         )
 
+    def partners(
+        self,
+        rows: Iterable[dict],
+        notation_by_id: dict[str, str],
+        minor_channels: frozenset[str],
+    ) -> dict[str, frozenset[str]]:
+        """The neutrals this rule's partners commit among ``rows``, each with
+        the channels it is committed through (:meth:`is_partner`).
+
+        :param rows: Ledger rows.
+        :param notation_by_id: The run's mechanisms, by the id the rows carry.
+        :param minor_channels: The run's opportunistic channels.
+        :return: Per neutral, as a :func:`formula_identity` key, the mechanism
+            ids of its partners (what :meth:`corroboration` reads).
+        """
+        found: dict[str, set[str]] = {}
+        for row in rows:
+            if self.is_partner(row, notation_by_id, minor_channels):
+                found.setdefault(formula_identity(row["assigned_formula"]), set()).add(
+                    str(row.get("ionization_mechanism_id"))
+                )
+        return {neutral: frozenset(ids) for neutral, ids in found.items()}
+
     def corroboration(
         self,
         row: dict,
         *,
-        partners: frozenset[str] | set[str],
+        partners: Mapping[str, Collection[str]],
         listed_formulas: frozenset[str] = frozenset(),
         isotopologue: bool = False,
     ) -> str | None:
         """What corroborates a reading under this rule, first match first.
 
         :param row: The reading's row.
-        :param partners: The neutrals a partner of the rule commits through a
-            channel other than the reading's, as :func:`formula_identity`
-            keys.
+        :param partners: This rule's partners (:meth:`partners`): per neutral,
+            the mechanism ids it is committed through. One through the
+            reading's own channel is no second channel, and the reading's own
+            row is never its own partner.
         :param listed_formulas: The neutrals the sample's lists name.
         :param isotopologue: Whether the reading has a committed isotopologue.
         :return: :data:`CORROBORATED_BY_ISOTOPOLOGUE`,
@@ -711,7 +735,8 @@ class SecondChannelRule:
             return CORROBORATED_BY_ISOTOPOLOGUE
         if self.listed and neutral in listed_formulas:
             return CORROBORATED_BY_LIST
-        if neutral in partners:
+        own = str(row.get("ionization_mechanism_id"))
+        if any(channel != own for channel in partners.get(neutral, ())):
             return CORROBORATED_BY_SECOND_CHANNEL
         return None
 
@@ -3725,6 +3750,8 @@ def cap_second_channel(
     minor_channels: frozenset[str],
     opened_channels: frozenset[str] = frozenset(),
     listed_formulas: frozenset[str] = frozenset(),
+    search_rule: SecondChannelRule = SEARCH_READING_RULE,
+    list_rule: SecondChannelRule = LIST_READING_RULE,
 ) -> dict:
     """Cap at ``candidate`` each reading through a secondary channel that
     nothing corroborates, in place.
@@ -3746,8 +3773,12 @@ def cap_second_channel(
       is left as it was: the list was read through it before any channel was
       opened.
 
-    The partner is the partner gate's (:data:`PARTNER_RULE`, :func:`shows_molecule`),
-    from either stage, read once on the ledger the reading changes settled
+    Each reading's partners are its configuration's own: a row of either stage
+    its ``partner_tiers`` and ``partner_channels`` admit
+    (:meth:`SecondChannelRule.partners`), through a channel other than the
+    reading's. Both configurations admit the partner gate's partner today
+    (:data:`PARTNER_RULE`, :func:`shows_molecule`). They are read once on the
+    ledger the reading changes settled
     (``service.Judging.judge``): this is a cap of the judging loop, which
     only lowers a tier, after the partner gate has settled every gated ion's
     reading. So the gate neither lifts it nor puts it back, and a reading the
@@ -3766,6 +3797,8 @@ def cap_second_channel(
         (``ResolvedProfile.added_channels``), whose list readings are judged.
     :param listed_formulas: The neutrals the sample's lists name, as
         :func:`formula_identity` keys (:func:`listed_formula_identities`).
+    :param search_rule: The configuration a search's reading is judged by.
+    :param list_rule: The configuration a list's reading is judged by.
     :return: How many search readings and list readings were judged
         (``read``, ``list_read``), and how many of each the cap lowered
         (``capped``, ``list_capped``).
@@ -3782,11 +3815,15 @@ def cap_second_channel(
         for row in assignments
         if row.get("role") == ROLE_ISO_CHILD and row.get("owner_peak_assignment_id")
     }
-    partners = {
-        formula_identity(row["assigned_formula"])
-        for row in assignments
-        if PARTNER_RULE.is_partner(row, notation_by_id, minor_channels)
-    }
+    # One pass of the ledger per partner bar, which the two configurations
+    # share today.
+    partners_by_bar: dict[tuple, dict[str, frozenset[str]]] = {}
+    for rule in (search_rule, list_rule):
+        bar = (rule.partner_tiers, rule.partner_channels)
+        if bar not in partners_by_bar:
+            partners_by_bar[bar] = rule.partners(
+                assignments, notation_by_id, minor_channels
+            )
     for row in assignments:
         if row.get("role") != ROLE_M0 or not row.get("assigned_formula"):
             continue
@@ -3796,11 +3833,11 @@ def cap_second_channel(
         list_row = row.get("source") == SOURCE_DATABASE
         if list_row and mechanism_id not in opened_ids:
             continue
-        rule = LIST_READING_RULE if list_row else SEARCH_READING_RULE
+        rule = list_rule if list_row else search_rule
         isotopologue = row.get("peak_assignment_id") in owners_with_children
         corroboration = rule.corroboration(
             row,
-            partners=partners,
+            partners=partners_by_bar[(rule.partner_tiers, rule.partner_channels)],
             listed_formulas=listed_formulas,
             isotopologue=isotopologue,
         )
