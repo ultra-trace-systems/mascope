@@ -1,5 +1,7 @@
 """Configuration for the peak-centric assignment engine."""
 
+import hashlib
+import json
 import os
 
 from pydantic import (
@@ -7,6 +9,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    ValidationError,
     field_validator,
     model_validator,
 )
@@ -644,6 +647,89 @@ class PeakAssignmentConfig(BaseModel):
             TIER_ASSIGNED: self.assigned_threshold,
             TIER_CANDIDATE: self.candidate_threshold,
         }
+
+
+class BatchAssignmentSettings(PeakAssignmentConfig):
+    """A batch's assignment settings: a run config without its decoy block.
+
+    Saved on the batch (``SampleBatch.assignment_settings``) and read by
+    every pass of its batch stages, so a pass runs on the batch's settings
+    whoever starts it (``docs/dev/batch_assignment_one_action.md``, 5.4).
+    A field it does not know is refused, not dropped: a misspelt setting
+    saved as nothing would leave the batch on a default nobody chose.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _name_the_fields(cls, data, handler):
+        """Each refusal named by its field, in the message itself.
+
+        The API answers a refused request with its validators' messages
+        alone (``api_exceptions``), and a bound's own message ("Input should
+        be greater than 0") does not say which setting broke it. Only the
+        location and the message are passed on, never the value sent.
+        """
+        try:
+            return handler(data)
+        except ValidationError as invalid:
+            raise ValueError(
+                "; ".join(
+                    f"{'.'.join(str(part) for part in error['loc']) or 'settings'}: "
+                    f"{error['msg'].removeprefix('Value error, ')}"
+                    for error in invalid.errors()
+                )
+            ) from None
+
+    @field_validator("decoy", mode="before")
+    @classmethod
+    def _no_decoy(cls, value):
+        """A decoy is a run of one sample against that sample's own last run;
+        a batch's passes write the batch ledger, which no decoy may reach."""
+        if value is not None:
+            raise ValueError(
+                "a batch's settings take no decoy: a decoy is a run of one "
+                "sample, launched on the sample"
+            )
+        return value
+
+
+def stored_batch_settings(settings: BatchAssignmentSettings | None) -> dict | None:
+    """The settings as the batch stores them: the fields that were set, so a
+    field left out follows the engine's default. None where none was set,
+    which means the defaults, as null does."""
+    if settings is None:
+        return None
+    stored = settings.model_dump(mode="json", exclude_unset=True, exclude={"decoy"})
+    return stored or None
+
+
+def batch_settings_config(stored: dict | None) -> PeakAssignmentConfig:
+    """The run config a batch's stored settings stand for: the defaults where
+    it stores none.
+
+    :raises pydantic.ValidationError: What it stores no longer reads as
+        settings (a field since removed or bounded tighter).
+    """
+    return PeakAssignmentConfig.model_validate(
+        BatchAssignmentSettings.model_validate(stored or {}).model_dump(
+            exclude_unset=True, exclude={"decoy"}
+        )
+    )
+
+
+def settings_hash(config: PeakAssignmentConfig | None) -> str:
+    """A short digest of the settings a run config runs on, its decoy block
+    left out: equal for two configs that run alike, whether a field was sent
+    as its default or left out. None stands for the defaults.
+
+    A pass records it in its summary; the batch's assignment status compares
+    the batch's own against it (``settings_changed``).
+    """
+    config = config or PeakAssignmentConfig()
+    text = json.dumps(config.model_dump(mode="json", exclude={"decoy"}), sort_keys=True)
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
 def known_preset_name(value: str | None, field_name: str) -> str:

@@ -820,9 +820,11 @@ class BatchPeaksResource(BaseResource):
         :param wait: Poll until the pass completes, fails or is cancelled.
             Defaults to True.
         :type wait: bool
-        :param config: The untargeted search's and the series detection's
-            settings, as ``peak_assignments`` takes them. None runs each on
-            the settings its last run on the batch recorded.
+        :param config: Settings for this pass alone, in place of the
+            batch's own (``assignment_settings``, set with
+            ``batches.update``), as ``peak_assignments`` takes them; the
+            pass's run records them as given in the request. None runs on
+            the batch's settings, the engine's defaults where it saved none.
         :type config: dict, optional
         :param poll_interval: Seconds between polls.
         :type poll_interval: float
@@ -869,7 +871,9 @@ class BatchPeaksResource(BaseResource):
         ``detail``: ``new_samples`` and ``removed_samples`` against the
         samples the last pass covered, ``resampled`` (a sample's in-app run
         since the pass), ``library_changed`` (a target collection or
-        reference list since), ``engine_changed`` and ``stages_stale``. A
+        reference list since), ``settings_changed`` (the batch's
+        assignment settings hash otherwise than the ones the pass ran on),
+        ``engine_changed`` and ``stages_stale``. A
         curation, a verdict or an import is no reason. ``needs_fold`` says
         whether the next pass folds every sample first, ``fold_reasons`` why.
 
@@ -879,7 +883,8 @@ class BatchPeaksResource(BaseResource):
         or was cancelled, with the stage it stopped at), ``running`` (the
         pass in flight: its ``process_id``, ``started_by``, ``stage``,
         ``stage_index`` of ``n_stages`` and ``progress``), ``stages`` and
-        ``stale_stages``. Requires the guest role.
+        ``stale_stages``, and ``settings_hash``, the hash of the batch's
+        settings now. Requires the guest role.
 
         :param batch_id: The ID of the sample batch.
         :type batch_id: str

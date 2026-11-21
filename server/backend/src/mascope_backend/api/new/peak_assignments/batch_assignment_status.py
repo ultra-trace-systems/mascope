@@ -23,6 +23,10 @@ runs and the stage rows record:
     in-app run completed after the pass started;
   - ``library_changed``: a target collection attached, detached or edited, a
     reference list loaded or dropped, against the pass's record;
+  - ``settings_changed``: the batch's assignment settings
+    (``SampleBatch.assignment_settings``) hash otherwise than the settings
+    the pass ran on, whether they were saved since or the pass ran on a
+    step's own settings in their place (MAS-1014);
   - ``engine_changed``: the engine version is not the pass's;
   - ``stages_stale``: a stage stale for a reason the others do not name.
 
@@ -67,15 +71,18 @@ from mascope_backend.api.new.peak_assignments.batch_stages import (
     STATE_RUNNING,
     STATE_STALE,
     batch_samples,
+    batch_settings,
     fold_reasons,
     last_pass,
     library_read,
+    settings_moved,
     stage_states,
     standing_entries,
 )
 from mascope_backend.api.new.peak_assignments.config import (
     IN_APP_ENGINE,
     PEAK_ASSIGNMENT_ENGINE_VERSION,
+    settings_hash,
 )
 from mascope_backend.db import (
     BatchPeak,
@@ -110,6 +117,7 @@ BEHIND_NEW_SAMPLES = "new_samples"
 BEHIND_REMOVED_SAMPLES = "removed_samples"
 BEHIND_RESAMPLED = "resampled"
 BEHIND_LIBRARY_CHANGED = "library_changed"
+BEHIND_SETTINGS_CHANGED = "settings_changed"
 BEHIND_ENGINE_CHANGED = "engine_changed"
 BEHIND_STAGES_STALE = "stages_stale"
 #: The reasons the batch's samples give.
@@ -213,6 +221,21 @@ def engine_reason(
         "reason": BEHIND_ENGINE_CHANGED,
         "count": 1,
         "detail": {"pass": pass_version, "now": engine_version},
+    }
+
+
+def settings_reason(last: Optional[dict], hash_now: str) -> Optional[dict]:
+    """``settings_changed`` where the batch's settings hash otherwise than
+    the settings the pass ran on: the test the next pass plans by
+    (``batch_stages.settings_moved``), so the status and the pass agree.
+    None for a pass that recorded no hash (one from before the batch kept
+    settings)."""
+    if not settings_moved(last, hash_now):
+        return None
+    return {
+        "reason": BEHIND_SETTINGS_CHANGED,
+        "count": 1,
+        "detail": {"pass": last.get("settings_hash"), "now": hash_now},
     }
 
 
@@ -424,6 +447,7 @@ async def get_batch_assignment_status(sample_batch_id: str) -> dict:
         newest = await _newest_pass(session, sample_batch_id)
         library = await library_read(session, sample_batch_id)
         samples = await batch_samples(session, sample_batch_id)
+        hash_now = settings_hash(await batch_settings(session, sample_batch_id))
         last_run = (
             await session.get(BatchPeakRun, last["batch_peak_run_id"])
             if last is not None
@@ -452,6 +476,7 @@ async def get_batch_assignment_status(sample_batch_id: str) -> dict:
         behind += sample_reasons(last.get("samples") or [], samples, resampled)
         for reason in (
             library_reason(last.get("library"), library),
+            settings_reason(last, hash_now),
             engine_reason(last.get("engine_version")),
         ):
             if reason is not None:
@@ -483,6 +508,7 @@ async def get_batch_assignment_status(sample_batch_id: str) -> dict:
         "sample_batch_id": sample_batch_id,
         "state": state,
         "engine_version": PEAK_ASSIGNMENT_ENGINE_VERSION,
+        "settings_hash": hash_now,
         "n_samples": len(samples),
         "n_batch_peaks": int(n_batch_peaks),
         "last_pass": (
@@ -494,8 +520,8 @@ async def get_batch_assignment_status(sample_batch_id: str) -> dict:
                 "utc_completed": _iso(last_run.batch_peak_run_utc_completed),
                 "started_by": _user(users, last_run.created_by),
                 "engine_version": last_run.engine_version,
-                # The batch keeps no settings of its own yet (MAS-1014).
-                "settings_hash": None,
+                # None for a pass from before the batch kept settings.
+                "settings_hash": last.get("settings_hash"),
                 "n_samples": len(last.get("samples") or []),
             }
             if last_run is not None
@@ -537,6 +563,7 @@ __all__ = [
     "BEHIND_NEW_SAMPLES",
     "BEHIND_REMOVED_SAMPLES",
     "BEHIND_RESAMPLED",
+    "BEHIND_SETTINGS_CHANGED",
     "BEHIND_STAGES_STALE",
     "NOT_A_REASON",
     "SAMPLE_IDS_CAP",
@@ -545,6 +572,7 @@ __all__ = [
     "get_batch_assignment_status",
     "library_reason",
     "running_record",
+    "settings_reason",
     "sample_reasons",
     "stale_reason",
     "state_of",

@@ -318,3 +318,104 @@ async def test_a_batch_is_created_with_the_seeding_option(
         async_session_factory, resp.json()["data"]["sample_batch_id"]
     )
     assert batch.seed_batch_peaks is expected
+
+
+# --- the batch's assignment settings (MAS-1014) ------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_assignment_settings_are_saved_read_kept_and_cleared(
+    editor_client, guest_client, async_session_factory, batch_with_collections
+):
+    """A batch saves its assignment settings as the fields that were set,
+    serves them on its read to a guest too, keeps them through an update
+    that leaves them out, and goes back to the defaults on null or on an
+    empty object; none of it flags a rematch, since no match reads them."""
+    ctx = batch_with_collections
+    url = f"/api/sample/batches/{ctx['batch_id']}"
+    batch, _ = await _stored(async_session_factory, ctx["batch_id"])
+    assert batch.assignment_settings is None
+    assert (await guest_client.get(url)).json()["data"]["assignment_settings"] is None
+
+    resp = await editor_client.patch(
+        url,
+        json={
+            "assignment_settings": {
+                "mz_precision_ppm": 3.0,
+                # The old name of the assigned band still reads, stored under
+                # its own.
+                "identified_threshold": 0.8,
+                "formula_ranges": "C0-40 H0-80 O0-20",
+            }
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    saved = {
+        "mz_precision_ppm": 3.0,
+        "assigned_threshold": 0.8,
+        "formula_ranges": "C0-40 H0-80 O0-20",
+    }
+    assert resp.json()["data"]["assignment_settings"] == saved
+    assert resp.json()["data"]["status"] == "ready"
+    batch, collections = await _stored(async_session_factory, ctx["batch_id"])
+    assert batch.assignment_settings == saved
+    assert collections == set(ctx["attached"])
+    read = await guest_client.get(url)
+    assert read.status_code == 200, read.text
+    assert read.json()["data"]["assignment_settings"] == saved
+
+    resp = await editor_client.patch(url, json={"sample_batch_name": "Renamed"})
+    assert resp.status_code == 200, resp.text
+    batch, _ = await _stored(async_session_factory, ctx["batch_id"])
+    assert batch.assignment_settings == saved
+
+    for cleared in (None, {}):
+        await editor_client.patch(url, json={"assignment_settings": saved})
+        resp = await editor_client.patch(url, json={"assignment_settings": cleared})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["data"]["assignment_settings"] is None
+        batch, _ = await _stored(async_session_factory, ctx["batch_id"])
+        assert batch.assignment_settings is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("settings", "field"),
+    [
+        ({"mz_precision_ppm": -1}, "mz_precision_ppm"),
+        ({"profile": "no-such-reagent"}, "profile"),
+        ({"max_alternatives": 10_000}, "max_alternatives"),
+        # A misspelt setting is refused, not dropped.
+        ({"mz_precision": 3.0}, "mz_precision"),
+        ({"decoy": {"mz_shift_ppm": 9}}, "decoy"),
+    ],
+    ids=["out-of-bounds", "unknown-profile", "over-the-cap", "unknown-field", "decoy"],
+)
+async def test_invalid_assignment_settings_are_refused_naming_the_field(
+    editor_client, async_session_factory, batch_with_collections, settings, field
+):
+    ctx = batch_with_collections
+    url = f"/api/sample/batches/{ctx['batch_id']}"
+    await editor_client.patch(
+        url, json={"assignment_settings": {"max_alternatives": 3}}
+    )
+    resp = await editor_client.patch(url, json={"assignment_settings": settings})
+    assert resp.status_code == 422, resp.text
+    # The answer names the setting it refused.
+    assert f"{field}: " in resp.json()["error"], resp.text
+    batch, _ = await _stored(async_session_factory, ctx["batch_id"])
+    assert batch.assignment_settings == {"max_alternatives": 3}
+
+
+@pytest.mark.asyncio
+async def test_a_guest_cannot_save_assignment_settings(
+    guest_client, async_session_factory, batch_with_collections
+):
+    ctx = batch_with_collections
+    resp = await guest_client.patch(
+        f"/api/sample/batches/{ctx['batch_id']}",
+        json={"assignment_settings": {"mz_precision_ppm": 3.0}},
+    )
+    assert resp.status_code == 403, resp.text
+    batch, _ = await _stored(async_session_factory, ctx["batch_id"])
+    assert batch.assignment_settings is None

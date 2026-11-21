@@ -1904,12 +1904,22 @@ made for.
   `run-stages` and `assign`, *Rebuild batch ledger* and an import answer that the batch
   stages are running, and name the stage (409). That holds for the whole pass, from its
   first stage to its end.
-- **The search's settings carry over.** *Search untargeted* runs on the settings its
-  dialog sends, and *Detect series* reads the m/z precision and the tier bands from the
-  same settings. A pass that another button starts sends none, so the search runs on the
-  settings its own last run on the batch recorded, and so does the series. Either runs on
-  the defaults where it never ran on the batch. Settings given to `run-stages` are what
-  both run on.
+- **The settings belong to the batch.** The search's settings - m/z precision, formula
+  ranges, the peak ceiling, the intensity threshold, the alternatives kept, the profile
+  and the context - and the tier bands are saved on the batch, so a pass runs on the
+  same settings whoever starts it. *Detect series* reads the m/z precision and the tier
+  bands from them, and every stage that rewrites members judges its samples again under
+  those bands. A batch that saved none runs on the engine's defaults. They are edited
+  through the API (`assignment_settings` on `PATCH /api/sample/batches/{id}`, or
+  `mascope.batches.update(batch_id, assignment_settings=...)` in the SDK) and served on
+  the batch's read. A setting the engine does not know, or a value out of its bounds, is
+  refused, naming the setting. Saving does not start a pass. It marks the batch behind:
+  the batch's assignment status (`GET /api/batch-peaks/batch/{id}/assignment-status`)
+  names `settings_changed`, and the next pass runs every stage, from the first, on the
+  new settings. Settings given to one request instead - the *Search untargeted* dialog's,
+  or a `config` sent to `run-stages`, `assign` or a step's own route - are what that pass
+  runs on in place of the batch's. Its run records that they came from the request, and
+  the batch stays behind until a pass runs on its own settings again.
 - **New members are brought up to the batch's readings.** A sample folded in after a
   stage ran, or folded again from a new run of its own, reads its own rows. Running the
   stages again claims the passing water-ladder rungs and the present known species in it,
@@ -2073,7 +2083,8 @@ placed this way, by a new sample or by *Rebuild batch ledger*.
 *Search untargeted*, beside *Rebuild batch ledger*, first asks for the search's parameters
 - m/z precision, formula ranges, the peak ceiling, the intensity threshold and the number
 of alternatives kept, the same settings as a per-sample run's untargeted stage, applied
-to the whole search - and then runs the untargeted composition search
+to the whole search, in place of the batch's own for this pass (*The settings belong to
+the batch*, above) - and then runs the untargeted composition search
 for the batch peaks nothing has assigned yet &mdash; once per species, on its brightest
 peak in that sample's own spectrum &mdash; and then measures the composition it found
 against every other sample the species was seen in, so each carries a fit of its own.

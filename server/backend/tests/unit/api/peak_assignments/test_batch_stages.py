@@ -2,8 +2,8 @@
 
 What a pass runs (:func:`batch_stages.plan`), what a stage's outcome says of
 it, how a record takes its version, what the ledger serves of each stage,
-when a pass folds first (:func:`batch_stages.fold_reasons`), which run's
-settings a stage reads, and what a pass's summary says of each stage.
+when a pass folds first (:func:`batch_stages.fold_reasons`), what a pass
+records of its settings and when they moved, and what a pass's summary says of each stage.
 The database side is in the integration suite (``test_batch_stages_api.py``).
 See ``batch_stages.py``.
 """
@@ -20,9 +20,10 @@ from mascope_backend.api.new.peak_assignments.batch_stages import (
     BatchStage,
     first_not_current,
     fold_reasons,
+    pass_config,
     pass_outcome,
     plan,
-    settings_recorded_by,
+    settings_moved,
     stages_after,
     stages_from,
     standing_entries,
@@ -30,6 +31,7 @@ from mascope_backend.api.new.peak_assignments.batch_stages import (
     upstream_reason,
     with_version,
 )
+from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 
 
 ORDER = [
@@ -306,53 +308,27 @@ class TestWhenAPassFoldsFirst:
         assert self._reasons(last_pass=None, n_batch_peaks=0) == ["no_batch_peaks"]
 
 
-class TestTheSettingsARunRecorded:
-    def test_a_pass_records_them_on_the_stage(self):
-        summary = {
-            "stages": [
-                {"stage": "search", "settings": {"mz_precision_ppm": 2.0}},
-                {"stage": "series", "settings": None},
-            ]
-        }
-        assert settings_recorded_by(
-            "assign",
-            {"fold": "auto", "settings": None},
-            summary,
-            BatchStage.SEARCH,
-            "search_untargeted",
-        ) == (True, {"mz_precision_ppm": 2.0})
-        # A pass that did not run the stage says nothing of it.
-        assert settings_recorded_by(
-            "search_untargeted",
-            {"fold": "auto", "settings": None},
-            summary,
-            BatchStage.SERIES,
-            "detect_series",
-        ) == (False, None)
+class TestThePassesSettings:
+    def test_a_pass_records_its_settings_and_where_they_came_from(self):
+        recorded = pass_config(
+            "series", "auto", PeakAssignmentConfig(max_alternatives=2)
+        )
+        assert recorded["from_stage"] == "series"
+        assert recorded["fold"] == "auto"
+        assert recorded["settings"]["max_alternatives"] == 2
+        assert "decoy" not in recorded["settings"]
+        assert recorded["settings_source"] == "batch"
+        given = pass_config(None, "always", None, "request")
+        assert given["settings"] == PeakAssignmentConfig().model_dump(
+            mode="json", exclude={"decoy"}
+        )
+        assert given["settings_source"] == "request"
 
-    def test_a_steps_own_run_recorded_them_as_its_config(self):
-        assert settings_recorded_by(
-            "search_untargeted",
-            {"mz_precision_ppm": 3.0},
-            {"anchors": 1},
-            BatchStage.SEARCH,
-            "search_untargeted",
-        ) == (True, {"mz_precision_ppm": 3.0})
-        assert settings_recorded_by(
-            "detect_series",
-            {"mz_precision_ppm": 3.0},
-            None,
-            BatchStage.SEARCH,
-            "search_untargeted",
-        ) == (False, None)
-
-    def test_a_pass_with_no_summary_is_never_read_as_settings(self):
-        # A pass a step's route started carries the step's action; its
-        # config is the pass's, not settings.
-        assert settings_recorded_by(
-            "search_untargeted",
-            {"from_stage": "search", "fold": "auto", "settings": None},
-            None,
-            BatchStage.SEARCH,
-            "search_untargeted",
-        ) == (False, None)
+    def test_settings_moved_only_where_both_sides_say_something(self):
+        assert settings_moved({"settings_hash": "a"}, "b") is True
+        assert settings_moved({"settings_hash": "a"}, "a") is False
+        # A pass from before the batch kept settings, or no pass: nothing.
+        assert settings_moved({"settings_hash": None}, "b") is False
+        assert settings_moved({}, "b") is False
+        assert settings_moved(None, "b") is False
+        assert settings_moved({"settings_hash": "a"}, None) is False

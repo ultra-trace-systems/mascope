@@ -73,6 +73,7 @@ from mascope_backend.api.new.peak_assignments.batch_stages import (
     BatchStage,
     assign_batch,
     pass_config,
+    pass_settings,
     plan_pass,
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
@@ -456,9 +457,11 @@ class AssignBatchBody(RequestBodyModel):
     config: PeakAssignmentConfig | None = Field(
         None,
         description=(
-            "The untargeted search's and the series detection's settings. "
-            "Omitted, each runs on the settings its last run on the batch "
-            "recorded, and on the engine defaults where it never ran."
+            "Settings for this pass alone, in place of the batch's own "
+            "(``assignment_settings`` on the batch): the pass's run records "
+            "them as given in the request (``settings_source`` ``request``). "
+            "Omitted, the pass runs on the batch's settings, and on the "
+            "engine's defaults where the batch saved none."
         ),
     )
 
@@ -471,8 +474,7 @@ async def _launch_pass(
 ) -> dict:
     """Refuse or launch a pass of the batch stages, as action ``assign``."""
     sample_batch = await fetch_sample_batch(sample_batch_id)
-    # None where none was given: each stage that takes settings then runs on
-    # the ones its own last run recorded (``batch_stages.settings_for``).
+    # None where none was given: the pass runs on the batch's own settings.
     config = body.config if body is not None and body.config else None
     if config is not None and config.decoy is not None:
         raise ApiException(
@@ -484,7 +486,10 @@ async def _launch_pass(
     await check_no_run_in_flight(sample_batch_id=sample_batch_id)
     from_stage = body.from_stage if body is not None else None
     fold = body.fold if body is not None else FOLD_AUTO
-    reasons, stages = await plan_pass(sample_batch_id, from_stage, fold)
+    # Read once, here: the run this opens records them, and the pass runs
+    # what its run records.
+    config, settings_source = await pass_settings(sample_batch_id, config)
+    reasons, stages = await plan_pass(sample_batch_id, from_stage, fold, config)
     if not reasons and not stages:
         # Answered here with no run, so a press with nothing to do prunes no
         # pass from the history.
@@ -503,7 +508,7 @@ async def _launch_pass(
     run_id = await start_run(
         sample_batch_id,
         ACTION_ASSIGN,
-        config=pass_config(from_stage, fold, config),
+        config=pass_config(from_stage, fold, config, settings_source),
         user_id=user.id,
     )
     process_id = gen_id(8)
@@ -513,6 +518,7 @@ async def _launch_pass(
         from_stage=from_stage,
         fold=fold,
         config=config,
+        settings_source=settings_source,
         action=ACTION_ASSIGN,
         batch_peak_run_id=run_id,
         independent_transaction=True,
@@ -665,15 +671,17 @@ async def search_untargeted_batch_peaks_route(
 
     :param sample_batch_id: The unique identifier of the sample batch.
     :param body: Optional search settings (formula ranges, tolerance, tier
-        bands, the per-sample cap on peaks enumerated). Omitted, the search
-        runs on the settings its last run on the batch recorded, and on the
-        engine defaults where it never ran. ``run_untargeted`` is implied.
+        bands, the per-sample cap on peaks enumerated), for this pass alone
+        in place of the batch's own (``assignment_settings``), which its run
+        records as an override. Omitted, the search runs on the batch's
+        settings, the engine defaults where it saved none.
+        ``run_untargeted`` is implied.
     :param user: The current authenticated user. Requires workspace editor role.
     :return: Acknowledgement message with the background process id.
     """
     sample_batch = await fetch_sample_batch(sample_batch_id)
-    # None where none was given: each stage that takes settings then runs on
-    # the ones its own last run recorded (``batch_stages.settings_for``).
+    # None where none was given: the pass runs on the batch's own settings;
+    # given, they override the batch's, and its run records that they did.
     config = body.config if body is not None and body.config else None
     if config is not None and config.decoy is not None:
         # A decoy is a run of one sample against that sample's own last run;
@@ -734,15 +742,16 @@ async def detect_series_batch_peaks_route(
 
     :param sample_batch_id: The unique identifier of the sample batch.
     :param body: Optional settings; the tier bands and the m/z precision are
-        read, the rest is the search's and is ignored. Omitted, each of the
-        search and the series runs on the settings its last run on the batch
-        recorded, and on the engine defaults where it never ran.
+        read, the rest is the search's and is ignored. Given, they override
+        the batch's own for this pass, which its run records; omitted, the
+        pass runs on the batch's settings (``assignment_settings``), the
+        engine defaults where it saved none.
     :param user: The current authenticated user. Requires workspace editor role.
     :return: Acknowledgement message with the background process id.
     """
     sample_batch = await fetch_sample_batch(sample_batch_id)
-    # None where none was given: each stage that takes settings then runs on
-    # the ones its own last run recorded (``batch_stages.settings_for``).
+    # None where none was given: the pass runs on the batch's own settings;
+    # given, they override the batch's, and its run records that they did.
     config = body.config if body is not None and body.config else None
     if config is not None and config.decoy is not None:
         raise ApiException(
