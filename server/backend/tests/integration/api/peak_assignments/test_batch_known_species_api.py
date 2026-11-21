@@ -1437,3 +1437,79 @@ async def test_a_samples_next_run_keeps_what_the_batchs_claim_keeps(
     record = _record((await _anchors(async_session_factory, batch))["d"])
     assert record["verdict"] == "present"
     assert record["test_held"] == 2
+
+
+async def test_a_samples_next_run_keeps_its_reading_on_a_twin(
+    async_session_factory, known_batch, monkeypatch, only_its_own_stage
+):
+    """The fold split the siloxane's trace: a second batch peak of it, 3 ppm
+    higher, is held for the decided one, and S02's member there reads the
+    compound. The run reads it there on its own again, and elects no second
+    copy on the decided peak, as the batch's own claim keeps a sample that
+    reads the species on a twin."""
+    batch, samples, ids = known_batch, known_batch["samples"], known_batch["ids"]
+    await _decided_through_the_stage(batch, monkeypatch)
+    twin_id = "~" + gen_id(15)
+    async with async_session_factory() as session:
+        siloxane = await session.get(BatchPeak, ids["d"])
+        twin = BatchPeak(
+            **{
+                column.name: getattr(siloxane, column.name)
+                for column in BatchPeak.__table__.columns
+            }
+        )
+        twin.batch_peak_id = twin_id
+        twin.mz = siloxane.mz * (1 + 3e-6)
+        record = {
+            **_record(siloxane),
+            "held": "twin",
+            "twin_of": ids["d"],
+            "twin_of_mz": siloxane.mz,
+        }
+        twin.provenance = {**siloxane.provenance, "known_species": record}
+        session.add(twin)
+        await session.flush()
+        own = (await _members(async_session_factory, ids["d"]))[samples["S00"]]
+        session.add(
+            BatchPeakOccurrence(
+                batch_peak_id=twin_id,
+                sample_item_id=samples["S02"],
+                sample_peak_id="tw",
+                mz_delta_ppm=0.0,
+                intensity=1e5,
+                tier=tier_code("assigned"),
+                fit_score=0.9,
+                candidate=own.candidate,
+                role=role_code("M0"),
+            )
+        )
+        await session.commit()
+    monkeypatch.setitem(MZ, "tw", MZ["d"] * (1 + 3e-6))
+    names = {sample: name for name, sample in samples.items()}
+
+    def rows_of(sample_item_id, run_id):
+        rows = [
+            row
+            for row in _rows(sample_item_id, names[sample_item_id], run_id=run_id)
+            if row["role"] in ("M0", "iso_child")
+        ]
+        [listed] = [
+            row
+            for row in _rows(sample_item_id, "S00", run_id=run_id)
+            if row["sample_peak_id"] == "d"
+        ]
+        return [*rows, {**listed, "sample_peak_id": "tw", "sample_peak_mz": MZ["tw"]}]
+
+    stub_known_set(monkeypatch, rows_of)
+
+    ctx = await run_sample(samples["S02"])
+
+    assert ctx.batch_applied["listed"] == {"reads_on_twin": 1}
+    rows = await _run_rows(async_session_factory, ctx.run_id)
+    assert rows["d"].assigned_formula == OTHER
+    assert "batch_known_species" not in (rows["d"].provenance or {})
+    assert [
+        peak
+        for peak, row in rows.items()
+        if row.role == "M0" and row.assigned_formula == D4
+    ] == ["tw"]

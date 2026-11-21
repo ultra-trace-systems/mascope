@@ -43,12 +43,14 @@ from mascope_backend.api.new.peak_assignments.batch_decisions import (
     rung_from,
     segment_of,
     strip_from,
+    twin_peaks,
 )
 from mascope_backend.api.new.peak_assignments.batch_known_species import (
     ALREADY,
     KEPT_CARRIES_LINES,
     KEPT_CLAIMED_OTHERWISE,
     KEPT_LINE_OF_ANOTHER,
+    KEPT_ON_TWIN,
     KEPT_TARGET_LIBRARY,
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
@@ -313,6 +315,65 @@ class TestAListedCompoundForASample:
     def test_no_other_record_proposes_a_compound(self, record):
         assert listed_from(ANCHOR, "p", record) is None
 
+    def test_it_names_the_sample_s_peaks_in_its_twins(self):
+        one = listed_from(ANCHOR, "p", _listed_record(), ["t2", "t1"])
+        assert one.twin_peak_ids == ("t1", "t2")
+        assert listed_from(ANCHOR, "p", _listed_record()).twin_peak_ids == ()
+
+
+def _anchor(batch_peak_id, mode="mode-1", variable="sum_peak_heights"):
+    return SimpleNamespace(
+        batch_peak_id=batch_peak_id,
+        ionization_mode_id=mode,
+        intensity_variable=variable,
+    )
+
+
+class TestTheTwinsOfADecision:
+    def test_a_twin_is_another_batch_peak_of_the_species_in_its_partition(self):
+        # The batch decides each partition's species together, and keeps a
+        # sample that reads one on any other batch peak of its trace: one held
+        # for the decided one, and one decided otherwise (settle_twins).
+        decided = _anchor("bp-d")
+        known = [
+            ("d", decided, _listed_record()),
+            ("held", _anchor("bp-h"), _listed_record(held="twin", twin_of="bp-d")),
+            ("absent", _anchor("bp-a"), _listed_record(verdict="absent")),
+            (
+                "other",
+                _anchor("bp-o"),
+                _listed_record(
+                    species={"kind": "listed", "formula": OTHER, "ion_formula": D4_ION}
+                ),
+            ),
+            (
+                "ion",
+                _anchor("bp-i"),
+                _listed_record(
+                    species={
+                        "kind": "listed",
+                        "formula": D4,
+                        "ion_formula": "C8H24O4Si4Na+",
+                    }
+                ),
+            ),
+            (
+                "library",
+                _anchor("bp-l"),
+                _listed_record(
+                    species={"kind": "library", "formula": D4, "ion_formula": D4_ION}
+                ),
+            ),
+            ("mode", _anchor("bp-m", mode="mode-2"), _listed_record()),
+            ("tof", _anchor("bp-t", variable="sum_peak_areas"), _listed_record()),
+        ]
+
+        assert twin_peaks(decided, _listed_record(), known) == ["held", "absent"]
+
+    def test_a_record_with_no_species_is_no_twin(self):
+        known = [("x", _anchor("bp-x"), {"verdict": "present"})]
+        assert twin_peaks(_anchor("bp-d"), _listed_record(), known) == []
+
 
 STRIP_RECORD = {
     "batch_peak_id": "bp-p",
@@ -450,6 +511,54 @@ class TestWhatBecomesOfAListedCompound:
             listed_decision(DECIDED, rows, claimed=claimed, owners=owners) == expected
         )
 
+    @pytest.mark.parametrize(
+        "rows, owners, on_twins, expected",
+        [
+            (
+                [_row("d", OTHER)],
+                set(),
+                [_row("e", D4, tier="candidate")],
+                KEPT_ON_TWIN,
+            ),
+            ([], set(), [_row("e", D4, tier="below_assignability")], KEPT_ON_TWIN),
+            (
+                [_row("d", D4, tier="below_assignability")],
+                set(),
+                [_row("e", D4, tier="unassigned")],
+                KEPT_ON_TWIN,
+            ),
+            ([_row("d", OTHER)], set(), [_row("e", OTHER)], None),
+            (
+                [_row("d", OTHER)],
+                set(),
+                [_row("e", D4, role="iso_child", owner_peak_assignment_id="id-q")],
+                None,
+            ),
+            ([_row("d", D4, tier="candidate")], set(), [_row("e", D4)], ALREADY),
+            ([_row("d", OTHER)], {"id-d"}, [_row("e", D4)], KEPT_CARRIES_LINES),
+        ],
+        ids=[
+            "the compound on a twin",
+            "on a twin below candidate",
+            "a lift, and on a twin",
+            "another formula on a twin",
+            "a twin's line of another",
+            "committed here on its own",
+            "another formula with its lines here",
+        ],
+    )
+    def test_a_sample_that_reads_it_on_a_twin_is_kept(
+        self, rows, owners, on_twins, expected
+    ):
+        # As the batch's own claim keeps one (decide_row's twins): the claim
+        # writes no second copy of the compound in the sample.
+        assert (
+            listed_decision(
+                DECIDED, rows, claimed=False, owners=owners, on_twins=on_twins
+            )
+            == expected
+        )
+
 
 PEAKS = pd.DataFrame(
     {"sample_peak_id": ["d", "e"], "mz": [297.08246, 310.0], "intensity": [1e5, 2e4]}
@@ -537,6 +646,37 @@ class TestTheListedCompoundElected:
         assert [row["sample_peak_id"] for row in stage_a] == ["d"]
         assert stage_b == []
         assert cite_listed(stage_a, {"d": DECIDED, "gone": gone}, outcomes) == 1
+
+    def test_a_reading_of_it_on_a_twin_keeps_the_run_s_reading(self):
+        # The fold split the compound's trace: the sample's peak e is in a
+        # twin, and the run's own reading of the compound there stands alone.
+        own = _row("e", D4, tier="candidate", source="database")
+        searched = _row("d", OTHER)
+        decided = replace(DECIDED, twin_peak_ids=("e",))
+
+        stage_a, stage_b, outcomes = _elect([own], [searched], decided={"d": decided})
+
+        assert outcomes == {"d": KEPT_ON_TWIN}
+        assert stage_a == [own] and stage_b == [searched]
+        assert searched["assigned_formula"] == OTHER
+        assert [
+            r["sample_peak_id"]
+            for r in stage_a + stage_b
+            if r["assigned_formula"] == D4
+        ] == ["e"]
+
+    def test_of_two_twins_decided_present_one_is_elected(self):
+        # Neither claimed in the batch, so both stand present; a run that
+        # reads the compound on neither peak elects it on the first alone.
+        first = replace(DECIDED, twin_peak_ids=("e",))
+        second = replace(DECIDED, sample_peak_id="e", twin_peak_ids=("d",))
+
+        stage_a, _, outcomes = _elect([], [], decided={"d": first, "e": second})
+
+        assert outcomes == {"d": LISTED_ELECTED, "e": KEPT_ON_TWIN}
+        assert [(r["sample_peak_id"], r["assigned_formula"]) for r in stage_a] == [
+            ("d", D4)
+        ]
 
     def test_a_reading_the_claim_keeps_is_left_as_it_is(self):
         searched = _row("d", OTHER)
