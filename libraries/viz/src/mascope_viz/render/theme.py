@@ -69,6 +69,10 @@ class Marks:
     band_opacity: float = 0.2
     span_opacity: float = 0.12
     gap_opacity: float = 0.18
+    #: A scatter point's fill, so that a point behind another shows.
+    point_opacity: float = 0.7
+    #: A box's fill.
+    box_opacity: float = 0.25
     bar_width: float = 0.8
 
 
@@ -132,10 +136,15 @@ class Theme:
 
     def token(self, name: str) -> str:
         """The colour of a token: ``series.N``, ``accent``, ``text``,
-        ``muted``, a state, or a span kind (``event``, ``gap``)."""
+        ``muted``, a state, the diverging ramp's ends (``diverging.low``,
+        ``diverging.high``), or a span kind (``event``, ``gap``)."""
         if name.startswith("series."):
             index = int(name.split(".", 1)[1]) - 1
             return self.categorical[index % len(self.categorical)]
+        if name == "diverging.low":
+            return self.diverging[0]
+        if name == "diverging.high":
+            return self.diverging[-1]
         if name == "event":
             return self.info
         if name == "gap":
@@ -155,7 +164,7 @@ class Theme:
         """Every colour token's value, for a renderer outside Python."""
         names = [f"series.{i}" for i in range(1, len(self.categorical) + 1)]
         names += ["accent", "text", "muted", "success", "warning", "error", "info"]
-        names += ["event", "gap"]
+        names += ["diverging.low", "diverging.high", "event", "gap"]
         return {name: self.token(name) for name in names}
 
 
@@ -321,6 +330,12 @@ def lab(colour: str) -> tuple[float, float, float]:
 def distance(a: str, b: str) -> float:
     """The CIELAB distance of two colours (CIE76)."""
     return math.dist(lab(a), lab(b))
+
+
+def blend(colour: str, ground: str, alpha: float) -> str:
+    """*colour* at *alpha* over *ground*, as one opaque colour: a tint
+    both renderers fill alike."""
+    return hex_colour(g + (c - g) * alpha for c, g in zip(rgb(colour), rgb(ground)))
 
 
 def interpolate(stops: tuple[str, ...], at: float) -> str:

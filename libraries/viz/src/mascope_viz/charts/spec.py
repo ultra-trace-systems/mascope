@@ -11,8 +11,8 @@ sections 2.4 and 2.8).
 
 The spec is a document, not only a Python object: :meth:`Figure.to_json`
 writes it as a versioned JSON document (:data:`FIGURE_SPEC_VERSION`) and
-:meth:`Figure.from_json` reads it back to an equal figure, which renders
-the same. What the document says, and nothing else, is what a renderer
+:meth:`Figure.from_json` reads it back to an equal figure (two figures are
+equal when their documents are), which renders the same. What the document says, and nothing else, is what a renderer
 draws:
 
 - **The primitives and their encodings.** Each primitive has encodings it
@@ -24,10 +24,22 @@ draws:
 - **The frame**, column by column with each column's type, so a time
   column comes back with its zone and a categorical with its categories in
   their order. A value that is not finite is a gap, and the document
-  writes it as ``null``.
+  writes it as ``null``. A renderer draws a categorical's values in the
+  order of its categories.
+- **The context** (:class:`Context`): what the view behind the figure
+  says of its values (the cadence, the statistic and band, the window and
+  zone, the normalisation, its members and how complete it is, the run
+  changes), as fields, so that nothing reading a figure parses its
+  subtitle. The subtitle is written from it (:func:`subtitle`).
+- **Display names.** A group column is a series' identity: its colour and
+  its one legend entry. What a legend or a hover text shows is the
+  panel's ``name`` column for that group (the option ``names`` for the
+  lines of a list of y), so a key such as ``ion:12+ion:14`` is never shown
+  for a name, and nothing reads meaning into a key.
 - **Theme tokens by name.** A panel names colours (``series.1``,
   ``accent``, ``muted``, the ``success``, ``warning``, ``error`` and
-  ``info`` states), the palettes (``categorical``, ``sequential``,
+  ``info`` states, the diverging ramp's ends ``diverging.low`` and
+  ``diverging.high``), the palettes (``categorical``, ``sequential``,
   ``diverging``) and the span kinds (``event``, ``gap``) by name; the
   renderer's theme gives them values (:mod:`mascope_viz.render.theme`), so
   one spec draws in the light and the dark theme alike.
@@ -70,7 +82,9 @@ MODES = ("marks", "raster")
 #: ``sequential`` and ``diverging`` map a number to a colour.
 PALETTES = ("categorical", "sequential", "diverging")
 
-#: The colours a panel may name for a group (option ``colours``).
+#: The colours a panel may name for a group (option ``colours``): the
+#: categorical palette's, the states', and the two ends of the diverging
+#: ramp (below and above its centre).
 COLOUR_TOKENS = (
     *(f"series.{i}" for i in range(1, 11)),
     "accent",
@@ -80,6 +94,8 @@ COLOUR_TOKENS = (
     "warning",
     "error",
     "info",
+    "diverging.low",
+    "diverging.high",
 )
 
 #: The kinds of span a time panel shades: an ``event`` (an episode, a period
@@ -120,7 +136,8 @@ class Option:
         ``text``, ``mode`` (:data:`MODES`), ``palette``
         (``sequential`` or ``diverging``), ``spans``, ``rules``,
         ``colours`` (group to :data:`COLOUR_TOKENS`), ``headers`` (column
-        to text) or ``formats`` (column to a number format).
+        to text: a table's headers, a series' display names) or
+        ``formats`` (column to a number format).
     :ivar default: Its value when the panel does not set it.
     """
 
@@ -152,6 +169,11 @@ _NUMBER = Encoding(("number",))
 _TIME_OR_NUMBER = Encoding(("time", "number"))
 _GROUP = Encoding(("text", "boolean", "number"))
 _LABEL = Encoding(("text", "number"))
+_FLAG = Encoding(("boolean",))
+#: A group's display name: what its legend entry and hover text say. The
+#: group column is its identity (its colour, its one legend entry); the
+#: name is only what a reader sees, so a key is never shown for a name.
+_NAME = Encoding(("text",))
 _ANY = ("time", "number", "boolean", "text")
 _TIME_MARKS = {"spans": Option("spans", ()), "rules": Option("rules", ())}
 
@@ -159,21 +181,23 @@ _TIME_MARKS = {"spans": Option("spans", ()), "rules": Option("rules", ())}
 PRIMITIVES: dict[str, Primitive] = {
     "series": Primitive(
         required={"x": _TIME_OR_NUMBER, "y": Encoding(("number",), many=True)},
-        optional={"group": _GROUP, "lo": _NUMBER, "hi": _NUMBER},
+        optional={"group": _GROUP, "name": _NAME, "lo": _NUMBER, "hi": _NUMBER},
         options={
             "mode": Option("mode", "marks"),
             "markers": Option("bool", False),
             "colours": Option("colours", {}),
+            "names": Option("headers", {}),
             **_TIME_MARKS,
         },
         summary=(
-            "lines over time or a number: one per group, or one per column "
-            "of a list of y; lo and hi a band; a gap (NaN) breaks the line"
+            "lines over time or a number: one per group (named by name), or "
+            "one per column of a list of y (named by the option names); lo "
+            "and hi a band; a gap (NaN) breaks the line"
         ),
     ),
     "strip": Primitive(
         required={"x": Encoding(("time",)), "y": _GROUP},
-        optional={"value": _NUMBER, "mark": Encoding(("boolean",))},
+        optional={"value": _NUMBER, "mark": _FLAG},
         options={
             "width": Option("duration", None),
             "mark_label": Option("text", "marked"),
@@ -186,42 +210,62 @@ PRIMITIVES: dict[str, Primitive] = {
     ),
     "heatmap": Primitive(
         required={"x": Encoding(_ANY), "y": Encoding(_ANY), "value": _NUMBER},
-        optional={},
+        optional={"gap": _FLAG},
         options={
             "mode": Option("mode", "marks"),
             "palette": Option("palette", "sequential"),
             "centre": Option("number", None),
+            "gap_label": Option("text", "no samples"),
         },
-        summary="an x by y grid of cells coloured by value",
+        summary=(
+            "an x by y grid of cells coloured by value; a gap cell (no "
+            "samples) in the gap style, a cell without a value blank"
+        ),
     ),
     "scatter": Primitive(
         required={"x": _NUMBER, "y": _NUMBER},
         optional={
             "size": _NUMBER,
             "colour": Encoding(("number", "text", "boolean")),
+            "name": _NAME,
             "label": _LABEL,
+            "hollow": _FLAG,
         },
         options={
             "top_n": Option("int", 0),
             "palette": Option("palette", "sequential"),
             "colours": Option("colours", {}),
+            "hollow_label": Option("text", ""),
         },
         summary=(
-            "points: size and colour by column, the top_n largest (by size, "
-            "else y) labelled"
+            "points: area in proportion to size, colour by column, hollow "
+            "where hollow is true, larger behind; the top_n largest (by "
+            "size, else y) labelled"
         ),
     ),
     "sticks": Primitive(
         required={"x": _NUMBER, "y": _NUMBER},
-        optional={"group": _GROUP, "label": _LABEL},
-        options={"top_n": Option("int", 0), "colours": Option("colours", {})},
-        summary="vertical lines from zero, a spectrum; the top_n tallest labelled",
+        optional={"group": _GROUP, "name": _NAME, "label": _LABEL, "mark": _FLAG},
+        options={
+            "top_n": Option("int", 0),
+            "colours": Option("colours", {}),
+            "by_sign": Option("bool", False),
+            "mark_label": Option("text", "marked"),
+        },
+        summary=(
+            "vertical lines from zero, a spectrum, signed values below it; "
+            "coloured by group or, by_sign, on the diverging ramp's ends; "
+            "mark flags a stick at its tip; the top_n tallest labelled"
+        ),
     ),
     "bars": Primitive(
         required={"x": _GROUP, "y": _NUMBER},
-        optional={"group": _GROUP, "lo": _NUMBER, "hi": _NUMBER},
+        optional={"group": _GROUP, "name": _NAME, "lo": _NUMBER, "hi": _NUMBER},
         options={"stack": Option("bool", False), "colours": Option("colours", {})},
-        summary="bars per category, groups side by side or stacked, lo-hi error bars",
+        summary=(
+            "bars per category, groups side by side or stacked, an interval "
+            "from lo to hi"
+        ),
     ),
     "box": Primitive(
         required={
@@ -232,24 +276,32 @@ PRIMITIVES: dict[str, Primitive] = {
             "lo": _NUMBER,
             "hi": _NUMBER,
         },
-        optional={"group": _GROUP, "mean": _NUMBER},
-        options={"colours": Option("colours", {})},
+        optional={"group": _GROUP, "name": _NAME, "mean": _NUMBER, "hollow": _FLAG},
+        options={"colours": Option("colours", {}), "hollow_label": Option("text", "")},
         summary=(
             "a box per category from its quartiles, whiskers from lo to hi, "
-            "groups side by side"
+            "groups side by side; hollow where hollow is true"
         ),
     ),
     "table": Primitive(
         required={"columns": Encoding(_ANY, many=True)},
-        optional={},
+        optional={"mark": _FLAG},
         options={
             "headers": Option("headers", {}),
             "formats": Option("formats", {}),
             "max_rows": Option("int", 0),
+            "mark_label": Option("text", "marked"),
         },
-        summary="rows of the frame, its columns formatted; max_rows caps them",
+        summary=(
+            "rows of the frame, its columns formatted; a row where mark is "
+            "true shaded; max_rows caps them"
+        ),
     ),
 }
+
+#: The primitives whose ``name`` encoding names the groups of a ``group``
+#: column; a scatter's names those of its ``colour`` column.
+_NAMED_BY_GROUP = ("series", "sticks", "bars", "box")
 
 #: The primitives that draw an x and a y axis.
 PLOTTED = tuple(name for name in PRIMITIVES if name != "table")
@@ -300,29 +352,42 @@ class Axis:
         return cls(**document)
 
 
+#: A panel's axes, in the document's order.
+AXES = ("x", "y", "colour", "size")
+
+
 @dataclass
 class Axes:
-    """A panel's axes: ``x``, ``y`` and ``colour``, the scale of a colour
-    by number (a heatmap's value, a scatter's or a strip's colour)."""
+    """A panel's axes: ``x``, ``y``, ``colour``, the scale of a colour by
+    number (a heatmap's value, a scatter's or a strip's colour), and
+    ``size``, whose label titles a scatter's size legend. A marker's area
+    is in proportion to its size value, so the size axis takes a label and
+    neither a log scale nor a range."""
 
     x: Axis = field(default_factory=Axis)
     y: Axis = field(default_factory=Axis)
     colour: Axis = field(default_factory=Axis)
+    size: Axis = field(default_factory=Axis)
 
     def __post_init__(self) -> None:
-        for name in ("x", "y", "colour"):
+        for name in AXES:
             value = getattr(self, name)
             if isinstance(value, Mapping):
                 setattr(self, name, Axis.from_dict(value))
             elif not isinstance(value, Axis):
                 raise TypeError(f"axes.{name} is not an Axis: {value!r}")
+        if self.size.scale != "linear" or self.size.range is not None:
+            raise ValueError(
+                "the size axis takes a label only: a marker's area is in "
+                "proportion to its value"
+            )
 
     def to_dict(self) -> dict[str, Any]:
-        return {name: getattr(self, name).to_dict() for name in ("x", "y", "colour")}
+        return {name: getattr(self, name).to_dict() for name in AXES}
 
     @classmethod
     def from_dict(cls, document: Mapping[str, Any]) -> "Axes":
-        _keys(document, {"x", "y", "colour"}, "the axes")
+        _keys(document, set(AXES), "the axes")
         return cls(**{name: Axis.from_dict(axis) for name, axis in document.items()})
 
 
@@ -437,33 +502,158 @@ class Panel:
         return cls(**fields)
 
 
+#: The fields of a figure's :class:`Context`, as the view frames' ``attrs``
+#: name them.
+CONTEXT_FIELDS = (
+    "cadence",
+    "stat",
+    "band",
+    "tz",
+    "start",
+    "end",
+    "normalise",
+    "normalise_name",
+    "normalise_members",
+    "normalise_complete",
+    "mixed_runs",
+    "run_changes",
+)
+
+#: The fields of a run change in :attr:`Context.run_changes`, as the store's
+#: ``RunChange.to_dict`` writes them.
+RUN_CHANGE_FIELDS = ("at", "sample_batch_id", "polarity", "before", "after")
+
+
 @dataclass
+class Context:
+    """What the view behind a figure says of its values: its frame's
+    ``attrs``, as data in the document. The subtitle is written from it
+    (:func:`subtitle`), and whatever reads a figure later (the web app's
+    renderer, a saved dashboard, the figure route's provenance) reads these
+    fields, never the subtitle's text. Each field is None where the view
+    does not say.
+
+    :ivar cadence: What one point stands for: ``1h``, ``raw``, ``hour of
+        day``, ``week``.
+    :ivar stat: A bin's statistic: ``median``, ``mean``, ``min`` or ``max``.
+    :ivar band: The percentiles of a bin's band, low then high (``[10,
+        90]``).
+    :ivar tz: The zone the times are shown in.
+    :ivar start: The window's start, ISO 8601 with its offset.
+    :ivar end: The window's end, the first moment after it.
+    :ivar normalise: What the values are divided by: ``none``, ``tic``, a
+        series key, or a list of series keys whose per-sample sum is the
+        denominator.
+    :ivar normalise_name: That, by name; a sum's members' names joined by
+        ``" + "``.
+    :ivar normalise_members: The keys the denominator sums, in order: one
+        for a single key, none for ``none`` and ``tic``.
+    :ivar normalise_complete: The share of the window's samples in which
+        every member has a value, from 0 to 1.
+    :ivar mixed_runs: Whether the window's batches carry more than one
+        ledger reading.
+    :ivar run_changes: Where the reading changes: each an object of
+        :data:`RUN_CHANGE_FIELDS`, ``at`` a time.
+    """
+
+    cadence: str | None = None
+    stat: str | None = None
+    band: list[float] | None = None
+    tz: str | None = None
+    start: str | None = None
+    end: str | None = None
+    normalise: str | list[str] | None = None
+    normalise_name: str | None = None
+    normalise_members: list[str] | None = None
+    normalise_complete: float | None = None
+    mixed_runs: bool | None = None
+    run_changes: list[dict[str, Any]] | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("cadence", "stat", "tz", "normalise_name"):
+            setattr(self, name, _maybe_text(getattr(self, name), f"context.{name}"))
+        self.band = _band(self.band)
+        self.start = _moment(self.start, "context.start")
+        self.end = _moment(self.end, "context.end")
+        if self.start is not None and self.end is not None:
+            if not pd.Timestamp(self.start) < pd.Timestamp(self.end):
+                raise ValueError("context: the window's start is not before its end")
+        self.normalise = _normaliser(self.normalise)
+        if self.normalise_members is not None:
+            self.normalise_members = _texts(
+                self.normalise_members, "context.normalise_members"
+            )
+        self.normalise_complete = _share(self.normalise_complete)
+        if self.mixed_runs is not None:
+            if not isinstance(self.mixed_runs, (bool, np.bool_)):
+                raise ValueError(
+                    f"context.mixed_runs={self.mixed_runs!r} is not true or false"
+                )
+            self.mixed_runs = bool(self.mixed_runs)
+        if self.run_changes is not None:
+            self.run_changes = [
+                _run_change(change)
+                for change in _list(self.run_changes, "context.run_changes")
+            ]
+
+    @classmethod
+    def from_attrs(cls, attrs: Mapping[str, Any]) -> "Context":
+        """The context a view frame's ``attrs`` give: the fields of
+        :data:`CONTEXT_FIELDS` it has, a tuple as a list; the rest of its
+        attrs (the view's name, its keys, the provenance) are not the
+        figure's to carry."""
+        if not isinstance(attrs, Mapping):
+            raise ValueError("a view's attrs are a mapping")
+        return cls(**{name: attrs.get(name) for name in CONTEXT_FIELDS})
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            name: (list(value) if isinstance(value, list) else value)
+            for name, value in ((n, getattr(self, n)) for n in CONTEXT_FIELDS)
+        }
+
+    @classmethod
+    def from_dict(cls, document: Mapping[str, Any]) -> "Context":
+        if not isinstance(document, Mapping):
+            raise ValueError("the context is a JSON object")
+        _keys(document, set(CONTEXT_FIELDS), "the context")
+        return cls(**document)
+
+
+@dataclass(eq=False)
 class Figure:
     """A chart: what every renderer draws, and the numbers behind it.
 
+    Two figures are equal when their documents are (:meth:`to_dict`).
+
     :ivar id: The chart's id, as a file name takes it (``species_series``).
     :ivar title: What it shows.
-    :ivar subtitle: How: the cadence, the normalisation and the time zone
-        of a chart over time (:func:`subtitle`).
+    :ivar subtitle: How: the cadence, the normalisation, the window and the
+        time zone of a chart over time. None, the default, writes it from
+        the context (:func:`subtitle`); a text is drawn as given.
     :ivar panels: Its plots, in reading order.
     :ivar summary: The numbers a caption may cite, as plain JSON values.
     :ivar data: The frame behind it; every panel draws columns of it. Kept
         with a fresh index and no ``attrs``: what the figure holds is what
-        its document says.
+        its document says, the view's attrs in :attr:`context`.
     :ivar notes: Lines printed under it.
     :ivar columns: How many panels a row of it holds.
-    :ivar share_x: Whether its panels share the x axis, zoom included.
+    :ivar share_x: Whether its panels share the x axis, zoom included:
+        every plotted panel's, which are then all time or all numbers.
+    :ivar context: What the view behind it says of its values
+        (:class:`Context`, or a mapping of its fields).
     """
 
     id: str
     title: str
-    subtitle: str = ""
+    subtitle: str | None = None
     panels: list[Panel] = field(default_factory=list)
     summary: dict[str, Any] = field(default_factory=dict)
     data: pd.DataFrame = field(default_factory=pd.DataFrame)
     notes: list[str] = field(default_factory=list)
     columns: int = 1
     share_x: bool = False
+    context: Context = field(default_factory=Context)
 
     def __post_init__(self) -> None:
         if not isinstance(self.id, str) or not _ID.match(self.id):
@@ -471,6 +661,12 @@ class Figure:
                 f"id={self.id!r} is not a name of letters, digits, '_', '.' and '-'"
             )
         self.title = _text(self.title, "the title")
+        if isinstance(self.context, Mapping):
+            self.context = Context.from_dict(self.context)
+        elif not isinstance(self.context, Context):
+            raise TypeError(f"context is not a Context: {self.context!r}")
+        if self.subtitle is None:
+            self.subtitle = subtitle(self.context)
         self.subtitle = _text(self.subtitle, "the subtitle")
         self.notes = [_text(note, "a note") for note in self.notes]
         if isinstance(self.columns, bool) or not isinstance(self.columns, int):
@@ -500,6 +696,13 @@ class Figure:
         }
         for index, panel in enumerate(self.panels):
             _check_panel(panel, kinds, zones, f"panel {index + 1} ({panel.primitive})")
+        if self.share_x:
+            _check_shared_x(self.panels, kinds)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Figure):
+            return NotImplemented
+        return self.to_dict() == other.to_dict()
 
     def kinds(self) -> dict[str, str]:
         """Each column's :data:`KINDS`."""
@@ -525,6 +728,7 @@ class Figure:
             "columns": self.columns,
             "share_x": self.share_x,
             "panels": [panel.to_dict() for panel in self.panels],
+            "context": self.context.to_dict(),
             "summary": self.summary,
             "notes": list(self.notes),
             "data": _frame_json(self.data),
@@ -566,6 +770,7 @@ class Figure:
                 "columns",
                 "share_x",
                 "panels",
+                "context",
                 "summary",
                 "notes",
                 "data",
@@ -581,12 +786,14 @@ class Figure:
         panels = [Panel.from_dict(panel) for panel in panels]
         fields = {
             key: document[key]
-            for key in ("id", "title", "subtitle", "summary", "notes", "columns")
+            for key in ("id", "title", "summary", "notes", "columns", "share_x")
             if key in document
         }
-        if "share_x" in document:
-            fields["share_x"] = document["share_x"]
-        return cls(panels=panels, data=data, **fields)
+        # A document's subtitle is drawn as it says, its absence as none:
+        # only a figure made in code writes one from its context.
+        fields["subtitle"] = document.get("subtitle", "")
+        context = Context.from_dict(document.get("context", {}))
+        return cls(panels=panels, data=data, context=context, **fields)
 
     @classmethod
     def from_json(cls, text: str | bytes) -> "Figure":
@@ -594,41 +801,88 @@ class Figure:
         return cls.from_dict(json.loads(text))
 
 
+#: A bin's statistic as a subtitle counts it.
+_STAT_PLURALS = {"median": "medians", "mean": "means", "min": "minima", "max": "maxima"}
+
+
 def subtitle(
+    context: "Context | Mapping[str, Any] | None" = None,
     *,
-    cadence: str | None = None,
-    stat: str | None = None,
-    normalise: str | None = None,
-    tz: str | None = None,
     extra: Sequence[str] = (),
 ) -> str:
-    """The subtitle a chart over time carries, from what its view says.
+    """The subtitle a chart over time carries, written from what its view
+    says, so that ten charts say it the same way.
 
-    :param cadence: What one point stands for (``1h``, ``raw``, ``hour of
-        day``), as a view's ``attrs["cadence"]`` gives it.
-    :param stat: The statistic of a bin (``median``).
-    :param normalise: What the values are divided by, by name (a view's
-        ``attrs["normalise_name"]``); None or ``none`` for raw values.
-    :param tz: The zone the times are in.
+    :param context: A figure's :class:`Context`, or a view frame's
+        ``attrs`` (read as :meth:`Context.from_attrs` reads them).
     :param extra: More parts, in order.
-    :return: ``"1h medians; raw values; times in Europe/Helsinki"``.
+    :return: The parts the context has, in this order: the cadence with
+        the statistic and the band (``1h medians, p10-p90 band``, or
+        ``every sample``); the normalisation, by name (``raw values``,
+        ``normalised to I- + IH2O-``); the window, in the zone
+        (``from 2026-07-01 00:00 to 2026-07-03 00:00``); the zone
+        (``times in Europe/Helsinki``); then *extra*. ``"; "`` between.
     """
+    if context is None:
+        context = Context()
+    elif not isinstance(context, Context):
+        context = Context.from_attrs(context)
     parts = []
-    if cadence:
-        if cadence == "raw":
-            parts.append("every sample")
-        elif stat:
-            parts.append(f"{cadence} {stat}s")
+    stat = _STAT_PLURALS.get(context.stat, context.stat) if context.stat else None
+    if context.cadence == "raw":
+        parts.append("every sample")
+    elif context.cadence or stat:
+        if context.cadence and stat:
+            how = f"{context.cadence} {stat}"
         else:
-            parts.append(f"cadence {cadence}")
-    if normalise is not None:
+            how = stat or f"cadence {context.cadence}"
+        if context.band is not None:
+            low, high = context.band
+            how += f", p{low:g}-p{high:g} band"
+        parts.append(how)
+    if context.normalise is not None:
         parts.append(
-            "raw values" if normalise in ("", "none") else f"normalised to {normalise}"
+            "raw values"
+            if context.normalise == "none"
+            else f"normalised to {_normaliser_name(context)}"
         )
-    if tz:
-        parts.append(f"times in {tz}")
-    parts.extend(extra)
+    window = _window_text(context)
+    if window:
+        parts.append(window)
+    if context.tz:
+        parts.append(f"times in {context.tz}")
+    parts.extend(_text(part, "a subtitle part") for part in extra)
     return "; ".join(parts)
+
+
+def _normaliser_name(context: Context) -> str:
+    """What the values are divided by, as a reader knows it: the view's
+    name for it, else its members' or its keys joined by ``" + "``."""
+    if context.normalise_name:
+        return context.normalise_name
+    if context.normalise_members:
+        return " + ".join(context.normalise_members)
+    normalise = context.normalise
+    return normalise if isinstance(normalise, str) else " + ".join(normalise or [])
+
+
+def _window_text(context: Context) -> str:
+    def moment(iso: str) -> str:
+        at = pd.Timestamp(iso)
+        if context.tz:
+            try:
+                return at.tz_convert(context.tz).strftime("%Y-%m-%d %H:%M")
+            except (TypeError, ValueError, KeyError):
+                pass
+        return at.strftime("%Y-%m-%d %H:%M%z")
+
+    if context.start and context.end:
+        return f"from {moment(context.start)} to {moment(context.end)}"
+    if context.start:
+        return f"from {moment(context.start)}"
+    if context.end:
+        return f"until {moment(context.end)}"
+    return ""
 
 
 # --- checking a panel against the frame -----------------------------------------
@@ -682,23 +936,73 @@ def _check_panel(
                 f"{where}: {panel.primitive} rise from zero, which a log axis does "
                 "not have"
             )
+    encodings = panel.encodings
     if panel.primitive == "series":
-        if not isinstance(panel.encodings["y"], str) and (
-            {"group", "lo", "hi"} & set(panel.encodings)
+        if not isinstance(encodings["y"], str) and (
+            {"group", "name", "lo", "hi"} & set(encodings)
         ):
             raise ValueError(
                 f"{where}: a list of y draws one line per column, with no group "
-                "and no band"
+                "and no band; the option names names its lines"
+            )
+        names = panel.options.get("names") or {}
+        if names:
+            columns = [] if isinstance(encodings["y"], str) else encodings["y"]
+            unknown = [column for column in names if column not in columns]
+            if unknown:
+                raise ValueError(
+                    f"{where}: the option names names the lines of a list of y; "
+                    f"{', '.join(map(repr, unknown))} is none of them"
+                )
+    if "name" in encodings:
+        grouped_by = "colour" if panel.primitive == "scatter" else "group"
+        column = encodings.get(grouped_by)
+        if column is None or (grouped_by == "colour" and kinds[column] == "number"):
+            raise ValueError(
+                f"{where}: name names the groups of its {grouped_by} column, "
+                f"and the panel has no {'categorical ' * (grouped_by == 'colour')}"
+                f"{grouped_by}"
+            )
+    if panel.primitive == "sticks" and panel.options.get("by_sign"):
+        if "group" in encodings:
+            raise ValueError(
+                f"{where}: by_sign colours sticks by their sign, a group by its "
+                "own colour: one or the other"
             )
     if panel.primitive == "bars" and panel.options.get("stack"):
-        if {"lo", "hi"} & set(panel.encodings):
+        if {"lo", "hi"} & set(encodings):
             raise ValueError(f"{where}: stacked bars draw no error bars")
-    if ("lo" in panel.encodings) != ("hi" in panel.encodings) and panel.primitive in (
+    if ("lo" in encodings) != ("hi" in encodings) and panel.primitive in (
         "series",
         "bars",
     ):
         raise ValueError(f"{where}: lo and hi come together")
     panel.options = _options(panel, _x_axis(panel, kinds, zones), where)
+
+
+def _check_shared_x(panels: Sequence[Panel], kinds: Mapping[str, str]) -> None:
+    """Panels that share their x axis draw one kind of x: all time or all
+    numbers. A categorical axis (bars, boxes, a heatmap's text) places its
+    categories at 0, 1, 2, which another panel's x would not share."""
+    seen: dict[str, str] = {}
+    for index, panel in enumerate(panels):
+        if panel.primitive not in PLOTTED:
+            continue
+        where = f"panel {index + 1} ({panel.primitive})"
+        if panel.primitive in ("bars", "box"):
+            kind = "text"
+        else:
+            kind = kinds[panel.encodings["x"]]
+        if kind not in ("time", "number"):
+            raise ValueError(
+                f"share_x joins time or number x axes; {where} draws categories"
+            )
+        seen.setdefault(kind, where)
+    if len(seen) > 1:
+        raise ValueError(
+            "share_x joins x axes of one kind; "
+            + " and ".join(f"{where} draws {kind}" for kind, where in seen.items())
+        )
 
 
 def _x_axis(
@@ -760,7 +1064,10 @@ def _option(kind: str, value: Any, x_axis: tuple[str | None, Any], label: str) -
             raise ValueError(f"{label}={value!r} is not a fixed duration") from e
         if step <= pd.Timedelta(0):
             raise ValueError(f"{label}={value!r} is not a positive duration")
-        return str(value)
+        # A count and pandas' unit (``1h``, ``90min``, ``1D``), so that a
+        # Timedelta or an offset given in code reads back from the document.
+        offset = pd.tseries.frequencies.to_offset(value)
+        return f"{offset.n}{offset.rule_code}"
     if kind == "colours":
         if not isinstance(value, Mapping):
             raise ValueError(f"{label} is not a mapping of group to colour")
@@ -1169,6 +1476,80 @@ def _text(value: Any, label: str) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{label} is not text: {value!r}")
     return value
+
+
+def _maybe_text(value: Any, label: str) -> str | None:
+    return None if value is None else _text(value, label)
+
+
+def _texts(values: Any, label: str) -> list[str]:
+    return [_text(value, f"{label} item") for value in _list(values, label)]
+
+
+def _band(band: Any) -> list[float] | None:
+    """A band's two percentiles, low then high, from 0 to 100."""
+    if band is None:
+        return None
+    ends = _list(band, "context.band")
+    if len(ends) != 2 or not all(_finite(end) for end in ends):
+        raise ValueError(f"context.band={band!r} is not two percentiles")
+    low, high = (float(end) for end in ends)
+    if not 0 <= low < high <= 100:
+        raise ValueError(
+            f"context.band={band!r}: percentiles go from 0 to 100, low first"
+        )
+    return [low, high]
+
+
+def _moment(value: Any, label: str) -> str | None:
+    """A time as ISO 8601 with its offset: a time without one is no
+    instant."""
+    if value is None:
+        return None
+    if not isinstance(value, (str, datetime.datetime)):
+        raise ValueError(f"{label}={value!r} is not a time")
+    try:
+        moment = pd.Timestamp(value)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"{label}={value!r} is not a time") from e
+    if pd.isna(moment):
+        raise ValueError(f"{label} is not a time")
+    if moment.tz is None:
+        raise ValueError(f"{label}={value!r} has no offset")
+    return moment.isoformat()
+
+
+def _normaliser(value: Any) -> str | list[str] | None:
+    """``normalise``: a text (``none``, ``tic``, a key) or a list of keys
+    whose sum is the denominator."""
+    if value is None or isinstance(value, str):
+        return value
+    keys = _texts(value, "context.normalise")
+    if not keys:
+        raise ValueError("context.normalise is an empty list: a sum needs a key")
+    return keys
+
+
+def _share(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (float, np.floating)) and math.isnan(value):
+        return None
+    if not _finite(value) or not 0 <= float(value) <= 1:
+        raise ValueError(f"context.normalise_complete={value!r} is no share in [0, 1]")
+    return float(value)
+
+
+def _run_change(change: Any) -> dict[str, Any]:
+    if not isinstance(change, Mapping):
+        raise ValueError("context.run_changes: a run change is an object")
+    _keys(change, set(RUN_CHANGE_FIELDS), "context.run_changes: a run change")
+    if change.get("at") is None:
+        raise ValueError("context.run_changes: a run change has no time")
+    out: dict[str, Any] = {"at": _moment(change["at"], "context.run_changes: at")}
+    for name in RUN_CHANGE_FIELDS[1:]:
+        out[name] = _maybe_text(change.get(name), f"context.run_changes: {name}")
+    return out
 
 
 def _where_values(column: str, values: Any) -> list[Any]:

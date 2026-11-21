@@ -114,7 +114,9 @@ class _Drawing:
         self.fig = fig
         self.theme = theme
         self.colours = common.colours(fig, theme)
-        self.legend: dict[str, Any] = {}
+        # A legend entry per identity (a group, a mark, a size legend's
+        # row), each its text and its handle, in the order first drawn.
+        self.legend: dict[Any, tuple[str, Any]] = {}
 
     # --- the figure ---------------------------------------------------------
 
@@ -123,14 +125,42 @@ class _Drawing:
 
         fig, theme = self.fig, self.theme
         arrangement = common.arrange(fig, theme)
-        notes = common.note_lines(fig, theme)
-        total = arrangement.total
         drawn = MplFigure(
-            figsize=(theme.layout.width / PX_PER_INCH, total / PX_PER_INCH),
+            figsize=(theme.layout.width / PX_PER_INCH, arrangement.total / PX_PER_INCH),
             dpi=PX_PER_INCH * theme.layout.scale,
             layout="constrained",
             facecolor=theme.paper,
         )
+        grid = drawn.add_gridspec(
+            arrangement.rows, arrangement.columns, height_ratios=arrangement.heights
+        )
+        self.panel_width = theme.layout.width / arrangement.columns
+        shared = None
+        for panel, (row, column) in zip(fig.panels, arrangement.cells):
+            plotted = fig.share_x and panel.primitive != "table"
+            ax = drawn.add_subplot(
+                grid[row, column], sharex=shared if plotted else None
+            )
+            if plotted and shared is None:
+                shared = ax
+            self._panel(drawn, ax, panel)
+        room = 0.0
+        if self.legend:
+            legend = drawn.legend(
+                [handle for _, handle in self.legend.values()],
+                [escape(text) for text, _ in self.legend.values()],
+                loc="outside right upper",
+                fontsize=px(theme.type.small),
+                labelcolor=theme.text,
+                frameon=False,
+            )
+            # The legend stands in the figure's top right corner, beside
+            # the header: the subtitle wraps in the width it leaves.
+            room = legend.get_window_extent().width / theme.layout.scale + MARGIN
+        lines = common.subtitle_lines(fig, theme, room)
+        arrangement = common.arrange(fig, theme, subtitle=len(lines))
+        total = arrangement.total
+        drawn.set_size_inches(theme.layout.width / PX_PER_INCH, total / PX_PER_INCH)
         # The panels are laid out between the header and the footer, whose
         # text the layout leaves alone.
         bottom = arrangement.footer / total
@@ -142,34 +172,13 @@ class _Drawing:
             wspace=0.04,
             rect=(0, bottom, 1, 1 - top - bottom),
         )
-        grid = drawn.add_gridspec(
-            arrangement.rows, arrangement.columns, height_ratios=arrangement.heights
-        )
-        self.panel_width = theme.layout.width / arrangement.columns
-        self._header(drawn, total)
-        shared = None
-        for panel, (row, column) in zip(fig.panels, arrangement.cells):
-            plotted = fig.share_x and panel.primitive != "table"
-            ax = drawn.add_subplot(
-                grid[row, column], sharex=shared if plotted else None
-            )
-            if plotted and shared is None:
-                shared = ax
-            self._panel(drawn, ax, panel)
+        self._header(drawn, total, lines)
+        notes = common.note_lines(fig, theme)
         if notes:
             self._footer(drawn, notes, arrangement.footer, total)
-        if self.legend:
-            drawn.legend(
-                list(self.legend.values()),
-                [escape(name) for name in self.legend],
-                loc="outside right upper",
-                fontsize=px(theme.type.small),
-                labelcolor=theme.text,
-                frameon=False,
-            )
         return drawn
 
-    def _header(self, drawn: Any, total: float) -> None:
+    def _header(self, drawn: Any, total: float, lines: list[str]) -> None:
         theme = self.theme
         left = MARGIN / theme.layout.width
         drawn.text(
@@ -183,15 +192,16 @@ class _Drawing:
             color=theme.text,
             in_layout=False,
         )
-        if self.fig.subtitle:
+        if lines:
             drawn.text(
                 left,
                 1 - (MARGIN + theme.type.title + 8) / total,
-                escape(self.fig.subtitle),
+                "\n".join(escape(line) for line in lines),
                 ha="left",
                 va="top",
                 fontsize=px(theme.type.subtitle),
                 color=theme.muted,
+                linespacing=common.LINE_HEIGHT,
                 in_layout=False,
             )
 
@@ -321,9 +331,14 @@ class _Drawing:
             in_layout=False,
         )
 
-    def _entry(self, name: str | None, handle: Any) -> None:
-        if name is not None and name not in self.legend:
-            self.legend[name] = handle
+    def _entry(self, key: Any, text: str, handle: Any) -> None:
+        if key is not None and key not in self.legend:
+            self.legend[key] = (text, handle)
+
+    def _group(self, group: str | None, handle: Any) -> None:
+        """A group's legend entry, under its display name."""
+        if group is not None:
+            self._entry(("group", group), self.colours.name(group), handle)
 
     def _colourbar(self, drawn: Any, ax: Any, scale: common.ColourScale) -> None:
         from matplotlib.cm import ScalarMappable
@@ -396,7 +411,7 @@ class _Drawing:
                     color=colour,
                     zorder=2,
                 )
-            self._entry(
+            self._group(
                 line.group,
                 Line2D(
                     [],
@@ -440,8 +455,10 @@ class _Drawing:
                 markeredgewidth=px(0.75),
                 zorder=3,
             )
+            label = panel.options["mark_label"]
             self._entry(
-                panel.options["mark_label"],
+                ("mark", label),
+                label,
                 Line2D(
                     [],
                     [],
@@ -462,9 +479,13 @@ class _Drawing:
             self._colourbar(drawn, ax, strip.scale)
 
     def _heatmap(self, drawn: Any, ax: Any, panel: Panel) -> None:
+        from matplotlib.colors import ListedColormap
+        from matplotlib.patches import Patch
+
+        theme = self.theme
         cells = common.grid(self.fig, panel)
         scale = common.colour_scale(
-            cells.values.ravel(), panel, self.theme, panel.options["palette"]
+            cells.values.ravel(), panel, theme, panel.options["palette"]
         )
         values = scale.values.reshape(cells.values.shape)
         xs = self._grid_axis(ax, "x", cells.xs, common.kind_of(self.fig, panel, "x"))
@@ -481,6 +502,20 @@ class _Drawing:
                 zorder=1,
             )
             self._colourbar(drawn, ax, scale)
+        if cells.gaps.any():
+            gap = _rgba(theme.token("gap"), theme.marks.gap_opacity)
+            ax.pcolormesh(
+                common.edges(xs),
+                common.edges(ys),
+                np.ma.masked_where(~cells.gaps, np.ones(cells.gaps.shape)),
+                cmap=ListedColormap([gap]),
+                vmin=0,
+                vmax=1,
+                shading="flat",
+                zorder=1,
+            )
+            label = panel.options["gap_label"]
+            self._entry(("gap", label), label, Patch(facecolor=gap, edgecolor="none"))
         ax.grid(False)
 
     def _grid_axis(
@@ -501,61 +536,67 @@ class _Drawing:
         return positions
 
     def _scatter(self, drawn: Any, ax: Any, panel: Panel) -> None:
+        """Every point in one call, so that the larger lie behind the
+        smaller whatever their group; legend entries for the groups, the
+        hollow points and the sizes."""
         from matplotlib.lines import Line2D
 
         theme = self.theme
-        frame = self.fig.frame(panel)
-        encodings = panel.encodings
-        x = common.on_scale(common.numbers(frame[encodings["x"]]), panel.axes.x.scale)
-        y = common.on_scale(common.numbers(frame[encodings["y"]]), panel.axes.y.scale)
-        if "size" in encodings:
-            diameters = common.sizes(common.numbers(frame[encodings["size"]]), theme)
-        else:
-            diameters = np.full(len(frame), theme.marks.marker)
-        area = px(diameters) ** 2
-        colour = encodings.get("colour")
-        if colour is not None and self.fig.kinds()[colour] == "number":
-            scale = common.colour_scale(
-                common.numbers(frame[colour]), panel, theme, panel.options["palette"]
+        drawn_points = common.points(self.fig, panel, theme, self.colours)
+        points = drawn_points.points
+        hollow = points["hollow"].to_numpy(dtype=bool)
+        opacity = theme.marks.point_opacity
+        ax.scatter(
+            points["x"],
+            points["y"],
+            s=px(points["diameter"].to_numpy(dtype=float)) ** 2,
+            facecolors=[
+                (0, 0, 0, 0) if h else _rgba(c, opacity)
+                for c, h in zip(points["colour"], hollow)
+            ],
+            edgecolors=[c if h else "none" for c, h in zip(points["colour"], hollow)],
+            linewidths=[px(theme.marks.line) if h else 0 for h in hollow],
+            zorder=2,
+        )
+        if (
+            drawn_points.scale is not None
+            and np.isfinite(drawn_points.scale.values).any()
+        ):
+            self._colourbar(drawn, ax, drawn_points.scale)
+        for group in drawn_points.groups:
+            self._group(
+                group,
+                Line2D(
+                    [],
+                    [],
+                    linestyle="none",
+                    marker="o",
+                    color=_rgba(self.colours.of(group), opacity),
+                    markeredgewidth=0,
+                ),
             )
-            shown = np.isfinite(x) & np.isfinite(y)
-            ax.scatter(
-                x[shown],
-                y[shown],
-                s=area[shown],
-                c=[scale.colour(v) or theme.muted for v in scale.values[shown]],
-                linewidths=0,
-                zorder=2,
-            )
-            if np.isfinite(scale.values).any():
-                self._colourbar(drawn, ax, scale)
-        elif colour is not None:
-            names = [common.label(v) if not pd.isna(v) else None for v in frame[colour]]
-            for group in common.ordered(frame[colour]):
-                name = common.label(group)
-                rows = (
-                    np.array([n == name for n in names])
-                    & np.isfinite(x)
-                    & np.isfinite(y)
-                )
-                tint = self.colours.of(name)
-                ax.scatter(
-                    x[rows], y[rows], s=area[rows], c=tint, linewidths=0, zorder=2
-                )
+        label = panel.options["hollow_label"]
+        if label and hollow.any():
+            self._entry(("hollow", label), label, _hollow_marker(theme))
+        if drawn_points.sizes:
+            title = panel.axes.size.label
+            index = self.fig.panels.index(panel)
+            if title:
+                self._entry(("size", index), title, Line2D([], [], linestyle="none"))
+            for value, diameter in drawn_points.sizes:
                 self._entry(
-                    name,
-                    Line2D([], [], linestyle="none", marker="o", color=tint),
+                    ("size", index, value),
+                    common.number_text(value),
+                    Line2D(
+                        [],
+                        [],
+                        linestyle="none",
+                        marker="o",
+                        markersize=px(diameter),
+                        color=_rgba(theme.muted, opacity),
+                        markeredgewidth=0,
+                    ),
                 )
-        else:
-            shown = np.isfinite(x) & np.isfinite(y)
-            ax.scatter(
-                x[shown],
-                y[shown],
-                s=area[shown],
-                c=self.colours.single,
-                linewidths=0,
-                zorder=2,
-            )
         self._labels(ax, panel)
 
     def _labels(self, ax: Any, panel: Panel) -> None:
@@ -576,25 +617,47 @@ class _Drawing:
         from matplotlib.lines import Line2D
 
         theme = self.theme
-        frame = self.fig.frame(panel)
-        x = common.numbers(frame[panel.encodings["x"]])
-        y = common.numbers(frame[panel.encodings["y"]])
+        sticks = common.sticks(self.fig, panel, theme, self.colours)
         ax.axhline(0, color=theme.muted, linewidth=px(theme.marks.rule), zorder=1)
-        for group in common.places(self.fig, panel, theme).groups:
-            rows = common.rows_of(frame, panel, group)
-            positions = frame.index.get_indexer(rows.index)
-            shown = positions[np.isfinite(x[positions]) & np.isfinite(y[positions])]
-            colour = self.colours.of(group)
+        if len(sticks):
             ax.vlines(
-                x[shown],
+                sticks["x"],
                 0,
-                y[shown],
-                colors=colour,
+                sticks["y"],
+                colors=list(sticks["colour"]),
                 linewidth=px(theme.marks.line),
                 zorder=2,
             )
-            self._entry(
+        for group in common.ordered(sticks["group"]):
+            colour = self.colours.of(group)
+            self._group(
                 group, Line2D([], [], color=colour, linewidth=px(theme.marks.line))
+            )
+        marked = sticks[sticks["marked"].to_numpy(dtype=bool)]
+        if len(marked):
+            ax.plot(
+                marked["x"],
+                marked["y"],
+                linestyle="none",
+                marker="D",
+                markersize=px(theme.marks.marker + 1),
+                color=theme.warning,
+                markeredgecolor=theme.paper,
+                markeredgewidth=px(0.75),
+                zorder=3,
+            )
+            label = panel.options["mark_label"]
+            self._entry(
+                ("mark", label),
+                label,
+                Line2D(
+                    [],
+                    [],
+                    linestyle="none",
+                    marker="D",
+                    color=theme.warning,
+                    markeredgecolor=theme.paper,
+                ),
             )
         self._labels(ax, panel)
 
@@ -608,24 +671,28 @@ class _Drawing:
             if not len(mine):
                 continue
             colour = self.colours.of(group)
-            errors = None
-            if "lo" in panel.encodings:
-                errors = np.vstack(
-                    [mine["err_lo"].to_numpy(), mine["err_hi"].to_numpy()]
-                )
-                errors = np.where(np.isfinite(errors), errors, 0)
             ax.bar(
                 mine["position"],
                 mine["height"],
                 width=place.width,
                 bottom=mine["bottom"],
                 color=colour,
-                yerr=errors,
-                ecolor=theme.text,
-                error_kw={"elinewidth": px(1), "capsize": px(3), "capthick": px(1)},
                 zorder=2,
             )
-            self._entry(group, Patch(facecolor=colour))
+            self._group(group, Patch(facecolor=colour))
+        spans = common.intervals(bars)
+        if len(spans):
+            ax.errorbar(
+                spans["position"],
+                spans["middle"],
+                yerr=spans["half"],
+                fmt="none",
+                ecolor=theme.text,
+                elinewidth=px(1),
+                capsize=px(3),
+                capthick=px(1),
+                zorder=3,
+            )
         self._categories(ax, place)
 
     def _box(self, drawn: Any, ax: Any, panel: Panel) -> None:
@@ -633,50 +700,64 @@ class _Drawing:
 
         theme = self.theme
         place, boxes = common.boxes(self.fig, panel, theme)
+        means = "mean" in panel.encodings
+        fill = theme.marks.box_opacity
         for group in place.groups:
             mine = boxes[[g == group for g in boxes["group"]]]
             if not len(mine):
                 continue
             colour = self.colours.of(group)
-            stats = [
-                {
-                    "q1": row["q1"],
-                    "med": row["median"],
-                    "q3": row["q3"],
-                    "whislo": row["lo"],
-                    "whishi": row["hi"],
-                    "mean": row["mean"],
-                    "fliers": [],
-                }
-                for _, row in mine.iterrows()
-            ]
-            means = "mean" in panel.encodings
             line = {"color": colour, "linewidth": px(theme.marks.line)}
-            ax.bxp(
-                stats,
-                positions=mine["position"].tolist(),
-                widths=place.width * 0.9,
-                patch_artist=True,
-                showmeans=means,
-                meanline=True,
-                showfliers=False,
-                manage_ticks=False,
-                boxprops={
-                    "facecolor": _rgba(colour, 0.25),
-                    "edgecolor": colour,
-                    "linewidth": px(theme.marks.line),
-                },
-                medianprops={"color": colour, "linewidth": px(2 * theme.marks.line)},
-                whiskerprops=line,
-                capprops=line,
-                meanprops={
-                    "color": colour,
-                    "linestyle": "--",
-                    "linewidth": px(theme.marks.line),
-                },
-                zorder=2,
+            for hollow in (False, True):
+                part = mine[mine["hollow"].to_numpy(dtype=bool) == hollow]
+                if not len(part):
+                    continue
+                ax.bxp(
+                    [
+                        {
+                            "q1": row["q1"],
+                            "med": row["median"],
+                            "q3": row["q3"],
+                            "whislo": row["lo"],
+                            "whishi": row["hi"],
+                            "mean": row["mean"],
+                            "fliers": [],
+                        }
+                        for _, row in part.iterrows()
+                    ],
+                    positions=part["position"].tolist(),
+                    widths=place.width * 0.9,
+                    patch_artist=True,
+                    showmeans=means,
+                    meanline=True,
+                    showfliers=False,
+                    manage_ticks=False,
+                    boxprops={
+                        "facecolor": (0, 0, 0, 0) if hollow else _rgba(colour, fill),
+                        "edgecolor": colour,
+                        "linewidth": px(theme.marks.line),
+                    },
+                    medianprops={
+                        "color": colour,
+                        "linewidth": px(2 * theme.marks.line),
+                    },
+                    whiskerprops=line,
+                    capprops=line,
+                    meanprops={
+                        "color": colour,
+                        "linestyle": "--",
+                        "linewidth": px(theme.marks.line),
+                    },
+                    zorder=2,
+                )
+            self._group(group, Patch(facecolor=_rgba(colour, fill), edgecolor=colour))
+        label = panel.options["hollow_label"]
+        if label and boxes["hollow"].to_numpy(dtype=bool).any():
+            self._entry(
+                ("hollow", label),
+                label,
+                Patch(facecolor=(0, 0, 0, 0), edgecolor=theme.muted),
             )
-            self._entry(group, Patch(facecolor=_rgba(colour, 0.25), edgecolor=colour))
         self._categories(ax, place)
 
     def _categories(self, ax: Any, place: common.Places) -> None:
@@ -699,6 +780,7 @@ class _Drawing:
             return
         drawn = Table(ax, bbox=[0, 0, 1, 1])
         family = font_family(theme.type.families)
+        marked = themes.blend(theme.warning, theme.paper, theme.marks.span_opacity)
         lines = [table.headers, *table.rows]
         for row, cells in enumerate(lines):
             for column, text in enumerate(cells):
@@ -709,7 +791,13 @@ class _Drawing:
                     height=1,
                     text=escape(text),
                     loc="right" if table.numeric[column] else "left",
-                    facecolor=theme.plot if row == 0 else theme.paper,
+                    facecolor=(
+                        theme.plot
+                        if row == 0
+                        else marked
+                        if table.marked[row - 1]
+                        else theme.paper
+                    ),
                     edgecolor=theme.axis,
                 )
                 cell.set_linewidth(px(0.5))
@@ -723,6 +811,20 @@ class _Drawing:
         drawn.set_fontsize(px(theme.type.small))
         drawn.auto_set_column_width(list(range(len(table.headers))))
         ax.add_table(drawn)
+
+
+def _hollow_marker(theme: themes.Theme) -> Any:
+    from matplotlib.lines import Line2D
+
+    return Line2D(
+        [],
+        [],
+        linestyle="none",
+        marker="o",
+        markerfacecolor="none",
+        markeredgecolor=theme.muted,
+        markeredgewidth=px(theme.marks.line),
+    )
 
 
 @functools.cache

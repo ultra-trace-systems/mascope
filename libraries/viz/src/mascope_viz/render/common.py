@@ -1,9 +1,11 @@
 """What both renderers compute alike, so a spec draws the same in each.
 
-The colour of each group, the order of categories, where a line breaks,
-which points carry labels, how a number maps to a colour, where a bar or a
-box stands, how a table cell reads and which notes a figure prints: each is
-decided here once, from the spec alone, and each renderer only draws the
+The colour and the display name of each group, the order of categories,
+where a line breaks, which points carry labels and in which order they are
+drawn, how big a marker is, how a number maps to a colour, which cells are
+gaps, where a bar, its interval or a box stands, how a table cell reads,
+where the subtitle and the notes wrap and which notes a figure prints: each
+is decided here once, from the spec alone, and each renderer only draws the
 result. A primitive that drifts between the backends is a bug (the note's
 section 5); keeping the decisions here is what keeps them from drifting.
 
@@ -28,6 +30,18 @@ RASTER_NOTE = (
     "path; this version has none and draws it as marks."
 )
 
+#: A line of text's height, in multiples of its type size.
+LINE_HEIGHT = 1.3
+
+#: A character's mean width, in multiples of its type size, as the header
+#: and the footer wrap: wide enough that a line of digits and capitals
+#: still fits on either renderer.
+CHAR_WIDTH = 0.62
+
+#: CSS pixels the header's and the footer's text keep from the figure's
+#: edges: plotly's left and right margins.
+TEXT_MARGINS = 88.0
+
 
 # --- groups and their colours ---------------------------------------------------
 
@@ -42,9 +56,14 @@ def label(value: Any) -> str:
 
 
 def ordered(column: pd.Series) -> list[Any]:
-    """*column*'s distinct values in the order they first appear, missing
-    values left out."""
-    return list(pd.unique(column.dropna()))
+    """*column*'s distinct values in the order a renderer draws them: a
+    categorical's categories in their order, those it holds; any other
+    column's in the order they first appear. Missing values left out."""
+    present = column.dropna()
+    if isinstance(column.dtype, pd.CategoricalDtype):
+        held = set(present.tolist())
+        return [c for c in column.dtype.categories if c in held]
+    return list(pd.unique(present))
 
 
 def _grouping(fig: Figure, panel: Panel) -> list[str]:
@@ -65,29 +84,56 @@ def _grouping(fig: Figure, panel: Panel) -> list[str]:
     return [label(value) for value in ordered(frame[column])]
 
 
+def _display(fig: Figure, panel: Panel) -> dict[str, str]:
+    """The display names *panel* gives its groups: its ``name`` column's
+    first value for each group, or for the lines of a list of y the option
+    ``names``."""
+    encodings = panel.encodings
+    if panel.primitive == "series" and not isinstance(encodings["y"], str):
+        return dict(panel.options.get("names") or {})
+    name = encodings.get("name")
+    if name is None:
+        return {}
+    column = encodings["colour" if panel.primitive == "scatter" else "group"]
+    frame = fig.frame(panel)
+    names: dict[str, str] = {}
+    for group, display in zip(frame[column], frame[name]):
+        if not (_missing(group) or _missing(display)):
+            names.setdefault(label(group), str(display))
+    return names
+
+
 @dataclass(frozen=True)
 class Colours:
-    """The colour of every group of a figure: the same group, the same
-    colour, in every panel.
+    """The colour and the display name of every group of a figure: the
+    same group, the same colour and the same name, in every panel.
 
     :ivar groups: Each group's colour, in the order the groups first
         appear.
     :ivar single: The colour of a panel that draws no groups.
+    :ivar names: Each group's display name, where a panel gives one.
     """
 
     groups: dict[str, str]
     single: str
+    names: dict[str, str]
 
     def of(self, group: str | None) -> str:
         return self.single if group is None else self.groups[group]
+
+    def name(self, group: str) -> str:
+        """What a legend or a hover text calls *group*: its display name,
+        else the group's own value."""
+        return self.names.get(group, group)
 
 
 def colours(fig: Figure, theme: themes.Theme) -> Colours:
     """Each group's colour across *fig*: the colour a panel's ``colours``
     option names for it (the first panel that names one), else the next
     categorical colour, in the order the groups first appear panel by
-    panel."""
+    panel; and its display name, the first panel's that gives one."""
     named: dict[str, str] = {}
+    names: dict[str, str] = {}
     order: list[str] = []
     for panel in fig.panels:
         tokens = panel.options.get("colours") or {}
@@ -96,6 +142,8 @@ def colours(fig: Figure, theme: themes.Theme) -> Colours:
                 order.append(group)
             if group in tokens and group not in named:
                 named[group] = theme.token(tokens[group])
+        for group, display in _display(fig, panel).items():
+            names.setdefault(group, display)
     groups = {}
     palette = theme.categorical
     index = 0
@@ -105,7 +153,7 @@ def colours(fig: Figure, theme: themes.Theme) -> Colours:
         else:
             groups[group] = palette[index % len(palette)]
             index += 1
-    return Colours(groups=groups, single=palette[0])
+    return Colours(groups=groups, single=palette[0], names=names)
 
 
 # --- numbers --------------------------------------------------------------------
@@ -159,20 +207,57 @@ def top(values: np.ndarray, n: int) -> np.ndarray:
 
 
 def sizes(values: np.ndarray, theme: themes.Theme) -> np.ndarray:
-    """Marker diameters in CSS pixels, their area in proportion to *values*
-    between the theme's smallest and largest; a missing or negative value
-    at the smallest."""
-    low, high = theme.marks.size_min, theme.marks.size_max
-    finite = np.isfinite(values) & (values >= 0)
+    """Marker diameters in CSS pixels, each marker's area in proportion to
+    its value: the largest value at the theme's largest size, the rest by
+    the square root of their share of it. A value whose marker would be
+    smaller than the theme's smallest, and a missing, zero or negative
+    one, is drawn at the smallest."""
+    low = theme.marks.size_min
+    positive = np.isfinite(values) & (values > 0)
     out = np.full(len(values), low, dtype="float64")
-    if not finite.any():
-        return out
-    roots = np.sqrt(values[finite])
-    top_root = roots.max()
-    if top_root == 0:
-        return out
-    out[finite] = low + (high - low) * roots / top_root
+    if positive.any():
+        out[positive] = _diameters(values[positive], values[positive].max(), theme)
     return out
+
+
+def _diameters(values: np.ndarray, peak: float, theme: themes.Theme) -> np.ndarray:
+    marks = theme.marks
+    return np.maximum(marks.size_min, marks.size_max * np.sqrt(values / peak))
+
+
+def size_legend(values: np.ndarray, theme: themes.Theme) -> list[tuple[float, float]]:
+    """The size legend of *values*: up to three round values (1, 2 or 5
+    times a power of ten), the largest at or under the largest value, then
+    the round values at or under a quarter and a sixteenth of it, each with
+    its diameter. A round value too small to draw above the smallest size
+    is left out."""
+    positive = values[np.isfinite(values) & (values > 0)]
+    if not positive.size:
+        return []
+    peak = float(positive.max())
+    top = _round_under(peak)
+    out: list[tuple[float, float]] = []
+    for share in (1, 4, 16):
+        value = _round_under(top / share)
+        diameter = float(_diameters(np.array([value]), peak, theme)[0])
+        if diameter > theme.marks.size_min:
+            out.append((value, diameter))
+    return out
+
+
+def _round_under(value: float) -> float:
+    """The largest of 1, 2 and 5 times a power of ten at or under
+    *value*."""
+    power = 10.0 ** math.floor(math.log10(value))
+    for multiple in (5, 2, 1):
+        if multiple * power <= value * (1 + 1e-9):
+            return multiple * power
+    return power / 2  # pragma: no cover - floor(log10) puts 1x at or under
+
+
+def number_text(value: float) -> str:
+    """A number as a legend shows it: ``50000``, ``2e7``, ``0.001``."""
+    return _power_text(value)
 
 
 # --- colour scales --------------------------------------------------------------
@@ -270,13 +355,18 @@ def _power_text(value: float) -> str:
 @dataclass(frozen=True)
 class Grid:
     """A heatmap's cells: the x and y values in drawing order (times and
-    numbers ascending, categories as they first appear) and the value of
-    each cell, NaN where the frame has none. A cell the frame repeats keeps
-    its last row."""
+    numbers ascending, categories in :func:`ordered`'s order), the value of
+    each cell, NaN where the frame has none, and which cells are gaps. A
+    cell the frame repeats keeps its last row.
+
+    Two kinds of empty cell draw differently: a gap (the ``gap`` column is
+    true: no samples there) in the theme's gap style, whatever its value;
+    a cell with samples and no value, or with no row at all, blank."""
 
     xs: list[Any]
     ys: list[Any]
     values: np.ndarray
+    gaps: np.ndarray
 
 
 def grid(fig: Figure, panel: Panel) -> Grid:
@@ -288,7 +378,21 @@ def grid(fig: Figure, panel: Panel) -> Grid:
     values = np.full((len(ys), len(xs)), np.nan)
     present = (x_at >= 0) & (y_at >= 0)
     values[y_at[present], x_at[present]] = numbers(frame[value])[present]
-    return Grid(xs=xs, ys=ys, values=values)
+    gaps = np.zeros(values.shape, dtype=bool)
+    if "gap" in panel.encodings:
+        flagged = present & flags(frame[panel.encodings["gap"]])
+        gaps[y_at[flagged], x_at[flagged]] = True
+        values[gaps] = np.nan
+    return Grid(xs=xs, ys=ys, values=values, gaps=gaps)
+
+
+def flags(column: pd.Series) -> np.ndarray:
+    """A boolean column as a mask, a missing value false."""
+    return (
+        column.astype(object)
+        .map(lambda v: v is True or v is np.True_)
+        .to_numpy(dtype=bool)
+    )
 
 
 def _axis_values(column: pd.Series, kind: str) -> tuple[list[Any], np.ndarray]:
@@ -421,10 +525,10 @@ def rows_of(frame: pd.DataFrame, panel: Panel, group: str | None) -> pd.DataFram
 
 def bars(fig: Figure, panel: Panel, theme: themes.Theme) -> tuple[Places, pd.DataFrame]:
     """Every bar: its ``group``, ``position`` (category index plus the
-    group's offset), ``category``, ``bottom``, ``height``, ``err_lo`` and
-    ``err_hi`` (NaN without lo and hi). A category's last row in a group
-    gives its bar; a stacked bar sits on the group before it on its side of
-    zero."""
+    group's offset), ``category``, ``bottom``, ``height``, and the ends of
+    its interval, ``lo`` and ``hi`` (NaN without them). A category's last
+    row in a group gives its bar, a bar without a height none; a stacked
+    bar sits on the group before it on its side of zero."""
     place = places(fig, panel, theme)
     frame = fig.frame(panel)
     x = panel.encodings["x"]
@@ -458,12 +562,28 @@ def bars(fig: Figure, panel: Panel, theme: themes.Theme) -> tuple[Places, pd.Dat
                     "position": c + offset,
                     "bottom": bottom,
                     "height": height,
-                    "err_lo": height - lo[i] if lo is not None else np.nan,
-                    "err_hi": hi[i] - height if hi is not None else np.nan,
+                    "lo": lo[i] if lo is not None else np.nan,
+                    "hi": hi[i] if hi is not None else np.nan,
                 }
             )
-    columns = ["group", "category", "position", "bottom", "height", "err_lo", "err_hi"]
+    columns = ["group", "category", "position", "bottom", "height", "lo", "hi"]
     return place, pd.DataFrame(records, columns=columns)
+
+
+def intervals(bars: pd.DataFrame) -> pd.DataFrame:
+    """The intervals of *bars* (:func:`bars`) both renderers draw: from lo
+    to hi wherever both are numbers, whether or not the interval holds the
+    bar's top, as ``position``, ``middle`` and ``half`` (its half width,
+    never negative)."""
+    lo, hi = bars["lo"].to_numpy(dtype=float), bars["hi"].to_numpy(dtype=float)
+    drawn = np.isfinite(lo) & np.isfinite(hi)
+    return pd.DataFrame(
+        {
+            "position": bars["position"].to_numpy(dtype=float)[drawn],
+            "middle": (lo[drawn] + hi[drawn]) / 2,
+            "half": np.abs(hi[drawn] - lo[drawn]) / 2,
+        }
+    )
 
 
 #: The statistics of a box, by encoding.
@@ -473,9 +593,10 @@ BOX_STATS = ("q1", "median", "q3", "lo", "hi")
 def boxes(
     fig: Figure, panel: Panel, theme: themes.Theme
 ) -> tuple[Places, pd.DataFrame]:
-    """Every box: its ``group``, ``category``, ``position`` and its
+    """Every box: its ``group``, ``category``, ``position``, its
     statistics (``q1``, ``median``, ``q3``, ``lo``, ``hi``, ``mean``, NaN
-    without one). A box missing any of the five is not drawn."""
+    without one) and whether it is ``hollow``. A box missing any of the
+    five is not drawn."""
     place = places(fig, panel, theme)
     frame = fig.frame(panel)
     x = panel.encodings["x"]
@@ -487,6 +608,11 @@ def boxes(
             numbers(rows[panel.encodings["mean"]])
             if "mean" in panel.encodings
             else None
+        )
+        hollow = (
+            flags(rows[panel.encodings["hollow"]])
+            if "hollow" in panel.encodings
+            else np.zeros(len(rows), dtype=bool)
         )
         by_category = {label(v): i for i, v in enumerate(rows[x])}
         for c, category in enumerate(place.categories):
@@ -503,9 +629,10 @@ def boxes(
                     "position": c + offset,
                     **values,
                     "mean": mean[i] if mean is not None else np.nan,
+                    "hollow": bool(hollow[i]),
                 }
             )
-    columns = ["group", "category", "position", *BOX_STATS, "mean"]
+    columns = ["group", "category", "position", *BOX_STATS, "mean", "hollow"]
     return place, pd.DataFrame(records, columns=columns)
 
 
@@ -575,6 +702,131 @@ def _missing(value: Any) -> bool:
         return False
 
 
+# --- points and sticks ------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Points:
+    """A scatter panel's points and what explains them.
+
+    :ivar points: One row per point both of whose axes can draw it, in
+        drawing order: with a ``size``, the largest first, so that it lies
+        behind the smaller. ``x``, ``y``, ``diameter`` (CSS pixels),
+        ``colour``, ``hollow``, ``group`` (its colour group, None without)
+        and ``text`` (its hover text: its label, then its group's name).
+    :ivar scale: The colour scale of a colour by number, else None.
+    :ivar groups: The colour groups the panel draws, in legend order.
+    :ivar sizes: The size legend (:func:`size_legend`), empty without a
+        size.
+    """
+
+    points: pd.DataFrame
+    scale: ColourScale | None
+    groups: list[str]
+    sizes: list[tuple[float, float]]
+
+
+def points(fig: Figure, panel: Panel, theme: themes.Theme, colours: Colours) -> Points:
+    frame = fig.frame(panel)
+    encodings = panel.encodings
+    n = len(frame)
+    x = on_scale(numbers(frame[encodings["x"]]), panel.axes.x.scale)
+    y = on_scale(numbers(frame[encodings["y"]]), panel.axes.y.scale)
+    legend: list[tuple[float, float]] = []
+    if "size" in encodings:
+        values = numbers(frame[encodings["size"]])
+        diameters = sizes(values, theme)
+        legend = size_legend(values, theme)
+    else:
+        diameters = np.full(n, theme.marks.marker, dtype="float64")
+    colour = encodings.get("colour")
+    scale = None
+    groups: list[str] = []
+    group_of: list[str | None] = [None] * n
+    if colour is not None and fig.kinds()[colour] == "number":
+        scale = colour_scale(
+            numbers(frame[colour]), panel, theme, panel.options["palette"]
+        )
+        tints = [scale.colour(v) or theme.muted for v in scale.values]
+    elif colour is not None:
+        group_of = [None if _missing(v) else label(v) for v in frame[colour]]
+        groups = [label(v) for v in ordered(frame[colour])]
+        tints = [theme.muted if g is None else colours.of(g) for g in group_of]
+    else:
+        tints = [colours.single] * n
+    hollow = (
+        flags(frame[encodings["hollow"]])
+        if "hollow" in encodings
+        else np.zeros(n, dtype=bool)
+    )
+    labels = (
+        [None if _missing(v) else label(v) for v in frame[encodings["label"]]]
+        if "label" in encodings
+        else [None] * n
+    )
+    texts = [
+        " \u00b7 ".join(part for part in (text, g and colours.name(g)) if part)
+        for text, g in zip(labels, group_of)
+    ]
+    table = pd.DataFrame(
+        {
+            "x": x,
+            "y": y,
+            "diameter": diameters,
+            "colour": pd.Series(tints, dtype=object),
+            "hollow": hollow,
+            "group": pd.Series(group_of, dtype=object),
+            "text": pd.Series(texts, dtype=object),
+        }
+    )
+    table = table[np.isfinite(x) & np.isfinite(y)]
+    if "size" in encodings:
+        table = table.sort_values("diameter", ascending=False, kind="stable")
+    return Points(
+        points=table.reset_index(drop=True), scale=scale, groups=groups, sizes=legend
+    )
+
+
+def sticks(
+    fig: Figure, panel: Panel, theme: themes.Theme, colours: Colours
+) -> pd.DataFrame:
+    """A sticks panel's sticks, each a line from zero to its y: ``x``,
+    ``y``, ``colour``, ``group`` (None without) and ``marked``. A stick
+    takes its group's colour; with ``by_sign`` one at or above zero takes
+    the diverging ramp's high end and one below it its low end. A stick
+    without an x or a y is not drawn."""
+    frame = fig.frame(panel)
+    encodings = panel.encodings
+    x = numbers(frame[encodings["x"]])
+    y = numbers(frame[encodings["y"]])
+    group_of: list[str | None] = [None] * len(frame)
+    if panel.options.get("by_sign"):
+        high, low = theme.token("diverging.high"), theme.token("diverging.low")
+        tints = [high if v >= 0 else low for v in y]
+    elif "group" in encodings:
+        group_of = [
+            None if _missing(v) else label(v) for v in frame[encodings["group"]]
+        ]
+        tints = [theme.muted if g is None else colours.of(g) for g in group_of]
+    else:
+        tints = [colours.single] * len(frame)
+    marked = (
+        flags(frame[encodings["mark"]])
+        if "mark" in encodings
+        else np.zeros(len(frame), dtype=bool)
+    )
+    table = pd.DataFrame(
+        {
+            "x": x,
+            "y": y,
+            "colour": pd.Series(tints, dtype=object),
+            "group": pd.Series(group_of, dtype=object),
+            "marked": marked,
+        }
+    )
+    return table[np.isfinite(x) & np.isfinite(y)].reset_index(drop=True)
+
+
 # --- labels -------------------------------------------------------------------------------
 
 
@@ -613,20 +865,22 @@ def labelled(fig: Figure, panel: Panel) -> pd.DataFrame:
 @dataclass(frozen=True)
 class Table:
     """A table panel as text: its headers, its rows, which columns are
-    numbers (set to the right), and how many rows the frame had."""
+    numbers (set to the right), which rows are marked (shaded), and how
+    many rows the frame had."""
 
     headers: list[str]
     rows: list[list[str]]
     numeric: list[bool]
     total: int
+    marked: list[bool]
 
 
 def table(fig: Figure, panel: Panel) -> Table:
     """A table's cells: each column formatted by its ``formats`` entry
-    (numbers ``g``, integers ``d`` without one), a time to the minute in
-    its zone (to the second when one has seconds), a boolean ``yes`` or
-    ``no``, a missing value empty; at most ``max_rows`` rows when it is not
-    0."""
+    (numbers ``g``, integers ``d`` without one; a number formatted ``d``
+    rounded to a whole one first), a time to the minute in its zone (to
+    the second when one has seconds), a boolean ``yes`` or ``no``, a
+    missing value empty; at most ``max_rows`` rows when it is not 0."""
     frame = fig.frame(panel)
     columns = panel.encodings["columns"]
     headers = panel.options.get("headers") or {}
@@ -637,11 +891,17 @@ def table(fig: Figure, panel: Panel) -> Table:
     cells = [
         _cells(shown[column], kinds[column], formats.get(column)) for column in columns
     ]
+    marked = (
+        flags(shown[panel.encodings["mark"]]).tolist()
+        if "mark" in panel.encodings
+        else [False] * len(shown)
+    )
     return Table(
         headers=[headers.get(column, column) for column in columns],
         rows=[list(row) for row in zip(*cells)] if cells else [],
         numeric=[kinds[column] == "number" for column in columns],
         total=len(frame),
+        marked=marked,
     )
 
 
@@ -661,7 +921,11 @@ def _cells(column: pd.Series, kind: str, spec: str | None) -> list[str]:
             out.append("yes" if value else "no")
         elif kind == "number":
             integer = isinstance(value, (int, np.integer))
-            out.append(format(value, spec or ("d" if integer else "g")))
+            spec = spec or ("d" if integer else "g")
+            if spec.endswith("d") and not integer:
+                # A count with a gap in it is a float column.
+                value = round(value)
+            out.append(format(value, spec))
         else:
             out.append(str(value))
     return out
@@ -673,7 +937,7 @@ def _cells(column: pd.Series, kind: str, spec: str | None) -> list[str]:
 def notes(fig: Figure) -> list[str]:
     """What a renderer prints under the figure: its notes, then a line for
     each panel that asked for the raster mode and was drawn as marks, and
-    for each table that shows only its first rows."""
+    for each table that shows only its first rows or shades rows."""
     out = list(fig.notes)
     for index, panel in enumerate(fig.panels):
         where = where_label(index, panel)
@@ -684,16 +948,35 @@ def notes(fig: Figure) -> list[str]:
             total = len(fig.frame(panel))
             if limit and total > limit:
                 out.append(f"{where} shows the first {limit} of {total} rows.")
+            if any(table(fig, panel).marked):
+                out.append(f"{where} shades the rows {panel.options['mark_label']}.")
     return out
 
 
+def wrap(text: str, size: float, theme: themes.Theme, room: float = 0.0) -> list[str]:
+    """*text* in lines that fit the header's and the footer's width, less
+    *room* CSS pixels (what a legend beside it takes), at type of *size*:
+    broken at spaces, a word longer than a line broken inside, nothing cut
+    off."""
+    width = theme.layout.width - TEXT_MARGINS - room
+    chars = max(20, int(width / (size * CHAR_WIDTH)))
+    return textwrap.wrap(text, width=chars, break_on_hyphens=False) or [""]
+
+
+def subtitle_lines(fig: Figure, theme: themes.Theme, room: float = 0.0) -> list[str]:
+    """The subtitle as a renderer draws it, beside *room* CSS pixels of
+    legend; no lines without one."""
+    if not fig.subtitle:
+        return []
+    return wrap(fig.subtitle, theme.type.subtitle, theme, room)
+
+
 def note_lines(fig: Figure, theme: themes.Theme) -> list[str]:
-    """:func:`notes` as the lines a renderer prints: each note wrapped to
-    the figure's width at the theme's small type."""
-    width = max(40, int(theme.layout.width / (theme.type.small * 0.6)))
+    """:func:`notes` as the lines a renderer prints, each note wrapped at
+    the theme's small type."""
     lines = []
     for note in notes(fig):
-        lines.extend(textwrap.wrap(note, width=width) or [""])
+        lines.extend(wrap(note, theme.type.small, theme))
     return lines
 
 
@@ -723,10 +1006,14 @@ class Arrangement:
         return self.header + sum(self.heights) + self.footer
 
 
-def arrange(fig: Figure, theme: themes.Theme) -> Arrangement:
+def arrange(
+    fig: Figure, theme: themes.Theme, subtitle: int | None = None
+) -> Arrangement:
     """Panels in reading order, :attr:`Figure.columns` to a row; a row as
     tall as its tallest panel: a plot the theme's panel height, a table
-    its rows' (as many as it shows, its header and its title)."""
+    its rows' (as many as it shows, its header and its title). The header
+    grows with the subtitle's lines (*subtitle* of them, or as many as
+    :func:`subtitle_lines` gives), the footer with the notes'."""
     columns = min(fig.columns, len(fig.panels))
     rows = math.ceil(len(fig.panels) / columns)
     cells = [(i // columns, i % columns) for i in range(len(fig.panels))]
@@ -743,7 +1030,13 @@ def arrange(fig: Figure, theme: themes.Theme) -> Arrangement:
             height = layout.panel
         heights[row] = max(heights[row], height)
     footer = layout.note * len(note_lines(fig, theme))
-    header = layout.header if fig.subtitle else layout.header - theme.type.subtitle - 6
+    # The header holds the title and one line of subtitle; a longer
+    # subtitle grows it by a line at a time.
+    lines = len(subtitle_lines(fig, theme)) if subtitle is None else subtitle
+    if lines:
+        header = layout.header + (lines - 1) * theme.type.subtitle * LINE_HEIGHT
+    else:
+        header = layout.header - theme.type.subtitle - 6
     return Arrangement(
         cells, rows, columns, heights, header, footer + (8 if footer else 0)
     )

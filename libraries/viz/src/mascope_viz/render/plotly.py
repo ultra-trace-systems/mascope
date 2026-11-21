@@ -114,7 +114,9 @@ class _Drawing:
             row_heights=arrangement.heights,
             vertical_spacing=spacing,
             horizontal_spacing=self._column_gap(arrangement),
-            shared_xaxes=fig.share_x,
+            # Every plotted panel's x, as matplotlib shares them: plotly's
+            # True would share them within a column only.
+            shared_xaxes="all" if fig.share_x else False,
         )
         self.drawn = drawn
         for panel, (row, column) in zip(fig.panels, arrangement.cells):
@@ -127,10 +129,12 @@ class _Drawing:
     def _layout(self, arrangement: common.Arrangement) -> None:
         fig, theme = self.fig, self.theme
         title = escape(fig.title)
-        if fig.subtitle:
+        # plotly.js does not wrap a title: each line of the subtitle as
+        # common wraps it is a line of its own.
+        for line in common.subtitle_lines(fig, theme):
             title += (
                 f"<br><span style='font-size: {theme.type.subtitle:g}px; "
-                f"font-weight: 400; opacity: 0.85;'>{escape(fig.subtitle)}</span>"
+                f"font-weight: 400; opacity: 0.85;'>{escape(line)}</span>"
             )
         notes = common.note_lines(fig, theme)
         bottom = AXIS_ROOM + (arrangement.footer if notes else 0.0)
@@ -140,6 +144,10 @@ class _Drawing:
                 "x": 0,
                 "xanchor": "left",
                 "xref": "paper",
+                "y": 1,
+                "yanchor": "top",
+                "yref": "container",
+                "pad": {"t": 12},
                 "font": {"size": theme.type.title, "color": theme.text},
             },
             "paper_bgcolor": theme.paper,
@@ -284,16 +292,43 @@ class _Drawing:
 
     def _named(self, group: str | None) -> dict[str, Any]:
         """A trace's legend settings: its group shown once across the
-        figure."""
+        figure, under its display name."""
         if group is None:
             return {"showlegend": False}
-        first = group not in self.shown
-        self.shown.add(group)
+        return self._legend(("group", group), self.colours.name(group), group)
+
+    def _legend(self, key: Any, text: str, group: str) -> dict[str, Any]:
+        """A trace's legend settings for the entry *key*: shown the first
+        time, as *text*; *group* toggles with it."""
+        first = key not in self.shown
+        self.shown.add(key)
         return {
-            "name": escape(group),
+            "name": escape(text),
             "legendgroup": escape(group),
             "showlegend": first,
         }
+
+    def _key(
+        self, key: Any, text: str, marker: dict[str, Any], row: int, column: int
+    ) -> None:
+        """A legend entry with no data of its own, for a mark, the hollow
+        points or a size: shown once across the figure."""
+        import plotly.graph_objects as go
+
+        if key in self.shown:
+            return
+        self._trace(
+            go.Scatter(
+                x=[None],
+                y=[None],
+                mode="markers",
+                marker=marker,
+                hoverinfo="skip",
+                **self._legend(key, text, f"{key[0]}:{text}"),
+            ),
+            row,
+            column,
+        )
 
     def _spans(self, panel: Panel, row: int, column: int) -> None:
         theme = self.theme
@@ -491,7 +526,11 @@ class _Drawing:
                         "color": theme.warning,
                         "line": {"color": theme.paper, "width": 0.75},
                     },
-                    **self._named(panel.options["mark_label"]),
+                    **self._legend(
+                        ("mark", panel.options["mark_label"]),
+                        panel.options["mark_label"],
+                        "mark:" + panel.options["mark_label"],
+                    ),
                 ),
                 row,
                 column,
@@ -563,6 +602,31 @@ class _Drawing:
                 row,
                 column,
             )
+        if cells.gaps.any():
+            gap = _rgba(self.theme.token("gap"), self.theme.marks.gap_opacity)
+            label = panel.options["gap_label"]
+            self._trace(
+                go.Heatmap(
+                    x=x,
+                    y=y,
+                    z=[[1.0 if g else None for g in line] for line in cells.gaps],
+                    colorscale=[[0.0, gap], [1.0, gap]],
+                    zmin=0,
+                    zmax=1,
+                    showscale=False,
+                    hoverongaps=False,
+                    hovertemplate=f"{escape(label)}<extra></extra>",
+                ),
+                row,
+                column,
+            )
+            self._key(
+                ("gap", label),
+                label,
+                {"symbol": "square", "size": 12, "color": gap},
+                row,
+                column,
+            )
         self.drawn.update_xaxes(row=row, col=column, showgrid=False)
         self.drawn.update_yaxes(row=row, col=column, showgrid=False)
 
@@ -585,83 +649,97 @@ class _Drawing:
         return names
 
     def _scatter(self, panel: Panel, row: int, column: int) -> None:
+        """Every point in one trace, so that the larger lie behind the
+        smaller whatever their group; legend entries of their own for the
+        groups, the hollow points and the sizes."""
         import plotly.graph_objects as go
 
         theme = self.theme
-        frame = self.fig.frame(panel)
-        encodings = panel.encodings
-        x = common.on_scale(common.numbers(frame[encodings["x"]]), panel.axes.x.scale)
-        y = common.on_scale(common.numbers(frame[encodings["y"]]), panel.axes.y.scale)
-        if "size" in encodings:
-            diameters = common.sizes(common.numbers(frame[encodings["size"]]), theme)
-        else:
-            diameters = np.full(len(frame), theme.marks.marker)
-        hover = (
-            [
-                escape(common.label(v)) if not pd.isna(v) else ""
-                for v in frame[encodings["label"]]
-            ]
-            if "label" in encodings
-            else None
+        drawn_points = common.points(self.fig, panel, theme, self.colours)
+        points = drawn_points.points
+        hollow = points["hollow"].to_numpy(dtype=bool)
+        opacity = theme.marks.point_opacity
+        texts = [escape(text) for text in points["text"]]
+        self._trace(
+            go.Scatter(
+                x=_values(points["x"].to_numpy()),
+                y=_values(points["y"].to_numpy()),
+                mode="markers",
+                marker={
+                    "size": _values(points["diameter"].to_numpy()),
+                    "color": [
+                        "rgba(0,0,0,0)" if h else _rgba(c, opacity)
+                        for c, h in zip(points["colour"], hollow)
+                    ],
+                    "line": {
+                        "color": list(points["colour"]),
+                        "width": [theme.marks.line if h else 0 for h in hollow],
+                    },
+                },
+                text=texts if any(texts) else None,
+                hoverinfo="x+y+text" if any(texts) else "x+y",
+                showlegend=False,
+            ),
+            row,
+            column,
         )
-        colour = encodings.get("colour")
-
-        def points(
-            rows: np.ndarray, marker: dict[str, Any], named: dict[str, Any]
-        ) -> None:
-            rows = rows & np.isfinite(x) & np.isfinite(y)
+        scale = drawn_points.scale
+        if scale is not None and np.isfinite(scale.values).any():
             self._trace(
                 go.Scatter(
-                    x=_values(x[rows]),
-                    y=_values(y[rows]),
+                    x=[None],
+                    y=[None],
                     mode="markers",
                     marker={
-                        "size": _values(diameters[rows]),
-                        "line": {"width": 0},
-                        **marker,
+                        "color": [scale.low],
+                        "showscale": True,
+                        **self._colourbar(scale, row, column),
                     },
-                    text=[hover[i] for i in np.flatnonzero(rows)] if hover else None,
-                    **named,
+                    showlegend=False,
+                    hoverinfo="skip",
                 ),
                 row,
                 column,
             )
-
-        everything = np.ones(len(frame), dtype=bool)
-        if colour is not None and self.fig.kinds()[colour] == "number":
-            scale = common.colour_scale(
-                common.numbers(frame[colour]), panel, theme, panel.options["palette"]
+        for group in drawn_points.groups:
+            self._key(
+                ("group", group),
+                self.colours.name(group),
+                {"size": theme.marks.marker + 3, "color": self.colours.of(group)},
+                row,
+                column,
             )
-            tints = np.array(
-                [scale.colour(v) or theme.muted for v in scale.values], dtype=object
+        label = panel.options["hollow_label"]
+        if label and hollow.any():
+            self._key(
+                ("hollow", label),
+                label,
+                {
+                    "size": theme.marks.marker + 3,
+                    "color": "rgba(0,0,0,0)",
+                    "line": {"color": theme.muted, "width": theme.marks.line},
+                },
+                row,
+                column,
             )
-            shown = everything & np.isfinite(x) & np.isfinite(y)
-            points(everything, {"color": list(tints[shown])}, {"showlegend": False})
-            if np.isfinite(scale.values).any():
-                self._trace(
-                    go.Scatter(
-                        x=[None],
-                        y=[None],
-                        mode="markers",
-                        marker={
-                            "color": [scale.low],
-                            "showscale": True,
-                            **self._colourbar(scale, row, column),
-                        },
-                        showlegend=False,
-                        hoverinfo="skip",
-                    ),
-                    row,
-                    column,
-                )
-        elif colour is not None:
-            names = [common.label(v) if not pd.isna(v) else None for v in frame[colour]]
-            for group in common.ordered(frame[colour]):
-                name = common.label(group)
-                rows = np.array([n == name for n in names], dtype=bool)
-                points(rows, {"color": self.colours.of(name)}, self._named(name))
-        else:
-            points(everything, {"color": self.colours.single}, {"showlegend": False})
+        index = self.fig.panels.index(panel)
+        for value, diameter in drawn_points.sizes:
+            title = panel.axes.size.label
+            self._trace(
+                go.Scatter(
+                    x=[None],
+                    y=[None],
+                    mode="markers",
+                    marker={"size": diameter, "color": _rgba(theme.muted, opacity)},
+                    name=escape(common.number_text(value)),
+                    legendgroup=f"size:{index}",
+                    legendgrouptitle={"text": escape(title)} if title else None,
+                    showlegend=True,
+                    hoverinfo="skip",
+                ),
+                row,
+                column,
+            )
         self._labels(panel, row, column)
 
     def _labels(self, panel: Panel, row: int, column: int) -> None:
@@ -689,9 +767,7 @@ class _Drawing:
         import plotly.graph_objects as go
 
         theme = self.theme
-        frame = self.fig.frame(panel)
-        x = common.numbers(frame[panel.encodings["x"]])
-        y = common.numbers(frame[panel.encodings["y"]])
+        sticks = common.sticks(self.fig, panel, theme, self.colours)
         xref, yref = self._refs(row, column)
         self.drawn.add_shape(
             type="line",
@@ -704,23 +780,43 @@ class _Drawing:
             line={"color": theme.muted, "width": theme.marks.rule},
             layer="below",
         )
-        for group in common.places(self.fig, panel, theme).groups:
-            rows = common.rows_of(frame, panel, group)
-            positions = frame.index.get_indexer(rows.index)
-            shown = positions[np.isfinite(x[positions]) & np.isfinite(y[positions])]
+        # One trace per group and colour (a line trace has one colour):
+        # a group's, or by sign the ramp's two ends.
+        keys = list(zip(sticks["group"], sticks["colour"]))
+        for group, colour in dict.fromkeys(keys):
+            mine = sticks[[key == (group, colour) for key in keys]]
             line_x: list[Any] = []
             line_y: list[Any] = []
-            for i in shown:
-                line_x += [float(x[i]), float(x[i]), None]
-                line_y += [0.0, float(y[i]), None]
+            for x, y in zip(mine["x"], mine["y"]):
+                line_x += [float(x), float(x), None]
+                line_y += [0.0, float(y), None]
             self._trace(
                 go.Scatter(
                     x=line_x,
                     y=line_y,
                     mode="lines",
-                    line={"color": self.colours.of(group), "width": theme.marks.line},
+                    line={"color": colour, "width": theme.marks.line},
                     connectgaps=False,
                     **self._named(group),
+                ),
+                row,
+                column,
+            )
+        marked = sticks[sticks["marked"].to_numpy(dtype=bool)]
+        if len(marked):
+            label = panel.options["mark_label"]
+            self._trace(
+                go.Scatter(
+                    x=_values(marked["x"].to_numpy()),
+                    y=_values(marked["y"].to_numpy()),
+                    mode="markers",
+                    marker={
+                        "symbol": "diamond",
+                        "size": theme.marks.marker + 2,
+                        "color": theme.warning,
+                        "line": {"color": theme.paper, "width": 0.75},
+                    },
+                    **self._legend(("mark", label), label, "mark:" + label),
                 ),
                 row,
                 column,
@@ -736,17 +832,7 @@ class _Drawing:
             mine = bars[[g == group for g in bars["group"]]]
             if not len(mine):
                 continue
-            errors = None
-            if "lo" in panel.encodings:
-                errors = {
-                    "type": "data",
-                    "symmetric": False,
-                    "array": _values(mine["err_hi"].to_numpy()),
-                    "arrayminus": _values(mine["err_lo"].to_numpy()),
-                    "color": theme.text,
-                    "thickness": 1,
-                    "width": 3,
-                }
+            name = escape(self.colours.name(group)) if group is not None else ""
             self._trace(
                 go.Bar(
                     x=_values(mine["position"].to_numpy()),
@@ -754,10 +840,33 @@ class _Drawing:
                     base=_values(mine["bottom"].to_numpy()),
                     width=place.width,
                     marker={"color": self.colours.of(group), "line": {"width": 0}},
-                    error_y=errors,
                     customdata=[escape(c) for c in mine["category"]],
-                    hovertemplate="%{customdata}: %{y}<extra></extra>",
+                    hovertemplate=f"%{{customdata}}: %{{y}}<extra>{name}</extra>",
                     **self._named(group),
+                ),
+                row,
+                column,
+            )
+        spans = common.intervals(bars)
+        if len(spans):
+            # The interval from lo to hi as matplotlib draws it: about its
+            # middle, so that it need not hold the bar's top.
+            self._trace(
+                go.Scatter(
+                    x=_values(spans["position"].to_numpy()),
+                    y=_values(spans["middle"].to_numpy()),
+                    mode="markers",
+                    marker={"size": 0, "color": "rgba(0,0,0,0)"},
+                    error_y={
+                        "type": "data",
+                        "symmetric": True,
+                        "array": _values(spans["half"].to_numpy()),
+                        "color": theme.text,
+                        "thickness": 1,
+                        "width": 3,
+                    },
+                    hoverinfo="skip",
+                    showlegend=False,
                 ),
                 row,
                 column,
@@ -774,29 +883,55 @@ class _Drawing:
             if not len(mine):
                 continue
             colour = self.colours.of(group)
-            stats = {
-                name: _values(mine[column_name].to_numpy())
-                for name, column_name in (
-                    ("q1", "q1"),
-                    ("median", "median"),
-                    ("q3", "q3"),
-                    ("lowerfence", "lo"),
-                    ("upperfence", "hi"),
+            # A box trace has one fill: the hollow boxes are a trace of
+            # their own, in the group's legend entry.
+            named = self._named(group)
+            for hollow in (False, True):
+                part = mine[mine["hollow"].to_numpy(dtype=bool) == hollow]
+                if not len(part):
+                    continue
+                stats = {
+                    name: _values(part[column_name].to_numpy())
+                    for name, column_name in (
+                        ("q1", "q1"),
+                        ("median", "median"),
+                        ("q3", "q3"),
+                        ("lowerfence", "lo"),
+                        ("upperfence", "hi"),
+                    )
+                }
+                if "mean" in panel.encodings:
+                    stats["mean"] = _values(part["mean"].to_numpy())
+                    stats["boxmean"] = True
+                self._trace(
+                    go.Box(
+                        x=_values(part["position"].to_numpy()),
+                        width=place.width * 0.9,
+                        fillcolor=(
+                            "rgba(0,0,0,0)"
+                            if hollow
+                            else _rgba(colour, theme.marks.box_opacity)
+                        ),
+                        line={"color": colour, "width": theme.marks.line},
+                        boxpoints=False,
+                        **stats,
+                        **named,
+                    ),
+                    row,
+                    column,
                 )
-            }
-            if "mean" in panel.encodings:
-                stats["mean"] = _values(mine["mean"].to_numpy())
-                stats["boxmean"] = True
-            self._trace(
-                go.Box(
-                    x=_values(mine["position"].to_numpy()),
-                    width=place.width * 0.9,
-                    fillcolor=_rgba(colour, 0.25),
-                    line={"color": colour, "width": theme.marks.line},
-                    boxpoints=False,
-                    **stats,
-                    **self._named(group),
-                ),
+                named = {**named, "showlegend": False}
+        label = panel.options["hollow_label"]
+        if label and boxes["hollow"].to_numpy(dtype=bool).any():
+            self._key(
+                ("hollow", label),
+                label,
+                {
+                    "symbol": "square",
+                    "size": 12,
+                    "color": "rgba(0,0,0,0)",
+                    "line": {"color": theme.muted, "width": theme.marks.line},
+                },
                 row,
                 column,
             )
@@ -824,6 +959,8 @@ class _Drawing:
             [escape(r[i]) for r in table.rows] for i in range(len(table.headers))
         ]
         align = ["right" if numeric else "left" for numeric in table.numeric]
+        shade = themes.blend(theme.warning, theme.paper, theme.marks.span_opacity)
+        fills = [shade if marked else theme.paper for marked in table.marked]
         self._trace(
             go.Table(
                 header={
@@ -836,7 +973,7 @@ class _Drawing:
                 },
                 cells={
                     "values": columns,
-                    "fill_color": theme.paper,
+                    "fill_color": [fills] * len(columns),
                     "line_color": theme.axis,
                     "font": {"size": theme.type.small, "color": theme.text},
                     "align": align,
