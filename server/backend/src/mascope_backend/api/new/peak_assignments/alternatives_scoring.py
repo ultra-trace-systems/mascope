@@ -44,6 +44,7 @@ from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_samp
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.new.match.params import default_match_params
+from mascope_backend.api.new.peak_assignments.config import IN_APP_ENGINE
 from mascope_backend.api.new.peak_assignments.engine import (
     MEASURED_SHORTLIST,
     ROLE_M0,
@@ -60,11 +61,13 @@ from mascope_backend.api.new.peak_assignments.seeded_scoring import (
     score_seeds,
 )
 from mascope_backend.api.new.peak_assignments.service import (
+    recorded_model,
     recorded_searched_mechanisms,
 )
 from mascope_backend.db import PeakAssignment, PeakAssignmentRun, async_session
 from mascope_tools.composition.arbitration import arbitrate_candidates
 from mascope_tools.composition.heuristic_filter import formula_plausibility
+from mascope_tools.composition.measurement_model import MeasurementModel
 
 
 #: Ceiling on the formulas one call will score. Each one costs a seed per adduct
@@ -270,6 +273,9 @@ async def score_row_alternatives(
             PeakAssignmentRun, getattr(assignment, "peak_assignment_run_id", None)
         )
         run_config = getattr(run, "config", None)
+        # An import's config is its client's own: it says nothing of where
+        # the in-app scorer centred, and the sample's in-app record is read.
+        in_app = getattr(run, "engine", None) == IN_APP_ENGINE
 
     selected = unscorable_alternatives(alternatives)
     wanted = selected[:MAX_SCORED_FORMULAS]
@@ -296,8 +302,17 @@ async def score_row_alternatives(
         for formula in formulas
         for mechanism in mechanisms
     }
+    # At the model the row's own run scored and capped it at, so the row and
+    # its alternatives are read on one scale; a run from before the one record
+    # at what it scored at (``service.recorded_measurement``).
     ion_by_seed, fit_by_ion, _errors, scored_df = await score_seeds(
-        sample, seeds, match_params
+        sample,
+        seeds,
+        match_params,
+        model=await recorded_model(
+            sample,
+            recorded=run_config if in_app and isinstance(run_config, dict) else None,
+        ),
     )
     m0_by_ion = _m0_by_ion(scored_df)
     mechanism_by_id = {m.ionization_mechanism_id: m for m in mechanisms}
@@ -492,9 +507,7 @@ async def measure_winner_confidence(
     match_params,
     *,
     peak_budget: int,
-    reagent_offset,
-    envelope_tolerance,
-    accuracy,
+    model: MeasurementModel,
 ) -> dict:
     """Measure the shortlists of a run's untargeted winners and record a confidence.
 
@@ -507,13 +520,13 @@ async def measure_winner_confidence(
     seeded pass, so the cost is one ``compute_match_isotopes`` read however
     many winners it covers.
 
-    The pass is scored at the measurement the winners' own fits were scored
-    at (``accuracy``): the run's seeded re-score's, which was fitted on the
-    committed winners. So the winner and its rivals are judged at one width,
-    as Stage A judges its candidates inside one frame. It is never one
-    fitted off the seeds: a shortlist is mostly wrong formulas, and a frame of
-    those fitted on its own lines would judge every one of them against the
-    width their chance matches happened to make.
+    The pass is scored at the run's measurement model, the one the winners'
+    own fits were scored and capped at (``model``). So the winner and its
+    rivals are judged at one centre and one width, as Stage A judges its
+    candidates inside one frame. It is never one fitted off the seeds: a
+    shortlist is mostly wrong formulas, and a frame of those fitted on its own
+    lines would judge every one of them against the width their chance
+    matches happened to make.
 
     A winner whose shortlist the budget did not reach records nothing: a share
     taken of part of the field would read as a share of all of it. A winner
@@ -532,10 +545,7 @@ async def measure_winner_confidence(
         that swaps adducts, the swapped set.
     :param match_params: The sample's resolved match parameters.
     :param peak_budget: How many winners' shortlists to measure.
-    :param reagent_offset: The run's scoring centre, as its re-score takes it.
-    :param envelope_tolerance: The tolerance the run fitted.
-    :param accuracy: The measurement the winners' fits were scored at, which
-        the pass is scored at (``seeded_scoring.scored_accuracy``).
+    :param model: The model the winners were scored and capped at.
     :return: What the pass did, for the run's record.
     """
     started = time.perf_counter()
@@ -561,12 +571,7 @@ async def measure_winner_confidence(
         for mechanism in mechanisms
     }
     ion_by_seed, fit_by_ion, _errors, scored_df = await score_seeds(
-        sample,
-        seeds,
-        match_params,
-        reagent_offset=reagent_offset,
-        envelope_tolerance=envelope_tolerance,
-        inherited_accuracy=accuracy,
+        sample, seeds, match_params, model=model
     )
     m0_by_ion = _m0_by_ion(scored_df)
 

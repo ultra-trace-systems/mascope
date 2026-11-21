@@ -79,7 +79,6 @@ from mascope_tools.composition.envelope_tolerance import (
 )
 from mascope_tools.composition.mass_accuracy import (
     PRED_SIGMA_PPM,
-    SampleMassAccuracy,
 )
 from mascope_tools.composition.profiles import INSTRUMENT_FALLBACK_SIGMA_PPM
 from mascope_tools.composition.reagents import reagent_library
@@ -278,8 +277,7 @@ def _stub_engine(monkeypatch, samples, peaks, matches, pairings):
         "score": [],
         "seeded_fits": [],
         "scoring": [],
-        "seeded_offsets": [],
-        "seeded_tolerances": [],
+        "seeded_models": [],
         "score_configs": [],
         "propagation_offsets": [],
     }
@@ -311,13 +309,12 @@ def _stub_engine(monkeypatch, samples, peaks, matches, pairings):
     async def match_params(sample_item_id):
         return SimpleNamespace(isotope_abundance_threshold=0.01, mz_tolerance=5)
 
-    async def seeded_fits(sample, params, seeds, *, reagent_offset, envelope_tolerance):
+    async def seeded_fits(sample, params, seeds, *, model):
         # The search's own re-score: the finder's reading measured again as an
         # ion, which is what the rows are tiered on. Canned here for the same
         # reason the finder is - these tests are about the pass, not the fit.
         calls["seeded_fits"].append((by_id[sample.sample_item_id], set(seeds)))
-        calls["seeded_offsets"].append(reagent_offset)
-        calls["seeded_tolerances"].append(envelope_tolerance)
+        calls["seeded_models"].append(model)
         return {seed: 0.88 for seed in seeds}
 
     async def seeded(sample, seeds, params, *, config=None):
@@ -356,18 +353,10 @@ def _stub_engine(monkeypatch, samples, peaks, matches, pairings):
 
 def _rescored(seeded_fits):
     """The search's seeded re-score (``service._seeded_rescore``), from a
-    stand-in for its fits: the measurement it scored at is none."""
+    stand-in for its fits: it keeps no frame to score again."""
 
-    async def rescore(
-        sample, params, seeds, *, reagent_offset, envelope_tolerance, **_kwargs
-    ):
-        fits = await seeded_fits(
-            sample,
-            params,
-            seeds,
-            reagent_offset=reagent_offset,
-            envelope_tolerance=envelope_tolerance,
-        )
+    async def rescore(sample, params, seeds, *, model, **_kwargs):
+        fits = await seeded_fits(sample, params, seeds, model=model)
         return fits, None
 
     return rescore
@@ -512,9 +501,9 @@ async def test_the_searched_sample_is_re_scored_at_its_reagent_lines_offset(
         folded_batch["batch_id"], PeakAssignmentConfig(profile="UR")
     )
 
-    [offset] = stubbed_engine["seeded_offsets"]
-    assert (offset.lines, offset.beyond_width) == (3, True)
-    assert offset.mu_ppm == pytest.approx(-1.3, abs=1e-6)
+    [model] = stubbed_engine["seeded_models"]
+    assert (model.reagent.lines, model.reagent.beyond_width) == (3, True)
+    assert model.scoring_mu_ppm == pytest.approx(-1.3, abs=1e-6)
 
     # The propagation of the same run measures the other sample under the
     # search's own configuration: its claim stage claims the same lines under
@@ -522,9 +511,12 @@ async def test_the_searched_sample_is_re_scored_at_its_reagent_lines_offset(
     # name no reagent, and measures at the offset they give.
     propagated = stubbed_engine["propagation_offsets"]
     assert propagated
-    for _sample, centre in propagated:
-        assert centre == offset
-    assert await service.sample_reagent_offset(propagated[0][0]) is None
+    for _sample, measured_at in propagated:
+        assert measured_at.reagent == model.reagent
+        assert measured_at.scoring_mu_ppm == model.scoring_mu_ppm
+    # A reader with no configuration claims the lines under the default
+    # profile, which names no reagent.
+    assert (await service.recorded_model(propagated[0][0])).reagent is None
 
 
 async def _record_run(
@@ -607,24 +599,25 @@ async def test_a_sample_with_a_run_is_re_scored_where_that_run_scored(
         folded_batch["batch_id"], PeakAssignmentConfig(profile="UR")
     )
 
-    [offset] = stubbed_engine["seeded_offsets"]
-    assert offset == service.ReagentOffset(mu_ppm=-0.05, lines=12, beyond_width=True)
+    [model] = stubbed_engine["seeded_models"]
+    assert (model.mu_source, model.scoring_mu_ppm) == ("fitted", -0.05)
 
     # The other sample has no run, so its propagation measures at the lines
     # its claim stage claims under the search's configuration; once a run
     # records a centre, that is what a reader outside a run takes.
     sample, claimed = next(
-        (sample, centre)
-        for sample, centre in stubbed_engine["propagation_offsets"]
+        (sample, measured_at)
+        for sample, measured_at in stubbed_engine["propagation_offsets"]
         if sample.sample_item_id == samples["S2"]
     )
-    assert (claimed.lines, claimed.beyond_width) == (3, True)
-    assert claimed.mu_ppm == pytest.approx(-1.3, abs=1e-6)
+    assert (claimed.reagent.lines, claimed.reagent.beyond_width) == (3, True)
+    assert claimed.scoring_mu_ppm == pytest.approx(-1.3, abs=1e-6)
     await _record_run(
         async_session_factory, samples["S2"], "completed", 1, _scoring(0.0, "none")
     )
     config = PeakAssignmentConfig(profile="UR")
-    assert await service.sample_reagent_offset(sample, config) is None
+    recorded = await service.recorded_model(sample, config)
+    assert (recorded.mu_source, recorded.mu_ppm) == ("none", None)
 
 
 #: The width a sample is scored at where nothing fitted one: the Orbitrap
@@ -716,12 +709,9 @@ async def test_the_search_ranks_the_sample_where_a_run_scores_it(
 
     [scoring] = stubbed_engine["scoring"]
     assert scoring.mu_ppm == pytest.approx(centre_ppm, abs=1e-6)
-    # The re-score of its commits is handed the same centre, under the same
-    # rule: taken only beyond the width.
-    [offset] = stubbed_engine["seeded_offsets"]
-    assert (SampleMassAccuracy(reagent=offset).scoring_mu_ppm or 0.0) == (
-        scoring.mu_ppm
-    )
+    # The re-score of its commits is handed the same model.
+    [model] = stubbed_engine["seeded_models"]
+    assert model.scoring_mu_ppm == scoring.mu_ppm
     # The run records the width it scored at, which the search ranks at too.
     assert scoring.sigma_ppm == pytest.approx(width_ppm, abs=1e-6)
 
@@ -761,7 +751,9 @@ async def test_a_sample_with_a_run_is_searched_at_that_runs_line_tolerance(
     assert expected != EnvelopeTolerance()
     [scoring] = stubbed_engine["scoring"]
     assert scoring.envelope_tolerance == expected
-    assert stubbed_engine["seeded_tolerances"] == [expected]
+    assert [model.envelope_tolerance for model in stubbed_engine["seeded_models"]] == [
+        expected
+    ]
 
 
 async def test_the_propagation_runs_every_stage_of_the_list(
@@ -1554,7 +1546,7 @@ async def test_a_reading_the_vote_puts_below_candidate_is_not_counted_held(
         },
     )
 
-    async def seeded_fits(sample, params, seeds, *, reagent_offset, envelope_tolerance):
+    async def seeded_fits(sample, params, seeds, *, model):
         return {seed: 0.05 if seed[0] == "C9H11NO" else 0.88 for seed in seeds}
 
     monkeypatch.setattr(service, "_seeded_rescore", _rescored(seeded_fits))

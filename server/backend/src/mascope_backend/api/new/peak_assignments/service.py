@@ -130,9 +130,8 @@ from mascope_backend.api.new.peak_assignments.engine import (
     DISPLACED_BY_CLAIM,
     ENVELOPE_TOLERANCE_KEY,
     FRAGMENTS_KEY,
-    MASS_CALIBRATION_KEY,
+    MEASUREMENT_MODEL_KEY,
     PARTNER_GATE_KEY,
-    PATTERN_SCORING_KEY,
     REFERENCE_IDENTITIES_COL,
     ROLE_ISO_CHILD,
     ROLE_M0,
@@ -145,16 +144,21 @@ from mascope_backend.api.new.peak_assignments.engine import (
     calibration_meta,
     cap_second_channel,
     drop_ions_claimed_elsewhere,
+    evidence_for,
     invert_matches_to_peak_assignments,
     listed_formula_identities,
+    read_p_correct_again,
     reading_as_alternative,
     record_stage_a_same_ion_readings,
     sample_mass_accuracy,
+    score_frame_at,
     score_ions_by_fit,
+    tier_for_evidence,
 )
 from mascope_backend.api.new.peak_assignments.envelope_claims import (
     EnvelopeClaim,
     apply_claims,
+    is_claimed,
     isotopologue_names,
 )
 from mascope_backend.api.new.peak_assignments.envelope_fit import (
@@ -188,7 +192,6 @@ from mascope_backend.api.new.peak_assignments.identification_level import (
 from mascope_backend.api.new.peak_assignments.listing import reference_listing
 from mascope_backend.api.new.peak_assignments.mass_gate import (
     OFF_CALIBRATION_Z,
-    MassCalibration,
     SourceLineCap,
     SpectrumLines,
     cap_mass_gate,
@@ -218,7 +221,6 @@ from mascope_backend.api.new.peak_assignments.seeded_scoring import (
     gate_lines,
     resolution_type_of,
     score_seeds,
-    scored_accuracy,
 )
 from mascope_backend.api.new.peak_assignments.target_listing import (
     with_target_listings,
@@ -234,6 +236,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
     TIER_CANDIDATE,
+    TIER_RANK,
     normalize_tier_bands,
 )
 from mascope_backend.api.new.peak_assignments.verification_queue import (
@@ -280,6 +283,7 @@ from mascope_signal.compute import (
 )
 from mascope_tools.composition.arbitration import CANDIDATE_DENSITY
 from mascope_tools.composition.calibration import (
+    Calibration,
     CalibrationRefused,
     InsufficientCalibrationData,
     recalibrate,
@@ -299,13 +303,13 @@ from mascope_tools.composition.envelope_tolerance import (
 from mascope_tools.composition.heuristic_filter import SCORE_VERSION
 from mascope_tools.composition.known_window import KnownWindow
 from mascope_tools.composition.mass_accuracy import (
-    MU_SOURCE_FITTED,
-    MU_SOURCE_NONE,
-    MU_SOURCE_REAGENT,
     ReagentOffset,
     SampleMassAccuracy,
     reagent_line_offset,
-    unwiden_sigma_ppm,
+)
+from mascope_tools.composition.measurement_model import (
+    LEGACY_SCORING_KEY,
+    MeasurementModel,
 )
 from mascope_tools.composition.mechanism_notation import (
     MechanismNotationError,
@@ -317,6 +321,7 @@ from mascope_tools.composition.profiles import (
     IDENTITY_PROFILE_NAME,
     ChemistryContext,
     get_reagent_profile,
+    resolve_fallback_sigma_ppm,
 )
 from mascope_tools.composition.reagents import (
     REAGENT_LINE_FAMILIES,
@@ -350,9 +355,12 @@ def scoring_width(run: PeakAssignmentRun) -> dict:
     """The mass-error width a run scored at, and where each number came from.
 
     An imported run answers with what its engine disclosed. An in-app run
-    answers from the ``pattern_scoring`` snapshot it wrote into its config
-    when it scored; an import's config is opaque, so the same key there is
-    the engine's own business and is not read.
+    answers from the measurement model it recorded (``measurement_model``):
+    the width it judged a mass error in, which is the fitted width widened by
+    the prediction's own spread, and its constant centre; a run from before
+    the one record from its ``pattern_scoring`` snapshot. An import's config
+    is opaque, so the same keys there are the engine's own business and are
+    not read.
 
     :param run: The run.
     :return: ``sigma_ppm``, ``sigma_source``, ``mu_ppm`` and ``mu_source``,
@@ -361,7 +369,12 @@ def scoring_width(run: PeakAssignmentRun) -> dict:
     if run.scoring_width is not None:
         width = run.scoring_width
     elif run.engine == IN_APP_ENGINE and isinstance(run.config, dict):
-        width = run.config.get(PATTERN_SCORING_KEY)
+        model = run.config.get(MEASUREMENT_MODEL_KEY)
+        width = (
+            {**model, "sigma_ppm": model.get("width_ppm")}
+            if isinstance(model, dict)
+            else run.config.get(LEGACY_SCORING_KEY)
+        )
     else:
         width = None
     if not isinstance(width, dict):
@@ -2635,6 +2648,8 @@ class JudgedCommits:
     :param partner_gate: The partner gate's summary, with its margin.
     :param fragments: What the fragment claim read as the source's
         (:meth:`Judging.judge`).
+    :param model: The measurement model the rows were scored and capped at;
+        None for a pass that judged none (a person's choice).
     """
 
     rows: list[dict]
@@ -2643,6 +2658,7 @@ class JudgedCommits:
     tiering: dict
     partner_gate: dict
     fragments: FragmentClaims
+    model: MeasurementModel | None = None
 
 
 async def batch_series_by_peak(sample_item_id: str) -> dict[str, dict]:
@@ -2987,10 +3003,46 @@ async def _reread_halogen_twins(
     return reread.matches, reread.records
 
 
+@dataclass(frozen=True)
+class ConfidenceCurve:
+    """The curve Stage A read its rows' ``p_correct`` off, and the notation
+    each mechanism's adducts were folded under, so a row the run scores again
+    reads its ``p_correct`` again as Stage A would have
+    (``engine.read_p_correct_again``).
+
+    :param calibration: The instrument's confidence curve.
+    :param notation_by_mechanism: Each mechanism's notation as Stage A's frame
+        names it.
+    """
+
+    calibration: Calibration
+    notation_by_mechanism: dict[str, str]
+
+    @classmethod
+    def of(
+        cls, calibration: Calibration | None, frame: pd.DataFrame
+    ) -> "ConfidenceCurve | None":
+        """The curve and the notations of the frame Stage A read through it;
+        None where the instrument has no curve, so no row has a number."""
+        if calibration is None:
+            return None
+        notations: dict[str, str] = {}
+        if {"ionization_mechanism_id", "ionization_mechanism"}.issubset(frame.columns):
+            for mechanism_id, notation in zip(
+                frame["ionization_mechanism_id"],
+                frame["ionization_mechanism"],
+                strict=True,
+            ):
+                if mechanism_id is None or notation is None or pd.isna(notation):
+                    continue
+                notations.setdefault(str(mechanism_id), str(notation))
+        return cls(calibration, notations)
+
+
 def judge_commits(
     rows: list[dict],
     *,
-    stage_a_accuracy: SampleMassAccuracy,
+    model: MeasurementModel,
     fallback_sigma_ppm: float,
     notation_by_id: dict[str, str],
     mz_tolerance_ppm: float,
@@ -3002,8 +3054,9 @@ def judge_commits(
     partner_gated_channels: frozenset[str] = frozenset(),
     reagent_lines: Sequence[dict] = (),
     resolution: Callable[[float], float] | None = None,
-    inherited_calibration: MassCalibration | None = None,
-    envelope_tolerance: EnvelopeTolerance | None = None,
+    refits: bool = True,
+    rescore: Callable[[MeasurementModel], dict] | None = None,
+    curve: ConfidenceCurve | None = None,
     artifact_peak_ids: frozenset[str] = frozenset(),
     instrument_type: str | None = None,
     listed_formulas: frozenset[str] = frozenset(),
@@ -3024,8 +3077,11 @@ def judge_commits(
        candidate, or lower where the round that found it held the row lower,
        by its evidence or by a cap (``envelope_claims.claimed_tier``). Then
        the reading changes, to their fixed point (:meth:`Judging.judge`): the
-       mass gate measures the run (``mass_gate.measure_mass_gate``): its
-       calibration, and the ceiling each line holds every reading of it under,
+       mass gate measures the run (``mass_gate.measure_mass_gate``): it refits
+       the measurement model on the round's corroborated commits, scores every
+       row again at it where it takes the refit, and records the ceiling each
+       line holds every reading of it under at the model the rows were scored
+       at,
        lowering nothing. The partner gate (``engine.apply_partner_gates``)
        reads its partners under those ceilings and settles each gated ion's
        reading, at the tier that reading's own evidence earns; a swap keeps
@@ -3057,7 +3113,10 @@ def judge_commits(
     The rows passed in are not modified.
 
     :param rows: Both stages' committed rows, as built.
-    :param stage_a_accuracy: What Stage A measured (``measure_mass_gate``).
+    :param model: The measurement model the rows were scored at: the run's v1,
+        a decoy's control's, or the sample's recorded one. Its line-share
+        tolerance is the one whose detectability threshold the tiering pass
+        asks a row's lines from (``tiering.detect_threshold``).
     :param fallback_sigma_ppm: The instrument class's width and precision.
     :param notation_by_id: The searched mechanisms (``read_cross_channel``).
     :param mz_tolerance_ppm: The run's match window.
@@ -3081,12 +3140,15 @@ def judge_commits(
     :param resolution: The file's resolving power as a function of m/z, at
         which the tiering pass and the claims read a neighbour's envelope, one
         line per peak the file resolves; None where the run could read none.
-    :param inherited_calibration: The calibration the mass gate judges every
-        round against instead of fitting one: a decoy run's control's. None
-        fits each round's own (``mass_gate.measure_mass_gate``).
-    :param envelope_tolerance: The tolerance the run scored a line's share at,
-        whose detectability threshold the tiering pass asks a row's lines from
-        (``tiering.detect_threshold``); None for the fit's default.
+    :param refits: Whether each round refits the model on its commits (v2);
+        False judges every round at ``model``: a decoy run's control's, whose
+        commits are wrong formulas on a moved axis, and the sample's recorded
+        one for a path that measured nothing of its own.
+    :param rescore: Every reading's fit at a model the refit takes
+        (:func:`fits_at` over the frames the rows were scored on), which the
+        round sets on its rows (:func:`rescore_rows`); None scores none again.
+    :param curve: The curve Stage A read its rows' ``p_correct`` off, which a
+        re-scored row reads again at its moved evidence; None reads none.
     :param artifact_peak_ids: The peaks the artifact pre-pass claimed, which
         the tiering pass reads as neither a line nor an absence.
     :param instrument_type: The sample's instrument class, which on a TOF
@@ -3110,7 +3172,7 @@ def judge_commits(
     """
     judging = Judging(
         rows,
-        stage_a_accuracy=stage_a_accuracy,
+        model=model,
         fallback_sigma_ppm=fallback_sigma_ppm,
         notation_by_id=notation_by_id,
         mz_tolerance_ppm=mz_tolerance_ppm,
@@ -3122,8 +3184,9 @@ def judge_commits(
         partner_gated_channels=partner_gated_channels,
         reagent_lines=reagent_lines,
         resolution=resolution,
-        inherited_calibration=inherited_calibration,
-        envelope_tolerance=envelope_tolerance,
+        refits=refits,
+        rescore=rescore,
+        curve=curve,
         artifact_peak_ids=artifact_peak_ids,
         instrument_type=instrument_type,
         listed_formulas=listed_formulas,
@@ -3149,6 +3212,10 @@ class Judging:
     (:meth:`another_round`). :func:`judge_commits` says what a round does;
     the parameters are its own, and ``rows`` are never modified.
 
+    :ivar floors: The tier a batch decision proposes its reading at, by the
+        peak it is proposed on (``pipeline.RunContext.floors``), which a
+        re-score lowers no such row below (:func:`rescore_rows`): only a cap
+        does. Empty for a pass with no batch decision.
     :ivar claims: The lines earlier rounds read as their owners', by row.
     :ivar rounds: The rounds begun.
     :ivar applied: The round's rows as it began: a fresh copy of ``rows`` with
@@ -3166,7 +3233,7 @@ class Judging:
     """
 
     rows: list[dict]
-    stage_a_accuracy: SampleMassAccuracy | None
+    model: MeasurementModel
     fallback_sigma_ppm: float
     notation_by_id: dict[str, str]
     mz_tolerance_ppm: float
@@ -3178,8 +3245,10 @@ class Judging:
     partner_gated_channels: frozenset[str] = frozenset()
     reagent_lines: Sequence[dict] = ()
     resolution: Callable[[float], float] | None = None
-    inherited_calibration: MassCalibration | None = None
-    envelope_tolerance: EnvelopeTolerance | None = None
+    refits: bool = True
+    rescore: Callable[[MeasurementModel], dict] | None = None
+    curve: ConfidenceCurve | None = None
+    floors: dict[str, str] = field(default_factory=dict)
     artifact_peak_ids: frozenset[str] = frozenset()
     instrument_type: str | None = None
     listed_formulas: frozenset[str] = frozenset()
@@ -3189,6 +3258,7 @@ class Judging:
     nox_skeleton: bool = False
     fragment_ladders: tuple[FragmentLadder, ...] = ()
     claims: dict[str, EnvelopeClaim] = field(default_factory=dict)
+    judged_at: MeasurementModel | None = None
     rounds: int = 0
     applied: list[dict] = field(default_factory=list)
     judged: list[dict] = field(default_factory=list)
@@ -3202,10 +3272,13 @@ class Judging:
     held: dict = field(default_factory=dict)
 
     def refit(self) -> None:
-        """Begin a round: the rows as the claims so far leave them, and the
-        mass gate's measurement of them (``mass_gate.measure_mass_gate``),
-        which records every row's ceiling and lowers none. A claim moves
-        which rows anchor the calibration, so it is measured each round."""
+        """Begin a round: the rows as the claims so far leave them, the
+        measurement model refitted on them where the path fits its own (v2),
+        the rows scored again at it where the refit takes it, and the mass
+        gate's measurement of them at the model they were scored at
+        (``mass_gate.measure_mass_gate``), which records every row's ceiling
+        and lowers none. A claim moves which rows anchor the refit, so it is
+        measured each round, from the model the rows were first scored at."""
         self.rounds += 1
         self.applied = apply_claims(
             copy.deepcopy(self.rows),
@@ -3217,16 +3290,32 @@ class Judging:
         )
 
     def _measure(self, ledger: list[dict]) -> None:
-        """Take ``ledger`` as the round's rows, measured by the mass gate."""
+        """Take ``ledger`` as the round's rows: the model refitted on them
+        where the path fits its own, the rows scored again at it where the
+        refit takes it, and the mass gate's measurement of them at the model
+        they were scored at."""
         self.judged = ledger
-        self.mass_calibration = measure_mass_gate(
-            self.judged,
-            stage_a_accuracy=self.stage_a_accuracy,
+
+        def rescore(model: MeasurementModel) -> int:
+            if self.rescore is None:
+                return 0
+            return rescore_rows(
+                ledger,
+                self.rescore(model),
+                self.tier_bands,
+                self.curve,
+                floors=self.floors,
+            )
+
+        self.mass_calibration, self.judged_at = measure_mass_gate(
+            ledger,
+            model=self.model,
             fallback_sigma_ppm=self.fallback_sigma_ppm,
             lines=self.lines,
             reagent_lines=self.reagent_lines,
-            calibration=self.inherited_calibration,
             source_line_cap=self.source_line_cap,
+            refit=self.refits,
+            rescore=rescore,
         )
 
     def judge(self) -> None:
@@ -3334,7 +3423,7 @@ class Judging:
             tier_bands=self.tier_bands,
             resolution=self.resolution,
             lines=self.lines,
-            envelope_tolerance=self.envelope_tolerance,
+            envelope_tolerance=self.model.envelope_tolerance,
             artifact_peak_ids=self.artifact_peak_ids,
             instrument_type=self.instrument_type,
             context=self.context,
@@ -3378,7 +3467,8 @@ class Judging:
         return True
 
     def result(self) -> JudgedCommits:
-        """The rows the last round left, and each pass's summary."""
+        """The rows the last round left, each pass's summary, and the model
+        they were scored and capped at."""
         return JudgedCommits(
             self.judged,
             self.mass_calibration,
@@ -3386,6 +3476,7 @@ class Judging:
             self.tiering,
             self.partner_gate,
             self.fragments,
+            self.judged_at or self.model,
         )
 
 
@@ -3992,8 +4083,7 @@ def _stored_run_config(
     config: PeakAssignmentConfig,
     resolved_profile: ResolvedProfile | None = None,
     search_scope: dict | None = None,
-    pattern_scoring: dict | None = None,
-    mass_calibration: dict | None = None,
+    measurement_model: dict | None = None,
     cross_channel: dict | None = None,
     tiering: dict | None = None,
     partner_gate: dict | None = None,
@@ -4064,8 +4154,9 @@ def _stored_run_config(
     :param config: The validated client-supplied run configuration.
     :param resolved_profile: The chemistry the run resolved to, when known.
     :param search_scope: What the untargeted stage was offered, once it is known.
-    :param pattern_scoring: What it scored an envelope at, once it is known.
-    :param mass_calibration: What the finished ledger measured of itself.
+    :param measurement_model: The measurement model it scored and capped at,
+        with how it matched a line and what its mass gate took, once the
+        ledger is judged (``engine.measurement_model_record``).
     :param cross_channel: What the sample's own channels corroborated.
     :param tiering: The rule set that judged the commits, and what it took.
     :param partner_gate: What the partner gate decided, and at what margin.
@@ -4085,10 +4176,8 @@ def _stored_run_config(
         stored[RESOLVED_PROFILE_KEY] = resolved_profile.snapshot()
     if search_scope is not None:
         stored[SEARCH_SCOPE_KEY] = search_scope
-    if pattern_scoring is not None:
-        stored[PATTERN_SCORING_KEY] = pattern_scoring
-    if mass_calibration is not None:
-        stored[MASS_CALIBRATION_KEY] = mass_calibration
+    if measurement_model is not None:
+        stored[MEASUREMENT_MODEL_KEY] = measurement_model
     if cross_channel is not None:
         stored[CROSS_CHANNEL_KEY] = cross_channel
     if tiering is not None:
@@ -4109,8 +4198,7 @@ async def _record_resolved_profile(
     config: PeakAssignmentConfig,
     resolved_profile: ResolvedProfile,
     search_scope: dict | None = None,
-    pattern_scoring: dict | None = None,
-    mass_calibration: dict | None = None,
+    measurement_model: dict | None = None,
     cross_channel: dict | None = None,
     tiering: dict | None = None,
     partner_gate: dict | None = None,
@@ -4134,8 +4222,7 @@ async def _record_resolved_profile(
     :param config: The run's configuration, re-serialized with the snapshot.
     :param resolved_profile: The chemistry the run resolved to.
     :param search_scope: What the untargeted stage was offered, once known.
-    :param pattern_scoring: What it scored an envelope at, once known.
-    :param mass_calibration: What the ledger measured of its own mass accuracy.
+    :param measurement_model: The model it scored and capped at, once known.
     :param cross_channel: What the sample's own channels corroborated.
     :param tiering: The rule set that judged the commits, and what it took.
     :param partner_gate: What the partner gate decided, and at what margin.
@@ -4155,8 +4242,7 @@ async def _record_resolved_profile(
                     config,
                     resolved_profile,
                     search_scope,
-                    pattern_scoring,
-                    mass_calibration,
+                    measurement_model,
                     cross_channel,
                     tiering,
                     partner_gate,
@@ -4524,19 +4610,6 @@ async def _latest_in_app_run(sample_item_id: str) -> tuple[str | None, dict | No
     return run_id, config if isinstance(config, dict) else {}
 
 
-async def _latest_run_pattern_scoring(sample_item_id: str) -> dict | None:
-    """What the sample's latest completed in-app run recorded it scored at.
-
-    :param sample_item_id: The sample.
-    :return: The run's ``pattern_scoring`` snapshot; None where the sample has
-        no completed in-app run, or its latest recorded none (a run without an
-        untargeted search, or one from before the snapshot).
-    """
-    _, config = await _latest_in_app_run(sample_item_id)
-    snapshot = (config or {}).get(PATTERN_SCORING_KEY)
-    return snapshot if isinstance(snapshot, dict) else None
-
-
 async def plan_sample_decoy(sample, config: PeakAssignmentConfig) -> DecoyPlan:
     """What a decoy run of a sample inherits, and the channels it searches.
 
@@ -4605,117 +4678,100 @@ async def plan_sample_decoy(sample, config: PeakAssignmentConfig) -> DecoyPlan:
     return replace(plan, mechanisms=searched, swapped=swapped)
 
 
-def _recorded_scoring_centre(
-    snapshot: dict | None,
-) -> tuple[bool, ReagentOffset | None]:
-    """The centre a run's snapshot says it scored the sample at, as the seeded
-    chain takes one.
-
-    The same centre :func:`_run_scoring_centre` hands the run's own re-score:
-    the library's fit where it made one, the reagent lines' where they stood in
-    for it, and none where the run scored uncorrected.
-
-    :param snapshot: A run's ``pattern_scoring`` snapshot, or None.
-    :return: Whether the snapshot records a centre, and that centre, marked
-        beyond the width so it is taken as it is; None for a run that scored
-        the sample uncorrected.
-    """
-    # A snapshot from before the offset was recorded says nothing about it.
-    source = (snapshot or {}).get("mu_source")
-    if source == MU_SOURCE_NONE:
-        return True, None
-    if source == MU_SOURCE_FITTED:
-        lines = snapshot.get("fitted_anchors") or 0
-    elif source == MU_SOURCE_REAGENT:
-        lines = snapshot.get("reagent_lines") or 0
-    else:
-        return False, None
-    return True, ReagentOffset(
-        mu_ppm=float(snapshot["mu_ppm"]), lines=int(lines), beyond_width=True
-    )
+#: :func:`recorded_measurement` was handed no reagent lines' centre, and
+#: claims the lines where it needs them. Distinct from None, a pass's answer
+#: for a profile with no reagent library.
+CLAIM_REAGENT_LINES = object()
 
 
-async def sample_recorded_width(sample_item_id: str) -> float | None:
-    """The width the sample's latest run fitted its mass errors at, outside any run.
-
-    What the batch search ranks a sample's candidates at beside the run's
-    centre (:func:`sample_reagent_offset`), as a run's own untargeted stage
-    ranks at Stage A's fitted width (``engine.pattern_scoring_for``). The run
-    records the width it scored at, widened by ``PRED_SIGMA_PPM``; the fit is
-    read back from it as a decoy reads its control's
-    (``decoy.inherited_accuracy``).
-
-    :param sample_item_id: The sample.
-    :return: That width; None where the sample has no completed in-app run,
-        its latest recorded none, or it scored at the instrument class's width
-        because too few known ions matched to fit one.
-    """
-    snapshot = await _latest_run_pattern_scoring(sample_item_id) or {}
-    sigma = snapshot.get("sigma_ppm")
-    if snapshot.get("sigma_source") != "fitted" or sigma is None:
-        return None
-    return unwiden_sigma_ppm(sigma)
-
-
-async def sample_reagent_offset(
+async def recorded_measurement(
     sample,
     config: PeakAssignmentConfig | None = None,
     *,
+    recorded: dict | None = None,
     peaks_df: pd.DataFrame | None = None,
     resolved_profile: ResolvedProfile | None = None,
-) -> ReagentOffset | None:
-    """Where a run of a sample scores its mass axis at, outside any run.
+    reagent_offset: ReagentOffset | None | object = CLAIM_REAGENT_LINES,
+) -> tuple[dict | None, MeasurementModel, bool]:
+    """The measurement model a sample is read at outside a run, and the run
+    config it was read off: the one way every reader outside a run reads it.
 
-    What the seeded chain scores a short seed list at when it has no run's
-    centre to hand (``seeded_scoring.score_seeds``): a pin, the inspector's
-    evidence and alternatives, the batch search's re-score and its
-    propagation. A run scores at the target library's own offset where it
-    fitted one, and at the reagent lines' only where it fitted none
-    (:attr:`SampleMassAccuracy.scoring_mu_ppm`); the lines need not sit where
-    the library does (on the gate's uronium set -0.9 ppm against near zero),
-    so a centre read off the lines alone would move these readers away from the
-    run. The sample's latest completed run's record of its centre is taken
-    first, then.
+    The model the sample's latest completed in-app run recorded, read with
+    the rest of that run's config in one query, so the width, the centre and
+    the line-share tolerance a reader scores at come from one run even when
+    another completes meanwhile (``MeasurementModel.from_run_config``; a run
+    from before the one record is read at what it scored at). A pin, the
+    inspector's evidence and alternatives, the batch search and its
+    propagation, the seeded chain's every caller outside a run read it here.
 
-    Only where no run recorded one are the lines claimed, as the run-less
-    ingest fold resolves them - the configuration's profile (the default's
-    where the caller has none), from the sample's own mechanisms, instrument
-    and polarity, over the same peak read - since a library too short to fit
-    an offset of its own is what a run then has as well.
+    Where no run recorded one, the sample is read as a run whose target
+    library fitted nothing reads it: at the instrument class's width, and at
+    the reagent lines' centre where they put the axis beyond that width,
+    claimed as the run-less ingest fold claims them - the configuration's
+    profile (the default's where the caller has none), from the sample's own
+    mechanisms, instrument and polarity, over the same peak read.
 
-    :param sample: The sample being scored.
+    :param sample: The sample.
     :param config: The configuration of the pass the caller is part of, whose
-        ``profile`` or ``mz_precision_ppm`` may override the default's: the
-        batch ledger's propagation is a step of a batch search, and claims a
-        sample's lines where that search's own re-score does. None for a
-        caller with no configuration of its own (a pin, the inspector).
+        ``profile`` or ``mz_precision_ppm`` may override the default's where
+        the lines are claimed; None for a caller with none of its own.
+    :param recorded: The run config to read the model off, where the caller
+        has read one (a person's choice reads its own run's); None reads the
+        sample's latest in-app run's.
     :param peaks_df: The sample's peaks, where the caller has read them.
     :param resolved_profile: The sample's resolved chemistry, where the caller
         has resolved it; ``config`` is then not read.
-    :return: That centre; None where the run scored uncorrected, or, with no
-        run's record, for a profile with no reagent library.
+    :param reagent_offset: The reagent lines' centre, where the caller has
+        claimed them (None for a profile with no reagent library); left out,
+        they are claimed here where they are needed.
+    :return: The run config read (None where the sample has no completed in-app
+        run), the model, and whether a record held it (False where it stands
+        in for one).
     """
-    recorded, centre = _recorded_scoring_centre(
-        await _latest_run_pattern_scoring(sample.sample_item_id)
-    )
-    if recorded:
-        return centre
-    if resolved_profile is None:
-        _, mechanisms = await fetch_sample_mechanisms(sample)
-        resolved_profile = resolve_profile(
-            config if config is not None else PeakAssignmentConfig(),
-            mechanism_notations=[m.ionization_mechanism for m in mechanisms],
-            instrument_type=get_instrument_type(sample.filename),
-            polarity=sample.polarity,
+    if recorded is None:
+        _, recorded = await _latest_in_app_run(sample.sample_item_id)
+    try:
+        instrument_type = get_instrument_type(sample.filename)
+    except ValueError:
+        instrument_type = None
+    fallback = resolve_fallback_sigma_ppm(instrument_type)
+    model = MeasurementModel.from_run_config(recorded, fallback)
+    if model is not None:
+        return recorded, model, True
+    if reagent_offset is CLAIM_REAGENT_LINES:
+        if resolved_profile is None:
+            _, mechanisms = await fetch_sample_mechanisms(sample)
+            resolved_profile = resolve_profile(
+                config if config is not None else PeakAssignmentConfig(),
+                mechanism_notations=[m.ionization_mechanism for m in mechanisms],
+                instrument_type=instrument_type,
+                polarity=sample.polarity,
+            )
+        if peaks_df is None:
+            peaks_df = await asyncio.to_thread(load_sample_peaks, sample)
+        reagent_offset = await asyncio.to_thread(
+            reagent_offset_for,
+            peaks_df,
+            resolved_profile,
+            resolution=await _resolution_of(sample),
         )
-    if peaks_df is None:
-        peaks_df = await asyncio.to_thread(load_sample_peaks, sample)
-    return await asyncio.to_thread(
-        reagent_offset_for,
-        peaks_df,
-        resolved_profile,
-        resolution=await _resolution_of(sample),
+    return (
+        recorded,
+        MeasurementModel.v1(
+            SampleMassAccuracy(reagent=reagent_offset),
+            fallback,
+            EnvelopeTolerance.from_record((recorded or {}).get(ENVELOPE_TOLERANCE_KEY)),
+        ),
+        False,
     )
+
+
+async def recorded_model(
+    sample, config: PeakAssignmentConfig | None = None, **kwargs
+) -> MeasurementModel:
+    """:func:`recorded_measurement`'s model alone."""
+    _, model, _ = await recorded_measurement(sample, config, **kwargs)
+    return model
 
 
 def _reagent_assignments(
@@ -4871,51 +4927,17 @@ def _artifact_assignments(
     return rows, {row["sample_peak_id"] for row in rows}
 
 
-def _run_scoring_centre(mass_accuracy: SampleMassAccuracy) -> ReagentOffset | None:
-    """The offset a run scored Stage A and its search at, as the seeded chain
-    takes one.
+@dataclass(frozen=True)
+class SeededFrame:
+    """The frame a seeded re-score scored a seed list on, kept so the run can
+    score the same lines again at its v2 model (:func:`rescore_rows`).
 
-    The seeded re-score of the search's commits is a frame too short to fit an
-    offset, which ``score_ions_by_fit`` centres on the offset it is handed
-    where that is beyond the width. In a run that has to be where Stage A and
-    the search were scored (:attr:`SampleMassAccuracy.scoring_mu_ppm`): the
-    target library's own fit where it made one, which need not be where the
-    reagent lines sit, and the lines' only otherwise. Handed the lines' offset
-    alone, a library fitted at +0.2 ppm with lines at -1.3 would rank a reading
-    at +0.2 and tier it at -1.3.
-
-    :param mass_accuracy: What Stage A measured, with the run's reagent offset.
-    :return: That centre, marked beyond the width so it is taken as it is; None
-        where the run scored the sample uncorrected.
+    :param scored: The gated, fit-scored frame.
+    :param ion_by_seed: Each seed's synthetic ion id in it.
     """
-    mu_ppm = mass_accuracy.scoring_mu_ppm
-    if mu_ppm is None:
-        return None
-    if mass_accuracy.mu_ppm is None:
-        return mass_accuracy.reagent
-    return ReagentOffset(mu_ppm=mu_ppm, lines=mass_accuracy.anchors, beyond_width=True)
 
-
-async def _seeded_fits(
-    sample,
-    match_params,
-    seeds: set[tuple[str, str]],
-    *,
-    reagent_offset: ReagentOffset | None,
-    envelope_tolerance: EnvelopeTolerance | None,
-    inherited_accuracy: SampleMassAccuracy | None = None,
-) -> dict[tuple[str, str], float | None]:
-    """:func:`_seeded_rescore`'s fits, for a caller that ranks nothing beside
-    them."""
-    fits, _accuracy = await _seeded_rescore(
-        sample,
-        match_params,
-        seeds,
-        reagent_offset=reagent_offset,
-        envelope_tolerance=envelope_tolerance,
-        inherited_accuracy=inherited_accuracy,
-    )
-    return fits
+    scored: pd.DataFrame
+    ion_by_seed: dict[tuple[str, str], str]
 
 
 async def _seeded_rescore(
@@ -4923,11 +4945,9 @@ async def _seeded_rescore(
     match_params,
     seeds: set[tuple[str, str]],
     *,
-    reagent_offset: ReagentOffset | None,
-    envelope_tolerance: EnvelopeTolerance | None,
-    inherited_accuracy: SampleMassAccuracy | None = None,
+    model: MeasurementModel,
     resolution: Callable[[float], float] | None | object = RESOLVE_RESOLUTION,
-) -> tuple[dict[tuple[str, str], float | None], SampleMassAccuracy | None]:
+) -> tuple[dict[tuple[str, str], float | None], SeededFrame | None]:
     """Measure the untargeted stage's readings the way Stage A measures one.
 
     One ``compute_match_isotopes`` pass over the sample for the whole seed list,
@@ -4936,41 +4956,24 @@ async def _seeded_rescore(
     batch ledger's propagation and the inspector's shortlist already measure
     through. The finder scored these readings too, against the peak list, and
     that score is what ranked them; this is what they are tiered on, and it is
-    the same quantity a Stage A row carries.
-
-    Shared with :func:`_search_sample`'s batch-fold twin through the same
-    helper, so the two paths cannot end up tiering the same reading differently.
+    the same quantity a Stage A row carries, at the same model: the run's,
+    which the finder ranked at too. The winners fit no model of their own.
 
     :param sample: The sample being assigned.
     :param match_params: The sample's resolved match parameters.
     :param seeds: ``(formula, mechanism id)`` pairs, from ``untargeted_seeds``.
-    :param reagent_offset: The centre a seed list too short to fit an offset of
-        its own is scored at, where it is beyond the width: in a run, the one
-        Stage A and the search were scored at (:func:`_run_scoring_centre`);
-        in a batch search, which runs no Stage A, the one its finder was
-        scored at (:func:`sample_reagent_offset`).
-    :param envelope_tolerance: How well the run measures a line's share: in a
-        run the one Stage A fitted, in a batch search the one the sample's
-        latest run recorded. None is today's numbers.
-    :param inherited_accuracy: In a decoy run, its control's measurement, which
-        the seeds are scored at instead of one fitted off them.
+    :param model: The measurement model the run scores at: a run's v1 or its
+        decoy's control's, a batch search's the sample's recorded one.
     :param resolution: The file's resolving power as the run read it, the
         seeds' lines are resolved at; left out, the chain reads it.
     :return: Fit per seed, where a seed whose ion the pass could not score is
         absent and its rows fall back to the finder's own number; and the
-        measurement the fits were scored at (``seeded_scoring.scored_accuracy``),
-        None where the pass scored nothing.
+        frame it scored, None where it scored nothing.
     """
     if not seeds:
         return {}, None
     ion_by_seed, fit_by_ion, _errors, scored_df = await score_seeds(
-        sample,
-        seeds,
-        match_params,
-        reagent_offset=reagent_offset,
-        envelope_tolerance=envelope_tolerance,
-        inherited_accuracy=inherited_accuracy,
-        resolution=resolution,
+        sample, seeds, match_params, model=model, resolution=resolution
     )
     fits = {
         seed: fit_by_ion.get(ion_id)
@@ -4983,11 +4986,251 @@ async def _seeded_rescore(
             f"{len(fits)} of {len(seeds)} untargeted readings measured as ions; "
             "the rest keep the finder's own fit"
         )
-    return fits, scored_accuracy(
-        scored_df,
-        reagent_offset=reagent_offset,
-        inherited_accuracy=inherited_accuracy,
+    return fits, (None if scored_df.empty else SeededFrame(scored_df, ion_by_seed))
+
+
+def fits_at(
+    model: MeasurementModel,
+    stage_a: pd.DataFrame | None,
+    seeded: SeededFrame | None,
+) -> dict[str, dict[tuple[str, str], float]]:
+    """Every scored reading's fit at a model, from the frames the run scored
+    its rows on: Stage A's and the seeded re-score's.
+
+    The same lines, the same gate's verdict, the same tolerance; only the
+    centre and the width are the model's (``engine.score_frame_at``). Keyed
+    by the row's source, then by ``(formula, mechanism id)``, the key a ledger
+    row carries in ``assigned_formula`` and ``ionization_mechanism_id``: a
+    Stage A row's compound formula, a search row's seed.
+
+    :param model: The model to score at.
+    :param stage_a: Stage A's gated, scored frame, or None.
+    :param seeded: The seeded re-score's frame, or None.
+    :return: Fit by reading, under :data:`SOURCE_DATABASE` for Stage A's
+        frame and :data:`SOURCE_UNTARGETED` for the re-score's.
+    """
+    fits: dict[tuple[str, str], float] = {}
+    searched: dict[tuple[str, str], float] = {}
+    if (
+        stage_a is not None
+        and not stage_a.empty
+        and {
+            "target_compound_formula",
+            "ionization_mechanism_id",
+        }.issubset(stage_a.columns)
+    ):
+        scores = score_frame_at(stage_a, model)
+        for formula, mechanism_id, fit in zip(
+            stage_a["target_compound_formula"],
+            stage_a["ionization_mechanism_id"],
+            scores,
+            strict=True,
+        ):
+            if formula is None or mechanism_id is None or pd.isna(fit):
+                continue
+            fits.setdefault((str(formula), str(mechanism_id)), float(fit))
+    if seeded is not None:
+        scores = score_frame_at(seeded.scored, model)
+        fit_by_ion: dict[str, float] = {}
+        for ion_id, fit in zip(seeded.scored["target_ion_id"], scores, strict=True):
+            if not pd.isna(fit):
+                fit_by_ion.setdefault(str(ion_id), float(fit))
+        for seed, ion_id in seeded.ion_by_seed.items():
+            if str(ion_id) in fit_by_ion:
+                searched[(str(seed[0]), str(seed[1]))] = fit_by_ion[str(ion_id)]
+    return {SOURCE_DATABASE: fits, SOURCE_UNTARGETED: searched}
+
+
+def rescore_rows(
+    rows: list[dict],
+    fits: dict[str, dict[tuple[str, str], float]],
+    tier_bands: dict[str, float] | None,
+    curve: ConfidenceCurve | None = None,
+    *,
+    floors: dict[str, str] | None = None,
+) -> int:
+    """Score a run's rows again at the fits :func:`fits_at` read, in place.
+
+    Each committed row whose reading the fits name takes its new fit; its
+    evidence moves with it, by the fit's ratio, so a list's prior and any
+    other weight on it stand; and its tier is the band its new evidence earns,
+    lowered no further than an earlier stage had already lowered it below the
+    band its old evidence earned (a list election's). A reading a batch
+    decision proposed at a tier falls no lower than that tier
+    (:func:`raise_to_floors`): the decision, not the evidence, put it there,
+    and only a cap takes it lower (MAS-983).
+    A row the frames did not score keeps its fit. Before any cap: the caps
+    judge the rows from here.
+
+    What else a row records of its fit moves with it:
+
+    * its ``p_correct``, read again off the curve at the new evidence, with the
+      adduct corroboration folded again (``engine.read_p_correct_again``);
+    * each stored alternative Stage A's frame scored, which takes that
+      reading's fit at the model; and on a target library's row each other
+      reading of its own ion, written at the row's fit, which follows it.
+
+    What the readings were ranked on stays as it was ranked: which formula
+    won the peak, the arbitration's confidence and tie, and the candidate
+    density. The search ranked at v1 too.
+
+    :param rows: The run's rows.
+    :param fits: Fit by source and ``(formula, mechanism id)``.
+    :param tier_bands: The run's bands; None moves no tier.
+    :param curve: The curve Stage A read ``p_correct`` off; None reads none
+        again.
+    :param floors: The tier a batch decision proposes its reading at, by the
+        peak it is proposed on; None for none.
+    :return: How many rows took a new fit.
+    """
+    bands = tier_bands or {}
+    candidate, assigned = bands.get(TIER_CANDIDATE), bands.get(TIER_ASSIGNED)
+    listed = fits.get(SOURCE_DATABASE, {})
+    rescored = 0
+    moved: set[str] = set()
+    for row in rows:
+        if not row.get("assigned_formula") or row.get("role") not in (
+            ROLE_M0,
+            ROLE_ISO_CHILD,
+        ):
+            continue
+        key = (str(row["assigned_formula"]), str(row.get("ionization_mechanism_id")))
+        # The frame that scored the row's own stage first: a reading a path
+        # gave rather than searched was scored in the seeded frame whichever
+        # stage it is read as.
+        own = (
+            SOURCE_UNTARGETED
+            if row.get("source") == SOURCE_UNTARGETED
+            else (SOURCE_DATABASE)
+        )
+        other = SOURCE_DATABASE if own == SOURCE_UNTARGETED else SOURCE_UNTARGETED
+        new = fits.get(own, {}).get(key, fits.get(other, {}).get(key))
+        old = row.get("fit_score")
+        if new is not None and old is not None:
+            new = round(float(new), 4)
+            if new != old:
+                rescored += 1
+                row["fit_score"] = new
+                if _move_evidence(row, float(old), new, candidate, assigned):
+                    moved.add(str(row.get("peak_assignment_id")))
+        _rescore_alternatives(row, listed, followed=(old, row.get("fit_score")))
+    raise_to_floors(rows, floors or {})
+    if curve is not None and moved and candidate is not None and assigned is not None:
+        read_p_correct_again(
+            rows,
+            moved,
+            curve.calibration,
+            curve.notation_by_mechanism,
+            candidate_threshold=candidate,
+            assigned_threshold=assigned,
+        )
+    return rescored
+
+
+def raise_to_floors(rows: list[dict], floors: dict[str, str]) -> int:
+    """Raise each monoisotopic row on a peak a batch decision proposes its
+    reading at a tier (``pipeline.RunContext.floors``) to that tier, where its
+    evidence left it lower: where the elect stage proposes it, and again where
+    a re-score moves its evidence (:func:`rescore_rows`). Only a cap may
+    lower it again.
+
+    :return: How many rows were raised.
+    """
+    raised = 0
+    for row in rows:
+        floor = floors.get(str(row.get("sample_peak_id")))
+        if floor is None or row.get("role") != ROLE_M0:
+            continue
+        if TIER_RANK.get(row.get("tier"), 0) < TIER_RANK[floor]:
+            row["tier"] = floor
+            raised += 1
+    return raised
+
+
+def _move_evidence(
+    row: dict,
+    old: float,
+    new: float,
+    candidate: float | None,
+    assigned: float | None,
+) -> bool:
+    """Move a re-scored row's evidence by its fit's ratio, and its tier to the
+    band that evidence earns (:func:`rescore_rows`).
+
+    A row an earlier stage held below the band its old evidence earned stays
+    held: it takes the lower of the two. So does a line an envelope claim
+    reads (``envelope_claims.apply_claims``): the claim reads it no higher
+    than candidate whatever its owner's evidence earns
+    (``envelope_claims.claimed_tier``), and it takes its owner's evidence, so
+    the band that evidence earned before says nothing of that ceiling. The
+    claim is applied each round to the rows as the stages built them, before
+    the re-score, and no cap lowers the line on its own after it. A reading
+    through a secondary channel needs no hold of its own: the second-channel
+    cap judges it after the re-score, at its new evidence
+    (``engine.cap_second_channel``).
+
+    :return: Whether the row carries evidence that moved.
+    """
+    provenance = row.setdefault("provenance", {})
+    evidence = provenance.get("evidence")
+    if evidence is None:
+        return False
+    moved = (
+        round(float(evidence) * new / old, 4)
+        if old > 0
+        else evidence_for(new, row["assigned_formula"])
     )
+    provenance["evidence"] = moved
+    if candidate is None or assigned is None or row.get("tier") not in TIER_RANK:
+        return True
+    earned_before = tier_for_evidence(
+        float(evidence), candidate_threshold=candidate, assigned_threshold=assigned
+    )
+    earned = tier_for_evidence(
+        moved, candidate_threshold=candidate, assigned_threshold=assigned
+    )
+    tier = row["tier"]
+    held = TIER_RANK[tier] < TIER_RANK[earned_before] or is_claimed(row)
+    row["tier"] = min(earned, tier, key=TIER_RANK.__getitem__) if held else earned
+    return True
+
+
+def _rescore_alternatives(
+    row: dict,
+    listed: dict[tuple[str, str], float],
+    *,
+    followed: tuple[float | None, float | None],
+) -> None:
+    """Give a row's stored alternatives their fits at the model, in place
+    (:func:`rescore_rows`).
+
+    An alternative of the target library's frame takes its reading's fit there,
+    on whichever row stores it. On a target library's row, another reading of
+    the row's own ion that no frame scored was written at the row's fit
+    (``engine.record_stage_a_same_ion_readings``), and follows it.
+
+    :param row: The row.
+    :param listed: Stage A's fits by ``(formula, mechanism id)``.
+    :param followed: The row's fit before the re-score and after it.
+    """
+    old, new = followed
+    for alternative in row.get("alternatives") or ():
+        if not isinstance(alternative, dict) or alternative.get("fit_score") is None:
+            continue
+        key = (
+            str(alternative.get("assigned_formula")),
+            str(alternative.get("ionization_mechanism_id")),
+        )
+        if alternative.get("source") == SOURCE_DATABASE and key in listed:
+            alternative["fit_score"] = round(float(listed[key]), 4)
+        elif (
+            alternative.get("same_ion")
+            and row.get("source") == SOURCE_DATABASE
+            and old is not None
+            and new is not None
+            and alternative["fit_score"] == old
+        ):
+            alternative["fit_score"] = new
 
 
 @dataclass(frozen=True)
@@ -5006,6 +5249,8 @@ class _StageAFirstPass:
     :param listed_formulas: The neutrals the lists read name, matched or not.
     :param assignments_of: Arbitrates a scored frame into rows as this pass
         did; None where the lists predicted nothing.
+    :param curve: The curve the rows' P(correct) was read off, which a re-score
+        reads again (:func:`rescore_rows`); None where there is none.
     """
 
     rows: list[dict]
@@ -5015,6 +5260,7 @@ class _StageAFirstPass:
     confidence_calibration: dict | None
     listed_formulas: frozenset[str]
     assignments_of: Callable[[pd.DataFrame], list[dict]] | None = None
+    curve: ConfidenceCurve | None = None
 
 
 async def _stage_a_first_pass(
@@ -5031,7 +5277,7 @@ async def _stage_a_first_pass(
     reagent_offset: ReagentOffset | None = None,
     ionization_setup: dict | None = None,
     reagent_profile: str | None = None,
-    inherited_accuracy: SampleMassAccuracy | None = None,
+    inherited_model: MeasurementModel | None = None,
     inherited_envelope: RunEnvelopeFit | None = None,
     resolution: Callable[[float], float] | None | object = RESOLVE_RESOLUTION,
 ) -> _StageAFirstPass:
@@ -5044,7 +5290,7 @@ async def _stage_a_first_pass(
     pooled curve, so the pool cannot feed on itself. The parameters are
     :func:`_stage_a_assignments`'.
     """
-    mass_accuracy = inherited_accuracy or SampleMassAccuracy(reagent=reagent_offset)
+    mass_accuracy = SampleMassAccuracy(reagent=reagent_offset)
     matched_df = match_isotope_df = pd.DataFrame()
     known_isotopes_df = await _fetch_known_isotopes(
         sample,
@@ -5076,11 +5322,11 @@ async def _stage_a_first_pass(
         # (:func:`gate_lines`): a line that test turns away is absent to the
         # fit and its peak goes to the search.
         if not match_isotope_df.empty:
-            # A decoy reads its control's tolerance from the start; any other
-            # run first today's numbers, since the fit reads the commits this
-            # pass makes.
+            # A decoy reads its control's model, tolerance included, from the
+            # start; any other run first today's numbers, since the fit reads
+            # the commits this pass makes.
             tolerance = (
-                None if inherited_envelope is None else inherited_envelope.tolerance
+                None if inherited_model is None else inherited_model.envelope_tolerance
             )
             matched_df = match_isotope_df
             gated_df = gate_lines(match_isotope_df, match_params, tolerance)
@@ -5096,13 +5342,12 @@ async def _stage_a_first_pass(
                 fallback_sigma_ppm=fallback_sigma_ppm,
                 reagent_offset=reagent_offset,
                 min_anchor_ions=STAGE_A_FIT_MIN_IONS,
-                inherited_accuracy=inherited_accuracy,
                 envelope_tolerance=tolerance,
+                model=inherited_model,
             )
-            # Read off the frame the fit was computed on, so Stage B is judged
-            # at the width Stage A was judged at rather than at one refitted
-            # over a different set of rows.
-            if inherited_accuracy is None:
+            # Read off the frame the fit was computed on: the run's v1 model,
+            # at which Stage A was judged and the search ranks.
+            if inherited_model is None:
                 mass_accuracy = sample_mass_accuracy(
                     match_isotope_df,
                     reagent=reagent_offset,
@@ -5145,6 +5390,7 @@ async def _stage_a_first_pass(
             confidence_calibration=confidence_calibration,
             listed_formulas=listed_formulas,
             assignments_of=assignments_of,
+            curve=ConfidenceCurve.of(calibration, match_isotope_df),
         )
     return _StageAFirstPass(
         rows=[],
@@ -5170,10 +5416,18 @@ async def _stage_a_assignments(
     reagent_offset: ReagentOffset | None = None,
     ionization_setup: dict | None = None,
     reagent_profile: str | None = None,
-    inherited_accuracy: SampleMassAccuracy | None = None,
+    inherited_model: MeasurementModel | None = None,
     inherited_envelope: RunEnvelopeFit | None = None,
     resolution: Callable[[float], float] | None | object = RESOLVE_RESOLUTION,
-) -> tuple[list[dict], dict | None, SampleMassAccuracy, RunEnvelopeFit, frozenset[str]]:
+) -> tuple[
+    list[dict],
+    dict | None,
+    SampleMassAccuracy,
+    RunEnvelopeFit,
+    frozenset[str],
+    pd.DataFrame,
+    ConfidenceCurve | None,
+]:
     """Stage A: database-first assignment from the known composition set.
 
     The curated target library plus (when loaded) the reference mirror, matched
@@ -5219,9 +5473,10 @@ async def _stage_a_assignments(
         confidence curve the rows are read off.
     :param reagent_profile: The reagent profile the run resolved to, which the
         run's record of that curve is compared with.
-    :param inherited_accuracy: A decoy run's control's measurement, which the
-        frame is scored at and which the stage returns, instead of one fitted
-        off a frame whose axis was moved on purpose. None for every other run.
+    :param inherited_model: A decoy run's control's measurement model, which
+        the frame is scored at instead of one fitted off a frame whose axis was
+        moved on purpose (``decoy.DecoyPlan``). None for every other run, whose
+        frame fits the v1 model the stage returns the measurement of.
     :param inherited_envelope: A decoy run's control's envelope tolerance,
         which the frame is scored at from the first pass and which the stage
         returns, instead of one fitted on the decoy's own commits. None for
@@ -5250,6 +5505,11 @@ async def _stage_a_assignments(
         And the neutrals the lists it read name, matched or not
         (:func:`listed_formula_identities`), which corroborate a search row
         through a secondary channel (``engine.cap_second_channel``).
+        And the gated frame its rows were scored on, which the run
+        scores again at its v2 model where the mass gate's refit takes one
+        (``mass_gate.measure_mass_gate``). And last the curve its rows'
+        P(correct) was read off, which that re-score reads again
+        (:func:`rescore_rows`); None where the instrument has none.
     """
     first = await _stage_a_first_pass(
         sample,
@@ -5264,7 +5524,7 @@ async def _stage_a_assignments(
         reagent_offset=reagent_offset,
         ionization_setup=ionization_setup,
         reagent_profile=reagent_profile,
-        inherited_accuracy=inherited_accuracy,
+        inherited_model=inherited_model,
         inherited_envelope=inherited_envelope,
         resolution=resolution,
     )
@@ -5277,6 +5537,8 @@ async def _stage_a_assignments(
             first.mass_accuracy,
             inherited_envelope,
             first.listed_formulas,
+            first.scored,
+            first.curve,
         )
     # The tolerance is fitted on what Stage A committed, which a sample with no
     # library match has nothing of: it can still take its neighbours' curve,
@@ -5285,11 +5547,10 @@ async def _stage_a_assignments(
         sample,
         first.scored,
         first.rows,
-        mass_accuracy=first.mass_accuracy,
-        fallback_sigma_ppm=fallback_sigma_ppm,
+        model=MeasurementModel.v1(first.mass_accuracy, fallback_sigma_ppm),
         read_neighbour=_neighbour_reader(config, match_params),
     )
-    stage_a_assignments = first.rows
+    stage_a_assignments, scored = first.rows, first.scored
     if envelope.fit.level != LEVEL_DEFAULT and not first.matched.empty:
         # Gated and scored again at the fitted tolerance, and the peaks
         # arbitrated on that, at the first pass's width and offset: the ones
@@ -5297,23 +5558,21 @@ async def _stage_a_assignments(
         # fitted window can admit a line the first pass turned away, a TOF
         # line read below 0.6 of its share where the curve opens, and refitted
         # here that line would be an anchor and move both.
-        stage_a_assignments = await asyncio.to_thread(
-            first.assignments_of,
-            score_ions_by_fit(
-                gate_lines(first.matched, match_params, envelope.tolerance),
-                fallback_sigma_ppm=fallback_sigma_ppm,
-                reagent_offset=reagent_offset,
-                min_anchor_ions=STAGE_A_FIT_MIN_IONS,
-                envelope_tolerance=envelope.tolerance,
-                inherited_accuracy=first.mass_accuracy,
+        scored = score_ions_by_fit(
+            gate_lines(first.matched, match_params, envelope.tolerance),
+            model=MeasurementModel.v1(
+                first.mass_accuracy, fallback_sigma_ppm, envelope.tolerance
             ),
         )
+        stage_a_assignments = await asyncio.to_thread(first.assignments_of, scored)
     return (
         stage_a_assignments,
         first.confidence_calibration,
         first.mass_accuracy,
         envelope,
         first.listed_formulas,
+        scored,
+        first.curve,
     )
 
 
@@ -5797,8 +6056,7 @@ async def _read_neighbour_lines(
         envelope_lines,
         first.scored,
         first.rows,
-        mass_accuracy=first.mass_accuracy,
-        fallback_sigma_ppm=fallback_sigma_ppm,
+        model=MeasurementModel.v1(first.mass_accuracy, fallback_sigma_ppm),
         form=FORM_CURVE,
     )
 

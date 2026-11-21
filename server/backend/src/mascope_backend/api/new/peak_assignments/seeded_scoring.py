@@ -11,18 +11,18 @@ Only the seeds, and what the caller reads off the result, differ.
 Declared here rather than inside either caller because the steps are subtle in
 ways that must not diverge between them: the resolution filter is the
 instrument's, the abundance floor is the sample's own match-params floor, the
-width a seed list too short to fit one is scored at is the instrument class's,
-its offset is the one a run of the sample scores at, and the synthetic ion
-ids exist only to group the scored frame back to its seeds, and a line's share
-is read at the envelope tolerance a run of the sample fitted.
-A second copy of that would drift, and the two callers would then measure the
-same composition differently.
+synthetic ion ids exist only to group the scored frame back to its seeds, and
+every seed is scored at one measurement model (``measurement_model``): the
+run's own inside a run, the one the sample's latest run recorded outside one
+(``service.recorded_model``). A seed list never fits a model of its own: a pin
+or the inspector's shortlist is a handful of formulas, mostly wrong ones, and
+fitted on them the width and the centre would be theirs rather than the
+sample's. A second copy of that would drift, and the two callers would then
+measure the same composition differently.
 
 Nothing here writes. The ids are synthetic, the frames are in memory, and the
 only database access is reading the mechanism rows the seeds name and, for a
-caller outside a run, the centre and the envelope tolerance the sample's latest
-run recorded, or the sample's own mechanisms its reagent profile is resolved
-from.
+caller outside a run, the model the sample's latest run recorded.
 """
 
 import asyncio
@@ -42,11 +42,7 @@ from mascope_backend.api.new.match.params.lib import apply_match_params
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import (
     line_heights_within,
-    sample_mass_accuracy,
     score_ions_by_fit,
-)
-from mascope_backend.api.new.peak_assignments.envelope_fit import (
-    recorded_envelope_tolerance,
 )
 from mascope_backend.db import IonizationMechanism, async_session
 from mascope_backend.runtime import runtime
@@ -54,24 +50,7 @@ from mascope_file.name import get_instrument_type
 from mascope_match import compute_match_isotopes
 from mascope_tools.composition.custom_elements import labelled_purity
 from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
-from mascope_tools.composition.mass_accuracy import (
-    MASS_ACCURACY_MIN_ANCHORS,
-    ReagentOffset,
-    SampleMassAccuracy,
-)
-from mascope_tools.composition.profiles import resolve_fallback_sigma_ppm
-
-
-#: The distinct ions a seeded frame's anchors must come from before its own
-#: width and offset are fitted. One ion's lines are one measurement of the
-#: axis, not several: they share the ion's own mass error. A bright ion that
-#: matches eight of its lines alone - a large carbon count, S, Cl, Br - would
-#: otherwise fit its own error as the offset and its lines' agreement as the
-#: width, at the 0.05 ppm floor, and read as a near-perfect fit wherever it sat
-#: inside the tolerance. So the fit asks for as many ions as it asks for lines;
-#: a seed list of fewer is scored as a lone seed is, at the class's width and
-#: the centre a run of the sample scores at.
-SEEDED_FIT_MIN_IONS = MASS_ACCURACY_MIN_ANCHORS
+from mascope_tools.composition.measurement_model import MeasurementModel
 
 
 def finite_or_none(value) -> float | None:
@@ -257,89 +236,26 @@ def gate_and_score(
     match_isotope_df: pd.DataFrame,
     match_params,
     *,
-    fallback_sigma_ppm: float,
-    reagent_offset: ReagentOffset | None,
-    envelope_tolerance: EnvelopeTolerance | None = None,
-    inherited_accuracy: SampleMassAccuracy | None = None,
+    model: MeasurementModel,
 ) -> pd.DataFrame:
-    """Gate and fit-score a seeded match frame, exactly as Stage A does.
+    """Gate and fit-score a seeded match frame, exactly as Stage A does, at a
+    measurement model.
 
-    The width and offset are fitted from the seeded frame itself, which a short
-    seed list - a pin, the inspector's evidence for one family - cannot do:
-    below :data:`mass_accuracy.MASS_ACCURACY_MIN_ANCHORS` matched lines there is
-    no width. Such a frame is scored at the instrument class's width, the one
-    Stage A and the untargeted search stand in with, rather than at
-    ``score_pattern_v2``'s generic 2 ppm, so one ion in one sample reads alike
-    alone and among many seeds. Lines are not enough on their own: below
-    :data:`SEEDED_FIT_MIN_IONS` distinct ions the frame is scored the same way
-    however many lines its ions matched, or a bright ion would be fitted on its
-    own lines and judged against itself.
+    The lines are gated at the model's line-share tolerance (:func:`gate_lines`)
+    and every ion is scored at its centre, its width and that tolerance
+    (``engine.score_ions_by_fit``). The frame is never fitted: a seed list is
+    a handful of formulas, and fitted on them a bright ion would be judged
+    against its own lines.
 
-    Nor can it fit an offset, below
-    :data:`mass_accuracy.MASS_OFFSET_MIN_ANCHORS` lines, and an Orbitrap
-    sample's axis can sit beyond the class's width: on the gate's
-    labelled-nitrate set the reagent lines put it at -1.26 ppm, 2.2 widths out.
-    Such a frame is centred where a run of the sample scores it: the library's
-    own offset where it fitted one, the reagent pre-pass's lines' where they
-    stood in beyond the width; uncorrected, the same ion would read worse alone
-    than in a run of its sample.
-
-    :param fallback_sigma_ppm: The instrument class's width
-        (``profiles.resolve_fallback_sigma_ppm``).
-    :param reagent_offset: The centre a run of the sample scored at: inside a
-        run its own (``service._run_scoring_centre``), outside one what its
-        latest run recorded, else where its reagent lines put the axis
-        (``service.sample_reagent_offset``); None where the run scored
-        uncorrected, or with no run, where its profile has no reagent library.
-    :param envelope_tolerance: How well a run of the sample measures a line's
-        share: inside a run the one its Stage A fitted, outside one what its
-        latest run recorded (``envelope_fit.recorded_envelope_tolerance``).
-        A seed list is no set of committed envelopes to fit one on. The lines
-        are gated at it (:func:`gate_lines`) and scored at it. None is today's
-        numbers.
-    :param inherited_accuracy: The measurement a decoy run scores everything
-        at, its control's; the frame is then never fitted
-        (``engine.score_ions_by_fit``). None for every other caller.
+    :param match_isotope_df: The raw seeded match frame.
+    :param match_params: The sample's match parameters.
+    :param model: The model the seeds are scored at: inside a run its own,
+        outside one the one the sample's latest run recorded
+        (``service.recorded_model``).
+    :return: The gated, fit-scored frame.
     """
-    gated = gate_lines(match_isotope_df, match_params, envelope_tolerance)
-    return score_ions_by_fit(
-        gated,
-        fallback_sigma_ppm=fallback_sigma_ppm,
-        reagent_offset=reagent_offset,
-        min_anchor_ions=SEEDED_FIT_MIN_IONS,
-        envelope_tolerance=envelope_tolerance,
-        inherited_accuracy=inherited_accuracy,
-    )
-
-
-def scored_accuracy(
-    scored_df: pd.DataFrame,
-    *,
-    reagent_offset: ReagentOffset | None,
-    inherited_accuracy: SampleMassAccuracy | None = None,
-) -> SampleMassAccuracy | None:
-    """The measurement :func:`gate_and_score` scored a seeded frame at.
-
-    Read off the frame it returned, which holds the gating's verdict as the
-    fit read it, so the width and offset are the ones its fits were computed
-    at. Another pass scored at this measurement (``inherited_accuracy``) reads
-    its ions on the same scale: a run's winner-confidence pass scores the
-    shortlist where the run's seeded re-score scored the winners it ranks
-    them against (``alternatives_scoring.measure_winner_confidence``).
-
-    :param scored_df: The frame :func:`gate_and_score` returned.
-    :param reagent_offset: The centre it was handed.
-    :param inherited_accuracy: The measurement it was handed, if any, which is
-        then the one it scored at.
-    :return: The measurement, or None for a frame that scored nothing.
-    """
-    if inherited_accuracy is not None:
-        return inherited_accuracy
-    if scored_df.empty:
-        return None
-    return sample_mass_accuracy(
-        scored_df, reagent=reagent_offset, min_anchor_ions=SEEDED_FIT_MIN_IONS
-    )
+    gated = gate_lines(match_isotope_df, match_params, model.envelope_tolerance)
+    return score_ions_by_fit(gated, model=model)
 
 
 def scored_maps(
@@ -389,14 +305,9 @@ def scored_maps(
     return fit_by_ion, errors
 
 
-#: :func:`score_seeds` was handed no reagent offset and resolves the sample's.
-#: Distinct from None, which is a run's answer for a profile with no reagent
-#: library.
-RESOLVE_REAGENT_OFFSET = object()
-
-#: :func:`score_seeds` was handed no envelope tolerance and reads the one the
-#: sample's latest run recorded. Distinct from None, today's numbers.
-RESOLVE_ENVELOPE_TOLERANCE = object()
+#: :func:`score_seeds` was handed no model and reads the one the sample's
+#: latest run recorded (``service.recorded_model``).
+RESOLVE_MODEL = object()
 
 #: The caller has not read the sample file's resolving power, and the chain
 #: reads it (``service._resolution_of``). Distinct from None, the answer for a
@@ -409,12 +320,8 @@ async def score_seeds(
     seeds: set[tuple[str, str]],
     match_params,
     *,
-    reagent_offset: ReagentOffset | None | object = RESOLVE_REAGENT_OFFSET,
+    model: MeasurementModel | object = RESOLVE_MODEL,
     config: PeakAssignmentConfig | None = None,
-    envelope_tolerance: EnvelopeTolerance | None | object = (
-        RESOLVE_ENVELOPE_TOLERANCE
-    ),
-    inherited_accuracy: SampleMassAccuracy | None = None,
     resolution: Callable[[float], float] | None | object = RESOLVE_RESOLUTION,
 ) -> tuple[
     dict[tuple[str, str], str],
@@ -427,9 +334,8 @@ async def score_seeds(
     The engine's Stage-A chain over a seeded frame and nothing more: ions for
     the seed list, one ``compute_match_isotopes`` pass (a single peak read
     covers every seed), :func:`gate_lines` gating, ``score_ions_by_fit`` at
-    the sample's instrument class's width and the offset a run of it scores at
-    where the seeds are too few to fit their own (:func:`gate_and_score`). No
-    candidate enumeration, no untargeted stage, no arbitration.
+    one measurement model (:func:`gate_and_score`). No candidate enumeration,
+    no untargeted stage, no arbitration.
 
     Labelled ions are read at the purity the sample's ionization setup carries
     (``custom_elements.labelled_purity``), as a run of the sample reads them:
@@ -439,25 +345,14 @@ async def score_seeds(
     :param sample: The sample being scored against.
     :param seeds: Distinct ``(formula, ionization_mechanism_id)`` pairs.
     :param match_params: The sample's resolved match parameters.
-    :param reagent_offset: The offset of the run or search the caller is part
-        of. Left out, the sample's own is resolved
-        (``service.sample_reagent_offset``), which is what every caller outside
-        a run - a pin, the inspector, the batch ledger's propagation - wants.
+    :param model: The model of the run or search the caller is part of. Left
+        out, the one the sample's latest run recorded is read
+        (``service.recorded_model``), which is what every caller outside a
+        run - a pin, the inspector, the batch ledger's propagation - wants.
     :param config: The configuration the sample's reagent lines are claimed
-        under where no run recorded a centre: the batch search's for its
+        under where no run recorded a model: the batch search's for its
         propagation, whose ``profile`` or ``mz_precision_ppm`` may override
         the default's. None resolves under the default configuration.
-    :param envelope_tolerance: The tolerance of the run the caller is part of.
-        Left out, the one the sample's latest run recorded is read
-        (``envelope_fit.recorded_envelope_tolerance``), which is what every
-        caller outside a run wants.
-    :param inherited_accuracy: Inside a decoy run, the control's measurement,
-        which the seeds are scored at whatever their number
-        (:func:`gate_and_score`); in a run's winner-confidence pass, the one
-        its seeded re-score scored the winners at (:func:`scored_accuracy`),
-        since the seeds there are a shortlist of mostly wrong formulas
-        (``alternatives_scoring.measure_winner_confidence``). None everywhere
-        else.
     :param resolution: The file's resolving power, which the seeds' lines are
         resolved at as Stage A resolves its known set's: a run's own reading;
         left out, it is read here.
@@ -470,10 +365,8 @@ async def score_seeds(
             sample,
             seeds,
             match_params,
-            reagent_offset=reagent_offset,
+            model=model,
             config=config,
-            envelope_tolerance=envelope_tolerance,
-            inherited_accuracy=inherited_accuracy,
             resolution=resolution,
         )
 
@@ -483,10 +376,8 @@ async def _score_seeds(
     seeds: set[tuple[str, str]],
     match_params,
     *,
-    reagent_offset: ReagentOffset | None | object,
+    model: MeasurementModel | object,
     config: PeakAssignmentConfig | None,
-    envelope_tolerance: EnvelopeTolerance | None | object,
-    inherited_accuracy: SampleMassAccuracy | None = None,
     resolution: Callable[[float], float] | None | object = RESOLVE_RESOLUTION,
 ) -> tuple[
     dict[tuple[str, str], str],
@@ -522,24 +413,14 @@ async def _score_seeds(
     if matched_df.empty:
         return ion_by_seed, {}, {}, pd.DataFrame()
 
-    if reagent_offset is RESOLVE_REAGENT_OFFSET:
+    if model is RESOLVE_MODEL:
         # Imported here: the service imports this module for its own runs.
         from mascope_backend.api.new.peak_assignments import service
 
-        reagent_offset = await service.sample_reagent_offset(sample, config)
-    if envelope_tolerance is RESOLVE_ENVELOPE_TOLERANCE:
-        envelope_tolerance = await recorded_envelope_tolerance(sample.sample_item_id)
+        model = await service.recorded_model(sample, config)
 
     scored_df = await asyncio.to_thread(
-        gate_and_score,
-        matched_df,
-        match_params,
-        fallback_sigma_ppm=resolve_fallback_sigma_ppm(
-            get_instrument_type(sample.filename)
-        ),
-        reagent_offset=reagent_offset,
-        envelope_tolerance=envelope_tolerance,
-        inherited_accuracy=inherited_accuracy,
+        gate_and_score, matched_df, match_params, model=model
     )
     fit_by_ion, errors_by_pairing = scored_maps(scored_df)
     return ion_by_seed, fit_by_ion, errors_by_pairing, scored_df

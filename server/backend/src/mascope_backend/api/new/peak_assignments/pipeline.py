@@ -59,14 +59,9 @@ from mascope_backend.api.new.peak_assignments.config import (
     MAX_UNTARGETED_PEAKS_CEILING,
     PeakAssignmentConfig,
 )
-from mascope_backend.api.new.peak_assignments.decoy import (
-    DecoyPlan,
-    inherited_calibration,
-)
+from mascope_backend.api.new.peak_assignments.decoy import DecoyPlan
 from mascope_backend.api.new.peak_assignments.engine import (
     LIST_PRIOR_WEIGHT,
-    MASS_CALIBRATION_KEY,
-    PATTERN_SCORING_KEY,
     ROLE_ISO_CHILD,
     ROLE_M0,
     SOURCE_DATABASE,
@@ -80,18 +75,16 @@ from mascope_backend.api.new.peak_assignments.engine import (
     list_readings,
     listed_formula_identities,
     listed_ions,
+    measurement_model_record,
     pattern_scoring_for,
-    pattern_scoring_snapshot,
     record_displaced_list_readings,
     record_same_ion_readings,
+    scoring_snapshot,
     settle_list_election,
     tier_for_evidence,
     untargeted_matches_to_peak_assignments,
     untargeted_seeds,
     untargeted_targets,
-)
-from mascope_backend.api.new.peak_assignments.envelope_fit import (
-    recorded_envelope_tolerance,
 )
 from mascope_backend.api.new.peak_assignments.halogen_twins import record_twins
 from mascope_backend.api.new.peak_assignments.identification_level import (
@@ -121,7 +114,6 @@ from mascope_backend.api.new.peak_assignments.tiering import LineGate, ask_absen
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
     TIER_CANDIDATE,
-    TIER_RANK,
 )
 from mascope_backend.db import PeakAssignment, PeakAssignmentRun, async_session
 from mascope_backend.runtime import runtime
@@ -132,7 +124,7 @@ from mascope_backend.socket.notifications import (
 from mascope_file.name import get_instrument_type
 from mascope_tools.composition.custom_elements import labelled_purity
 from mascope_tools.composition.finder import assign_compositions
-from mascope_tools.composition.mass_accuracy import SampleMassAccuracy
+from mascope_tools.composition.measurement_model import MeasurementModel
 
 
 class Stage(StrEnum):
@@ -182,17 +174,19 @@ class Measurement(StrEnum):
     """Where a path's measurement model comes from: the centre and width a
     mass error is read against, and the tolerance a line's share is."""
 
-    #: Fitted on the path's own readings: Stage A's lines, its commits'
-    #: envelopes, the search's winners and the mass gate's anchors.
+    #: Fitted on the path's own readings at the model's two named points:
+    #: Stage A's lines and its commits' envelopes (v1), and the mass gate's
+    #: corroborated commits and source lines (v2).
     FITTED = "fitted"
     #: A decoy's control's, recorded on the control and never fitted again on
     #: the decoy's wrong readings (``decoy.DecoyPlan``).
     CONTROL = "control"
-    #: The sample's own, as its latest run recorded it: the width, centre and
-    #: line-share tolerance it scored at and the mass calibration it judged at.
-    #: A sample no run recorded one for scores at the instrument class's width
-    #: and its reagent lines' centre, and its mass gate fits on what the path
-    #: committed and the source's own lines, as a run's does.
+    #: The sample's own, as its latest run recorded it: the measurement model
+    #: it scored and capped at, its centre, width and line-share tolerance
+    #: (``service.recorded_measurement``). A sample no run recorded one for
+    #: scores at the instrument class's width and its reagent lines' centre,
+    #: and its refit stage refits that on what the path committed and the
+    #: source's own lines, as a run's does.
     RECORDED = "recorded"
 
 
@@ -370,8 +364,9 @@ class RunContext:
     :param floors: The tier a batch decision proposes its given reading at,
         by the peak it is proposed on: a listed compound the batch decided
         present, at candidate. The elect stage raises the reading to it, and
-        the judging and the caps may lower it again; the evidence alone does
-        not keep it below.
+        so does a re-score at the refit's model (``service.rescore_rows``):
+        the caps may lower it again, but the evidence alone does not keep it
+        below.
     """
 
     path: AssignmentPath
@@ -417,14 +412,16 @@ class RunContext:
     artifact_peak_ids: set[str] = field(default_factory=set)
     # -- propose
     stage_a: list[dict] = field(default_factory=list)
+    stage_a_scored: pd.DataFrame | None = None
     confidence_calibration: dict | None = None
+    confidence_curve: Any = None
     mass_accuracy: Any = None
     envelope: Any = None
     listed_formulas: frozenset[str] = frozenset()
     listed_ions: dict = field(default_factory=dict)
+    model: MeasurementModel | None = None
+    model_recorded: bool = False
     scoring: Any = None
-    envelope_tolerance: Any = None
-    recorded_calibration: Any = None
     line_gate: Any = None
     search: SearchProposal | None = None
     seeds: set[tuple[str, str]] = field(default_factory=set)
@@ -434,7 +431,7 @@ class RunContext:
     by_persistence: set[str] = field(default_factory=set)
     # -- score
     fit_by_seed: dict = field(default_factory=dict)
-    winner_accuracy: Any = None
+    seeded_frame: service.SeededFrame | None = None
     # -- elect
     stage_b: list[dict] = field(default_factory=list)
     same_ion_families: int = 0
@@ -690,6 +687,8 @@ async def _propose_known_set(ctx: RunContext) -> None:
         ctx.mass_accuracy,
         ctx.envelope,
         ctx.listed_formulas,
+        ctx.stage_a_scored,
+        ctx.confidence_curve,
     ) = await service._stage_a_assignments(
         sample,
         ctx.config,
@@ -703,7 +702,7 @@ async def _propose_known_set(ctx: RunContext) -> None:
         reagent_offset=ctx.reagent_offset,
         ionization_setup=ctx.ionization_setup,
         reagent_profile=ctx.resolved_profile.profile.name,
-        inherited_accuracy=None if plan is None else plan.accuracy,
+        inherited_model=None if plan is None else plan.model,
         inherited_envelope=None if plan is None else plan.envelope,
         resolution=ctx.resolution,
     )
@@ -731,35 +730,40 @@ async def _propose_known_set(ctx: RunContext) -> None:
             )
         )
     await ctx.progress(0.4)
-    ctx.envelope_tolerance = envelope.tolerance
-    # How this sample's envelopes are predicted and matched, resolved before
-    # the search because the judging reads it whether or not the search ran: a
-    # pass of the known set alone still has committed rows whose peaks a
-    # neighbour's envelope may already predict.
-    ctx.scoring = pattern_scoring_for(
-        ctx.match_params,
-        ctx.mass_accuracy,
-        ctx.instrument_type,
-        ctx.resolution,
-        envelope_tolerance=envelope.tolerance,
+    # The run's measurement model at its first named point (v1): Stage A's
+    # fit on the target library's lines, with the class's width and the reagent
+    # lines' centre where they stand in, and the line-share tolerance fitted on
+    # Stage A's envelopes. A decoy's is its control's, unchanged.
+    ctx.model = (
+        plan.model
+        if plan is not None
+        else MeasurementModel.v1(
+            ctx.mass_accuracy,
+            ctx.resolved_profile.fallback_sigma_ppm,
+            envelope.tolerance,
+            envelope.record(),
+        )
     )
-    # On a TOF the search's window is bounded by the width Stage A fitted (step
-    # 3.6): a candidate further from the sample's centre than the mass gate's
-    # floor is one it would hold below assignability whatever its fit, so it
-    # is no candidate to search for.
+    _read_at_model(ctx)
+
+
+def _read_at_model(ctx: RunContext) -> None:
+    """Resolve what the search ranks at from the model: how this sample's
+    envelopes are predicted and matched (``engine.pattern_scoring_for``), and
+    on a TOF the window it searches. Resolved before the search because the
+    judging reads it whether or not the search ran: a pass of the known set
+    alone still has committed rows whose peaks a neighbour's envelope may
+    already predict. On a TOF the window is bounded by the model (step 3.6):
+    a candidate further from the sample's centre than the mass gate's floor
+    is one it would hold below assignability whatever its fit, so it is no
+    candidate to search for."""
+    ctx.scoring = pattern_scoring_for(ctx.match_params, ctx.model, ctx.resolution)
     ctx.resolved_profile = with_fitted_window(
         ctx.resolved_profile,
-        sigma_ppm=ctx.scoring.sigma_ppm
-        if ctx.mass_accuracy.sigma_ppm is not None
-        else None,
-        mu_ppm=ctx.scoring.mu_ppm,
+        model=ctx.model,
         sigmas=BELOW_ASSIGNABILITY_Z,
         instrument_type=ctx.instrument_type,
     )
-    # The measurement the search's winners' fits were scored at: the seeded
-    # re-score's where it scored any (the score stage), else Stage A's, which
-    # the finder's own numbers were scored at.
-    ctx.winner_accuracy = ctx.mass_accuracy
 
 
 async def _propose_by_search(ctx: RunContext) -> None:
@@ -863,13 +867,13 @@ async def _propose_by_search(ctx: RunContext) -> None:
     # estimate rides along when the file has one, and so do the scan counts.
     frame = search_peaks_df[search.columns]
     scoring = ctx.scoring
-    mass_accuracy = ctx.mass_accuracy
-    search.snapshot = pattern_scoring_snapshot(scoring, mass_accuracy, frame)
+    model = ctx.model
+    search.snapshot = scoring_snapshot(scoring, frame)
     runtime.logger.info(
-        f"Untargeted stage for sample '{sample.sample_item_name}' scores at "
-        f"{scoring.sigma_ppm:.3f} ppm ({search.snapshot['sigma_source']}, "
-        f"{mass_accuracy.anchors} anchors of {mass_accuracy.anchor_ions} ions), "
-        f"offset {scoring.mu_ppm:+.3f} ppm ({search.snapshot['mu_source']})"
+        f"Untargeted stage for sample '{sample.sample_item_name}' ranks at the "
+        f"v{model.version} model, {scoring.sigma_ppm:.3f} ppm "
+        f"({model.sigma_source}, anchors {dict(model.anchors)}), "
+        f"offset {scoring.mu_ppm:+.3f} ppm ({model.mu_source})"
     )
     search.started = time.perf_counter()
     # assign_compositions is synchronous and CPU-bound: it runs on a worker
@@ -1082,51 +1086,30 @@ async def _propose_given(ctx: RunContext) -> None:
 
 async def _recorded_measurement(ctx: RunContext) -> None:
     """The measurement a path with no Stage A of its own scores and judges at:
-    what the sample's latest run recorded (:attr:`Measurement.RECORDED`).
-
-    The width that run fitted (``service.sample_recorded_width``), at which a
-    run's own search ranks; the line-share tolerance it fitted
-    (``envelope_fit.recorded_envelope_tolerance``); the centre it scored at,
-    or where no run recorded one the reagent lines the claim stage read, taken
-    only beyond the width (``SampleMassAccuracy.scoring_mu_ppm``); and the
-    mass calibration its gate judged at, which the refit stage takes as a
-    decoy takes its control's. A TOF's window is bounded by that width, as a
-    run's own search bounds it by the one its Stage A fitted (step 3.6).
+    the model the sample's latest run recorded (:attr:`Measurement.RECORDED`),
+    read with the rest of that run's config in one query
+    (``service.recorded_measurement``), so the width, the centre and the
+    line-share tolerance come from one run even where another completes
+    mid-search. The caps judge at the same model, as a decoy's judge at its
+    control's. A sample no run recorded one for is read at the class's width
+    and the reagent lines the claim stage read, taken only beyond it, as a run
+    whose library fitted nothing is; its refit stage then refits that model on
+    what the path committed and the source's own lines, as a run's does. A
+    TOF's window is bounded by the model, as a run's own search is by its v1
+    (step 3.6).
     """
-    sample_item_id = ctx.sample.sample_item_id
-    width = await service.sample_recorded_width(sample_item_id)
-    ctx.envelope_tolerance = await recorded_envelope_tolerance(sample_item_id)
-    recorded = ctx.recorded
-    if recorded is None:
-        _, recorded = await service._latest_in_app_run(sample_item_id)
+    recorded, ctx.model, ctx.model_recorded = await service.recorded_measurement(
+        ctx.sample,
+        ctx.config,
+        recorded=ctx.recorded,
+        peaks_df=ctx.peaks_df,
+        resolved_profile=ctx.resolved_profile,
+        reagent_offset=ctx.reagent_offset,
+    )
     # The gate its absent-line rule asked lines at, which a person's choice
     # is asked at; None where it asked none.
     ctx.line_gate = LineGate.from_record((recorded or {}).get(TIERING_KEY))
-    has_centre, centre = service._recorded_scoring_centre(
-        (recorded or {}).get(PATTERN_SCORING_KEY)
-    )
-    ctx.mass_accuracy = SampleMassAccuracy(
-        sigma_ppm=width, reagent=centre if has_centre else ctx.reagent_offset
-    )
-    calibration = (recorded or {}).get(MASS_CALIBRATION_KEY)
-    ctx.recorded_calibration = (
-        inherited_calibration(calibration) if isinstance(calibration, dict) else None
-    )
-    ctx.scoring = pattern_scoring_for(
-        ctx.match_params,
-        ctx.mass_accuracy,
-        ctx.instrument_type,
-        ctx.resolution,
-        envelope_tolerance=ctx.envelope_tolerance,
-    )
-    ctx.resolved_profile = with_fitted_window(
-        ctx.resolved_profile,
-        sigma_ppm=ctx.scoring.sigma_ppm if width is not None else None,
-        mu_ppm=ctx.scoring.mu_ppm,
-        sigmas=BELOW_ASSIGNABILITY_Z,
-        instrument_type=ctx.instrument_type,
-    )
-    ctx.winner_accuracy = ctx.mass_accuracy
+    _read_at_model(ctx)
 
 
 # --- score ----------------------------------------------------------------------
@@ -1140,6 +1123,8 @@ async def score(ctx: RunContext) -> None:
     ion, through one match pass over the sample, gated by the run's match
     params (``service._seeded_rescore``): the second measurement is what the
     row is tiered on, so a search's "assigned" and a list's mean one thing.
+    Both are read at the run's model, the one the search ranked at; the
+    winners fit none of their own.
     """
     if ctx.path.proposal in (Proposal.GIVEN, Proposal.PERSONS_FORMULA):
         if not ctx.seeds:
@@ -1147,21 +1132,22 @@ async def score(ctx: RunContext) -> None:
             return
         # The given readings, each an ion measured as a list's is: in one match
         # pass over the sample's peaks, gated by its match parameters and fit
-        # at its recorded measurement (``seeded_scoring.score_seeds``).
+        # at its recorded model (``seeded_scoring.score_seeds``).
         ctx.seeded = await score_seeds(
             ctx.sample,
             ctx.seeds,
             ctx.match_params,
-            reagent_offset=service._run_scoring_centre(ctx.mass_accuracy),
-            envelope_tolerance=ctx.envelope_tolerance,
+            model=ctx.model,
             resolution=ctx.resolution,
         )
+        ion_by_seed, _fits, _errors, scored_df = ctx.seeded
+        if not scored_df.empty:
+            ctx.seeded_frame = service.SeededFrame(scored_df, ion_by_seed)
         return
     search = ctx.search
     if search is None or not search.ran:
         return
-    plan = ctx.decoy_plan if ctx.inherits else None
-    ctx.fit_by_seed, rescored_accuracy = await service._seeded_rescore(
+    ctx.fit_by_seed, ctx.seeded_frame = await service._seeded_rescore(
         ctx.sample,
         ctx.match_params,
         untargeted_seeds(
@@ -1169,13 +1155,9 @@ async def score(ctx: RunContext) -> None:
             search.mechanism_id_by_notation,
             to_custom_element_format,
         ),
-        reagent_offset=service._run_scoring_centre(ctx.mass_accuracy),
-        envelope_tolerance=ctx.envelope_tolerance,
-        inherited_accuracy=None if plan is None else plan.accuracy,
+        model=ctx.model,
         resolution=ctx.resolution,
     )
-    if rescored_accuracy is not None:
-        ctx.winner_accuracy = rescored_accuracy
 
 
 # --- elect ----------------------------------------------------------------------
@@ -1232,7 +1214,7 @@ async def elect(ctx: RunContext) -> None:
             instrument=ctx.instrument_type,
             calibration=None,
         )
-        raise_to_floors(rows, ctx.floors)
+        service.raise_to_floors(rows, ctx.floors)
         if ctx.path.rules is Rules.RUN:
             ctx.stage_a, ctx.stage_b = _read_as_a_run_reads(ctx, rows)
         else:
@@ -1300,24 +1282,6 @@ async def elect(ctx: RunContext) -> None:
                 **ctx.series_by_peak,
             },
         )
-
-
-def raise_to_floors(rows: list[dict], floors: dict[str, str]) -> int:
-    """Raise each monoisotopic row on a peak a batch decision proposes its
-    reading at a tier (:attr:`RunContext.floors`) to that tier, where its
-    evidence left it lower. The judging round after it may lower it again.
-
-    :return: How many rows were raised.
-    """
-    raised = 0
-    for row in rows:
-        floor = floors.get(str(row.get("sample_peak_id")))
-        if floor is None or row.get("role") != ROLE_M0:
-            continue
-        if TIER_RANK.get(row.get("tier"), 0) < TIER_RANK[floor]:
-            row["tier"] = floor
-            raised += 1
-    return raised
 
 
 def _read_as_a_run_reads(
@@ -1403,9 +1367,12 @@ def _elect_persons_choice(ctx: RunContext) -> None:
 
 async def refit(ctx: RunContext) -> None:
     """Refit the measurement model on the ledger as the reading changes so far
-    leave it: the run's own mass calibration (``mass_gate.measure_mass_gate``)
-    over its corroborated commits and the source's own lines, or a decoy's
-    control's. It records every row's ceiling and lowers none.
+    leave it: its second named point (v2), over the run's corroborated commits
+    and the source's own lines (``mass_gate.measure_mass_gate``). Where the
+    refit moves the model beyond the bound, every row is scored again at it
+    before any cap (``service.rescore_rows``), so the caps read the model the
+    rows were scored at; a decoy and a path reading the sample's recorded
+    model refit nothing. It records every row's ceiling and lowers none.
 
     The first round sets up the judging (``service.Judging``) over the elected
     rows, with what every round reads: the sample's peaks, read for which
@@ -1425,12 +1392,16 @@ async def refit(ctx: RunContext) -> None:
 
 
 def _judging_for(ctx: RunContext) -> service.Judging:
-    """The judging rounds over the elected rows, under the run's rules."""
+    """The judging rounds over the elected rows, under the run's rules, at
+    its model."""
     resolved_profile = ctx.resolved_profile
-    plan = ctx.decoy_plan if ctx.inherits else None
+    refits = ctx.path.measurement is Measurement.FITTED or (
+        ctx.path.measurement is Measurement.RECORDED and not ctx.model_recorded
+    )
+    stage_a_scored, seeded_frame = ctx.stage_a_scored, ctx.seeded_frame
     return service.Judging(
         ctx.stage_a + ctx.stage_b,
-        stage_a_accuracy=ctx.mass_accuracy,
+        model=ctx.model,
         fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
         notation_by_id=service._notation_by_id(ctx.searched_mechanisms),
         mz_tolerance_ppm=ctx.scoring.mz_tolerance_ppm,
@@ -1442,14 +1413,14 @@ def _judging_for(ctx: RunContext) -> service.Judging:
         partner_gated_channels=resolved_profile.partner_gated_channels,
         reagent_lines=ctx.reagent_rows,
         resolution=ctx.resolution,
-        inherited_calibration=(
-            plan.calibration
-            if plan is not None
-            else ctx.recorded_calibration
-            if ctx.path.measurement is Measurement.RECORDED
+        refits=refits,
+        rescore=(
+            (lambda model: service.fits_at(model, stage_a_scored, seeded_frame))
+            if refits
             else None
         ),
-        envelope_tolerance=ctx.scoring.envelope_tolerance,
+        curve=ctx.confidence_curve,
+        floors=ctx.floors,
         artifact_peak_ids=frozenset(ctx.artifact_peak_ids),
         instrument_type=ctx.instrument_type,
         listed_formulas=ctx.listed_formulas,
@@ -1564,29 +1535,36 @@ def _report_judging(ctx: RunContext) -> None:
     cross_channel = judged.cross_channel
     tiering = ctx.tiering
     partner_gate = judged.partner_gate
+    model = judged.model
+    refit = mass_calibration.get("refit") or {}
     if mass_calibration["applied"]:
-        trend = mass_calibration["trend"]
+        trend = model.trend
         centre = (
-            f"a centre following {trend['offset_mda']:+.3f} mDa over m/z "
-            f"{trend['mz_lo']:.0f}-{trend['mz_hi']:.0f}"
-            if trend
-            else f"a constant centre ({mass_calibration['trend_refused']})"
+            f"a centre following {trend.offset_mda:+.3f} mDa over m/z "
+            f"{trend.mz_lo:.0f}-{trend.mz_hi:.0f}"
+            if trend is not None
+            else f"a constant centre ({model.trend_refused or 'no trend asked'})"
         )
         runtime.logger.info(
-            f"Sample '{name}' calibrates at {mass_calibration['mu_ppm']:+.3f} ppm, "
-            f"width {mass_calibration['sigma_ppm']:.3f} ppm over "
-            f"{mass_calibration['anchors']} anchors "
-            f"({mass_calibration['reagent_anchors']} of them the source's own "
-            f"lines), judged at {centre}; {mass_calibration['capped']} of "
+            f"Sample '{name}' scores and caps at its v{model.version} model, "
+            f"{model.scoring_mu_ppm:+.3f} ppm, width {model.width_ppm:.3f} ppm "
+            f"over anchors {dict(model.anchors)}, at {centre}"
+            + (
+                f"; its refit moved {refit.get('centre_moved_widths')} widths "
+                f"and rescored {refit.get('rescored', 0)} rows"
+                if refit.get("adopted")
+                else ""
+            )
+            + f"; {mass_calibration['capped']} of "
             f"{mass_calibration['committed'] - mass_calibration['corroborated']} "
             "uncorroborated commits capped off calibration"
         )
     else:
         runtime.logger.info(
             f"Sample '{name}' corroborated {mass_calibration['corroborated']} of "
-            f"{mass_calibration['committed']} commits and had "
-            f"{mass_calibration['reagent_anchors']} of the source's own lines, "
-            "too few to measure a mass calibration; no row is gated on one"
+            f"{mass_calibration['committed']} commits, its refit anchors "
+            f"{refit.get('anchors', {})}, too few to measure a mass "
+            "calibration; no row is gated on one"
         )
     followed = mass_calibration["isotopologues"]
     runtime.logger.info(
@@ -1665,8 +1643,8 @@ async def level(ctx: RunContext) -> None:
 
     Where the run asks for it, the search's winners' confidence first: the
     shortlist each winner's row carries, measured on the peak it names through
-    every channel the search went through and at the width the winners were
-    re-scored at (``alternatives_scoring.measure_winner_confidence``). Read off
+    every channel the search went through and at the model the winners were
+    scored and capped at (``alternatives_scoring.measure_winner_confidence``). Read off
     the judged ledger, after every pass that may swap a reading; it writes
     provenance alone, which the level then reads.
     """
@@ -1689,9 +1667,7 @@ async def level(ctx: RunContext) -> None:
             ctx.searched_mechanisms,
             ctx.match_params,
             peak_budget=ctx.config.stage_b_confidence_peaks,
-            reagent_offset=service._run_scoring_centre(ctx.mass_accuracy),
-            envelope_tolerance=ctx.envelope_tolerance,
-            accuracy=ctx.winner_accuracy,
+            model=ctx.judged.model or ctx.model,
         )
         search.scope[WINNER_CONFIDENCE_KEY] = winner_confidence
         runtime.logger.info(
@@ -1804,8 +1780,16 @@ async def keep_run(ctx: RunContext) -> dict:
         ctx.config,
         ctx.resolved_profile,
         None if search is None else search.scope,
-        None if search is None else search.snapshot,
-        judged.mass_calibration,
+        measurement_model_record(
+            judged.model,
+            ranked_at=ctx.model,
+            scoring=(
+                search.snapshot
+                if search is not None and search.snapshot is not None
+                else scoring_snapshot(ctx.scoring)
+            ),
+            gate=judged.mass_calibration,
+        ),
         judged.cross_channel,
         ctx.tiering,
         judged.partner_gate,

@@ -37,7 +37,6 @@ from mascope_backend.api.controllers.target.lib.compute.target_ions_compute impo
     FileLines,
 )
 from mascope_backend.api.new.peak_assignments.profiles import NamedContext
-from mascope_tools.composition.mass_accuracy import ReagentOffset, SampleMassAccuracy
 
 
 _MOD = "mascope_backend.api.new.peak_assignments.service"
@@ -547,9 +546,9 @@ class TestTheJudgedLedger:
         assert mocks["resolution"].call_args.args[0].sample_item_id == "si-1"
         config = recorder.recorded_configs()[-1]
         # These peaks carry no noise estimate, and the file a resolving power.
-        lines = config["mass_calibration"]["lines"]
+        lines = config["measurement_model"]["gate"]["lines"]
         assert (lines["noise"], lines["resolution"]) == (False, True)
-        assert set(config["mass_calibration"]["isotopologues"]) == {
+        assert set(config["measurement_model"]["gate"]["isotopologues"]) == {
             "tracks",
             "in_doubt",
             "untracked",
@@ -648,10 +647,12 @@ class TestTheJudgedLedger:
 
         await _run(PeakAssignmentConfig(profile="UR", run_untargeted=False))
 
-        calibration = recorder.recorded_configs()[-1]["mass_calibration"]
-        # The library's monoisotopic row and the three lines.
-        assert (calibration["anchors"], calibration["reagent_anchors"]) == (4, 3)
-        assert (calibration["committed"], calibration["corroborated"]) == (2, 2)
+        gate = recorder.recorded_configs()[-1]["measurement_model"]["gate"]
+        # The library's monoisotopic row and the three lines, which the refit
+        # anchored on.
+        anchors = gate["refit"]["anchors"]
+        assert (anchors["commits"], anchors["source_lines"]) == (1, 3)
+        assert (gate["committed"], gate["corroborated"]) == (2, 2)
         by_peak = {row["sample_peak_id"]: row for row in recorder.rows}
         assert {by_peak[peak]["role"] for peak in ("r1", "r2", "r3")} == {"reagent"}
 
@@ -1037,7 +1038,7 @@ class TestTheJudgedLedger:
 
         await _run(PeakAssignmentConfig(run_untargeted=False))
 
-        assert handed["envelope_tolerance"] == fitted.tolerance
+        assert handed["model"].envelope_tolerance == fitted.tolerance
         assert handed["artifact_peak_ids"] == frozenset({"p-lobe"})
         assert handed["instrument_type"] == "orbi"
         assert handed["lines"].holds("p1")
@@ -2181,8 +2182,9 @@ class TestResolvedProfile:
             "fallback_sigma_ppm": 0.3,
             "reagent_offset": None,
             "min_anchor_ions": STAGE_A_FIT_MIN_IONS,
-            # Fitted off the frame: only a decoy run scores at another's.
-            "inherited_accuracy": None,
+            # Fitted off the frame (the run's v1): only a decoy run scores at
+            # another's model.
+            "model": None,
             # The first pass reads today's numbers, since the tolerance is
             # fitted on its commits; only a decoy reads its control's.
             "envelope_tolerance": None,
@@ -2237,7 +2239,7 @@ class TestResolvedProfile:
 
         scoring = mocks["compositions"].call_args.kwargs["scoring"]
         assert scoring.resolution is resolution
-        recorded = recorder.recorded_configs()[-1]["pattern_scoring"]
+        recorded = recorder.recorded_configs()[-1]["measurement_model"]["scoring"]
         assert recorded["lines_merged_at_resolution"] is True
 
     @pytest.mark.asyncio
@@ -2264,7 +2266,7 @@ class TestResolvedProfile:
 
         await _run(PeakAssignmentConfig())
 
-        recorded = recorder.recorded_configs()[-1]["pattern_scoring"]
+        recorded = recorder.recorded_configs()[-1]["measurement_model"]["scoring"]
         if column:
             assert recorded["snr_source"] == "peak_list"
             assert recorded["snr_peaks"] == 40
@@ -2337,14 +2339,15 @@ class TestResolvedProfile:
             offset = mocks["fit"].call_args.kwargs["reagent_offset"]
             assert (offset.lines, offset.beyond_width) == (3, True)
             assert offset.mu_ppm == pytest.approx(-1.3, abs=1e-6)
-        # The search's commits are measured again as ions at the same offset,
-        # so a seed list too short to fit one is centred where Stage A was.
-        seeded = mocks["seeded"].call_args.kwargs["reagent_offset"]
-        assert (seeded.lines, seeded.beyond_width) == (3, True)
-        assert seeded.mu_ppm == pytest.approx(-1.3, abs=1e-6)
+        # The search's commits are measured again as ions at the same model,
+        # centred where Stage A was.
+        seeded = mocks["seeded"].call_args.kwargs["model"]
+        assert seeded.mu_source == "reagent"
+        assert (seeded.reagent.lines, seeded.reagent.beyond_width) == (3, True)
+        assert seeded.scoring_mu_ppm == pytest.approx(-1.3, abs=1e-6)
         scoring = mocks["compositions"].call_args.kwargs["scoring"]
         assert scoring.mu_ppm == pytest.approx(-1.3, abs=1e-6)
-        recorded = recorder.recorded_configs()[-1]["pattern_scoring"]
+        recorded = _ranked_at(recorder.recorded_configs()[-1])
         assert recorded["mu_source"] == "reagent"
         assert recorded["sigma_source"] == "instrument_class"
         assert recorded["reagent_lines"] == 3
@@ -2401,9 +2404,9 @@ class TestResolvedProfile:
         )
         scoring = mocks["compositions"].call_args.kwargs["scoring"]
         assert scoring.mu_ppm == pytest.approx(0.2)
-        seeded = mocks["seeded"].call_args.kwargs["reagent_offset"]
-        assert seeded.mu_ppm == pytest.approx(0.2)
-        assert seeded.beyond_width
+        seeded = mocks["seeded"].call_args.kwargs["model"]
+        assert seeded.scoring_mu_ppm == pytest.approx(0.2)
+        assert seeded.mu_source == "fitted"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -2465,8 +2468,10 @@ class TestResolvedProfile:
         configs = recorder.recorded_configs()
         assert len(configs) == 2
         assert configs[0]["resolved_profile"] == configs[1]["resolved_profile"]
-        assert "mass_calibration" not in configs[0]
-        assert configs[1]["mass_calibration"]["committed"] == len(_stage_a_rows())
+        assert "measurement_model" not in configs[0]
+        assert configs[1]["measurement_model"]["gate"]["committed"] == len(
+            _stage_a_rows()
+        )
         snapshot = configs[0]["resolved_profile"]
         # '[M+H]+' is diagnostic of nothing, so a positive sample falls back to
         # the generic positive preset - and says that it did.
@@ -2794,10 +2799,10 @@ class TestStageAFitsOnIons:
         scoring = mocks["compositions"].call_args.kwargs["scoring"]
         assert scoring.mu_ppm == 0.0
         assert scoring.sigma_ppm == pytest.approx(math.hypot(0.3, PRED_SIGMA_PPM))
-        recorded = recorder.recorded_configs()[-1]["pattern_scoring"]
+        recorded = _ranked_at(recorder.recorded_configs()[-1])
         assert recorded["sigma_source"] == "instrument_class"
         assert recorded["mu_source"] == "none"
-        assert (recorded["fitted_anchors"], recorded["fitted_anchor_ions"]) == (10, 1)
+        assert _library_anchors(recorded) == (10, 1)
 
     @staticmethod
     async def _run_on_ions(ions: int):
@@ -2828,7 +2833,7 @@ class TestStageAFitsOnIons:
         await _run(PeakAssignmentConfig())
 
         scoring = mocks["compositions"].call_args.kwargs["scoring"]
-        return scoring, recorder.recorded_configs()[-1]["pattern_scoring"]
+        return scoring, _ranked_at(recorder.recorded_configs()[-1])
 
     @pytest.mark.asyncio
     async def test_lines_of_eight_ions_fit_the_sample(self):
@@ -2839,13 +2844,13 @@ class TestStageAFitsOnIons:
         assert scoring.mu_ppm == pytest.approx(0.6)
         assert recorded["sigma_source"] == "fitted"
         assert recorded["mu_source"] == "fitted"
-        assert (recorded["fitted_anchors"], recorded["fitted_anchor_ions"]) == (10, 8)
+        assert _library_anchors(recorded) == (10, 8)
 
     @pytest.mark.asyncio
     async def test_lines_of_seven_ions_do_not(self):
         # The same ten lines, more than a fit asks for, from seven ions: one
-        # short of the eight the seeded chain asks for too, so the sample is
-        # scored at the stand-ins.
+        # short of the eight Stage A asks for, so the sample is scored at the
+        # stand-ins.
         from mascope_tools.composition.mass_accuracy import PRED_SIGMA_PPM
 
         scoring, recorded = await self._run_on_ions(7)
@@ -2854,7 +2859,20 @@ class TestStageAFitsOnIons:
         assert scoring.sigma_ppm == pytest.approx(math.hypot(0.3, PRED_SIGMA_PPM))
         assert recorded["sigma_source"] == "instrument_class"
         assert recorded["mu_source"] == "none"
-        assert (recorded["fitted_anchors"], recorded["fitted_anchor_ions"]) == (10, 7)
+        assert _library_anchors(recorded) == (10, 7)
+
+
+def _ranked_at(config: dict) -> dict:
+    """The model a run's search ranked at, as its record keeps it: the v1
+    beside the v2 the run went on to, or the model itself."""
+    model = config["measurement_model"]
+    return model.get("ranked_at") or model
+
+
+def _library_anchors(record: dict) -> tuple[int, int]:
+    """The library lines and ions a v1 model was fitted on."""
+    anchors = record["anchors"]
+    return anchors["library_lines"], anchors["library_ions"]
 
 
 def _censored_library(
@@ -2950,7 +2968,9 @@ class TestTheRunFitsItsEnvelopeTolerance:
 
         scoring = mocks["compositions"].call_args.kwargs["scoring"]
         assert scoring.envelope_tolerance == tolerance
-        assert mocks["seeded"].await_args.kwargs["envelope_tolerance"] == tolerance
+        assert mocks["seeded"].await_args.kwargs["model"].envelope_tolerance == (
+            tolerance
+        )
 
         frame = pd.DataFrame(rows)
         fitted, today = (
@@ -3025,7 +3045,7 @@ class TestTheRunFitsItsEnvelopeTolerance:
         assert recorded["detect_snr"] == 3.0
         scoring = mocks["compositions"].call_args.kwargs["scoring"]
         assert scoring.envelope_tolerance == DEFAULT_TOLERANCE
-        assert mocks["seeded"].await_args.kwargs["envelope_tolerance"] == (
+        assert mocks["seeded"].await_args.kwargs["model"].envelope_tolerance == (
             DEFAULT_TOLERANCE
         )
 
@@ -3435,14 +3455,6 @@ class TestStageBWinnerConfidence:
         "other_candidates": "C14H13N5O2, C18H17N3",
     }
 
-    CENTRE = ReagentOffset(-0.9, 10, beyond_width=True)
-
-    #: The measurement the seeded re-score scored the winners at, which is not
-    #: Stage A's: fitted on the winners' own seeds.
-    RESCORED = SampleMassAccuracy(
-        mu_ppm=0.2, sigma_ppm=0.7, anchors=12, reagent=CENTRE, anchor_ions=9
-    )
-
     #: A secondary channel the run opened beside the sample's own adduct.
     OPENED = SimpleNamespace(
         ionization_mechanism_id="im-2",
@@ -3450,7 +3462,7 @@ class TestStageBWinnerConfidence:
         ionization_mechanism_polarity="+",
     )
 
-    def _start_with(self, recorder, *, rescored=RESCORED, opened=False):
+    def _start_with(self, recorder, *, opened=False):
         peaks = _peaks_df(
             [
                 ("p1", 181.0707, 10000.0),
@@ -3510,7 +3522,7 @@ class TestStageBWinnerConfidence:
         patches["seeded"] = patch(
             f"{_MOD}._seeded_rescore",
             new_callable=AsyncMock,
-            return_value=({}, rescored),
+            return_value=({}, None),
         )
         if opened:
             # The run opens a secondary channel for this sample, which the
@@ -3521,20 +3533,15 @@ class TestStageBWinnerConfidence:
                     mechanisms + [self.OPENED]
                 ),
             )
-        # A centre the run did measure, so the pass is seen to take the run's
-        # rather than one of its own.
-        patches["centre"] = patch(
-            f"{_MOD}._run_scoring_centre", return_value=self.CENTRE
-        )
         return _start(patches)
 
-    async def _ledger(self, *, rescored=RESCORED, opened=False, **options):
+    async def _ledger(self, *, opened=False, **options):
         from mascope_backend.api.new.peak_assignments.config import (
             PeakAssignmentConfig,
         )
 
         recorder = _Recorder()
-        mocks = self._start_with(recorder, rescored=rescored, opened=opened)
+        mocks = self._start_with(recorder, opened=opened)
         await _run(PeakAssignmentConfig(**{"run_untargeted": True, **options}))
         rows = {row["sample_peak_id"]: row for row in recorder.rows}
         scope = recorder.recorded_configs()[-1].get("search_scope")
@@ -3585,27 +3592,69 @@ class TestStageBWinnerConfidence:
         call = mocks["shortlist"].await_args
         # Every shortlist formula under every adduct the run searched.
         assert call.args[1] == {("C14H13N5O2", "im-1"), ("C18H17N3", "im-1")}
-        # At the measurement the winners' own fits were scored at, the seeded
-        # re-score's: one width for the winner and its rivals, never one
+        # At the model the winners' own fits were scored and capped at: one
+        # centre and one width for the winner and its rivals, never a model
         # fitted off a frame of mostly wrong formulas.
-        assert call.kwargs["inherited_accuracy"] is self.RESCORED
-        assert call.kwargs["reagent_offset"] is self.CENTRE
-        rescore = mocks["seeded"].call_args.kwargs
-        assert call.kwargs["envelope_tolerance"] is rescore["envelope_tolerance"]
+        assert call.kwargs["model"] == mocks["seeded"].call_args.kwargs["model"]
+        assert call.kwargs["model"].version == 1
 
     @pytest.mark.asyncio
-    async def test_a_re_score_that_scored_nothing_leaves_stage_a_s_measurement(
-        self,
-    ):
-        # Then every winner kept the finder's own fit, which the finder scored
-        # at Stage A's measurement.
-        _rows, _scope, mocks = await self._ledger(
-            rescored=None, stage_b_confidence=True
+    async def test_a_run_that_takes_v2_measures_and_records_v2(self):
+        # The refit puts the centre 1.5 ppm off v1's, beyond the bound: the run
+        # takes v2. The shortlist is then measured at v2, the model its
+        # winners were scored and capped at, and the run records v2, which
+        # every reader outside it reads.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_backend.api.new.peak_assignments.mass_gate import (
+            MassCalibration,
+        )
+        from mascope_tools.composition.calibration import (
+            Calibration,
+            apply_calibration,
+        )
+        from mascope_tools.composition.measurement_model import MeasurementModel
+
+        recorder = _Recorder()
+        mocks = self._start_with(recorder)
+        curve = Calibration(a=5.74, b=-3.36, instrument="orbi")
+        mocks["calibration"].return_value = curve
+        refitted = MassCalibration(mu_ppm=-1.5, sigma_ppm=0.2, anchors=40)
+        _start(
+            {
+                "refit": patch(
+                    "mascope_backend.api.new.peak_assignments.mass_gate."
+                    "fit_run_mass_accuracy",
+                    return_value=refitted,
+                )
+            }
         )
 
-        accuracy = mocks["centre"].call_args.args[0]
-        assert mocks["shortlist"].await_args.kwargs["inherited_accuracy"] is accuracy
-        assert accuracy is not self.RESCORED
+        await _run(PeakAssignmentConfig(run_untargeted=True, stage_b_confidence=True))
+
+        shortlist = mocks["shortlist"].await_args.kwargs["model"]
+        ranked = mocks["seeded"].call_args.kwargs["model"]
+        assert (ranked.version, shortlist.version) == (1, 2)
+        assert shortlist.scoring_mu_ppm == pytest.approx(-1.5)
+        config = recorder.recorded_configs()[-1]
+        assert config["measurement_model"]["gate"]["refit"]["adopted"] is True
+        recorded = MeasurementModel.from_run_config(config)
+        assert recorded.version == 2
+        assert recorded.scoring_mu_ppm == pytest.approx(-1.5)
+        assert recorded.record() == shortlist.record()
+        # The v1 the search ranked at is kept beside it.
+        assert config["measurement_model"]["ranked_at"] == ranked.record()
+        # The library's rows were scored again at v2, and read their
+        # P(correct) off the run's curve at the evidence v2 gave them.
+        assert config["measurement_model"]["gate"]["refit"]["rescored"] >= 1
+        listed = [row for row in recorder.rows if row.get("source") == "database"]
+        assert listed
+        for row in listed:
+            provenance = row["provenance"]
+            assert provenance["p_correct"] == round(
+                float(apply_calibration(provenance["evidence"], curve)), 4
+            )
 
     @pytest.mark.asyncio
     async def test_the_shortlist_is_tried_through_the_channels_the_run_opened(self):

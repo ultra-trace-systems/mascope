@@ -445,7 +445,8 @@ def reread_twins(
     - its envelope claimed the twin as its own heavy-halogen line;
     - its evidence, fit times plausibility, reaches ``candidate_threshold``;
     - its mass error sits within ``sigmas`` of the sample's width from the
-      sample's centre.
+      sample's centre at the reading's m/z, which a model with a trend moves
+      along the axis.
 
     It then replaces the peak's rows - the incumbent's, and the incumbent's
     lines with it - and the twin's, and its own lines join the frame's. A peak
@@ -473,7 +474,6 @@ def reread_twins(
     if not twins:
         return TwinReread(matches=matches, summary=summary)
     sigma = None if scoring is None else float(scoring.sigma_ppm)
-    mu = 0.0 if scoring is None else float(scoring.mu_ppm)
     records: dict[float, dict] = {}
     for halogen in TWIN_HALOGENS:
         mine = [twin for twin in twins if twin.halogen == halogen]
@@ -508,8 +508,13 @@ def reread_twins(
             if fit * plausibility < candidate_threshold:
                 continue
             error = reading.get("mz_error_ppm")
+            # The centre at the reading's m/z, which its fit read its lines'
+            # errors from and the mass gate caps at: a model with a trend
+            # moves it along the axis (``PatternScoring.centres_at``).
             if sigma is not None and (
-                error is None or abs(float(error) - mu) > sigmas * sigma
+                error is None
+                or abs(float(error) - float(scoring.centres_at(float(reading["mz"]))))
+                > sigmas * sigma
             ):
                 continue
             # The incumbent's rows, and everything at the peaks the reading

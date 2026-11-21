@@ -1,14 +1,13 @@
-"""Unit tests for the width and offset the seeded scoring chain scores at.
+"""Unit tests for the measurement model the seeded scoring chain scores at.
 
-The chain fits a sample's width and offset off the seeded frame itself, which a
-short seed list - a pin, the inspector's evidence for one family - cannot do.
-Such a list is scored at the instrument class's width, the one Stage A and the
-untargeted search stand in with, so one ion in one sample reads alike alone and
-among many seeds. Nor can it fit an offset, and it is centred where the
-sample's reagent lines put the axis, as Stage A centres one. A bright ion that
-matches eight lines alone is such a list too: its lines measure only itself. The matcher, the
-mechanism read and the reagent pre-pass are stubbed; the ions, the gating and
-the fit are the real ones. See ``seeded_scoring.py``.
+Every seed list is scored at one measurement model: the one its caller hands
+it - a run's, a decoy's control's - or, outside a run, the one the sample's
+latest run recorded (``service.recorded_model``). It never fits one of its own:
+a pin or the inspector's shortlist is a handful of formulas, mostly wrong ones,
+and a bright ion that matches eight lines alone measures only itself. So one
+ion in one sample reads alike alone and among many seeds. The matcher, the
+mechanism read and the recorded model are stubbed; the ions, the gating and the
+fit are the real ones. See ``seeded_scoring.py``.
 """
 
 from types import SimpleNamespace
@@ -25,7 +24,6 @@ from mascope_backend.api.new.peak_assignments.engine import (
     score_ions_by_fit,
 )
 from mascope_backend.api.new.peak_assignments.seeded_scoring import (
-    SEEDED_FIT_MIN_IONS,
     build_seeded_isotopes_df,
     score_seeds,
 )
@@ -36,6 +34,7 @@ from mascope_match.params import (
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS, label_purity
 from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
 from mascope_tools.composition.mass_accuracy import fit_sample_mass_accuracy
+from mascope_tools.composition.measurement_model import MeasurementModel
 from mascope_tools.composition.profiles import INSTRUMENT_FALLBACK_SIGMA_PPM
 
 
@@ -104,20 +103,38 @@ def _matched(
     return frame
 
 
-@pytest.fixture
-def reagent(monkeypatch):
-    """The sample's reagent pre-pass, as ``score_seeds`` resolves it: none by
-    default; set ``offset`` to give the sample's lines one. ``calls`` records
-    the samples it was resolved for, ``configs`` the configuration each was
-    resolved under."""
-    state = SimpleNamespace(offset=None, calls=[], configs=[])
+#: A sample its latest run recorded no model of its own for: the class's width,
+#: no centre, today's line tolerance.
+STAND_IN = MeasurementModel.v1(SampleMassAccuracy(), ORBI_WIDTH)
 
-    async def sample_reagent_offset(sample, config=None):
+
+def _model(mu_ppm=None, tolerance=None) -> MeasurementModel:
+    """A model at the class's width, centred at ``mu_ppm`` (a stand-in centre
+    from the reagent lines), reading a line's share at ``tolerance``."""
+    reagent = (
+        None
+        if mu_ppm is None
+        else ReagentOffset(mu_ppm=mu_ppm, lines=7, beyond_width=True)
+    )
+    return MeasurementModel.v1(
+        SampleMassAccuracy(reagent=reagent), ORBI_WIDTH, tolerance
+    )
+
+
+@pytest.fixture
+def recorded(monkeypatch):
+    """The model the sample's latest run recorded, as ``score_seeds`` reads it
+    outside a run: the stand-in by default; set ``model`` to give it another.
+    ``calls`` records the samples it was read for, ``configs`` the
+    configuration each was read under."""
+    state = SimpleNamespace(model=STAND_IN, calls=[], configs=[])
+
+    async def recorded_model(sample, config=None):
         state.calls.append(sample)
         state.configs.append(config)
-        return state.offset
+        return state.model
 
-    monkeypatch.setattr(service, "sample_reagent_offset", sample_reagent_offset)
+    monkeypatch.setattr(service, "recorded_model", recorded_model)
     return state
 
 
@@ -136,7 +153,7 @@ class _Frames(list):
 
 
 @pytest.fixture
-def stubbed(monkeypatch, reagent):
+def stubbed(monkeypatch, recorded):
     frames = _Frames()
     frames.purities = []
 
@@ -175,15 +192,6 @@ def stubbed(monkeypatch, reagent):
     monkeypatch.setattr(seeded_scoring, "build_seeded_isotopes_df", build)
     monkeypatch.setattr(seeded_scoring, "get_instrument_type", lambda name: "orbi")
 
-    async def recorded(sample_item_id):
-        # What the sample's latest run recorded of a line's tolerance: today's
-        # unless a test says.
-        frames.recorded_for.append(sample_item_id)
-        return frames.recorded_tolerance
-
-    frames.recorded_for = []
-    frames.recorded_tolerance = EnvelopeTolerance()
-    monkeypatch.setattr(seeded_scoring, "recorded_envelope_tolerance", recorded)
     return frames
 
 
@@ -202,8 +210,8 @@ async def test_a_lone_seed_scores_as_it_does_among_twenty_others(stubbed):
     crowd = await _fit({TARGET} | OTHERS)
 
     # The premise: one ion's three lines fit no width, twenty-one ions' do,
-    # and the crowd's is the class's own at no offset - so the two can only
-    # agree if the lone seed is scored at the class's width too.
+    # and the crowd's is the class's own at no offset. Both are scored at the
+    # sample's model, which neither frame fits.
     assert fit_sample_mass_accuracy(stubbed[0]) == (None, None)
     mu, sigma = fit_sample_mass_accuracy(stubbed[-1])
     assert mu == pytest.approx(0.0, abs=1e-9)
@@ -212,8 +220,8 @@ async def test_a_lone_seed_scores_as_it_does_among_twenty_others(stubbed):
 
 
 async def test_the_generic_width_would_read_the_lone_seed_otherwise(stubbed):
-    """Why the width is passed: scored without the class's width, the lone seed
-    is judged at the score's generic 2 ppm, where 0.5 ppm off reads as near
+    """Why the model's width matters: scored without it, the lone seed is
+    judged at the score's generic 2 ppm, where 0.5 ppm off reads as near
     perfect."""
     lone = await _fit({TARGET})
     generic = score_ions_by_fit(stubbed[-1])["match_score"].iloc[0]
@@ -235,7 +243,6 @@ async def test_a_lone_bright_seed_is_not_calibrated_on_its_own_lines(stubbed):
     mu, sigma = fit_sample_mass_accuracy(alone)
     assert mu == pytest.approx(TARGET_ERROR_PPM)
     assert sigma == pytest.approx(0.05)
-    assert alone["target_ion_id"].nunique() < SEEDED_FIT_MIN_IONS
     self_calibrated = score_ions_by_fit(
         seeded_scoring.apply_match_params(alone, OrbiMatchParams()),
         fallback_sigma_ppm=ORBI_WIDTH,
@@ -245,258 +252,159 @@ async def test_a_lone_bright_seed_is_not_calibrated_on_its_own_lines(stubbed):
     assert self_calibrated - bright > 0.2
 
 
-async def test_a_few_bright_seeds_sharing_an_offset_are_not_fitted(stubbed):
-    """Seven ions, each bright enough to match eight lines alone and all at one
-    offset: their lines agree as one ion's do, so fitted they would set the
-    offset at that error and the width at the floor. Seven is short of the
-    eight ions a seeded fit asks for, and they are scored at the class's
-    width, as the target is alone."""
-    stubbed.found_abundance = ORBI_DEFAULT_ISOTOPE_ABUNDANCE_THRESHOLD
-    stubbed.others_centre_ppm = TARGET_ERROR_PPM
-    stubbed.others_spread_ppm = 0.0
-    few = {TARGET} | set(sorted(OTHERS)[:6])
-    alone = await _fit({TARGET})
-    together = await _fit(few)
-    frame = stubbed[-1]
-
-    # The premise: every ion matched eight lines or more, at one offset, so a
-    # fit counting lines would measure that offset at the floor's width.
-    gated = seeded_scoring.apply_match_params(frame, OrbiMatchParams())
-    lines = gated[gated["sample_peak_intensity"] > 0].groupby("target_ion_id")
-    assert lines.size().size == 7
-    assert lines.size().min() >= 8
-    mu, sigma = fit_sample_mass_accuracy(frame)
-    assert mu == pytest.approx(TARGET_ERROR_PPM)
-    assert sigma == pytest.approx(0.05)
-    self_calibrated = score_ions_by_fit(gated, fallback_sigma_ppm=ORBI_WIDTH)
-    self_calibrated = self_calibrated.loc[
-        self_calibrated["target_compound_formula"] == TARGET[0], "match_score"
-    ].iloc[0]
-
-    assert together == pytest.approx(alone, abs=0.01)
-    assert self_calibrated - together > 0.2
-
-
-async def test_a_long_seed_list_still_fits_its_own_offset(stubbed):
-    """Twenty-one ions are enough: their lines measure the axis, not one ion,
-    and the frame is centred where they put it."""
-    stubbed.target_error_ppm = 0.0
-    centred = await _fit({TARGET})
+async def test_a_long_seed_list_is_not_centred_on_itself(stubbed):
+    """Twenty-one ions all 1.26 ppm off would fit their own offset there, and
+    read as on the axis. The chain fits none: they are read at the sample's
+    model, which puts them 1.26 ppm off it, as a run of the sample reads them
+    (a decoy's moved axis is the case this matters most for)."""
     stubbed.target_error_ppm = AXIS_PPM
     stubbed.others_centre_ppm = AXIS_PPM
     crowd = await _fit({TARGET} | OTHERS)
+    mu, _sigma = fit_sample_mass_accuracy(stubbed[-1])
+    stubbed.target_error_ppm = 0.0
+    stubbed.others_centre_ppm = 0.0
+    centred = await _fit({TARGET} | OTHERS)
 
-    assert stubbed[-1]["target_ion_id"].nunique() >= SEEDED_FIT_MIN_IONS
-    assert crowd == pytest.approx(centred, abs=0.01)
+    assert mu == pytest.approx(AXIS_PPM, abs=1e-6)
+    assert centred - crowd > 0.1
 
 
-async def test_a_lone_seed_is_centred_where_the_reagent_lines_put_the_axis(
-    stubbed, reagent
+async def test_a_seed_list_is_scored_at_the_centre_the_sample_s_model_puts(
+    stubbed, recorded
 ):
-    """A run of the sample centres a frame too short to fit an offset on its
-    reagent lines where they are beyond the width; the seeded readers - a pin,
-    the inspector, the batch ledger - read the same ion alike."""
+    """A pin, the inspector, the batch ledger: each reads the centre the
+    sample's latest run recorded, a stand-in centre from the reagent lines
+    included, as that run read its own rows."""
     stubbed.target_error_ppm = 0.0
     centred = await _fit({TARGET})
     stubbed.target_error_ppm = AXIS_PPM
     uncorrected = await _fit({TARGET})
-    reagent.offset = ReagentOffset(mu_ppm=AXIS_PPM, lines=7, beyond_width=True)
+    recorded.model = _model(AXIS_PPM)
     corrected = await _fit({TARGET})
 
-    assert reagent.calls == [SAMPLE] * 3
-    assert fit_sample_mass_accuracy(stubbed[-1]) == (None, None)
+    assert recorded.calls == [SAMPLE] * 3
     assert corrected == pytest.approx(centred, abs=0.01)
     # Uncorrected, 2.2 widths off reads as a much worse ion.
     assert corrected - uncorrected > 0.1
 
 
-async def test_the_sample_is_resolved_under_the_callers_configuration(stubbed, reagent):
+async def test_the_sample_is_read_under_the_callers_configuration(stubbed, recorded):
     """The batch ledger's propagation is a step of a batch search whose
-    profile may be overridden, and resolves the sample under that search's
-    configuration; a pin or the inspector, with none, under the default."""
+    profile may be overridden, and reads the sample under that search's
+    configuration where no run recorded a model; a pin or the inspector, with
+    none, under the default."""
     config = PeakAssignmentConfig(profile="UR")
 
     await _fit({TARGET}, config=config)
     await _fit({TARGET})
 
-    assert reagent.configs == [config, None]
+    assert recorded.configs == [config, None]
 
 
-async def test_an_offset_inside_the_width_is_not_taken(stubbed, reagent):
-    """As in Stage A: lines that put the axis inside the width say nothing the
-    score does not already allow for."""
+async def test_a_handed_model_is_used_and_none_is_read(stubbed, recorded):
+    """A caller inside a run hands over its model; the sample's recorded one
+    is then not read."""
     stubbed.target_error_ppm = AXIS_PPM
-    uncorrected = await _fit({TARGET})
-    reagent.offset = ReagentOffset(mu_ppm=AXIS_PPM, lines=7, beyond_width=False)
-
-    assert await _fit({TARGET}) == pytest.approx(uncorrected)
-
-
-async def test_a_runs_own_offset_is_used_and_none_is_resolved(stubbed, reagent):
-    """A caller inside a run hands over its pre-pass's offset, None included
-    (a profile with no reagent library); the sample's is then not read
-    again."""
-    stubbed.target_error_ppm = AXIS_PPM
-    reagent.offset = ReagentOffset(mu_ppm=AXIS_PPM, lines=7, beyond_width=True)
+    recorded.model = _model(AXIS_PPM)
     resolved = await _fit({TARGET})
-    reagent.calls.clear()
+    recorded.calls.clear()
 
-    handed = await _fit(
-        {TARGET},
-        reagent_offset=ReagentOffset(mu_ppm=AXIS_PPM, lines=7, beyond_width=True),
-    )
-    no_library = await _fit({TARGET}, reagent_offset=None)
+    handed = await _fit({TARGET}, model=_model(AXIS_PPM))
+    uncentred = await _fit({TARGET}, model=STAND_IN)
 
-    assert reagent.calls == []
+    assert recorded.calls == []
     assert handed == pytest.approx(resolved)
-    assert resolved - no_library > 0.1
+    assert resolved - uncentred > 0.1
 
 
-async def test_a_runs_seeded_re_score_is_handed_the_runs_offset(stubbed, reagent):
+async def test_a_runs_seeded_re_score_is_scored_at_the_runs_model(stubbed, recorded):
     """The untargeted stage's commits are measured again through this chain
-    (``service._seeded_fits``) at the offset the run's pre-pass read, the one
-    Stage A was scored at, and the sample's lines are not claimed twice."""
+    (``service._seeded_rescore``) at the run's model, the one Stage A was
+    scored at and the search ranked at, and none is read or fitted."""
     stubbed.target_error_ppm = AXIS_PPM
-    offset = ReagentOffset(mu_ppm=AXIS_PPM, lines=7, beyond_width=True)
+    model = _model(AXIS_PPM)
 
-    fits = await service._seeded_fits(
-        SAMPLE,
-        OrbiMatchParams(),
-        {TARGET},
-        reagent_offset=offset,
-        envelope_tolerance=None,
+    fits, frame = await service._seeded_rescore(
+        SAMPLE, OrbiMatchParams(), {TARGET}, model=model
     )
 
-    assert reagent.calls == []
-    assert fits[TARGET] == pytest.approx(await _fit({TARGET}, reagent_offset=offset))
-    assert fits[TARGET] - await _fit({TARGET}, reagent_offset=None) > 0.1
+    assert recorded.calls == []
+    assert fits[TARGET] == pytest.approx(await _fit({TARGET}, model=model))
+    assert fits[TARGET] - await _fit({TARGET}, model=STAND_IN) > 0.1
+    assert set(frame.ion_by_seed) == {TARGET}
 
 
-async def test_a_decoy_s_re_score_is_scored_at_its_control_s_measurement(
-    stubbed, reagent
-):
-    """A decoy run's commits sit on an axis moved on purpose, and a list long
-    enough to fit its own offset would centre on the move. Inside a decoy the
-    re-score takes its control's measurement whatever the list's length
-    (``decoy.inherited_accuracy``), through every step of the chain."""
+async def test_the_re_score_s_frame_scores_again_as_a_fresh_pass_would(stubbed):
+    """The run scores its rows again at a refitted model off the frame the
+    re-score kept (``service.fits_at``): the same lines, the same gate, at the
+    new centre and width, without another match pass."""
+    stubbed.target_error_ppm = AXIS_PPM
+    seeds = {TARGET} | set(sorted(OTHERS)[:3])
+    _fits, frame = await service._seeded_rescore(
+        SAMPLE, OrbiMatchParams(), seeds, model=STAND_IN
+    )
+    passes = len(stubbed)
+
+    again = service.fits_at(_model(AXIS_PPM), None, frame)
+
+    assert len(stubbed) == passes
+    for seed in seeds:
+        assert again["untargeted"][seed] == pytest.approx(
+            await _fit_seed(seed, seeds, model=_model(AXIS_PPM))
+        )
+
+
+async def _fit_seed(seed, seeds, **kwargs):
+    ion_by_seed, fit_by_ion, _errors, _scored = await score_seeds(
+        SAMPLE, seeds, OrbiMatchParams(), **kwargs
+    )
+    return fit_by_ion[ion_by_seed[seed]]
+
+
+async def test_a_decoy_s_re_score_is_scored_at_its_control_s_model(stubbed):
+    """A decoy run's commits sit on an axis moved on purpose. A list long
+    enough to fit its own offset would centre on the move; the re-score reads
+    its control's model instead, through every step of the chain."""
     stubbed.target_error_ppm = 3.0
     stubbed.others_centre_ppm = 3.0
     seeds = {TARGET} | OTHERS
-    control = SampleMassAccuracy(mu_ppm=0.0, sigma_ppm=0.2, anchors=40, anchor_ions=12)
-
-    own = await service._seeded_fits(
-        SAMPLE, OrbiMatchParams(), seeds, reagent_offset=None, envelope_tolerance=None
+    control = MeasurementModel.v1(
+        SampleMassAccuracy(mu_ppm=0.0, sigma_ppm=0.2, anchors=40, anchor_ions=12),
+        ORBI_WIDTH,
     )
-    decoy = await service._seeded_fits(
-        SAMPLE,
-        OrbiMatchParams(),
-        seeds,
-        reagent_offset=None,
-        envelope_tolerance=None,
-        inherited_accuracy=control,
+    stubbed.others_centre_ppm = 0.0
+    stubbed.target_error_ppm = 0.0
+    on_axis, _ = await service._seeded_rescore(
+        SAMPLE, OrbiMatchParams(), seeds, model=control
     )
-
-    # Fitted, the frame is centred on the move and the target reads as on the
-    # axis; at the control's centre it reads three ppm off it.
-    assert own[TARGET] - decoy[TARGET] > 0.3
-    assert reagent.calls == []
-
-
-@pytest.mark.parametrize("frame", ["crowd", "bright", "centred"])
-async def test_a_runs_re_score_hands_on_the_measurement_it_scored_at(stubbed, frame):
-    """A run's winner-confidence pass scores the winners' shortlists where the
-    seeded re-score scored the winners (``seeded_scoring.scored_accuracy``),
-    so an ion read there reads as it did among them: one width for a winner
-    and its rivals. Whatever the re-score scored at: a crowd's own fit off the
-    axis, the class's width for a lone bright ion whose own lines would fit
-    one, the reagent lines' centre for a frame too short to fit any."""
-    seeds = {TARGET}
-    offset = None
-    if frame == "crowd":
-        stubbed.others_centre_ppm = TARGET_ERROR_PPM
-        seeds |= OTHERS
-    elif frame == "bright":
-        stubbed.found_abundance = ORBI_DEFAULT_ISOTOPE_ABUNDANCE_THRESHOLD
-    else:
-        stubbed.target_error_ppm = AXIS_PPM
-        offset = ReagentOffset(mu_ppm=AXIS_PPM, lines=7, beyond_width=True)
-
-    fits, accuracy = await service._seeded_rescore(
-        SAMPLE,
-        OrbiMatchParams(),
-        seeds,
-        reagent_offset=offset,
-        envelope_tolerance=None,
+    stubbed.target_error_ppm = 3.0
+    stubbed.others_centre_ppm = 3.0
+    decoy, _ = await service._seeded_rescore(
+        SAMPLE, OrbiMatchParams(), seeds, model=control
     )
 
-    assert await _fit({TARGET}, inherited_accuracy=accuracy) == pytest.approx(
-        fits[TARGET]
-    )
-    if frame == "crowd":
-        # The premise: twenty-one ions fit an offset of their own, off the
-        # axis, so a lone seed fitting none reads differently.
-        assert accuracy.mu_ppm == pytest.approx(TARGET_ERROR_PPM, abs=0.05)
-        assert fits[TARGET] - await _fit({TARGET}) > 0.05
+    # At the control's centre the target reads three ppm off it.
+    assert on_axis[TARGET] - decoy[TARGET] > 0.3
 
 
-async def test_a_decoy_s_re_score_hands_on_its_control_s_measurement(stubbed):
-    control = SampleMassAccuracy(mu_ppm=0.0, sigma_ppm=0.2, anchors=40, anchor_ions=12)
-
-    _fits, accuracy = await service._seeded_rescore(
-        SAMPLE,
-        OrbiMatchParams(),
-        {TARGET} | OTHERS,
-        reagent_offset=None,
-        envelope_tolerance=None,
-        inherited_accuracy=control,
+async def test_a_re_score_with_nothing_to_score_hands_on_nothing(stubbed, monkeypatch):
+    no_seeds = await service._seeded_rescore(
+        SAMPLE, OrbiMatchParams(), set(), model=STAND_IN
     )
 
-    assert accuracy is control
-
-
-async def test_a_re_score_that_scored_nothing_hands_on_nothing(stubbed, monkeypatch):
-    """Its winners keep the finder's own fits, which the run's caller reads at
-    Stage A's measurement instead."""
-    _fits, no_seeds = await service._seeded_rescore(
-        SAMPLE, OrbiMatchParams(), set(), reagent_offset=None, envelope_tolerance=None
-    )
-
-    async def nothing_matched(filename, target_isotopes_df, polarity):
+    async def nothing(**_kwargs):
         return pd.DataFrame()
 
-    monkeypatch.setattr(seeded_scoring, "compute_match_isotopes", nothing_matched)
-    fits, no_lines = await service._seeded_rescore(
-        SimpleNamespace(**vars(SAMPLE), sample_item_name="Sample One"),
+    monkeypatch.setattr(seeded_scoring, "compute_match_isotopes", nothing)
+    no_lines = await service._seeded_rescore(
+        SimpleNamespace(**vars(SAMPLE), sample_item_name="sample"),
         OrbiMatchParams(),
         {TARGET},
-        reagent_offset=ReagentOffset(mu_ppm=AXIS_PPM, lines=7, beyond_width=True),
-        envelope_tolerance=None,
+        model=STAND_IN,
     )
 
-    assert (no_seeds, no_lines, fits) == (None, None, {})
-
-
-async def test_a_run_centres_its_re_score_where_stage_a_was_scored():
-    """Stage A and the search are scored at ``scoring_mu_ppm``: the library's
-    own fit where it made one, which need not be the reagent lines', and the
-    lines' only otherwise. The re-score of the search's commits is handed that
-    centre, not the lines' alone."""
-    lines = ReagentOffset(mu_ppm=AXIS_PPM, lines=7, beyond_width=True)
-    inside = ReagentOffset(mu_ppm=AXIS_PPM, lines=7, beyond_width=False)
-
-    fitted = service._run_scoring_centre(
-        SampleMassAccuracy(mu_ppm=0.2, sigma_ppm=0.3, anchors=9, reagent=lines)
-    )
-    assert (fitted.mu_ppm, fitted.lines, fitted.beyond_width) == (0.2, 9, True)
-    assert (
-        service._run_scoring_centre(SampleMassAccuracy(anchors=2, reagent=lines))
-        == lines
-    )
-    assert (
-        service._run_scoring_centre(SampleMassAccuracy(anchors=2, reagent=inside))
-        is None
-    )
-    assert service._run_scoring_centre(SampleMassAccuracy()) is None
+    assert no_seeds == ({}, None)
+    assert no_lines == ({}, None)
 
 
 async def test_the_seeds_are_read_at_the_purity_of_the_samples_setup(stubbed):
@@ -518,40 +426,31 @@ CENTRED_LOW = EnvelopeTolerance(centre=-0.1, floor=0.05)
 
 
 async def test_a_seed_list_outside_a_run_is_read_at_its_latest_runs_tolerance(
-    stubbed,
+    stubbed, recorded
 ):
     """A pin, the inspector, the batch ledger's propagation: none of them is a
     run, and each reads a line at the tolerance the sample's latest run fitted,
-    as that run read its own rows."""
-    stubbed.recorded_tolerance = CENTRED_LOW
+    with the rest of its model, as that run read its own rows."""
+    recorded.model = _model(tolerance=CENTRED_LOW)
 
     resolved = await _fit({TARGET})
 
-    assert stubbed.recorded_for == ["si-1"]
+    assert recorded.calls == [SAMPLE]
     assert resolved == pytest.approx(
-        await _fit({TARGET}, envelope_tolerance=CENTRED_LOW)
+        await _fit({TARGET}, model=_model(tolerance=CENTRED_LOW))
     )
-    assert resolved < await _fit({TARGET}, envelope_tolerance=None) - 0.05
+    assert resolved < await _fit({TARGET}, model=STAND_IN) - 0.05
 
 
-async def test_a_runs_seeded_re_score_is_handed_the_runs_tolerance(stubbed):
+async def test_a_runs_seeded_re_score_is_handed_the_runs_tolerance(stubbed, recorded):
     """The search's commits are measured again at the tolerance Stage A fitted,
-    not at what an earlier run recorded."""
-    stubbed.recorded_tolerance = EnvelopeTolerance()
-
-    fits = await service._seeded_fits(
-        SAMPLE,
-        OrbiMatchParams(),
-        {TARGET},
-        reagent_offset=None,
-        envelope_tolerance=CENTRED_LOW,
+    the run's model's, not at what an earlier run recorded."""
+    fits, _frame = await service._seeded_rescore(
+        SAMPLE, OrbiMatchParams(), {TARGET}, model=_model(tolerance=CENTRED_LOW)
     )
 
-    assert stubbed.recorded_for == []
-    assert fits[TARGET] == pytest.approx(
-        await _fit({TARGET}, reagent_offset=None, envelope_tolerance=CENTRED_LOW)
-    )
-    assert fits[TARGET] < await _fit({TARGET}, envelope_tolerance=None) - 0.05
+    assert recorded.calls == []
+    assert fits[TARGET] < await _fit({TARGET}, model=STAND_IN) - 0.05
 
 
 def _low_resolution(mz):
@@ -590,8 +489,7 @@ async def test_a_runs_re_score_is_handed_the_runs_resolution(stubbed, monkeypatc
         SAMPLE,
         OrbiMatchParams(),
         {TARGET},
-        reagent_offset=None,
-        envelope_tolerance=None,
+        model=STAND_IN,
         resolution=_low_resolution,
     )
 

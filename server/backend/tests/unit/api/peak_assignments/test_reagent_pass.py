@@ -42,6 +42,8 @@ from mascope_tools.composition.heuristic_filter import (
     predict_isotopes,
     predict_resolved_isotopes,
 )
+from mascope_tools.composition.mass_accuracy import SampleMassAccuracy
+from mascope_tools.composition.measurement_model import MeasurementModel
 from mascope_tools.composition.reagents import (
     DEFAULT_ISOTOPOLOGUE_MIN_RELATIVE,
     FAMILY_FRAGMENT,
@@ -362,11 +364,13 @@ class TestWhereTheClaimedLinesPutTheAxis:
 
 
 class TestTheOffsetOutsideARun:
-    """The seeded chain reads the offset a run's pre-pass would, with no run.
+    """The model a reader outside a run reads centres where a run's pre-pass
+    would, with no run (``service.recorded_measurement``).
 
     A pin, the inspector and the batch ledger's propagation score a short seed
-    list that fits no offset of its own, and a run of the same sample centres
-    such a list on the reagent lines (MAS-375).
+    list that fits no model of its own, and a run of the same sample centres
+    such a list on the reagent lines where its library fitted nothing
+    (MAS-375).
     """
 
     _urea = staticmethod(TestWhereTheClaimedLinesPutTheAxis._urea)
@@ -453,36 +457,47 @@ class TestTheOffsetOutsideARun:
             return peaks
 
         async def no_run(sample_item_id):
-            return None
+            return None, None
 
         notation = "[M+CH4N2O+H]+"
         monkeypatch.setattr(service, "fetch_sample_mechanisms", mechanisms)
         monkeypatch.setattr(service, "load_sample_peaks", load_peaks)
         monkeypatch.setattr(service, "get_instrument_type", lambda name: "orbi")
-        monkeypatch.setattr(service, "_latest_run_pattern_scoring", no_run)
+        monkeypatch.setattr(service, "_latest_in_app_run", no_run)
         sample = SimpleNamespace(sample_item_id="s1", filename="sample", polarity="+")
 
-        offset = await service.sample_reagent_offset(sample)
+        recorded, model, from_record = await service.recorded_measurement(sample)
 
         assert read == [sample]
+        assert recorded is None and not from_record
+        offset = model.reagent
         assert offset == _run_pre_pass(peaks, "UR", "orbi")[2]
         assert offset.mu_ppm == pytest.approx(-1.3, abs=0.05)
         assert offset.beyond_width
+        # The lines stand in for the centre a thin library could not fit, at
+        # the class's width.
+        assert model.mu_source == "reagent"
+        assert model.scoring_mu_ppm == pytest.approx(offset.mu_ppm)
+        assert model.sigma_ppm is None
 
         # The same lines on a sample whose mechanisms name no reagent source:
         # no library, so nothing to ask.
         notation = "[M+H]+"
-        assert await service.sample_reagent_offset(sample) is None
+        model = await service.recorded_model(sample)
+        assert model.reagent is None
+        assert model.mu_source == "none"
 
         # A caller's own configuration picks the profile: one that names the
         # reagent finds the lines the mechanisms alone would not.
         config = PeakAssignmentConfig(profile="UR")
-        assert await service.sample_reagent_offset(sample, config) == offset
+        assert (await service.recorded_model(sample, config)).reagent == offset
 
         # And the instrument class sets the width the offset must clear.
         notation = "[M+CH4N2O+H]+"
         monkeypatch.setattr(service, "get_instrument_type", lambda name: "tof")
-        assert not (await service.sample_reagent_offset(sample)).beyond_width
+        model = await service.recorded_model(sample)
+        assert not model.reagent.beyond_width
+        assert model.mu_source == "none"
 
     @pytest.mark.asyncio
     async def test_a_sample_is_centred_where_its_latest_run_scored(self, monkeypatch):
@@ -494,17 +509,19 @@ class TestTheOffsetOutsideARun:
         # are centred there, not on the lines.
         peaks = self._urea(-0.9, -0.9)
         recorded = {
-            "mu_ppm": -0.05,
-            "mu_source": "fitted",
-            "fitted_anchors": 12,
-            "reagent_lines": 3,
-            "reagent_mu_ppm": -0.9,
+            "pattern_scoring": {
+                "mu_ppm": -0.05,
+                "mu_source": "fitted",
+                "fitted_anchors": 12,
+                "reagent_lines": 3,
+                "reagent_mu_ppm": -0.9,
+            }
         }
         asked, read = [], []
 
         async def latest(sample_item_id):
             asked.append(sample_item_id)
-            return recorded
+            return "run-1", recorded
 
         async def mechanisms(sample):
             return ["im-urea"], [SimpleNamespace(ionization_mechanism="[M+CH4N2O+H]+")]
@@ -513,45 +530,72 @@ class TestTheOffsetOutsideARun:
             read.append(sample)
             return peaks
 
-        monkeypatch.setattr(service, "_latest_run_pattern_scoring", latest)
+        monkeypatch.setattr(service, "_latest_in_app_run", latest)
         monkeypatch.setattr(service, "fetch_sample_mechanisms", mechanisms)
         monkeypatch.setattr(service, "load_sample_peaks", load_peaks)
         monkeypatch.setattr(service, "get_instrument_type", lambda name: "orbi")
         sample = SimpleNamespace(sample_item_id="s1", filename="sample", polarity="+")
         assert _run_pre_pass(peaks, "UR", "orbi")[2].beyond_width
 
-        offset = await service.sample_reagent_offset(sample)
+        _, model, from_record = await service.recorded_measurement(sample)
 
+        # One read of the latest run answers it.
         assert asked == ["s1"]
-        assert offset == service.ReagentOffset(
-            mu_ppm=-0.05, lines=12, beyond_width=True
-        )
+        assert from_record
+        assert model.mu_source == "fitted"
+        assert model.scoring_mu_ppm == pytest.approx(-0.05)
         # The run's record answers it: the peaks are not read.
         assert read == []
 
         # A run that stood the lines in scored at them.
         recorded = {
-            "mu_ppm": -0.9,
-            "mu_source": "reagent",
-            "fitted_anchors": 1,
-            "reagent_lines": 3,
-            "reagent_mu_ppm": -0.9,
+            "pattern_scoring": {
+                "mu_ppm": -0.9,
+                "mu_source": "reagent",
+                "fitted_anchors": 1,
+                "reagent_lines": 3,
+                "reagent_mu_ppm": -0.9,
+            }
         }
-        assert await service.sample_reagent_offset(sample) == service.ReagentOffset(
-            mu_ppm=-0.9, lines=3, beyond_width=True
-        )
+        model = await service.recorded_model(sample)
+        assert model.mu_source == "reagent"
+        assert model.scoring_mu_ppm == pytest.approx(-0.9)
         # A run that scored the sample uncorrected leaves it uncorrected, even
         # where the lines today would say otherwise.
-        recorded = {"mu_ppm": 0.0, "mu_source": "none", "fitted_anchors": 0}
-        assert await service.sample_reagent_offset(sample) is None
+        recorded = {
+            "pattern_scoring": {"mu_ppm": 0.0, "mu_source": "none", "fitted_anchors": 0}
+        }
+        model = await service.recorded_model(sample)
+        assert model.mu_ppm is None
+        assert model.scoring_mu_ppm == 0.0
+        assert read == []
+
+        # A run's one record is read as it stands, centre and width.
+        recorded = {
+            "measurement_model": {
+                "version": 2,
+                "mu_ppm": -0.2,
+                "mu_source": "fitted",
+                "sigma_ppm": 0.1,
+                "fallback_sigma_ppm": 0.3,
+                "width_floor_ppm": 0.58,
+            }
+        }
+        model = await service.recorded_model(sample)
+        assert model.version == 2
+        assert model.scoring_mu_ppm == pytest.approx(-0.2)
+        assert model.width_ppm == pytest.approx(0.58)
         assert read == []
 
         # A record from before the offset was recorded says nothing, and the
         # lines are claimed as with no run at all.
-        recorded = {"sigma_ppm": 0.6, "sigma_source": "instrument_class"}
-        offset = await service.sample_reagent_offset(sample)
+        recorded = {
+            "pattern_scoring": {"sigma_ppm": 0.6, "sigma_source": "instrument_class"}
+        }
+        _, model, from_record = await service.recorded_measurement(sample)
         assert read == [sample]
-        assert offset == _run_pre_pass(peaks, "UR", "orbi")[2]
+        assert not from_record
+        assert model.reagent == _run_pre_pass(peaks, "UR", "orbi")[2]
 
     @pytest.mark.asyncio
     async def test_a_caller_with_the_peaks_and_profile_is_not_read_again(
@@ -566,7 +610,7 @@ class TestTheOffsetOutsideARun:
         )
 
         async def no_run(sample_item_id):
-            return None
+            return None, None
 
         async def unread(*args, **kwargs):
             raise AssertionError("resolved again")
@@ -574,7 +618,7 @@ class TestTheOffsetOutsideARun:
         def unloaded(sample):
             raise AssertionError("read again")
 
-        monkeypatch.setattr(service, "_latest_run_pattern_scoring", no_run)
+        monkeypatch.setattr(service, "_latest_in_app_run", no_run)
         monkeypatch.setattr(service, "fetch_sample_mechanisms", unread)
         monkeypatch.setattr(service, "load_sample_peaks", unloaded)
         peaks = self._urea(-1.3, -1.3)
@@ -586,11 +630,16 @@ class TestTheOffsetOutsideARun:
         )
         sample = SimpleNamespace(sample_item_id="s1", filename="sample", polarity="+")
 
-        offset = await service.sample_reagent_offset(
+        model = await service.recorded_model(
             sample, peaks_df=peaks, resolved_profile=resolved
         )
 
-        assert offset == _run_pre_pass(peaks, "UR", "orbi")[2]
+        assert model.reagent == _run_pre_pass(peaks, "UR", "orbi")[2]
+
+        # A caller that claimed the lines itself hands them over, None
+        # included: nothing is claimed again.
+        model = await service.recorded_model(sample, reagent_offset=None)
+        assert model.reagent is None
 
 
 def tof(mz: float) -> float:
@@ -707,16 +756,16 @@ class TestATofIsotopeLineIsOnePeak:
             return ["im-urea"], [SimpleNamespace(ionization_mechanism="[M+CH4N2O+H]+")]
 
         async def no_run(sample_item_id):
-            return None
+            return None, None
 
         monkeypatch.setattr(service, "_resolution_of", resolution_of)
         monkeypatch.setattr(service, "fetch_sample_mechanisms", mechanisms)
         monkeypatch.setattr(service, "load_sample_peaks", lambda sample: peaks)
         monkeypatch.setattr(service, "get_instrument_type", lambda name: "tof")
-        monkeypatch.setattr(service, "_latest_run_pattern_scoring", no_run)
+        monkeypatch.setattr(service, "_latest_in_app_run", no_run)
         sample = SimpleNamespace(sample_item_id="s1", filename="sample", polarity="+")
 
-        offset = await service.sample_reagent_offset(sample)
+        offset = (await service.recorded_model(sample)).reagent
 
         assert asked == [sample]
         assert offset == _run_pre_pass(peaks, "UR", "tof", resolution=tof)[2]
@@ -1619,9 +1668,14 @@ class TestTheReadingChangesSettleBeforeTheFragmentClaimIsKept:
         from mascope_backend.api.new.peak_assignments import service
 
         measured = []
+
+        def measure(ledger, **_):
+            measured.append(len(ledger))
+            return {}, None
+
         judging = service.Judging(
             rows,
-            stage_a_accuracy=None,
+            model=MeasurementModel.v1(SampleMassAccuracy(), 1.0),
             fallback_sigma_ppm=1.0,
             notation_by_id=notations,
             mz_tolerance_ppm=5.0,
@@ -1635,7 +1689,7 @@ class TestTheReadingChangesSettleBeforeTheFragmentClaimIsKept:
         with patch.object(
             service,
             "measure_mass_gate",
-            side_effect=lambda ledger, **_: measured.append(len(ledger)) or {},
+            side_effect=measure,
         ):
             judging.refit()
             judging.judge()

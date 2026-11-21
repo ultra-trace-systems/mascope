@@ -3753,6 +3753,45 @@ describe('PanePeakAssign mass z', () => {
 
     expect(massZ(wrapper).exists()).toBe(false)
   })
+
+  // A run records one measurement model: the centre and the width its rows
+  // were scored and capped at, with the gate's caps under `gate`.
+  const MODEL = {
+    version: 2,
+    mu_ppm: -0.21,
+    sigma_ppm: 0.12,
+    width_ppm: 0.58,
+    centre: 'constant',
+    gate: { cap_z: 3, floor_z: 6 }
+  }
+  const withModel = (model) => ({ engine: 'mascope', config: { measurement_model: model } })
+
+  it("reads the run's measurement model: its width and the gate's caps", async () => {
+    focusedAssignment = { ...ROW, mass_z: -3.4 }
+    runRecord = withModel(MODEL)
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(massZ(wrapper).find('.v').classes()).toContain('far')
+    expect(massZ(wrapper).find('.k').attributes('data-tooltip')).toBe(
+      [
+        "The m/z error in widths of the run's own mass calibration at this m/z.",
+        'The run measured a centre of -0.21 ppm and a width of 0.58 ppm.',
+        'Beyond 3 widths an uncorroborated row stays at candidate; beyond 6, below ' +
+          'assignability.'
+      ].join('\n')
+    )
+  })
+
+  it('takes the model over an older record beside it', async () => {
+    focusedAssignment = { ...ROW, mass_z: -3.4 }
+    runRecord = {
+      engine: 'mascope',
+      config: { measurement_model: MODEL, mass_calibration: { ...CALIBRATION, cap_z: 9 } }
+    }
+    const wrapper = await mountPane()
+
+    expect(massZ(wrapper).find('.v').classes()).toContain('far')
+  })
 })
 
 // The readings of the committed ion that the run did not commit: the same ion

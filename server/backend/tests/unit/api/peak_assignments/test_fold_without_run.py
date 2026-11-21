@@ -197,6 +197,8 @@ def _patched(
         SampleMassAccuracy(),
         NO_ENVELOPE_FIT,
         frozenset(),
+        pd.DataFrame(),
+        None,
     )
     return stack, mocks
 
@@ -436,6 +438,8 @@ async def test_the_fold_gates_its_stage_a_rows_as_a_run_does():
         SampleMassAccuracy(0.0, 0.1, 12),
         NO_ENVELOPE_FIT,
         frozenset(),
+        pd.DataFrame(),
+        None,
     )
     with stack:
         assert await fold_sample_peaks_without_run("si-1") == "batch-1"
@@ -505,6 +509,8 @@ async def test_the_fold_anchors_its_gate_on_the_source_s_lines_as_a_run_does(
         SampleMassAccuracy(),
         NO_ENVELOPE_FIT,
         frozenset(),
+        pd.DataFrame(),
+        None,
     )
     with stack:
         assert await fold_sample_peaks_without_run("si-1") == "batch-1"
@@ -587,6 +593,8 @@ async def test_the_fold_reads_an_isotopologue_s_line_as_a_run_does(
         SampleMassAccuracy(0.0, 0.1, 12),
         NO_ENVELOPE_FIT,
         frozenset(),
+        pd.DataFrame(),
+        None,
     )
     mocks["peaks"].return_value = pd.DataFrame(peaks)
     # Twenty-ppm lines, so the neighbour 30 ppm off sits 1.5 of them away and
@@ -652,6 +660,8 @@ async def test_the_fold_asks_a_mirror_rows_nitrogen_count_as_a_run_does(
         SampleMassAccuracy(),
         NO_ENVELOPE_FIT,
         frozenset(),
+        pd.DataFrame(),
+        None,
     )
     mocks["peaks"].return_value = pd.DataFrame(peaks)
     mocks["mechanisms"].return_value = (
@@ -700,6 +710,8 @@ async def test_the_fold_reads_a_list_through_the_channels_a_run_opens():
         SampleMassAccuracy(),
         NO_ENVELOPE_FIT,
         frozenset(),
+        pd.DataFrame(),
+        None,
     )
     # The window starts above every probe of the source's channels, so its
     # silence there is the window's and the channels are opened.
@@ -1125,6 +1137,8 @@ async def test_the_folds_second_channel_cap_is_told_what_the_lists_name():
         SampleMassAccuracy(),
         NO_ENVELOPE_FIT,
         listed,
+        pd.DataFrame(),
+        None,
     )
     with stack:
         cap = stack.enter_context(
@@ -1172,6 +1186,8 @@ async def test_the_fold_reads_a_fragment_as_the_source_s_as_a_run_does():
         SampleMassAccuracy(),
         NO_ENVELOPE_FIT,
         frozenset(),
+        pd.DataFrame(),
+        None,
     )
     mocks["peaks"].return_value = pd.DataFrame(
         {

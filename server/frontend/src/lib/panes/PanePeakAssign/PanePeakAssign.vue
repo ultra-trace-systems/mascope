@@ -1040,10 +1040,19 @@ const massZ = computed(() => {
   const z = focusedAssignment.value?.mass_z ?? provenance.value?.mass_z
   return typeof z === 'number' && Number.isFinite(z) ? z : null
 })
-// What the distance is measured in, recorded once on the run.
+// What the distance is measured in, recorded once on the run: its measurement
+// model, the centre and width the row's fit was scored at too, with what its
+// mass gate capped at it. A run from before the one record kept the gate's
+// calibration under its own key.
+const isRecord = (value) => value != null && typeof value === 'object' && !Array.isArray(value)
 const massCalibration = computed(() => {
-  const record = app.data.peakAssignment.peak.run?.config?.mass_calibration
-  return record && typeof record === 'object' && !Array.isArray(record) ? record : null
+  const config = app.data.peakAssignment.peak.run?.config
+  const model = config?.measurement_model
+  if (isRecord(model)) {
+    const gate = isRecord(model.gate) ? model.gate : {}
+    return { ...model, gate_sigma_ppm: model.width_ppm, cap_z: gate.cap_z, floor_z: gate.floor_z }
+  }
+  return isRecord(config?.mass_calibration) ? config.mass_calibration : null
 })
 // Past the distance the gate caps a row at: marked, since that is what a reader
 // scanning the card needs to see. Whether the cap applied is the reasons' to

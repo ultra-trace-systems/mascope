@@ -2668,7 +2668,7 @@ class PeakAssignmentRun(Base):
     )
     # The mass-error width an imported run's engine disclosed it scored at:
     # ``sigma_ppm``, ``sigma_source``, ``mu_ppm``, ``mu_source``. An in-app
-    # run keeps the same numbers in its config's ``pattern_scoring`` snapshot,
+    # run keeps the same numbers in its config's ``measurement_model`` record,
     # which the runs listing reads instead; an import's config is opaque, so
     # its disclosure needs a place of its own. NULL for in-app runs and for
     # imports that disclosed none.

@@ -171,7 +171,7 @@ def ion_scores_v2(
     by: str,
     *,
     sigma_ppm: float | None = None,
-    mu: float | None = 0.0,
+    mu: float | np.ndarray | None = 0.0,
     tolerance: EnvelopeTolerance | None = None,
 ) -> pd.Series:
     """:func:`ion_score_v2` for every ion of a frame, scored together.
@@ -194,13 +194,17 @@ def ion_scores_v2(
     :param by: The column naming each row's ion. A missing value is an ion of
         its own, as ``groupby(dropna=False)`` makes it.
     :param sigma_ppm: As :func:`ion_score_v2`.
-    :param mu: As :func:`ion_score_v2`.
+    :param mu: As :func:`ion_score_v2`; or one centre per row of the frame, in
+        its order, for a sample whose centre follows m/z
+        (``MeasurementModel.centres_ppm`` at each row's m/z).
     :param tolerance: As :func:`ion_score_v2`, one for every ion: the sample's.
     :return: Each row's ion's fit, on the frame's index.
     """
     if frame.empty:
         return pd.Series(dtype=float, index=frame.index)
-    mu = 0.0 if mu is None else float(mu)
+    centres = np.broadcast_to(
+        np.asarray(0.0 if mu is None else mu, dtype=float), (len(frame),)
+    )
     codes, _ = pd.factorize(frame[by], use_na_sentinel=False)
     abundance = pd.to_numeric(frame["relative_abundance"], errors="coerce").to_numpy(
         float
@@ -244,7 +248,7 @@ def ion_scores_v2(
     )
     me = (
         pd.to_numeric(frame["match_mz_error"], errors="coerce").to_numpy(float)[order]
-        - mu
+        - centres[order]
     )
     if "is_satellite" in frame.columns:
         satellite = frame["is_satellite"].fillna(False).astype(bool).to_numpy()[order]

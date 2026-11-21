@@ -20,6 +20,7 @@ from __future__ import annotations
 import copy
 import itertools
 from collections.abc import Sequence
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -67,6 +68,12 @@ from mascope_backend.api.new.peak_assignments.tiering import (
 from mascope_backend.api.new.peak_assignments.tiers import TIER_RANK
 from mascope_tools.composition import profiles as presets
 from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
+from mascope_tools.composition.measurement_model import (
+    ANCHOR_COMMITS,
+    ANCHOR_SOURCE_CAPPED,
+    ANCHOR_SOURCE_LINES,
+    MeasurementModel,
+)
 
 
 #: Each ion's lines, heights relative to its own, as the tests state them.
@@ -207,6 +214,11 @@ def commit(
     }
 
 
+#: The v1 model the rows are judged from: Stage A measured nothing of the
+#: sample, so the class's width stands in and any measured refit is taken.
+STAND_IN = MeasurementModel.v1(SampleMassAccuracy(), 0.3)
+
+
 def anchors() -> list[dict]:
     """Twelve target library lines on calibration, away from every envelope."""
     return [
@@ -263,7 +275,7 @@ def judge(
 ):
     return judge_commits(
         rows,
-        stage_a_accuracy=SampleMassAccuracy(),
+        model=STAND_IN,
         fallback_sigma_ppm=0.3,
         notation_by_id={"im-1": channel, "im-2": second},
         mz_tolerance_ppm=5.0,
@@ -494,14 +506,14 @@ class TestAClaimIsJudgedAgain:
                 label="13C",
             ),
         ]
-        unclaimed = apply_mass_gate(
-            copy.deepcopy(rows), stage_a_accuracy=None, fallback_sigma_ppm=0.3
+        unclaimed, _ = apply_mass_gate(
+            copy.deepcopy(rows), model=STAND_IN, fallback_sigma_ppm=0.3
         )
 
         judged = judge(rows)
 
-        assert unclaimed["anchors"] == 13
-        assert judged.mass_calibration["anchors"] == 12
+        assert unclaimed["refit"]["anchors"][ANCHOR_COMMITS] == 13
+        assert judged.mass_calibration["refit"]["anchors"][ANCHOR_COMMITS] == 12
         carried = by_id(judged.rows)["pa-y-13c"]
         assert (carried["owner_peak_assignment_id"], carried["isotope_label"]) == (
             "pa-x",
@@ -542,8 +554,8 @@ class TestAClaimIsJudgedAgain:
         judged = judge(rows, reagent_lines=lines)
 
         assert judged.tiering["claim_rounds"] == 2
-        assert judged.mass_calibration["anchors"] == 12 + 3
-        assert judged.mass_calibration["reagent_anchors"] == 3
+        anchors_of = judged.mass_calibration["refit"]["anchors"]
+        assert (anchors_of[ANCHOR_COMMITS], anchors_of[ANCHOR_SOURCE_LINES]) == (12, 3)
         assert lines == before
         assert not set(by_id(judged.rows)) & {"n3", "no2", "n4", "n3-15n"}
 
@@ -558,8 +570,9 @@ class TestAClaimIsJudgedAgain:
 
         judged = judge(rows, reagent_lines=lines, source_line_cap=cap)
 
-        assert judged.mass_calibration["reagent_anchors"] == 2
-        assert judged.mass_calibration["reagent_capped"] == 1
+        anchors_of = judged.mass_calibration["refit"]["anchors"]
+        assert anchors_of[ANCHOR_SOURCE_LINES] == 2
+        assert anchors_of[ANCHOR_SOURCE_CAPPED] == 1
 
     def test_a_line_the_owner_does_not_predict_leaves_the_ledger(self):
         rows = anchors() + [
@@ -634,14 +647,13 @@ class TestTheSpectrumReachesTheTieringPass:
         )
         return judge_commits(
             rows,
-            stage_a_accuracy=SampleMassAccuracy(),
             fallback_sigma_ppm=0.3,
             notation_by_id={"im-1": "[M+H]+", "im-2": "[M+Na]+"},
             mz_tolerance_ppm=5.0,
             abundance_floor=0.01,
             max_alternatives=5,
             lines=lines,
-            **kwargs,
+            **{"model": STAND_IN, **kwargs},
         )
 
     #: The owner's own peak and its second channel's, at a signal-to-noise of
@@ -666,7 +678,11 @@ class TestTheSpectrumReachesTheTieringPass:
 
     def test_the_runs_tolerance_sets_where_it_asks_from(self):
         judged = self.judged(
-            owner(), self.PEAKS, envelope_tolerance=EnvelopeTolerance(detect_snr=20.0)
+            owner(),
+            self.PEAKS,
+            model=replace(
+                STAND_IN, envelope_tolerance=EnvelopeTolerance(detect_snr=20.0)
+            ),
         )
         assert by_id(judged.rows)["pa-x"]["tier"] == "assigned"
         assert judged.tiering["absent_line"]["detect_snr"] == 20.0
@@ -709,7 +725,7 @@ class TestTheWidthsReachTheTieringPass:
         )
         return judge_commits(
             rows,
-            stage_a_accuracy=SampleMassAccuracy(),
+            model=STAND_IN,
             fallback_sigma_ppm=0.3,
             notation_by_id={"im-1": "[M+H]+", "im-2": "[M+Na]+"},
             mz_tolerance_ppm=5.0,
@@ -919,7 +935,7 @@ class TestTheBandsReachTheReasons:
         low["provenance"]["evidence"] = 0.3
         judged = judge_commits(
             anchors() + [low],
-            stage_a_accuracy=SampleMassAccuracy(),
+            model=STAND_IN,
             fallback_sigma_ppm=0.3,
             notation_by_id={"im-1": "[M+H]+"},
             mz_tolerance_ppm=5.0,
@@ -961,7 +977,7 @@ class TestThePartnerGateReadsTheJudgedLedger:
     def _judge(self, rows: list[dict]):
         return judge_commits(
             rows,
-            stage_a_accuracy=SampleMassAccuracy(),
+            model=STAND_IN,
             fallback_sigma_ppm=0.3,
             notation_by_id=self.IDS,
             mz_tolerance_ppm=5.0,
@@ -1037,7 +1053,7 @@ class TestThePartnerGateReadsTheJudgedLedger:
         listed = frozenset({"C11H20O7"})
         judge_commits(
             anchors() + [self._formate()],
-            stage_a_accuracy=SampleMassAccuracy(),
+            model=STAND_IN,
             fallback_sigma_ppm=0.3,
             notation_by_id=self.IDS,
             mz_tolerance_ppm=5.0,
@@ -1087,7 +1103,7 @@ def judge_ledger(
     """Judge a ledger through every pass, under the run's bands."""
     return judge_commits(
         rows,
-        stage_a_accuracy=SampleMassAccuracy(),
+        model=STAND_IN,
         fallback_sigma_ppm=0.3,
         notation_by_id=notation_by_id,
         mz_tolerance_ppm=5.0,
@@ -1358,9 +1374,7 @@ def caps_in_order(
     :return: The tiers the round leaves.
     """
     judged = copy.deepcopy(rows)
-    mass_gate = measure_mass_gate(
-        judged, stage_a_accuracy=SampleMassAccuracy(), fallback_sigma_ppm=0.3
-    )
+    mass_gate, _ = measure_mass_gate(judged, model=STAND_IN, fallback_sigma_ppm=0.3)
     apply_partner_gates(
         judged,
         notation_by_id=notation_by_id,

@@ -41,6 +41,7 @@ from mascope_tools.composition.envelope_tolerance import (
     fit_envelope_tolerance,
 )
 from mascope_tools.composition.mass_accuracy import mass_accuracy_anchors
+from mascope_tools.composition.measurement_model import MeasurementModel
 
 
 _SVC = "mascope_backend.api.new.peak_assignments.service"
@@ -206,9 +207,7 @@ class TestTheGate:
             scored = gate_and_score(
                 frame,
                 OrbiMatchParams(),
-                fallback_sigma_ppm=0.3,
-                reagent_offset=None,
-                envelope_tolerance=tolerance,
+                model=MeasurementModel.v1(SampleMassAccuracy(), 0.3, tolerance),
             )
             return (scored["sample_peak_intensity"] > 0).tolist()
 
@@ -230,7 +229,7 @@ class TestStageA:
 
     FRAME = pd.DataFrame(_ion(-0.3, -0.6, 0.6))
 
-    async def _first_pass(self, inherited_envelope=None):
+    async def _first_pass(self, inherited_envelope=None, inherited_model=None):
         scored = MagicMock(side_effect=lambda df, **_kwargs: df)
         patches = [
             patch(
@@ -263,6 +262,7 @@ class TestStageA:
                 fallback_sigma_ppm=0.6,
                 known_window=None,
                 inherited_envelope=inherited_envelope,
+                inherited_model=inherited_model,
             )
         finally:
             for started in patches:
@@ -283,7 +283,14 @@ class TestStageA:
 
     @pytest.mark.asyncio
     async def test_a_decoys_first_pass_gates_at_its_controls_tolerance(self):
-        _, gated = await self._first_pass(inherited_envelope=_fitted())
+        # The tolerance of the control's model, which the decoy inherits whole.
+        control = _fitted()
+        _, gated = await self._first_pass(
+            inherited_envelope=control,
+            inherited_model=MeasurementModel.v1(
+                SampleMassAccuracy(), 0.6, control.tolerance
+            ),
+        )
 
         assert self._kept(gated) == [True, True, True, False]
 
@@ -364,7 +371,7 @@ class TestStageAMassAccuracy:
                 AsyncMock(return_value=fitted),
             ),
         ):
-            _, _, accuracy, _, _ = await service._stage_a_assignments(
+            _, _, accuracy, _, _, _, _ = await service._stage_a_assignments(
                 SimpleNamespace(
                     sample_item_id="si-1", filename="tof-sample.h5", polarity="-"
                 ),
@@ -391,7 +398,11 @@ class TestStageAMassAccuracy:
                 reagent_offset=None,
                 min_anchor_ions=STAGE_A_FIT_MIN_IONS,
                 envelope_tolerance=fitted.tolerance,
-                inherited_accuracy=inherited,
+                model=(
+                    None
+                    if inherited is None
+                    else MeasurementModel.v1(inherited, 3.0, fitted.tolerance)
+                ),
             )["match_score"].to_numpy()
 
         # Refitted on those, the width and offset would move, and the scores.

@@ -112,10 +112,12 @@ class PeakAssignmentRunRecord(BaseModel):
     #: Null when the run was not calibrated, and for imported runs.
     confidence_calibration: dict | None = None
     #: The width the run judged a mass error against, in ppm: for an in-app
-    #: run the sigma Stage B scored at, lifted from its ``pattern_scoring``
-    #: snapshot; for an imported run what its engine disclosed in
-    #: ``scoring_width``. Served so an external engine comparing itself to a
-    #: run reads the width that run scored at instead of measuring it again.
+    #: run the width it scored and capped at, lifted from its
+    #: ``measurement_model`` record (``width_ppm``; a run from before the
+    #: record, its ``pattern_scoring`` snapshot); for an imported run what its
+    #: engine disclosed in ``scoring_width``. Served so an external engine
+    #: comparing itself to a run reads the width that run scored at instead of
+    #: measuring it again.
     #: Null for a run that never reached scoring, an import that disclosed
     #: none, and the batch-derived run.
     sigma_ppm: float | None = None
@@ -696,10 +698,11 @@ class TierBands(BaseModel):
 class ScoringWidth(BaseModel):
     """The width an imported run's engine judged a mass error against.
 
-    The same four numbers an in-app run records in its ``pattern_scoring``
-    snapshot, so a reader compares two runs' widths without knowing which
-    engine made either. Disclosed beside ``calibration``, and like it read
-    only from the request that creates the run.
+    The same four numbers the runs listing reads off an in-app run's
+    ``measurement_model`` record, so a reader compares two runs' widths
+    without knowing which engine made either. Disclosed beside
+    ``calibration``, and like it read only from the request that creates the
+    run.
     """
 
     sigma_ppm: float = Field(

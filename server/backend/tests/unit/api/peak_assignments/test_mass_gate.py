@@ -11,6 +11,7 @@ what an isotopologue's own line can deliver when it misses its parent.
 
 import math
 from dataclasses import replace
+from unittest.mock import Mock
 
 import pandas as pd
 import pytest
@@ -56,6 +57,17 @@ from mascope_tools.composition.mass_accuracy import (
     MASS_TREND_ABS_FLOOR_MDA,
     TREND_TOO_FEW_POINTS,
     MassTrend,
+    SampleMassAccuracy,
+    widen_sigma_ppm,
+)
+from mascope_tools.composition.measurement_model import (
+    ANCHOR_COMMITS,
+    ANCHOR_SOURCE_CAPPED,
+    ANCHOR_SOURCE_LINES,
+    MODEL_V1,
+    MODEL_V2,
+    REFIT_BOUND_WIDTHS,
+    MeasurementModel,
 )
 
 
@@ -63,6 +75,30 @@ from mascope_tools.composition.mass_accuracy import (
 #: Orbitrap's, so an isotopologue tracks its parent within 0.3 ppm and the width
 #: the search scored at - the floor on the gate's own width - is hypot(0.3, 0.5).
 PRECISION = 0.3
+
+
+def _v1(accuracy: SampleMassAccuracy | None = None) -> MeasurementModel:
+    """The run's v1 model: Stage A's measurement, by default none at all, where
+    the class's width and no centre stand in and nothing is the sample's own."""
+    return MeasurementModel.v1(accuracy or SampleMassAccuracy(), PRECISION)
+
+
+def _gate(rows, *, accuracy: SampleMassAccuracy | None = None, **kwargs):
+    """The gate over ``rows``, refitting from :func:`_v1`: its summary, and the
+    model the rows were judged at."""
+    return apply_mass_gate(
+        rows, model=_v1(accuracy), fallback_sigma_ppm=PRECISION, **kwargs
+    )
+
+
+def _anchor_counts(summary) -> tuple[int, int]:
+    """What the refit was fitted over: every anchor, and the source's lines
+    among them."""
+    anchors = summary["refit"]["anchors"]
+    return (
+        anchors[ANCHOR_COMMITS] + anchors[ANCHOR_SOURCE_LINES],
+        anchors[ANCHOR_SOURCE_LINES],
+    )
 
 
 def _row(
@@ -253,7 +289,7 @@ class TestTheRunsOwnCalibration:
         )
 
         assert not calibration.measured
-        assert calibration.z_of(5.0) is None
+        assert calibration.as_model(_v1()).z_of(5.0) is None
 
 
 class TestTheGate:
@@ -267,14 +303,15 @@ class TestTheGate:
         # number a reader needs, and it is not readable off the 1 ppm alone.
         rows = _anchors(12) + [_row("far", ppm=1.0)]
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+        summary, model = _gate(rows)
 
         assert rows[-1]["provenance"]["mass_z"] == pytest.approx(1.72, rel=0.02)
         assert all("mass_z" in row["provenance"] for row in rows)
-        # Both widths are on the record, so the ratio above is checkable.
-        assert summary["sigma_ppm"] == pytest.approx(0.148, rel=0.05)
-        assert summary["gate_sigma_ppm"] == pytest.approx(0.583, rel=0.01)
-        assert summary["search_sigma_ppm"] == pytest.approx(0.583, rel=0.01)
+        # Both widths are on the model, so the ratio above is checkable.
+        assert model.version == MODEL_V2
+        assert model.sigma_ppm == pytest.approx(0.148, rel=0.05)
+        assert model.width_ppm == pytest.approx(0.583, rel=0.01)
+        assert _v1().width_ppm == pytest.approx(0.583, rel=0.01)
 
     def test_the_distance_is_measured_from_the_run_s_own_centre(self):
         # The reason the offset half of the fit is load-bearing. Every row of
@@ -283,7 +320,7 @@ class TestTheGate:
         # would demote a correct run entire.
         rows = _anchors(12, ppm=-1.2) + [_row("typical", ppm=-1.2)]
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+        summary, model = _gate(rows)
 
         assert rows[-1]["provenance"]["mass_z"] == pytest.approx(0.0, abs=0.5)
         assert rows[-1]["tier"] == TIER_ASSIGNED
@@ -292,7 +329,7 @@ class TestTheGate:
     def test_an_uncorroborated_outlier_is_capped_at_candidate(self):
         rows = _anchors(12, spread=0.1) + [_row("off", ppm=2.5)]
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+        summary, model = _gate(rows)
 
         assert rows[-1]["tier"] == TIER_CANDIDATE
         assert rows[-1]["provenance"]["mass_gate"] == {
@@ -309,7 +346,7 @@ class TestTheGate:
     def test_far_enough_out_it_is_below_assignability(self):
         rows = _anchors(12, spread=0.1) + [_row("wild", ppm=5.0)]
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+        summary, model = _gate(rows)
 
         assert rows[-1]["tier"] == TIER_BELOW_ASSIGNABILITY
         assert summary["below_assignability"] == 1
@@ -325,7 +362,7 @@ class TestTheGate:
             _row("child", ppm=5.0, role="iso_child", owner="m0"),
         ]
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+        summary, model = _gate(rows)
 
         assert rows[-2]["tier"] == TIER_ASSIGNED
         assert abs(rows[-2]["provenance"]["mass_z"]) > BELOW_ASSIGNABILITY_Z
@@ -345,7 +382,7 @@ class TestTheGate:
             _mirror("seed", ppm=5.0),
         ]
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+        summary, model = _gate(rows)
 
         library, seed = rows[-2], rows[-1]
         assert library["tier"] == TIER_BELOW_ASSIGNABILITY
@@ -365,7 +402,7 @@ class TestTheGate:
         assert summary["capped"] == 2
         assert summary["below_assignability"] == 2
         assert summary["capped_curated"] == 1
-        assert summary["anchors"] == 13
+        assert _anchor_counts(summary) == (13, 0)
 
     def test_a_library_row_an_isotopologue_tracks_is_kept(self):
         rows = _anchors(12, spread=0.1) + [
@@ -373,7 +410,7 @@ class TestTheGate:
             _library("child", ppm=5.0, role="iso_child", owner="m0"),
         ]
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+        summary, model = _gate(rows)
 
         assert [row["tier"] for row in rows[-2:]] == [TIER_ASSIGNED, TIER_ASSIGNED]
         assert rows[-2]["provenance"]["mass_gate"] == {
@@ -390,7 +427,7 @@ class TestTheGate:
             _library("child", ppm=2.5, role="iso_child", owner="m0"),
         ]
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+        summary, model = _gate(rows)
 
         m0, child = rows[-2], rows[-1]
         assert m0["tier"] == TIER_ASSIGNED
@@ -410,7 +447,7 @@ class TestTheGate:
         # must not appear to have.
         rows = _anchors(12, spread=0.1) + [_row("low", ppm=0.6, tier=TIER_CANDIDATE)]
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+        summary, model = _gate(rows)
 
         assert rows[-1]["tier"] == TIER_CANDIDATE
         assert "capped" not in rows[-1]["provenance"]["mass_gate"]
@@ -422,7 +459,7 @@ class TestTheGate:
         # up carrying.
         rows = _anchors(12, spread=0.1) + [_row("held", ppm=2.5, tier=TIER_CANDIDATE)]
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+        summary, model = _gate(rows)
 
         assert rows[-1]["tier"] == TIER_CANDIDATE
         assert rows[-1]["provenance"]["mass_gate"] == {
@@ -438,7 +475,7 @@ class TestTheGate:
         # commits has not earned the right to withdraw a tier.
         rows = _anchors(3) + [_row("far", ppm=9.0)]
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+        summary, model = _gate(rows)
 
         assert summary["applied"] is False
         assert summary["capped"] == 0
@@ -449,7 +486,7 @@ class TestTheGate:
     def test_a_commit_with_no_mass_error_is_left_alone(self):
         rows = _anchors(12) + [_row("no_error", ppm=None)]
 
-        apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+        _gate(rows)
 
         assert "mass_z" not in rows[-1]["provenance"]
         assert rows[-1]["tier"] == TIER_ASSIGNED
@@ -457,17 +494,98 @@ class TestTheGate:
     def test_the_run_records_what_it_fitted_and_what_it_cost(self):
         rows = _anchors(12, ppm=-0.5, spread=0.1) + [_row("off", ppm=1.5)]
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+        summary, model = _gate(rows)
 
-        assert summary["mu_ppm"] == pytest.approx(-0.5)
-        assert summary["mu_source"] == "fitted"
-        assert summary["sigma_source"] == "fitted"
-        assert summary["anchors"] == 12
+        assert model.mu_ppm == pytest.approx(-0.5)
+        assert model.mu_source == "fitted"
+        assert model.sigma_source == "fitted"
+        assert _anchor_counts(summary) == (12, 0)
         assert summary["committed"] == 13
         assert summary["corroborated"] == 12
         assert summary["cap_z"] == OFF_CALIBRATION_Z
         assert summary["floor_z"] == BELOW_ASSIGNABILITY_Z
         assert summary["capped"] == 1
+
+
+#: A v1 model Stage A measured of the sample itself: on axis, 0.1 ppm wide.
+MEASURED = SampleMassAccuracy(mu_ppm=0.0, sigma_ppm=0.1, anchors=24, anchor_ions=10)
+
+
+class TestTheVersionTheRunJudgesAt:
+    """The rows are judged at the model they were scored at: v1, or v2 where
+    the refit moved beyond the bound and the rows were scored again at it."""
+
+    def test_a_refit_too_thin_to_measure_leaves_the_rows_at_v1(self):
+        # Three corroborated commits measure no v2, and the sample's own v1
+        # still judges: a row nine widths from it is below assignability.
+        rows = _anchors(3) + [_row("far", ppm=5.0)]
+        rescore = Mock(return_value=0)
+
+        summary, model = _gate(rows, accuracy=MEASURED, rescore=rescore)
+
+        assert model == _v1(MEASURED)
+        assert summary["applied"] is True
+        assert summary["refit"]["fitted"] is False
+        assert rows[-1]["tier"] == TIER_BELOW_ASSIGNABILITY
+        assert rows[-1]["provenance"]["mass_z"] == pytest.approx(
+            5.0 / _v1(MEASURED).width_ppm, abs=0.01
+        )
+        rescore.assert_not_called()
+
+    def test_a_refit_inside_the_bound_leaves_the_rows_at_v1(self):
+        rows = _anchors(12, ppm=0.05) + [_row("off", ppm=1.0)]
+        rescore = Mock(return_value=0)
+
+        summary, model = _gate(rows, accuracy=MEASURED, rescore=rescore)
+
+        assert model.version == MODEL_V1
+        assert summary["refit"]["adopted"] is False
+        assert summary["refit"]["centre_moved_widths"] < REFIT_BOUND_WIDTHS
+        # What the refit measured is recorded, though the run did not take it.
+        assert summary["refit"]["model"]["mu_ppm"] == pytest.approx(0.05)
+        assert rows[-1]["provenance"]["mass_z"] == pytest.approx(
+            1.0 / _v1(MEASURED).width_ppm, abs=0.01
+        )
+        rescore.assert_not_called()
+
+    def test_a_refit_beyond_the_bound_scores_the_rows_again_and_judges_there(self):
+        rows = _anchors(12, ppm=-1.2) + [_row("typical", ppm=-1.2)]
+        rescore = Mock(return_value=7)
+
+        summary, model = _gate(rows, accuracy=MEASURED, rescore=rescore)
+
+        assert model.version == MODEL_V2
+        assert model.mu_ppm == pytest.approx(-1.2)
+        rescore.assert_called_once_with(model)
+        assert summary["refit"]["adopted"] is True
+        assert summary["refit"]["rescored"] == 7
+        assert "model" not in summary["refit"]
+        assert rows[-1]["provenance"]["mass_z"] == pytest.approx(0.0, abs=0.01)
+
+    def test_an_inherited_model_is_judged_at_as_it_is(self):
+        # A decoy's commits are wrong formulas on a moved axis: it judges at its
+        # control's model and refits nothing on them.
+        inherited = _v1(MEASURED).v2(
+            mu_ppm=-1.2, sigma_ppm=0.1, commits=200, source_lines=0
+        )
+        rows = _anchors(12, ppm=0.0) + [_row("typical", ppm=0.0)]
+        rescore = Mock(return_value=0)
+
+        summary, model = apply_mass_gate(
+            rows,
+            model=inherited,
+            fallback_sigma_ppm=PRECISION,
+            refit=False,
+            rescore=rescore,
+        )
+
+        assert model is inherited
+        assert summary["inherited"] is True
+        assert "refit" not in summary
+        assert rows[-1]["provenance"]["mass_z"] == pytest.approx(
+            1.2 / inherited.width_ppm, abs=0.01
+        )
+        rescore.assert_not_called()
 
 
 class TestTheStageAOnlyLedger:
@@ -490,7 +608,7 @@ class TestTheStageAOnlyLedger:
             _row("reagent", role="reagent", source="reagent", formula=None, ppm=8.0),
         ]
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+        summary, model = _gate(rows)
 
         assert summary["applied"] is True
         assert (summary["capped"], summary["capped_curated"]) == (2, 2)
@@ -505,7 +623,7 @@ class TestTheStageAOnlyLedger:
             _row("reagent", role="reagent", source="reagent", formula=None, ppm=8.0),
         ]
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+        summary, model = _gate(rows)
 
         assert summary["applied"] is True
         assert rows[0]["tier"] == TIER_CANDIDATE
@@ -625,10 +743,10 @@ class TestWhatAnchorsTheCalibration:
         # own search was told to accept.
         rows = _anchors(12, spread=0.01) + [_row("off", ppm=1.0)]
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+        summary, model = _gate(rows)
 
-        assert summary["sigma_ppm"] < summary["gate_sigma_ppm"]
-        assert summary["gate_sigma_ppm"] == pytest.approx(summary["search_sigma_ppm"])
+        assert model.sigma_ppm < model.width_ppm
+        assert model.width_ppm == pytest.approx(_v1().width_ppm)
         assert summary["capped"] == 0
         assert rows[-1]["tier"] == TIER_ASSIGNED
 
@@ -638,10 +756,10 @@ class TestWhatAnchorsTheCalibration:
         # it measured.
         rows = _anchors(12, spread=2.0) + [_row("off", ppm=30.0)]
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+        summary, model = _gate(rows)
 
-        assert summary["gate_sigma_ppm"] == pytest.approx(summary["sigma_ppm"])
-        assert summary["gate_sigma_ppm"] > summary["search_sigma_ppm"]
+        assert model.width_ppm == pytest.approx(widen_sigma_ppm(model.sigma_ppm))
+        assert model.width_ppm > _v1().width_ppm
         assert summary["capped"] == 1
 
 
@@ -746,12 +864,10 @@ class TestTheSourcesOwnLines:
         lines = _lines(9, spread=0.1) + [_line("13C", label="13C", owner="line-0")]
         before = [dict(line, provenance=dict(line["provenance"])) for line in lines]
 
-        summary = apply_mass_gate(
-            rows, fallback_sigma_ppm=PRECISION, reagent_lines=lines
-        )
+        summary, model = _gate(rows, reagent_lines=lines)
 
         assert summary["applied"]
-        assert (summary["anchors"], summary["reagent_anchors"]) == (16, 9)
+        assert _anchor_counts(summary) == (16, 9)
         # The commits are still the commits: a source line is not judged.
         assert (summary["committed"], summary["corroborated"]) == (8, 7)
         assert rows[-1]["tier"] == TIER_CANDIDATE
@@ -761,10 +877,10 @@ class TestTheSourcesOwnLines:
     def test_without_them_the_gate_stands_down_and_says_none_anchored_it(self):
         rows = _anchors(7, spread=0.1) + [_row("off", ppm=2.5)]
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+        summary, model = _gate(rows)
 
         assert not summary["applied"]
-        assert (summary["anchors"], summary["reagent_anchors"]) == (7, 0)
+        assert _anchor_counts(summary) == (7, 0)
         assert rows[-1]["tier"] == TIER_ASSIGNED
 
 
@@ -860,21 +976,17 @@ class TestTheSourcesBrightLines:
         rows = _anchors(7, spread=0.1) + [_row("off", ppm=2.5)]
         lines = _lines(9, spread=0.1) + [_line("bright", ppm=4.0, intensity=900.0)]
 
-        summary = apply_mass_gate(
-            rows, fallback_sigma_ppm=PRECISION, reagent_lines=lines, source_line_cap=CAP
-        )
+        summary, model = _gate(rows, reagent_lines=lines, source_line_cap=CAP)
 
-        assert (summary["anchors"], summary["reagent_anchors"]) == (16, 9)
-        assert summary["reagent_capped"] == 1
+        assert _anchor_counts(summary) == (16, 9)
+        assert summary["refit"]["anchors"][ANCHOR_SOURCE_CAPPED] == 1
 
     def test_a_run_without_a_cap_records_none_capped(self):
         rows = _anchors(7, spread=0.1)
 
-        summary = apply_mass_gate(
-            rows, fallback_sigma_ppm=PRECISION, reagent_lines=_lines(9)
-        )
+        summary, model = _gate(rows, reagent_lines=_lines(9))
 
-        assert summary["reagent_capped"] == 0
+        assert summary["refit"]["anchors"][ANCHOR_SOURCE_CAPPED] == 0
 
 
 #: The line the commits of a run follow below: an absolute offset of -0.15 mDa,
@@ -912,12 +1024,12 @@ def _trend_run(probe_ppm, probe_mz=61.0, *, located=True):
 
 
 def _calibration_with_a_trend(mz_lo=59.0):
-    """A run centred at -0.12 ppm and judged at 0.583, whose commits drew the line."""
+    """A run centred at -0.12 ppm and judged at 0.583, whose commits drew the
+    line: its v2 model, floored at the stand-in v1's width."""
     return MassCalibration(
         mu_ppm=-0.12,
         sigma_ppm=0.08,
         anchors=12,
-        gate_sigma_ppm=0.583,
         trend=MassTrend(
             intercept_ppm=TREND_INTERCEPT_PPM,
             offset_mda=TREND_OFFSET_MDA,
@@ -927,7 +1039,7 @@ def _calibration_with_a_trend(mz_lo=59.0):
             mz_hi=400.0,
         ),
         trend_rows=53,
-    )
+    ).as_model(_v1())
 
 
 class TestTheCentreFollowsTheMassRange:
@@ -939,16 +1051,16 @@ class TestTheCentreFollowsTheMassRange:
         # three widths out, capped for the calibration's shape.
         rows = _trend_run(probe_ppm=_centre(61.0))
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+        summary, model = _gate(rows)
 
-        assert summary["centre"] == "trend"
+        assert model.record()["centre"] == "trend"
         assert rows[-1]["provenance"]["mass_z"] == pytest.approx(0.0, abs=0.3)
         assert rows[-1]["tier"] == TIER_ASSIGNED
 
         constant = _trend_run(probe_ppm=_centre(61.0), located=False)
-        summary = apply_mass_gate(constant, fallback_sigma_ppm=PRECISION)
+        summary, model = _gate(constant)
 
-        assert summary["centre"] == "constant"
+        assert model.record()["centre"] == "constant"
         assert constant[-1]["provenance"]["mass_z"] < -OFF_CALIBRATION_Z
         assert constant[-1]["tier"] == TIER_CANDIDATE
 
@@ -957,14 +1069,14 @@ class TestTheCentreFollowsTheMassRange:
         # draw at m/z 61: the shape is no excuse for a row that is not on it.
         rows = _trend_run(probe_ppm=0.0)
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+        summary, model = _gate(rows)
 
         assert rows[-1]["provenance"]["mass_z"] > OFF_CALIBRATION_Z
         assert rows[-1]["tier"] == TIER_CANDIDATE
         assert summary["capped"] == 1
 
         constant = _trend_run(probe_ppm=0.0, located=False)
-        apply_mass_gate(constant, fallback_sigma_ppm=PRECISION)
+        _gate(constant)
 
         assert constant[-1]["tier"] == TIER_ASSIGNED
 
@@ -1031,12 +1143,12 @@ class TestTheCentreFollowsTheMassRange:
             return rows + [_row("off", ppm=2.0, mz=40.0 if located else None)]
 
         rows, unlocated = flat(True), flat(False)
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
-        apply_mass_gate(unlocated, fallback_sigma_ppm=PRECISION)
+        summary, model = _gate(rows)
+        _gate(unlocated)
 
-        assert summary["centre"] == "constant"
-        assert summary["trend"] is None
-        assert summary["trend_refused"] is not None
+        assert model.record()["centre"] == "constant"
+        assert model.trend is None
+        assert model.trend_refused is not None
         assert [row["provenance"] for row in rows] == [
             row["provenance"] for row in unlocated
         ]
@@ -1060,7 +1172,7 @@ class TestTheCentreFollowsTheMassRange:
             1.5 / (MASS_TREND_ABS_FLOOR_MDA * 1000.0 / 40.0)
         )
         assert calibration.z_of(_centre(200.0) + 1.5, 200.0) == pytest.approx(
-            1.5 / 0.583
+            1.5 / _v1().width_ppm
         )
 
     def test_a_run_without_a_line_puts_no_floor_under_its_width(self):
@@ -1069,12 +1181,14 @@ class TestTheCentreFollowsTheMassRange:
         # row there in its own width, as it does everywhere.
         calibration = replace(_calibration_with_a_trend(), trend=None)
 
-        assert calibration.z_of(1.5 - 0.12, 40.0) == pytest.approx(1.5 / 0.583)
+        assert calibration.z_of(1.5 - 0.12, 40.0) == pytest.approx(
+            1.5 / _v1().width_ppm
+        )
 
     def test_a_row_whose_mz_is_unknown_is_judged_at_the_constant_centre(self):
         calibration = _calibration_with_a_trend()
 
-        assert calibration.z_of(0.46) == pytest.approx((0.46 + 0.12) / 0.583)
+        assert calibration.z_of(0.46) == pytest.approx((0.46 + 0.12) / _v1().width_ppm)
 
     @pytest.mark.parametrize(
         ("value", "usable"),
@@ -1093,32 +1207,29 @@ class TestTheCentreFollowsTheMassRange:
         assert peak_mz({"sample_peak_mz": value}) == usable
 
     def test_the_run_records_the_centre_it_judged_at(self):
-        summary = apply_mass_gate(
-            _trend_run(probe_ppm=_centre(61.0)), fallback_sigma_ppm=PRECISION
-        )
+        summary, model = _gate(_trend_run(probe_ppm=_centre(61.0)))
 
-        assert summary["trend_refused"] is None
-        trend = summary["trend"]
+        assert model.trend_refused is None
+        trend = model.record()["trend"]
         assert trend["offset_mda"] == pytest.approx(TREND_OFFSET_MDA, abs=0.01)
         assert trend["intercept_ppm"] == pytest.approx(TREND_INTERCEPT_PPM, abs=0.05)
         assert trend["rows"] == 53
         assert 0 < trend["kept"] <= 53
         assert (trend["mz_lo"], trend["mz_hi"]) == pytest.approx((59.0, 400.0), abs=0.5)
-        assert trend["abs_floor_mda"] == MASS_TREND_ABS_FLOOR_MDA
 
-        unlocated = apply_mass_gate(
-            _trend_run(probe_ppm=0.0, located=False), fallback_sigma_ppm=PRECISION
-        )
+        unlocated, unlocated_model = _gate(_trend_run(probe_ppm=0.0, located=False))
 
-        assert unlocated["centre"] == "constant"
-        assert unlocated["trend"] is None
-        assert unlocated["trend_refused"] == TREND_TOO_FEW_POINTS
+        assert unlocated_model.record()["centre"] == "constant"
+        assert unlocated_model.trend is None
+        assert unlocated_model.trend_refused == TREND_TOO_FEW_POINTS
 
-        unmeasured = apply_mass_gate(_anchors(3), fallback_sigma_ppm=PRECISION)
+        unmeasured, unmeasured_model = _gate(_anchors(3))
 
-        assert unmeasured["centre"] == "none"
-        assert unmeasured["trend"] is None
-        assert unmeasured["trend_refused"] is None
+        # Judged at the stand-in v1, which put no centre anywhere.
+        assert unmeasured_model.version == MODEL_V1
+        assert unmeasured_model.record()["centre"] == "none"
+        assert unmeasured_model.trend is None
+        assert unmeasured_model.trend_refused is None
 
 
 def _flat_resolution(mz):
@@ -1437,7 +1548,7 @@ class TestTheGateOnAnIsotopologue:
     def test_a_line_in_doubt_is_held_at_candidate_and_corroborates_nothing(self):
         rows, lines = _isotopologue_pair(1.3, child_snr=3.0)
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION, lines=lines)
+        summary, model = _gate(rows, lines=lines)
 
         m0, child = rows[-2], rows[-1]
         assert child["tier"] == TIER_CANDIDATE
@@ -1452,7 +1563,7 @@ class TestTheGateOnAnIsotopologue:
         # rests on its own fit and does not anchor the calibration.
         assert m0["provenance"]["mass_gate"] == {"corroborated_by": None}
         assert m0["tier"] == TIER_ASSIGNED
-        assert summary["anchors"] == 12
+        assert _anchor_counts(summary) == (12, 0)
         assert (summary["capped"], summary["capped_in_doubt"]) == (0, 1)
 
     def test_a_line_in_doubt_is_not_taken_lower_for_its_distance(self):
@@ -1461,7 +1572,7 @@ class TestTheGateOnAnIsotopologue:
         # miss, so the line is held at candidate rather than dropped below.
         rows, lines = _isotopologue_pair(4.0, child_snr=3.0, neighbour=True)
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION, lines=lines)
+        summary, model = _gate(rows, lines=lines)
 
         child = rows[-1]
         assert child["provenance"]["mass_z"] > BELOW_ASSIGNABILITY_Z
@@ -1474,7 +1585,7 @@ class TestTheGateOnAnIsotopologue:
     def test_the_same_miss_without_the_neighbour_is_a_coincidence(self):
         rows, lines = _isotopologue_pair(4.0, child_snr=3.0)
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION, lines=lines)
+        summary, model = _gate(rows, lines=lines)
 
         child = rows[-1]
         assert child["tier"] == TIER_BELOW_ASSIGNABILITY
@@ -1492,7 +1603,7 @@ class TestTheGateOnAnIsotopologue:
         # 1.5 ppm from a parent a bright line should sit within 0.9 of.
         rows, lines = _isotopologue_pair(1.5)
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION, lines=lines)
+        summary, model = _gate(rows, lines=lines)
 
         child = rows[-1]
         assert abs(child["provenance"]["mass_z"]) < OFF_CALIBRATION_Z
@@ -1509,7 +1620,7 @@ class TestTheGateOnAnIsotopologue:
     def test_a_line_that_tracks_keeps_its_tier_and_corroborates_its_parent(self):
         rows, lines = _isotopologue_pair(0.4, child_snr=3.0, neighbour=True)
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION, lines=lines)
+        summary, model = _gate(rows, lines=lines)
 
         m0, child = rows[-2], rows[-1]
         assert child["tier"] == TIER_ASSIGNED
@@ -1520,14 +1631,14 @@ class TestTheGateOnAnIsotopologue:
         assert m0["provenance"]["mass_gate"]["corroborated_by"] == (
             CORROBORATED_ISOTOPOLOGUE
         )
-        assert summary["anchors"] == 13
+        assert _anchor_counts(summary) == (13, 0)
 
     def test_a_tier_already_below_the_cap_is_left_alone(self):
         # The gate lowers nothing and counts nothing; it records the ceiling
         # it would have held the row to, for a pass that lifts tiers later.
         rows, lines = _isotopologue_pair(1.5, tier=TIER_CANDIDATE)
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION, lines=lines)
+        summary, model = _gate(rows, lines=lines)
 
         assert rows[-1]["tier"] == TIER_CANDIDATE
         assert rows[-1]["provenance"]["mass_gate"] == {
@@ -1545,7 +1656,7 @@ class TestTheGateOnAnIsotopologue:
             _row("child", ppm=1.5, role="iso_child", owner="m0", mz=201.0),
         ]
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+        summary, model = _gate(rows)
 
         assert summary["applied"] is False
         assert rows[0]["tier"] == TIER_ASSIGNED
@@ -1565,7 +1676,7 @@ class TestTheGateOnAnIsotopologue:
             8.0, parent_ppm=8.0, tier=TIER_CANDIDATE, provenance=claim
         )
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION, lines=lines)
+        summary, model = _gate(rows, lines=lines)
 
         m0, child = rows[-2], rows[-1]
         assert corroboration_of(rows, precision_ppm=PRECISION)["m0"] is None
@@ -1575,7 +1686,7 @@ class TestTheGateOnAnIsotopologue:
             "corroborated_by": None,
             "tracking": TRACKING_TRACKS,
         }
-        assert summary["anchors"] == 12
+        assert _anchor_counts(summary) == (12, 0)
 
     def test_the_run_records_how_its_isotopologues_follow(self):
         rows = _anchors(12, spread=0.1) + [
@@ -1593,7 +1704,7 @@ class TestTheGateOnAnIsotopologue:
             ]
         )
 
-        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION, lines=lines)
+        summary, model = _gate(rows, lines=lines)
 
         assert summary["isotopologues"] == {
             TRACKING_TRACKS: 1,
@@ -1603,7 +1714,7 @@ class TestTheGateOnAnIsotopologue:
         assert (summary["capped_in_doubt"], summary["capped_untracked"]) == (1, 1)
         assert summary["lines"] == lines.snapshot()
         # Without a spectrum the run says it read nothing.
-        bare = apply_mass_gate(_anchors(12), fallback_sigma_ppm=PRECISION)
+        bare, _ = _gate(_anchors(12))
         assert (bare["lines"]["noise"], bare["lines"]["resolution"]) == (False, False)
         assert bare["isotopologues"] == {
             TRACKING_TRACKS: 0,

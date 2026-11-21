@@ -564,6 +564,20 @@ def _mechanism(notation, mechanism_id):
     )
 
 
+def _recorded(width: float) -> dict:
+    """A latest run's config whose one record of its measurement model fitted
+    ``width`` and no centre."""
+    return {
+        "measurement_model": {
+            "version": 1,
+            "mu_ppm": None,
+            "mu_source": "none",
+            "sigma_ppm": width,
+            "fallback_sigma_ppm": 0.5,
+        }
+    }
+
+
 def _searching(
     sample,
     peaks,
@@ -577,10 +591,10 @@ def _searching(
     resolution=None,
 ):
     """Stand in for what a batch search of one sample reads: its sample row,
-    peaks and mechanisms, its file's resolving power and its recorded
-    measurement (none unless a test says), the batch's records of it (none),
-    its known set and its finder. Everything between them is the stage list's
-    own.
+    peaks and mechanisms, its file's resolving power and its latest run's
+    record of its measurement model (none unless a test names a ``width``),
+    the batch's records of it (none), its known set and its finder.
+    Everything between them is the stage list's own.
 
     :return: The stack of stand-ins, and the ones a test reads back.
     """
@@ -626,14 +640,13 @@ def _searching(
             f"{_SVC}._resolution_of", AsyncMock(return_value=resolution)
         ),
         "cap": stand_in(f"{_SVC}._source_line_cap", AsyncMock(return_value=None)),
-        "width": stand_in(
-            f"{_SVC}.sample_recorded_width", AsyncMock(return_value=width)
-        ),
-        "tolerance": stand_in(
-            f"{_PIPE}.recorded_envelope_tolerance", AsyncMock(return_value=None)
-        ),
         "latest": stand_in(
-            f"{_SVC}._latest_in_app_run", AsyncMock(return_value=(None, None))
+            f"{_SVC}._latest_in_app_run",
+            AsyncMock(
+                return_value=(None, None)
+                if width is None
+                else ("run-1", _recorded(width))
+            ),
         ),
         "known": stand_in(
             f"{_SVC}._fetch_known_isotopes",
@@ -1333,12 +1346,14 @@ async def test_the_search_s_mass_gate_judges_at_the_samples_recorded_calibration
     recorded,
 ):
     # The measurement model a batch search reads is the one the sample's
-    # latest run recorded: a reading 5 ppm off that run's calibration, whose
-    # gate is 0.1 ppm wide, is held below assignability as that run's gate
-    # holds it. With no run to read one from, the gate fits on what the search
-    # committed - one uncorroborated reading, too few - and stands down.
-    from mascope_backend.api.new.peak_assignments.engine import MASS_CALIBRATION_KEY
-    from mascope_backend.api.new.peak_assignments.mass_gate import MassCalibration
+    # latest run recorded: a reading 5 ppm off that run's model, whose width is
+    # 0.1 ppm widened to 0.51, is held below assignability as that run's gate
+    # holds it. With no run to read one from, the model is the class's
+    # stand-in and is refitted on what the search committed - one
+    # uncorroborated reading, too few - and the gate stands down.
+    from mascope_backend.api.new.peak_assignments.engine import (
+        MEASUREMENT_MODEL_KEY,
+    )
 
     reading = _match(160.8413, "Br2", "Br2H-", "[M-H]-")
     reading["mz_error_ppm"] = 5.0
@@ -1356,9 +1371,13 @@ async def test_the_search_s_mass_gate_judges_at_the_samples_recorded_calibration
         mocks["latest"].return_value = (
             "run-1",
             {
-                MASS_CALIBRATION_KEY: MassCalibration(
-                    mu_ppm=0.0, sigma_ppm=0.1, anchors=40, gate_sigma_ppm=0.1
-                ).snapshot()
+                MEASUREMENT_MODEL_KEY: {
+                    "version": 2,
+                    "mu_ppm": 0.0,
+                    "mu_source": "fitted",
+                    "sigma_ppm": 0.1,
+                    "fallback_sigma_ppm": 0.3,
+                }
             },
         )
     with stack:
@@ -1368,11 +1387,15 @@ async def test_the_search_s_mass_gate_judges_at_the_samples_recorded_calibration
 
     (row,) = rows
     gate = row["provenance"]["mass_gate"]
+    # One read of the sample's latest run gives the model.
+    mocks["latest"].assert_awaited_once_with("si-1")
     if recorded:
+        assert row["provenance"]["mass_z"] == pytest.approx(5.0 / 0.5099, abs=0.01)
         assert row["tier"] == "below_assignability"
         assert gate["capped"] == "below_assignability"
     else:
         assert "capped" not in gate
+        assert "mass_z" not in row["provenance"]
         assert row["tier"] == TIER_CANDIDATE
 
 
@@ -1457,6 +1480,63 @@ async def test_a_batch_search_is_scored_at_its_samples_own_instrument(
         math.hypot(INSTRUMENT_FALLBACK_SIGMA_PPM[instrument], PRED_SIGMA_PPM)
     )
     assert seen["scoring"].mz_tolerance_ppm == 15.0
+
+
+@pytest.mark.asyncio
+async def test_a_searched_samples_width_centre_and_tolerance_are_one_records():
+    # MAS-867: the width, the centre and the line-share tolerance a batch
+    # search ranks a sample at come from one read of one run's record, its
+    # measurement model and the tolerance beside it. A run that completes
+    # mid-search is a second record the search never reads.
+    seen = {}
+
+    def finder(*args, **kwargs):
+        seen["scoring"] = kwargs["scoring"]
+        raise _Searched
+
+    first = {
+        "measurement_model": {
+            "version": 2,
+            "mu_ppm": -0.4,
+            "mu_source": "fitted",
+            "sigma_ppm": 0.2,
+            "fallback_sigma_ppm": 0.3,
+            "width_floor_ppm": 0.6,
+        },
+        "envelope_tolerance": {
+            "form": "centre_width",
+            "level": "own",
+            "centre": 0.07,
+            "floor": 0.05,
+            "detect_snr": 3.0,
+        },
+    }
+    later = {
+        "measurement_model": {
+            "version": 1,
+            "mu_ppm": 1.5,
+            "mu_source": "fitted",
+            "sigma_ppm": 2.0,
+        },
+        "envelope_tolerance": None,
+    }
+    stack, mocks = _searching(
+        _sample(),
+        _peaks([("p1", 160.8413, 1.0e6)]),
+        [_mechanism("[M-H]-", "im-h")],
+        finder=finder,
+    )
+    mocks["latest"].side_effect = [("run-1", first), ("run-2", later)]
+    with stack, pytest.raises(_Searched):
+        await batch_untargeted._search_sample("si-1", {"p1"}, PeakAssignmentConfig())
+
+    mocks["latest"].assert_awaited_once_with("si-1")
+    scoring = seen["scoring"]
+    # The record's floor, its centre and its tolerance, all three the first
+    # run's.
+    assert scoring.sigma_ppm == pytest.approx(0.6)
+    assert scoring.mu_ppm == pytest.approx(-0.4)
+    assert scoring.envelope_tolerance.centre == pytest.approx(0.07)
 
 
 @pytest.fixture(autouse=True)

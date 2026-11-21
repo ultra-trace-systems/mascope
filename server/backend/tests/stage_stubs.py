@@ -135,12 +135,13 @@ def stub_seeded_scorer(
     stand-in ``seeded(sample, seeds, params)`` that gives canned pairings: the
     frame Stage A's election reads is built from them (:func:`seeded_frame`).
 
-    :param offsets: Where each measurement's centre is appended, if given.
+    :param offsets: Where each measurement's model is appended, with the
+        sample it measured, if given.
     """
 
     async def score(sample, seeds, params, **kwargs):
         if offsets is not None:
-            offsets.append((sample, kwargs.get("reagent_offset")))
+            offsets.append((sample, kwargs.get("model")))
         ion_by_seed, fit_by_ion, errors, _ = await seeded(sample, seeds, params)
         return (
             ion_by_seed,

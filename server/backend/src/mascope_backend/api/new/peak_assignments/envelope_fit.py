@@ -73,7 +73,6 @@ from mascope_backend.api.new.peak_assignments.engine import (
     ENVELOPE_TOLERANCE_KEY,
     ROLE_M0,
     SOURCE_DATABASE,
-    SampleMassAccuracy,
     labelled_isotopes,
     monoisotopic_row,
 )
@@ -104,7 +103,7 @@ from mascope_tools.composition.envelope_tolerance import (
     fit_envelope_tolerance,
 )
 from mascope_tools.composition.line_model import tracks
-from mascope_tools.composition.mass_accuracy import scoring_sigma_ppm
+from mascope_tools.composition.measurement_model import MeasurementModel
 from mascope_tools.composition.utils import parse_formula_tokens
 
 
@@ -171,8 +170,7 @@ def envelope_lines(
     match_isotope_df: pd.DataFrame,
     stage_a_rows: Sequence[dict],
     *,
-    mass_accuracy: SampleMassAccuracy,
-    fallback_sigma_ppm: float,
+    model: MeasurementModel,
     form: str,
 ) -> EnvelopeLines:
     """The lines of a run's committed Stage A envelopes its tolerance is fitted on.
@@ -181,10 +179,11 @@ def envelope_lines(
         isotopologue of every ion, a gated-out one with its intensity zeroed.
     :param stage_a_rows: The rows Stage A built from it; their monoisotopic
         rows name the envelopes it committed.
-    :param mass_accuracy: What Stage A measured, whose centre and width the
-        monoisotopic line must sit within the gate's cap of.
-    :param fallback_sigma_ppm: The instrument class's width, which is also the
-        precision a line must track its parent within.
+    :param model: The run's measurement model as Stage A fitted it (v1, before
+        the tolerance it is reading lines for): its centre and width are what
+        the monoisotopic line must sit within the gate's cap of, and the
+        instrument class's width it carries is the precision a line must track
+        its parent within.
     :param form: The form the tolerance takes (:func:`form_for`), which says
         which lines are read.
     :return: The lines, with each one's expected S/N and its observed /
@@ -237,8 +236,8 @@ def envelope_lines(
     ions = match_isotope_df.loc[keys.isin(committed), "target_ion_id"].unique()
     frame = match_isotope_df[match_isotope_df["target_ion_id"].isin(ions)]
 
-    width = scoring_sigma_ppm(mass_accuracy.sigma_ppm, float(fallback_sigma_ppm))
-    centre = float(mass_accuracy.scoring_mu_ppm or 0.0)
+    width = model.width_ppm
+    precision = model.fallback_sigma_ppm
     snr_column, ratio_column = [], []
     read: set[tuple] = set()
     for _, ion in frame.groupby("target_ion_id", sort=False):
@@ -255,7 +254,11 @@ def envelope_lines(
             continue
         read.add(key)
         mono_error = _finite(mono["match_mz_error"])
-        if mono_error is None or abs(mono_error - centre) > OFF_CALIBRATION_Z * width:
+        if (
+            mono_error is None
+            or abs(mono_error - model.centre_ppm(_finite(mono.get("mz"))))
+            > OFF_CALIBRATION_Z * width
+        ):
             continue
         abundance = pd.to_numeric(ion["relative_abundance"], errors="coerce")
         intensity = pd.to_numeric(ion["sample_peak_intensity"], errors="coerce")
@@ -300,7 +303,7 @@ def envelope_lines(
                 if not tracks(
                     ion.at[index, "match_mz_error"],
                     reference,
-                    float(fallback_sigma_ppm),
+                    float(precision),
                 ):
                     continue
                 ratio = (observed / anchor_intensity) / share
@@ -583,30 +586,15 @@ async def read_pool(
     return pool
 
 
-async def recorded_envelope_tolerance(sample_item_id: str) -> EnvelopeTolerance:
-    """The tolerance a sample's latest completed in-app run scored at.
-
-    What a formula measured outside any run - a pin, the inspector's evidence
-    and alternatives, the batch search and its propagation - is read at, so
-    one ion in one sample reads alike alone and in its run
-    (``seeded_scoring.score_seeds``).
-
-    :param sample_item_id: The sample.
-    :return: That tolerance; today's where the sample has no such run, or its
-        latest run fitted none.
-    """
-    rows = await _latest_records([sample_item_id])
-    return EnvelopeTolerance.from_record(rows[0][1] if rows else None)
-
-
 async def recorded_envelope_tolerances(
     sample_batch_id: str,
 ) -> dict[str, EnvelopeTolerance]:
-    """The tolerance each sample of a batch scored at, as
-    :func:`recorded_envelope_tolerance` reads it for one: what the batch's
-    isotopologue stamping (``batch_isotopologues``) judges a line's share at in
-    each sample. A sample with no such run is not named; its reader takes
-    today's.
+    """The tolerance each sample of a batch scored at, as its latest
+    completed in-app run recorded it: what the batch's isotopologue stamping
+    (``batch_isotopologues``) judges a line's share at in each sample. A
+    sample with no such run is not named; its reader takes today's. One
+    sample's reader outside a run reads the tolerance with the rest of its
+    model (``service.recorded_measurement``).
 
     :param sample_batch_id: The batch.
     :return: Sample -> its tolerance.
@@ -663,8 +651,7 @@ async def fit_run_envelope_tolerance(
     match_isotope_df: pd.DataFrame,
     stage_a_rows: Sequence[dict],
     *,
-    mass_accuracy: SampleMassAccuracy,
-    fallback_sigma_ppm: float,
+    model: MeasurementModel,
     read_neighbour: NeighbourReader,
 ) -> RunEnvelopeFit:
     """Fit the tolerance a run scores a line's share at, on Stage A's commits.
@@ -676,8 +663,8 @@ async def fit_run_envelope_tolerance(
     :param sample: The sample the run assigns.
     :param match_isotope_df: Stage A's gated, fit-scored frame.
     :param stage_a_rows: The rows Stage A built from it.
-    :param mass_accuracy: What Stage A measured.
-    :param fallback_sigma_ppm: The instrument class's width and precision.
+    :param model: The run's v1 model, before its tolerance
+        (:func:`envelope_lines`).
     :param read_neighbour: Reads a neighbour's own lines for the pool, under
         this run's config and match parameters.
     :return: The fit and what the run records of it.
@@ -689,13 +676,7 @@ async def fit_run_envelope_tolerance(
         # run-less fold stands down on it rather than fail, and so does this.
         instrument_type = None
     form = form_for(instrument_type)
-    lines = envelope_lines(
-        match_isotope_df,
-        stage_a_rows,
-        mass_accuracy=mass_accuracy,
-        fallback_sigma_ppm=fallback_sigma_ppm,
-        form=form,
-    )
+    lines = envelope_lines(match_isotope_df, stage_a_rows, model=model, form=form)
     fit = fit_envelope_tolerance(form, lines)
     if form != FORM_CURVE:
         return RunEnvelopeFit(fit)

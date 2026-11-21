@@ -54,6 +54,7 @@ from mascope_tools.composition.envelope_tolerance import (
     EnvelopeTolerance,
     fit_envelope_tolerance,
 )
+from mascope_tools.composition.measurement_model import MeasurementModel
 from mascope_tools.composition.profiles import INSTRUMENT_FALLBACK_SIGMA_PPM
 
 
@@ -123,8 +124,10 @@ def _lines(
     return envelope_lines(
         frame,
         _committed(frame) if rows is None else rows,
-        mass_accuracy=kwargs.pop("mass_accuracy", SampleMassAccuracy()),
-        fallback_sigma_ppm=kwargs.pop("fallback_sigma_ppm", ORBI),
+        model=MeasurementModel.v1(
+            kwargs.pop("mass_accuracy", SampleMassAccuracy()),
+            kwargs.pop("fallback_sigma_ppm", ORBI),
+        ),
         form=form,
     )
 
@@ -435,8 +438,10 @@ class TestTheRunsLevel:
                 _Sample(filename),
                 frame,
                 _committed(frame),
-                mass_accuracy=SampleMassAccuracy(),
-                fallback_sigma_ppm=ORBI if filename.endswith(".raw") else TOF,
+                model=MeasurementModel.v1(
+                    SampleMassAccuracy(),
+                    ORBI if filename.endswith(".raw") else TOF,
+                ),
                 read_neighbour=_never_read,
             )
         return fit, read_settings, read_neighbours

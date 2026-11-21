@@ -23,9 +23,10 @@ from mascope_backend.api.new.peak_assignments.engine import (
     TIER_CANDIDATE,
     ReagentOffset,
     SampleMassAccuracy,
+    measurement_model_record,
     pattern_scoring_for,
-    pattern_scoring_snapshot,
     sample_mass_accuracy,
+    scoring_snapshot,
     signal_to_noise_snapshot,
     untargeted_matches_to_peak_assignments,
     untargeted_seeds,
@@ -35,7 +36,11 @@ from mascope_tools.composition.mass_accuracy import (
     fit_mass_accuracy,
     reagent_line_offset,
 )
-from mascope_tools.composition.profiles import INSTRUMENT_FALLBACK_SIGMA_PPM
+from mascope_tools.composition.measurement_model import MeasurementModel
+from mascope_tools.composition.profiles import (
+    INSTRUMENT_FALLBACK_SIGMA_PPM,
+    resolve_fallback_sigma_ppm,
+)
 
 
 CANDIDATE = 0.45
@@ -50,6 +55,18 @@ MECHANISMS = {"[M+H]+": "mech-h", "[M+NH4]+": "mech-nh4"}
 NITRATE_LINES = [1.2556, -0.0517, -0.7262, -1.3953, -1.2555, -1.9426, -1.7316]
 #: What they say, as the pre-pass hands it on.
 NITRATE_READING = ReagentOffset(mu_ppm=-1.2555, lines=7, beyond_width=True)
+
+
+def _v1_scoring(params, accuracy, instrument, resolution=None):
+    """How the search ranks at the run's v1 model of ``accuracy``."""
+    model = MeasurementModel.v1(accuracy, resolve_fallback_sigma_ppm(instrument))
+    return pattern_scoring_for(params, model, resolution)
+
+
+def _record(scoring, accuracy, peaks=None, instrument="orbi") -> dict:
+    """What a run that ended at that v1 records of its model."""
+    model = MeasurementModel.v1(accuracy, resolve_fallback_sigma_ppm(instrument))
+    return measurement_model_record(model, scoring=scoring_snapshot(scoring, peaks))
 
 
 def _orbi_params(tolerance: int = 5, floor: float = 1e-5) -> SimpleNamespace:
@@ -349,7 +366,7 @@ class TestPatternScoringForTheSample:
     """What the finder is told about the sample it is searching."""
 
     def test_the_width_is_the_one_stage_a_measured(self):
-        scoring = pattern_scoring_for(
+        scoring = _v1_scoring(
             _orbi_params(), SampleMassAccuracy(-0.24, 0.30, 14), "orbi"
         )
 
@@ -361,14 +378,14 @@ class TestPatternScoringForTheSample:
         # poor substitute and the only honest one: the 5 ppm match tolerance
         # would be five times this instrument's real accuracy, and at that width
         # every candidate the search enumerated fits equally well.
-        scoring = pattern_scoring_for(_orbi_params(), SampleMassAccuracy(), "orbi")
+        scoring = _v1_scoring(_orbi_params(), SampleMassAccuracy(), "orbi")
 
         assert scoring.sigma_ppm == pytest.approx(
             math.hypot(ORBI_ACCURACY, PRED_SIGMA_PPM)
         )
 
     def test_a_tof_is_judged_at_a_tofs_width_and_window(self):
-        scoring = pattern_scoring_for(
+        scoring = _v1_scoring(
             _orbi_params(tolerance=15, floor=1e-4), SampleMassAccuracy(), "tof"
         )
 
@@ -382,7 +399,7 @@ class TestPatternScoringForTheSample:
         # Stage A scored its own ions there, and the search is scored where
         # Stage A was. The width stays the class's: a handful of the source's
         # bright lines says where the axis is, not how an analyte scatters.
-        scoring = pattern_scoring_for(
+        scoring = _v1_scoring(
             _orbi_params(),
             SampleMassAccuracy(None, None, 7, NITRATE_READING),
             "orbi",
@@ -394,7 +411,7 @@ class TestPatternScoringForTheSample:
         )
 
     def test_a_reading_inside_the_width_leaves_the_search_uncorrected(self):
-        scoring = pattern_scoring_for(
+        scoring = _v1_scoring(
             _orbi_params(),
             SampleMassAccuracy(None, None, 2, ReagentOffset(0.30, 9)),
             "orbi",
@@ -404,18 +421,14 @@ class TestPatternScoringForTheSample:
 
     def test_a_measured_width_beats_the_class_statement(self):
         # However well or badly this sample measures, what it measured wins.
-        loose = pattern_scoring_for(
-            _orbi_params(), SampleMassAccuracy(0.0, 1.4, 31), "orbi"
-        )
+        loose = _v1_scoring(_orbi_params(), SampleMassAccuracy(0.0, 1.4, 31), "orbi")
 
         assert loose.sigma_ppm == pytest.approx(math.hypot(1.4, PRED_SIGMA_PPM))
 
     def test_the_envelope_floor_is_the_samples_own(self):
         # The same floor Stage A generates its isotopes at, so the two stages
         # predict a line to the same depth.
-        scoring = pattern_scoring_for(
-            _orbi_params(), SampleMassAccuracy(0.0, 0.3, 9), "orbi"
-        )
+        scoring = _v1_scoring(_orbi_params(), SampleMassAccuracy(0.0, 0.3, 9), "orbi")
         assert scoring.abundance_floor == 1e-5
 
     def test_the_files_resolving_power_reaches_the_envelope_match(self):
@@ -424,12 +437,10 @@ class TestPatternScoringForTheSample:
         def resolution(mz):
             return 8000.0
 
-        with_resolution = pattern_scoring_for(
+        with_resolution = _v1_scoring(
             _orbi_params(), SampleMassAccuracy(0.0, 0.3, 9), "orbi", resolution
         )
-        without = pattern_scoring_for(
-            _orbi_params(), SampleMassAccuracy(0.0, 0.3, 9), "orbi"
-        )
+        without = _v1_scoring(_orbi_params(), SampleMassAccuracy(0.0, 0.3, 9), "orbi")
 
         assert with_resolution.resolution is resolution
         assert without.resolution is None
@@ -441,26 +452,26 @@ class TestTheRunSaysWhatItJudgedAt:
     @pytest.mark.parametrize("read", [True, False], ids=["read", "none"])
     def test_it_says_whether_the_lines_were_merged_at_the_files_width(self, read):
         accuracy = SampleMassAccuracy(0.0, 0.3, 9)
-        scoring = pattern_scoring_for(
+        scoring = _v1_scoring(
             _orbi_params(),
             accuracy,
             "orbi",
             (lambda mz: 8000.0) if read else None,
         )
 
-        snapshot = pattern_scoring_snapshot(scoring, accuracy)
+        snapshot = _record(scoring, accuracy)
 
-        assert snapshot["lines_merged_at_resolution"] is read
+        assert snapshot["scoring"]["lines_merged_at_resolution"] is read
 
     def test_a_fitted_width_says_so_and_names_its_anchors(self):
         accuracy = SampleMassAccuracy(-0.24, 0.30, 14)
-        scoring = pattern_scoring_for(_orbi_params(), accuracy, "orbi")
+        scoring = _v1_scoring(_orbi_params(), accuracy, "orbi")
 
-        snapshot = pattern_scoring_snapshot(scoring, accuracy)
+        snapshot = _record(scoring, accuracy)
 
         assert snapshot["sigma_source"] == "fitted"
-        assert snapshot["fitted_anchors"] == 14
-        assert snapshot["sigma_ppm"] == pytest.approx(
+        assert snapshot["anchors"]["library_lines"] == 14
+        assert snapshot["width_ppm"] == pytest.approx(
             math.hypot(0.30, PRED_SIGMA_PPM), abs=1e-4
         )
         assert snapshot["mu_ppm"] == pytest.approx(-0.24)
@@ -469,13 +480,13 @@ class TestTheRunSaysWhatItJudgedAt:
         # Two anchors is not a small measurement of a width, it is none - and
         # the count is what a reader needs to see why the class stood in.
         accuracy = SampleMassAccuracy(0.0, None, 2)
-        scoring = pattern_scoring_for(_orbi_params(), accuracy, "orbi")
+        scoring = _v1_scoring(_orbi_params(), accuracy, "orbi")
 
-        snapshot = pattern_scoring_snapshot(scoring, accuracy)
+        snapshot = _record(scoring, accuracy)
 
         assert snapshot["sigma_source"] == "instrument_class"
-        assert snapshot["fitted_anchors"] == 2
-        assert snapshot["sigma_ppm"] == pytest.approx(
+        assert snapshot["anchors"]["library_lines"] == 2
+        assert snapshot["width_ppm"] == pytest.approx(
             math.hypot(ORBI_ACCURACY, PRED_SIGMA_PPM), abs=1e-4
         )
 
@@ -484,26 +495,26 @@ class TestTheRunSaysWhatItJudgedAt:
         # count the record would show a class width beside twelve anchors and
         # nothing to say why.
         accuracy = SampleMassAccuracy(None, None, 12, anchor_ions=3)
-        scoring = pattern_scoring_for(_orbi_params(), accuracy, "orbi")
+        scoring = _v1_scoring(_orbi_params(), accuracy, "orbi")
 
-        snapshot = pattern_scoring_snapshot(scoring, accuracy)
+        snapshot = _record(scoring, accuracy)
 
         assert snapshot["sigma_source"] == "instrument_class"
-        assert snapshot["fitted_anchors"] == 12
-        assert snapshot["fitted_anchor_ions"] == 3
+        assert snapshot["anchors"]["library_lines"] == 12
+        assert snapshot["anchors"]["library_ions"] == 3
 
     def test_an_offset_from_the_reagent_lines_says_so_and_names_them(self):
         accuracy = SampleMassAccuracy(None, None, 7, NITRATE_READING)
-        scoring = pattern_scoring_for(_orbi_params(), accuracy, "orbi")
+        scoring = _v1_scoring(_orbi_params(), accuracy, "orbi")
 
-        snapshot = pattern_scoring_snapshot(scoring, accuracy)
+        snapshot = _record(scoring, accuracy)
 
         assert snapshot["mu_source"] == "reagent"
         assert snapshot["mu_ppm"] == pytest.approx(-1.2555)
         assert snapshot["reagent_lines"] == 7
         assert snapshot["reagent_mu_ppm"] == pytest.approx(-1.2555)
         # The library's own count still says why it did not measure one.
-        assert snapshot["fitted_anchors"] == 7
+        assert snapshot["anchors"]["library_lines"] == 7
         assert snapshot["sigma_source"] == "instrument_class"
 
     @pytest.mark.parametrize(
@@ -515,19 +526,19 @@ class TestTheRunSaysWhatItJudgedAt:
         # "none" alone would not say whether the lines were read and found
         # inside the width, too few to read, or never asked.
         accuracy = SampleMassAccuracy(None, None, 2, reading)
-        scoring = pattern_scoring_for(_orbi_params(), accuracy, "orbi")
+        scoring = _v1_scoring(_orbi_params(), accuracy, "orbi")
 
-        snapshot = pattern_scoring_snapshot(scoring, accuracy)
+        snapshot = _record(scoring, accuracy)
 
-        assert (snapshot["mu_source"], snapshot["mu_ppm"]) == ("none", 0.0)
+        assert (snapshot["mu_source"], snapshot["mu_ppm"]) == ("none", None)
         assert snapshot["reagent_lines"] == reading.lines
         assert snapshot["reagent_mu_ppm"] == recorded
 
     def test_a_run_with_no_pre_pass_records_no_reading(self):
         accuracy = SampleMassAccuracy(-0.24, 0.30, 14)
-        scoring = pattern_scoring_for(_orbi_params(), accuracy, "orbi")
+        scoring = _v1_scoring(_orbi_params(), accuracy, "orbi")
 
-        snapshot = pattern_scoring_snapshot(scoring, accuracy)
+        snapshot = _record(scoring, accuracy)
 
         assert snapshot["mu_source"] == "fitted"
         assert "reagent_lines" not in snapshot
@@ -535,14 +546,12 @@ class TestTheRunSaysWhatItJudgedAt:
 
     def test_the_window_and_the_floor_ride_along(self):
         accuracy = SampleMassAccuracy(0.0, 0.3, 11)
-        scoring = pattern_scoring_for(
-            _orbi_params(tolerance=15, floor=1e-4), accuracy, "tof"
-        )
+        scoring = _v1_scoring(_orbi_params(tolerance=15, floor=1e-4), accuracy, "tof")
 
-        snapshot = pattern_scoring_snapshot(scoring, accuracy)
+        snapshot = _record(scoring, accuracy, instrument="tof")
 
-        assert snapshot["mz_tolerance_ppm"] == 15
-        assert snapshot["abundance_floor"] == 1e-4
+        assert snapshot["scoring"]["mz_tolerance_ppm"] == 15
+        assert snapshot["scoring"]["abundance_floor"] == 1e-4
 
 
 class TestTheRunSaysWhichSignalToNoiseItScoredOn:
@@ -639,17 +648,17 @@ class TestTheRunSaysWhichSignalToNoiseItScoredOn:
 
     def test_the_scoring_snapshot_carries_it_when_given_the_peaks(self):
         accuracy = SampleMassAccuracy(0.0, 0.3, 11)
-        scoring = pattern_scoring_for(_orbi_params(), accuracy, "orbi")
+        scoring = _v1_scoring(_orbi_params(), accuracy, "orbi")
 
-        without = pattern_scoring_snapshot(scoring, accuracy)
-        with_peaks = pattern_scoring_snapshot(
-            scoring, accuracy, self._peaks(lambda h: h)
-        )
+        without = _record(scoring, accuracy)
+        with_peaks = _record(scoring, accuracy, self._peaks(lambda h: h))
 
-        assert "snr_source" not in without
-        assert with_peaks["snr_source"] == "peak_list"
-        assert with_peaks["snr_intensity_spearman"] == 1.0
-        assert {k: with_peaks[k] for k in without} == without
+        assert "snr_source" not in without["scoring"]
+        assert with_peaks["scoring"]["snr_source"] == "peak_list"
+        assert with_peaks["scoring"]["snr_intensity_spearman"] == 1.0
+        assert {k: with_peaks["scoring"][k] for k in without["scoring"]} == without[
+            "scoring"
+        ]
 
 
 class TestWhichReadingsAreMeasuredAgain:
