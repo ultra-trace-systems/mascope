@@ -25,18 +25,18 @@ of any hour) and ``sparse_hours``; with ``by``, the same per group under
 
 - **An hour sampled on few days is no cycle.** An hour is sparse when it
   holds under half the samples of the typical hour, the median over the
-  hours sampled at all, so an hour with no sample is sparse beside hours
-  with some. With ``by``, each group is judged per day: per calendar day
-  of it from the window's first sample to its last, and at least per day
-  of a whole one (:data:`WHOLE_DAYS`: a month's, a season's, the week's
-  five weekdays or its two weekend days), against the typical hour of the
-  group that holds the most samples per day. So a month the window holds
-  twice is judged as one it holds once, a weekend's two days beside the
-  week's five, and a month the window holds three hours of reads as
-  sparse in every hour. The note names the sparse hours of the cycles
-  drawn. The rule counts samples, not values: a species below detection in
-  its trough is sampled there, and the note on species detected seldom
-  says that its trough reads high.
+  hours sampled at all, or no sample at all, so a species no batch of the
+  window reads is sparse in every hour. With ``by``, each group is judged
+  per day: per calendar day of it from the window's first sample to its
+  last, and at least per day of a whole one (:data:`WHOLE_DAYS`: a
+  month's, a season's, the week's five weekdays or its two weekend days),
+  against the typical hour of the group that holds the most samples per
+  day. So a month the window holds twice is judged as one it holds once,
+  a weekend's two days beside the week's five, and a month the window
+  holds three hours of reads as sparse in every hour. The note names the
+  sparse hours of the cycles drawn. The rule counts samples, not values: a
+  species below detection in its trough is sampled there, and the note on
+  species detected seldom says that its trough reads high.
 """
 
 import calendar
@@ -152,8 +152,10 @@ def cycle(
         "amplitude": None,
         "day_night_ratio": None,
         "min_n": int(n.min()),
+        # An hour without a sample is sparse, also in a cycle without one
         "sparse_hours": [
-            int(h) for h in np.flatnonzero(n_samples < SPARSE * reference)
+            int(h)
+            for h in np.flatnonzero((n_samples == 0) | (n_samples < SPARSE * reference))
         ],
         "presence": common.presence(rows["n"], rows["n_samples"]),
     }

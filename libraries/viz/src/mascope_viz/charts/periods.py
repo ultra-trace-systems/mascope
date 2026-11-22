@@ -12,9 +12,12 @@ maximum). Box conventions differ, and a reader assumes Tukey's whiskers at
   months.
 - **A thin period is hollow**: one with under half the samples of the
   species' fullest one, such as the window's first and last or a week
-  with a gap, is drawn without its fill and flagged in the summary. Each
-  species is judged on its own samples, those of the batches that read
-  it, so the species beside it in the figure change none of its periods.
+  with a gap, or with no sample of it at all, is drawn without its fill
+  and flagged in the summary. So a species no batch of the window reads
+  is thin in every period. Each species is judged on its own samples,
+  those of the batches that read it, so what is drawn beside it changes
+  the judgement of no period it holds samples in; it can widen the window
+  by periods it holds none of, which are thin.
 
 The summary, per species: its period medians, each with the period's
 start, its ``n`` (values), ``n_samples`` (the samples that could have held
@@ -118,9 +121,11 @@ def _figure(
         "label",
         pd.DatetimeIndex(data["period"]).strftime(_LABELS[period]).astype(str),
     )
-    # Thin against the species' own fullest period
+    # Thin against the species' own fullest period, and thin without a
+    # sample of it, also where it has none in the window
     fullest = data.groupby("key", observed=True)["n_samples"].transform("max")
-    data["thin"] = (data["n_samples"] < fullest / 2).to_numpy(dtype=bool)
+    empty = data["n_samples"] == 0
+    data["thin"] = (empty | (data["n_samples"] < fullest / 2)).to_numpy(dtype=bool)
 
     entries = []
     for s in resolved.species:
