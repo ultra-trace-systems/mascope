@@ -123,6 +123,34 @@ class CalibrationConfig(BaseModel):
     # collection of 7 lines or fewer cannot fall below it on the 3 points a
     # TOF fit needs. Conservative until the TOF thresholds are tuned.
     TOF_MIN_KEPT_LINE_SHARE: float | None = 0.4
+    # A TOF fit is extrapolated past its calibrants when the file's strong
+    # peaks reach further beyond the span of the lines it kept than this many
+    # times the span's own width, at either end, None disabling the check.
+    # Distances are on the square-root scale: the TOF index is linear in
+    # sqrt(m/z), and the error of a line fitted on points over a width w
+    # grows with the distance past them in units of w (the variance of a
+    # predicted value: Draper and Smith, Applied Regression Analysis, 1998,
+    # https://doi.org/10.1002/9781118625590).
+    # From the plan's assessment and baseline (docs/dev/tof_calibration.md):
+    # TOF H's old set on 41-148 Th, in files with strong peaks to about
+    # 450 Th, read -10 to -21 ppm above 160 Th, 1.6 widths past 148 Th; its
+    # corrected set on 41-228 Th, which holds there, reaches the same peaks
+    # 0.7 widths past 228 Th, and the regression corpus's propylamine file,
+    # with strong peaks to 611 Th, 1.1 widths past. Site B's nitrate sets on
+    # 62-188 Th, in modes with strong peaks to 500-700 Th, reach 1.5 to 2.2
+    # widths past. A limit of 1.25 lies between: the corrected set clears it
+    # to 674 Th, the old one to 375 Th, a nitrate set to 441 Th. On the
+    # corpus's fitted TOF files the lowest strong peaks lie at most 0.5
+    # widths below the lowest line kept, so the low end raises it only for
+    # a set whose lines all sit high.
+    TOF_MAX_EXTRAPOLATION_SPANS: float | None = 1.25
+    # The strong peaks of that check: of the fit's polarity, S/N at least
+    # TOF_STRONG_PEAK_SNR (the plan's "strong peaks"), and the file's reach
+    # read at the TOF_STRONG_PEAK_TAIL-th lowest and highest of them, so that
+    # a stray peak or two at the end of the axis does not decide it: the
+    # baseline took a mass band to hold strong peaks from five on.
+    TOF_STRONG_PEAK_SNR: float = 20.0
+    TOF_STRONG_PEAK_TAIL: int = 5
     # Summed calibrant intensity as a fraction of the mean TIC per scan, None
     # disabling the check. Off for both: in production it only ever flagged
     # fits that were otherwise healthy, down to 3e-5 on Orbitrap and 5e-7 on
