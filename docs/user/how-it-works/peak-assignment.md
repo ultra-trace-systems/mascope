@@ -1886,7 +1886,7 @@ not:
 | Your pass is running | the phase it is in, and *Step 3 of 4* | **Cancel** |
 | Another person's pass is running | *Another user is assigning this batch*, its step and when it started | none: the server would refuse a second pass |
 | Up to date | when the last pass ended, *up to date*, the samples it covered, and the change in assigned rows where this tab saw the pass | **Re-assign**, outlined: every stage again |
-| Behind | the first reason, in words: *12 samples added since the last assignment*, *Target collections or reference lists changed since the last assignment*, *Assigned by an older engine (0.7.0)* | **Update assignment** when new samples are the only reason, else **Re-assign** |
+| Behind | the first reason, in words: *12 samples added since the last assignment*, *Target collections or reference lists changed since the last assignment*, *Assignment settings changed since the last assignment*, *Assigned by an older engine (0.7.0)* | **Update assignment** when new samples are the only reason, else **Re-assign** |
 | Stopped | *Stopped at* the stage: the stages before it were applied | **Retry**: the pass again from that stage |
 
 A viewer of the workspace sees the same status. The button is disabled, and says what
@@ -1975,8 +1975,9 @@ made for.
   the batch's read. A setting the engine does not know, or a value out of its bounds, is
   refused, naming the setting. Saving does not start a pass. It marks the batch behind:
   the batch's assignment status (`GET /api/batch-peaks/batch/{id}/assignment-status`)
-  names `settings_changed`, and the next pass runs every stage, from the first, on the
-  new settings. A pass *Assign batch* starts sends no settings, so it runs on the batch's.
+  names `settings_changed`, *Assign batch* says *Assignment settings changed since the
+  last assignment*, and the next pass runs every stage, from the first, on the new
+  settings. A pass *Assign batch* starts sends no settings, so it runs on the batch's.
   Settings given to one request instead - a `config` sent to `run-stages`, `assign` or a
   step's own route - are what that pass runs on in place of the batch's. Its run records
   that they came from the request, and the batch stays behind until a pass runs on its
