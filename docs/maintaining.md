@@ -1824,12 +1824,28 @@ is disabled, deleted or has its sessions ended, is tried again: the worker that
 could not reach Redis keeps the sign-out, asks Redis every 10 seconds, and signs
 the sockets out within 10 seconds of it answering. Until then the sockets keep
 their rooms; nothing reaches them while Redis is down, but the events that flow
-again in those seconds do. A worker keeps at most 1,000 such sign-outs; one more is dropped
+again in those seconds do. A sign-out that Redis cuts off partway, after a
+socket's session was cleared but before it left its rooms, is finished for that
+socket: the worker keeps the socket itself, not a search for it. An eviction cut
+off the same way also drops the account's place in the rooms its sockets had
+already left. A worker keeps at most 1,000 such sign-outs; one more is dropped
 with an `ERROR` in GlitchTip, "Dropped a sign-out that found Redis out of
 reach". What a worker keeps is lost when it stops before Redis is back, which
 it reports as a warning in GlitchTip, "Dropped N sign-out(s) that found Redis
-out of reach at shutdown": those sockets keep their rooms until they reconnect
-or their token expires.
+out of reach at shutdown", and a worker killed outright reports nothing.
+
+What is lost so is caught up on where the account still shows it. Once an hour
+the worker holding each web socket reads the socket's account, and evicts the
+socket if the account is disabled, deleted, held at the password screen or has
+had its sessions ended. It says so in GlitchTip with a warning, "Socket ... held
+rooms its account may no longer read; evicting them at its renewal". That costs
+one account read per open socket per hour. A logout leaves no such mark: its
+token ends only in the browser. So a logout whose sign-out is lost to an outage
+and a worker stop is not caught up on. Its sockets keep their rooms until they
+reconnect or their token expires (`JWT_EXPIRATION_SECONDS`, 7 days by default).
+A socket whose sign-out Redis had cut off partway is the one exception: its
+session is gone, so the expiry no longer reaches it either, and it keeps its
+rooms until it reconnects.
 python-socketio's own "Cannot receive from redis... retrying" and "Cannot
 publish to redis... retrying" lines are logged at `INFO`; its other errors, such
 as "giving up" on a publish, still reach GlitchTip. A Redis that stays down is

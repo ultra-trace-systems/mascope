@@ -13,7 +13,10 @@ also by a renewal task that lives exactly as long as the connection (started
 on connect, cancelled on disconnect), so a tab that only listens keeps its
 session and records too. The renewal is also what signs a web socket out when
 its token expires: it wakes at the expiry and hands the socket to
-:func:`mascope_backend.socket.eviction.sign_out_expired_socket`.
+:func:`mascope_backend.socket.eviction.sign_out_expired_socket`. And it is the
+backstop for an eviction that was lost: each tick reads the socket's account
+and evicts the socket when the account may no longer read
+(:func:`mascope_backend.socket.eviction.evict_held_socket`).
 
 A web (default-namespace) session is also indexed by user, so every socket an
 account has open can be found from any worker - which is what ending its
@@ -339,7 +342,10 @@ async def _renew_session(sid: str, expires_at: Optional[float] = None) -> None:
     signed out instead, and the tick before it is brought forward to the
     expiry, so the socket goes when its token does, not up to an interval
     later. ``expires_at``, the expiry of a token the socket authenticated
-    with at connect, brings the first tick forward the same way.
+    with at connect, brings the first tick forward the same way. Any other
+    session has its account read, and its socket evicted when the account may
+    no longer read
+    (:func:`mascope_backend.socket.eviction.evict_held_socket`).
     """
     delay = _first_delay(expires_at)
     while True:
@@ -356,18 +362,22 @@ async def _renew_session(sid: str, expires_at: Optional[float] = None) -> None:
             # Logged inside; retried on the next tick. A session cleared under
             # a live socket has nothing to refresh until the socket is gone.
             continue
-        if (expires_at := session.get("expires_at")) is None:
-            # A service socket, or a session saved before sessions kept the
-            # token's expiry.
-            continue
-        remaining = expires_at - time.time()
-        if remaining <= 0:
-            # Imported lazily: eviction imports this package.
-            from mascope_backend.socket.eviction import sign_out_expired_socket
+        # Imported lazily: eviction imports this package.
+        from mascope_backend.socket.eviction import (
+            evict_held_socket,
+            sign_out_expired_socket,
+        )
 
-            await sign_out_expired_socket(sid, session["user_id"])
-        else:
+        # None for a session saved before sessions kept the token's expiry.
+        if (expires_at := session.get("expires_at")) is not None:
+            remaining = expires_at - time.time()
+            if remaining <= 0:
+                await sign_out_expired_socket(sid, session["user_id"])
+                continue
             delay = min(delay, remaining)
+        # The backstop for an eviction that was lost, its worker stopped
+        # before Redis answered: the account is read once a tick.
+        await evict_held_socket(sid, session)
 
 
 def start_session_renewal(sid: str, expires_at: Optional[float] = None) -> None:

@@ -1169,6 +1169,370 @@ async def test_a_retry_cut_off_by_the_stop_is_said_dropped(person, sio, quick_re
     assert eviction._retries == {}
 
 
+# --- What Redis cut off partway is finished ---
+
+
+def _cut_socket_rooms(cut: str, live_rate_limiter=None):
+    """
+    ``room_tracker.socket_rooms`` meeting Redis out of reach once, for ``cut``.
+
+    With ``live_rate_limiter``, Redis then stays out of reach until the test
+    lets it answer again, so the retry waits.
+    """
+    read = room_tracker.socket_rooms
+    missed: list[str] = []
+
+    async def socket_rooms(sid):
+        if sid == cut and not missed:
+            missed.append(sid)
+            if live_rate_limiter is not None:
+                live_rate_limiter.out_of_reach = True
+            raise RedisConnectionError("Connection refused.")
+        return await read(sid)
+
+    return patch.object(room_tracker, "socket_rooms", socket_rooms), missed
+
+
+@pytest.mark.parametrize("cut", ["sid-a", "sid-b"], ids=["named-tab", "other-tab"])
+@pytest.mark.asyncio
+async def test_a_sign_out_redis_cut_off_partway_is_finished(
+    person, sio, quick_retries, cut
+):
+    """
+    The sign-out clears the socket's session and index entry before it reads
+    its rooms. Cut off between the two, it used to be kept, but the retry
+    found the socket by neither: it kept every room, and was never told.
+    """
+    await _open_socket("sid-a", person, THIS_BROWSER)
+    await _open_socket("sid-b", person, THIS_BROWSER)
+    cut_off, missed = _cut_socket_rooms(cut)
+
+    with cut_off:
+        await _logout(person, "sid-a")
+        assert missed == [cut]
+        await _until(lambda: _no_retries())
+
+    await _assert_signed_out(sio, "sid-a", person)
+    await _assert_signed_out(sio, "sid-b", person)
+    assert sorted(_told_signed_out(sio)) == ["sid-a", "sid-b"]
+    assert not await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
+
+
+@pytest.mark.asyncio
+async def test_a_sign_out_at_the_expiry_redis_cut_off_is_finished(
+    person, sio, quick_retries
+):
+    """Its session is gone too, so the renewal's next tick would not find it."""
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+    await _expire_session("sid-a", time.time() - 1)
+    cut_off, missed = _cut_socket_rooms("sid-a")
+
+    with cut_off:
+        assert await sign_out_expired_socket("sid-a", person.id) is False
+        assert missed == ["sid-a"]
+        await _until(lambda: _no_retries())
+
+    await _assert_signed_out(sio, "sid-a", person)
+
+
+@pytest.mark.parametrize("cut", ["sid-a", "sid-b"], ids=["named-tab", "other-tab"])
+@pytest.mark.asyncio
+async def test_a_sign_out_cut_off_before_its_session_went_is_finished(
+    person, sio, live_rate_limiter, quick_retries, cut
+):
+    """
+    Redis gone from the start of the socket's sign-out: its session stays,
+    still the one signed out, and is cleared with the rest. The named tab
+    signed in with another token than the cookie's, which it goes with all
+    the same.
+    """
+    await _open_socket("sid-a", person, OTHER_BROWSER)
+    await _open_socket("sid-b", person, THIS_BROWSER)
+    peek = session_store.peek_session_user
+    read = session_store.get_session_user
+    reads: list[str] = []
+
+    def then_cut(sid):
+        if sid == cut and not reads:
+            reads.append(sid)
+            live_rate_limiter.out_of_reach = True
+
+    async def read_then_cut(sid, *args, **kwargs):
+        session = await read(sid, *args, **kwargs)
+        then_cut(sid)
+        return session
+
+    async def peek_then_cut(sid, *args, **kwargs):
+        session = await peek(sid, *args, **kwargs)
+        then_cut(sid)
+        return session
+
+    with (
+        patch("mascope_backend.socket.eviction.get_session_user", read_then_cut),
+        patch("mascope_backend.socket.eviction.peek_session_user", peek_then_cut),
+    ):
+        await _logout(person, "sid-a", issued=THIS_BROWSER)
+        assert reads == [cut]
+        # Looked at in the stub: Redis does not answer yet.
+        assert storage_config.session_key(cut, "/") in live_rate_limiter.values
+        live_rate_limiter.out_of_reach = False
+        await _until(lambda: _no_retries())
+
+    await _assert_signed_out(sio, cut, person)
+
+
+@pytest.mark.asyncio
+async def test_a_finish_redis_misses_again_is_kept_again(person, sio, quick_retries):
+    await _open_socket("sid-a", person, THIS_BROWSER)
+    await _open_socket("sid-b", person, THIS_BROWSER)
+    cut_off, _ = _cut_socket_rooms("sid-b")
+    peek = session_store.peek_session_user
+    peeks: list[str] = []
+
+    async def miss_the_finish(sid, *args, **kwargs):
+        if sid == "sid-b":
+            peeks.append(sid)
+            # The first is the logout's own; the second, the finish's.
+            if len(peeks) == 2:
+                raise RedisConnectionError("Connection refused.")
+        return await peek(sid, *args, **kwargs)
+
+    with (
+        cut_off,
+        patch("mascope_backend.socket.eviction.peek_session_user", miss_the_finish),
+    ):
+        await _logout(person, "sid-a")
+        await _until(lambda: _no_retries())
+
+    assert len(peeks) == 3
+    await _assert_signed_out(sio, "sid-b", person)
+
+
+@pytest.mark.asyncio
+async def test_a_finish_leaves_a_socket_signed_in_again_since(
+    person, sio, live_rate_limiter, quick_retries
+):
+    """What it holds then is the new session's, as for the named tab reached."""
+    await _open_socket("sid-a", person, THIS_BROWSER)
+    await _open_socket("sid-b", person, THIS_BROWSER)
+    cut_off, _ = _cut_socket_rooms("sid-b", live_rate_limiter)
+
+    with cut_off:
+        await _logout(person, "sid-a")
+        assert eviction._retries
+        live_rate_limiter.out_of_reach = False
+        # Signed in again, with a newer token, before the retry ran.
+        await _open_socket("sid-b", person, THIS_BROWSER + timedelta(seconds=5))
+        sio.leave_room.reset_mock()
+        sio.emit.reset_mock()
+        await _until(lambda: _no_retries())
+
+    assert _left(sio, "sid-b") == set()
+    assert _told_signed_out(sio) == []
+    assert (await get_session_user("sid-b"))["user_id"] == person.id
+    assert RESOURCE_ROOM in await room_tracker.socket_rooms("sid-b")
+
+
+def _cut_user_leave(live_rate_limiter):
+    """
+    ``room_tracker.leave``, the account's membership of a room, meeting Redis
+    out of reach once; Redis then stays out of reach until the test lets it
+    answer.
+    """
+    leave = room_tracker.leave
+    missed: list[str] = []
+
+    async def cut(user_id, room):
+        if not missed:
+            missed.append(room)
+            live_rate_limiter.out_of_reach = True
+            raise RedisConnectionError("Connection refused.")
+        return await leave(user_id, room)
+
+    return patch.object(room_tracker, "leave", cut), missed
+
+
+@pytest.mark.asyncio
+async def test_an_eviction_cut_off_after_its_sockets_left_drops_the_account_s_rooms(
+    person, sio, live_rate_limiter, async_session_factory, quick_retries
+):
+    """
+    The socket had left the rooms, and its record with them, so the retry
+    found nothing to leave: the account stayed in them, for notification
+    routing, until their records lapsed.
+    """
+    await _open_socket("sid-a", person, datetime.now(timezone.utc) - LONG_AGO)
+    await subscribe("sid-a", OTHER_ROOM)
+    await _set_active(async_session_factory, person, False)
+    cut_off, missed = _cut_user_leave(live_rate_limiter)
+
+    with cut_off:
+        assert await evict_ended_sessions(person.id) == 0
+        assert missed
+        # The socket has left them, its record too (in the stub: Redis does
+        # not answer yet).
+        assert live_rate_limiter.sets[storage_config.socket_rooms_key("sid-a")] == {
+            f"user-{person.id}"
+        }
+        live_rate_limiter.out_of_reach = False
+        await _until(lambda: _no_retries())
+
+    assert not await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
+    assert not await room_tracker.is_in_room(person.id, OTHER_ROOM)
+    assert await room_tracker.is_in_room(person.id, f"user-{person.id}")
+
+
+@pytest.mark.asyncio
+async def test_an_eviction_kept_over_a_cut_one_carries_its_rooms(
+    person, sio, live_rate_limiter, async_session_factory, quick_retries
+):
+    """A second eviction of the account, kept before the retry ran, replaces it."""
+    await _open_socket("sid-a", person, datetime.now(timezone.utc) - LONG_AGO)
+    await _set_active(async_session_factory, person, False)
+    cut_off, _ = _cut_user_leave(live_rate_limiter)
+
+    with cut_off:
+        await evict_ended_sessions(person.id)
+        # Redis still out of reach: kept again, under the same key.
+        await evict_ended_sessions(person.id)
+        assert list(eviction._retries) == [("evict", person.id)]
+        live_rate_limiter.out_of_reach = False
+        await _until(lambda: _no_retries())
+
+    assert not await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
+
+
+# --- The renewal's hourly check of the account ---
+
+
+def _user_reads() -> tuple[list[str], object]:
+    """A list of the statements the backend's engine runs that read users."""
+    from sqlalchemy import event
+
+    from mascope_backend import db
+
+    engine = db.ASYNC_SESSION_MAKER.kw["bind"].sync_engine
+    reads: list[str] = []
+
+    def before(conn, cursor, statement, parameters, context, executemany):
+        if (
+            statement.lstrip().upper().startswith("SELECT")
+            and 'FROM "user"' in statement
+        ):
+            reads.append(statement)
+
+    event.listen(engine, "before_cursor_execute", before)
+    return reads, lambda: event.remove(engine, "before_cursor_execute", before)
+
+
+async def _deny(async_session_factory, user: User, how: str) -> None:
+    async with async_session_factory() as session:
+        stored = await session.get(User, user.id)
+        if how == "disabled":
+            stored.is_active = False
+        elif how == "held":
+            stored.must_change_password = True
+        elif how == "revoked":
+            stored.sessions_revoked_at = datetime.now(timezone.utc)
+        else:
+            await session.execute(
+                delete(AccessToken).where(AccessToken.user_id == user.id)
+            )
+            await session.delete(stored)
+        await session.commit()
+
+
+@pytest.mark.parametrize("how", ["disabled", "held", "revoked", "deleted"])
+@pytest.mark.asyncio
+async def test_a_lost_eviction_is_caught_up_at_the_socket_s_renewal(
+    person, sio, live_rate_limiter, async_session_factory, monkeypatch, how
+):
+    """
+    The eviction Redis missed was kept by the worker that tried it, which
+    stopped before Redis answered; the socket, on a worker that runs on, used
+    to keep its rooms until it reconnected or its token expired.
+    """
+    await _open_socket("sid-a", person, datetime.now(timezone.utc) - LONG_AGO)
+    await _deny(async_session_factory, person, how)
+    live_rate_limiter.out_of_reach = True
+    assert await evict_ended_sessions(person.id) == 0
+    # The worker that kept it stops, and drops it.
+    await stop_sign_out_retries()
+    live_rate_limiter.out_of_reach = False
+    assert RESOURCE_ROOM in await room_tracker.socket_rooms("sid-a")
+
+    # The worker holding the socket renews it.
+    monkeypatch.setattr(storage_config, "session_renewal_interval", 0.01)
+    session_store.start_session_renewal("sid-a")
+    await _until(lambda: _rooms_left("sid-a"))
+
+    await _assert_evicted(sio, "sid-a", person)
+
+
+@pytest.mark.asyncio
+async def test_the_renewal_keeps_a_socket_its_account_lets_read(
+    person, sio, monkeypatch
+):
+    """And reads the account once a tick, which is all it costs."""
+    await _open_socket("sid-a", person, datetime.now(timezone.utc) - LONG_AGO)
+    claim = session_store.renew_socket_claim
+    ticks: list[str] = []
+
+    async def tick(sid):
+        ticks.append(sid)
+        return await claim(sid)
+
+    reads, stop_counting = _user_reads()
+    try:
+        with (
+            patch.object(session_store, "renew_socket_claim", tick),
+            captured_logs(level="DEBUG") as records,
+        ):
+            monkeypatch.setattr(storage_config, "session_renewal_interval", 0.05)
+            session_store.start_session_renewal("sid-a")
+
+            async def three_ticks() -> bool:
+                return len(ticks) >= 3
+
+            await _until(three_ticks)
+            await stop_session_renewal("sid-a")
+    finally:
+        stop_counting()
+
+    # A tick cancelled before its read is the one it may be short of.
+    assert len(ticks) - 1 <= len(reads) <= len(ticks)
+    assert not [r for r in records if "at its renewal" in r["message"]]
+    sio.leave_room.assert_not_awaited()
+    assert await room_tracker.socket_rooms("sid-a") == {
+        RESOURCE_ROOM,
+        SIGNED_IN_ROOM,
+        f"user-{person.id}",
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_renewal_does_not_evict_a_held_socket_again(
+    person, sio, async_session_factory, monkeypatch
+):
+    """Once a socket holds its own room alone, there is nothing to evict."""
+    await _open_socket("sid-a", person, datetime.now(timezone.utc) - LONG_AGO)
+    await _set_active(async_session_factory, person, False)
+    await evict_ended_sessions(person.id)
+    evictions = AsyncMock(wraps=evict_ended_sessions)
+
+    with (
+        patch("mascope_backend.socket.eviction.evict_ended_sessions", evictions),
+        captured_logs(level="DEBUG") as records,
+    ):
+        monkeypatch.setattr(storage_config, "session_renewal_interval", 0.01)
+        session_store.start_session_renewal("sid-a")
+        await asyncio.sleep(0.1)
+        await stop_session_renewal("sid-a")
+
+    evictions.assert_not_awaited()
+    assert not [r for r in records if "at its renewal" in r["message"]]
+
+
 # --- A maintenance script whose evictions find Redis out of reach ---
 
 
