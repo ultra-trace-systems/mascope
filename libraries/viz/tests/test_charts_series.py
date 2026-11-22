@@ -148,7 +148,8 @@ class _Species:
 
 
 #: One compound as a target ion and as an assigned formula under two
-#: mechanisms, and a formula only the engine assigns.
+#: mechanisms, a formula only the engine assigns, and a target ion whose
+#: formula the engine reads under a mechanism that sorts before the ion's.
 SPECIES = _Species(
     [
         {
@@ -179,6 +180,20 @@ SPECIES = _Species(
             "ion_formula": "C5H8O3I-",
             "mechanism": "[M+I]-",
         },
+        {
+            "series_key": "ion:t2",
+            "name": "levoglucosan",
+            "formula": "C6H10O5",
+            "ion_formula": "C6H10O5I-",
+            "mechanism": "[M+I]-",
+        },
+        {
+            "series_key": "formula:C6H10O5|[M+H]+",
+            "name": "C6H10O5",
+            "formula": "C6H10O5",
+            "ion_formula": "C6H11O5+",
+            "mechanism": "[M+H]+",
+        },
     ]
 )
 
@@ -191,6 +206,10 @@ def test_a_species_is_a_key_a_name_or_a_formula():
     assert keys("C5H8O3") == ["formula:C5H8O3|[M+I]-"]
     assert keys("C5H8O3I-") == ["formula:C5H8O3|[M+I]-"]
     assert keys("pinic acid") == ["ion:t1"]
+    # A neutral formula the ion holds by formula alone, and the engine
+    # under another mechanism: the ion first, whatever its mechanism
+    assert keys("C6H10O5") == ["ion:t2", "formula:C6H10O5|[M+H]+"]
+    assert keys("levoglucosan") == ["ion:t2"]
     assert keys("tic") == ["tic"]
     # A key is taken as it is, even one a target ion would hold
     assert keys("formula:C9H14O4|[M+I]-") == ["formula:C9H14O4|[M+I]-"]
@@ -274,7 +293,7 @@ def test_a_species_the_store_does_not_hold_names_the_nearest():
         resolve(SPECIES, "pinic acd")
     assert "pinic acid" in caught.value.near
     with pytest.raises(UnknownSpecies) as caught:
-        resolve(SPECIES, "ion:t2")
+        resolve(SPECIES, "ion:t3")
     assert "ion:t1" in caught.value.near
 
 
@@ -513,6 +532,10 @@ def test_species_series_panels_or_overlay(month):
     assert [p.title for p in panels.panels] == [_entry(panels, k)["name"] for k in keys]
     assert panels.share_x
     assert panels.columns == 1 and panels.summary["layout"] == "panels"
+    # With no window, the summary spans the first sample to the last
+    times = campaign.tables["samples"]["t_mid_utc"]
+    assert panels.summary["start"] == common.at(times.min(), ZONE)
+    assert panels.summary["end"] == common.at(times.max(), ZONE)
     assert (
         species_series(
             store, _cycles(campaign, "night", "formula:")[:5], cadence="1d"
@@ -598,6 +621,14 @@ def test_species_series_coarsens_past_its_budget_and_says_so(month):
     assert twice.context.cadence == "1h"
     assert twice.summary["coarsened_from"] == "raw"
     assert twice.summary["budget"] == 5_000
+
+
+def test_the_budget_coarsens_to_a_longer_cadence_each_step():
+    """Each step bins at the next longer cadence, never at the one it has:
+    a step to the same cadence would bin the same frame for ever."""
+    steps = [series_chart._coarser(c) for c in ("raw", "1min", "10min", "1h", "1D")]
+
+    assert steps == ["10min", "10min", "1h", "1D", None]
 
 
 def test_species_series_by_day_is_the_views_day(month):
