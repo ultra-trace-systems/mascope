@@ -31,6 +31,7 @@ from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     search_outcome,
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+from mascope_backend.api.new.peak_assignments.partner_gate import PARTNER_GATE_KEPT
 from mascope_backend.api.new.peak_assignments.pipeline import admitted_targets
 from mascope_backend.api.new.peak_assignments.profiles import (
     NamedContext,
@@ -1360,28 +1361,143 @@ async def test_a_searched_reading_keeps_its_claimed_line_as_its_pattern(claim):
     assert measured["p1"]["fit_score"] < listed["p1"]["fit_score"]
 
 
-async def _measure_ammonium_reading(*, known):
+async def _measure_ammonium_reading(*, known, opened=True, partner=False):
     """The ammonium reading of ``_search_ammonium_reading``, measured on a
-    uronium sample whose spectrum opens the channel, over a known set of
-    ``known``.
+    uronium sample whose spectrum opens the channel or not (``opened``), over
+    a known set of ``known``; with ``partner``, beside the same neutral
+    measured through the mode's own protonation.
 
     :return: The judged row on its peak, and the fake known-set read.
     """
+    # 138.0986 is the carrier that opens the ammonium channel; 171.1016 is
+    # C9H14O3 + H+.
+    specs = [("p0", 100.0, 1.0e6), ("p2", 188.1281, 1.0e5)]
+    readings = [("bp-1", "C9H14O3", "C9H18NO3+", "im-nh4", ["p2"])]
+    if opened:
+        specs.append(("p1", 138.0986, 1.0e4))
+    if partner:
+        specs.append(("p3", 171.1016, 1.0e5))
+        readings.append(("bp-2", "C9H14O3", "C9H15O3+", "im-h", ["p3"]))
     measured, mocks = await _measure(
         _sample(polarity="+"),
-        _peaks(
-            [
-                ("p0", 100.0, 1.0e6),
-                ("p1", 138.0986, 1.0e4),
-                ("p2", 188.1281, 1.0e5),
-            ]
-        ),
+        _peaks(specs),
         [_mechanism("[M+H]+", "im-h"), _mechanism("[M+CH4N2O+H]+", "im-urea")],
-        [("bp-1", "C9H14O3", "C9H18NO3+", "im-nh4", ["p2"])],
+        readings,
         secondary=[_mechanism("[M+NH4]+", "im-nh4")],
         known=known,
     )
     return measured["p2"], mocks["known"]
+
+
+@pytest.mark.asyncio
+async def test_a_measured_reading_through_a_channel_its_sample_did_not_open_is_held():
+    # MAS-1039: a sample whose spectrum opens the ammonium channel holds a
+    # reading through it at candidate, since nothing corroborates it.
+    # Propagated to a member whose sample shows no carrier, a run of which
+    # never opens the channel, the reading is judged as an opened channel's
+    # all the same: held at candidate there too, not assigned on its evidence
+    # alone. The lists are read through the channel as a run that opened it
+    # reads them.
+    judged = {}
+    for opened in (True, False):
+        row, known_isotopes = await _measure_ammonium_reading(
+            known=pd.DataFrame(), opened=opened
+        )
+        assert row["ionization_mechanism_id"] == "im-nh4"
+        assert row["source"] == "untargeted"
+        assert row["tier"] == TIER_CANDIDATE
+        assert row["provenance"]["minor_channel"] == {
+            "corroborated_by": None,
+            "capped": True,
+            "isotopologue": False,
+        }
+        assert (
+            row["provenance"]["evidence"] >= PeakAssignmentConfig().assigned_threshold
+        )
+        (call,) = known_isotopes.await_args_list
+        assert [m.ionization_mechanism_id for m in call.args[3]] == [
+            "im-h",
+            "im-urea",
+            "im-nh4",
+        ]
+        judged[opened] = _reasons(row)
+    assert judged[False] == judged[True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lift", ["list", "second_channel"])
+async def test_corroboration_lifts_a_reading_through_a_channel_its_sample_did_not_open(
+    lift,
+):
+    # What lifts a run's own reading through an opened channel lifts the
+    # propagated one alike, on a member whose sample did not open it: a list
+    # naming its neutral, or the sample showing the neutral through one of the
+    # mode's own channels. The member then reads what the sample that opened
+    # the channel reads.
+    known = (
+        pd.DataFrame(
+            {
+                "target_compound_formula": ["O3C9H14"],
+                "ionization_mechanism_id": ["im-h"],
+                "target_compound_id": ["tc-1"],
+            }
+        )
+        if lift == "list"
+        else pd.DataFrame()
+    )
+    judged = {}
+    for opened in (True, False):
+        row, _ = await _measure_ammonium_reading(
+            known=known, opened=opened, partner=lift == "second_channel"
+        )
+        assert row["ionization_mechanism_id"] == "im-nh4"
+        assert row["provenance"]["minor_channel"]["corroborated_by"] == lift
+        assert row["provenance"]["minor_channel"]["capped"] is False
+        judged[opened] = (row["tier"], _reasons(row))
+    assert judged[False] == judged[True]
+    if lift == "second_channel":
+        # Its partner is a second observation, so nothing else holds it.
+        assert judged[False][0] == TIER_ASSIGNED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("opened", [True, False], ids=["opened", "not opened"])
+@pytest.mark.parametrize("partner", [True, False], ids=["partner", "no partner"])
+async def test_the_partner_gate_reads_a_channel_its_sample_did_not_open(
+    opened, partner
+):
+    # MAS-1039: formate is a partner-gated channel of the bromide source. A
+    # reading through it measured on a member whose spectrum shows no formate,
+    # so that a run of its sample never opens the channel, is held to the gate
+    # as on a sample that opened it: it stands on a partner, the neutral
+    # through the mode's own bromide adduct, and is kept and held at candidate
+    # without one.
+    # 44.9982 is the formate anion, the channel's carrier; 229.1081 is
+    # C10H16O3 + HCOO- and 263.0288 C10H16O3 + 79Br-.
+    specs = [("p0", 300.0, 1.0e6), ("p2", 229.1081, 1.0e5)]
+    readings = [("bp-1", "C10H16O3", "C11H17O5-", "im-formate", ["p2"])]
+    if opened:
+        specs.append(("p1", 44.9982, 1.0e5))
+    if partner:
+        specs.append(("p3", 263.0288, 1.0e5))
+        readings.append(("bp-2", "C10H16O3", "C10H16O3Br-", "im-br", ["p3"]))
+    measured, _ = await _measure(
+        _sample(),
+        _peaks(specs),
+        [_mechanism("[M+Br]-", "im-br")],
+        readings,
+        secondary=[_mechanism("[M+HCOO]-", "im-formate")],
+    )
+
+    row = measured["p2"]
+    assert row["ionization_mechanism_id"] == "im-formate"
+    gate = {"channel": "[M+HCOO]-", "partner": partner}
+    if not partner:
+        gate["kept"] = PARTNER_GATE_KEPT
+    assert row["provenance"]["partner_gate"] == gate
+    assert row["provenance"]["minor_channel"]["capped"] is not partner
+    if not partner:
+        assert row["tier"] == TIER_CANDIDATE
 
 
 @pytest.mark.asyncio

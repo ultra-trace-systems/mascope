@@ -155,6 +155,11 @@ class ResolvedProfile:
     :param nox_skeleton: Whether the run reads the carbon skeleton of an
         organonitrate in the context's windows and the implausibility
         signatures (``profiles.nox_skeleton_applies``, step 3.6).
+    :param given_channels: Secondary channels the sample's spectrum did not
+        open that a batch decision measured on it reads through
+        (``sample_mechanisms.given_secondary_channels``). The pass that
+        measures it judges such a reading as an opened channel's, as a run of
+        the sample that opened the channel does (MAS-1039).
     """
 
     profile: ReagentProfile
@@ -173,6 +178,7 @@ class ResolvedProfile:
     named_context: NamedContext = NamedContext()
     fitted_window: dict | None = None
     nox_skeleton: bool = False
+    given_channels: tuple[str, ...] = ()
 
     @property
     def minor_channels(self) -> frozenset[str]:
@@ -193,13 +199,16 @@ class ResolvedProfile:
         otherwise - proton transfer declared beside the electron transfer of
         a charge-transfer source - the declared channel is the mode's own and
         stays out of this set, whatever the spectrum said.
+
+        A channel a batch decision measured through (:attr:`given_channels`)
+        is in it as one the spectrum opened.
         """
         unavailable = set(self.unavailable_channels)
         opened = {
             notation
             for notation in present_notations(self.channel_evidence)
             if notation not in unavailable
-        }
+        } | set(self.given_channels)
         declared = set(self.mode_channels)
         channels = secondary_channels(self.profile.name)
         held = {c.notation for c in channels if c.declared_stays_secondary}

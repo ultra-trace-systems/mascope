@@ -8,6 +8,7 @@ word on its own authority.
 """
 
 import itertools
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pandas as pd
@@ -50,6 +51,7 @@ from mascope_backend.api.new.peak_assignments.sample_mechanisms import (
     _searched_mechanisms,
     _untargeted_ionization_notations,
     _without_unreadable,
+    given_secondary_channels,
 )
 from mascope_backend.api.new.peak_assignments.tiers import TIER_ASSIGNED, TIER_CANDIDATE
 from mascope_backend.api.new.peak_assignments.untargeted_rows import (
@@ -1729,6 +1731,62 @@ class TestTheChannelsASampleIsSearchedThrough:
 
     def test_a_mode_that_declares_nothing_searches_nothing(self):
         assert _searched_mechanisms([], [self.AMMONIUM], self._resolved([])) == []
+
+    #: No carrier: the urea profile leaves ammonium shut.
+    SHOWS_NOTHING = ([100.0, 200.0], [1.0e6, 1.0e4])
+
+    def _given(self, given_ids, mechanisms, spectrum):
+        resolved = self._resolved(
+            [m.ionization_mechanism for m in mechanisms], spectrum=spectrum
+        )
+        searched = _searched_mechanisms(mechanisms, [self.AMMONIUM], resolved)
+        return given_secondary_channels(
+            given_ids, searched, [self.AMMONIUM], resolved
+        ), resolved
+
+    def test_a_given_reading_opens_a_channel_its_sample_shut(self):
+        # MAS-1039: a batch decision read through ammonium on another sample
+        # is read through it here as through an opened channel, and the
+        # channel is then searched and secondary as one the spectrum opened.
+        channels, resolved = self._given(
+            ["im-h", "im-nh4"], [self.PROTON, self.UREA_ADDUCT], self.SHOWS_NOTHING
+        )
+        assert channels == ("[M+NH4]+",)
+        given = replace(resolved, given_channels=channels)
+        assert "[M+NH4]+" in given.minor_channels
+        assert "[M+NH4]+" in given.added_channels
+        searched = _searched_mechanisms(
+            [self.PROTON, self.UREA_ADDUCT], [self.AMMONIUM], given
+        )
+        assert [m.ionization_mechanism_id for m in searched] == [
+            "im-h",
+            "im-urea",
+            "im-nh4",
+        ]
+
+    @pytest.mark.parametrize(
+        "spectrum, declared",
+        [(SHOWS_AMMONIUM, False), (SHOWS_NOTHING, True)],
+        ids=["opened", "declared"],
+    )
+    def test_a_given_reading_through_a_searched_channel_opens_nothing(
+        self, spectrum, declared
+    ):
+        mechanisms = [self.PROTON, self.UREA_ADDUCT] + (
+            [self.AMMONIUM] if declared else []
+        )
+        channels, _ = self._given(["im-h", "im-nh4"], mechanisms, spectrum)
+        assert channels == ()
+
+    def test_a_given_reading_opens_nothing_where_the_mode_declares_nothing(self):
+        channels, _ = self._given(["im-nh4"], [], self.SHOWS_NOTHING)
+        assert channels == ()
+
+    def test_a_given_reading_through_a_mechanism_of_no_channel_opens_nothing(self):
+        channels, _ = self._given(
+            ["im-h", "im-other"], [self.PROTON, self.UREA_ADDUCT], self.SHOWS_NOTHING
+        )
+        assert channels == ()
 
 
 class TestEachMechanismIsSearchedOnce:

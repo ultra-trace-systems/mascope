@@ -5,6 +5,7 @@ the deployment's rows for a profile's secondary channels, and the notation
 each mechanism is named by in a run's frames.
 """
 
+from collections.abc import Iterable
 from types import SimpleNamespace
 
 import pandas as pd
@@ -298,6 +299,48 @@ def _searched_mechanisms(
         for mechanism in secondary_mechanisms
         if mechanism.ionization_mechanism in resolved_profile.added_channels
     ]
+
+
+def given_secondary_channels(
+    given_mechanism_ids: Iterable[str],
+    searched_mechanisms: list[SimpleNamespace],
+    secondary_mechanisms: list[SimpleNamespace],
+    resolved_profile: ResolvedProfile,
+) -> tuple[str, ...]:
+    """The profile's secondary channels a given reading goes through that the
+    sample does not search (``ResolvedProfile.given_channels``).
+
+    A batch decision is measured on a member through the mechanism it was
+    read through on its representative, whose sample may have opened a channel
+    the member's did not (MAS-1039). Judged with the member's channels alone,
+    such a reading would escape every rule a reading through an opened channel
+    is held to.
+
+    :param given_mechanism_ids: The mechanisms the given readings go through.
+    :param searched_mechanisms: The ones the sample searches
+        (:func:`_searched_mechanisms`); none when its mode declares none, and
+        then no channel is added either.
+    :param secondary_mechanisms: The deployment's rows for the profile's
+        secondary channels (:func:`_resolve_secondary_channels`).
+    :param resolved_profile: The sample's resolved chemistry.
+    :return: The channels' notations, as the profile names them.
+    """
+    searched = {m.ionization_mechanism_id for m in searched_mechanisms}
+    if not searched:
+        return ()
+    unsearched = set(given_mechanism_ids) - searched
+    keys = {
+        mechanism_key(m.ionization_mechanism)
+        for m in secondary_mechanisms
+        if m.ionization_mechanism_id in unsearched
+    }
+    return tuple(
+        sorted(
+            channel.notation
+            for channel in secondary_channels(resolved_profile.profile.name)
+            if mechanism_key(channel.notation) in keys
+        )
+    )
 
 
 def _notation_by_id(searched_mechanisms: list[SimpleNamespace]) -> dict[str, str]:

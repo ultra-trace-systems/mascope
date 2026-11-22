@@ -2083,6 +2083,15 @@ completed pass leaves every stage current.
   measurement model. A series that proposes the formula a member already reads is a
   second observation of it, so the member is judged again too, with no new run. The
   members a sample's own run wrote keep its tiers.
+  A reading through a secondary channel that the member's sample did not open is judged
+  as a reading through an opened channel. Ammonium read on one sample of a uronium batch
+  is an example: another sample may show no ammonium carrier, so a run of it never opens
+  the channel. Measured on that sample's member, the reading is held at *candidate*, as
+  it is on the sample that opened the channel. A list naming its molecule lifts it, and so
+  does the sample showing the molecule through one of the mode's own channels (*What
+  lets a secondary channel's reading reach assigned*, above). Through a channel that needs
+  the molecule shown elsewhere, it stands only where the sample shows it. Its evidence
+  alone never takes it to *assigned*.
 - **Records are kept, marked stale.** When a batch peak's reading moves off what a stage's
   record was made for, the record is kept, marked stale, and served by no reader. The stage
   that wrote it reads it again when it runs, and a reading that comes back finds it
