@@ -152,8 +152,12 @@ re-match, and a file reprocessed into its daily batch, also swap the
 collections the earlier version gave the batch for the new version's, so the
 batch is matched against them; a collection you attached to the batch
 yourself stays, and an analysis batch you put together keeps all of its
-collections. A sample you give a mode by hand takes its current
-version: an earlier version keeps only the samples already on it.
+collections. A sample you re-match, re-calibrate or assign on its own also
+moves onto the new version, but it is matched against the collections its
+batch still holds: the batch stays flagged, and its re-match brings the
+collections and the rest of its samples current. A sample you give a mode by
+hand takes its current version: an earlier version keeps only the samples
+already on it.
 Renaming a mode, or changing its token or the instrument it belongs to,
 changes no result and makes no version. Each peak assignment run records the
 version it searched under.

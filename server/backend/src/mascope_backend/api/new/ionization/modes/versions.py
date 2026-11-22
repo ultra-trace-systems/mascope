@@ -31,7 +31,13 @@ reads the batch's own rows, not the mode's. So the re-process that moves a
 batch's items onto the current version also swaps the collections an earlier
 version gave the batch for the current version's
 (:func:`align_batch_collections`), and leaves the ones a person attached. An
-analysis batch, which a person put together, keeps its collections.
+analysis batch, which a person put together, keeps its collections. A
+re-process of one sample - a per-sample rematch, a sample's re-calibration
+or its assignment run - moves that sample alone and leaves the batch's
+collections as they are: every other sample of the batch was matched against
+them, so they are not one sample's to change. Until the batch's own rematch,
+which the edit flagged, such a sample is recorded under the current version
+while its collection matches come from the collections the batch still holds.
 
 The batch ledger is partitioned per setup, not per version: an anchor made
 under one version stays the anchor of the same species under the next, so

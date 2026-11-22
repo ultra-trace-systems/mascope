@@ -199,6 +199,11 @@ async def rematch_sample(
 
     # Step 0: A sample bound under a version of its ionization mode that an
     # edit has since replaced is matched under the current one, and records it.
+    # Only this sample moves: it is matched against the collections its batch
+    # still holds, which may be an earlier version's. The batch's collections
+    # are not one sample's to change - every other sample of the batch was
+    # matched against them - so the batch stays flagged, and its own rematch
+    # (rematch_batch) brings the collections and the rest of its samples current.
     await move_to_current_versions(sample_item_ids=[sample_item_id])
 
     # Step 1: Remove matches (partial or full)
