@@ -9,7 +9,13 @@ import pandas as pd
 from loguru import logger
 
 from .._resolve import resolve_id
-from ._base import UNSET, BaseResource, Needs, _coerce_datetime_columns
+from ._base import (
+    UNSET,
+    BaseResource,
+    Needs,
+    _coerce_datetime_columns,
+    _coerce_utc_columns,
+)
 
 
 #: The columns of :meth:`BatchesResource.ion_series`, in order.
@@ -90,7 +96,7 @@ class BatchesResource(BaseResource):
         data = self._get("sample/batches", params={"dataset_id": dataset_id})
         if not data:
             return None
-        df = _coerce_datetime_columns(pd.DataFrame(data))
+        df = _coerce_utc_columns(_coerce_datetime_columns(pd.DataFrame(data)))
         logger.info("Found {} batch(es)", len(df))
         self._client._cache[cache_key] = df
         return df.copy()

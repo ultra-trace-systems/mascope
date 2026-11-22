@@ -14,6 +14,7 @@ from ._base import (
     BaseResource,
     Needs,
     _coerce_datetime_columns,
+    _coerce_utc_columns,
     _lists_warnings,
     _log_api_message,
 )
@@ -363,7 +364,7 @@ class SamplesResource(BaseResource):
         data = self._get("samples", params={"sample_batch_id": batch_id})
         if not data:
             return None
-        df = _coerce_datetime_columns(pd.DataFrame(data))
+        df = _coerce_utc_columns(_coerce_datetime_columns(pd.DataFrame(data)))
         self._client._cache[cache_key] = df
         return df.copy()
 

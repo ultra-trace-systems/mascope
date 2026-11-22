@@ -502,7 +502,8 @@ def _outside(
 
 def _instants(times: pd.Series) -> pd.Series:
     """Listed times in UTC. The listing writes a time with whole seconds
-    without its fraction, so the SDK can leave a column of both as text."""
+    without its fraction, so an older SDK can leave a column of both as
+    text; a column the SDK parsed passes through."""
     return pd.to_datetime(times, utc=True, format="ISO8601")
 
 
@@ -904,9 +905,10 @@ def resolve(client: "MascopeClient", scope: Scope) -> ResolvedScope:
         .astype({"n_samples": "int64"})
         .reset_index(drop=True)
     )
-    # The listing gives it as text: the store compares it as a time
-    batches["sample_batch_utc_modified"] = pd.to_datetime(
-        batches["sample_batch_utc_modified"], utc=True
+    # The store compares it as a time. An SDK older than its audit-column
+    # parse lists it as text, with or without a fraction: read as ISO 8601
+    batches["sample_batch_utc_modified"] = _instants(
+        batches["sample_batch_utc_modified"]
     )
 
     collections = _collections(client, batches)

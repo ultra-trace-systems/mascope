@@ -2,7 +2,7 @@
 
 import pandas as pd
 
-from ._base import BaseResource, _coerce_datetime_columns
+from ._base import BaseResource, _coerce_datetime_columns, _coerce_utc_columns
 
 
 class IonizationResource(BaseResource):
@@ -50,7 +50,7 @@ class IonizationResource(BaseResource):
         data = self._get("ionization_mechanisms")
         if not data:
             return None
-        df = _coerce_datetime_columns(pd.DataFrame(data))
+        df = _coerce_utc_columns(_coerce_datetime_columns(pd.DataFrame(data)))
         self._client._cache[cache_key] = df
         return df.copy()
 
@@ -90,6 +90,6 @@ class IonizationResource(BaseResource):
         data = self._get("ionization/modes", params=params)
         if not data:
             return None
-        df = _coerce_datetime_columns(pd.DataFrame(data))
+        df = _coerce_utc_columns(_coerce_datetime_columns(pd.DataFrame(data)))
         self._client._cache[cache_key] = df
         return df.copy()
