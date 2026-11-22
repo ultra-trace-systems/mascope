@@ -782,6 +782,9 @@ Code, shipped in releases.
   (S/N ≥ 20) reach well beyond the calibrant span at either end, with the threshold from the
   baseline and both spans in the message: "calibrated on 41–148 Th; peaks to 450 Th are
   extrapolated" (MAS-184).
+  Built: the record keeps `strong_peaks` (the fifth lowest and highest peak of S/N ≥ 20), and
+  the issue fires past 1.25 widths of the span in √m/z (`TOF_MAX_EXTRAPOLATION_SPANS`). The old
+  TOF H set reaches 1.57 widths past, the corrected one 0.70, site B's nitrate sets 1.5–2.2.
 - **Calibrant hygiene.** Per collection × instrument, the share of recent files in which each
   calibrant is matched, and a flag on calibrant peaks with an unresolved neighbour or a ¹³C line
   beside them (MAS-185).

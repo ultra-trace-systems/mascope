@@ -231,6 +231,7 @@ Beside its parameters and the counts and mean errors of its quality block, a TOF
 
 - **Points**: every calibrant line the fit chose from, the ones it left out included. Each has its ion, its exact and observed m/z, its residual under the fit in ppm, the signal-to-noise ratio of its peak, and whether the fit kept it. The residual is the fit's m/z at the peak's time-of-flight index against the exact m/z, as the TOF calibration audit reads it. A line the search found no peak for within 15 ppm of its axis, or the matching turned down, never reached the fit and is not listed.
 - **Span**: the exact m/z of the lowest and the highest line kept. Peaks outside it are on an extrapolated axis.
+- **Strong peaks**: how far the file's strong peaks reach: those of the fit's polarity with a signal-to-noise ratio of 20 or more, read at the fifth lowest and the fifth highest, so that a stray peak at the end of the axis does not decide it. The record keeps their count beside it. The [verification](#verification) holds this reach against the span.
 - **Lines**: how many distinct lines the collection offered above the abundance floor, matched or not. A line two ions share counts once.
 - **Collection**: the calibration collection, and a hash of the isotopes it offered under the mode's ionization mechanisms: their formulas, exact m/z and abundances. Editing the collection's compounds changes the hash, so files fitted on different versions of one collection can be told apart. The hash is the same on every server.
 - **Model**: the model kept, by Tofwerk's number: 0 for the square-root model, 2 for the three-parameter one. Its equation is in Tofwerk's names, `i = p1*sqrt(m) + p2` or `i = p1*m^p3 + p2`: `i` is the time-of-flight index, `p1` and `p2` are $p_0$ and $p_1$ above, and `p3` is $p_2$. Beside it, `compared` lists each model's mean held-out error in ppm, and `min_gain_ppm` the 0.5 ppm the three-parameter model has to gain. `compared` is empty (`null`) when the calibrants came from fewer than four ions, and a model whose fits failed has no error in it.
@@ -310,6 +311,7 @@ Matching and peak assignment trust a calibrated file's mass axis, so after a fit
 | Correction made by a fit nothing corroborates (one point, or two isotopes of one ion) | at most 10 ppm | at most 10 ppm |
 | Distinct calibrant ions, for a fit on 3 or more points | at least 2 | at least 2 |
 | Share of the collection's lines the fit kept | not checked | at least 40% |
+| How far the strong peaks reach past the lines kept | not checked | at most 1.25 widths of the span, on the square-root scale |
 
 One or two calibration points are common for narrow mass ranges and EasyIC.
 Two points from different ions check each other, so such a fit is judged on its error alone.
@@ -325,6 +327,28 @@ Most right fits keep most of their collection's lines: on production TOFs, three
 So a right fit on few of a long collection's lines can also be flagged.
 A collection of 7 lines or fewer is never caught by this check, since a TOF fit needs 3 points.
 A record written before fits counted their collection's lines is not judged on it.
+
+A TOF fit holds between the lines it kept; past them its axis is extrapolated.
+A record can look healthy and still leave most of the file's peaks there: on one instrument, a set calibrated on 41–148 Th, in files with strong peaks to about 450 Th, read 10 to 21 ppm low above 160 Th with a mean error of 3–5 ppm after the fit.
+So a TOF fit is flagged *extrapolated* when the file's strong peaks reach far past its span at either end, and the message names both: "Calibrated on 41–148 Th; peaks to 450 Th are extrapolated."
+
+The distance is measured on the scale the model is a straight line on, $\sqrt{m/z}$, and in widths of the span on that scale.
+The error of a straight line fitted on points grows with the distance past them, in units of how far apart the points lie ([Draper and Smith, 1998](https://doi.org/10.1002/9781118625590), the variance of a predicted value).
+The fit is flagged when the strong peaks reach more than 1.25 widths past either end.
+That limit lies between the cases measured on the fleet:
+
+| Set | Strong peaks to | Widths past the top | Flagged |
+|---|---|--:|---|
+| 41–148 Th, the set that read 10–21 ppm low | 450 Th | 1.57 | yes |
+| 41–228 Th, its corrected set | 450 Th | 0.70 | no |
+| 41–228 Th | 611 Th | 1.10 | no |
+| 62–188 Th, nitrate | 500–700 Th | 1.5–2.2 | yes |
+
+The corrected set clears the check up to 674 Th, and a nitrate set on 62–188 Th up to 441 Th.
+The lowest strong peaks lie at most half a width below the lowest calibrant on the TOF files measured, so the low end flags only a set whose lines all sit high.
+A fit flagged *extrapolated* is no worse inside its span: its error there is still the one it reports.
+The lasting fix is a calibrant higher up the axis, an ion in every file of the mode.
+A record written before fits kept the reach of their strong peaks is not judged on it; re-calibrating the file records it.
 
 A file stitched from several scan ranges is calibrated range by range, and each range fitted on calibrants of its own is checked against the bar on them, as well as the file as a whole.
 A range fitted on a single calibrant (or on two isotopes of one ion) is corroborated by another range of the same file when that range is fitted on calibrants of two or more ions, clears the bar itself, and makes a correction within 2 ppm of the first range's.

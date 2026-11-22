@@ -190,6 +190,36 @@ describe('calibrationStatus', () => {
     expect(status.tooltip).not.toContain('Accepted')
   })
 
+  it('names both spans of a TOF fit whose strong peaks reach past its calibrants', () => {
+    const status = calibrationStatus({
+      status: 'poor',
+      verified: true,
+      quality_issues: [
+        {
+          code: 'extrapolated',
+          message: 'Calibrated on 41–148 Th; peaks to 450 Th are extrapolated.'
+        }
+      ],
+      quality: {
+        n_points: 6,
+        pre_fit_mz_error_ppm: 12.0,
+        post_fit_mz_error_ppm: 3.4,
+        span: [41.04, 148.1],
+        strong_peaks: { span: [15.0, 450.2], n_peaks: 420 }
+      }
+    })
+
+    expect(status.state).toBe('warned')
+    expect(status.severity).toBe('warn')
+    expect(status.tooltip).toBe(
+      'm/z calibration below the quality bar (6 points over m/z 41–148, ' +
+        '12.00 ppm → 3.40 ppm mean |m/z error|): ' +
+        'Calibrated on 41–148 Th; peaks to 450 Th are extrapolated. ' +
+        'Matches and assignments use it – treat their mass errors with care. ' +
+        'Click to recalibrate.'
+    )
+  })
+
   it('keeps warning about an accepted fit below the bar', () => {
     const status = calibrationStatus({ ...BELOW_BAR, verified: true, accepted_by: 7 })
 
