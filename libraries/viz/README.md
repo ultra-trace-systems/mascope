@@ -588,10 +588,17 @@ Its y is linear by default, where an amplitude reads. Its summary per
 species: `hour_max`, `hour_min`, `amplitude` (the largest hourly median
 over the smallest), `day_night_ratio` (the median of the hourly medians
 over `day_hours`, 10:00 to 16:00 by default, over that over `night_hours`,
-22:00 to 04:00), `min_n` and `sparse_hours`, the hours with under half the
-values of the median hour, which a note names; with `by`, the same per
-group. The diurnal view follows openair's `timeVariation` (Carslaw and
-Ropkins 2012).
+22:00 to 04:00), `min_n`, the fewest values of any hour, and
+`sparse_hours`; with `by`, the same per group. An hour sampled on few days
+is no cycle, so an hour is sparse when it holds under half the samples of
+the typical hour, the median over the hours sampled at all, and a note
+names the sparse hours of the lines drawn. With `by`, a group is judged
+against the fullest group's typical hour, so a month the window holds
+three hours of is sparse in every hour; a weekday or weekend group is
+judged per day of the week it holds. Samples count, not values: a species
+below detection in its trough is sampled there, and reads high (the note
+on seldom detected species). The diurnal view follows openair's
+`timeVariation` (Carslaw and Ropkins 2012).
 
 `period_boxes` draws a period with under half the samples of the fullest
 one, such as the window's first and last, hollow, and lists it in the

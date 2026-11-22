@@ -823,14 +823,12 @@ def test_diurnal_recovers_the_known_phases(month):
 
     fig = diurnal(store, keys)
 
-    assert sum(1 for e in fig.summary["species"] if not e["sparse_hours"]) >= 8
+    # Every hour of the month is sampled on some thirty days
+    assert all(e["sparse_hours"] == [] for e in fig.summary["species"])
     cycles = campaign.truth.cycles
     for key in keys:
         entry = _entry(fig, key)
         cycle = cycles[key]
-        if entry["sparse_hours"]:
-            # Below detection in its trough: no cycle to read there
-            continue
         if cycle.peak_hour is None:
             assert 0.9 <= entry["day_night_ratio"] <= 1.1, key
             assert entry["amplitude"] < 1.1, key
@@ -930,6 +928,9 @@ def test_diurnal_by_a_split_draws_a_line_per_group_in_each_panel(month):
             median = rows.set_index("hour")["value"]
             assert group["hour_max"] == int(median.idxmax())
             assert group["min_n"] == int(rows["n"].min())
+            # The weekend's two days a week, judged per day, are no fewer
+            # than the week's five
+            assert group["sparse_hours"] == [], group["group"]
         # The whole window's numbers stand beside the groups'
         whole = views.diurnal(store, key)
         assert entry["hour_max"] == int(whole.set_index("hour")["value"].idxmax())
@@ -938,23 +939,129 @@ def test_diurnal_by_a_split_draws_a_line_per_group_in_each_panel(month):
     assert diurnal(store, keys[0]).summary["species"][0].get("groups") is None
 
 
-def test_diurnal_notes_an_hour_with_too_few_values(month):
-    """A night species below detection by day: its day hours hold a few
-    values, which are no cycle."""
+def test_diurnal_judges_an_hour_by_its_samples_not_its_values(month):
+    """A night species below detection by day is sampled there: its few
+    day values are its trough, read high, not an hour sampled on few days."""
     campaign, store = month
-    sparse = _seldom(campaign)
+    seldom = _seldom(campaign)
     flat = _cycles(campaign, "flat")[0]
 
-    fig = diurnal(store, [sparse, flat])
+    fig = diurnal(store, [seldom, flat])
 
-    n = _rows(fig, sparse).set_index("hour")["n"]
-    entry = _entry(fig, sparse)
-    assert entry["sparse_hours"] == [int(h) for h in n.index[n < n.median() / 2]]
-    assert entry["sparse_hours"]
-    assert entry["min_n"] == int(n.min())
-    assert _entry(fig, flat)["sparse_hours"] == []
-    (note,) = [note for note in fig.notes if "Under half" in note]
-    assert entry["name"] in note and _entry(fig, flat)["name"] not in note
+    rows = _rows(fig, seldom)
+    assert (rows["n"] < rows["n"].median() / 2).any()
+    entry = _entry(fig, seldom)
+    assert entry["sparse_hours"] == []
+    assert entry["min_n"] == int(rows["n"].min())
+    assert not any("few days" in note for note in fig.notes)
+    # Read high, if it is detected seldom enough
+    named = any(entry["name"] in note and "read high" in note for note in fig.notes)
+    assert named == (entry["presence"] < common.SELDOM)
+
+
+def test_diurnal_notes_the_hours_a_window_samples_on_few_days(month):
+    """Six hours of one day: the other eighteen hold no sample, beside
+    hours that hold some."""
+    campaign, store = month
+    key = _cycles(campaign, "day")[0]
+
+    fig = diurnal(
+        store, key, start="2026-06-02T09:00+03:00", end="2026-06-02T15:00+03:00"
+    )
+
+    entry = _entry(fig, key)
+    assert entry["sparse_hours"] == [*range(9), *range(15, 24)]
+    (note,) = [note for note in fig.notes if "few days" in note]
+    assert note == (
+        "An hour sampled on few days is no cycle. Under half the samples of a "
+        f"typical hour: {entry['name']} (hours 0-8, 15-23)."
+    )
+
+
+def test_diurnal_by_month_notes_a_month_the_window_holds_hours_of(month):
+    """The window ends at 03:00 local on 1 July: July's three hours of one
+    day are no cycle beside June's thirty days, in any hour."""
+    campaign, store = month
+    keys = _cycles(campaign, "day")[:2]
+
+    fig = diurnal(store, keys, by="month")
+
+    for key in keys:
+        entry = _entry(fig, key)
+        june, july = entry["groups"]
+        assert (june["group"], july["group"]) == ("Jun", "Jul")
+        assert june["sparse_hours"] == []
+        assert july["sparse_hours"] == list(range(24))
+        rows = _rows(fig, key)
+        sampled = rows[(rows["group"] == "Jul") & (rows["n_samples"] > 0)]
+        assert list(sampled["hour"]) == [0, 1, 2]
+        # The window's own cycle is sampled on thirty days in every hour
+        assert entry["sparse_hours"] == []
+    (note,) = [note for note in fig.notes if "few days" in note]
+    names = [_entry(fig, key)["name"] for key in keys]
+    assert note == (
+        "An hour sampled on few days is no cycle. Under half the samples of the "
+        "fullest group's typical hour: "
+        + "; ".join(f"{name}, Jul (every hour)" for name in names)
+        + "."
+    )
+
+
+def test_diurnal_by_weekday_judges_a_group_per_day_of_the_week_it_holds(month):
+    """A window from Saturday to 03:00 on Monday: the weekend's two whole
+    days are its cycle; Monday's three hours, two fifths of a weekend day's
+    samples per day of the week, are none."""
+    campaign, store = month
+    key = _cycles(campaign, "day")[0]
+
+    fig = diurnal(
+        store,
+        key,
+        by="weekday",
+        start="2026-06-06T00:00+03:00",
+        end="2026-06-08T03:00+03:00",
+    )
+
+    weekday, weekend = _entry(fig, key)["groups"]
+    assert (weekday["group"], weekend["group"]) == ("weekday", "weekend")
+    assert weekend["sparse_hours"] == []
+    assert weekday["sparse_hours"] == list(range(24))
+    rows = _rows(fig, key)
+    monday = rows[(rows["group"] == "weekday") & (rows["n_samples"] > 0)]
+    assert list(monday["hour"]) == [0, 1, 2]
+
+
+def test_an_hour_under_half_the_typical_hours_samples_is_sparse():
+    """The typical hour is the median over the hours sampled at all: an
+    hour with none is sparse beside hours with some, and a cycle sampled in
+    no hour has no sparse hour."""
+    day, night = hours((10, 16), "day"), hours((22, 4), "night")
+    n_samples = [0] * 14 + [100] * 6 + [50, 49, 100, 100]
+
+    got = diurnal_module.cycle(_hours([1.0] * 24, n_samples=n_samples), day, night)
+
+    assert got["sparse_hours"] == [*range(14), 21]
+    unsampled = _hours([np.nan] * 24, n=[0] * 24, n_samples=[0] * 24)
+    assert diurnal_module.cycle(unsampled, day, night)["sparse_hours"] == []
+    # Against a fuller group's typical hour, every hour of this one
+    full = _hours([1.0] * 24, n_samples=[100] * 24)
+    assert diurnal_module.cycle(full, day, night, 201.0)["sparse_hours"] == list(
+        range(24)
+    )
+    assert diurnal_module.cycle(full, day, night, 200.0)["sparse_hours"] == []
+
+
+@pytest.mark.parametrize(
+    "given, named",
+    [
+        ([5], "hour 5"),
+        ([0, 1, 2, 5, 22, 23], "hours 0-2, 5, 22-23"),
+        ([3, 7], "hours 3, 7"),
+        (list(range(24)), "every hour"),
+    ],
+)
+def test_a_note_names_hours_as_runs(given, named):
+    assert diurnal_module._listed(given) == named
 
 
 def test_diurnal_of_a_flat_species_is_flat_under_the_reagent_sum(clusters):
