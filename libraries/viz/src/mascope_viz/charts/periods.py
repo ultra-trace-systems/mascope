@@ -84,13 +84,15 @@ def period_boxes(
     if y not in SCALES:
         raise InvalidChart(f"y={y!r} is none of {', '.join(SCALES)}")
     read = {"normalise": normalise, "tz": tz, "start": start, "end": end}
-    resolved = resolve(store, species, **read)
+    with common.refused():
+        resolved = resolve(store, species, **read)
     if len(resolved.species) > common.MAX_PANELS:
         raise InvalidChart(
             f"{len(resolved.species)} species are more than "
             f"{common.MAX_PANELS} panels: name fewer"
         )
-    frame = views.periods(store, resolved.keys, period, **read)
+    with common.refused():
+        frame = views.periods(store, resolved.keys, period, **read)
     if not frame["n"].sum():
         raise InvalidChart(
             "No values to draw: no sample in the window holds a value of "

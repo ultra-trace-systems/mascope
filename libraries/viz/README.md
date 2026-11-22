@@ -572,6 +572,8 @@ What the three charts share:
   `run_changes` of the figure.
 - A parameter a chart cannot draw, or a window without a value of any of
   its species, raises `InvalidChart`, whose message says what to change.
+  That includes what the views refuse (`normalise`, `tz`, `start`, `end`)
+  and what the spec does (an event's times), with their message.
 
 `species_series` bins at `cadence` `auto` (the samples' spacing), `10min`,
 `1h`, `1d`, or every sample at `raw`. When the bins times the series pass
