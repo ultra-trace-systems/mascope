@@ -11,6 +11,7 @@ matplotlib is imported here alone, when a figure is drawn.
 
 import datetime
 import functools
+import math
 from typing import Any
 
 import numpy as np
@@ -29,6 +30,12 @@ PT_PER_PX = 0.75
 
 #: The margin of the header's and the footer's text, in CSS pixels.
 MARGIN = 12.0
+
+#: The least space between two category labels, in CSS pixels.
+LABEL_GAP = 4.0
+
+#: The angle category labels slant at when level they would overlap.
+SLANT = 45.0
 
 
 def render(fig: Figure, *, theme: "str | themes.Theme" = "light") -> Any:
@@ -104,6 +111,17 @@ def px(value: float) -> float:
     return value * PT_PER_PX
 
 
+def fitted(widest: float, line: float, slot: float, gap: float) -> int | None:
+    """How category labels fit their slots, each *slot* wide: None when
+    the *widest*, level, leaves *gap* to the next; else every how many of
+    them to keep, slanted at :data:`SLANT`. Two slanted labels stand a
+    *line*'s height apart across the slant when their ticks are that height
+    over sin(slant) apart, and *gap* more."""
+    if widest + gap <= slot:
+        return None
+    return math.ceil((line / math.sin(math.radians(SLANT)) + gap) / slot)
+
+
 def _rgba(colour: str, alpha: float) -> tuple[float, float, float, float]:
     r, g, b = themes.rgb(colour)
     return (r, g, b, alpha)
@@ -117,6 +135,8 @@ class _Drawing:
         # A legend entry per identity (a group, a mark, a size legend's
         # row), each its text and its handle, in the order first drawn.
         self.legend: dict[Any, tuple[str, Any]] = {}
+        # The panels whose x axis draws categories, each with its labels
+        self.categorised: list[tuple[Any, list[str]]] = []
 
     # --- the figure ---------------------------------------------------------
 
@@ -176,7 +196,35 @@ class _Drawing:
         notes = common.note_lines(fig, theme)
         if notes:
             self._footer(drawn, notes, arrangement.footer, total)
+        if self.categorised:
+            self._fit_categories(drawn)
         return drawn
+
+    def _fit_categories(self, drawn: Any) -> None:
+        """Category labels that would overlap, slanted; and when even
+        slanted they would, every so many of them, as plotly turns and thins
+        its own. Measured on the laid-out figure, where the panels have their
+        widths."""
+        drawn.draw_without_rendering()
+        gap = LABEL_GAP * self.theme.layout.scale
+        for ax, names in self.categorised:
+            if len(names) < 2:
+                continue
+            boxes = [t.get_window_extent() for t in ax.get_xticklabels()]
+            every = fitted(
+                max(box.width for box in boxes),
+                max(box.height for box in boxes),
+                ax.get_window_extent().width / len(names),
+                gap,
+            )
+            if every is None:
+                continue
+            kept = range(0, len(names), every)
+            ax.set_xticks(kept, [escape(names[i]) for i in kept])
+            # Each ends at its tick, as matplotlib's own dates slant
+            for label in ax.get_xticklabels():
+                label.set_rotation(SLANT)
+                label.set_horizontalalignment("right")
 
     def _header(self, drawn: Any, total: float, lines: list[str]) -> None:
         theme = self.theme
@@ -766,6 +814,7 @@ class _Drawing:
         )
         ax.set_xlim(-0.5, len(place.categories) - 0.5)
         ax.grid(False, axis="x")
+        self.categorised.append((ax, list(place.categories)))
 
     def _table(self, ax: Any, panel: Panel) -> None:
         """A table filling the panel: a row per frame row and one for the

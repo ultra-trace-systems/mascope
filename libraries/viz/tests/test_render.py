@@ -1241,6 +1241,24 @@ def test_a_box_with_few_samples_is_hollow_on_both_backends():
     assert legend.get_texts()[-1].get_text() == "fewer than 10 samples"
 
 
+@pytest.mark.parametrize(
+    "widest, slot, every",
+    [
+        # Level, they leave the gap: 96 + 4 fills a slot of 100
+        (96.0, 100.0, None),
+        (96.5, 100.0, 1),
+        # Slanted, a 20 px line needs 20 / sin 45 = 28.3 px, and the gap
+        (90.0, 32.3, 1),
+        (90.0, 32.2, 2),
+        (90.0, 10.0, 4),
+    ],
+)
+def test_category_labels_slant_and_thin_to_fit_their_slots(widest, slot, every):
+    from mascope_viz.render import mpl
+
+    assert mpl.fitted(widest, 20.0, slot, 4.0) == every
+
+
 def test_a_heatmap_draws_a_gap_and_a_blank_cell_apart_on_both_backends():
     fig = specs.heatmap()
     # A gap cell is a gap whatever its value.
