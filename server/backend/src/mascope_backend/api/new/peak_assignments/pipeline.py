@@ -316,7 +316,8 @@ PROPAGATION = AssignmentPath(
 #: A person's choice: the hand assignment on a sample's row
 #: (``curation.curate_assignment``) and the batch's *Use this*, a pin measured
 #: on each member (``batch_curation``). Both read one rule set, the spectrum's,
-#: at the gate the sample's run recorded.
+#: at the gate the sample's run recorded; a pin in a sample no run asked lines
+#: in, at the gate a run of it would ask at.
 PERSONS_CHOICE = AssignmentPath(
     "person's choice",
     Stage.RESOLVE,
@@ -1256,10 +1257,32 @@ async def _recorded_measurement(ctx: RunContext) -> None:
         resolved_profile=ctx.resolved_profile,
         reagent_offset=ctx.reagent_offset,
     )
-    # The gate its absent-line rule asked lines at, which a person's choice
-    # is asked at; None where it asked none.
-    ctx.line_gate = LineGate.from_record((recorded or {}).get(TIERING_KEY))
     _read_at_model(ctx)
+    ctx.line_gate = _persons_line_gate(ctx, recorded)
+
+
+def _persons_line_gate(ctx: RunContext, recorded: dict | None) -> LineGate | None:
+    """The gate a person's choice is asked its lines at (:func:`_cap_by_the_spectrum`).
+
+    The one the sample's run asked its own rows' lines at, where it recorded
+    one. In a sample no run asked lines in - one the ingest folded straight
+    into the batch ledger, or whose run was tiered before rule set 11 - the
+    gate a run of the sample would ask at: the measurement it is scored at,
+    that is its match window, envelope floor and line-share tolerance, and its
+    instrument class (``tiering.LineGate.at``), as a propagated reading of
+    that sample is asked. So the batch's *Use this* asks its lines in every
+    sample. A hand assignment on a run that asked no line is still asked
+    none: it reads no peaks there (``curation._persons_choice``).
+    """
+    gate = LineGate.from_record((recorded or {}).get(TIERING_KEY))
+    if gate is not None:
+        return gate
+    return LineGate.at(
+        mz_tolerance_ppm=ctx.scoring.mz_tolerance_ppm,
+        abundance_floor=ctx.scoring.abundance_floor,
+        envelope_tolerance=ctx.model.envelope_tolerance,
+        instrument_type=ctx.instrument_type,
+    )
 
 
 # --- score ----------------------------------------------------------------------
@@ -1700,11 +1723,12 @@ async def cap(ctx: RunContext) -> None:
 def _cap_by_the_spectrum(ctx: RunContext) -> None:
     """The spectrum's rules (:attr:`Rules.SPECTRUM`): each monoisotopic row is
     asked whether the spectrum holds the lines its formula predicts, at the
-    gate the sample's run asked its own rows at (``tiering.ask_absent_line``).
-    An absent line holds the row at candidate at most, never lifts one, and
-    is the reason it lists; its isotopologue rows follow it. A sample whose
-    run asked no line is asked none, and so is one whose peaks the pass has
-    none of."""
+    gate the sample's run asked its own rows at, or in a sample no run asked
+    lines in, at the gate a run of it would ask at (:func:`_persons_line_gate`;
+    ``tiering.ask_absent_line``). An absent line holds the row at candidate at
+    most, never lifts one, and is the reason it lists; its isotopologue rows
+    follow it. A hand assignment on a run that asked no line is asked none,
+    and so is a sample whose peaks the pass has none of."""
     rows = ctx.fragments.rows
     gate = ctx.line_gate
     artifacts = (
