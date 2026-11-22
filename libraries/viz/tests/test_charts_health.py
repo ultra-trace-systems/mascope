@@ -245,6 +245,18 @@ def test_coverage_of_a_window_and_a_coarser_cell(month):
     assert fig.context.start is not None
 
 
+@pytest.mark.parametrize("cadence", ["W", "MS"])
+def test_coverage_refuses_a_calendar_cadence(month, cadence):
+    """The view bins by a calendar period, but a strip's cells share one
+    width: the chart says so rather than failing on its label."""
+    _, store = month
+    with pytest.raises(ValueError, match="calendar period"):
+        coverage(store, cadence=cadence)
+    assert coverage(store, cadence="7D").panels[0].axes.colour.label == (
+        "Samples per 7 days"
+    )
+
+
 # --- instrument_signal ---------------------------------------------------------------
 
 
@@ -483,6 +495,72 @@ def test_a_drift_passes_over_a_day_holding_too_few_values():
     assert drift(pd.Series(t), values) == pytest.approx(1.0)
     values[24 * 4 : 24 * 4 + 13] = 500.0
     assert drift(pd.Series(t), values) == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize("last", [True, False], ids=["last-day", "first-day"])
+def test_a_drift_reads_a_25_hour_day_across_a_clock_change(last):
+    """25 October 2026 is 25 hours long in Helsinki: a day's end is the next
+    midnight on the wall clock, not 24 hours on."""
+    if last:
+        t = pd.date_range(
+            "2026-10-20", "2026-10-26", freq="1h", tz=ZONE, inclusive="left"
+        )
+        day = t.normalize() == pd.Timestamp("2026-10-25", tz=ZONE)
+    else:
+        t = pd.date_range(
+            "2026-10-25", "2026-10-31", freq="1h", tz=ZONE, inclusive="left"
+        )
+        day = t.normalize() != pd.Timestamp("2026-10-25", tz=ZONE)
+    assert (t.normalize() == pd.Timestamp("2026-10-25", tz=ZONE)).sum() == 25
+    values = np.where(day, 500.0, 1000.0)
+
+    assert drift(pd.Series(t), values) == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize("width", ["6min", "7min", "11min"])
+def test_a_step_pairs_bins_that_do_not_divide_the_window(width):
+    """A bin pairs with the bin nearest one window before it: 7-minute bins
+    do not divide a day, and an exact match would pair none."""
+    t = pd.date_range("2026-06-01", "2026-06-05", freq=width, tz=ZONE, inclusive="left")
+    at = len(t) // 2
+    values = np.full(len(t), 1000.0) * (1 + 0.001 * (np.arange(len(t)) % 3))
+    values[at:] *= 0.5
+
+    found = largest_step(pd.Series(t), values, pd.Timedelta("24h"))
+
+    assert found is not None
+    assert abs(pd.Timestamp(found["at"]) - t[at]) <= pd.Timedelta(width)
+    assert found["factor"] == pytest.approx(0.5, rel=0.01)
+
+
+def test_a_step_pairs_irregular_samples_and_never_a_bin_with_itself():
+    rng = np.random.default_rng(5)
+    offsets = np.cumsum(rng.uniform(5, 9, size=4 * 24 * 60 // 7)) * 60e9
+    t = pd.DatetimeIndex(
+        pd.Timestamp("2026-06-01", tz=ZONE).value + offsets.astype("int64"), tz="UTC"
+    ).tz_convert(ZONE)
+    at = len(t) // 2
+    values = np.full(len(t), 1000.0)
+    values[at:] = 250.0
+
+    found = largest_step(pd.Series(t), values, pd.Timedelta("24h"))
+    assert found["factor"] == pytest.approx(0.25)
+    assert abs(pd.Timestamp(found["at"]) - t[at]) <= pd.Timedelta("10min")
+    # A window shorter than a bin finds no partner before any bin
+    assert largest_step(pd.Series(t), values, pd.Timedelta("1min")) is None
+
+
+def test_a_step_on_local_days_pairs_across_a_clock_change():
+    """Daily bins in local time are 23 or 25 hours apart across a clock
+    change; the days beside it still pair."""
+    t = pd.date_range("2026-10-15", "2026-11-05", freq="1D", tz=ZONE, inclusive="left")
+    at = list(t).index(pd.Timestamp("2026-10-26", tz=ZONE))
+    values = np.where(np.arange(len(t)) >= at, 400.0, 1000.0)
+
+    found = largest_step(pd.Series(t), values, pd.Timedelta("3D"))
+
+    assert pd.Timestamp(found["at"]) == t[at]
+    assert found["factor"] == pytest.approx(0.4)
 
 
 def test_a_step_on_a_flat_noisy_trace_is_placed_at_the_step():

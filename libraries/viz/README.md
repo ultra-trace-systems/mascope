@@ -450,8 +450,9 @@ What every chart kind does the same way:
   `normalise`, `normalise_name`, `cadence`, `tz`, `start`, `end`,
   `mixed_runs` and `run_changes`; `registry.get(id).summary` lists the rest.
 
-**`coverage`** takes `cadence` (a cell, `1h`), `min_gap` (the shortest gap
-shaded, `1h`), `tz`, `start` and `end`. Its summary has the span from the
+**`coverage`** takes `cadence` (a cell, `1h`; a fixed duration, so `7D`
+rather than the calendar week `W`), `min_gap` (the shortest gap shaded,
+`1h`), `tz`, `start` and `end`. Its summary has the span from the
 first file or sample to the last, the hours in it, missing and acquired,
 the coverage fraction, each gap with its files and unfiled files, the
 totals, and each row's counts. A row is a polarity and a mode's name; the
@@ -461,10 +462,13 @@ mode's ID is beside the name when two modes share it.
 then the TIC alone is drawn: a reagent is never guessed from a name),
 `normalise`, `cadence` (`1h`), `step_window` (`24h`), `tz`, `start` and
 `end`. Its summary gives each trace's `median` (of its bins), `drift` (the
-last full local day's median over the first's) and largest `step`. A step
+last full local day's median over the first's; a day runs midnight to
+midnight on the wall clock, 23 or 25 hours across a clock change) and largest `step`. A step
 at a time is the ratio of the median of the bins in the window after it to
 that of the bins one window earlier, over the pairs of bins that both hold
-a value, and only where more than half the window's bins pair up. So each
+a value, and only where more than half the window's bins pair up. A bin
+pairs with the bin nearest one window before it, within half a bin, so
+bins that do not divide the window still pair. So each
 side holds the same hours of the day, a day-long window cancels a diurnal
 cycle even beside a gap, and a stretch without samples makes no step. A
 median ratio stays near its largest for most of a window either side of a
