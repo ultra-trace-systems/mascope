@@ -1119,6 +1119,24 @@ def test_diurnal_judges_three_hours_of_a_summer_as_a_whole_summer(long_window):
     _judged_whole(store, key, "season", window, "JJA", "SON")
 
 
+def test_a_whole_group_is_the_views_days_of_it_in_a_common_year_or_a_week():
+    """The days a group is judged per at least are those the view groups
+    into it of a common year's days, or of a week's from Monday: every
+    month and season, the weekdays and the weekend."""
+    year = pd.date_range("2025-01-01", "2025-12-31", freq="D", tz=ZONE)
+    week = pd.date_range("2025-01-06", "2025-01-12", freq="D", tz=ZONE)
+    assert week[0].day_name() == "Monday"
+
+    want = {
+        **views._group_days(year, "month"),
+        **views._group_days(year, "season"),
+        **views._group_days(week, "weekday"),
+    }
+
+    assert diurnal_module.WHOLE_DAYS == want
+    assert want["Feb"] == 28 and want["DJF"] == 90
+
+
 def test_an_hour_under_half_the_typical_hours_samples_is_sparse():
     """The typical hour is the median over the hours sampled at all: an
     hour with none is sparse beside hours with some, and a cycle sampled in
