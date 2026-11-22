@@ -220,6 +220,13 @@ class CalibrationConfig(BaseModel):
     # ppm at the default 15: as close as real calibrants sit to a good fit,
     # where peaks that line up by chance spread over the whole tolerance.
     TOF_SEARCH_TIGHT_SHARE: float = 1 / 3
+    # A TOF file whose mode has no calibrants takes its calibration from the
+    # nearest fitted files of its instrument and polarity within this many
+    # seconds of it, centre to centre (``tof_calibration_transfer``). A
+    # multi-scheme instrument changes mode within minutes, and its axis
+    # drifts by a few ppm within a run; a file with no fitted neighbour this
+    # close stays unfitted.
+    TOF_TRANSFER_WINDOW_S: float = 1800.0
 
     # Orbi calibration parameters. The refine window must be wide enough to
     # contain the true calibrant centroid under a realistic instrument-side

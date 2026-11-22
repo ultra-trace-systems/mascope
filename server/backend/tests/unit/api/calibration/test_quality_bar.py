@@ -15,6 +15,7 @@ from mascope_backend.api.controllers.calibration.calibration_controller import (
     previous_fit_moved_the_axis,
     seal_fit,
     stamp_quality_verdict,
+    transfer_replaces,
 )
 from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
     axis_correction_ppm,
@@ -516,6 +517,21 @@ class TestStampQualityVerdict:
         assert "accepted_at" not in fit
         assert "accepted_by" not in fit
 
+    def test_a_transfer_block_on_a_fit_is_dropped(self, warn):
+        """A fit judged here is the file's own: the account of a transfer it
+        arrived with, as ``/mz_apply`` takes keys off the request body, does
+        not stay on it."""
+        fit = {
+            "quality": dict(GOOD),
+            "status": "transferred",
+            "transfer": {"sources": [{"sample_file_id": "sf-2"}]},
+        }
+
+        stamp_quality_verdict(fit, ORBI_FILE, sealed=True)
+
+        assert fit["status"] == "ok"
+        assert "transfer" not in fit
+
 
 class TestRecordKinds:
     CONVERTER = {"mode": 0, "par": [1.0, 2.0]}
@@ -540,6 +556,31 @@ class TestRecordKinds:
     def test_a_poor_fit_moved_the_axis(self):
         assert previous_fit_moved_the_axis({"status": "poor", "verified": False})
         assert previous_fit_moved_the_axis({"status": "poor", "verified": True})
+
+    def test_a_transfer_moved_the_axis(self):
+        assert previous_fit_moved_the_axis(
+            {"mode": 0, "par": [1.0, 2.0], "status": "transferred", "verified": True}
+        )
+
+    @pytest.mark.parametrize(
+        ("record", "refused"),
+        [
+            ({**CONVERTER, "status": "unfitted"}, None),
+            (CONVERTER, None),
+            ({**CONVERTER, "status": "transferred", "verified": True}, None),
+            ({**CONVERTER, "status": "ok", "verified": True}, "holds a fit"),
+            ({**CONVERTER, "status": "poor", "verified": True}, "holds a fit"),
+            ({"status": "failed", "verified": False}, "calibration failed"),
+            (None, "no calibration record"),
+        ],
+        ids=["converter", "bare", "transfer", "ok", "poor", "failed", "none"],
+    )
+    def test_what_a_transfer_replaces(self, record, refused):
+        reason = transfer_replaces(record)
+        if refused is None:
+            assert reason is None
+        else:
+            assert refused in reason
 
     def test_a_converter_record_did_not_move_the_axis(self):
         assert not previous_fit_moved_the_axis(
