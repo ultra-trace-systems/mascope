@@ -313,6 +313,8 @@ encoding takes and each option's default. What every figure shares:
   a log axis, where a row or column at a value that is not positive is
   not drawn. A lone cell is one unit wide, a day on a time axis and as
   wide as its value on a log axis. Both renderers place the cells alike.
+  plotly's hover says a cell's value to four significant digits, also on
+  a log colour scale, where the cell's colour is set by the value's log.
 - **A group keeps its colour** in every panel of a figure, and appears
   once in its legend. Groups take the categorical palette in the order
   they first appear; `colours` names a group's colour by token instead,
