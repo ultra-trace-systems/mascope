@@ -2,7 +2,7 @@
 
 No DB: which anchors the walk starts from and may reach, what the plan does
 with each committed proposal, the batch's FDR, the outcome, what a run copies
-onto its rows (``service.stamp_series``) and which members a proposal may take
+onto its rows (``batch_lines.stamp_series``) and which members a proposal may take
 (``batch_untargeted._takes_the_member``). See ``batch_series.py``.
 """
 

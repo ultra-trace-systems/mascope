@@ -8,7 +8,7 @@ rejected (the first superseded), S2 rejected, the batch peak confirmed at the
 batch level, and S5 in batch B confirmed. S3 has no verdict of its own and so
 borrows the batch level's; S4 dissents and borrows nothing. S6, confirmed too,
 is in another dataset, which no read here reaches. See
-``service.get_scope_verifications``.
+``verification.get_scope_verifications``.
 """
 
 import json

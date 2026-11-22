@@ -2869,7 +2869,7 @@ class SampleMeasurementModel(Base):
     One row per sample, the last such pass's. ``config`` holds what a run keeps
     in its own config: the model under ``measurement_model`` and the line-share
     tolerance under ``envelope_tolerance``, so a reader outside a run reads it
-    as it reads a run's (``service.recorded_measurement``), where the sample
+    as it reads a run's (``model_readers.recorded_measurement``), where the sample
     has no completed in-app run of its own: a run's record comes first.
     """
 

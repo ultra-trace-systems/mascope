@@ -1520,7 +1520,7 @@ def off_calibration(committed: dict, ceiling: str = "below_assignability") -> di
 
 class TestBeforeTheMassGatesCap:
     """A run reads the ledger here before it applies the mass gate's cap
-    (``service.judge_commits``). Every tier is read under that gate's ceiling,
+    (``judging_loop.judge_commits``). Every tier is read under that gate's ceiling,
     so what is recorded is what would be after the cap, and nothing is capped
     until :func:`cap_cross_channel`."""
 
