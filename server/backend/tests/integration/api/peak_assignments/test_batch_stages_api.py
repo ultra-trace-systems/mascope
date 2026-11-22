@@ -30,11 +30,12 @@ from mascope_backend.api.new.peak_assignments import (
     batch_peaks_routes,
     batch_rejudge,
     batch_stages,
+    batch_staleness,
 )
+from mascope_backend.api.new.peak_assignments.batch_fold import rebuild_batch_ledger
+from mascope_backend.api.new.peak_assignments.batch_lock import _acquire_batch_fold_lock
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-    _acquire_batch_fold_lock,
     fold_sample_into_batch_peaks,
-    rebuild_batch_ledger,
     recompute_batch_consensus,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
@@ -46,15 +47,17 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
 )
 from mascope_backend.api.new.peak_assignments.batch_stages import (
     STAGES,
-    BatchStage,
     assign_batch,
     begin_stage,
     finish_stage,
     hand_over,
-    mark_batch_stale,
     running_stage,
     stage_standing,
     stop_stage,
+)
+from mascope_backend.api.new.peak_assignments.batch_staleness import (
+    BatchStage,
+    mark_batch_stale,
 )
 from mascope_backend.api.new.peak_assignments.config import (
     PeakAssignmentConfig,
@@ -796,7 +799,7 @@ async def test_between_two_stages_of_a_pass_the_next_one_already_runs(
     the fold lock, which every writer of the rows takes first."""
     batch_id = folded["batch_id"]
     seen = []
-    lock = batch_stages._fold_lock
+    lock = batch_staleness._fold_lock
 
     async def probing(session, sample_batch_id):
         async with async_session_factory() as other:
@@ -804,7 +807,9 @@ async def test_between_two_stages_of_a_pass_the_next_one_already_runs(
         seen.append(running.stage if running is not None else None)
         await lock(session, sample_batch_id)
 
+    # The stages and the marks below them each take it as their own name.
     monkeypatch.setattr(batch_stages, "_fold_lock", probing)
+    monkeypatch.setattr(batch_staleness, "_fold_lock", probing)
     await _run(batch_id)
     # The first stage's start finds none running; every stage's end finds
     # it running.
@@ -917,15 +922,15 @@ async def test_a_rebuild_marks_the_stages_under_the_fold_lock(
     """The rebuild's own mark goes through the locked writer."""
     batch_id = folded["batch_id"]
     marks = []
-    real = batch_stages.mark_batch_stale
+    real = batch_staleness.mark_batch_stale
 
     async def recording(sample_batch_id, reason):
         marks.append(reason)
         await real(sample_batch_id, reason)
 
-    from mascope_backend.api.new.peak_assignments import batch_peaks_controller
+    from mascope_backend.api.new.peak_assignments import batch_fold
 
-    monkeypatch.setattr(batch_peaks_controller, "mark_batch_stale", recording)
+    monkeypatch.setattr(batch_fold, "mark_batch_stale", recording)
     await _run(batch_id, "batch_checks")
     await rebuild_batch_ledger(batch_id)
     assert marks == ["rebuild"]
@@ -979,7 +984,7 @@ def seen_settings(stand_ins, monkeypatch):
         judged.append(config)
         return await rejudge(sample_batch_id, samples, config)
 
-    monkeypatch.setattr(batch_rejudge, "rejudge_samples", recording)
+    monkeypatch.setattr(batch_stages, "rejudge_samples", recording)
     return {"seen": seen, "judged": judged}
 
 

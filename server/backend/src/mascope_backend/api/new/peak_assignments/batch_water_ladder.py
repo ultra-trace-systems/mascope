@@ -73,28 +73,20 @@ from sqlalchemy import or_, select
 
 from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.new.peak_assignments.batch_known_species import (
-    ALREADY,
-    KEPT_CARRIES_LINES,
-    KEPT_CLAIMED_OTHERWISE,
     KEPT_HAND_ASSIGNED,
-    KEPT_LINE_OF_ANOTHER,
-    KEPT_TARGET_LIBRARY,
     ROW_KEPT_IMPORTED,
     ROW_KEPT_NO_ROW,
-    Member,
-    Partition,
     Row,
-    Species,
     _as_dict,
     _load_batch,
     _member_from,
     _read_rows,
     _row_marks,
-    partition_of,
     restore_row,
     trace_centre,
     with_row_before,
 )
+from mascope_backend.api.new.peak_assignments.batch_lock import _acquire_batch_fold_lock
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     MARK_WATER_LADDERS,
     ROLE_ISO_CHILD,
@@ -114,7 +106,6 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     water_ladder_record_of,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-    _acquire_batch_fold_lock,
     _recompute_consensus,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
@@ -127,8 +118,19 @@ from mascope_backend.api.new.peak_assignments.config import (
     IN_APP_ENGINE,
     PeakAssignmentConfig,
 )
-from mascope_backend.api.new.peak_assignments.engine import SOURCE_REAGENT
+from mascope_backend.api.new.peak_assignments.known_species import (
+    ALREADY,
+    KEPT_CARRIES_LINES,
+    KEPT_CLAIMED_OTHERWISE,
+    KEPT_LINE_OF_ANOTHER,
+    KEPT_TARGET_LIBRARY,
+    Member,
+    Partition,
+    Species,
+    partition_of,
+)
 from mascope_backend.api.new.peak_assignments.reagent_pass import water_rung_row
+from mascope_backend.api.new.peak_assignments.row_terms import SOURCE_REAGENT
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
     TIER_CANDIDATE,

@@ -29,7 +29,6 @@ from mascope_tools.composition.envelope_tolerance import (
 _PIPE = "mascope_backend.api.new.peak_assignments.pipeline"
 #: What Stage A hands on of a tolerance it fitted nothing for: today's numbers.
 NO_ENVELOPE_FIT = RunEnvelopeFit(fit_envelope_tolerance(FORM_DEFAULT, EnvelopeLines()))
-_CTL = "mascope_backend.api.new.peak_assignments.batch_peaks_controller"
 
 
 #: The modules of the run's path that read a file's instrument type.
@@ -157,7 +156,7 @@ def _patched(
         # known species and no series, unless a test says.
         "batch_species": stack.enter_context(
             patch(
-                "mascope_backend.api.new.peak_assignments.batch_known_species.batch_species_for",
+                "mascope_backend.api.new.peak_assignments.known_species.batch_species_for",
                 new_callable=AsyncMock,
                 return_value=[],
             )
@@ -199,7 +198,7 @@ def _patched(
         ),
         "stage_a": stack.enter_context(
             patch(
-                "mascope_backend.api.new.peak_assignments.stage_a_pass._stage_a_assignments",
+                "mascope_backend.api.new.peak_assignments.pipeline._stage_a_assignments",
                 new_callable=AsyncMock,
             )
         ),
@@ -224,7 +223,7 @@ def _patched(
         ),
         "fold": stack.enter_context(
             patch(
-                f"{_CTL}.fold_sample_into_batch_peaks",
+                "mascope_backend.api.new.peak_assignments.batch_fold.fold_sample_into_batch_peaks",
                 new_callable=AsyncMock,
                 return_value="batch-1",
             )
@@ -358,7 +357,12 @@ async def test_the_fold_runs_every_stage_of_the_list():
 
     stack, _mocks = _patched()
     with stack:
-        stack.enter_context(patch(f"{_PIPE}.run_stages", side_effect=recording))
+        stack.enter_context(
+            patch(
+                "mascope_backend.api.new.peak_assignments.batch_fold.run_stages",
+                side_effect=recording,
+            )
+        )
         assert await fold_sample_peaks_without_run("si-1") == "batch-1"
 
     (ctx,) = passes
@@ -1159,7 +1163,7 @@ async def test_the_fold_takes_its_batchs_word_as_a_run_does():
     stack, mocks = _patched()
     batch_species = stack.enter_context(
         patch(
-            "mascope_backend.api.new.peak_assignments.batch_known_species.batch_species_for",
+            "mascope_backend.api.new.peak_assignments.known_species.batch_species_for",
             new_callable=AsyncMock,
             return_value=[species],
         )

@@ -71,14 +71,6 @@ from mascope_backend.api.new.peak_assignments.config import (
     PeakAssignmentConfig,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
-    ROLE_ARTIFACT,
-    ROLE_ISO_CHILD,
-    ROLE_M0,
-    ROLE_UNASSIGNED,
-    SOURCE_DATABASE,
-    SOURCE_MANUAL,
-    SOURCE_UNTARGETED,
-    TIERING_KEY,
     evidence_for,
     plausibility_for,
     tier_for_evidence,
@@ -93,6 +85,21 @@ from mascope_backend.api.new.peak_assignments.identification_level import (
 )
 from mascope_backend.api.new.peak_assignments.model_readers import (
     provenance_with_calibration,
+)
+from mascope_backend.api.new.peak_assignments.pipeline import (
+    PERSONS_CHOICE,
+    RunContext,
+    run_stages,
+)
+from mascope_backend.api.new.peak_assignments.row_terms import (
+    ROLE_ARTIFACT,
+    ROLE_ISO_CHILD,
+    ROLE_M0,
+    ROLE_UNASSIGNED,
+    SOURCE_DATABASE,
+    SOURCE_MANUAL,
+    SOURCE_UNTARGETED,
+    TIERING_KEY,
 )
 from mascope_backend.api.new.peak_assignments.sample_inputs import load_sample_peaks
 from mascope_backend.api.new.peak_assignments.schemas import (
@@ -990,13 +997,6 @@ async def _persons_choice(
     :param bands: The run's ``(assigned, candidate)`` bands.
     :return: The row as judged, and what asking its lines came to.
     """
-    # Imported here: the stage list composes the service, which this module
-    # imports.
-    from mascope_backend.api.new.peak_assignments.pipeline import (
-        PERSONS_CHOICE,
-        RunContext,
-        run_stages,
-    )
 
     recorded = (
         run.config

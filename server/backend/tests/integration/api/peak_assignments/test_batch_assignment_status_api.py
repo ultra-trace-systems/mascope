@@ -25,8 +25,8 @@ from mascope_backend.api.new.peak_assignments import batch_stages
 from mascope_backend.api.new.peak_assignments.batch_assignment_status import (
     get_batch_assignment_status,
 )
+from mascope_backend.api.new.peak_assignments.batch_lock import _acquire_batch_fold_lock
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-    _acquire_batch_fold_lock,
     fold_sample_into_batch_peaks,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
@@ -39,15 +39,17 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     start_run,
 )
 from mascope_backend.api.new.peak_assignments.batch_stages import (
-    REASON_CONSENSUS,
-    REASON_CURATION,
-    REASON_REBUILD,
     STAGES,
-    BatchStage,
     assign_batch,
     begin_stage,
     finish_stage,
     library_read,
+)
+from mascope_backend.api.new.peak_assignments.batch_staleness import (
+    REASON_CONSENSUS,
+    REASON_CURATION,
+    REASON_REBUILD,
+    BatchStage,
     mark_batch_stale,
     mark_stale,
 )
@@ -351,9 +353,7 @@ async def test_a_pass_that_folds_first_is_running_in_its_fold(
         await release.wait()
         return {"status": "success", "message": "Rebuilt."}
 
-    from mascope_backend.api.new.peak_assignments import batch_peaks_controller
-
-    monkeypatch.setattr(batch_peaks_controller, "rebuild_batch_ledger", held_rebuild)
+    monkeypatch.setattr(batch_stages, "rebuild_batch_ledger", held_rebuild)
     task = asyncio.create_task(_pass(batch_id, fold="always"))
     try:
         await asyncio.wait_for(entered.wait(), 30)

@@ -12,9 +12,9 @@ import pytest_asyncio
 from sqlalchemy import select, update
 
 from mascope_backend.api.new.peak_assignments import batch_peaks_routes
+from mascope_backend.api.new.peak_assignments.batch_fold import rebuild_batch_ledger
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     fold_sample_into_batch_peaks,
-    rebuild_batch_ledger,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_FOLD,

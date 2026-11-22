@@ -66,8 +66,8 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     anchor_snapshot_row,
     snapshot_anchor_meta,
 )
-from mascope_backend.api.new.peak_assignments.engine import (
-    DISPLACED_BY_CLAIM,
+from mascope_backend.api.new.peak_assignments.engine import DISPLACED_BY_CLAIM
+from mascope_backend.api.new.peak_assignments.row_terms import (
     SOURCE_DATABASE,
     SOURCE_MANUAL,
     SOURCE_UNTARGETED,

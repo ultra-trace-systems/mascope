@@ -74,6 +74,9 @@ from mascope_backend.api.new.peak_assignments.admission import (
     assignment_claim,
     in_flight_run_id,
 )
+from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    fold_sample_into_batch_peaks,
+)
 from mascope_backend.api.new.peak_assignments.engine import (
     plausibility_for,
     tier_for_evidence,
@@ -1045,10 +1048,6 @@ async def _finalize_import(sample, run_id: str, staged: int, user_id: int | None
     # partial import - it replaces this sample's whole contribution to the batch
     # overview, so peaks the import left out are withdrawn from it.
     try:
-        from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-            fold_sample_into_batch_peaks,
-        )
-
         await fold_sample_into_batch_peaks(sample.sample_item_id)
     except Exception as fold_error:  # noqa: BLE001 - fold-in is best-effort
         runtime.logger.warning(

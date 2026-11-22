@@ -17,14 +17,24 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select, update
 
-from mascope_backend.api.new.peak_assignments import batch_peaks_controller
+from mascope_backend.api.new.peak_assignments import (
+    batch_peaks,
+    batch_peaks_controller,
+    batch_rejudge,
+    batch_runs,
+    batch_stages,
+    batch_staleness,
+    continuity,
+)
+from mascope_backend.api.new.peak_assignments.batch_fold import (
+    backfill_sample_batch_peaks,
+)
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     mz_from_delta,
     role_name,
     tier_name,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-    backfill_sample_batch_peaks,
     fold_sample_into_batch_peaks,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_records import (
@@ -719,7 +729,16 @@ async def test_concurrent_folds_without_the_lock_split_one_species(
     async def _no_lock(session, sample_batch_id):
         return None
 
-    monkeypatch.setattr(batch_peaks_controller, "_acquire_batch_fold_lock", _no_lock)
+    # Every module that takes the lock reads it as its own name.
+    for module in (
+        batch_peaks_controller,
+        batch_runs,
+        batch_rejudge,
+        continuity,
+        batch_staleness,
+        batch_stages,
+    ):
+        monkeypatch.setattr(module, "_acquire_batch_fold_lock", _no_lock)
 
     assert await _fold_two_samples_concurrently(gate, samples) == [batch, batch]
 
@@ -1466,7 +1485,7 @@ async def test_a_second_instrument_type_folds_into_a_partition_of_its_own(
     batch, samples = seeded
     # Sample B is the batch's TOF file; the classifier reads the file name.
     monkeypatch.setattr(
-        batch_peaks_controller,
+        batch_peaks,
         "get_instrument_type",
         lambda filename: "tof" if "-test-B-" in filename else "orbi",
     )

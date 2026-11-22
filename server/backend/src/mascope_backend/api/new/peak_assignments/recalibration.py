@@ -20,12 +20,12 @@ from mascope_backend.api.new.peak_assignments.config import (
     IN_APP_ENGINE,
     STAGE_B_V2_ENGINE_VERSION,
 )
-from mascope_backend.api.new.peak_assignments.engine import (
+from mascope_backend.api.new.peak_assignments.profiles import RESOLVED_PROFILE_KEY
+from mascope_backend.api.new.peak_assignments.row_terms import (
     ROLE_M0,
     SOURCE_DATABASE,
     SOURCE_UNTARGETED,
 )
-from mascope_backend.api.new.peak_assignments.profiles import RESOLVED_PROFILE_KEY
 from mascope_backend.api.new.peak_assignments.run_config import IONIZATION_SETUP_KEY
 from mascope_backend.api.new.peak_assignments.tiers import TIER_ASSIGNED, TIER_CANDIDATE
 from mascope_backend.db import (

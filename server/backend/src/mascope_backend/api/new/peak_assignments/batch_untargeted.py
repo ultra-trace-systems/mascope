@@ -51,11 +51,11 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
 import numpy as np
-import pandas as pd
 from sqlalchemy import func, or_, select
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.lib.api_features import api_controller_background_task
+from mascope_backend.api.new.peak_assignments.batch_lock import _acquire_batch_fold_lock
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     MARK_SEARCH,
     PERSISTENCE_KEY,
@@ -72,7 +72,6 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     tier_code,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-    _acquire_batch_fold_lock,
     recompute_batch_consensus,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
@@ -80,17 +79,10 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     in_batch_run,
     touch_ledger,
 )
-from mascope_backend.api.new.peak_assignments.config import (
-    PeakAssignmentConfig,
-)
+from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import (
-    ROLE_ARTIFACT,
-    ROLE_M0,
-    ROLE_REAGENT,
-    SOURCE_UNTARGETED,
     evidence_for,
     formula_identity,
-    untargeted_targets,
 )
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
 from mascope_backend.api.new.peak_assignments.pipeline import (
@@ -100,6 +92,12 @@ from mascope_backend.api.new.peak_assignments.pipeline import (
     RunContext,
     keep_search_rows,
     run_stages,
+)
+from mascope_backend.api.new.peak_assignments.row_terms import (
+    ROLE_ARTIFACT,
+    ROLE_M0,
+    ROLE_REAGENT,
+    SOURCE_UNTARGETED,
 )
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_CANDIDATE,
@@ -260,63 +258,6 @@ def persistent_anchors(
             if n_present / n_samples > split:
                 persistent[anchor] = Occurrence(n_present, n_samples, split)
     return persistent, splits
-
-
-def admitted_targets(
-    frame: pd.DataFrame,
-    target_peak_ids: set[str],
-    persistent_peak_ids: set[str],
-    *,
-    peak_intensity_threshold: float,
-    max_untargeted_peaks: Optional[int],
-    ceiling: int,
-) -> tuple[pd.DataFrame, dict, set[str]]:
-    """The representatives a sample's search enumerates, and which of them
-    persistence alone admitted.
-
-    Two admissions, side by side. By height, as a run's search admits: a
-    representative at or above the intensity floor, brightest first up to the
-    cap (``engine.untargeted_targets``). By persistence: a representative of a
-    persistent anchor, however faint and wherever the cap stopped. The ceiling
-    still bounds the two together, the faint ones brightest first: it is
-    there so no search is unbounded work, whatever admitted the peaks.
-
-    :param frame: The sample's peaks the search reads, persistent sub-floor
-        ones included, with ``sample_peak_id`` and ``intensity``.
-    :param target_peak_ids: The sample's representatives.
-    :param persistent_peak_ids: Those whose anchors are persistent.
-    :param peak_intensity_threshold: The run's intensity floor.
-    :param max_untargeted_peaks: The run's cap, or None.
-    :param ceiling: The hard bound on the peaks enumerated.
-    :return: The peaks to enumerate; the search's scope, with
-        ``admitted_by_persistence``; and the ids of the peaks persistence
-        alone admitted.
-    """
-    representatives = frame[frame["sample_peak_id"].isin(target_peak_ids)]
-    by_height = representatives[
-        representatives["intensity"] >= peak_intensity_threshold
-    ]
-    targets, scope = untargeted_targets(by_height, max_untargeted_peaks, ceiling)
-    persistent = representatives[
-        representatives["sample_peak_id"].isin(persistent_peak_ids)
-        & ~representatives["sample_peak_id"].isin(targets["sample_peak_id"])
-    ]
-    unfloored = int(
-        (~persistent["sample_peak_id"].isin(by_height["sample_peak_id"])).sum()
-    )
-    extra = persistent.nlargest(max(ceiling - len(targets), 0), "intensity")
-    scope = {
-        **scope,
-        "eligible_peaks": scope["eligible_peaks"] + unfloored,
-        "searched_peaks": scope["searched_peaks"] + int(len(extra)),
-        "admitted_by_persistence": int(len(extra)),
-    }
-    scope["limited"] = scope["searched_peaks"] < scope["eligible_peaks"]
-    return (
-        pd.concat([targets, extra]) if len(extra) else targets,
-        scope,
-        {str(peak) for peak in extra["sample_peak_id"]},
-    )
 
 
 def choose_representatives(members: Iterable[Any]) -> dict[str, Any]:

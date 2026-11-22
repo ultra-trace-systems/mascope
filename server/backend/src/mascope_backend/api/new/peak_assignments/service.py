@@ -24,7 +24,7 @@ from dataclasses import replace
 from datetime import datetime as dt
 from datetime import timezone
 
-from sqlalchemy import update
+from sqlalchemy import insert, update
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.lib.api_features import api_controller_background_task
@@ -33,6 +33,7 @@ from mascope_backend.api.new.ionization.modes.versions import (
     move_to_current_versions,
     sample_setup,
 )
+from mascope_backend.api.new.peak_assignments import run_config
 from mascope_backend.api.new.peak_assignments.admission import (
     _sample_assignments_in_flight,
     assignment_claim,
@@ -40,6 +41,9 @@ from mascope_backend.api.new.peak_assignments.admission import (
 )
 from mascope_backend.api.new.peak_assignments.batch_fold import (
     fold_sample_peaks_without_run,
+)
+from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    fold_sample_into_batch_peaks,
 )
 from mascope_backend.api.new.peak_assignments.config import (
     IN_APP_ENGINE,
@@ -60,11 +64,23 @@ from mascope_backend.api.new.peak_assignments.decoy import (
     swap_channels,
     wrong_adducts,
 )
+from mascope_backend.api.new.peak_assignments.engine import (
+    measurement_model_record,
+    scoring_snapshot,
+)
 from mascope_backend.api.new.peak_assignments.model_readers import _latest_in_app_run
+from mascope_backend.api.new.peak_assignments.pipeline import (
+    DECOY,
+    RUN,
+    RunContext,
+    ledger_rows,
+    run_stages,
+)
 from mascope_backend.api.new.peak_assignments.profiles import (
     RESOLVED_PROFILE_KEY,
     resolve_profile,
 )
+from mascope_backend.api.new.peak_assignments.row_terms import SOURCE_DATABASE
 from mascope_backend.api.new.peak_assignments.run_config import _stored_run_config
 from mascope_backend.api.new.peak_assignments.sample_inputs import (
     count_sample_peaks,
@@ -74,7 +90,7 @@ from mascope_backend.api.new.peak_assignments.sample_mechanisms import (
     fetch_mechanisms_by_notation,
     fetch_sample_mechanisms,
 )
-from mascope_backend.db import PeakAssignmentRun, async_session
+from mascope_backend.db import PeakAssignment, PeakAssignmentRun, async_session
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.notifications import UserNotification
@@ -501,14 +517,6 @@ async def _assign_sample(
             f"Starting peak assignment run '{run.peak_assignment_run_id}' "
             f"for sample '{sample.sample_item_name}'"
         )
-        # Imported here: the stage list composes this module's helpers.
-        from mascope_backend.api.new.peak_assignments.pipeline import (
-            DECOY,
-            RUN,
-            RunContext,
-            keep_run,
-            run_stages,
-        )
 
         ctx = await run_stages(
             RunContext(
@@ -637,3 +645,108 @@ async def auto_assign_sample_peaks(
         runtime.logger.warning(
             f"Auto peak assignment failed for sample '{sample_item_id}': {e}"
         )
+
+
+async def keep_run(ctx: RunContext) -> dict:
+    """A run keeps its ledger: what it recorded of each stage on its run, the
+    rows, and then its run completed and folded into the batch ledger.
+
+    :return: The run's outcome, as the assign task reports it.
+    """
+    sample = ctx.sample
+    judged = ctx.judged
+    plan = ctx.decoy_plan
+    search = ctx.search
+    fragments = ctx.fragments
+    await run_config._record_resolved_profile(
+        ctx.run_id,
+        ctx.config,
+        ctx.resolved_profile,
+        None if search is None else search.scope,
+        measurement_model_record(
+            judged.model,
+            ranked_at=ctx.model,
+            scoring=(
+                search.snapshot
+                if search is not None and search.snapshot is not None
+                else scoring_snapshot(ctx.scoring)
+            ),
+            gate=judged.mass_calibration,
+        ),
+        judged.cross_channel,
+        ctx.tiering,
+        judged.partner_gate,
+        fragments.summary if fragments.summary["ladders"] else None,
+        ctx.ionization_setup,
+        ctx.envelope.record(),
+        None if plan is None else plan.record(),
+        ctx.batch.record(ctx.batch_applied),
+    )
+    await ctx.progress(0.8)
+    all_assignments, committed_rows, unassigned_assignments = ledger_rows(ctx)
+    # Insert owners before children: owner_peak_assignment_id is a
+    # self-referential FK validated per row during the bulk insert.
+    all_assignments.sort(key=lambda row: row["owner_peak_assignment_id"] is not None)
+    if all_assignments:
+        async with async_session() as session:
+            await session.execute(insert(PeakAssignment), all_assignments)
+            # The curve the rows were scored against, committed with them. It is
+            # the run's to record - one curve serves a whole run - but it has to
+            # land in the same transaction as the ledger, because a run
+            # interrupted after this point keeps its rows without ever being
+            # finalized: the startup reaper marks it failed and leaves the
+            # ledger standing, and a read that names that run by id serves rows
+            # whose P(correct) would then name no curve at all.
+            await session.execute(
+                update(PeakAssignmentRun)
+                .where(PeakAssignmentRun.peak_assignment_run_id == ctx.run_id)
+                .values(confidence_calibration=ctx.confidence_calibration)
+            )
+            await session.commit()
+
+    await _finalize_run(ctx.run_id, "completed")
+    await ctx.progress(1.0)
+
+    # Fold this completed run into the batch peaks so the batch overview
+    # reflects every assignment path: sample arrival, an explicit single-sample
+    # re-assign, and a batch assign (which loops the run). Isolated -- a fold-in
+    # failure must never fail or un-complete the assignment itself. A decoy is
+    # never folded: its rows are the sample read wrong on purpose, and the
+    # batch ledger is the sample's result.
+    try:
+        if plan is None:
+            await fold_sample_into_batch_peaks(sample.sample_item_id)
+    except Exception as fold_error:  # noqa: BLE001 - fold-in is best-effort
+        runtime.logger.warning(
+            f"Batch-peak fold-in failed for sample '{sample.sample_item_id}' "
+            f"(run '{ctx.run_id}'): {fold_error}"
+        )
+
+    database_assigned = sum(
+        1 for row in committed_rows if row.get("source") == SOURCE_DATABASE
+    )
+    untargeted_assigned = len(committed_rows) - database_assigned
+    message = (
+        f"Assigned peaks for sample '{sample.sample_item_name}': "
+        f"{database_assigned} from the target library, "
+        f"{untargeted_assigned} untargeted, "
+        f"{len(unassigned_assignments)} unassigned "
+        f"({len(all_assignments)} peaks total)."
+    )
+    runtime.logger.info(message)
+    return {
+        "status": "success",
+        "message": message,
+        "data": {
+            "peak_assignment_run_id": ctx.run_id,
+            "total_peaks": len(all_assignments),
+            "database_assigned": database_assigned,
+            "untargeted_assigned": untargeted_assigned,
+            "unassigned": len(unassigned_assignments),
+        },
+        "_notification_data": {
+            "sample_batch_id": sample.sample_batch_id,
+            "sample_item_id": sample.sample_item_id,
+            "peak_assignment_run_id": ctx.run_id,
+        },
+    }

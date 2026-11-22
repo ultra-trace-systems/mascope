@@ -32,7 +32,7 @@ from test_utils import captured_logs
 from mascope_backend.api.new.peak_assignments import (
     batch_curation,
     batch_peaks_routes,
-    batch_stages,
+    batch_staleness,
     batch_untargeted,
     pipeline,
     sample_inputs,
@@ -76,11 +76,11 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
 )
 from mascope_backend.api.new.peak_assignments.batch_series import _write_records
 from mascope_backend.api.new.peak_assignments.batch_stages import (
-    BatchStage,
     begin_stage,
     finish_stage,
     stage_standing,
 )
+from mascope_backend.api.new.peak_assignments.batch_staleness import BatchStage
 from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     Annotation,
     Reading,
@@ -1558,7 +1558,7 @@ async def test_an_interrupted_pin_whose_stale_mark_fails_stays_a_cancellation(
 
     monkeypatch.setattr(batch_curation, "_propagate_to_sample", cancelled)
     monkeypatch.setattr(batch_curation, "recompute_batch_consensus", fails)
-    monkeypatch.setattr(batch_stages, "mark_every_stage_stale", fails)
+    monkeypatch.setattr(batch_staleness, "mark_every_stage_stale", fails)
     with captured_logs("WARNING") as logs, pytest.raises(asyncio.CancelledError):
         await run_batch_peak_curation(
             batch_id,

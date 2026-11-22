@@ -17,9 +17,11 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select, update
 
-from mascope_backend.api.new.peak_assignments import batch_peaks_controller
-from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+from mascope_backend.api.new.peak_assignments import batch_peaks
+from mascope_backend.api.new.peak_assignments.batch_fold import (
     backfill_sample_batch_peaks,
+)
+from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     fold_sample_into_batch_peaks,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_records import (
@@ -713,9 +715,7 @@ async def test_a_tof_line_seeds_at_the_merged_line_a_tof_run_matches(
     """A TOF run matches the merged low-resolution lines, so a TOF anchor is
     seeded at the glucose ion's merged line. The naphthol ion has no such
     line, so B's naphthol line mints at its own m/z."""
-    monkeypatch.setattr(
-        batch_peaks_controller, "get_instrument_type", lambda filename: "tof"
-    )
+    monkeypatch.setattr(batch_peaks, "get_instrument_type", lambda filename: "tof")
     batch_id, samples, _ = await make_batch(seed=True, collection=True)
     await fold_sample_into_batch_peaks(samples["A"])
     await fold_sample_into_batch_peaks(samples["B"])

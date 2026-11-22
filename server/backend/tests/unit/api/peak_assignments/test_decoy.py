@@ -20,7 +20,6 @@ from pydantic import ValidationError
 from test_engine import TestScoreIonsByFit  # same directory, as test_orchestrator
 from test_mass_gate import PRECISION, _anchors, _row
 from test_orchestrator import (
-    _PIPE,
     TestTheLaddersAreClimbedThroughTheOpenedChannels,
     TestTheListsAreReadThroughTheOpenedChannels,
     _patches,
@@ -38,7 +37,6 @@ from mascope_backend.api.new.peak_assignments.config import (
     PeakAssignmentDecoy,
 )
 from mascope_backend.api.new.peak_assignments.decoy import (
-    DECOY_ARM_KEY,
     REFUSED_NO_CONTROL,
     REFUSED_NO_SCORING,
     DecoyPlan,
@@ -49,8 +47,6 @@ from mascope_backend.api.new.peak_assignments.decoy import (
     wrong_adducts,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
-    ENVELOPE_TOLERANCE_KEY,
-    MEASUREMENT_MODEL_KEY,
     measurement_model_record,
     pattern_scoring_for,
     score_ions_by_fit,
@@ -64,6 +60,11 @@ from mascope_backend.api.new.peak_assignments.profiles import (
     RESOLVED_PROFILE_KEY,
     NamedContext,
     resolve_profile,
+)
+from mascope_backend.api.new.peak_assignments.row_terms import (
+    DECOY_ARM_KEY,
+    ENVELOPE_TOLERANCE_KEY,
+    MEASUREMENT_MODEL_KEY,
 )
 from mascope_backend.api.new.peak_assignments.sample_inputs import load_sample_peaks
 from mascope_backend.api.new.peak_assignments.tiers import (
@@ -625,10 +626,8 @@ class TestADecoyRun:
         mocks["plan"] = _stand_in(
             "plan_sample_decoy", new_callable=AsyncMock, return_value=plan
         ).start()
-        mocks["fold"] = patch(
-            "mascope_backend.api.new.peak_assignments.batch_peaks_controller."
-            "fold_sample_into_batch_peaks",
-            new_callable=AsyncMock,
+        mocks["fold"] = _stand_in(
+            "fold_sample_into_batch_peaks", new_callable=AsyncMock
         ).start()
         mocks["gate"] = _stand_in("measure_mass_gate", wraps=measure_mass_gate).start()
         return mocks
@@ -647,7 +646,10 @@ class TestADecoyRun:
             return await run_stages(ctx)
 
         self._start(_plan())
-        patch(f"{_PIPE}.run_stages", side_effect=recording).start()
+        patch(
+            "mascope_backend.api.new.peak_assignments.service.run_stages",
+            side_effect=recording,
+        ).start()
 
         await _run(PeakAssignmentConfig(decoy=SHIFT))
 
@@ -965,11 +967,7 @@ class TestTheSourcesIonsAreWhereTheControlReadThem:
             new_callable=AsyncMock,
             return_value=None if decoy is None else _plan(decoy),
         ).start()
-        patch(
-            "mascope_backend.api.new.peak_assignments.batch_peaks_controller."
-            "fold_sample_into_batch_peaks",
-            new_callable=AsyncMock,
-        ).start()
+        _stand_in("fold_sample_into_batch_peaks", new_callable=AsyncMock).start()
         return mocks
 
     @pytest.mark.asyncio
@@ -1073,11 +1071,7 @@ class TestTheSourcesLaddersAreTheSamples:
                 else _plan(SWAP, mechanisms=(sodium,), swapped={"[M]+.": "[M+Na]+"})
             ),
         ).start()
-        patch(
-            "mascope_backend.api.new.peak_assignments.batch_peaks_controller."
-            "fold_sample_into_batch_peaks",
-            new_callable=AsyncMock,
-        ).start()
+        _stand_in("fold_sample_into_batch_peaks", new_callable=AsyncMock).start()
 
         await _run(PeakAssignmentConfig(run_untargeted=False, decoy=decoy))
 

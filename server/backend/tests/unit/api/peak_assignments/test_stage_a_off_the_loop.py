@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mascope_backend.api.new.peak_assignments import stage_a_pass
+from mascope_backend.api.new.peak_assignments import pipeline, stage_a_pass
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import SampleMassAccuracy
 from mascope_backend.api.new.peak_assignments.envelope_fit import RunEnvelopeFit
@@ -154,23 +154,23 @@ async def test_the_rescore_at_the_fitted_tolerance_arbitrates_off_the_loop():
     )
     with (
         patch(
-            "mascope_backend.api.new.peak_assignments.stage_a_pass._stage_a_first_pass",
+            "mascope_backend.api.new.peak_assignments.pipeline._stage_a_first_pass",
             AsyncMock(return_value=first),
         ),
         patch(
-            "mascope_backend.api.new.peak_assignments.stage_a_pass.fit_run_envelope_tolerance",
+            "mascope_backend.api.new.peak_assignments.pipeline.fit_run_envelope_tolerance",
             AsyncMock(return_value=fitted),
         ),
         patch(
-            "mascope_backend.api.new.peak_assignments.stage_a_pass.gate_lines",
+            "mascope_backend.api.new.peak_assignments.pipeline.gate_lines",
             side_effect=lambda df, *_args, **_kwargs: df,
         ),
         patch(
-            "mascope_backend.api.new.peak_assignments.stage_a_pass.score_ions_by_fit",
+            "mascope_backend.api.new.peak_assignments.pipeline.score_ions_by_fit",
             side_effect=lambda df, **_kwargs: df,
         ),
     ):
-        rows, _, _, envelope, _, _, curve = await stage_a_pass._stage_a_assignments(
+        rows, _, _, envelope, _, _, curve = await pipeline._stage_a_assignments(
             SimpleNamespace(sample_item_id="si-1", filename="orbi-sample.raw"),
             PeakAssignmentConfig(),
             SimpleNamespace(isotope_abundance_threshold=0.01),

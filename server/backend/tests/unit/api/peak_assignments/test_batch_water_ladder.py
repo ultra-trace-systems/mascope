@@ -21,13 +21,7 @@ import pytest
 
 from mascope_backend.api.new.peak_assignments import batch_water_ladder
 from mascope_backend.api.new.peak_assignments.batch_known_species import (
-    ALREADY,
-    KEPT_CARRIES_LINES,
-    KEPT_CLAIMED_OTHERWISE,
     KEPT_HAND_ASSIGNED,
-    KEPT_LINE_OF_ANOTHER,
-    KEPT_TARGET_LIBRARY,
-    Member,
     Row,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
@@ -74,6 +68,14 @@ from mascope_backend.api.new.peak_assignments.batch_water_ladder import (
     unexplained_share,
 )
 from mascope_backend.api.new.peak_assignments.engine import DISPLACED_BY_CLAIM
+from mascope_backend.api.new.peak_assignments.known_species import (
+    ALREADY,
+    KEPT_CARRIES_LINES,
+    KEPT_CLAIMED_OTHERWISE,
+    KEPT_LINE_OF_ANOTHER,
+    KEPT_TARGET_LIBRARY,
+    Member,
+)
 from mascope_backend.api.new.peak_assignments.reagent_pass import (
     REASON_BATCH_WATER_LADDER,
     water_rung_row,

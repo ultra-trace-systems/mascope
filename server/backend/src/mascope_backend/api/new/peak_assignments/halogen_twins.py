@@ -45,10 +45,10 @@ import numpy as np
 import pandas as pd
 from IsoSpecPy import PeriodicTbl
 
-from mascope_backend.api.new.peak_assignments.engine import (
+from mascope_backend.api.new.peak_assignments.engine import cap_alternatives
+from mascope_backend.api.new.peak_assignments.row_terms import (
     UNTARGETED_IONIZATION,
     UNTARGETED_NO_MATCH,
-    cap_alternatives,
 )
 from mascope_tools.composition.finder import assign_compositions
 from mascope_tools.composition.heuristic_filter import (

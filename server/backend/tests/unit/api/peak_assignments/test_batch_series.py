@@ -30,10 +30,10 @@ from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     Annotation,
     _takes_the_member,
 )
-from mascope_backend.api.new.peak_assignments.engine import (
+from mascope_backend.api.new.peak_assignments.engine import evidence_for
+from mascope_backend.api.new.peak_assignments.row_terms import (
     ROLE_ARTIFACT,
     ROLE_REAGENT,
-    evidence_for,
 )
 from mascope_tools.composition.series import (
     CONTAMINANT_UNITS,

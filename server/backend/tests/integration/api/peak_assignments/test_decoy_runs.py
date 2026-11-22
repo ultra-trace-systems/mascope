@@ -25,16 +25,14 @@ from mascope_backend.api.new.peak_assignments.config import (
     PeakAssignmentConfig,
     PeakAssignmentDecoy,
 )
-from mascope_backend.api.new.peak_assignments.engine import (
-    MEASUREMENT_MODEL_KEY,
-    measurement_model_record,
-)
+from mascope_backend.api.new.peak_assignments.engine import measurement_model_record
 from mascope_backend.api.new.peak_assignments.ledger_reads import (
     get_peak_assignment_runs,
     get_peak_assignments,
 )
 from mascope_backend.api.new.peak_assignments.model_readers import recorded_model
 from mascope_backend.api.new.peak_assignments.profiles import RESOLVED_PROFILE_KEY
+from mascope_backend.api.new.peak_assignments.row_terms import MEASUREMENT_MODEL_KEY
 from mascope_backend.api.new.peak_assignments.sample_status import (
     get_batch_sample_assignment_status,
 )

@@ -47,8 +47,6 @@ from mascope_backend.api.new.match.params import default_match_params
 from mascope_backend.api.new.peak_assignments.config import IN_APP_ENGINE
 from mascope_backend.api.new.peak_assignments.engine import (
     MEASURED_SHORTLIST,
-    ROLE_M0,
-    SOURCE_UNTARGETED,
     evidence_for,
     formula_identity,
     ion_identity,
@@ -56,6 +54,10 @@ from mascope_backend.api.new.peak_assignments.engine import (
 )
 from mascope_backend.api.new.peak_assignments.fold_view import is_fold_id
 from mascope_backend.api.new.peak_assignments.model_readers import recorded_model
+from mascope_backend.api.new.peak_assignments.row_terms import (
+    ROLE_M0,
+    SOURCE_UNTARGETED,
+)
 from mascope_backend.api.new.peak_assignments.sample_mechanisms import (
     recorded_searched_mechanisms,
 )

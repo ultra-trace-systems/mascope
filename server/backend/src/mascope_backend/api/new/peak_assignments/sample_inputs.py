@@ -23,7 +23,7 @@ from mascope_backend.api.controllers.target.lib.compute.target_ions_compute impo
 )
 from mascope_backend.api.new.instrument_configs.lib import read_instrument_functions
 from mascope_backend.api.new.match.params.lib import isotope_abundance_threshold_expr
-from mascope_backend.api.new.peak_assignments.engine import REFERENCE_IDENTITIES_COL
+from mascope_backend.api.new.peak_assignments.row_terms import REFERENCE_IDENTITIES_COL
 from mascope_backend.api.new.reference.licenses import reference_license_gate
 from mascope_backend.db import (
     IonizationMechanism,

@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from mascope_backend.api.new.peak_assignments import row_terms
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     ROLE_ISO_CHILD,
     SERIES_KEY,
@@ -486,13 +487,13 @@ def test_role_constant_matches_the_assignment_engine():
     # batch_peaks is pure and cannot import the engine (pandas, numpy, the id
     # helper), so the roles it compares against are spelled twice. This is the
     # tripwire that keeps the spellings one value each.
-    from mascope_backend.api.new.peak_assignments import batch_peaks, engine
+    from mascope_backend.api.new.peak_assignments import batch_peaks
 
-    assert ROLE_ISO_CHILD == engine.ROLE_ISO_CHILD
-    assert batch_peaks.ROLE_M0 == engine.ROLE_M0
-    assert batch_peaks.ROLE_UNASSIGNED == engine.ROLE_UNASSIGNED
-    assert batch_peaks.ROLE_REAGENT == engine.ROLE_REAGENT
-    assert batch_peaks.ROLE_ARTIFACT == engine.ROLE_ARTIFACT
+    assert ROLE_ISO_CHILD == row_terms.ROLE_ISO_CHILD
+    assert batch_peaks.ROLE_M0 == row_terms.ROLE_M0
+    assert batch_peaks.ROLE_UNASSIGNED == row_terms.ROLE_UNASSIGNED
+    assert batch_peaks.ROLE_REAGENT == row_terms.ROLE_REAGENT
+    assert batch_peaks.ROLE_ARTIFACT == row_terms.ROLE_ARTIFACT
 
 
 def test_the_tier_codes_are_the_tier_ranks():

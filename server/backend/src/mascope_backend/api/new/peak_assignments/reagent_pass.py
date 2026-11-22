@@ -82,23 +82,21 @@ from dataclasses import dataclass
 import pandas as pd
 
 from mascope_backend.api.new.peak_assignments.config import MAX_ALTERNATIVES_CEILING
-from mascope_backend.api.new.peak_assignments.cross_channel import (
-    same_ion_readings,
-)
+from mascope_backend.api.new.peak_assignments.cross_channel import same_ion_readings
 from mascope_backend.api.new.peak_assignments.engine import (
     DISPLACED_BY_CLAIM,
-    ROLE_ISO_CHILD,
-    ROLE_M0,
-    ROLE_REAGENT,
-    SOURCE_REAGENT,
     is_target_library_row,
     reading_as_alternative,
     shows_molecule,
 )
 from mascope_backend.api.new.peak_assignments.mass_gate import is_committed
-from mascope_backend.api.new.peak_assignments.tiers import (
-    TIER_UNASSIGNED,
+from mascope_backend.api.new.peak_assignments.row_terms import (
+    ROLE_ISO_CHILD,
+    ROLE_M0,
+    ROLE_REAGENT,
+    SOURCE_REAGENT,
 )
+from mascope_backend.api.new.peak_assignments.tiers import TIER_UNASSIGNED
 from mascope_backend.db.id import gen_id
 from mascope_tools.composition.reagents import (
     FAMILY_FRAGMENT,

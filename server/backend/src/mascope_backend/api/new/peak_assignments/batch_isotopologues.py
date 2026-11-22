@@ -66,6 +66,7 @@ from sqlalchemy import select
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.lib.api_features import api_controller_background_task
+from mascope_backend.api.new.peak_assignments.batch_lock import _acquire_batch_fold_lock
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     DIAGNOSTIC_ISOTOPOLOGUES_KEY,
     ROLE_ISO_CHILD,
@@ -79,9 +80,6 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     mz_from_delta,
     resolution_from_tol_ppm,
     role_name,
-)
-from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-    _acquire_batch_fold_lock,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_ISOTOPOLOGUES,

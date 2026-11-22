@@ -39,6 +39,7 @@ from typing import Any, Optional
 from sqlalchemy import select
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
+from mascope_backend.api.new.peak_assignments.batch_lock import _acquire_batch_fold_lock
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     KNOWN_SPECIES_KEY,
     ROLE_ISO_CHILD,
@@ -51,7 +52,11 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     standing_series_record,
     tier_code,
 )
+from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    _recompute_consensus,
+)
 from mascope_backend.api.new.peak_assignments.batch_runs import touch_ledger
+from mascope_backend.api.new.peak_assignments.batch_untargeted import Annotation
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
 from mascope_backend.api.new.peak_assignments.pipeline import (
@@ -76,8 +81,6 @@ def given_readings(members: Iterable[Any], registries: dict[str, list]) -> dict:
     :param registries: Anchor id -> its candidate registry.
     :return: Anchor id -> ``batch_untargeted.Annotation``.
     """
-    # Imported here: the search imports the stage list this module composes.
-    from mascope_backend.api.new.peak_assignments.batch_untargeted import Annotation
 
     given = {}
     for member in members:
@@ -217,11 +220,6 @@ async def rejudge_sample(
         where nothing the batch wrote in it carries a reading to judge),
         ``members_judged`` and ``members_moved``.
     """
-    # Imported here: the controller imports the fold, which the stages import.
-    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-        _acquire_batch_fold_lock,
-        _recompute_consensus,
-    )
 
     members, registries = await _sample_members(sample_batch_id, sample_item_id)
     targets = judged_targets(members, corroborated)

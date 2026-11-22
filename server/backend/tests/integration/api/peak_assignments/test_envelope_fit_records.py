@@ -21,10 +21,7 @@ import pytest
 import pytest_asyncio
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
-from mascope_backend.api.new.peak_assignments import (
-    envelope_fit,
-    model_readers,
-)
+from mascope_backend.api.new.peak_assignments import envelope_fit, model_readers
 from mascope_backend.api.new.peak_assignments.config import IN_APP_ENGINE
 from mascope_backend.api.new.peak_assignments.engine import SampleMassAccuracy
 from mascope_backend.db import (

@@ -12,13 +12,13 @@ from mascope_backend.api.new.peak_assignments.engine import (
     GRID_RIVALS,
     LIST_PRIOR_WEIGHT,
     LIST_READING,
-    REFERENCE_IDENTITIES_COL,
     RIVALS_PAST_CAP,
     list_readings,
     reading_as_alternative,
     record_displaced_list_readings,
     settle_list_election,
 )
+from mascope_backend.api.new.peak_assignments.row_terms import REFERENCE_IDENTITIES_COL
 from mascope_tools.composition.finder import (
     HELD_BY_LIBRARY,
     HELD_BY_LINES,

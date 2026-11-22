@@ -17,11 +17,6 @@ from mascope_backend.api.controllers.match.lib.match_score_v2 import ion_score_v
 from mascope_backend.api.new.peak_assignments.engine import (
     ISOTOPE_FORMULA_LENGTH,
     RIVALS_PAST_CAP,
-    ROLE_ISO_CHILD,
-    ROLE_M0,
-    ROLE_UNASSIGNED,
-    SOURCE_DATABASE,
-    SOURCE_UNTARGETED,
     TIER_ASSIGNED,
     TIER_BELOW_ASSIGNABILITY,
     TIER_CANDIDATE,
@@ -38,6 +33,15 @@ from mascope_backend.api.new.peak_assignments.engine import (
     plausibility_for,
     score_ions_by_fit,
     tier_for_evidence,
+)
+from mascope_backend.api.new.peak_assignments.row_terms import (
+    ROLE_ISO_CHILD,
+    ROLE_M0,
+    ROLE_UNASSIGNED,
+    SOURCE_DATABASE,
+    SOURCE_UNTARGETED,
+)
+from mascope_backend.api.new.peak_assignments.untargeted_rows import (
     untargeted_matches_to_peak_assignments,
 )
 

@@ -41,10 +41,7 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     NotFoundException,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks import continuity_stale
-from mascope_backend.api.new.peak_assignments.claims import (
-    claim_level,
-    mapping_context,
-)
+from mascope_backend.api.new.peak_assignments.claims import claim_level, mapping_context
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,

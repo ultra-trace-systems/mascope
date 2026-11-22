@@ -8,20 +8,20 @@ the run's ``config``.
 from sqlalchemy import update
 
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
-from mascope_backend.api.new.peak_assignments.decoy import DECOY_ARM_KEY
-from mascope_backend.api.new.peak_assignments.engine import (
+from mascope_backend.api.new.peak_assignments.profiles import (
+    RESOLVED_PROFILE_KEY,
+    ResolvedProfile,
+)
+from mascope_backend.api.new.peak_assignments.row_terms import (
     BATCH_DECISIONS_KEY,
     CROSS_CHANNEL_KEY,
+    DECOY_ARM_KEY,
     ENVELOPE_TOLERANCE_KEY,
     FRAGMENTS_KEY,
     MEASUREMENT_MODEL_KEY,
     PARTNER_GATE_KEY,
     SEARCH_SCOPE_KEY,
     TIERING_KEY,
-)
-from mascope_backend.api.new.peak_assignments.profiles import (
-    RESOLVED_PROFILE_KEY,
-    ResolvedProfile,
 )
 from mascope_backend.api.new.reference.licenses import reference_license_gate
 from mascope_backend.db import PeakAssignmentRun, async_session

@@ -56,10 +56,6 @@ from mascope_backend.api.new.peak_assignments.config import (
     PeakAssignmentConfig,
     PeakAssignmentDecoy,
 )
-from mascope_backend.api.new.peak_assignments.engine import (
-    ENVELOPE_TOLERANCE_KEY,
-    MEASUREMENT_MODEL_KEY,
-)
 from mascope_backend.api.new.peak_assignments.envelope_fit import (
     RunEnvelopeFit,
     inherited_envelope_fit,
@@ -69,6 +65,10 @@ from mascope_backend.api.new.peak_assignments.profiles import (
     NamedContext,
     ResolvedProfile,
 )
+from mascope_backend.api.new.peak_assignments.row_terms import (
+    ENVELOPE_TOLERANCE_KEY,
+    MEASUREMENT_MODEL_KEY,
+)
 from mascope_tools.composition.measurement_model import (
     LEGACY_SCORING_KEY,
     MeasurementModel,
@@ -77,13 +77,6 @@ from mascope_tools.composition.mechanism_notation import mechanism_key
 from mascope_tools.composition.profiles import get_reagent_profile
 from mascope_tools.composition.reagents import secondary_channels
 
-
-#: Key under which a decoy run's stored config records what it ran against:
-#: the control's id, the window a shift had to clear, the channels it swapped
-#: and the calibration it inherited. Server state, beside the request's own
-#: ``decoy`` block, for the reason the licence gate is: a client says which arm,
-#: never which run it bounds.
-DECOY_ARM_KEY = "decoy_arm"
 
 #: The adducts a swapped channel is searched through, per polarity, in the
 #: order they are taken: the reference's wrong set first (sodium and ammonium

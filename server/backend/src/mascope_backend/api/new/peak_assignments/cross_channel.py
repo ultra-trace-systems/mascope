@@ -66,7 +66,7 @@ Four things settle it, and a row that one of them settles records which
   asks depends on the row's channel. A reading through one of the mode's own
   channels is the mode's own reading of the ion - the operator declared that
   channel as what the source does - and its second channel still settles it
-  unless the sample shows the other molecule ``engine.PARTNER_MARGIN`` times as
+  unless the sample shows the other molecule ``partner_gate.PARTNER_MARGIN`` times as
   brightly as the row's own or more, or shows the row's own molecule through
   no other of the mode's channels at all: a rival has to beat the declared
   reading by the margin a contest demands, not merely fail to lose by it. The
@@ -75,9 +75,9 @@ Four things settle it, and a row that one of them settles records which
   sample shows stays the doubt it is unless the stronger partner settles it.
 - **The stronger partner.** Where the sample shows both molecules, the two are
   weighed the way the partner gate weighs two opportunistic readings
-  (``engine.apply_partner_gates``, ``engine.outweighs``): where the row's
+  (``partner_gate.apply_partner_gates``, ``partner_gate.outweighs``): where the row's
   molecule is committed through one of the mode's own channels on a peak
-  ``engine.PARTNER_MARGIN`` times as bright as the other's or more, the ion is
+  ``partner_gate.PARTNER_MARGIN`` times as bright as the other's or more, the ion is
   settled, whichever channel the row is read through. A reading's own channel
   shows nothing for it: another peak of the row's molecule through the row's
   channel is the row's ion again, split or on a shoulder, and one of the other
@@ -158,18 +158,19 @@ import re
 
 from mascope_backend.api.new.peak_assignments.engine import (
     CORROBORATION_RULE,
-    PARTNER_GATE_UNMET,
-    PARTNER_MARGIN,
-    ROLE_ISO_CHILD,
-    ROLE_M0,
     is_reference_mirror_row,
     is_target_library_row,
-    outweighs,
-    partner_ratio,
     shows_molecule,
     tier_under_ceiling,
 )
 from mascope_backend.api.new.peak_assignments.mass_gate import is_committed
+from mascope_backend.api.new.peak_assignments.partner_gate import (
+    PARTNER_GATE_UNMET,
+    PARTNER_MARGIN,
+    outweighs,
+    partner_ratio,
+)
+from mascope_backend.api.new.peak_assignments.row_terms import ROLE_ISO_CHILD, ROLE_M0
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
     TIER_CANDIDATE,
@@ -215,7 +216,7 @@ AMBIGUITY_REASONS = (REASON_AMBIGUOUS_NITROGEN, REASON_AMBIGUOUS_ADDUCT)
 
 #: The flag the finder puts on a same-ion alternative: not a weaker hypothesis
 #: but this row's own measurement, split differently between analyte and
-#: mechanism (``engine.untargeted_matches_to_peak_assignments``).
+#: mechanism (``untargeted_rows.untargeted_matches_to_peak_assignments``).
 SAME_ION = "same_ion"
 
 #: An explicitly labelled atom in a formula: the bracketed isotope form the
@@ -302,7 +303,7 @@ def same_ion_readings(row: dict, notation_by_id: dict[str, str]) -> list[dict]:
             continue
         # An opportunistic reading the partner gate displaced: the sample was
         # asked to bear it out and did not, so it is no doubt about the reading
-        # it did bear out (``engine.apply_partner_gates``). One its contest
+        # it did bear out (``partner_gate.apply_partner_gates``). One its contest
         # outweighed the sample did bear out, and is weighed again here.
         if alternative.get("partner_gate") == PARTNER_GATE_UNMET:
             continue
@@ -405,7 +406,7 @@ def weighed(
 ) -> dict | None:
     """How strongly the sample shows the row's molecule against a reading's.
 
-    Each read as the partner gate reads a partner (``engine.apply_partner_gates``):
+    Each read as the partner gate reads a partner (``partner_gate.apply_partner_gates``):
     the brightest row that commits the neutral through one of the mode's own
     channels (:func:`partner_heights`). Rows through the row's own channel are
     left out of its molecule's, the row itself with them: its peak is the one
@@ -421,11 +422,11 @@ def weighed(
     :param partners: :func:`partner_heights`.
     :return: None where the sample does not commit the reading's molecule
         through a mode channel. Otherwise the ratio of the two partners' peaks,
-        the row's over the reading's (``engine.partner_ratio``, None where the
+        the row's over the reading's (``partner_gate.partner_ratio``, None where the
         row's molecule has no partner of its own); whether it settles the
-        reading (``engine.outweighs``, ``decisive``); and whether the margin
+        reading (``partner_gate.outweighs``, ``decisive``); and whether the margin
         read from the reading's side goes to the reading (``rival_decisive``):
-        its molecule's peak is ``engine.PARTNER_MARGIN`` times as bright as the
+        its molecule's peak is ``partner_gate.PARTNER_MARGIN`` times as bright as the
         row's or more, or the row's molecule has no partner at all.
     """
     theirs = [
@@ -473,14 +474,14 @@ def same_ion_question(
 
     A reading whose molecule the sample also commits through one of the mode's
     own channels is weighed against the row's own (:func:`weighed`): where the
-    sample shows the row's molecule ``engine.PARTNER_MARGIN`` times as brightly
+    sample shows the row's molecule ``partner_gate.PARTNER_MARGIN`` times as brightly
     or more, the stronger partner settles it. Otherwise the reading has a second
     observation of its own, and the row's is no longer the whole of the
     evidence. A row read through a channel the run opened for itself is then in
     doubt, and a corroborated one records the rival the sample shows, marked
     ``shown``. The mode's own reading is in doubt only where the margin, read
     from the other side, goes to the reading: its molecule is shown
-    ``engine.PARTNER_MARGIN`` times as brightly as the row's or more, or the
+    ``partner_gate.PARTNER_MARGIN`` times as brightly as the row's or more, or the
     row's own molecule is shown through no other of the mode's channels. Short
     of that, the declared reading stands on its second channel.
 

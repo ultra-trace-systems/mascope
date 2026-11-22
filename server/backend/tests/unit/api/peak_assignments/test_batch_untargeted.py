@@ -21,7 +21,6 @@ from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     SPLIT_BOUNDS,
     Annotation,
     Occurrence,
-    admitted_targets,
     choose_representatives,
     group_by_sample,
     merge_search_rows,
@@ -31,18 +30,16 @@ from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     search_outcome,
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
-from mascope_backend.api.new.peak_assignments.engine import (
-    ROLE_ARTIFACT,
-    ROLE_REAGENT,
-)
+from mascope_backend.api.new.peak_assignments.pipeline import admitted_targets
 from mascope_backend.api.new.peak_assignments.profiles import (
     NamedContext,
     resolve_profile,
 )
-from mascope_backend.api.new.peak_assignments.tiers import (
-    TIER_ASSIGNED,
-    TIER_CANDIDATE,
+from mascope_backend.api.new.peak_assignments.row_terms import (
+    ROLE_ARTIFACT,
+    ROLE_REAGENT,
 )
+from mascope_backend.api.new.peak_assignments.tiers import TIER_ASSIGNED, TIER_CANDIDATE
 from mascope_tools.composition.mass_accuracy import PRED_SIGMA_PPM
 from mascope_tools.composition.profiles import CHAMBER, INSTRUMENT_FALLBACK_SIGMA_PPM
 
@@ -638,7 +635,7 @@ def _searching(
             f"{_PIPE}.sample_label_purity", AsyncMock(return_value=None)
         ),
         "species": stand_in(
-            "mascope_backend.api.new.peak_assignments.batch_known_species.batch_species_for",
+            "mascope_backend.api.new.peak_assignments.known_species.batch_species_for",
             AsyncMock(return_value=[]),
         ),
         "series": stand_in(
@@ -1377,9 +1374,7 @@ async def test_the_search_s_mass_gate_judges_at_the_samples_recorded_calibration
     # holds it. With no run to read one from, the model is the class's
     # stand-in and is refitted on what the search committed - one
     # uncorroborated reading, too few - and the gate stands down.
-    from mascope_backend.api.new.peak_assignments.engine import (
-        MEASUREMENT_MODEL_KEY,
-    )
+    from mascope_backend.api.new.peak_assignments.row_terms import MEASUREMENT_MODEL_KEY
 
     reading = _match(160.8413, "Br2", "Br2H-", "[M-H]-")
     reading["mz_error_ppm"] = 5.0

@@ -255,11 +255,6 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
 )
 from mascope_backend.api.new.peak_assignments.engine import (
     GRID_RIVALS,
-    PARTNER_MARGIN,
-    ROLE_ISO_CHILD,
-    ROLE_M0,
-    SOURCE_DATABASE,
-    SOURCE_UNTARGETED,
     is_target_library_row,
     tier_under_ceiling,
 )
@@ -277,6 +272,13 @@ from mascope_backend.api.new.peak_assignments.mass_gate import (
     UNREAD_LINE,
     SpectrumLines,
     tracking_of,
+)
+from mascope_backend.api.new.peak_assignments.partner_gate import PARTNER_MARGIN
+from mascope_backend.api.new.peak_assignments.row_terms import (
+    ROLE_ISO_CHILD,
+    ROLE_M0,
+    SOURCE_DATABASE,
+    SOURCE_UNTARGETED,
 )
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,

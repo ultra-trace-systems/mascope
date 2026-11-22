@@ -26,17 +26,20 @@ import pytest_asyncio
 from sqlalchemy import func, select, update
 
 from mascope_backend.api.new.peak_assignments import (
+    batch_fold,
     batch_peaks,
     batch_peaks_controller,
     batch_peaks_routes,
     continuity,
+)
+from mascope_backend.api.new.peak_assignments.batch_fold import (
+    backfill_sample_batch_peaks,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     CO_VARIATION_KEY,
     standing_co_variation_record,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-    backfill_sample_batch_peaks,
     fold_sample_into_batch_peaks,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
@@ -550,7 +553,7 @@ async def test_a_fold_s_failing_pass_leaves_the_fold_done(
     async def broken(*args, **kwargs):
         raise RuntimeError("no grading today")
 
-    monkeypatch.setattr(continuity, "run_batch_continuity", broken)
+    monkeypatch.setattr(batch_peaks_controller, "run_batch_continuity", broken)
     assert await fold_sample_into_batch_peaks(samples[0]) == batch_id
 
 
@@ -660,9 +663,7 @@ async def test_a_rebuild_grades_the_batch_at_its_end_and_says_so(
     async def capture(notification, increment=None):
         packets.append((notification, increment))
 
-    monkeypatch.setattr(
-        batch_peaks_controller, "send_progress_user_notification", capture
-    )
+    monkeypatch.setattr(batch_fold, "send_progress_user_notification", capture)
     folded, failed = await backfill_sample_batch_peaks(batch_id, process_id="proc-1")
     assert (folded, failed) == (N_SAMPLES, 0)
     anchors = await _anchors(async_session_factory, batch_id)
@@ -691,7 +692,7 @@ async def test_a_rebuild_whose_grading_fails_is_still_a_rebuild(
     async def broken(*args, **kwargs):
         raise RuntimeError("no grading today")
 
-    monkeypatch.setattr(continuity, "run_batch_continuity", broken)
+    monkeypatch.setattr(batch_peaks_controller, "run_batch_continuity", broken)
     folded, failed = await backfill_sample_batch_peaks(continuity_batch["batch_id"])
     assert (folded, failed) == (N_SAMPLES, 0)
 
@@ -791,7 +792,7 @@ async def test_a_fold_hands_the_pass_the_time_it_committed(
         calls.append((sample_batch_id, kwargs))
         return {"skipped": SKIPPED_CURRENT}
 
-    monkeypatch.setattr(continuity, "run_batch_continuity", recorder)
+    monkeypatch.setattr(batch_peaks_controller, "run_batch_continuity", recorder)
     before = datetime.now(timezone.utc)
     await fold_sample_into_batch_peaks(samples[0])
     after = datetime.now(timezone.utc)
@@ -810,7 +811,7 @@ async def test_a_rebuild_grades_once_whatever_the_fold_trigger_says(
         calls.append(kwargs)
         return {"pairs": 0, "pairs_graded": 0}
 
-    monkeypatch.setattr(continuity, "run_batch_continuity", recorder)
+    monkeypatch.setattr(batch_fold, "run_batch_continuity", recorder)
     await backfill_sample_batch_peaks(continuity_batch["batch_id"])
     # The rebuild's folds defer their consensus, and grade nothing until the
     # last one is in: one pass, asked for outright.

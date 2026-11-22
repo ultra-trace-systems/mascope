@@ -61,6 +61,7 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     NotFoundException,
 )
 from mascope_backend.api.new.peak_assignments.batch_blend import blend_record_of
+from mascope_backend.api.new.peak_assignments.batch_lock import _acquire_batch_fold_lock
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     continuity_stale,
     instrument_type_of,
@@ -449,32 +450,6 @@ async def running_run(session, sample_batch_id: str) -> Optional[BatchPeakRun]:
     )
 
 
-@api_controller()
-async def check_no_run_in_flight(sample_batch_id: str) -> dict:
-    """The routes' synchronous refusal: a second batch-level operation on a
-    ledger one is still rewriting is refused on the request, not in a
-    notification.
-
-    Refused while a batch run is in flight, and while a pass of the batch
-    stages runs: a pass holds a stage row running from its start to its end,
-    also where it holds no batch run (``batch_stages.BatchStageRunningException``).
-    """
-    # Imported here: the stages import this module.
-    from mascope_backend.api.new.peak_assignments.batch_stages import (
-        BatchStageRunningException,
-        running_stage,
-    )
-
-    async with async_session() as session:
-        stage = await running_stage(session, sample_batch_id)
-        if stage is not None:
-            raise BatchStageRunningException(sample_batch_id, stage)
-        running = await running_run(session, sample_batch_id)
-        if running is not None:
-            raise BatchRunInFlightException(sample_batch_id, running)
-    return {"status": "success", "message": "No batch run in flight", "results": 0}
-
-
 # --- snapshots --------------------------------------------------------------------
 
 
@@ -549,9 +524,6 @@ async def start_run(
 
     :return: The new run's id.
     """
-    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-        _acquire_batch_fold_lock,
-    )
 
     async with async_session() as session:
         await _acquire_batch_fold_lock(session, sample_batch_id)
@@ -583,9 +555,6 @@ async def complete_run(
     """Close a run as completed: it becomes the current run, the previous one
     keeps the snapshot taken when this one started, and the batch's older runs
     beyond :data:`BATCH_RUN_KEEP` are pruned."""
-    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-        _acquire_batch_fold_lock,
-    )
 
     async with async_session() as session:
         await _acquire_batch_fold_lock(session, sample_batch_id)
@@ -887,7 +856,6 @@ __all__ = [
     "anchor_snapshot_row",
     "cancel_requested",
     "cancel_run",
-    "check_no_run_in_flight",
     "close_shielded",
     "complete_run",
     "current_run",

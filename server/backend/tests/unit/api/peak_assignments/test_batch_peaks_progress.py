@@ -18,12 +18,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mascope_backend.socket.notifications.service import (
-    send_progress_user_notification,
-)
+from mascope_backend.socket.notifications.service import send_progress_user_notification
 
 
-_MOD = "mascope_backend.api.new.peak_assignments.batch_peaks_controller"
+_MOD = "mascope_backend.api.new.peak_assignments.batch_fold"
 _SVC = "mascope_backend.socket.notifications.service"
 
 
@@ -90,7 +88,7 @@ def _start(sample_ids, fold=None):
         "recompute": patch(f"{_MOD}.recompute_batch_consensus", new_callable=AsyncMock),
         # The ratio-stability pass the rebuild runs once its samples are in.
         "continuity": patch(
-            "mascope_backend.api.new.peak_assignments.continuity.run_batch_continuity",
+            "mascope_backend.api.new.peak_assignments.batch_fold.run_batch_continuity",
             new_callable=AsyncMock,
         ),
     }
@@ -138,7 +136,7 @@ def _stop_all_patches():
 async def test_reports_before_and_after_every_sample():
     """Each sample of an ordinary batch ticks twice - as it starts, and once it
     has been folded."""
-    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         backfill_sample_batch_peaks,
     )
 
@@ -166,7 +164,7 @@ async def test_reports_before_and_after_every_sample():
 async def test_packets_are_pending_ones_on_the_controllers_channel():
     """The stream is typed for the process the browser is already tracking, and
     addressed to the batch's room and to whoever asked for the backfill."""
-    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         backfill_sample_batch_peaks,
     )
 
@@ -192,7 +190,7 @@ async def test_a_sample_whose_fold_raised_still_advances_the_bar():
     """The bar tracks how much of the batch has been dealt with, not how much of
     it succeeded: a bar that stalls on the one failure the run isolated reads as
     a hang."""
-    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         backfill_sample_batch_peaks,
     )
 
@@ -221,7 +219,7 @@ async def test_a_sample_with_nothing_to_fold_still_advances_the_bar():
     """A sample with no completed run, and nothing for the no-run fold to fold
     either (a blank, say), returns None. It is still one of the N the bar counts
     through."""
-    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         backfill_sample_batch_peaks,
     )
 
@@ -238,7 +236,7 @@ async def test_a_large_batch_is_sampled_rather_than_reported_per_sample():
     """Past the step count the batch is sampled, so the packet count stays
     bounded however large it is - and the last sample reports whatever the
     stride, so the bar still ends full rather than a stride short of it."""
-    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         _BACKFILL_PROGRESS_STEPS,
         backfill_sample_batch_peaks,
     )
@@ -266,7 +264,7 @@ async def test_the_consensus_is_recomputed_once_after_every_sample_folded():
     """Each fold defers its consensus and the batch is recomputed once at the
     end - the per-sample recompute was O(samples x anchors) and every
     intermediate result was overwritten by the next sample's."""
-    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         backfill_sample_batch_peaks,
     )
 
@@ -295,7 +293,7 @@ async def test_the_consensus_pass_runs_even_when_a_fold_raised():
     """A sample whose fold raised is skipped; the anchors the others touched
     still need their consensus, so the pass is unconditional on a fold that
     raised (the loop's own except arms catch it and carry on)."""
-    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         backfill_sample_batch_peaks,
     )
 
@@ -314,7 +312,7 @@ async def test_the_consensus_pass_runs_when_the_loop_is_left_altogether():
     folds before it have COMMITTED occurrences whose anchors nothing else
     recomputes - so the pass is in a finally, and the exception still
     propagates. Without it the recompute is never awaited at all."""
-    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         backfill_sample_batch_peaks,
     )
 
@@ -332,7 +330,7 @@ async def test_a_cancelled_backfill_still_runs_the_consensus_pass():
     """The load-bearing vector: a CancelledError is a BaseException, so it walks
     past both of the loop's except arms. It must still reach the caller as a
     cancellation, and the committed folds must still get their consensus."""
-    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         backfill_sample_batch_peaks,
     )
 
@@ -349,7 +347,7 @@ async def test_a_failing_consensus_pass_does_not_mask_the_cancellation():
     """The guard on the finally. A recompute that raises while the loop is
     already unwinding must not REPLACE the exception that interrupted it - a
     cancellation reported as a database error is the wrong story entirely."""
-    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         backfill_sample_batch_peaks,
     )
 
@@ -368,7 +366,7 @@ async def test_a_consensus_pass_that_fails_on_the_ordinary_path_still_raises():
     the only news there is. Swallowed, `backfill_outcome` would report a green
     'Computed batch peaks from N assigned sample(s)' over anchors it never
     wrote."""
-    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         backfill_sample_batch_peaks,
     )
 
@@ -383,7 +381,7 @@ async def test_a_consensus_pass_that_fails_on_the_ordinary_path_still_raises():
 async def test_no_process_means_no_stream():
     """A backfill nobody is watching (no process id) folds silently: a generated
     id would open a new progress bar per packet rather than fill one."""
-    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         backfill_sample_batch_peaks,
     )
 
@@ -398,7 +396,7 @@ async def test_no_process_means_no_stream():
 @pytest.mark.asyncio
 async def test_an_empty_batch_reports_nothing():
     """Nothing to fold, so nothing to report - and no N to divide the bar by."""
-    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         backfill_sample_batch_peaks,
     )
 
@@ -416,7 +414,7 @@ async def test_the_emitted_stream_fills_one_bar_from_empty_to_full():
     sends are the ones the calculator reads, and together they draw a bar that
     climbs to full. Asserted over the pair because either half can be right
     while the two do not meet."""
-    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         backfill_sample_batch_peaks,
     )
 
@@ -441,7 +439,7 @@ async def test_the_ratio_stability_pass_runs_once_after_the_consensus_and_says_s
     """The pass grades the whole batch, so it runs once, after the deferred
     consensus has written the anchors it reads, and names itself on the
     rebuild's channel before and after."""
-    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         backfill_sample_batch_peaks,
     )
 
@@ -483,7 +481,7 @@ async def test_the_ratio_stability_pass_runs_once_after_the_consensus_and_says_s
 async def test_a_pass_that_graded_nothing_says_why(summary, says):
     """A rebuild whose pass graded no pair says why, not "0 pairs", which
     would read as a batch with nothing to pair."""
-    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         backfill_sample_batch_peaks,
     )
 

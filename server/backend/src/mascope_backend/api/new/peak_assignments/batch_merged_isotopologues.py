@@ -83,6 +83,7 @@ from mascope_backend.api.new.peak_assignments.batch_lines import (
     read_as_batch_isotopologue,
     with_batch_isotopologue_line,
 )
+from mascope_backend.api.new.peak_assignments.batch_lock import _acquire_batch_fold_lock
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     MARK_ISOTOPE_LINES,
     MERGED_ISOTOPOLOGUE_OF_KEY,
@@ -104,7 +105,6 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     standing_merged_isotopologues_record,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-    _acquire_batch_fold_lock,
     _recompute_consensus,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
@@ -113,8 +113,8 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     touch_ledger,
 )
 from mascope_backend.api.new.peak_assignments.config import IN_APP_ENGINE
-from mascope_backend.api.new.peak_assignments.engine import SOURCE_MANUAL
 from mascope_backend.api.new.peak_assignments.envelope_claims import isotopologue_names
+from mascope_backend.api.new.peak_assignments.row_terms import SOURCE_MANUAL
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,

@@ -19,24 +19,15 @@ import pytest
 
 from mascope_backend.api.new.peak_assignments import model_readers, prepasses
 from mascope_backend.api.new.peak_assignments.batch_known_species import (
-    ALREADY,
     BACKGROUND_TAG,
     BATCH_CLAIM,
     HELD_CURATED,
     HELD_TWIN,
     HELD_VOTE,
-    KEPT_CARRIES_LINES,
-    KEPT_CLAIMED_OTHERWISE,
     KEPT_HAND_ASSIGNED,
-    KEPT_LINE_OF_ANOTHER,
-    KEPT_ON_TWIN,
-    KEPT_TARGET_LIBRARY,
-    LISTED_CLAIM_TIER,
     OWN_CLAIM,
-    Member,
     Plan,
     Row,
-    Species,
     Written,
     claim_turns,
     decide_row,
@@ -45,7 +36,6 @@ from mascope_backend.api.new.peak_assignments.batch_known_species import (
     ladder_claimed,
     library_species,
     listed_species,
-    listed_species_row,
     plan_batch,
     row_record,
     sample_decision,
@@ -70,12 +60,21 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     anchor_snapshot_row,
     snapshot_anchor_meta,
 )
-from mascope_backend.api.new.peak_assignments.engine import (
-    DISPLACED_BY_CLAIM,
-    REFERENCE_IDENTITIES_COL,
-)
+from mascope_backend.api.new.peak_assignments.engine import DISPLACED_BY_CLAIM
 from mascope_backend.api.new.peak_assignments.identification_level import (
     IDENTIFICATION_LEVEL,
+)
+from mascope_backend.api.new.peak_assignments.known_species import (
+    ALREADY,
+    KEPT_CARRIES_LINES,
+    KEPT_CLAIMED_OTHERWISE,
+    KEPT_LINE_OF_ANOTHER,
+    KEPT_ON_TWIN,
+    KEPT_TARGET_LIBRARY,
+    LISTED_CLAIM_TIER,
+    Member,
+    Species,
+    listed_species_row,
 )
 from mascope_backend.api.new.peak_assignments.reagent_pass import (
     REASON_BATCH_KNOWN_SPECIES,
@@ -85,6 +84,7 @@ from mascope_backend.api.new.peak_assignments.reagent_pass import (
     build_reagent_assignments,
     claim_batch_species,
 )
+from mascope_backend.api.new.peak_assignments.row_terms import REFERENCE_IDENTITIES_COL
 from mascope_tools.composition.known_species import (
     REASON_ONE_FILE,
     REASON_TEST_NEVER_HELD,

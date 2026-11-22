@@ -57,9 +57,7 @@ from mascope_backend.api.new.peak_assignments.listing import (
     consensus_listing,
     consensus_target_id,
 )
-from mascope_backend.api.new.peak_assignments.target_listing import (
-    with_target_listings,
-)
+from mascope_backend.api.new.peak_assignments.target_listing import with_target_listings
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,

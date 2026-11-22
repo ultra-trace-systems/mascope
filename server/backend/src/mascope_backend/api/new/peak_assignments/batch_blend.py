@@ -78,10 +78,7 @@ from typing import Any, Iterable, Optional
 
 from scipy.stats import mannwhitneyu
 
-from mascope_backend.api.new.peak_assignments.tiers import (
-    TIER_ASSIGNED,
-    TIER_CANDIDATE,
-)
+from mascope_backend.api.new.peak_assignments.tiers import TIER_ASSIGNED, TIER_CANDIDATE
 
 
 #: The key a probable blend is recorded under in ``batch_peak.provenance``.

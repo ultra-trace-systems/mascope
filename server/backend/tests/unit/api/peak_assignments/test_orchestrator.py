@@ -68,7 +68,10 @@ _READERS = {
     "fetch_mechanisms_by_notation": ("sample_mechanisms", "service"),
     "fetch_sample": ("service", "ledger_reads", "verification", "batch_fold"),
     "fetch_sample_mechanisms": ("sample_mechanisms", "service", "model_readers"),
-    "fit_run_envelope_tolerance": ("stage_a_pass",),
+    "fit_run_envelope_tolerance": ("pipeline",),
+    "fold_sample_into_batch_peaks": ("service", "batch_fold"),
+    "gate_lines": ("stage_a_pass", "pipeline"),
+    "score_ions_by_fit": ("stage_a_pass", "pipeline"),
     "get_instrument_type": (
         "service",
         "recalibration",
@@ -79,7 +82,7 @@ _READERS = {
     ),
     "in_flight_run_id": ("service", "batch_fold"),
     "load_calibration": ("stage_a_pass", "recalibration"),
-    "load_sample_peaks": ("sample_inputs", "stage_a_pass", "model_readers"),
+    "load_sample_peaks": ("sample_inputs", "pipeline", "model_readers"),
     "measure_mass_gate": ("judging_loop",),
 }
 
@@ -274,12 +277,12 @@ def _patches(
         ),
         # Gating and fit scoring are covered by their own tests; keep the frame
         # intact so arbitration sees exactly the rows the test declared.
-        "apply_params": patch(
-            "mascope_backend.api.new.peak_assignments.stage_a_pass.gate_lines",
+        "apply_params": _stand_in(
+            "gate_lines",
             side_effect=lambda df, *_args, **_kwargs: df,
         ),
-        "fit": patch(
-            "mascope_backend.api.new.peak_assignments.stage_a_pass.score_ions_by_fit",
+        "fit": _stand_in(
+            "score_ions_by_fit",
             side_effect=lambda df, **_kwargs: df,
         ),
         "calibration": _stand_in(
@@ -326,7 +329,7 @@ def _patches(
         # What the sample's batch decided of its known species lives with its
         # batch ledger in the database; these samples' batches decided none.
         "batch_species": patch(
-            "mascope_backend.api.new.peak_assignments.batch_known_species.batch_species_for",
+            "mascope_backend.api.new.peak_assignments.known_species.batch_species_for",
             new_callable=AsyncMock,
             return_value=[],
         ),
@@ -356,10 +359,8 @@ def _patches(
         ),
         "claim": _stand_in("assignment_claim", _claim_stub()),
         "session": _stand_in("async_session", side_effect=recorder.session_factory),
-        # The ledger is inserted where the run keeps it, in the stage list.
-        "ledger_session": patch(
-            f"{_PIPE}.async_session", side_effect=recorder.session_factory
-        ),
+        # The ledger is inserted where the run keeps it (``service.keep_run``):
+        # the service's session, stood in for above.
         "progress": patch(
             f"{_PIPE}.send_progress_user_notification", new_callable=AsyncMock
         ),
@@ -544,7 +545,10 @@ class TestTheJudgedLedger:
 
         peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
         _start(_patches(_Recorder(), peaks, _stage_a_rows()))
-        patch(f"{_PIPE}.run_stages", side_effect=recording).start()
+        patch(
+            "mascope_backend.api.new.peak_assignments.service.run_stages",
+            side_effect=recording,
+        ).start()
 
         result = await _run(PeakAssignmentConfig(run_untargeted=untargeted))
 
@@ -1061,7 +1065,7 @@ class TestTheJudgedLedger:
         recorder = _Recorder()
         _start(_patches(recorder, peaks, _stage_a_rows()))
         patch(
-            "mascope_backend.api.new.peak_assignments.stage_a_pass.fit_run_envelope_tolerance",
+            "mascope_backend.api.new.peak_assignments.pipeline.fit_run_envelope_tolerance",
             new_callable=AsyncMock,
             return_value=fitted,
         ).start()
@@ -1120,7 +1124,7 @@ class TestTheJudgedLedger:
         # reading changes settle them, before any cap, and the peak it takes
         # is written once, as the source's ion.
         from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
-        from mascope_backend.api.new.peak_assignments.engine import FRAGMENTS_KEY
+        from mascope_backend.api.new.peak_assignments.row_terms import FRAGMENTS_KEY
         from mascope_tools.composition.reagents import FragmentIon, FragmentLadder
 
         ladder = FragmentLadder(
@@ -1171,7 +1175,7 @@ class TestTheJudgedLedger:
     @pytest.mark.asyncio
     async def test_a_profile_with_no_ladder_records_no_claim(self):
         from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
-        from mascope_backend.api.new.peak_assignments.engine import FRAGMENTS_KEY
+        from mascope_backend.api.new.peak_assignments.row_terms import FRAGMENTS_KEY
 
         peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
         recorder = _Recorder()
@@ -2958,7 +2962,7 @@ class TestTheRunFitsItsEnvelopeTolerance:
         recorder = _Recorder()
         mocks = _start(_patches(recorder, peaks, []))
         patch(
-            "mascope_backend.api.new.peak_assignments.stage_a_pass.fit_run_envelope_tolerance",
+            "mascope_backend.api.new.peak_assignments.pipeline.fit_run_envelope_tolerance",
             new_callable=AsyncMock,
             return_value=pooled,
         ).start()
@@ -3343,7 +3347,7 @@ class TestTheRunTakesItsBatchsWord:
             ),
         )
         patches["batch_species"] = patch(
-            "mascope_backend.api.new.peak_assignments.batch_known_species.batch_species_for",
+            "mascope_backend.api.new.peak_assignments.known_species.batch_species_for",
             new_callable=AsyncMock,
             return_value=[species] if decided else [],
         )
@@ -3723,8 +3727,7 @@ class TestTheIngestFoldTiersAsARunDoes:
         )
         recorder = _Recorder()
         _start(_patches(recorder, peaks, rows))
-        fold = patch(
-            "mascope_backend.api.new.peak_assignments.batch_peaks_controller."
+        fold = _stand_in(
             "fold_sample_into_batch_peaks",
             new_callable=AsyncMock,
             return_value="sb-1",

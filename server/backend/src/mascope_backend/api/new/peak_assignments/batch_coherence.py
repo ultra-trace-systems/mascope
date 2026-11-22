@@ -73,15 +73,13 @@ from typing import Any, Iterable, Optional
 from sqlalchemy import select
 
 from mascope_backend.api.lib.api_features import api_controller_background_task
+from mascope_backend.api.new.peak_assignments.batch_lock import _acquire_batch_fold_lock
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     CO_VARIATION_KEY,
     FLAT_SERIES_KEY,
     ROLE_REAGENT,
     instrument_type_of,
     is_isotope_line,
-)
-from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-    _acquire_batch_fold_lock,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_CO_VARIATION,
