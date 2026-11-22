@@ -12,10 +12,12 @@ digest's summary may cite.
 - :func:`coverage`: files and samples per hour by polarity and mode, the
   gaps, the files acquired but in no batch.
 - :func:`composition`: the assigned formulas per period, with their class,
-  element counts and ratios.
+  element counts, ratios and tier.
 - :func:`spectrum`: a period's average spectrum on the batch-peak grid, and
   its difference to another period.
+- :func:`spectrogram`: the assigned signal over time on a fixed m/z grid.
 - :func:`top`: the brightest keys, the biggest changers, the new ones.
+- :func:`amplitude`: how much each key's binned medians vary.
 
 What the views share:
 
@@ -103,6 +105,15 @@ TOP_BY = ("median", "ratio", "new")
 
 #: What :func:`composition` sums the formulas by.
 COMPOSITION_BY = ("class", "n_c")
+
+#: The tiers of a batch peak's formula, most confident first, as the server
+#: names them: a candidate is a plausible formula with real alternatives
+#: open, not an identification.
+TIERS = ("assigned", "candidate", "below_assignability", "unassigned")
+
+#: The rows :func:`spectrogram`'s m/z grid holds at most: more, and its
+#: rows widen.
+SPECTROGRAM_MAX_ROWS = 2000
 
 #: Month abbreviations, fixed rather than the locale's.
 MONTHS = (
@@ -1980,6 +1991,15 @@ def _species(store: CampaignStore, keys: Sequence[Key]) -> pd.DataFrame:
     return pd.concat([species, rows])
 
 
+def _grid_keys(store: CampaignStore) -> tuple[list[str], pd.DataFrame]:
+    """Every formula key of the store with an m/z, and their species
+    columns: the batch-peak grid a spectrum is drawn on. A formula key
+    without an m/z has no place on it."""
+    keys = _formula_keys(store)
+    species = _species(store, keys)
+    return [k for k in keys if not pd.isna(species.loc[k, "mz"])], species
+
+
 def composition(
     store: CampaignStore,
     period: str,
@@ -2003,11 +2023,16 @@ def composition(
         them to divide by their sum.
     :return: With *by* None, one row per period and key with a value in
         it, key order within a period: ``period`` (its start), ``key``,
-        ``median``, ``mean`` and ``n`` of its sample values, ``share`` (its
-        mean over the sum of the period's means) and the species columns
-        (:data:`SPECIES_COLUMNS`). With *by*, one row per period and group:
-        ``period``, the group (``class`` or ``n_c``), ``mean`` and
-        ``share`` (the sums over its keys) and ``n_keys``.
+        ``median``, ``mean`` and ``n`` of its sample values, ``n_samples``
+        (the period's samples of the batches that read the key, so that
+        ``n`` over it is how often the key was detected where it could
+        have been), ``share`` (its mean over the sum of the period's
+        means), ``tier`` (the tier most of a formula key's points in the
+        period carry, a tie going to the less confident of
+        :data:`TIERS`; None for a target ion and a sum) and the species
+        columns (:data:`SPECIES_COLUMNS`). With *by*, one row per period
+        and group: ``period``, the group (``class`` or ``n_c``), ``mean``
+        and ``share`` (the sums over its keys) and ``n_keys``.
     """
     if by is not None and by not in COMPOSITION_BY:
         raise ValueError(f"by={by!r} is none of {', '.join(COMPOSITION_BY)}")
@@ -2027,7 +2052,7 @@ def composition(
             view="composition",
         )
         zone, attrs, items = values.zone, values.attrs, values.items
-        frame = _composed(values, period)
+        frame = _composed(store, values, period)
     else:
         # A store without a batch ledger has no formula to compose
         zone = display_zone(store, tz)
@@ -2043,8 +2068,11 @@ def composition(
             end=hi,
         )
         columns = {"period": "time", "key": "object", "median": "float64"}
-        frame = _empty(dict(columns, mean="float64", n="int64"), zone)
+        columns.update(mean="float64", n="int64", n_samples="int64")
+        frame = _empty(dict(columns, tier="object"), zone)
+    tier = frame.pop("tier")
     frame["share"] = frame["mean"] / frame.groupby("period")["mean"].transform("sum")
+    frame["tier"] = tier
     species = _species(store, items)
     for column in SPECIES_COLUMNS:
         frame[column] = frame["key"].map(species[column]).to_numpy()
@@ -2058,9 +2086,10 @@ def composition(
     return _stamp(frame, dict(attrs, cadence=period, period=period, by=by))
 
 
-def _composed(values: _Values, period: str) -> pd.DataFrame:
-    """:func:`composition`'s ``period``, ``key``, ``median``, ``mean`` and
-    ``n``: a row per period and key with a value in it."""
+def _composed(store: CampaignStore, values: _Values, period: str) -> pd.DataFrame:
+    """:func:`composition`'s ``period``, ``key``, ``median``, ``mean``,
+    ``n``, ``n_samples`` and ``tier``: a row per period and key with a value
+    in it."""
     code = np.full(len(values.t), -1, dtype="int64")
     reads_any = values.reads_any
     code[reads_any], starts = _period_codes(values.t[reads_any], values.zone, period)
@@ -2071,6 +2100,11 @@ def _composed(values: _Values, period: str) -> pd.DataFrame:
     )
     stats = stats[stats["n"] > 0]
     at = stats.index.to_numpy("int64")
+    # Per period, the samples of each batch, then of the batches reading a key
+    per_batch = np.zeros((len(starts), len(values.present)), dtype="int64")
+    np.add.at(per_batch, (code[reads_any], values.batch[reads_any]), 1)
+    n_samples = per_batch @ values.present.astype("int64")
+    tiers = _tiers(store, values, code)
     return pd.DataFrame(
         {
             "period": _times(starts.asi8[at // n_keys], values.zone),
@@ -2078,8 +2112,54 @@ def _composed(values: _Values, period: str) -> pd.DataFrame:
             "median": stats["median"].to_numpy(),
             "mean": stats["mean"].to_numpy(),
             "n": stats["n"].to_numpy("int64"),
+            "n_samples": n_samples[at // n_keys, at % n_keys].astype("int64"),
+            "tier": pd.Series(tiers.reindex(at).to_numpy(), dtype=object),
         }
     )
+
+
+def _tiers(store: CampaignStore, values: _Values, code: np.ndarray) -> pd.Series:
+    """The tier most of each formula key's points carry, per period: indexed
+    by ``period code * len(keys) + key``. A tie goes to the less confident
+    tier of :data:`TIERS`, and a tier the server names that is none of them
+    is less confident than all of them.
+
+    :param code: Each sample's period, as a code; -1 for none.
+    """
+    n_keys = len(values.keys)
+    formula = [
+        k
+        for k, members in enumerate(values.members)
+        if len(members) == 1 and members[0].startswith("formula:")
+    ]
+    if not formula:
+        return pd.Series([], dtype=object)
+    rows = store.table("peak_series", keys=[values.keys[k] for k in formula])
+    index = pd.Index(values.samples["sample_item_id"].astype(str))
+    pos = _positions(index, rows["sample_item_id"])
+    key = _positions(pd.Index(values.keys), rows["series_key"])
+    tier = rows["tier"].astype(object).to_numpy()
+    kept = (pos >= 0) & (key >= 0) & pd.notna(tier)
+    if not kept.any():
+        return pd.Series([], dtype=object)
+    counts = (
+        pd.DataFrame(
+            {
+                "group": code[pos[kept]] * n_keys + key[kept],
+                "tier": tier[kept].astype(str),
+            }
+        )
+        .value_counts()
+        .rename("count")
+        .reset_index()
+    )
+    confidence = {name: -i for i, name in enumerate(TIERS)}
+    counts["confidence"] = counts["tier"].map(confidence).fillna(-len(TIERS))
+    counts = counts.sort_values(
+        ["group", "count", "confidence"], ascending=[True, False, True], kind="stable"
+    )
+    first = counts.drop_duplicates("group")
+    return pd.Series(first["tier"].to_numpy(), index=first["group"].to_numpy())
 
 
 def spectrum(
@@ -2104,14 +2184,19 @@ def spectrum(
         them to divide by their sum.
     :return: One row per key with a value in *period* or *other*, by m/z:
         ``key``, ``mz``, ``name``, ``formula``, ``ion_formula``, ``value``
-        (the mean of its sample values in *period*) and ``n``; with
-        *other*, also ``other_value``, ``other_n``, ``diff`` (``value``
-        less ``other_value``, a key without a value in one of them counting
-        0 there) and ``ratio`` (``value`` over ``other_value``, NaN without
-        both). ``attrs`` adds ``period`` and ``other``, ISO in UTC; its
-        ``mixed_runs`` and ``run_changes`` are over the batches both windows
-        draw and those between them, so a change between them is flagged
-        at the batch where the run changed.
+        (the mean of its sample values in *period*), ``n`` and
+        ``n_samples`` (the period's samples of the batches that read the
+        key: ``n`` over it is how often it was detected where it could have
+        been); with *other*, also ``other_value``, ``other_n``,
+        ``other_n_samples``, ``diff`` (``value`` less ``other_value``, a
+        key without a value in one of them counting 0 there) and ``ratio``
+        (``value`` over ``other_value``, NaN without both). ``attrs`` adds
+        ``period`` and ``other``, ISO in UTC, and ``period_drawn`` and
+        ``other_drawn``, the times of the first and the last sample each
+        draws from (of a batch that reads a key), ISO in UTC, None without
+        one; its ``mixed_runs`` and ``run_changes`` are over the batches
+        both windows draw and those between them, so a change between them
+        is flagged at the batch where the run changed.
     """
     normalise = _check_normalise(normalise)
     zone = display_zone(store, tz)
@@ -2119,10 +2204,7 @@ def spectrum(
     if other is not None:
         windows["other"] = _window(other, zone)
     if keys is None:
-        keys = _formula_keys(store)
-        species = _species(store, keys)
-        # The grid is the batch peaks': a formula key without one has no place
-        keys = [k for k in keys if not pd.isna(species.loc[k, "mz"])]
+        keys, species = _grid_keys(store)
         items = keys
     else:
         items = _check_keys(store, keys, tic=False)
@@ -2143,16 +2225,16 @@ def spectrum(
         normalise=normalise,
         normalise_name=_normaliser_name(store, normalise),
     )
-    attrs.update(cadence="period", other=None)
+    attrs.update(cadence="period", other=None, period_drawn=None, other_drawn=None)
     for name, window in windows.items():
         attrs[name] = [None if w is None else w.isoformat() for w in window]
     if not keys:
         columns = {"key": "object", "mz": "float64", "name": "object"}
         columns.update(formula="object", ion_formula="object", value="float64")
-        columns.update(n="int64")
+        columns.update(n="int64", n_samples="int64")
         if other is not None:
-            columns.update(other_value="float64", other_n="int64", diff="float64")
-            columns.update(ratio="float64")
+            columns.update(other_value="float64", other_n="int64")
+            columns.update(other_n_samples="int64", diff="float64", ratio="float64")
         return _stamp(_empty(columns, zone), attrs)
 
     means = {}
@@ -2177,6 +2259,15 @@ def spectrum(
         means[name] = pd.DataFrame(
             {"value": grouped.mean(), "n": grouped.count()}
         ).reindex(range(len(keys)))
+        # The window's samples of each batch, then of the batches reading a key
+        per_batch = np.bincount(values.batch, minlength=len(values.present))
+        means[name]["n_samples"] = per_batch @ values.present.astype("int64")
+        times = values.t[values.reads_any]
+        if len(times):
+            attrs[f"{name}_drawn"] = [
+                pd.Timestamp(t, tz="UTC").isoformat()
+                for t in (times.min(), times.max())
+            ]
     frame = pd.DataFrame(
         {
             "key": keys,
@@ -2186,12 +2277,14 @@ def spectrum(
             "ion_formula": species.loc[keys, "ion_formula"].to_numpy(),
             "value": means["period"]["value"].to_numpy(),
             "n": means["period"]["n"].fillna(0).to_numpy("int64"),
+            "n_samples": means["period"]["n_samples"].to_numpy("int64"),
         }
     )
     seen = frame["n"] > 0
     if other is not None:
         frame["other_value"] = means["other"]["value"].to_numpy()
         frame["other_n"] = means["other"]["n"].fillna(0).to_numpy("int64")
+        frame["other_n_samples"] = means["other"]["n_samples"].to_numpy("int64")
         frame["diff"] = frame["value"].fillna(0) - frame["other_value"].fillna(0)
         frame["ratio"] = frame["value"] / frame["other_value"]
         seen |= frame["other_n"] > 0
@@ -2203,6 +2296,323 @@ def spectrum(
         # Over the samples of both windows
         attrs["normalise_complete"] = complete[0] / complete[1]
     return _stamp(frame, attrs)
+
+
+@dataclass(frozen=True)
+class Spectrogram:
+    """The assigned signal over time on a fixed m/z grid.
+
+    Each grid row is an m/z range of :attr:`mz_width`, centred on a multiple
+    of it, holding the formula keys whose batch peaks' m/z (the ion's, its
+    adduct included) falls in it. A sample's value of a row is the sum of
+    its keys' values in it; a cell's value is the **mean** of that over the
+    bin's samples with a value, never their sum, which would grow with the
+    samples in the bin and draw coverage instead of signal.
+
+    :ivar cells: One row per cell with a value, oldest bin first, then by
+        m/z: ``t`` (its bin's start), ``t_end`` (the next bin's), ``mz``
+        (its row's centre), ``value``, ``n`` (the bin's samples with a
+        value of the row) and ``n_samples`` (the bin's samples of the
+        batches that read a key of the row). A cell whose samples hold no
+        value of its row is no row: blank, not zero.
+    :ivar bins: One row per time bin from the first sample's to the last's:
+        ``t``, ``t_end``, ``n_samples`` (its samples of the batches that read
+        a key; 0 for a bin without one, a gap) and ``total`` (the column
+        sum: the sum of its cells' values, NaN without a cell).
+    :ivar rows: One row per grid row from the lowest holding a key to the
+        highest: ``mz``, ``n_keys``, ``n`` (the window's samples with a
+        value of it), ``n_samples`` (those of the batches that read one of
+        its keys), ``total`` (the sum of its cells' values, NaN without
+        one), and the key that contributes most to it,
+        the one whose values over the window's samples sum to the most:
+        ``key``, ``name``, ``formula`` and ``share`` (its sum over the
+        row's), None and NaN for a row without a value.
+    :ivar mz_width: The rows' width, in Th.
+    :ivar widened: Whether :attr:`mz_width` is wider than asked, to keep the
+        grid under ``max_rows`` rows.
+    """
+
+    cells: pd.DataFrame
+    bins: pd.DataFrame
+    rows: pd.DataFrame
+    mz_width: float
+    widened: bool
+
+
+_CELL_COLUMNS = {
+    "t": "time",
+    "t_end": "time",
+    "mz": "float64",
+    "value": "float64",
+    "n": "int64",
+    "n_samples": "int64",
+}
+
+_BIN_COLUMNS = {"t": "time", "t_end": "time", "n_samples": "int64", "total": "float64"}
+
+
+def _check_width(mz_width: Any) -> float:
+    if isinstance(mz_width, bool) or not isinstance(
+        mz_width, (int, float, np.integer, np.floating)
+    ):
+        raise ValueError(f"mz_width={mz_width!r} is no width in Th")
+    width = float(mz_width)
+    if not math.isfinite(width) or width <= 0:
+        raise ValueError(f"mz_width={mz_width!r} is no positive width in Th")
+    return width
+
+
+def _grid_rows(mz: np.ndarray, width: float) -> np.ndarray:
+    """Each m/z's grid row, as the multiple of *width* nearest it."""
+    return np.floor(mz / width + 0.5).astype("int64")
+
+
+def _grid_width(mz: np.ndarray, width: float, max_rows: int) -> tuple[float, bool]:
+    """*width*, or the smallest whole multiple of it whose grid over *mz*
+    holds at most *max_rows* rows; whether it widened."""
+
+    def rows(w: float) -> int:
+        cells = _grid_rows(mz, w)
+        return int(cells.max() - cells.min()) + 1
+
+    if rows(width) <= max_rows:
+        return width, False
+    factor = max(2, math.ceil(rows(width) / max_rows))
+    while rows(factor * width) > max_rows:
+        factor += 1
+    return factor * width, True
+
+
+def spectrogram(
+    store: CampaignStore,
+    *,
+    mz_width: float = 1.0,
+    cadence: str = "1h",
+    normalise: str = "none",
+    tz: str | None = None,
+    start: Any = None,
+    end: Any = None,
+    max_rows: int = SPECTROGRAM_MAX_ROWS,
+) -> Spectrogram:
+    """The assigned signal over time, binned by time and onto a fixed m/z
+    grid: the data of a spectrogram.
+
+    The store holds the batch peaks with a consensus formula, so this is
+    the assigned signal only (:class:`Spectrogram`).
+
+    :param mz_width: The grid rows' width in Th; 1, the default, centres
+        them on whole numbers. When the rows from the lowest m/z to the
+        highest would pass *max_rows*, they widen to the smallest whole
+        multiple of it that keeps under it (:attr:`Spectrogram.widened`).
+    :param cadence: The time bins: a pandas offset, as :func:`series`
+        takes one (``10min``, ``1h``, ``1D``); an hour by default.
+    :param normalise: ``none``, ``tic``, a series key, or a sequence of
+        them to divide by their sum; each value is divided by its own
+        sample's before it is summed into a row.
+    :param tz: The zone the bins are in.
+    :param start: The window's start, if any.
+    :param end: The window's end, if any.
+    :param max_rows: The rows the grid may hold.
+    :return: The cells, the bins and the rows. Each frame's ``attrs`` are a
+        view's, with ``cadence``, ``stat`` (``mean``), ``mz_width``,
+        ``mz_width_asked``, ``widened`` and ``max_rows``.
+    """
+    width = _check_width(mz_width)
+    if (
+        isinstance(max_rows, bool)
+        or not isinstance(max_rows, (int, np.integer))
+        or max_rows < 1
+    ):
+        raise ValueError(f"max_rows={max_rows!r} is no positive count")
+    if cadence in ("auto", "raw"):
+        raise ValueError(
+            f"cadence={cadence!r}: a spectrogram's cells are bins of one step; "
+            "give a pandas offset such as '10min', '1h' or '1D'"
+        )
+    offset = _offset(cadence, auto_raw=False)
+    normalise = _check_normalise(normalise)
+    keys, species = _grid_keys(store)
+    mz = species.loc[keys, "mz"].to_numpy("float64") if keys else np.array([])
+    widened = False
+    if keys:
+        width, widened = _grid_width(mz, width, int(max_rows))
+    extra = {
+        "cadence": _cadence_name(offset),
+        "stat": "mean",
+        "mz_width": width,
+        "mz_width_asked": _check_width(mz_width),
+        "widened": widened,
+        "max_rows": int(max_rows),
+    }
+    if not keys:
+        # A store without a batch ledger has no formula on the grid
+        zone = display_zone(store, tz)
+        attrs = _attrs(
+            store,
+            "spectrogram",
+            zone,
+            normalise=normalise,
+            normalise_name=_normaliser_name(store, normalise),
+            start=_bound(start, zone),
+            end=_bound(end, zone),
+        )
+        return _spectrogram_of(
+            _empty(_CELL_COLUMNS, zone),
+            _empty(_BIN_COLUMNS, zone),
+            _grid_frame(np.array([]), np.array([], "int64")),
+            dict(attrs, **extra),
+            width,
+            widened,
+        )
+    values = _read(
+        store,
+        keys,
+        normalise=normalise,
+        tz=tz,
+        start=start,
+        end=end,
+        view="spectrogram",
+    )
+    attrs = dict(values.attrs, **extra)
+    zone = values.zone
+    cell = _grid_rows(mz, width)
+    first_row = int(cell.min())
+    n_rows = int(cell.max()) - first_row + 1
+    row_of = cell - first_row
+    centres = np.round((first_row + np.arange(n_rows)) * width, 10)
+    n_keys = np.bincount(row_of, minlength=n_rows)
+    reads_any = values.reads_any
+    if not reads_any.any():
+        return _spectrogram_of(
+            _empty(_CELL_COLUMNS, zone),
+            _empty(_BIN_COLUMNS, zone),
+            _grid_frame(centres, n_keys),
+            attrs,
+            width,
+            widened,
+        )
+
+    t = values.t
+    edges = _edges(
+        pd.Timestamp(t[reads_any].min(), tz="UTC"),
+        pd.Timestamp(t[reads_any].max(), tz="UTC"),
+        offset,
+        zone,
+    )
+    sample_bin = np.searchsorted(edges, t, side="right") - 1
+    first = int(sample_bin[reads_any].min())
+    n_bins = int(sample_bin[reads_any].max()) - first + 1
+    sample_bin = sample_bin - first
+    starts = edges[first : first + n_bins]
+    ends = edges[first + 1 : first + n_bins + 1]
+
+    # A sample's value of a row: the sum of its keys' values in it
+    found = np.isfinite(values.value)
+    pos, key, value = values.pos[found], values.key[found], values.value[found]
+    per_sample = pd.Series(value).groupby(pos * n_rows + row_of[key], sort=True).sum()
+    code = per_sample.index.to_numpy("int64")
+    # A cell's: the mean over its bin's samples with a value
+    cells = pd.Series(per_sample.to_numpy()).groupby(
+        sample_bin[code // n_rows] * n_rows + code % n_rows, sort=True
+    )
+    mean, count = cells.mean(), cells.count()
+    at = mean.index.to_numpy("int64")
+
+    # The samples that could hold a row's value: those of a batch reading
+    # one of its keys
+    reads_row = np.zeros((n_rows, len(values.present)), dtype=bool)
+    np.logical_or.at(reads_row, row_of, values.present.T)
+    per_batch = np.zeros((n_bins, len(values.present)), dtype="int64")
+    np.add.at(per_batch, (sample_bin[reads_any], values.batch[reads_any]), 1)
+    could = per_batch @ reads_row.T.astype("int64")
+
+    cell_frame = pd.DataFrame(
+        {
+            "t": _times(starts[at // n_rows], zone),
+            "t_end": _times(ends[at // n_rows], zone),
+            "mz": centres[at % n_rows],
+            "value": mean.to_numpy("float64"),
+            "n": count.to_numpy("int64"),
+            "n_samples": could[at // n_rows, at % n_rows].astype("int64"),
+        }
+    )
+    by_bin = pd.Series(mean.to_numpy()).groupby(at // n_rows).sum()
+    bin_frame = pd.DataFrame(
+        {
+            "t": _times(starts, zone),
+            "t_end": _times(ends, zone),
+            "n_samples": per_batch.sum(axis=1).astype("int64"),
+            "total": _fill(n_bins, by_bin.index.to_numpy("int64"), by_bin),
+        }
+    )
+    by_row = pd.Series(mean.to_numpy()).groupby(at % n_rows).sum()
+    rows = _grid_frame(centres, n_keys)
+    rows["n"] = np.bincount(code % n_rows, minlength=n_rows).astype("int64")
+    rows["n_samples"] = could.sum(axis=0).astype("int64")
+    rows["total"] = _fill(n_rows, by_row.index.to_numpy("int64"), by_row)
+    # The key that contributes most to each row, over the window's samples
+    summed = pd.Series(value).groupby(key).sum()
+    per_key = _fill(len(keys), summed.index.to_numpy("int64"), summed)
+    _contributors(rows, keys, species, row_of, per_key)
+    return _spectrogram_of(cell_frame, bin_frame, rows, attrs, width, widened)
+
+
+def _grid_frame(centres: np.ndarray, n_keys: np.ndarray) -> pd.DataFrame:
+    """:attr:`Spectrogram.rows` before its values are read."""
+    n = len(centres)
+    return pd.DataFrame(
+        {
+            "mz": np.asarray(centres, dtype="float64"),
+            "n_keys": np.asarray(n_keys, dtype="int64"),
+            "n": np.zeros(n, dtype="int64"),
+            "n_samples": np.zeros(n, dtype="int64"),
+            "total": np.full(n, np.nan),
+            "key": pd.Series([None] * n, dtype=object),
+            "name": pd.Series([None] * n, dtype=object),
+            "formula": pd.Series([None] * n, dtype=object),
+            "share": np.full(n, np.nan),
+        }
+    )
+
+
+def _contributors(
+    rows: pd.DataFrame,
+    keys: list[str],
+    species: pd.DataFrame,
+    row_of: np.ndarray,
+    per_key: np.ndarray,
+) -> None:
+    """Fill *rows*' ``key``, ``name``, ``formula`` and ``share`` from each
+    key's sum over the window (*per_key*, NaN without a value): its row's
+    largest, a tie going to the key first in order."""
+    order = pd.DataFrame({"row": row_of, "sum": per_key, "key": np.arange(len(keys))})
+    order = order[np.isfinite(order["sum"].to_numpy())]
+    if order.empty:
+        return
+    totals = order.groupby("row")["sum"].sum()
+    best = order.sort_values(
+        ["row", "sum", "key"], ascending=[True, False, True], kind="stable"
+    ).drop_duplicates("row")
+    chosen = [keys[k] for k in best["key"]]
+    at = best["row"].to_numpy("int64")
+    rows.loc[at, "key"] = chosen
+    rows.loc[at, "name"] = species.loc[chosen, "name"].to_numpy()
+    rows.loc[at, "formula"] = species.loc[chosen, "formula"].to_numpy()
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rows.loc[at, "share"] = best["sum"].to_numpy() / totals.loc[at].to_numpy()
+
+
+def _spectrogram_of(
+    cells: pd.DataFrame,
+    bins: pd.DataFrame,
+    rows: pd.DataFrame,
+    attrs: dict[str, Any],
+    width: float,
+    widened: bool,
+) -> Spectrogram:
+    for frame in (cells, bins, rows):
+        _stamp(frame, dict(attrs))
+    return Spectrogram(cells, bins, rows, mz_width=width, widened=widened)
 
 
 def top(
@@ -2357,3 +2767,73 @@ def top(
     columns = ["rank", "key", "value", "median", "first", "last", "ratio", "new"]
     columns += ["n", "n_samples", "presence", "name", "formula", "ion_formula"]
     return _stamp(frame[columns], attrs)
+
+
+def amplitude(
+    store: CampaignStore,
+    keys: Any = None,
+    *,
+    cadence: str = "1h",
+    normalise: str = "none",
+    tz: str | None = None,
+    start: Any = None,
+    end: Any = None,
+) -> pd.DataFrame:
+    """How much each key's binned medians vary: the coefficient of variation
+    (their standard deviation over their mean) of its :func:`series`
+    medians at *cadence*, over the bins with a value. A Van Krevelen colours
+    by it. Under ``normalise="none"`` it includes the instrument's drift.
+
+    :param keys: The series keys; None for every formula key of the store.
+    :param cadence: The bins, a pandas offset; an hour by default.
+    :param normalise: ``none``, ``tic``, a series key, or a sequence of
+        them to divide by their sum.
+    :return: One row per key, in the keys' order: ``key``, ``cv`` (NaN with
+        fewer than two bins with a value), ``mean`` (of the
+        medians) and ``n_bins`` (bins with a value). ``attrs`` are
+        :func:`series`' with ``view`` ``amplitude``.
+    """
+    if keys is None:
+        keys = _formula_keys(store)
+    if not len(keys):
+        zone = display_zone(store, tz)
+        attrs = _attrs(
+            store,
+            "amplitude",
+            zone,
+            normalise=_check_normalise(normalise),
+            normalise_name=_normaliser_name(store, _check_normalise(normalise)),
+            start=_bound(start, zone),
+            end=_bound(end, zone),
+        )
+        frame = _empty(
+            {"key": "object", "cv": "float64", "mean": "float64", "n_bins": "int64"},
+            zone,
+        )
+        return _stamp(frame, dict(attrs, cadence=_cadence_name(_offset(cadence))))
+    binned = series(
+        store,
+        keys,
+        cadence=cadence,
+        normalise=normalise,
+        stat="median",
+        band=None,
+        tz=tz,
+        start=start,
+        end=end,
+    )
+    names = list(binned.attrs["keys"])
+    grouped = binned.groupby(
+        pd.Categorical(binned["key"].astype(str), categories=names), observed=False
+    )["value"]
+    mean = grouped.mean().reindex(names)
+    cv = grouped.std(ddof=1).reindex(names) / mean
+    frame = pd.DataFrame(
+        {
+            "key": names,
+            "cv": cv.to_numpy("float64"),
+            "mean": mean.to_numpy("float64"),
+            "n_bins": grouped.count().reindex(names).to_numpy("int64"),
+        }
+    )
+    return _stamp(frame, dict(binned.attrs, view="amplitude"))
