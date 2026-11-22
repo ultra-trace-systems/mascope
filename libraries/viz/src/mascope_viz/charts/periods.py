@@ -11,8 +11,10 @@ maximum). Box conventions differ, and a reader assumes Tukey's whiskers at
 - **Periods** are the display zone's days, weeks from Monday to Sunday, or
   months.
 - **A thin period is hollow**: one with under half the samples of the
-  figure's fullest one, such as the window's first and last or a week
-  with a gap, is drawn without its fill and flagged in the summary.
+  species' fullest one, such as the window's first and last or a week
+  with a gap, is drawn without its fill and flagged in the summary. Each
+  species is judged on its own samples, those of the batches that read
+  it, so the species beside it in the figure change none of its periods.
 
 The summary, per species: its period medians, each with the period's
 start, its ``n`` (values), ``n_samples`` (the samples that could have held
@@ -48,7 +50,7 @@ _LABELS = {"day": "%Y-%m-%d", "week": "%Y-%m-%d", "month": "%Y-%m"}
 _AXES = {"day": "day", "week": "week from Monday", "month": "month"}
 
 #: What a hollow box means, in its legend entry.
-THIN = "under half the fullest period's samples"
+THIN = "under half its fullest period's samples"
 
 #: What the boxes are, for the subtitle.
 BOXES = "boxes p25-p75 with the median, whiskers p5-p95, no outlier marks"
@@ -116,10 +118,9 @@ def _figure(
         "label",
         pd.DatetimeIndex(data["period"]).strftime(_LABELS[period]).astype(str),
     )
-    # Thin against the fullest period of the figure
-    data["thin"] = (data["n_samples"] < data["n_samples"].max() / 2).to_numpy(
-        dtype=bool
-    )
+    # Thin against the species' own fullest period
+    fullest = data.groupby("key", observed=True)["n_samples"].transform("max")
+    data["thin"] = (data["n_samples"] < fullest / 2).to_numpy(dtype=bool)
 
     entries = []
     for s in resolved.species:

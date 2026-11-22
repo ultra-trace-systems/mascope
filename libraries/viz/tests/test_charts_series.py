@@ -1269,7 +1269,7 @@ def test_a_thin_period_is_hollow_and_flagged(month):
         "2026-07-01T00:00:00+03:00",
     ]
     rows = _rows(weeks, key)
-    fullest = weeks.data["n_samples"].max()
+    fullest = rows["n_samples"].max()
     np.testing.assert_array_equal(rows["thin"], rows["n_samples"] < fullest / 2)
     panel = weeks.panels[0]
     assert panel.encodings["hollow"] == "thin"
@@ -1290,6 +1290,50 @@ def test_a_thin_period_is_hollow_and_flagged(month):
     assert [p["n"] for p in periods] == list(rows["n"])
     assert weeks.columns == 1 and days.columns == 1
     assert period_boxes(store, _cycles(campaign, "day")[:3]).columns == 2
+
+
+def test_a_period_is_thin_under_half_its_fullest_and_not_at_half(month):
+    """Twelve hours of a day are half a whole day's samples, and not thin;
+    three days of a week, under half a whole week's, are."""
+    campaign, store = month
+    key = _cycles(campaign, "day")[0]
+    window = {"start": "2026-06-05T12:00+03:00", "end": "2026-06-09T06:00+03:00"}
+
+    days = _entry(period_boxes(store, key, period="day", **window), key)["periods"]
+    weeks = period_boxes(store, key, period="week", start="2026-06-05T00:00+03:00")
+
+    assert [p["n_samples"] for p in days] == [720, 1440, 1440, 1440, 360]
+    assert [p["thin"] for p in days] == [False, False, False, False, True]
+    first, fullest = _entry(weeks, key)["periods"][:2]
+    assert 1 / 3 < first["n_samples"] / fullest["n_samples"] < 1 / 2
+    assert first["thin"] and not fullest["thin"]
+
+
+def test_a_species_thin_periods_are_its_own(month):
+    """From 10 June, the formula the run change renames is read on six days
+    of June, under half the target ion's 21. Judged on its own samples, its
+    June is its fullest and not thin, beside the ion as alone; July, three
+    hours of the ion's and none of its, is thin for both."""
+    campaign, store = month
+    old, _ = campaign.truth.run_change.readings[0]
+    ion = _cycles(campaign, "day")[0]
+    window = {"period": "month", "start": "2026-06-10T00:00+03:00"}
+
+    both = period_boxes(store, [ion, old], **window)
+    alone = period_boxes(store, old, **window)
+
+    june = {k: _rows(both, k).iloc[0] for k in (ion, old)}
+    assert 0 < june[old]["n_samples"] < june[ion]["n_samples"] / 2
+    for key in (ion, old):
+        entry = _entry(both, key)
+        assert [p["thin"] for p in entry["periods"]] == [False, True], key
+        assert entry["thin_periods"] == ["2026-07-01T00:00:00+03:00"], key
+        assert entry["highest_median"] == "2026-06-01T00:00:00+03:00", key
+    assert list(_rows(both, old)["thin"]) == [False, True]
+    # Alone, its periods end with its last sample's: June, the same June
+    (only,) = _entry(alone, old)["periods"]
+    assert only == _entry(both, old)["periods"][0]
+    assert _entry(alone, old)["highest_median"] == _entry(both, old)["highest_median"]
 
 
 @pytest.mark.parametrize(

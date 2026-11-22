@@ -609,10 +609,12 @@ below detection in its trough is sampled there, and reads high (the note
 on seldom detected species). The diurnal view follows openair's
 `timeVariation` (Carslaw and Ropkins 2012).
 
-`period_boxes` draws a period with under half the samples of the fullest
-one, such as the window's first and last, hollow, and lists it in the
-summary's `thin_periods`; the summary gives every period's median, `n` and
-`n_samples`, and the period of the highest median among those not thin.
+`period_boxes` draws a period with under half the samples of the
+species' fullest one, such as the window's first and last, hollow, and
+lists it in the summary's `thin_periods`; each species is judged on its
+own samples, so what is drawn beside it changes none of its periods. The
+summary gives every period's median, `n` and `n_samples`, and the period
+of the highest median among those not thin.
 
 ## The command line
 
