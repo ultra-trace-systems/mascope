@@ -25,6 +25,8 @@ from .common import (
     face,
     moment,
     normalise_notes,
+    polarities,
+    pooled_note,
     run_notes,
 )
 from .registry import ChartKind, Param
@@ -220,6 +222,7 @@ def top_species(
         "first_period": first,
         "last_period": last,
         "min_present": min_present,
+        "polarities": polarities(attrs),
         "median": rows("median"),
         "ratio": rows("ratio"),
         "new": rows("new"),
@@ -239,6 +242,11 @@ def top_species(
             "The engine run changes in the last period: a formula new in it "
             "may be a peak read before as another formula. Its row is marked."
         )
+    notes += pooled_note(
+        attrs,
+        "the lists rank the species of both together: a positive and a "
+        "negative ion are two chemistries' readings, not one scale",
+    )
     notes += [*normalise_notes(attrs), *run_notes(attrs, zone), BELOW_DETECTION]
     context = Context.from_attrs(attrs)
     return Figure(
@@ -308,6 +316,7 @@ KIND = registry.register(
             "first_period",
             "last_period",
             "min_present",
+            "polarities",
             "normalise",
             "normalise_name",
             "cadence",

@@ -6,7 +6,8 @@
   when there are two or more, and gives each trace's drift and largest
   step. `scope_summary` is a digest's cover table, a run change marked.
   `top_species` lists the brightest species, the biggest changers and the
-  new ones. Each figure's summary holds the numbers a caption may cite, as
+  new ones. `instrument_signal` and `top_species` say in a note when the
+  window's samples are of both polarities, which they pool. Each figure's summary holds the numbers a caption may cite, as
   JSON. `views.top` ranks only the keys present in at least half the
   samples compared (`min_present=`), and gives each key's detections and
   presence.

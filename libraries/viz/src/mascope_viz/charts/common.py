@@ -119,7 +119,8 @@ def species_refs(
     by its key as a view spells it (a sum's members joined by ``+``).
 
     The TIC is named ``TIC``; a sum by its members' names joined by
-    `` + ``, with no formula; a key the store has no name for by its key.
+    `` + ``, with no formula; a key the store has no name for by its
+    formula, and without one by its key.
 
     :raises ValueError: A key the store does not hold.
     """
@@ -134,12 +135,12 @@ def species_refs(
         if key == views.TIC:
             return {"key": key, "name": "TIC", "formula": None}
         row = rows.loc[key]
-        name = row["name"]
-        formula = row["formula"]
+        formula = _text(row["formula"])
+        # A target ion without a compound name by its formula
         return {
             "key": key,
-            "name": key if pd.isna(name) else str(name),
-            "formula": None if pd.isna(formula) else str(formula),
+            "name": _text(row["name"]) or formula or key,
+            "formula": formula,
         }
 
     out = {}
@@ -156,6 +157,14 @@ def species_refs(
 
 def _members(key: Any) -> tuple[str, ...]:
     return (key,) if isinstance(key, str) else tuple(key)
+
+
+def _text(value: Any) -> str | None:
+    """*value* as text; None when missing or blank."""
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return None
+    text = str(value)
+    return text if text.strip() else None
 
 
 def moment(value: Any, zone: str) -> pd.Timestamp | None:
@@ -201,6 +210,22 @@ def run_notes(attrs: Mapping[str, Any], zone: str) -> list[str]:
             "after it is two readings, not one series."
         )
     return notes
+
+
+def polarities(attrs: Mapping[str, Any]) -> list[str]:
+    """The polarities of a view's window's samples, ``+`` before ``-``."""
+    return list(attrs.get("polarities") or [])
+
+
+def pooled_note(attrs: Mapping[str, Any], what: str) -> list[str]:
+    """A note when the window's samples are of both polarities, so *what*
+    pools two chemistries; none for one polarity."""
+    if len(polarities(attrs)) < 2:
+        return []
+    return [
+        f"The window's samples are of both polarities, and {what}. Scope the "
+        "store to one polarity to read either alone."
+    ]
 
 
 def normalise_notes(attrs: Mapping[str, Any]) -> list[str]:

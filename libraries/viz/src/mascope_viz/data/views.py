@@ -64,7 +64,11 @@ What the views share:
   them: a run change is flagged, never silently joined; both empty without
   a formula key or a formula to normalise by, a sum's members included)
   and the store's ``provenance``. A formula is read in one polarity only, so a change in
-  the other polarity's batches is none of its keys'.
+  the other polarity's batches is none of its keys'. :func:`series`,
+  :func:`diurnal`, :func:`periods`, :func:`composition` and :func:`top`
+  add ``polarities``: those of the window's samples, ``+`` before ``-``.
+  With both, the TIC, a key's statistics and a ranking pool two
+  chemistries, and a chart says so.
 """
 
 import math
@@ -536,17 +540,28 @@ def _per_sample(
 
 
 def _names(store: CampaignStore, keys: Sequence[str]) -> dict[str, str]:
-    """The series keys' names; a key the store names none of is its own."""
+    """The series keys' names: a species' name, else its formula (a target
+    ion without a compound name), else its key."""
     named: dict[str, str] = {}
     wanted = [k for k in keys if k != TIC]
     if wanted:
         species = store.table("species", keys=wanted)
-        named = {
-            str(key): str(name)
-            for key, name in zip(species["series_key"], species["name"])
-            if not pd.isna(name)
-        }
+        for key, name, formula in zip(
+            species["series_key"], species["name"], species["formula"]
+        ):
+            label = _label_text(name) or _label_text(formula)
+            if label:
+                named[str(key)] = label
     return {k: named.get(k, k) for k in keys}
+
+
+def _label_text(value: Any) -> str | None:
+    """*value* as a label; None when missing or blank (a store synced
+    before blank names were dropped may still hold one)."""
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return None
+    text = str(value)
+    return text if text.strip() else None
 
 
 def _normaliser_name(store: CampaignStore, normalise: Normaliser) -> str | None:
@@ -886,12 +901,24 @@ def _sampled(
             normalise_name=_normaliser_name(store, normalise),
             start=lo,
             end=hi,
-        ),
+        )
+        | {"polarities": _polarities(samples["polarity"])},
         batch_ids=tuple(batches.categories),
         window=(lo, hi),
         members=tuple(_members(k) for k in items),
         normalise=normalise,
     )
+
+
+def _polarities(polarity: pd.Series) -> list[str]:
+    """The polarities of samples: ``+``, ``-`` or both, a
+    polarity-switching sample's (``+-``) both of its."""
+    found = {
+        sign
+        for value in polarity.dropna().astype(str).unique()
+        for sign in _streams(value)
+    }
+    return [sign for sign in ("+", "-") if sign in found]
 
 
 def _with_rows(store: CampaignStore, values: _Values) -> _Values:

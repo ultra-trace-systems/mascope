@@ -28,6 +28,8 @@ from .common import (
     face,
     normalise_notes,
     normaliser_name,
+    polarities,
+    pooled_note,
     run_notes,
     run_rules,
     species_refs,
@@ -319,6 +321,7 @@ def instrument_signal(
         "stat": attrs.get("stat"),
         "band": attrs.get("band"),
         "step_window": duration_text(window),
+        "polarities": polarities(attrs),
         "reagents": [refs[key] for key in reagents],
         "traces": traces,
         "shares": share_rows,
@@ -335,6 +338,11 @@ def instrument_signal(
             "one is below detection, the sum is the others' and its share is "
             "missing."
         )
+    notes += pooled_note(
+        attrs,
+        "the TIC pools them: a bin's median and its p10-p90 band mix the two "
+        "polarities' TICs, so the band can be the gap between them",
+    )
     notes += [*normalise_notes(attrs), *run_notes(attrs, zone), BELOW_DETECTION]
     return Figure(
         "instrument_signal",
@@ -382,6 +390,7 @@ KIND = registry.register(
             "stat",
             "band",
             "step_window",
+            "polarities",
             "normalise",
             "normalise_name",
             "cadence",

@@ -316,6 +316,14 @@ def compound_class(counts: dict[str, int] | None) -> str | None:
     return letters + ("X" if set(counts) - set("CHONS") else "")
 
 
+def _text(value: Any) -> str | None:
+    """*value* as text; None for a missing value and for blank text."""
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return None
+    text = str(value)
+    return text if text.strip() else None
+
+
 def _species_row(
     key: str,
     name: Any,
@@ -325,13 +333,15 @@ def _species_row(
     mz: float = np.nan,
 ) -> dict[str, Any]:
     """A ``species`` row. OSc is the carbon oxidation state estimated as
-    ``2 O/C - H/C`` (Kroll et al. 2011)."""
+    ``2 O/C - H/C`` (Kroll et al. 2011). A blank name or formula is none:
+    the server names a target ion without a compound name ``""``."""
+    formula = _text(formula)
     counts = element_counts(formula)
     row: dict[str, Any] = {
         "series_key": key,
-        "name": None if name is None or pd.isna(name) else str(name),
-        "formula": formula if isinstance(formula, str) else None,
-        "ion_formula": ion_formula if isinstance(ion_formula, str) else None,
+        "name": _text(name),
+        "formula": formula,
+        "ion_formula": _text(ion_formula),
         "mechanism": mechanism if isinstance(mechanism, str) else None,
         "class": compound_class(counts),
         "mz": float(mz) if mz is not None and not pd.isna(mz) else np.nan,
