@@ -9,8 +9,9 @@
 
 Status: **design, nothing built** (2026-10-05). The decisions in section 3 were
 settled in design review on that date; decision 11, where the finder lives,
-was added on 2026-11-05 (MAS-105, with the UX review's D1). Section 9 lists
-what is open, each item with a recommendation. Code anchors were read on `develop` on the same date
+was added on 2026-11-05 (MAS-105, with the UX review's D1), and decisions 12
+to 17 on 2026-11-22, which answer the rest of section 9: nothing there is
+open now. Code anchors were read on `develop` on the same date
 and are named where a claim rests on them.
 
 ## Picking this up
@@ -206,7 +207,7 @@ Facts a filter wants that are not columns:
 ## 3. Decisions
 
 Settled in design review, 2026-10-05; decision 11 on 2026-11-05; decisions
-12 and 13 on 2026-11-22.
+12 to 17 on 2026-11-22.
 
 | # | Decision |
 |---|---|
@@ -223,6 +224,10 @@ Settled in design review, 2026-10-05; decision 11 on 2026-11-05; decisions
 | 11 | The finder is a **destination in the navigation sidebar**, *Find samples*, beside *Raw files*, which moves there from the chart tabs (decided 2026-11-05 with decision D1 of `ux_review_2026_10.md`, the sidebar): both are global lists over the instruments a person can read, not views of the open batch. It fills the main area with a facet column and the chips, histogram, count, result table and actions. The acquisition workspaces stay browsable from the workspace switcher but stop being the route to a batch. |
 | 12 | A refreshable batch **never refreshes on its own**. Decision 2 holds without exception; a badge on the batch saying new samples match its recipe can follow (decided 2026-11-22, MAS-106). |
 | 13 | The finder **does not search analysis batches**. Finding one's own work is a different feature from finding samples by their acquisition record (decided 2026-11-22, MAS-110). |
+| 14 | **Registry fields and environments are defined by editors.** The global editor role or higher creates, changes and retires both, as ionization modes and instrument configurations are handled (`docs/authorization.md`, shared reference data). A field in use is retired, not deleted (decided 2026-11-22, MAS-104). |
+| 15 | A changed environment **flags, and re-runs nothing**. The batches holding the sample show stale against what their run recorded; existing runs keep their snapshot, and a person asks for the re-run (decided 2026-11-22, MAS-107). |
+| 16 | The list headers' key **stays `applies_to_contexts`** in schema 2. Its values are called regimes in the UI and here, and are checked against a vocabulary as list `tags` are (decided 2026-11-22, MAS-108). |
+| 17 | A sample is placed in time by **its window's start**, the file's start plus `t0`: one rule for the finder, the scopes and the charts (decided 2026-11-22, MAS-109). |
 
 Not chosen, and why:
 
@@ -267,7 +272,7 @@ counts simple, and `v` leaves room for it.
 
 | Clause | Reads | Notes |
 |---|---|---|
-| `datetime_utc` | `sample_file.datetime_utc` | half-open `[from, to)`; `to: null` is "and onwards", which is what makes a refresh useful. Relative ranges ("last 30 days") are left out: with an append-only refresh they would only ever accumulate |
+| `datetime_utc` | the sample's start: `sample_file.datetime_utc` plus the sample's `t0` (decision 17); the file's start until files are split into windows | half-open `[from, to)`; `to: null` is "and onwards", which is what makes a refresh useful. Relative ranges ("last 30 days") are left out: with an append-only refresh they would only ever accumulate |
 | `instrument` | `sample_file.instrument`, folded as `instrument_key` does | |
 | `chemistry` | the mode's chemistry key | not `ionization_mode_id` (section 2.4). Resolved to the set of mode ids sharing the key before the query, so no schema change. Once chemistry profiles are the unit a person sees (ingest design, phase 8), the clause names profiles |
 | `polarity` | `sample_item.polarity` | |
@@ -381,6 +386,9 @@ workspace: a filter across instruments needs "site" to be one field. An
 attribute template becomes a named selection of registry fields to show in a
 form; the free-form labels people use today keep working as batch annotations
 and are not migrated.
+Fields are defined at the global editor role or higher: create, change and
+retire, as for the other shared reference data (decision 14). A field that
+acquisition metadata uses is retired, not deleted.
 
 **Storage.** `acquisition_metadata`: one row per (`sample_file_id`,
 `part_key`), where an empty part key means the whole file, holding a JSONB
@@ -503,6 +511,13 @@ default as today, and the preview says which happened.
 **What a run records.** The resolved-profile snapshot on the run gains the
 environments, the regimes, and the id and version of every list read, beside
 the context and window it already holds.
+
+**When an environment changes.** Nothing re-runs (decision 15). Metadata is
+read through, so nothing is written to a batch when a tag changes; a batch
+is stale when its samples' current environments differ from those its run
+recorded, which is compared on read and shown in the assign launcher's
+preview. Existing runs keep their snapshot, and a person asks for the
+re-run.
 
 **Before it is on by default.** The house rule of the assignment work
 applies: measured on the testbed against the reference before any default
@@ -632,12 +647,12 @@ phase 1 depends on nothing.
 
 | # | Question | Recommendation |
 |---|---|---|
-| 1 | Who may define registry fields and environments? | As ionization modes do: any editor creates, changing or deleting needs admin, since both reach every instrument's data |
+| 1 | Who may define registry fields and environments? | *Decided 2026-11-22, decision 14:* the global editor role or higher creates, changes and retires both. The recommendation here was "any editor creates, changing or deleting needs admin", as ionization modes were thought to do; since 2026-08-20 a mode is created, edited and deleted at editor level, and `docs/authorization.md` says so of shared reference data (MAS-104) |
 | 2 | Where does the finder live? | *Decided 2026-11-05, decision 11:* a destination in the navigation sidebar beside *Raw files*, which moves there too; the acquisition workspaces stay browsable but stop being the route to a batch (MAS-105) |
 | 3 | Does a refresh ever run on its own? | *Decided 2026-11-22, decision 12:* no (decision 2 says asked for). A badge on the batch saying new samples match its recipe is cheap and can follow (MAS-106) |
-| 4 | Does changing a sample's environment flag the batches holding it for re-assignment? | Show it on the batch; do not re-run anything unasked. Existing runs keep their snapshot |
-| 5 | The list headers call regimes `applies_to_contexts`, but they are not chemistry contexts. Rename? | Keep the key in schema 2; call them regimes in the UI and here; hold them to a checked vocabulary as list `tags` are |
-| 6 | Which time does `datetime_utc` filter on once files are split into windows: the file's start or the window's? | The window's start (file start plus `t0`), so a long file's parts sort and filter where they were measured |
+| 4 | Does changing a sample's environment flag the batches holding it for re-assignment? | *Decided 2026-11-22, decision 15:* it flags them as stale and re-runs nothing; existing runs keep their snapshot. The flag is read, not written (section 4.6; MAS-107, built in MAS-342) |
+| 5 | The list headers call regimes `applies_to_contexts`, but they are not chemistry contexts. Rename? | *Decided 2026-11-22, decision 16:* no. The key stays in schema 2; they are called regimes in the UI and here, and held to a checked vocabulary as list `tags` are (MAS-108, built in MAS-336) |
+| 6 | Which time does `datetime_utc` filter on once files are split into windows: the file's start or the window's? | *Decided 2026-11-22, decision 17:* the window's start (file start plus `t0`), so a long file's parts sort and filter where they were measured. One rule with the scopes of `time_scopes.md` and the charts of `mascope_viz`, which read the file's start today; the code follows with the ingest design's phase 6 (MAS-109, MAS-93) |
 | 7 | Should the finder also search analysis batches a person can read? | *Decided 2026-11-22, decision 13:* not in this design (decision 1). It would be a different feature: finding one's own work (MAS-110) |
 
 ---
