@@ -45,7 +45,7 @@ import time
 import weakref
 from collections import Counter
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any, Optional
 
@@ -1216,6 +1216,11 @@ async def _propose_given(ctx: RunContext) -> None:
     rows, and for the neutrals they name, which corroborate a reading through
     a secondary channel. A person's choice reads none: its rules are the
     spectrum's.
+
+    A given reading through a secondary channel the sample did not open is
+    judged as an opened channel's, as a run of the sample that opened it
+    judges it (MAS-1039): the channel joins the ones the pass reads through
+    (``ResolvedProfile.given_channels``) before the lists are read.
     """
     ctx.seeds = {
         (annotation.formula, annotation.ionization_mechanism_id)
@@ -1224,6 +1229,7 @@ async def _propose_given(ctx: RunContext) -> None:
     }
     await _recorded_measurement(ctx)
     if ctx.path.rules is Rules.RUN:
+        _open_given_channels(ctx)
         known = await sample_inputs._fetch_known_isotopes(
             ctx.sample,
             ctx.match_params.isotope_abundance_threshold,
@@ -1234,6 +1240,30 @@ async def _propose_given(ctx: RunContext) -> None:
         )
         ctx.listed_formulas = listed_formula_identities(known)
         ctx.listed_ions = listed_ions(known)
+
+
+def _open_given_channels(ctx: RunContext) -> None:
+    """Read the given readings' unopened secondary channels as opened ones
+    (``sample_mechanisms.given_secondary_channels``): the hold, the partner
+    gate and the lists then read a reading through one as a run that opened
+    it reads it."""
+    channels = sample_mechanisms.given_secondary_channels(
+        [mechanism_id for _, mechanism_id in ctx.seeds],
+        ctx.searched_mechanisms,
+        ctx.secondary_mechanisms,
+        ctx.resolved_profile,
+    )
+    if not channels:
+        return
+    ctx.resolved_profile = replace(ctx.resolved_profile, given_channels=channels)
+    ctx.searched_mechanisms = sample_mechanisms._searched_mechanisms(
+        ctx.mechanisms, ctx.secondary_mechanisms, ctx.resolved_profile
+    )
+    runtime.logger.info(
+        f"Sample '{ctx.sample.sample_item_name}' reads batch decisions through "
+        f"{', '.join(channels)}, which its spectrum did not open: judged as "
+        "an opened channel's readings"
+    )
 
 
 async def _recorded_measurement(ctx: RunContext) -> None:
