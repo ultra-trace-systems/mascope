@@ -2224,6 +2224,34 @@ def test_spectrogram_rows_widen_past_the_cap_and_say_so(month):
     assert len(narrow.rows) > rows and not narrow.widened
 
 
+def test_spectrogram_rows_hold_at_most_the_cap(month):
+    """A cap a width's grid meets exactly takes that width: "at most",
+    not "under"."""
+    _, store = month
+    span = {k: len(views.spectrogram(store, mz_width=float(k)).rows) for k in (1, 2, 3)}
+    assert span[1] > span[2] > span[3]
+
+    exact = views.spectrogram(store, max_rows=span[1])
+    third = views.spectrogram(store, max_rows=span[3])
+
+    assert exact.mz_width == 1.0 and not exact.widened
+    assert third.mz_width == 3.0 and third.widened
+    assert len(third.rows) == span[3]
+    assert views.spectrogram(store, max_rows=span[3] - 1).mz_width > 3.0
+
+
+def test_spectrogram_rows_widen_to_the_smallest_multiple_that_holds():
+    """The widening starts at a multiple no larger than the smallest that
+    holds the grid: from m/z 3.2 to 86.6, 85 rows of 1 Th, a cap of 42
+    takes 2 Th (42 rows), where a start at 85 / 42 rounded up would skip
+    to 3."""
+    mz = np.array([3.2, 86.6])
+
+    assert views._grid_width(mz, 1.0, 42) == (2.0, True)
+    assert views._grid_width(mz, 1.0, 85) == (1.0, False)
+    assert views._grid_width(mz, 0.5, 42) == (2.0, True)
+
+
 def test_a_spectrogram_rows_top_formula_contributes_most(month, values):
     campaign, store = month
 

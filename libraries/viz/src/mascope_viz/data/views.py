@@ -2377,7 +2377,10 @@ def _grid_width(mz: np.ndarray, width: float, max_rows: int) -> tuple[float, boo
 
     if rows(width) <= max_rows:
         return width, False
-    factor = max(2, math.ceil(rows(width) / max_rows))
+    # The rows at width w lie between span / w and span / w + 2, so no
+    # factor f with f * max_rows <= rows(width) - 2 can hold the grid:
+    # start at the first that might, never past the smallest that does
+    factor = max(2, (rows(width) - 2) // max_rows + 1)
     while rows(factor * width) > max_rows:
         factor += 1
     return factor * width, True
