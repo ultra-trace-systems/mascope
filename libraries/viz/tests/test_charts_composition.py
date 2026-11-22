@@ -831,11 +831,16 @@ def test_the_signal_is_named_by_the_instrument_type(types, variable):
 @pytest.mark.parametrize(
     "call, message",
     [
-        (lambda s: period_spectrum(s, top_n=-1), "top_n"),
-        (lambda s: period_spectrum(s, top_n=2.5), "top_n"),
-        (lambda s: van_krevelen(s, top_n=-1), "top_n"),
+        # The chart's own check, before the spec's ("...: option top_n=-1")
+        (lambda s: period_spectrum(s, top_n=-1), "^top_n=-1 is negative"),
+        (lambda s: period_spectrum(s, top_n=2.5), "^top_n=2.5 is no count"),
+        (lambda s: van_krevelen(s, top_n=-1), "^top_n=-1 is negative"),
+        (lambda s: van_krevelen(s, top_n=2.5), "^top_n=2.5 is no count"),
         (lambda s: van_krevelen(s, tiers=[]), "tiers is empty"),
         (lambda s: spectrogram(s, mz_width=-1), "mz_width"),
+        (lambda s: spectrogram(s, top_n=-1), "^top_n=-1 is negative"),
+        (lambda s: spectrogram(s, top_n=2.5), "^top_n=2.5 is no count"),
+        (lambda s: spectrogram(s, top_n=True), "^top_n=True is no count"),
     ],
 )
 def test_a_wrong_argument_to_a_chart_says_what_is_wrong(month, call, message):
@@ -843,6 +848,14 @@ def test_a_wrong_argument_to_a_chart_says_what_is_wrong(month, call, message):
 
     with pytest.raises(ValueError, match=message):
         call(store)
+
+
+def test_a_count_a_chart_takes_is_a_plain_int():
+    """A NumPy integer is a count too, and comes back a plain int, as a
+    JSON summary takes it."""
+    count = chart_common.check_count("top_n", np.int64(3))
+
+    assert count == 3 and type(count) is int
 
 
 def test_a_colour_scale_of_one_value_fits_its_data():

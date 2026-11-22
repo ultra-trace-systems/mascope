@@ -699,6 +699,16 @@ def text(value: Any) -> str | None:
     return str(value)
 
 
+def check_count(name: str, value: Any) -> int:
+    """*value* as a count a chart takes, such as ``top_n``: a whole number,
+    not negative; a ValueError naming *name* otherwise."""
+    if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+        raise ValueError(f"{name}={value!r} is no count")
+    if value < 0:
+        raise ValueError(f"{name}={value!r} is negative")
+    return int(value)
+
+
 def percent(share: float) -> str:
     """A share as a note, a label or a hover says it: ``12 %``, ``0.4 %``,
     ``under 0.1 %``."""

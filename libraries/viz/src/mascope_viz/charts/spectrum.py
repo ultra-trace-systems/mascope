@@ -65,10 +65,7 @@ def period_spectrum(
         whose sum divides.
     :param tz: The zone a time without one is in, and times are shown in.
     """
-    if isinstance(top_n, bool) or not isinstance(top_n, (int, np.integer)):
-        raise ValueError(f"top_n={top_n!r} is no count")
-    if top_n < 0:
-        raise ValueError(f"top_n={top_n!r} is negative")
+    top_n = common.check_count("top_n", top_n)
     compare = other_start is not None or other_end is not None
     frame = views.spectrum(
         store,
