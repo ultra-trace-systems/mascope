@@ -229,6 +229,48 @@ describe('calibrationStatus', () => {
     expect(status.tooltip).not.toContain('skipped')
   })
 
+  it('says a TOF calibration was transferred from the two nearest fitted files', () => {
+    const status = calibrationStatus({
+      mode: 0,
+      par: [2830.0, -9000.0],
+      status: 'transferred',
+      verified: true,
+      transfer: {
+        sources: [
+          { sample_file_id: 'sf-a', gap_s: -360, weight: 0.4 },
+          { sample_file_id: 'sf-b', gap_s: 240, weight: 0.6 }
+        ],
+        gap_s: 240,
+        window_s: 1800
+      }
+    })
+
+    expect(status.state).toBe('transferred')
+    expect(status.severity).toBe('muted')
+    expect(status.clickable).toBe(true)
+    expect(status.tooltip).toBe(
+      'm/z calibration transferred from the two nearest fitted files of the ' +
+        'instrument, interpolated in time (the nearer 4 min away). Its ionization ' +
+        'mode has no calibrants of its own. Matches and assignments use it; a fit ' +
+        'of the file itself replaces it.'
+    )
+  })
+
+  it('says a TOF calibration was transferred from the one fitted file in reach', () => {
+    const status = calibrationStatus({
+      mode: 0,
+      par: [2830.0, -9000.0],
+      status: 'transferred',
+      verified: true,
+      transfer: { sources: [{ sample_file_id: 'sf-a', gap_s: -720, weight: 1 }], gap_s: 720 }
+    })
+
+    expect(status.state).toBe('transferred')
+    expect(status.tooltip).toMatch(
+      /^m\/z calibration transferred from the nearest fitted file of the instrument, 12 min away\. /
+    )
+  })
+
   it('shows a TOF file on its acquisition axis as not calibrated', () => {
     for (const record of [
       { mode: 0, par: [1, 2], status: 'unfitted', verified: false },

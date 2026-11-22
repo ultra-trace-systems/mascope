@@ -19,6 +19,7 @@ import { canCalibrateInstruments } from '@/lib/permissions'
 import { segmentListItems, splitQualityIssues } from '@/lib/calibrationSegments'
 import { calibrationPointRows } from '@/lib/calibrationPoints'
 import { calibrationSettingsText } from '@/lib/calibrationSettings'
+import { transferText } from '@/lib/calibrationTransfer'
 
 const mzFit = useMzFit()
 const confirm = useConfirm()
@@ -114,6 +115,13 @@ const segmentLists = computed(() => {
     { heading: 'Applied:', ranges: applied },
     ...(fitted.length > 0 ? [{ heading: 'This fit:', ranges: fitted }] : [])
   ]
+})
+// Where the calibration the sample runs on came from, when it was transferred
+// from neighbouring files rather than fitted on the file: the dialog's fit
+// then has no calibrants to work with, and this says what the badge says.
+const appliedTransfer = computed(() => {
+  const sample = batch.value ? previewSample.value : original.value
+  return transferText(sample?.mz_calibration)
 })
 // Whether the deployment keeps a below-bar fit out of matching ("enforce"),
 // which is the only case saving one needs an explicit acceptance.
@@ -379,6 +387,15 @@ const formatter = new Intl.NumberFormat('en-US', {
             {{ mzFit.error }}
           </Message>
         </div>
+        <Message
+          v-if="appliedTransfer"
+          severity="info"
+          style="margin-bottom: 0.3rem"
+          data-testid="calibration-transferred"
+        >
+          Applied: {{ appliedTransfer }} Its ionization mode has no calibrants of its own; a fit
+          saved here replaces the transfer.
+        </Message>
         <Message
           v-if="qualityIssues.length > 0"
           severity="warn"

@@ -19,6 +19,10 @@
  *   is still verified and matched; under `"enforce"` it is unverified (matches
  *   skipped) unless an operator accepted it (`verified: true`, `accepted_by`).
  *   Whenever downstream results run on it, the badge keeps saying so.
+ * - `{status: "transferred", transfer: {...}}` - a TOF file whose mode has no
+ *   calibrants, given the calibration of the nearest fitted files of its
+ *   instrument (`@/lib/calibrationTransfer`). Verified and matched; a fit of
+ *   the file itself replaces it.
  * - `{status: "ok", verified: true, ...}` - an applied fit that clears the
  *   bar, optionally with a `quality` block (calibration point count, pre/post
  *   mean |m/z error| in ppm) recorded at fit time. `acquisition_drift` marks a
@@ -46,6 +50,7 @@
 
 import { carriedSegmentsText } from '@/lib/calibrationSegments'
 import { calibrationSpanText } from '@/lib/calibrationPoints'
+import { isTransferred, transferText } from '@/lib/calibrationTransfer'
 
 const ppm = (value) => (value === null || value === undefined ? null : `${value.toFixed(2)} ppm`)
 
@@ -68,7 +73,8 @@ const STALE_TEXT =
  * `poor`, `warned` and `accepted` (warn - a calibration that is not good
  * enough, used or not), `stale` (warn - a fit made on an older version of the
  * calibration collection), `drifted` (info - calibrated fine, the instrument
- * needs attention), `unfitted`/`unverified` (secondary), `ok` (muted), `none`.
+ * needs attention), `unfitted`/`unverified` (secondary), `transferred` and
+ * `ok` (muted), `none`.
  *
  * @param {object|null|undefined} mzCalibration - `sample.mz_calibration` record
  * @param {boolean|null|undefined} [collectionStale] -
@@ -143,6 +149,18 @@ function recordStatus(mzCalibration) {
       tooltip:
         'Not calibrated: the m/z axis is the one the acquisition wrote. ' +
         'Match computation and peak assignment are skipped. Click to calibrate.'
+    }
+  }
+
+  if (isTransferred(mzCalibration)) {
+    return {
+      state: 'transferred',
+      icon: 'ph ph-scales',
+      severity: 'muted',
+      clickable: true,
+      tooltip:
+        `${transferText(mzCalibration)} Its ionization mode has no calibrants of its ` +
+        'own. Matches and assignments use it; a fit of the file itself replaces it.'
     }
   }
 

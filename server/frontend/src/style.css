@@ -286,6 +286,13 @@
     color: var(--p-text-muted-color);
   }
 
+  /* Calibrated, but from neighbouring files rather than on its own
+     calibrants: green, lighter than a fit of its own. */
+  .browser .calibration-transferred {
+    color: var(--state-success);
+    opacity: 0.45;
+  }
+
   .browser .calibration-none {
     color: var(--p-text-muted-color);
     opacity: 0.45;
