@@ -549,6 +549,30 @@ async def test_the_list_marks_a_fit_on_an_older_version(
 
 
 @pytest.mark.asyncio
+async def test_the_sample_read_marks_a_fit_on_an_older_version(
+    owner_client, async_session_factory, ctx
+):
+    """GET /samples/{id} carries the mark too: the store swaps it in for a row."""
+    ids = await _setup(async_session_factory)
+    now = await collection_version(ids["collection"], [ids["mechanism"]])
+    _, item_id = await _batch(
+        async_session_factory, ctx, ids["mode"], record=_tof_record(now)
+    )
+
+    async def read():
+        response = await owner_client.get(f"/api/samples/{item_id}")
+        assert response.status_code == 200, response.text
+        return response.json()["data"]["mz_calibration_collection_stale"]
+
+    assert await read() is False
+
+    added = await _another_compound(async_session_factory, ids["mechanism"])
+    await _edit_compounds(owner_client, ids["collection"], [ids["compound"], added])
+
+    assert await read() is True
+
+
+@pytest.mark.asyncio
 async def test_the_list_marks_a_fit_on_a_collection_emptied_since(
     owner_client, async_session_factory, ctx
 ):
