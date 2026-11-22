@@ -351,7 +351,10 @@ encoding takes and each option's default. What every figure shares:
   their column holds, as are a text or a boolean column; they take neither
   a range nor a log scale. The y of a list of `y` and a box's y draw
   numbers. `mascope_viz.charts.spec.axis_kind` says which, for the spec's
-  check and the renderers alike.
+  check and the renderers alike. Category labels that would overlap
+  slant, and where even slanted they would, every so many are kept, as
+  plotly turns and thins its own; matplotlib measures them on the laid-out
+  figure.
 - **`share_x`** joins the x axis of every plotted panel, zoom included,
   on both renderers. They must all draw times or all numbers.
 - **`where`** keeps the rows of the figure's frame a panel draws, so small
