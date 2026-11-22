@@ -100,6 +100,40 @@ class NotFound(VizError):
         }
 
 
+class InvalidChart(VizError, ValueError):
+    """A chart asked for with parameters it cannot draw as given, or over
+    a window that holds nothing to draw: the message says which, and what
+    to change. A :class:`ValueError` too."""
+
+    code = "invalid_chart"
+
+
+class UnknownSpecies(InvalidChart):
+    """A species a chart was asked for that the store holds under no key,
+    name or formula.
+
+    :ivar query: The species as given.
+    :ivar near: The keys, names and formulas of the store closest to it.
+    """
+
+    code = "unknown_species"
+
+    def __init__(self, query: str, near: Sequence[str]):
+        self.query = query
+        self.near = list(near)
+        hint = (
+            f" The nearest the store holds: {listed(self.near)}." if self.near else ""
+        )
+        super().__init__(
+            f"The store holds no species {query!r}: give a series key, a "
+            "species' name, its neutral or its ion formula as the store "
+            "spells them (case counts), or top:N." + hint
+        )
+
+    def details(self) -> dict[str, Any]:
+        return {"query": self.query, "near": self.near[:LISTED]}
+
+
 class AccessDenied(VizError):
     """A 403: the token's user may not read what the scope names."""
 

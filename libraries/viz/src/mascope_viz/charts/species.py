@@ -1,0 +1,322 @@
+"""The species a chart draws: the ``species`` parameter every species chart
+takes, resolved to the store's series keys.
+
+Each item names a species as the store does, tried in this order:
+
+- an exact series key (``ion:<target_ion_id>``,
+  ``formula:<formula>|<mechanism>``), or ``tic``;
+- else a literal, case-sensitive match on a species' name, its neutral
+  formula or its ion formula;
+- or ``top:N``: the N species with the highest median over the chart's own
+  window, under its own normalisation (:func:`mascope_viz.data.views.top`).
+
+A formula held both as a target ion and as an assigned formula under the
+same mechanism resolves to the target ion's ``ion:`` key: the collection's
+identity, which survives a change of engine run, where the formula's key
+does not. A formula read under several mechanisms resolves to every one of
+them, a series each, the mechanism named in its legend
+(``docs/dev/time_scopes.md``, decision 3). An item that matches nothing is
+an error that lists the store's nearest names.
+
+A recipe's named list of species is such a list of items. The resolved
+list goes into each chart's summary, so that a caption can cite it and a
+rerun can pin it.
+"""
+
+import difflib
+import re
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Any
+
+import pandas as pd
+
+from ..data import views
+from ..data.store import CampaignStore
+from ..errors import InvalidChart, UnknownSpecies
+
+
+#: ``top:N``.
+_TOP = re.compile(r"^top:(\d+)$")
+
+#: How many near names an unknown species' error offers.
+_NEAR = 8
+
+
+@dataclass(frozen=True)
+class Species:
+    """One series a chart draws.
+
+    :ivar key: Its series key.
+    :ivar name: What its legend, title and hover text say: the species'
+        name, with its mechanism where another species of the list shares
+        its name or formula.
+    :ivar formula: Its neutral formula; None for the TIC or a species the
+        store gives none.
+    :ivar mechanism: The mechanism it is read under; None where the store
+        names none.
+    """
+
+    key: str
+    name: str
+    formula: str | None = None
+    mechanism: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """The species as a summary gives it: ``key``, ``name``,
+        ``formula``."""
+        return {"key": self.key, "name": self.name, "formula": self.formula}
+
+
+@dataclass(frozen=True)
+class Resolved:
+    """The species a ``species`` parameter names, in order, each once.
+
+    :ivar species: The species, in the order the items name them.
+    :ivar given: The parameter as given, as plain JSON: a text or a list
+        of them.
+    """
+
+    species: tuple[Species, ...]
+    given: Any
+
+    @property
+    def keys(self) -> list[str]:
+        return [s.key for s in self.species]
+
+    def name(self, key: str) -> str:
+        return next(s.name for s in self.species if s.key == key)
+
+
+def _items(species: Any) -> list[str]:
+    """The parameter as a list of texts."""
+    if isinstance(species, str):
+        items = [species]
+    elif isinstance(species, Sequence):
+        items = list(species)
+    else:
+        raise InvalidChart(
+            f"species={species!r} is no species: give a key, a name, a "
+            "formula, top:N, or a list of them"
+        )
+    if not items:
+        raise InvalidChart("species is an empty list: name at least one species")
+    for item in items:
+        if not isinstance(item, str) or not item.strip():
+            raise InvalidChart(
+                f"species holds {item!r}, which is no key, name or formula"
+            )
+    return [item.strip() for item in items]
+
+
+def _table(store: CampaignStore) -> pd.DataFrame:
+    """The store's species as text columns, ``None`` where it names none:
+    object columns, since a text column of pandas 3 reads ``None`` as NaN,
+    which is no falsy name."""
+    species = store.table("species")
+    out = pd.DataFrame(index=range(len(species)))
+    for column in ("series_key", "name", "formula", "ion_formula", "mechanism"):
+        values = species[column].astype(object).to_numpy()
+        out[column] = pd.Series(
+            [None if pd.isna(v) else str(v) for v in values], dtype=object
+        )
+    return out
+
+
+def _identities(table: pd.DataFrame) -> dict[str, list[str]]:
+    """Each formula key held by a target ion of the same formula and
+    mechanism, to those ions' keys."""
+    ions = table[table["series_key"].str.startswith("ion:")]
+    held: dict[tuple[str, str], list[str]] = {}
+    for row in ions.itertuples():
+        if row.formula and row.mechanism:
+            held.setdefault((row.formula, row.mechanism), []).append(row.series_key)
+    formulas = table[table["series_key"].str.startswith("formula:")]
+    return {
+        row.series_key: held[(row.formula, row.mechanism)]
+        for row in formulas.itertuples()
+        if (row.formula, row.mechanism) in held
+    }
+
+
+def _matched(table: pd.DataFrame, item: str, identities: dict[str, list[str]]):
+    """The keys *item* names by name or formula, a formula a target ion
+    holds as that ion's key."""
+    hit = (
+        (table["name"] == item)
+        | (table["formula"] == item)
+        | (table["ion_formula"] == item)
+    )
+    keys: list[str] = []
+    for key in table.loc[hit, "series_key"]:
+        for resolved in identities.get(key, [key]):
+            if resolved not in keys:
+                keys.append(resolved)
+    by_key = table.set_index("series_key")
+    # Ions first, then by mechanism, so that a rerun gives the same order
+    return sorted(
+        keys,
+        key=lambda k: (
+            not k.startswith("ion:"),
+            by_key.loc[k, "mechanism"] or "",
+            k,
+        ),
+    )
+
+
+def _near(table: pd.DataFrame, item: str) -> list[str]:
+    """The store's keys, names and formulas closest to *item*: those equal
+    to it but for case first, then the closest spellings."""
+    pool = list(
+        dict.fromkeys(
+            str(v)
+            for column in ("name", "formula", "ion_formula", "series_key")
+            for v in table[column]
+            if v
+        )
+    )
+    folded = [v for v in pool if v.casefold() == item.casefold()]
+    close = difflib.get_close_matches(item, pool, n=_NEAR, cutoff=0.6)
+    return list(dict.fromkeys(folded + close))[:_NEAR]
+
+
+def _top(
+    store: CampaignStore,
+    n: int,
+    table: pd.DataFrame,
+    identities: dict[str, list[str]],
+    *,
+    normalise: Any,
+    tz: str | None,
+    start: Any,
+    end: Any,
+) -> list[str]:
+    """The *n* species of the highest median, each once: a formula a target
+    ion holds counts as that ion, and the normaliser's own keys, which it
+    divides to one, are left out."""
+    members = set(views._members(views._check_normalise(normalise)))
+    candidates = [
+        key
+        for key in table["series_key"]
+        if key not in identities and key not in members
+    ]
+    if not candidates:
+        raise InvalidChart(
+            "top:N has no species to rank: the store holds none besides the "
+            "normaliser's"
+        )
+    ranked = views.top(
+        store,
+        n,
+        "median",
+        keys=candidates,
+        normalise=normalise,
+        tz=tz,
+        start=start,
+        end=end,
+    )
+    return [str(key) for key in ranked["key"]]
+
+
+def resolve(
+    store: CampaignStore,
+    species: Any,
+    *,
+    normalise: Any = "none",
+    tz: str | None = None,
+    start: Any = None,
+    end: Any = None,
+) -> Resolved:
+    """The series keys *species* names (see the module).
+
+    :param species: A key, a name, a formula or ``top:N``, or a list of
+        them.
+    :param normalise: The chart's normalisation, which ``top:N`` ranks
+        under.
+    :param tz: The chart's zone,
+    :param start: its window's start,
+    :param end: and its end, which ``top:N`` ranks over.
+    :raises UnknownSpecies: An item matches no species of the store.
+    :raises InvalidChart: The parameter is no list of species, or
+        ``top:N`` finds none with a value in the window.
+    """
+    items = _items(species)
+    table = _table(store)
+    identities = _identities(table)
+    held = set(table["series_key"])
+    keys: list[str] = []
+    for item in items:
+        top = _TOP.match(item)
+        if top:
+            n = int(top.group(1))
+            if n < 1:
+                raise InvalidChart(f"{item!r}: top:N takes N of at least 1")
+            found = _top(
+                store,
+                n,
+                table,
+                identities,
+                normalise=normalise,
+                tz=tz,
+                start=start,
+                end=end,
+            )
+            if not found:
+                raise InvalidChart(
+                    f"{item!r}: no species has a value in the window to rank"
+                )
+        elif item == views.TIC or item in held:
+            found = [item]
+        else:
+            found = _matched(table, item, identities)
+            if not found:
+                raise UnknownSpecies(item, _near(table, item))
+        keys.extend(k for k in found if k not in keys)
+    given = species if isinstance(species, str) else list(items)
+    return Resolved(_named(table, keys), given)
+
+
+def _named(table: pd.DataFrame, keys: list[str]) -> tuple[Species, ...]:
+    """The species of *keys*, each named: by its name, the mechanism added
+    where another of them shares its name or formula, the key where that
+    does not tell them apart."""
+    by_key = table.drop_duplicates("series_key").set_index("series_key")
+    rows = []
+    for key in keys:
+        if key == views.TIC:
+            rows.append(Species(key, "TIC"))
+            continue
+        row = by_key.loc[key]
+        rows.append(
+            Species(
+                key,
+                row["name"] or row["formula"] or key,
+                row["formula"],
+                row["mechanism"],
+            )
+        )
+
+    def mechanisms(i: int) -> set[str | None]:
+        """The mechanisms of the species that share species *i*'s name or
+        formula, its own included."""
+        mine = rows[i]
+        return {
+            s.mechanism
+            for s in rows
+            if s.name == mine.name
+            or (mine.formula is not None and s.formula == mine.formula)
+        }
+
+    out = []
+    for i, s in enumerate(rows):
+        name = s.name
+        if s.mechanism and len(mechanisms(i)) > 1:
+            name = f"{name} {s.mechanism}"
+        out.append(Species(s.key, name, s.formula, s.mechanism))
+    seen = [s.name for s in out]
+    return tuple(
+        Species(s.key, f"{s.name} ({s.key})", s.formula, s.mechanism)
+        if seen.count(s.name) > 1
+        else s
+        for s in out
+    )
