@@ -1970,7 +1970,14 @@ The Mascope frontend is build with the following technologies:
   - [Single File Components](https://vuejs.org/api/sfc-spec.html)
   - [`<script setup>`](https://vuejs.org/api/sfc-script-setup.html#script-setup)
 - [Pinia stores](https://pinia.vuejs.org/introduction.html) with the [setup store syntax](https://pinia.vuejs.org/core-concepts/#Setup-Stores)
-- [PrimeVue](https://primevue.org/introduction/) as the component library
+- [PrimeVue](https://primevue.org/introduction/) as the component library,
+  pinned at 4.5.4 with PrimeIcons 7. PrimeVue 5 and PrimeIcons 8 are under
+  the commercial PrimeUI licence and stay out: `.github/dependabot.yml`
+  ignores both majors, and the licence gate (`tooling/check-licenses.py`)
+  fails on them. PrimeVue 4.5.5 stays out too, because it breaks manual
+  input in the 24-hour `DatePicker`. Decided on 2026-11-22 (MAS-102): stay
+  on this MIT line through release 2.0, and look again after it, or sooner
+  on a security advisory against PrimeVue 4 or a Vue major it cannot follow
 - [Vite](https://vitejs.dev/guide/) as the build tool + dev server
 - [Vitest](https://vitest.dev/guide/) for unit tests
 - [Playwright](https://playwright.dev/docs/intro) for end-to-end tests
