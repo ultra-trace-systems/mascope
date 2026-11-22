@@ -63,7 +63,8 @@ def largest_step(
 
     At each bin's start, the ratio of the median of the bins' values in the
     *window* after it to the median of the bins one *window* earlier, the
-    bins of the window before it. Only the pairs of bins that both hold a
+    bins of the window before it (each paired with the bin nearest to one
+    window before it, within half a bin). Only the pairs of bins that both hold a
     value count, and only where more than half the window's bins pair up:
     so each side holds the same hours of the day, a window of a whole day
     cancels a diurnal cycle even beside a gap, and a stretch without
@@ -87,10 +88,7 @@ def largest_step(
     width = window.value
     step = float(np.median(np.diff(ns)))
     need = width / step / 2
-    # Each bin's value one window earlier, NaN where there is no such bin
-    earlier = (
-        pd.Series(values, index=ns).groupby(level=0).first().reindex(ns - width)
-    ).to_numpy("float64")
+    earlier = _one_window_earlier(ns, values, width, step)
     paired = np.isfinite(values) & np.isfinite(earlier)
     hi = np.searchsorted(ns, ns + width, side="left")
     log_ratio = np.full(len(ns), np.nan)
@@ -122,6 +120,25 @@ def largest_step(
     }
 
 
+def _one_window_earlier(
+    ns: np.ndarray, values: np.ndarray, width: int, step: float
+) -> np.ndarray:
+    """Each bin's partner one *width* earlier (*ns* sorted, as
+    :func:`largest_step` takes them): the value of the bin nearest
+    to that time, if it lies within half a bin (*step*) of it and before the
+    bin itself, else NaN. Nearest, not exact, so bins that do not divide the
+    window (7-minute bins, irregular raw samples, local days across a clock
+    change) still pair."""
+    target = ns - width
+    right = np.clip(np.searchsorted(ns, target), 0, len(ns) - 1)
+    left = np.clip(right - 1, 0, len(ns) - 1)
+    nearest = np.where(
+        np.abs(ns[right] - target) < np.abs(ns[left] - target), right, left
+    )
+    near = (np.abs(ns[nearest] - target) <= step / 2) & (ns[nearest] < ns)
+    return np.where(near, values[nearest], np.nan)
+
+
 def drift(times: pd.Series, values: np.ndarray) -> float | None:
     """The last full day's median of a binned trace over its first full
     day's: a day whose bins all lie in the trace's span (in the times'
@@ -136,7 +153,9 @@ def drift(times: pd.Series, values: np.ndarray) -> float | None:
     days = t.normalize()
     medians = []
     for day in days.unique():
-        next_day = (day + pd.Timedelta(days=1)).normalize()
+        # The next midnight on the wall clock: a day across a clock change
+        # is 23 or 25 hours long
+        next_day = day + pd.DateOffset(days=1)
         if day < t[0] or next_day > end:
             continue
         mine = values[(t >= day) & (t < next_day)]

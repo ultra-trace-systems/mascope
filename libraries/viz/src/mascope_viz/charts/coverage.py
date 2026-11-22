@@ -85,7 +85,9 @@ def coverage(
 ) -> Figure:
     """When the instrument acquired, and what of it a batch holds.
 
-    :param cadence: A cell's width, a pandas offset.
+    :param cadence: A cell's width, a fixed pandas offset (``1h``, ``1D``,
+        ``7D``). A calendar period such as ``W`` or ``MS`` is refused: its
+        cells would differ in width, and a strip's cells share one.
     :param min_gap: The shortest stretch without a sample that is shaded
         as a gap.
     :param tz: The zone the cells are in.
@@ -95,6 +97,13 @@ def coverage(
     found = views.coverage(
         store, cadence=cadence, min_gap=min_gap, tz=tz, start=start, end=end
     )
+    try:
+        cell = pd.Timedelta(pd.tseries.frequencies.to_offset(cadence))
+    except ValueError as e:
+        raise ValueError(
+            f"cadence={cadence!r} is a calendar period, and a coverage cell has "
+            "one width: give a duration such as '1h', '1D' or '7D'"
+        ) from e
     bins = found.bins
     attrs = bins.attrs
     zone = attrs["tz"]
@@ -115,7 +124,7 @@ def coverage(
     )
     gaps = found.gaps
     shortest = duration_text(min_gap)
-    width = duration_text(pd.Timedelta(pd.tseries.frequencies.to_offset(cadence)))
+    width = duration_text(cell)
     panel = Panel(
         "strip",
         axes={
