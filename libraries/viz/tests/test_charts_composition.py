@@ -424,23 +424,32 @@ def test_the_mirror_draws_the_other_period_below(month):
     np.testing.assert_array_equal(
         mirror["mark"], mirror["label"].notna().to_numpy() & (own < 0.5)
     )
-    # Two nights in which a faint peak is seen in about a third of the
-    # samples, every stick labelled
-    night = pd.Timestamp("2026-06-03T00:00", tz="UTC")
+    # A morning, in which a peak of the fixture is seen in few samples,
+    # against the afternoon, in which it is seen in all: every stick
+    # labelled, and each side marked by its own period's presence
+    morning = pd.Timestamp("2026-06-02T06:00", tz="UTC")
     wide = period_spectrum(
         store,
-        start=night,
-        end=night + DAY / 3,
-        other_start=night - DAY,
-        other_end=night - DAY * 2 / 3,
+        start=morning,
+        end=morning + DAY / 12,
+        other_start=morning + DAY / 3,
+        other_end=morning + DAY * 5 / 12,
         top_n=60,
     )
     mirrored = wide.frame(wide.panels[0])
     own = np.where(
         mirrored["side"] == "period", mirrored["presence"], mirrored["other_presence"]
     )
-    assert (own < 0.5).any() and (own >= 0.5).any()
     np.testing.assert_array_equal(mirrored["mark"], own < 0.5)
+    sides = mirrored[mirrored["label"].notna()].pivot(
+        index="key", columns="side", values="mark"
+    )
+    crossing = sides[sides["period"] != sides["other"]]
+    assert len(crossing) and crossing["period"].all()
+    # On plotly, a stick's hover says which period it is
+    names = {t.name: t.hoverinfo for t in render.plotly(wide).data if t.mode == "lines"}
+    assert set(names) >= set(mirrored["side_name"])
+    assert {names[name] for name in mirrored["side_name"]} == {"x+y+text+name"}
     assert fig.panels[0].options["colours"] == {
         "period": "series.1",
         "other": "series.2",
