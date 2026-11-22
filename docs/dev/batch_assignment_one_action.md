@@ -129,9 +129,30 @@ first:
   its stage's name;
 - imports and the implicit *Folded samples* run keep their labels.
 
-Picking an earlier run shows the ledger as that run left it, read-only, as the selector
-does today ([`BatchPeakRunSelect.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/BatchPeakRunSelect.vue)),
-and the bar shows the *Viewing an earlier run* state.
+Picking an earlier run shows the ledger as that run left it, read-only, as the run
+selector did, and the bar shows the *Viewing an earlier run* state.
+
+As built (MAS-1016, `BatchAssignDetails.vue`, `BatchRunHistory.vue`, `batchPass.js`):
+
+- The pass Details tells of is the one running, else the newest that stopped, else the
+  last that completed. A rebuild or an import running on its own is no pass, and Details
+  then keeps the last one. A pass still running reads its plan off `n_stages`: a pass runs
+  from its first stage to the end, so the planned stages are the order's tail, the fold
+  first where it folds.
+- A stage's result line is worded per stage from its outcome's counts in
+  `summary.stages`, and falls back to the head of the step's own message where the
+  counts are missing (a step that read nothing). A skipped fold reads *No rebuild needed*;
+  one that ran gives `fold.reasons`.
+- The tier chips compare the snapshot of the newest completed run before the pass (the
+  run current as it started) with the live ledger, or with the pass's own snapshot once a
+  later run replaced it, over the batch peaks that are not an isotope line, as the status
+  line's *+N assigned* counts them. A stopped pass with a run after it, a running pass
+  and an earlier run on screen draw none. The run records no tier counts of its own, so
+  this reads one snapshot, two at most, as Details opens.
+- The settings are the run's `config.settings` and `settings_source`. *Change settings*
+  waits for the dialog (MAS-1017).
+- The run selector is gone; `runLabel` and the ordinal live in the runs store
+  (`stores/data/modules/batchPeak/run.js`) with `backToCurrent`.
 
 ### 3.3 The menu
 
