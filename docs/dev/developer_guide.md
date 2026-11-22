@@ -1977,7 +1977,7 @@ The Mascope frontend is build with the following technologies:
   fails on them. PrimeVue 4.5.5 stays out too, because it breaks manual
   input in the 24-hour `DatePicker`. Decided on 2026-11-22 (MAS-102): stay
   on this MIT line through release 2.0, and look again after it, or sooner
-  on a security advisory against PrimeVue 4 or a Vue major it cannot follow
+  on a security advisory against PrimeVue 4 or a Vue major it cannot follow.
 - [Vite](https://vitejs.dev/guide/) as the build tool + dev server
 - [Vitest](https://vitest.dev/guide/) for unit tests
 - [Playwright](https://playwright.dev/docs/intro) for end-to-end tests

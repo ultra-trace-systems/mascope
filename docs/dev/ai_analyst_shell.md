@@ -6,7 +6,7 @@
   (Linear, P-MAS-21, filed 2026-11-04: milestones 0 to 5 follow section 4;
   the five decisions of section 5 are MAS-659 to MAS-662 and MAS-665,
   all taken: MAS-661's thresholds were pre-registered on 2026-11-22, and
-  MAS-662 closed that day with its batch-report brief filed as the stub
+  MAS-662 closed that day, its batch-report brief held by the stub
   MAS-1124;
   milestone 0's test issues are MAS-666 to MAS-668, with MAS-669 asking
   for the owner's bench modules; the rest follow the decisions; since
@@ -672,7 +672,9 @@ its description.
    peaky's golden runs guard it; a Goose recipe alone would tie the
    deterministic core to one runtime's instruction text. *Taken by both
    owners, November 2026 (MAS-662); the batch-report brief that names the
-   step module, the composition file and the wrapper is still to file.*
+   step module, the composition file and the wrapper is still to file.
+   MAS-662 closed on 2026-11-22 with the stub MAS-1124 holding that
+   brief's place.*
 5. **Peaky is the shell** (joint, 2.5). The AI frontend is called Peaky
    and lives in the peaky repository and package; every computation and
    reusable piece is Mascope's; milestones 3 and 4 are Peaky-team
