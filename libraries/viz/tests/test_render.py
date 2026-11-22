@@ -2345,6 +2345,38 @@ def test_a_sticks_hover_says_its_text_on_the_stick_and_its_label():
     assert all(t.hoverinfo == "skip" for t in plain.data if t.mode == "text")
 
 
+def test_a_grouped_sticks_hover_keeps_its_groups_name():
+    """A hover text replaces plotly's default hover, which named the trace:
+    the sticks of a group, such as a mirror's two periods, still say whose
+    they are."""
+    fig = _sticks_with_hover()
+    data = fig.data.assign(
+        side=["night" if i % 2 else "day" for i in range(len(fig.data))],
+        side_name=["Night" if i % 2 else "Day" for i in range(len(fig.data))],
+    )
+    panel = fig.panels[0]
+    grouped = Figure(
+        fig.id,
+        fig.title,
+        panels=[
+            Panel(
+                "sticks",
+                axes=panel.axes,
+                encodings={**panel.encodings, "group": "side", "name": "side_name"},
+                options=panel.options,
+                where=panel.where,
+            )
+        ],
+        data=data,
+    )
+
+    plotted = render.plotly(grouped)
+
+    lines = [t for t in plotted.data if t.mode == "lines"]
+    assert sorted(t.name for t in lines) == ["Day", "Night"]
+    assert all(t.hoverinfo == "x+y+text+name" for t in lines)
+
+
 def test_a_hover_text_is_drawn_as_written():
     fig = _sticks_with_hover()
     fig.data.loc[0, "hover"] = "<b>C2H4O2</b> & co"
