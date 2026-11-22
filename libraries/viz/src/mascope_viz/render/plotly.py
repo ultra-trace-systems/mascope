@@ -59,6 +59,17 @@ def _rgba(colour: str, alpha: float) -> str:
 DAY_MS = 86_400_000
 
 
+#: A heatmap cell's hover: its x, its y and its value, as the cell's text,
+#: since on a log colour scale its z is the value's log10.
+HEATMAP_HOVER = "x: %{x}<br>y: %{y}<br>z: %{customdata}<extra></extra>"
+
+
+def _value_texts(array: np.ndarray) -> list[str | None]:
+    """Numbers as a hover shows them, to four significant digits, a gap
+    None."""
+    return [f"{v:.4g}" if np.isfinite(v) else None for v in np.asarray(array, float)]
+
+
 def _wall(column: pd.Series) -> list[Any]:
     """Times as plotly.js draws them: the wall-clock time in their zone, a
     gap None."""
@@ -598,6 +609,8 @@ class _Drawing:
                 go.Heatmap(
                     **place,
                     z=[_values(line) for line in values],
+                    customdata=[_value_texts(line) for line in cells.values],
+                    hovertemplate=HEATMAP_HOVER,
                     colorscale=settings["colorscale"],
                     zmin=settings["cmin"],
                     zmax=settings["cmax"],

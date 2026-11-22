@@ -2062,3 +2062,34 @@ def test_a_lone_heatmap_cell_on_a_time_axis_is_a_day_wide_on_both_backends():
     for trace in _heatmaps(fig):
         assert trace.x is None and trace.x0 == "2026-07-01T00:00:00"
         assert trace.dx == day / pd.Timedelta(milliseconds=1)
+
+
+def test_a_heatmaps_hover_shows_a_cells_value_not_its_log():
+    """On a log colour scale a cell's z is its value's log10, which the
+    colour bar labels; the hover says the value itself."""
+    fig = specs.heatmap()
+    cells = common.grid(fig, fig.panels[0])
+    trace = next(t for t in render.plotly(fig).data if t.type == "heatmap")
+    assert "%{customdata}" in trace.hovertemplate
+    assert "%{z}" not in trace.hovertemplate
+    i, j = np.unravel_index(np.nanargmax(cells.values), cells.values.shape)
+    peak = cells.values[i, j]
+    assert peak > 1000
+    assert trace.customdata[i][j] == f"{peak:.4g}"
+    assert trace.z[i][j] == pytest.approx(np.log10(peak))
+    blank = np.argwhere(np.isnan(cells.values))
+    assert len(blank) and all(trace.customdata[a][b] is None for a, b in blank)
+    # On a linear scale the value is z, and the hover says it alike.
+    weekly = next(
+        t for t in render.plotly(fig).data if t.type == "heatmap" and t.xaxis == "x2"
+    )
+    change = common.grid(fig, fig.panels[1]).values
+    k, m = np.argwhere(np.isfinite(change))[0]
+    assert weekly.customdata[k][m] == f"{change[k, m]:.4g}"
+    # Four significant digits.
+    data = pd.DataFrame(
+        {"x": [1.0, 2.0], "y": ["a", "a"], "v": [1234.5678, 1.23456e-4]}
+    )
+    panel = Panel("heatmap", encodings={"x": "x", "y": "y", "value": "v"})
+    (trace,) = _heatmaps(Figure("h", "H", panels=[panel], data=data))
+    assert list(trace.customdata[0]) == ["1235", "0.0001235"]
