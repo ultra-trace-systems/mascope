@@ -390,12 +390,16 @@ help card gains its legend.
 1. **The reagent role's name.** The mockup says *source ion*. The word is one of the
    naming decisions in the peak-assignment glossary kept with Peaky's author. The build
    keeps *reagent* until that decision is taken.
-2. **The default sort:** intensity, descending, in both scopes. The alternative is tier,
-   which the sample ledger uses now.
+2. **The default sort:** intensity, descending, in both scopes. The alternative was
+   tier, which the sample ledger uses now. *Decided on 2026-11-22: intensity.* A row
+   keeps its place when a re-run changes its tier, and the order matches the spectrum;
+   tier stays one click away as a sort and in the filter bar.
 3. **Engine readings in the Tier and Level cells.** They become a second chip behind
-   *Show › Engine readings*, not columns. The alternative keeps today's columns.
+   *Show › Engine readings*, not columns. The alternative kept today's columns.
+   *Decided on 2026-11-22: the chip.*
 
-Each is built as written here and raised on its PR.
+The first is built as written here and raised on its PR. The other two are settled, and
+MAS-1064's brief carries them.
 
 ## 8. Docs
 
