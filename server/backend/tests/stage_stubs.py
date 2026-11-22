@@ -26,6 +26,7 @@ from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_samp
 from mascope_backend.api.new.peak_assignments import (
     batch_fold,
     judging_loop,
+    model_readers,
     pipeline,
     sample_inputs,
     sample_mechanisms,
@@ -70,6 +71,24 @@ def protonated(formula: str) -> str:
     return f"{to_hill_order(counts)}+"
 
 
+#: The modules of a run that read each name :func:`stub_sample_reads` stands
+#: in for, each patched with the one stand-in, as one in the service reached
+#: every read of it when the service held them all.
+_SAMPLE_READERS = {
+    "load_sample_peaks": (sample_inputs, pipeline, model_readers),
+    "fetch_sample_mechanisms": (sample_mechanisms, service, model_readers),
+    "fetch_mechanisms_by_notation": (sample_mechanisms, service),
+    "_resolution_of": (sample_inputs, model_readers),
+    "_source_line_cap": (judging_loop,),
+}
+
+
+def _stand_in(monkeypatch, name, value) -> None:
+    """Stand in for ``name`` in each module of a run that reads it."""
+    for module in _SAMPLE_READERS[name]:
+        monkeypatch.setattr(module, name, value)
+
+
 def stub_sample_reads(
     monkeypatch,
     peaks_of: Callable[[str], pd.DataFrame],
@@ -80,21 +99,19 @@ def stub_sample_reads(
     and no ion current read. Its batch's records, its setup and its named
     context are read from the test database, which holds none of them."""
     rows = list(mechanisms)
-    monkeypatch.setattr(
-        sample_inputs,
+    _stand_in(
+        monkeypatch,
         "load_sample_peaks",
         lambda sample: peaks_of(sample.sample_item_id),
     )
-    monkeypatch.setattr(
-        sample_mechanisms,
+    _stand_in(
+        monkeypatch,
         "fetch_sample_mechanisms",
         AsyncMock(return_value=([m.ionization_mechanism_id for m in rows], rows)),
     )
-    monkeypatch.setattr(
-        sample_mechanisms, "fetch_mechanisms_by_notation", AsyncMock(return_value=[])
-    )
-    monkeypatch.setattr(sample_inputs, "_resolution_of", AsyncMock(return_value=None))
-    monkeypatch.setattr(judging_loop, "_source_line_cap", AsyncMock(return_value=None))
+    _stand_in(monkeypatch, "fetch_mechanisms_by_notation", AsyncMock(return_value=[]))
+    _stand_in(monkeypatch, "_resolution_of", AsyncMock(return_value=None))
+    _stand_in(monkeypatch, "_source_line_cap", AsyncMock(return_value=None))
 
 
 def seeded_frame(
