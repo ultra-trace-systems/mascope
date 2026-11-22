@@ -345,7 +345,10 @@ That limit lies between the cases measured on the fleet:
 | 62–188 Th, nitrate | 500–700 Th | 1.5–2.2 | yes |
 
 The corrected set clears the check up to 674 Th, and a nitrate set on 62–188 Th up to 441 Th.
-The lowest strong peaks lie at most half a width below the lowest calibrant on the TOF files measured, so the low end flags only a set whose lines all sit high.
+On a sample of two sites' files over 60 days, the old 41–148 Th set is flagged on 17 of 36 files: those whose strong peaks reach past about 375 Th.
+The corrected set is flagged on none of them; the farthest sits 1.12 widths past.
+On the negative modes, the 62–188 Th nitrate set is flagged on 399 of 612 files, the more often the higher their strong peaks reach (up to 1,300 Th).
+At the low end, the check flagged only records whose lowest line sat at 79 Th or higher.
 A fit flagged *extrapolated* is no worse inside its span: its error there is still the one it reports.
 The lasting fix is a calibrant higher up the axis, an ion in every file of the mode.
 A record written before fits kept the reach of their strong peaks is not judged on it; re-calibrating the file records it.
