@@ -95,7 +95,7 @@ RADICAL = "C6H11O6"
 SEEN_TWICE = ["[M+H]+", "[M+NH4]+"]
 
 #: What a run copies onto a row whose formula a homologous series of its batch
-#: proposed (``service.stamp_series``): one CH2 above an assigned C5H10O6.
+#: proposed (``batch_lines.stamp_series``): one CH2 above an assigned C5H10O6.
 SERIES_BLOCK = {
     "formula": PLAIN,
     "has_anchor": True,

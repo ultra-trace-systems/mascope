@@ -280,7 +280,7 @@ it follows from, and the structure's name, cut to fit; its tooltip has the evide
 The three V3 pieces that answer guardrails 1, 3 and 5, and the three section 7 questions the
 brief decided.
 
-**The queue** (`peak_assignments/verification_queue.py`, pure; `service.get_verification_queue`;
+**The queue** (`peak_assignments/verification_queue.py`, pure; `verification.get_verification_queue`;
 `GET /peak-assignments/sample/{id}/verification-queue`, guest-readable, session only). It ranks the
 rows of the run the ledger shows (`_ledger_run`, shared with the ledger read) that take a verdict:
 an analyte's formula with a finite evidence, no isotope line, source ion, artifact or unassigned

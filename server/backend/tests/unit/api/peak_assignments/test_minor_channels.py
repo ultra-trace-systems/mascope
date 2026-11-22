@@ -2063,7 +2063,7 @@ class TestAListsReadingThroughAGatedChannel:
 )
 def test_the_folds_reading_records_a_list_as_a_run_does(listed, corroboration):
     """The stage list's judging rounds tell the second-channel cap what the
-    lists name, on every path (``service.Judging.cap``): a reading the gate
+    lists name, on every path (``judging_loop.Judging.cap``): a reading the gate
     swapped in is corroborated by a list where a later round took its partner
     away, and held where nothing names it (``TestThePartnerGate.
     test_a_swapped_in_reading_a_list_names_is_corroborated_by_the_list`` is

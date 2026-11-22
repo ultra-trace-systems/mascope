@@ -53,7 +53,7 @@ unconditionally, not via the legacy `MASCOPE_MATCH_SCORE_VERSION` switch:
   against the peak list (`match_isotopic_pattern`), at the sample's own mass width and with
   its own noise where the peak list carries a `signal_to_noise` column, and that is what
   RANKS the readings of a peak. What a committed row is TIERED on is the winner measured
-  again as an ion, through the Stage A chain above (`service._seeded_rescore` →
+  again as an ion, through the Stage A chain above (`judging_loop._seeded_rescore` →
   `seeded_scoring.score_seeds`): one `compute_match_isotopes` pass per sample with the
   run's gating, scored at the run's measurement model. Only that one number reaches the row: the two are the same fit on two
   frames, so a second score on the row would name a version that no longer differs. What

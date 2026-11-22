@@ -1025,7 +1025,7 @@ class TestTheElectStageReadsThem:
     @pytest.mark.asyncio
     async def test_a_listed_compound_holds_candidate_through_the_re_score(self):
         # The refit's re-score moves a row's evidence and its tier with it
-        # (``service.rescore_rows``). A row the decision put at candidate,
+        # (``judging_loop.rescore_rows``). A row the decision put at candidate,
         # elected or lifted, falls no lower: only a cap takes it lower. A
         # reading the decision kept keeps its own tier.
         ctx = _context(
@@ -1109,7 +1109,7 @@ class TestWhatTheStagesTookIsNoReadings:
     @pytest.mark.asyncio
     async def test_a_listed_compound_is_measured_on_the_axis_as_stored(self):
         # On a shifted decoy arm the source's peaks are read where the source
-        # put them (``service._source_axis``): the arm claims what its control
+        # put them (``sample_mechanisms._source_axis``): the arm claims what its control
         # claims.
         exact = ion_mz("C8H25O4Si4", 1)
         ctx = _context(listed={"d": DECIDED})
