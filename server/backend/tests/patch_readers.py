@@ -8,10 +8,27 @@ one mock, so what the test sets on the mock and asserts of it holds wherever
 the run read it.
 """
 
+import importlib
+import pkgutil
 from unittest.mock import DEFAULT, patch
 
 
 PACKAGE = "mascope_backend.api.new.peak_assignments"
+
+
+def readers(name: str, value) -> set[str]:
+    """The package's modules whose ``name`` is ``value``: each one a stand-in
+    for ``value`` has to be set in to reach every read of it.
+
+    :param name: The name the modules import it as.
+    :param value: What they read under it, the real object.
+    """
+    package = importlib.import_module(PACKAGE)
+    return {
+        info.name
+        for info in pkgutil.iter_modules(package.__path__)
+        if vars(importlib.import_module(f"{PACKAGE}.{info.name}")).get(name) is value
+    }
 
 
 class PatchReaders:
