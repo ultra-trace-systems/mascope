@@ -191,6 +191,37 @@ Applying a fit clears the file's matches and marks its batches for rematching; a
 Editing the compounds of the calibration collection a mode already uses marks every batch holding that mode's files for recalibration, as pointing the mode at another collection does. Their status icon then offers to re-calibrate the batch. The files stay on their old calibration until someone re-calibrates them: recalibrating the batch refits them on the collection as it is now and leaves the batch marked for rematching. Renaming the collection, or attaching it to batches, changes no fit and marks nothing for recalibration. A collection no mode calibrates on is matched only, and editing it marks its batches for rematching.
 A TOF file that has never been fitted carries the axis the acquisition software wrote, stamped `unfitted` in its calibration record.
 
+#### Modes without calibrants: a calibration transferred from neighbouring files
+
+Some modes of a multi-scheme TOF have no calibration collection: an ambient or a zero mode, run between the reagent modes within minutes.
+Their spectra hold too few known ions to fit on, and the axis the acquisition software wrote can be 100 ppm off or more.
+Such a file takes its calibration from its neighbours instead:
+
+```mermaid
+flowchart TD
+  A[TOF file, no mode with a collection] --> B{"Fitted files within 30 min?"}
+  B -- none --> U[Stays unfitted, not matched]
+  B -- one --> C[Take its parameters]
+  B -- "one on each side" --> D[Interpolate the two in time]
+  C --> E[Move them to the file's own TOF index]
+  D --> E
+  E --> F[Apply: status transferred]
+```
+
+- **The neighbours** are files of the same instrument and polarity whose own fit cleared the quality bar. A fit below the bar, a failed one, and another transferred calibration never lend theirs. Times are each file's centre, its start plus half its length.
+- **Within 30 minutes**, centre to centre. The nearest neighbour before the file and the nearest after it are taken. With both, their parameters are interpolated linearly in time; with one, its parameters are taken as they are. With none, the file stays unfitted and is not matched, and its processing status says why.
+- **The time-of-flight index.** Each file's stored spectrum starts where the converter cut off the samples below 10 Th, and where that is depends on the file's own acquisition axis. One sample is about 20 ppm at 100 Th. So each neighbour's offset $p_1$ is moved to the raw spectrum's index by its own cut before the interpolation, and to the file's index by the file's cut after it. The cuts are read from each file's Tofwerk `.h5`; a file stored without one gets no transfer.
+- **Models.** The square-root model is the three-parameter one at $p_2 = 0.5$, so a square-root and a three-parameter neighbour are interpolated in the three-parameter model.
+
+The record says `status: "transferred"`, and keeps under `transfer` each source file's id with its signed time gap in seconds (`gap_s`, negative before the file) and its weight, the gap to the nearest source, the window (`window_s`), and the file's own cut (`raw_index_offset`).
+A transferred calibration is verified: the sample is matched and assigned on it.
+It has no quality block of its own and does not appear on the calibration trend.
+A fit of the file itself replaces it as soon as its mode has calibrants, and a transfer never replaces a fit of the file itself or a failed fit's marker.
+Processing the file again makes the transfer again, from the neighbours it has then.
+
+A file is processed when it arrives, and the neighbour after it has usually not arrived yet, so a new file mostly takes the calibration of the one before it.
+Processing it again once its later neighbour is in interpolates between the two.
+
 #### The three-parameter model
 
 In an ideal time-of-flight analyser the flight time grows with the square root of m/z ([Guilhaus, 1995](https://doi.org/10.1002/jms.1190301102)), which is the model above.
@@ -369,6 +400,7 @@ Once the badges are rare, switch to `"enforce"`.
 
 TOF files arrive carrying the axis the acquisition software wrote.
 Until a fit replaces it, that axis is unverified and the sample is not matched.
+A file in a mode without a calibration collection takes its neighbours' calibration where it can ([Modes without calibrants](#modes-without-calibrants-a-calibration-transferred-from-neighbouring-files)).
 If the ionization mode had no calibration collection when the files were uploaded, calibrate them from the batch menu once a collection is set.
 
 ## Calibration Trend of a TOF Instrument
@@ -411,6 +443,7 @@ The sample browser shows each sample's calibration outcome in the calibration co
 | Badge | Meaning |
 |---|---|
 | Green | Calibrated and verified. |
+| Faint green | Calibration transferred from neighbouring fitted files of the instrument, for a mode without calibrants. Verified and matched; the tooltip says from how many files and how far away. |
 | Teal | Calibrated and verified, but the file's own axis was far off before calibration (acquisition drift). The data is fine; the instrument needs retuning. |
 | Amber | Calibrated below the quality bar. Matched anyway (warn-only servers), accepted by an operator and used, or left out of matching - the tooltip says which, and why the fit missed the bar. |
 | Amber | Calibrated on an older version of the calibration collection: its compounds changed since the file was fitted, or the mode now calibrates on another collection or with other ionization mechanisms. Recalibrate the batch to fit the file on the current calibrants. A fit already amber for its quality says this in its tooltip too. TOF fits only: their record names the collection version (the **Collection** hash of [What a TOF record says](#what-a-tof-record-says)). |
@@ -419,3 +452,4 @@ The sample browser shows each sample's calibration outcome in the calibration co
 | Faint grey | Calibration does not apply: no calibration collection, or a blank file. |
 
 Click a badge to open the calibration dialog for that sample.
+For a transferred calibration the dialog says where it came from, and that a fit saved there replaces it.

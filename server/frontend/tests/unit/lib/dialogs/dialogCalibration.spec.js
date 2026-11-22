@@ -310,6 +310,42 @@ describe('DialogCalibration', () => {
     expect(summary().exists()).toBe(false)
   })
 
+  it('says the calibration applied was transferred from neighbouring files', () => {
+    mocks.fit = fitted({ n_points: 1 }, [point(), SUMMARY])
+    const transferred = {
+      mode: 0,
+      par: [2830.0, -9000.0],
+      status: 'transferred',
+      verified: true,
+      transfer: {
+        sources: [
+          { sample_file_id: 'sf-a', gap_s: -360, weight: 0.4 },
+          { sample_file_id: 'sf-b', gap_s: 240, weight: 0.6 }
+        ],
+        gap_s: 240,
+        window_s: 1800
+      }
+    }
+
+    const wrapper = mountDialog({ ...SAMPLE, mz_calibration: transferred })
+
+    const message = wrapper.find('[data-testid="calibration-transferred"]')
+    expect(message.exists()).toBe(true)
+    expect(message.text()).toContain(
+      'Applied: m/z calibration transferred from the two nearest fitted files of the ' +
+        'instrument, interpolated in time (the nearer 4 min away).'
+    )
+    expect(message.text()).toContain('a fit saved here replaces the transfer.')
+  })
+
+  it('says nothing of a transfer for a sample fitted on its own', () => {
+    mocks.fit = fitted({ n_points: 1 }, [point(), SUMMARY])
+
+    const wrapper = mountDialog({ ...SAMPLE, mz_calibration: record(undefined) })
+
+    expect(wrapper.find('[data-testid="calibration-transferred"]').exists()).toBe(false)
+  })
+
   it('shows a sample that is not stitched as before', () => {
     mocks.fit = fitted({ n_points: 1 }, [point(), SUMMARY])
 
