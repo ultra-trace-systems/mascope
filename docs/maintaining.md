@@ -34,6 +34,7 @@ Everything below assumes an Ubuntu host provisioned with
 | Rebuild the peak stores that disagree with the scans their files read, keeping every sample (dry run first) | `DRY_RUN=1 mascope prod db script run rebuild_stale_peak_stores`, then without `DRY_RUN` |
 | Fill the scan counts of the Orbitrap peak stores detected before them, which sets their batches to rematch (dry run first) | `FILL_SCAN_COUNTS=1 DRY_RUN=1 mascope prod db script run rebuild_stale_peak_stores`, then without `DRY_RUN` |
 | Flag the Orbitrap peaks under a local floor weak in stores written before the floor (dry run first) | `DRY_RUN=1 mascope prod db script run reflag_orbitrap_weak_peaks`, then without `DRY_RUN` |
+| Rebuild the stored TOF isotope lines of target ions made before the current grouping, which sets the TOF batches they reach to rematch (dry run first; `REBUILD_TOF_SCOPE=calibration` or `REBUILD_TOF_COLLECTIONS=<id>,<id>` to narrow it) | `DRY_RUN=1 mascope prod db script run rebuild_tof_target_isotopes`, then without `DRY_RUN` |
 | Give stored matches the intensity of isotope lines that missed their ratio (once, after the upgrade; dry run first) | `DRY_RUN=1 mascope prod db script run reaggregate_ratio_gated_intensity`, then without `DRY_RUN` |
 | Audit a TOF instrument's m/z calibration | `TOF_AUDIT_INSTRUMENT=<name> mascope prod db script run audit_tof_calibration` |
 | Fill the model of instruments registered before it was read (once, after the upgrade) | `DRY_RUN=1 mascope prod db script run backfill_instrument_model`, then without `DRY_RUN` |
@@ -2737,6 +2738,16 @@ applies clear: the re-calibration step of the TOF mass calibration plan
 absolute - an apply recomputes every m/z axis of a file from its stored TOF
 index - so no file is detected or converted again. It works on one instrument
 at a time, and an operator runs it on the plan owner's word, in three steps.
+
+**Before the first step, bring the calibrants' lines up to date.** A TOF fit
+reads the stored isotope lines of the mode's calibration collection, and a
+target ion made before the current grouping keeps the lines it was given then.
+Rebuild them on the instrument's calibration collections first:
+`DRY_RUN=1 REBUILD_TOF_COLLECTIONS=<id> mascope prod db script run
+rebuild_tof_target_isotopes`, then without `DRY_RUN`. The dry run gives each
+mode's isotope hash before and after. Run after a pass, a rebuild that changes
+a calibrant's lines changes that hash, so every file the pass fitted is off
+target again and the next run fits it once more.
 
 **1. Read what it would do.** The default, which writes nothing:
 
