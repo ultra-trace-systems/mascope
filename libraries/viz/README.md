@@ -142,9 +142,11 @@ views.periods(store, keys, "week")  # the distribution per week
 views.coverage(store).gaps  # stretches without a sample, and the files in them
 views.composition(store, "month", by="class")  # the formulas' budget by class
 views.spectrum(store, (start, end), other=(start2, end2))  # a period against another
+views.spectrogram(store, cadence="1h").cells  # time by m/z rows, assigned peaks
 views.top(
     store, 10, "ratio", period="week"
 )  # the biggest changers, seen in half the samples
+views.amplitude(store, keys)  # the cv of each key's hourly medians
 ```
 
 | View | One row per |
@@ -153,9 +155,11 @@ views.top(
 | `diurnal` | hour of day and key, and group with `by=` (month, season, weekday): the median and quartiles, `n` (values) and `n_samples`; with `by=`, `attrs["group_days"]`, per key the calendar days of each group from the first sample of a batch that reads it to the last |
 | `periods` | day, week or month and key: `n` (values), `n_samples`, mean, min, p5, p25, median, p75, p95, max |
 | `coverage` | hour, polarity and mode: files, unfiled files and samples (a polarity-switching file counts under both polarities), with the mode's ID and name; also the gaps, the totals and the span from the first file or sample to the last |
-| `composition` | period and formula, or class or carbon number with `by=`: median, mean, share, and the species' element counts, O/C, H/C and OSc |
-| `spectrum` | formula, by m/z: the mean over a period, and against another period the difference and ratio |
+| `composition` | period and formula, or class or carbon number with `by=`: median, mean, `n`, `n_samples`, share, the formula's tier, and the species' element counts, O/C, H/C and OSc |
+| `spectrum` | formula, by m/z: the mean over a period, `n` and `n_samples`, and against another period the difference and ratio |
+| `spectrogram` | time bin and m/z row with a value (`cells`), with the bins (`bins`: their samples and column sums) and the rows (`rows`: their keys, `n` and `n_samples`, row sums and the formula that contributes most) |
 | `top` | ranked key: by median, by the ratio of the last period to the first (up or down), or new in the last period; with its values detected (`n`), the samples that could hold one (`n_samples`) and the presence it was ranked on |
+| `amplitude` | key: the cv of its medians at a cadence (an hour by default), their mean and how many bins have one |
 
 What every view does the same way:
 
@@ -173,11 +177,28 @@ What every view does the same way:
 - **Gaps stay gaps.** A bin without a sample is NaN, never interpolated. A
   value below detection, or an ion record without a match, is NaN, never 0.
   At `raw`, a NaN row breaks the line where a bin would be empty.
-- **Presence.** Since below detection is missing, a statistic is over the
-  detected values only, and reads high for a key near its detection limit.
-  So `series`, `diurnal` and `periods` give both counts: `n`, the values in
-  a row, and `n_samples`, the samples in it of the batches that read the
-  key. `n` over `n_samples` is how often the key was detected there.
+- **Presence goes with a statistic.** A statistic is over the detected
+  values only, so it reads high for a key seen in few samples. Where a view
+  gives a value's `n`, it gives `n_samples` beside it: the samples of the
+  batches that read the key, which could have held a value. `n` over
+  `n_samples` is how often the key was detected where it could have been.
+- **A formula's tier** in `composition` is the tier most of its points in
+  the period carry: `assigned`, `candidate`, `below_assignability` or
+  `unassigned`, as the server names them, a tie going to the less
+  confident. A candidate is a plausible formula with real alternatives
+  open, not an identification. A target ion and a sum have none.
+- **The spectrogram's grid.** `spectrogram` sums each sample's formula
+  keys into fixed m/z rows, by their batch peaks' m/z (the ion's, its
+  adduct included), 1 Th wide and centred on whole numbers by default. A
+  cell is the **mean** over its time bin's samples with a value, never the
+  sum, which would grow with the samples in the bin and draw coverage
+  instead of signal; `n` and `n_samples` go with it. A cell without a
+  value is no row: blank, not zero. A bin without samples is a gap, its
+  `n_samples` 0. The rows widen to a whole multiple of `mz_width` when
+  more than `max_rows` (2000) would span the m/z range, and its attrs say
+  so (`widened`). The store holds assigned peaks only, so this is the
+  assigned signal. The cadence is a pandas offset, an hour by default:
+  a row per sample is the `[big]` extra's raster.
 - **A sample's value of a key** is the sum of its values: two batch peaks
   can carry one formula, and the SDK notebooks sum per sample the same way.
 - **Normalisation** is `none` by default, `tic`, a series key such as a

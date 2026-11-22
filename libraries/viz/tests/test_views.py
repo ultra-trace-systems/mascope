@@ -1952,6 +1952,371 @@ def test_a_spectrum_needs_an_mz_for_each_key(month):
         views.spectrum(store, keys=[ion])
 
 
+def test_the_spectrum_counts_the_samples_that_could_hold_each_key(month):
+    """Presence: a key's values over the samples of the batches that read
+    it. Across the run change, the old formulas are read before it and the
+    new ones after it, so each counts its own side's samples only."""
+    campaign, store = month
+    change = campaign.truth.run_change
+    day = pd.Timedelta(days=1)
+    old, new = (sorted(keys) for keys in zip(*change.readings))
+    samples = campaign.tables["samples"]["t_mid_utc"]
+    before = int(((samples >= change.at - day) & (samples < change.at)).sum())
+    after = int(((samples >= change.at) & (samples < change.at + day)).sum())
+
+    frame = views.spectrum(store, (change.at - day, change.at + day)).set_index("key")
+    compared = views.spectrum(
+        store, (change.at, change.at + day), (change.at - day, change.at)
+    ).set_index("key")
+
+    assert (frame.loc[old, "n_samples"] == before).all()
+    assert (frame.loc[new, "n_samples"] == after).all()
+    flat = sorted(set(frame.index) - set(old) - set(new))
+    assert (frame.loc[flat, "n_samples"] == before + after).all()
+    assert (frame["n"] <= frame["n_samples"]).all()
+    assert (compared.loc[new, "n_samples"] == after).all()
+    assert (compared.loc[old, "other_n_samples"] == before).all()
+    assert (compared.loc[old, "n_samples"] == 0).all()
+    first, last = (pd.Timestamp(t) for t in frame.attrs["period_drawn"])
+    inside = samples[(samples >= change.at - day) & (samples < change.at + day)]
+    assert (first, last) == (inside.min(), inside.max())
+    assert (
+        compared.attrs["other_drawn"][1]
+        == pd.Timestamp(samples[samples < change.at].max()).isoformat()
+    )
+    assert views.spectrum(store).attrs["other_drawn"] is None
+
+
+def test_composition_counts_the_samples_that_could_hold_each_key(month):
+    campaign, store = month
+    change = campaign.truth.run_change
+    old, new = (sorted(keys) for keys in zip(*change.readings))
+    samples = campaign.tables["samples"]["t_mid_utc"]
+
+    frame = views.composition(store, "all").set_index("key")
+
+    assert (frame.loc[old, "n_samples"] == int((samples < change.at).sum())).all()
+    assert (frame.loc[new, "n_samples"] == int((samples >= change.at).sum())).all()
+    assert (frame["n"] <= frame["n_samples"]).all()
+    weekly = views.composition(store, "week")
+    np.testing.assert_array_equal(
+        weekly.groupby("key")["n_samples"].sum().loc[frame.index], frame["n_samples"]
+    )
+
+
+def _tiers_of(campaign: Campaign) -> pd.Series:
+    """Each formula key's tier, as the campaign's detected points carry it."""
+    rows = campaign.tables["peak_series"].dropna(subset=["intensity"])
+    return (
+        rows.groupby(rows["series_key"].astype(str))["tier"]
+        .agg(lambda tiers: tiers.astype(str).mode().iloc[0])
+        .sort_index()
+    )
+
+
+def test_composition_gives_each_formulas_tier(month):
+    campaign, store = month
+    want = _tiers_of(campaign)
+
+    frame = views.composition(store, "all").set_index("key")
+    weekly = views.composition(store, "week")
+
+    assert set(want) == {"assigned", "candidate"}
+    assert frame["tier"].sort_index().to_dict() == want.to_dict()
+    assert (weekly["tier"].to_numpy() == weekly["key"].map(want).to_numpy()).all()
+    ions = views.composition(store, "all", keys=sorted(campaign.truth.cycles))
+    assert ions.loc[ions["key"].str.startswith("ion:"), "tier"].isna().all()
+    by_class = views.composition(store, "all", by="class")
+    assert "tier" not in by_class and "n_samples" not in by_class
+
+
+def test_a_formulas_tier_is_its_most_values_a_tie_the_less_confident(
+    short_campaign, tmp_path
+):
+    tables = dict(short_campaign.tables)
+    peaks = tables["peak_series"].copy()
+    keys = peaks["series_key"].astype(str)
+    detected = peaks["intensity"].notna()
+    tied, most = sorted(set(keys[detected & (peaks["tier"] == "assigned")]))[:2]
+    tier = peaks["tier"].astype(object)
+    for key, share in ((tied, 2), (most, 3)):
+        rows = np.flatnonzero((keys == key) & detected)
+        # Half of them, or a third, read as candidates
+        tier.iloc[rows[: len(rows) // share]] = "candidate"
+        tier.iloc[rows[len(rows) // share :]] = "assigned"
+        assert len(rows) % 2 == 0
+    peaks["tier"] = pd.Categorical(tier, categories=["assigned", "candidate"])
+    tables["peak_series"] = peaks
+    store = _sync(dataclasses.replace(short_campaign, tables=tables), tmp_path)
+
+    frame = views.composition(store, "all").set_index("key")
+
+    assert frame.loc[tied, "tier"] == "candidate"
+    assert frame.loc[most, "tier"] == "assigned"
+
+
+def _grid_rows(campaign: Campaign, values: pd.DataFrame, width: float) -> pd.Series:
+    species = campaign.tables["species"].set_index("series_key")["mz"]
+    return np.floor(values["key"].map(species) / width + 0.5) * width
+
+
+def _expected_cells(campaign: Campaign, values: pd.DataFrame) -> pd.DataFrame:
+    """Each (hour, 1 Th row)'s mean over the hour's samples with a value of
+    the sum of the row's formulas in each, from the campaign's own values:
+    Helsinki's hours are UTC's, a whole number of hours off."""
+    formula = values[values["key"].str.startswith("formula:")].dropna(subset=["value"])
+    per_sample = formula.groupby(
+        [
+            formula["sample_item_id"],
+            formula["t"].dt.floor("1h"),
+            _grid_rows(campaign, formula, 1.0),
+        ]
+    )["value"].sum()
+    hour, row = (
+        per_sample.index.get_level_values(1),
+        per_sample.index.get_level_values(2),
+    )
+    return per_sample.groupby([hour, row]).agg(["mean", "size"])
+
+
+def test_a_spectrogram_cell_is_the_mean_of_its_samples_row_sums(month, values):
+    campaign, store = month
+
+    grid = views.spectrogram(store)
+
+    cells = grid.cells.set_index(
+        [grid.cells["t"].dt.tz_convert("UTC").rename("t"), "mz"]
+    )
+    want = _expected_cells(campaign, values)
+    want.index = want.index.set_names(["t", "mz"])
+    assert len(cells) == len(want)
+    want = want.loc[cells.index]
+    np.testing.assert_allclose(cells["value"], want["mean"], rtol=1e-12)
+    np.testing.assert_array_equal(cells["n"], want["size"])
+    assert (cells["n"] <= cells["n_samples"]).all()
+    assert (grid.cells["t_end"] - grid.cells["t"] == pd.Timedelta(hours=1)).all()
+    assert str(grid.cells["t"].dt.tz) == ZONE
+    assert grid.mz_width == 1.0 and not grid.widened
+    assert grid.cells.attrs["cadence"] == "1h"
+    assert grid.cells.attrs["stat"] == "mean"
+    assert ATTRS <= set(grid.cells.attrs)
+    # The column and row sums are of the cells' values
+    by_bin = grid.cells.groupby("t")["value"].sum()
+    bins = grid.bins.set_index("t")
+    np.testing.assert_allclose(bins.loc[by_bin.index, "total"], by_bin)
+    by_row = grid.cells.groupby("mz")["value"].sum()
+    rows = grid.rows.set_index("mz")
+    np.testing.assert_allclose(rows.loc[by_row.index, "total"], by_row)
+    # A row's presence: its samples with a value, over those that could
+    detected = want.groupby(level="mz")["size"].sum()
+    np.testing.assert_array_equal(rows.loc[detected.index, "n"], detected)
+    could = grid.cells.groupby("mz")["n_samples"].sum()
+    assert (rows.loc[could.index, "n_samples"] >= could).all()
+    assert (rows["n"] <= rows["n_samples"]).all()
+    assert (rows.loc[~rows.index.isin(detected.index), "n"] == 0).all()
+
+
+def test_a_spectrogram_counts_the_samples_that_could_hold_a_row(month):
+    """The run change reads three formulas anew from one batch on. On rows
+    narrow enough to hold an old reading and its new one apart, the local
+    day across the change has samples of both runs: a row of a new formula
+    counts those after the change alone, one of an old formula those
+    before it, and every other row all of them."""
+    campaign, store = month
+    change = campaign.truth.run_change
+    old, new = (set(keys) for keys in zip(*change.readings))
+    species = store.table("species")
+    mz = pd.Series(species["mz"].to_numpy(), index=species["series_key"].astype(str))
+    width = 0.01
+
+    grid = views.spectrogram(store, mz_width=width, cadence="1D", max_rows=10**5)
+
+    assert not grid.widened
+    rows = np.round(np.floor(mz / width + 0.5) * width, 10)
+    rows = rows[rows.index.str.startswith("formula:")]
+    of_row = {r: set(keys) for r, keys in rows.groupby(rows).groups.items()}
+    bin_ = grid.bins[(grid.bins["t"] <= change.at) & (grid.bins["t_end"] > change.at)]
+    assert len(bin_) == 1
+    t, t_end = bin_["t"].iloc[0], bin_["t_end"].iloc[0]
+    samples = campaign.tables["samples"]["t_mid_utc"]
+    within = (samples >= t) & (samples < t_end)
+    after = int((within & (samples >= change.at)).sum())
+    before = int((within & (samples < change.at)).sum())
+    assert after and before and bin_["n_samples"].iloc[0] == after + before
+    cells = grid.cells[grid.cells["t"] == t].set_index("mz")
+    for row, keys in of_row.items():
+        if row not in cells.index:
+            continue
+        want = after if keys <= new else before if keys <= old else after + before
+        assert cells.loc[row, "n_samples"] == want, (row, keys)
+    assert any(keys <= new for keys in of_row.values())
+    assert any(keys <= old for keys in of_row.values())
+
+
+def test_doubling_the_samples_in_a_bin_leaves_a_spectrogram_cell_unchanged(
+    short_campaign, tmp_path
+):
+    """A cell is a mean over its bin's samples, not a sum, which would
+    double with them and draw coverage instead of signal."""
+    tables = dict(short_campaign.tables)
+    samples = tables["samples"]
+    twin = samples.copy()
+    twin["sample_item_id"] = (samples["sample_item_id"].astype(str) + "b").astype(
+        samples["sample_item_id"].dtype
+    )
+    tables["samples"] = (
+        pd.concat([samples, twin])
+        .sort_values(["t_mid_utc", "sample_item_id"], kind="stable")
+        .reset_index(drop=True)
+    )
+    for name in ("ion_series", "peak_series"):
+        rows = tables[name].copy()
+        rows["sample_item_id"] = rows["sample_item_id"].astype(str)
+        again = rows.copy()
+        again["sample_item_id"] = again["sample_item_id"] + "b"
+        tables[name] = pd.concat([rows, again], ignore_index=True)
+    once = _sync(short_campaign, tmp_path / "once")
+    twice = _sync(
+        dataclasses.replace(short_campaign, tables=tables), tmp_path / "twice"
+    )
+
+    one, two = views.spectrogram(once), views.spectrogram(twice)
+
+    assert len(one.cells) == len(two.cells) > 0
+    np.testing.assert_allclose(two.cells["value"], one.cells["value"], rtol=1e-12)
+    np.testing.assert_array_equal(two.cells["n"], 2 * one.cells["n"])
+    np.testing.assert_array_equal(two.cells["n_samples"], 2 * one.cells["n_samples"])
+    np.testing.assert_allclose(two.bins["total"], one.bins["total"], rtol=1e-12)
+
+
+def test_the_gap_day_is_a_gap_in_the_spectrogram_not_zeros(month):
+    campaign, store = month
+    gap = campaign.truth.gap
+
+    grid = views.spectrogram(store)
+
+    bins = grid.bins
+    inside = (bins["t"] >= gap.start) & (bins["t_end"] <= gap.end)
+    assert inside.sum() == 24
+    assert (bins.loc[inside, "n_samples"] == 0).all()
+    assert bins.loc[inside, "total"].isna().all()
+    assert (bins.loc[~inside, "n_samples"] > 0).all()
+    assert not ((grid.cells["t"] >= gap.start) & (grid.cells["t"] < gap.end)).any()
+    # No cell is zero: below detection is no value
+    assert (grid.cells["value"] > 0).all()
+
+
+def test_spectrogram_rows_widen_past_the_cap_and_say_so(month):
+    _, store = month
+    rows = len(views.spectrogram(store).rows)
+
+    grid = views.spectrogram(store, max_rows=rows // 3)
+
+    assert grid.widened and grid.cells.attrs["widened"]
+    assert grid.mz_width == float(round(grid.mz_width)) >= 3
+    assert len(grid.rows) <= rows // 3
+    # The smallest whole multiple that keeps under the cap
+    assert len(views.spectrogram(store, mz_width=grid.mz_width - 1).rows) > rows // 3
+    assert grid.cells.attrs["mz_width"] == grid.mz_width
+    assert grid.cells.attrs["mz_width_asked"] == 1.0
+    np.testing.assert_allclose(grid.rows["mz"] % grid.mz_width, 0.0, atol=1e-9)
+    narrow = views.spectrogram(store, mz_width=0.5)
+    assert len(narrow.rows) > rows and not narrow.widened
+
+
+def test_a_spectrogram_rows_top_formula_contributes_most(month, values):
+    campaign, store = month
+
+    grid = views.spectrogram(store)
+
+    formula = values[values["key"].str.startswith("formula:")]
+    sums = formula.groupby("key")["value"].sum()
+    row = _grid_rows(campaign, sums.rename("value").reset_index(), 1.0)
+    row.index = sums.index
+    rows = grid.rows.dropna(subset=["key"]).set_index("mz")
+    for mz, keys in sums.groupby(row.to_numpy()).groups.items():
+        best = sums.loc[keys].idxmax()
+        assert rows.loc[mz, "key"] == best, mz
+        assert rows.loc[mz, "share"] == pytest.approx(
+            sums.loc[best] / sums.loc[keys].sum()
+        )
+    assert (grid.rows["n_keys"].sum()) == len(views._grid_keys(store)[0])
+
+
+def test_a_normalised_spectrogram_divides_each_sample_before_its_row_sum(month, values):
+    campaign, store = month
+    formula = values[values["key"].str.startswith("formula:")].dropna(subset=["value"])
+    divided = formula.assign(value=formula["value"] / formula["tic"])
+
+    grid = views.spectrogram(store, normalise="tic")
+
+    want = _expected_cells(campaign, divided)
+    want.index = want.index.set_names(["t", "mz"])
+    cells = grid.cells.set_index(
+        [grid.cells["t"].dt.tz_convert("UTC").rename("t"), "mz"]
+    )
+    np.testing.assert_allclose(
+        cells["value"], want.loc[cells.index, "mean"], rtol=1e-12
+    )
+    assert grid.cells.attrs["normalise_name"] == "TIC"
+
+
+def test_a_spectrogram_of_a_window_bins_its_samples_alone(month):
+    campaign, store = month
+    episode = campaign.truth.episodes[0]
+
+    grid = views.spectrogram(store, start=episode.start, end=episode.end, cadence="2h")
+
+    assert grid.bins["t"].min() <= episode.start < grid.bins["t_end"].min()
+    assert grid.bins["t_end"].max() >= episode.end > grid.bins["t"].max()
+    assert (grid.bins["t_end"] - grid.bins["t"] == pd.Timedelta(hours=2)).all()
+    assert grid.cells.attrs["start"] == episode.start.isoformat()
+
+
+def test_a_spectrogram_without_a_formula_is_empty_with_its_columns(
+    month, short_campaign, tmp_path
+):
+    _, full = month
+    client = FakeClient(short_campaign)
+    client.no_ledger = True
+    store = _sync(client, tmp_path)
+    whole = views.spectrogram(full)
+
+    grid = views.spectrogram(store)
+
+    for name in ("cells", "bins", "rows"):
+        frame = getattr(grid, name)
+        assert frame.empty, name
+        assert list(frame.columns) == list(getattr(whole, name).columns), name
+    assert grid.cells.attrs["view"] == "spectrogram"
+    assert str(grid.bins["t"].dt.tz) == ZONE
+    amplitude = views.amplitude(store)
+    assert amplitude.empty
+    assert list(amplitude.columns) == ["key", "cv", "mean", "n_bins"]
+    assert amplitude.attrs["view"] == "amplitude"
+
+
+def test_amplitude_is_the_cv_of_a_keys_hourly_medians(month, values):
+    campaign, store = month
+    keys = sorted(k for k in campaign.truth.cycles if k.startswith("formula:"))[:6]
+
+    frame = views.amplitude(store, keys).set_index("key")
+
+    raw = values[values["key"].isin(keys)].dropna(subset=["value"])
+    medians = raw.groupby(["key", raw["t"].dt.floor("1h")])["value"].median()
+    grouped = medians.groupby(level=0)
+    np.testing.assert_allclose(
+        frame.loc[keys, "cv"], (grouped.std() / grouped.mean()).loc[keys], rtol=1e-9
+    )
+    np.testing.assert_array_equal(frame.loc[keys, "n_bins"], grouped.size().loc[keys])
+    assert frame.attrs["view"] == "amplitude"
+    assert frame.attrs["cadence"] == "1h"
+    flat = [k for k in keys if campaign.truth.cycles[k].kind == "flat"]
+    cycling = [k for k in keys if campaign.truth.cycles[k].kind != "flat"]
+    assert frame.loc[flat, "cv"].max() < frame.loc[cycling, "cv"].min()
+    assert len(views.amplitude(store)) == len(views._formula_keys(store))
+
+
 def test_top_lists_the_episode_species_as_changers(month):
     campaign, store = month
     episode = campaign.truth.episodes[0]
@@ -2181,7 +2546,9 @@ def test_every_frame_states_its_zone_cadence_and_normalisation(month):
         "gaps": views.coverage(store).gaps,
         "composition": views.composition(store, "week"),
         "spectrum": views.spectrum(store),
+        "spectrogram": views.spectrogram(store, cadence="1D").cells,
         "top": views.top(store, 3, "median"),
+        "amplitude": views.amplitude(store, [key]),
     }
 
     for name, frame in frames.items():
@@ -2589,6 +2956,12 @@ def test_a_key_the_store_does_not_hold_is_an_error(month):
         (lambda s: views.top(s, 0, "median"), "n="),
         (lambda s: views.top(s, 3, "loudest"), "by="),
         (lambda s: views.spectrum(s, ("2026-06-02", "2026-06-01")), "ends before"),
+        (lambda s: views.spectrogram(s, mz_width=0), "mz_width"),
+        (lambda s: views.spectrogram(s, mz_width="1"), "mz_width"),
+        (lambda s: views.spectrogram(s, max_rows=0), "max_rows"),
+        (lambda s: views.spectrogram(s, cadence="raw"), "bins of one step"),
+        (lambda s: views.spectrogram(s, cadence="auto"), "bins of one step"),
+        (lambda s: views.spectrogram(s, normalise="reagent"), "normalise"),
     ],
 )
 def test_a_wrong_argument_says_what_is_wrong(month, call, message):
