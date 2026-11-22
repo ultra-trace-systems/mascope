@@ -31,7 +31,8 @@ General calibration workflow:
    missing, underdetermined, or inaccurate.
 - For a TOF fit, say what it was made on: every candidate point with its
    residual, the m/z span of the points kept, the version of the calibration
-   collection, the model and the node's version.
+   collection, the model and the node's version, and how far the file's
+   strong peaks reach.
 - For an Orbitrap fit, report the offset in mDa its calibrants carry beside
    the factor, fitted and not applied (:func:`offset_report`).
 - Apply the accepted calibration by updating stored calibration parameters and
@@ -1551,6 +1552,7 @@ class TofCalibrationHandler(BaseCalibrationHandler):
             self.fitted_on = self._fitted_on(
                 target_isotopes_df, good_matches_df, selected_matches_df
             )
+            self.fitted_on["strong_peaks"] = await asyncio.to_thread(self._strong_peaks)
 
             isotopes_from_single_ion = (
                 len(selected_matches_df.target_ion_id.unique()) == 1
@@ -1607,6 +1609,9 @@ class TofCalibrationHandler(BaseCalibrationHandler):
           the tolerance (``n_lines``, ``n_ions``).
         - ``node_version``: :data:`TOF_CALIBRATION_NODE_VERSION`.
 
+        The fit adds ``strong_peaks``, how far the file's strong peaks reach
+        (:meth:`_strong_peaks`).
+
         :param isotopes: The isotopes the collection offered the fit.
         :param candidates: The matches the fit chose from, one per peak in
             the order of the peaks' m/z (:meth:`_one_reading_per_peak`).
@@ -1659,6 +1664,44 @@ class TofCalibrationHandler(BaseCalibrationHandler):
             },
             "search": self.search,
             "node_version": TOF_CALIBRATION_NODE_VERSION,
+        }
+
+    def _strong_peaks(self) -> dict:
+        """How far the file's strong peaks reach, for its record's quality block.
+
+        The peaks of the fit's polarity with S/N at least
+        ``calibration_config.TOF_STRONG_PEAK_SNR``, among those the fit's
+        calibrants are looked for in (:meth:`_peaks_to_match`), on the axis
+        the file carries before the fit. The quality bar holds their reach
+        against the span of the lines the fit kept
+        (``TOF_MAX_EXTRAPOLATION_SPANS``).
+
+        Synchronous: it reads the filestore, so it runs in a worker thread.
+
+        :return: ``span``, the m/z of the ``TOF_STRONG_PEAK_TAIL``-th lowest
+            and highest strong peak, None where there are none; with fewer
+            than twice that many, read nearer the ends, so that the lower end
+            never lies above the higher.
+            ``n_peaks``, how many there are; ``min_snr`` and ``tail``, the
+            settings they were read with.
+        """
+        peak_data = self._peaks_to_match()
+        min_snr = calibration_config.TOF_STRONG_PEAK_SNR
+        tail = calibration_config.TOF_STRONG_PEAK_TAIL
+        strong = (peak_data.polarity.values == self.params.polarity) & (
+            peak_data.signal_to_noise.values >= min_snr
+        )
+        mzs = np.sort(peak_data.mz.values[strong])
+        reach = min(tail, (mzs.size + 1) // 2)
+        return {
+            "span": (
+                [_finite_or_none(mzs[reach - 1]), _finite_or_none(mzs[-reach])]
+                if mzs.size
+                else None
+            ),
+            "n_peaks": int(mzs.size),
+            "min_snr": _finite_or_none(min_snr),
+            "tail": tail,
         }
 
     async def apply(self, fit: dict):
@@ -2691,7 +2734,9 @@ def _quality_block_issues(
     against an instrument-class bound; for a fit on one point, or on two
     isotopes of one ion, how far it moved the axis; for one on three or more,
     how many ions the points came from; for a TOF fit, the share of its
-    collection's lines it kept; and, where a bound is set, the
+    collection's lines it kept and how far past its calibrants the file's
+    strong peaks reach (:func:`_extrapolation_issues`); and, where a bound
+    is set, the
     calibrants' share of the TIC. A fit with no quality
     block cannot be judged and is reported as such rather than let through.
 
@@ -2828,6 +2873,9 @@ def _quality_block_issues(
             }
         )
 
+    if tof:
+        issues.extend(_extrapolation_issues(quality))
+
     calibrant_to_tic = quality.get("calibrant_to_tic")
     if (
         min_calibrant_to_tic is not None
@@ -2844,3 +2892,54 @@ def _quality_block_issues(
             }
         )
     return issues
+
+
+def _extrapolation_issues(quality: dict) -> list[dict]:
+    """
+    Whether a TOF fit leaves the file's strong peaks on an extrapolated axis.
+
+    The fit is held between the lines it kept (``span``); past them its axis
+    is extrapolated, and the further past, the worse: TOF H's set on 41-148
+    Th read -10 to -21 ppm above 160 Th with a post-fit error of 3-5 ppm. The
+    issue is raised when the file's strong peaks (``strong_peaks``) reach
+    further beyond the span than ``TOF_MAX_EXTRAPOLATION_SPANS`` times its
+    width, at either end, measured in sqrt(m/z), which the TOF index is
+    linear in. A record without either span, from before they were kept, is
+    not judged on it.
+
+    :param quality: A TOF fit's ``quality`` block (see :func:`fit_quality`).
+    :return: One ``extrapolated`` issue naming both spans, or none.
+    """
+    limit = calibration_config.TOF_MAX_EXTRAPOLATION_SPANS
+    span = quality.get("span")
+    reach = (quality.get("strong_peaks") or {}).get("span")
+    if limit is None or not _is_span(span) or not _is_span(reach):
+        return []
+    low, high = span
+    width = math.sqrt(high) - math.sqrt(low)
+    past = []
+    if math.sqrt(low) - math.sqrt(reach[0]) > limit * width:
+        past.append(f"from {reach[0]:.0f} Th")
+    if math.sqrt(reach[1]) - math.sqrt(high) > limit * width:
+        past.append(f"to {reach[1]:.0f} Th")
+    if not past:
+        return []
+    return [
+        {
+            "code": "extrapolated",
+            "message": (
+                f"Calibrated on {low:.0f}\u2013{high:.0f} Th; peaks "
+                f"{' and '.join(past)} are extrapolated."
+            ),
+        }
+    ]
+
+
+def _is_span(span) -> bool:
+    """Whether a recorded span is two positive m/z, the lower first."""
+    return (
+        isinstance(span, list | tuple)
+        and len(span) == 2
+        and all(isinstance(mz, int | float) and mz > 0 for mz in span)
+        and span[0] <= span[1]
+    )

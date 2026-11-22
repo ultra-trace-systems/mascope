@@ -52,6 +52,7 @@ NEW_KEYS = {
     "model",
     "search",
     "node_version",
+    "strong_peaks",
 }
 
 #: The lines scattered about the true axis so that the search's axis holds
@@ -277,6 +278,84 @@ async def test_a_fit_that_does_not_come_about_records_nothing(filestore):
 
     assert handler.fit_result is None
     assert handler.fitted_on is None
+
+
+# --- How far the strong peaks reach ---
+
+#: Sample peaks beside the calibrant lines, each far from every line: strong
+#: ones of the fit's polarity below and above them, and peaks the reach
+#: leaves out: weak ones, one of the other polarity, a satellite.
+SAMPLE_PEAKS = [
+    *({"mz": mz, "snr": 50.0} for mz in (20.0, 25.0, 30.0)),
+    {"mz": 35.0, "snr": 20.0},
+    *({"mz": mz, "snr": 50.0} for mz in (400.0, 500.0, 600.0, 700.0, 800.0, 900.0)),
+    {"mz": 10.0, "snr": 19.0},
+    {"mz": 1200.0, "snr": 19.0},
+    {"mz": 1300.0, "snr": 400.0, "polarity": "+"},
+    {"mz": 1400.0, "snr": 400.0, "satellite": True},
+]
+
+
+def _write_with_sample_peaks(filestore) -> str:
+    peaks = support.calibrant_peaks()
+    for peak in peaks:
+        peak["snr"] = SNR[round(peak["mz"])]
+    return support.write_file(filestore, [*peaks, *SAMPLE_PEAKS])
+
+
+@pytest.mark.asyncio
+async def test_the_record_says_how_far_the_strong_peaks_reach(filestore):
+    """The strong peaks are those of the fit's polarity with S/N 20 or more,
+    20 itself included: the five calibrant lines and ten sample peaks. Their reach is read at the
+    fifth from either end, past 35 Th below and short of 600 Th above."""
+    filename = _write_with_sample_peaks(filestore)
+
+    handler = await _node_fit(filename, support.isotopes())
+    strong = handler.fitted_on["strong_peaks"]
+
+    assert strong["n_peaks"] == 15
+    assert strong["span"] == [
+        pytest.approx(61.988, abs=1e-2),
+        pytest.approx(500.0, abs=1e-2),
+    ]
+    assert (strong["min_snr"], strong["tail"]) == (20.0, 5)
+    # The fit itself is the one it would be without the sample peaks
+    assert handler.fitted_on["span"] == [
+        pytest.approx(61.988, abs=1e-3),
+        pytest.approx(187.980, abs=1e-3),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_few_strong_peaks_reach_from_their_middle(filestore):
+    """Five strong peaks are fewer than twice five: both ends are read at
+    the third, so the lower never lies above the higher."""
+    filename = _write(filestore)
+
+    handler = await _node_fit(filename, support.isotopes())
+
+    middle = sorted(support.isotopes().query("relative_abundance >= 0.15").mz)[2]
+    assert handler.fitted_on["strong_peaks"]["span"] == [
+        pytest.approx(middle, abs=1e-2),
+        pytest.approx(middle, abs=1e-2),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_fit_flags_peaks_far_past_its_calibrants(filestore):
+    """Calibrated on 62-188 Th, the strong peaks reach 500 Th: 1.5 widths of
+    the span past its top in sqrt(m/z). The fit the dialog previews says so,
+    under its seal."""
+    filename = _write_with_sample_peaks(filestore)
+
+    fit, _ = await _fit_answer(filename, support.isotopes())
+
+    assert fit["quality_issues"] == [
+        {
+            "code": "extrapolated",
+            "message": "Calibrated on 62\u2013188 Th; peaks to 500 Th are extrapolated.",
+        }
+    ]
 
 
 # --- The collection's version ---

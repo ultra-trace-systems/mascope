@@ -290,6 +290,113 @@ class TestKeptLineShare:
         assert _codes({**GOOD, "n_points": 3, "n_lines": 11}, TOF_FILE) == []
 
 
+def _reach(span, peaks):
+    """A TOF block fitted on ``span`` in a file whose strong peaks reach
+    ``peaks``."""
+    return {**GOOD, "span": span, "strong_peaks": {"span": peaks, "n_peaks": 400}}
+
+
+class TestExtrapolated:
+    """A TOF fit whose file's strong peaks reach far past its calibrants is
+    flagged: past the lines it kept its axis is extrapolated. Distances are
+    in sqrt(m/z) and in widths of the span, the limit 1.25 widths."""
+
+    def test_the_assessments_old_set_is_caught(self):
+        # TOF H's old set on 41-148 Th, peaks to 450 Th: 1.57 widths past
+        (issue,) = calibration_quality_issues(
+            _reach([41.04, 148.1], [15, 450]), TOF_FILE
+        )
+
+        assert issue == {
+            "code": "extrapolated",
+            "message": "Calibrated on 41–148 Th; peaks to 450 Th are extrapolated.",
+        }
+
+    def test_the_corrected_set_clears_it(self):
+        # The same peaks on the corrected set, 41-228 Th: 0.70 widths past
+        assert _codes(_reach([41.04, 228.2], [15, 450]), TOF_FILE) == []
+        # and a file of the same instrument with strong peaks to 611 Th: 1.10
+        assert _codes(_reach([41.04, 228.2], [15, 611]), TOF_FILE) == []
+
+    def test_a_nitrate_set_on_a_long_axis_is_caught(self):
+        (issue,) = calibration_quality_issues(
+            _reach([61.99, 187.98], [35, 520]), TOF_FILE
+        )
+
+        assert issue["message"] == (
+            "Calibrated on 62–188 Th; peaks to 520 Th are extrapolated."
+        )
+
+    @pytest.mark.parametrize(
+        ("peaks", "codes"),
+        [
+            # sqrt(100) = 10, sqrt(400) = 20: the width is 10, so the limit
+            # lies at sqrt 32.5 (1,056.25 Th) above
+            pytest.param([100, 1056], [], id="just inside above"),
+            pytest.param([100, 1057], ["extrapolated"], id="just past above"),
+            pytest.param([100, 400], [], id="inside the span"),
+        ],
+    )
+    def test_the_limit_is_a_width_and_a_quarter_past_the_top(self, peaks, codes):
+        assert _codes(_reach([100, 400], peaks), TOF_FILE) == codes
+
+    @pytest.mark.parametrize(
+        ("peaks", "codes"),
+        [
+            # sqrt(400) = 20, sqrt(900) = 30: the limit below is sqrt 7.5
+            # (56.25 Th)
+            pytest.param([57, 900], [], id="just inside below"),
+            pytest.param([56, 900], ["extrapolated"], id="just past below"),
+        ],
+    )
+    def test_the_low_end_is_judged_alike(self, peaks, codes):
+        assert _codes(_reach([400, 900], peaks), TOF_FILE) == codes
+
+    def test_the_message_names_the_low_end(self):
+        (issue,) = calibration_quality_issues(_reach([400, 900], [50, 900]), TOF_FILE)
+
+        assert issue["message"] == (
+            "Calibrated on 400–900 Th; peaks from 50 Th are extrapolated."
+        )
+
+    def test_both_ends_make_one_issue(self):
+        (issue,) = calibration_quality_issues(_reach([400, 900], [50, 2000]), TOF_FILE)
+
+        assert issue["message"] == (
+            "Calibrated on 400–900 Th; peaks from 50 Th and to 2000 Th "
+            "are extrapolated."
+        )
+
+    def test_it_follows_the_setting(self, monkeypatch):
+        quality = _reach([100, 400], [100, 1200])
+        assert _codes(quality, TOF_FILE) == ["extrapolated"]
+
+        monkeypatch.setattr(calibration_config, "TOF_MAX_EXTRAPOLATION_SPANS", 1.5)
+        assert _codes(quality, TOF_FILE) == []
+
+        monkeypatch.setattr(calibration_config, "TOF_MAX_EXTRAPOLATION_SPANS", None)
+        assert _codes(quality, TOF_FILE) == []
+
+    def test_it_judges_tof_fits_only(self):
+        assert _codes(_reach([41.04, 148.1], [15, 450]), ORBI_FILE) == []
+
+    @pytest.mark.parametrize(
+        "quality",
+        [
+            pytest.param({**GOOD, "span": [41.04, 148.1]}, id="no strong peaks"),
+            pytest.param({**GOOD, "strong_peaks": {"span": [15, 450]}}, id="no span"),
+            pytest.param(_reach([41.04, 148.1], None), id="a file without any"),
+            pytest.param(_reach(None, [15, 450]), id="a span of none"),
+            pytest.param(_reach([41.04, None], [15, 450]), id="half a span"),
+            pytest.param(_reach([148.1, 41.04], [15, 450]), id="a span upside down"),
+            pytest.param(_reach([41.04, 100.0, 148.1], [15, 450]), id="three m/z"),
+            pytest.param(_reach([41.04, 148.1], [0.0, 450]), id="a reach from 0 Th"),
+        ],
+    )
+    def test_a_record_without_both_spans_is_not_held_against_it(self, quality):
+        assert _codes(quality, TOF_FILE) == []
+
+
 class TestFitQualityCountsIons:
     def test_distinct_ions_are_counted(self):
         stats = [
