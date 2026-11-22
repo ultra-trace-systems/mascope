@@ -262,7 +262,8 @@
 
   /* Badge semantics: red = calibration failed (needs action), amber = a fit
      below the quality bar, whether skipped or accepted and in use (the
-     results are suspect), teal = calibrated fine but the file arrived with
+     results are suspect), or one made on an older version of the
+     calibration collection, teal = calibrated fine but the file arrived with
      acquisition drift (the instrument needs retuning, not the data), green =
      calibrated, grey = never fitted or unverified. */
   .browser .calibration-failed {
@@ -271,7 +272,8 @@
 
   .browser .calibration-poor,
   .browser .calibration-warned,
-  .browser .calibration-accepted {
+  .browser .calibration-accepted,
+  .browser .calibration-stale {
     color: var(--state-warning);
   }
 

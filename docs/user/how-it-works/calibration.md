@@ -188,7 +188,7 @@ A TOF fit is absolute.
 Applying it recomputes the m/z axis from the stored time-of-flight index of every point of the spectrum and every detected peak, and nothing depends on the axis the file had before (an Orbitrap fit, by contrast, rescales the stored axis by a cumulative factor).
 So re-calibrating needs no peak re-detection, an earlier fit is restored exactly from its parameters, in either model, and applying the same fit twice changes nothing.
 Applying a fit clears the file's matches and marks its batches for rematching; a batch still waiting on a recalibration stays marked for it.
-Editing the calibration collection a mode already uses only marks its batches: the files stay on their old calibration until someone re-calibrates them.
+Editing the compounds of the calibration collection a mode already uses marks every batch holding that mode's files for recalibration, as pointing the mode at another collection does. Their status icon then offers to re-calibrate the batch. The files stay on their old calibration until someone re-calibrates them: recalibrating the batch refits them on the collection as it is now and leaves the batch marked for rematching. Renaming the collection, or attaching it to batches, changes no fit and marks nothing for recalibration. A collection no mode calibrates on is matched only, and editing it marks its batches for rematching.
 A TOF file that has never been fitted carries the axis the acquisition software wrote, stamped `unfitted` in its calibration record.
 
 #### The three-parameter model
@@ -386,6 +386,7 @@ The sample browser shows each sample's calibration outcome in the calibration co
 | Green | Calibrated and verified. |
 | Teal | Calibrated and verified, but the file's own axis was far off before calibration (acquisition drift). The data is fine; the instrument needs retuning. |
 | Amber | Calibrated below the quality bar. Matched anyway (warn-only servers), accepted by an operator and used, or left out of matching - the tooltip says which, and why the fit missed the bar. |
+| Amber | Calibrated on an older version of the calibration collection: its compounds changed since the file was fitted, or the mode now calibrates on another collection or with other ionization mechanisms. Recalibrate the batch to fit the file on the current calibrants. A fit already amber for its quality says this in its tooltip too. TOF fits only: their record names the collection version (the **Collection** hash of [What a TOF record says](#what-a-tof-record-says)). |
 | Red | Calibration failed; the sample is uncalibrated and not matched. |
 | Grey | Not calibrated (a TOF file still on its acquisition axis), or not verified. |
 | Faint grey | Calibration does not apply: no calibration collection, or a blank file. |

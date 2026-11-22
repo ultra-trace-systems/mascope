@@ -272,17 +272,26 @@ const openCalibration = (sample) => {
         </template>
         <template #body="{ data }">
           <span
-            v-if="calibrationStatus(data.mz_calibration)"
+            v-if="calibrationStatus(data.mz_calibration, data.mz_calibration_collection_stale)"
             class="pi ph ph-scales"
             :class="[
-              `calibration-${calibrationStatus(data.mz_calibration).state}`,
-              { 'calibration-badge': calibrationStatus(data.mz_calibration).clickable }
+              `calibration-${calibrationStatus(data.mz_calibration, data.mz_calibration_collection_stale).state}`,
+              {
+                'calibration-badge': calibrationStatus(
+                  data.mz_calibration,
+                  data.mz_calibration_collection_stale
+                ).clickable
+              }
             ]"
             v-tooltip="{
-              value: calibrationStatus(data.mz_calibration).tooltip,
+              value: calibrationStatus(data.mz_calibration, data.mz_calibration_collection_stale)
+                .tooltip,
               showDelay: 500
             }"
-            @click.stop="calibrationStatus(data.mz_calibration).clickable && openCalibration(data)"
+            @click.stop="
+              calibrationStatus(data.mz_calibration, data.mz_calibration_collection_stale)
+                .clickable && openCalibration(data)
+            "
           />
         </template>
       </Column>
