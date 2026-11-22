@@ -917,3 +917,123 @@ def test_a_formula_new_after_an_earlier_run_change_is_not_marked(late_species):
     assert not any(
         note.startswith("The engine run changes in the last") for note in fig.notes
     )
+
+
+# --- what a real server gives: blank names, both polarities ------------------------
+
+
+#: The target ions without a compound name, and the blank name each is
+#: given: the server's ``""`` for the reagent, a space for one compound.
+UNNAMED = {"ti0000": "", "ti0001": " "}
+
+#: A target ion whose name, formula and ion formula the server gives blank.
+BLANK = "ti0003"
+
+
+def _stale_text(value):
+    """The store's text before blank names were dropped: kept as given."""
+    return None if value is None or pd.isna(value) else str(value)
+
+
+def _mixed_client() -> tuple[Campaign, FakeClient]:
+    """The short campaign as a server of both chemistries gives it: the
+    second day's samples positive, two target ions without a compound name
+    (the server's ``""``, and a space), and a third with a blank formula
+    and ion formula as well."""
+    campaign = generate(SHORT, seed=2)
+    client = FakeClient(campaign)
+    middle = client.batch_ids[1]
+    client.by_batch[middle] = client.by_batch[middle].assign(polarity="+")
+    blank = ["target_compound_name", "target_compound_formula", "ion_formula"]
+    for ions in client.ions.values():
+        for ion, blank_name in UNNAMED.items():
+            ions.loc[ions["target_ion_id"] == ion, "target_compound_name"] = blank_name
+        ions.loc[ions["target_ion_id"] == BLANK, blank] = ""
+    return campaign, client
+
+
+@pytest.fixture(scope="module", params=["fresh", "stale"])
+def mixed(request, tmp_path_factory) -> tuple[Campaign, CampaignStore]:
+    """The mixed server's campaign, synced; ``stale`` as a store synced
+    before blank names were dropped, which still holds them."""
+    campaign, client = _mixed_client()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(store_module, "_now", lambda: pd.Timestamp("2026-08-01T00:00Z"))
+        patch.setattr(store_module.time, "sleep", lambda seconds: None)
+        if request.param == "stale":
+            patch.setattr(store_module, "_text", _stale_text)
+        report = sync(client, SCOPE, root=tmp_path_factory.mktemp(request.param))
+    return campaign, report.store
+
+
+def test_the_store_holds_a_blank_name_as_none(mixed, request):
+    _, store = mixed
+    species = store.table("species").set_index("series_key")
+
+    names = [species.at[f"ion:{ion}", "name"] for ion in UNNAMED]
+    blank = species.loc[f"ion:{BLANK}", ["name", "formula", "ion_formula"]]
+    stale = request.node.callspec.params["mixed"] == "stale"
+    if stale:
+        assert names == list(UNNAMED.values())
+        assert list(blank) == ["", "", ""]
+    else:
+        assert pd.isna(names).all()
+        assert blank.isna().all()
+    assert species.at["ion:ti0002", "name"] == "compound 02"
+
+
+def test_an_ion_without_a_name_is_named_by_its_formula(mixed):
+    campaign, store = mixed
+    reagents = [f"ion:{ion}" for ion in UNNAMED]
+    # The first day, negative alone: a sum never spans polarities
+    end = campaign.truth.start + pd.Timedelta(days=1)
+
+    signal = instrument_signal(store, reagents=reagents, tz="UTC", end=end)
+    summary = scope_summary(store, reagents=reagents, normalise=reagents[0])
+    top = top_species(store, period="day", normalise=reagents, tz="UTC", end=end)
+
+    assert [r["name"] for r in signal.summary["reagents"]] == ["I", "C13H26O"]
+    assert {t["key"]: t["name"] for t in signal.summary["traces"]} == {
+        "tic": "TIC",
+        "ion:ti0000": "I",
+        "ion:ti0001": "C13H26O",
+        "ion:ti0000+ion:ti0001": "I + C13H26O",
+    }
+    assert set(signal.data["name"]) == {"TIC", "I", "C13H26O", "I + C13H26O"}
+    rows = dict(zip(summary.data["item"], summary.data["value"]))
+    assert rows["Reagent ions"] == "I, C13H26O"
+    assert rows["Normalisation"] == "I"
+    # The view names the normaliser, and the subtitle prints it
+    assert top.summary["normalise_name"] == "I + C13H26O"
+    assert "I + C13H26O" in top.subtitle
+    # A named ion keeps its name
+    named = instrument_signal(store, reagents=["ion:ti0002"])
+    assert named.summary["reagents"][0]["name"] == "compound 02"
+
+
+def test_an_ion_without_a_name_or_a_formula_is_named_by_its_key(mixed):
+    campaign, store = mixed
+    key = f"ion:{BLANK}"
+    end = campaign.truth.start + pd.Timedelta(days=1)
+
+    fig = instrument_signal(store, reagents=[key], normalise=key, tz="UTC", end=end)
+
+    assert fig.summary["reagents"] == [{"key": key, "name": key, "formula": None}]
+    assert fig.summary["normalise_name"] == key
+
+
+@pytest.mark.parametrize("build", [instrument_signal, top_species])
+def test_a_window_of_both_polarities_says_it_pools_them(mixed, build):
+    campaign, store = mixed
+    start = campaign.truth.start
+    pooled = "The window's samples are of both polarities"
+
+    both = build(store, tz="UTC")
+    negative = build(store, tz="UTC", end=start + pd.Timedelta(days=1))
+
+    assert both.summary["polarities"] == ["+", "-"]
+    assert [note for note in both.notes if note.startswith(pooled)]
+    assert negative.summary["polarities"] == ["-"]
+    assert not [note for note in negative.notes if note.startswith(pooled)]
+    what = "the TIC pools them" if build is instrument_signal else "rank the species"
+    assert what in next(note for note in both.notes if note.startswith(pooled))

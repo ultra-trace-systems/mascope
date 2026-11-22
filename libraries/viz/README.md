@@ -70,7 +70,7 @@ The tables are those of section 2.2 of the note, in UTC:
 | `files` | file acquired in the range; `in_batch` says whether a batch holds it |
 | `ion_series` | (sample, target ion) with a match record, keyed `ion:<target_ion_id>`; a record without a match is NaN |
 | `peak_series` | (sample, batch peak) with a consensus formula, keyed `formula:<formula>\|<mechanism>`, with the ledger run that read it |
-| `species` | series key: name, formula, ion formula, mechanism, class, m/z, element counts, O/C, H/C and OSc |
+| `species` | series key: name, formula, ion formula, mechanism, class, m/z, element counts, O/C, H/C and OSc; a blank name or formula is null (the server names a target ion without a compound name `""`) |
 | `rollups` | UTC hour or day, series key and reading: median, mean, 10th and 90th percentiles and count |
 
 A batch is fetched again when the server lists it modified since, its
@@ -203,6 +203,8 @@ What every view does the same way:
   from more than one engine run, and where the run changes. They are over the batches whose
   samples the view draws, in the polarity the formulas are read in: a
   change between the other polarity's batches is not flagged.
+  `series`, `diurnal`, `periods`, `composition` and `top` add
+  `polarities`: those of the window's samples, `+` before `-`.
   A chart prints them; a run change is flagged, never joined silently. A
   `spectrum` against another period flags a change between the two, at
   the batch where the run changed.
@@ -442,6 +444,12 @@ What every chart kind does the same way:
   in what share of the samples the sum was partial.
 - **A run change is drawn**, never joined: a line in the notes, the
   summary's `run_changes`, and a rule on a time axis at each change.
+- **Both polarities are said.** When the window's samples are of both
+  polarities, `instrument_signal` and `top_species` say in a note that
+  they pool two chemistries, and their summary's `polarities` lists both.
+  A store scoped to one polarity reads either alone.
+- **A species is named** by its name, else its formula (a target ion
+  without a compound name), else its key.
 - **Below detection is missing.** A statistic is over the detected values
   only, so the summaries give each species' presence: its values detected
   over the samples that could have held one.

@@ -2472,3 +2472,34 @@ def test_a_wrong_argument_says_what_is_wrong(month, call, message):
 
     with pytest.raises(ValueError, match=message):
         call(store)
+
+
+def test_a_view_says_the_polarities_of_its_windows_samples(short_campaign, tmp_path):
+    """The second day's samples are positive, the fourth's switch polarity
+    (``+-``): the frames say which polarities the window's samples hold,
+    from the rollups and from the rows alike."""
+    client = FakeClient(short_campaign)
+    first, middle, last = client.batch_ids
+    client.by_batch[middle] = client.by_batch[middle].assign(polarity="+")
+    client.by_batch[last] = client.by_batch[last].assign(polarity="+-")
+    store = _sync(client, tmp_path)
+    key = sorted(short_campaign.truth.cycles)[0]
+    start = short_campaign.truth.start
+    day = pd.Timedelta(days=1)
+
+    rolled = views.series(store, key, cadence="1h", tz="UTC")
+    rows = views.series(store, key, cadence="10min")
+    ranked = views.top(store, 3, "median", period="day")
+    hours = views.diurnal(store, key, start=start, end=start + day)
+    second = views.periods(store, key, "day", start=start + day, end=start + 2 * day)
+    last_day = views.series(store, key, start=start + 3 * day)
+
+    assert rolled.attrs["source"] == "rollups"
+    assert rolled.attrs["polarities"] == ["+", "-"]
+    assert rows.attrs["source"] == "rows"
+    assert rows.attrs["polarities"] == ["+", "-"]
+    assert ranked.attrs["polarities"] == ["+", "-"]
+    assert hours.attrs["polarities"] == ["-"]
+    assert second.attrs["polarities"] == ["+"]
+    # A polarity-switching sample is of both
+    assert last_day.attrs["polarities"] == ["+", "-"]
