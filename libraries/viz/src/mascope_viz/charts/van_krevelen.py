@@ -135,10 +135,7 @@ def van_krevelen(
         "label": "formula",
         "hollow": "hollow",
     }
-    options: dict[str, Any] = {
-        "top_n": top_n,
-        "hollow_label": "candidate, not an identification",
-    }
+    options: dict[str, Any] = {"top_n": top_n, "hollow_label": _hollow_label(data)}
     if colour == "n_c":
         encodings["colour"] = "n_c"
         colour_axis = {"label": "Carbon number"}
@@ -201,6 +198,17 @@ _COLOUR_NAMES = {
     "class": "compound class",
     "amplitude": "amplitude",
 }
+
+
+def _hollow_label(data: pd.DataFrame) -> str:
+    """The legend of the hollow points: the tiers they are, in the order
+    of :data:`~mascope_viz.data.views.TIERS`, none of them an
+    identification; empty when no point is hollow."""
+    drawn = set(data.loc[data["hollow"], "tier"].astype(str))
+    hollow = [tier.replace("_", " ") for tier in views.TIERS if tier in drawn]
+    if not hollow:
+        return ""
+    return f"{' or '.join(hollow)}, not an identification"
 
 
 def _check_tiers(tiers: Any) -> list[str]:

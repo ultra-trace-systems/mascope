@@ -587,8 +587,9 @@ against its background, a night against a day.
 each formula at the O/C and H/C of its neutral formula: the reagent adduct is not counted. A formula without carbon has
 no place on it, and is left out and counted. Only the `assigned` tier is
 drawn by default, since a candidate is not an identification; with
-`tiers=["assigned", "candidate"]` the candidates are drawn hollow, and the
-summary counts every tier apart (`by_tier`). A marker's area is in
+`tiers=["assigned", "candidate"]` the candidates are drawn hollow, as is
+any other tier asked for, the legend naming the tiers it draws hollow, and
+the summary counts every tier apart (`by_tier`). A marker's area is in
 proportion to the median signal, with a size legend; signal is not
 abundance, since the sensitivity differs from compound to compound. The
 classes are the store's: CHO, CHON, CHOS, CHONS, the rest as `other`. By

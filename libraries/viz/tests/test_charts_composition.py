@@ -630,6 +630,42 @@ def test_candidates_are_drawn_hollow_and_counted_apart_when_asked_for(month):
     _drawn(fig)
 
 
+def test_the_hollow_legend_names_the_tiers_drawn_hollow(
+    short_campaign,  # noqa: F811
+    tmp_path,
+):
+    """A tier weaker than a candidate is not called one: the legend of the
+    hollow points names the tiers they are."""
+    tables = dict(short_campaign.tables)
+    peaks = tables["peak_series"].copy()
+    keys = peaks["series_key"].astype(str)
+    tier = peaks["tier"].astype(object)
+    assert set(tier.dropna()) == {"assigned"}
+    candidate, weaker = _formula_keys(set(keys))[:2]
+    tier[(keys == candidate) & tier.notna()] = "candidate"
+    tier[(keys == weaker) & tier.notna()] = "below_assignability"
+    peaks["tier"] = pd.Categorical(tier, categories=views.TIERS)
+    tables["peak_series"] = peaks
+    store = _sync(dataclasses.replace(short_campaign, tables=tables), tmp_path)
+
+    def label(tiers):
+        fig = van_krevelen(store, tiers=tiers)
+        return fig, fig.panels[0].options["hollow_label"]
+
+    fig, text = label(["assigned", "below_assignability"])
+    assert set(fig.data.loc[fig.data["hollow"], "key"]) == {weaker}
+    assert text == "below assignability, not an identification"
+    fig, text = label(["assigned", "candidate", "below_assignability"])
+    assert set(fig.data.loc[fig.data["hollow"], "key"]) == {candidate, weaker}
+    assert text == "candidate or below assignability, not an identification"
+    _, text = label(["candidate"])
+    assert text == "candidate, not an identification"
+    # No point drawn hollow, no hollow entry in the legend
+    fig, text = label(["assigned", "unassigned"])
+    assert not fig.data["hollow"].any() and text == ""
+    _drawn(fig)
+
+
 def test_the_weighted_and_the_bulk_means_are_each_named(month):
     _, store = month
 
