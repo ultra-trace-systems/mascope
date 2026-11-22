@@ -53,6 +53,12 @@ def _rgba(colour: str, alpha: float) -> str:
     return f"rgba({r},{g},{b},{alpha})"
 
 
+#: A day in milliseconds, plotly.js's time unit: the width of a lone
+#: heatmap cell on a time axis, which :func:`common.edges` makes one unit
+#: of matplotlib's, a day.
+DAY_MS = 86_400_000
+
+
 def _wall(column: pd.Series) -> list[Any]:
     """Times as plotly.js draws them: the wall-clock time in their zone, a
     gap None."""
@@ -585,12 +591,12 @@ class _Drawing:
         y = self._grid_axis(
             "y", cells.ys, common.kind_of(self.fig, panel, "y"), row, column
         )
+        place = self._place(panel, cells, x, y)
         if np.isfinite(values).any():
             settings = self._colourbar(scale, row, column)
             self._trace(
                 go.Heatmap(
-                    x=x,
-                    y=y,
+                    **place,
                     z=[_values(line) for line in values],
                     colorscale=settings["colorscale"],
                     zmin=settings["cmin"],
@@ -607,8 +613,7 @@ class _Drawing:
             label = panel.options["gap_label"]
             self._trace(
                 go.Heatmap(
-                    x=x,
-                    y=y,
+                    **place,
                     z=[[1.0 if g else None for g in line] for line in cells.gaps],
                     colorscale=[[0.0, gap], [1.0, gap]],
                     zmin=0,
@@ -629,6 +634,29 @@ class _Drawing:
             )
         self.drawn.update_xaxes(row=row, col=column, showgrid=False)
         self.drawn.update_yaxes(row=row, col=column, showgrid=False)
+
+    def _place(
+        self, panel: Panel, cells: common.Grid, x: list[Any], y: list[Any]
+    ) -> dict[str, Any]:
+        """Where plotly.js draws a heatmap's cells: by their centres *x* and
+        *y*, which it places as :func:`common.edges` does, but a lone cell
+        on a number or time axis by its centre (``x0``, ``y0``) and width
+        (``dx``, ``dy``). Given one centre, plotly.js makes a cell one unit
+        wide whatever the axis: a millisecond on a time axis, where
+        matplotlib's is a day, and off a log axis for a cell at 0.5 or
+        under."""
+        place: dict[str, Any] = {"x": x, "y": y}
+        for axis, values in (("x", cells.xs), ("y", cells.ys)):
+            kind = common.kind_of(self.fig, panel, axis)
+            if len(values) != 1 or kind == "category":
+                continue
+            if kind == "time":
+                width = DAY_MS
+            else:
+                width = common.lone_width(values[0], getattr(panel.axes, axis).scale)
+            centre = place.pop(axis)[0]
+            place.update({f"{axis}0": centre, f"d{axis}": width})
+        return place
 
     def _grid_axis(
         self, axis: str, values: list[Any], kind: str, row: int, column: int

@@ -492,8 +492,8 @@ class _Drawing:
         ys = self._grid_axis(ax, "y", cells.ys, common.kind_of(self.fig, panel, "y"))
         if np.isfinite(values).any():
             ax.pcolormesh(
-                common.edges(xs),
-                common.edges(ys),
+                common.edges(xs, panel.axes.x.scale),
+                common.edges(ys, panel.axes.y.scale),
                 np.ma.masked_invalid(values),
                 cmap=_colourmap(scale.stops),
                 vmin=scale.low,
@@ -505,8 +505,8 @@ class _Drawing:
         if cells.gaps.any():
             gap = _rgba(theme.token("gap"), theme.marks.gap_cell_opacity)
             ax.pcolormesh(
-                common.edges(xs),
-                common.edges(ys),
+                common.edges(xs, panel.axes.x.scale),
+                common.edges(ys, panel.axes.y.scale),
                 np.ma.masked_where(~cells.gaps, np.ones(cells.gaps.shape)),
                 cmap=ListedColormap([gap]),
                 vmin=0,

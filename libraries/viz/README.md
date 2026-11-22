@@ -309,6 +309,10 @@ encoding takes and each option's default. What every figure shares:
   is a gap on a log axis. A heatmap cell whose `gap` is true (no samples)
   is drawn in the gap style, a grey tint held apart from both ramps; a
   cell with samples and no value is blank.
+- **A heatmap's cells meet halfway** between two values, in log space on
+  a log axis, where a row or column at a value that is not positive is
+  not drawn. A lone cell is one unit wide, a day on a time axis and as
+  wide as its value on a log axis. Both renderers place the cells alike.
 - **A group keeps its colour** in every panel of a figure, and appears
   once in its legend. Groups take the categorical palette in the order
   they first appear; `colours` names a group's colour by token instead,
