@@ -849,8 +849,10 @@ class _Drawing:
                 line_text += [text, text, None]
             said = any(h is not None for h in mine["hover"])
             # A hover text replaces plotly's default, which names the
-            # trace: a group's sticks keep its name (a mirror's period)
+            # trace: a group's sticks keep its name (a mirror's period),
+            # in full, where plotly would cut it to 15 characters
             shown = "x+y+text" if group is None else "x+y+text+name"
+            whole = {} if group is None else {"hoverlabel": {"namelength": -1}}
             self._trace(
                 go.Scatter(
                     x=line_x,
@@ -860,6 +862,7 @@ class _Drawing:
                     connectgaps=False,
                     text=line_text if said else None,
                     hoverinfo=shown if said else None,
+                    **whole,
                     **self._named(group),
                 ),
                 row,
