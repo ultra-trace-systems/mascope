@@ -15,7 +15,10 @@ import numpy as np
 import pytest
 
 from mascope_backend.api.models.calibration.config import calibration_config
-from mascope_backend.api.new.peak_assignments import service
+from mascope_backend.api.new.peak_assignments import (
+    judging_loop,
+    sample_inputs,
+)
 from mascope_backend.api.new.peak_assignments.mass_gate import SourceLineCap
 from mascope_signal.compute import PartialPeakStoreError, StalePeakStoreError
 
@@ -48,11 +51,11 @@ async def _cap(instrument_type="orbi", tic=(800.0, 1200.0), raises=None, by_peak
         return by_peak
 
     with (
-        patch.object(service, "get_instrument_type", instrument),
-        patch.object(service, "get_tic_per_scan", side_effect=tic_read) as read,
-        patch.object(service, "get_stream_tic_by_peak", side_effect=stream_read),
+        patch.object(judging_loop, "get_instrument_type", instrument),
+        patch.object(sample_inputs, "get_tic_per_scan", side_effect=tic_read) as read,
+        patch.object(sample_inputs, "get_stream_tic_by_peak", side_effect=stream_read),
     ):
-        cap = await service._source_line_cap(SAMPLE)
+        cap = await judging_loop._source_line_cap(SAMPLE)
     return cap, read
 
 

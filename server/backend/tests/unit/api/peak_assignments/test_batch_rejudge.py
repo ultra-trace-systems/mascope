@@ -30,7 +30,7 @@ from mascope_backend.api.new.peak_assignments.batch_rejudge import (
     judged_targets,
     new_tier,
 )
-from mascope_backend.api.new.peak_assignments.service import raise_to_floors
+from mascope_backend.api.new.peak_assignments.judging_loop import raise_to_floors
 
 
 def _member(anchor="bp-1", **fields):

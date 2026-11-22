@@ -1041,7 +1041,7 @@ async def _propagate_to_sample(
     record of the series that proposed the reading): a member's row that reads
     its anchor's proposal carries the record, as a run of the sample reads it
     off the batch once the anchor's consensus names the formula
-    (``service.stamp_series``), since the series is the second observation a
+    (``batch_lines.stamp_series``), since the series is the second observation a
     proposal rests on. While the proposals are measured the batch serves no
     reader the record yet (``batch_peaks.standing_series_record``).
 

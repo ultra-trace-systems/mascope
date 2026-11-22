@@ -24,8 +24,13 @@ from stage_stubs import stub_seeded_scorer  # the tests root, on sys.path
 from mascope_backend.api.new.peak_assignments import (
     batch_peaks_controller,
     batch_untargeted,
+    judging_loop,
+    model_readers,
     pipeline,
+    sample_inputs,
+    sample_mechanisms,
     service,
+    stage_a_pass,
 )
 from mascope_backend.api.new.peak_assignments.batch_curation import (
     release_batch_peak_curation,
@@ -77,11 +82,26 @@ from mascope_tools.composition.envelope_tolerance import (
     EnvelopeTolerance,
     fit_envelope_tolerance,
 )
-from mascope_tools.composition.mass_accuracy import (
-    PRED_SIGMA_PPM,
-)
+from mascope_tools.composition.mass_accuracy import PRED_SIGMA_PPM
 from mascope_tools.composition.profiles import INSTRUMENT_FALLBACK_SIGMA_PPM
 from mascope_tools.composition.reagents import reagent_library
+
+
+#: The modules of a run and of a recorded measurement that read each name the
+#: tests stand in for, so one stand-in reaches every read of it, as a stand-in
+#: in the one module that read them all once did.
+_READERS = {
+    "load_sample_peaks": (sample_inputs, model_readers, stage_a_pass),
+    "_resolution_of": (sample_inputs, model_readers),
+    "fetch_sample_mechanisms": (sample_mechanisms, model_readers, service),
+    "_untargeted_ionization_notations": (sample_mechanisms, stage_a_pass),
+}
+
+
+def _stand_in(monkeypatch, name, value):
+    """Stand in for ``name`` in each module that reads it."""
+    for module in _READERS[name]:
+        monkeypatch.setattr(module, name, value)
 
 
 pytestmark = pytest.mark.asyncio
@@ -333,13 +353,13 @@ def _stub_engine(monkeypatch, samples, peaks, matches, pairings):
 
     # The search runs the stage list, which reads the sample through the
     # service's helpers and the library's names in its own module.
-    monkeypatch.setattr(service, "load_sample_peaks", load_peaks)
+    _stand_in(monkeypatch, "load_sample_peaks", load_peaks)
     monkeypatch.setattr(pipeline, "assign_compositions", assign)
-    monkeypatch.setattr(service, "fetch_sample_mechanisms", mechanisms)
-    monkeypatch.setattr(service, "_untargeted_ionization_notations", notations)
+    _stand_in(monkeypatch, "fetch_sample_mechanisms", mechanisms)
+    _stand_in(monkeypatch, "_untargeted_ionization_notations", notations)
     monkeypatch.setattr(pipeline, "default_match_params", match_params)
-    monkeypatch.setattr(service, "_seeded_rescore", _rescored(seeded_fits))
-    monkeypatch.setattr(service, "_resolution_of", resolution_of)
+    monkeypatch.setattr(judging_loop, "_seeded_rescore", _rescored(seeded_fits))
+    _stand_in(monkeypatch, "_resolution_of", resolution_of)
     # The propagation measures the readings through the stage list, whose
     # election reads the scored frame a seeded pass gives.
     stub_seeded_scorer(
@@ -352,7 +372,7 @@ def _stub_engine(monkeypatch, samples, peaks, matches, pairings):
 
 
 def _rescored(seeded_fits):
-    """The search's seeded re-score (``service._seeded_rescore``), from a
+    """The search's seeded re-score (``judging_loop._seeded_rescore``), from a
     stand-in for its fits: it keeps no frame to score again."""
 
     async def rescore(sample, params, seeds, *, model, **_kwargs):
@@ -462,9 +482,9 @@ async def test_a_secondary_channel_the_mode_declares_is_searched_once(
         searched.append([mechanism.ionization_mechanism_id for mechanism in mechs])
         return ["H+"], {"H+": "mech-h"}
 
-    monkeypatch.setattr(service, "fetch_sample_mechanisms", mechanisms)
-    monkeypatch.setattr(service, "fetch_mechanisms_by_notation", secondary)
-    monkeypatch.setattr(service, "_untargeted_ionization_notations", notations)
+    _stand_in(monkeypatch, "fetch_sample_mechanisms", mechanisms)
+    monkeypatch.setattr(sample_mechanisms, "fetch_mechanisms_by_notation", secondary)
+    _stand_in(monkeypatch, "_untargeted_ionization_notations", notations)
 
     await run_batch_untargeted_search(
         folded_batch["batch_id"], PeakAssignmentConfig(profile="UR")
@@ -491,11 +511,10 @@ async def test_the_searched_sample_is_re_scored_at_its_reagent_lines_offset(
     # No run's pre-pass is on this path, so the search reads the sample's
     # reagent lines off its own peak list and the re-score of its commits is
     # centred there, as a run of the sample centres its own.
-    monkeypatch.setattr(
-        service,
-        "load_sample_peaks",
-        lambda sample: _frame(_PEAKS["S1"] + _urea_lines(-1.3)),
-    )
+    def peaks(sample):
+        return _frame(_PEAKS["S1"] + _urea_lines(-1.3))
+
+    _stand_in(monkeypatch, "load_sample_peaks", peaks)
 
     await run_batch_untargeted_search(
         folded_batch["batch_id"], PeakAssignmentConfig(profile="UR")
@@ -516,7 +535,7 @@ async def test_the_searched_sample_is_re_scored_at_its_reagent_lines_offset(
         assert measured_at.scoring_mu_ppm == model.scoring_mu_ppm
     # A reader with no configuration claims the lines under the default
     # profile, which names no reagent.
-    assert (await service.recorded_model(propagated[0][0])).reagent is None
+    assert (await model_readers.recorded_model(propagated[0][0])).reagent is None
 
 
 async def _record_run(
@@ -566,8 +585,8 @@ async def test_a_sample_with_a_run_is_re_scored_where_that_run_scored(
     # and its reagent lines sit beyond the width at -1.3 ppm. A run scored it
     # at the library's fit, so the search's re-score is centred there too.
     samples = folded_batch["samples"]
-    monkeypatch.setattr(
-        service,
+    _stand_in(
+        monkeypatch,
         "load_sample_peaks",
         lambda sample: _frame(_PEAKS["S1"] + _urea_lines(-1.3)),
     )
@@ -616,7 +635,7 @@ async def test_a_sample_with_a_run_is_re_scored_where_that_run_scored(
         async_session_factory, samples["S2"], "completed", 1, _scoring(0.0, "none")
     )
     config = PeakAssignmentConfig(profile="UR")
-    recorded = await service.recorded_model(sample, config)
+    recorded = await model_readers.recorded_model(sample, config)
     assert (recorded.mu_source, recorded.mu_ppm) == ("none", None)
 
 
@@ -693,8 +712,8 @@ async def test_the_search_ranks_the_sample_where_a_run_scores_it(
     # width, or on a sample measured wider or narrower than its class, it
     # chose readings a run of the sample would not.
     samples = folded_batch["samples"]
-    monkeypatch.setattr(
-        service,
+    _stand_in(
+        monkeypatch,
         "load_sample_peaks",
         lambda sample: _frame(_PEAKS["S1"] + _urea_lines(shift_ppm)),
     )
@@ -1010,7 +1029,7 @@ async def test_a_sample_that_will_not_read_leaves_its_anchors_unsearched(
     def unreadable(sample):
         raise FileNotFoundError("the peak file has moved")
 
-    monkeypatch.setattr(service, "load_sample_peaks", unreadable)
+    _stand_in(monkeypatch, "load_sample_peaks", unreadable)
 
     counts = await run_batch_untargeted_search(batch_id, PeakAssignmentConfig())
 
@@ -1549,7 +1568,7 @@ async def test_a_reading_the_vote_puts_below_candidate_is_not_counted_held(
     async def seeded_fits(sample, params, seeds, *, model):
         return {seed: 0.05 if seed[0] == "C9H11NO" else 0.88 for seed in seeds}
 
-    monkeypatch.setattr(service, "_seeded_rescore", _rescored(seeded_fits))
+    monkeypatch.setattr(judging_loop, "_seeded_rescore", _rescored(seeded_fits))
     counts, _ = await _search_persistence(persistence_batch)
 
     faint = (await _anchors_by_mz(async_session_factory, batch_id))[150]

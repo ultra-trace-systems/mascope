@@ -31,21 +31,21 @@ from unittest.mock import AsyncMock, PropertyMock, patch
 import pandas as pd
 import pytest
 
-import mascope_backend.api.new.peak_assignments.service as service
 from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
     FileLines,
 )
+from mascope_backend.api.new.peak_assignments import sample_inputs
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
-from mascope_backend.api.new.peak_assignments.service import (
+from mascope_backend.api.new.peak_assignments.run_config import (
     REFERENCE_LICENSES_KEY,
-    _fetch_reference_known_isotopes,
     _stored_run_config,
+)
+from mascope_backend.api.new.peak_assignments.sample_inputs import (
+    _fetch_reference_known_isotopes,
 )
 from mascope_backend.api.new.reference.licenses import reference_license_gate
 from mascope_reference import KnownComposition, KnownIdentity
 
-
-_MOD = "mascope_backend.api.new.peak_assignments.service"
 
 #: An Orbitrap file with no resolution read: its fine lines as they are.
 _FINE = FileLines("HIGH")
@@ -96,17 +96,17 @@ class TestGateResolution:
 
     def test_stage_a_reads_the_one_gate(self):
         """Stage A and the reference sources API read the gate from one home."""
-        assert service.reference_license_gate is reference_license_gate
+        assert sample_inputs.reference_license_gate is reference_license_gate
 
     def test_unset_is_the_default(self):
         """The single most important property of the whole change: the shipped
         config gates nothing, so an upgrade changes no deployment's results."""
-        assert service.runtime.full_config.backend.reference_licenses is None
+        assert sample_inputs.runtime.full_config.backend.reference_licenses is None
         assert reference_license_gate() is None
 
     def test_reads_the_configured_allowlist(self, monkeypatch):
         monkeypatch.setattr(
-            service.runtime.full_config.backend,
+            sample_inputs.runtime.full_config.backend,
             "reference_licenses",
             ["CC0", "public-domain"],
         )
@@ -116,7 +116,7 @@ class TestGateResolution:
         """Defensive: `runtime.config` is whichever module the process is, and
         an older env toml validates into a model that never saw the field."""
         with patch.object(
-            type(service.runtime),
+            type(sample_inputs.runtime),
             "config",
             new_callable=PropertyMock,
             return_value=SimpleNamespace(),
@@ -129,9 +129,9 @@ class TestGateAtTheCallSite:
 
     @pytest.fixture(autouse=True)
     def _fresh_cache(self):
-        service._reference_isotope_cache.clear()
+        sample_inputs._reference_isotope_cache.clear()
         yield
-        service._reference_isotope_cache.clear()
+        sample_inputs._reference_isotope_cache.clear()
         patch.stopall()
 
     def _patches(self, gates):
@@ -140,20 +140,26 @@ class TestGateAtTheCallSite:
         The reference state is held constant across calls on purpose - the
         cache tests below must isolate the gate as the only thing that moved.
         """
-        patch(f"{_MOD}.async_session", side_effect=lambda: _session_ctx()).start()
         patch(
-            f"{_MOD}.known_state_fingerprint",
+            "mascope_backend.api.new.peak_assignments.sample_inputs.async_session",
+            side_effect=lambda: _session_ctx(),
+        ).start()
+        patch(
+            "mascope_backend.api.new.peak_assignments.sample_inputs.known_state_fingerprint",
             new_callable=AsyncMock,
             return_value=(("src-1", "t1"),),
         ).start()
-        patch(f"{_MOD}.reference_license_gate", side_effect=gates).start()
+        patch(
+            "mascope_backend.api.new.peak_assignments.sample_inputs.reference_license_gate",
+            side_effect=gates,
+        ).start()
         known = patch(
-            f"{_MOD}.iter_known_compositions",
+            "mascope_backend.api.new.peak_assignments.sample_inputs.iter_known_compositions",
             new_callable=AsyncMock,
             return_value=_known(),
         ).start()
         build = patch(
-            f"{_MOD}._build_reference_isotopes_df",
+            "mascope_backend.api.new.peak_assignments.sample_inputs._build_reference_isotopes_df",
             return_value=pd.DataFrame({"mz": [183.1026], "relative_abundance": [1.0]}),
         ).start()
         return known, build
@@ -218,21 +224,28 @@ class TestRunRecordsTheGate:
     def test_ungated_runs_record_null_rather_than_nothing(self):
         """Present-and-null distinguishes "everything was allowed" from a run
         written before this was recorded at all."""
-        with patch(f"{_MOD}.reference_license_gate", return_value=None):
+        with patch(
+            "mascope_backend.api.new.peak_assignments.run_config.reference_license_gate",
+            return_value=None,
+        ):
             stored = _stored_run_config(PeakAssignmentConfig())
         assert REFERENCE_LICENSES_KEY in stored
         assert stored[REFERENCE_LICENSES_KEY] is None
 
     def test_gated_runs_record_the_effective_set(self):
         with patch(
-            f"{_MOD}.reference_license_gate", return_value=["CC0", "public-domain"]
+            "mascope_backend.api.new.peak_assignments.run_config.reference_license_gate",
+            return_value=["CC0", "public-domain"],
         ):
             stored = _stored_run_config(PeakAssignmentConfig())
         assert stored[REFERENCE_LICENSES_KEY] == ["CC0", "public-domain"]
 
     def test_the_requested_config_is_carried_through_untouched(self):
         config = PeakAssignmentConfig(max_untargeted_peaks=42, run_untargeted=False)
-        with patch(f"{_MOD}.reference_license_gate", return_value=None):
+        with patch(
+            "mascope_backend.api.new.peak_assignments.run_config.reference_license_gate",
+            return_value=None,
+        ):
             stored = _stored_run_config(config)
         assert stored["max_untargeted_peaks"] == 42
         assert stored["run_untargeted"] is False
@@ -244,6 +257,9 @@ class TestRunRecordsTheGate:
         sources the deployment declined."""
         assert REFERENCE_LICENSES_KEY not in PeakAssignmentConfig.model_fields
         smuggled = PeakAssignmentConfig(**{REFERENCE_LICENSES_KEY: ["anything"]})
-        with patch(f"{_MOD}.reference_license_gate", return_value=["CC0"]):
+        with patch(
+            "mascope_backend.api.new.peak_assignments.run_config.reference_license_gate",
+            return_value=["CC0"],
+        ):
             stored = _stored_run_config(smuggled)
         assert stored[REFERENCE_LICENSES_KEY] == ["CC0"]

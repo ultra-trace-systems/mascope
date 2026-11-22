@@ -41,12 +41,12 @@ from mascope_backend.api.new.peak_assignments.fold_view import (
     fold_assignment_id,
     fold_run_id,
 )
-from mascope_backend.api.new.peak_assignments.sample_status import (
-    get_batch_sample_assignment_status,
-)
-from mascope_backend.api.new.peak_assignments.service import (
+from mascope_backend.api.new.peak_assignments.ledger_reads import (
     get_peak_assignment_detail,
     get_peak_assignments,
+)
+from mascope_backend.api.new.peak_assignments.sample_status import (
+    get_batch_sample_assignment_status,
 )
 from mascope_backend.db import (
     BatchPeak,

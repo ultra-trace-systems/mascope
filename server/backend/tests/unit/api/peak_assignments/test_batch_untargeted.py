@@ -541,7 +541,10 @@ class _Searched(Exception):
     """Raised by the fake finder once it has seen what the search hands it."""
 
 
-_SVC = "mascope_backend.api.new.peak_assignments.service"
+_SI = "mascope_backend.api.new.peak_assignments.sample_inputs"
+_SM = "mascope_backend.api.new.peak_assignments.sample_mechanisms"
+_MR = "mascope_backend.api.new.peak_assignments.model_readers"
+_SA = "mascope_backend.api.new.peak_assignments.stage_a_pass"
 _PIPE = "mascope_backend.api.new.peak_assignments.pipeline"
 _BU = "mascope_backend.api.new.peak_assignments.batch_untargeted"
 
@@ -608,9 +611,9 @@ def _searching(
         "explained": stand_in(
             f"{_BU}._explained_peaks", AsyncMock(return_value=frozenset(explained))
         ),
-        "peaks": stand_in(f"{_SVC}.load_sample_peaks", return_value=peaks),
+        "peaks": stand_in(f"{_SI}.load_sample_peaks", return_value=peaks),
         "mechanisms": stand_in(
-            f"{_SVC}.fetch_sample_mechanisms",
+            f"{_SM}.fetch_sample_mechanisms",
             AsyncMock(
                 return_value=(
                     [m.ionization_mechanism_id for m in mechanisms],
@@ -619,7 +622,7 @@ def _searching(
             ),
         ),
         "secondary": stand_in(
-            f"{_SVC}.fetch_mechanisms_by_notation",
+            f"{_SM}.fetch_mechanisms_by_notation",
             AsyncMock(return_value=list(secondary)),
         ),
         "params": stand_in(
@@ -638,13 +641,19 @@ def _searching(
             "mascope_backend.api.new.peak_assignments.batch_known_species.batch_species_for",
             AsyncMock(return_value=[]),
         ),
-        "series": stand_in(f"{_SVC}.batch_series_by_peak", AsyncMock(return_value={})),
-        "resolution": stand_in(
-            f"{_SVC}._resolution_of", AsyncMock(return_value=resolution)
+        "series": stand_in(
+            "mascope_backend.api.new.peak_assignments.batch_lines.batch_series_by_peak",
+            AsyncMock(return_value={}),
         ),
-        "cap": stand_in(f"{_SVC}._source_line_cap", AsyncMock(return_value=None)),
+        "resolution": stand_in(
+            f"{_SI}._resolution_of", AsyncMock(return_value=resolution)
+        ),
+        "cap": stand_in(
+            "mascope_backend.api.new.peak_assignments.judging_loop._source_line_cap",
+            AsyncMock(return_value=None),
+        ),
         "latest": stand_in(
-            f"{_SVC}._latest_in_app_run",
+            f"{_MR}._latest_in_app_run",
             AsyncMock(
                 return_value=(None, None)
                 if width is None
@@ -652,14 +661,21 @@ def _searching(
             ),
         ),
         "known": stand_in(
-            f"{_SVC}._fetch_known_isotopes",
+            f"{_SI}._fetch_known_isotopes",
             AsyncMock(return_value=pd.DataFrame() if known is None else known),
         ),
         "seeded": stand_in(
-            f"{_SVC}._seeded_rescore", AsyncMock(return_value=({}, None))
+            "mascope_backend.api.new.peak_assignments.judging_loop._seeded_rescore",
+            AsyncMock(return_value=({}, None)),
         ),
         "finder": stand_in(f"{_PIPE}.assign_compositions", finder),
     }
+    # The recorded measurement reads the sample's inputs in its own module, and
+    # Stage A its known isotopes: the same stand-ins there.
+    stand_in(f"{_MR}.load_sample_peaks", mocks["peaks"])
+    stand_in(f"{_MR}.fetch_sample_mechanisms", mocks["mechanisms"])
+    stand_in(f"{_MR}._resolution_of", mocks["resolution"])
+    stand_in(f"{_SA}._fetch_known_isotopes", mocks["known"])
     return stack, mocks
 
 
@@ -775,7 +791,10 @@ async def test_the_search_s_partner_gate_turns_tropylium_as_a_run_s_does():
         _sample(polarity="+"), peaks, mode, finder=finder, secondary=secondary
     )
     cap = stack.enter_context(
-        patch(f"{_SVC}.cap_second_channel", wraps=batch_untargeted_second_channel())
+        patch(
+            "mascope_backend.api.new.peak_assignments.judging_loop.cap_second_channel",
+            wraps=batch_untargeted_second_channel(),
+        )
     )
     with stack:
         rows, _, _ = await batch_untargeted._search_sample(
@@ -790,9 +809,9 @@ async def test_the_search_s_partner_gate_turns_tropylium_as_a_run_s_does():
 
 
 def batch_untargeted_second_channel():
-    from mascope_backend.api.new.peak_assignments import service
+    from mascope_backend.api.new.peak_assignments import judging_loop
 
-    return service.cap_second_channel
+    return judging_loop.cap_second_channel
 
 
 @pytest.mark.asyncio
@@ -1069,10 +1088,14 @@ def _claiming(claim, peak_ids):
     artifact one, with no row of its own; None claims nothing."""
     if claim == "reagent":
         return patch(
-            f"{_SVC}._reagent_assignments", return_value=([], set(peak_ids), None)
+            "mascope_backend.api.new.peak_assignments.prepasses._reagent_assignments",
+            return_value=([], set(peak_ids), None),
         )
     if claim == "artifact":
-        return patch(f"{_SVC}._artifact_assignments", return_value=([], set(peak_ids)))
+        return patch(
+            "mascope_backend.api.new.peak_assignments.prepasses._artifact_assignments",
+            return_value=([], set(peak_ids)),
+        )
     return nullcontext()
 
 
@@ -1420,7 +1443,13 @@ async def test_a_representative_the_claim_stage_takes_is_no_target():
         [_mechanism("[M-H]-", "im-h")],
         finder=finder,
     )
-    with stack, patch(f"{_SVC}._artifact_assignments", return_value=([], {"p1"})):
+    with (
+        stack,
+        patch(
+            "mascope_backend.api.new.peak_assignments.prepasses._artifact_assignments",
+            return_value=([], {"p1"}),
+        ),
+    ):
         await batch_untargeted._search_sample(
             "si-1", {"p1", "p2"}, PeakAssignmentConfig()
         )
@@ -1783,16 +1812,16 @@ class TestTheBatchSearchReadsHalogenTwins:
 
     @pytest.mark.asyncio
     async def test_a_bromide_sample_reads_no_bromine_twin(self, monkeypatch):
-        from mascope_backend.api.new.peak_assignments import service
+        from mascope_backend.api.new.peak_assignments import judging_loop
 
         seen = {}
-        real = service.twin_halogens
+        real = judging_loop.twin_halogens
 
         def spy(*args, **kwargs):
             seen["halogens"] = real(*args, **kwargs)
             return seen["halogens"]
 
-        monkeypatch.setattr(service, "twin_halogens", spy)
+        monkeypatch.setattr(judging_loop, "twin_halogens", spy)
         peaks, target, _ = self._chlorobenzene()
 
         await self._search(peaks, target, config=PeakAssignmentConfig(profile="BR"))

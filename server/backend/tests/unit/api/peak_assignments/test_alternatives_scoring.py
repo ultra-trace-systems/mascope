@@ -46,7 +46,6 @@ from mascope_tools.composition.heuristic_filter import formula_plausibility
 
 
 _MOD = "mascope_backend.api.new.peak_assignments.alternatives_scoring"
-_SVC = "mascope_backend.api.new.peak_assignments.service"
 
 #: The peak the row under test sits on.
 PEAK_ID = "sp-1"
@@ -146,7 +145,7 @@ async def _run(
             ),
         ),
         patch(
-            f"{_SVC}.fetch_sample_mechanisms",
+            "mascope_backend.api.new.peak_assignments.sample_mechanisms.fetch_sample_mechanisms",
             AsyncMock(
                 return_value=(
                     [m.ionization_mechanism_id for m in mechanisms],
@@ -155,7 +154,7 @@ async def _run(
             ),
         ),
         patch(
-            f"{_SVC}.fetch_mechanisms_by_notation",
+            "mascope_backend.api.new.peak_assignments.sample_mechanisms.fetch_mechanisms_by_notation",
             AsyncMock(return_value=list(opened)),
         ),
         patch(

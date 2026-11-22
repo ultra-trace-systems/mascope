@@ -801,7 +801,7 @@ def shows_molecule(
     cannot name.
 
     It is read where the reading changes have settled and before any cap
-    (``service.Judging.judge``): after the mass gate has measured the ledger,
+    (``judging_loop.Judging.judge``): after the mass gate has measured the ledger,
     whose ceiling is the one cap below candidate and is read here, so the
     other caps cannot move the answer.
 
@@ -3277,7 +3277,7 @@ def apply_partner_gates(
     leaves committed (:func:`tier_under_ceiling`), and before the
     cross-channel pass reads the ledger, so that a reading it sets aside is no
     rival there. Every path of the stage list that judges as a run does reads
-    it so, in its judge stage (``service.Judging``): a batch search over the
+    it so, in its judge stage (``judging_loop.Judging``): a batch search over the
     rows it read in a sample, a batch decision measured on a sample over the
     rows measured there.
 
@@ -3877,7 +3877,7 @@ def cap_second_channel(
     reading's. Both configurations admit the partner gate's partner today
     (:data:`PARTNER_RULE`, :func:`shows_molecule`). They are read once on the
     ledger the reading changes settled
-    (``service.Judging.judge``): this is a cap of the judging loop, which
+    (``judging_loop.Judging.judge``): this is a cap of the judging loop, which
     only lowers a tier, after the partner gate has settled every gated ion's
     reading. So the gate neither lifts it nor puts it back, and a reading the
     gate gave the row is judged here as any other. Before it was a cap, a

@@ -248,7 +248,7 @@ class PeakAssignmentRecord(BaseModel):
     #: The ``rule`` of each of the row's tier reasons (provenance.tier_reasons),
     #: in order; None where it records none. The reasons' details are in the
     #: detail read. This and the next three are what the gate card reads of
-    #: every committed row (``service._rule_records``), flattened so a whole
+    #: every committed row (``ledger_reads._rule_records``), flattened so a whole
     #: run is one paged read rather than one detail read per row.
     tier_reason_rules: list[str] | None = None
     #: Whether the mass gate names a corroboration for the row
@@ -291,7 +291,7 @@ class PeakAssignmentDetailRecord(PeakAssignmentRecord):
     provenance: dict | None = None
     #: The reference-list compounds ``assigned_formula`` is listed as, looked up
     #: when the row is read and scoped as Stage A matches
-    #: (``service.with_known_compounds``): name, source, licence, InChIKey, the
+    #: (``ledger_reads.with_known_compounds``): name, source, licence, InChIKey, the
     #: source's own id and its cross-references, at most as many as a run keeps.
     #: Each alternative a list holds carries the same key. Empty where no list
     #: holds the formula, and None where the row commits none or the lookup could

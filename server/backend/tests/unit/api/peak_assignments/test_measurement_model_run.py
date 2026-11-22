@@ -3,8 +3,8 @@
 Stage A fits the run's model at its first named point (v1) and every row is
 scored there. The refit stage fits it again on the run's corroborated commits
 (v2); where that moves the centre or the width beyond the bound, every row is
-scored again at v2 off the frames it was scored on (``service.fits_at``,
-``service.rescore_rows``) before any cap, and the mass gate reads a row's
+scored again at v2 off the frames it was scored on (``judging_loop.fits_at``,
+``judging_loop.rescore_rows``) before any cap, and the mass gate reads a row's
 distance at the same model. So a row's fit score and its ``mass_z`` are read
 at one centre and one width, whichever version the run ends at.
 """
@@ -12,7 +12,7 @@ at one centre and one width, whichever version the run ends at.
 import pandas as pd
 import pytest
 
-from mascope_backend.api.new.peak_assignments import service
+from mascope_backend.api.new.peak_assignments import judging_loop, stage_a_pass
 from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_ISO_CHILD,
     ROLE_M0,
@@ -59,7 +59,7 @@ V1 = MeasurementModel.v1(
 #: A confidence curve, and the adduct its compounds' second channel is
 #: corroborated by.
 CALIBRATION = Calibration(a=6.0, b=-3.0, corroboration_weights={"[M+Na]+": 1.5})
-CURVE = service.ConfidenceCurve(CALIBRATION, {"im-1": "[M+H]+", "im-2": "[M+Na]+"})
+CURVE = stage_a_pass.ConfidenceCurve(CALIBRATION, {"im-1": "[M+H]+", "im-2": "[M+Na]+"})
 
 
 def _p(evidence: float) -> float:
@@ -128,12 +128,12 @@ def _rows(frame: pd.DataFrame, model: MeasurementModel) -> list[dict]:
 def _refit(
     rows: list[dict],
     frame: pd.DataFrame,
-    curve: service.ConfidenceCurve | None = None,
+    curve: stage_a_pass.ConfidenceCurve | None = None,
     *,
     floors: dict[str, str] | None = None,
     fragment_ladders: tuple[FragmentLadder, ...] = (),
-) -> service.Judging:
-    judging = service.Judging(
+) -> judging_loop.Judging:
+    judging = judging_loop.Judging(
         rows,
         model=V1,
         fallback_sigma_ppm=ORBI_WIDTH,
@@ -143,7 +143,7 @@ def _refit(
         max_alternatives=5,
         lines=SpectrumLines([], [], []),
         tier_bands=BANDS,
-        rescore=lambda model: service.fits_at(model, frame, None),
+        rescore=lambda model: judging_loop.fits_at(model, frame, None),
         curve=curve,
         floors=floors or {},
         fragment_ladders=fragment_ladders,
@@ -152,7 +152,7 @@ def _refit(
     return judging
 
 
-def _judged(judging: service.Judging) -> service.JudgedCommits:
+def _judged(judging: judging_loop.Judging) -> judging_loop.JudgedCommits:
     """The judging rounds run on from the first refit to their fixed point."""
     judging.judge()
     judging.cap()
@@ -243,7 +243,7 @@ class TestOneModelForTheScoreAndTheCap:
         decided["tier"] = TIER_BELOW_ASSIGNABILITY
         floors = {decided["sample_peak_id"]: TIER_CANDIDATE}
         # Proposed as the elect stage proposes it.
-        assert service.raise_to_floors(rows, floors) == 1
+        assert judging_loop.raise_to_floors(rows, floors) == 1
 
         def judged(**kwargs) -> dict:
             result = _judged(_refit(rows, frame, **kwargs))
@@ -327,7 +327,7 @@ class TestRescoreRows:
         ]
         fits = {SOURCE_UNTARGETED: {("C6H12O6", "im-1"): 0.9}}
 
-        assert service.rescore_rows(rows, fits, BANDS) == 2
+        assert judging_loop.rescore_rows(rows, fits, BANDS) == 2
 
         for row in rows:
             assert row["fit_score"] == 0.9
@@ -340,7 +340,7 @@ class TestRescoreRows:
         row = _row("weighted", fit=0.8, evidence=0.4, tier=TIER_BELOW_ASSIGNABILITY)
         fits = {SOURCE_UNTARGETED: {("C6H12O6", "im-1"): 0.4}}
 
-        service.rescore_rows([row], fits, BANDS)
+        judging_loop.rescore_rows([row], fits, BANDS)
 
         assert row["provenance"]["evidence"] == pytest.approx(0.2)
         assert row["tier"] == TIER_BELOW_ASSIGNABILITY
@@ -356,7 +356,7 @@ class TestRescoreRows:
             }
         }
 
-        service.rescore_rows([held, falls], fits, BANDS)
+        judging_loop.rescore_rows([held, falls], fits, BANDS)
 
         assert held["tier"] == TIER_CANDIDATE
         assert falls["tier"] == TIER_BELOW_ASSIGNABILITY
@@ -379,7 +379,7 @@ class TestRescoreRows:
         }
         floors = {"p-decided": TIER_CANDIDATE, "p-lifted": TIER_CANDIDATE}
 
-        service.rescore_rows([decided, lifted, free], fits, BANDS, floors=floors)
+        judging_loop.rescore_rows([decided, lifted, free], fits, BANDS, floors=floors)
 
         assert decided["provenance"]["evidence"] == 0.1
         assert decided["tier"] == TIER_CANDIDATE
@@ -394,7 +394,7 @@ class TestRescoreRows:
             SOURCE_UNTARGETED: {("C6H12O6", "im-1"): 0.6},
         }
 
-        service.rescore_rows([listed, searched], fits, BANDS)
+        judging_loop.rescore_rows([listed, searched], fits, BANDS)
 
         assert (listed["fit_score"], searched["fit_score"]) == (0.8, 0.6)
 
@@ -410,7 +410,7 @@ class TestRescoreRows:
         )
         fits = {SOURCE_DATABASE: {}, SOURCE_UNTARGETED: {("C7H14O6", "im-1"): 0.7}}
 
-        service.rescore_rows([given], fits, BANDS)
+        judging_loop.rescore_rows([given], fits, BANDS)
 
         assert given["fit_score"] == 0.7
 
@@ -419,7 +419,7 @@ class TestRescoreRows:
         reagent = _row("reagent", fit=0.5, tier=TIER_CANDIDATE)
         reagent["role"] = "reagent"
 
-        rescored = service.rescore_rows(
+        rescored = judging_loop.rescore_rows(
             [row, reagent], {SOURCE_UNTARGETED: {("C6H12O6", "x"): 0.9}}, BANDS
         )
 
@@ -474,7 +474,7 @@ class TestTheRescoreMovesWhatTheRowRecordsOfItsFit:
         row = _listed("r", fit=0.9, alternatives=[_alternative("C5H10O5", 0.6)])
         fits = {SOURCE_DATABASE: {("C6H12O6", "im-1"): 0.5, ("C5H10O5", "im-1"): 0.85}}
 
-        service.rescore_rows([row], fits, BANDS, CURVE)
+        judging_loop.rescore_rows([row], fits, BANDS, CURVE)
 
         assert (row["fit_score"], row["tier"]) == (0.5, TIER_CANDIDATE)
         assert row["provenance"]["evidence"] == 0.5
@@ -488,7 +488,7 @@ class TestTheRescoreMovesWhatTheRowRecordsOfItsFit:
         row["provenance"].update(evidence=0.63, plausibility=0.7, p_correct=_p(0.63))
         fits = {SOURCE_DATABASE: {("C6H12O6", "im-1"): 0.5}}
 
-        service.rescore_rows([row], fits, BANDS, CURVE)
+        judging_loop.rescore_rows([row], fits, BANDS, CURVE)
 
         evidence = row["provenance"]["evidence"]
         assert evidence == pytest.approx(0.35)
@@ -500,7 +500,7 @@ class TestTheRescoreMovesWhatTheRowRecordsOfItsFit:
         row = _listed("r", fit=0.9, alternatives=[_alternative("C5H10O5", 0.6)])
         fits = {SOURCE_DATABASE: {("C6H12O6", "im-1"): 0.9, ("C5H10O5", "im-1"): 0.3}}
 
-        assert service.rescore_rows([row], fits, BANDS, CURVE) == 0
+        assert judging_loop.rescore_rows([row], fits, BANDS, CURVE) == 0
 
         assert row["alternatives"][0]["fit_score"] == 0.3
         assert row["provenance"]["p_correct"] == _p(0.9)
@@ -521,7 +521,7 @@ class TestTheRescoreMovesWhatTheRowRecordsOfItsFit:
             }
         }
 
-        service.rescore_rows([row], fits, BANDS, CURVE)
+        judging_loop.rescore_rows([row], fits, BANDS, CURVE)
 
         assert same_ion["fit_score"] == 0.6
         assert restated["fit_score"] == 0.7
@@ -534,7 +534,7 @@ class TestTheRescoreMovesWhatTheRowRecordsOfItsFit:
         row["alternatives"] = [same_ion]
         fits = {SOURCE_UNTARGETED: {("C6H12O6", "im-1"): 0.6}}
 
-        service.rescore_rows([row], fits, BANDS, CURVE)
+        judging_loop.rescore_rows([row], fits, BANDS, CURVE)
 
         assert row["fit_score"] == 0.6
         assert same_ion["fit_score"] == 0.9
@@ -551,7 +551,7 @@ class TestTheRescoreMovesWhatTheRowRecordsOfItsFit:
         other["provenance"]["p_correct"] = 0.4242
         fits = {SOURCE_DATABASE: {("C6H12O6", "im-2"): 0.2}}
 
-        service.rescore_rows([first, second, other], fits, BANDS, CURVE)
+        judging_loop.rescore_rows([first, second, other], fits, BANDS, CURVE)
 
         assert second["provenance"]["p_correct"] == _p(0.2)
         # The first row's own fit did not move; its sibling's boost is gone.
@@ -565,7 +565,7 @@ class TestTheRescoreMovesWhatTheRowRecordsOfItsFit:
         second = _listed("na", fit=0.2, mechanism="im-2")
         fits = {SOURCE_DATABASE: {("C6H12O6", "im-2"): 0.8}}
 
-        service.rescore_rows([first, second], fits, BANDS, CURVE)
+        judging_loop.rescore_rows([first, second], fits, BANDS, CURVE)
 
         lifted = round(apply_corroboration(_p(0.8), ["[M+Na]+"], {"[M+Na]+": 1.5}), 4)
         assert first["provenance"]["p_correct"] == lifted
@@ -583,7 +583,7 @@ class TestTheRescoreMovesWhatTheRowRecordsOfItsFit:
         second["tier"] = TIER_BELOW_ASSIGNABILITY
         fits = {SOURCE_DATABASE: {("C6H12O6", "im-1"): 0.85}}
 
-        service.rescore_rows([first, second], fits, BANDS, CURVE)
+        judging_loop.rescore_rows([first, second], fits, BANDS, CURVE)
 
         lifted = round(apply_corroboration(_p(0.85), ["[M+Na]+"], {"[M+Na]+": 1.5}), 4)
         assert first["provenance"]["p_correct"] == lifted
@@ -593,7 +593,7 @@ class TestTheRescoreMovesWhatTheRowRecordsOfItsFit:
         child["role"] = ROLE_ISO_CHILD
         fits = {SOURCE_DATABASE: {("C6H12O6", "im-1"): 0.5}}
 
-        service.rescore_rows([child], fits, BANDS, CURVE)
+        judging_loop.rescore_rows([child], fits, BANDS, CURVE)
 
         assert child["provenance"]["p_correct"] == _p(0.5)
 
@@ -603,7 +603,7 @@ class TestTheRescoreMovesWhatTheRowRecordsOfItsFit:
         row["provenance"]["p_correct"] = None
         fits = {SOURCE_DATABASE: {("C6H12O6", "im-1"): 0.5}}
 
-        service.rescore_rows([row], fits, BANDS, None)
+        judging_loop.rescore_rows([row], fits, BANDS, None)
 
         assert row["provenance"]["p_correct"] is None
         assert row["fit_score"] == 0.5
@@ -616,11 +616,11 @@ class TestTheRescoreMovesWhatTheRowRecordsOfItsFit:
             }
         )
 
-        curve = service.ConfidenceCurve.of(CALIBRATION, frame)
+        curve = stage_a_pass.ConfidenceCurve.of(CALIBRATION, frame)
 
         assert curve.calibration is CALIBRATION
         assert curve.notation_by_mechanism == {"im-1": "[M+H]+", "im-2": "[M+Na]+"}
-        assert service.ConfidenceCurve.of(None, frame) is None
+        assert stage_a_pass.ConfidenceCurve.of(None, frame) is None
 
 
 class TestTheSecondChannelCapAtTheNewModel:
@@ -648,7 +648,7 @@ class TestTheSecondChannelCapAtTheNewModel:
         reading = next(row for row in rows if row["peak_assignment_id"] == "ion-0-M0")
         assert reading["tier"] == TIER_BELOW_ASSIGNABILITY
 
-        judging = service.Judging(
+        judging = judging_loop.Judging(
             rows,
             model=V1,
             fallback_sigma_ppm=ORBI_WIDTH,
@@ -659,7 +659,7 @@ class TestTheSecondChannelCapAtTheNewModel:
             lines=SpectrumLines([], [], []),
             tier_bands=BANDS,
             minor_channels=frozenset(minor),
-            rescore=lambda model: service.fits_at(model, frame, None),
+            rescore=lambda model: judging_loop.fits_at(model, frame, None),
         )
         judging.refit()
         judging.judge()
@@ -710,7 +710,7 @@ class TestAClaimedLineAtTheNewModel:
         free = _row("free", fit=0.5, tier=TIER_CANDIDATE, role=ROLE_ISO_CHILD)
         fits = {SOURCE_UNTARGETED: {("C6H12O6", "im-1"): 0.9}}
 
-        service.rescore_rows([claimed, free], fits, BANDS)
+        judging_loop.rescore_rows([claimed, free], fits, BANDS)
 
         assert claimed["provenance"]["evidence"] == 0.9
         assert claimed["tier"] == TIER_CANDIDATE
@@ -720,7 +720,7 @@ class TestAClaimedLineAtTheNewModel:
         row = _claimed(_row("claimed", fit=0.5, tier=TIER_CANDIDATE))
         fits = {SOURCE_UNTARGETED: {("C6H12O6", "im-1"): 0.2}}
 
-        service.rescore_rows([row], fits, BANDS)
+        judging_loop.rescore_rows([row], fits, BANDS)
 
         assert row["tier"] == TIER_BELOW_ASSIGNABILITY
 
@@ -735,7 +735,7 @@ class TestAClaimedLineAtTheNewModel:
         for row in (by_id["ion-0-M0"], by_id["ion-1-M0"]):
             row.update(fit_score=0.5, tier=TIER_CANDIDATE)
             row["provenance"]["evidence"] = 0.5
-        judging = service.Judging(
+        judging = judging_loop.Judging(
             rows,
             model=V1,
             fallback_sigma_ppm=ORBI_WIDTH,
@@ -745,7 +745,7 @@ class TestAClaimedLineAtTheNewModel:
             max_alternatives=5,
             lines=SpectrumLines([], [], []),
             tier_bands=BANDS,
-            rescore=lambda model: service.fits_at(model, frame, None),
+            rescore=lambda model: judging_loop.fits_at(model, frame, None),
         )
         judging.claims = {
             "ion-1-M0": EnvelopeClaim(
@@ -789,7 +789,7 @@ def _ctx(path, *, recorded=False):
         model=V1,
         model_recorded=recorded,
         stage_a_scored=_frame(2),
-        seeded_frame=service.SeededFrame(_frame(1), {}),
+        seeded_frame=judging_loop.SeededFrame(_frame(1), {}),
         confidence_curve=CURVE,
         decoy_plan=None,
         stage_a=[],
@@ -839,7 +839,7 @@ class TestWhichPathsRefit:
         ctx = _ctx(getattr(pipeline, path_name), recorded=recorded)
         handed = []
         monkeypatch.setattr(
-            service, "fits_at", lambda *args: handed.append(args) or {"fits": 1}
+            judging_loop, "fits_at", lambda *args: handed.append(args) or {"fits": 1}
         )
 
         judging = pipeline._judging_for(ctx)
@@ -906,9 +906,7 @@ async def test_a_given_readings_frame_is_kept_to_score_again(monkeypatch):
 
 
 def test_the_record_keeps_the_model_the_search_ranked_at_where_the_run_moved():
-    from mascope_backend.api.new.peak_assignments.engine import (
-        measurement_model_record,
-    )
+    from mascope_backend.api.new.peak_assignments.engine import measurement_model_record
 
     v2 = V1.v2(mu_ppm=-1.2, sigma_ppm=0.1, commits=40, source_lines=3)
 

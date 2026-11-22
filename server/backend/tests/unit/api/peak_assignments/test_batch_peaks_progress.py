@@ -80,7 +80,7 @@ def _start(sample_ids, fold=None):
         # A sample the run fold answers None for is handed to the no-run fold,
         # which the rebuild reaches through the service; nothing there either.
         "fold_no_run": patch(
-            "mascope_backend.api.new.peak_assignments.service"
+            "mascope_backend.api.new.peak_assignments.batch_fold"
             ".fold_sample_peaks_without_run",
             new_callable=AsyncMock,
         ),

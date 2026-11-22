@@ -665,9 +665,7 @@ async def _grade_continuity_after_fold(
     read after this fold committed; a grade one fold behind is served marked
     (``batch_peaks.continuity_stale``) until the next pass.
     """
-    from mascope_backend.api.new.peak_assignments.continuity import (
-        run_batch_continuity,
-    )
+    from mascope_backend.api.new.peak_assignments.continuity import run_batch_continuity
 
     try:
         await run_batch_continuity(sample_batch_id, triggered_at=committed_at)
@@ -1468,7 +1466,7 @@ async def backfill_sample_batch_peaks(
     """
     # Imported here, as the service imports this module's fold: the two lean on
     # each other and neither can be the other's module-level import.
-    from mascope_backend.api.new.peak_assignments.service import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         fold_sample_peaks_without_run,
     )
 

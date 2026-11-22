@@ -12,7 +12,7 @@ from mascope_backend.api.controllers.target.lib.compute.target_ions_compute impo
     LEAD_ISOTOPE_FORMULA,
     FileLines,
 )
-from mascope_backend.api.new.peak_assignments import service
+from mascope_backend.api.new.peak_assignments import sample_inputs
 
 
 pytestmark = pytest.mark.asyncio
@@ -60,8 +60,8 @@ async def _fetch(file_lines):
     context = MagicMock()
     context.__aenter__ = AsyncMock(return_value=session)
     context.__aexit__ = AsyncMock(return_value=False)
-    with patch.object(service, "async_session", return_value=context):
-        frame = await service._fetch_known_target_isotopes(
+    with patch.object(sample_inputs, "async_session", return_value=context):
+        frame = await sample_inputs._fetch_known_target_isotopes(
             SAMPLE, 1e-4, ["mech-h"], file_lines
         )
     (statement,), _ = session.execute.call_args

@@ -13,6 +13,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from mascope_backend.api.new.peak_assignments import (
+    judging_loop,
+    model_readers,
+    run_config,
+)
 from mascope_backend.api.new.peak_assignments.cross_channel import (
     REASON_AMBIGUOUS_ADDUCT,
     SAME_ION_SETTLED,
@@ -247,13 +252,9 @@ def _run_pre_pass(
 ):
     """The pre-pass as a run calls it, with the chemistry a run would resolve
     and the channels it searches."""
-    from mascope_backend.api.new.peak_assignments.config import (
-        PeakAssignmentConfig,
-    )
+    from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+    from mascope_backend.api.new.peak_assignments.prepasses import _reagent_assignments
     from mascope_backend.api.new.peak_assignments.profiles import resolve_profile
-    from mascope_backend.api.new.peak_assignments.service import (
-        _reagent_assignments,
-    )
 
     resolved = resolve_profile(
         PeakAssignmentConfig(profile=profile),
@@ -365,7 +366,7 @@ class TestWhereTheClaimedLinesPutTheAxis:
 
 class TestTheOffsetOutsideARun:
     """The model a reader outside a run reads centres where a run's pre-pass
-    would, with no run (``service.recorded_measurement``).
+    would, with no run (``model_readers.recorded_measurement``).
 
     A pin, the inspector and the batch ledger's propagation score a short seed
     list that fits no model of its own, and a run of the same sample centres
@@ -379,23 +380,18 @@ class TestTheOffsetOutsideARun:
     def no_resolution(self, monkeypatch):
         # The file's resolving power lives with its instrument functions in the
         # database; these samples have none unless a test says.
-        from mascope_backend.api.new.peak_assignments import service
 
         async def none(sample):
             return None
 
-        monkeypatch.setattr(service, "_resolution_of", none)
+        monkeypatch.setattr(model_readers, "_resolution_of", none)
 
     def test_the_peak_list_reads_the_runs_offset(self):
-        from mascope_backend.api.new.peak_assignments.config import (
-            PeakAssignmentConfig,
-        )
-        from mascope_backend.api.new.peak_assignments.profiles import (
-            resolve_profile,
-        )
-        from mascope_backend.api.new.peak_assignments.service import (
+        from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+        from mascope_backend.api.new.peak_assignments.model_readers import (
             reagent_offset_for,
         )
+        from mascope_backend.api.new.peak_assignments.profiles import resolve_profile
 
         peaks = self._urea(1.0, -1.3)
         resolved = resolve_profile(
@@ -410,15 +406,11 @@ class TestTheOffsetOutsideARun:
         assert run_offset.beyond_width
 
     def test_the_claim_is_made_at_the_profiles_precision(self):
-        from mascope_backend.api.new.peak_assignments.config import (
-            PeakAssignmentConfig,
-        )
-        from mascope_backend.api.new.peak_assignments.profiles import (
-            resolve_profile,
-        )
-        from mascope_backend.api.new.peak_assignments.service import (
+        from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+        from mascope_backend.api.new.peak_assignments.model_readers import (
             reagent_offset_for,
         )
+        from mascope_backend.api.new.peak_assignments.profiles import resolve_profile
 
         # The rungs sit at -1.3 ppm and their isotopologue lines 5.8 ppm above
         # them: outside an Orbitrap's 3 ppm claim, inside a 10 ppm one. Claimed
@@ -441,10 +433,7 @@ class TestTheOffsetOutsideARun:
 
     @pytest.mark.asyncio
     async def test_a_sample_reads_the_profile_its_mechanisms_name(self, monkeypatch):
-        from mascope_backend.api.new.peak_assignments import service
-        from mascope_backend.api.new.peak_assignments.config import (
-            PeakAssignmentConfig,
-        )
+        from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 
         peaks = self._urea(-1.3, -1.3)
         read = []
@@ -460,13 +449,13 @@ class TestTheOffsetOutsideARun:
             return None, None
 
         notation = "[M+CH4N2O+H]+"
-        monkeypatch.setattr(service, "fetch_sample_mechanisms", mechanisms)
-        monkeypatch.setattr(service, "load_sample_peaks", load_peaks)
-        monkeypatch.setattr(service, "get_instrument_type", lambda name: "orbi")
-        monkeypatch.setattr(service, "_latest_in_app_run", no_run)
+        monkeypatch.setattr(model_readers, "fetch_sample_mechanisms", mechanisms)
+        monkeypatch.setattr(model_readers, "load_sample_peaks", load_peaks)
+        monkeypatch.setattr(model_readers, "get_instrument_type", lambda name: "orbi")
+        monkeypatch.setattr(model_readers, "_latest_in_app_run", no_run)
         sample = SimpleNamespace(sample_item_id="s1", filename="sample", polarity="+")
 
-        recorded, model, from_record = await service.recorded_measurement(sample)
+        recorded, model, from_record = await model_readers.recorded_measurement(sample)
 
         assert read == [sample]
         assert recorded is None and not from_record
@@ -483,25 +472,24 @@ class TestTheOffsetOutsideARun:
         # The same lines on a sample whose mechanisms name no reagent source:
         # no library, so nothing to ask.
         notation = "[M+H]+"
-        model = await service.recorded_model(sample)
+        model = await model_readers.recorded_model(sample)
         assert model.reagent is None
         assert model.mu_source == "none"
 
         # A caller's own configuration picks the profile: one that names the
         # reagent finds the lines the mechanisms alone would not.
         config = PeakAssignmentConfig(profile="UR")
-        assert (await service.recorded_model(sample, config)).reagent == offset
+        assert (await model_readers.recorded_model(sample, config)).reagent == offset
 
         # And the instrument class sets the width the offset must clear.
         notation = "[M+CH4N2O+H]+"
-        monkeypatch.setattr(service, "get_instrument_type", lambda name: "tof")
-        model = await service.recorded_model(sample)
+        monkeypatch.setattr(model_readers, "get_instrument_type", lambda name: "tof")
+        model = await model_readers.recorded_model(sample)
         assert not model.reagent.beyond_width
         assert model.mu_source == "none"
 
     @pytest.mark.asyncio
     async def test_a_sample_is_centred_where_its_latest_run_scored(self, monkeypatch):
-        from mascope_backend.api.new.peak_assignments import service
 
         # The gate's uronium case: the library fitted its own offset near zero
         # while the reagent lines sit at -0.9 ppm, beyond an Orbitrap's width.
@@ -530,14 +518,14 @@ class TestTheOffsetOutsideARun:
             read.append(sample)
             return peaks
 
-        monkeypatch.setattr(service, "_latest_in_app_run", latest)
-        monkeypatch.setattr(service, "fetch_sample_mechanisms", mechanisms)
-        monkeypatch.setattr(service, "load_sample_peaks", load_peaks)
-        monkeypatch.setattr(service, "get_instrument_type", lambda name: "orbi")
+        monkeypatch.setattr(model_readers, "_latest_in_app_run", latest)
+        monkeypatch.setattr(model_readers, "fetch_sample_mechanisms", mechanisms)
+        monkeypatch.setattr(model_readers, "load_sample_peaks", load_peaks)
+        monkeypatch.setattr(model_readers, "get_instrument_type", lambda name: "orbi")
         sample = SimpleNamespace(sample_item_id="s1", filename="sample", polarity="+")
         assert _run_pre_pass(peaks, "UR", "orbi")[2].beyond_width
 
-        _, model, from_record = await service.recorded_measurement(sample)
+        _, model, from_record = await model_readers.recorded_measurement(sample)
 
         # One read of the latest run answers it.
         assert asked == ["s1"]
@@ -557,7 +545,7 @@ class TestTheOffsetOutsideARun:
                 "reagent_mu_ppm": -0.9,
             }
         }
-        model = await service.recorded_model(sample)
+        model = await model_readers.recorded_model(sample)
         assert model.mu_source == "reagent"
         assert model.scoring_mu_ppm == pytest.approx(-0.9)
         # A run that scored the sample uncorrected leaves it uncorrected, even
@@ -565,7 +553,7 @@ class TestTheOffsetOutsideARun:
         recorded = {
             "pattern_scoring": {"mu_ppm": 0.0, "mu_source": "none", "fitted_anchors": 0}
         }
-        model = await service.recorded_model(sample)
+        model = await model_readers.recorded_model(sample)
         assert model.mu_ppm is None
         assert model.scoring_mu_ppm == 0.0
         assert read == []
@@ -581,7 +569,7 @@ class TestTheOffsetOutsideARun:
                 "width_floor_ppm": 0.58,
             }
         }
-        model = await service.recorded_model(sample)
+        model = await model_readers.recorded_model(sample)
         assert model.version == 2
         assert model.scoring_mu_ppm == pytest.approx(-0.2)
         assert model.width_ppm == pytest.approx(0.58)
@@ -592,7 +580,7 @@ class TestTheOffsetOutsideARun:
         recorded = {
             "pattern_scoring": {"sigma_ppm": 0.6, "sigma_source": "instrument_class"}
         }
-        _, model, from_record = await service.recorded_measurement(sample)
+        _, model, from_record = await model_readers.recorded_measurement(sample)
         assert read == [sample]
         assert not from_record
         assert model.reagent == _run_pre_pass(peaks, "UR", "orbi")[2]
@@ -601,13 +589,8 @@ class TestTheOffsetOutsideARun:
     async def test_a_caller_with_the_peaks_and_profile_is_not_read_again(
         self, monkeypatch
     ):
-        from mascope_backend.api.new.peak_assignments import service
-        from mascope_backend.api.new.peak_assignments.config import (
-            PeakAssignmentConfig,
-        )
-        from mascope_backend.api.new.peak_assignments.profiles import (
-            resolve_profile,
-        )
+        from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+        from mascope_backend.api.new.peak_assignments.profiles import resolve_profile
 
         async def no_run(sample_item_id):
             return None, None
@@ -618,9 +601,9 @@ class TestTheOffsetOutsideARun:
         def unloaded(sample):
             raise AssertionError("read again")
 
-        monkeypatch.setattr(service, "_latest_in_app_run", no_run)
-        monkeypatch.setattr(service, "fetch_sample_mechanisms", unread)
-        monkeypatch.setattr(service, "load_sample_peaks", unloaded)
+        monkeypatch.setattr(model_readers, "_latest_in_app_run", no_run)
+        monkeypatch.setattr(model_readers, "fetch_sample_mechanisms", unread)
+        monkeypatch.setattr(model_readers, "load_sample_peaks", unloaded)
         peaks = self._urea(-1.3, -1.3)
         resolved = resolve_profile(
             PeakAssignmentConfig(profile="UR"),
@@ -630,7 +613,7 @@ class TestTheOffsetOutsideARun:
         )
         sample = SimpleNamespace(sample_item_id="s1", filename="sample", polarity="+")
 
-        model = await service.recorded_model(
+        model = await model_readers.recorded_model(
             sample, peaks_df=peaks, resolved_profile=resolved
         )
 
@@ -638,7 +621,7 @@ class TestTheOffsetOutsideARun:
 
         # A caller that claimed the lines itself hands them over, None
         # included: nothing is claimed again.
-        model = await service.recorded_model(sample, reagent_offset=None)
+        model = await model_readers.recorded_model(sample, reagent_offset=None)
         assert model.reagent is None
 
 
@@ -716,15 +699,11 @@ class TestATofIsotopeLineIsOnePeak:
         assert line["sample_peak_id"] in claimed
 
     def test_the_offset_outside_a_run_reads_the_same_peaks(self):
-        from mascope_backend.api.new.peak_assignments.config import (
-            PeakAssignmentConfig,
-        )
-        from mascope_backend.api.new.peak_assignments.profiles import (
-            resolve_profile,
-        )
-        from mascope_backend.api.new.peak_assignments.service import (
+        from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+        from mascope_backend.api.new.peak_assignments.model_readers import (
             reagent_offset_for,
         )
+        from mascope_backend.api.new.peak_assignments.profiles import resolve_profile
 
         peaks = _tof_urea(-1.3)
         resolved = resolve_profile(
@@ -743,7 +722,6 @@ class TestATofIsotopeLineIsOnePeak:
 
     @pytest.mark.asyncio
     async def test_a_sample_s_offset_reads_its_files_resolution(self, monkeypatch):
-        from mascope_backend.api.new.peak_assignments import service
 
         peaks = _tof_urea(-1.3)
         asked = []
@@ -758,14 +736,14 @@ class TestATofIsotopeLineIsOnePeak:
         async def no_run(sample_item_id):
             return None, None
 
-        monkeypatch.setattr(service, "_resolution_of", resolution_of)
-        monkeypatch.setattr(service, "fetch_sample_mechanisms", mechanisms)
-        monkeypatch.setattr(service, "load_sample_peaks", lambda sample: peaks)
-        monkeypatch.setattr(service, "get_instrument_type", lambda name: "tof")
-        monkeypatch.setattr(service, "_latest_in_app_run", no_run)
+        monkeypatch.setattr(model_readers, "_resolution_of", resolution_of)
+        monkeypatch.setattr(model_readers, "fetch_sample_mechanisms", mechanisms)
+        monkeypatch.setattr(model_readers, "load_sample_peaks", lambda sample: peaks)
+        monkeypatch.setattr(model_readers, "get_instrument_type", lambda name: "tof")
+        monkeypatch.setattr(model_readers, "_latest_in_app_run", no_run)
         sample = SimpleNamespace(sample_item_id="s1", filename="sample", polarity="+")
 
-        offset = (await service.recorded_model(sample)).reagent
+        offset = (await model_readers.recorded_model(sample)).reagent
 
         assert asked == [sample]
         assert offset == _run_pre_pass(peaks, "UR", "tof", resolution=tof)[2]
@@ -1302,14 +1280,11 @@ class TestTheFragmentClaim:
         assert (claims.fragments, claims.peak_ids) == ([], set())
 
     def test_the_run_records_what_the_claim_took(self):
-        from mascope_backend.api.new.peak_assignments import service
-        from mascope_backend.api.new.peak_assignments.config import (
-            PeakAssignmentConfig,
-        )
+        from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
         from mascope_backend.api.new.peak_assignments.engine import FRAGMENTS_KEY
 
         claims = claim([pinene(), c6h8()])
-        stored = service._stored_run_config(
+        stored = run_config._stored_run_config(
             PeakAssignmentConfig(), fragments=claims.summary
         )
         assert stored[FRAGMENTS_KEY]["claims"] == [
@@ -1321,7 +1296,9 @@ class TestTheFragmentClaim:
                 "read_as": "C6H8",
             }
         ]
-        assert FRAGMENTS_KEY not in service._stored_run_config(PeakAssignmentConfig())
+        assert FRAGMENTS_KEY not in run_config._stored_run_config(
+            PeakAssignmentConfig()
+        )
 
     def test_the_shipped_ladder_on_the_proton_transfer_cylinder(self):
         # A proton-transfer file of the certified cylinder, heights as the
@@ -1636,7 +1613,7 @@ class TestARungsLinesFromTheBackend:
 class TestTheReadingChangesSettleBeforeTheFragmentClaimIsKept:
     """The fragment claim reads the ledger the partner gate settled, and a
     claim takes its rows off and runs the changes again
-    (``service.Judging.judge``): a fragment read as a molecule is no partner
+    (``judging_loop.Judging.judge``): a fragment read as a molecule is no partner
     on the ledger the caps judge."""
 
     NOTATIONS = {**CHANNELS, "nh4": "[M+NH4]+"}
@@ -1665,15 +1642,13 @@ class TestTheReadingChangesSettleBeforeTheFragmentClaimIsKept:
         gated = self.GATED if gated is None else gated
         from unittest.mock import patch
 
-        from mascope_backend.api.new.peak_assignments import service
-
         measured = []
 
         def measure(ledger, **_):
             measured.append(len(ledger))
             return {}, None
 
-        judging = service.Judging(
+        judging = judging_loop.Judging(
             rows,
             model=MeasurementModel.v1(SampleMassAccuracy(), 1.0),
             fallback_sigma_ppm=1.0,
@@ -1687,7 +1662,7 @@ class TestTheReadingChangesSettleBeforeTheFragmentClaimIsKept:
             fragment_ladders=ladders,
         )
         with patch.object(
-            service,
+            judging_loop,
             "measure_mass_gate",
             side_effect=measure,
         ):

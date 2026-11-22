@@ -25,7 +25,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from mascope_backend.api.new.peak_assignments import service
+from mascope_backend.api.new.peak_assignments import judging_loop, run_config
 from mascope_backend.api.new.peak_assignments import tiering as tiering_module
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.cross_channel import (
@@ -40,6 +40,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     cap_second_channel,
 )
 from mascope_backend.api.new.peak_assignments.envelope_claims import ENVELOPE_CLAIM
+from mascope_backend.api.new.peak_assignments.judging_loop import judge_commits
 from mascope_backend.api.new.peak_assignments.mass_gate import (
     REASON_OFF_CALIBRATION,
     TRACKING_TRACKS,
@@ -49,7 +50,6 @@ from mascope_backend.api.new.peak_assignments.mass_gate import (
     cap_mass_gate,
     measure_mass_gate,
 )
-from mascope_backend.api.new.peak_assignments.service import judge_commits
 from mascope_backend.api.new.peak_assignments.tiering import (
     PREDICTED_ENVELOPE,
     REASON_ABSENT_LINE,
@@ -130,7 +130,7 @@ def caps_only_lower(monkeypatch):
     started: dict[int, str] = {}
 
     def checked(name: str):
-        cap = getattr(service, name)
+        cap = getattr(judging_loop, name)
 
         def wrapper(rows, *args, **kwargs):
             before = {id(row): row["tier"] for row in rows}
@@ -138,7 +138,7 @@ def caps_only_lower(monkeypatch):
             assert not raised(before, rows), f"{name} raised {raised(before, rows)}"
             return result
 
-        monkeypatch.setattr(service, name, wrapper)
+        monkeypatch.setattr(judging_loop, name, wrapper)
 
     for name in (
         "cap_second_channel",
@@ -148,7 +148,7 @@ def caps_only_lower(monkeypatch):
     ):
         checked(name)
 
-    record = service.read_cross_channel
+    record = judging_loop.read_cross_channel
 
     def recording(rows, **kwargs):
         result = record(rows, **kwargs)
@@ -156,15 +156,15 @@ def caps_only_lower(monkeypatch):
         started.update({id(row): row["tier"] for row in rows})
         return result
 
-    find = service.find_envelope_claims
+    find = judging_loop.find_envelope_claims
 
     def finding(rows, **kwargs):
         assert started, "the caps ran before the cross-channel pass read the ledger"
         assert not raised(started, rows), f"the caps raised {raised(started, rows)}"
         return find(rows, **kwargs)
 
-    monkeypatch.setattr(service, "read_cross_channel", recording)
-    monkeypatch.setattr(service, "find_envelope_claims", finding)
+    monkeypatch.setattr(judging_loop, "read_cross_channel", recording)
+    monkeypatch.setattr(judging_loop, "find_envelope_claims", finding)
 
 
 def commit(
@@ -778,7 +778,7 @@ class TestAChainOfClaims:
         assert judged.tiering["unapplied"] == 0
 
     def test_the_rounds_stop_at_their_limit_and_say_what_they_left(self, monkeypatch):
-        monkeypatch.setattr(service, "MAX_CLAIM_ROUNDS", 2)
+        monkeypatch.setattr(judging_loop, "MAX_CLAIM_ROUNDS", 2)
 
         judged = judge(chain())
 
@@ -1042,14 +1042,14 @@ class TestThePartnerGateReadsTheJudgedLedger:
         # A reading through a secondary channel a list names is corroborated
         # by it, read in the caps (engine.cap_second_channel), and a list's
         # reading through a channel the run opened is judged there.
-        cap = service.cap_second_channel
+        cap = judging_loop.cap_second_channel
         seen = []
 
         def recording(rows, **kwargs):
             seen.append((kwargs["listed_formulas"], kwargs["opened_channels"]))
             return cap(rows, **kwargs)
 
-        monkeypatch.setattr(service, "cap_second_channel", recording)
+        monkeypatch.setattr(judging_loop, "cap_second_channel", recording)
         listed = frozenset({"C11H20O7"})
         judge_commits(
             anchors() + [self._formate()],
@@ -1345,12 +1345,12 @@ def test_the_run_records_the_partner_gates_summary_beside_the_cross_channel_one(
         minor=OPENED,
         gated=OPENED,
     )
-    stored = service._stored_run_config(
+    stored = run_config._stored_run_config(
         PeakAssignmentConfig(), partner_gate=judged.partner_gate
     )
     assert stored[PARTNER_GATE_KEY] == judged.partner_gate
     assert stored[PARTNER_GATE_KEY]["margin"] == 10.0
-    assert PARTNER_GATE_KEY not in service._stored_run_config(PeakAssignmentConfig())
+    assert PARTNER_GATE_KEY not in run_config._stored_run_config(PeakAssignmentConfig())
 
 
 #: The four caps of a judging round, in the order ``judge_commits`` applies

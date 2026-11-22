@@ -10,8 +10,8 @@ lookup is faked.
 
 import pytest
 
-import mascope_backend.api.new.peak_assignments.service as service
-from mascope_backend.api.new.peak_assignments.service import (
+from mascope_backend.api.new.peak_assignments import ledger_reads
+from mascope_backend.api.new.peak_assignments.ledger_reads import (
     _recorded_ceiling,
     with_known_compounds,
 )
@@ -58,7 +58,9 @@ def lookup(monkeypatch):
         }
         return {formula: listed[formula] for formula in formulas if formula in listed}
 
-    monkeypatch.setattr(service.reference_service, "known_listings", known_listings)
+    monkeypatch.setattr(
+        ledger_reads.reference_service, "known_listings", known_listings
+    )
     return asked
 
 
@@ -93,7 +95,7 @@ async def test_it_asks_as_a_run_of_the_sample_matches(lookup, monkeypatch):
     # The sample's polarity, the ceiling its run recorded and the licences the
     # deployment matches against: a compound a run could not have matched is
     # no name for its formula.
-    monkeypatch.setattr(service, "reference_license_gate", lambda: ["CC-BY-4.0"])
+    monkeypatch.setattr(ledger_reads, "reference_license_gate", lambda: ["CC-BY-4.0"])
     ceiling = KnownWindow(frozenset({"C", "H", "N", "O"}), 40, 700.0)
     await with_known_compounds(the_row(), polarity="negative", ceiling=ceiling)
     assert (lookup["licenses"], lookup["ceiling"], lookup["polarity"]) == (
@@ -114,7 +116,9 @@ async def test_a_lookup_that_fails_leaves_the_row_as_it_was(monkeypatch):
     async def known_listings(*args, **kwargs):
         raise RuntimeError("the reference mirror is not migrated")
 
-    monkeypatch.setattr(service.reference_service, "known_listings", known_listings)
+    monkeypatch.setattr(
+        ledger_reads.reference_service, "known_listings", known_listings
+    )
     record = await with_known_compounds(the_row())
     assert record == the_row()
 
@@ -124,7 +128,9 @@ async def test_a_row_that_commits_nothing_asks_nothing(monkeypatch):
     async def known_listings(*args, **kwargs):
         raise AssertionError("nothing to name, so nothing to ask")
 
-    monkeypatch.setattr(service.reference_service, "known_listings", known_listings)
+    monkeypatch.setattr(
+        ledger_reads.reference_service, "known_listings", known_listings
+    )
     record = await with_known_compounds({"assigned_formula": None, "alternatives": []})
     assert "known_compounds" not in record
 

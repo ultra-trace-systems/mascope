@@ -14,7 +14,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete
 
-import mascope_backend.api.new.peak_assignments.service as service
+from mascope_backend.api.new.peak_assignments import ledger_reads
 from mascope_backend.db import ReferenceCompound, ReferenceSource
 from mascope_reference import canonical_formula, monoisotopic_mass
 
@@ -113,7 +113,7 @@ async def test_the_row_and_its_alternative_are_named(
 async def test_a_list_the_deployment_does_not_match_against_names_nothing(
     guest_client, pa_test_data, listed, monkeypatch
 ):
-    monkeypatch.setattr(service, "reference_license_gate", lambda: ["CC-BY-4.0"])
+    monkeypatch.setattr(ledger_reads, "reference_license_gate", lambda: ["CC-BY-4.0"])
     record = await _detail(guest_client, pa_test_data)
     assert [known["name"] for known in record["known_compounds"]] == ["glucose"]
     assert "known_compounds" not in record["alternatives"][0]

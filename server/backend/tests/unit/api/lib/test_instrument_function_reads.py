@@ -27,7 +27,7 @@ from mascope_backend.api.models.calibration.calibration_pydantic_model import (
 )
 from mascope_backend.api.new.peak_assignments import (
     batch_peaks_controller,
-    service,
+    sample_inputs,
 )
 
 
@@ -163,8 +163,8 @@ async def test_the_mass_gate_reads_the_samples_widths_by_its_polarity():
     sample = SimpleNamespace(filename="f.raw", polarity="-", sample_item_name="s")
     read, asked = _spy()
 
-    with patch.object(service, "read_instrument_functions", read):
-        resolution = await service._resolution_of(sample)
+    with patch.object(sample_inputs, "read_instrument_functions", read):
+        resolution = await sample_inputs._resolution_of(sample)
 
     assert asked == [("f.raw", "-", None)]
     assert resolution(200.0) == RESOLUTION["-"]

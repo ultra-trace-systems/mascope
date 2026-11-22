@@ -592,11 +592,11 @@ async def recorded_envelope_tolerances(
 ) -> dict[str, EnvelopeTolerance]:
     """The tolerance each sample of a batch scored at, as its latest
     completed in-app run recorded it, or for a sample with none, as the
-    run-less fold that assigned it kept it (``service.record_sample_model``):
+    run-less fold that assigned it kept it (``model_readers.record_sample_model``):
     what the batch's isotopologue stamping (``batch_isotopologues``) judges a
     line's share at in each sample. One sample's reader outside a run reads
     the same tolerance with the rest of its model
-    (``service.recorded_measurement``). A sample neither recorded is not
+    (``model_readers.recorded_measurement``). A sample neither recorded is not
     named; its reader takes today's.
 
     :param sample_batch_id: The batch.

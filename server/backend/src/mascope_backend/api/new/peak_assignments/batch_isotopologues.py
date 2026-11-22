@@ -91,7 +91,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
 from mascope_backend.api.new.peak_assignments.envelope_fit import (
     recorded_envelope_tolerances,
 )
-from mascope_backend.api.new.peak_assignments.service import load_sample_peaks
+from mascope_backend.api.new.peak_assignments.sample_inputs import load_sample_peaks
 from mascope_backend.api.new.peak_assignments.tiers import TIER_UNASSIGNED
 from mascope_backend.db import BatchPeak, BatchPeakOccurrence, async_session
 from mascope_backend.runtime import runtime

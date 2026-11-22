@@ -23,7 +23,14 @@ from unittest.mock import AsyncMock
 import pandas as pd
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
-from mascope_backend.api.new.peak_assignments import pipeline, service
+from mascope_backend.api.new.peak_assignments import (
+    judging_loop,
+    pipeline,
+    sample_inputs,
+    sample_mechanisms,
+    service,
+    stage_a_pass,
+)
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.envelope_fit import RunEnvelopeFit
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
@@ -74,18 +81,20 @@ def stub_sample_reads(
     context are read from the test database, which holds none of them."""
     rows = list(mechanisms)
     monkeypatch.setattr(
-        service, "load_sample_peaks", lambda sample: peaks_of(sample.sample_item_id)
+        sample_inputs,
+        "load_sample_peaks",
+        lambda sample: peaks_of(sample.sample_item_id),
     )
     monkeypatch.setattr(
-        service,
+        sample_mechanisms,
         "fetch_sample_mechanisms",
         AsyncMock(return_value=([m.ionization_mechanism_id for m in rows], rows)),
     )
     monkeypatch.setattr(
-        service, "fetch_mechanisms_by_notation", AsyncMock(return_value=[])
+        sample_mechanisms, "fetch_mechanisms_by_notation", AsyncMock(return_value=[])
     )
-    monkeypatch.setattr(service, "_resolution_of", AsyncMock(return_value=None))
-    monkeypatch.setattr(service, "_source_line_cap", AsyncMock(return_value=None))
+    monkeypatch.setattr(sample_inputs, "_resolution_of", AsyncMock(return_value=None))
+    monkeypatch.setattr(judging_loop, "_source_line_cap", AsyncMock(return_value=None))
 
 
 def seeded_frame(
@@ -177,7 +186,7 @@ def stub_seeded_scorer(
 def stub_known_set(
     monkeypatch, rows_of: Callable[[str, str], list[dict]]
 ) -> list[set[str]]:
-    """The known set a run or a fold proposes (``service._stage_a_assignments``),
+    """The known set a run or a fold proposes (``stage_a_pass._stage_a_assignments``),
     canned: the rows ``rows_of(sample_item_id, run_id)`` gives, but for those
     on a peak the claim stage took, at a measurement of nothing fitted and
     today's line-share tolerance, with no frame to score again at a refit's
@@ -214,7 +223,7 @@ def stub_known_set(
             None,
         )
 
-    monkeypatch.setattr(service, "_stage_a_assignments", stage_a)
+    monkeypatch.setattr(stage_a_pass, "_stage_a_assignments", stage_a)
     return excluded
 
 

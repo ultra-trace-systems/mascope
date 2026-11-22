@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from mascope_backend.api.new.peak_assignments.service import (
-    _provenance_scalars,
+from mascope_backend.api.new.peak_assignments.ledger_reads import _provenance_scalars
+from mascope_backend.api.new.peak_assignments.model_readers import (
     provenance_with_calibration,
 )
 

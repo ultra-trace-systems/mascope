@@ -34,8 +34,8 @@ from mascope_backend.api.new.peak_assignments.import_validation import (
     unknown_peak_ids,
     unresolved_owner_error,
 )
+from mascope_backend.api.new.peak_assignments.ledger_reads import _provenance_scalars
 from mascope_backend.api.new.peak_assignments.schemas import ImportAssignmentRow
-from mascope_backend.api.new.peak_assignments.service import _provenance_scalars
 from mascope_backend.db import PeakAssignment
 
 

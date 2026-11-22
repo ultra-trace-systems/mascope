@@ -32,7 +32,7 @@ judge with its mass gate off.
 A shift moves the axis off every formula of the sample, not off the source
 that made the spectrum. The two passes that look for the source's own ions,
 the secondary channels' carriers and the reagent pre-pass's lines, read the
-peaks on the axis as stored (``service._source_axis``), so a shifted arm
+peaks on the axis as stored (``sample_mechanisms._source_axis``), so a shifted arm
 opens the channels its control opened and claims the lines its control
 claimed, at the offset its control measured them at; the reference's arms
 open the side channels their control recorded too. (The adduct arm moves no

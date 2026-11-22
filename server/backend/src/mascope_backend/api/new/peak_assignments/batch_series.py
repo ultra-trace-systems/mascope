@@ -32,7 +32,7 @@ same families and leaves the ledger as it stands. The records go on before the
 measurement and again after it, so a detection that stops partway leaves its
 record on every member it measured, and the next one finds the family again.
 A per-sample run of a sample of the batch copies the record onto its row of the
-same reading (``service.stamp_series``), and the tiering pass counts it as a
+same reading (``batch_lines.stamp_series``), and the tiering pass counts it as a
 second observation (``tiering.series_anchor``). Nothing here writes a
 per-sample run.
 
@@ -95,7 +95,9 @@ from mascope_backend.api.new.peak_assignments.batch_untargeted import (
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.profiles import resolve_profile
-from mascope_backend.api.new.peak_assignments.service import fetch_sample_mechanisms
+from mascope_backend.api.new.peak_assignments.sample_mechanisms import (
+    fetch_sample_mechanisms,
+)
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
     TIER_BELOW_ASSIGNABILITY,

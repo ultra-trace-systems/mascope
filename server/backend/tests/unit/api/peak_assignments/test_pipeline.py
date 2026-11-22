@@ -165,10 +165,12 @@ async def test_a_searched_row_names_its_twin_s_reading_before_the_list_reading_i
         patch.object(
             pipeline, "untargeted_matches_to_peak_assignments", return_value=[row]
         ),
-        patch.object(pipeline.service, "_record_same_ion_readings", return_value=0),
-        patch.object(pipeline.service, "stamp_series", return_value=0),
         patch.object(
-            pipeline.service, "batch_series_by_peak", AsyncMock(return_value={})
+            pipeline.stage_a_pass, "_record_same_ion_readings", return_value=0
+        ),
+        patch.object(pipeline.batch_lines, "stamp_series", return_value=0),
+        patch.object(
+            pipeline.batch_lines, "batch_series_by_peak", AsyncMock(return_value={})
         ),
     ):
         await pipeline.elect(ctx)

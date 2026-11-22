@@ -15,7 +15,9 @@ from mascope_backend.api.controllers.target.lib.compute import target_ions_compu
 from mascope_backend.api.new.ionization.modes.schema import DEFAULT_LABEL_PURITY
 from mascope_backend.api.new.peak_assignments import (
     batch_untargeted,
+    model_readers,
     pipeline,
+    prepasses,
     service,
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
@@ -126,11 +128,11 @@ def test_the_reagent_pass_reads_a_labelled_reagent_at_the_setups_purity(
         mz_precision_ppm=2.0,
     )
     with (
-        patch.object(service, "claim_reagent_peaks") as claim,
-        patch.object(service, "reagent_library_for"),
+        patch.object(model_readers, "claim_reagent_peaks") as claim,
+        patch.object(model_readers, "reagent_library_for"),
         labelled_purity(0.9),
     ):
-        service._claim_reagent_lines(MagicMock(), resolved, resolution=None)
+        model_readers._claim_reagent_lines(MagicMock(), resolved, resolution=None)
     assert claim.call_args.kwargs["purity"] == claimed
 
 
@@ -152,13 +154,15 @@ def test_the_ladder_claim_reads_a_labelled_reagent_at_the_setups_purity(
         MagicMock(),
     )
     with (
-        patch.object(service, "claim_reagent_peaks", return_value=(hits, calibration)),
-        patch.object(service, "_claimed_lines_offset", return_value=None),
-        patch.object(service, "build_reagent_assignments", return_value=[]),
-        patch.object(service, "claim_ladder_peaks", return_value=([], None)) as climb,
+        patch.object(
+            model_readers, "claim_reagent_peaks", return_value=(hits, calibration)
+        ),
+        patch.object(prepasses, "_claimed_lines_offset", return_value=None),
+        patch.object(prepasses, "build_reagent_assignments", return_value=[]),
+        patch.object(prepasses, "claim_ladder_peaks", return_value=([], None)) as climb,
         labelled_purity(0.9),
     ):
-        service._reagent_assignments(
+        prepasses._reagent_assignments(
             MagicMock(),
             resolved,
             "sample1",

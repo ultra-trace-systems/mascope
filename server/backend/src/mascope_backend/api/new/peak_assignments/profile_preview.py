@@ -68,7 +68,7 @@ async def preview_profiles(
     """Resolve a run config's profile and context over one sample or a batch.
 
     The mechanisms are read the way a run reads them
-    (``service.fetch_sample_mechanisms``): the mode's own, at the sample's
+    (``sample_mechanisms.fetch_sample_mechanisms``): the mode's own, at the sample's
     polarity. A sample with no mode resolves on its polarity alone, as the
     fingerprint does when nothing is diagnostic. The instrument class is the
     one the reader recorded when it converted the sample's file, which is the

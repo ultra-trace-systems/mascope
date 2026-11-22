@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from mascope_backend.api.new.peak_assignments import judging_loop
 from mascope_backend.api.new.peak_assignments.engine import RIVALS_PAST_CAP
 from mascope_backend.api.new.peak_assignments.halogen_twins import (
     ONE_ATOM_RATIO,
@@ -420,13 +421,10 @@ class TestTheCap:
 
 
 class TestTheRunsReread:
-    """``service._reread_halogen_twins``: which runs read twins, and the record."""
+    """``judging_loop._reread_halogen_twins``: which runs read twins, and the record."""
 
     async def run(self, profile, context="auto", listed=frozenset()):
-        from mascope_backend.api.new.peak_assignments import service
-        from mascope_backend.api.new.peak_assignments.config import (
-            PeakAssignmentConfig,
-        )
+        from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
         from mascope_backend.api.new.peak_assignments.profiles import resolve_profile
 
         resolved = resolve_profile(
@@ -437,7 +435,7 @@ class TestTheRunsReread:
         )
         frame = peaks()
         scope: dict = {}
-        rows, records = await service._reread_halogen_twins(
+        rows, records = await judging_loop._reread_halogen_twins(
             matches(frame),
             frame,
             resolved_profile=resolved,
@@ -469,16 +467,16 @@ class TestTheRunsReread:
 
     @pytest.mark.asyncio
     async def test_a_bromide_run_reads_no_bromine_twin(self, monkeypatch):
-        from mascope_backend.api.new.peak_assignments import service
+        from mascope_backend.api.new.peak_assignments import judging_loop
 
         seen = {}
-        real = service.twin_halogens
+        real = judging_loop.twin_halogens
 
         def spy(*args, **kwargs):
             seen["halogens"] = real(*args, **kwargs)
             return seen["halogens"]
 
-        monkeypatch.setattr(service, "twin_halogens", spy)
+        monkeypatch.setattr(judging_loop, "twin_halogens", spy)
         await self.run("BR")
         assert seen["halogens"] == ("Cl",)
 

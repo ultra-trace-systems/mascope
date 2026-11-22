@@ -11,6 +11,7 @@ import pytest
 
 from mascope_backend.api.new.peak_assignments.batch_peaks import candidate_index
 from mascope_backend.api.new.peak_assignments.fold_view import member_row
+from mascope_backend.api.new.peak_assignments.ledger_reads import _provenance_scalars
 from mascope_backend.api.new.peak_assignments.listing import (
     consensus_listing,
     consensus_target_id,
@@ -18,7 +19,6 @@ from mascope_backend.api.new.peak_assignments.listing import (
     target_candidate,
     with_target,
 )
-from mascope_backend.api.new.peak_assignments.service import _provenance_scalars
 
 
 def _identity(name, source, tags=None):

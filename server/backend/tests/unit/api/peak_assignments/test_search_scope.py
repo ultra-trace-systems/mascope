@@ -92,7 +92,7 @@ class TestACapTheCallerAskedFor:
 
 class TestWhatTheRunRecords:
     def test_the_scope_lands_on_the_stored_config(self):
-        from mascope_backend.api.new.peak_assignments.service import (
+        from mascope_backend.api.new.peak_assignments.run_config import (
             _stored_run_config,
         )
 
@@ -102,7 +102,7 @@ class TestWhatTheRunRecords:
         assert stored[SEARCH_SCOPE_KEY]["eligible_peaks"] == 60
 
     def test_a_run_without_the_stage_records_no_scope(self):
-        from mascope_backend.api.new.peak_assignments.service import (
+        from mascope_backend.api.new.peak_assignments.run_config import (
             _stored_run_config,
         )
 

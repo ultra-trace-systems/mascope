@@ -5,7 +5,7 @@ acquisition time that share its acquisition settings, each read fresh and never
 from a run of theirs (``envelope_fit.read_pool``), so the curve is the same
 whichever of them ran before it, or at once with it; a formula measured outside
 any run reads the tolerance the sample's latest completed in-app run recorded,
-with the rest of its model (``service.recorded_measurement``); the settings are
+with the rest of its model (``model_readers.recorded_measurement``); the settings are
 the sample's stream's where it points at one, else its file's ``.props``
 (``envelope_fit.acquisition_settings``). A decoy run is the sample's for no
 reader: it scored at its control's tolerance (step 5.2).
@@ -21,7 +21,10 @@ import pytest
 import pytest_asyncio
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
-from mascope_backend.api.new.peak_assignments import envelope_fit, service
+from mascope_backend.api.new.peak_assignments import (
+    envelope_fit,
+    model_readers,
+)
 from mascope_backend.api.new.peak_assignments.config import IN_APP_ENGINE
 from mascope_backend.api.new.peak_assignments.engine import SampleMassAccuracy
 from mascope_backend.db import (
@@ -436,7 +439,7 @@ async def _recorded_tolerance(sample_item_id: str) -> EnvelopeTolerance:
     sample = SimpleNamespace(
         sample_item_id=sample_item_id, filename="sample.raw", polarity="+"
     )
-    model = await service.recorded_model(sample, reagent_offset=None)
+    model = await model_readers.recorded_model(sample, reagent_offset=None)
     return model.envelope_tolerance
 
 
@@ -527,7 +530,7 @@ async def _recorded(sample_item_id: str):
     sample = SimpleNamespace(
         sample_item_id=sample_item_id, filename="sample.raw", polarity="+"
     )
-    return await service.recorded_measurement(sample, reagent_offset=None)
+    return await model_readers.recorded_measurement(sample, reagent_offset=None)
 
 
 async def test_after_a_run_less_fold_a_reader_reads_the_folds_model(batch):
@@ -535,7 +538,7 @@ async def test_after_a_run_less_fold_a_reader_reads_the_folds_model(batch):
     # reader of the sample outside a run - the inspector, a pin, the batch
     # search - reads them, not the class's width and today's numbers.
     kept = _fold_record(0.8, -0.6)
-    await service.record_sample_model(batch.samples["S"], kept)
+    await model_readers.record_sample_model(batch.samples["S"], kept)
 
     recorded, model, from_record = await _recorded(batch.samples["S"])
 
@@ -549,8 +552,8 @@ async def test_after_a_run_less_fold_a_reader_reads_the_folds_model(batch):
 
 
 async def test_a_later_fold_replaces_the_samples_record(batch):
-    await service.record_sample_model(batch.samples["S"], _fold_record(0.8, -0.6))
-    await service.record_sample_model(batch.samples["S"], _fold_record(0.5, 0.3))
+    await model_readers.record_sample_model(batch.samples["S"], _fold_record(0.8, -0.6))
+    await model_readers.record_sample_model(batch.samples["S"], _fold_record(0.5, 0.3))
 
     _recorded_config, model, _ = await _recorded(batch.samples["S"])
 
@@ -561,7 +564,7 @@ async def test_a_later_fold_replaces_the_samples_record(batch):
 async def test_a_samples_run_comes_before_its_folds_record(batch):
     # A completed in-app run is the sample's result: its record is read, and
     # the fold's only where there is none.
-    await service.record_sample_model(batch.samples["S"], _fold_record(0.8, -0.6))
+    await model_readers.record_sample_model(batch.samples["S"], _fold_record(0.8, -0.6))
     await batch.run("S", _record(0.5, TEN, lines=25), minutes_ago=30)
 
     _recorded_config, model, from_record = await _recorded(batch.samples["S"])
@@ -574,7 +577,7 @@ async def test_a_samples_run_comes_before_its_folds_record(batch):
 
 
 async def test_a_decoy_run_does_not_hide_the_folds_record(batch):
-    await service.record_sample_model(batch.samples["S"], _fold_record(0.8, -0.6))
+    await model_readers.record_sample_model(batch.samples["S"], _fold_record(0.8, -0.6))
     await batch.run(
         "S", _record(0.2, TEN, lines=25), minutes_ago=5, decoy="swap_adducts"
     )
@@ -589,9 +592,9 @@ async def test_the_batch_reads_a_folded_samples_tolerance_where_it_has_no_run(ba
     # read: a run's where the sample has one, else what its fold kept.
     run_record = _record(0.5, TEN, lines=25)
     await batch.run("S", run_record, minutes_ago=30)
-    await service.record_sample_model(batch.samples["S"], _fold_record(0.2, 0.0))
+    await model_readers.record_sample_model(batch.samples["S"], _fold_record(0.2, 0.0))
     folded = _fold_record(0.8, -0.6)
-    await service.record_sample_model(batch.samples["A"], folded)
+    await model_readers.record_sample_model(batch.samples["A"], folded)
 
     tolerances = await envelope_fit.recorded_envelope_tolerances(batch.id)
 

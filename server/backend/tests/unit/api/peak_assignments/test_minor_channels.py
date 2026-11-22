@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 
 from mascope_backend.api.new.peak_assignments import engine as engine_module
+from mascope_backend.api.new.peak_assignments import judging_loop, sample_mechanisms
 from mascope_backend.api.new.peak_assignments import service as service_module
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.cross_channel import (
@@ -38,17 +39,14 @@ from mascope_backend.api.new.peak_assignments.profiles import (
     resolve_profile,
     with_secondary_channels,
 )
-from mascope_backend.api.new.peak_assignments.service import (
+from mascope_backend.api.new.peak_assignments.sample_mechanisms import (
     _notation_by_id,
     _readable,
     _searched_mechanisms,
     _untargeted_ionization_notations,
     _without_unreadable,
 )
-from mascope_backend.api.new.peak_assignments.tiers import (
-    TIER_ASSIGNED,
-    TIER_CANDIDATE,
-)
+from mascope_backend.api.new.peak_assignments.tiers import TIER_ASSIGNED, TIER_CANDIDATE
 from mascope_tools.composition.mass_accuracy import SampleMassAccuracy
 from mascope_tools.composition.measurement_model import MeasurementModel
 from mascope_tools.composition.utils import formula_identity
@@ -1749,7 +1747,7 @@ class TestEachMechanismIsSearchedOnce:
             "warning",
             lambda message: warnings.append(message),
         )
-        monkeypatch.setattr(service_module, "_reported_unreadable", set())
+        monkeypatch.setattr(sample_mechanisms, "_reported_unreadable", set())
         label = _mechanism("im-label", "+H+ (a free-text label)")
 
         assert not _readable(label)
@@ -1774,7 +1772,7 @@ class TestEachMechanismIsSearchedOnce:
         # generated for the row read its text as some other mechanism. The
         # other polarity's ids stay: Stage A fetches by polarity too.
         monkeypatch.setattr(service_module.runtime.logger, "warning", lambda _: None)
-        monkeypatch.setattr(service_module, "_reported_unreadable", set())
+        monkeypatch.setattr(sample_mechanisms, "_reported_unreadable", set())
 
         mechanism_ids, mechanisms = _without_unreadable(
             ["im-h", "im-label", "im-other-polarity"],
@@ -1795,7 +1793,7 @@ class TestEachMechanismIsSearchedOnce:
         # mechanisms that now read their neutral loss apart.
         warnings = []
         monkeypatch.setattr(service_module.runtime.logger, "warning", warnings.append)
-        monkeypatch.setattr(service_module, "_reported_unreadable", set())
+        monkeypatch.setattr(sample_mechanisms, "_reported_unreadable", set())
         shape = _mechanism("im-shape", notation)
 
         mechanism_ids, mechanisms = _without_unreadable(
@@ -2086,7 +2084,7 @@ def test_the_folds_reading_records_a_list_as_a_run_does(listed, corroboration):
     seen = ledger_row("c7h7", "C7H7", "im-ct", intensity=2.0e5)
     opened = frozenset({"[M+H]+", "[M-H]+"})
 
-    judging = service_module.Judging(
+    judging = judging_loop.Judging(
         [benzyl, partner, seen],
         model=MeasurementModel.v1(SampleMassAccuracy(), 1.0),
         fallback_sigma_ppm=1.0,

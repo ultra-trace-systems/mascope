@@ -550,7 +550,7 @@ class PeakAssignmentConfig(BaseModel):
     # One pair, both stages, and now on one scale. Both stages' fit is
     # `ion_score_v2` over one `compute_match_isotopes` pass: Stage A's over the
     # curated library's ions, Stage B's over the untargeted stage's winners
-    # measured again as ions (`service._seeded_rescore`). The band means the same
+    # measured again as ions (`judging_loop._seeded_rescore`). The band means the same
     # thing to each, which is what the sweep behind these numbers assumed and
     # what the numbers themselves were fitted against - so per-stage bands, the
     # apparatus this comment used to argue was not worth building, are not

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from mascope_backend.api.new.peak_assignments.batch_lines import stamp_series
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     ROLE_ISO_CHILD,
     SERIES_KEY,
@@ -34,7 +35,6 @@ from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_REAGENT,
     evidence_for,
 )
-from mascope_backend.api.new.peak_assignments.service import stamp_series
 from mascope_tools.composition.series import (
     CONTAMINANT_UNITS,
     DECOY_OFFSETS_DA,
@@ -872,9 +872,7 @@ class TestTheModesChemistry:
         self, monkeypatch, instrument, notation, expected
     ):
         from mascope_backend.api.new.peak_assignments import batch_series
-        from mascope_backend.api.new.peak_assignments.config import (
-            PeakAssignmentConfig,
-        )
+        from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 
         async def sample(sample_item_id):
             assert sample_item_id == "s-1"
@@ -898,9 +896,7 @@ class TestTheModesChemistry:
     @pytest.mark.asyncio
     async def test_the_run_s_window_overrides_the_profile_s(self, monkeypatch):
         from mascope_backend.api.new.peak_assignments import batch_series
-        from mascope_backend.api.new.peak_assignments.config import (
-            PeakAssignmentConfig,
-        )
+        from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 
         async def sample(sample_item_id):
             return SimpleNamespace(filename="sample-file", polarity="-")

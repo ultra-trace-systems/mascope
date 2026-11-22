@@ -155,7 +155,7 @@ Gating is the same as the other writes; **admission cannot be**:
 - **Sample eligibility, stated rather than inherited by accident.** An import is
   refused for a **blank sample** on the rule the in-app path uses -
   `sample.instrument_function_id is None` (`ineligible_reason` in
-  [service.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/service.py)) -
+  [sample_inputs.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/sample_inputs.py)) -
   and for the same reason: a blank carries no measured peaks to assign. Do
   **not** let peak-existence validation produce this refusal indirectly; that
   argument fails for a zero-row payload, and "a blank has no peaks" is an

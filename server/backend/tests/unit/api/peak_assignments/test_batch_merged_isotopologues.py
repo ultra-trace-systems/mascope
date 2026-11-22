@@ -16,8 +16,8 @@ from types import SimpleNamespace
 import pytest
 
 from mascope_backend.api.new.peak_assignments import (
+    batch_lines,
     batch_merged_isotopologues,
-    service,
 )
 from mascope_backend.api.new.peak_assignments.batch_merged_isotopologues import (
     ALREADY,
@@ -893,9 +893,9 @@ class TestTheSummary:
 
 
 class TestTheSamplesRow:
-    """The per-sample rewrite (``service.read_as_batch_isotopologue``)."""
+    """The per-sample rewrite (``batch_lines.read_as_batch_isotopologue``)."""
 
-    LINE = service.BatchLine(
+    LINE = batch_lines.BatchLine(
         label="13C",
         mz_offset=1.00336,
         share=0.1,
@@ -942,7 +942,7 @@ class TestTheSamplesRow:
 
     def test_the_row_becomes_its_owners_isotopologue(self):
         row, owner = self._rows()
-        values = service.read_as_batch_isotopologue(row, owner, self.LINE)
+        values = batch_lines.read_as_batch_isotopologue(row, owner, self.LINE)
         assert values["role"] == "iso_child"
         assert values["owner_peak_assignment_id"] == "row-p"
         assert values["assigned_formula"] == "C10H16O4"
@@ -963,7 +963,7 @@ class TestTheSamplesRow:
 
     def test_what_it_said_is_kept_first_among_its_alternatives(self):
         row, owner = self._rows()
-        values = service.read_as_batch_isotopologue(row, owner, self.LINE)
+        values = batch_lines.read_as_batch_isotopologue(row, owner, self.LINE)
         first = values["alternatives"][0]
         assert first[DISPLACED_BY_CLAIM] is True
         assert first["assigned_formula"] == "C9H12N2O2"
@@ -978,20 +978,22 @@ class TestTheSamplesRow:
             alternatives=None,
         )
         assert (
-            service.read_as_batch_isotopologue(row, owner, self.LINE)["alternatives"]
+            batch_lines.read_as_batch_isotopologue(row, owner, self.LINE)[
+                "alternatives"
+            ]
             is None
         )
 
     def test_the_rewrite_is_recorded_on_the_row(self):
         row, owner = self._rows()
-        provenance = service.read_as_batch_isotopologue(row, owner, self.LINE)[
+        provenance = batch_lines.read_as_batch_isotopologue(row, owner, self.LINE)[
             "provenance"
         ]
         # The owner's measurement, and none of its arbitration.
         assert provenance["plausibility"] == 0.9
         assert provenance["evidence"] == 0.72
         assert "p_correct" not in provenance
-        record = provenance[service.BATCH_ISOTOPOLOGUE]
+        record = provenance[batch_lines.BATCH_ISOTOPOLOGUE]
         assert record["line"] == "13C"
         assert (record["batch_peak_id"], record["parent_batch_peak_id"]) == ("X", "P")
         assert record["batch_peak_run_id"] == "run-strip"
@@ -1003,17 +1005,17 @@ class TestTheSamplesRow:
 
     def test_and_on_its_owner(self):
         row, owner = self._rows()
-        provenance = service.with_batch_isotopologue_line(owner, row, self.LINE)
+        provenance = batch_lines.with_batch_isotopologue_line(owner, row, self.LINE)
         assert provenance["evidence"] == 0.72
-        [entry] = provenance[service.BATCH_ISOTOPOLOGUES]
+        [entry] = provenance[batch_lines.BATCH_ISOTOPOLOGUES]
         assert entry["peak_assignment_id"] == "row-x"
         assert entry["sample_peak_id"] == "peak-x"
         assert (entry["line"], entry["batch_peak_id"]) == ("13C", "X")
-        assert service.BATCH_ISOTOPOLOGUES not in owner["provenance"]
+        assert batch_lines.BATCH_ISOTOPOLOGUES not in owner["provenance"]
         # A second rewrite of the same peak replaces its entry.
         owner["provenance"] = provenance
-        again = service.with_batch_isotopologue_line(owner, row, self.LINE)
-        assert len(again[service.BATCH_ISOTOPOLOGUES]) == 1
+        again = batch_lines.with_batch_isotopologue_line(owner, row, self.LINE)
+        assert len(again[batch_lines.BATCH_ISOTOPOLOGUES]) == 1
 
     def test_the_row_shows_its_owners_level(self):
         row, owner = self._rows()
@@ -1026,7 +1028,7 @@ class TestTheSamplesRow:
             "lift": "measure it",
             "rivals": [],
         }
-        values = service.read_as_batch_isotopologue(row, owner, self.LINE)
+        values = batch_lines.read_as_batch_isotopologue(row, owner, self.LINE)
         assert values["level"] == "5a"
         assert values["provenance"]["identification_level"] == {
             "level": "5a",
@@ -1039,7 +1041,7 @@ class TestTheSamplesRow:
         row, owner = self._rows()
         row["level"] = "4a"
         row["provenance"]["identification_level"] = {"level": "4a"}
-        values = service.read_as_batch_isotopologue(row, owner, self.LINE)
+        values = batch_lines.read_as_batch_isotopologue(row, owner, self.LINE)
         assert values["level"] is None
         assert "identification_level" not in values["provenance"]
 
@@ -1056,19 +1058,19 @@ class TestTheSamplesRow:
             "evidence": "one rival left open: C9H12N2O2",
             "lift": "measure it",
         }
-        values = service.read_as_batch_isotopologue(row, owner, self.LINE)
+        values = batch_lines.read_as_batch_isotopologue(row, owner, self.LINE)
         assert values["level"] is None
         assert "identification_level" not in values["provenance"]
 
     def test_the_row_takes_its_owners_mechanism(self):
         row, owner = self._rows()
         row["ionization_mechanism_id"] = "mech-other"
-        values = service.read_as_batch_isotopologue(row, owner, self.LINE)
+        values = batch_lines.read_as_batch_isotopologue(row, owner, self.LINE)
         assert values["ionization_mechanism_id"] == MECH
 
     def test_a_target_lists_owner_names_the_line_by_its_offset(self):
         row, owner = self._rows(owner_source=SOURCE_DATABASE)
-        values = service.read_as_batch_isotopologue(row, owner, self.LINE)
+        values = batch_lines.read_as_batch_isotopologue(row, owner, self.LINE)
         assert values["isotope_label"] == "M+1"
         assert values["ion_formula"] == PARENT_ION
         assert values["isotope_formula"]

@@ -20,7 +20,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
 
-from mascope_backend.api.new.peak_assignments import service
+from mascope_backend.api.new.peak_assignments import recalibration
 from mascope_backend.db import (
     AssignmentCalibration,
     AssignmentVerification,
@@ -87,7 +87,7 @@ async def cal_data(async_session_factory, pa_test_data, monkeypatch):
     }
     marker = f"cal-{ids['file']}"
     monkeypatch.setattr(
-        service,
+        recalibration,
         "_instrument_class",
         lambda filename: ids["inst"] if filename and marker in filename else None,
     )
@@ -378,7 +378,7 @@ async def test_a_profiles_refit_fits_its_labels_and_refits_its_corroboration(
             "other_profile", "rejected" if confirmed else "confirmed", evidence
         )
 
-    result = await service.recalibrate_instrument(
+    result = await recalibration.recalibrate_instrument(
         cal_data["inst"], profile=cal_data["profile"]
     )
 
@@ -410,7 +410,7 @@ async def test_a_sibling_below_assignability_is_no_corroboration(cal_data):
         cal_data, "current", _draw(60, seed=11), low_tier_when_rejected=0.9
     )
 
-    result = await service.recalibrate_instrument(
+    result = await recalibration.recalibrate_instrument(
         cal_data["inst"], profile=cal_data["profile"]
     )
 
@@ -461,7 +461,7 @@ async def test_only_the_judged_runs_monoisotopic_siblings_count(cal_data):
             also_seen="candidate",
         )
 
-    result = await service.recalibrate_instrument(
+    result = await recalibration.recalibrate_instrument(
         cal_data["inst"], profile=cal_data["profile"]
     )
 
@@ -505,7 +505,7 @@ async def test_only_stage_a_siblings_of_the_compound_count(cal_data):
         observed.append([OTHER] if confirmed and i % 2 == 0 else [])
         labels.append(int(confirmed))
 
-    result = await service.recalibrate_instrument(
+    result = await recalibration.recalibrate_instrument(
         cal_data["inst"], profile=cal_data["profile"]
     )
 
@@ -537,7 +537,7 @@ async def test_a_label_off_a_stage_a_target_row_sits_out_the_weights(cal_data, r
     for evidence, _ in _draw(10, seed=16):
         await cal_data["label"]("current", "rejected", evidence, level="pattern", **row)
 
-    result = await service.recalibrate_instrument(
+    result = await recalibration.recalibrate_instrument(
         cal_data["inst"], profile=cal_data["profile"]
     )
 
@@ -555,7 +555,7 @@ async def test_a_pooled_refit_across_profiles_records_none_and_refits_no_weight(
     await _label_draw(cal_data, "current", _draw(40, seed=3))
     await _label_draw(cal_data, "other_profile", _draw(40, seed=4), seed=4)
 
-    result = await service.recalibrate_instrument(cal_data["inst"])
+    result = await recalibration.recalibrate_instrument(cal_data["inst"])
 
     assert result["recalibrated"] is True, result["message"]
     assert result["n_pos"] + result["n_neg"] == 80
@@ -579,9 +579,11 @@ async def test_a_pooled_refit_whose_labels_share_a_profile_is_that_profiles(
     current = Calibration(
         a=0.5, b=-2.5, corroboration_weights={"[M+Br]-": 2.28, "+NO3-": 0.5}
     )
-    monkeypatch.setattr(service, "load_calibration", AsyncMock(return_value=current))
+    monkeypatch.setattr(
+        recalibration, "load_calibration", AsyncMock(return_value=current)
+    )
 
-    result = await service.recalibrate_instrument(cal_data["inst"])
+    result = await recalibration.recalibrate_instrument(cal_data["inst"])
 
     assert result["recalibrated"] is True, result["message"]
     assert result["reagent_profile"] == cal_data["profile"]
@@ -610,7 +612,7 @@ async def test_a_label_with_no_cross_channel_reading_sits_out_the_weights(
             "current", "rejected", evidence, level="pattern", row=False
         )
 
-    result = await service.recalibrate_instrument(
+    result = await recalibration.recalibrate_instrument(
         cal_data["inst"], profile=cal_data["profile"]
     )
 
@@ -636,10 +638,10 @@ async def test_the_pool_admits_stage_b_labels_on_the_v2_scale_only(
 
     def _recalibrate(scores, labels, levels, **kwargs):
         captured["scores"] = sorted(scores)
-        raise service.InsufficientCalibrationData("stop here")
+        raise recalibration.InsufficientCalibrationData("stop here")
 
-    monkeypatch.setattr(service, "recalibrate", _recalibrate)
-    result = await service.recalibrate_instrument(cal_data["inst"])
+    monkeypatch.setattr(recalibration, "recalibrate", _recalibrate)
+    result = await recalibration.recalibrate_instrument(cal_data["inst"])
 
     assert captured["scores"] == [0.12, 0.81, 0.91]
     assert result["recalibrated"] is False
@@ -655,16 +657,18 @@ async def test_a_refit_worse_than_the_curve_in_force_is_not_saved(
     noisier estimate of it, which is reported and not put in force."""
     truth = Calibration(a=6.0, b=-3.0)
     await _label_draw(cal_data, "current", _draw(60, seed=0, truth=truth))
-    monkeypatch.setattr(service, "load_calibration", AsyncMock(return_value=truth))
-    real = service.recalibrate
+    monkeypatch.setattr(
+        recalibration, "load_calibration", AsyncMock(return_value=truth)
+    )
+    real = recalibration.recalibrate
 
     def _worse(*args, **kwargs):
         out = real(*args, **kwargs)
         # Whatever this draw gives, the refit is held to the incumbent's ECE.
         return {**out, "activate": False, "refusal": "ece_regression"}
 
-    monkeypatch.setattr(service, "recalibrate", _worse)
-    result = await service.recalibrate_instrument(
+    monkeypatch.setattr(recalibration, "recalibrate", _worse)
+    result = await recalibration.recalibrate_instrument(
         cal_data["inst"], profile=cal_data["profile"]
     )
 
@@ -686,7 +690,7 @@ async def test_labels_that_make_no_usable_curve_are_reported_not_raised(
             "current", "rejected" if confirmed else "confirmed", evidence
         )
 
-    result = await service.recalibrate_instrument(
+    result = await recalibration.recalibrate_instrument(
         cal_data["inst"], profile=cal_data["profile"]
     )
 

@@ -476,7 +476,7 @@ REASON_ON_A_LIST = "on_a_list"
 #: The provenance block a row carries where its batch's series detection
 #: vouches for its formula (``batch_series.series_record``): the unit, the
 #: anchor it was stepped from and that anchor's formula, and ``has_anchor``.
-#: Written by the run before this pass reads it (``service.stamp_series``).
+#: Written by the run before this pass reads it (``batch_lines.stamp_series``).
 SERIES = "series"
 
 #: A row whose ion reads another way, where something settled which reading it

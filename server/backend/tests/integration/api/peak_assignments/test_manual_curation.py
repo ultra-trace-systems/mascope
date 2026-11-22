@@ -19,7 +19,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
 
-from mascope_backend.api.new.peak_assignments import curation, service
+from mascope_backend.api.new.peak_assignments import curation, sample_inputs
 from mascope_backend.api.new.peak_assignments.config import MAX_ALTERNATIVES_CEILING
 from mascope_backend.api.new.peak_assignments.tiering import (
     DETECT_DEFAULT,
@@ -2240,7 +2240,7 @@ async def asks_lines(curated_run, async_session_factory, monkeypatch):
         return None
 
     monkeypatch.setattr(curation, "load_sample_peaks", spectrum.load)
-    monkeypatch.setattr(service, "_resolution_of", no_resolution)
+    monkeypatch.setattr(sample_inputs, "_resolution_of", no_resolution)
     return spectrum
 
 
@@ -2683,7 +2683,7 @@ async def test_the_files_resolving_power_shapes_the_prediction(
     async def tof_resolution(sample):
         return lambda mz: 5000.0
 
-    monkeypatch.setattr(service, "_resolution_of", tof_resolution)
+    monkeypatch.setattr(sample_inputs, "_resolution_of", tof_resolution)
     asks_lines.peaks = _bromo_peaks()
     await editor_client.patch(
         _url(curated_run, curated_run["blank_id"]),

@@ -17,7 +17,7 @@ from sqlalchemy import delete, select
 from test_utils import captured_logs
 
 from mascope_backend.api.new.ionization.modes.versions import sample_setup
-from mascope_backend.api.new.peak_assignments import calibration_store
+from mascope_backend.api.new.peak_assignments import calibration_store, recalibration
 from mascope_backend.api.new.peak_assignments import service as assignments
 from mascope_backend.api.new.peak_assignments.calibration_store import (
     StoredCalibration,
@@ -380,17 +380,17 @@ async def test_a_refit_records_the_setups_its_labels_were_scored_under(
         await session.commit()
 
     saved = AsyncMock()
-    monkeypatch.setattr(assignments, "save_calibration", saved)
-    monkeypatch.setattr(assignments, "load_calibration", AsyncMock(return_value=None))
+    monkeypatch.setattr(recalibration, "save_calibration", saved)
+    monkeypatch.setattr(recalibration, "load_calibration", AsyncMock(return_value=None))
     monkeypatch.setattr(
-        assignments,
+        recalibration,
         "recalibrate",
         # What the response reads of a fit, beyond the curve: counts.
         lambda *args, **kwargs: defaultdict(
             int, calibration=_curve("orbi"), activate=True
         ),
     )
-    await assignments.recalibrate_instrument("orbi")
+    await recalibration.recalibrate_instrument("orbi")
 
     setups = saved.await_args.args[2]
     assert {"ionization_mode_id": stamped["first"], "version": 1} in setups
