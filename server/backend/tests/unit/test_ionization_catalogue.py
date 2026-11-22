@@ -14,6 +14,7 @@ import pytest
 
 from mascope_backend.db import IonizationMechanism
 from mascope_backend.ionization_catalogue import (
+    DECLARED_BEFORE,
     SYSTEM_MODES,
     is_shipped_mechanism,
     shipped_mechanisms,
@@ -46,6 +47,46 @@ FIXED_IDS = {
     "[M+Na]+": "sysAddNaPos",
     "[M+K]+": "sysAddKPos",
 }
+
+
+#: What each shipped mode declares. Written out, so that a change to a
+#: chemistry's mechanisms reads as a change to what every server searches
+#: under it, and needs its earlier set in DECLARED_BEFORE.
+DECLARED = {
+    "nitrate": ("[M+NO3]-", "[M-H]-"),
+    "nitrate-15n": ("[M+^NO3]-", "[M-H]-"),
+    "bromide": ("[M+Br]-", "[M-H]-"),
+    "iodide": ("[M+I]-", "[M-H]-"),
+    "deprotonation": ("[M-H]-",),
+    "ambient-negative": ("[M]-.",),
+    # The ammonium adduct since decision MAS-811: a regular channel of the
+    # source, which without it reads its ions as nitrogen-bearing neutrals.
+    "uronium": ("[M+CH4N2O+H]+", "[M+H]+", "[M+NH4]+"),
+    "ammonium": ("[M+NH4]+", "[M+H]+"),
+    "ammonium-15n": ("[M+^NH4]+", "[M+H]+"),
+    "protonation": ("[M+H]+",),
+    "ambient-positive": ("[M]+.",),
+}
+
+
+def test_what_each_shipped_mode_declares():
+    """The reagent's own adduct first: a seeded collection writes each of its
+    ions through the first mechanism that makes it."""
+    assert {key: mechanisms for key, *_, mechanisms in SYSTEM_MODES} == DECLARED
+
+
+def test_a_definition_declared_before_is_an_earlier_one_of_its_chemistry():
+    """A current definition among the earlier ones would read as the one to
+    replace; one of another chemistry's key would redefine nothing."""
+    polarity = {key: polarity for key, _, _, polarity, _ in SYSTEM_MODES}
+    shipped = {m.notation: m.polarity for m in shipped_mechanisms()}
+
+    assert set(DECLARED_BEFORE) <= set(DECLARED)
+    for key, earlier in DECLARED_BEFORE.items():
+        for mechanisms in earlier:
+            assert mechanisms != frozenset(DECLARED[key])
+            assert {shipped[m] for m in mechanisms} == {polarity[key]}
+    assert DECLARED_BEFORE["uronium"] == (frozenset({"[M+CH4N2O+H]+", "[M+H]+"}),)
 
 
 def _modes_and_channels() -> set[str]:

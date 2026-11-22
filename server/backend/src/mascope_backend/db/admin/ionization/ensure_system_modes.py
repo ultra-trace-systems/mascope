@@ -38,10 +38,11 @@ polarity they are stored under, the name compared in the standard adduct
 notation the column reads it in, so a row still holding the legacy spelling
 (``+Br-`` for ``[M+Br]-``) counts.
 
-Neither pass adds a mechanism to a mode, shipped or the deployment's own. A
-secondary channel declared on a mode is that mode's own channel, which the
-engine searches differently (``reagents.SecondaryChannel``); the row on its
-own only makes the channel searchable. For the modes themselves:
+Neither pass adds a mechanism to a deployment's own mode. A secondary channel
+declared on a mode is that mode's own channel, which the engine searches
+differently (``reagents.SecondaryChannel``); the row on its own only makes the
+channel searchable. A shipped mode declares what its chemistry does, which a
+release may change. For the modes themselves:
 
 - a row already carrying the ``system_key`` is left as it is, collections and
   all, but for its name: one still under a name an earlier release seeded it
@@ -50,10 +51,19 @@ own only makes the channel searchable. For the modes themselves:
   acquisition batches are named for either name, since a daily batch is found
   again by its mode's name and an edit of the name is refused there too. Both
   are logged, and the row keeps the name it has while either holds;
+- a row carrying the key and still declaring the mechanisms an earlier
+  release defined its chemistry with (``DECLARED_BEFORE``) is brought onto
+  the ones it has now: in place while no sample is bound under it, else as
+  its next version, as an edit of the mechanisms would make it, with the
+  method bindings following it. Its samples keep the version their results
+  came from until they are processed again, and their batches are not
+  flagged. A deployment cannot change a shipped mode's mechanisms, so a row
+  declaring anything else is logged and left;
 - a row under the catalogue's own id but no key - what a downgrade leaves
   behind - is claimed rather than duplicated, but only while it is still what
   was seeded: name (this release's or an earlier one's, which is then renamed
-  as above), polarity, no token, the same mechanisms. Edited in the meantime,
+  as above), polarity, no token, the same mechanisms or an earlier release's
+  (then brought onto this one's as above). Edited in the meantime,
   it is left alone and logged, because claiming it would lock somebody's edit
   under the catalogue's key;
 - a chemistry whose name some other mode already uses is skipped and logged,
@@ -136,6 +146,7 @@ from mascope_backend.db import (
     async_session,
 )
 from mascope_backend.ionization_catalogue import (
+    DECLARED_BEFORE,
     NAMED_BEFORE,
     SEEDED_BEFORE,
     SYSTEM_MODES,
@@ -276,6 +287,9 @@ async def ensure_system_ionization_modes() -> dict[str, int]:
         "claimed": 0,
         "renamed": 0,
         "not_renamed": 0,
+        "redefined": 0,
+        "versioned": 0,
+        "not_redefined": 0,
         "no_mechanism": 0,
         "name_taken": 0,
         "edited": 0,
@@ -318,21 +332,36 @@ async def ensure_system_ionization_modes() -> dict[str, int]:
         polarity_of = {
             shipped.notation: shipped.polarity for shipped in shipped_mechanisms()
         }
+        notation_of = {
+            mechanism_id: name for (name, _), mechanism_id in mechanisms.items()
+        }
 
         for system_key, mode_id, name, polarity, wanted in SYSTEM_MODES:
             earlier_names = NAMED_BEFORE.get(system_key, frozenset())
+            earlier_definitions = DECLARED_BEFORE.get(system_key, ())
+            mechanism_ids = [
+                mechanisms.get((mechanism, polarity_of[mechanism]))
+                for mechanism in wanted
+            ]
+            missing = any(mechanism_id is None for mechanism_id in mechanism_ids)
+
             current = keyed.get(system_key)
             if current is not None:
                 if current.ionization_mode_name in earlier_names:
                     renamed = await _rename(session, current, name, names_in_use)
                     counts["renamed" if renamed else "not_renamed"] += 1
+                await _redefine(
+                    session,
+                    current,
+                    None if missing else mechanism_ids,
+                    _declared(current, notation_of),
+                    set(wanted),
+                    earlier_definitions,
+                    counts,
+                )
                 continue
 
-            mechanism_ids = [
-                mechanisms.get((mechanism, polarity_of[mechanism]))
-                for mechanism in wanted
-            ]
-            if any(mechanism_id is None for mechanism_id in mechanism_ids):
+            if missing:
                 counts["no_mechanism"] += 1
                 continue
 
@@ -342,12 +371,12 @@ async def ensure_system_ionization_modes() -> dict[str, int]:
                 # it editable like any other, and claiming a renamed or
                 # re-pointed one would lock that edit under the catalogue's
                 # key - which the guard then refuses to undo, token included.
+                declared = _declared(claimable, notation_of)
                 still_ours = (
                     claimable.ionization_mode_name in {name, *earlier_names}
                     and claimable.ionization_mode_polarity == polarity
                     and claimable.ionization_mode_token is None
-                    and set(claimable.ionization_mechanism_ids or [])
-                    == set(mechanism_ids)
+                    and (declared == set(wanted) or declared in earlier_definitions)
                 )
                 if not still_ours:
                     runtime.logger.warning(
@@ -368,6 +397,15 @@ async def ensure_system_ionization_modes() -> dict[str, int]:
                 if claimable.ionization_mode_name != name:
                     renamed = await _rename(session, claimable, name, names_in_use)
                     counts["renamed" if renamed else "not_renamed"] += 1
+                await _redefine(
+                    session,
+                    claimable,
+                    mechanism_ids,
+                    declared,
+                    set(wanted),
+                    earlier_definitions,
+                    counts,
+                )
                 continue
             if mode_id in ids_in_use:
                 # A superseded version holds the catalogue's id: the chemistry
@@ -405,10 +443,18 @@ async def ensure_system_ionization_modes() -> dict[str, int]:
 
         await session.commit()
 
-    if counts["seeded"] or counts["claimed"] or counts["renamed"]:
+    if (
+        counts["seeded"]
+        or counts["claimed"]
+        or counts["renamed"]
+        or counts["redefined"]
+    ):
         runtime.logger.info(
             f"System ionization modes: {counts['seeded']} created, "
-            f"{counts['claimed']} claimed, {counts['renamed']} renamed"
+            f"{counts['claimed']} claimed, {counts['renamed']} renamed, "
+            f"{counts['redefined']} brought onto their chemistry's mechanisms "
+            f"({counts['versioned']} as a new version, samples are bound under "
+            "the old one)"
         )
     if counts["no_mechanism"]:
         runtime.logger.warning(
@@ -416,6 +462,86 @@ async def ensure_system_ionization_modes() -> dict[str, int]:
             "an ionization mechanism they need could not be created here"
         )
     return counts
+
+
+def _declared(mode: IonizationMode, notation_of: dict[str, str]) -> frozenset[str]:
+    """The mechanisms a mode declares, in the standard notation.
+
+    :param mode: The mode.
+    :param notation_of: Each mechanism's notation, by its id. A mechanism the
+        server no longer holds reads as its id, which no definition names.
+    :return: The notations.
+    :rtype: frozenset[str]
+    """
+    return frozenset(
+        notation_of.get(mechanism_id, mechanism_id)
+        for mechanism_id in mode.ionization_mechanism_ids or []
+    )
+
+
+async def _redefine(
+    session: AsyncSession,
+    mode: IonizationMode,
+    mechanism_ids: list[str] | None,
+    declared: frozenset[str],
+    wanted: set[str],
+    earlier_definitions: tuple[frozenset[str], ...],
+    counts: dict[str, int],
+) -> None:
+    """Bring a shipped mode still declaring what an earlier release defined
+    its chemistry with onto the definition it has now.
+
+    In place while no sample is bound under the version, when nothing has been
+    computed from it; once one is, as the next version, as an edit of the
+    mechanisms would make it, with the method bindings following it. The
+    samples keep the version their results came from until they are processed
+    again, and their batches are not flagged: the seed is not the deployment's
+    edit. A mode declaring anything else is left as it is and logged: a
+    deployment cannot change a shipped mode's mechanisms, so no release made
+    it.
+
+    :param session: The pass's transaction; the caller commits.
+    :param mode: The current version, loaded in ``session``.
+    :param mechanism_ids: The ids of the chemistry's mechanisms here, in the
+        catalogue's order; None when one of them is missing.
+    :param declared: What the mode declares now (:func:`_declared`).
+    :param wanted: The chemistry's mechanisms.
+    :param earlier_definitions: What earlier releases defined it with
+        (``DECLARED_BEFORE``).
+    :param counts: The pass's counts, updated.
+    """
+    if declared == wanted:
+        return
+    if declared not in earlier_definitions or mechanism_ids is None:
+        why = (
+            "a mechanism its chemistry declares now is missing here"
+            if declared in earlier_definitions
+            else "no release of Mascope defined its chemistry with those"
+        )
+        runtime.logger.warning(
+            f"Ionization mode {mode.ionization_mode_id} ({mode.system_key or 'unkeyed'}) "
+            f"declares {', '.join(sorted(declared)) or 'no mechanism'} and keeps "
+            f"them: {why}. Its chemistry declares {', '.join(sorted(wanted))}."
+        )
+        counts["not_redefined"] += 1
+        return
+
+    counts["redefined"] += 1
+    held = await session.scalar(
+        select(exists().where(SampleItem.ionization_mode_id == mode.ionization_mode_id))
+    )
+    if not held:
+        mode.ionization_mechanism_ids = mechanism_ids
+        return
+    successor = make_version(mode, {"ionization_mechanism_ids": mechanism_ids})
+    mode.is_active = False
+    await session.flush()
+    session.add(successor)
+    await session.flush()
+    await repoint_routing(
+        session, mode.ionization_mode_id, successor.ionization_mode_id
+    )
+    counts["versioned"] += 1
 
 
 async def _rename(

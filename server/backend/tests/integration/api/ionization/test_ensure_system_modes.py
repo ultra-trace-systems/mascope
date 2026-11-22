@@ -11,6 +11,8 @@ the pass creates none. Creating a mechanism is the other pass's work, with the
 target ions it has to build for every compound in the library.
 """
 
+from datetime import datetime, timezone
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
@@ -19,14 +21,21 @@ from mascope_backend.db import (
     Dataset,
     IonizationMechanism,
     IonizationMode,
+    MethodBinding,
     SampleBatch,
+    SampleFile,
+    SampleItem,
     Workspace,
 )
 from mascope_backend.db.admin.ionization.ensure_system_modes import (
     ensure_system_ionization_modes,
 )
 from mascope_backend.db.id import gen_id
-from mascope_backend.ionization_catalogue import NAMED_BEFORE, SYSTEM_MODES
+from mascope_backend.ionization_catalogue import (
+    DECLARED_BEFORE,
+    NAMED_BEFORE,
+    SYSTEM_MODES,
+)
 from mascope_tools.composition.mechanism_notation import mechanism_spellings
 
 
@@ -281,8 +290,7 @@ async def _add_mode(async_session_factory, mode_id, **fields):
         session.add(
             IonizationMode(
                 ionization_mode_id=mode_id,
-                ionization_mode_polarity=_POLARITY,
-                **fields,
+                **{"ionization_mode_polarity": _POLARITY, **fields},
             )
         )
         await session.commit()
@@ -525,3 +533,310 @@ async def test_a_row_a_downgrade_left_under_an_earlier_name_is_claimed_and_renam
     assert (counts["claimed"], counts["renamed"]) == (1, 1)
     assert mode.ionization_mode_id == _MODE_ID
     assert mode.ionization_mode_name == _NAME
+
+
+# --- a chemistry whose mechanisms a release changed ------------------------
+
+# Uronium, positive gained the ammonium adduct (decision MAS-811).
+_UR_KEY, _UR_ID, _UR_NAME, _UR_POLARITY, _UR_MECHANISMS = next(
+    entry for entry in SYSTEM_MODES if entry[0] == "uronium"
+)
+(_UR_EARLIER,) = DECLARED_BEFORE[_UR_KEY]
+_NOW = datetime(2026, 11, 22, 12, tzinfo=timezone.utc)
+
+
+@pytest_asyncio.fixture
+async def uronium_mechanisms(async_session_factory, clean_slate):
+    """The uronium chemistry's mechanisms by notation: the server's own where
+    it holds them, else made here and removed afterwards."""
+    ids, made = {}, []
+    async with async_session_factory() as session:
+        for notation in _UR_MECHANISMS:
+            held = await session.scalar(
+                select(IonizationMechanism.ionization_mechanism_id)
+                .where(
+                    IonizationMechanism.ionization_mechanism.in_(
+                        mechanism_spellings([notation])
+                    ),
+                    IonizationMechanism.ionization_mechanism_polarity == "+",
+                )
+                .order_by(IonizationMechanism.ionization_mechanism_id)
+                .limit(1)
+            )
+            if held is None:
+                held = gen_id(11)
+                session.add(
+                    IonizationMechanism(
+                        ionization_mechanism_id=held,
+                        ionization_mechanism_polarity="+",
+                        ionization_mechanism=notation,
+                    )
+                )
+                made.append(held)
+            ids[notation] = held
+        await session.commit()
+    yield ids
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(IonizationMechanism).where(
+                IonizationMechanism.ionization_mechanism_id.in_(made)
+            )
+        )
+        await session.commit()
+
+
+async def _declared(async_session_factory, mode) -> set[str]:
+    """What a mode declares, in the standard notation."""
+    async with async_session_factory() as session:
+        return set(
+            (
+                await session.execute(
+                    select(IonizationMechanism.ionization_mechanism).where(
+                        IonizationMechanism.ionization_mechanism_id.in_(
+                            mode.ionization_mechanism_ids
+                        )
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+async def _uronium_as_seeded_before(async_session_factory, mechanisms, **fields):
+    """The uronium mode as the release before the ammonium adduct seeded it."""
+    await _add_mode(
+        async_session_factory,
+        _UR_ID,
+        **{
+            "ionization_mode_name": _UR_NAME,
+            "ionization_mode_polarity": _UR_POLARITY,
+            "ionization_mechanism_ids": [
+                mechanisms[notation]
+                for notation in _UR_MECHANISMS
+                if notation in _UR_EARLIER
+            ],
+            "system_key": _UR_KEY,
+            **fields,
+        },
+    )
+
+
+async def _uronium_versions(async_session_factory):
+    async with async_session_factory() as session:
+        return (
+            (
+                await session.execute(
+                    select(IonizationMode)
+                    .where(IonizationMode.ionization_mode_name == _UR_NAME)
+                    .order_by(IonizationMode.version)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_mode_on_an_earlier_definition_is_brought_onto_its_chemistrys(
+    async_session_factory, uronium_mechanisms
+):
+    """In place while no sample is bound under it: nothing was computed from
+    it yet, so there is no result for a version to keep."""
+    await _uronium_as_seeded_before(async_session_factory, uronium_mechanisms)
+
+    counts = await ensure_system_ionization_modes()
+    again = await ensure_system_ionization_modes()
+
+    (mode,) = await _uronium_versions(async_session_factory)
+    assert (counts["redefined"], counts["versioned"]) == (1, 0)
+    assert again["redefined"] == again["not_redefined"] == 0
+    assert (mode.ionization_mode_id, mode.version, mode.is_active) == (
+        _UR_ID,
+        1,
+        True,
+    )
+    assert mode.ionization_mechanism_ids == [
+        uronium_mechanisms[notation] for notation in _UR_MECHANISMS
+    ]
+    assert await _declared(async_session_factory, mode) == set(_UR_MECHANISMS)
+
+
+async def _bound_under(async_session_factory, mode_id):
+    """A sample processed under the mode, and a method binding routing to it.
+
+    :return: The ids made, by kind, for :func:`_drop_bound`.
+    """
+    ids = {key: gen_id() for key in ("workspace", "dataset", "batch", "file", "item")}
+    ids["binding"] = gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            Workspace(
+                workspace_id=ids["workspace"],
+                workspace_name=f"Redefine test {ids['workspace']}",
+                is_system=True,
+            )
+        )
+        session.add(
+            Dataset(
+                dataset_id=ids["dataset"],
+                workspace_id=ids["workspace"],
+                dataset_name="2026",
+                dataset_type="ACQUISITION",
+            )
+        )
+        session.add(
+            SampleBatch(
+                sample_batch_id=ids["batch"],
+                dataset_id=ids["dataset"],
+                sample_batch_name=f"2026-11-22 {_UR_NAME} acquisition",
+                sample_batch_type="ACQUISITION",
+                polarity=_UR_POLARITY,
+                status="ready",
+            )
+        )
+        session.add(
+            SampleFile(
+                sample_file_id=ids["file"],
+                filename=f"RedefineTest_{ids['file']}.raw",
+                instrument="RedefineTest",
+                datetime=_NOW.replace(tzinfo=None),
+                datetime_utc=_NOW,
+                length=60.0,
+                range=[122.0, 740.0],
+                polarity=_UR_POLARITY,
+                instrument_type="orbi",
+            )
+        )
+        await session.flush()
+        session.add(
+            SampleItem(
+                sample_item_id=ids["item"],
+                sample_batch_id=ids["batch"],
+                sample_file_id=ids["file"],
+                sample_item_name="2026-11-22 12:00:00",
+                sample_item_type="ACQUISITION",
+                sample_item_attributes={},
+                polarity=_UR_POLARITY,
+                ionization_mode_id=mode_id,
+                sample_item_utc_created=_NOW,
+            )
+        )
+        session.add(
+            MethodBinding(
+                method_binding_id=ids["binding"],
+                binding_key=f"redefine-test-{ids['binding']}",
+                instrument="RedefineTest",
+                method_key="m.meth",
+                signature_class="FTMS +",
+                ionization_mode_id=mode_id,
+                candidate_mode_id=mode_id,
+                chemistry_keys=[_UR_KEY],
+                state="learned",
+                source="token",
+                first_seen=_NOW,
+                last_seen=_NOW,
+            )
+        )
+        await session.commit()
+    return ids
+
+
+async def _drop_bound(async_session_factory, ids):
+    async with async_session_factory() as session:
+        for model, column, key in (
+            (MethodBinding, MethodBinding.method_binding_id, "binding"),
+            (SampleItem, SampleItem.sample_item_id, "item"),
+            (SampleFile, SampleFile.sample_file_id, "file"),
+            (SampleBatch, SampleBatch.sample_batch_id, "batch"),
+            (Dataset, Dataset.dataset_id, "dataset"),
+            (Workspace, Workspace.workspace_id, "workspace"),
+        ):
+            await session.execute(delete(model).where(column == ids[key]))
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_mode_samples_are_bound_under_takes_its_definition_as_a_new_version(
+    async_session_factory, uronium_mechanisms
+):
+    """As an edit of the mechanisms would make it: the samples keep the
+    version their results came from, new files of the method route to the
+    new one, and no batch is flagged, the seed not being the site's edit."""
+    await _uronium_as_seeded_before(async_session_factory, uronium_mechanisms)
+    bound = await _bound_under(async_session_factory, _UR_ID)
+    try:
+        counts = await ensure_system_ionization_modes()
+        again = await ensure_system_ionization_modes()
+        versions = await _uronium_versions(async_session_factory)
+        async with async_session_factory() as session:
+            item_mode = await session.scalar(
+                select(SampleItem.ionization_mode_id).where(
+                    SampleItem.sample_item_id == bound["item"]
+                )
+            )
+            binding = await session.get(MethodBinding, bound["binding"])
+            status = await session.scalar(
+                select(SampleBatch.status).where(
+                    SampleBatch.sample_batch_id == bound["batch"]
+                )
+            )
+    finally:
+        await _drop_bound(async_session_factory, bound)
+
+    first, successor = versions
+    assert (counts["redefined"], counts["versioned"]) == (1, 1)
+    assert again["redefined"] == again["versioned"] == 0
+    assert (first.ionization_mode_id, first.version, first.is_active) == (
+        _UR_ID,
+        1,
+        False,
+    )
+    assert await _declared(async_session_factory, first) == set(_UR_EARLIER)
+    assert (successor.version, successor.is_active) == (2, True)
+    assert successor.supersedes_id == _UR_ID
+    assert successor.system_key == _UR_KEY
+    assert await _declared(async_session_factory, successor) == set(_UR_MECHANISMS)
+    assert item_mode == _UR_ID
+    assert binding.ionization_mode_id == successor.ionization_mode_id
+    assert binding.candidate_mode_id == successor.ionization_mode_id
+    assert status == "ready"
+
+
+@pytest.mark.asyncio
+async def test_a_mode_declaring_what_no_release_defined_is_left_as_it_is(
+    async_session_factory, uronium_mechanisms
+):
+    """A site cannot change a shipped mode's mechanisms, so no edit of its
+    own is undone here: the row is logged and kept."""
+    await _add_mode(
+        async_session_factory,
+        _UR_ID,
+        ionization_mode_name=_UR_NAME,
+        ionization_mode_polarity=_UR_POLARITY,
+        ionization_mechanism_ids=[uronium_mechanisms["[M+H]+"]],
+        system_key=_UR_KEY,
+    )
+
+    counts = await ensure_system_ionization_modes()
+
+    (mode,) = await _uronium_versions(async_session_factory)
+    assert (counts["redefined"], counts["not_redefined"]) == (0, 1)
+    assert mode.ionization_mechanism_ids == [uronium_mechanisms["[M+H]+"]]
+
+
+@pytest.mark.asyncio
+async def test_a_row_a_downgrade_left_on_an_earlier_definition_is_claimed_and_redefined(
+    async_session_factory, uronium_mechanisms
+):
+    """It is still what was seeded, by the release that seeded it."""
+    await _uronium_as_seeded_before(
+        async_session_factory, uronium_mechanisms, system_key=None
+    )
+
+    counts = await ensure_system_ionization_modes()
+
+    (mode,) = await _uronium_versions(async_session_factory)
+    assert (counts["claimed"], counts["redefined"], counts["edited"]) == (1, 1, 0)
+    assert mode.system_key == _UR_KEY
+    assert await _declared(async_session_factory, mode) == set(_UR_MECHANISMS)

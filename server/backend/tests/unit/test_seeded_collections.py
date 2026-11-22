@@ -26,14 +26,21 @@ from mascope_backend.ionization_catalogue import (
     NAMED_BEFORE,
     SEEDED_BEFORE,
     SYSTEM_MODES,
+    _background_compounds,
     _neutral,
     collection_digest,
     seeded_collection_ids,
     seeded_collections,
 )
+from mascope_reference.seed import catalogue
 from mascope_tools.composition.mechanism_notation import parse_mechanism
 from mascope_tools.composition.profiles import detect_reagent_profile
-from mascope_tools.composition.reagents import ion_mz, reagent_library
+from mascope_tools.composition.reagents import (
+    BACKGROUND_ANCHOR_LISTS,
+    background_anchor_lists,
+    ion_mz,
+    reagent_library,
+)
 from mascope_tools.composition.utils import parse_composition, to_hill_notation
 
 
@@ -65,6 +72,29 @@ CALIBRANTS = {
     "ambient-positive": [("[C16H10]+", "C16H10")],
 }
 
+#: The background tier each chemistry's calibrants carry behind its reagent's
+#: series, as (the compound, its neutral), in the order of its reference
+#: lists: the cyclic siloxanes, then caprolactam (decision MAS-811).
+BACKGROUND = {
+    "uronium": [
+        ("Hexamethylcyclotrisiloxane (D3)", "C6H18O3Si3"),
+        ("Octamethylcyclotetrasiloxane (D4)", "C8H24O4Si4"),
+        ("Decamethylcyclopentasiloxane (D5)", "C10H30O5Si5"),
+        ("Dodecamethylcyclohexasiloxane (D6)", "C12H36O6Si6"),
+        ("Tetradecamethylcycloheptasiloxane (D7)", "C14H42O7Si7"),
+        ("Hexadecamethylcyclooctasiloxane (D8)", "C16H48O8Si8"),
+        ("Caprolactam", "C6H11NO"),
+    ],
+}
+
+#: The lines a chemistry's reagent compounds give through a channel its mode
+#: declares beside the reagent's own, which the library does not name. Under
+#: uronium's ammonium adduct the series' rungs become NH4+, below every scan
+#: window; [urea+NH4]+, the ion through which ambient ammonia is read, which
+#: every uronium spectrum holds; and the dimer's ammonium cluster, which the
+#: test spectra do not show. A line no peak holds is left out of a fit.
+THROUGH_DECLARED_CHANNELS = {"uronium": {"H4N+", "CH8N3O+", "C2H12N5O2+"}}
+
 #: The chemistries with no reagent of their own in the library, which ship
 #: without collections until a further tier gives them anchors.
 WITHOUT_A_REAGENT = {"deprotonation", "protonation", "ammonium", "ammonium-15n"}
@@ -86,7 +116,7 @@ SEEDED_DIGESTS = {
     "sysIodideDia": "e808f225d923c917",
     "sysAmbientNegCal": "6baa13c90da5dd82",
     "sysAmbientNegDia": "7542acc9f1fca4af",
-    "sysUroniumCal": "23abfad0e4bbf4bc",
+    "sysUroniumCal": "12948e42e87394ca",
     "sysUroniumDia": "ec1418fcd33dc2ef",
     "sysAmbientPosCal": "c0da51cbf39db2e2",
     "sysAmbientPosDia": "acd8c07034a3ab89",
@@ -110,6 +140,11 @@ def _library(system_key: str):
     _, _, polarity, mechanisms = _MODES[system_key]
     profile = detect_reagent_profile(mechanisms, polarity, instrument_type="orbi")
     return reagent_library(profile.name)
+
+
+def _mz(ion: str) -> float:
+    """The m/z of a singly charged ion as the target ion generator writes it."""
+    return ion_mz(ion[:-1], 1 if ion.endswith("+") else -1)
 
 
 def _ion_formula(formula: str, charge: int) -> str:
@@ -136,13 +171,23 @@ def _ions_through_mode(system_key: str, formula: str) -> set[str]:
     return {ion.target_ion_formula for ion in ions}
 
 
+def _reagent_compounds(collection):
+    """The compounds a collection holds for the reagent's own ions."""
+    background = {name for name, _ in BACKGROUND.get(collection.system_key, [])}
+    return [
+        compound
+        for compound in collection.compounds
+        if collection.collection_type != "CALIBRANTS" or compound.name not in background
+    ]
+
+
 def _every_compound():
     return [
         pytest.param(
             collection, compound, id=f"{collection.collection_id}:{compound.name}"
         )
         for collection in seeded_collections()
-        for compound in collection.compounds
+        for compound in _reagent_compounds(collection)
     ]
 
 
@@ -159,12 +204,107 @@ def test_a_chemistry_without_a_reagent_has_nothing_to_seed(system_key):
 
 @pytest.mark.parametrize("system_key", sorted(CALIBRANTS))
 def test_the_calibrants_are_the_reagents_own_cluster_series(system_key):
+    """Then the background tier, where the chemistry has one."""
     collection = _by_key("calibration_collection_id")[system_key]
 
     assert [
         (compound.name, compound.formula) for compound in collection.compounds
-    ] == CALIBRANTS[system_key]
+    ] == CALIBRANTS[system_key] + BACKGROUND.get(system_key, [])
     assert collection.collection_type == "CALIBRANTS"
+
+
+def test_the_background_tier_is_read_off_its_reference_lists():
+    """As each list names its compounds, so a list's edit reaches the tier."""
+    lists = {peak_list.id: peak_list for peak_list in catalogue()}
+    for system_key, compounds in BACKGROUND.items():
+        _, _, polarity, mechanisms = _MODES[system_key]
+        profile = detect_reagent_profile(mechanisms, polarity, instrument_type="orbi")
+        named = background_anchor_lists(profile.name)
+
+        assert named
+        assert compounds == [
+            (species.name, species.formula)
+            for list_id in named
+            for species in lists[list_id].species
+        ]
+    assert set(BACKGROUND_ANCHOR_LISTS) == {
+        detect_reagent_profile(_MODES[key][3], _MODES[key][2], "orbi").name
+        for key in BACKGROUND
+    }
+
+
+@pytest.mark.parametrize(
+    ("list_ids", "polarity", "message"),
+    [
+        (("no-such-list",), "+", "No shipped reference list"),
+        (("cyclic-siloxanes",), "-", "would calibrate a mode of polarity -"),
+    ],
+    ids=["unknown", "other-polarity"],
+)
+def test_a_background_list_that_cannot_anchor_the_mode_is_refused(
+    list_ids, polarity, message
+):
+    with pytest.raises(ValueError, match=message):
+        _background_compounds(list_ids, polarity)
+
+
+@pytest.mark.parametrize(
+    "compound",
+    [compound for compounds in BACKGROUND.values() for compound in compounds],
+    ids=lambda compound: compound[0],
+)
+def test_a_background_compound_is_fitted_on_through_every_mechanism(compound):
+    """Protonated and as its urea adduct, the two channels the demo's files
+    hold each anchor in, and as its ammonium adduct, which the mode declares
+    too and the fit takes where a file holds it."""
+    name, formula = compound
+    neutral = dict(parse_composition(formula))
+
+    def ion(**added):
+        counts = dict(neutral)
+        for element, count in added.items():
+            counts[element] = counts.get(element, 0) + count
+        return to_hill_notation(counts) + "+"
+
+    assert _ions_through_mode("uronium", formula) == {
+        ion(H=1),
+        ion(C=1, H=5, N=2, O=1),
+        ion(H=4, N=1),
+    }
+
+
+def test_the_uronium_calibrants_reach_a_window_above_the_urea_series():
+    """A scan window from m/z 122 to 740 holds no rung of the urea series
+    but the trimer, which the demo's files of that window hold at noise: the
+    calibrants have ions there that are not the series' (GitHub #2689)."""
+    collection = _by_key("calibration_collection_id")["uronium"]
+    series = {
+        ion
+        for compound in _reagent_compounds(collection)
+        for ion in _ions_through_mode("uronium", compound.formula)
+    }
+    above = {
+        ion
+        for compound in collection.compounds
+        for ion in _ions_through_mode("uronium", compound.formula)
+        if ion not in series and 122 <= _mz(ion) <= 740
+    }
+
+    # Caprolactam's urea adduct and D3 to D6, protonated and urea-clustered:
+    # the ions in every one of the demo's 81 files of that window.
+    assert {
+        "C7H16N3O2+",
+        "C6H19O3Si3+",
+        "C8H25O4Si4+",
+        "C10H31O5Si5+",
+        "C12H37O6Si6+",
+        "C7H23N2O4Si3+",
+        "C9H29N2O5Si4+",
+        "C11H35N2O6Si5+",
+        "C13H41N2O7Si6+",
+    } <= above
+    assert round(_mz("C7H16N3O2+"), 4) == 174.1237
+    assert round(_mz("C6H19O3Si3+"), 4) == 223.0637
 
 
 @pytest.mark.parametrize(
@@ -222,17 +362,20 @@ def test_every_compound_becomes_its_ion_under_its_mode(collection, compound):
 )
 def test_a_calibrant_gives_no_line_but_its_collections_anchors(collection):
     """Whatever else a compound becomes under the mode is fitted on too, so a
-    calibrant collection may hold no ion it does not mean."""
+    reagent calibrant may hold no ion it does not mean but the ones a channel
+    the mode declares beside the reagent's makes of it, named here."""
     library = {ion.label: ion for ion in _library(collection.system_key)}
+    reagent = _reagent_compounds(collection)
     anchors = {
-        _ion_formula(library[c.name].formula, library[c.name].charge)
-        for c in collection.compounds
+        _ion_formula(library[c.name].formula, library[c.name].charge) for c in reagent
     }
+    declared = THROUGH_DECLARED_CHANNELS.get(collection.system_key, set())
 
-    for compound in collection.compounds:
-        assert _ions_through_mode(collection.system_key, compound.formula) <= (
-            anchors | {_PROTON}
-        )
+    given = set()
+    for compound in reagent:
+        given |= _ions_through_mode(collection.system_key, compound.formula)
+    assert given <= anchors | {_PROTON} | declared
+    assert declared <= given
 
 
 @pytest.mark.parametrize(
@@ -246,10 +389,11 @@ def test_a_diagnostic_gives_no_line_its_source_does_not_make(collection):
     lines = {
         _ion_formula(ion.formula, ion.charge) for ion in _library(collection.system_key)
     }
+    declared = THROUGH_DECLARED_CHANNELS.get(collection.system_key, set())
 
     for compound in collection.compounds:
         assert _ions_through_mode(collection.system_key, compound.formula) <= (
-            lines | {_PROTON}
+            lines | {_PROTON} | declared
         )
 
 

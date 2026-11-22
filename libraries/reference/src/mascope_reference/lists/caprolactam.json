@@ -1,0 +1,28 @@
+{
+  "schema_version": 2,
+  "id": "caprolactam",
+  "label": "Caprolactam, the nylon-6 monomer",
+  "data_version": "2026.11",
+  "license": "CC-BY-4.0",
+  "references": [
+    {
+      "citation": "A. Narcelli Pestana de Aguiar, L. M. Gutiérrez Beleño, F. R. de Aquino Neto, G. Vanini, Permeably enclosed raw matrices direct analysis in real time mass spectrometry (PERM-DART-MS): a novel solution for the analysis of untreated samples. Analytical and Bioanalytical Chemistry 418 (2026) 6957-6971.",
+      "doi": "10.1007/s00216-026-06692-y"
+    },
+    {
+      "citation": "S. M. Duncan, K. Sexton, L. Collins, B. J. Turpin, Residential water-soluble organic gases: chemical characterization of a substantial contributor to indoor exposures. Environmental Science: Processes & Impacts 21 (2019) 1364-1373.",
+      "doi": "10.1039/c9em00105k"
+    }
+  ],
+  "polarity": "positive",
+  "native_detection": "Protonated, [M+H]+ at m/z 114.0913",
+  "always_active": true,
+  "tags": ["background"],
+  "provenance": {
+    "compiled_from": "Caprolactam, the nylon-6 monomer: a background ion of open-air ionization, present in the air and system blanks of an ambient (DART) source, where the ion at m/z 114.09194 is read as caprolactam from nylon residues or airborne laboratory background (Narcelli Pestana de Aguiar et al. 2026, the section on background contributions); and a compound of indoor air, C6H11NO detected protonated in the water-soluble gases of 7 of 13 homes (Duncan et al. 2019, Table 2). Formula checked against PubChem.",
+    "caveat": "Both works assign the formula, not the structure: the first calls the ion caprolactam-like. Mascope's demo uronium spectra hold caprolactam's urea adduct, C7H16N3O2+ at m/z 174.1237, in every file of one instrument, which is why the list anchors the uronium chemistry's calibrants."
+  },
+  "species": [
+    {"formula": "C6H11NO", "name": "Caprolactam", "evidence": "formula"}
+  ]
+}

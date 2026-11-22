@@ -19,11 +19,13 @@ pointed at a collection of the deployment's keeps it, and a seeded collection
 the deployment edits is left as it was edited.
 
 The reagent's ions are the first of the tiers the chemistry-profile proposal
-named for a profile's anchors, and the only one built. The further tiers - the
-ions an environment's every spectrum carries in its background, and a fit on
-the sample's own assignments (self-consistency) - stay out until the reagent
-ions prove insufficient for a chemistry. Where they fall short is known
-already. Protonation, deprotonation and the two ammonium chemistries have no
+named for a profile's anchors. The second, the ions an environment's spectra
+carry in their background, is built for uronium alone, whose scan window can
+start above its whole ladder: its calibrants carry the cyclic siloxanes and
+caprolactam behind the urea series (``reagents.BACKGROUND_ANCHOR_LISTS``),
+read off their reference lists, and a file is fitted on the ones it holds.
+The third, a fit on the sample's own assignments (self-consistency), stays
+out. Where the first two fall short is known already. Protonation, deprotonation and the two ammonium chemistries have no
 reagent in the library and ship without collections. A charge-transfer mode's
 reagent is an Orbitrap's EASY-IC beam, whose one ion cannot fit a TOF axis,
 which needs three points. The reagents with a cluster series give a TOF those
@@ -131,7 +133,7 @@ SYSTEM_MODES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         "sysUronium",
         "Uronium, positive",
         "+",
-        ("[M+CH4N2O+H]+", "[M+H]+"),
+        ("[M+CH4N2O+H]+", "[M+H]+", "[M+NH4]+"),
     ),
     (
         "ammonium",
@@ -171,6 +173,20 @@ SYSTEM_MODES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
 NAMED_BEFORE: dict[str, frozenset[str]] = {
     "ambient-negative": frozenset({"Ambient, negative"}),
     "ambient-positive": frozenset({"Ambient, positive"}),
+}
+
+#: The mechanisms earlier releases declared a chemistry with, by its key. A
+#: deployment cannot change a shipped mode's mechanisms, so a current version
+#: declaring one of these sets is a release's, and a start brings it onto the
+#: chemistry's definition in :data:`SYSTEM_MODES` (``ensure_system_modes``),
+#: as a new version where samples are bound under it. A change to the
+#: mechanisms there adds the set it replaces here.
+#:
+#: Uronium, positive gained the ammonium adduct (decision MAS-811): a regular
+#: channel of the source, 27 % of the demo dataset's uronium golden rows, which
+#: without it are read as nitrogen-bearing neutrals.
+DECLARED_BEFORE: dict[str, tuple[frozenset[str], ...]] = {
+    "uronium": (frozenset({"[M+CH4N2O+H]+", "[M+H]+"}),),
 }
 
 # What a deployment may change on a seeded mode: which target collections it
@@ -332,6 +348,18 @@ _CALIBRANTS_DESCRIPTION = (
     "is edited here; to calibrate on a collection of your own, point the "
     "ionization mode at that one instead."
 )
+#: The same, for a collection that carries a background tier behind the
+#: reagent's series (:func:`seeded_collections`).
+_CALIBRANTS_WITH_BACKGROUND_DESCRIPTION = (
+    "Shipped by Mascope: the m/z anchors files of this chemistry are "
+    "calibrated on. First the reagent ion and its own clusters, each named for "
+    "the ion it stands for; then compounds this source's background carries, "
+    "each named for itself and read through the mode's mechanisms, for a scan "
+    "window that holds none of the reagent's ions. A file is calibrated on the "
+    "ones it holds. Mascope brings it up to date with each release until it "
+    "is edited here; to calibrate on a collection of your own, point the "
+    "ionization mode at that one instead."
+)
 _DIAGNOSTICS_DESCRIPTION = (
     "Shipped by Mascope: the ions this chemistry's reagent makes on its own, "
     "matched in every file of the chemistry to watch the source. Each compound "
@@ -347,7 +375,13 @@ _DIAGNOSTICS_DESCRIPTION = (
 #: compounds, which follow the reagent-ion library - adds the digest the
 #: collection had before it here. The catalogue's tests pin the current digest
 #: of every collection, so such a change fails them until it does.
-SEEDED_BEFORE: frozenset[str] = frozenset()
+SEEDED_BEFORE: frozenset[str] = frozenset(
+    {
+        # Uronium, positive calibrants: the urea series alone, before its
+        # background tier (MAS-521).
+        "23abfad0e4bbf4bc",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -467,6 +501,14 @@ def seeded_collections() -> tuple[SeededCollection, ...]:
     alone. The air's ions are in neither, being the discharge's rather than
     the reagent's.
 
+    Behind the series, a profile with a background tier
+    (``reagents.BACKGROUND_ANCHOR_LISTS``, uronium's) carries the compounds of
+    its reference lists in its calibrants, each as the neutral the list names,
+    so that every mechanism of the mode reads it: a siloxane is fitted on as
+    its protonated ion and its urea adduct both. They are a site's background
+    rather than every file's, and a file is fitted on the ones it holds: a
+    line no peak matches is left out of the fit, as a missing cluster is.
+
     The chemistry is read off the mode's mechanisms as an Orbitrap's file
     would be (``detect_reagent_profile``). The reagents read the same on any
     instrument, but electron transfer names a reagent only on an Orbitrap,
@@ -485,6 +527,7 @@ def seeded_collections() -> tuple[SeededCollection, ...]:
     from mascope_tools.composition.reagents import (
         KIND_CLUSTER,
         REAGENT_LINE_FAMILIES,
+        background_anchor_lists,
         reagent_library,
     )
 
@@ -498,15 +541,30 @@ def seeded_collections() -> tuple[SeededCollection, ...]:
         ]
         if not lines:
             continue
-        anchors = [ion for ion in lines if ion.kind == KIND_CLUSTER]
-        for mode_field, suffix, name, collection_type, description, ions in (
+
+        def reagent_compounds(ions) -> tuple[SeededCompound, ...]:
+            return tuple(
+                SeededCompound(
+                    name=ion.label,
+                    formula=_neutral(ion.formula, ion.charge, mechanisms),
+                )
+                for ion in ions
+            )
+
+        anchors = reagent_compounds(ion for ion in lines if ion.kind == KIND_CLUSTER)
+        background = _background_compounds(
+            background_anchor_lists(profile.name), polarity
+        )
+        for mode_field, suffix, name, collection_type, description, compounds in (
             (
                 "calibration_collection_id",
                 "Cal",
                 f"{mode_name} calibrants",
                 "CALIBRANTS",
-                _CALIBRANTS_DESCRIPTION,
-                anchors,
+                _CALIBRANTS_WITH_BACKGROUND_DESCRIPTION
+                if background
+                else _CALIBRANTS_DESCRIPTION,
+                anchors + background,
             ),
             (
                 "diagnostic_collection_id",
@@ -514,7 +572,7 @@ def seeded_collections() -> tuple[SeededCollection, ...]:
                 f"{mode_name} reagent ions",
                 "DIAGNOSTICS",
                 _DIAGNOSTICS_DESCRIPTION,
-                lines,
+                reagent_compounds(lines),
             ),
         ):
             seeded.append(
@@ -525,16 +583,50 @@ def seeded_collections() -> tuple[SeededCollection, ...]:
                     name=name,
                     description=description,
                     collection_type=collection_type,
-                    compounds=tuple(
-                        SeededCompound(
-                            name=ion.label,
-                            formula=_neutral(ion.formula, ion.charge, mechanisms),
-                        )
-                        for ion in ions
-                    ),
+                    compounds=compounds,
                 )
             )
     return tuple(seeded)
+
+
+#: A reference list's polarity, as a mode's.
+_LIST_POLARITY = {"positive": "+", "negative": "-"}
+
+
+def _background_compounds(
+    list_ids: tuple[str, ...], polarity: str
+) -> tuple[SeededCompound, ...]:
+    """The compounds of a background tier's reference lists, in list order.
+
+    Each is its list's species as it names it, the neutral, which every
+    mechanism of the mode turns into an ion.
+
+    :param list_ids: The shipped reference lists, by id.
+    :param polarity: The mode's polarity, ``"+"`` or ``"-"``.
+    :return: The compounds.
+    :raises ValueError: A list is not shipped, or was measured in the other
+        polarity only (pinned against by the catalogue's tests).
+    """
+    if not list_ids:
+        return ()
+    from mascope_reference.seed import catalogue
+
+    shipped = {peak_list.id: peak_list for peak_list in catalogue()}
+    compounds = []
+    for list_id in list_ids:
+        peak_list = shipped.get(list_id)
+        if peak_list is None:
+            raise ValueError(f"No shipped reference list is named {list_id!r}.")
+        if _LIST_POLARITY.get(peak_list.polarity or "both", polarity) != polarity:
+            raise ValueError(
+                f"The reference list {list_id!r} is {peak_list.polarity}, but "
+                f"its compounds would calibrate a mode of polarity {polarity}."
+            )
+        compounds.extend(
+            SeededCompound(name=species.name, formula=species.formula)
+            for species in peak_list.species
+        )
+    return tuple(compounds)
 
 
 def seeded_collection_ids() -> frozenset[str]:
