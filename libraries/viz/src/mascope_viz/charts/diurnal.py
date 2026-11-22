@@ -20,9 +20,19 @@ largest and smallest hourly median), ``amplitude`` (the largest hourly
 median over the smallest), ``day_night_ratio`` (the median of the hourly
 medians over the day hours divided by that over the night hours, the hours
 given as clock spans echoed in the summary), ``min_n`` (the fewest values
-of any hour) and ``sparse_hours`` (the hours holding under half the values
-of the median hour, which a note names: an hour sampled on a few days is
-not a cycle); with ``by``, the same per group under ``groups``.
+of any hour) and ``sparse_hours``; with ``by``, the same per group under
+``groups``.
+
+- **An hour sampled on few days is no cycle.** An hour is sparse when it
+  holds under half the samples of the typical hour, the median over the
+  hours sampled at all, so an hour with no sample is sparse beside hours
+  with some. With ``by``, each group is judged against the typical hour of
+  the fullest group, so a month the window holds three hours of reads as
+  sparse in every hour; a group of the weekday split is judged per day of
+  the week it holds, its weekend's two beside the week's five. The note
+  names the sparse hours of the cycles drawn. The rule counts samples, not
+  values: a species below detection in its trough is sampled there, and
+  the note on species detected seldom says that its trough reads high.
 """
 
 from collections.abc import Sequence
@@ -50,6 +60,13 @@ SCALES = ("linear", "log")
 #: to 16:00, and 22:00 to 04:00.
 DAY_HOURS = (10, 16)
 NIGHT_HOURS = (22, 4)
+
+#: Under this share of the typical hour's samples, an hour is sparse.
+SPARSE = 0.5
+
+#: The days of the week each group of the weekday split holds: a group's
+#: samples are judged per day it holds. A month's or a season's holds one.
+WEEK_DAYS = {"weekday": 5, "weekend": 2}
 
 #: The note every diurnal figure prints.
 CLOCK_NOTE = (
@@ -79,25 +96,45 @@ def _median(values: np.ndarray) -> float | None:
     return float(np.median(found)) if len(found) else None
 
 
-def cycle(rows: pd.DataFrame, day: Sequence[int], night: Sequence[int]) -> dict:
+def typical(rows: pd.DataFrame) -> float:
+    """The typical hour's samples among *rows*: the median over the hours
+    sampled at all; 0 without one."""
+    n_samples = rows["n_samples"].to_numpy("int64")
+    sampled = n_samples[n_samples > 0]
+    return float(np.median(sampled)) if len(sampled) else 0.0
+
+
+def cycle(
+    rows: pd.DataFrame,
+    day: Sequence[int],
+    night: Sequence[int],
+    reference: float | None = None,
+) -> dict:
     """A cycle's numbers, from its 24 rows of the view's frame, which are in
-    hour order."""
+    hour order.
+
+    :param reference: The typical hour's samples its hours are judged
+        against; by default its own (:func:`typical`).
+    """
     median = rows["value"].to_numpy("float64")
     n = rows["n"].to_numpy("int64")
+    n_samples = rows["n_samples"].to_numpy("int64")
+    reference = typical(rows) if reference is None else reference
     out: dict[str, Any] = {
         "hour_max": None,
         "hour_min": None,
         "amplitude": None,
         "day_night_ratio": None,
         "min_n": int(n.min()),
-        "sparse_hours": [],
+        "sparse_hours": [
+            int(h) for h in np.flatnonzero(n_samples < SPARSE * reference)
+        ],
         "presence": common.presence(rows["n"], rows["n_samples"]),
     }
     if not np.isfinite(median).any():
         return out
     high = int(np.nanargmax(median))
     low = int(np.nanargmin(median))
-    typical = float(np.median(n))
     out.update(
         hour_max=high,
         hour_min=low,
@@ -105,9 +142,23 @@ def cycle(rows: pd.DataFrame, day: Sequence[int], night: Sequence[int]) -> dict:
         day_night_ratio=common.ratio(
             _median(median[list(day)]), _median(median[list(night)])
         ),
-        sparse_hours=[int(h) for h in np.flatnonzero(n < typical / 2)],
     )
     return out
+
+
+def groups(
+    rows: pd.DataFrame, day: Sequence[int], night: Sequence[int]
+) -> list[dict[str, Any]]:
+    """Each group's cycle, from one species' rows of the split view's
+    frame, its hours judged against the typical hour of the fullest group,
+    per day of the week a group holds (:data:`WEEK_DAYS`)."""
+    split = [(str(group), part) for group, part in rows.groupby("group", sort=False)]
+    days = {group: WEEK_DAYS.get(group, 1) for group, _ in split}
+    fullest = max(typical(part) / days[group] for group, part in split)
+    return [
+        {"group": group, **cycle(part, day, night, fullest * days[group])}
+        for group, part in split
+    ]
 
 
 def diurnal(
@@ -192,13 +243,12 @@ def _figure(
     for s in resolved.species:
         entry = {**s.to_dict(), **cycle(whole[whole["key"] == s.key], day, night)}
         if by:
-            mine = frame[frame["key"] == s.key]
-            entry["groups"] = [
-                {"group": str(group), **cycle(rows, day, night)}
-                for group, rows in mine.groupby("group", sort=False)
-            ]
-        if entry["sparse_hours"]:
-            sparse.append(f"{s.name} (hours {_listed(entry['sparse_hours'])})")
+            entry["groups"] = groups(frame[frame["key"] == s.key], day, night)
+        # The cycles drawn: the groups' with a split, else the window's
+        for drawn in entry["groups"] if by else [entry]:
+            if drawn["sparse_hours"]:
+                where = f"{s.name}, {drawn['group']}" if by else s.name
+                sparse.append(f"{where} ({_listed(drawn['sparse_hours'])})")
         entries.append(entry)
 
     label = common.y_label(store, attrs)
@@ -227,8 +277,10 @@ def _figure(
     notes = [CLOCK_NOTE.format(zone=zone), *common.notes(attrs, entries)]
     if sparse:
         notes.append(
-            "Under half the values of the median hour, so no cycle to read "
-            "there: " + "; ".join(sparse) + "."
+            "An hour sampled on few days is no cycle. Under half the samples "
+            + ("of the fullest group's typical hour: " if by else "of a typical hour: ")
+            + "; ".join(sparse)
+            + "."
         )
     extra = [f"by {by}"] if by else []
     return Figure(
@@ -258,7 +310,20 @@ def _figure(
 
 
 def _listed(hours: Sequence[int]) -> str:
-    return ", ".join(str(h) for h in hours)
+    """Hours in order as a note names them: ``every hour``, ``hour 5``,
+    ``hours 0-2, 5, 22-23``."""
+    if len(hours) == 24:
+        return "every hour"
+    runs: list[list[int]] = []
+    for hour in sorted(hours):
+        if runs and hour == runs[-1][-1] + 1:
+            runs[-1].append(hour)
+        else:
+            runs.append([hour])
+    named = ", ".join(
+        str(run[0]) if len(run) == 1 else f"{run[0]}-{run[-1]}" for run in runs
+    )
+    return ("hour " if len(hours) == 1 else "hours ") + named
 
 
 KIND = registry.register(
