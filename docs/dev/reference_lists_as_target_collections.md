@@ -696,9 +696,10 @@ Each is a call, not a task; the phase named waits on it.
   sharing, and the search field narrows. Revisit if the picker proves noisy.
   Phase 1.
 - **P4. Environments and attachment.** When MAS-342 lands and environments
-  select lists for Stage A, should the batch's Targets also follow? *Leaning:*
-  suggest, never attach unasked, consistent with "re-run nothing unasked"
-  (MAS-107). Phase 3.
+  select lists for Stage A, should the batch's Targets also follow? *Decided
+  on 2026-11-22 (MAS-450):* suggest, never attach unasked, consistent with
+  "re-run nothing unasked" (MAS-107). Attaching runs matching, so an
+  automatic attach would be an automatic match. Phase 3, MAS-463.
 - **P5. Export as a list file.** Should a collection export as a schema 2
   list file, making the list format the answer to #747 and #748? *Leaning:*
   yes, as a step of its own after phase 1, briefed against those two issues.

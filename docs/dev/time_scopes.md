@@ -140,6 +140,8 @@ instrument.
 
 Set by the owner on 2026-11-18, from the review that proposed this design;
 8 and 9 follow from decisions already taken elsewhere. MAS-1020 is the record.
+Decisions 10 to 13 were set on 2026-11-22; each answers an open question of
+section 9.
 
 | # | Decision |
 |---|---|
@@ -152,6 +154,10 @@ Set by the owner on 2026-11-18, from the review that proposed this design;
 | 7 | **The live scope is asked for.** A person switches a scope to *now*; nothing follows the instrument unasked, and a dashboard remembers whether it follows. |
 | 8 | **The scope strip shows the instrument's acquisition time zone** by default, the zone on the axis, a setting to switch: the visual digests' decision 6, applied to the app. |
 | 9 | **A scope spans one instrument** until the tier-3 `comparison` chart exists (MAS-244); two sites side by side is that chart's job, not phase 2's. |
+| 10 | **The scope routes are the only cross-batch read.** `GET /api/samples` keeps its contract and gains no time-range form; the finder's search route is the sample-level query over a range (decided 2026-11-22, MAS-1021). |
+| 11 | **A dashboard is shared as a target collection is.** Any editor of the workspace shares; the owner edits; anyone else copies it to change it, so a shared view never changes under its readers (decided 2026-11-22, MAS-1022). |
+| 12 | **A dashboard follows the batches' current runs.** The run is named on each chart, and a marker on the axis shows where it changes; a report pins by being a snapshot (decided 2026-11-22, MAS-1023). |
+| 13 | **The finder's time histogram and the scope strip's coverage strip are one component** with two data sources. Whichever of the two lands first builds it; the other adopts it (decided 2026-11-22, MAS-1024). |
 
 Not chosen, and why:
 
@@ -419,10 +425,10 @@ follow.
 
 | # | Question | Recommendation | Decision issue |
 |---|---|---|---|
-| 1 | Does `GET /api/samples` get a time-range form, or is the scope route the only cross-batch read? | The scope route only; the samples route keeps its contract and the finder's search route is the sample-level query. | MAS-1021, gates the scope routes |
-| 2 | Who may share a dashboard to a workspace, and who may edit a shared one? | As target collections: any editor of the workspace shares; the owner edits; a shared one is copied to edit. | MAS-1022, gates the dashboard routes |
-| 3 | Does a dashboard pin the engine run, or follow? | Follows, with the run on its face; a report pins by being a snapshot. | MAS-1023, gates the dashboard view |
-| 4 | Does the finder's time histogram and the scope strip's coverage strip become one component? | Yes; the finder's histogram is the coverage strip with counts. | MAS-1024, gates Explore and the finder pane |
+| 1 | Does `GET /api/samples` get a time-range form, or is the scope route the only cross-batch read? | The scope route only; the samples route keeps its contract and the finder's search route is the sample-level query. | MAS-1021: decided 2026-11-22 as recommended, decision 10 |
+| 2 | Who may share a dashboard to a workspace, and who may edit a shared one? | As target collections: any editor of the workspace shares; the owner edits; a shared one is copied to edit. | MAS-1022: decided 2026-11-22 as recommended, decision 11 |
+| 3 | Does a dashboard pin the engine run, or follow? | Follows, with the run on its face; a report pins by being a snapshot. | MAS-1023: decided 2026-11-22 as recommended, decision 12 |
+| 4 | Does the finder's time histogram and the scope strip's coverage strip become one component? | Yes; the finder's histogram is the coverage strip with counts. | MAS-1024: decided 2026-11-22 as recommended, decision 13 |
 | 5 | May a verdict fan out from Explore to every batch peak of a range, behind an approval, or is a batch the only place to curate? | Not before the dashboards' pilot shows the need; until then a series point opens its sample's batch. The batches would still own the results. | MAS-1038, gates nothing yet |
 
 The time zone and the single-instrument scope, open in the first draft, are
