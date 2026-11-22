@@ -336,7 +336,7 @@ Mascope carries a small curated seed of atmospheric CIMS lists: a monoterpene
 HOM list, isoprene's oxidation products, mass spectrometry background
 contaminants, and families of species no formula grid reaches, such as reactive
 iodine, perfluorocarboxylic acids, cyclic and linear siloxanes and
-organophosphates. They live in
+organophosphates, and caprolactam, the nylon-6 monomer. They live in
 [`libraries/reference/src/mascope_reference/lists/`](https://github.com/ultra-trace-systems/mascope/tree/master/libraries/reference/src/mascope_reference/lists),
 one list per file, and nothing loads them unasked:
 
@@ -389,9 +389,11 @@ belongs to the whole list, and its species are neutral formulas:
     are copied into the provenance of every row they match.
 - **`tags` say how a reader should take the list's compounds**, from a fixed
   vocabulary the checks hold a list to. The one tag is `background`: the
-  cyclic siloxanes carry it, because they are a background of most inlets and
-  an analyte of indoor air, so a row they name says the list reads them as
-  background. The row shows the tag beside the list's name; the tier does not
+  cyclic siloxanes and caprolactam carry it, because they are a background of
+  most inlets and an analyte of indoor air, so a row they name says the list
+  reads them as background. The same two lists anchor the calibrants of the
+  shipped Uronium, positive chemistry behind its urea series
+  ([What the shipped chemistries calibrate on](import-files.md#what-the-shipped-chemistries-calibrate-on)). The row shows the tag beside the list's name; the tier does not
   weigh it, and whether the compounds are background in a dataset is the
   batch's question. A tag reaches every record the list loads, so changing it
   needs a new `data_version`.

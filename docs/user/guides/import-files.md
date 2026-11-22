@@ -185,6 +185,42 @@ uncalibrated.
     each daily batch for its new ones, and keeps any collection added under
     **Edit batch targets**. An analysis batch keeps its collections.
 
+### What the shipped chemistries calibrate on
+
+Mascope ships a set of chemistries, the same on every server, each with the
+mechanisms its ions are formed by. Where a chemistry has a reagent of its own,
+it also ships the calibrant collection its files are calibrated on, named after
+it (*Bromide, negative calibrants*):
+
+| Chemistry | Mechanisms | Calibrants it ships |
+| --- | --- | --- |
+| Nitrate, Nitrate 15N, Bromide and Iodide, negative | The reagent's adduct and `[M-H]-` | The reagent ion and its own clusters, such as `[Br]-`, `[Br2]-` and `[Br3]-` for bromide. An Orbitrap needs one of them in its scan window; a TOF fit needs three, and they all sit at the low end of the range. |
+| Uronium, positive | `[M+CH4N2O+H]+`, `[M+H]+` and `[M+NH4]+` | The protonated urea monomer, dimer and trimer, and behind them two compounds a uronium source's background carries, for a scan window that starts above the urea series: the cyclic siloxanes D3 to D8 and caprolactam. |
+| Charge transfer (EASY-IC), negative and positive | Electron transfer | The one ion of an Orbitrap's EASY-IC source, its lock mass. A TOF fit cannot use a single anchor, so a TOF file under one of these is not calibrated. |
+| Deprotonation, negative; Protonation, Ammonium and Ammonium 15N, positive | Their own | None: they have no reagent of their own. Their files are not calibrated until the mode points at a calibrant collection of yours. |
+
+The background compounds of Uronium, positive are compounds, not ions: every
+mechanism of the mode reads them, so a siloxane is fitted on as its protonated
+ion and as its urea adduct, and caprolactam (m/z 114.09 protonated, below such
+a window) as its urea adduct at m/z 174.124. They are a background of
+laboratory air and of the instrument, not of every site, so a file is fitted on
+the ones it holds, and one that holds none of the calibrants still ends as
+**Calibration failed**. The siloxanes are a classic background of mass
+spectrometer inlets
+([Schlosser and Volkmer-Engert 2003](https://doi.org/10.1002/jms.465)) and are
+measured in air worldwide
+([Genualdi et al. 2011](https://doi.org/10.1021/es200301j)); caprolactam, the nylon-6 monomer, is a background ion of open-air ionization
+([Narcelli Pestana de Aguiar et al. 2026](https://doi.org/10.1007/s00216-026-06692-y))
+and a compound of indoor air ([Duncan et al. 2019](https://doi.org/10.1039/c9em00105k)).
+Both come from Mascope's reference lists, where they are
+tagged `background` ([Reference lists](reference-lists.md#the-lists-that-ship-with-mascope)).
+
+Uronium, positive declares the ammonium adduct since this release: a uronium
+source makes ammonium adducts of its analytes as a matter of course. A server
+that already has the chemistry brings it onto the new mechanisms at its next
+start, as a new version where files were processed under it; those files keep
+their results until they are processed again.
+
 ## Get the raw files in
 
 ### Automatically, with the File Agent

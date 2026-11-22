@@ -833,6 +833,8 @@ KIND_FRAGMENT = "fragment"
 # chemist recognises at sight, the cyclic siloxanes first, are analytes on an
 # indoor-air deployment, so they are named from their reference list, which
 # reads them as background, rather than claimed before the sample is asked.
+# A list may still anchor a profile's calibration
+# (:data:`BACKGROUND_ANCHOR_LISTS`), which claims nothing.
 
 #: The reagent's own ladder and the companions it makes: the ion a CIMS source
 #: is dosed with, its clusters, hydrates and oxides.
@@ -1721,6 +1723,35 @@ def reagent_library(profile_name: str) -> tuple[ReagentCluster, ...]:
     :return: Its cluster library, empty when the profile has no reagent.
     """
     return REAGENT_CLUSTERS.get(profile_name, ())
+
+
+#: The background anchor tier: the reference lists (``mascope_reference``'s
+#: shipped lists, by id) whose compounds a profile's calibrants carry behind
+#: its reagent's own series, for a scan window that holds none of the series.
+#: These are calibrants only. Nothing here is claimed before the stages, for
+#: the reason the section comment on the families gives: a contaminant is an
+#: analyte on some deployment, so it is named from its list rather than taken
+#: out of the sample's ledger.
+#:
+#: Uronium's window can start above its whole ladder (m/z 122, the dimer at
+#: 121): on the demo dataset's 81 files of such a window the urea trimer was at
+#: noise and none was calibrated. Their spectra hold D3 to D6 in every file,
+#: protonated and as urea adducts within 0.2 ppm of each other's offset, and
+#: caprolactam's urea adduct in every file (decision MAS-811). It is a site's
+#: background, not a universal one: the demo's second instrument holds none of
+#: the siloxanes, so a file is fitted on the ones it holds.
+BACKGROUND_ANCHOR_LISTS: dict[str, tuple[str, ...]] = {
+    "UR": ("cyclic-siloxanes", "caprolactam"),
+}
+
+
+def background_anchor_lists(profile_name: str) -> tuple[str, ...]:
+    """The reference lists a profile's calibrants carry behind its reagent.
+
+    :param profile_name: The profile's name.
+    :return: The lists' ids, empty when the profile has no background tier.
+    """
+    return BACKGROUND_ANCHOR_LISTS.get(profile_name, ())
 
 
 #: Window the ANCHOR ions are looked for in, in ppm. The same width and the

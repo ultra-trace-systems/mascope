@@ -2078,9 +2078,13 @@ chemistries are an Orbitrap's EASY-IC source, not an APi-TOF's ambient ions
 with no reagent: their one calibrant is the source's lock mass, which a TOF
 fit cannot use. A cluster series gives a TOF fit the three points it needs to
 run and none to spare, all at the low end of the range: the series ends at
-m/z 188 for nitrate and 381 for iodide. A mode whose files reach well above
-that, or whose spectra do not show every cluster, is better served by a
-calibrant collection of the deployment's own. The collections are global,
+m/z 188 for nitrate and 381 for iodide. Uronium's calibrants carry a second
+tier behind the urea series, for a window that starts above it: the compounds
+of the shipped `cyclic-siloxanes` and `caprolactam` reference lists, which a
+uronium source's background carries. A file is fitted on the ones it holds,
+and one holding none of the calibrants still fails its calibration. A mode
+whose files reach well above the series, or whose spectra do not show every
+cluster, is better served by a calibrant collection of the deployment's own. The collections are global,
 named after their chemistry (*Bromide, negative calibrants*, *Bromide,
 negative reagent ions*) under fixed ids (`sysBromideCal`, `sysBromideDia`),
 and a start points each shipped mode at its own only where the mode points at
@@ -2095,6 +2099,17 @@ serves for a rematch as an edit would, and leaves an edited one as it is. The
 start's log line `System target collections: ...` counts both and names the
 edited ones. A deleted one comes back at the next start, as a deleted shipped
 mechanism does; to stop a mode using it, point the mode at another collection.
+
+A release may also change the mechanisms a shipped mode declares, which no
+deployment can: *Uronium, positive* gained `[M+NH4]+` in this one. A start
+brings a shipped mode still declaring what an earlier release defined it with
+onto the current mechanisms: in place while no file is processed under it,
+else as its next version, with the method bindings following it, as an edit
+would. Files processed before keep the version their results came from until
+they are processed again, and their batches are not flagged. The start's log
+line `System ionization modes: ...` counts the modes brought onto their
+chemistry's mechanisms; a shipped mode declaring mechanisms no release gave it
+is left as it is and logged as a warning.
 
 Earlier releases shipped the two charge-transfer modes as *Ambient,
 negative* and *Ambient, positive*. A start renames a shipped mode still under
