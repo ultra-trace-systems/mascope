@@ -20,10 +20,15 @@ system with the app's own charts:
   groups draws small multiples or its top N.
 - **Sequential**: magma, dark to light on the dark ground and light to dark
   on the light one, so the high values stand out on either and the low
-  values stay apart from a gap, which shows the ground.
+  values stay apart from a blank cell, which shows the ground.
 - **Diverging**: the app's formula blue through a neutral grey to the
   accent, interpolated in OKLab; the centre is grey, not the ground, so
-  "no change" stays apart from "no data".
+  "no change" stays apart from "no value".
+- **Gaps**: the ``gap`` token, a grey, as a tint over the ground: light
+  over a series' gap span, heavier in a heatmap's gap cell, where it has
+  to stay apart from every colour of both ramps. The diverging centre is
+  a grey too, so the cell's tint is set per theme: on light grounds a
+  light tint would read as "no change".
 - **Type**: IBM Plex Sans, as the app; a renderer falls back to the next
   family it finds. Sizes are the app's three, in CSS pixels.
 
@@ -32,8 +37,9 @@ every categorical colour and both ends of the diverging ramp at 3:1 or
 more against every ground (WCAG 2.2, 1.4.11: a graphic's contrast), any
 two categorical colours at least :data:`DISTINCT` apart in CIELAB, the
 sequential ramp's lightness monotonic with its high end at 3:1 or more,
-and both ramps' low ends, and the diverging centre, apart from every
-ground.
+both ramps' low ends, and the diverging centre, apart from every ground,
+and a heatmap's gap cell, over every ground, apart from that ground and
+from every colour along both ramps.
 
 Pure Python: importing it imports neither renderer.
 """
@@ -53,8 +59,14 @@ GRAPHIC_CONTRAST = 3.0
 DISTINCT = 20.0
 
 #: The CIELAB distance a ramp's low end, and the diverging centre, keep
-#: from every ground, so a cell of it is told from a gap.
+#: from every ground, so a cell of it is told from a blank cell; and that
+#: a heatmap's gap cell keeps from its ground and from every colour along
+#: both ramps, so "no samples" is told from a blank cell and from a value.
 APART = 5.0
+
+#: How many colours along a ramp the check measures a gap cell against:
+#: a ramp is drawn continuous, interpolated between its stops.
+RAMP_SAMPLES = 256
 
 
 @dataclass(frozen=True)
@@ -68,7 +80,11 @@ class Marks:
     size_max: float = 18.0
     band_opacity: float = 0.2
     span_opacity: float = 0.12
+    #: A gap span's tint over a series or a strip.
     gap_opacity: float = 0.18
+    #: A heatmap gap cell's tint: :func:`check` holds it apart from both
+    #: ramps, so each theme sets its own.
+    gap_cell_opacity: float = 0.18
     #: A scatter point's fill, so that a point behind another shows.
     point_opacity: float = 0.7
     #: A box's fill.
@@ -109,7 +125,7 @@ class Theme:
     :ivar plot: The ground of a plot's area.
     :ivar grounds: Every ground a colour is checked against.
     :ivar text: Titles, labels and ticks.
-    :ivar muted: Subtitles, notes, rules and the gap fill.
+    :ivar muted: Subtitles, notes and rules; the ``gap`` token's tint.
     :ivar grid: Grid lines.
     :ivar axis: Axis lines and table rules.
     """
@@ -216,6 +232,9 @@ LIGHT = Theme(
         "#b46846",
         "#a23f00",
     ),
+    # The gap token at 0.18 over the plot ground is 1.8 from the diverging
+    # centre; at 0.5 it is 7.9 or more from both ramps on every ground.
+    marks=Marks(gap_cell_opacity=0.5),
 )
 
 DARK = Theme(
@@ -266,6 +285,9 @@ DARK = Theme(
         "#b66a43",
         "#dd743b",
     ),
+    # 7.6 or more from both ramps and 9.4 or more from its ground, on every
+    # ground.
+    marks=Marks(gap_cell_opacity=0.18),
 )
 
 _THEMES = {"light": LIGHT, "dark": DARK}
@@ -408,7 +430,40 @@ def check(theme: "str | Theme") -> list[str]:
                 "centre at every step"
             )
             break
+    ramps = {
+        "sequential": along(theme.sequential),
+        "diverging": along(theme.diverging),
+    }
+    for ground in theme.grounds:
+        cell = gap_cell(theme, ground)
+        gap = distance(cell, ground)
+        if gap < APART:
+            problems.append(
+                f"{theme.name}: a gap cell {cell} is {gap:.1f} from the ground "
+                f"{ground}, too close to tell from a blank cell"
+            )
+        for name, colours in ramps.items():
+            nearest = min(colours, key=lambda colour: distance(cell, colour))
+            gap = distance(cell, nearest)
+            if gap < APART:
+                problems.append(
+                    f"{theme.name}: a gap cell {cell} on {ground} is {gap:.1f} "
+                    f"from the {name} ramp's {nearest}, too close to tell from "
+                    "a value"
+                )
     return problems
+
+
+def gap_cell(theme: Theme, ground: str) -> str:
+    """A heatmap gap cell's colour over *ground*: the ``gap`` token at the
+    theme's gap cell opacity, as both renderers draw it."""
+    return blend(theme.token("gap"), ground, theme.marks.gap_cell_opacity)
+
+
+def along(stops: tuple[str, ...]) -> list[str]:
+    """The colours along a ramp, :data:`RAMP_SAMPLES` of them, as the
+    renderers interpolate between its stops."""
+    return [interpolate(stops, i / (RAMP_SAMPLES - 1)) for i in range(RAMP_SAMPLES)]
 
 
 def _pairs(colours: tuple[str, ...]) -> Iterable[tuple[tuple[int, str], ...]]:

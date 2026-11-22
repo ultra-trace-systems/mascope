@@ -20,7 +20,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ..charts.spec import Figure, Panel
+from ..charts.spec import Figure, Panel, axis_kind
 from . import theme as themes
 
 
@@ -925,6 +925,10 @@ def _cells(column: pd.Series, kind: str, spec: str | None) -> list[str]:
             if spec.endswith("d") and not integer:
                 # A count with a gap in it is a float column.
                 value = round(value)
+            elif integer and spec[-1].isdigit():
+                # A precision without a type: Python takes none on an
+                # integer, so it is written as the float it equals.
+                value = float(value)
             out.append(format(value, spec))
         else:
             out.append(str(value))
@@ -1052,6 +1056,7 @@ def time_kind(fig: Figure, panel: Panel, axis: str) -> bool:
     return isinstance(column, str) and fig.kinds()[column] == "time"
 
 
-def kind_of(fig: Figure, panel: Panel, axis: str) -> str | None:
-    column = panel.encodings.get(axis)
-    return fig.kinds()[column] if isinstance(column, str) else None
+def kind_of(fig: Figure, panel: Panel, axis: str) -> str:
+    """What *panel*'s *axis* draws, as the spec reads it: ``time``,
+    ``number`` or ``category`` (:func:`~mascope_viz.charts.spec.axis_kind`)."""
+    return axis_kind(panel, fig.kinds(), axis)

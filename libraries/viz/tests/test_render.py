@@ -1684,3 +1684,260 @@ def test_a_log_axis_range_is_drawn_in_its_powers_on_both_backends():
     )
     assert list(render.plotly(fig).layout.xaxis.range) == [0.0, 2.0]
     assert render.matplotlib(fig).axes[0].get_xlim() == pytest.approx((1, 100))
+
+
+# --- round 3: gap cells, y ranges, integer formats, NumPy times, the size legend, the header ----
+
+
+def test_a_gap_cell_is_drawn_in_the_gap_cell_tint_on_both_backends():
+    """A gap cell takes the gap token at the theme's gap cell opacity, which
+    the contrast check holds apart from both ramps: on light grounds the
+    span's light tint would read as the diverging ramp's "no change"."""
+    fig = specs.heatmap()
+    for name in theme.THEMES:
+        palette = theme.get(name)
+        ax = render.matplotlib(fig, theme=name).axes[0]
+        meshes = [c for c in ax.collections if isinstance(c, QuadMesh)]
+        gap_mesh = next(m for m in meshes if m.get_cmap().name != "mascope_viz")
+        colour = gap_mesh.get_cmap().colors[0]
+        assert theme.hex_colour(colour[:3]) == palette.token("gap")
+        assert colour[3] == palette.marks.gap_cell_opacity
+        plotted = render.plotly(fig, theme=name)
+        gap_trace = next(
+            t for t in plotted.data if t.type == "heatmap" and not t.showscale
+        )
+        r, g, b = (round(c * 255) for c in theme.rgb(palette.token("gap")))
+        tint = f"rgba({r},{g},{b},{palette.marks.gap_cell_opacity})"
+        assert [stop[1] for stop in gap_trace.colorscale] == [tint, tint]
+    # The light theme's cell is not the span's tint, which would sit on the
+    # diverging centre.
+    assert theme.LIGHT.marks.gap_cell_opacity != theme.LIGHT.marks.gap_opacity
+    centre = theme.LIGHT.diverging[len(theme.LIGHT.diverging) // 2]
+    span_tint = theme.blend(
+        theme.LIGHT.token("gap"), theme.LIGHT.plot, theme.LIGHT.marks.gap_opacity
+    )
+    assert theme.distance(span_tint, centre) < theme.APART
+    assert theme.distance(theme.gap_cell(theme.LIGHT, theme.LIGHT.plot), centre) > 7
+
+
+@pytest.mark.parametrize(
+    "change, problem",
+    [
+        (
+            lambda t: {
+                "diverging": (
+                    *t.diverging[:4],
+                    theme.gap_cell(t, t.plot),
+                    *t.diverging[5:],
+                )
+            },
+            "from the diverging ramp's",
+        ),
+        (
+            lambda t: {"sequential": (theme.gap_cell(t, t.plot), *t.sequential[1:])},
+            "from the sequential ramp's",
+        ),
+        (
+            lambda t: {"marks": theme.Marks(gap_cell_opacity=0.0)},
+            "too close to tell from a blank cell",
+        ),
+    ],
+)
+def test_the_contrast_check_holds_a_gap_cell_apart(change, problem):
+    from dataclasses import replace
+
+    for name in theme.THEMES:
+        palette = theme.get(name)
+        problems = theme.check(replace(palette, **change(palette)))
+        assert any(problem in p for p in problems), problems
+
+
+def test_the_contrast_check_measures_a_gap_cell_along_a_ramp_not_at_its_stops():
+    from dataclasses import replace
+
+    cell = theme.gap_cell(theme.LIGHT, theme.LIGHT.plot)
+    # Two stops each well apart from the cell, whose middle is the cell.
+    low = theme.hex_colour(c - 24 / 255 for c in theme.rgb(cell))
+    high = theme.hex_colour(c + 24 / 255 for c in theme.rgb(cell))
+    assert min(theme.distance(cell, low), theme.distance(cell, high)) > theme.APART
+    problems = theme.check(replace(theme.LIGHT, sequential=(low, high)))
+    assert any(
+        f"a gap cell {cell} on {theme.LIGHT.plot}" in p and "sequential" in p
+        for p in problems
+    ), problems
+    assert len(theme.along(("#000000", "#ffffff"))) == theme.RAMP_SAMPLES
+    assert theme.along(("#000000", "#ffffff"))[:: theme.RAMP_SAMPLES - 1] == [
+        "#000000",
+        "#ffffff",
+    ]
+
+
+def _y_range(fig: Figure) -> tuple[tuple[float, float], list[float] | None]:
+    return (
+        render.matplotlib(fig).axes[0].get_ylim(),
+        render.plotly(fig).layout.yaxis.range,
+    )
+
+
+def test_a_y_range_holds_for_a_list_of_y_on_both_backends():
+    data = pd.DataFrame(
+        {"x": [1.0, 2.0, 3.0], "a": [1.0, 2.0, 4.0], "b": [2.0, 3.0, 1.0]}
+    )
+    for y in ("a", ["a", "b"]):
+        fig = Figure(
+            "r",
+            "R",
+            panels=[
+                Panel(
+                    "series",
+                    axes={"y": {"range": (0, 100)}},
+                    encodings={"x": "x", "y": y},
+                )
+            ],
+            data=data,
+        )
+        ylim, yrange = _y_range(fig)
+        assert ylim == pytest.approx((0, 100)), y
+        assert list(yrange) == [0.0, 100.0], y
+
+
+def test_a_y_range_holds_for_a_box_on_both_backends():
+    fig = specs.box()
+    panel = fig.panels[0]
+    panel.axes.y.range = (0.0, 1e6)
+    fig = Figure.from_json(fig.to_json())
+    ylim, yrange = _y_range(fig)
+    assert ylim == pytest.approx((0, 1e6))
+    assert list(yrange) == [0.0, 1e6]
+
+
+def test_a_precision_without_a_type_formats_an_integer_column():
+    data = pd.DataFrame({"n": [1, 25, 1234], "m": [3, 4, 5]})
+    fig = Figure(
+        "p",
+        "P",
+        panels=[
+            Panel(
+                "table",
+                encodings={"columns": ["n", "m"]},
+                options={"formats": {"n": ".2", "m": ",.3"}},
+            )
+        ],
+        data=data,
+    )
+    table = common.table(fig, fig.panels[0])
+    assert [row[0] for row in table.rows] == ["1.0", "2.5e+01", "1.2e+03"]
+    assert [row[1] for row in table.rows] == ["3.0", "4.0", "5.0"]
+    cells = render.plotly(fig).data[0].cells.values
+    assert list(cells[0]) == ["1.0", "2.5e+01", "1.2e+03"]
+    table = next(
+        c for c in render.matplotlib(fig).axes[0].get_children() if isinstance(c, Table)
+    )
+    drawn = {cell.get_text().get_text() for cell in table.get_celld().values()}
+    assert {"1.0", "2.5e+01", "1.2e+03", "5.0"} <= drawn
+    # A precision with a type formats the integer as Python does.
+    typed = Figure(
+        "q",
+        "Q",
+        panels=[
+            Panel(
+                "table", encodings={"columns": ["n"]}, options={"formats": {"n": ".1%"}}
+            )
+        ],
+        data=data,
+    )
+    assert common.table(typed, typed.panels[0]).rows[1] == ["2500.0%"]
+
+
+def test_numpy_times_in_the_summary_are_written_as_their_pandas_twins():
+    zoned = pd.Series(pd.date_range("2026-07-01", periods=3, freq="1h", tz=specs.ZONE))
+    fig = Figure(
+        "s",
+        "S",
+        panels=[Panel("table", encodings={"columns": ["a"]})],
+        summary={
+            "first": zoned.to_numpy(dtype="datetime64[ns]").min(),
+            "day": np.datetime64("2026-07-01", "D"),
+            "never": np.datetime64("NaT", "ns"),
+            "step": np.timedelta64(90, "m"),
+            "no_step": np.timedelta64("NaT", "ns"),
+        },
+        data=pd.DataFrame({"a": [1]}),
+    )
+    first = zoned.min().tz_convert("UTC").isoformat()
+    assert fig.summary == {
+        "first": first,
+        "day": "2026-07-01T00:00:00+00:00",
+        "never": None,
+        "step": pd.Timedelta("90min").isoformat(),
+        "no_step": None,
+    }
+    assert pd.Timestamp(fig.summary["first"]) == zoned.min()
+    assert Figure.from_json(fig.to_json()).summary == fig.summary
+
+
+def test_the_size_legend_gives_three_rows_and_a_round_value_of_two():
+    from dataclasses import replace
+
+    fine = replace(theme.LIGHT, marks=replace(theme.LIGHT.marks, size_min=1.0))
+    legend = common.size_legend(np.array([10.0, 1e5]), fine)
+    assert [value for value, _ in legend] == [1e5, 2e4, 5e3]
+    assert [diameter for _, diameter in legend] == pytest.approx(
+        [18.0, 18.0 * np.sqrt(0.2), 18.0 * np.sqrt(0.05)]
+    )
+    # A round value too small to draw above the smallest size is left out.
+    assert [value for value, _ in common.size_legend(np.array([9e4]), theme.LIGHT)] == [
+        5e4,
+        1e4,
+    ]
+
+
+def test_the_header_is_the_themes_for_one_line_of_subtitle():
+    fig = specs.series()
+    layout = theme.LIGHT.layout
+    line = theme.LIGHT.type.subtitle * common.LINE_HEIGHT
+    assert common.arrange(fig, theme.LIGHT, subtitle=1).header == layout.header
+    assert common.arrange(fig, theme.LIGHT, subtitle=3).header == pytest.approx(
+        layout.header + 2 * line
+    )
+    assert common.arrange(fig, theme.LIGHT, subtitle=0).header == (
+        layout.header - theme.LIGHT.type.subtitle - 6
+    )
+
+
+def test_a_panel_draws_only_the_categories_its_rows_hold_on_both_backends():
+    days = pd.CategoricalDtype(["Mon", "Tue", "Wed"], ordered=True)
+    data = pd.DataFrame(
+        {
+            "day": pd.Series(["Wed", "Mon", "Tue"], dtype=days),
+            "y": [3.0, 1.0, 2.0],
+            "part": [1, 1, 2],
+        }
+    )
+    fig = Figure(
+        "c",
+        "C",
+        panels=[Panel("bars", encodings={"x": "day", "y": "y"}, where={"part": 1})],
+        data=data,
+    )
+    assert common.ordered(fig.frame(fig.panels[0])["day"]) == ["Mon", "Wed"]
+    ax = render.matplotlib(fig).axes[0]
+    assert [t.get_text() for t in ax.get_xticklabels()] == ["Mon", "Wed"]
+    assert list(render.plotly(fig).layout.xaxis.ticktext) == ["Mon", "Wed"]
+
+
+def test_a_group_with_two_names_in_a_panel_takes_its_first():
+    data = pd.DataFrame(
+        {"x": ["a", "a", "b"], "y": [1.0, 2.0, 3.0], "name": ["One", "Uno", "Two"]}
+    )
+    fig = Figure(
+        "n",
+        "N",
+        panels=[
+            Panel("bars", encodings={"x": "x", "y": "y", "group": "x", "name": "name"})
+        ],
+        data=data,
+    )
+    assert common.colours(fig, theme.LIGHT).name("a") == "One"
+    names = [t.name for t in render.plotly(fig).data if t.showlegend]
+    assert names == ["One", "Two"]
