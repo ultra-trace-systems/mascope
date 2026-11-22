@@ -512,6 +512,92 @@ one species, listed once, as the ion. When the engine run changes in the
 last period, a formula new in it may be an earlier peak read as another
 formula, and its row is marked.
 
+### The species charts
+
+`species_series`, `diurnal` and `period_boxes` draw the species their
+`species` parameter names:
+
+```python
+fig = registry.get("species_series").build(store, species="top:5", cadence="1h")
+fig.summary["species"]  # per species: median, max and its time, presence
+render.save(fig, "species.html")
+```
+
+| Chart | Question | Drawn as |
+|---|---|---|
+| `species_series` | How did these species behave over the period? | a `series` panel per species (at most 24) on a shared time axis, or overlaid (at most 8); a median line with its p10-p90 band where a bin holds several samples; log y by default; event spans |
+| `diurnal` | What is the daily cycle? | a `series` panel per species over the hour of day: the median with the interquartile band; with `by` (month, season, weekday), a line per group in each panel |
+| `period_boxes` | How did the distribution shift week to week, month to month? | a `box` per day, week (Monday to Sunday) or month per species: p25 to p75 with the median, whiskers p5 to p95, no outlier marks |
+
+**The `species` parameter** is the same for the three. It takes a list,
+such as a recipe's named list, of these, tried in this order:
+
+- an exact series key (`ion:...`, `formula:...|...`) or `tic`;
+- a species' name, its neutral formula or its ion formula, matched
+  literally, case included;
+- `top:N`, the N species with the highest median over the chart's own
+  window, under its own normalisation, the normaliser's own ions left out.
+
+A formula held both by a target ion and by the engine under the same
+mechanism is the target ion's `ion:` key: that identity survives a change
+of engine run, where a formula's key does not. A formula under several
+mechanisms is a series per mechanism, its legend naming the mechanism. A
+species the store does not hold raises `UnknownSpecies`, which lists the
+nearest names. The resolved list is in the summary, `species`, and the
+parameter as given in `requested`, so a rerun can pin the list.
+
+What the three charts share:
+
+- **Signal, not concentration.** No calibration factor is applied, so the y
+  axis names the intensity the server gives: peak area on a TOF, peak
+  height on an Orbitrap. A normalised value is unitless, labelled
+  `signal / <normaliser>`.
+- **`normalise`** is `none` (the default), `tic`, a series key, or a list
+  of keys whose per-sample sum divides, as the views take it. The subtitle
+  names it; when a sum lacked a member in some samples, a note says in
+  what share of them.
+- **The face** says the cadence, the statistic and band, the window and
+  the zone, from the view's frame.
+- **A run change is drawn.** When the engine run that reads the formulas
+  changes in the window, a note says where, the summary lists the changes,
+  and a `species_series` panel whose values the run moves (a formula's, or
+  any divided by a formula) has a rule at each.
+- **Below detection is missing, not zero**, so every statistic is over the
+  detected values only. Each species' `presence` in the summary is its
+  values over the samples that could have held one, and a note names the
+  species detected in under 90 % of them.
+- **Summaries are plain JSON**: times in ISO 8601 with their offset in the
+  display zone, NaN as null, a species as `key`, `name` and `formula`, with
+  the `normalise`, `cadence`, `tz`, `start`, `end`, `mixed_runs` and
+  `run_changes` of the figure.
+- A parameter a chart cannot draw, or a window without a value of any of
+  its species, raises `InvalidChart`, whose message says what to change.
+
+`species_series` bins at `cadence` `auto` (the samples' spacing), `10min`,
+`1h`, `1d`, or every sample at `raw`. When the bins times the series pass
+its `budget` (50,000 marks a figure), it bins at the next of `10min`, `1h`
+and `1d`, and its subtitle says so; it never drops points. Its summary per
+species: the `median` and `max` of the plotted bins, `max_time`, the start
+of the maximum's bin, and `fraction_present`, the bins with a value over
+the bins with samples, so an acquisition gap does not count against it.
+
+`diurnal` takes its hours from the display zone's clock, clock changes
+included; it knows no site's coordinates, so nothing in it is solar time.
+Hour `h` holds the samples from `h:00` to `h:59` and is drawn at `h + 0.5`.
+Its y is linear by default, where an amplitude reads. Its summary per
+species: `hour_max`, `hour_min`, `amplitude` (the largest hourly median
+over the smallest), `day_night_ratio` (the median of the hourly medians
+over `day_hours`, 10:00 to 16:00 by default, over that over `night_hours`,
+22:00 to 04:00), `min_n` and `sparse_hours`, the hours with under half the
+values of the median hour, which a note names; with `by`, the same per
+group. The diurnal view follows openair's `timeVariation` (Carslaw and
+Ropkins 2012).
+
+`period_boxes` draws a period with under half the samples of the fullest
+one, such as the window's first and last, hollow, and lists it in the
+summary's `thin_periods`; the summary gives every period's median, `n` and
+`n_samples`, and the period of the highest median among those not thin.
+
 ## The command line
 
 `mascope-viz` drives the data layer from a shell or a coding agent. Its

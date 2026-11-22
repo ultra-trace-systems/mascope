@@ -6,16 +6,37 @@ A chart is a view call plus spec building (``docs/dev/visual_digest.md``,
 section 2.4): the views aggregate, and a chart only arranges what they give
 and says what it is. Pandas and NumPy only, so a server can build the
 charts without the renderers.
+
+The species charts (``species_series``, ``diurnal``, ``period_boxes``)
+follow the same conventions (MAS-228's review, on every chart of the
+note's phase 2), with helpers of their own below:
+
+- **On the face**: the cadence, the statistic and the band, the
+  normalisation by name, the window and the zone, all from the view's
+  ``attrs`` (:func:`context`), never retyped.
+- **A run change is drawn**: a line in the notes (:func:`run_note`), the
+  changes in the summary, and on a time axis a rule at each
+  (:func:`run_rules`).
+- **Below detection is missing, not zero**, so each statistic is over the
+  detected values only. Each summary carries presence, the values detected
+  over the samples that could have held one (:func:`presence`).
+- **Summaries are plain JSON**: times ISO 8601 with their offset in the
+  display zone, NaN as null, a species as ``{key, name, formula}``
+  (:func:`summary`).
 """
 
+import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from ..data import views
 from ..data.store import CampaignStore
 from .registry import Param
+from .spec import Context
+from .species import Resolved
 
 
 #: A polarity as a reader names it.
@@ -276,3 +297,227 @@ def duration_text(value: Any) -> str:
     if seconds and seconds % 60 == 0:
         return f"{seconds // 60}min"
     return f"{step.total_seconds():g}s"
+
+
+# --- the species charts ---------------------------------------------------------
+
+
+#: The y label of a raw value, by the instrument type's first letters as
+#: the server (``orbi``, ``tof``) or a store (``Orbitrap``, ``TOF``)
+#: spells it: what the intensity is on that instrument.
+INTENSITY = {"tof": "peak area", "orbi": "peak height"}
+
+#: Under this share of detections, a summary names a species as read high.
+SELDOM = 0.9
+
+#: The most panels a species chart's small multiples hold, a species each.
+MAX_PANELS = 24
+
+
+def window_samples(store: CampaignStore, attrs: Mapping[str, Any]) -> pd.DataFrame:
+    """The store's samples inside the window a view frame's *attrs* name."""
+    samples = store.table("samples")
+    when = samples["t_mid_utc"]
+    kept = when.notna()
+    if attrs.get("start"):
+        kept &= when >= pd.Timestamp(attrs["start"])
+    if attrs.get("end"):
+        kept &= when < pd.Timestamp(attrs["end"])
+    return samples[kept]
+
+
+def y_label(store: CampaignStore, attrs: Mapping[str, Any]) -> str:
+    """What a value is, as an axis says it: ``peak area`` (TOF), ``peak
+    height`` (Orbitrap), both where the window holds both, ``signal`` where
+    the store names neither; ``signal / <normaliser>`` when normalised."""
+    if attrs.get("normalise") not in (None, "none"):
+        return f"signal / {attrs.get('normalise_name') or attrs['normalise']}"
+    types = window_samples(store, attrs)["instrument_type"].dropna().astype(str)
+    found = set()
+    for kind in set(types):
+        name = next(
+            (
+                label
+                for prefix, label in INTENSITY.items()
+                if kind.lower().startswith(prefix)
+            ),
+            None,
+        )
+        if name is None:
+            return "signal"
+        found.add(name)
+    if not found:
+        return "signal"
+    return " or ".join(label for label in INTENSITY.values() if label in found)
+
+
+def time_axis(zone: str) -> str:
+    return f"time ({zone})"
+
+
+def at(moment: Any, zone: str) -> str | None:
+    """A time, which has a zone, as ISO 8601 with its offset in *zone*;
+    None for none."""
+    if moment is None:
+        return None
+    return pd.Timestamp(moment).tz_convert(zone).isoformat()
+
+
+def depends_on_run(key: str, attrs: Mapping[str, Any]) -> bool:
+    """Whether a run change moves *key*'s values: a formula's, or any key's
+    divided by a formula's."""
+    members = attrs.get("normalise_members") or []
+    return key.startswith("formula:") or any(m.startswith("formula:") for m in members)
+
+
+def run_note(attrs: Mapping[str, Any], zone: str) -> str | None:
+    """The line a figure prints when its formulas come from more than one
+    engine run; None when they do not."""
+    # A view's frame is mixed exactly when it lists a change
+    changes = attrs.get("run_changes") or []
+    if not changes:
+        return None
+    moments = list(
+        dict.fromkeys(
+            pd.Timestamp(change["at"]).tz_convert(zone).strftime("%Y-%m-%d %H:%M")
+            for change in changes
+        )
+    )
+    return (
+        "The engine run that reads the formulas changes at "
+        + ", ".join(moments)
+        + f" ({zone}): a formula's values either side of a change are two "
+        "readings, not one series."
+    )
+
+
+def partial_note(attrs: Mapping[str, Any]) -> str | None:
+    """The line a figure prints when its denominator, a sum, lacked a member
+    in some samples; None otherwise."""
+    members = attrs.get("normalise_members") or []
+    complete = attrs.get("normalise_complete")
+    if len(members) < 2 or complete is None or complete >= 1:
+        return None
+    partial = 100.0 * (1.0 - complete)
+    return (
+        f"In {partial:.1f} % of the samples the denominator, "
+        f"{attrs.get('normalise_name')}, was a partial sum: a member had no "
+        "value there."
+    )
+
+
+def ratio(top: Any, bottom: Any) -> float | None:
+    """*top* over *bottom*; None unless both are finite and *bottom* is
+    positive."""
+    if top is None or bottom is None:
+        return None
+    top, bottom = float(top), float(bottom)
+    if not (math.isfinite(top) and math.isfinite(bottom)) or bottom <= 0:
+        return None
+    return top / bottom
+
+
+def presence(n: Any, n_samples: Any) -> float | None:
+    """The values detected over the samples that could have held one; None
+    without such a sample."""
+    n, n_samples = float(np.sum(n)), float(np.sum(n_samples))
+    return n / n_samples if n_samples else None
+
+
+def seldom_note(entries: Sequence[Mapping[str, Any]]) -> str | None:
+    """The line a figure prints for species detected in under
+    :data:`SELDOM` of the samples that could hold them."""
+    names = [
+        e["name"]
+        for e in entries
+        if e.get("presence") is not None and e["presence"] < SELDOM
+    ]
+    if not names:
+        return None
+    return (
+        f"Below detection is missing, not zero: {', '.join(names)} "
+        f"{'was' if len(names) == 1 else 'were'} detected in under "
+        f"{SELDOM:.0%} of the samples that could hold a value, and the "
+        "statistics, over the detected values only, read high."
+    )
+
+
+def context(attrs: Mapping[str, Any]) -> Context:
+    """The figure's context, from the view frame's *attrs*."""
+    return Context.from_attrs(attrs)
+
+
+def span(
+    store: CampaignStore, attrs: Mapping[str, Any], zone: str
+) -> tuple[str | None, str | None]:
+    """The window's start and end in *zone*; where a bound is open, the
+    first or the last sample's time in it."""
+    start, end = attrs.get("start"), attrs.get("end")
+    if start is None or end is None:
+        # A chart draws only a window that holds a value, so a sample
+        times = window_samples(store, attrs)["t_mid_utc"]
+        start = start if start is not None else times.min()
+        end = end if end is not None else times.max()
+    return at(start, zone), at(end, zone)
+
+
+def number(value: Any) -> float | None:
+    """A float, None for a value that is missing or not finite."""
+    if value is None:
+        return None
+    value = float(value)
+    return value if math.isfinite(value) else None
+
+
+def summary(
+    store: CampaignStore,
+    attrs: Mapping[str, Any],
+    resolved: Resolved,
+    entries: list[dict[str, Any]],
+    **extra: Any,
+) -> dict[str, Any]:
+    """The fields every species chart's summary carries, then *extra*.
+
+    :param entries: Per species, in the resolved order: its numbers, after
+        its ``key``, ``name`` and ``formula``.
+    """
+    zone = attrs["tz"]
+    start, end = span(store, attrs, zone)
+    return {
+        "species": entries,
+        "requested": resolved.given,
+        "cadence": attrs.get("cadence"),
+        "tz": zone,
+        "start": start,
+        "end": end,
+        "normalise": attrs.get("normalise"),
+        "normalise_name": attrs.get("normalise_name"),
+        "normalise_members": list(attrs.get("normalise_members") or []),
+        "normalise_complete": number(attrs.get("normalise_complete")),
+        "mixed_runs": bool(attrs.get("mixed_runs")),
+        "run_changes": run_changes(attrs, zone),
+        **extra,
+    }
+
+
+def notes(attrs: Mapping[str, Any], entries: Sequence[Mapping[str, Any]]) -> list[str]:
+    """The notes every species chart prints, those that apply."""
+    zone = attrs["tz"]
+    return [
+        line
+        for line in (run_note(attrs, zone), partial_note(attrs), seldom_note(entries))
+        if line
+    ]
+
+
+def named(frame: pd.DataFrame, resolved: Resolved) -> pd.DataFrame:
+    """*frame* with each row's species' display name, ``name``, beside its
+    ``key``."""
+    frame = frame.copy()
+    names = {s.key: s.name for s in resolved.species}
+    frame.insert(
+        frame.columns.get_loc("key") + 1,
+        "name",
+        [names[str(k)] for k in frame["key"]],
+    )
+    return frame

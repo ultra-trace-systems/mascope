@@ -1,10 +1,24 @@
 """Charts: the Figure spec every chart kind returns and every renderer draws
-(:mod:`.spec`), and the registry of the chart kinds (:mod:`.registry`).
-Pandas and NumPy only: a server can build specs without the renderers
-(``docs/dev/visual_digest.md``, section 2.1)."""
+(:mod:`.spec`), the registry of the chart kinds (:mod:`.registry`), and the
+chart kinds themselves, each registered when its module is imported here.
+The species charts, ``species_series`` (:mod:`.series`), ``diurnal``
+(:mod:`.diurnal`) and ``period_boxes`` (:mod:`.periods`), draw the species
+a ``species`` parameter names (:mod:`.species`). Pandas and NumPy only: a
+server can build specs without the renderers (``docs/dev/visual_digest.md``,
+section 2.1)."""
 
 # The chart modules register their kinds as they are imported
-from . import coverage, registry, signal, summary, top  # noqa: F401
+from . import (  # noqa: F401
+    coverage,
+    diurnal,
+    periods,
+    registry,
+    series,
+    signal,
+    species,
+    summary,
+    top,
+)
 from .registry import ChartKind, Param
 from .spec import (
     CONTEXT_FIELDS,
@@ -30,6 +44,10 @@ __all__ = [
     "Figure",
     "Panel",
     "Param",
+    "diurnal",
+    "periods",
     "registry",
+    "series",
+    "species",
     "subtitle",
 ]
