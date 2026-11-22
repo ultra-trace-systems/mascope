@@ -1050,6 +1050,30 @@ async def test_a_poor_fit_never_replaces_an_ok_record(filestore, tmp_path):
     assert event["target"] == TARGET
 
 
+@pytest.mark.parametrize(
+    ("old_span", "kind"), [([62.0, 188.0], "poor"), ([41.0, 400.0], "kept")]
+)
+@pytest.mark.asyncio
+async def test_an_extrapolated_fit_replaces_an_ok_record_as_extrapolated(
+    filestore, tmp_path, old_span, kind
+):
+    """An ok record on the same set reaches the file's peaks as far: the fit
+    replaces it, poor on ``extrapolated``. One on a wider set does not."""
+    write_file(filestore, APPLIED)
+    old = {**APPLIED, "status": "ok", "verified": True, "quality": {"span": old_span}}
+    fit = {**FIT_OK, "quality": {**FIT_OK["quality"], **REACHING}}
+    stored = {**fit, "status": "poor", "verified": True}
+
+    outcome, ledger, seen = await _run_file(
+        tmp_path, _candidate(old), fit, stored, issues=("extrapolated",)
+    )
+
+    assert outcome.kind == kind
+    assert seen["applied"] is (kind == "poor")
+    events = [e["event"] for e in _whole(ledger)]
+    assert events == (["apply", "applied"] if kind == "poor" else ["kept"])
+
+
 @pytest.mark.parametrize("old_status", ["poor", "legacy", "unfitted", "failed"])
 @pytest.mark.asyncio
 async def test_a_poor_fit_replaces_any_other_record(filestore, tmp_path, old_status):
@@ -2112,12 +2136,12 @@ async def test_a_dry_fit_that_never_comes_clean_would_fail():
     )
 
 
-def _dry(fit=True, issues=()):
+def _dry(fit=True, issues=(), quality=None):
     if not fit:
         return script.DryFit(None, None, [], "no calibrants", 7)
     return script.DryFit(
         fit={"mode": 0, "par": list(APPLIED["par"])},
-        quality={},
+        quality=quality or {},
         issues=[{"code": code} for code in issues],
         reason=None,
         attempts=2,
@@ -2125,6 +2149,34 @@ def _dry(fit=True, issues=()):
 
 
 OK_RECORD = {**APPLIED, "status": "ok", "verified": True}
+
+#: A fit on a 62-188 Th set in a file with strong peaks to 544 Th: 1.6 widths
+#: past its top, so ``extrapolated``
+REACHING = {"span": [62.0, 188.0], "strong_peaks": {"span": [50.0, 544.0]}}
+#: An ok record on that set, and one on a set to 400 Th, which reaches the
+#: same peaks 0.24 widths past
+OK_ON_SET = {**OK_RECORD, "quality": {"span": [62.0, 188.0]}}
+OK_WIDER = {**OK_RECORD, "quality": {"span": [41.0, 400.0]}}
+
+
+@pytest.mark.parametrize(
+    ("issues", "old", "counted"),
+    [
+        (["extrapolated"], OK_RECORD, []),
+        (["extrapolated"], OK_ON_SET, []),
+        (["extrapolated", "residual"], OK_ON_SET, ["residual"]),
+        (["extrapolated"], OK_WIDER, ["extrapolated"]),
+        (["residual"], OK_WIDER, ["residual"]),
+        ([], OK_WIDER, []),
+    ],
+    ids=["no span", "same set", "other issue", "wider set", "residual", "none"],
+)
+def test_an_ok_record_is_weighed_alike_on_extrapolation(issues, old, counted):
+    """Extrapolation counts against a fit only where the old record clears it
+    on the same strong peaks: the calibrant set decides it, not the fit."""
+    found = script.issues_against_ok([{"code": code} for code in issues], REACHING, old)
+
+    assert [issue["code"] for issue in found] == counted
 
 
 @pytest.mark.parametrize(
@@ -2134,8 +2186,18 @@ OK_RECORD = {**APPLIED, "status": "ok", "verified": True}
         (OK_RECORD, _dry(), "would apply ok"),
         ({**CONVERTER, "status": "unfitted"}, _dry(issues=("residual",)), None),
         (OK_RECORD, _dry(fit=False), "would fail"),
+        (
+            OK_ON_SET,
+            _dry(issues=("extrapolated",), quality=REACHING),
+            "would apply poor",
+        ),
+        (
+            OK_WIDER,
+            _dry(issues=("extrapolated",), quality=REACHING),
+            "would keep its ok record",
+        ),
     ],
-    ids=["keep", "apply ok", "apply poor", "fail"],
+    ids=["keep", "apply ok", "apply poor", "fail", "alike", "extrapolated"],
 )
 @pytest.mark.asyncio
 async def test_what_a_dry_run_says_of_a_file(filestore, tmp_path, old, dry, outcome):
@@ -2158,7 +2220,7 @@ async def test_what_a_dry_run_says_of_a_file(filestore, tmp_path, old, dry, outc
     assert bool(report.bands) == applies
     assert report.assignment_runs == (2 if applies else 0)
     if outcome == "would keep its ok record":
-        assert entry["issues"] == ["residual"]
+        assert entry["issues"] == [issue["code"] for issue in dry.issues]
     if outcome == "would fail":
         assert entry["reason"] == "no calibrants"
     else:

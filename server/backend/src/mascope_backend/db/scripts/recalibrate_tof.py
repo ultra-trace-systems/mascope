@@ -22,7 +22,9 @@ a refit from the stored peaks followed by an apply, with no re-detection.
   ``calibration_quality_gate``, the same failure marker), with one
   exception: a fit below the quality bar never replaces a record that
   cleared it (``status: ok``). That file keeps its record and the ledger says
-  so. Before each apply the ledger records what the file had. After each
+  so. An ``extrapolated`` fit is held below it only when the old record,
+  judged on the same strong peaks, is not extrapolated
+  (:func:`issues_against_ok`). Before each apply the ledger records what the file had. After each
   batch of files the runner matches the files' acquisition samples, as
   ingest does, and rematches every other batch the applies set to
   ``rematch``. It touches no peak-assignment run: it lists those on the
@@ -142,7 +144,9 @@ from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
     calibration_isotopes_sha256,
     calibration_params_factory,
     calibration_quality_issues,
+    extrapolation_issues,
     fit_quality,
+    is_span,
 )
 from mascope_backend.api.controllers.match.match_controller import (
     match_compute_sample,
@@ -857,6 +861,34 @@ def on_target(record: dict | None, target: dict | None) -> bool:
     )
 
 
+def issues_against_ok(
+    issues: list[dict], quality: dict | None, old: dict
+) -> list[dict]:
+    """The issues of a fit that keep an ``ok`` record from being replaced by it.
+
+    All of them but ``extrapolated``, which counts only when the old record
+    clears it on the same strong peaks. How far a file's strong peaks lie
+    past the calibrants is the calibrant set's, not the fit's, and a record
+    from before the reach was kept was never judged on it: held against
+    such a record, every fit on a set that stops short of the file's peaks
+    would read as worse, and the file would keep an axis just as
+    extrapolated. A record whose own span is not kept cannot be told apart,
+    so the fit is not held worse than it either.
+
+    :param issues: The fit's quality issues
+        (:func:`calibration_quality_issues`).
+    :param quality: The fit's quality block, whose ``strong_peaks`` the old
+        record is judged on.
+    :param old: The ``ok`` record the fit would replace.
+    """
+    old_span = ((old or {}).get("quality") or {}).get("span")
+    if is_span(old_span) and not extrapolation_issues(
+        {"span": old_span, "strong_peaks": (quality or {}).get("strong_peaks")}
+    ):
+        return issues
+    return [issue for issue in issues if issue["code"] != "extrapolated"]
+
+
 def record_status(record: dict | None) -> str:
     """What kind of record a file holds, as the ledger and the report say it."""
     if not isinstance(record, dict):
@@ -1273,7 +1305,9 @@ async def run_file(
     async def judge(fit: dict) -> bool:
         issues = calibration_quality_issues(fit.get("quality"), candidate.filename)
         new_status = "poor" if issues else "ok"
-        if record_status(old_record) == "ok" and new_status != "ok":
+        if record_status(old_record) == "ok" and issues_against_ok(
+            issues, fit.get("quality"), old_record
+        ):
             ledger.write(
                 {
                     "event": "kept",
@@ -2209,7 +2243,9 @@ async def _dry_one(candidate, target, config, report) -> Outcome:
     new_status = "poor" if result.issues else "ok"
     entry["new"] = {"mode": result.fit["mode"], "par": result.fit["par"]}
     entry["attempts"] = result.attempts
-    if record_status(candidate.record) == "ok" and new_status != "ok":
+    if record_status(candidate.record) == "ok" and issues_against_ok(
+        result.issues, result.quality, candidate.record
+    ):
         entry["outcome"] = "would keep its ok record"
         entry["issues"] = [issue["code"] for issue in result.issues]
         report.files.append(entry)

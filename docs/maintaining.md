@@ -2769,7 +2769,13 @@ is what undoes a run (step 3).
   `calibration_quality_gate`, with a failed fit leaving the same marker on a
   file still on the converter's calibration. One thing differs: a fit below
   the bar never replaces a record that cleared it (`status: ok`). That file
-  keeps its record, and the ledger lists it as `kept`.
+  keeps its record, and the ledger lists it as `kept`. The one issue judged
+  alike on both is `extrapolated`: how far the file's peaks lie past the
+  calibrants belongs to the calibration set, and a record from before the
+  check was never judged on it. So it keeps the old record only when the old
+  record, held against the new fit's strong peaks, is not extrapolated. A
+  fit that is otherwise sound replaces the old record and carries
+  `status: poor` with the `extrapolated` issue.
 - **Which files.** The instrument's TOF files that ingest calibrates, newest
   first: those whose one acquisition sample is in a mode with a calibration
   collection. A file whose record this version of the node fitted from the

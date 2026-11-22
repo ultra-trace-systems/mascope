@@ -2735,7 +2735,7 @@ def _quality_block_issues(
     isotopes of one ion, how far it moved the axis; for one on three or more,
     how many ions the points came from; for a TOF fit, the share of its
     collection's lines it kept and how far past its calibrants the file's
-    strong peaks reach (:func:`_extrapolation_issues`); and, where a bound
+    strong peaks reach (:func:`extrapolation_issues`); and, where a bound
     is set, the
     calibrants' share of the TIC. A fit with no quality
     block cannot be judged and is reported as such rather than let through.
@@ -2874,7 +2874,7 @@ def _quality_block_issues(
         )
 
     if tof:
-        issues.extend(_extrapolation_issues(quality))
+        issues.extend(extrapolation_issues(quality))
 
     calibrant_to_tic = quality.get("calibrant_to_tic")
     if (
@@ -2894,7 +2894,7 @@ def _quality_block_issues(
     return issues
 
 
-def _extrapolation_issues(quality: dict) -> list[dict]:
+def extrapolation_issues(quality: dict) -> list[dict]:
     """
     Whether a TOF fit leaves the file's strong peaks on an extrapolated axis.
 
@@ -2913,7 +2913,7 @@ def _extrapolation_issues(quality: dict) -> list[dict]:
     limit = calibration_config.TOF_MAX_EXTRAPOLATION_SPANS
     span = quality.get("span")
     reach = (quality.get("strong_peaks") or {}).get("span")
-    if limit is None or not _is_span(span) or not _is_span(reach):
+    if limit is None or not is_span(span) or not is_span(reach):
         return []
     low, high = span
     width = math.sqrt(high) - math.sqrt(low)
@@ -2935,7 +2935,7 @@ def _extrapolation_issues(quality: dict) -> list[dict]:
     ]
 
 
-def _is_span(span) -> bool:
+def is_span(span) -> bool:
     """Whether a recorded span is two positive m/z, the lower first."""
     return (
         isinstance(span, list | tuple)
