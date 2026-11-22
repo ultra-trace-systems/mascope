@@ -650,12 +650,15 @@ its description.
    and its ACP direction;
    the cost is tracking a project in mid-migration.
 3. **Admission thresholds.** The correct rate a model must clear per task
-   class, and the wrong rate it may not exceed. *Leaning: 100 % correct on
-   metadata and decline questions, the frontier model's own rate on
-   analysis and interpretation, one wrong answer on a decline question
-   disqualifies, a missing one does not.* Pre-registered, not fitted: a
-   pilot on one model settles the harness, then the thresholds are written
-   and hashed before the full matrix runs.
+   class, and the wrong rate it may not exceed. *Decided on 2026-11-22
+   (MAS-661):* 100 % correct on metadata and decline questions; on analysis
+   and interpretation, at least the frontier model's lowest correct rate
+   across its own repetitions on the same surface, so run-to-run noise does
+   not exclude a model; one wrong answer (stated but false) on a decline
+   question disqualifies a model from that class, a missing one does not.
+   Pre-registered, not fitted: the thresholds stand as written here from
+   that date, a pilot on one model settles the harness, and the run folder
+   of the full matrix records the hash of the commit that carries them.
 4. **Where recipes live** (a joint decision since 2.5). The step
    implementations, and every rule a result rests on, in `mascope_ai`; the
    composition of steps into a recipe, with its parameters and narrative
