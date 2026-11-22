@@ -1383,6 +1383,32 @@ async def test_an_eviction_cut_off_after_its_sockets_left_drops_the_account_s_ro
 
 
 @pytest.mark.asyncio
+async def test_an_eviction_cut_off_after_its_last_socket_was_forgotten_drops_its_rooms(
+    person, sio, live_rate_limiter, async_session_factory, quick_retries
+):
+    """
+    The cut attempt took the account's only socket out of the index itself (its
+    session was lost), so the retry found no socket on record and returned
+    before it dropped the rooms it carried: the account stayed in them, for
+    notification routing, until their records lapsed.
+    """
+    await _open_socket("sid-a", person, datetime.now(timezone.utc) - LONG_AGO)
+    await subscribe("sid-a", OTHER_ROOM)
+    await redis_storage_client.client.delete(storage_config.session_key("sid-a", "/"))
+    await _set_active(async_session_factory, person, False)
+    cut_off, missed = _cut_user_leave(live_rate_limiter)
+
+    with cut_off:
+        assert await evict_ended_sessions(person.id) == 0
+        assert missed
+        live_rate_limiter.out_of_reach = False
+        await _until(lambda: _no_retries())
+
+    assert not await room_tracker.is_in_room(person.id, RESOURCE_ROOM)
+    assert not await room_tracker.is_in_room(person.id, OTHER_ROOM)
+
+
+@pytest.mark.asyncio
 async def test_an_eviction_kept_over_a_cut_one_carries_its_rooms(
     person, sio, live_rate_limiter, async_session_factory, quick_retries
 ):

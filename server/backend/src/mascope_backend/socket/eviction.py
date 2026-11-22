@@ -185,9 +185,13 @@ async def evict_ended_sessions(
     try:
         sids = await get_user_socket_sids(user_id)
         if not sids:
-            # No socket of the account's is on record: the last one's
-            # disconnect dropped every room of the account's, carried or not
-            # (room_tracker.release_socket).
+            # No socket of the account's is on record, so none holds a room.
+            # A last disconnect has dropped the account's rooms already
+            # (room_tracker.release_socket), but an attempt Redis cut off may
+            # have taken its last socket out of the index itself (one whose
+            # session was lost): the rooms it carries are dropped here.
+            for room in left:
+                await room_tracker.leave(user_id, room)
             return 0
         if user is None:
             user = await _read_account(user_id)
