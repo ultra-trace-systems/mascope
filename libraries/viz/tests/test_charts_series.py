@@ -7,7 +7,7 @@ The assertions are against the answers the campaign was built from
 from, not against what the charts gave last time. ``month`` (each
 chemistry's month, synced once per session) carries most of them;
 ``clusters`` is the halide month with its reagent over two ions, and
-``year`` a year of one sample a minute for the point budget.
+``year`` a year of hourly rollups for the point budget.
 """
 
 import dataclasses
@@ -59,17 +59,21 @@ def clusters(cluster_campaign, tmp_path_factory) -> tuple[Campaign, CampaignStor
     return cluster_campaign, _sync(cluster_campaign, tmp_path_factory.mktemp("c"))
 
 
-#: A year of one sample a minute, six species of which one is a target ion:
-#: the positive chemistry, whose signal does not follow a falling reagent.
+#: A year of five species, four formulas and a target ion: the positive
+#: chemistry, whose signal does not follow a falling reagent. A sample every
+#: ten minutes in weekly batches gives the same hourly rollups as one a
+#: minute in daily batches, whose store takes most of a minute to sync.
 YEAR = dataclasses.replace(
     POSITIVE,
     days=365,
-    n_species=6,
+    n_species=4,
     n_targets=1,
     episodes=(),
     n_renamed=0,
     gap_day=200,
-    run_change_day=180,
+    run_change_day=182,
+    batch_days=7,
+    sample_minutes=10,
 )
 
 
@@ -790,7 +794,7 @@ def test_species_series_under_a_reagent_sum(clusters):
 def year_figure(year):
     campaign, store = year
     keys = sorted(_species(store)["series_key"])
-    return keys, species_series(store, keys[:5], cadence="1h")
+    return keys, species_series(store, keys, cadence="1h")
 
 
 def test_a_year_of_hourly_rollups_renders_within_the_point_budget(year_figure, year):
@@ -798,6 +802,7 @@ def test_a_year_of_hourly_rollups_renders_within_the_point_budget(year_figure, y
     plotly draws each bin's median and its band's two edges, nothing more."""
     keys, fig = year_figure
 
+    assert len(keys) == 5
     assert fig.summary["source"] == "rollups"
     assert fig.context.cadence == "1h"
     assert fig.summary["marks"] == len(fig.data) == 5 * 365 * 24
@@ -806,13 +811,14 @@ def test_a_year_of_hourly_rollups_renders_within_the_point_budget(year_figure, y
     points = sum(len(trace.x) for trace in plotted.data)
     # A line and a band: three points a bin, a break between pieces
     assert points <= 3 * series_chart.BUDGET + 1_000
-    # A sixth species would pass the budget: the year is drawn by day
-    six = species_series(year[1], keys[:6], cadence="1h")
-    assert six.context.cadence == "1D"
-    assert six.summary["coarsened_from"] == "1h"
+    # A budget a mark short of the year's hours: the year is drawn by day
+    short = fig.summary["marks"] - 1
+    daily = species_series(year[1], keys, cadence="1h", budget=short)
+    assert daily.context.cadence == "1D"
+    assert daily.summary["coarsened_from"] == "1h"
     # The local days from 1 June to the three hours of the next 1 June
-    assert six.summary["marks"] == len(six.data) == 6 * 366
-    assert "coarsened from 1h to 1D" in six.subtitle
+    assert daily.summary["marks"] == len(daily.data) == 5 * 366
+    assert f"coarsened from 1h to 1D to keep within {short:,} marks" in daily.subtitle
 
 
 # --- diurnal ----------------------------------------------------------------------

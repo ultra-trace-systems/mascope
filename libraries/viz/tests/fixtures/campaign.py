@@ -118,12 +118,18 @@ class CampaignParams:
     timezone: str = "Europe/Helsinki"
     instrument: str = "instrument X"
     file_minutes: int = 10
+    # The minutes from one sample to the next, each a minute long: a year's
+    # store syncs fast at one sample in ten minutes.
+    sample_minutes: int = 1
     n_species: int = 50
     # The first n_targets species are also a target collection's ions.
     n_targets: int = 10
     noise_cv: float = 0.08
     detection_limit: float = 50.0
     gap_day: int = 20
+    # The UTC days a batch holds, the first batch from ``start``: a year's
+    # store syncs fast in weekly batches.
+    batch_days: int = 1
     tic_step_at: pd.Timedelta = pd.Timedelta(days=11, hours=12)
     tic_step_factor: float = 0.6
     run_change_day: int = 15
@@ -366,7 +372,7 @@ def generate(params: CampaignParams = HALIDE_NEGATIVE, seed: int = 0) -> Campaig
     J = params.n_species
     start = params.start
     end = start + params.days * DAY
-    cadence = pd.Timedelta(minutes=1)
+    cadence = pd.Timedelta(minutes=params.sample_minutes)
     mechanism = params.mechanism
 
     # Species: formulas, levels and cycles, drawn in a fixed order.
@@ -418,13 +424,13 @@ def generate(params: CampaignParams = HALIDE_NEGATIVE, seed: int = 0) -> Campaig
     reagent_key = "ion:ti0000" if params.reagent else None
     cluster_key = "ion:tw0000" if params.cluster else None
 
-    # Time: one sample a minute, ``file_minutes`` samples to a file; the gap
-    # day keeps its files and loses its samples.
+    # Time: a sample a minute long every ``sample_minutes``, a file every
+    # ``file_minutes``; the gap day keeps its files and loses its samples.
     n_minutes = params.days * 1440
     minute = np.arange(n_minutes, dtype=np.int64)
     day_of = minute // 1440
     filed = day_of != params.gap_day
-    m = minute[filed]
+    m = minute[filed & (minute % params.sample_minutes == 0)]
     n = m.size
     file_of = m // params.file_minutes
     t_mid = start + pd.to_timedelta(m * 60 + 30, unit="s")
@@ -487,12 +493,17 @@ def generate(params: CampaignParams = HALIDE_NEGATIVE, seed: int = 0) -> Campaig
             )
             cluster[lost] = np.nan
 
-    # Batches: one per UTC day, the gap day none.
-    batch_days = [d for d in range(params.days) if d != params.gap_day]
+    # Batches: one per ``batch_days`` UTC days, the gap day in none; each
+    # named by its first day.
+    batch_of_day = np.arange(params.days, dtype=np.int64) // params.batch_days
+    batch_of_day[params.gap_day] = -1
+    held = np.unique(batch_of_day[batch_of_day >= 0])
+    batch_days = [int(np.flatnonzero(batch_of_day == b)[0]) for b in held]
     batch_ids = [f"batch-{d + 1:02d}" for d in batch_days]
     batch_index = np.full(params.days, -1, dtype=np.int64)
-    batch_index[batch_days] = np.arange(len(batch_days))
-    b_of = batch_index[day_of[filed]]
+    filed_days = batch_of_day >= 0
+    batch_index[filed_days] = np.searchsorted(held, batch_of_day[filed_days])
+    b_of = batch_index[day_of[m]]
     runs = ["run-1", "run-2"]
     run_of_batch = np.array(
         [0 if d < params.run_change_day else 1 for d in batch_days], dtype=np.int64
@@ -757,10 +768,14 @@ def _validate(params: CampaignParams) -> None:
             raise ValueError("share_peak_hour is no hour of the day")
     if 1440 % params.file_minutes:
         raise ValueError("file_minutes must divide a day")
+    if params.sample_minutes < 1 or params.file_minutes % params.sample_minutes:
+        raise ValueError("sample_minutes must divide file_minutes")
     if not 0 <= params.gap_day < params.days:
         raise ValueError("gap_day is outside the campaign")
     if not 0 < params.run_change_day < params.days:
         raise ValueError("run_change_day is outside the campaign")
+    if params.batch_days < 1 or params.run_change_day % params.batch_days:
+        raise ValueError("a batch holds whole days, and the run changes between two")
     if params.noise_cv >= 0.25:
         raise ValueError("noise_cv must stay under 0.25 to keep values positive")
     gap = (params.gap_day * DAY, (params.gap_day + 1) * DAY)
