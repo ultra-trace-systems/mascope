@@ -85,9 +85,19 @@ def year(tmp_path_factory) -> tuple[Campaign, CampaignStore]:
 
 #: A year and a half from 1 June, a sample an hour, of a formula and a
 #: target ion: June to November and summer and autumn held twice, the rest
-#: once, and two hours of a second December.
+#: once, and two hours of a second December. The run change on 14 June
+#: 2027 renames the formula, so its first reading spans a year of the
+#: window, and the gap is 16 July 2026.
 LONG = dataclasses.replace(
-    YEAR, days=548, n_species=1, sample_minutes=60, file_minutes=60, batch_days=14
+    YEAR,
+    days=548,
+    n_species=1,
+    sample_minutes=60,
+    file_minutes=60,
+    batch_days=14,
+    n_renamed=1,
+    run_change_day=378,
+    gap_day=45,
 )
 
 
@@ -1093,7 +1103,7 @@ def test_diurnal_judges_a_group_the_window_holds_twice_per_day(long_window, by, 
 
     fig = diurnal(store, key, by=by)
 
-    assert views.diurnal(store, key, by=by).attrs["group_days"] == spans
+    assert views.diurnal(store, key, by=by).attrs["group_days"] == {key: spans}
     groups = {g["group"]: g for g in _entry(fig, key)["groups"]}
     assert list(groups) == list(spans)
     for name, group in groups.items():
@@ -1102,6 +1112,31 @@ def test_diurnal_judges_a_group_the_window_holds_twice_per_day(long_window, by, 
     twice, once = ("Jul", "Feb") if by == "month" else ("JJA", "MAM")
     assert groups[twice]["min_n"] > 1.9 * groups[once]["min_n"]
     assert not any("few days" in note for note in fig.notes)
+
+
+def test_diurnal_judges_a_species_read_in_part_of_the_window_on_its_days(
+    long_window,
+):
+    """The formula the run change renames is read from 1 June 2026 to 14
+    June 2027 of the year and a half, and missed on 16 July 2026. Its
+    months span its own days, July's 31 and not the target ion's 62, so
+    beside the ion it reads as it does alone: no month sparse."""
+    campaign, store = long_window
+    old, _ = campaign.truth.run_change.readings[0]
+    ion = _cycles(campaign, "day")[0]
+
+    alone = diurnal(store, old, by="month")
+    both = diurnal(store, [ion, old], by="month")
+
+    days = views.diurnal(store, [ion, old], by="month").attrs["group_days"]
+    assert days[old] == views.diurnal(store, old, by="month").attrs["group_days"][old]
+    assert (days[ion]["Jul"], days[old]["Jul"]) == (62, 31)
+    rows = _rows(both, old)
+    assert rows.loc[rows["group"] == "Jul", "n_samples"].max() == 30
+    assert _entry(both, old)["groups"] == _entry(alone, old)["groups"]
+    for group in _entry(both, old)["groups"]:
+        assert group["sparse_hours"] == [], group["group"]
+    assert not any("few days" in note for note in both.notes)
 
 
 def _judged_whole(store, key, by, window, stub, whole) -> None:
@@ -1113,7 +1148,8 @@ def _judged_whole(store, key, by, window, stub, whole) -> None:
     assert set(groups) == {stub, whole}
     assert groups[stub]["sparse_hours"] == list(range(24))
     assert groups[whole]["sparse_hours"] == []
-    assert views.diurnal(store, key, by=by, **window).attrs["group_days"][stub] == 1
+    days = views.diurnal(store, key, by=by, **window).attrs["group_days"]
+    assert days[key][stub] == 1
 
 
 def test_diurnal_judges_half_an_hour_of_a_weekend_as_a_whole_weekend(month):

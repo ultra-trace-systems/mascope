@@ -27,13 +27,16 @@ of any hour) and ``sparse_hours``; with ``by``, the same per group under
   holds under half the samples of the typical hour, the median over the
   hours sampled at all, or no sample at all, so a species no batch of the
   window reads is sparse in every hour. With ``by``, each group is judged
-  per day: per calendar day of it from the window's first sample to its
-  last, and at least per day of a whole one (:data:`WHOLE_DAYS`: a
-  month's, a season's, the week's five weekdays or its two weekend days),
-  against the typical hour of the group that holds the most samples per
-  day. So a month the window holds twice is judged as one it holds once,
-  a weekend's two days beside the week's five, and a month the window
-  holds three hours of reads as sparse in every hour. The note names the
+  per day: per calendar day of it from the first sample of a batch that
+  reads the species to the last, and at least per day of a whole one
+  (:data:`WHOLE_DAYS`: a month's, a season's, the week's five weekdays or
+  its two weekend days), against the typical hour of the species' group
+  that holds the most samples per day. So a month the window holds twice
+  is judged as one it holds once, a weekend's two days beside the week's
+  five, and a month the window holds three hours of reads as sparse in
+  every hour. Each species is judged on its own samples: what is drawn
+  beside it changes the judgement of no group it holds samples in, but it
+  can add groups it holds none of, which are sparse. The note names the
   sparse hours of the cycles drawn. The rule counts samples, not values: a
   species below detection in its trough is sampled there, and the note on
   species detected seldom says that its trough reads high.
@@ -184,9 +187,9 @@ def groups(
     frame, its hours judged per day of the group against the typical hour
     of the group fullest per day.
 
-    :param spans: The calendar days of each group the window spans (the
-        view's ``group_days``); a group is judged per day of at least a
-        whole one (:data:`WHOLE_DAYS`).
+    :param spans: The calendar days of each group the species' samples
+        span (the view's ``group_days`` of its key); a group is judged per
+        day of at least a whole one (:data:`WHOLE_DAYS`).
     """
     split = [(str(group), part) for group, part in rows.groupby("group", sort=False)]
     days = {group: max(spans.get(group, 0), WHOLE_DAYS[group]) for group, _ in split}
@@ -284,7 +287,10 @@ def _figure(
         entry = {**s.to_dict(), **cycle(whole[whole["key"] == s.key], day, night)}
         if by:
             entry["groups"] = groups(
-                frame[frame["key"] == s.key], day, night, attrs["group_days"]
+                frame[frame["key"] == s.key],
+                day,
+                night,
+                attrs["group_days"][s.key],
             )
         # The cycles drawn: the groups' with a split, else the window's
         for drawn in entry["groups"] if by else [entry]:

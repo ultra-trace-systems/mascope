@@ -1508,9 +1508,10 @@ def diurnal(
         in the hour) and ``n_samples`` (the samples in it of the batches
         that read the key, so ``n`` over ``n_samples`` is how often the key
         was detected there). An hour without a value is NaN. ``attrs`` adds
-        ``by``; ``group_days``, with *by*, the calendar days of each group
-        from the day of the window's first sample to its last's (a month
-        of two years counted in both), None without; and ``stat`` and
+        ``by``; ``group_days``, with *by*, per key the calendar days of each
+        group from the day of the first sample of a batch that reads the
+        key to the last's (a month of two years counted in both; ``{}`` for
+        a key no batch of the window reads), None without; and ``stat`` and
         ``band``, what ``value`` and ``lo`` and ``hi`` are: ``median`` and
         (25, 75).
     """
@@ -1523,7 +1524,7 @@ def diurnal(
         values.attrs,
         cadence="hour of day",
         by=by,
-        group_days={} if by else None,
+        group_days={key: {} for key in values.keys} if by else None,
         stat="median",
         band=(25, 75),
     )
@@ -1540,7 +1541,12 @@ def diurnal(
     group = np.full(len(local), -1, dtype="int64")
     group[reads_any], labels = _groups(local[reads_any], by)
     if by is not None:
-        attrs["group_days"] = _group_days(local[reads_any], by)
+        # Per key, over the samples of the batches that read it, as its
+        # n_samples is counted
+        for k, key in enumerate(values.keys):
+            reads = values.reads(k)
+            if reads.any():
+                attrs["group_days"][key] = _group_days(local[reads], by)
     n_keys, n_groups = len(values.keys), len(labels)
     size = n_groups * n_keys * 24
     grouped = _grouped(

@@ -1312,7 +1312,7 @@ def test_an_empty_window_still_has_the_sample_counts(month, view):
     if view == "diurnal":
         # Split, it spans no day of any group
         split = views.diurnal(store, views.TIC, by="month", **window)
-        assert split.empty and split.attrs["group_days"] == {}
+        assert split.empty and split.attrs["group_days"] == {views.TIC: {}}
 
 
 def test_diurnal_counts_the_samples_per_group(month):
@@ -1345,7 +1345,7 @@ def test_diurnal_splits_by_month_season_or_weekday(month, values, by, groups, da
     assert list(dict.fromkeys(frame["group"])) == groups
     assert frame.attrs["by"] == by
     # The calendar days of each group, 1 June to 1 July, the last 03:00
-    assert frame.attrs["group_days"] == days
+    assert frame.attrs["group_days"] == {key: days}
     assert len(frame) == 24 * len(groups)
     assert frame["n"].sum() == len(campaign.tables["samples"])
     if by == "weekday":
@@ -1353,6 +1353,26 @@ def test_diurnal_splits_by_month_season_or_weekday(month, values, by, groups, da
         local = samples["t_mid_utc"].dt.tz_convert(ZONE)
         weekend = int((local.dt.day_of_week >= 5).sum())
         assert frame.loc[frame["group"] == "weekend", "n"].sum() == weekend
+
+
+def test_diurnal_counts_a_groups_days_per_key(month):
+    """Each key's days span the samples of the batches that read it: the
+    TIC's the window's, June and three hours of 1 July; the formula the run
+    change renames, its first reading's, to the 03:00 of 16 June the change
+    falls at; the formula it becomes, from then on; and before the change,
+    that one none."""
+    campaign, store = month
+    old, new = campaign.truth.run_change.readings[0]
+
+    days = views.diurnal(store, [views.TIC, old, new], by="month").attrs["group_days"]
+    early = views.diurnal(store, [views.TIC, new], by="month", end="2026-06-09")
+
+    assert days == {
+        views.TIC: {"Jun": 30, "Jul": 1},
+        old: {"Jun": 16},
+        new: {"Jun": 15, "Jul": 1},
+    }
+    assert early.attrs["group_days"] == {views.TIC: {"Jun": 8}, new: {}}
 
 
 # --- periods ----------------------------------------------------------------------
