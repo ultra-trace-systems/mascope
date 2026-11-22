@@ -161,6 +161,9 @@ def van_krevelen(
                 "normalise by the reagent ions to take it out."
             )
     notes += common.formula_run_notes(attrs) + common.normaliser_notes(attrs)
+    if formulas.empty:
+        window = common.window_name([attrs["start"], attrs["end"]], attrs["tz"])
+        notes = common.empty_notes(store, [window]) + notes
     # One point per formula over the whole window
     attrs = dict(attrs, cadence="window")
     context = Context.from_attrs(dict(attrs, stat="median"))
