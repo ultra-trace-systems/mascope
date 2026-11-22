@@ -8,7 +8,7 @@ report (PDF), for the long time series the app does not draw. The design is
 
 The package is young: it has its data layer, the scope, the campaign store
 and the views, a command line over them, the Figure spec charts are drawn
-from and its two renderers, and its test backbone.
+from and its two renderers, the first chart kinds, and its test backbone.
 
 ## Scope
 
@@ -135,7 +135,9 @@ views.periods(store, keys, "week")  # the distribution per week
 views.coverage(store).gaps  # stretches without a sample, and the files in them
 views.composition(store, "month", by="class")  # the formulas' budget by class
 views.spectrum(store, (start, end), other=(start2, end2))  # a period against another
-views.top(store, 10, "ratio", period="week")  # the biggest changers
+views.top(
+    store, 10, "ratio", period="week"
+)  # the biggest changers, seen in half the samples
 ```
 
 | View | One row per |
@@ -143,10 +145,10 @@ views.top(store, 10, "ratio", period="week")  # the biggest changers
 | `series` | bin and key: `t`, `key`, `value`, `lo`, `hi`, `n` (values) and `n_samples` |
 | `diurnal` | hour of day and key, and group with `by=` (month, season, weekday): the median and quartiles |
 | `periods` | day, week or month and key: `n`, mean, min, p5, p25, median, p75, p95, max |
-| `coverage` | hour, polarity and mode: files, unfiled files and samples (a polarity-switching file counts under both polarities), with the mode's ID and name; also the gaps and the totals |
+| `coverage` | hour, polarity and mode: files, unfiled files and samples (a polarity-switching file counts under both polarities), with the mode's ID and name; also the gaps, the totals and the span from the first file or sample to the last |
 | `composition` | period and formula, or class or carbon number with `by=`: median, mean, share, and the species' element counts, O/C, H/C and OSc |
 | `spectrum` | formula, by m/z: the mean over a period, and against another period the difference and ratio |
-| `top` | ranked key: by median, by the ratio of the last period to the first (up or down), or new in the last period |
+| `top` | ranked key: by median, by the ratio of the last period to the first (up or down), or new in the last period; with its values detected (`n`), the samples that could hold one (`n_samples`) and the presence it was ranked on |
 
 What every view does the same way:
 
@@ -400,12 +402,98 @@ they record.
 parameters (`Param`: name, type, default, choices, help) and its summary's
 fields, and holds the function that builds its figures. `register` adds a
 kind, `get` finds one by id, and `all` lists them, for the command line's
-`list` and `describe`. The registry is empty until the chart kinds land.
+`list` and `describe`. Importing `mascope_viz.charts` registers the kinds
+below.
 
 **The import boundary.** `mascope_viz.data` and `mascope_viz.charts`
 import pandas, NumPy and pyarrow, never matplotlib or plotly, so a server
 can build and send specs without the renderers (the note's section 2.8).
 `mascope_viz.render` imports each renderer only when it draws.
+
+## The chart kinds
+
+A chart kind is a function `(store, **params) -> Figure`. Each draws a view's
+frame, says on its face what the values are, and puts in its summary the
+numbers a caption may cite.
+
+```python
+from mascope_viz.charts import registry
+
+registry.ids()  # coverage, instrument_signal, scope_summary, top_species, ...
+fig = registry.get("instrument_signal").build(store, reagents=["ion:..."])
+fig.summary["traces"]  # each trace's median, drift and largest step
+```
+
+| Id | Question | Draws |
+|---|---|---|
+| `coverage` | When was the instrument acquiring, and is every file in a batch? | a strip, one row per polarity and mode, coloured by samples per hour; files in no batch on a row of their own, marked; gaps shaded |
+| `instrument_signal` | Was the ion source stable? | the TIC and the reagent ions named, hourly medians with a p10-p90 band on a log axis; with two or more, their sum and each one's share of it |
+| `scope_summary` | What is this digest about? | a table for a digest's cover; a run change is a marked row |
+| `top_species` | What was brightest, what changed most, what is new? | three tables: by median, by the last period over the first, and new in the last period |
+
+What every chart kind does the same way:
+
+- **A signal, never a concentration.** No calibration factor is applied,
+  so an axis says what the server's values are: peak area on a TOF, peak
+  height on an Orbitrap. A normalised value is labelled
+  `signal / <normaliser>`. The TIC is the mean intensity per scan.
+- **`normalise`** is `none` by default, `tic`, a series key, or a list of
+  keys whose per-sample sum divides. The subtitle names it, and a note says
+  in what share of the samples the sum was partial.
+- **A run change is drawn**, never joined: a line in the notes, the
+  summary's `run_changes`, and a rule on a time axis at each change.
+- **Below detection is missing.** A statistic is over the detected values
+  only, so the summaries give each species' presence: its values detected
+  over the samples that could have held one.
+- **Summaries are JSON**: times as ISO 8601 with the display zone's offset,
+  NaN as null, a species as `{key, name, formula}`. Every summary has
+  `normalise`, `normalise_name`, `cadence`, `tz`, `start`, `end`,
+  `mixed_runs` and `run_changes`; `registry.get(id).summary` lists the rest.
+
+**`coverage`** takes `cadence` (a cell, `1h`), `min_gap` (the shortest gap
+shaded, `1h`), `tz`, `start` and `end`. Its summary has the span from the
+first file or sample to the last, the hours in it, missing and acquired,
+the coverage fraction, each gap with its files and unfiled files, the
+totals, and each row's counts. A row is a polarity and a mode's name; the
+mode's ID is beside the name when two modes share it.
+
+**`instrument_signal`** takes `reagents` (series keys; none by default, and
+then the TIC alone is drawn: a reagent is never guessed from a name),
+`normalise`, `cadence` (`1h`), `step_window` (`24h`), `tz`, `start` and
+`end`. Its summary gives each trace's `median` (of its bins), `drift` (the
+last full local day's median over the first's) and largest `step`. A step
+at a time is the ratio of the median of the bins in the window after it to
+that of the bins one window earlier, over the pairs of bins that both hold
+a value, and only where more than half the window's bins pair up. So each
+side holds the same hours of the day, a day-long window cancels a diurnal
+cycle even beside a gap, and a stretch without samples makes no step. A
+median ratio stays near its largest for most of a window either side of a
+step; the step's time is where the ratio of the same pairs' means is
+furthest from 1. With two or more reagent ions, the sum is a further trace
+and a third panel draws each ion's share of it, binned from each sample's
+share: a share that cycles is the reagent's, not the air's.
+
+**`scope_summary`** takes `reagents`, `normalise`, `cadence` (`auto`),
+`generated_at` (now when not given; a digest that must be the same bytes
+every run pins it) and `tz`. It lists the datasets, batches, samples,
+files, span, zone, instrument, intensity variable, chemistry, reagent ions,
+collections, engine runs and each run change, the normalisation and its
+members by name, the cadence, the median sample spacing, the coverage, the
+rule that below detection is missing, the package versions, the server's
+Mascope and engine versions, and when the store was synced and the table
+made. A sync records the datasets' and collections' names in the store; a
+store synced before that shows their IDs until its next sync.
+
+**`top_species`** takes `n` (10), `period` (`week`), `keys` (every key by
+default), `normalise`, `min_present` (0.5), `tz`, `start` and `end`. The
+first and last periods are the calendar periods of the window's first and
+last samples, and the subtitle names them: the ratio compares those two
+alone. A key is ranked only when present in at least `min_present` of the
+samples compared, since a ratio of a handful of detections is noise. A
+target ion and an assigned formula of the same formula and mechanism are
+one species, listed once, as the ion. When the engine run changes in the
+last period, a formula new in it may be an earlier peak read as another
+formula, and its row is marked.
 
 ## The command line
 

@@ -27,7 +27,8 @@ The tables, all times in UTC:
 
 On disk, under ``<root>/<server>/<workspace>/<scope key>/``::
 
-    store.json                    the scope, the server, the provenance and
+    store.json                    the scope, the server, the provenance,
+                                  the datasets' and collections' names and
                                   each batch's sync stamp
     files.parquet                 the files listing, rewritten every sync
     samples/<batch>.parquet       one file per batch per table
@@ -1301,6 +1302,22 @@ def _fetch_batch(
     return tables, stamp
 
 
+def _named(frame: pd.DataFrame, prefix: str) -> list[dict[str, Any]]:
+    """The distinct ``<prefix>_id`` and ``<prefix>_name`` of *frame*'s rows,
+    as ``{"id", "name"}``, in the order they first appear; empty when the
+    frame has no such columns."""
+    id_column, name_column = f"{prefix}_id", f"{prefix}_name"
+    if frame is None or id_column not in frame:
+        return []
+    names = frame[name_column] if name_column in frame else [None] * len(frame)
+    seen: dict[str, Any] = {}
+    for id_, name in zip(frame[id_column], names):
+        if id_ is None or (isinstance(id_, float) and np.isnan(id_)):
+            continue
+        seen.setdefault(str(id_), None if pd.isna(name) else str(name))
+    return [{"id": id_, "name": name} for id_, name in seen.items()]
+
+
 def _mode_names(client: "MascopeClient") -> dict[str, str]:
     """The ionization modes' names by ID, the seeded ones a sample may be
     of included.
@@ -1399,6 +1416,10 @@ def sync(
         collection=resolved.collection,
         timezone=resolved.timezone,
         display_tz=resolved.display_tz,
+        # What a cover names the scope by: the listings' names, as of this
+        # sync, so a store a chart reads alone can say them
+        datasets=_named(resolved.batches, "dataset"),
+        collections=_named(resolved.collections, "target_collection"),
         sync_started_utc=_iso(now),
         batches=stamps,
     )

@@ -8,8 +8,8 @@ offers the charts to a person or a model: a kind says what it answers, its
 parameters with their types, defaults and choices, the series it draws and
 the fields of its summary, as plain data (:meth:`ChartKind.to_dict`).
 
-The registry is empty until the chart modules land (the tier-1 charts,
-``docs/dev/visual_digest.md`` section 3).
+The tier-1 charts (``docs/dev/visual_digest.md`` section 3) register as
+:mod:`mascope_viz.charts` imports their modules.
 """
 
 import builtins
