@@ -1378,6 +1378,35 @@ def test_coverage_counts_files_and_samples_per_hour_by_polarity_and_mode(month):
     assert bins.attrs["cadence"] == "1h"
 
 
+def test_coverage_spans_the_first_file_to_the_last_samples_end(month):
+    campaign, store = month
+    files = campaign.tables["files"]
+    samples = campaign.tables["samples"]
+    last = samples["datetime_utc"] + pd.to_timedelta(samples["t1"], unit="s")
+
+    found = views.coverage(store)
+
+    assert found.start == files["datetime_utc"].min()
+    assert found.end == last.max()
+    assert str(found.start.tz) == ZONE
+    # A window inside the gap: its files alone span it
+    inside = views.coverage(
+        store,
+        start=campaign.truth.gap.start + pd.Timedelta(hours=6),
+        end=campaign.truth.gap.start + pd.Timedelta(hours=12),
+    )
+    assert inside.start == campaign.truth.gap.start + pd.Timedelta(hours=6)
+    assert inside.end == campaign.truth.gap.start + pd.Timedelta(hours=12)
+
+
+def test_coverage_of_nothing_spans_nothing(month):
+    _, store = month
+
+    found = views.coverage(store, start="2027-01-01", end="2027-01-02")
+
+    assert (found.start, found.end) == (None, None)
+
+
 def test_coverage_of_a_window_inside_the_gap_is_all_gap(month):
     campaign, store = month
     gap = campaign.truth.gap
@@ -1871,6 +1900,83 @@ def test_an_ion_matched_only_in_the_last_period_is_new(short_campaign, tmp_path)
 
     assert key.startswith("ion:")
     assert list(frame["key"]) == [key]
+
+
+def test_top_counts_each_keys_values_and_the_samples_that_could_hold_one(month, values):
+    campaign, store = month
+    n_samples = len(campaign.tables["samples"])
+    detected = values.dropna(subset=["value"]).groupby("key").size()
+
+    frame = views.top(store, 100, "median", min_present=0)
+
+    by_key = frame.set_index("key")
+    # Every batch reads every key but a re-read formula: its old reading
+    # up to the run change, its new one from it on
+    renamed = {key for pair in campaign.truth.run_change.readings for key in pair}
+    for key, row in by_key.iterrows():
+        assert row["n"] == detected.get(key, 0), key
+        if key not in renamed and key != views.TIC:
+            assert row["n_samples"] == n_samples, key
+        assert row["presence"] == pytest.approx(row["n"] / row["n_samples"])
+    species = store.table("species").set_index("series_key")
+    for key in by_key.index:
+        assert by_key.at[key, "ion_formula"] == species.at[key, "ion_formula"]
+
+
+def test_top_ranks_only_the_keys_present_in_enough_samples(month):
+    _, store = month
+
+    every = views.top(store, 100, "median", min_present=0)
+    kept = views.top(store, 100, "median", min_present=0.9)
+
+    assert every["presence"].min() < 0.9
+    assert set(kept["key"]) == set(every.loc[every["presence"] >= 0.9, "key"])
+    assert kept.attrs["min_present"] == 0.9
+    # The default is half the samples
+    assert set(views.top(store, 100, "median")["key"]) == set(
+        every.loc[every["presence"] >= 0.5, "key"]
+    )
+    with pytest.raises(ValueError, match="min_present"):
+        views.top(store, 3, "median", min_present=1.5)
+
+
+def test_a_ratio_needs_presence_in_both_periods(month):
+    campaign, store = month
+    episode = campaign.truth.episodes[0]
+    day = _day(episode.start)
+    window = {"period": "day", "start": day - pd.Timedelta(days=1)}
+    window["end"] = day + pd.Timedelta(days=1)
+
+    every = views.top(store, 100, "ratio", min_present=0, **window)
+    first = views.top(
+        store, 100, "median", min_present=0, start=window["start"], end=day
+    )
+    last = views.top(store, 100, "median", min_present=0, start=day, end=window["end"])
+
+    lower = np.minimum(
+        first.set_index("key")["presence"], last.set_index("key")["presence"]
+    )
+    got = every.set_index("key")["presence"]
+    np.testing.assert_allclose(got, lower.reindex(got.index))
+    half = views.top(store, 100, "ratio", min_present=0.5, **window)
+    assert set(half["key"]) == set(got[got >= 0.5].index)
+
+
+def test_new_needs_presence_in_the_last_period(month):
+    campaign, store = month
+    day = _day(campaign.truth.run_change.at)
+    window = {"period": "day", "start": day - pd.Timedelta(days=1)}
+    window["end"] = day + pd.Timedelta(days=1)
+
+    found = views.top(store, 10, "new", min_present=0, **window)
+    # Over the samples that could hold a value: those of the batches that
+    # read the formula, from the run change (00:00 UTC) to the window's end
+    # (21:00 UTC), a sample a minute
+    assert (found["n_samples"] == 21 * 60).all()
+    assert (found["presence"] > 0.8).all()
+    strict = views.top(store, 10, "new", min_present=0.95, **window)
+    assert set(strict["key"]) == set(found.loc[found["presence"] >= 0.95, "key"])
+    assert len(strict) < len(found)
 
 
 def test_nothing_is_new_in_a_window_of_one_period(month):
