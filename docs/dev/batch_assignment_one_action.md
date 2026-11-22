@@ -239,11 +239,19 @@ so a rewrite placed after a recording would knock it off the rows it moves.
 | 3 | Known species | rewrites: members and in-app rows of species present | the ladders' claims |
 | 4 | Untargeted search | rewrites: members of unassigned batch peaks | skips members claimed in 2 and 3 |
 | 5 | Isotope lines | rewrites: one owner link per isotope line | committed rows from 4 |
-| 6 | Homologous series | rewrites: members that take a proposal | assigned batch peaks; a line owned in 5 is no start |
+| 6 | Homologous series | rewrites: members that take a proposal | assigned batch peaks; a line owned in 5 is no start, and it moves no reading a record of 5 stands on |
 | 7 | Co-variation | records only | channels from 4 to 6; normaliser from 2 and 3 |
 | 8 | Ratio stability | records only | 7 (a drift graded without it reads `red`) |
 | 9 | Batch checks | records only | the stamps of 5 and the reading of 7 |
 | 10 | Probable blends, levels | records only | the consensus |
+
+Stage 6 rewrites members after stage 5 has recorded the isotope lines, against the
+second rule. It may do so because it yields to them (MAS-1091). A row the strip read as
+a parent's line is an isotope line, and the series never reaches it. A parent whose lines
+the strip or the stamping recorded keeps its reading: the series applies a proposal to it
+only where the proposal names that reading, formula and mechanism. Before, the series
+moved such a parent to its own formula, the parent's record went stale, and with it
+stage 5. Every pass then ended with stage 5 stale, and the next pass started there.
 
 Two consequences matter to the user. Ratio stability moves from the end of the rebuild to
 after co-variation: the rebuild grades continuity before any co-variation reading exists,

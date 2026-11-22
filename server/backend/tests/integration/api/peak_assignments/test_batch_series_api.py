@@ -43,6 +43,7 @@ from mascope_backend.api.new.peak_assignments import (
 )
 from mascope_backend.api.new.peak_assignments.batch_lines import batch_series_by_peak
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    DIAGNOSTIC_ISOTOPOLOGUES_KEY,
     SERIES_KEY,
     is_stale,
     resolve_candidate,
@@ -67,7 +68,11 @@ from mascope_backend.api.new.peak_assignments.batch_series import (
     run_batch_series_detection,
     series_outcome,
 )
-from mascope_backend.api.new.peak_assignments.batch_stages import assign_batch
+from mascope_backend.api.new.peak_assignments.batch_stages import (
+    STAGES,
+    assign_batch,
+    stage_standing,
+)
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import evidence_for
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
@@ -453,6 +458,83 @@ async def test_a_better_measured_reading_keeps_its_member(
     # The anchor carries the series exactly when its consensus is the series'.
     carried = _carries(rival)
     assert carried == (rival.consensus_formula == below)
+
+
+@pytest_asyncio.fixture
+async def stamped_rival_batch(async_session_factory, pa_test_data):
+    """The series batch with the rival one CH2 below the first compound held
+    poorly in both samples, so the series' formula would take every member,
+    and its stamped lines standing on the rival's reading: an isotope-line
+    record the series must not move (MAS-1091)."""
+    batch_id, samples = await _new_batch(
+        async_session_factory, pa_test_data, label="series-stamped"
+    )
+    below = _step(SOURCES[0], -1)
+    for name in ("S1", "S2"):
+        readings = _peaks()
+        readings["down-0"] = (below, ("candidate", RIVAL, 0.40))
+        await fold_sample_into_batch_peaks(
+            samples[name], rows=_rows(samples[name], readings), persisted=False
+        )
+    async with async_session_factory() as session:
+        rival = (
+            await session.execute(
+                select(BatchPeak).where(
+                    BatchPeak.sample_batch_id == batch_id,
+                    BatchPeak.consensus_formula == RIVAL,
+                )
+            )
+        ).scalar_one()
+        rival.provenance = {
+            **(rival.provenance or {}),
+            DIAGNOSTIC_ISOTOPOLOGUES_KEY: {
+                "formula": RIVAL,
+                "ionization_mechanism_id": MECHANISM,
+                "batch_peak_run_id": "run-lines",
+                "predicted": [],
+            },
+        }
+        await session.commit()
+    return {"batch_id": batch_id, "samples": samples}
+
+
+async def test_a_pass_leaves_a_stamped_parent_its_reading_and_ends_current(
+    async_session_factory, stamped_rival_batch, stubbed, only_these_stages
+):
+    """The series yields to the isotope lines (MAS-1091): its proposal onto a
+    parent whose lines a record stands on is not applied, the record stands
+    after the series' consensus recompute, and so the pass that ran both
+    ends with every stage current."""
+    only_these_stages("series")
+    batch_id = stamped_rival_batch["batch_id"]
+    outcome = await assign_batch(sample_batch_id=batch_id)
+    standing = await stage_standing(batch_id)
+    assert {e["stage"]: e["state"] for e in standing["stages"]} == {
+        spec.stage.value: "current" for spec in STAGES
+    }
+    assert standing["stale_stages"] == []
+
+    anchors = await _anchors(async_session_factory, batch_id)
+    parent = anchors["down-0"]
+    assert parent.consensus_formula == RIVAL
+    record = parent.provenance[DIAGNOSTIC_ISOTOPOLOGUES_KEY]
+    assert not is_stale(record)
+    assert SERIES_KEY not in parent.provenance
+    for name in ("S1", "S2"):
+        members = await _members(
+            async_session_factory, stamped_rival_batch["samples"][name]
+        )
+        assert (
+            resolve_candidate(parent.candidates, members["down-0"].candidate)["formula"]
+            == RIVAL
+        )
+    # The rest of the family is measured as before.
+    assert anchors["up-1"].consensus_formula == _step(SOURCES[1], 1)
+
+    series = next(s for s in outcome["data"]["stages"] if s["stage"] == "series")
+    counts = series["outcomes"][0]["data"]
+    assert counts["anchors_yielded"] == 1
+    assert counts["anchors_proposed"] == 11
 
 
 def _carries(anchor):

@@ -12,6 +12,8 @@ import pytest
 
 from mascope_backend.api.new.peak_assignments.batch_lines import stamp_series
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    DIAGNOSTIC_ISOTOPOLOGUES_KEY,
+    MERGED_ISOTOPOLOGUES_KEY,
     ROLE_ISO_CHILD,
     SERIES_KEY,
     role_code,
@@ -213,6 +215,42 @@ class TestTheWalksAnchors:
         ]
         assert [p.key for p in modes["mode-2"].peaks] == ["other"]
 
+    @pytest.mark.parametrize(
+        "key", [DIAGNOSTIC_ISOTOPOLOGUES_KEY, MERGED_ISOTOPOLOGUES_KEY]
+    )
+    def test_a_target_an_isotope_line_record_stands_on_is_a_line_parent(self, key):
+        # MAS-1091: the stamping's or the strip's record on the reading.
+        lines = {key: {"formula": "C9H12O5", "ionization_mechanism_id": MECHANISM}}
+        modes = series_anchors(
+            [
+                anchor("src", tier="assigned", formula="C8H10O5", provenance=lines),
+                anchor("held", tier="candidate", formula="C9H12O5", provenance=lines),
+                anchor("open", mz=199.06),
+            ],
+            NOTATIONS,
+        )
+        mode = modes["mode-1"]
+        assert [t.key for t in mode.targets] == ["held", "open"]
+        # A source is never moved: only a target can be.
+        assert mode.line_parents == {"held": ("C9H12O5", MECHANISM)}
+
+    @pytest.mark.parametrize(
+        "record",
+        [
+            {"formula": "C9H12O5", "ionization_mechanism_id": MECHANISM, "stale": True},
+            {"formula": "C9H12O4", "ionization_mechanism_id": MECHANISM},
+            {"formula": "C9H12O5", "ionization_mechanism_id": "mech-other"},
+        ],
+    )
+    def test_a_record_that_does_not_stand_makes_no_line_parent(self, record):
+        lines = {DIAGNOSTIC_ISOTOPOLOGUES_KEY: record}
+        modes = series_anchors(
+            [anchor("held", tier="candidate", formula="C9H12O5", provenance=lines)],
+            NOTATIONS,
+        )
+        assert [t.key for t in modes["mode-1"].targets] == ["held"]
+        assert modes["mode-1"].line_parents == {}
+
     def test_each_mode_is_walked_on_its_own(self):
         modes = series_anchors(
             [
@@ -325,6 +363,46 @@ class TestThePlan:
         assert "up-0" not in result.corroborated
         assert result.annotations["up-0"].formula == "C9H12O5"
 
+    @staticmethod
+    def _line_parent(formula, mechanism=MECHANISM):
+        """A candidate on ``formula`` whose stamped lines stand on it."""
+        lines = {
+            DIAGNOSTIC_ISOTOPOLOGUES_KEY: {
+                "formula": formula,
+                "ionization_mechanism_id": mechanism,
+            }
+        }
+        return {
+            "tier": "candidate",
+            "formula": formula,
+            "ionization_mechanism_id": mechanism,
+            "provenance": lines,
+        }
+
+    def test_a_line_parent_reading_another_formula_keeps_it(self):
+        # MAS-1091: the series yields to the isotope lines.
+        result = plan(ladder_batch(C9H12O5=self._line_parent("C5H10N4O4")))
+        assert "up-0" not in result.records
+        assert "up-0" not in result.annotations
+        assert result.yielded == {"up-0"}
+        # The family is committed on the walk as it was, and every other
+        # proposal is applied.
+        ch2 = next(e for e in result.evidence["mode-1"] if e.unit == "CH2")
+        assert (ch2.n_links, ch2.significant) == (MIN_LINKS, True)
+        assert len(result.records) == MIN_LINKS - 1
+
+    def test_a_line_parent_reading_the_proposed_formula_is_corroborated(self):
+        result = plan(ladder_batch(C9H12O5=self._line_parent("C9H12O5")))
+        assert "up-0" in result.corroborated
+        assert result.records["up-0"]["formula"] == "C9H12O5"
+        assert result.yielded == set()
+
+    def test_a_line_parent_read_through_another_mechanism_keeps_it(self):
+        parent = self._line_parent("C9H12O5", mechanism="mech-other")
+        result = plan(ladder_batch(C9H12O5=parent))
+        assert "up-0" not in result.records
+        assert result.yielded == {"up-0"}
+
     def test_a_family_short_of_the_floor_commits_nothing(self):
         anchors = ladder_batch()[:-1]
         result = plan(anchors)
@@ -434,6 +512,20 @@ class TestTheLadders:
         short = plan(ladder_batch()[:-1] + [above])
         assert short.records == {}
         assert siloxane(short).n_links == 1
+
+    def test_a_line_parent_the_series_yielded_is_not_linked(self):
+        # Reached by the walk as a taken target is: the ladders read it so.
+        lines = {
+            DIAGNOSTIC_ISOTOPOLOGUES_KEY: {
+                "formula": "C5H10N4O4",
+                "ionization_mechanism_id": MECHANISM,
+            }
+        }
+        parent = {"tier": "candidate", "formula": "C5H10N4O4", "provenance": lines}
+        above = anchor("si", mz=at(_up(SOURCES[0])) + SILOXANE.mass)
+        yielded = plan(ladder_batch(C9H12O5=parent) + [above])
+        assert yielded.yielded == {"up-0"}
+        assert siloxane(yielded).n_links == 0
 
     def test_an_assigned_member_of_a_series_is_not_linked(self):
         series = {SERIES_KEY: {"formula": "C9H12O5", "has_anchor": True}}

@@ -20,7 +20,8 @@ an anchor's members already read the peak another way, the proposal takes a
 member only where it measures at least as well: a homologue is a reason to
 measure a formula, not to overrule a better measured one. Where the anchor
 already reads the proposed formula at candidate, nothing is measured and the
-series is recorded beside it.
+series is recorded beside it. It yields to the isotope lines, moving no reading
+their records stand on (``batch_peaks.stands_under_lines``, MAS-1091).
 
 The anchor carries the series under ``provenance.series``
 (``batch_peaks.SERIES_KEY``) with ``has_anchor``: the unit, the assigned anchor
@@ -80,6 +81,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     standing_batch_checks_record,
     standing_co_variation_record,
     standing_series_record,
+    stands_under_lines,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     recompute_batch_consensus,
@@ -165,6 +167,7 @@ class ModeAnchors:
         link them, as nothing explains them.
     :ivar peaks: Every anchor of the mode, claimed ones included, with its
         brightest member: what the ladders' isotope lines are read against.
+    :ivar line_parents: Target -> the reading an isotope-line record stands on.
     """
 
     sources: list[SeriesSource] = field(default_factory=list)
@@ -173,6 +176,7 @@ class ModeAnchors:
     series_members: set[str] = field(default_factory=set)
     below: list[SeriesTarget] = field(default_factory=list)
     peaks: list[MeasuredPeak] = field(default_factory=list)
+    line_parents: dict[str, tuple] = field(default_factory=dict)
 
 
 def _series_member(anchor: Any) -> bool:
@@ -243,6 +247,9 @@ def series_anchors(
             mode.formula_of[anchor.batch_peak_id] = formula
             if tier == TIER_ASSIGNED:
                 mode.series_members.add(anchor.batch_peak_id)
+            if stands_under_lines(anchor):
+                reading = (formula, anchor.ionization_mechanism_id)
+                mode.line_parents[anchor.batch_peak_id] = reading
         elif tier == TIER_BELOW_ASSIGNABILITY:
             mode.below.append(SeriesTarget(anchor.batch_peak_id, anchor.mz, None))
     for mode_id, mode in modes.items():
@@ -307,6 +314,7 @@ class SeriesPlan:
     :ivar ladders: Mode id -> every contaminant unit's links by mass alone
         there (:func:`plan_series`), which nothing measures or records on an
         anchor.
+    :ivar yielded: The targets the series yields (:attr:`ModeAnchors.line_parents`).
     """
 
     evidence: dict[Optional[str], list[SeriesEvidence]] = field(default_factory=dict)
@@ -314,6 +322,17 @@ class SeriesPlan:
     annotations: dict[str, Annotation] = field(default_factory=dict)
     corroborated: set[str] = field(default_factory=set)
     ladders: dict[Optional[str], list[LadderEvidence]] = field(default_factory=dict)
+    yielded: set[str] = field(default_factory=set)
+
+    @property
+    def counts(self) -> dict:
+        """The run's counts of what the plan does with the targets."""
+        return {
+            "anchors_proposed": len(self.records),
+            "anchors_corroborated": len(self.corroborated),
+            "anchors_yielded": len(self.yielded),
+            "anchors_measured": len(self.annotations),
+        }
 
     @property
     def modes_walked(self) -> list[Optional[str]]:
@@ -351,7 +370,7 @@ def plan_series(
     and link the contaminant units by mass alone among what is left.
 
     The ladders link the anchors nothing explains: the targets no committed
-    proposal took and the batch does not assign
+    proposal reached and the batch does not assign
     (:attr:`ModeAnchors.series_members`), and the anchors held below
     assignability (:attr:`ModeAnchors.below`). That is the unassigned anchors
     and those held at candidate or below assignability, which is where a
@@ -393,6 +412,7 @@ def plan_series(
             target
             for target in [*anchors.targets, *anchors.below]
             if target.key not in plan.records
+            and target.key not in plan.yielded
             and target.key not in anchors.series_members
             and target.key not in lines
         ]
@@ -438,6 +458,10 @@ def _walk_mode(
     for key, (proposal, units) in sorted(committed_proposals(evidence).items()):
         mechanism_id = mechanism_id_by_notation.get(proposal.mechanism)
         if mechanism_id is None:
+            continue
+        reading = anchors.line_parents.get(key)
+        if reading is not None and reading != (proposal.formula, mechanism_id):
+            plan.yielded.add(key)
             continue
         plan.records[key] = series_record(
             proposal,
@@ -748,9 +772,7 @@ async def run_batch_series_detection(
             e.significant for units in plan.evidence.values() for e in units
         ),
         "proposals": sum(e.n_links for units in plan.evidence.values() for e in units),
-        "anchors_proposed": len(plan.records),
-        "anchors_corroborated": len(plan.corroborated),
-        "anchors_measured": len(plan.annotations),
+        **plan.counts,
         "members_assigned": 0,
         "anchors_in_series": 0,
         "samples_measured": 0,
