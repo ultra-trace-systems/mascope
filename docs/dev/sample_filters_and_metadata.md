@@ -205,7 +205,8 @@ Facts a filter wants that are not columns:
 
 ## 3. Decisions
 
-Settled in design review, 2026-10-05; decision 11 on 2026-11-05.
+Settled in design review, 2026-10-05; decision 11 on 2026-11-05; decisions
+12 and 13 on 2026-11-22.
 
 | # | Decision |
 |---|---|
@@ -220,6 +221,8 @@ Settled in design review, 2026-10-05; decision 11 on 2026-11-05.
 | 9 | A copy **reads acquisition metadata through**, live. Nothing is snapshotted at copy time. |
 | 10 | The **origin key leaves out the ionization mode**. A copy whose file's chemistry is corrected afterwards stays as it is, and the refresh preview lists such copies. |
 | 11 | The finder is a **destination in the navigation sidebar**, *Find samples*, beside *Raw files*, which moves there from the chart tabs (decided 2026-11-05 with decision D1 of `ux_review_2026_10.md`, the sidebar): both are global lists over the instruments a person can read, not views of the open batch. It fills the main area with a facet column and the chips, histogram, count, result table and actions. The acquisition workspaces stay browsable from the workspace switcher but stop being the route to a batch. |
+| 12 | A refreshable batch **never refreshes on its own**. Decision 2 holds without exception; a badge on the batch saying new samples match its recipe can follow (decided 2026-11-22, MAS-106). |
+| 13 | The finder **does not search analysis batches**. Finding one's own work is a different feature from finding samples by their acquisition record (decided 2026-11-22, MAS-110). |
 
 Not chosen, and why:
 
@@ -631,11 +634,11 @@ phase 1 depends on nothing.
 |---|---|---|
 | 1 | Who may define registry fields and environments? | As ionization modes do: any editor creates, changing or deleting needs admin, since both reach every instrument's data |
 | 2 | Where does the finder live? | *Decided 2026-11-05, decision 11:* a destination in the navigation sidebar beside *Raw files*, which moves there too; the acquisition workspaces stay browsable but stop being the route to a batch (MAS-105) |
-| 3 | Does a refresh ever run on its own? | No (decision 2 says asked for). A badge on the batch saying new samples match its recipe is cheap and can follow |
+| 3 | Does a refresh ever run on its own? | *Decided 2026-11-22, decision 12:* no (decision 2 says asked for). A badge on the batch saying new samples match its recipe is cheap and can follow (MAS-106) |
 | 4 | Does changing a sample's environment flag the batches holding it for re-assignment? | Show it on the batch; do not re-run anything unasked. Existing runs keep their snapshot |
 | 5 | The list headers call regimes `applies_to_contexts`, but they are not chemistry contexts. Rename? | Keep the key in schema 2; call them regimes in the UI and here; hold them to a checked vocabulary as list `tags` are |
 | 6 | Which time does `datetime_utc` filter on once files are split into windows: the file's start or the window's? | The window's start (file start plus `t0`), so a long file's parts sort and filter where they were measured |
-| 7 | Should the finder also search analysis batches a person can read? | Not in this design (decision 1). It would be a different feature: finding one's own work |
+| 7 | Should the finder also search analysis batches a person can read? | *Decided 2026-11-22, decision 13:* not in this design (decision 1). It would be a different feature: finding one's own work (MAS-110) |
 
 ---
 
