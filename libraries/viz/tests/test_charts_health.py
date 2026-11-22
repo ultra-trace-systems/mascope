@@ -498,21 +498,22 @@ def test_a_drift_passes_over_a_day_holding_too_few_values():
 
 
 @pytest.mark.parametrize("last", [True, False], ids=["last-day", "first-day"])
-def test_a_drift_reads_a_25_hour_day_across_a_clock_change(last):
-    """25 October 2026 is 25 hours long in Helsinki: a day's end is the next
-    midnight on the wall clock, not 24 hours on."""
-    if last:
-        t = pd.date_range(
-            "2026-10-20", "2026-10-26", freq="1h", tz=ZONE, inclusive="left"
-        )
-        day = t.normalize() == pd.Timestamp("2026-10-25", tz=ZONE)
-    else:
-        t = pd.date_range(
-            "2026-10-25", "2026-10-31", freq="1h", tz=ZONE, inclusive="left"
-        )
-        day = t.normalize() != pd.Timestamp("2026-10-25", tz=ZONE)
-    assert (t.normalize() == pd.Timestamp("2026-10-25", tz=ZONE)).sum() == 25
-    values = np.where(day, 500.0, 1000.0)
+@pytest.mark.parametrize(
+    ("change", "hours"),
+    [("2026-03-29", 23), ("2026-10-25", 25)],
+    ids=["spring-23h", "autumn-25h"],
+)
+def test_a_drift_reads_a_day_across_a_clock_change(change, hours, last):
+    """29 March 2026 is 23 hours long in Helsinki and 25 October 25 hours:
+    a day's end is the next midnight on the wall clock, not 24 hours on."""
+    clock_day = pd.Timestamp(change, tz=ZONE)
+    # Six full days, the clock change's the last of them or the first
+    start = clock_day - pd.DateOffset(days=5) if last else clock_day
+    t = pd.date_range(start, start + pd.DateOffset(days=6), freq="1h", inclusive="left")
+    on_clock_day = t.normalize() == clock_day
+    assert on_clock_day.sum() == hours
+    # The half-level day is the last full day, or every day after the first
+    values = np.where(on_clock_day == last, 500.0, 1000.0)
 
     assert drift(pd.Series(t), values) == pytest.approx(0.5)
 
