@@ -1601,6 +1601,9 @@ class Coverage:
     :ivar n_files: Files acquired in the window.
     :ivar n_unfiled: Those no batch of the scope holds.
     :ivar n_samples: Samples in the window.
+    :ivar start: The span the gaps are looked for in: the first file's or
+        sample's acquisition start, in the display zone; None with neither.
+    :ivar end: Its end: the last file's or sample's acquisition end.
     """
 
     bins: pd.DataFrame
@@ -1608,6 +1611,8 @@ class Coverage:
     n_files: int
     n_unfiled: int
     n_samples: int
+    start: pd.Timestamp | None = None
+    end: pd.Timestamp | None = None
 
 
 def coverage(
@@ -1664,12 +1669,14 @@ def coverage(
 
     file_ns = _ns(files["datetime_utc"])
     sample_ns = _ns(samples["t_mid_utc"])
-    gaps = _gaps(files, samples, unfiled, shortest, zone)
+    gaps, (first, last) = _gaps(files, samples, unfiled, shortest, zone)
     gaps.attrs.update(attrs)
     summary = {
         "n_files": len(files),
         "n_unfiled": int(unfiled.sum()),
         "n_samples": len(samples),
+        "start": first,
+        "end": last,
     }
     every = np.concatenate([file_ns[of_file], sample_ns])
     if not len(every):
@@ -1803,8 +1810,9 @@ def _gaps(
     unfiled: pd.Series,
     shortest: pd.Timedelta,
     zone: str,
-) -> pd.DataFrame:
-    """:attr:`Coverage.gaps`."""
+) -> tuple[pd.DataFrame, tuple[pd.Timestamp | None, pd.Timestamp | None]]:
+    """:attr:`Coverage.gaps`, and the span they are looked for in
+    (:attr:`Coverage.start`, :attr:`Coverage.end`)."""
     start = _ns(samples["datetime_utc"])
     begin = start + np.nan_to_num(samples["t0"].to_numpy("float64") * 1e9).astype(
         "int64"
@@ -1822,14 +1830,23 @@ def _gaps(
     file_end = file_start + np.maximum(length, 0)
 
     spans = []
+    ends: list[int] = []
     if len(begin):
         order = np.argsort(begin, kind="stable")
         begin, finish = begin[order], np.maximum.accumulate(finish[order])
         spans = list(zip(finish[:-1], begin[1:]))
+        ends = [begin[0], finish[-1]]
         if len(file_start):
             spans = [(file_start.min(), begin[0]), *spans, (finish[-1], file_end.max())]
     elif len(file_start):
         spans = [(file_start.min(), file_end.max())]
+    if len(file_start):
+        ends += [file_start.min(), file_end.max()]
+    span = (
+        (_times(np.array([min(ends)]), zone)[0], _times(np.array([max(ends)]), zone)[0])
+        if ends
+        else (None, None)
+    )
     rows = []
     for gap_start, gap_end in spans:
         if gap_end - gap_start < shortest.value or gap_end <= gap_start:
@@ -1859,7 +1876,7 @@ def _gaps(
             "n_unfiled": frame["n_unfiled"].to_numpy("int64"),
         }
     )
-    return frame
+    return frame, span
 
 
 # --- composition, spectrum, top ----------------------------------------------
@@ -2124,6 +2141,7 @@ def top(
     keys: Any = None,
     period: str = "week",
     normalise: str = "none",
+    min_present: float = 0.5,
     tz: str | None = None,
     start: Any = None,
     end: Any = None,
@@ -2132,7 +2150,11 @@ def top(
     new ones.
 
     The first and last periods are the calendar periods (*period*, in
-    *tz*) of the window's first and last samples.
+    *tz*) of the window's first and last samples. A key's presence in some
+    samples is its values detected in them over those of them that could
+    have held one (the samples of the batches that read it): below
+    detection is missing, so a median of a few detections reads high, and a
+    ratio of a handful of them is noise.
 
     :param n: How many keys.
     :param by: ``median``, the highest median sample value over the
@@ -2146,17 +2168,32 @@ def top(
     :param period: ``day``, ``week`` or ``month``.
     :param normalise: ``none``, ``tic``, a series key, or a sequence of
         them to divide by their sum.
+    :param min_present: Rank only the keys present in at least this share
+        of the samples compared, from 0 to 1: over the window by
+        ``median``, in each of the first and last periods by ``ratio``, in
+        the last period by ``new``.
     :return: Up to *n* rows, best first: ``rank``, ``key``, ``value`` (what
         it is ranked by: the median, the ratio, the last), ``median``,
         ``first`` and ``last`` (the medians in the first and last periods),
-        ``ratio`` (``last`` over ``first``), ``new``, ``name`` and
-        ``formula``. ``attrs`` adds ``by``, ``period``, ``first_period``
-        and ``last_period`` (their starts, ISO in *tz*).
+        ``ratio`` (``last`` over ``first``), ``new``, ``n`` (its values
+        detected in the window) and ``n_samples`` (the window's samples
+        that could have held one), ``presence`` (the share *min_present*
+        was held to: ``n`` over ``n_samples`` by ``median``, the lower of
+        the two periods' by ``ratio``, the last period's by ``new``),
+        ``name``, ``formula`` and ``ion_formula``. ``attrs`` adds ``by``,
+        ``period``, ``min_present``, ``first_period`` and ``last_period``
+        (their starts, ISO in *tz*).
     """
     if by not in TOP_BY:
         raise ValueError(f"by={by!r} is none of {', '.join(TOP_BY)}")
     if isinstance(n, bool) or not isinstance(n, (int, np.integer)) or n < 1:
         raise ValueError(f"n={n!r} is no positive count")
+    if (
+        isinstance(min_present, bool)
+        or not isinstance(min_present, (int, float, np.number))
+        or not 0 <= min_present <= 1
+    ):
+        raise ValueError(f"min_present={min_present!r} is no share from 0 to 1")
     if period not in PERIODS:
         raise ValueError(f"period={period!r} is none of {', '.join(PERIODS)}")
     if keys is None:
@@ -2164,7 +2201,9 @@ def top(
     values = _read(
         store, keys, normalise=normalise, tz=tz, start=start, end=end, view="top"
     )
-    attrs = dict(values.attrs, cadence=period, by=by, period=period)
+    attrs = dict(
+        values.attrs, cadence=period, by=by, period=period, min_present=min_present
+    )
     n_keys = len(values.keys)
     code = np.full(len(values.t), -1, dtype="int64")
     reads_any = values.reads_any
@@ -2194,15 +2233,37 @@ def top(
     before = np.zeros(n_keys, dtype=bool)
     np.logical_or.at(before, values.key[detected & (of_value < last)], True)
     frame["new"] = (last > 0) & frame["last"].notna().to_numpy() & ~before
+    # Per key: the samples that could have held a value, and those that do
+    could = values.present[values.batch]
+
+    def presence_in(selected: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        held = np.bincount(
+            values.key[detected & selected[values.pos]], minlength=n_keys
+        )
+        return held, could[selected].sum(axis=0)
+
+    def share(counts: tuple[np.ndarray, np.ndarray]) -> np.ndarray:
+        held, could_hold = counts
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.where(could_hold > 0, held / could_hold, np.nan)
+
+    window = presence_in(np.ones(len(values.t), dtype=bool))
+    frame["n"] = window[0].astype("int64")
+    frame["n_samples"] = window[1].astype("int64")
     species = _species(store, values.items)
     frame["name"] = frame["key"].map(species["name"])
     frame["formula"] = frame["key"].map(species["formula"])
+    frame["ion_formula"] = frame["key"].map(species["ion_formula"])
 
     if by == "median":
         frame["value"] = frame["median"]
+        frame["presence"] = share(window)
         score = frame["median"]
     elif by == "ratio":
         frame["value"] = frame["ratio"]
+        frame["presence"] = np.minimum(
+            share(presence_in(code == 0)), share(presence_in(code == last))
+        )
         # Up or down alike; without a value in both periods, or with the
         # one period as both, no change
         score = np.abs(np.log(frame["ratio"]))
@@ -2210,8 +2271,10 @@ def top(
             score = pd.Series(np.nan, index=frame.index)
     else:
         frame["value"] = frame["last"]
+        frame["presence"] = share(presence_in(code == last))
         score = frame["last"].where(frame["new"])
-    frame["score"] = score
+    # A key too seldom detected is not ranked
+    frame["score"] = score.where(frame["presence"] >= min_present)
     frame = (
         frame[frame["score"].notna()]
         .sort_values(["score", "key"], ascending=[False, True], kind="stable")
@@ -2220,4 +2283,5 @@ def top(
     )
     frame.insert(0, "rank", np.arange(1, len(frame) + 1))
     columns = ["rank", "key", "value", "median", "first", "last", "ratio", "new"]
-    return _stamp(frame[[*columns, "name", "formula"]], attrs)
+    columns += ["n", "n_samples", "presence", "name", "formula", "ion_formula"]
+    return _stamp(frame[columns], attrs)
