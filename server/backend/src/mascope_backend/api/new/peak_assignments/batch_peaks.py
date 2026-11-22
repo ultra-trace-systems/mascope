@@ -1213,6 +1213,23 @@ def standing_merged_isotopologues_record(anchor: Any) -> Optional[dict]:
     return record
 
 
+def stands_under_lines(anchor: Any) -> bool:
+    """Whether an isotope-line record stands on an anchor's reading: the
+    lines the stamping predicted for it (``diagnostic_isotopologues``), or the
+    rows the strip took as its lines (``merged_isotopologues``).
+
+    Both stand while the anchor reads the formula and mechanism they were
+    read against, so the series moves no such reading: it would mark them
+    stale, and the isotope lines' stage with them (``batch_series.py``,
+    MAS-1091). A row the strip read as a parent's line is an isotope line
+    (:func:`is_isotope_line`).
+    """
+    return (
+        standing_diagnostic_isotopologues_record(anchor) is not None
+        or standing_merged_isotopologues_record(anchor) is not None
+    )
+
+
 def without_merged_lines(record: dict, released: set[str]) -> Optional[dict]:
     """The parent's record with the lines of the released rows taken off: a
     row whose own record came off is no longer this parent's line. None when

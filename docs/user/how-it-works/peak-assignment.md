@@ -1976,7 +1976,9 @@ the search skips what the source's claims took, the series walks from what the s
 committed, the ratio stability grades a drift by the co-variation, the batch checks read the
 stamps and the co-variation. And every stage that rewrites members runs before every stage
 that only records a reading: a record stands only while its batch peak reads what it was
-made for.
+made for. The series rewrites members after the isotope lines are recorded, so it moves
+no reading an isotope line's record stands on (*Detecting series*, below), and a
+completed pass leaves every stage current.
 
 - **Assign batch starts the list at its first stage that is not current**, and every
   stage after it runs too, on what it wrote. On a batch that is up to date, *Re-assign*
@@ -2623,7 +2625,16 @@ the sample gives the same reading, and a sample whose peak the formula's isotope
 does not reach keeps the peak as it was. Where a sample
 already reads the peak another way, the series' formula takes it only where it measures
 at least as well. On a batch peak that already reads the proposed formula, the series is
-recorded beside it, and only the samples that do not read the formula yet are measured. A
+recorded beside it, and only the samples that do not read the formula yet are measured.
+
+The series yields to the isotope lines, the stage before it. A row the strip read as
+another compound's isotope line is never a step of a series. A batch peak whose isotope
+lines were stripped or stamped keeps its reading: a series that proposes another formula
+for it, or the same formula through another ionization, leaves it as it is, measures
+nothing on it and records nothing on it. Moving it would leave the isotope lines it
+explains standing for a reading the peak no longer holds, so the isotope lines would be
+out of date after every pass, and the next *Assign batch* would start there again. The
+run's summary counts these batch peaks (`anchors_yielded`). A
 row a series vouches for shows a stairs badge beside its formula, in green as a reading
 that supports it, whose tooltip names the
 step and the assigned compound the series starts at. The series counts as a second

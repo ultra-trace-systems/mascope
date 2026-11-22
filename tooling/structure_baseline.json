@@ -42,7 +42,7 @@
         "batch_peaks_records.py:_batch_peak_meta": 126,
         "batch_peaks_records.py:get_batch_peak_counterpart": 108,
         "batch_peaks_records.py:get_batch_peak_series": 138,
-        "batch_series.py:run_batch_series_detection": 140,
+        "batch_series.py:run_batch_series_detection": 138,
         "batch_stages.py:assign_batch": 219,
         "batch_untargeted.py:_propagate_to_sample": 115,
         "batch_untargeted.py:run_batch_untargeted_search": 306,
