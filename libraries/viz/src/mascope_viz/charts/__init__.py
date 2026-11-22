@@ -6,8 +6,9 @@ The species charts, ``species_series`` (:mod:`.series`), ``diurnal``
 a ``species`` parameter names (:mod:`.species`). The composition charts,
 ``spectrogram`` (:mod:`.spectrogram`), ``period_spectrum`` (:mod:`.spectrum`)
 and ``van_krevelen`` (:mod:`.van_krevelen`), draw the store's assigned
-peaks. Pandas and NumPy only: a server can build specs without the
-renderers (``docs/dev/visual_digest.md``, section 2.1)."""
+peaks. Pandas, NumPy and pyarrow only (the chart modules read the
+campaign store): a server can build specs without the renderers
+(``docs/dev/visual_digest.md``, section 2.1)."""
 
 # The chart modules register their kinds as they are imported
 from . import (  # noqa: F401
