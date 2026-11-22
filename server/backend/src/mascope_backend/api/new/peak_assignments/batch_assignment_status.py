@@ -75,6 +75,7 @@ from mascope_backend.api.new.peak_assignments.batch_stages import (
     fold_reasons,
     last_pass,
     library_read,
+    pass_settings_hash,
     settings_moved,
     stage_states,
     standing_entries,
@@ -227,15 +228,15 @@ def engine_reason(
 def settings_reason(last: Optional[dict], hash_now: str) -> Optional[dict]:
     """``settings_changed`` where the batch's settings hash otherwise than
     the settings the pass ran on: the test the next pass plans by
-    (``batch_stages.settings_moved``), so the status and the pass agree.
-    None for a pass that recorded no hash (one from before the batch kept
-    settings)."""
+    (``batch_stages.settings_moved``), so the status and the pass agree. A
+    pass that recorded no hash (one from before the batch kept settings)
+    reads as one on the defaults."""
     if not settings_moved(last, hash_now):
         return None
     return {
         "reason": BEHIND_SETTINGS_CHANGED,
         "count": 1,
-        "detail": {"pass": last.get("settings_hash"), "now": hash_now},
+        "detail": {"pass": pass_settings_hash(last), "now": hash_now},
     }
 
 

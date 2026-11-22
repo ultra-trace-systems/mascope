@@ -422,7 +422,9 @@ As built (`batch_assignment_status.py`):
   end writes the summary whole. `progress` is the share of stages finished; a stage's own
   progress stays in its packets. A rebuild or import on its own serves no stage.
 - `settings_changed` compares the hash of the batch's settings with the one the last pass
-  recorded (MAS-1014, 5.4). A pass from before then recorded none and compares nothing.
+  recorded (MAS-1014, 5.4). A pass from before then recorded none and reads as one on the
+  defaults: no batch turns behind when the column arrives, and the first save of other
+  settings does.
 - About a dozen queries whatever the batch's size: the read of a 5,000-sample batch sends
   the statements a two-sample one does.
 

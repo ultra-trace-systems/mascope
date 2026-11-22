@@ -1366,7 +1366,7 @@ async def last_pass(session, sample_batch_id: str) -> Optional[dict]:
                 "samples": run.summary.get("samples"),
                 "library": run.summary.get("library"),
                 # None for a pass from before the batch kept settings
-                # (MAS-1014): nothing to compare.
+                # (MAS-1014): read as the defaults' (pass_settings_hash).
                 "settings_hash": run.summary.get("settings_hash"),
             }
     return None
@@ -1640,11 +1640,22 @@ INTERRUPTED_ERROR = (
 )
 
 
+def pass_settings_hash(last: Optional[dict]) -> Optional[str]:
+    """The settings hash the batch's last completed pass ran on; None where
+    there is no pass. A pass from before the batch kept settings recorded no
+    hash and reads as one on the defaults: no batch turns behind when the
+    column arrives, every column being null, and the first save of other
+    settings does."""
+    if last is None:
+        return None
+    return last.get("settings_hash") or settings_hash(None)
+
+
 def settings_moved(last: Optional[dict], hash_now: Optional[str]) -> bool:
     """Whether a pass on settings of hash ``hash_now`` runs on other settings
-    than the batch's last completed pass did. No: where either says nothing,
-    as a pass from before the batch kept settings records no hash."""
-    recorded = last.get("settings_hash") if last is not None else None
+    than the batch's last completed pass did (:func:`pass_settings_hash`).
+    No where there is no pass, or no settings to compare."""
+    recorded = pass_settings_hash(last)
     return recorded is not None and hash_now is not None and recorded != hash_now
 
 
