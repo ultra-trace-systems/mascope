@@ -343,6 +343,66 @@ def given_secondary_channels(
     )
 
 
+def judged_mechanisms(
+    searched_mechanisms: list[SimpleNamespace],
+    secondary_mechanisms: list[SimpleNamespace],
+    resolved_profile: ResolvedProfile | None,
+) -> list[SimpleNamespace]:
+    """The mechanisms the lists are read and the judging names its rows'
+    channels through: the searched ones, and the secondary channels a batch
+    decision measured on the sample reads through that its spectrum did not
+    open (``ResolvedProfile.given_channels``, MAS-1039).
+
+    Only the rules that judge such a channel's own reading read it. The
+    same-ion families (:func:`family_mechanisms`), the search, the winners'
+    shortlists and the identification levels stay on the searched mechanisms:
+    a reading through one of the sample's own channels gains no rival through
+    a channel only another sample opened.
+    """
+    given = set(getattr(resolved_profile, "given_channels", ()))
+    if not given:
+        return searched_mechanisms
+    searched = {m.ionization_mechanism_id for m in searched_mechanisms}
+    return searched_mechanisms + [
+        mechanism
+        for mechanism in secondary_mechanisms
+        if mechanism.ionization_mechanism in given
+        and mechanism.ionization_mechanism_id not in searched
+    ]
+
+
+def family_mechanisms(
+    rows: list[dict],
+    searched_mechanisms: list[SimpleNamespace],
+    judged: list[SimpleNamespace],
+) -> list[tuple[list[dict], list[SimpleNamespace]]]:
+    """The rows, split by the mechanisms their ions' same-ion families are
+    read through.
+
+    A row through one of the sample's own channels reads its family through
+    the searched mechanisms alone. A given reading through a channel only
+    another sample opened reads it through the judged ones
+    (:func:`judged_mechanisms`), its own channel among them, as a run of the
+    sample that opened it does (MAS-1039). So that reading is asked about the
+    sample's own channels' readings of its ion, and none of the sample's own
+    readings gains a rival through a channel its spectrum did not open.
+
+    :param rows: The rows to give families.
+    :param searched_mechanisms: The ones the sample searches.
+    :param judged: :func:`judged_mechanisms`.
+    :return: ``(rows, mechanisms)`` pairs, the sample's own rows first.
+    """
+    searched = {m.ionization_mechanism_id for m in searched_mechanisms}
+    given = {m.ionization_mechanism_id for m in judged} - searched
+    if not given:
+        return [(rows, searched_mechanisms)]
+    through_given = [
+        row for row in rows if str(row.get("ionization_mechanism_id")) in given
+    ]
+    own = [row for row in rows if str(row.get("ionization_mechanism_id")) not in given]
+    return [(own, searched_mechanisms), (through_given, judged)]
+
+
 def _notation_by_id(searched_mechanisms: list[SimpleNamespace]) -> dict[str, str]:
     """The searched mechanisms' finder notations, keyed by mechanism id.
 

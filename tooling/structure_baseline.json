@@ -77,7 +77,7 @@
         "pipeline.py:_propose_on_representatives": 120,
         "pipeline.py:_report_judging": 105,
         "pipeline.py:_stage_a_assignments": 172,
-        "pipeline.py:elect": 130,
+        "pipeline.py:elect": 125,
         "pipeline.py:resolve": 110,
         "prepasses.py:_reagent_assignments": 133,
         "profile_preview.py:preview_profiles": 128,

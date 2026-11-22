@@ -806,6 +806,7 @@ def _ctx(path, *, recorded=False):
             profile=SimpleNamespace(name="no ladders"),
         ),
         searched_mechanisms=[],
+        judged_mechanisms=[],
         scoring=SimpleNamespace(mz_tolerance_ppm=3.0, abundance_floor=0.001),
         config=PeakAssignmentConfig(),
         lines=None,
