@@ -105,6 +105,8 @@ export function behindWords(reason, status) {
       return `${plural(count, 'sample')} assigned again on their own since the last assignment`
     case 'library_changed':
       return 'Target collections or reference lists changed since the last assignment'
+    case 'settings_changed':
+      return 'Assignment settings changed since the last assignment'
     case 'engine_changed': {
       const version = reason.detail?.pass ?? status?.last_pass?.engine_version
       return version ? `Assigned by an older engine (${version})` : 'Assigned by an older engine'

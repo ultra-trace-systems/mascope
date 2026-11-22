@@ -127,6 +127,10 @@ const FIXTURES = {
     needs_fold: true,
     fold_reasons: ['library_changed']
   }),
+  // Saved settings mark no stage stale: the pass still runs every stage.
+  behind_settings: statusOf('behind', {
+    behind: [{ reason: 'settings_changed', count: 1, detail: { pass: 'hash-a', now: 'hash-b' } }]
+  }),
   behind_engine: statusOf('behind', {
     behind: [{ reason: 'engine_changed', count: 1, detail: { pass: '0.7.0', now: '0.8.0' } }],
     needs_fold: true
@@ -398,6 +402,19 @@ describe('BatchAssignControl states', () => {
     expect(detail().text()).toBe('and 1 other change')
     expect(main().text()).toBe('Re-assign')
     expect(main().attributes('data-outlined')).toBe('false')
+  })
+
+  it('behind on saved settings: says so, and Re-assign runs every stage', async () => {
+    await mountControl(FIXTURES.behind_settings)
+
+    expect(line()).toBe('Assignment settings changed since the last assignment')
+    expect(main().text()).toBe('Re-assign')
+    expect(main().attributes('data-outlined')).toBe('false')
+
+    get.mockResolvedValue(FIXTURES.running_mine)
+    await main().trigger('click')
+    await flushPromises()
+    expect(assignCalls()[0][1]).toEqual({ from_stage: 'water_ladders' })
   })
 
   it('behind on the engine: names the version the pass ran under', async () => {
