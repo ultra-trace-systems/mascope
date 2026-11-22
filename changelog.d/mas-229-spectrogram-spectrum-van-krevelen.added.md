@@ -13,7 +13,9 @@
   class or amplitude; candidates are drawn hollow only when asked for.
   Each chart says what it was drawn from: the variable (peak area or
   height, or the normaliser), a change of engine run, and how often a
-  stick's peak was seen. Its summary is plain JSON, with each period's
+  stick's peak was seen. A chart with nothing to draw says why: the store
+  holds no assigned peak, as when no batch has a ledger, or the window
+  holds none. Its summary is plain JSON, with each period's
   tallest peaks, the increases and decreases apart, and the weighted and
   bulk mean ratios. The views gain `spectrogram` and `amplitude`;
   `spectrum` and `composition` give `n_samples` beside `n`, and

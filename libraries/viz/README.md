@@ -502,6 +502,12 @@ What every chart kind does the same way:
 - **Below detection is missing.** A statistic is over the detected values
   only, so the summaries give each species' presence: its values detected
   over the samples that could have held one.
+- **Nothing to draw is said.** A spectrogram, a period spectrum or a Van
+  Krevelen with no assigned peak to draw leads its notes with why. Either
+  the store holds none, because no batch has a ledger (no assignment pass
+  has run, as on the stock demo stack) or its runs left none, or the
+  window holds none, named. The period spectrum names the one period of
+  two that holds none.
 - **Summaries are JSON**: times as ISO 8601 with the display zone's offset,
   NaN as null, a species as `{key, name, formula}`. Every summary has
   `normalise`, `normalise_name`, `cadence`, `tz`, `start`, `end`,

@@ -89,8 +89,8 @@ def period_spectrum(
             ),
             dtype=object,
         )
-    period_name = _window_name(attrs["period"], zone)
-    other_name = _window_name(attrs["other"], zone) if compare else None
+    period_name = common.window_name(attrs["period"], zone)
+    other_name = common.window_name(attrs["other"], zone) if compare else None
     notes = [
         common.ASSIGNED_ONLY,
         "A stick is the mean of the values detected in its period: a peak "
@@ -104,6 +104,10 @@ def period_spectrum(
         )
         notes += _drift_notes(attrs, zone)
     notes += common.formula_run_notes(attrs) + common.normaliser_notes(attrs)
+    empty = [period_name] if not (frame["n"] > 0).any() else []
+    if compare and not (frame["other_n"] > 0).any():
+        empty.append(other_name)
+    notes = common.empty_notes(store, empty) + notes
     context = Context.from_attrs(
         dict(attrs, stat="mean", start=attrs["period"][0], end=attrs["period"][1])
     )
@@ -197,18 +201,6 @@ def _presence(n: pd.Series, n_samples: pd.Series) -> np.ndarray:
         share = n.to_numpy("float64") / n_samples.to_numpy("float64")
     share[n_samples.to_numpy() == 0] = np.nan
     return share
-
-
-def _window_name(window: list[Any] | None, zone: str) -> str:
-    """A period as a legend or a title calls it."""
-    start, end = window or (None, None)
-    if start and end:
-        return f"{common.wall(start, zone)} to {common.wall(end, zone)}"
-    if start:
-        return f"from {common.wall(start, zone)}"
-    if end:
-        return f"until {common.wall(end, zone)}"
-    return "every sample"
 
 
 def _top(values: pd.Series, n: int) -> np.ndarray:

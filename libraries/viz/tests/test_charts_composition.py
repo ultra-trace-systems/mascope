@@ -831,20 +831,132 @@ def test_each_summary_carries_its_fields_and_the_views_context(month, chart):
     assert fig.id == chart
 
 
+#: The window before the campaign, which holds no sample.
+BEFORE = (
+    pd.Timestamp("2026-05-01T00:00", tz=ZONE),
+    pd.Timestamp("2026-05-02T00:00", tz=ZONE),
+)
+
+
+def _empty(fig: Figure) -> list[str]:
+    """The notes of *fig* that say it has nothing, or nothing for a
+    window, to draw."""
+    return [
+        n for n in fig.notes if n.startswith(("Nothing to draw", "No assigned peak"))
+    ]
+
+
+def _builds(chart: str, **kwargs) -> list:
+    """The ways to build *chart*: the period spectrum alone and against
+    another period, the others as they are."""
+    kind = registry.get(chart)
+    if chart != "period_spectrum":
+        return [lambda store: kind.build(store, **kwargs)]
+    return [
+        lambda store: kind.build(store, **kwargs),
+        lambda store: kind.build(
+            store, other_start=BEFORE[0] - DAY, other_end=BEFORE[1] - DAY, **kwargs
+        ),
+    ]
+
+
 @pytest.mark.parametrize("chart", IDS)
-def test_each_chart_of_a_store_without_a_formula_draws_empty(
+def test_each_chart_of_a_store_without_a_ledger_draws_empty_and_says_why(
+    chart,
+    short_campaign,  # noqa: F811
+    tmp_path,
+):
+    """The demo bundle ships no batch ledger: the store holds no assigned
+    peak, and one note says that no assignment pass has run, whatever the
+    window."""
+    client = FakeClient(short_campaign)
+    client.no_ledger = True
+    store = _sync(client, tmp_path)
+
+    for build in _builds(chart):
+        fig = build(store)
+
+        assert fig.data.empty
+        assert _empty(fig) == [chart_common.NO_LEDGER]
+        assert fig.notes[0] == chart_common.NO_LEDGER
+        _drawn(fig)
+
+
+@pytest.mark.parametrize("chart", IDS)
+def test_each_chart_of_a_store_whose_runs_left_no_assigned_peak_says_so(
     chart,
     short_campaign,  # noqa: F811
     tmp_path,
 ):
     client = FakeClient(short_campaign)
-    client.no_ledger = True
+    for batch, points in client.points.items():
+        client.points[batch] = points.iloc[:0]
     store = _sync(client, tmp_path)
+    assert store.status().batches["reading"].notna().all()
 
-    fig = registry.get(chart).build(store)
+    for build in _builds(chart):
+        fig = build(store)
 
-    assert fig.data.empty
+        assert fig.data.empty
+        assert _empty(fig) == [chart_common.NO_ASSIGNED_PEAK]
+        _drawn(fig)
+
+
+@pytest.mark.parametrize("chart", IDS)
+def test_each_chart_of_a_window_without_an_assigned_peak_names_the_window(month, chart):
+    """A window that holds no sample: the note names it, and says the store
+    holds assigned peaks outside it. A window with some says nothing of
+    the kind."""
+    campaign, store = month
+    kind = registry.get(chart)
+    episode = campaign.truth.episodes[0]
+
+    fig = kind.build(store, start=BEFORE[0], end=BEFORE[1])
+
+    assert fig.data.empty or chart == "spectrogram"
+    assert _empty(fig) == [
+        "No assigned peak has a value in 2026-05-01 00:00 to 2026-05-02 00:00: "
+        "the store holds some outside it."
+    ]
+    assert fig.notes[0] == _empty(fig)[0]
     _drawn(fig)
+    assert not _empty(kind.build(store, start=episode.start, end=episode.end))
+
+
+def test_a_period_spectrum_names_the_one_period_without_an_assigned_peak(month):
+    """Against a window with no sample, the mirror draws the period alone
+    and a note names the other; either way round."""
+    campaign, store = month
+    episode = campaign.truth.episodes[0]
+    names = {
+        "episode": chart_common.window_name([episode.start, episode.end], ZONE),
+        "before": "2026-05-01 00:00 to 2026-05-02 00:00",
+    }
+
+    fig = period_spectrum(
+        store,
+        start=episode.start,
+        end=episode.end,
+        other_start=BEFORE[0],
+        other_end=BEFORE[1],
+    )
+    swapped = period_spectrum(
+        store,
+        start=BEFORE[0],
+        end=BEFORE[1],
+        other_start=episode.start,
+        other_end=episode.end,
+    )
+
+    for drawn, side in ((fig, "period"), (swapped, "other")):
+        mirror = drawn.data[drawn.data["part"] == "mirror"]
+        assert set(mirror["side"]) == {side}
+        assert _empty(drawn) == [
+            f"No assigned peak has a value in {names['before']}: the store holds "
+            "some outside it."
+        ]
+        assert names["episode"] not in _empty(drawn)[0]
+        _drawn(drawn)
 
 
 def test_unnamed_reagent_ions_are_named_by_their_formulas(tmp_path):

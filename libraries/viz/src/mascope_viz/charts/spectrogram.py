@@ -85,6 +85,9 @@ def spectrogram(
             f"{attrs['max_rows']} rows."
         )
     notes += common.formula_run_notes(attrs) + common.normaliser_notes(attrs)
+    if grid.cells.empty:
+        window = common.window_name([attrs["start"], attrs["end"]], zone)
+        notes = common.empty_notes(store, [window]) + notes
     context = Context.from_attrs(attrs)
     figure = Figure(
         "spectrogram",

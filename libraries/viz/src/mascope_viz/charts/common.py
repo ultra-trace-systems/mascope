@@ -26,8 +26,11 @@ The composition charts (spectrogram, period spectrum, Van Krevelen) say
 the same with their own helpers below: the signal's label
 (:func:`signal_label`), the summary's context (:func:`context_summary`),
 the run-change note and rules (:func:`formula_run_notes`,
-:func:`formula_run_rules`) and the note on a partial normaliser
-(:func:`normaliser_notes`).
+:func:`formula_run_rules`), the note on a partial normaliser
+(:func:`normaliser_notes`), and why a chart has nothing to draw: whether
+the store holds no assigned peak (no batch ledger, or none its runs left)
+or the window holds none (:func:`empty_notes`), so an empty frame is not
+taken for a rendering fault.
 """
 
 import math
@@ -693,6 +696,55 @@ def normaliser_notes(attrs: Mapping[str, Any]) -> list[str]:
     return [
         f"In {share} of the samples {name} had no value, so those samples "
         "have none either."
+    ]
+
+
+def window_name(window: Any, zone: str | None) -> str:
+    """A window, ``[start, end]`` with either None for open, as a note, a
+    legend or a title calls it."""
+    start, end = window or (None, None)
+    if start and end:
+        return f"{wall(start, zone)} to {wall(end, zone)}"
+    if start:
+        return f"from {wall(start, zone)}"
+    if end:
+        return f"until {wall(end, zone)}"
+    return "every sample"
+
+
+#: The note of a store that holds no assigned peak, none of whose batches
+#: has a ledger.
+NO_LEDGER = (
+    "Nothing to draw: the store holds no assigned peak. None of its batches "
+    "has a batch ledger, so no assignment pass has run on them."
+)
+
+#: The note of a store that holds no assigned peak although its batches
+#: have a ledger.
+NO_ASSIGNED_PEAK = (
+    "Nothing to draw: the store holds no assigned peak. Its batches' engine "
+    "runs left no batch peak with a consensus formula seen in two samples."
+)
+
+
+def empty_notes(store: CampaignStore, empty: list[str]) -> list[str]:
+    """Why a chart of the assigned peaks draws nothing, or nothing for a
+    window: the store holds none at all, and why, or a window holds none.
+
+    :param empty: The windows, by name (:func:`window_name`), in which no
+        assigned peak has a value; none when the chart draws them all.
+    :return: One note when the store holds no assigned peak; else one per
+        window of *empty*.
+    """
+    if not empty:
+        return []
+    keys = store.table("species")["series_key"].astype(str)
+    if not keys.str.startswith("formula:").any():
+        readings = store.status().batches["reading"]
+        return [NO_ASSIGNED_PEAK if readings.notna().any() else NO_LEDGER]
+    return [
+        f"No assigned peak has a value in {name}: the store holds some outside it."
+        for name in empty
     ]
 
 
