@@ -363,7 +363,7 @@ def test_species_series_at_auto_cadence_leaves_no_bin_empty_but_the_gap(month):
     fig = species_series(store, key)
 
     assert fig.context.cadence == "1min"
-    assert fig.summary["auto"] and fig.summary["coarsened_from"] is None
+    assert fig.summary["auto"] is True and fig.summary["coarsened_from"] is None
     rows = _rows(fig, key)
     in_gap = ((rows["t"] >= gap.start) & (rows["t"] < gap.end)).to_numpy()
     sampled = rows["n_samples"].to_numpy() > 0
@@ -414,6 +414,8 @@ def test_species_series_summary_is_of_the_plotted_bins(month):
 
     fig = species_series(store, [flat, sparse], cadence="1h")
 
+    assert fig.summary["auto"] is False
+    assert fig.summary["stat"] == "median" and fig.summary["band"] == [10, 90]
     for key in (flat, sparse):
         rows = _rows(fig, key)
         entry = _entry(fig, key)
@@ -616,6 +618,12 @@ def test_species_series_coarsens_past_its_budget_and_says_so(month):
     daily = species_series(store, keys, cadence="1h", budget=1_000)
     assert daily.context.cadence == "1D"
     assert daily.summary["coarsened_from"] == "1h"
+    # A budget of exactly the marks holds them, and one mark fewer does not
+    marks = species_series(store, keys, cadence="1h").summary["marks"]
+    exact = species_series(store, keys, cadence="1h", budget=marks)
+    assert exact.context.cadence == "1h" and exact.summary["coarsened_from"] is None
+    short = species_series(store, keys, cadence="1h", budget=marks - 1)
+    assert short.summary["coarsened_from"] == "1h"
     # Coarsened twice, it says the cadence asked for
     twice = species_series(store, keys, cadence="raw", budget=5_000)
     assert twice.context.cadence == "1h"
@@ -871,7 +879,15 @@ def test_diurnal_draws_an_hour_at_its_middle_on_the_zones_clock(month):
     rows = _rows(fig, key)
     assert list(rows["x"]) == [h + 0.5 for h in range(24)]
     panel = fig.panels[0]
-    assert panel.encodings["x"] == "x"
+    # A line per species, its legend and its hover the species' name
+    assert panel.encodings == {
+        "x": "x",
+        "y": "value",
+        "group": "key",
+        "name": "name",
+        "lo": "lo",
+        "hi": "hi",
+    }
     assert panel.axes.x.label == f"hour of day ({ZONE})"
     assert panel.axes.x.range == (0.0, 24.0)
     assert panel.axes.y.scale == "linear"
@@ -894,7 +910,14 @@ def test_diurnal_by_a_split_draws_a_line_per_group_in_each_panel(month):
     assert diurnal(store, _cycles(campaign, "night", "formula:")[:4]).columns == 3
     for panel, key in zip(fig.panels, keys):
         assert panel.where == {"key": [key]}
-        assert panel.encodings["group"] == "group"
+        # A line per group, its legend the group's
+        assert panel.encodings == {
+            "x": "x",
+            "y": "value",
+            "group": "group",
+            "lo": "lo",
+            "hi": "hi",
+        }
     assert set(fig.data["group"]) == {"weekday", "weekend"}
     assert "by weekday" in fig.subtitle
     assert fig.summary["by"] == "weekday"
@@ -906,9 +929,12 @@ def test_diurnal_by_a_split_draws_a_line_per_group_in_each_panel(month):
             rows = want[(want["key"] == key) & (want["group"] == group["group"])]
             median = rows.set_index("hour")["value"]
             assert group["hour_max"] == int(median.idxmax())
+            assert group["min_n"] == int(rows["n"].min())
         # The whole window's numbers stand beside the groups'
-        whole = views.diurnal(store, key).set_index("hour")["value"]
-        assert entry["hour_max"] == int(whole.idxmax())
+        whole = views.diurnal(store, key)
+        assert entry["hour_max"] == int(whole.set_index("hour")["value"].idxmax())
+        assert entry["min_n"] == int(whole["n"].min())
+        assert entry["min_n"] > max(g["min_n"] for g in entry["groups"])
     assert diurnal(store, keys[0]).summary["species"][0].get("groups") is None
 
 
@@ -1059,6 +1085,14 @@ def test_a_thin_period_is_hollow_and_flagged(month):
     assert [p["n"] for p in periods] == list(rows["n"])
     assert [p["label"] for p in periods] == list(rows["label"])
     assert periods[0]["start"] == "2026-06-01T00:00:00+03:00"
+    # A species seldom detected: its values and its samples apart
+    seldom = _seldom(campaign)
+    sparse = period_boxes(store, seldom, period="week")
+    rows = _rows(sparse, seldom)
+    assert (rows["n"] < rows["n_samples"]).all()
+    periods = _entry(sparse, seldom)["periods"]
+    assert [p["n_samples"] for p in periods] == list(rows["n_samples"])
+    assert [p["n"] for p in periods] == list(rows["n"])
     assert weeks.columns == 1 and days.columns == 1
     assert period_boxes(store, _cycles(campaign, "day")[:3]).columns == 2
 
