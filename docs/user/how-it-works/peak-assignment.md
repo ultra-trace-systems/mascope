@@ -1562,12 +1562,16 @@ the numbers the pin then writes for this sample.
 
 A pin is your choice, as an assignment by hand on one sample is, and both are judged
 alike: the tier is read off the evidence, and then the spectrum is asked whether it
-holds the isotope lines the formula predicts, at the gate the sample's assignment run
-asked its own rows at. A line that should be there and is not holds the pin's reading
-at *candidate* in that sample, as it holds a hand assignment. A sample with no such
-run, one only folded into the batch ledger, has no such gate and is asked no line, nor
-is one whose run asked its own rows none: there the pin's reading takes the tier its
-evidence gives. Nothing else a run asks is asked of a person's choice: those rules
+holds the isotope lines the formula predicts. A pin is asked this in every sample. Where
+the sample's assignment run recorded the gate it asked its own rows at, the pin is asked
+at that gate. A sample with no such run, one only folded into the batch ledger, or one
+whose run was made before Mascope looked for missing lines, is asked at the gate a run
+of that sample would ask at: the window, envelope floor and detection threshold of the
+measurement the sample is read at. That is the gate a reading the batch carries into
+the sample by itself, such as a series member's, is asked at, so your choice is never
+checked less than an automatic one. A line that should be there and is not holds the
+pin's reading at *candidate* in that sample, as it holds a hand assignment. Nothing
+else a run asks is asked of a person's choice: those rules
 weigh rivals, channels and lists, which a choice is not. When the identity's isotope
 pattern does not reach this peak, the alternative says *not reached here*: a pin leaves
 this sample as it is. Nothing is saved by looking. The pin's note keeps what was measured

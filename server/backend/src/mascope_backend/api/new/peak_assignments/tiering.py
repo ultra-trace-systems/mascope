@@ -1335,6 +1335,34 @@ class LineGate:
         }
 
     @classmethod
+    def at(
+        cls,
+        *,
+        mz_tolerance_ppm: float,
+        abundance_floor: float,
+        envelope_tolerance: EnvelopeTolerance | None,
+        instrument_type: str | None,
+    ) -> LineGate:
+        """The gate a run asks its rows' lines at, from what it measures with.
+
+        :param mz_tolerance_ppm: The match window it scores at.
+        :param abundance_floor: The envelope floor it scores at.
+        :param envelope_tolerance: The line-share tolerance it scores at, whose
+            detectability threshold the rule asks lines from; None for the
+            fit's default.
+        :param instrument_type: Its instrument class.
+        """
+        detect_snr, detect_from = detect_threshold(envelope_tolerance)
+        return cls(
+            mz_tolerance_ppm=float(mz_tolerance_ppm),
+            abundance_floor=float(abundance_floor),
+            detect_snr=detect_snr,
+            detect_from=detect_from,
+            rel_detect_no_snr=REL_DETECT_NO_SNR,
+            tof=instrument_type == "tof",
+        )
+
+    @classmethod
     def from_record(cls, tiering: Any) -> LineGate | None:
         """The gate a run asked its rows' lines at, read off its tiering record.
 
@@ -2457,14 +2485,11 @@ def apply_tiering(
     rows = list(assignments)
     committed = [row for row in rows if row.get("assigned_formula")]
     m0 = [row for row in committed if row.get("role") == ROLE_M0]
-    detect_snr, detect_from = detect_threshold(envelope_tolerance)
-    gate = LineGate(
-        mz_tolerance_ppm=float(mz_tolerance_ppm),
-        abundance_floor=float(abundance_floor),
-        detect_snr=detect_snr,
-        detect_from=detect_from,
-        rel_detect_no_snr=REL_DETECT_NO_SNR,
-        tof=instrument_type == "tof",
+    gate = LineGate.at(
+        mz_tolerance_ppm=mz_tolerance_ppm,
+        abundance_floor=abundance_floor,
+        envelope_tolerance=envelope_tolerance,
+        instrument_type=instrument_type,
     )
     artifacts = frozenset(str(peak_id) for peak_id in artifact_peak_ids)
     asked = with_absent = untestable = 0

@@ -34,6 +34,7 @@ from mascope_backend.api.new.peak_assignments import (
     batch_peaks_routes,
     batch_staleness,
     batch_untargeted,
+    model_readers,
     pipeline,
     sample_inputs,
 )
@@ -89,9 +90,11 @@ from mascope_backend.api.new.peak_assignments.batch_untargeted import (
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import (
+    SampleMassAccuracy,
     evidence_for,
     tier_for_evidence,
 )
+from mascope_backend.api.new.peak_assignments.tiering import DETECT_DEFAULT, LineGate
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
@@ -105,7 +108,13 @@ from mascope_backend.db import (
     SampleItem,
 )
 from mascope_backend.db.id import gen_id
+from mascope_tools.composition.envelope_tolerance import (
+    FORM_CENTRE_WIDTH,
+    LEVEL_OWN,
+)
 from mascope_tools.composition.heuristic_filter import formula_plausibility
+from mascope_tools.composition.measurement_model import MeasurementModel
+from mascope_tools.composition.profiles import INSTRUMENT_FALLBACK_SIGMA_PPM
 
 
 pytestmark = pytest.mark.asyncio
@@ -1457,6 +1466,141 @@ async def test_a_pin_is_asked_the_spectrums_rules_as_a_hand_assignment_is(
     ]
     members = await _members(async_session_factory, anchor["batch_peak_id"])
     assert tier_name(members[anchor["s1"]].tier) == "candidate"
+
+
+def _record_passes(monkeypatch):
+    """The stage-list passes the batch's measurements run, in order."""
+    passes = []
+    run_stages = pipeline.run_stages
+
+    async def recording(ctx):
+        passes.append(ctx)
+        return await run_stages(ctx)
+
+    monkeypatch.setattr(batch_untargeted, "run_stages", recording)
+    # A noise estimate, so the ion's 13C line is one the spectrum would show,
+    # and a peak above it, so its m/z is inside what the spectrum reads.
+    monkeypatch.setattr(
+        sample_inputs,
+        "load_sample_peaks",
+        lambda sample: frame([("p1", 181.0707, 5000.0), ("p9", 250.0, 50.0)]).assign(
+            signal_to_noise=100.0
+        ),
+    )
+    return passes
+
+
+async def _no_run_on(session_factory, sample_item_id):
+    """Leave the sample with no completed in-app run, as one the ingest folded
+    straight into the batch ledger is."""
+    async with session_factory() as session:
+        await session.execute(
+            update(PeakAssignmentRun)
+            .where(PeakAssignmentRun.sample_item_id == sample_item_id)
+            .values(status="failed")
+        )
+        await session.commit()
+
+
+def _reasons(ctx, peak_id="p1"):
+    (row,) = [row for row in ctx.judged.rows if row["sample_peak_id"] == peak_id]
+    return [reason["rule"] for reason in row["provenance"].get("tier_reasons", [])]
+
+
+def _fold_kept(detect_snr):
+    """What a run-less fold keeps for a sample (``model_readers.record_sample_model``):
+    its model and a line-share tolerance whose own fit set the detectability
+    threshold the absent-line rule asks lines from."""
+    model = MeasurementModel.v1(
+        SampleMassAccuracy(mu_ppm=0.0, sigma_ppm=0.2, anchors=30, anchor_ions=9),
+        INSTRUMENT_FALLBACK_SIGMA_PPM["orbi"],
+    )
+    return {
+        "measurement_model": model.record(),
+        "envelope_tolerance": {
+            "level": LEVEL_OWN,
+            "form": FORM_CENTRE_WIDTH,
+            "centre": 0.0,
+            "floor": 0.05,
+            "detect_snr": detect_snr,
+        },
+    }
+
+
+@pytest.mark.parametrize("kept", [None, 2.5], ids=["nothing kept", "fold's model"])
+async def test_a_pin_in_a_sample_no_run_read_is_asked_as_a_propagation_is(
+    async_session_factory, anchor, stubbed_scorer, monkeypatch, kept
+):
+    """MAS-1046: S1 has no run, so nothing recorded a gate for its lines. The
+    pin is asked them at the gate a run of S1 would ask at, the one a
+    propagated reading of S1 is asked at, and the absent 13C line holds S1's
+    member at candidate as it holds the propagated reading. Where the ingest
+    fold kept S1's model, its tolerance's own threshold is the gate's."""
+    await _no_run_on(async_session_factory, anchor["s1"])
+    if kept is not None:
+        await model_readers.record_sample_model(anchor["s1"], _fold_kept(kept))
+    passes = _record_passes(monkeypatch)
+    await run_batch_peak_curation(
+        anchor["batch_id"],
+        anchor["batch_peak_id"],
+        anchor["other"],
+        "C6H12O6",
+        PeakAssignmentConfig(),
+    )
+    (pin,) = passes
+    assert pin.path is pipeline.PERSONS_CHOICE
+    assert pin.recorded is None
+    assert _reasons(pin) == ["absent_line"]
+    assert pin.tiering == {"rules": "spectrum", "asked": 1, "capped": 1}
+    members = await _members(async_session_factory, anchor["batch_peak_id"])
+    assert tier_name(members[anchor["s1"]].tier) == "candidate"
+
+    # The same reading propagated onto S1, under a run's rules.
+    await _propagate_to_sample(
+        anchor["batch_id"],
+        anchor["s1"],
+        {anchor["batch_peak_id"]: Annotation("C6H12O6", "C6H13O6+", MECH, "M0", None)},
+        PeakAssignmentConfig(),
+        only_unassigned=False,
+    )
+    propagated = passes[-1]
+    assert propagated.path is pipeline.PROPAGATION
+    assert "absent_line" in _reasons(propagated)
+    assert pin.line_gate == LineGate.from_record(propagated.tiering)
+    if kept is not None:
+        assert pin.line_gate.detect_snr == kept
+
+
+async def test_a_pin_is_asked_at_the_gate_its_samples_run_recorded(
+    async_session_factory, anchor, stubbed_scorer, monkeypatch
+):
+    """Where S1's run recorded the gate it asked lines at, the pin is asked
+    at that one, not at the one its measurement would give."""
+    recorded = LineGate(15.0, 0.02, 4.0, DETECT_DEFAULT, 0.2, True)
+    async with async_session_factory() as session:
+        await session.execute(
+            update(PeakAssignmentRun)
+            .where(PeakAssignmentRun.sample_item_id == anchor["s1"])
+            .values(
+                config={
+                    "tiering": {
+                        "version": 11,
+                        "absent_line": {"spectrum": True, **recorded.record()},
+                    }
+                }
+            )
+        )
+        await session.commit()
+    passes = _record_passes(monkeypatch)
+    await run_batch_peak_curation(
+        anchor["batch_id"],
+        anchor["batch_peak_id"],
+        anchor["other"],
+        "C6H12O6",
+        PeakAssignmentConfig(),
+    )
+    (pin,) = passes
+    assert pin.line_gate == recorded
 
 
 # --- the batch stages --------------------------------------------------------------
