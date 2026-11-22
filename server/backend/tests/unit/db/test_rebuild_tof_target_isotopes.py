@@ -107,12 +107,13 @@ def test_lines_compare_to_six_decimals_in_any_order():
     a = [("C", 100.0000001, 0.5), ("D", 101.0, 0.25)]
     b = [("D", 101.0000004, 0.2500001), ("C", 100.0, 0.5)]
     assert script.lines_of(a) == script.lines_of(b)
-    # The same two lines, one m/z or one abundance moved by 1e-5
+    # The same two lines, one m/z or one abundance moved by 2e-6: alike at
+    # 5 decimals, different at 6
     assert script.lines_of(a) != script.lines_of(
-        [("C", 100.00001, 0.5), ("D", 101.0, 0.25)]
+        [("C", 100.000002, 0.5), ("D", 101.0, 0.25)]
     )
     assert script.lines_of(a) != script.lines_of(
-        [("C", 100.0, 0.5), ("D", 101.0, 0.25001)]
+        [("C", 100.0, 0.5), ("D", 101.0, 0.250002)]
     )
 
 
