@@ -130,7 +130,10 @@ Non-goals, each a decision:
   gap is accepted: the operator fills it by hand, as today. What changes is
   that the agent now *says* there was a gap, and when (4.8). Only the
   restarts the updater itself causes are covered, because nobody knows they
-  happened (4.5).
+  happened (4.5). *Since 2026-11-22 (MAS-964) the gap is no longer left to
+  the operator: the agent keeps a record of what it uploaded and of what it
+  had queued, and catches up at every start within an age and a count bound
+  (MAS-968). That work is outside this design, which builds on its record.*
 - **Updating agents that predate this work, or the TOF agent.** They cannot
   be reached; phase E replaces them by hand.
 - **Delta or background-download optimisations.** The installer is small
@@ -254,7 +257,10 @@ The new agent, started with `--after-update`:
 What this does *not* do is the reason it is safe:
 
 - It never runs without a handoff, so a first start, a crash, a reboot or a
-  closed window uploads nothing from the folder.
+  closed window uploads nothing from the folder through this pickup. *Since
+  2026-11-22 (MAS-964) those starts have a bounded catch-up of their own
+  (MAS-968). The handoff's `pending` list is that record's, and the pickup
+  here is that catch-up under the tighter bounds below (ICS-95).*
 - It never walks the tree. It lists a handful of folders the old agent named.
 - It only picks up files created in the seconds the agent was not running,
   which the running agent would have uploaded anyway.
@@ -326,6 +332,13 @@ refusing the credential after an update, is.
   the operator is told about, which is what #1905 found worst about the gap.
   The user guide gets the sentence #1905 asks for.
 
+  *Since 2026-11-22 (MAS-964):* the `last_alive` mark lives in the state
+  file MAS-968 creates, and the agent catches up at start within bounds. The
+  warning then names only what that catch-up could not cover, files older
+  than its age bound or beyond its count, and no longer every file that
+  arrived in the gap (ICS-90). "No folder scan and uploads nothing" stays
+  true of the warning itself.
+
 ### 4.9 Server side
 
 - `[backend]` settings: `file_agent_updates = "auto" | "notify" | "off"`,
@@ -369,7 +382,8 @@ it as one:
 
 - **A - agent prerequisites, useful on their own.** Single-instance mutex;
   state file with `last_alive`; the gap warning (4.8, log only). Closes the
-  "silent" half of #1905.
+  "silent" half of #1905. Since 2026-11-22 the state file is the one MAS-968
+  creates (MAS-964), and A adds `last_alive` to it.
 - **B - updater.** Server offer endpoint, capability and settings (4.1,
   4.9), default `off`; agent offer loop, download, verification (4.3),
   drain and handoff (4.4, 4.5), update helper and health mark (4.6, 4.7);
@@ -385,7 +399,10 @@ it as one:
 
 B must be released before phase E's first site visit (decided on 2026-11-22,
 section 1). A and C can land either side of it, except that B's drain and
-handoff builds on A's mutex and state file.
+handoff builds on A's mutex and on the File Agent's record of what it
+uploaded and had queued (MAS-968, decided in MAS-964 on 2026-11-22): the
+handoff's `pending` list is that record's, and A's `last_alive` mark lives
+in the same state file.
 
 ## 7. Rollout
 
@@ -409,7 +426,10 @@ handoff builds on A's mutex and state file.
   screen after a Windows reboot runs no agent at all, and is updated on its
   next start. That is the service question in 9.
 - Files that arrive while the agent is stopped for any reason other than an
-  update are still not uploaded. They are reported instead (4.8).
+  update are still not uploaded. They are reported instead (4.8). *Since
+  2026-11-22 (MAS-964, MAS-968) they are caught up at the next start within
+  an age and a count bound, and what falls outside the bounds is what is
+  reported.*
 - A file moved into the watched folder during an update's restart keeps its
   old creation time and is missed by the handoff.
 - A release that installs, starts and passes the health mark but misbehaves
