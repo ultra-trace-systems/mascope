@@ -11,9 +11,12 @@ from datetime import UTC, datetime
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from test_utils import gen_test_id
 
+from mascope_backend.api.controllers.match.lib.match_write_lock import (
+    acquire_match_write_locks,
+)
 from mascope_backend.api.controllers.target.isotopes.target_isotopes_controller import (
     get_target_isotopes,
 )
@@ -104,7 +107,13 @@ def test_lines_compare_to_six_decimals_in_any_order():
     a = [("C", 100.0000001, 0.5), ("D", 101.0, 0.25)]
     b = [("D", 101.0000004, 0.2500001), ("C", 100.0, 0.5)]
     assert script.lines_of(a) == script.lines_of(b)
-    assert script.lines_of(a) != script.lines_of([("C", 100.00001, 0.5)])
+    # The same two lines, one m/z or one abundance moved by 1e-5
+    assert script.lines_of(a) != script.lines_of(
+        [("C", 100.00001, 0.5), ("D", 101.0, 0.25)]
+    )
+    assert script.lines_of(a) != script.lines_of(
+        [("C", 100.0, 0.5), ("D", 101.0, 0.25001)]
+    )
 
 
 # --- The database ---
@@ -764,3 +773,119 @@ async def test_a_calibration_collection_reports_its_modes_hash_before_and_after(
     assert mode.after == await _fit_hash(library)
     assert mode.before != mode.after
     assert totals.hashes_changed == 1
+
+
+async def _add_tof_sample(session_factory, library, key: str, batch: str) -> str:
+    """A second TOF sample in a batch, matched on nothing; the fixture's
+    teardown removes it with the others."""
+    async with session_factory() as session:
+        file_id = gen_test_id()
+        session.add(
+            SampleFile(
+                sample_file_id=file_id,
+                filename=f"rebuild-{key}-{file_id}",
+                instrument="rebuild-tof",
+                instrument_type="tof",
+                datetime=datetime(2026, 10, 1, 13),
+                datetime_utc=datetime(2026, 10, 1, 13, tzinfo=UTC),
+                length=1.0,
+                range=[10.0, 500.0],
+                polarity="-",
+            )
+        )
+        await session.flush()
+        sample_id = gen_test_id()
+        session.add(
+            SampleItem(
+                sample_item_id=sample_id,
+                sample_batch_id=library["batches"][batch],
+                sample_file_id=file_id,
+                sample_item_name=f"rebuild {key}",
+                sample_item_type="ACQUISITION",
+            )
+        )
+        await session.commit()
+    library["samples"][key] = sample_id
+    return sample_id
+
+
+async def _matches_held(session_factory, sample_ids) -> tuple[int, int]:
+    async with session_factory() as session:
+        return tuple(
+            [
+                await session.scalar(
+                    select(func.count())
+                    .select_from(table)
+                    .where(table.sample_item_id.in_(list(sample_ids)))
+                )
+                for table in (MatchIsotope, MatchIon)
+            ]
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_dry_run_counts_the_matches_a_run_removes(
+    async_session_factory, library
+):
+    """A batch two collections with a changed ion reach counts its samples'
+    matches once, in the dry run as in the run."""
+    async with async_session_factory() as session:
+        session.add(
+            TargetCollectionInSampleBatch(
+                target_collection_id=library["collections"]["calibration"],
+                sample_batch_id=library["batches"]["tof"],
+            )
+        )
+        await session.commit()
+    scope = _scope(library, "targets", "calibration")
+
+    dry = await script.rebuild(scope, dry_run=True)
+    # Both collections reach the batch
+    for key in ("targets", "calibration"):
+        plan = _plan(dry, library["collections"][key])
+        assert library["samples"]["tof"] in plan.samples
+        assert plan.match_isotopes
+    held = await _matches_held(async_session_factory, dry.samples)
+
+    run = await script.rebuild(scope, dry_run=False)
+
+    assert await _matches_held(async_session_factory, dry.samples) == (0, 0)
+    assert run.samples == dry.samples
+    assert (dry.match_isotopes, dry.match_ions) == held
+    assert (run.match_isotopes, run.match_ions) == held
+
+
+@pytest.mark.asyncio
+async def test_the_match_write_locks_are_taken_through_one_sample_per_batch(
+    async_session_factory, library, monkeypatch
+):
+    """The lock helper reads the samples' batches in one ``IN``: it gets one
+    sample of each batch, not every sample the run reaches."""
+    second = await _add_tof_sample(async_session_factory, library, "tof_2", "tof")
+    taken = []
+
+    async def record(session, sample_item_ids):
+        taken.append(sorted(sample_item_ids))
+        await acquire_match_write_locks(session, sample_item_ids)
+
+    monkeypatch.setattr(script, "acquire_match_write_locks", record)
+
+    totals = await script.rebuild(_scope(library, "targets"), dry_run=False)
+
+    plan = _plan(totals, library["collections"]["targets"])
+    assert {library["samples"]["tof"], second} <= set(plan.samples)
+    (lock_samples,) = taken
+    async with async_session_factory() as session:
+        batches = (
+            (
+                await session.execute(
+                    select(SampleItem.sample_batch_id).where(
+                        SampleItem.sample_item_id.in_(lock_samples)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(lock_samples) == len(plan.batches)
+    assert sorted(batches) == sorted(plan.batches)

@@ -328,8 +328,21 @@ class CollectionPlan:
     #: matches go.
     batches: list[str] = field(default_factory=list)
     samples: list[str] = field(default_factory=list)
-    match_isotopes: int = 0
-    match_ions: int = 0
+    #: One TOF sample of each batch, which the batch's match-write lock is
+    #: taken through.
+    lock_samples: list[str] = field(default_factory=list)
+    #: The match isotopes and match ions each sample holds, by sample: a
+    #: sample that two collections reach counts once over a run (``Totals``).
+    match_isotopes_by_sample: dict[str, int] = field(default_factory=dict)
+    match_ions_by_sample: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def match_isotopes(self) -> int:
+        return sum(self.match_isotopes_by_sample.values())
+
+    @property
+    def match_ions(self) -> int:
+        return sum(self.match_ions_by_sample.values())
 
     @property
     def changed(self) -> list[IonRead]:
@@ -512,17 +525,47 @@ async def mode_hashes(
     return hashes
 
 
-async def affected(
-    session, changed: list[IonRead]
-) -> tuple[list[str], list[str], int, int]:
+@dataclass
+class Reach:
+    """The TOF batches a collection's changed ions reach, and their TOF
+    samples."""
+
+    batches: list[str] = field(default_factory=list)
+    samples: list[str] = field(default_factory=list)
+    #: One sample of each batch.
+    lock_samples: list[str] = field(default_factory=list)
+    match_isotopes_by_sample: dict[str, int] = field(default_factory=dict)
+    match_ions_by_sample: dict[str, int] = field(default_factory=dict)
+
+
+async def _count_by_sample(session, table, sample_ids: list[str]) -> dict[str, int]:
+    """The rows of a match table each sample holds; a sample with none is
+    left out."""
+    counts: dict[str, int] = {}
+    for chunk in _chunks(sample_ids):
+        counts.update(
+            (
+                await session.execute(
+                    select(table.sample_item_id, func.count())
+                    .where(table.sample_item_id.in_(chunk))
+                    .group_by(table.sample_item_id)
+                )
+            )
+            .tuples()
+            .all()
+        )
+    return counts
+
+
+async def affected(session, changed: list[IonRead]) -> Reach:
     """The TOF batches the changed ions reach, their TOF samples, and how
-    many match isotopes and match ions those samples hold.
+    many match isotopes and match ions each of those samples holds.
 
     A batch is reached when it holds a collection that holds a changed ion's
     compound, or a sample matched on one of a changed ion's LOW rows.
     """
     if not changed:
-        return [], [], 0, 0
+        return Reach()
     compound_ids = sorted({ion.target_compound_id for ion in changed})
     old_ids = sorted({isotope_id for ion in changed for isotope_id in ion.low_ids})
     batch_ids: set[str] = set()
@@ -561,11 +604,13 @@ async def affected(
         )
 
     samples: set[str] = set()
-    batches: set[str] = set()
+    #: Each batch, and one of its TOF samples.
+    batches: dict[str, str] = {}
     for chunk in _chunks(sorted(batch_ids)):
         for sample_item_id, sample_batch_id in (
             await session.execute(
                 select(SampleItem.sample_item_id, SampleItem.sample_batch_id)
+                .order_by(SampleItem.sample_item_id)
                 .join(
                     SampleFile, SampleFile.sample_file_id == SampleItem.sample_file_id
                 )
@@ -576,21 +621,18 @@ async def affected(
             )
         ).all():
             samples.add(sample_item_id)
-            batches.add(sample_batch_id)
+            batches.setdefault(sample_batch_id, sample_item_id)
 
-    match_isotopes = match_ions = 0
-    for chunk in _chunks(sorted(samples)):
-        match_isotopes += await session.scalar(
-            select(func.count())
-            .select_from(MatchIsotope)
-            .where(MatchIsotope.sample_item_id.in_(chunk))
-        )
-        match_ions += await session.scalar(
-            select(func.count())
-            .select_from(MatchIon)
-            .where(MatchIon.sample_item_id.in_(chunk))
-        )
-    return sorted(batches), sorted(samples), match_isotopes, match_ions
+    samples_sorted = sorted(samples)
+    return Reach(
+        batches=sorted(batches),
+        samples=samples_sorted,
+        lock_samples=sorted(batches.values()),
+        match_isotopes_by_sample=await _count_by_sample(
+            session, MatchIsotope, samples_sorted
+        ),
+        match_ions_by_sample=await _count_by_sample(session, MatchIon, samples_sorted),
+    )
 
 
 async def plan_collection(
@@ -600,12 +642,12 @@ async def plan_collection(
     plan = CollectionPlan(collection_id=collection_id, name=name)
     plan.ions = await read_ions(session, collection_id, fresh_cache)
     plan.modes = await mode_hashes(session, collection_id, plan.ions)
-    (
-        plan.batches,
-        plan.samples,
-        plan.match_isotopes,
-        plan.match_ions,
-    ) = await affected(session, plan.changed)
+    reach = await affected(session, plan.changed)
+    plan.batches = reach.batches
+    plan.samples = reach.samples
+    plan.lock_samples = reach.lock_samples
+    plan.match_isotopes_by_sample = reach.match_isotopes_by_sample
+    plan.match_ions_by_sample = reach.match_ions_by_sample
     return plan
 
 
@@ -617,8 +659,10 @@ async def write_plan(session, plan: CollectionPlan) -> None:
         return
     now = datetime.now(timezone.utc)
     # The batches' match-write locks first, as every match writer takes them,
-    # so a match being written to these samples lands before or after
-    await acquire_match_write_locks(session, plan.samples)
+    # so a match being written to these samples lands before or after. One
+    # sample per batch: the helper reads the batches back in one ``IN``, which
+    # every TOF sample of a server could overfill.
+    await acquire_match_write_locks(session, plan.lock_samples)
     for chunk in _chunks(plan.batches):
         await session.execute(
             update(SampleBatch)
@@ -732,9 +776,20 @@ class Totals:
     not_made: set = field(default_factory=set)
     batches: set = field(default_factory=set)
     samples: set = field(default_factory=set)
-    match_isotopes: int = 0
-    match_ions: int = 0
+    #: Each sample's matches as the first collection that reached it counted
+    #: them. A run's later collections find them gone, and a dry run's find
+    #: them again, so this is what a run removes in both.
+    match_isotopes_by_sample: dict = field(default_factory=dict)
+    match_ions_by_sample: dict = field(default_factory=dict)
     hashes_changed: int = 0
+
+    @property
+    def match_isotopes(self) -> int:
+        return sum(self.match_isotopes_by_sample.values())
+
+    @property
+    def match_ions(self) -> int:
+        return sum(self.match_ions_by_sample.values())
 
     def add(self, plan: CollectionPlan) -> None:
         self.plans.append(plan)
@@ -747,8 +802,12 @@ class Totals:
         self.not_made.update(ion.target_ion_id for ion in plan.not_made)
         self.batches.update(plan.batches)
         self.samples.update(plan.samples)
-        self.match_isotopes += plan.match_isotopes
-        self.match_ions += plan.match_ions
+        for into, counts in (
+            (self.match_isotopes_by_sample, plan.match_isotopes_by_sample),
+            (self.match_ions_by_sample, plan.match_ions_by_sample),
+        ):
+            for sample_id, count in counts.items():
+                into.setdefault(sample_id, count)
         self.hashes_changed += sum(
             1 for mode in plan.modes if mode.before != mode.after
         )
