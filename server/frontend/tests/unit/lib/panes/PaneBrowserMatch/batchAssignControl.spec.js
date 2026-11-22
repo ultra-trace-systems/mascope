@@ -30,9 +30,14 @@ let app
 let notificationHandlers
 
 vi.mock('@/stores', () => ({ useApp: () => app }))
-// The run selector reads the runs store; its own spec pins it.
-vi.mock('@/lib/panes/PaneBrowserMatch/BatchPeakRunSelect.vue', () => ({
-  default: { template: '<div class="run-select-stub" />' }
+// Details reads the runs store and the ledger; its own spec pins it. The
+// stub shows which of its two views the control opened it on.
+vi.mock('@/lib/panes/PaneBrowserMatch/BatchAssignDetails.vue', () => ({
+  default: {
+    props: ['view'],
+    emits: ['update:view', 'picked'],
+    template: '<div class="details-stub" :data-view="view" />'
+  }
 }))
 
 const helpStub = {
@@ -189,7 +194,13 @@ function makeApp({
       workspace: { focused: workspace },
       sample: { list: samples, pending: false },
       batchPeak: { list: peaks, pending: false, error: null },
-      batchPeakRun: { list: [{ batch_peak_run_id: 'run-9', current: true }], viewingCurrent: true }
+      batchPeakRun: {
+        list: [{ batch_peak_run_id: 'run-9', current: true }],
+        viewing: null,
+        viewingCurrent: true,
+        ordinal: () => 1,
+        backToCurrent: vi.fn()
+      }
     },
     ui: {
       help: helpStub,
@@ -246,7 +257,15 @@ const GLOBAL_STUBS = {
       '<button :disabled="disabled" :data-outlined="String(!!outlined)" :data-loading="String(!!loading)">{{ label }}</button>'
   },
   TieredMenu: TieredMenuStub,
-  Popover: { methods: { show() {} }, template: '<div class="popover-stub"><slot /></div>' }
+  Popover: {
+    methods: {
+      show(event, target) {
+        popoverShown.push(target ?? null)
+      },
+      hide() {}
+    },
+    template: '<div class="popover-stub"><slot /></div>'
+  }
 }
 
 const { default: BatchAssignControl } =
@@ -256,6 +275,8 @@ const { useBatchAssign, POLL_MS, LEDGER_WAIT_MS } =
 
 let wrapper
 let assign
+// The targets the Details popover was shown at, one per opening.
+let popoverShown = []
 
 async function mountControl(status, options = {}) {
   app = makeApp(options)
@@ -308,6 +329,7 @@ beforeEach(() => {
   vi.setSystemTime(new Date(2026, 10, 16, 16, 0))
   notificationHandlers = {}
   socketHandlers = {}
+  popoverShown = []
   post.mockReset()
   get.mockReset()
   post.mockResolvedValue(ack())
@@ -790,11 +812,22 @@ describe('BatchAssignControl menu', () => {
     expect(assign.exporting).toBe(true)
   })
 
-  it('Run history opens the run selector', async () => {
+  it('Run history opens Details on its history, under the status', async () => {
     await mountControl(FIXTURES.current)
 
-    expect(menuItem('run-history').exists()).toBe(true)
-    expect(wrapper.find('.popover-stub .run-select-stub').exists()).toBe(true)
+    expect(wrapper.find('.details-stub').attributes('data-view')).toBe('details')
+    await menuItem('run-history').trigger('click')
+
+    expect(popoverShown).toHaveLength(1)
+    expect(popoverShown[0]).toBe(wrapper.find('[data-testid="assign-status"]').element)
+    expect(wrapper.find('.details-stub').attributes('data-view')).toBe('history')
+  })
+
+  it('keeps no run selector in the bar', async () => {
+    await mountControl(FIXTURES.current)
+
+    expect(wrapper.find('.run-select').exists()).toBe(false)
+    expect(wrapper.findAllComponents({ name: 'Select' })).toHaveLength(0)
   })
 
   it('hides Advanced while Show assignment stages is off', async () => {
@@ -1306,4 +1339,100 @@ describe('BatchAssignControl menu entries that need data', () => {
     await flushPromises()
     expect(menuItem('export-ledger').attributes('disabled')).toBeDefined()
   })
+})
+
+describe('BatchAssignControl Details', () => {
+  const toggle = () => wrapper.find('[data-testid="assign-details-toggle"]')
+
+  it.each([
+    ['current', FIXTURES.current],
+    ['behind', FIXTURES.behind_new],
+    ['running', FIXTURES.running_mine],
+    ['failed', FIXTURES.failed],
+    ['cancelled', FIXTURES.cancelled]
+  ])('offers Details beside the status when %s', async (_, fixture) => {
+    await mountControl(fixture)
+
+    expect(toggle().exists()).toBe(true)
+    await toggle().trigger('click')
+    expect(popoverShown).toHaveLength(1)
+    expect(wrapper.find('.details-stub').attributes('data-view')).toBe('details')
+  })
+
+  it('opens on the checklist again after Run history', async () => {
+    await mountControl(FIXTURES.current)
+
+    await menuItem('run-history').trigger('click')
+    expect(wrapper.find('.details-stub').attributes('data-view')).toBe('history')
+    await toggle().trigger('click')
+    expect(wrapper.find('.details-stub').attributes('data-view')).toBe('details')
+  })
+
+  it.each([
+    ['not assigned', FIXTURES.none],
+    ['known compositions only', FIXTURES.folded_only]
+  ])('offers no Details on a batch %s', async (_, fixture) => {
+    await mountControl(fixture)
+
+    expect(toggle().exists()).toBe(false)
+  })
+})
+
+describe('BatchAssignControl viewing an earlier run', () => {
+  async function viewEarlier() {
+    app.data.batchPeakRun.viewing = {
+      batch_peak_run_id: 'run-7',
+      action: 'assign',
+      current: false,
+      batch_peak_run_utc_created: new Date(2026, 10, 14, 9, 30).toISOString()
+    }
+    app.data.batchPeakRun.viewingCurrent = false
+    app.data.batchPeakRun.ordinal = (run) => (run?.batch_peak_run_id === 'run-7' ? 3 : null)
+    await flushPromises()
+  }
+
+  it('says which run is on screen, read-only, and offers Back to current', async () => {
+    await mountControl(FIXTURES.behind_new)
+    await viewEarlier()
+
+    expect(line()).toBe('Viewing run #3 · 14 Nov 09:30 · read-only')
+    expect(detail().exists()).toBe(false)
+    expect(main().text()).toBe('Back to current')
+    expect(main().attributes('data-outlined')).toBe('true')
+    expect(toggle().exists()).toBe(true)
+  })
+
+  it('offers Details while an earlier run is on screen, also on a batch of known compositions only', async () => {
+    await mountControl(FIXTURES.folded_only)
+    expect(toggle().exists()).toBe(false)
+    await viewEarlier()
+
+    expect(toggle().exists()).toBe(true)
+  })
+
+  it('Back to current refocuses the current run and posts nothing', async () => {
+    await mountControl(FIXTURES.current)
+    await viewEarlier()
+
+    await main().trigger('click')
+    await flushPromises()
+
+    expect(app.data.batchPeakRun.backToCurrent).toHaveBeenCalledTimes(1)
+    expect(assignCalls()).toHaveLength(0)
+  })
+
+  it('says where the batch stands again once the current run is back', async () => {
+    await mountControl(FIXTURES.current)
+    await viewEarlier()
+    app.data.batchPeakRun.viewing = { batch_peak_run_id: 'run-9', current: true }
+    app.data.batchPeakRun.viewingCurrent = true
+    await flushPromises()
+
+    expect(line()).toBe('Assigned today 14:02 · up to date')
+    expect(main().text()).toBe('Re-assign')
+  })
+
+  function toggle() {
+    return wrapper.find('[data-testid="assign-details-toggle"]')
+  }
 })

@@ -5,6 +5,7 @@ import { api } from '@/api'
 import { getApiErrorMessage, isRefusedRequest } from '@/api/utils'
 import { canEditWorkspace } from '@/lib/permissions'
 import { useApp } from '@/stores'
+import { FOLD_STAGE } from '@/stores/data/modules/batchPeak/run.js'
 
 /**
  * Assigning a batch: where its assignment stands, and the one action that
@@ -48,8 +49,8 @@ export const PHASES = [
   'Cross-check across the batch'
 ]
 
-/** The fold of every sample: a phase of its own, and no stage of the list. */
-export const FOLD_STAGE = 'fold'
+/** The fold of every sample: no stage of the list; run.js owns the name. */
+export { FOLD_STAGE }
 
 /** How often the status is read again while a pass runs. */
 export const POLL_MS = 30 * 1000

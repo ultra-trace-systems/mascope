@@ -6,8 +6,8 @@ import TieredMenu from 'primevue/tieredmenu'
 
 import { useApp } from '@/stores'
 
-import BatchPeakRunSelect from './BatchPeakRunSelect.vue'
-import { PHASES, useBatchAssign } from './stores/batchAssign.js'
+import BatchAssignDetails from './BatchAssignDetails.vue'
+import { PHASES, useBatchAssign, whenWords } from './stores/batchAssign.js'
 
 /**
  * Assign batch: the one control that runs the batch's pass and says where the
@@ -21,6 +21,11 @@ import { PHASES, useBatchAssign } from './stores/batchAssign.js'
  * Re-assign from scratch, Run history, Export ledger, and, behind the user
  * setting *Show assignment stages*, Advanced › Run from a stage.
  *
+ * **Details**, beside the status, opens the pass's stages, results and
+ * settings, and Run history (BatchAssignDetails, 3.2). While an earlier run's
+ * ledger is on screen the bar says so, *Viewing run #N · read-only*, and the
+ * main half is **Back to current**.
+ *
  * Everything it shows comes from the status read in the store, so two users
  * and two tabs see the same state. Rendered inside the switch bar, so it
  * inherits the bar's feature-flag gate.
@@ -32,7 +37,36 @@ const assign = useBatchAssign()
 const release = assign.attach()
 onBeforeUnmount(release)
 
-const view = computed(() => assign.view)
+const runs = computed(() => app.data.batchPeakRun)
+
+/** An earlier run's ledger is on screen, read-only: the bar says which. */
+const viewingEarlier = computed(() => {
+  if (!runs.value || runs.value.viewingCurrent !== false || !runs.value.viewing) return null
+  const run = runs.value.viewing
+  const ordinal = runs.value.ordinal?.(run)
+  const when = whenWords(run.batch_peak_run_utc_created)
+  return {
+    line: [
+      ordinal != null ? `Viewing run #${ordinal}` : 'Viewing an earlier run',
+      when,
+      'read-only'
+    ]
+      .filter(Boolean)
+      .join(' · ')
+  }
+})
+
+const view = computed(() => {
+  const base = assign.view
+  if (!viewingEarlier.value) return base
+  return {
+    ...base,
+    tone: 'neutral',
+    line: viewingEarlier.value.line,
+    detail: null,
+    action: { kind: 'back', label: 'Back to current', filled: false }
+  }
+})
 
 // The ledger's empty state carries Assign batch itself; the bar then hides
 // its copy, so the two are never on screen together.
@@ -45,6 +79,13 @@ const action = computed(() => {
 
 const running = computed(() => view.value.state === 'running')
 
+// Details is offered once the batch has a pass to tell of, or a run to go back
+// to: not on a ledger that holds known compositions only, or none.
+const offersDetails = computed(() => {
+  if (viewingEarlier.value) return true
+  return Boolean(view.value.state) && !['none', 'folded_only'].includes(view.value.state)
+})
+
 // Why the main half is disabled, shown on its wrapper: a disabled button
 // receives no hover of its own. Cancel is this person's own pass, which the
 // role that started it may stop.
@@ -54,18 +95,29 @@ const disabledReason = computed(() => {
   return assign.blockedReason
 })
 
+const ACTION_ICONS = { cancel: 'pi ph ph-stop', back: 'pi ph ph-arrow-u-up-left' }
+const actionIcon = computed(() => ACTION_ICONS[action.value?.kind] ?? 'pi ph ph-magic-wand')
+
 function runAction() {
   const act = action.value
   if (!act) return
   if (act.kind === 'cancel') assign.cancel()
+  else if (act.kind === 'back') runs.value.backToCurrent()
   else assign.assign(act.body)
 }
 
 // --- The menu ------------------------------------------------------------------
 
 const menu = ref(null)
-const history = ref(null)
-const chevron = ref(null)
+const details = ref(null)
+const detailsView = ref('details')
+const statusEl = ref(null)
+
+/** Open Details, on its checklist or on Run history, under the status. */
+function openDetails(event, on = 'details') {
+  detailsView.value = on
+  details.value?.show(event, statusEl.value)
+}
 
 const canStart = computed(() => !assign.blockedReason && !running.value && !assign.launching)
 
@@ -103,9 +155,7 @@ const menuItems = computed(() => {
       icon: 'pi ph ph-clock-counter-clockwise',
       class: 'run-history',
       disabled: !app.data.batchPeakRun?.list?.length,
-      // Until Details lands (MAS-1016), the existing run selector, in a
-      // popover off the chevron.
-      command: ({ originalEvent }) => history.value?.show(originalEvent, chevron.value?.$el)
+      command: ({ originalEvent }) => openDetails(originalEvent, 'history')
     },
     {
       label: 'Export ledger',
@@ -139,6 +189,7 @@ function toggleMenu(event) {
   <span class="assign-control">
     <!-- Where the batch stands: a dot, the status line and the line under it. -->
     <span
+      ref="statusEl"
       class="assign-status"
       :class="`tone-${view.tone}`"
       data-testid="assign-status"
@@ -160,13 +211,24 @@ function toggleMenu(event) {
       </span>
     </span>
 
+    <Button
+      v-if="offersDetails"
+      class="assign-details-toggle"
+      data-testid="assign-details-toggle"
+      label="Details"
+      link
+      size="small"
+      aria-haspopup="true"
+      @click="(event) => openDetails(event)"
+    />
+
     <span class="assign-split">
       <span v-if="action" v-tooltip.bottom="disabledReason" class="assign-main-wrap">
         <Button
           class="assign-main"
           data-testid="assign-main"
           :label="action.label"
-          :icon="action.kind === 'cancel' ? 'pi ph ph-stop' : 'pi ph ph-magic-wand'"
+          :icon="actionIcon"
           size="small"
           :outlined="!action.filled"
           :severity="action.kind === 'cancel' ? 'secondary' : undefined"
@@ -176,7 +238,6 @@ function toggleMenu(event) {
         />
       </span>
       <Button
-        ref="chevron"
         class="assign-menu-toggle"
         data-testid="assign-menu-toggle"
         icon="pi ph ph-caret-down"
@@ -189,8 +250,8 @@ function toggleMenu(event) {
       />
     </span>
     <TieredMenu ref="menu" :model="menuItems" popup />
-    <Popover ref="history">
-      <BatchPeakRunSelect />
+    <Popover ref="details">
+      <BatchAssignDetails v-model:view="detailsView" @picked="details?.hide()" />
     </Popover>
   </span>
 </template>
