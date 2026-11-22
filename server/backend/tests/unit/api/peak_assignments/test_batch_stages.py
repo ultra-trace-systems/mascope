@@ -31,7 +31,10 @@ from mascope_backend.api.new.peak_assignments.batch_stages import (
     upstream_reason,
     with_version,
 )
-from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+from mascope_backend.api.new.peak_assignments.config import (
+    PeakAssignmentConfig,
+    settings_hash,
+)
 
 
 ORDER = [
@@ -327,8 +330,12 @@ class TestThePassesSettings:
     def test_settings_moved_only_where_both_sides_say_something(self):
         assert settings_moved({"settings_hash": "a"}, "b") is True
         assert settings_moved({"settings_hash": "a"}, "a") is False
-        # A pass from before the batch kept settings, or no pass: nothing.
-        assert settings_moved({"settings_hash": None}, "b") is False
-        assert settings_moved({}, "b") is False
+        # A pass from before the batch kept settings ran on the defaults.
+        defaults = settings_hash(None)
+        assert settings_moved({"settings_hash": None}, "b") is True
+        assert settings_moved({}, "b") is True
+        assert settings_moved({"settings_hash": None}, defaults) is False
+        assert settings_moved({}, defaults) is False
+        # No pass: nothing.
         assert settings_moved(None, "b") is False
         assert settings_moved({"settings_hash": "a"}, None) is False

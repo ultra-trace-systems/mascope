@@ -1883,7 +1883,8 @@ made for.
   new settings. Settings given to one request instead - the *Search untargeted* dialog's,
   or a `config` sent to `run-stages`, `assign` or a step's own route - are what that pass
   runs on in place of the batch's. Its run records that they came from the request, and
-  the batch stays behind until a pass runs on its own settings again.
+  the batch stays behind until a pass runs on its own settings again. A pass made before
+  batches kept settings counts as one on the defaults.
 - **New members are brought up to the batch's readings.** A sample folded in after a
   stage ran, or folded again from a new run of its own, reads its own rows. Running the
   stages again claims the passing water-ladder rungs and the present known species in it,

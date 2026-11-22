@@ -766,6 +766,36 @@ async def test_settings_saved_after_a_pass_are_settings_changed(
     assert (await _status(guest_client, batch_id))["state"] == "current"
 
 
+async def test_settings_saved_after_a_pass_with_no_hash_are_settings_changed(
+    guest_client, editor_client, folded, stand_ins, async_session_factory
+):
+    """A pass from before the batch kept settings recorded no hash, and reads
+    as one on the defaults: current while the batch keeps them, behind on the
+    first save of others."""
+    batch_id = folded["batch_id"]
+    await _pass(batch_id)
+    run = await _newest_run(async_session_factory, batch_id)
+    async with async_session_factory() as session:
+        stored = await session.get(BatchPeakRun, run.batch_peak_run_id)
+        summary = dict(stored.summary)
+        summary.pop("settings_hash")
+        stored.summary = summary
+        await session.commit()
+    status = await _status(guest_client, batch_id)
+    assert status["state"] == "current"
+    assert status["last_pass"]["settings_hash"] is None
+
+    await _save_settings(editor_client, batch_id, {"mz_precision_ppm": 2.5})
+    status = await _status(guest_client, batch_id)
+    assert status["state"] == "behind"
+    reasons = _reasons(status)
+    assert set(reasons) == {"settings_changed"}
+    assert reasons["settings_changed"]["detail"] == {
+        "pass": settings_hash(PeakAssignmentConfig()),
+        "now": settings_hash(PeakAssignmentConfig(mz_precision_ppm=2.5)),
+    }
+
+
 async def test_a_pass_on_a_requests_own_settings_leaves_it_settings_changed(
     guest_client, folded, stand_ins
 ):

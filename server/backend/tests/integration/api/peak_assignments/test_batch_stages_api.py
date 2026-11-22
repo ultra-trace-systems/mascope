@@ -1074,13 +1074,8 @@ async def test_settings_given_to_a_pass_override_the_batchs_and_say_so(
     assert run.config["settings_source"] == "batch"
 
 
-async def test_a_pass_from_before_the_batch_kept_settings_compares_nothing(
-    folded, stand_ins, async_session_factory
-):
-    """A pass that recorded no settings hash says nothing of the settings it
-    ran on: saving some starts no pass from the first stage."""
-    batch_id = folded["batch_id"]
-    await _run(batch_id)
+async def _drop_settings_hash(async_session_factory, batch_id):
+    """Make the newest pass one from before the batch kept settings."""
     run = await _newest_run(async_session_factory, batch_id)
     async with async_session_factory() as session:
         stored = await session.get(BatchPeakRun, run.batch_peak_run_id)
@@ -1088,8 +1083,25 @@ async def test_a_pass_from_before_the_batch_kept_settings_compares_nothing(
         summary.pop("settings_hash")
         stored.summary = summary
         await session.commit()
-    await _save_settings(async_session_factory, batch_id, {"mz_precision_ppm": 2.5})
+
+
+async def test_a_pass_from_before_the_batch_kept_settings_ran_on_the_defaults(
+    folded, seen_settings, async_session_factory
+):
+    """A pass that recorded no settings hash reads as one on the defaults: a
+    batch left on them needs no pass, and the first save of other settings
+    runs the next pass from the first stage, on them."""
+    batch_id = folded["batch_id"]
+    await _run(batch_id)
+    await _drop_settings_hash(async_session_factory, batch_id)
     assert (await _run(batch_id))["status"] == "skipped"
+
+    await _save_settings(async_session_factory, batch_id, {"mz_precision_ppm": 2.5})
+    seen_settings["seen"].clear()
+    await _run(batch_id)
+    run = await _newest_run(async_session_factory, batch_id)
+    assert run.summary["first_stage"] == ORDER[0]
+    assert seen_settings["seen"]["search"].mz_precision_ppm == 2.5
 
 
 async def test_settings_a_batch_saved_that_no_longer_read_are_the_defaults(
