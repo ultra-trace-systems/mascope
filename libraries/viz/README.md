@@ -313,9 +313,9 @@ render.plotly(fig)  # a plotly.graph_objects.Figure
 |---|---|---|---|
 | `series` | lines over time or a number, a band, gaps as gaps | `x`, `y` (one column or a list); `group`, `name`, `lo`, `hi` | `mode`, `markers`, `colours`, `names`, `spans`, `rules` |
 | `strip` | categorical rows by time, a cell where a row has a value | `x` (time), `y`; `value`, `mark` | `width`, `mark_label`, `spans`, `rules` |
-| `heatmap` | an x by y grid of cells coloured by value | `x`, `y`, `value`; `gap` | `mode`, `palette`, `centre`, `gap_label` |
+| `heatmap` | an x by y grid of cells coloured by value | `x`, `y`, `value`; `gap` | `mode`, `palette`, `centre`, `gap_label`, `rules` |
 | `scatter` | points, area by size, colour by column, the top N labelled | `x`, `y`; `size`, `colour`, `name`, `label`, `hollow` | `top_n`, `palette`, `colours`, `hollow_label` |
-| `sticks` | a spectrum: lines from zero, signed, the top N labelled | `x`, `y`; `group`, `name`, `label`, `mark` | `top_n`, `colours`, `by_sign`, `mark_label` |
+| `sticks` | a spectrum: lines from zero, signed, the top N labelled | `x`, `y`; `group`, `name`, `label`, `mark`, `hover` | `top_n`, `colours`, `by_sign`, `mark_label` |
 | `bars` | bars per category, side by side or stacked, an interval | `x`, `y`; `group`, `name`, `lo`, `hi` | `stack`, `colours` |
 | `box` | a box per category from its quartiles | `x`, `q1`, `median`, `q3`, `lo`, `hi`; `group`, `name`, `mean`, `hollow` | `colours`, `hollow_label` |
 | `table` | rows of the frame, formatted | `columns` (a list); `mark` | `headers`, `formats`, `max_rows`, `mark_label` |
@@ -373,7 +373,10 @@ encoding takes and each option's default. What every figure shares:
   holds the bar's top, the same on both renderers.
 - **`spans`** shade stretches of a time panel (`kind` `event` or `gap`),
   and **`rules`** mark a moment, such as a change of engine run, each with
-  a label. A time without a zone is in the x column's zone.
+  a label. A time without a zone is in the x column's zone. A heatmap
+  takes rules too, drawn over its cells, when its x is a time or a number.
+- **`hover`** on sticks is what plotly's hover text says of a stick and of
+  its label, such as how often a peak was seen; matplotlib draws no hover.
 - **Axes.** Each plotted panel has its own scale, range and label on each
   axis. A bars or box panel's x and a strip's rows are categories whatever
   their column holds, as are a text or a boolean column; they take neither

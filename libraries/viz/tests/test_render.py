@@ -2228,3 +2228,147 @@ def test_a_heatmaps_hover_shows_a_cells_value_not_its_log():
     panel = Panel("heatmap", encodings={"x": "x", "y": "y", "value": "v"})
     (trace,) = _heatmaps(Figure("h", "H", panels=[panel], data=data))
     assert list(trace.customdata[0]) == ["1235", "0.0001235"]
+
+
+# --- the composition snapshots (MAS-229): a heatmap's rules, a stick's hover -----------
+
+
+def _spectrogram_with_a_rule() -> Figure:
+    fig = specs.heatmap()
+    at = pd.Timestamp("2026-07-01T06:00", tz=specs.ZONE)
+    panels = [
+        Panel(
+            "heatmap",
+            axes=fig.panels[0].axes,
+            encodings=fig.panels[0].encodings,
+            options={"rules": [{"at": at, "label": "engine run changes"}]},
+            where=fig.panels[0].where,
+        ),
+        fig.panels[1],
+    ]
+    return Figure("spectrogram", fig.title, panels=panels, data=fig.data)
+
+
+def test_a_heatmap_marks_a_moment_over_its_cells_on_both_backends():
+    fig = _spectrogram_with_a_rule()
+    at = pd.Timestamp("2026-07-01T06:00", tz=specs.ZONE)
+
+    ax = render.matplotlib(fig).axes[0]
+    rules = [line for line in ax.get_lines() if line.get_zorder() == 1.5]
+    assert len(rules) == 1
+    assert rules[0].get_xdata()[0] == pytest.approx(
+        at.as_unit("ns").value / 86400e9, abs=1e-9
+    )
+    mesh = next(c for c in ax.collections if isinstance(c, QuadMesh))
+    assert rules[0].get_zorder() > mesh.get_zorder()
+    assert "engine run changes" in [t.get_text().strip() for t in ax.texts]
+    plotted = render.plotly(fig)
+    (rule,) = [s for s in plotted.layout.shapes if s.type == "line"]
+    assert rule.x0 == rule.x1 == "2026-07-01T06:00:00"
+    assert rule.layer == "above" and rule.xref == "x"
+    assert "engine run changes" in {a.text for a in plotted.layout.annotations}
+    parsed = Figure.from_json(fig.to_json())
+    assert parsed == fig
+    assert parsed.panels[0].options["rules"][0]["at"] == at
+    # A heatmap without rules draws none
+    assert not [s for s in render.plotly(specs.heatmap()).layout.shapes]
+
+
+def test_a_rule_on_a_heatmap_of_categories_is_refused():
+    data = pd.DataFrame({"x": ["a", "b"], "y": [1.0, 2.0], "v": [1.0, 2.0]})
+    with pytest.raises(ValueError, match="a rule marks a moment of a time or number"):
+        Figure(
+            "h",
+            "H",
+            panels=[
+                Panel(
+                    "heatmap",
+                    encodings={"x": "x", "y": "y", "value": "v"},
+                    options={"rules": [{"at": 1.0}]},
+                )
+            ],
+            data=data,
+        )
+
+
+def _sticks_with_hover() -> Figure:
+    fig = specs.sticks()
+    data = fig.data.assign(
+        hover=[
+            f"{f}: seen in {i * 10} % of the samples"
+            for i, f in enumerate(fig.data["formula"])
+        ]
+    )
+    data.loc[3, "hover"] = None
+    panel = fig.panels[0]
+    return Figure(
+        "period_spectrum",
+        fig.title,
+        panels=[
+            Panel(
+                "sticks",
+                axes=panel.axes,
+                encodings={**panel.encodings, "hover": "hover"},
+                options={"top_n": 4},
+                where=panel.where,
+            )
+        ],
+        data=data,
+    )
+
+
+def test_a_sticks_hover_says_its_text_on_the_stick_and_its_label():
+    fig = _sticks_with_hover()
+    mean = fig.frame(fig.panels[0])
+
+    plotted = render.plotly(fig)
+
+    (lines,) = [t for t in plotted.data if t.mode == "lines"]
+    assert lines.hoverinfo == "x+y+text"
+    texts = [t for t in lines.text if t is not None]
+    want = [h if isinstance(h, str) else "" for h in mean["hover"]]
+    assert texts == [h for h in want for _ in range(2)]
+    (labels,) = [t for t in plotted.data if t.mode == "text"]
+    tallest = mean.sort_values("intensity", ascending=False).head(4)
+    assert list(labels.text) == list(tallest["formula"])
+    assert list(labels.hovertext) == [
+        h if isinstance(h, str) else "" for h in tallest["hover"]
+    ]
+    assert labels.hoverinfo == "text"
+    # A static renderer has no hover: matplotlib draws the same sticks
+    ax = render.matplotlib(fig).axes[0]
+    assert len(ax.collections[0].get_segments()) == len(mean)
+    assert Figure.from_json(fig.to_json()) == fig
+    # Without a hover column the sticks and labels say no text
+    plain = render.plotly(specs.sticks())
+    assert all(t.text is None for t in plain.data if t.mode == "lines")
+    assert all(t.hoverinfo == "skip" for t in plain.data if t.mode == "text")
+
+
+def test_a_hover_text_is_drawn_as_written():
+    fig = _sticks_with_hover()
+    fig.data.loc[0, "hover"] = "<b>C2H4O2</b> & co"
+    fig = Figure.from_json(fig.to_json())
+    (lines,) = [t for t in render.plotly(fig).data if t.mode == "lines"]
+    assert "&lt;b&gt;C2H4O2&lt;/b&gt; &amp; co" in lines.text
+
+
+def test_a_heatmap_without_a_cell_draws_on_both_backends():
+    """A spectrogram of a store without a formula: a time axis with no
+    cell draws an empty panel, not an error."""
+    data = pd.DataFrame(
+        {
+            "t": pd.DatetimeIndex([], tz=specs.ZONE).as_unit("ns"),
+            "mz": pd.Series([], dtype="float64"),
+            "v": pd.Series([], dtype="float64"),
+        }
+    )
+    fig = Figure(
+        "h",
+        "H",
+        panels=[Panel("heatmap", encodings={"x": "t", "y": "mz", "value": "v"})],
+        data=data,
+    )
+    ax = render.matplotlib(fig).axes[0]
+    assert not [c for c in ax.collections if isinstance(c, QuadMesh)]
+    assert not [t for t in render.plotly(fig).data if t.type == "heatmap"]

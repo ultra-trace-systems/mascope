@@ -812,10 +812,11 @@ def sticks(
     fig: Figure, panel: Panel, theme: themes.Theme, colours: Colours
 ) -> pd.DataFrame:
     """A sticks panel's sticks, each a line from zero to its y: ``x``,
-    ``y``, ``colour``, ``group`` (None without) and ``marked``. A stick
-    takes its group's colour; with ``by_sign`` one at or above zero takes
-    the diverging ramp's high end and one below it its low end. A stick
-    without an x or a y is not drawn."""
+    ``y``, ``colour``, ``group`` (None without), ``marked`` and ``hover``
+    (its ``hover`` text, None without). A stick takes its group's colour;
+    with ``by_sign`` one at or above zero takes the diverging ramp's high
+    end and one below it its low end. A stick without an x or a y is not
+    drawn."""
     frame = fig.frame(panel)
     encodings = panel.encodings
     x = numbers(frame[encodings["x"]])
@@ -843,9 +844,19 @@ def sticks(
             "colour": pd.Series(tints, dtype=object),
             "group": pd.Series(group_of, dtype=object),
             "marked": marked,
+            "hover": pd.Series(_hovers(frame, panel), dtype=object),
         }
     )
     return table[np.isfinite(x) & np.isfinite(y)].reset_index(drop=True)
+
+
+def _hovers(frame: pd.DataFrame, panel: Panel) -> list[str | None]:
+    """Each row's ``hover`` text, None where it has none or the panel no
+    such encoding."""
+    column = panel.encodings.get("hover")
+    if column is None:
+        return [None] * len(frame)
+    return [None if _missing(v) else str(v) for v in frame[column]]
 
 
 # --- labels -------------------------------------------------------------------------------
@@ -853,12 +864,12 @@ def sticks(
 
 def labelled(fig: Figure, panel: Panel) -> pd.DataFrame:
     """The points a scatter or sticks panel labels: the ``top_n`` largest,
-    by size where it has one, by |y| for sticks, else by y; ``x``, ``y``
-    and ``text``."""
+    by size where it has one, by |y| for sticks, else by y; ``x``, ``y``,
+    ``text`` and ``hover`` (the row's ``hover`` text, None without)."""
     n = panel.options.get("top_n", 0)
     encodings = panel.encodings
     if not n or "label" not in encodings:
-        return pd.DataFrame({"x": [], "y": [], "text": []})
+        return pd.DataFrame({"x": [], "y": [], "text": [], "hover": []})
     frame = fig.frame(panel)
     x = on_scale(numbers(frame[encodings["x"]]), panel.axes.x.scale)
     y = on_scale(numbers(frame[encodings["y"]]), panel.axes.y.scale)
@@ -871,11 +882,13 @@ def labelled(fig: Figure, panel: Panel) -> pd.DataFrame:
     by[~(np.isfinite(x) & np.isfinite(y))] = np.nan
     texts = frame[encodings["label"]]
     chosen = [i for i in top(by, n) if not _missing(texts.iloc[i])]
+    hovers = _hovers(frame, panel)
     return pd.DataFrame(
         {
             "x": x[chosen],
             "y": y[chosen],
             "text": [label(texts.iloc[i]) for i in chosen],
+            "hover": pd.Series([hovers[i] for i in chosen], dtype=object),
         }
     )
 
