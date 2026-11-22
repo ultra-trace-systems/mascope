@@ -373,8 +373,14 @@ The path:
    the A/B instrument and nothing else; its default is not flipped, and the
    user docs keep describing v1 until step 2 removes it.
 4. **The legacy path is frozen meanwhile**: correctness fixes only, no medium
-   work on the targeted view. This presumes MAS-83 is answered *frozen* or
-   *retired*, not *maintained*; that call is still the owner's.
+   work on the targeted view. MAS-83 confirmed this on 2026-11-22: frozen
+   now, retired by step 2. Ten of the legacy path's open GitHub issues were
+   closed as not planned that day. Its four correctness bugs stay open
+   (#1093, #1160, #1317, #1969), and so do the two that concern what
+   survives: matching parameters per instrument (#1191) and target
+   collections (#1491). The removal is MAS-1115, behind MAS-80 and behind
+   MAS-1114, which gives the match-parameter drawer and *Rate Match* their
+   home first.
 
 What the fold changes for a targeted user, accepted here: a curated target
 whose envelope fits can sit at *candidate* when an untargeted rival lies
