@@ -264,22 +264,7 @@ async def get_samples(
             sample_data["ms2_group_count"] = row.ms2_group_count
             data.append(sample_data)
 
-        # Whether each TOF fit was made on its mode's calibration collection
-        # as it stands now, read once per mode
-        modes = {
-            sample["ionization_mode_id"]
-            for sample in data
-            if sample["ionization_mode_id"]
-            and recorded_version(sample["mz_calibration"]) is not None
-        }
-        versions = await current_collection_versions(session, modes) if modes else {}
-        for sample in data:
-            mode_id = sample["ionization_mode_id"]
-            sample["mz_calibration_collection_stale"] = (
-                collection_stale(sample["mz_calibration"], versions[mode_id])
-                if mode_id in versions
-                else None
-            )
+        await mark_collection_stale(session, data)
 
         return {
             "status": "success",
@@ -287,6 +272,33 @@ async def get_samples(
             "results": len(data),
             "data": data,
         }
+
+
+async def mark_collection_stale(session, samples: list[dict]) -> None:
+    """Set ``mz_calibration_collection_stale`` on each sample dict in place.
+
+    Whether each TOF fit was made on its mode's calibration collection as it
+    stands now (:func:`collection_stale`), the collection read once per mode.
+    ``None`` for a sample whose record names no collection version.
+
+    :param session: An open database session.
+    :param samples: Sample dicts carrying ``ionization_mode_id`` and
+        ``mz_calibration``.
+    """
+    modes = {
+        sample["ionization_mode_id"]
+        for sample in samples
+        if sample["ionization_mode_id"]
+        and recorded_version(sample["mz_calibration"]) is not None
+    }
+    versions = await current_collection_versions(session, modes) if modes else {}
+    for sample in samples:
+        mode_id = sample["ionization_mode_id"]
+        sample["mz_calibration_collection_stale"] = (
+            collection_stale(sample["mz_calibration"], versions[mode_id])
+            if mode_id in versions
+            else None
+        )
 
 
 async def sample_line_width(sample: Sample) -> dict:
@@ -331,7 +343,9 @@ async def get_sample(
     :return: A dictionary containing detailed sample information, match data (if available), and match collection types (if available),
         and ``ms2_groups``: the MS2 groups the group inventory lists for the
         sample, as the batch's groups route gives them
-        (:func:`mascope_backend.api.new.ms2.inventory.group_record`).
+        (:func:`mascope_backend.api.new.ms2.inventory.group_record`), and
+        ``mz_calibration_collection_stale`` as the sample list gives it
+        (:func:`mark_collection_stale`).
     :rtype: dict
     :raises NotFoundException: If the sample with the specified item ID is not found.
     """
@@ -402,6 +416,8 @@ async def get_sample(
         }
 
     sample_data["match"] = match_data
+    async with async_session() as session:
+        await mark_collection_stale(session, [sample_data])
     sample_data["ms2_groups"] = await sample_ms2_groups(row.Sample)
     sample_data["line_width"] = await sample_line_width(row.Sample)
 
