@@ -1200,6 +1200,7 @@ def test_diurnal_recovers_each_species_known_phase(month):
 
     assert frame.attrs["cadence"] == "hour of day"
     assert frame.attrs["tz"] == ZONE
+    assert frame.attrs["group_days"] is None
     for key, rows in frame.groupby("key", observed=True):
         median = rows.set_index("hour")["value"]
         cycle = cycles[key]
@@ -1308,6 +1309,10 @@ def test_an_empty_window_still_has_the_sample_counts(month, view):
 
     assert frame.empty
     assert frame["n_samples"].dtype == "int64"
+    if view == "diurnal":
+        # Split, it spans no day of any group
+        split = views.diurnal(store, views.TIC, by="month", **window)
+        assert split.empty and split.attrs["group_days"] == {}
 
 
 def test_diurnal_counts_the_samples_per_group(month):
@@ -1324,14 +1329,14 @@ def test_diurnal_counts_the_samples_per_group(month):
 
 
 @pytest.mark.parametrize(
-    "by, groups",
+    "by, groups, days",
     [
-        ("month", ["Jun", "Jul"]),
-        ("season", ["JJA"]),
-        ("weekday", ["weekday", "weekend"]),
+        ("month", ["Jun", "Jul"], {"Jun": 30, "Jul": 1}),
+        ("season", ["JJA"], {"JJA": 31}),
+        ("weekday", ["weekday", "weekend"], {"weekday": 23, "weekend": 8}),
     ],
 )
-def test_diurnal_splits_by_month_season_or_weekday(month, values, by, groups):
+def test_diurnal_splits_by_month_season_or_weekday(month, values, by, groups, days):
     campaign, store = month
     key = views.TIC
 
@@ -1339,6 +1344,8 @@ def test_diurnal_splits_by_month_season_or_weekday(month, values, by, groups):
 
     assert list(dict.fromkeys(frame["group"])) == groups
     assert frame.attrs["by"] == by
+    # The calendar days of each group, 1 June to 1 July, the last 03:00
+    assert frame.attrs["group_days"] == days
     assert len(frame) == 24 * len(groups)
     assert frame["n"].sum() == len(campaign.tables["samples"])
     if by == "weekday":
