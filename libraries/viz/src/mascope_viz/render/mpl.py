@@ -298,7 +298,7 @@ class _Drawing:
                 (ax.set_xlim if axis == "x" else ax.set_ylim)(*spec.range)
         if common.time_kind(self.fig, panel, "x"):
             self._time_axis(ax, self.fig.data[panel.encodings["x"]])
-        if panel.primitive in ("series", "strip"):
+        if panel.primitive in ("series", "strip", "heatmap"):
             self._spans(ax, panel)
 
     def _style(self, ax: Any) -> None:
@@ -570,7 +570,10 @@ class _Drawing:
         self, ax: Any, axis: str, values: list[Any], kind: str
     ) -> np.ndarray:
         """A heatmap axis' cell centres: dates and numbers as they are, a
-        category at its index, labelled."""
+        category at its index, labelled. A heatmap without a cell has
+        none."""
+        if not values:
+            return np.array([], dtype="float64")
         if kind == "time":
             return _dates(pd.Series(values))
         if kind == "number":

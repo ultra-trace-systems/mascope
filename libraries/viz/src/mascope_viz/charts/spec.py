@@ -175,6 +175,9 @@ _FLAG = Encoding(("boolean",))
 #: group column is its identity (its colour, its one legend entry); the
 #: name is only what a reader sees, so a key is never shown for a name.
 _NAME = Encoding(("text",))
+#: What an interactive renderer's hover text says of a mark, beside its
+#: place; a static renderer has no hover and draws none.
+_HOVER = Encoding(("text",))
 _ANY = ("time", "number", "boolean", "text")
 _TIME_MARKS = {"spans": Option("spans", ()), "rules": Option("rules", ())}
 
@@ -217,10 +220,12 @@ PRIMITIVES: dict[str, Primitive] = {
             "palette": Option("palette", "sequential"),
             "centre": Option("number", None),
             "gap_label": Option("text", "no samples"),
+            "rules": Option("rules", ()),
         },
         summary=(
             "an x by y grid of cells coloured by value; a gap cell (no "
-            "samples) in the gap style, a cell without a value blank"
+            "samples) in the gap style, a cell without a value blank; rules "
+            "mark a moment of a time or number x over the cells"
         ),
     ),
     "scatter": Primitive(
@@ -246,7 +251,13 @@ PRIMITIVES: dict[str, Primitive] = {
     ),
     "sticks": Primitive(
         required={"x": _NUMBER, "y": _NUMBER},
-        optional={"group": _GROUP, "name": _NAME, "label": _LABEL, "mark": _FLAG},
+        optional={
+            "group": _GROUP,
+            "name": _NAME,
+            "label": _LABEL,
+            "mark": _FLAG,
+            "hover": _HOVER,
+        },
         options={
             "top_n": Option("int", 0),
             "colours": Option("colours", {}),
@@ -256,7 +267,8 @@ PRIMITIVES: dict[str, Primitive] = {
         summary=(
             "vertical lines from zero, a spectrum, signed values below it; "
             "coloured by group or, by_sign, on the diverging ramp's ends; "
-            "mark flags a stick at its tip; the top_n tallest labelled"
+            "mark flags a stick at its tip; the top_n tallest labelled; "
+            "hover what an interactive renderer says of a stick and its label"
         ),
     ),
     "bars": Primitive(
@@ -989,6 +1001,12 @@ def _check_panel(
                 f"{where}: name names the groups of its {grouped_by} column, "
                 f"and the panel has no {'categorical ' * (grouped_by == 'colour')}"
                 f"{grouped_by}"
+            )
+    if panel.primitive == "heatmap" and panel.options.get("rules"):
+        if axis_kind(panel, kinds, "x") == "category":
+            raise ValueError(
+                f"{where}: a rule marks a moment of a time or number x; "
+                f"x draws {panel.encodings['x']!r} as categories"
             )
     if panel.primitive == "sticks" and panel.options.get("by_sign"):
         if "group" in encodings:

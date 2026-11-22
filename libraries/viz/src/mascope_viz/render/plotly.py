@@ -303,7 +303,7 @@ class _Drawing:
                 settings["range"] = [float(low), float(high)]
             if settings:
                 update(row=row, col=column, **settings)
-        if panel.primitive in ("series", "strip"):
+        if panel.primitive in ("series", "strip", "heatmap"):
             self._spans(panel, row, column)
 
     def _x(self, column: pd.Series) -> list[Any]:
@@ -681,6 +681,9 @@ class _Drawing:
     def _grid_axis(
         self, axis: str, values: list[Any], kind: str, row: int, column: int
     ) -> list[Any]:
+        if not values:
+            # A heatmap without a cell
+            return []
         if kind == "time":
             return _wall(pd.Series(values))
         if kind == "number":
@@ -796,6 +799,8 @@ class _Drawing:
         labelled = common.labelled(self.fig, panel)
         if not len(labelled):
             return
+        hovers = list(labelled["hover"])
+        said = any(h is not None for h in hovers)
         self._trace(
             go.Scatter(
                 x=_values(labelled["x"].to_numpy()),
@@ -805,7 +810,8 @@ class _Drawing:
                 textposition="top center",
                 textfont={"size": self.theme.type.small, "color": self.theme.text},
                 showlegend=False,
-                hoverinfo="skip",
+                hovertext=[escape(h or "") for h in hovers] if said else None,
+                hoverinfo="text" if said else "skip",
             ),
             row,
             column,
@@ -835,9 +841,13 @@ class _Drawing:
             mine = sticks[[key == (group, colour) for key in keys]]
             line_x: list[Any] = []
             line_y: list[Any] = []
-            for x, y in zip(mine["x"], mine["y"]):
+            line_text: list[Any] = []
+            for x, y, hover in zip(mine["x"], mine["y"], mine["hover"]):
                 line_x += [float(x), float(x), None]
                 line_y += [0.0, float(y), None]
+                text = escape(hover) if hover is not None else ""
+                line_text += [text, text, None]
+            said = any(h is not None for h in mine["hover"])
             self._trace(
                 go.Scatter(
                     x=line_x,
@@ -845,6 +855,8 @@ class _Drawing:
                     mode="lines",
                     line={"color": colour, "width": theme.marks.line},
                     connectgaps=False,
+                    text=line_text if said else None,
+                    hoverinfo="x+y+text" if said else None,
                     **self._named(group),
                 ),
                 row,
