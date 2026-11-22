@@ -143,8 +143,8 @@ views.top(
 | View | One row per |
 |---|---|
 | `series` | bin and key: `t`, `key`, `value`, `lo`, `hi`, `n` (values) and `n_samples` |
-| `diurnal` | hour of day and key, and group with `by=` (month, season, weekday): the median and quartiles |
-| `periods` | day, week or month and key: `n`, mean, min, p5, p25, median, p75, p95, max |
+| `diurnal` | hour of day and key, and group with `by=` (month, season, weekday): the median and quartiles, `n` (values) and `n_samples` |
+| `periods` | day, week or month and key: `n` (values), `n_samples`, mean, min, p5, p25, median, p75, p95, max |
 | `coverage` | hour, polarity and mode: files, unfiled files and samples (a polarity-switching file counts under both polarities), with the mode's ID and name; also the gaps, the totals and the span from the first file or sample to the last |
 | `composition` | period and formula, or class or carbon number with `by=`: median, mean, share, and the species' element counts, O/C, H/C and OSc |
 | `spectrum` | formula, by m/z: the mean over a period, and against another period the difference and ratio |
@@ -166,6 +166,11 @@ What every view does the same way:
 - **Gaps stay gaps.** A bin without a sample is NaN, never interpolated. A
   value below detection, or an ion record without a match, is NaN, never 0.
   At `raw`, a NaN row breaks the line where a bin would be empty.
+- **Presence.** Since below detection is missing, a statistic is over the
+  detected values only, and reads high for a key near its detection limit.
+  So `series`, `diurnal` and `periods` give both counts: `n`, the values in
+  a row, and `n_samples`, the samples in it of the batches that read the
+  key. `n` over `n_samples` is how often the key was detected there.
 - **A sample's value of a key** is the sum of its values: two batch peaks
   can carry one formula, and the SDK notebooks sum per sample the same way.
 - **Normalisation** is `none` by default, `tic`, a series key such as a

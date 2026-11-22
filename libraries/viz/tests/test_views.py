@@ -1247,6 +1247,82 @@ def test_diurnal_quartiles_and_counts(month, values):
     np.testing.assert_array_equal(frame["n"], raw.groupby(hour).size())
 
 
+def _read_by(campaign: Campaign, key: str) -> pd.Series:
+    """Which of the campaign's samples are of a batch that reads *key*."""
+    samples = campaign.tables["samples"]
+    batch = samples["sample_batch_id"].astype(str)
+    ids = samples["sample_item_id"].astype(str)
+    of_key = pd.concat(
+        [
+            rows.loc[rows["series_key"].astype(str) == key, "sample_item_id"]
+            for rows in (
+                campaign.tables["ion_series"],
+                campaign.tables["peak_series"],
+            )
+        ]
+    ).astype(str)
+    reading = set(batch[ids.isin(set(of_key))])
+    return batch.isin(reading)
+
+
+def test_diurnal_counts_the_samples_that_could_hold_a_value(month, values):
+    """``n_samples`` is the samples of the batches that read the key, in
+    each hour: every sample for a target ion, the first run's for a
+    formula the second run reads as another."""
+    campaign, store = month
+    ion = _with_nans(campaign, values)
+    old, _ = campaign.truth.run_change.readings[0]
+    samples = campaign.tables["samples"]
+    hour = samples["t_mid_utc"].dt.tz_convert(ZONE).dt.hour
+
+    frame = views.diurnal(store, [ion, old])
+
+    assert frame.attrs["stat"] == "median"
+    assert tuple(frame.attrs["band"]) == (25, 75)
+    for key in (ion, old):
+        rows = frame[frame["key"] == key].set_index("hour")
+        read = _read_by(campaign, key)
+        want = hour[read].value_counts().reindex(range(24), fill_value=0)
+        np.testing.assert_array_equal(rows["n_samples"], want.sort_index())
+        assert (rows["n"] <= rows["n_samples"]).all()
+    # The ion misses a match now and then; the formula has no samples after
+    # the change
+    ion_rows = frame[frame["key"] == ion]
+    assert ion_rows["n"].sum() < ion_rows["n_samples"].sum()
+    assert (
+        frame.loc[frame["key"] == old, "n_samples"].sum()
+        < frame.loc[frame["key"] == ion, "n_samples"].sum()
+    )
+
+
+@pytest.mark.parametrize("view", ["diurnal", "periods"])
+def test_an_empty_window_still_has_the_sample_counts(month, view):
+    campaign, store = month
+    gap = campaign.truth.gap
+    window = {"start": gap.start + pd.Timedelta(hours=6), "end": gap.end}
+
+    if view == "diurnal":
+        frame = views.diurnal(store, views.TIC, **window)
+    else:
+        frame = views.periods(store, views.TIC, "week", **window)
+
+    assert frame.empty
+    assert frame["n_samples"].dtype == "int64"
+
+
+def test_diurnal_counts_the_samples_per_group(month):
+    campaign, store = month
+    samples = campaign.tables["samples"]
+    local = samples["t_mid_utc"].dt.tz_convert(ZONE)
+    weekend = local.dt.day_of_week >= 5
+
+    frame = views.diurnal(store, views.TIC, by="weekday")
+
+    rows = frame[frame["group"] == "weekend"].set_index("hour")
+    want = local[weekend].dt.hour.value_counts().reindex(range(24), fill_value=0)
+    np.testing.assert_array_equal(rows["n_samples"], want.sort_index())
+
+
 @pytest.mark.parametrize(
     "by, groups",
     [
@@ -1324,6 +1400,27 @@ def test_periods_are_weeks_from_monday_with_their_distribution(month, values):
 
 def _day(moment: pd.Timestamp) -> pd.Timestamp:
     return moment.tz_convert(ZONE).normalize()
+
+
+def test_periods_count_the_samples_that_could_hold_a_value(month, values):
+    campaign, store = month
+    ion = _with_nans(campaign, values)
+    old, _ = campaign.truth.run_change.readings[0]
+    samples = campaign.tables["samples"]
+    week = samples["t_mid_utc"].map(_week_of)
+
+    frame = views.periods(store, [ion, old], "week")
+
+    for key in (ion, old):
+        rows = frame[frame["key"] == key].set_index("period")
+        want = week[_read_by(campaign, key)].value_counts()
+        want = want.reindex(rows.index, fill_value=0)
+        np.testing.assert_array_equal(rows["n_samples"], want)
+        assert (rows["n"] <= rows["n_samples"]).all()
+    # The formula's last weeks are the second run's, which reads another
+    old_rows = frame[frame["key"] == old].set_index("period")
+    assert old_rows["n_samples"].iloc[-1] == 0
+    assert list(frame.columns[:4]) == ["period", "key", "n", "n_samples"]
 
 
 # --- coverage ---------------------------------------------------------------------
