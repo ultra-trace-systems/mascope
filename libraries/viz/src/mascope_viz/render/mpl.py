@@ -503,7 +503,7 @@ class _Drawing:
             )
             self._colourbar(drawn, ax, scale)
         if cells.gaps.any():
-            gap = _rgba(theme.token("gap"), theme.marks.gap_opacity)
+            gap = _rgba(theme.token("gap"), theme.marks.gap_cell_opacity)
             ax.pcolormesh(
                 common.edges(xs),
                 common.edges(ys),
@@ -519,7 +519,7 @@ class _Drawing:
         ax.grid(False)
 
     def _grid_axis(
-        self, ax: Any, axis: str, values: list[Any], kind: str | None
+        self, ax: Any, axis: str, values: list[Any], kind: str
     ) -> np.ndarray:
         """A heatmap axis' cell centres: dates and numbers as they are, a
         category at its index, labelled."""

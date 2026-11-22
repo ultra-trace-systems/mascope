@@ -103,9 +103,10 @@ COLOUR_TOKENS = (
 SPAN_KINDS = ("event", "gap")
 
 #: A number format a ``table`` column takes: a small subset of Python's
-#: format specification, ``[,][.N](e|f|g|%)`` or ``[,]d``. A renderer outside
-#: Python maps it to its own (d3-format writes Python's ``g``, which drops
-#: trailing zeros, as ``~g``).
+#: format specification, ``[,][.N](e|f|g|%)`` or ``[,]d``. A precision
+#: without a type writes an integer as the float it equals, since Python
+#: takes none on an integer. A renderer outside Python maps it to its own
+#: (d3-format writes Python's ``g``, which drops trailing zeros, as ``~g``).
 _FORMAT = re.compile(r"^,?(?:\.\d{1,2}[efg%]?|[efg%d])$")
 
 #: A figure's id, as a file name takes it.
@@ -305,6 +306,28 @@ _NAMED_BY_GROUP = ("series", "sticks", "bars", "box")
 
 #: The primitives that draw an x and a y axis.
 PLOTTED = tuple(name for name in PRIMITIVES if name != "table")
+
+#: The axes that draw their column as categories, at 0, 1, 2 in order,
+#: whatever its kind: a bars or a box panel's x, a strip's rows.
+CATEGORY_AXES = frozenset({("bars", "x"), ("box", "x"), ("strip", "y")})
+
+
+def axis_kind(panel: "Panel", kinds: Mapping[str, str], axis: str) -> str:
+    """What a plotted *panel*'s *axis* draws: ``time``, ``number`` or
+    ``category``. An axis of :data:`CATEGORY_AXES` draws categories; one
+    with no column of its own (a list of y, a box's statistics) numbers;
+    any other its column's kind, a text or a boolean as categories. The
+    spec checks a scale and a range by it, and the renderers draw by it.
+
+    :param kinds: The figure's column kinds (:meth:`Figure.kinds`).
+    """
+    if (panel.primitive, axis) in CATEGORY_AXES:
+        return "category"
+    column = panel.encodings.get(axis)
+    if not isinstance(column, str):
+        return "number"
+    kind = kinds[column]
+    return kind if kind in ("time", "number") else "category"
 
 
 # --- the spec ----------------------------------------------------------------
@@ -919,17 +942,21 @@ def _check_panel(
             )
     if panel.primitive in PLOTTED:
         for axis in ("x", "y"):
-            column = panel.encodings.get(axis)
-            kind = kinds[column] if isinstance(column, str) else "number"
+            kind = axis_kind(panel, kinds, axis)
+            if kind == "number":
+                continue
+            column = panel.encodings[axis]
+            drawn = (
+                f"{axis} draws {column!r} as categories"
+                if kind == "category"
+                else f"{axis} draws {column!r}, which is {kind}"
+            )
             spec = getattr(panel.axes, axis)
-            if spec.scale == "log" and kind != "number":
+            if spec.scale == "log":
+                raise ValueError(f"{where}: a log {axis} axis draws numbers; {drawn}")
+            if spec.range is not None:
                 raise ValueError(
-                    f"{where}: a log {axis} axis draws numbers; {column!r} is {kind}"
-                )
-            if spec.range is not None and kind != "number":
-                raise ValueError(
-                    f"{where}: a range sets the ends of a number axis; {axis} draws "
-                    f"{column!r}, which is {kind}"
+                    f"{where}: a range sets the ends of a number axis; {drawn}"
                 )
         if panel.primitive in ("sticks", "bars") and panel.axes.y.scale == "log":
             raise ValueError(
@@ -989,11 +1016,8 @@ def _check_shared_x(panels: Sequence[Panel], kinds: Mapping[str, str]) -> None:
         if panel.primitive not in PLOTTED:
             continue
         where = f"panel {index + 1} ({panel.primitive})"
-        if panel.primitive in ("bars", "box"):
-            kind = "text"
-        else:
-            kind = kinds[panel.encodings["x"]]
-        if kind not in ("time", "number"):
+        kind = axis_kind(panel, kinds, "x")
+        if kind == "category":
             raise ValueError(
                 f"share_x joins time or number x axes; {where} draws categories"
             )
@@ -1582,8 +1606,8 @@ def _keys(document: Mapping[str, Any], allowed: set[str], what: str) -> None:
 
 def _plain(value: Any, where: str) -> Any:
     """*value* as plain JSON values: a NumPy scalar as a Python one, a
-    number that is not finite as None, a time as ISO 8601, a tuple as a
-    list."""
+    number that is not finite as None, a time as ISO 8601 (a NumPy time in
+    UTC), a duration as ISO 8601, a tuple as a list."""
     if isinstance(value, Mapping):
         out = {}
         for key, item in value.items():
@@ -1593,6 +1617,12 @@ def _plain(value: Any, where: str) -> Any:
         return out
     if isinstance(value, (list, tuple)):
         return [_plain(item, f"{where}[{i}]") for i, item in enumerate(value)]
+    if isinstance(value, np.datetime64):
+        # NumPy keeps a zoned column's times in UTC and names no zone, so
+        # its time is read in UTC; .item() would give its nanoseconds.
+        return None if np.isnat(value) else pd.Timestamp(value, tz="UTC").isoformat()
+    if isinstance(value, np.timedelta64):
+        value = pd.Timedelta(value)
     if isinstance(value, np.generic):
         value = value.item()
     if value is None or isinstance(value, (bool, str, int)):

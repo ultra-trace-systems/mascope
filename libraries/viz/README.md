@@ -231,6 +231,10 @@ from mascope_viz.data import views
 from mascope_viz import render
 
 frame = views.series(store, ["ion:...", "tic"], cadence="1h")
+# What a legend calls each series: its species' name, else its key
+species = store.table("species").dropna(subset=["name"])
+names = dict(zip(species["series_key"], species["name"]), tic="TIC")
+frame["name"] = [names.get(key, key) for key in frame["key"]]
 fig = Figure(
     "species_series",
     "Species over time",
@@ -303,7 +307,8 @@ encoding takes and each option's default. What every figure shares:
 - **Gaps stay gaps.** A NaN breaks a line on both renderers, a value alone
   between two gaps is drawn as a point, and a value that is not positive
   is a gap on a log axis. A heatmap cell whose `gap` is true (no samples)
-  is drawn in the gap style; a cell with samples and no value is blank.
+  is drawn in the gap style, a grey tint held apart from both ramps; a
+  cell with samples and no value is blank.
 - **A group keeps its colour** in every panel of a figure, and appears
   once in its legend. Groups take the categorical palette in the order
   they first appear; `colours` names a group's colour by token instead,
@@ -326,6 +331,12 @@ encoding takes and each option's default. What every figure shares:
 - **`spans`** shade stretches of a time panel (`kind` `event` or `gap`),
   and **`rules`** mark a moment, such as a change of engine run, each with
   a label. A time without a zone is in the x column's zone.
+- **Axes.** Each plotted panel has its own scale, range and label on each
+  axis. A bars or box panel's x and a strip's rows are categories whatever
+  their column holds, as are a text or a boolean column; they take neither
+  a range nor a log scale. The y of a list of `y` and a box's y draw
+  numbers. `mascope_viz.charts.spec.axis_kind` says which, for the spec's
+  check and the renderers alike.
 - **`share_x`** joins the x axis of every plotted panel, zoom included,
   on both renderers. They must all draw times or all numbers.
 - **`where`** keeps the rows of the figure's frame a panel draws, so small
@@ -341,7 +352,9 @@ encoding takes and each option's default. What every figure shares:
 
 **The spec is a document.** `fig.to_json()` writes a JSON document of
 version `figure_spec_version` (1): the panels, each with its primitive,
-axes, encodings and options; the context; the summary; the notes; and the
+axes, encodings and options; the context; the summary, as plain JSON
+(NaN as null, a time as ISO 8601 with its offset, a NumPy `datetime64`,
+which names no zone, in UTC); the notes; and the
 frame column by column, each column with its type (`time` with its zone,
 `number`, `integer`, `boolean`, `text` or `category` with its categories in
 order). `Figure.from_json()` reads it back to an equal figure (two figures
@@ -363,7 +376,10 @@ The sequential ramp is magma, light to dark on the light ground and dark to
 light on the dark one; the diverging ramp runs from blue through grey to
 the accent. `theme.check("light")` is the contrast check both themes pass:
 every categorical colour at 3:1 or more on every ground (WCAG 2.2, 1.4.11),
-any two of them apart, and the ramps ordered and apart from the ground.
+any two of them apart, the ramps ordered and apart from the ground, and a
+heatmap's gap cell apart from its ground and from every colour along both
+ramps. The gap cell's tint is heavier in the light theme: there a light
+tint would match the diverging ramp's grey centre.
 `theme.get("dark").tokens()` lists every token's colour.
 
 **Saving.** `render.save(fig, path, theme=..., plotlyjs="inline")` writes

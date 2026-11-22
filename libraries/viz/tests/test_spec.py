@@ -39,6 +39,10 @@ def _figure(*panels: Panel, **fields) -> Figure:
     return Figure("f", "F", panels=list(panels), data=_frame(), **fields)
 
 
+#: A box panel's statistics.
+BOX = ("q1", "median", "q3", "lo", "hi")
+
+
 #: A view frame's attrs, as views.series gives them after MAS-1094: a sum
 #: of three reagent ions as the normaliser.
 ATTRS = {
@@ -104,12 +108,17 @@ def test_normalise_is_a_text_or_a_list_of_keys():
     "fields, message",
     [
         ({"band": [90, 10]}, "low first"),
+        ({"band": [50, 50]}, "low first"),
         ({"band": [10]}, "not two percentiles"),
         ({"start": "2026-07-01T00:00"}, "has no offset"),
         ({"start": "soon"}, "is not a time"),
         ({"start": 5}, "is not a time"),
         (
             {"start": "2026-07-02T00:00Z", "end": "2026-07-01T00:00Z"},
+            "start is not before its end",
+        ),
+        (
+            {"start": "2026-07-01T03:00+03:00", "end": "2026-07-01T00:00Z"},
             "start is not before its end",
         ),
         ({"normalise_complete": 1.5}, "no share"),
@@ -255,6 +264,22 @@ def test_a_duration_is_written_as_the_document_reads_it(width, written):
             [Panel("heatmap", encodings={"x": "label", "y": "x", "value": "x"})],
             "panel 1 \\(heatmap\\) draws categories",
         ),
+        # Bars and boxes stand at 0, 1, 2 whatever their x column: a number
+        # there (an hour, a week) is a category too.
+        (
+            [
+                Panel("series", encodings={"x": "x", "y": "x"}),
+                Panel("bars", encodings={"x": "x", "y": "x"}),
+            ],
+            "panel 2 \\(bars\\) draws categories",
+        ),
+        (
+            [
+                Panel("series", encodings={"x": "x", "y": "x"}),
+                Panel("box", encodings={"x": "x", **{s: "x" for s in BOX}}),
+            ],
+            "panel 2 \\(box\\) draws categories",
+        ),
     ],
 )
 def test_share_x_joins_axes_of_one_kind(panels, message):
@@ -332,10 +357,60 @@ def test_share_x_passes_over_tables():
         (
             dict(
                 primitive="scatter",
+                encodings={"x": "x", "y": "x", "size": "x"},
+                axes={"size": {"range": (0, 10)}},
+            ),
+            "the size axis takes a label only",
+        ),
+        (
+            dict(
+                primitive="scatter",
                 encodings={"x": "x", "y": "x"},
                 axes={"x": {"scale": "log", "range": (0, 10)}},
             ),
             "reaches 0 on a log axis",
+        ),
+        # An axis that draws categories takes neither a range nor a log
+        # scale, whatever its column's kind.
+        (
+            dict(
+                primitive="bars",
+                encodings={"x": "x", "y": "x"},
+                axes={"x": {"range": (0, 10)}},
+            ),
+            "a range sets the ends of a number axis; x draws 'x' as categories",
+        ),
+        (
+            dict(
+                primitive="box",
+                encodings={"x": "x", **{s: "x" for s in BOX}},
+                axes={"x": {"scale": "log"}},
+            ),
+            "a log x axis draws numbers; x draws 'x' as categories",
+        ),
+        (
+            dict(
+                primitive="strip",
+                encodings={"x": "t", "y": "x"},
+                axes={"y": {"range": (0, 10)}},
+            ),
+            "y draws 'x' as categories",
+        ),
+        (
+            dict(
+                primitive="heatmap",
+                encodings={"x": "label", "y": "x", "value": "x"},
+                axes={"x": {"range": (0, 10)}},
+            ),
+            "x draws 'label' as categories",
+        ),
+        (
+            dict(
+                primitive="series",
+                encodings={"x": "t", "y": "x"},
+                axes={"x": {"scale": "log"}},
+            ),
+            "a log x axis draws numbers; x draws 't', which is time",
         ),
         (
             dict(
@@ -487,3 +562,34 @@ def test_a_document_without_a_subtitle_draws_none():
 def test_a_zone_the_subtitle_cannot_read_keeps_the_offset():
     attrs = {"start": "2026-07-01T00:00:00+00:00", "tz": "Mars/Base"}
     assert subtitle(attrs) == "from 2026-07-01 00:00+0000; times in Mars/Base"
+
+
+# --- what an axis draws ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "panel, x, y",
+    [
+        (Panel("series", encodings={"x": "t", "y": "x"}), "time", "number"),
+        (Panel("series", encodings={"x": "x", "y": ["x", "x"]}), "number", "number"),
+        (Panel("bars", encodings={"x": "x", "y": "x"}), "category", "number"),
+        (
+            Panel("box", encodings={"x": "label", **{s: "x" for s in BOX}}),
+            "category",
+            "number",
+        ),
+        (Panel("strip", encodings={"x": "t", "y": "x"}), "time", "category"),
+        (
+            Panel("heatmap", encodings={"x": "label", "y": "x", "value": "x"}),
+            "category",
+            "number",
+        ),
+        (Panel("sticks", encodings={"x": "x", "y": "x"}), "number", "number"),
+    ],
+)
+def test_an_axis_draws_time_numbers_or_categories(panel, x, y):
+    from mascope_viz.charts.spec import axis_kind
+
+    fig = _figure(panel)
+    kinds = fig.kinds()
+    assert (axis_kind(panel, kinds, "x"), axis_kind(panel, kinds, "y")) == (x, y)

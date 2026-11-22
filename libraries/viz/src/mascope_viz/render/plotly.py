@@ -603,7 +603,7 @@ class _Drawing:
                 column,
             )
         if cells.gaps.any():
-            gap = _rgba(self.theme.token("gap"), self.theme.marks.gap_opacity)
+            gap = _rgba(self.theme.token("gap"), self.theme.marks.gap_cell_opacity)
             label = panel.options["gap_label"]
             self._trace(
                 go.Heatmap(
@@ -631,7 +631,7 @@ class _Drawing:
         self.drawn.update_yaxes(row=row, col=column, showgrid=False)
 
     def _grid_axis(
-        self, axis: str, values: list[Any], kind: str | None, row: int, column: int
+        self, axis: str, values: list[Any], kind: str, row: int, column: int
     ) -> list[Any]:
         if kind == "time":
             return _wall(pd.Series(values))
