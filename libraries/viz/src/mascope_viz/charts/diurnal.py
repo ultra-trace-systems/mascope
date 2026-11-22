@@ -39,6 +39,7 @@ of any hour) and ``sparse_hours``; with ``by``, the same per group under
   says that its trough reads high.
 """
 
+import calendar
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -68,18 +69,30 @@ NIGHT_HOURS = (22, 4)
 #: Under this share of the typical hour's samples, an hour is sparse.
 SPARSE = 0.5
 
-#: The days of each group whole: a month's (February's of a common year),
-#: a season's, the week's weekdays and its weekend. A group is judged per
-#: day the window spans of it, and at least per day of a whole one.
-WHOLE_DAYS = {
-    **dict(zip(views.MONTHS, (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31))),
-    "DJF": 90,
-    "MAM": 92,
-    "JJA": 92,
-    "SON": 91,
-    "weekday": 5,
-    "weekend": 2,
-}
+#: The year whose calendar gives a whole month's and a whole season's
+#: days: a common one, so a whole February is 28 days.
+COMMON_YEAR = 2025
+
+
+def _whole_days() -> dict[str, int]:
+    """The days of each group whole: a month's and a season's (its months'
+    in :data:`~mascope_viz.data.views.SEASONS`) in a common year, and the
+    week's five weekdays and its two weekend days."""
+    month = {m: calendar.monthrange(COMMON_YEAR, m)[1] for m in range(1, 13)}
+    return {
+        **{name: month[m] for m, name in enumerate(views.MONTHS, start=1)},
+        **{
+            season: sum(month[m] for m in months)
+            for season, months in views.SEASONS.items()
+        },
+        "weekday": 5,
+        "weekend": 2,
+    }
+
+
+#: The days of each group whole (:func:`_whole_days`). A group is judged
+#: per day the window spans of it, and at least per day of a whole one.
+WHOLE_DAYS = _whole_days()
 
 #: The note every diurnal figure prints.
 CLOCK_NOTE = (
