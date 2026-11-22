@@ -1495,20 +1495,26 @@ def diurnal(
     :param tz: The zone whose hours they are.
     :return: One row per group (when *by* splits), key and hour 0 to 23:
         ``group`` (with *by*), ``key``, ``hour``, ``value`` (the median),
-        ``lo`` and ``hi`` (the 25th and 75th percentiles) and ``n``. An
-        hour without a value is NaN. ``attrs`` adds ``by``.
+        ``lo`` and ``hi`` (the 25th and 75th percentiles), ``n`` (the values
+        in the hour) and ``n_samples`` (the samples in it of the batches
+        that read the key, so ``n`` over ``n_samples`` is how often the key
+        was detected there). An hour without a value is NaN. ``attrs`` adds
+        ``by``, and ``stat`` and ``band``, what ``value`` and ``lo`` and
+        ``hi`` are: ``median`` and (25, 75).
     """
     if by is not None and by not in DIURNAL_BY:
         raise ValueError(f"by={by!r} is none of {', '.join(DIURNAL_BY)}")
     values = _read(
         store, keys, normalise=normalise, tz=tz, start=start, end=end, view="diurnal"
     )
-    attrs = dict(values.attrs, cadence="hour of day", by=by)
+    attrs = dict(
+        values.attrs, cadence="hour of day", by=by, stat="median", band=(25, 75)
+    )
     reads_any = values.reads_any
     if not reads_any.any():
         columns = {"group": "object"} if by else {}
         columns.update(key="object", hour="int64", value="float64", lo="float64")
-        columns.update(hi="float64", n="int64")
+        columns.update(hi="float64", n="int64", n_samples="int64")
         frame = _empty(columns, values.zone)
         return _stamp(frame, attrs)
 
@@ -1522,6 +1528,13 @@ def diurnal(
         (group[values.pos] * n_keys + values.key) * 24 + hour[values.pos], values.value
     )
     at = grouped.size().index.to_numpy("int64")
+    # The samples each (group, key, hour) holds of the batches reading the key
+    n_samples = np.zeros(size, dtype="int64")
+    for k in range(n_keys):
+        reads = values.reads(k)
+        n_samples += np.bincount(
+            (group[reads] * n_keys + k) * 24 + hour[reads], minlength=size
+        )
     frame = pd.DataFrame(
         {
             "group": np.repeat(np.array(labels, dtype=object), n_keys * 24),
@@ -1533,6 +1546,7 @@ def diurnal(
             "lo": _fill(size, at, grouped.quantile(0.25)),
             "hi": _fill(size, at, grouped.quantile(0.75)),
             "n": _fill(size, at, grouped.count(), 0),
+            "n_samples": n_samples,
         }
     )
     if by is None:
@@ -1566,9 +1580,10 @@ def periods(
         them to divide by their sum.
     :return: One row per period and key, key by key, from the first
         sample's period to the last's: ``period`` (its start in *tz*),
-        ``key``, ``n``, ``mean``, ``min``, ``p5``, ``p25``, ``median``,
-        ``p75``, ``p95`` and ``max`` of the sample values in it; NaN, and
-        ``n`` 0, in a period without one.
+        ``key``, ``n`` (the values in it), ``n_samples`` (the samples in it
+        of the batches that read the key), ``mean``, ``min``, ``p5``,
+        ``p25``, ``median``, ``p75``, ``p95`` and ``max`` of the sample
+        values in it; NaN, and ``n`` 0, in a period without one.
     """
     if period not in PERIODS:
         raise ValueError(f"period={period!r} is none of {', '.join(PERIODS)}")
@@ -1580,6 +1595,7 @@ def periods(
     reads_any = values.reads_any
     if not reads_any.any():
         columns = {"period": "time", "key": "object", "n": "int64"}
+        columns["n_samples"] = "int64"
         columns.update({stat: "float64" for stat in stats})
         return _stamp(_empty(columns, values.zone), attrs)
 
@@ -1589,10 +1605,14 @@ def periods(
     size = n_keys * n_periods
     grouped = _grouped(values.key * n_periods + code[values.pos], values.value)
     at = grouped.size().index.to_numpy("int64")
+    n_samples = np.concatenate(
+        [np.bincount(code[values.reads(k)], minlength=n_periods) for k in range(n_keys)]
+    )
     frame = {
         "period": _times(np.tile(starts.asi8, n_keys), values.zone),
         "key": _key_column(values.keys, np.repeat(np.arange(n_keys), n_periods)),
         "n": _fill(size, at, grouped.count(), 0),
+        "n_samples": n_samples.astype("int64"),
         "mean": _fill(size, at, grouped.mean()),
         "min": _fill(size, at, grouped.min()),
     }
