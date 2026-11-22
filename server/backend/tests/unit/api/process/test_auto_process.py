@@ -2318,6 +2318,182 @@ async def test_a_tof_file_without_calibrants_is_held_back(status, record):
     )
 
 
+# ---------------------------------------------------------------------------
+# Calibration transfer (MAS-187): a TOF file whose mode has no calibrants
+# ---------------------------------------------------------------------------
+
+#: A converter record, as every TOF file has from registration.
+_CONVERTER = {"mode": 0, "par": [10850.0, -18500.0], "status": "unfitted"}
+
+#: What a transfer from two neighbours leaves on the file.
+_TRANSFERRED = {
+    "mode": 0,
+    "par": [10850.1, -31300.0],
+    "status": "transferred",
+    "verified": True,
+    "transfer": {
+        "sources": [
+            {"sample_file_id": "sf-before", "gap_s": -240.0, "weight": 0.6},
+            {"sample_file_id": "sf-after", "gap_s": 360.0, "weight": 0.4},
+        ],
+        "gap_s": 240.0,
+        "window_s": 1800.0,
+        "raw_index_offset": 12800,
+    },
+}
+
+
+def _start_transfer(outcome=None, *, instrument_type="tof", collection=None):
+    """A one-polarity TOF file in a mode without a collection, on its
+    converter record, and the transfer the pipeline asks for, stubbed: it
+    leaves ``outcome``'s record on the file, as the apply does."""
+    from mascope_backend.api.controllers.calibration.calibration_controller import (
+        TransferOutcome,
+    )
+
+    mocks, sample_file = _start_single(calibration_collection_id=collection)
+    sample_file.instrument_type = instrument_type
+    sample_file.mz_calibration = dict(_CONVERTER)
+    outcome = outcome or TransferOutcome(True, record=_TRANSFERRED)
+
+    async def transfer(sample_file_id, **_):
+        assert sample_file_id == "sf-001"
+        if isinstance(outcome, Exception):
+            raise outcome
+        if outcome.applied:
+            # The row as the apply left it, read again: the pipeline's own
+            # copy still holds the converter's record.
+            applied = MagicMock(wraps=sample_file)
+            applied.mz_calibration = outcome.record
+            mocks["fetch_sample_file"].return_value = applied
+        return outcome
+
+    mocks["transfer"] = patch(
+        f"{_SVC}.calibration_mz_transfer", side_effect=transfer
+    ).start()
+    return mocks, sample_file
+
+
+@pytest.mark.asyncio
+async def test_a_tof_file_without_calibrants_is_matched_on_a_transfer(status):
+    """The transfer gives the file a verified record, so it is matched and
+    assigned, and its status says where its calibration came from."""
+    mocks, _ = _start_transfer()
+
+    await _run_pipeline()
+
+    mocks["transfer"].assert_called_once()
+    assert mocks["transfer"].call_args.kwargs == {
+        "user_id": 42,
+        "process_id": "proc-001",
+    }
+    mocks["calibrate"].assert_not_called()
+    mocks["match"].assert_called_once()
+    mocks["assign"].assert_called_once()
+    assert [state for state, _ in _recorded(status)] == ["bound", "calibrated", "done"]
+    assert _recorded(status)[-1] == (
+        "done",
+        "Matched 1 sample. m/z calibration transferred from two neighbouring "
+        "fitted files, interpolated in time, the nearest 4 min away.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_tof_file_with_no_neighbour_stays_unfitted_and_says_why(status):
+    from mascope_backend.api.controllers.calibration.calibration_controller import (
+        TransferOutcome,
+    )
+
+    mocks, _ = _start_transfer(
+        TransferOutcome(
+            False,
+            reason="no fitted file of its instrument and polarity is within "
+            "30 minutes of it to transfer a calibration from",
+        )
+    )
+
+    await _run_pipeline()
+
+    mocks["transfer"].assert_called_once()
+    mocks["match"].assert_not_called()
+    assert _recorded(status)[-1] == (
+        "calibration_failed",
+        "Not m/z calibrated: ionization mode 'Bromide RI' has no calibration "
+        "collection, and no fitted file of its instrument and polarity is "
+        "within 30 minutes of it to transfer a calibration from. Matching needs "
+        "a verified m/z calibration. Matching and peak assignment were skipped.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_transfer_that_fails_holds_the_file_back(status):
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    mocks, _ = _start_transfer(ApiException("Disk gone", "tech", 500))
+
+    result = await _run_pipeline()
+
+    mocks["match"].assert_not_called()
+    assert "Auto-processing complete" in result["message"]
+    state, detail = _recorded(status)[-1]
+    assert state == "calibration_failed"
+    assert detail.startswith(
+        "Not m/z calibrated: ionization mode 'Bromide RI' has no calibration "
+        "collection, and the transfer of a neighbouring file's calibration "
+        "failed: "
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("instrument_type", "collection"),
+    [
+        # An Orbitrap file is calibrated on its own or not at all.
+        ("orbi", None),
+        # A mode with calibrants is fitted: a transfer is only for one without.
+        ("tof", "cal-001"),
+    ],
+)
+async def test_no_transfer_where_the_file_is_not_a_tof_without_calibrants(
+    status, instrument_type, collection
+):
+    mocks, _ = _start_transfer(instrument_type=instrument_type, collection=collection)
+    mocks["calibrate"].return_value = _outcome(True)
+
+    await _run_pipeline()
+
+    mocks["transfer"].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_no_transfer_for_a_blank_tof_file(status):
+    mocks, _ = _start_transfer()
+    mocks["fetch_sample_file"].return_value.instrument_function_id = None
+
+    await _run_pipeline()
+
+    mocks["transfer"].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_no_transfer_for_a_file_whose_samples_would_calibrate_twice(status):
+    """A file with calibrants on both polarities is left as it is: a transfer
+    would be one polarity's calibration for both."""
+
+    async def calibrate(sample, sample_file):
+        raise AssertionError("a shared-calibration file must not be calibrated")
+
+    mocks, sample_file = _start_dual_polarity(
+        calibrate=calibrate, neg_collection="cal-neg", pos_collection="cal-pos"
+    )
+    sample_file.instrument_type = "tof"
+    transfer = patch(f"{_SVC}.calibration_mz_transfer").start()
+
+    await _run_pipeline()
+
+    transfer.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_the_reason_comes_from_the_calibration_not_the_record(status):
     """A failure never overwrites an applied fit, so the record can be stale."""

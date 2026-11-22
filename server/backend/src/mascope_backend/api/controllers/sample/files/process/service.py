@@ -17,12 +17,16 @@ from mascope_backend.api.controllers.calibration.calibration_controller import (
     BeforeApply,
     ClearedMzCalibration,
     calibration_mz_calibrate_sample,
+    calibration_mz_transfer,
     is_unfitted_record,
     reset_mz_calibration,
     restore_mz_calibration,
 )
 from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
     calibration_params_factory,
+)
+from mascope_backend.api.controllers.calibration.lib.tof_calibration_transfer import (
+    transfer_note,
 )
 from mascope_backend.api.controllers.dataset.acquisition.service import (
     get_acquisition_dataset,
@@ -1854,6 +1858,43 @@ async def _auto_process_sample_file(
             )
         matchable_sample_ids.add(sample_item_id)
 
+    # --- A TOF file whose modes have no calibrants: transfer one --- #
+    # From the nearest fitted files of its instrument and polarity, within a
+    # window (MAS-187). Only where no sample of the file calibrates: a file
+    # whose samples would calibrate more than once is left as it is.
+    transferred = False
+    if (
+        not calibrating_sample_ids
+        and not shared_calibration
+        and not is_blank_sample_file
+        and sample_file.instrument_type == "tof"
+    ):
+        try:
+            transfer = await calibration_mz_transfer(
+                sample_file_id, user_id=user_id, process_id=process_id
+            )
+        except ApiException as error:
+            runtime.logger.exception(
+                "Failed to transfer an m/z calibration to "
+                f"'{sample_file.filename}': {error}"
+            )
+            not_calibrated_reason = (
+                f"{not_calibrated_reason}, and the transfer of a neighbouring "
+                f"file's calibration failed: {_calibration_error_reason(error)}"
+            )
+        else:
+            transferred = transfer.applied
+            if transferred:
+                await record_processing_status(
+                    sample_file_id,
+                    ProcessingStatus.CALIBRATED,
+                    compose_detail(file_note),
+                )
+            else:
+                not_calibrated_reason = (
+                    f"{not_calibrated_reason}, and {transfer.reason}"
+                )
+
     # --- Hold back what the match gate would refuse --- #
     # match_compute_sample refuses a sample whose file record is not verified,
     # with a raised warning that ends the whole run - so judge the record here,
@@ -1863,7 +1904,7 @@ async def _auto_process_sample_file(
     # was never fitted keeps its converter's record, which matching refuses
     # though the pipeline had no calibrants to fit it with.
     mz_calibration = sample_file.mz_calibration
-    if calibrating_sample_ids and matchable_sample_ids:
+    if (calibrating_sample_ids or transferred) and matchable_sample_ids:
         mz_calibration = (
             await fetch_sample_file(sample_file_id=sample_file_id)
         ).mz_calibration
@@ -1890,6 +1931,8 @@ async def _auto_process_sample_file(
         )
     elif is_blank_sample_file:
         calibration_note = "Blank measurement: no peaks to calibrate, match or assign."
+    elif transferred:
+        calibration_note = transfer_note(mz_calibration)
     elif not_calibrated_reason:
         axis = (
             "the acquisition axis"

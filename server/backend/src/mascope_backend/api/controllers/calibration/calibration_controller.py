@@ -33,6 +33,10 @@ from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
     fit_quality,
     get_calibration_handler,
 )
+from mascope_backend.api.controllers.calibration.lib.tof_calibration_transfer import (
+    is_transferred_record,
+    plan_transfer,
+)
 from mascope_backend.api.controllers.match.match_controller import match_remove_sample
 from mascope_backend.api.controllers.sample.batches.status.service import (
     update_sample_batch_status,
@@ -68,7 +72,13 @@ from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
     SampleFileUpdate,
 )
 from mascope_backend.api.new.ionization.modes.versions import move_to_current_versions
-from mascope_backend.db import IonizationMode, Sample, SampleBatch, async_session
+from mascope_backend.db import (
+    IonizationMode,
+    Sample,
+    SampleBatch,
+    SampleFile,
+    async_session,
+)
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
 from mascope_backend.service_token import derive_token_secret
@@ -351,8 +361,9 @@ def previous_fit_moved_the_axis(previous: dict | None) -> bool:
     marker record instead (``status: "failed"``, ``verified: False``) and a
     converter record (:func:`is_unfitted_record`) describes the acquisition
     axis; neither has touched it, so the file still sits on the axis it was
-    acquired with. Any other record is treated as applied unless it says it
-    is unverified: the cost of being wrong that way is one drift observation
+    acquired with. A transfer from neighbouring files (``status:
+    "transferred"``) moved it as a fit does. Any other record is treated as
+    applied unless it says it is unverified: the cost of being wrong that way is one drift observation
     not raised, against a badge that blames the instrument for a fit which
     displaced the axis.
 
@@ -601,7 +612,9 @@ def stamp_quality_verdict(
 
     Everything this decides is dropped from the incoming dict first:
     ``/mz_apply`` takes the fit straight off the request body and persists
-    unknown keys verbatim. For the same reason the quality block is only
+    unknown keys verbatim. So is a transfer's account of its sources
+    (``transfer``): a fit judged here is a fit of the file itself, and only
+    :func:`calibration_mz_transfer` writes a transfer. For the same reason the quality block is only
     judged when the fit is ``sealed`` (see :func:`fit_seal_valid`); an
     unsealed fit gets :data:`UNSEALED_FIT_ISSUE` instead, and is treated as
     any other fit below the bar.
@@ -613,7 +626,14 @@ def stamp_quality_verdict(
     :param sealed: Whether the fit's seal was valid before it was applied.
     :return: The quality issues found; empty when the fit cleared the bar.
     """
-    for key in ("quality_issues", "quality_gate", "accepted_at", "accepted_by", "seal"):
+    for key in (
+        "quality_issues",
+        "quality_gate",
+        "accepted_at",
+        "accepted_by",
+        "seal",
+        "transfer",
+    ):
         fit.pop(key, None)
     if sealed:
         issues = calibration_quality_issues(fit.get("quality"), filename)
@@ -1020,6 +1040,7 @@ async def calibration_mz_apply(
     filename: str,
     manual: bool = False,
     accept_quality_issues: bool = False,
+    transferred: bool = False,
     independent_transaction: bool = False,
     user_id: int | None = None,
     process_id=None,
@@ -1047,6 +1068,11 @@ async def calibration_mz_apply(
         see :func:`carry_acquisition_drift`.
     :param accept_quality_issues: Whether an operator accepted this fit
         knowing it misses the quality bar; stores it ``verified`` anyway.
+    :param transferred: Whether ``fit`` is a calibration transferred from
+        neighbouring files (:func:`calibration_mz_transfer`) rather than a fit
+        of this file. It is stored as it comes, ``status: "transferred"``: it
+        has no quality block to judge, and no pre-fit error a drift marker
+        could be read from.
     :param independent_transaction: Whether to run as independent transaction
     :param user_id: Current user triggered operation (for user notifications)
     :param process_id: Process ID for tracking
@@ -1125,12 +1151,16 @@ async def calibration_mz_apply(
     updated_mz_axis = (await asyncio.to_thread(get_sum_signal, filename)).mz.values
     new_mz_range = [updated_mz_axis[0], updated_mz_axis[-1]]
 
-    issues = stamp_quality_verdict(
-        fit,
-        filename,
-        accept=accept_quality_issues,
-        accepted_by=user_id,
-        sealed=sealed,
+    issues = (
+        []
+        if transferred
+        else stamp_quality_verdict(
+            fit,
+            filename,
+            accept=accept_quality_issues,
+            accepted_by=user_id,
+            sealed=sealed,
+        )
     )
     if issues:
         # INFO: a data condition the record and the badge carry.
@@ -1432,6 +1462,89 @@ async def calibration_mz_calibrate_sample(
             "affected_sample_batch_ids": affected_sample_batch_ids,
         },
     }
+
+
+@dataclass(frozen=True)
+class TransferOutcome:
+    """What :func:`calibration_mz_transfer` did for a file."""
+
+    #: Whether a transferred calibration was applied.
+    applied: bool
+    #: The record applied; None when none was.
+    record: dict | None = None
+    #: Why none was, as a clause; None when one was.
+    reason: str | None = None
+
+
+def transfer_replaces(record: dict | None) -> str | None:
+    """Why a transfer may not replace a file's record, or None when it may.
+
+    A transfer replaces the converter's record (:func:`is_unfitted_record`)
+    and an earlier transfer. It never replaces a fit of the file itself: that
+    wins over a transfer. Nor a failed fit's marker, which MAS-178 left out
+    of its scope; nor no record at all.
+    """
+    if is_unfitted_record(record) or is_transferred_record(record):
+        return None
+    if isinstance(record, dict) and record.get("status") == "failed":
+        return (
+            "its own m/z calibration failed, and a transfer does not stand "
+            "in for a failed fit"
+        )
+    if record is None:
+        return "it has no calibration record to transfer one over"
+    return "it holds a fit of its own, which a transfer does not replace"
+
+
+async def calibration_mz_transfer(
+    sample_file_id: str,
+    user_id: int | None = None,
+    process_id: str | None = None,
+) -> TransferOutcome:
+    """
+    Give a TOF file in a mode without calibrants its neighbours' calibration.
+
+    The parameters of the nearest fitted files of the same instrument and
+    polarity, interpolated in time within
+    :data:`calibration_config.TOF_TRANSFER_WINDOW_S`
+    (``tof_calibration_transfer`` says how), applied as any fit is
+    (:func:`calibration_mz_apply`): the file's axes are recomputed from its
+    TOF index, its matches removed and its analysis batches flagged
+    ``rematch``. The record says ``status: "transferred"`` and names its
+    sources and the time gap.
+
+    :param sample_file_id: The file.
+    :param user_id: Current user triggered operation (for user notifications)
+    :param process_id: Parent process ID for tracking
+    :return: Whether a transfer was applied, the record, or why not.
+    """
+    async with async_session() as session:
+        sample_file = await session.get(SampleFile, sample_file_id)
+    if sample_file is None:
+        return TransferOutcome(False, reason="the file is gone")
+    refused = transfer_replaces(sample_file.mz_calibration)
+    if refused is not None:
+        return TransferOutcome(False, reason=refused)
+    plan = await plan_transfer(sample_file)
+    if plan.record is None:
+        return TransferOutcome(False, reason=plan.reason)
+    record = plan.record
+    await calibration_mz_apply(
+        fit=record,
+        filename=sample_file.filename,
+        transferred=True,
+        independent_transaction=False,
+        user_id=user_id,
+        process_id=gen_id(8),
+        parent_id=process_id,
+    )
+    transfer = record["transfer"]
+    runtime.logger.info(
+        f"Transferred an m/z calibration to '{sample_file.filename}' from "
+        f"{len(transfer['sources'])} neighbouring file(s), the nearest "
+        f"{transfer['gap_s']:.0f} s away."
+    )
+    return TransferOutcome(True, record=record)
 
 
 # How many failed samples the batch calibration warning names one by one
