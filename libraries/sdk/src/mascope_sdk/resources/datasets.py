@@ -6,7 +6,13 @@ from typing import Any
 import pandas as pd
 from loguru import logger
 
-from ._base import UNSET, BaseResource, Needs, _coerce_datetime_columns
+from ._base import (
+    UNSET,
+    BaseResource,
+    Needs,
+    _coerce_datetime_columns,
+    _coerce_utc_columns,
+)
 
 
 #: The role a dataset write needs, as docs/user/sdk/index.md lists it.
@@ -62,7 +68,7 @@ class DatasetsResource(BaseResource):
         data = self._get(f"workspaces/{workspace_id}/datasets")
         if not data:
             return None
-        df = _coerce_datetime_columns(pd.DataFrame(data))
+        df = _coerce_utc_columns(_coerce_datetime_columns(pd.DataFrame(data)))
         logger.info("Found {} dataset(s)", len(df))
         self._client._cache[cache_key] = df
         return df.copy()

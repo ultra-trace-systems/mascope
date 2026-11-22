@@ -186,11 +186,14 @@ class FakeAPI:
     :ivar spans: Whether the batch listing gives each batch's span and
         instruments, as a server since the span does; one before it does not.
     :ivar no_span: Batches the listing gives no span, as an empty one.
+    :ivar modified: ``sample_batch_utc_modified`` as the listing writes it,
+        by batch; a batch left out has the recorded one.
     """
 
     def __init__(self, spans: bool = True):
         self.spans = spans
         self.no_span: set[str] = set()
+        self.modified: dict[str, str] = {}
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.failures: list[tuple[re.Pattern, int]] = []
         self.files = copy.deepcopy(FILES)
@@ -245,6 +248,11 @@ class FakeAPI:
                     "dataset_id": d,
                     "polarity": "+-" if b == "b2" else "-",
                     **(self._span(b) if self.spans else {}),
+                    **(
+                        {"sample_batch_utc_modified": self.modified[b]}
+                        if b in self.modified
+                        else {}
+                    ),
                 }
                 for b, (d, name) in BATCHES.items()
                 if d == params.get("dataset_id")
@@ -420,6 +428,34 @@ class TestADataset:
         assert str(batches["first_datetime_utc"].dt.tz) == "UTC"
         assert batches.loc["b1", "sample_batch_utc_modified"] == pd.Timestamp(
             RECORDED["batch_row"]["sample_batch_utc_modified"]
+        )
+
+    @pytest.mark.parametrize("sdk", ["parses it", "lists it as text"])
+    def test_a_modified_time_with_and_without_a_fraction_resolves(
+        self, client, api, monkeypatch, sdk
+    ):
+        """The server leaves the fraction out of a time whose microseconds
+        are 0. The first value pandas would infer a format from is the whole
+        second; an SDK from before its audit-column parse lists both as text."""
+        if sdk == "lists it as text":
+            from mascope_sdk.resources import batches as sdk_batches
+
+            monkeypatch.setattr(sdk_batches, "_coerce_utc_columns", lambda df: df)
+        api.modified = {
+            "b5": "2026-03-07T10:00:00+00:00",
+            "b1": "2026-03-07T10:00:00.5+00:00",
+        }
+
+        batches = resolve(client, Scope(dataset="Campaign 2026")).batches.set_index(
+            "sample_batch_id"
+        )
+
+        assert str(batches["sample_batch_utc_modified"].dt.tz) == "UTC"
+        assert batches.loc["b5", "sample_batch_utc_modified"] == pd.Timestamp(
+            "2026-03-07T10:00:00", tz="UTC"
+        )
+        assert batches.loc["b1", "sample_batch_utc_modified"] == pd.Timestamp(
+            "2026-03-07T10:00:00.5", tz="UTC"
         )
 
     def test_without_a_range_the_files_are_those_of_the_batches_span(self, client, api):
