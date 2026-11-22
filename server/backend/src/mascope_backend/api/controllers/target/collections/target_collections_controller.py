@@ -32,6 +32,7 @@ from mascope_backend.api.models.target.collections.target_collection_pydantic_mo
 )
 from mascope_backend.api.new.ionization.modes.versions import (
     held_by_earlier_versions,
+    lineage,
     still_held,
 )
 from mascope_backend.api.new.workspaces.dependencies import (
@@ -40,6 +41,7 @@ from mascope_backend.api.new.workspaces.dependencies import (
 )
 from mascope_backend.db import (
     IonizationMode,
+    SampleItem,
     TargetCollection,
     TargetCollectionInSampleBatch,
     TargetCompound,
@@ -55,6 +57,52 @@ from mascope_backend.socket.records.service import (
 
 # How many unknown ids a refusal names in its message; the rest are counted.
 _MISSING_IDS_SHOWN = 10
+
+
+async def calibrated_batch_ids(target_collection_id: str) -> set[str]:
+    """The batches whose files a mode calibrates on this collection.
+
+    The batches holding samples under any version of a mode whose current
+    version names the collection its calibration collection. A sample an
+    earlier version left on its version moves onto the current one when it is
+    re-processed, so it is calibrated on this collection then too, as the
+    ionization mode edit reads it (``api/new/ionization/modes/service.py``).
+    A mode whose current version calibrates on another collection is not
+    counted: its batches were flagged when the mode was pointed away.
+
+    :param target_collection_id: The collection.
+    :return: The batch ids, empty when no mode calibrates on it.
+    """
+    async with async_session() as session:
+        mode_ids = (
+            (
+                await session.execute(
+                    select(IonizationMode.ionization_mode_id).where(
+                        IonizationMode.calibration_collection_id
+                        == target_collection_id,
+                        IonizationMode.is_active.is_(True),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        versions = set()
+        for mode_id in mode_ids:
+            versions.update(await lineage(session, mode_id))
+        if not versions:
+            return set()
+        return set(
+            (
+                await session.execute(
+                    select(SampleItem.sample_batch_id)
+                    .where(SampleItem.ionization_mode_id.in_(versions))
+                    .distinct()
+                )
+            )
+            .scalars()
+            .all()
+        )
 
 
 async def verify_target_compound_ids(target_compound_ids: list[str]) -> list[str]:
@@ -451,7 +499,9 @@ async def update_target_collection(
     """
     Updates a target collection's basic fields and modifies its associated
     sample batches or target compounds. Changes that affect matching set
-    affected batches to "rematch" status.
+    affected batches to "rematch" status; a change of the compounds of a
+    collection some ionization mode calibrates on sets the batches of that
+    mode's files to "recalibrate" (:func:`calibrated_batch_ids`).
 
     Steps:
     1. Fetch existing target collection with associations
@@ -460,7 +510,8 @@ async def update_target_collection(
     4. Create new target compounds if provided
     5. Detect changes between current and proposed state
     6. Update collection data and associations
-    7. Set rematch status for affected sample batches
+    7. Set recalibrate status for the batches calibrated on the collection,
+       rematch status for the other affected sample batches
     8. Emit appropriate reload events based on change types
 
     :param target_collection_id: ID of the target collection to update
@@ -638,7 +689,7 @@ async def update_target_collection(
 
         post_update_compound_count = len(target_collection_db.target_compound)
 
-    # Step 7: Set rematch status for affected sample batches
+    # Step 7: Set recalibrate and rematch status for affected sample batches
     # TODO_match If collection type changes, all affected batches need new
     # match_collection, match_sample
     needs_rematch = (
@@ -649,13 +700,36 @@ async def update_target_collection(
     # didn't change in this request (e.g. batches-only update on an empty collection).
     empty_no_op = not changes["compounds"] and post_update_compound_count == 0
 
-    batch_status_result = None
-    if needs_rematch and affected_sample_batch_ids and not empty_no_op:
-        batch_status_result = await update_sample_batch_status(
-            sample_batch_ids=list(affected_sample_batch_ids),
-            status="rematch",
-            independent_transaction=True,  # batches reloads to show rematch status
-            never_lower=True,
+    # A collection some mode calibrates on is a calibration's input, not only
+    # a match's: a change of its compounds leaves every file of those modes
+    # fitted on the old ones, so their batches need the m/z re-fit, which
+    # itself ends in a rematch. The stronger "recalibrate", as the mode edit
+    # sets when a mode is pointed at another collection. A collection that
+    # only matches keeps the rematch.
+    recalibrate_ids = (
+        await calibrated_batch_ids(target_collection_id)
+        if changes["compounds"]
+        else set()
+    )
+
+    batch_status_results = []
+    if recalibrate_ids:
+        batch_status_results.append(
+            await update_sample_batch_status(
+                sample_batch_ids=sorted(recalibrate_ids),
+                status="recalibrate",
+                independent_transaction=True,
+            )
+        )
+    rematch_ids = affected_sample_batch_ids - recalibrate_ids
+    if needs_rematch and rematch_ids and not empty_no_op:
+        batch_status_results.append(
+            await update_sample_batch_status(
+                sample_batch_ids=list(rematch_ids),
+                status="rematch",
+                independent_transaction=True,  # batches reloads to show rematch status
+                never_lower=True,
+            )
         )
 
     # Step 8: Emit reload events based on change types
@@ -696,7 +770,7 @@ async def update_target_collection(
         count = len(created_target_compound_ids)
         message += f", {count} target compound{'s' if count != 1 else ''} created"
 
-    if batch_status_result:
+    for batch_status_result in batch_status_results:
         message += f". {batch_status_result.get('message', '')}"
 
     runtime.logger.info(message)

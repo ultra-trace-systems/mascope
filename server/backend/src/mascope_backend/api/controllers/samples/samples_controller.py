@@ -7,6 +7,11 @@ from fastapi import HTTPException
 from sqlalchemy import Integer, func, select
 
 import mascope_signal.compute as m_compute
+from mascope_backend.api.controllers.calibration.lib.collection_version import (
+    collection_stale,
+    current_collection_versions,
+    recorded_version,
+)
 from mascope_backend.api.controllers.sample.files.process.census import (
     holds_only_fragmentation_scans,
 )
@@ -147,7 +152,11 @@ async def get_samples(
         with nested match information, and each sample's ``ms2_group_count``:
         how many MS2 groups the group inventory lists for it, 0 for a sample
         with none. A sample's ``mz_calibration`` leaves out a TOF fit's
-        ``quality.points`` (:func:`_listed_mz_calibration`)
+        ``quality.points`` (:func:`_listed_mz_calibration`), and its
+        ``mz_calibration_collection_stale`` says whether that fit was made on
+        another version of the calibration collection than its mode offers a
+        fit now: None for a record that names no version
+        (``calibration/lib/collection_version.py``)
     :rtype: dict
     """
     async with async_session() as session:
@@ -254,6 +263,23 @@ async def get_samples(
             sample_data["match"] = match_data
             sample_data["ms2_group_count"] = row.ms2_group_count
             data.append(sample_data)
+
+        # Whether each TOF fit was made on its mode's calibration collection
+        # as it stands now, read once per mode
+        modes = {
+            sample["ionization_mode_id"]
+            for sample in data
+            if sample["ionization_mode_id"]
+            and recorded_version(sample["mz_calibration"]) is not None
+        }
+        versions = await current_collection_versions(session, modes) if modes else {}
+        for sample in data:
+            mode_id = sample["ionization_mode_id"]
+            sample["mz_calibration_collection_stale"] = (
+                collection_stale(sample["mz_calibration"], versions[mode_id])
+                if mode_id in versions
+                else None
+            )
 
         return {
             "status": "success",

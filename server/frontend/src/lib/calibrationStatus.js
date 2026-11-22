@@ -35,6 +35,13 @@
  * lines it kept in `quality.span`, and the calibration collection's version,
  * the model and the node's version. The badge names the span; a record from
  * before these keys, and an Orbitrap one, says what it always did.
+ *
+ * The sample list says, per sample, whether that collection version is still
+ * the one the sample's ionization mode offers a fit
+ * (`mz_calibration_collection_stale`): an edit of the calibration
+ * collection's compounds, or a mode pointed at another collection, leaves the
+ * file fitted on calibrants the mode no longer has. A fit that is otherwise
+ * fine then reads `stale` (warn); any other applied fit's tooltip says it too.
  */
 
 import { carriedSegmentsText } from '@/lib/calibrationSegments'
@@ -50,20 +57,46 @@ const driftText = (mzCalibration) => {
   return `Acquisition drift${drift ? ` ${drift}` : ''} – consider retuning the instrument.`
 }
 
+const STALE_TEXT =
+  'Fitted on an older version of the calibration collection: its calibrants ' +
+  'have changed since. Recalibrate the batch to fit it on the current ones.'
+
 /**
  * Derive the calibration badge for a sample row.
  *
  * States and their severities, from most to least urgent: `failed` (danger),
  * `poor`, `warned` and `accepted` (warn - a calibration that is not good
- * enough, used or not), `drifted` (info - calibrated fine, the instrument needs attention),
- * `unfitted`/`unverified` (secondary), `ok` (muted), `none`.
+ * enough, used or not), `stale` (warn - a fit made on an older version of the
+ * calibration collection), `drifted` (info - calibrated fine, the instrument
+ * needs attention), `unfitted`/`unverified` (secondary), `ok` (muted), `none`.
  *
  * @param {object|null|undefined} mzCalibration - `sample.mz_calibration` record
+ * @param {boolean|null|undefined} [collectionStale] -
+ *   `sample.mz_calibration_collection_stale`: true when the fit was made on
+ *   another version of the calibration collection than the mode offers now
  * @returns {{state: string, icon: string, severity: string, tooltip: string,
  *   clickable: boolean}} Badge descriptor; `clickable` is false when opening
  *   the calibration dialog cannot help (nothing to calibrate against).
  */
-export function calibrationStatus(mzCalibration) {
+export function calibrationStatus(mzCalibration, collectionStale = null) {
+  const status = recordStatus(mzCalibration)
+  if (collectionStale !== true) return status
+  if (status.state === 'ok' || status.state === 'drifted') {
+    return {
+      ...status,
+      state: 'stale',
+      severity: 'warn',
+      tooltip: `${status.tooltip.replace(/\.?$/, '.')} ${STALE_TEXT}`
+    }
+  }
+  if (['poor', 'warned', 'accepted', 'unverified'].includes(status.state)) {
+    return { ...status, tooltip: `${status.tooltip} ${STALE_TEXT}` }
+  }
+  return status
+}
+
+/** The badge a record gives on its own, without its collection's version. */
+function recordStatus(mzCalibration) {
   if (!mzCalibration) {
     return {
       state: 'none',

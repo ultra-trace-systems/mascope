@@ -298,4 +298,69 @@ describe('calibrationStatus', () => {
       expect(status.tooltip).toContain(carried)
     })
   })
+
+  describe('a fit made on an older version of the calibration collection', () => {
+    const fit = (extra = {}) => ({
+      status: 'ok',
+      verified: true,
+      mode: 0,
+      par: [10850.0, -18500.0],
+      quality: {
+        n_points: 5,
+        collection: { id: 'c1', isotopes_sha256: 'old' }
+      },
+      ...extra
+    })
+
+    it('reads stale and says why', () => {
+      const status = calibrationStatus(fit(), true)
+
+      expect(status.state).toBe('stale')
+      expect(status.severity).toBe('warn')
+      expect(status.clickable).toBe(true)
+      expect(status.tooltip).toBe(
+        'm/z calibrated: 5 points. Fitted on an older version of the calibration ' +
+          'collection: its calibrants have changed since. Recalibrate the batch to ' +
+          'fit it on the current ones.'
+      )
+    })
+
+    it.each([false, null, undefined])('reads as before when the list says %s', (stale) => {
+      expect(calibrationStatus(fit(), stale)).toEqual(calibrationStatus(fit()))
+      expect(calibrationStatus(fit(), stale).state).toBe('ok')
+    })
+
+    it('turns a drifted fit stale, keeping the drift', () => {
+      const status = calibrationStatus(fit({ acquisition_drift: true }), true)
+
+      expect(status.state).toBe('stale')
+      expect(status.tooltip).toContain('consider retuning the instrument. Fitted on an older')
+    })
+
+    it.each([
+      ['warned', { status: 'poor', quality_issues: [{ message: 'Too far.' }] }],
+      ['accepted', { status: 'poor', accepted_by: 4, quality_issues: [{ message: 'Too far.' }] }],
+      ['poor', { status: 'poor', verified: false, quality_issues: [{ message: 'Too far.' }] }],
+      ['unverified', { verified: false }]
+    ])('keeps a %s badge and says it in the tooltip', (state, extra) => {
+      const status = calibrationStatus(fit(extra), true)
+
+      expect(status.state).toBe(state)
+      expect(status.tooltip).toContain('Fitted on an older version of the calibration collection')
+    })
+
+    it.each([
+      ['failed', { status: 'failed' }],
+      ['unfitted', { status: 'unfitted' }]
+    ])('leaves a %s badge alone', (state, extra) => {
+      const status = calibrationStatus(fit(extra), true)
+
+      expect(status.state).toBe(state)
+      expect(status.tooltip).not.toContain('older version')
+    })
+
+    it('leaves the never-calibrated badge alone', () => {
+      expect(calibrationStatus(null, true).state).toBe('none')
+    })
+  })
 })

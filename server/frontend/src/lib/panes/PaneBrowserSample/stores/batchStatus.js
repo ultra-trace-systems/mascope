@@ -6,8 +6,9 @@ export const useBatchStatus = defineStore('browser.sample.batchStatus', () => {
       type: 'button',
       icon: 'ph ph-scales',
       tooltip:
-        'Calibration collection changed. Click to re-calibrate this batch so the new ' +
-        'calibration takes effect (afterwards the batch will need re-matching)',
+        'The calibration collection changed, or the compounds in it did. Click to ' +
+        're-calibrate this batch so the new calibration takes effect (afterwards ' +
+        'the batch will need re-matching)',
       severity: 'warn'
     },
     rematch: {
