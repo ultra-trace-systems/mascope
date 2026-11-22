@@ -83,7 +83,9 @@ what a release of Mascope seeded it with, which its digest says:
 - holding what this release seeds, it is left;
 - holding what an earlier release seeded (``SEEDED_BEFORE``), it is brought
   to this release's, through the path a person's edit takes
-  (``update_target_collection``), so the batches it serves are re-matched;
+  (``update_target_collection``), so the batches it serves are flagged as
+  after that edit: "recalibrate" where a mode calibrates on it, else
+  "rematch";
 - holding anything else, the deployment has edited it, and it is left as it
   is.
 
@@ -862,7 +864,9 @@ async def _bring_up_to_date(collection: SeededCollection) -> None:
     """Make a collection an earlier release seeded what this one seeds.
 
     Through the path a person's edit of the collection takes, so the batches it
-    serves are marked for a rematch as they would be after that edit. The
+    serves are flagged as they would be after that edit: "recalibrate" for
+    those holding files of a mode that calibrates on it, "rematch" for the
+    rest. The
     compounds it no longer holds stay in the library, as they do when a person
     takes one out of a collection.
     """

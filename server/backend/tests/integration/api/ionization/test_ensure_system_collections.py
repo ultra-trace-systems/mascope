@@ -418,11 +418,14 @@ async def _seed_as_an_earlier_release(monkeypatch):
         await ensure_system_ionization()
 
 
-async def _batch_serving(factory, collection_id: str) -> str:
+async def _batch_serving(
+    factory, collection_id: str, ionization_mode_id: str | None = None
+) -> str:
     """A batch the collection serves, settled after its last match.
 
     With a sample in it: a batch with none has nothing to match, and stays
-    ready whatever its collections do.
+    ready whatever its collections do. The sample is processed under
+    ``ionization_mode_id`` when given.
     """
     async with factory() as session:
         session.add(
@@ -479,6 +482,7 @@ async def _batch_serving(factory, collection_id: str) -> str:
                 sample_item_attributes={},
                 polarity="-",
                 sample_item_utc_created=_NOW,
+                ionization_mode_id=ionization_mode_id,
             )
         )
         await session.commit()
@@ -507,6 +511,29 @@ async def test_a_collection_an_earlier_release_seeded_is_brought_up_to_date(
             select(SampleBatch.status).where(SampleBatch.sample_batch_id == batch)
         )
     assert status == "rematch"
+
+
+@pytest.mark.asyncio
+async def test_bringing_a_calibrant_collection_up_to_date_flags_its_modes_batches(
+    fresh_db, monkeypatch
+):
+    """As a person's edit would: the batches whose files the shipped mode
+    calibrates on the collection are flagged "recalibrate", not "rematch",
+    since their calibration was made on the collection's earlier content."""
+    await _seed_as_an_earlier_release(monkeypatch)
+    batch = await _batch_serving(
+        fresh_db, _EARLIER.collection_id, ionization_mode_id=_BROMIDE_MODE
+    )
+    monkeypatch.setattr(seed_module, "SEEDED_BEFORE", frozenset({_EARLIER.digest}))
+
+    counts = await ensure_system_ionization_collections()
+
+    assert counts["updated"] == 1
+    async with fresh_db() as session:
+        status = await session.scalar(
+            select(SampleBatch.status).where(SampleBatch.sample_batch_id == batch)
+        )
+    assert status == "recalibrate"
 
 
 @pytest.mark.asyncio

@@ -2094,8 +2094,9 @@ them as its next version, as an edit of the mode would: those files keep the
 version their results came from until they are processed again, and their
 batches are not flagged. A deployment may also edit a shipped collection: each
 start compares a shipped collection with what releases of Mascope seeded it
-with, brings one that still holds that up to date, marking the batches it
-serves for a rematch as an edit would, and leaves an edited one as it is. The
+with, brings one that still holds that up to date, flagging the batches it
+serves as an edit would (*recalibrate* for the batches whose files a mode
+calibrates on it, *rematch* for the rest), and leaves an edited one as it is. The
 start's log line `System target collections: ...` counts both and names the
 edited ones. A deleted one comes back at the next start, as a deleted shipped
 mechanism does; to stop a mode using it, point the mode at another collection.
@@ -2106,7 +2107,12 @@ brings a shipped mode still declaring what an earlier release defined it with
 onto the current mechanisms: in place while no file is processed under it,
 else as its next version, with the method bindings following it, as an edit
 would. Files processed before keep the version their results came from until
-they are processed again, and their batches are not flagged. The start's log
+they are processed again. The new version alone flags no batch, but this
+release also brings the *Uronium, positive calibrants* collection up to date,
+so the first start after the upgrade flags every batch holding Uronium,
+positive files *recalibrate*, unless the mode was pointed at a calibration
+collection of the deployment's own: their calibration was made on the old
+collection, and processing them again calibrates and matches them anew. The start's log
 line `System ionization modes: ...` counts the modes brought onto their
 chemistry's mechanisms; a shipped mode declaring mechanisms no release gave it
 is left as it is and logged as a warning.
