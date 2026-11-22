@@ -10,5 +10,7 @@
   demo's uronium golden rows are. A server brings its existing Uronium,
   positive mode onto the new mechanisms at its next start, as a new version
   where files were processed under it, and those files keep their results
-  until they are processed again. Caprolactam ships as a reference list of its
+  until they are processed again. The same start brings the shipped
+  calibrant collection up to date, so every batch holding Uronium, positive
+  files is flagged *recalibrate* after the upgrade. Caprolactam ships as a reference list of its
   own, tagged `background` as the siloxanes are.
