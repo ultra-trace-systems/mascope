@@ -157,6 +157,45 @@ def test_the_eight_primitives_draw_the_same_counts_on_both_backends():
     assert plotly_sticks == mpl_sticks == 16
 
 
+#: The axes whose grid a primitive hides: a heatmap's cells, a strip's rows
+#: and a category x. Every other axis draws its grid.
+HIDDEN_GRIDS = {"strip": {"y"}, "heatmap": {"x", "y"}, "bars": {"x"}, "box": {"x"}}
+
+
+def _mpl_grid(ax, axis: str) -> bool:
+    """Whether a matplotlib axis draws its grid: every gridline, or none."""
+    shown = {line.get_visible() for line in getattr(ax, f"{axis}axis").get_gridlines()}
+    assert len(shown) == 1
+    return shown.pop()
+
+
+@pytest.mark.parametrize("theme_name", theme.THEMES)
+@pytest.mark.parametrize("name", ALL)
+def test_both_backends_hide_the_same_grids(name, theme_name):
+    """The theme's axis style does not turn a grid a panel hides back on:
+    plotly styles the axes before the panels draw."""
+    fig = _figure(name)
+    drawn = render.matplotlib(fig, theme=theme_name)
+    drawn.draw_without_rendering()
+    axes = [ax for ax in drawn.axes if ax.get_subplotspec() is not None]
+    plotted = render.plotly(fig, theme=theme_name)
+    style = theme.get(theme_name)
+    cells = common.arrange(fig, style).cells
+    for panel, ax, (row, column) in zip(fig.panels, axes, cells, strict=True):
+        if panel.primitive == "table":
+            continue
+        subplot = plotted.get_subplot(row + 1, column + 1)
+        for axis in ("x", "y"):
+            shown = axis not in HIDDEN_GRIDS.get(panel.primitive, set())
+            where = (panel.primitive, axis)
+            assert _mpl_grid(ax, axis) is shown, where
+            styled = getattr(subplot, f"{axis}axis")
+            assert styled.showgrid == shown, where
+            # The rest of the theme's style still reaches every axis.
+            assert styled.gridcolor == style.grid, where
+            assert styled.showline is True and styled.zeroline is False, where
+
+
 # --- gaps, log axes, bands and spans -------------------------------------------------
 
 

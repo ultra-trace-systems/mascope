@@ -136,6 +136,7 @@ class _Drawing:
             shared_xaxes="all" if fig.share_x else False,
         )
         self.drawn = drawn
+        self._axis_style()
         for panel, (row, column) in zip(fig.panels, arrangement.cells):
             self._panel(panel, row + 1, column + 1)
             if panel.title:
@@ -209,6 +210,12 @@ class _Drawing:
                 font={"size": theme.type.small, "color": theme.muted},
             )
         self.drawn.update_layout(**layout)
+
+    def _axis_style(self) -> None:
+        """The theme's style on every axis, set before the panels draw so
+        that a panel's own setting wins: a heatmap, a strip's rows and a
+        category x hide their grid, as on matplotlib."""
+        theme = self.theme
         axis = {
             "showgrid": True,
             "gridcolor": theme.grid,
