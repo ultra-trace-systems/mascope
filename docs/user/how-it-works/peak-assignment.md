@@ -2624,8 +2624,9 @@ at least as well. On a batch peak that already reads the proposed formula, the s
 recorded beside it, and only the samples that do not read the formula yet are measured.
 
 The series yields to the isotope lines, the stage before it. A row the strip read as
-another compound's isotope line is never a step of a series. A batch peak whose isotope
-lines were stripped or stamped keeps its reading: a series that proposes another formula
+another compound's isotope line is never a step of a series. A batch peak the isotope
+lines read against keeps its reading: the strip took rows as its lines, or the stamping
+predicted its lines, stamped or not. A series that proposes another formula
 for it, or the same formula through another ionization, leaves it as it is, measures
 nothing on it and records nothing on it. Moving it would leave the isotope lines it
 explains standing for a reading the peak no longer holds, so the isotope lines would be
