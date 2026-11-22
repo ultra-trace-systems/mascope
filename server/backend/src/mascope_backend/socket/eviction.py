@@ -66,8 +66,24 @@ eviction reads the account from the database, so an account enabled again
 meanwhile keeps its sockets, and a sign-out finds the session's sockets by its
 ``iat`` once more. A retry that meets Redis out of reach again is kept again;
 one that meets any other fault is not, as trying it again would only meet the
-fault again. What a worker keeps is in its memory: a worker that stops before
-Redis is back drops it, and says so in monitoring.
+fault again.
+
+What Redis cut off partway is finished, not read again, as what it already
+did hides it from a fresh read. A socket's sign-out clears its session and
+index entry first, so a socket cut off after that is found by neither: it is
+kept by its sid, and the retry signs it out without asking for its session
+(:func:`_finish_sign_out`). An eviction cut off after a socket left a room
+has lost the room from the socket's record, so it keeps the rooms it left, and
+the retry drops the account's membership of them as well.
+
+What a worker keeps is in its memory: a worker that stops before Redis is back
+drops it, and says so in monitoring. What is lost so is caught up on, where
+the server still has a mark of it, by the renewal that keeps each connected
+socket alive: once an hour it reads the account and evicts a socket the
+account's state no longer lets read (:func:`evict_held_socket`). A logout
+leaves no such mark, since its token ends only in the browser: a socket whose
+sign-out was lost with its worker keeps its rooms until it reconnects or, when
+its session is still whole, until its token expires.
 """
 
 import asyncio
@@ -140,7 +156,9 @@ def socket_hold_reason(
     return None
 
 
-async def evict_ended_sessions(user_id: int, user=None) -> int:
+async def evict_ended_sessions(
+    user_id: int, user=None, *, left_before: frozenset[str] = frozenset()
+) -> int:
     """
     Make every socket of an account that may no longer read leave its rooms.
 
@@ -156,21 +174,25 @@ async def evict_ended_sessions(user_id: int, user=None) -> int:
     :param user_id: The account.
     :param user: The account as just committed, if the caller has it; read
         from the database otherwise. A deleted account's caller passes none.
+    :param left_before: For its retry: the rooms an attempt Redis cut off made
+        sockets leave. The sockets' records no longer name them, so the
+        account's membership of them is dropped here, where no socket that may
+        read holds them.
     :return: How many sockets were evicted.
     """
     worker_pid = os.getpid()
+    left: set[str] = set(left_before)
     try:
         sids = await get_user_socket_sids(user_id)
         if not sids:
+            # No socket of the account's is on record: the last one's
+            # disconnect dropped every room of the account's, carried or not
+            # (room_tracker.release_socket).
             return 0
         if user is None:
-            from mascope_backend.db import User, async_session
-
-            async with async_session() as db:
-                user = await db.get(User, user_id)
+            user = await _read_account(user_id)
 
         own_room = f"user-{user_id}"
-        left: set[str] = set()
         kept: set[str] = set()
         evicted = 0
         for sid in sids:
@@ -235,31 +257,58 @@ async def evict_ended_sessions(user_id: int, user=None) -> int:
         )
         if redis_out_of_reach(e):
             # Tried again with the account as the database then has it.
-            _retry_later(("evict", user_id), partial(evict_ended_sessions, user_id))
+            _keep_eviction(user_id, left)
         return 0
 
 
-async def _sign_out_named(sid: str, user_id: int) -> bool:
+def _keep_eviction(user_id: int, left: set[str]) -> None:
     """
-    End the socket session of a tab that has just signed out.
+    Keep an eviction that found Redis out of reach, with the rooms it left.
+
+    One kept already for the account is replaced, so the rooms it carries are
+    carried on too.
+    """
+    key = ("evict", user_id)
+    earlier = _retries.get(key)
+    if isinstance(earlier, partial):
+        left = left | earlier.keywords.get("left_before", frozenset())
+    _retry_later(
+        key, partial(evict_ended_sessions, user_id, left_before=frozenset(left))
+    )
+
+
+async def _read_account(user_id: int):
+    """The account as the database has it, or ``None`` if it has none."""
+    from mascope_backend.db import User, async_session
+
+    async with async_session() as db:
+        return await db.get(User, user_id)
+
+
+async def _named_session(sid: str, user_id: int) -> Optional[dict]:
+    """
+    The session of the tab that has just signed out, if it is the account's.
 
     The logout route names the socket from the request's ``X-SID``, which the
     client supplies, so the socket is touched only when its stored session is
     the account signing out: a header naming another account's socket changes
-    nothing. The session is cleared first, so a subscribe arriving meanwhile is
-    refused; then the socket leaves every room it is on record in, the
-    signed-in room and ``user-{id}`` with the others. The user's membership of
-    a room goes only where no other socket of theirs holds it, as on a
-    disconnect: signing out of one tab leaves the others as they are.
+    nothing. It then goes as :func:`_sign_out` describes: the session is
+    cleared first, so a subscribe arriving meanwhile is refused; then the
+    socket leaves every room it is on record in, the signed-in room and
+    ``user-{id}`` with the others. The user's membership of a room goes only
+    where no other socket of theirs holds it, as on a disconnect: signing out
+    of one tab leaves the others as they are.
 
     The connection itself stays open: the tab carries on as one that has not
-    signed in, as the SPA's socket is before its login form. Raises what it
-    fails with; :func:`sign_out_session` logs it and keeps a retry.
+    signed in, as the SPA's socket is before its login form. Raises what
+    reading the session fails with but its absence;
+    :func:`sign_out_session` logs it and keeps a retry.
 
     :param sid: The socket the signing-out request names, on the default
         namespace.
     :param user_id: The account signing out.
-    :return: Whether the socket was signed out.
+    :return: The socket's session, or ``None`` when it is not to be signed
+        out.
     """
     try:
         session = await get_session_user(sid)
@@ -268,16 +317,14 @@ async def _sign_out_named(sid: str, user_id: int) -> bool:
             # Not read, so not known to be signed out.
             raise
         # Never authenticated, or already gone: nothing is signed in.
-        return False
+        return None
     if session.get("user_id") != user_id:
         runtime.logger.warning(
             f"Sign-out of user {user_id} named socket {sid} of another "
             f"account; left it as it is [Worker {os.getpid()}]"
         )
-        return False
-
-    await _sign_out(sid, user_id)
-    return True
+        return None
+    return session
 
 
 async def sign_out_session(
@@ -297,7 +344,8 @@ async def sign_out_session(
     Redis was out of reach for any of it, the sign-out is tried again once
     Redis answers (see the module's docstring); the named socket only if it was
     the one not reached, as a tab signed out already may have signed in again
-    by then.
+    by then. A socket whose own sign-out Redis cut off partway is kept to be
+    finished by itself (:func:`_sign_out_or_finish_later`).
 
     :param user_id: The account signing out.
     :param issued_at: The ``iat`` of the ending session's token; ``None`` for a
@@ -311,17 +359,21 @@ async def sign_out_session(
     out_of_reach = False
     if sid:
         try:
-            if await _sign_out_named(sid, user_id):
-                signed_out += 1
+            named = await _named_session(sid, user_id)
         except Exception as e:
             log_socket_failure(
                 f"Failed to sign socket {sid} of user {user_id} out "
                 f"[Worker {os.getpid()}]",
                 e,
             )
+            named = None
             if redis_out_of_reach(e):
                 retry_sid = sid
                 out_of_reach = True
+        if named is not None and await _sign_out_or_finish_later(
+            sid, user_id, named.get("issued_at")
+        ):
+            signed_out += 1
     try:
         others = await get_user_socket_sids(user_id)
     except Exception as e:
@@ -337,14 +389,6 @@ async def sign_out_session(
             # Looked at without a refresh, so a socket its dead worker left
             # keeps no longer for having been read.
             session = await peek_session_user(other)
-            if (
-                session is None
-                or session.get("user_id") != user_id
-                or session.get("issued_at") != issued_at
-            ):
-                continue
-            await _sign_out(other, user_id)
-            signed_out += 1
         except Exception as e:
             log_socket_failure(
                 f"Failed to sign socket {other} of user {user_id} out "
@@ -352,6 +396,15 @@ async def sign_out_session(
                 e,
             )
             out_of_reach = out_of_reach or redis_out_of_reach(e)
+            continue
+        if (
+            session is None
+            or session.get("user_id") != user_id
+            or session.get("issued_at") != issued_at
+        ):
+            continue
+        if await _sign_out_or_finish_later(other, user_id, issued_at):
+            signed_out += 1
     if out_of_reach:
         _retry_later(
             ("sign-out", user_id, issued_at, retry_sid),
@@ -368,7 +421,9 @@ async def sign_out_expired_socket(sid: str, user_id: int) -> bool:
     session's ``exp`` passes. The socket goes as a logout signs it out: the tab
     is no longer signed in over HTTP either. Its session is read again first,
     so a socket that signed in again meanwhile, with a newer token, stays.
-    Never raises: the renewal that calls it must carry on.
+    Never raises: the renewal that calls it must carry on. One whose sign-out
+    Redis cuts off partway is kept to be finished, as a logout's is; one whose
+    session cannot be read is left to the renewal's next tick.
 
     :param sid: The socket, on the default namespace.
     :param user_id: The account its expired session was signed in as.
@@ -376,15 +431,6 @@ async def sign_out_expired_socket(sid: str, user_id: int) -> bool:
     """
     try:
         session = await peek_session_user(sid)
-        if (
-            session is None
-            or session.get("user_id") != user_id
-            or (expires_at := session.get("expires_at")) is None
-            or expires_at > time.time()
-        ):
-            return False
-        await _sign_out(sid, user_id)
-        return True
     except Exception as e:
         log_socket_failure(
             f"Failed to sign socket {sid} of user {user_id} out at its session's "
@@ -392,6 +438,142 @@ async def sign_out_expired_socket(sid: str, user_id: int) -> bool:
             e,
         )
         return False
+    if (
+        session is None
+        or session.get("user_id") != user_id
+        or (expires_at := session.get("expires_at")) is None
+        or expires_at > time.time()
+    ):
+        return False
+    return await _sign_out_or_finish_later(sid, user_id, session.get("issued_at"))
+
+
+async def evict_held_socket(sid: str, session: dict) -> bool:
+    """
+    Evict a connected socket whose account may no longer read, if eviction
+    missed it.
+
+    Called once an hour by the renewal of the worker holding the connection,
+    with the session it has just read. An eviction that found Redis out of
+    reach is kept only in the memory of the worker that tried it, and is
+    dropped if that worker stops before Redis answers; the socket may be held
+    by another worker that runs on. This reads the account and evicts as
+    :func:`evict_ended_sessions` does when :func:`socket_hold_reason` says the
+    socket may no longer read and it still holds a room but its own. So a
+    disabled, deleted or revoked account, or one held at the password screen,
+    loses its rooms within the hour whatever was lost on the way, at one
+    account read per socket per hour.
+
+    A logout moves nothing on the account, so a sign-out lost so is not
+    caught here (see the module's docstring). Never raises: the renewal that
+    calls it must carry on.
+
+    :param sid: The socket, on the default namespace.
+    :param session: Its session, as the renewal read it.
+    :return: Whether the account's sockets were evicted.
+    """
+    if (user_id := session.get("user_id")) is None:
+        return False
+    try:
+        user = await _read_account(user_id)
+        if (
+            socket_hold_reason(
+                user, session.get("issued_at"), session.get("expires_at")
+            )
+            is None
+        ):
+            return False
+        if not await room_tracker.socket_rooms(sid) - {f"user-{user_id}"}:
+            # Evicted already, or held since it signed in.
+            return False
+    except Exception as e:
+        log_socket_failure(
+            f"Failed to check the account of socket {sid}, user {user_id}, "
+            f"at its renewal [Worker {os.getpid()}]",
+            e,
+        )
+        return False
+    runtime.logger.warning(
+        f"Socket {sid} of user {user_id} held rooms its account may no longer "
+        f"read; evicting them at its renewal [Worker {os.getpid()}]"
+    )
+    # The account's every socket, as the eviction that missed them would have.
+    await evict_ended_sessions(user_id, user)
+    return True
+
+
+async def _sign_out_or_finish_later(
+    sid: str, user_id: int, issued_at: Optional[int]
+) -> bool:
+    """
+    Sign a socket out; when Redis cuts that off, keep it to be finished.
+
+    :func:`_sign_out` clears the session and its index entry before it reads
+    the socket's rooms, so a socket it leaves halfway is no longer found by
+    either, and a retry that reads them again would leave it in its rooms. It
+    is kept by its sid instead (see :func:`_finish_sign_out`).
+
+    Never raises.
+
+    :param sid: The socket, on the default namespace.
+    :param user_id: The account it is signed in as.
+    :param issued_at: The ``iat`` its session recorded: how the retry tells
+        the session it was signing out from one the socket signed in with
+        since.
+    :return: Whether the socket was signed out.
+    """
+    try:
+        await _sign_out(sid, user_id)
+        return True
+    except Exception as e:
+        log_socket_failure(
+            f"Failed to sign socket {sid} of user {user_id} out [Worker {os.getpid()}]",
+            e,
+        )
+        if redis_out_of_reach(e):
+            _retry_later(
+                ("finish-sign-out", user_id, sid),
+                partial(_finish_sign_out, sid, user_id, issued_at),
+            )
+        return False
+
+
+async def _finish_sign_out(sid: str, user_id: int, issued_at: Optional[int]) -> bool:
+    """
+    Finish a socket's sign-out that Redis cut off partway.
+
+    The socket is not looked for by its session or the account's index, which
+    the first attempt may have cleared already: it is signed out by its sid,
+    its rooms read from its own record, as :func:`_sign_out` does. A session
+    of the socket's left uncleared is cleared with them. Only one the socket
+    signed in with since, of another account or token, keeps it as it is.
+
+    Never raises, and keeps itself again if Redis is still out of reach.
+
+    :param sid: The socket, on the default namespace.
+    :param user_id: The account it was signed in as.
+    :param issued_at: The ``iat`` of the session being signed out.
+    :return: Whether the socket was signed out.
+    """
+    try:
+        session = await peek_session_user(sid)
+    except Exception as e:
+        log_socket_failure(
+            f"Failed to sign socket {sid} of user {user_id} out [Worker {os.getpid()}]",
+            e,
+        )
+        if redis_out_of_reach(e):
+            _retry_later(
+                ("finish-sign-out", user_id, sid),
+                partial(_finish_sign_out, sid, user_id, issued_at),
+            )
+        return False
+    if session is not None and (
+        session.get("user_id") != user_id or session.get("issued_at") != issued_at
+    ):
+        # Signed in again since: what it holds now is the new session's.
+        return False
+    return await _sign_out_or_finish_later(sid, user_id, issued_at)
 
 
 def _retry_later(key: tuple, retry: Callable[[], Awaitable[object]]) -> None:

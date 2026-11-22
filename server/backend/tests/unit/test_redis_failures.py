@@ -252,16 +252,33 @@ async def _sign_out_expired(monkeypatch, error: Exception) -> None:
     assert await eviction.sign_out_expired_socket("sid-1", 1) is False
 
 
+async def _finish_sign_out(monkeypatch, error: Exception) -> None:
+    monkeypatch.setattr(eviction, "peek_session_user", _raising(error))
+    assert await eviction._finish_sign_out("sid-1", 1, 1000) is False
+
+
+async def _evict_held(monkeypatch, error: Exception) -> None:
+    async def _account(user_id):
+        return None
+
+    monkeypatch.setattr(eviction, "_read_account", _account)
+    monkeypatch.setattr(eviction.room_tracker, "socket_rooms", _raising(error))
+    assert await eviction.evict_held_socket("sid-1", {"user_id": 1}) is False
+
+
 #: (the function whose failure is logged, a call that reaches it with an error)
 _SOCKET_SITES = [
     pytest.param("authenticate_socket_connection", _authenticate, id="sign-in"),
     pytest.param("_hold_quietly", _hold_quietly, id="hold"),
     pytest.param("wrapper", _subscribe, id="socket_auth"),
     pytest.param("evict_ended_sessions", _evict, id="evict"),
-    pytest.param("sign_out_session", _sign_out_named, id="sign-out-named"),
+    # The named socket's own sign-out logs where it keeps what was cut off.
+    pytest.param("_sign_out_or_finish_later", _sign_out_named, id="sign-out-named"),
     pytest.param("sign_out_session", _sign_out_session_list, id="sign-out-list"),
     pytest.param("sign_out_session", _sign_out_session_each, id="sign-out-each"),
     pytest.param("sign_out_expired_socket", _sign_out_expired, id="sign-out-expiry"),
+    pytest.param("_finish_sign_out", _finish_sign_out, id="sign-out-finish"),
+    pytest.param("evict_held_socket", _evict_held, id="renewal-check"),
 ]
 
 
