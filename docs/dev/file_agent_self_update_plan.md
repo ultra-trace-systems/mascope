@@ -1,8 +1,8 @@
 # File Agent self-update
 
 - **Status:** design
-- **As of:** 2026-10-22
-- **Tracked in:** [OrbionICS self-update](https://linear.app/ultra-trace/project/orbionics-self-update-96caa663228f) (Linear, ICS-89 to ICS-101, filed 2026-10-22: milestones A, B and C; ICS-92 decides whether B gates MAS-210)
+- **As of:** 2026-11-22
+- **Tracked in:** [OrbionICS self-update](https://linear.app/ultra-trace/project/orbionics-self-update-96caa663228f) (Linear, ICS-89 to ICS-101 and ICS-105, filed 2026-10-22: milestones A, B and C; ICS-92 decided on 2026-11-22 that B gates MAS-210, through ICS-101)
 - **What:** The File Agent moving to a new release without a hand on the instrument PC.
 
 Goal: make the File Agent installed on an instrument PC able to move to a
@@ -38,6 +38,17 @@ If the agent installed during phase E can update itself, phase E is the last
 campaign. If the updater ships afterwards, it takes one more campaign to put
 it in place, which is exactly the cost this work exists to avoid. **This has
 to ship, and be proven on the internal deployment, before phase E starts.**
+
+**Decided on 2026-11-22 (ICS-92): it does.** The visits that replace the
+agents still uploading on tokens bound to no device (MAS-210) wait for the
+proving run on the internal deployment (ICS-101), and what a visit installs
+is the release that carries the updater. Two sites have such agents carrying
+live uploads. They keep working in the meantime because the token lifetime
+stays at 360 days, as v1.13.0 kept it; the 90-day lifetime (MAS-211) follows
+the visits. The cost is accepted with the decision: the 2.0 release waits on
+those visits, so it waits on phase B of section 6 as well. The alternatives
+set aside were to visit every site now and update each agent by hand once
+more when B ships, and to visit only the two urgent sites now.
 
 The ingest work ([ingest routing and splitting](ingest_routing_and_splitting.md))
 lowers the stakes but does not remove them. It deliberately keeps the agent
@@ -372,16 +383,21 @@ it as one:
 - **E - later, as sites ask.** Server-hosted installers (4.2); per-device
   policy editing in the UI; maintenance windows beyond the setting.
 
-B must be released before phase E's first site visit. A and C can land
-either side of it.
+B must be released before phase E's first site visit (decided on 2026-11-22,
+section 1). A and C can land either side of it, except that B's drain and
+handoff builds on A's mutex and state file.
 
 ## 7. Rollout
 
 - The internal deployment's agent first, `auto`, across at least two
-  releases, one of them a planted failure.
-- Then one customer site that agrees to `auto`. Its server's own update
-  moves its agents, so agents are staged per deployment for free: a site's
-  agents update when its server does, not when a release is published.
+  releases, one of them a planted failure (ICS-101). This is the run the
+  site visits wait for.
+- Then one customer site that agrees to `auto` (ICS-105). Its server's own
+  update moves its agents, so agents are staged per deployment for free: a
+  site's agents update when its server does, not when a release is
+  published. This step does not gate the visits: a site needs an agent that
+  carries the updater before it can show anything, so the first site phase E
+  visits can be this one.
 - The rest per phase E. Paired machines is the progress view, and
   `last_seen_version` gives the same answer in SQL.
 
