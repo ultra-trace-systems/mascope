@@ -29,8 +29,11 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     standing_series_record,
     water_ladder_summary,
 )
+from mascope_backend.api.new.peak_assignments.batch_series import (
+    read_batch_groups,
+    with_sample_peaks,
+)
 from mascope_backend.api.new.peak_assignments.config import IN_APP_ENGINE
-from mascope_backend.api.new.peak_assignments.engine import MEASUREMENT_MODEL_KEY
 from mascope_backend.api.new.peak_assignments.fold_view import (
     derived_ledger,
     fold_id_target,
@@ -48,6 +51,7 @@ from mascope_backend.api.new.peak_assignments.model_readers import (
 )
 from mascope_backend.api.new.peak_assignments.peak_ids import load_peak_ids
 from mascope_backend.api.new.peak_assignments.profiles import RESOLVED_PROFILE_KEY
+from mascope_backend.api.new.peak_assignments.row_terms import MEASUREMENT_MODEL_KEY
 from mascope_backend.api.new.peak_assignments.schemas import DEFAULT_PAGE_LIMIT
 from mascope_backend.api.new.peak_assignments.target_listing import with_target_listings
 from mascope_backend.api.new.peak_assignments.tiering import (
@@ -748,11 +752,6 @@ async def _with_batch_readings(
     Three reads whatever the groups hold: the batch's anchors, the members'
     mechanisms and the sample's peaks at them.
     """
-    # Imported here: the series detection imports this module.
-    from mascope_backend.api.new.peak_assignments.batch_series import (
-        read_batch_groups,
-        with_sample_peaks,
-    )
 
     if anchor is None:
         for key in (

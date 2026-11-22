@@ -21,11 +21,6 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
     read_cross_channel,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
-    ROLE_ISO_CHILD,
-    ROLE_M0,
-    SOURCE_DATABASE,
-    SOURCE_UNTARGETED,
-    apply_partner_gates,
     cap_second_channel,
     evidence_for,
     read_p_correct_again,
@@ -49,16 +44,23 @@ from mascope_backend.api.new.peak_assignments.mass_gate import (
     cap_mass_gate,
     measure_mass_gate,
 )
+from mascope_backend.api.new.peak_assignments.partner_gate import apply_partner_gates
 from mascope_backend.api.new.peak_assignments.profiles import ResolvedProfile
 from mascope_backend.api.new.peak_assignments.reagent_pass import (
     FragmentClaims,
     claim_fragments,
 )
-from mascope_backend.api.new.peak_assignments.sample_inputs import _source_ion_current
-from mascope_backend.api.new.peak_assignments.seeded_scoring import (
-    RESOLVE_RESOLUTION,
-    score_seeds,
+from mascope_backend.api.new.peak_assignments.row_terms import (
+    ROLE_ISO_CHILD,
+    ROLE_M0,
+    SOURCE_DATABASE,
+    SOURCE_UNTARGETED,
 )
+from mascope_backend.api.new.peak_assignments.sample_inputs import (
+    RESOLVE_RESOLUTION,
+    _source_ion_current,
+)
+from mascope_backend.api.new.peak_assignments.seeded_scoring import score_seeds
 from mascope_backend.api.new.peak_assignments.stage_a_pass import ConfidenceCurve
 from mascope_backend.api.new.peak_assignments.tiering import (
     apply_tiering,
@@ -229,7 +231,7 @@ def judge_commits(
        row again at it where it takes the refit, and records the ceiling each
        line holds every reading of it under at the model the rows were scored
        at,
-       lowering nothing. The partner gate (``engine.apply_partner_gates``)
+       lowering nothing. The partner gate (``partner_gate.apply_partner_gates``)
        reads its partners under those ceilings and settles each gated ion's
        reading, at the tier that reading's own evidence earns; a swap keeps
        the ion, its line and its mass error, so it moves nothing the mass gate
@@ -276,7 +278,7 @@ def judge_commits(
         sample commits through any other channel is one it shows, which the
         cross-channel pass does not let a second channel settle against.
     :param partner_gated_channels: Those of them held to a partner
-        (``engine.apply_partner_gates``), read over both stages' rows after
+        (``partner_gate.apply_partner_gates``), read over both stages' rows after
         the mass gate's measurement, so a partner is a reading its ceiling
         leaves committed, and before every cap, so a reading set aside is no
         rival in the cross-channel pass.
@@ -470,7 +472,7 @@ class Judging:
         of them.
 
         1. The partner gate settles each gated ion's reading against the
-           molecules the sample shows (``engine.apply_partner_gates``), under
+           molecules the sample shows (``partner_gate.apply_partner_gates``), under
            the ceilings the refit recorded.
         2. The fragment claim reads the settled ledger
            (``reagent_pass.claim_fragments``): a reading of a fragment's ion is

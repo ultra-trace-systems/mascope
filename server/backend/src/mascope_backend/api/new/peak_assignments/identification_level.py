@@ -120,14 +120,16 @@ from mascope_backend.api.new.peak_assignments.engine import (
     GRID_RIVALS,
     MEASURED_SHORTLIST,
     RIVALS_PAST_CAP,
-    ROLE_ISO_CHILD,
-    ROLE_M0,
-    SOURCE_DATABASE,
-    SOURCE_UNTARGETED,
     formula_identity,
     ion_identity,
 )
 from mascope_backend.api.new.peak_assignments.mass_gate import SpectrumLines
+from mascope_backend.api.new.peak_assignments.row_terms import (
+    ROLE_ISO_CHILD,
+    ROLE_M0,
+    SOURCE_DATABASE,
+    SOURCE_UNTARGETED,
+)
 from mascope_backend.api.new.peak_assignments.tiering import (
     LINE_ABSENT,
     PREDICTED_ENVELOPE,
@@ -1039,7 +1041,7 @@ def inherited_level(owner_level: dict | None, owner_id: str) -> dict:
 def hand_level(row: dict) -> dict:
     """The level of a row no stage of its run elected: one a person assigned
     by hand, or one a batch pass rewrote as the listed compound its batch
-    decided present (``batch_known_species.listed_species_row``).
+    decided present (``known_species.listed_species_row``).
 
     What the mapping can state of such a formula: 5b where its lines
     (``tiering.ask_absent_line``, which curation asks) or its plausibility

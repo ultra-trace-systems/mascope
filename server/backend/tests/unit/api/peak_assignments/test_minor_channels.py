@@ -14,7 +14,11 @@ import pandas as pd
 import pytest
 
 from mascope_backend.api.new.peak_assignments import engine as engine_module
-from mascope_backend.api.new.peak_assignments import judging_loop, sample_mechanisms
+from mascope_backend.api.new.peak_assignments import (
+    judging_loop,
+    partner_gate,
+    sample_mechanisms,
+)
 from mascope_backend.api.new.peak_assignments import service as service_module
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.cross_channel import (
@@ -25,15 +29,16 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
 )
 from mascope_backend.api.new.peak_assignments.engine import (
     PARTNER_ANY_CHANNEL,
-    PARTNER_GATE_KEPT,
-    PARTNER_GATE_LIST,
     SecondChannelRule,
-    apply_partner_gates,
     cap_second_channel,
     listed_formula_identities,
-    untargeted_matches_to_peak_assignments,
 )
 from mascope_backend.api.new.peak_assignments.mass_gate import cap_mass_gate
+from mascope_backend.api.new.peak_assignments.partner_gate import (
+    PARTNER_GATE_KEPT,
+    PARTNER_GATE_LIST,
+    apply_partner_gates,
+)
 from mascope_backend.api.new.peak_assignments.profiles import (
     ResolvedProfile,
     resolve_profile,
@@ -47,6 +52,9 @@ from mascope_backend.api.new.peak_assignments.sample_mechanisms import (
     _without_unreadable,
 )
 from mascope_backend.api.new.peak_assignments.tiers import TIER_ASSIGNED, TIER_CANDIDATE
+from mascope_backend.api.new.peak_assignments.untargeted_rows import (
+    untargeted_matches_to_peak_assignments,
+)
 from mascope_tools.composition.mass_accuracy import SampleMassAccuracy
 from mascope_tools.composition.measurement_model import MeasurementModel
 from mascope_tools.composition.utils import formula_identity
@@ -701,7 +709,7 @@ class TestThePartnerGate:
         }
 
     def test_the_walk_says_when_its_rounds_ran_out(self, monkeypatch):
-        monkeypatch.setattr(engine_module, "MAX_PARTNER_GATE_ROUNDS", 1)
+        monkeypatch.setattr(partner_gate, "MAX_PARTNER_GATE_ROUNDS", 1)
         r1 = self._formate("r1", "C10H18O5")
         r2 = self._formate("r2", "C9H16O3", acid="C10H18O5")
         summary = apply_partner_gates(
@@ -1204,7 +1212,7 @@ class TestTheStrongerPartnerDecides:
     ):
         # The record rounds down and decides on what it records, so a ratio
         # short of the margin never reads as the margin.
-        assert engine_module.PARTNER_MARGIN == 10.0
+        assert partner_gate.PARTNER_MARGIN == 10.0
         c5h7 = self._benzyl(elected="C5H6", other=("C5H8", "im-hydride"))
         self._gate(
             [

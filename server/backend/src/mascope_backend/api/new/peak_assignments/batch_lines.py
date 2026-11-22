@@ -17,8 +17,6 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
 from mascope_backend.api.new.peak_assignments.config import MAX_ALTERNATIVES_CEILING
 from mascope_backend.api.new.peak_assignments.engine import (
     DISPLACED_BY_CLAIM,
-    ROLE_ISO_CHILD,
-    ROLE_M0,
     reading_as_alternative,
 )
 from mascope_backend.api.new.peak_assignments.envelope_claims import isotopologue_names
@@ -27,6 +25,7 @@ from mascope_backend.api.new.peak_assignments.identification_level import (
     inherited_level,
     is_level,
 )
+from mascope_backend.api.new.peak_assignments.row_terms import ROLE_ISO_CHILD, ROLE_M0
 from mascope_backend.db import BatchPeak, BatchPeakOccurrence, async_session
 
 

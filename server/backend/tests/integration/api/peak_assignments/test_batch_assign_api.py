@@ -28,14 +28,16 @@ from sqlalchemy import func, select, update
 from mascope_backend.api.lib import api_features
 from mascope_backend.api.lib import utils as api_utils
 from mascope_backend.api.new.peak_assignments import (
+    batch_fold,
     batch_peaks_controller,
     batch_peaks_routes,
     batch_stages,
+    batch_staleness,
     batch_untargeted,
 )
+from mascope_backend.api.new.peak_assignments.batch_fold import rebuild_batch_ledger
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     fold_sample_into_batch_peaks,
-    rebuild_batch_ledger,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_ASSIGN,
@@ -43,7 +45,6 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_SEARCH,
     BATCH_RUN_KEEP,
     RUN_IN_FLIGHT_CODE,
-    check_no_run_in_flight,
     complete_run,
     fail_run,
     request_cancel,
@@ -53,6 +54,7 @@ from mascope_backend.api.new.peak_assignments.batch_stages import (
     INTERRUPTED_ERROR,
     STAGES,
     assign_batch,
+    check_no_run_in_flight,
     needs_fold,
     stage_standing,
 )
@@ -319,7 +321,7 @@ async def test_a_pass_of_the_real_stages_is_one_batch_run_with_one_snapshot(
     async with async_session_factory() as session:
         named = {
             r.batch_peak_run_id
-            for r in (await batch_stages.stage_states(session, batch_id)).values()
+            for r in (await batch_staleness.stage_states(session, batch_id)).values()
             if r.stage in {s.stage.value for s in STAGES if s.actions}
         }
     assert named == {run.batch_peak_run_id}
@@ -540,9 +542,7 @@ async def test_a_rebuild_on_its_own_that_is_cancelled_closes_its_run(
     async def cancelled(*args, **kwargs):
         raise asyncio.CancelledError()
 
-    monkeypatch.setattr(
-        batch_peaks_controller, "backfill_sample_batch_peaks", cancelled
-    )
+    monkeypatch.setattr(batch_fold, "backfill_sample_batch_peaks", cancelled)
     with pytest.raises(asyncio.CancelledError):
         await rebuild_batch_ledger(batch_id)
     run = (await _runs(async_session_factory, batch_id))[-1]
@@ -562,9 +562,7 @@ async def test_a_pass_that_needs_a_fold_folds_first_and_runs_every_stage(
     async def grading(*args, **kwargs):
         graded.append(args)
 
-    monkeypatch.setattr(
-        batch_peaks_controller, "_grade_continuity_after_backfill", grading
-    )
+    monkeypatch.setattr(batch_fold, "_grade_continuity_after_backfill", grading)
     await _pass(batch_id)
     await complete_run(
         batch_id, await start_run(batch_id, ACTION_IMPORT, engine="peaky")
@@ -749,9 +747,7 @@ async def test_a_pass_cancelled_during_its_fold_runs_no_stage(
         await request_cancel(sample_batch_id)
         await clear(sample_batch_id)
 
-    monkeypatch.setattr(
-        batch_peaks_controller, "clear_engine_verdicts", cancels_then_clears
-    )
+    monkeypatch.setattr(batch_fold, "clear_engine_verdicts", cancels_then_clears)
     outcome = await _pass(batch_id, fold="always")
     assert outcome["status"] == "cancelled"
     assert stand_ins["ran"] == []

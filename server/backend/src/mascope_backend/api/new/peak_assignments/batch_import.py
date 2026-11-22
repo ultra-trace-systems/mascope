@@ -49,9 +49,9 @@ from typing import Any, Optional, Sequence
 from sqlalchemy import select
 
 from mascope_backend.api.lib.api_features import api_controller_background_task
+from mascope_backend.api.new.peak_assignments.batch_lock import _acquire_batch_fold_lock
 from mascope_backend.api.new.peak_assignments.batch_peaks import ROLE_M0, manual_pin_of
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-    _acquire_batch_fold_lock,
     clear_engine_verdicts_statement,
     recompute_batch_consensus,
 )
@@ -60,7 +60,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     fail_run,
     touch_ledger,
 )
-from mascope_backend.api.new.peak_assignments.batch_stages import (
+from mascope_backend.api.new.peak_assignments.batch_staleness import (
     REASON_IMPORT,
     mark_batch_stale,
 )

@@ -29,11 +29,13 @@ from dataclasses import dataclass
 
 from mascope_backend.api.new.peak_assignments.engine import (
     DISPLACED_BY_CLAIM,
-    ROLE_ISO_CHILD,
-    SOURCE_DATABASE,
     _isotope_offset_label,
     fit_isotope_formula,
     reading_as_alternative,
+)
+from mascope_backend.api.new.peak_assignments.row_terms import (
+    ROLE_ISO_CHILD,
+    SOURCE_DATABASE,
 )
 from mascope_backend.api.new.peak_assignments.tiers import TIER_CANDIDATE, TIER_RANK
 from mascope_tools.composition.finder import replace_atom_with_isotope

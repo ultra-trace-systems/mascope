@@ -13,10 +13,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select, update
 
-from mascope_backend.api.new.peak_assignments import (
-    batch_peaks_controller,
-    batch_peaks_routes,
-)
+from mascope_backend.api.new.peak_assignments import batch_peaks, batch_peaks_routes
 from mascope_backend.api.new.peak_assignments.batch_export import (
     COLUMNS,
     write_batch_ledger_csv,
@@ -140,7 +137,7 @@ async def mixed_ledger(async_session_factory, pa_test_data, monkeypatch):
     two batch peaks at the same m/z, one per instrument type's partition."""
     # The fold reads the instrument type off the file name; T1 is the TOF file.
     monkeypatch.setattr(
-        batch_peaks_controller,
+        batch_peaks,
         "get_instrument_type",
         lambda filename: "tof" if "-T1-" in filename else "orbi",
     )

@@ -17,13 +17,13 @@ from mascope_backend.api.new.peak_assignments.artifact_pass import (
     build_artifact_assignments,
     claim_artifact_peaks,
 )
-from mascope_backend.api.new.peak_assignments.engine import (
-    ROLE_ARTIFACT,
-    SOURCE_ARTIFACT,
-)
 from mascope_backend.api.new.peak_assignments.import_validation import (
     coherent_tiers,
     owner_link_errors,
+)
+from mascope_backend.api.new.peak_assignments.row_terms import (
+    ROLE_ARTIFACT,
+    SOURCE_ARTIFACT,
 )
 from mascope_backend.api.new.peak_assignments.tiers import TIER_UNASSIGNED
 

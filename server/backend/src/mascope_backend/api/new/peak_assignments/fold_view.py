@@ -62,13 +62,9 @@ from mascope_backend.api.new.peak_assignments.config import (
     FOLD_ENGINE,
     PEAK_ASSIGNMENT_ENGINE_VERSION,
 )
-from mascope_backend.api.new.peak_assignments.engine import (
-    ROLE_UNASSIGNED,
-    evidence_for,
-)
-from mascope_backend.api.new.peak_assignments.target_listing import (
-    with_target_listings,
-)
+from mascope_backend.api.new.peak_assignments.engine import evidence_for
+from mascope_backend.api.new.peak_assignments.row_terms import ROLE_UNASSIGNED
+from mascope_backend.api.new.peak_assignments.target_listing import with_target_listings
 from mascope_backend.api.new.peak_assignments.tiers import TIER_UNASSIGNED
 from mascope_backend.db import BatchPeak, BatchPeakOccurrence
 

@@ -34,9 +34,7 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
     read_cross_channel,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
-    PARTNER_GATE_KEY,
     SampleMassAccuracy,
-    apply_partner_gates,
     cap_second_channel,
 )
 from mascope_backend.api.new.peak_assignments.envelope_claims import ENVELOPE_CLAIM
@@ -50,6 +48,8 @@ from mascope_backend.api.new.peak_assignments.mass_gate import (
     cap_mass_gate,
     measure_mass_gate,
 )
+from mascope_backend.api.new.peak_assignments.partner_gate import apply_partner_gates
+from mascope_backend.api.new.peak_assignments.row_terms import PARTNER_GATE_KEY
 from mascope_backend.api.new.peak_assignments.tiering import (
     PREDICTED_ENVELOPE,
     REASON_ABSENT_LINE,

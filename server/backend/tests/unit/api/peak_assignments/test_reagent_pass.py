@@ -24,11 +24,7 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
     SETTLED_BY_SECOND_CHANNEL,
     apply_cross_channel,
 )
-from mascope_backend.api.new.peak_assignments.engine import (
-    ROLE_REAGENT,
-    SOURCE_REAGENT,
-    drop_ions_claimed_elsewhere,
-)
+from mascope_backend.api.new.peak_assignments.engine import drop_ions_claimed_elsewhere
 from mascope_backend.api.new.peak_assignments.import_validation import (
     coherent_tiers,
     owner_link_errors,
@@ -41,6 +37,10 @@ from mascope_backend.api.new.peak_assignments.reagent_pass import (
     fragment_ladders_for,
     ion_ladders_for,
     reagent_library_for,
+)
+from mascope_backend.api.new.peak_assignments.row_terms import (
+    ROLE_REAGENT,
+    SOURCE_REAGENT,
 )
 from mascope_backend.api.new.peak_assignments.tiers import TIER_UNASSIGNED
 from mascope_tools.composition.heuristic_filter import (
@@ -1281,7 +1281,7 @@ class TestTheFragmentClaim:
 
     def test_the_run_records_what_the_claim_took(self):
         from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
-        from mascope_backend.api.new.peak_assignments.engine import FRAGMENTS_KEY
+        from mascope_backend.api.new.peak_assignments.row_terms import FRAGMENTS_KEY
 
         claims = claim([pinene(), c6h8()])
         stored = run_config._stored_run_config(

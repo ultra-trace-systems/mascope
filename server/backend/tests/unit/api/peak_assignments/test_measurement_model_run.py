@@ -14,10 +14,6 @@ import pytest
 
 from mascope_backend.api.new.peak_assignments import judging_loop, stage_a_pass
 from mascope_backend.api.new.peak_assignments.engine import (
-    ROLE_ISO_CHILD,
-    ROLE_M0,
-    SOURCE_DATABASE,
-    SOURCE_UNTARGETED,
     score_frame_at,
     tier_for_evidence,
 )
@@ -27,6 +23,12 @@ from mascope_backend.api.new.peak_assignments.envelope_claims import (
     EnvelopeClaim,
 )
 from mascope_backend.api.new.peak_assignments.mass_gate import SpectrumLines
+from mascope_backend.api.new.peak_assignments.row_terms import (
+    ROLE_ISO_CHILD,
+    ROLE_M0,
+    SOURCE_DATABASE,
+    SOURCE_UNTARGETED,
+)
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
     TIER_BELOW_ASSIGNABILITY,

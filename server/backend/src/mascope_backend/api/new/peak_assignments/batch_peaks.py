@@ -76,6 +76,7 @@ from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_RANK,
     TIER_UNASSIGNED,
 )
+from mascope_file.name import get_instrument_type
 
 
 # --- tolerances ---------------------------------------------------------------
@@ -1987,7 +1988,7 @@ def member_state(member: Any) -> dict:
 
 
 #: The batch stages that rewrite members, as their marks name them
-#: (``batch_stages.BatchStage`` spells the same names).
+#: (``batch_staleness.BatchStage`` spells the same names).
 MARK_WATER_LADDERS = "water_ladders"
 MARK_KNOWN_SPECIES = "known_species"
 MARK_SEARCH = "search"
@@ -2451,3 +2452,14 @@ def _rollup_tier(winner_members: list) -> str:
     if cand_or_better >= 0.5:
         return TIER_CANDIDATE
     return TIER_BELOW_ASSIGNABILITY
+
+
+def _intensity_variable(filename: str) -> str:
+    """The batch peak's intensity unit, from the instrument type (areas for TOF,
+    heights for Orbitrap). Defaults to heights if the filename cannot be classified
+    -- an unclassifiable file must never abort the fold-in."""
+    try:
+        instrument_type = get_instrument_type(filename)
+    except Exception:  # noqa: BLE001 - classification is best-effort
+        instrument_type = None
+    return "sum_peak_areas" if instrument_type == "tof" else "sum_peak_heights"

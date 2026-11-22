@@ -72,7 +72,7 @@ stage's start to its last stage's end: each later stage begins in the
 transaction the stage before it ends in (:func:`hand_over`), so it holds one
 also where it holds no batch run (judging samples again, stamping versions,
 the ratio stability, the probable blends). Every step's route refuses while
-one does (``batch_runs.check_no_run_in_flight``), and so does a pass's first
+one does (``batch_stages.check_no_run_in_flight``), and so does a pass's first
 stage, which a second press can reach before the first pass's stage is
 marked (:func:`begin_stage`). Every writer of the stage rows takes the
 batch's fold lock first, as a fold does, so no two lock them in different
@@ -105,22 +105,48 @@ import hashlib
 import json
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from enum import StrEnum
+from datetime import datetime
 from typing import Any, Optional
 
 from fastapi import status
 from pydantic import ValidationError
-from sqlalchemy import case, func, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from mascope_backend.api.lib.api_features import api_controller_background_task
+from mascope_backend.api.lib.api_features import (
+    api_controller,
+    api_controller_background_task,
+)
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     ApiException,
     CodedHTTPException,
 )
 from mascope_backend.api.lib.utils import handle_reloads
+from mascope_backend.api.new.peak_assignments.batch_checks import read_batch_checks
+from mascope_backend.api.new.peak_assignments.batch_coherence import (
+    read_batch_co_variation,
+)
+from mascope_backend.api.new.peak_assignments.batch_fold import rebuild_batch_ledger
+from mascope_backend.api.new.peak_assignments.batch_isotopologues import (
+    stamp_batch_isotopologues,
+)
+from mascope_backend.api.new.peak_assignments.batch_known_species import (
+    decide_batch_known_species,
+)
+from mascope_backend.api.new.peak_assignments.batch_lock import _acquire_batch_fold_lock
+from mascope_backend.api.new.peak_assignments.batch_merged_isotopologues import (
+    strip_batch_isotopologue_rows,
+)
 from mascope_backend.api.new.peak_assignments.batch_peaks import STAGE_VERSION
+from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
+    recompute_batch_consensus,
+)
+from mascope_backend.api.new.peak_assignments.batch_rejudge import (
+    rejudge_samples,
+    samples_written,
+    series_corroborated,
+    species_restored,
+)
 from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_ASSIGN,
     ACTION_BATCH_CHECKS,
@@ -134,6 +160,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_WATER_LADDERS,
     RUN_IN_FLIGHT_CODE,
     STATUS_COMPLETED,
+    BatchRunInFlightException,
     cancel_requested,
     cancel_run,
     close_shielded,
@@ -141,13 +168,40 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     current_run,
     fail_run,
     record_progress,
+    running_run,
     start_run,
+)
+from mascope_backend.api.new.peak_assignments.batch_series import detect_batch_series
+from mascope_backend.api.new.peak_assignments.batch_staleness import (
+    REASON_INTERRUPTED,
+    REASON_PARTIAL,
+    REASON_UPSTREAM,
+    STAGE_RECORD_KEYS,
+    STATE_CURRENT,
+    STATE_NOT_RUN,
+    STATE_RUNNING,
+    STATE_STALE,
+    BatchStage,
+    _fold_lock,
+    _now,
+    mark_stale,
+    stage_states,
+    stages_from,
+)
+from mascope_backend.api.new.peak_assignments.batch_untargeted import (
+    search_batch_untargeted,
+)
+from mascope_backend.api.new.peak_assignments.batch_water_ladder import (
+    measure_batch_water_ladders,
 )
 from mascope_backend.api.new.peak_assignments.config import (
     PEAK_ASSIGNMENT_ENGINE_VERSION,
     PeakAssignmentConfig,
     batch_settings_config,
     settings_hash,
+)
+from mascope_backend.api.new.peak_assignments.continuity import (
+    recompute_batch_continuity,
 )
 from mascope_backend.db import (
     BatchPeak,
@@ -165,44 +219,8 @@ from mascope_backend.db import (
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.notifications.schemas import UserNotification
-from mascope_backend.socket.notifications.service import (
-    send_progress_user_notification,
-)
+from mascope_backend.socket.notifications.service import send_progress_user_notification
 
-
-class BatchStage(StrEnum):
-    """A batch stage, in the order every pass runs them."""
-
-    WATER_LADDERS = "water_ladders"
-    KNOWN_SPECIES = "known_species"
-    SEARCH = "search"
-    ISOTOPE_LINES = "isotope_lines"
-    SERIES = "series"
-    CO_VARIATION = "co_variation"
-    CONTINUITY = "continuity"
-    BATCH_CHECKS = "batch_checks"
-    BLENDS = "blends"
-
-
-#: What a stage's row says of it.
-STATE_CURRENT = "current"
-STATE_RUNNING = "running"
-STATE_STALE = "stale"
-#: What the ledger says of a stage with no row: it never ran on the batch.
-STATE_NOT_RUN = "not_run"
-
-#: Why a stage is stale.
-REASON_FOLD = "fold"
-REASON_REBUILD = "rebuild"
-#: An engine's batch result imported (``batch_import.py``).
-REASON_IMPORT = "import"
-#: A person's pin on a batch peak, or its release (``batch_curation.py``).
-REASON_CURATION = "curation"
-REASON_INTERRUPTED = "interrupted"
-REASON_PARTIAL = "partial"
-REASON_CONSENSUS = "consensus"
-#: An earlier stage ran again: ``upstream:<stage>``.
-REASON_UPSTREAM = "upstream"
 
 #: The phases the app groups the stages under (``batch_assignment_one_action.md``,
 #: 3.7): words of the app, not of the order.
@@ -301,26 +319,14 @@ def _dependent(call: StageCall) -> dict:
 
 
 async def _run_water_ladders(call: StageCall) -> list[dict]:
-    from mascope_backend.api.new.peak_assignments.batch_water_ladder import (
-        measure_batch_water_ladders,
-    )
-
     return [await measure_batch_water_ladders(**_dependent(call))]
 
 
 async def _run_known_species(call: StageCall) -> list[dict]:
-    from mascope_backend.api.new.peak_assignments.batch_known_species import (
-        decide_batch_known_species,
-    )
-
     return [await decide_batch_known_species(**_dependent(call))]
 
 
 async def _run_search(call: StageCall) -> list[dict]:
-    from mascope_backend.api.new.peak_assignments.batch_untargeted import (
-        search_batch_untargeted,
-    )
-
     return [
         await search_batch_untargeted(
             config=call.config,
@@ -334,12 +340,6 @@ async def _run_isotope_lines(call: StageCall) -> list[dict]:
     """The rows that are another row's isotope line, stripped to it, then the
     diagnostic lines of what stands stamped: a stripped row is no parent of
     lines of its own, and a stamp reads the parents the strip left."""
-    from mascope_backend.api.new.peak_assignments.batch_isotopologues import (
-        stamp_batch_isotopologues,
-    )
-    from mascope_backend.api.new.peak_assignments.batch_merged_isotopologues import (
-        strip_batch_isotopologue_rows,
-    )
 
     return [
         await strip_batch_isotopologue_rows(**_dependent(call)),
@@ -348,26 +348,14 @@ async def _run_isotope_lines(call: StageCall) -> list[dict]:
 
 
 async def _run_series(call: StageCall) -> list[dict]:
-    from mascope_backend.api.new.peak_assignments.batch_series import (
-        detect_batch_series,
-    )
-
     return [await detect_batch_series(config=call.config, **_dependent(call))]
 
 
 async def _run_co_variation(call: StageCall) -> list[dict]:
-    from mascope_backend.api.new.peak_assignments.batch_coherence import (
-        read_batch_co_variation,
-    )
-
     return [await read_batch_co_variation(**_dependent(call))]
 
 
 async def _run_continuity(call: StageCall) -> list[dict]:
-    from mascope_backend.api.new.peak_assignments.continuity import (
-        recompute_batch_continuity,
-    )
-
     # It opens no batch run and records nothing that names one.
     kwargs = _dependent(call)
     kwargs.pop("batch_peak_run_id")
@@ -375,19 +363,12 @@ async def _run_continuity(call: StageCall) -> list[dict]:
 
 
 async def _run_batch_checks(call: StageCall) -> list[dict]:
-    from mascope_backend.api.new.peak_assignments.batch_checks import (
-        read_batch_checks,
-    )
-
     return [await read_batch_checks(**_dependent(call))]
 
 
 async def _run_blends(call: StageCall) -> list[dict]:
     """The probable blends: the consensus of every batch peak recomputed, so
     each reads the members the stages before left it (``batch_blend.py``)."""
-    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-        recompute_batch_consensus,
-    )
 
     async with async_session() as session:
         ids = set(
@@ -418,7 +399,7 @@ STAGES: tuple[StageSpec, ...] = (
         "Measure water ladders",
         PHASE_SOURCE,
         (ACTION_WATER_LADDERS,),
-        ("water_ladder",),
+        STAGE_RECORD_KEYS[BatchStage.WATER_LADDERS],
         True,
         _run_water_ladders,
     ),
@@ -427,7 +408,7 @@ STAGES: tuple[StageSpec, ...] = (
         "Decide known species",
         PHASE_SOURCE,
         (ACTION_KNOWN_SPECIES,),
-        ("known_species",),
+        STAGE_RECORD_KEYS[BatchStage.KNOWN_SPECIES],
         True,
         _run_known_species,
     ),
@@ -436,7 +417,7 @@ STAGES: tuple[StageSpec, ...] = (
         "Search untargeted",
         PHASE_COMPOSITIONS,
         (ACTION_SEARCH,),
-        ("persistence",),
+        STAGE_RECORD_KEYS[BatchStage.SEARCH],
         True,
         _run_search,
         takes_settings=True,
@@ -446,12 +427,7 @@ STAGES: tuple[StageSpec, ...] = (
         "Isotope lines",
         PHASE_COMPOSITIONS,
         (ACTION_STRIP_ISOTOPOLOGUES, ACTION_ISOTOPOLOGUES),
-        (
-            "merged_isotopologue_of",
-            "merged_isotopologues",
-            "diagnostic_isotopologues",
-            "stamped_isotopologue_of",
-        ),
+        STAGE_RECORD_KEYS[BatchStage.ISOTOPE_LINES],
         True,
         _run_isotope_lines,
     ),
@@ -460,7 +436,7 @@ STAGES: tuple[StageSpec, ...] = (
         "Detect series",
         PHASE_COMPOSITIONS,
         (ACTION_SERIES,),
-        ("series",),
+        STAGE_RECORD_KEYS[BatchStage.SERIES],
         True,
         _run_series,
         takes_settings=True,
@@ -470,7 +446,7 @@ STAGES: tuple[StageSpec, ...] = (
         "Read co-variation",
         PHASE_CROSS_CHECK,
         (ACTION_CO_VARIATION,),
-        ("co_variation", "flat_series"),
+        STAGE_RECORD_KEYS[BatchStage.CO_VARIATION],
         False,
         _run_co_variation,
     ),
@@ -479,7 +455,7 @@ STAGES: tuple[StageSpec, ...] = (
         "Ratio stability",
         PHASE_CROSS_CHECK,
         (),
-        (),
+        STAGE_RECORD_KEYS[BatchStage.CONTINUITY],
         False,
         _run_continuity,
     ),
@@ -488,7 +464,7 @@ STAGES: tuple[StageSpec, ...] = (
         "Read batch checks",
         PHASE_CROSS_CHECK,
         (ACTION_BATCH_CHECKS,),
-        ("batch_checks",),
+        STAGE_RECORD_KEYS[BatchStage.BATCH_CHECKS],
         False,
         _run_batch_checks,
     ),
@@ -497,7 +473,7 @@ STAGES: tuple[StageSpec, ...] = (
         "Probable blends",
         PHASE_CROSS_CHECK,
         (),
-        (),
+        STAGE_RECORD_KEYS[BatchStage.BLENDS],
         False,
         _run_blends,
     ),
@@ -505,20 +481,6 @@ STAGES: tuple[StageSpec, ...] = (
 
 #: Each stage's spec, by name.
 STAGE_BY_NAME: dict[BatchStage, StageSpec] = {spec.stage: spec for spec in STAGES}
-
-#: The stage that wrote each provenance key's records.
-STAGE_OF_KEY: dict[str, BatchStage] = {
-    key: spec.stage for spec in STAGES for key in spec.record_keys
-}
-
-
-# --- pure parts -------------------------------------------------------------------
-
-
-def stages_from(first: BatchStage | str) -> tuple[BatchStage, ...]:
-    """The stages from ``first`` to the end, in order."""
-    names = [spec.stage for spec in STAGES]
-    return tuple(names[names.index(BatchStage(first)) :])
 
 
 def stages_after(stage: BatchStage | str) -> tuple[BatchStage, ...]:
@@ -589,13 +551,6 @@ def with_version(record: Any, run_ids: set[str], version: int) -> Optional[dict]
     return {**record, "version": version}
 
 
-# --- the stages' standing ---------------------------------------------------------
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 class BatchStageRunningException(CodedHTTPException):
     """A pass of the batch stages is running on this batch (409).
 
@@ -603,7 +558,7 @@ class BatchStageRunningException(CodedHTTPException):
     last stage's end, also where it holds no batch run: while it judges
     samples again, stamps versions, or runs the ratio stability and the
     probable blends. Each step's route, the pass's own, a rebuild and an
-    import refuse while it does (``batch_runs.check_no_run_in_flight``), and
+    import refuse while it does (``batch_stages.check_no_run_in_flight``), and
     so does a pass's first stage (:func:`begin_stage`).
     """
 
@@ -640,94 +595,6 @@ async def running_stage(session, sample_batch_id: str) -> Optional[BatchPeakStag
         .scalars()
         .first()
     )
-
-
-async def _fold_lock(session, sample_batch_id: str) -> None:
-    """The batch's fold lock, taken before any stage row is written.
-
-    A fold marks the stage rows inside its own transaction, under this lock,
-    and so does a consensus recompute. A writer of more than one stage row
-    that took the rows' own locks first could lock them in another order than
-    the fold, and Postgres would abort one of the two to break the deadlock.
-    Taken first by every writer, the lock orders them all.
-    """
-    # Imported here: the controller imports the fold, which imports this module.
-    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-        _acquire_batch_fold_lock,
-    )
-
-    await _acquire_batch_fold_lock(session, sample_batch_id)
-
-
-async def mark_stale(
-    session,
-    sample_batch_id: str,
-    stages: Iterable[BatchStage | str],
-    reason: str,
-    *,
-    at: Optional[datetime] = None,
-    skip_running: bool = False,
-) -> None:
-    """Mark stages of a batch stale, on the caller's session and inside its
-    transaction: the fold's, which writes what they read, and which holds
-    the batch's fold lock (:func:`_fold_lock`).
-
-    Only a stage that has run has a row to mark; one that never ran is not
-    stale, it is not run. A running stage keeps running, and the mark is what
-    its end reads (:func:`finish_stage`): it ends stale where something moved
-    after it started. With ``skip_running`` a running stage is not marked at
-    all: a consensus recompute's mark, which a running stage's own writes
-    set off.
-    """
-    names = [BatchStage(stage).value for stage in stages]
-    if not names:
-        return
-    conditions = [
-        BatchPeakStage.sample_batch_id == sample_batch_id,
-        BatchPeakStage.stage.in_(names),
-    ]
-    if skip_running:
-        conditions.append(BatchPeakStage.state != STATE_RUNNING)
-    await session.execute(
-        update(BatchPeakStage)
-        .where(*conditions)
-        .values(
-            state=case(
-                (BatchPeakStage.state == STATE_RUNNING, STATE_RUNNING),
-                else_=STATE_STALE,
-            ),
-            stale_reason=reason,
-            utc_stale=at or _now(),
-        )
-        .execution_options(synchronize_session=False)
-    )
-
-
-async def mark_every_stage_stale(session, sample_batch_id: str, reason: str) -> None:
-    """A fold's mark: every stage reads the members it rewrote."""
-    await mark_stale(session, sample_batch_id, stages_from(STAGES[0].stage), reason)
-
-
-async def mark_batch_stale(sample_batch_id: str, reason: str) -> None:
-    """Mark every stage of a batch stale, in a transaction of its own under
-    the fold lock: the mark of a writer whose rewrites commit sample by
-    sample, a rebuild, an import, a pin. Shielded, and logged rather than
-    raised where it fails: it is written while an interruption unwinds too,
-    and must not replace what interrupted it."""
-
-    async def write() -> None:
-        async with async_session() as session:
-            await _fold_lock(session, sample_batch_id)
-            await mark_every_stage_stale(session, sample_batch_id, reason)
-            await session.commit()
-
-    try:
-        await asyncio.shield(write())
-    except Exception as exc:  # noqa: BLE001 - never replace what interrupted it
-        runtime.logger.warning(
-            f"Could not mark the batch stages of batch '{sample_batch_id}' stale "
-            f"({reason}): {exc}"
-        )
 
 
 async def _begin(session, sample_batch_id: str, stage: BatchStage) -> tuple:
@@ -905,22 +772,6 @@ async def stop_stage(
         )
 
 
-async def stage_states(session, sample_batch_id: str) -> dict[str, BatchPeakStage]:
-    """The rows of a batch's stages, by stage name."""
-    rows = (
-        (
-            await session.execute(
-                select(BatchPeakStage).where(
-                    BatchPeakStage.sample_batch_id == sample_batch_id
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    return {row.stage: row for row in rows}
-
-
 def _iso(value: Optional[datetime]) -> Optional[str]:
     return value.isoformat() if value is not None else None
 
@@ -971,10 +822,6 @@ async def stamp_versions(
 
     :return: How many records were stamped.
     """
-    # Imported here: the controller imports the fold, which imports this module.
-    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-        _acquire_batch_fold_lock,
-    )
 
     if not keys or not run_ids:
         return 0
@@ -1160,12 +1007,6 @@ async def judge_again(
 
     :return: The step's outcome, as the stage's own steps report theirs.
     """
-    from mascope_backend.api.new.peak_assignments.batch_rejudge import (
-        rejudge_samples,
-        samples_written,
-        series_corroborated,
-        species_restored,
-    )
 
     samples: dict[str, frozenset[str]] = {
         sample: frozenset()
@@ -1203,7 +1044,7 @@ async def judge_again(
 # --- folding first ----------------------------------------------------------------
 
 #: The pass's first stage, which no stage row tracks: every sample folded again,
-#: today's rebuild (``batch_peaks_controller.rebuild_batch_ledger``).
+#: today's rebuild (``batch_fold.rebuild_batch_ledger``).
 FOLD_STAGE = "fold"
 FOLD_LABEL = "Fold the samples"
 
@@ -1854,12 +1695,6 @@ async def assign_batch(
 
         index = 0
         if reasons:
-            # Imported here: the controller imports the fold, which imports
-            # this module.
-            from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-                rebuild_batch_ledger,
-            )
-
             record.start(FOLD_STAGE)
             await announce(FOLD_STAGE, FOLD_LABEL, PHASE_GATHER, index)
             outcome = await rebuild_batch_ledger(
@@ -1926,6 +1761,26 @@ async def assign_batch(
     return pass_outcome(sample_batch_id, record, run_id, asked)
 
 
+@api_controller()
+async def check_no_run_in_flight(sample_batch_id: str) -> dict:
+    """The routes' synchronous refusal: a second batch-level operation on a
+    ledger one is still rewriting is refused on the request, not in a
+    notification.
+
+    Refused while a batch run is in flight, and while a pass of the batch
+    stages runs: a pass holds a stage row running from its start to its end,
+    also where it holds no batch run (:class:`BatchStageRunningException`).
+    """
+    async with async_session() as session:
+        stage = await running_stage(session, sample_batch_id)
+        if stage is not None:
+            raise BatchStageRunningException(sample_batch_id, stage)
+        running = await running_run(session, sample_batch_id)
+        if running is not None:
+            raise BatchRunInFlightException(sample_batch_id, running)
+    return {"status": "success", "message": "No batch run in flight", "results": 0}
+
+
 __all__ = [
     "ENTRY_CANCELLED",
     "ENTRY_DONE",
@@ -1942,13 +1797,11 @@ __all__ = [
     "FOLD_NO_BATCH_PEAKS",
     "FOLD_STAGE",
     "NOTIFICATION_TYPE",
-    "BatchStage",
     "BatchStageRunningException",
     "PassCancelled",
     "PassRecord",
     "STAGES",
     "STAGE_BY_NAME",
-    "STAGE_OF_KEY",
     "StageCall",
     "StageSpec",
     "SETTINGS_FROM_BATCH",
@@ -1964,9 +1817,6 @@ __all__ = [
     "is_pass_summary",
     "last_pass",
     "library_read",
-    "mark_batch_stale",
-    "mark_every_stage_stale",
-    "mark_stale",
     "needs_fold",
     "pass_config",
     "pass_outcome",
@@ -1976,10 +1826,8 @@ __all__ = [
     "settings_moved",
     "running_stage",
     "stage_standing",
-    "stage_states",
     "stages_after",
     "stage_packet",
-    "stages_from",
     "stamp_versions",
     "standing_entries",
     "stop_if_cancelled",
@@ -1987,4 +1835,5 @@ __all__ = [
     "stopped_partway",
     "upstream_reason",
     "with_version",
+    "check_no_run_in_flight",
 ]

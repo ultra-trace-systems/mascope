@@ -13,10 +13,8 @@ from mascope_backend.api.new.peak_assignments.config import (
     MAX_UNTARGETED_PEAKS_CEILING,
     PeakAssignmentConfig,
 )
-from mascope_backend.api.new.peak_assignments.engine import (
-    SEARCH_SCOPE_KEY,
-    untargeted_targets,
-)
+from mascope_backend.api.new.peak_assignments.engine import untargeted_targets
+from mascope_backend.api.new.peak_assignments.row_terms import SEARCH_SCOPE_KEY
 
 
 def peaks(count: int) -> pd.DataFrame:

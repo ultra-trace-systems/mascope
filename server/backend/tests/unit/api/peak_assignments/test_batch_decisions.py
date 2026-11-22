@@ -45,7 +45,9 @@ from mascope_backend.api.new.peak_assignments.batch_decisions import (
     strip_from,
     twin_peaks,
 )
-from mascope_backend.api.new.peak_assignments.batch_known_species import (
+from mascope_backend.api.new.peak_assignments.batch_lines import BatchLine
+from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+from mascope_backend.api.new.peak_assignments.known_species import (
     ALREADY,
     KEPT_CARRIES_LINES,
     KEPT_CLAIMED_OTHERWISE,
@@ -53,8 +55,6 @@ from mascope_backend.api.new.peak_assignments.batch_known_species import (
     KEPT_ON_TWIN,
     KEPT_TARGET_LIBRARY,
 )
-from mascope_backend.api.new.peak_assignments.batch_lines import BatchLine
-from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.reagent_pass import (
     REASON_BATCH_KNOWN_SPECIES,
     REASON_BATCH_WATER_LADDER,
@@ -1151,9 +1151,7 @@ class TestTheReaderReadsWhatItIsAsked:
         series = AsyncMock(return_value={"p": {"version": 1}})
         members = AsyncMock(return_value=({}, {}))
         with (
-            patch.object(
-                batch_decisions.batch_known_species, "batch_species_for", species
-            ),
+            patch.object(batch_decisions.known_species, "batch_species_for", species),
             patch.object(batch_decisions, "rungs_for", rungs),
             patch.object(batch_decisions.batch_lines, "batch_series_by_peak", series),
             patch.object(batch_decisions, "member_decisions", members),
@@ -1193,7 +1191,7 @@ class TestTheReaderReadsWhatItIsAsked:
 
         with (
             patch.object(
-                batch_decisions.batch_known_species,
+                batch_decisions.known_species,
                 "batch_species_for",
                 reading("species", []),
             ),

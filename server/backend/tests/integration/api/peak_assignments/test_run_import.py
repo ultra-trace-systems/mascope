@@ -77,7 +77,6 @@ def stub_fold_in(monkeypatch):
     covered by its own suite; here it would only add a slow no-op over fixture
     data. Recorded rather than dropped so the tests can assert it was reached.
     """
-    from mascope_backend.api.new.peak_assignments import batch_peaks_controller
 
     calls = []
 
@@ -85,7 +84,7 @@ def stub_fold_in(monkeypatch):
         calls.append(sample_item_id)
         return None
 
-    monkeypatch.setattr(batch_peaks_controller, "fold_sample_into_batch_peaks", _fold)
+    monkeypatch.setattr(import_service, "fold_sample_into_batch_peaks", _fold)
     return calls
 
 
@@ -328,14 +327,11 @@ class TestSingleRequestImport:
         self, editor_client, import_sample, feature_enabled, monkeypatch
     ):
         """Failure isolation mirrors the in-app path: best-effort, never fatal."""
-        from mascope_backend.api.new.peak_assignments import batch_peaks_controller
 
         async def _boom(_sample_item_id):
             raise RuntimeError("batch peaks unavailable")
 
-        monkeypatch.setattr(
-            batch_peaks_controller, "fold_sample_into_batch_peaks", _boom
-        )
+        monkeypatch.setattr(import_service, "fold_sample_into_batch_peaks", _boom)
 
         response = await _post(editor_client, import_sample, _body([_row("peak-0")]))
 

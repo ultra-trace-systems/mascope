@@ -96,6 +96,7 @@ from mascope_backend.api.new.peak_assignments.batch_coherence import (
     partition_anchors,
     partition_of,
 )
+from mascope_backend.api.new.peak_assignments.batch_lock import _acquire_batch_fold_lock
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     CONTINUITY_GRADES,
     CONTINUITY_PARTIAL,
@@ -122,10 +123,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     standing_co_variation_record,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import touch_ledger
-from mascope_backend.api.new.peak_assignments.tiers import (
-    TIER_ASSIGNED,
-    TIER_CANDIDATE,
-)
+from mascope_backend.api.new.peak_assignments.tiers import TIER_ASSIGNED, TIER_CANDIDATE
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
@@ -1050,9 +1048,6 @@ async def run_batch_continuity(
         # The write waits for the folds of the batch: a fold rewrites the
         # anchors' consensus row by row, and two writers over one batch's rows
         # in different orders is a deadlock waiting to happen.
-        from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-            _acquire_batch_fold_lock,
-        )
 
         await _acquire_batch_fold_lock(session, sample_batch_id)
         written = await _write(session, anchors, records)

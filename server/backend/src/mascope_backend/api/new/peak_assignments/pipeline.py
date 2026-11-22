@@ -42,16 +42,16 @@ from __future__ import annotations
 
 import asyncio
 import time
+import weakref
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
-from types import SimpleNamespace
-from typing import Any
+from typing import Any, Optional
 
 import pandas as pd
-from sqlalchemy import insert, update
 
+from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.new.cheminfo.utils import to_custom_element_format
 from mascope_backend.api.new.ionization.modes.versions import (
     sample_label_purity,
@@ -66,8 +66,11 @@ from mascope_backend.api.new.peak_assignments import (
     run_config,
     sample_inputs,
     sample_mechanisms,
-    service,
     stage_a_pass,
+)
+from mascope_backend.api.new.peak_assignments.alternatives_scoring import (
+    WINNER_CONFIDENCE_KEY,
+    measure_winner_confidence,
 )
 from mascope_backend.api.new.peak_assignments.batch_decisions import (
     KIND_ISOTOPOLOGUE_STRIP,
@@ -90,14 +93,7 @@ from mascope_backend.api.new.peak_assignments.config import (
 )
 from mascope_backend.api.new.peak_assignments.decoy import DecoyPlan
 from mascope_backend.api.new.peak_assignments.engine import (
-    ENVELOPE_TOLERANCE_KEY,
     LIST_PRIOR_WEIGHT,
-    MEASUREMENT_MODEL_KEY,
-    ROLE_ISO_CHILD,
-    ROLE_M0,
-    SOURCE_DATABASE,
-    SOURCE_UNTARGETED,
-    TIERING_KEY,
     build_unassigned_assignments,
     drop_ions_claimed_elsewhere,
     evidence_for,
@@ -106,16 +102,20 @@ from mascope_backend.api.new.peak_assignments.engine import (
     list_readings,
     listed_formula_identities,
     listed_ions,
-    measurement_model_record,
     pattern_scoring_for,
     record_displaced_list_readings,
     record_same_ion_readings,
+    score_ions_by_fit,
     scoring_snapshot,
     settle_list_election,
     tier_for_evidence,
-    untargeted_matches_to_peak_assignments,
-    untargeted_seeds,
     untargeted_targets,
+)
+from mascope_backend.api.new.peak_assignments.envelope_fit import (
+    NeighbourReader,
+    RunEnvelopeFit,
+    envelope_lines,
+    fit_run_envelope_tolerance,
 )
 from mascope_backend.api.new.peak_assignments.halogen_twins import record_twins
 from mascope_backend.api.new.peak_assignments.identification_level import (
@@ -140,10 +140,31 @@ from mascope_backend.api.new.peak_assignments.reagent_pass import (
     FragmentClaims,
     fragment_ladders_for,
 )
-from mascope_backend.api.new.peak_assignments.seeded_scoring import score_seeds
+from mascope_backend.api.new.peak_assignments.row_terms import (
+    ROLE_ISO_CHILD,
+    ROLE_M0,
+    SOURCE_UNTARGETED,
+    TIERING_KEY,
+)
+from mascope_backend.api.new.peak_assignments.sample_inputs import (
+    RESOLVE_RESOLUTION,
+    ineligible_reason,
+    load_sample_peaks,
+)
+from mascope_backend.api.new.peak_assignments.seeded_scoring import (
+    gate_lines,
+    score_seeds,
+)
+from mascope_backend.api.new.peak_assignments.stage_a_pass import (
+    ConfidenceCurve,
+    _stage_a_first_pass,
+)
 from mascope_backend.api.new.peak_assignments.tiering import LineGate, ask_absent_line
 from mascope_backend.api.new.peak_assignments.tiers import TIER_ASSIGNED, TIER_CANDIDATE
-from mascope_backend.db import PeakAssignment, PeakAssignmentRun, async_session
+from mascope_backend.api.new.peak_assignments.untargeted_rows import (
+    untargeted_matches_to_peak_assignments,
+    untargeted_seeds,
+)
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.notifications import (
     UserNotification,
@@ -151,7 +172,14 @@ from mascope_backend.socket.notifications import (
 )
 from mascope_file.name import get_instrument_type
 from mascope_tools.composition.custom_elements import labelled_purity
+from mascope_tools.composition.envelope_tolerance import (
+    FORM_CURVE,
+    LEVEL_DEFAULT,
+    EnvelopeLines,
+)
 from mascope_tools.composition.finder import assign_compositions
+from mascope_tools.composition.known_window import KnownWindow
+from mascope_tools.composition.mass_accuracy import ReagentOffset, SampleMassAccuracy
 from mascope_tools.composition.measurement_model import MeasurementModel
 
 
@@ -799,7 +827,7 @@ async def _propose_known_set(ctx: RunContext) -> None:
     """Stage A: the known composition set, matched, scored and arbitrated.
 
     The curated target library plus (when loaded) the reference mirror
-    (``stage_a_pass._stage_a_assignments``), whose lines fit the measurement every
+    (``pipeline._stage_a_assignments``), whose lines fit the measurement every
     later stage scores at: the width, the offset and the line-share
     tolerance. A decoy scores at its control's instead.
     """
@@ -813,7 +841,7 @@ async def _propose_known_set(ctx: RunContext) -> None:
         ctx.listed_formulas,
         ctx.stage_a_scored,
         ctx.confidence_curve,
-    ) = await stage_a_pass._stage_a_assignments(
+    ) = await _stage_a_assignments(
         sample,
         ctx.config,
         ctx.match_params,
@@ -1066,10 +1094,6 @@ async def _propose_on_representatives(ctx: RunContext) -> None:
     the claim stage nor the batch ledger explains it (``explained_peak_ids``):
     the batch's frame, as a run's is its Stage A and its pre-passes.
     """
-    # Imported here: the batch search imports this module.
-    from mascope_backend.api.new.peak_assignments.batch_untargeted import (
-        admitted_targets,
-    )
 
     sample = ctx.sample
     config = ctx.config
@@ -1293,7 +1317,7 @@ async def elect(ctx: RunContext) -> None:
     """One reading per peak: the ledger's committed rows.
 
     The search's matches become rows on the peaks it was offered and no
-    earlier stage took (``engine.untargeted_matches_to_peak_assignments``),
+    earlier stage took (``untargeted_rows.untargeted_matches_to_peak_assignments``),
     carrying the list readings it displaced and the twins it read. Given
     readings are elected as Stage A elects a list's. Under a run's rules none
     is elected on a peak the claim stage took, and each is then the row a run
@@ -1856,12 +1880,6 @@ async def level(ctx: RunContext) -> None:
         return
     search = ctx.search
     if ctx.config.stage_b_confidence and search is not None:
-        # Imported here: the inspector's module imports the service.
-        from mascope_backend.api.new.peak_assignments.alternatives_scoring import (
-            WINNER_CONFIDENCE_KEY,
-            measure_winner_confidence,
-        )
-
         winner_confidence = await measure_winner_confidence(
             sample,
             rows,
@@ -1965,168 +1983,6 @@ def ledger_rows(ctx: RunContext) -> tuple[list[dict], list[dict], list[dict]]:
     return every, committed, unassigned
 
 
-async def keep_run(ctx: RunContext) -> dict:
-    """A run keeps its ledger: what it recorded of each stage on its run, the
-    rows, and then its run completed and folded into the batch ledger.
-
-    :return: The run's outcome, as the assign task reports it.
-    """
-    sample = ctx.sample
-    judged = ctx.judged
-    plan = ctx.decoy_plan
-    search = ctx.search
-    fragments = ctx.fragments
-    await run_config._record_resolved_profile(
-        ctx.run_id,
-        ctx.config,
-        ctx.resolved_profile,
-        None if search is None else search.scope,
-        measurement_model_record(
-            judged.model,
-            ranked_at=ctx.model,
-            scoring=(
-                search.snapshot
-                if search is not None and search.snapshot is not None
-                else scoring_snapshot(ctx.scoring)
-            ),
-            gate=judged.mass_calibration,
-        ),
-        judged.cross_channel,
-        ctx.tiering,
-        judged.partner_gate,
-        fragments.summary if fragments.summary["ladders"] else None,
-        ctx.ionization_setup,
-        ctx.envelope.record(),
-        None if plan is None else plan.record(),
-        ctx.batch.record(ctx.batch_applied),
-    )
-    await ctx.progress(0.8)
-    all_assignments, committed_rows, unassigned_assignments = ledger_rows(ctx)
-    # Insert owners before children: owner_peak_assignment_id is a
-    # self-referential FK validated per row during the bulk insert.
-    all_assignments.sort(key=lambda row: row["owner_peak_assignment_id"] is not None)
-    if all_assignments:
-        async with async_session() as session:
-            await session.execute(insert(PeakAssignment), all_assignments)
-            # The curve the rows were scored against, committed with them. It is
-            # the run's to record - one curve serves a whole run - but it has to
-            # land in the same transaction as the ledger, because a run
-            # interrupted after this point keeps its rows without ever being
-            # finalized: the startup reaper marks it failed and leaves the
-            # ledger standing, and a read that names that run by id serves rows
-            # whose P(correct) would then name no curve at all.
-            await session.execute(
-                update(PeakAssignmentRun)
-                .where(PeakAssignmentRun.peak_assignment_run_id == ctx.run_id)
-                .values(confidence_calibration=ctx.confidence_calibration)
-            )
-            await session.commit()
-
-    await service._finalize_run(ctx.run_id, "completed")
-    await ctx.progress(1.0)
-
-    # Fold this completed run into the batch peaks so the batch overview
-    # reflects every assignment path: sample arrival, an explicit single-sample
-    # re-assign, and a batch assign (which loops the run). Isolated -- a fold-in
-    # failure must never fail or un-complete the assignment itself. A decoy is
-    # never folded: its rows are the sample read wrong on purpose, and the
-    # batch ledger is the sample's result.
-    try:
-        from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-            fold_sample_into_batch_peaks,
-        )
-
-        if plan is None:
-            await fold_sample_into_batch_peaks(sample.sample_item_id)
-    except Exception as fold_error:  # noqa: BLE001 - fold-in is best-effort
-        runtime.logger.warning(
-            f"Batch-peak fold-in failed for sample '{sample.sample_item_id}' "
-            f"(run '{ctx.run_id}'): {fold_error}"
-        )
-
-    database_assigned = sum(
-        1 for row in committed_rows if row.get("source") == SOURCE_DATABASE
-    )
-    untargeted_assigned = len(committed_rows) - database_assigned
-    message = (
-        f"Assigned peaks for sample '{sample.sample_item_name}': "
-        f"{database_assigned} from the target library, "
-        f"{untargeted_assigned} untargeted, "
-        f"{len(unassigned_assignments)} unassigned "
-        f"({len(all_assignments)} peaks total)."
-    )
-    runtime.logger.info(message)
-    return {
-        "status": "success",
-        "message": message,
-        "data": {
-            "peak_assignment_run_id": ctx.run_id,
-            "total_peaks": len(all_assignments),
-            "database_assigned": database_assigned,
-            "untargeted_assigned": untargeted_assigned,
-            "unassigned": len(unassigned_assignments),
-        },
-        "_notification_data": {
-            "sample_batch_id": sample.sample_batch_id,
-            "sample_item_id": sample.sample_item_id,
-            "peak_assignment_run_id": ctx.run_id,
-        },
-    }
-
-
-async def keep_fold(
-    ctx: RunContext, *, defer_consensus_to: set[str] | None = None
-) -> str | None:
-    """The ingest fold keeps its ledger as the sample's members in its batch's
-    batch peaks, and writes no run (``fold_view`` serves the Sample view from
-    them). Its rows are shaped as ledger rows, stamped with the derived run's
-    id: the run they will never be. The model it scored and capped them at is
-    kept for the sample (``model_readers.record_sample_model``), which every reader
-    outside a run reads where the sample has no run.
-
-    :param defer_consensus_to: As for ``fold_sample_into_batch_peaks``: a
-        whole-batch walk collects the anchors touched and recomputes once.
-    :return: The batch folded into.
-    """
-    # Imported here: the batch fold imports the service, which this module
-    # composes.
-    from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-        fold_sample_into_batch_peaks,
-    )
-
-    every, committed, _ = ledger_rows(ctx)
-    runtime.logger.info(
-        f"Stage A assigned {len(committed)} of {len(ctx.peaks_df)} peaks of sample "
-        f"'{ctx.sample.sample_item_name}' ({len(ctx.reagent_rows)} claimed by the "
-        f"reagent pre-pass, {len(ctx.artifact_rows)} by the artifact one, "
-        f"{len(ctx.fragments.fragments)} read as fragments, "
-        f"{ctx.tiering['capped']} capped by the tiering rules); folding into the "
-        "batch ledger without a run"
-    )
-    batch = await fold_sample_into_batch_peaks(
-        ctx.sample.sample_item_id,
-        rows=[SimpleNamespace(**row) for row in every],
-        persisted=False,
-        defer_consensus_to=defer_consensus_to,
-    )
-    # The model the fold scored and capped its rows at, kept for the sample,
-    # which has no run to record it on: the inspector, a pin and the batch
-    # search read the sample at it (MAS-725).
-    await model_readers.record_sample_model(
-        ctx.sample.sample_item_id,
-        {
-            MEASUREMENT_MODEL_KEY: measurement_model_record(
-                ctx.judged.model,
-                ranked_at=ctx.model,
-                scoring=scoring_snapshot(ctx.scoring),
-                gate=ctx.judged.mass_calibration,
-            ),
-            ENVELOPE_TOLERANCE_KEY: ctx.envelope.record(),
-        },
-    )
-    return batch
-
-
 async def keep_search_rows(ctx: RunContext) -> tuple[list[dict], int, set[str]]:
     """The batch search keeps a sample's judged rows for the batch: every
     sample's are merged into one reading per anchor before any is written
@@ -2180,3 +2036,438 @@ async def run_stages(ctx: RunContext) -> RunContext:
                 continue
             index += 1
     return ctx
+
+
+def admitted_targets(
+    frame: pd.DataFrame,
+    target_peak_ids: set[str],
+    persistent_peak_ids: set[str],
+    *,
+    peak_intensity_threshold: float,
+    max_untargeted_peaks: Optional[int],
+    ceiling: int,
+) -> tuple[pd.DataFrame, dict, set[str]]:
+    """The representatives a sample's search enumerates, and which of them
+    persistence alone admitted.
+
+    Two admissions, side by side. By height, as a run's search admits: a
+    representative at or above the intensity floor, brightest first up to the
+    cap (``engine.untargeted_targets``). By persistence: a representative of a
+    persistent anchor, however faint and wherever the cap stopped. The ceiling
+    still bounds the two together, the faint ones brightest first: it is
+    there so no search is unbounded work, whatever admitted the peaks.
+
+    :param frame: The sample's peaks the search reads, persistent sub-floor
+        ones included, with ``sample_peak_id`` and ``intensity``.
+    :param target_peak_ids: The sample's representatives.
+    :param persistent_peak_ids: Those whose anchors are persistent.
+    :param peak_intensity_threshold: The run's intensity floor.
+    :param max_untargeted_peaks: The run's cap, or None.
+    :param ceiling: The hard bound on the peaks enumerated.
+    :return: The peaks to enumerate; the search's scope, with
+        ``admitted_by_persistence``; and the ids of the peaks persistence
+        alone admitted.
+    """
+    representatives = frame[frame["sample_peak_id"].isin(target_peak_ids)]
+    by_height = representatives[
+        representatives["intensity"] >= peak_intensity_threshold
+    ]
+    targets, scope = untargeted_targets(by_height, max_untargeted_peaks, ceiling)
+    persistent = representatives[
+        representatives["sample_peak_id"].isin(persistent_peak_ids)
+        & ~representatives["sample_peak_id"].isin(targets["sample_peak_id"])
+    ]
+    unfloored = int(
+        (~persistent["sample_peak_id"].isin(by_height["sample_peak_id"])).sum()
+    )
+    extra = persistent.nlargest(max(ceiling - len(targets), 0), "intensity")
+    scope = {
+        **scope,
+        "eligible_peaks": scope["eligible_peaks"] + unfloored,
+        "searched_peaks": scope["searched_peaks"] + int(len(extra)),
+        "admitted_by_persistence": int(len(extra)),
+    }
+    scope["limited"] = scope["searched_peaks"] < scope["eligible_peaks"]
+    return (
+        pd.concat([targets, extra]) if len(extra) else targets,
+        scope,
+        {str(peak) for peak in extra["sample_peak_id"]},
+    )
+
+
+async def _stage_a_assignments(
+    sample,
+    config: PeakAssignmentConfig,
+    match_params,
+    mechanism_ids,
+    mechanisms,
+    peak_assignment_run_id: str,
+    excluded_peak_ids: set[str] | None = None,
+    *,
+    fallback_sigma_ppm: float,
+    known_window: KnownWindow | None,
+    reagent_offset: ReagentOffset | None = None,
+    ionization_setup: dict | None = None,
+    reagent_profile: str | None = None,
+    inherited_model: MeasurementModel | None = None,
+    inherited_envelope: RunEnvelopeFit | None = None,
+    resolution: Callable[[float], float] | None | object = RESOLVE_RESOLUTION,
+) -> tuple[
+    list[dict],
+    dict | None,
+    SampleMassAccuracy,
+    RunEnvelopeFit,
+    frozenset[str],
+    pd.DataFrame,
+    ConfidenceCurve | None,
+]:
+    """Stage A: database-first assignment from the known composition set.
+
+    The curated target library plus (when loaded) the reference mirror, matched
+    against the sample's peaks, gated by the sample's match parameters, scored
+    with the fit score and arbitrated into one row per won peak. Shared by the
+    run-backed orchestrator and the run-less ingest fold
+    (:func:`fold_sample_peaks_without_run`), so the two cannot drift apart in
+    what they call Stage A.
+
+    :param sample: The sample view row.
+    :param config: The run configuration (thresholds, alternatives cap).
+    :param match_params: The sample's match parameters (gating, abundance floor).
+    :param mechanism_ids: The sample's ionization mechanism ids, which the
+        target library is read through: the workspace named its compounds for
+        the modes its collection is attached to.
+    :param mechanisms: The mechanisms the reference lists are read through:
+        the mode's own and the secondary channels the run opened
+        (:func:`_searched_mechanisms`), since a list names a compound and not
+        the channel it is seen through. A reading through an opened channel is
+        held as the search's are (``engine.cap_second_channel``).
+    :param peak_assignment_run_id: The id stamped on every row.
+    :param excluded_peak_ids: Peaks the reagent pre-pass has already claimed.
+        Dropped before arbitration rather than after it: a reagent peak left in
+        the frame would still fold corroboration into a compound's other
+        adducts, so removing its row afterwards would leave a boost behind that
+        no surviving row accounts for. Whole target ions go, not single rows -
+        see :func:`drop_ions_claimed_elsewhere` for why the difference matters.
+    :param fallback_sigma_ppm: The resolved profile's instrument class width.
+        Stage A scores at it when the target library matched too few lines to
+        fit a width, or lines of fewer than :data:`STAGE_A_FIT_MIN_IONS` ions,
+        as the untargeted stage does, so neither stage falls back to a width
+        the other does not use (:func:`score_ions_by_fit`).
+    :param known_window: The resolved chemistry context's ceiling on every
+        reference source's window, or None where the context sets none.
+    :param reagent_offset: Where the reagent pre-pass's lines put the mass
+        axis. Stage A scores at it where the target library matched too few
+        lines, or too few ions, to fit an offset and the lines show one beyond
+        the width (:attr:`SampleMassAccuracy.scoring_mu_ppm`), and so does the
+        untargeted stage. The width stays the class's: a handful of the source's own
+        bright lines says where the axis sits, not how an analyte scatters
+        about it.
+    :param ionization_setup: The setup the sample is bound under, whose
+        confidence curve the rows are read off.
+    :param reagent_profile: The reagent profile the run resolved to, which the
+        run's record of that curve is compared with.
+    :param inherited_model: A decoy run's control's measurement model, which
+        the frame is scored at instead of one fitted off a frame whose axis was
+        moved on purpose (``decoy.DecoyPlan``). None for every other run, whose
+        frame fits the v1 model the stage returns the measurement of.
+    :param inherited_envelope: A decoy run's control's envelope tolerance,
+        which the frame is scored at from the first pass and which the stage
+        returns, instead of one fitted on the decoy's own commits. None for
+        every other run.
+    :param resolution: The file's resolving power as the run read it, the
+        lines of its known set are resolved at (:func:`_fetch_known_isotopes`).
+    :return: The assignment rows; what a run records about the confidence curve
+        their P(correct) came from - None when Stage A never ran or the
+        instrument has no curve; and what the target library's own matched
+        isotopologues say about this sample's mass error. That last one is the
+        instrument's accuracy ON THIS SAMPLE, and Stage B is scored at it: the
+        untargeted stage has no corroborated set of its own to fit a width
+        from, and the target library is exactly such a set. The reference
+        mirror is not, so its lines are left out of the fit even though they
+        compete for peaks in the same frame (:func:`target_library_rows`). Its
+        ``sigma_ppm`` is None when too few of the library's lines, or too few
+        of its ions, matched to fit one, its ``anchors`` and ``anchor_ions``
+        say how few, and its ``reagent`` is the pre-pass's reading, carried
+        even where the library matched nothing. And last, the envelope
+        tolerance the run fitted on the envelopes Stage A committed
+        (:func:`envelope_fit.fit_run_envelope_tolerance`), which Stage A's own
+        rows are scored at, and the search and its seeded re-score after them.
+        Stage A first scores at today's numbers, since it is its commits that
+        the fit reads, and gates and scores its frame again at the fitted
+        tolerance, at the width and offset the first pass measured.
+        And the neutrals the lists it read name, matched or not
+        (:func:`listed_formula_identities`), which corroborate a search row
+        through a secondary channel (``engine.cap_second_channel``).
+        And the gated frame its rows were scored on, which the run
+        scores again at its v2 model where the mass gate's refit takes one
+        (``mass_gate.measure_mass_gate``). And last the curve its rows'
+        P(correct) was read off, which that re-score reads again
+        (:func:`rescore_rows`); None where the instrument has none.
+    """
+    first = await _stage_a_first_pass(
+        sample,
+        config,
+        match_params,
+        mechanism_ids,
+        mechanisms,
+        peak_assignment_run_id,
+        excluded_peak_ids,
+        fallback_sigma_ppm=fallback_sigma_ppm,
+        known_window=known_window,
+        reagent_offset=reagent_offset,
+        ionization_setup=ionization_setup,
+        reagent_profile=reagent_profile,
+        inherited_model=inherited_model,
+        inherited_envelope=inherited_envelope,
+        resolution=resolution,
+    )
+    if inherited_envelope is not None:
+        # A decoy's commits are wrong formulas on a moved axis, and few: it
+        # fits no tolerance on them, and was scored at its control's above.
+        return (
+            first.rows,
+            first.confidence_calibration,
+            first.mass_accuracy,
+            inherited_envelope,
+            first.listed_formulas,
+            first.scored,
+            first.curve,
+        )
+    # The tolerance is fitted on what Stage A committed, which a sample with no
+    # library match has nothing of: it can still take its neighbours' curve,
+    # each read under this run's config and match parameters.
+    envelope = await fit_run_envelope_tolerance(
+        sample,
+        first.scored,
+        first.rows,
+        model=MeasurementModel.v1(first.mass_accuracy, fallback_sigma_ppm),
+        read_neighbour=_neighbour_reader(config, match_params),
+    )
+    stage_a_assignments, scored = first.rows, first.scored
+    if envelope.fit.level != LEVEL_DEFAULT and not first.matched.empty:
+        # Gated and scored again at the fitted tolerance, and the peaks
+        # arbitrated on that, at the first pass's width and offset: the ones
+        # the run records and Stage B and the mass gate are scored at. The
+        # fitted window can admit a line the first pass turned away, a TOF
+        # line read below 0.6 of its share where the curve opens, and refitted
+        # here that line would be an anchor and move both.
+        scored = score_ions_by_fit(
+            gate_lines(first.matched, match_params, envelope.tolerance),
+            model=MeasurementModel.v1(
+                first.mass_accuracy, fallback_sigma_ppm, envelope.tolerance
+            ),
+        )
+        stage_a_assignments = await asyncio.to_thread(first.assignments_of, scored)
+    return (
+        stage_a_assignments,
+        first.confidence_calibration,
+        first.mass_accuracy,
+        envelope,
+        first.listed_formulas,
+        scored,
+        first.curve,
+    )
+
+
+#: The id a neighbour's first-pass rows are stamped with: they are read for
+#: their lines and never kept.
+_NEIGHBOUR_READ_RUN_ID = "envelope-pool-read"
+
+#: How many neighbour reads one process runs at a time. A read is seconds of
+#: pandas work that holds the interpreter lock, in a worker thread or on the
+#: event loop. Five thin runs at once on the demo bundle's bromide batch read
+#: 30 neighbours side by side, and the server answered no request for eight
+#: minutes; one at a time, the other runs' reads wait without working and the
+#: server keeps answering.
+NEIGHBOUR_READS_AT_ONCE = 1
+
+_neighbour_read_slots: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, asyncio.Semaphore
+] = weakref.WeakKeyDictionary()
+
+
+def _neighbour_read_slot() -> asyncio.Semaphore:
+    """The running loop's semaphore of :data:`NEIGHBOUR_READS_AT_ONCE`, made on
+    first use: an asyncio semaphore belongs to the loop it first waits on."""
+    loop = asyncio.get_running_loop()
+    slot = _neighbour_read_slots.get(loop)
+    if slot is None:
+        slot = _neighbour_read_slots[loop] = asyncio.Semaphore(NEIGHBOUR_READS_AT_ONCE)
+    return slot
+
+
+async def _neighbour_envelope_lines(
+    neighbour, config: PeakAssignmentConfig, match_params
+) -> EnvelopeLines | None:
+    """A neighbour's own lines, for a thin file's pooled curve.
+
+    Its Stage A first pass at today's numbers (:func:`_stage_a_first_pass`),
+    on its own peaks, mechanisms, channels and pre-passes, composed by the stage
+    list's resolve and claim stages as the run-less fold composes them
+    (``pipeline.resolve``, ``pipeline.claim``), and read by
+    ``envelope_fit.envelope_lines``. The config and the match parameters are
+    the reading run's, so every line of one pool is measured alike. Labelled
+    lines are predicted at the purity of the neighbour's own setup, as a run of
+    it predicts them. It is never its pooled curve, nor anything a run of it
+    recorded: the pool is a function of the reading run's inputs and its
+    neighbours' data, whichever of them ran before. Runs that read the same
+    neighbour under equal configs and match parameters while its read is in
+    flight share that read (:func:`_join_neighbour_read`).
+
+    :param neighbour: The neighbour's sample view row.
+    :param config: The reading run's configuration.
+    :param match_params: The reading run's match parameters.
+    :return: Its lines; None where the engine would not run it (a blank, an
+        unverified calibration) or it has no peak list, so the next nearest
+        file takes its place.
+    """
+    if ineligible_reason(neighbour) is not None:
+        return None
+    read = _join_neighbour_read(neighbour, config, match_params)
+    read.waiters += 1
+    try:
+        # Shielded: a run cancelled while it waits leaves the read to the
+        # runs still waiting on it.
+        return await asyncio.shield(read.task)
+    finally:
+        read.waiters -= 1
+        if read.waiters == 0 and not read.task.done():
+            # Every run that asked for it has gone. Out of the table first, so
+            # no run joins a read that is being cancelled.
+            _forget_neighbour_read(read)
+            read.task.cancel()
+
+
+@dataclass(eq=False)
+class _NeighbourRead:
+    """One neighbour read in flight in a process (:func:`_join_neighbour_read`).
+
+    :param sample_item_id: The neighbour read.
+    :param config: The configuration it is read under.
+    :param match_params: The match parameters it is read under.
+    :param task: The read, in its process's slot.
+    :param waiters: The runs waiting on it.
+    """
+
+    sample_item_id: str
+    config: PeakAssignmentConfig
+    match_params: object
+    task: asyncio.Task
+    waiters: int = 0
+
+
+_neighbour_reads_in_flight: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, dict[str, list[_NeighbourRead]]
+] = weakref.WeakKeyDictionary()
+
+
+def _join_neighbour_read(
+    neighbour, config: PeakAssignmentConfig, match_params
+) -> _NeighbourRead:
+    """The read of ``neighbour`` in flight under an equal config and equal match
+    parameters, else a new one.
+
+    Runs reading the same neighbour at the same time share one read: they would
+    compute the same lines from the same data at the same moment. The thin
+    files of a batch run at once read largely the same neighbours, and the
+    reads, one at a time (:data:`NEIGHBOUR_READS_AT_ONCE`), would otherwise
+    queue the same work several times over. A read that has ended is never
+    joined: the next run reads afresh, so no run reads lines older than its
+    own start.
+    """
+    in_flight = _neighbour_reads_in_flight.setdefault(asyncio.get_running_loop(), {})
+    sample_item_id = str(neighbour.sample_item_id)
+    reads = in_flight.setdefault(sample_item_id, [])
+    for read in reads:
+        if read.config == config and read.match_params == match_params:
+            return read
+    read = _NeighbourRead(
+        sample_item_id=sample_item_id,
+        config=config,
+        match_params=match_params,
+        task=asyncio.create_task(
+            _slotted_neighbour_read(neighbour, config, match_params)
+        ),
+    )
+    reads.append(read)
+    read.task.add_done_callback(lambda _task: _forget_neighbour_read(read))
+    return read
+
+
+def _forget_neighbour_read(read: _NeighbourRead) -> None:
+    """Take ``read`` out of its process's reads in flight, if it is still in."""
+    in_flight = _neighbour_reads_in_flight.get(read.task.get_loop(), {})
+    reads = in_flight.get(read.sample_item_id, [])
+    if any(other is read for other in reads):
+        reads[:] = [other for other in reads if other is not read]
+        if not reads:
+            del in_flight[read.sample_item_id]
+
+
+async def _slotted_neighbour_read(
+    neighbour, config: PeakAssignmentConfig, match_params
+) -> EnvelopeLines | None:
+    """:func:`_read_neighbour_lines`, in its process's slot."""
+    async with _neighbour_read_slot():
+        return await _read_neighbour_lines(neighbour, config, match_params)
+
+
+async def _read_neighbour_lines(
+    neighbour, config: PeakAssignmentConfig, match_params
+) -> EnvelopeLines | None:
+    """:func:`_neighbour_envelope_lines`' read itself."""
+    # The file reads and the line read go off the event loop, as the first
+    # pass's arbitration does: a thin run reads six files, and on the loop
+    # their work would hold every other request of the server for a minute.
+    try:
+        peaks_df = await asyncio.to_thread(load_sample_peaks, neighbour)
+    except NotFoundException:
+        # Its file is missing or not processed yet: no peak list.
+        return None
+    if peaks_df.empty:
+        return None
+
+    with labelled_purity(await sample_label_purity(neighbour.sample_item_id)):
+        # The stage list's first two stages, composed as the run-less fold
+        # composes them: its peaks, mechanisms, channels and pre-passes.
+        inputs = RunContext(
+            path=INGEST_FOLD,
+            sample=neighbour,
+            config=config,
+            run_id=_NEIGHBOUR_READ_RUN_ID,
+            match_params=match_params,
+            peaks_df=peaks_df,
+            strict_instrument=False,
+        )
+        await resolve(inputs)
+        await claim(inputs)
+        fallback_sigma_ppm = inputs.resolved_profile.fallback_sigma_ppm
+        first = await _stage_a_first_pass(
+            neighbour,
+            config,
+            match_params,
+            inputs.mechanism_ids,
+            inputs.searched_mechanisms,
+            _NEIGHBOUR_READ_RUN_ID,
+            excluded_peak_ids=inputs.claimed_peak_ids,
+            fallback_sigma_ppm=fallback_sigma_ppm,
+            known_window=inputs.resolved_profile.context.known_window,
+            reagent_offset=inputs.reagent_offset,
+        )
+    return await asyncio.to_thread(
+        envelope_lines,
+        first.scored,
+        first.rows,
+        model=MeasurementModel.v1(first.mass_accuracy, fallback_sigma_ppm),
+        form=FORM_CURVE,
+    )
+
+
+def _neighbour_reader(config: PeakAssignmentConfig, match_params) -> NeighbourReader:
+    """Reads a thin file's neighbours under the reading run's config and match
+    parameters (:func:`_neighbour_envelope_lines`)."""
+
+    async def read(neighbour) -> EnvelopeLines | None:
+        return await _neighbour_envelope_lines(neighbour, config, match_params)
+
+    return read

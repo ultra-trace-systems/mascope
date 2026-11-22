@@ -33,6 +33,7 @@ from mascope_backend.api.new.peak_assignments.batch_export import (
     export_batch_ledger,
     get_batch_peak_members,
 )
+from mascope_backend.api.new.peak_assignments.batch_fold import compute_batch_peaks
 from mascope_backend.api.new.peak_assignments.batch_import import (
     import_batch_run,
     validate_batch_import,
@@ -42,9 +43,6 @@ from mascope_backend.api.new.peak_assignments.batch_peak_verification import (
     get_batch_peak_verdicts,
     retract_batch_peak_verdict,
     verify_batch_peak,
-)
-from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-    compute_batch_peaks,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_records import (
     get_batch_peak_counterpart,
@@ -62,7 +60,6 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_SERIES,
     ACTION_STRIP_ISOTOPOLOGUES,
     ACTION_WATER_LADDERS,
-    check_no_run_in_flight,
     list_batch_runs,
     request_cancel,
     run_record,
@@ -70,12 +67,13 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
 )
 from mascope_backend.api.new.peak_assignments.batch_stages import (
     FOLD_AUTO,
-    BatchStage,
     assign_batch,
+    check_no_run_in_flight,
     pass_config,
     pass_settings,
     plan_pass,
 )
+from mascope_backend.api.new.peak_assignments.batch_staleness import BatchStage
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.routes import (
     reject_oversized_import,

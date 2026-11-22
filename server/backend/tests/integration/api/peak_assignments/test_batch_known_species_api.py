@@ -42,7 +42,6 @@ from mascope_backend.api.new.peak_assignments import (
     pipeline,
 )
 from mascope_backend.api.new.peak_assignments.batch_known_species import (
-    batch_species_for,
     run_batch_known_species,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
@@ -61,7 +60,8 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     start_run,
 )
 from mascope_backend.api.new.peak_assignments.batch_stages import assign_batch
-from mascope_backend.api.new.peak_assignments.engine import MEASUREMENT_MODEL_KEY
+from mascope_backend.api.new.peak_assignments.known_species import batch_species_for
+from mascope_backend.api.new.peak_assignments.row_terms import MEASUREMENT_MODEL_KEY
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,

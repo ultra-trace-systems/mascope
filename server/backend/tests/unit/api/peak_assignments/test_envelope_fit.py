@@ -24,13 +24,7 @@ from mascope_backend.api.controllers.target.lib.compute.target_ions_compute impo
     LEAD_ISOTOPE_FORMULA,
 )
 from mascope_backend.api.new.peak_assignments import envelope_fit
-from mascope_backend.api.new.peak_assignments.engine import (
-    ROLE_ISO_CHILD,
-    ROLE_M0,
-    SOURCE_DATABASE,
-    SOURCE_UNTARGETED,
-    SampleMassAccuracy,
-)
+from mascope_backend.api.new.peak_assignments.engine import SampleMassAccuracy
 from mascope_backend.api.new.peak_assignments.envelope_fit import (
     POOL_NEIGHBOURS,
     EnvelopePool,
@@ -41,6 +35,12 @@ from mascope_backend.api.new.peak_assignments.envelope_fit import (
     inherited_envelope_fit,
     is_carbon13_line,
     read_pool,
+)
+from mascope_backend.api.new.peak_assignments.row_terms import (
+    ROLE_ISO_CHILD,
+    ROLE_M0,
+    SOURCE_DATABASE,
+    SOURCE_UNTARGETED,
 )
 from mascope_tools.composition.envelope_tolerance import (
     DEFAULT_TOLERANCE,

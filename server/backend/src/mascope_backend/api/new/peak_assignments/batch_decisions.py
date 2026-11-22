@@ -62,23 +62,7 @@ from typing import Any, Optional
 import pandas as pd
 from sqlalchemy import or_, select
 
-from mascope_backend.api.new.peak_assignments import (
-    batch_known_species,
-    batch_lines,
-)
-from mascope_backend.api.new.peak_assignments.batch_known_species import (
-    ALREADY,
-    KEPT_CARRIES_LINES,
-    KEPT_CLAIMED_OTHERWISE,
-    KEPT_LINE_OF_ANOTHER,
-    KEPT_ON_TWIN,
-    KEPT_TARGET_LIBRARY,
-    Species,
-    _registry_exemplar,
-    listed_species_row,
-    partition_of,
-    sample_partition,
-)
+from mascope_backend.api.new.peak_assignments import batch_lines, known_species
 from mascope_backend.api.new.peak_assignments.batch_lines import (
     BatchLine,
     read_as_batch_isotopologue,
@@ -92,22 +76,34 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     standing_merged_isotopologue_of_record,
     standing_water_ladder_record,
 )
-from mascope_backend.api.new.peak_assignments.batch_stages import (
+from mascope_backend.api.new.peak_assignments.batch_staleness import (
     STATE_NOT_RUN,
     BatchStage,
     stage_states,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
-    ROLE_ISO_CHILD,
-    ROLE_M0,
     build_unassigned_assignments,
     is_target_library_row,
+)
+from mascope_backend.api.new.peak_assignments.known_species import (
+    ALREADY,
+    KEPT_CARRIES_LINES,
+    KEPT_CLAIMED_OTHERWISE,
+    KEPT_LINE_OF_ANOTHER,
+    KEPT_ON_TWIN,
+    KEPT_TARGET_LIBRARY,
+    Species,
+    _registry_exemplar,
+    listed_species_row,
+    partition_of,
+    sample_partition,
 )
 from mascope_backend.api.new.peak_assignments.reagent_pass import (
     REASON_BATCH_KNOWN_SPECIES,
     REASON_BATCH_WATER_LADDER,
     BatchSpecies,
 )
+from mascope_backend.api.new.peak_assignments.row_terms import ROLE_ISO_CHILD, ROLE_M0
 from mascope_backend.api.new.peak_assignments.tiers import TIER_ASSIGNED, TIER_CANDIDATE
 from mascope_backend.db import BatchPeak, BatchPeakOccurrence, async_session
 from mascope_tools.composition.known_species import KIND_LISTED
@@ -149,7 +145,7 @@ MONOISOTOPIC_TRACK = "M0"
 
 #: What became of a listed compound the batch decided present on its peak:
 #: elected as the list's reading, or the run's own reading of it lifted to
-#: candidate. :data:`batch_known_species.ALREADY` where the run committed it
+#: candidate. :data:`known_species.ALREADY` where the run committed it
 #: on its own, and a ``KEPT_*`` reason where the batch's claim keeps a file's
 #: own reading too.
 LISTED_ELECTED = "elected"
@@ -169,7 +165,7 @@ STRIP_KEPT_CLAIMED = "claimed"
 STRIP_KEPT_CARRIES_LINES = "carries_lines"
 
 #: The tiers at which a run's row commits its formula, as a file's own test
-#: of a listed compound reads it (``batch_known_species.Species.reads``).
+#: of a listed compound reads it (``known_species.Species.reads``).
 _COMMITTED = (TIER_ASSIGNED, TIER_CANDIDATE)
 
 
@@ -181,12 +177,12 @@ class ListedDecision:
     :param species: The compound.
     :param exemplar: The reading a row of it takes: the list's source and
         target off the batch peak's registry, at the ion's own mass
-        (``batch_known_species._registry_exemplar``).
+        (``known_species._registry_exemplar``).
     :param record: The decision, as a row cites it.
     :param twin_peak_ids: The sample's peaks in the decision's twins: the
         other batch peaks of the compound's trace in its partition
         (:func:`twin_peaks`), where a sample that reads the compound is kept
-        (``batch_known_species.KEPT_ON_TWIN``).
+        (``known_species.KEPT_ON_TWIN``).
     """
 
     sample_peak_id: str
@@ -709,7 +705,7 @@ async def read_batch_decisions(
         kinds=kinds,
         stages=stages,
         species=(
-            tuple(await batch_known_species.batch_species_for(sample))
+            tuple(await known_species.batch_species_for(sample))
             if KIND_KNOWN_SPECIES in kinds
             else ()
         ),
@@ -740,11 +736,11 @@ def listed_decision(
     (``batch_known_species.sample_decision``, then ``decide_row``'s twins):
     None where its reading is elected, :data:`LISTED_LIFTED` where the run's
     own reading of the compound is lifted to candidate,
-    :data:`batch_known_species.ALREADY` where the run committed it on its
+    :data:`known_species.ALREADY` where the run committed it on its
     own, else why the run's reading is kept: the target library named the
     peak, the peak is another row's isotope line, a claim took it for the
     source, its reading carries isotope lines of another formula, or the run
-    reads the compound on a twin (``batch_known_species.KEPT_ON_TWIN``), so
+    reads the compound on a twin (``known_species.KEPT_ON_TWIN``), so
     the election would write a second copy of it.
 
     :param rows_on_peak: The run's elected rows on the peak.
@@ -796,7 +792,7 @@ def elect_listed(
 ) -> tuple[list[dict], list[dict], dict[str, str]]:
     """Elect each listed compound the batch decided present on its peak, as
     the batch's own claim writes a member's row
-    (``batch_known_species.listed_species_row``): the list's reading at
+    (``known_species.listed_species_row``): the list's reading at
     candidate, no fit of the run's own, the reading it displaced first among
     its alternatives and the decision as its tier reason; or, where the run
     read the compound below candidate, that reading lifted. A row the claim

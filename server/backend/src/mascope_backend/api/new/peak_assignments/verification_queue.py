@@ -44,7 +44,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any, Iterable, Mapping, Sequence
 
-from mascope_backend.api.new.peak_assignments.engine import (
+from mascope_backend.api.new.peak_assignments.row_terms import (
     ROLE_ARTIFACT,
     ROLE_ISO_CHILD,
     ROLE_REAGENT,

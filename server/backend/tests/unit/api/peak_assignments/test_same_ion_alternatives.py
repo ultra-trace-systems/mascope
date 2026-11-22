@@ -12,6 +12,8 @@ import pandas as pd
 from mascope_backend.api.new.peak_assignments.engine import (
     RIVALS_PAST_CAP,
     record_stage_a_same_ion_readings,
+)
+from mascope_backend.api.new.peak_assignments.untargeted_rows import (
     untargeted_matches_to_peak_assignments,
 )
 from mascope_tools.composition.heuristic_filter import formula_plausibility

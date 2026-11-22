@@ -68,6 +68,7 @@ from mascope_backend.api.new.peak_assignments.batch_isotopologues import (
     read_noise,
     trace_centre,
 )
+from mascope_backend.api.new.peak_assignments.batch_lock import _acquire_batch_fold_lock
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     BATCH_CHECK_FACTS,
     BATCH_CHECKS_KEY,
@@ -81,9 +82,6 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     stamped_isotopologue_of_record,
     standing_co_variation_record,
     standing_diagnostic_isotopologues_record,
-)
-from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-    _acquire_batch_fold_lock,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
     ACTION_BATCH_CHECKS,

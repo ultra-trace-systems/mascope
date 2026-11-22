@@ -18,10 +18,7 @@ from typing import Any, Optional
 from sqlalchemy import and_, func, or_, select
 
 from mascope_backend.api.lib.api_features import api_controller
-from mascope_backend.api.new.peak_assignments.batch_peaks import (
-    SOURCE_ROLES,
-    role_code,
-)
+from mascope_backend.api.new.peak_assignments.batch_peaks import SOURCE_ROLES, role_code
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,

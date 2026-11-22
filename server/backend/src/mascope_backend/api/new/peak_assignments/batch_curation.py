@@ -70,6 +70,7 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     CodedHTTPException,
     NotFoundException,
 )
+from mascope_backend.api.new.peak_assignments.batch_lock import _acquire_batch_fold_lock
 from mascope_backend.api.new.peak_assignments.batch_peak_verification import (
     ClaimChangedException,
 )
@@ -83,11 +84,10 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     tier_name,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-    _acquire_batch_fold_lock,
     recompute_batch_consensus,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import touch_ledger
-from mascope_backend.api.new.peak_assignments.batch_stages import (
+from mascope_backend.api.new.peak_assignments.batch_staleness import (
     REASON_CURATION,
     mark_batch_stale,
     mark_every_stage_stale,
@@ -99,9 +99,7 @@ from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     reads_annotation,
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
-from mascope_backend.api.new.peak_assignments.derived_evidence import (
-    isotopologue_rows,
-)
+from mascope_backend.api.new.peak_assignments.derived_evidence import isotopologue_rows
 from mascope_backend.api.new.peak_assignments.engine import (
     evidence_for,
     monoisotopic_row,

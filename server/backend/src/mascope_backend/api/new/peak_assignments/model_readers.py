@@ -19,7 +19,6 @@ from mascope_backend.api.new.peak_assignments.config import (
     PEAK_ASSIGNMENT_ENGINE_VERSION,
     PeakAssignmentConfig,
 )
-from mascope_backend.api.new.peak_assignments.engine import ENVELOPE_TOLERANCE_KEY
 from mascope_backend.api.new.peak_assignments.profiles import (
     ResolvedProfile,
     resolve_profile,
@@ -28,6 +27,7 @@ from mascope_backend.api.new.peak_assignments.reagent_pass import (
     claim_reagent_peaks,
     reagent_library_for,
 )
+from mascope_backend.api.new.peak_assignments.row_terms import ENVELOPE_TOLERANCE_KEY
 from mascope_backend.api.new.peak_assignments.sample_inputs import (
     _resolution_of,
     load_sample_peaks,

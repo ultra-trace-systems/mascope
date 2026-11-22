@@ -36,7 +36,7 @@ from stage_stubs import (  # the tests root, on sys.path
 from stage_stubs import mechanism as mechanism_row
 
 from mascope_backend.api.new.peak_assignments import (
-    batch_peaks_controller,
+    batch_peaks,
     batch_peaks_routes,
     batch_water_ladder,
     pipeline,
@@ -208,9 +208,7 @@ def _rows(sample_item_id, name, *, run_id=None):
 def tof(monkeypatch):
     """Every sample of the batch is a TOF's, and its partition's profile the
     bromide one; which samples the profile was resolved on is kept."""
-    monkeypatch.setattr(
-        batch_peaks_controller, "get_instrument_type", lambda filename: "tof"
-    )
+    monkeypatch.setattr(batch_peaks, "get_instrument_type", lambda filename: "tof")
     asked = []
 
     async def chemistry(sample_item_id, config):
@@ -992,9 +990,7 @@ async def test_two_click_orders_leave_one_ledger(
     known species* before the water ladders claimed the humid segment's rung
     for another source ion on one file's word, and the ladder that ran after
     it found the rung taken."""
-    from mascope_backend.api.new.peak_assignments.batch_stages import (
-        assign_batch,
-    )
+    from mascope_backend.api.new.peak_assignments.batch_stages import assign_batch
 
     clicked = {}
     for order in (
@@ -1179,9 +1175,7 @@ async def test_a_sample_folded_in_claims_the_rungs_of_its_segment_and_one_outsid
     segment, claims its rungs; one acquired between the two segments, or after
     the last, claims none: a rung is evidence about the segment it was
     measured in (decided 2026-11-17)."""
-    from mascope_backend.api.new.peak_assignments.batch_stages import (
-        assign_batch,
-    )
+    from mascope_backend.api.new.peak_assignments.batch_stages import assign_batch
 
     only_these_stages("water_ladders")
     _stub_a_run(monkeypatch)
@@ -1218,13 +1212,9 @@ async def test_a_samples_run_claims_a_rung_once_where_the_fold_split_its_trace(
     """Two batch peaks of one rung's trace both carry its record: the run
     claims the ion once, read off the one its segment's spectra hold most,
     whichever comes first or last by id."""
-    from mascope_backend.api.controllers.samples.lib.samples_fetch import (
-        fetch_sample,
-    )
+    from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
     from mascope_backend.api.new.peak_assignments.batch_decisions import rungs_for
-    from mascope_backend.api.new.peak_assignments.batch_stages import (
-        assign_batch,
-    )
+    from mascope_backend.api.new.peak_assignments.batch_stages import assign_batch
 
     only_these_stages("water_ladders")
     batch = ladder_batch
@@ -1264,13 +1254,9 @@ async def test_a_samples_run_reads_no_rung_of_another_partition(
     """A rung recorded on a batch peak of another partition - another
     ionization mode, or another intensity variable - is another source's
     measurement: the sample's run reads only its own partition's."""
-    from mascope_backend.api.controllers.samples.lib.samples_fetch import (
-        fetch_sample,
-    )
+    from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
     from mascope_backend.api.new.peak_assignments.batch_decisions import rungs_for
-    from mascope_backend.api.new.peak_assignments.batch_stages import (
-        assign_batch,
-    )
+    from mascope_backend.api.new.peak_assignments.batch_stages import assign_batch
 
     only_these_stages("water_ladders")
     batch = ladder_batch

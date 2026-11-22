@@ -2280,7 +2280,7 @@ async def test_a_hand_assignment_runs_the_person_s_choice_path(
         passes.append(ctx)
         return await run_stages(ctx)
 
-    monkeypatch.setattr(pipeline, "run_stages", recording)
+    monkeypatch.setattr(curation, "run_stages", recording)
     asks_lines.peaks = _bromo_peaks()
     response = await editor_client.patch(
         _url(curated_run, curated_run["blank_id"]),

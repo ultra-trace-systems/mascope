@@ -64,6 +64,7 @@ from sqlalchemy import select
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.new.cheminfo.utils import to_custom_element_format
+from mascope_backend.api.new.peak_assignments.batch_lock import _acquire_batch_fold_lock
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     BATCH_CHECK_FACTS,
     BATCH_CHECKS_KEY,
@@ -81,7 +82,6 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     standing_series_record,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-    _acquire_batch_fold_lock,
     recompute_batch_consensus,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (

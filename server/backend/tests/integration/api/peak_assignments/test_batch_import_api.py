@@ -27,9 +27,10 @@ from test_utils import captured_logs
 
 from mascope_backend.api.new.peak_assignments import (
     batch_import,
-    batch_stages,
+    batch_staleness,
     pipeline,
 )
+from mascope_backend.api.new.peak_assignments.batch_fold import rebuild_batch_ledger
 from mascope_backend.api.new.peak_assignments.batch_import import (
     REASON_CURATED,
     REASON_ISOTOPOLOGUE,
@@ -38,13 +39,9 @@ from mascope_backend.api.new.peak_assignments.batch_import import (
     perform_batch_import,
     run_batch_import,
 )
-from mascope_backend.api.new.peak_assignments.batch_peaks import (
-    ROLE_M0,
-    role_code,
-)
+from mascope_backend.api.new.peak_assignments.batch_peaks import ROLE_M0, role_code
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     fold_sample_into_batch_peaks,
-    rebuild_batch_ledger,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks_records import (
     get_batch_peak_ledger,
@@ -55,11 +52,11 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     start_run,
 )
 from mascope_backend.api.new.peak_assignments.batch_stages import (
-    BatchStage,
     begin_stage,
     finish_stage,
     stage_standing,
 )
+from mascope_backend.api.new.peak_assignments.batch_staleness import BatchStage
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
 from mascope_backend.api.new.peak_assignments.schemas import BatchImportRow
 from mascope_backend.db import (
@@ -565,7 +562,7 @@ async def test_a_cancelled_import_whose_stale_mark_fails_stays_a_cancellation(
 
     monkeypatch.setattr(pipeline, "score_seeds", cancelled)
     monkeypatch.setattr(batch_import, "recompute_batch_consensus", fails)
-    monkeypatch.setattr(batch_stages, "mark_every_stage_stale", fails)
+    monkeypatch.setattr(batch_staleness, "mark_every_stage_stale", fails)
     await _stages_ran(batch_id, BatchStage.SERIES)
 
     with captured_logs("WARNING") as logs, pytest.raises(asyncio.CancelledError):

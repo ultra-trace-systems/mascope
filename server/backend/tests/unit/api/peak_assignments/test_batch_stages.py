@@ -10,14 +10,11 @@ See ``batch_stages.py``.
 
 from types import SimpleNamespace
 
+import pytest
+
 from mascope_backend.api.new.peak_assignments import batch_stages
 from mascope_backend.api.new.peak_assignments.batch_stages import (
-    STAGE_OF_KEY,
     STAGES,
-    STATE_CURRENT,
-    STATE_NOT_RUN,
-    STATE_STALE,
-    BatchStage,
     first_not_current,
     fold_reasons,
     pass_config,
@@ -25,11 +22,19 @@ from mascope_backend.api.new.peak_assignments.batch_stages import (
     plan,
     settings_moved,
     stages_after,
-    stages_from,
     standing_entries,
     stopped_partway,
     upstream_reason,
     with_version,
+)
+from mascope_backend.api.new.peak_assignments.batch_staleness import (
+    STAGE_OF_KEY,
+    STATE_CURRENT,
+    STATE_NOT_RUN,
+    STATE_STALE,
+    BatchStage,
+    mark_every_stage_stale,
+    stages_from,
 )
 from mascope_backend.api.new.peak_assignments.config import (
     PeakAssignmentConfig,
@@ -56,6 +61,37 @@ def test_the_stages_run_in_the_order_their_reads_give():
     assert [spec.stage.value for spec in STAGES] == ORDER
     rewriting = [spec.rewrites for spec in STAGES]
     assert rewriting == [True] * 5 + [False] * 4
+
+
+def test_the_stage_marks_read_the_stage_lists_order_and_keys():
+    # The marks sit below the stage list (``batch_staleness``): they read the
+    # order off ``BatchStage`` and the record keys off its own table, which
+    # must say what the list runs and writes.
+    assert [spec.stage for spec in STAGES] == list(BatchStage)
+    assert stages_from(BatchStage.WATER_LADDERS) == tuple(spec.stage for spec in STAGES)
+    assert STAGE_OF_KEY == {
+        key: spec.stage for spec in STAGES for key in spec.record_keys
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_folds_mark_names_every_stage_of_the_list():
+    # A fold rewrites members every stage reads, so its mark names them all,
+    # the first included.
+    session = SimpleNamespace(statements=[])
+
+    async def execute(statement):
+        session.statements.append(statement)
+
+    session.execute = execute
+    await mark_every_stage_stale(session, "sb-1", "fold")
+    (statement,) = session.statements
+    marked = next(
+        value
+        for value in statement.compile().params.values()
+        if isinstance(value, list)
+    )
+    assert marked == [spec.stage.value for spec in STAGES]
 
 
 def test_each_record_key_names_the_stage_that_writes_it():

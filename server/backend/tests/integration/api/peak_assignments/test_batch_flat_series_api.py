@@ -28,9 +28,6 @@ from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_samp
 from mascope_backend.api.new.peak_assignments.batch_coherence import (
     run_batch_co_variation,
 )
-from mascope_backend.api.new.peak_assignments.batch_known_species import (
-    batch_species_for,
-)
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     FLAT_SERIES_KEY,
     TIER_REASONS_KEY,
@@ -48,6 +45,7 @@ from mascope_backend.api.new.peak_assignments.fold_view import (
     fold_assignment_id,
     fold_run_id,
 )
+from mascope_backend.api.new.peak_assignments.known_species import batch_species_for
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,

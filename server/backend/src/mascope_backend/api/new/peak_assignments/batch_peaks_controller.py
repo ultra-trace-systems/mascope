@@ -27,14 +27,13 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Iterable
 
-from sqlalchemy import func, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select, update
 
-from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.new.instrument_configs.lib import read_instrument_functions
 from mascope_backend.api.new.ionization.modes.versions import root_ids
 from mascope_backend.api.new.peak_assignments import batch_peaks
 from mascope_backend.api.new.peak_assignments.batch_blend import BLEND_TIERS
+from mascope_backend.api.new.peak_assignments.batch_lock import _acquire_batch_fold_lock
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     DIAGNOSTIC_ISOTOPOLOGUES_KEY,
     HELD_MEMBERS_KEY,
@@ -50,6 +49,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     AnchorSet,
     Consensus,
     PersistenceFacts,
+    _intensity_variable,
     batch_checks_record_of,
     candidate_index,
     co_variation_record_of,
@@ -82,23 +82,17 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
     without_merged_lines,
 )
 from mascope_backend.api.new.peak_assignments.batch_runs import (
-    ACTION_REBUILD,
-    close_shielded,
-    complete_run,
     ensure_current_run,
-    fail_run,
-    start_run,
     touch_ledger,
 )
-from mascope_backend.api.new.peak_assignments.batch_stages import (
+from mascope_backend.api.new.peak_assignments.batch_staleness import (
     REASON_CONSENSUS,
     REASON_FOLD,
-    REASON_REBUILD,
     STAGE_OF_KEY,
-    mark_batch_stale,
     mark_every_stage_stale,
     mark_stale,
 )
+from mascope_backend.api.new.peak_assignments.continuity import run_batch_continuity
 from mascope_backend.api.new.peak_assignments.engine import (
     is_monoisotopic_formula,
     labelled_isotopes,
@@ -119,23 +113,7 @@ from mascope_backend.db import (
 )
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
-from mascope_backend.socket.notifications import (
-    UserNotification,
-    send_progress_user_notification,
-)
-from mascope_file.name import get_instrument_type
 from mascope_tools.composition.utils import formula_identity
-
-
-def _intensity_variable(filename: str) -> str:
-    """The batch peak's intensity unit, from the instrument type (areas for TOF,
-    heights for Orbitrap). Defaults to heights if the filename cannot be classified
-    -- an unclassifiable file must never abort the fold-in."""
-    try:
-        instrument_type = get_instrument_type(filename)
-    except Exception:  # noqa: BLE001 - classification is best-effort
-        instrument_type = None
-    return "sum_peak_areas" if instrument_type == "tof" else "sum_peak_heights"
 
 
 async def _latest_completed_run_id(session, sample_item_id: str) -> str | None:
@@ -157,63 +135,6 @@ async def _latest_completed_run_id(session, sample_item_id: str) -> str | None:
             .limit(1)
         )
     ).scalar_one_or_none()
-
-
-#: Namespace discriminator for the fold-in lock, hashed into the first int of the
-#: two-int advisory-lock key space so these locks cannot collide with the other
-#: advisory-lock users (match writes, assignment claims).
-_BATCH_PEAK_FOLD_LOCK_NAMESPACE = "mascope_batch_peak_fold"
-
-
-async def _acquire_batch_fold_lock(session, sample_batch_id: str) -> None:
-    """Serialize this batch's fold-ins for the rest of the caller's transaction.
-
-    Anchors are frozen and append-only, and no unique constraint can catch a
-    duplicate one -- anchor identity is tolerance-based, which an exact-value key
-    cannot express. So the only thing keeping two folds from each minting an
-    anchor for the same species is that they do not read the anchor set before
-    the other has committed its own. Nothing enforced that. Run finalize and
-    import publish are admitted per *sample*, so two samples of one batch can be
-    assigned or published at the same time and their folds overlap; the backfill
-    is admitted not at all, so it can overlap either of those or a second
-    backfill of the same batch; and production runs parallel workers, which no
-    in-process gate would reach anyway. A duplicate minted that way is permanent
-    -- later folds snap to whichever anchor is nearest, so one species stays
-    split across two traces with both support fractions wrong.
-
-    Transaction-scoped, so it releases on the caller's commit or rollback with no
-    unlock to forget. Keyed on the batch, so folds of different batches still run
-    in parallel. ``hashtext`` is 32-bit and the key space is two ints, so a
-    collision is possible; what it cannot do is let two folds of one batch
-    through, because the same batch id always hashes to the same key. (Postgres
-    keeps session- and transaction-scoped advisory locks in one space, so a
-    collision with :mod:`admission`'s never-committed claim would be a hang
-    rather than a slowdown. Two namespaces and two ids would have to collide at
-    once; the point here is only that the failure is one-sided in our favour for
-    the case that matters -- a missed lock -- not that every collision is cheap.)
-
-    **Depends on READ COMMITTED**, which is what the engine runs (no
-    ``isolation_level`` is set anywhere). The fold's transaction opens well
-    before this lock -- at the ``Sample`` read -- so the anchor SELECT that
-    follows is only guaranteed to see the previous holder's committed anchors
-    because each statement takes its own snapshot. Under REPEATABLE READ the
-    lock would still serialize perfectly and the duplicate anchors would come
-    straight back, with nothing in the wait to hint at it.
-
-    :param session: The session whose transaction takes and holds the lock; must
-        be the one that goes on to read the anchors and write the fold.
-    :type session: AsyncSession
-    :param sample_batch_id: The batch whose fold-ins are serialized.
-    :type sample_batch_id: str
-    """
-    await session.execute(
-        select(
-            func.pg_advisory_xact_lock(
-                func.hashtext(_BATCH_PEAK_FOLD_LOCK_NAMESPACE),
-                func.hashtext(sample_batch_id),
-            )
-        )
-    )
 
 
 def _tolerance_fn(resolution_func):
@@ -665,7 +586,6 @@ async def _grade_continuity_after_fold(
     read after this fold committed; a grade one fold behind is served marked
     (``batch_peaks.continuity_stale``) until the next pass.
     """
-    from mascope_backend.api.new.peak_assignments.continuity import run_batch_continuity
 
     try:
         await run_batch_continuity(sample_batch_id, triggered_at=committed_at)
@@ -1294,402 +1214,6 @@ async def recompute_batch_consensus(
     return len(anchor_ids)
 
 
-#: Roughly how many points along a batch report progress, whatever its size.
-#: Every sample reports up to this many; past it every stride-th sample does,
-#: and the last one always, so the bar still fills. Integer division puts the
-#: true worst case just under twice this (a 199-sample batch reports all 199),
-#: which matters only in that the count stops growing with the batch.
-#:
-#: Bounded at all because the backfill's per-sample cost is not the assignment
-#: loop's: a sample with no completed run returns from the fold after two
-#: selects, so on the population this button exists for - a batch assigned
-#: before batch peaks, most of it unassigned - a packet per sample is a burst of
-#: socket traffic with no work between the packets. Each one is a Redis publish
-#: plus a room-membership check, and re-runs every registered notification
-#: watcher in every subscribed browser. A hundred steps is already finer than a
-#: progress bar can draw.
-_BACKFILL_PROGRESS_STEPS = 100
-
-
-def _backfill_progress_notification(
-    sample_batch_id: str,
-    item_index: int,
-    total_samples: int,
-    user_id: int | None,
-    process_id: str,
-    parent_id: str | None,
-) -> UserNotification:
-    """The pending packet announcing that sample ``item_index`` is being folded.
-
-    Typed as ``compute_batch_peaks`` -- the controller that owns the process,
-    not the function that emits it -- so the whole run reports on one channel:
-    the browser tracks a process by its id and ends its bar on the terminal
-    packet the decorator sends under that same type.
-    """
-    return UserNotification(
-        process_id=process_id,
-        parent_id=parent_id,
-        type="compute_batch_peaks",
-        status="pending",
-        message=(
-            f"Rebuilding the batch ledger, folding sample {item_index + 1}/{total_samples}."
-        ),
-        data={
-            "sample_batch_id": sample_batch_id,
-            "_room_ids": [sample_batch_id],
-            "_user_id": user_id,
-            "_total_samples": total_samples,
-            "_item_index": item_index,
-        },
-    )
-
-
-def _continuity_progress_notification(
-    sample_batch_id: str,
-    total_samples: int,
-    user_id: int | None,
-    process_id: str,
-    parent_id: str | None,
-    message: str,
-) -> UserNotification:
-    """A pending packet naming the continuity pass a rebuild runs once its
-    samples are folded, on the rebuild's own channel and with its bar full:
-    every sample has been dealt with, and what is left is one pass over the
-    whole batch, which the decorator's terminal packet ends."""
-    return UserNotification(
-        process_id=process_id,
-        parent_id=parent_id,
-        type="compute_batch_peaks",
-        status="pending",
-        message=message,
-        data={
-            "sample_batch_id": sample_batch_id,
-            "_room_ids": [sample_batch_id],
-            "_user_id": user_id,
-            "_total_samples": total_samples,
-            "_item_index": max(total_samples - 1, 0),
-        },
-    )
-
-
-async def _grade_continuity_after_backfill(
-    sample_batch_id: str,
-    total_samples: int,
-    user_id: int | None,
-    process_id: str | None,
-    parent_id: str | None,
-) -> None:
-    """The rebuild's trigger of the batch's continuity pass: once, after the
-    last sample is folded and the deferred consensus written, announced on the
-    rebuild's channel before and after so the wait does not read as a hang.
-    Never failing the rebuild: its samples are folded whatever the grading
-    does."""
-    from mascope_backend.api.new.peak_assignments.continuity import (
-        continuity_outcome,
-        run_batch_continuity,
-    )
-
-    def packet(message: str) -> UserNotification | None:
-        # As the folds' own packets: no process, no bar to drive; no samples,
-        # no bar at all.
-        if process_id is None or not total_samples:
-            return None
-        return _continuity_progress_notification(
-            sample_batch_id, total_samples, user_id, process_id, parent_id, message
-        )
-
-    before = packet(
-        "Rebuilding the batch ledger, grading the ratio stability of its batch peaks."
-    )
-    if before is not None:
-        await send_progress_user_notification(before, 1.0)
-    try:
-        summary = await run_batch_continuity(sample_batch_id)
-        # Worded as the route's outcome is: a pass that skipped, or a batch
-        # that is not time-ordered, grades no pair, and "0 pairs" would read
-        # as a batch with nothing to pair.
-        outcome = continuity_outcome(summary, sample_batch_id)
-    except Exception:  # noqa: BLE001 - grading is best-effort
-        runtime.logger.exception(
-            f"Continuity pass after the rebuild of batch '{sample_batch_id}' failed; "
-            "the ledger is rebuilt and its grades are as an earlier pass left them."
-        )
-        return
-    after = packet(f"Rebuilding the batch ledger. {outcome['message']}")
-    if after is not None:
-        await send_progress_user_notification(after, 1.0)
-
-
-async def backfill_sample_batch_peaks(
-    sample_batch_id: str,
-    user_id: int | None = None,
-    process_id: str | None = None,
-    parent_id: str | None = None,
-    grade_continuity: bool = True,
-) -> tuple[int, int]:
-    """Fold every sample of a batch into the batch peaks, in acquisition-time
-    order: from its latest completed assignment run where it has one, otherwise
-    from a fresh Stage A pass over its peaks with no run written - the way
-    ingest folds a sample. The Rebuild batch ledger button, and what populates
-    a batch that predates the ledger, was never assigned, or was imported.
-
-    Returns the number of samples folded and the number whose fold raised. The
-    two are counted apart because they mean opposite things to whoever asked:
-    nothing folded because nothing was assigned is the batch's state, while
-    nothing folded because every fold raised is a fault - and the count alone
-    cannot tell them apart.
-
-    Reports progress while it runs, on the same terms as a batch assignment: a
-    reporting sample sends two pending packets, before and after its fold, so
-    the bar steps from ``i/N`` to ``(i + 1)/N``. Every sample reports up to
-    :data:`_BACKFILL_PROGRESS_STEPS`, past which the batch is sampled. The
-    after-packet is sent for a sample whose fold raised as well -- the bar
-    tracks how much of the batch has been dealt with, not how much of it
-    succeeded, and stalling it on the one sample the run isolated is exactly the
-    reading it must not invite. For the same reason the bar counts samples
-    walked, not samples folded: it can fill while nothing was folded at all,
-    which is the outcome the terminal notification exists to name.
-
-    :param sample_batch_id: The batch to fold.
-    :param user_id: Who to route the progress stream to alongside the batch's
-        room; ``None`` sends to the room alone.
-    :param process_id: The process the progress belongs to. Without one there is
-        no bar to drive -- the browser tracks progress per process id, and a
-        generated one would open a new bar per packet -- so the stream is
-        skipped entirely rather than emitted anonymously.
-    :param parent_id: The owning process, when this backfill is nested in one.
-    :param grade_continuity: Grade the batch's ratio stability once the batch
-        is folded. False inside a pass of the batch stages, whose ratio
-        stability stage grades it after the co-variation it reads.
-    :return: ``(folded, failed)`` sample counts.
-    :rtype: tuple[int, int]
-    """
-    # Imported here, as the service imports this module's fold: the two lean on
-    # each other and neither can be the other's module-level import.
-    from mascope_backend.api.new.peak_assignments.batch_fold import (
-        fold_sample_peaks_without_run,
-    )
-
-    async with async_session() as session:
-        sample_ids = (
-            (
-                await session.execute(
-                    select(Sample.sample_item_id)
-                    .where(Sample.sample_batch_id == sample_batch_id)
-                    .order_by(Sample.datetime)
-                )
-            )
-            .scalars()
-            .all()
-        )
-
-    total_samples = len(sample_ids)
-    stride = max(1, total_samples // _BACKFILL_PROGRESS_STEPS)
-
-    folded = 0
-    failed = 0
-    # The anchors the deferred folds below report touching, recomputed once
-    # each at the end instead of once per sample (see recompute_batch_consensus).
-    touched: set[str] = set()
-    # True only once the loop has walked the whole batch of its own accord. Still
-    # False in the finally means we are unwinding, which is the one case where
-    # the consensus pass must not replace the exception that got us there.
-    walked_the_batch = False
-    try:
-        for item_index, sample_item_id in enumerate(sample_ids):
-            # The last sample always reports, whatever the stride, so the bar ends
-            # full rather than a stride short of it.
-            reports = process_id is not None and (
-                item_index % stride == 0 or item_index == total_samples - 1
-            )
-            notification = (
-                _backfill_progress_notification(
-                    sample_batch_id=sample_batch_id,
-                    item_index=item_index,
-                    total_samples=total_samples,
-                    user_id=user_id,
-                    process_id=process_id,
-                    parent_id=parent_id,
-                )
-                if reports
-                else None
-            )
-            if notification is not None:
-                await send_progress_user_notification(notification)
-
-            try:
-                # The run fold answers None for a sample with no completed run;
-                # Stage A then folds it as ingest would, skipping a blank or an
-                # unverified calibration the same way.
-                if (
-                    await fold_sample_into_batch_peaks(
-                        sample_item_id, defer_consensus_to=touched
-                    )
-                    is not None
-                    or await fold_sample_peaks_without_run(
-                        sample_item_id, defer_consensus_to=touched
-                    )
-                    is not None
-                ):
-                    folded += 1
-            except IntegrityError:
-                # Its own branch as a tripwire, not because the cause is known: the
-                # fold-in lock plus the delete-then-flush of a re-fold should have
-                # made the (batch peak, sample) unique key unreachable, so a
-                # violation of THAT key means the serialization did not hold and is
-                # worth chasing. The same branch also catches the foreign keys a
-                # long backfill can lose under it -- a run pruned, a sample removed --
-                # which are ordinary and unrelated. Hence a message that reports
-                # which sample and leaves the diagnosis to the logged constraint.
-                failed += 1
-                runtime.logger.exception(
-                    "Batch-peak backfill hit a database constraint on sample "
-                    f"'{sample_item_id}'. A violated (batch peak, sample) unique key "
-                    "means two folds of it overlapped, which the fold-in lock should "
-                    "prevent; a foreign key means a run or sample it referenced went "
-                    "away while the backfill ran."
-                )
-            except Exception:  # noqa: BLE001 - one bad sample must not abort backfill
-                # Logged with the traceback: the exception's message alone is often
-                # just a key or an index, and the caller only ever sees a count.
-                failed += 1
-                runtime.logger.exception(
-                    f"Batch-peak backfill failed for sample '{sample_item_id}'."
-                )
-
-            # Outside the try, so the bar advances past a sample whose fold raised
-            # as well as one that folded. `send_progress_user_notification` deep
-            # copies, so this is the same object the pre-fold tick was built from.
-            if notification is not None:
-                await send_progress_user_notification(notification, 1.0)
-        walked_the_batch = True
-    finally:
-        # In a finally because deferring the recompute is what makes this pass
-        # load-bearing rather than a tidy-up: every fold above has COMMITTED its
-        # occurrences while their anchors still describe the members they had
-        # before, and nothing else will fix them - a later arriving fold
-        # recomputes only the anchors ITS own sample touched. An anchor a
-        # deferred fold MINTED and left unwritten is worse than stale: it keeps
-        # its server defaults (tier 'unassigned', n_present 0, no formula), which
-        # the ledger's default occupancy floor hides outright while the series
-        # endpoint still draws it from the committed occurrences.
-        #
-        # The vector is cancellation, not the notification calls: both socket
-        # layers swallow a Redis failure, but a CancelledError walks past both
-        # `except` arms above (it is a BaseException) and out of the loop.
-        #
-        # In-process only, and deliberately NOT asyncio.shield-ed the way the run
-        # finalizer shields its terminal write. Under a level-triggered
-        # cancellation (anyio re-cancels a suspended child until its scope is
-        # left) the first await here raises again and the pass does nothing;
-        # shielding would fix that at the price of making a cancelled backfill
-        # uninterruptible for up to one lock-taking transaction per chunk, on a
-        # fold lock with no timeout. Neither is free, and the recovery is the
-        # same either way and cheap: re-run the backfill. It is idempotent and
-        # derives everything from committed occurrences. A SIGKILL, an OOM kill
-        # or a worker killed past its stop grace reaches no finally at all.
-        #
-        # Scoping also retires an incidental sweep the whole-batch pass did: an
-        # anchor left memberless by a SAMPLE deletion (its occurrences cascade,
-        # the anchor does not) is no longer collected, because no fold's touched
-        # set can name it. That is develop's behaviour too - the per-sample
-        # recompute was touched-only - so nothing regresses here, but the sample
-        # -delete path owns that cleanup and does not yet do it.
-        try:
-            await recompute_batch_consensus(sample_batch_id, touched)
-        except Exception:
-            if walked_the_batch:
-                raise
-            # Already unwinding. Raising here would REPLACE the exception that
-            # interrupted the loop - a CancelledError above all, which has to
-            # reach the caller as a cancellation and not as a database error.
-            runtime.logger.exception(
-                "Batch-peak backfill was interrupted and its deferred consensus "
-                f"pass then failed for batch '{sample_batch_id}'. The anchors its "
-                "committed folds touched still describe their previous members; "
-                "re-running the backfill repairs them."
-            )
-
-    # Reached only once the batch is walked and its consensus written: the
-    # pass grades the whole batch, so it runs once here rather than after
-    # each of the deferred folds above.
-    if grade_continuity:
-        await _grade_continuity_after_backfill(
-            sample_batch_id, total_samples, user_id, process_id, parent_id
-        )
-    return folded, failed
-
-
-def backfill_outcome(folded: int, failed: int, sample_batch_id: str) -> dict:
-    """Report a backfill outcome, distinguishing "folded nothing" from success.
-
-    Folding zero samples is what a batch of blanks, or of samples not yet
-    calibrated or peak-detected, looks like, and it is the outcome the person
-    who clicked most needs to hear: the request was accepted and did nothing.
-    Announced green as "Rebuilt the batch ledger from 0 sample(s)" it reads as
-    done, which is how a user arrives back at an empty ledger with no idea why.
-
-    Which of the four things happened is not a count's to say, so the failures
-    are carried separately. Nothing folded and nothing raised is the batch's
-    state and the message names it; nothing folded because every fold raised is
-    a fault, and telling that user why a sample is skipped would be advice
-    that cannot help. A run that folded some and dropped others is neither, and
-    saying only how many succeeded hides a sample missing from the ledger.
-
-    ``partial`` is the outcome the notification layer maps to a warning
-    severity. The word is a stretch for "none of it" -- but the run did finish,
-    which rules out ``failed``, and the point of the status is the severity a
-    reader sees.
-
-    :param folded: How many of the batch's samples were folded in.
-    :param failed: How many raised while folding and were skipped.
-    :param sample_batch_id: The batch the backfill ran for.
-    :return: The controller result the background-task decorator reports from.
-    :rtype: dict
-    """
-    counts = {"samples_folded": folded, "samples_failed": failed}
-    notification_data = {"sample_batch_id": sample_batch_id}
-
-    if folded == 0 and failed == 0:
-        return {
-            "status": "partial",
-            "message": (
-                "The batch ledger is empty: none of this batch's samples could "
-                "be folded. A sample is skipped when it is a blank, when its m/z "
-                "calibration is not verified, or when it has no detected peaks yet."
-            ),
-            "data": counts,
-            "_notification_data": notification_data,
-        }
-    if folded == 0:
-        return {
-            "status": "failed",
-            "message": (
-                f"The batch ledger was not rebuilt: all {failed} sample(s) failed "
-                "to fold. See the server log for the reason."
-            ),
-            "data": counts,
-            "_notification_data": notification_data,
-        }
-    if failed:
-        return {
-            "status": "partial",
-            "message": (
-                f"Rebuilt the batch ledger from {folded} sample(s); "
-                f"{failed} sample(s) failed to fold and are missing from the "
-                "result. See the server log for the reason."
-            ),
-            "data": counts,
-            "_notification_data": notification_data,
-        }
-    return {
-        "status": "success",
-        "message": f"Rebuilt the batch ledger from {folded} sample(s).",
-        "data": counts,
-        "_notification_data": notification_data,
-    }
-
-
 def clear_engine_verdicts_statement(sample_batch_id: str):
     """The statement that takes every importing engine's verdict off a batch's
     anchors, for the caller to run in its own transaction under the fold lock."""
@@ -1726,87 +1250,3 @@ async def clear_engine_verdicts(sample_batch_id: str) -> None:
         await session.execute(clear_engine_verdicts_statement(sample_batch_id))
         await touch_ledger(session, sample_batch_id)
         await session.commit()
-
-
-async def rebuild_batch_ledger(
-    sample_batch_id: str,
-    user_id: int | None = None,
-    process_id: str | None = None,
-    parent_id: str | None = None,
-    batch_peak_run_id: str | None = None,
-) -> dict:
-    """The rebuild as a batch run: opened before the first fold (refused if one
-    is in flight; the current run's state is snapshotted), closed as completed
-    with the outcome's counts - or as failed, the live ledger then being
-    whatever the folds left.
-
-    Inside a pass of the batch stages (``batch_peak_run_id``, the pass's run)
-    it is the pass's first stage, *Fold the samples*: it opens no run, and
-    leaves the ratio stability to the pass's own stage, which grades it after
-    the co-variation it reads."""
-
-    async def fold(run_id: str) -> tuple[int, int]:
-        await clear_engine_verdicts(sample_batch_id)
-        return await backfill_sample_batch_peaks(
-            sample_batch_id,
-            user_id=user_id,
-            process_id=process_id,
-            parent_id=parent_id,
-            grade_continuity=batch_peak_run_id is None,
-        )
-
-    if batch_peak_run_id is not None:
-        folded, failed = await fold(batch_peak_run_id)
-        outcome = backfill_outcome(folded, failed, sample_batch_id)
-    else:
-        run_id = await start_run(sample_batch_id, ACTION_REBUILD, user_id=user_id)
-        try:
-            folded, failed = await fold(run_id)
-        except BaseException as exc:
-            # BaseException: a cancelled rebuild left running would hold the
-            # ledger until the startup reaper runs.
-            await close_shielded(
-                fail_run(sample_batch_id, run_id, f"{type(exc).__name__}: {exc}"),
-                f"rebuild run '{run_id}' as failed",
-            )
-            raise
-        outcome = backfill_outcome(folded, failed, sample_batch_id)
-        await complete_run(sample_batch_id, run_id, summary=outcome.get("data"))
-    # Each fold marked the stages stale already; the rebuild says why.
-    await mark_batch_stale(sample_batch_id, REASON_REBUILD)
-    return outcome
-
-
-@api_controller_background_task(
-    success_notification_rooms=["sample_batch_id"],
-    success_reload=[("peak_assignment", "sample_batch_id")],
-    error_notification_rooms=["sample_batch_id"],
-)
-async def compute_batch_peaks(
-    sample_batch_id: str,
-    independent_transaction: bool = False,
-    user_id: int | None = None,
-    process_id: str | None = None,
-    parent_id: str | None = None,
-) -> dict:
-    """Rebuild a batch's batch peaks from every one of its samples - from a
-    completed assignment run where there is one, otherwise from a fresh Stage A
-    pass with no run written.
-
-    This is how a batch that predates the ledger, was never assigned, or was
-    imported gets populated into the batch overview. Idempotent -- re-running
-    re-folds each sample. Emits ``peak_assignment_reload`` so the Assignments
-    chart refreshes, including when nothing was folded: the ledger is then
-    correct in being empty, and the notification says why.
-
-    Folds sample by sample and reports as it goes, so the wait is a filling bar
-    rather than a spinner: the per-sample packets are pending ones on this same
-    ``compute_batch_peaks`` channel, and the decorator's terminal packet ends
-    the bar.
-    """
-    return await rebuild_batch_ledger(
-        sample_batch_id,
-        user_id=user_id,
-        process_id=process_id,
-        parent_id=parent_id,
-    )

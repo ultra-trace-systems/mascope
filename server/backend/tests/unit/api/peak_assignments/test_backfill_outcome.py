@@ -16,9 +16,7 @@ from mascope_backend.api.lib.api_features import (
     RESULT_STATUS_NOTIFICATION,
     notification_status,
 )
-from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
-    backfill_outcome,
-)
+from mascope_backend.api.new.peak_assignments.batch_fold import backfill_outcome
 
 
 def test_folding_samples_is_a_success_naming_the_count():

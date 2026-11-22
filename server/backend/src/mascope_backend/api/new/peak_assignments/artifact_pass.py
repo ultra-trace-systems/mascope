@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from mascope_backend.api.new.peak_assignments.engine import (
+from mascope_backend.api.new.peak_assignments.row_terms import (
     ROLE_ARTIFACT,
     SOURCE_ARTIFACT,
 )

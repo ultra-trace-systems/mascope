@@ -24,12 +24,12 @@ import pandas as pd
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.new.peak_assignments import (
+    batch_fold,
     judging_loop,
     pipeline,
     sample_inputs,
     sample_mechanisms,
     service,
-    stage_a_pass,
 )
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.envelope_fit import RunEnvelopeFit
@@ -186,7 +186,7 @@ def stub_seeded_scorer(
 def stub_known_set(
     monkeypatch, rows_of: Callable[[str, str], list[dict]]
 ) -> list[set[str]]:
-    """The known set a run or a fold proposes (``stage_a_pass._stage_a_assignments``),
+    """The known set a run or a fold proposes (``pipeline._stage_a_assignments``),
     canned: the rows ``rows_of(sample_item_id, run_id)`` gives, but for those
     on a peak the claim stage took, at a measurement of nothing fitted and
     today's line-share tolerance, with no frame to score again at a refit's
@@ -223,7 +223,7 @@ def stub_known_set(
             None,
         )
 
-    monkeypatch.setattr(stage_a_pass, "_stage_a_assignments", stage_a)
+    monkeypatch.setattr(pipeline, "_stage_a_assignments", stage_a)
     return excluded
 
 
@@ -245,7 +245,7 @@ async def run_sample(
             sample=await fetch_sample(sample_item_id),
             config=config,
             run_id=run.peak_assignment_run_id,
-            keep=pipeline.keep_run,
+            keep=service.keep_run,
             run=run,
         )
     )
@@ -265,7 +265,7 @@ async def fold_sample(
             sample=await fetch_sample(sample_item_id),
             config=config or PeakAssignmentConfig(run_untargeted=False),
             run_id=fold_run_id(sample_item_id),
-            keep=pipeline.keep_fold,
+            keep=batch_fold.keep_fold,
             strict_instrument=False,
         )
     )

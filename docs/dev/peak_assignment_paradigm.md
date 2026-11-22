@@ -3,7 +3,7 @@
 # Peak-Centric Assignment: Design & Implementation Plan
 
 - **Status:** built
-- **As of:** 2026-10-27
+- **As of:** 2026-11-22
 - **Tracked in:** closed; the phase 4 leftovers are MAS-61 and MAS-229, the "fold targeted in" of phase 5 is MAS-80 (its path is §5.4, decided under MAS-162)
 - **What:** The shift from target-anchored matching to assigning every peak, and how the engine is operated.
 
@@ -469,3 +469,55 @@ operator sees of it is under "Interrupted runs" in
 It is deliberately best-effort: it operates on a table a recent migration added,
 so on a database not yet upgraded to this head it must warn and continue rather
 than take the server down with it.
+
+## 8. Where the code sits: the package's layers
+
+The backend's `api/new/peak_assignments` package is layered, lowest first, as its
+`__init__.py` docstring states (MAS-1079). A module imports only from its own
+layer or a lower one, and only at its top: no module imports another of the
+package inside a function, and no two modules import each other, however far
+round. `tooling/structure.py check` holds the second half in CI (no import cycle,
+no import of the package inside a function); the layer order itself is this list
+and the docstring's, which a review reads.
+
+1. **Records and config:** `tiers`, `config`, `schemas`, `claims`, `peak_ids`,
+   `profiles`, `row_terms` (a row's roles, sources and provenance keys),
+   `run_config` (what a run records on its row), `listing`, `target_listing`,
+   `admission`, `calibration_store`; and the batch ledger's records:
+   `batch_peaks`, `batch_blend`, `batch_lock` and `batch_staleness` (the stage
+   names, their states and the marks that make them stale).
+2. **Inputs:** `sample_inputs` (a sample's peaks, resolving power and known
+   isotopes), `sample_mechanisms`, `profile_preview`.
+3. **Stages:** `engine`, `untargeted_rows`, `partner_gate`, `tiering`,
+   `mass_gate`, `envelope_claims`, `envelope_fit`, `cross_channel`,
+   `identification_level`, `reagent_pass`, `artifact_pass`, `prepasses`,
+   `stage_a_pass`, `halogen_twins`, `decoy`, `seeded_scoring`,
+   `alternatives_scoring`, `derived_evidence`, `fold_view`, `known_species`;
+   and `model_readers`, the recorded measurement model's reader, which sits with
+   the stages because where no run recorded a model it reads the reagent lines'
+   offset again through the reagent pass.
+4. **The pipeline:** `pipeline` (the stage list, Stage A's assignments and the
+   neighbour reads a thin file's envelope is pooled from, which run the stage
+   list's first stages on each neighbour), `judging_loop`, and what a run reads
+   of its batch: `batch_decisions`, `batch_lines`.
+5. **The batch:** the ledger's fold and runs (`batch_peaks_controller`,
+   `batch_runs`, `batch_fold`), its stages (`batch_water_ladder`,
+   `batch_known_species`, `batch_untargeted`, `batch_merged_isotopologues`,
+   `batch_isotopologues`, `batch_series`, `batch_coherence`, `continuity`,
+   `batch_checks`, `batch_rejudge`) and their orchestrator, `batch_stages`,
+   which imports every stage and is imported by none of them: what the stages
+   share with it sits in `batch_staleness`, below both.
+6. **Entry points:** the run's lifecycle (`service`), curation (`curation`,
+   `batch_curation`, `batch_peak_verification`), imports (`import_service`,
+   `import_validation`, `batch_import`) and an instrument's recalibration
+   (`recalibration`).
+7. **Reads for the API, and the routes:** `ledger_reads`, `verification`,
+   `verification_queue`, `batch_assignment_status`, `batch_peaks_records`,
+   `batch_export`, `sample_status`, `visualization`, `routes`,
+   `batch_peaks_routes`.
+
+Where a lower layer has to reach an upper one it is handed the callable rather
+than importing it: the stage list ends in a keep stage its caller passes in
+(`service.keep_run` for a run, `batch_fold.keep_fold` for the ingest fold), and
+the batch's rebuild walk, which folds a sample with no run through the stage
+list, lives with the fold in `batch_fold`.

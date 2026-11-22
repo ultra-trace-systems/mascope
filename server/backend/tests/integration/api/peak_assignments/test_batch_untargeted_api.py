@@ -91,7 +91,7 @@ from mascope_tools.composition.reagents import reagent_library
 #: tests stand in for, so one stand-in reaches every read of it, as a stand-in
 #: in the one module that read them all once did.
 _READERS = {
-    "load_sample_peaks": (sample_inputs, model_readers, stage_a_pass),
+    "load_sample_peaks": (sample_inputs, model_readers, pipeline),
     "_resolution_of": (sample_inputs, model_readers),
     "fetch_sample_mechanisms": (sample_mechanisms, model_readers, service),
     "_untargeted_ionization_notations": (sample_mechanisms, stage_a_pass),

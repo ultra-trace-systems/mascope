@@ -235,12 +235,12 @@ def only_its_own_stage(monkeypatch):
     stage's route does runs that stage alone: the stages after it are their
     own suites', and a pass of all of them would prune the stage's own batch
     run from the history before the test reads it (``BATCH_RUN_KEEP``)."""
-    from mascope_backend.api.new.peak_assignments import batch_stages
+    from mascope_backend.api.new.peak_assignments import batch_stages, batch_staleness
 
     monkeypatch.setattr(
         batch_stages,
         "plan",
-        lambda states, from_stage: (batch_stages.BatchStage(from_stage),),
+        lambda states, from_stage: (batch_staleness.BatchStage(from_stage),),
     )
 
 
