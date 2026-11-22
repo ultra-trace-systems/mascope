@@ -1472,6 +1472,15 @@ def _groups(local: pd.DatetimeIndex, by: str | None) -> tuple[np.ndarray, list[s
     return remap[code], [labels[i] for i in occur]
 
 
+def _group_days(local: pd.DatetimeIndex, by: str) -> dict[str, int]:
+    """Per group under *by* of the times *local*, the calendar days of it
+    from the first time's day to the last's."""
+    days = local.tz_localize(None).normalize()
+    code, labels = _groups(pd.date_range(days.min(), days.max(), freq="D"), by)
+    counts = np.bincount(code, minlength=len(labels))
+    return dict(zip(labels, (int(n) for n in counts)))
+
+
 def diurnal(
     store: CampaignStore,
     keys: Any,
@@ -1499,8 +1508,11 @@ def diurnal(
         in the hour) and ``n_samples`` (the samples in it of the batches
         that read the key, so ``n`` over ``n_samples`` is how often the key
         was detected there). An hour without a value is NaN. ``attrs`` adds
-        ``by``, and ``stat`` and ``band``, what ``value`` and ``lo`` and
-        ``hi`` are: ``median`` and (25, 75).
+        ``by``; ``group_days``, with *by*, the calendar days of each group
+        from the day of the window's first sample to its last's (a month
+        of two years counted in both), None without; and ``stat`` and
+        ``band``, what ``value`` and ``lo`` and ``hi`` are: ``median`` and
+        (25, 75).
     """
     if by is not None and by not in DIURNAL_BY:
         raise ValueError(f"by={by!r} is none of {', '.join(DIURNAL_BY)}")
@@ -1508,7 +1520,12 @@ def diurnal(
         store, keys, normalise=normalise, tz=tz, start=start, end=end, view="diurnal"
     )
     attrs = dict(
-        values.attrs, cadence="hour of day", by=by, stat="median", band=(25, 75)
+        values.attrs,
+        cadence="hour of day",
+        by=by,
+        group_days={} if by else None,
+        stat="median",
+        band=(25, 75),
     )
     reads_any = values.reads_any
     if not reads_any.any():
@@ -1522,6 +1539,8 @@ def diurnal(
     hour = local.hour.to_numpy().astype("int64")
     group = np.full(len(local), -1, dtype="int64")
     group[reads_any], labels = _groups(local[reads_any], by)
+    if by is not None:
+        attrs["group_days"] = _group_days(local[reads_any], by)
     n_keys, n_groups = len(values.keys), len(labels)
     size = n_groups * n_keys * 24
     grouped = _grouped(

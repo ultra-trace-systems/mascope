@@ -83,6 +83,20 @@ def year(tmp_path_factory) -> tuple[Campaign, CampaignStore]:
     return campaign, _sync(campaign, tmp_path_factory.mktemp("year"))
 
 
+#: A year and a half from 1 June, a sample an hour, of a formula and a
+#: target ion: June to November and summer and autumn held twice, the rest
+#: once, and two hours of a second December.
+LONG = dataclasses.replace(
+    YEAR, days=548, n_species=1, sample_minutes=60, file_minutes=60, batch_days=14
+)
+
+
+@pytest.fixture(scope="module")
+def long_window(tmp_path_factory) -> tuple[Campaign, CampaignStore]:
+    campaign = generate(LONG, seed=0)
+    return campaign, _sync(campaign, tmp_path_factory.mktemp("long"))
+
+
 def _cycles(campaign: Campaign, kind: str, prefix: str = "ion:") -> list[str]:
     return sorted(
         key
@@ -1008,8 +1022,8 @@ def test_diurnal_by_month_notes_a_month_the_window_holds_hours_of(month):
     (note,) = [note for note in fig.notes if "few days" in note]
     names = [_entry(fig, key)["name"] for key in keys]
     assert note == (
-        "An hour sampled on few days is no cycle. Under half the samples of the "
-        "fullest group's typical hour: "
+        "An hour sampled on few days is no cycle. Under half the samples per "
+        "day of the fullest group's typical hour: "
         + "; ".join(f"{name}, Jul (every hour)" for name in names)
         + "."
     )
@@ -1037,6 +1051,72 @@ def test_diurnal_by_weekday_judges_a_group_per_day_of_the_week_it_holds(month):
     rows = _rows(fig, key)
     monday = rows[(rows["group"] == "weekday") & (rows["n_samples"] > 0)]
     assert list(monday["hour"]) == [0, 1, 2]
+
+
+@pytest.mark.parametrize(
+    "by, spans",
+    [
+        (
+            "month",
+            {
+                **{"Jan": 31, "Feb": 28, "Mar": 31, "Apr": 30, "May": 31},
+                **{"Jun": 60, "Jul": 62, "Aug": 62, "Sep": 60, "Oct": 62},
+                **{"Nov": 60, "Dec": 32},
+            },
+        ),
+        ("season", {"DJF": 91, "MAM": 92, "JJA": 184, "SON": 182}),
+    ],
+)
+def test_diurnal_judges_a_group_the_window_holds_twice_per_day(long_window, by, spans):
+    """Over a year and a half, a month or a season held once is sampled on
+    each of its days, as one held twice is: judged per day, neither is
+    sparse in any hour. December's two hours of a second year are days of
+    it, not a second December the first is judged as half of."""
+    campaign, store = long_window
+    key = _cycles(campaign, "day")[0]
+
+    fig = diurnal(store, key, by=by)
+
+    assert views.diurnal(store, key, by=by).attrs["group_days"] == spans
+    groups = {g["group"]: g for g in _entry(fig, key)["groups"]}
+    assert list(groups) == list(spans)
+    for name, group in groups.items():
+        assert group["sparse_hours"] == [], name
+    # The groups held twice hold twice the samples
+    twice, once = ("Jul", "Feb") if by == "month" else ("JJA", "MAM")
+    assert groups[twice]["min_n"] > 1.9 * groups[once]["min_n"]
+    assert not any("few days" in note for note in fig.notes)
+
+
+def _judged_whole(store, key, by, window, stub, whole) -> None:
+    """The *stub* group, which the window spans a day of, is judged per day
+    of a whole one: sparse in every hour, beside a *whole* group in none."""
+    fig = diurnal(store, key, by=by, **window)
+
+    groups = {g["group"]: g for g in _entry(fig, key)["groups"]}
+    assert set(groups) == {stub, whole}
+    assert groups[stub]["sparse_hours"] == list(range(24))
+    assert groups[whole]["sparse_hours"] == []
+    assert views.diurnal(store, key, by=by, **window).attrs["group_days"][stub] == 1
+
+
+def test_diurnal_judges_half_an_hour_of_a_weekend_as_a_whole_weekend(month):
+    """Half an hour of a Saturday, judged per a whole weekend's two days,
+    is under half of a weekday's samples per day."""
+    campaign, store = month
+    key = _cycles(campaign, "day")[0]
+    window = {"end": "2026-06-06T00:30+03:00"}
+
+    _judged_whole(store, key, "weekday", window, "weekend", "weekday")
+
+
+def test_diurnal_judges_three_hours_of_a_summer_as_a_whole_summer(long_window):
+    """Three hours of 31 August beside a whole autumn."""
+    campaign, store = long_window
+    key = _cycles(campaign, "day")[0]
+    window = {"start": "2026-08-31T21:00+03:00", "end": "2026-12-01T00:00+02:00"}
+
+    _judged_whole(store, key, "season", window, "JJA", "SON")
 
 
 def test_an_hour_under_half_the_typical_hours_samples_is_sparse():

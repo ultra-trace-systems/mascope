@@ -26,16 +26,20 @@ of any hour) and ``sparse_hours``; with ``by``, the same per group under
 - **An hour sampled on few days is no cycle.** An hour is sparse when it
   holds under half the samples of the typical hour, the median over the
   hours sampled at all, so an hour with no sample is sparse beside hours
-  with some. With ``by``, each group is judged against the typical hour of
-  the fullest group, so a month the window holds three hours of reads as
-  sparse in every hour; a group of the weekday split is judged per day of
-  the week it holds, its weekend's two beside the week's five. The note
-  names the sparse hours of the cycles drawn. The rule counts samples, not
-  values: a species below detection in its trough is sampled there, and
-  the note on species detected seldom says that its trough reads high.
+  with some. With ``by``, each group is judged per day: per calendar day
+  of it from the window's first sample to its last, and at least per day
+  of a whole one (:data:`WHOLE_DAYS`: a month's, a season's, the week's
+  five weekdays or its two weekend days), against the typical hour of the
+  group that holds the most samples per day. So a month the window holds
+  twice is judged as one it holds once, a weekend's two days beside the
+  week's five, and a month the window holds three hours of reads as
+  sparse in every hour. The note names the sparse hours of the cycles
+  drawn. The rule counts samples, not values: a species below detection in
+  its trough is sampled there, and the note on species detected seldom
+  says that its trough reads high.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -64,9 +68,18 @@ NIGHT_HOURS = (22, 4)
 #: Under this share of the typical hour's samples, an hour is sparse.
 SPARSE = 0.5
 
-#: The days of the week each group of the weekday split holds: a group's
-#: samples are judged per day it holds. A month's or a season's holds one.
-WEEK_DAYS = {"weekday": 5, "weekend": 2}
+#: The days of each group whole: a month's (February's of a common year),
+#: a season's, the week's weekdays and its weekend. A group is judged per
+#: day the window spans of it, and at least per day of a whole one.
+WHOLE_DAYS = {
+    **dict(zip(views.MONTHS, (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31))),
+    "DJF": 90,
+    "MAM": 92,
+    "JJA": 92,
+    "SON": 91,
+    "weekday": 5,
+    "weekend": 2,
+}
 
 #: The note every diurnal figure prints.
 CLOCK_NOTE = (
@@ -147,13 +160,21 @@ def cycle(
 
 
 def groups(
-    rows: pd.DataFrame, day: Sequence[int], night: Sequence[int]
+    rows: pd.DataFrame,
+    day: Sequence[int],
+    night: Sequence[int],
+    spans: Mapping[str, int],
 ) -> list[dict[str, Any]]:
     """Each group's cycle, from one species' rows of the split view's
-    frame, its hours judged against the typical hour of the fullest group,
-    per day of the week a group holds (:data:`WEEK_DAYS`)."""
+    frame, its hours judged per day of the group against the typical hour
+    of the group fullest per day.
+
+    :param spans: The calendar days of each group the window spans (the
+        view's ``group_days``); a group is judged per day of at least a
+        whole one (:data:`WHOLE_DAYS`).
+    """
     split = [(str(group), part) for group, part in rows.groupby("group", sort=False)]
-    days = {group: WEEK_DAYS.get(group, 1) for group, _ in split}
+    days = {group: max(spans.get(group, 0), WHOLE_DAYS[group]) for group, _ in split}
     fullest = max(typical(part) / days[group] for group, part in split)
     return [
         {"group": group, **cycle(part, day, night, fullest * days[group])}
@@ -247,7 +268,9 @@ def _figure(
     for s in resolved.species:
         entry = {**s.to_dict(), **cycle(whole[whole["key"] == s.key], day, night)}
         if by:
-            entry["groups"] = groups(frame[frame["key"] == s.key], day, night)
+            entry["groups"] = groups(
+                frame[frame["key"] == s.key], day, night, attrs["group_days"]
+            )
         # The cycles drawn: the groups' with a split, else the window's
         for drawn in entry["groups"] if by else [entry]:
             if drawn["sparse_hours"]:
@@ -282,7 +305,11 @@ def _figure(
     if sparse:
         notes.append(
             "An hour sampled on few days is no cycle. Under half the samples "
-            + ("of the fullest group's typical hour: " if by else "of a typical hour: ")
+            + (
+                "per day of the fullest group's typical hour: "
+                if by
+                else "of a typical hour: "
+            )
             + "; ".join(sparse)
             + "."
         )

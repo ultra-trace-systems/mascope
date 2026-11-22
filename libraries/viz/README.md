@@ -143,7 +143,7 @@ views.top(
 | View | One row per |
 |---|---|
 | `series` | bin and key: `t`, `key`, `value`, `lo`, `hi`, `n` (values) and `n_samples` |
-| `diurnal` | hour of day and key, and group with `by=` (month, season, weekday): the median and quartiles, `n` (values) and `n_samples` |
+| `diurnal` | hour of day and key, and group with `by=` (month, season, weekday): the median and quartiles, `n` (values) and `n_samples`; with `by=`, `attrs["group_days"]`, the calendar days of each group the window spans |
 | `periods` | day, week or month and key: `n` (values), `n_samples`, mean, min, p5, p25, median, p75, p95, max |
 | `coverage` | hour, polarity and mode: files, unfiled files and samples (a polarity-switching file counts under both polarities), with the mode's ID and name; also the gaps, the totals and the span from the first file or sample to the last |
 | `composition` | period and formula, or class or carbon number with `by=`: median, mean, share, and the species' element counts, O/C, H/C and OSc |
@@ -598,9 +598,13 @@ over `day_hours`, 10:00 to 16:00 by default, over that over `night_hours`,
 is no cycle, so an hour is sparse when it holds under half the samples of
 the typical hour, the median over the hours sampled at all, and a note
 names the sparse hours of the lines drawn. With `by`, a group is judged
-against the fullest group's typical hour, so a month the window holds
-three hours of is sparse in every hour; a weekday or weekend group is
-judged per day of the week it holds. Samples count, not values: a species
+per calendar day of it from the window's first sample to its last, and at
+least per day of a whole one (a month, a season, the week's five weekdays
+or its two weekend days), against the typical hour of the group with the
+most samples per day. So a month the window holds twice is judged as one
+it holds once, and a month it holds three hours of is sparse in every
+hour. The diurnal view gives those days as `group_days` in its frame's
+`attrs`. Samples count, not values: a species
 below detection in its trough is sampled there, and reads high (the note
 on seldom detected species). The diurnal view follows openair's
 `timeVariation` (Carslaw and Ropkins 2012).
