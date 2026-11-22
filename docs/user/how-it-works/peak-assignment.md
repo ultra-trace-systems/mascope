@@ -1888,6 +1888,7 @@ not:
 | Up to date | when the last pass ended, *up to date*, the samples it covered, and the change in assigned rows where this tab saw the pass | **Re-assign**, outlined: every stage again |
 | Behind | the first reason, in words: *12 samples added since the last assignment*, *Target collections or reference lists changed since the last assignment*, *Assignment settings changed since the last assignment*, *Assigned by an older engine (0.7.0)* | **Update assignment** when new samples are the only reason, else **Re-assign** |
 | Stopped | *Stopped at* the stage: the stages before it were applied | **Retry**: the pass again from that stage |
+| Viewing an earlier run | *Viewing run #3 · 14 Nov 09:30 · read-only* | **Back to current**: the live ledger again |
 
 A viewer of the workspace sees the same status. The button is disabled, and says what
 enables it: *Ask an editor of this workspace to assign it*.
@@ -1908,7 +1909,7 @@ The arrow beside the button opens its menu:
 
 - **Re-assign from scratch** folds every sample again before the pass. It is slower; use
   it for an imported ledger, an old one, or a ledger you suspect is wrong.
-- **Run history** opens the run selector (*Batch runs*, below).
+- **Run history** opens the batch's runs (*Batch runs*, below).
 - **Export ledger** downloads the whole ledger as CSV, as the ledger's view menu does
   (*Reading the ledger*, below).
 - **Advanced › Run from a stage** lists the stages under their phases. Each starts the
@@ -1916,6 +1917,31 @@ The arrow beside the button opens its menu:
   stages** on, under **Assignment** in **Settings**, which is off by default: it is for
   checking a stage. A stage is never run alone from the app, because the stages after
   it read what it writes.
+
+**Details**, beside the status line, opens the pass the batch stands on: the one
+running, else the newest that stopped, else the last that completed. It is there
+once a pass has run, and while an earlier run is on screen. It holds:
+
+- **The stages, under their phases**, each with where the pass left it: *Done*,
+  *Running* with the share of the stage done where the stage reports one, *Failed*
+  with its error, *Cancelled*, *Out of date* with why (*Samples were folded in
+  since*, *Detect series ran again since*, ...), *Waiting* for a stage the pass has
+  yet to reach, or *Not run*, a stage before the one the pass started at. A fold the
+  pass did not need reads *No rebuild needed*, and one it ran says why. While your
+  pass runs the list moves with it, stage by stage.
+- **A one-line result for each stage that finished**, from the counts the pass
+  kept: *24 samples folded*, *52 of 80 batch peaks assigned a composition*, *38 rows
+  folded under their compound, 14 isotope lines stamped*. A stage that found
+  nothing to read says so.
+- **The change to the tier counts**, as chips: *+12 assigned*, *−9 candidate*. They
+  compare the ledger as the pass found it, the snapshot of the run before it, with
+  the ledger as it left it, isotope lines aside, as the status line counts them.
+  They are left out while the pass runs and while an earlier run is on screen.
+- **The settings the pass ran under**: the chemistry profile and context, the m/z
+  precision, the formula range, the peak ceiling, the intensity threshold, the
+  alternatives kept and the tier bands, and whether they were the batch's own or
+  given to that one run.
+- **Run history**, the batch's runs (*Batch runs*, below).
 
 A pass is one entry in the progress strip. When it ends, the status line and the
 ledger's tier chips change in place, and nothing else is said while the bar is on
@@ -3088,13 +3114,23 @@ And a peak focused from the batch side - the chart, the arrow beside a batch pea
 
 --8<-- "_help/batch-runs.md"
 
-**Run history**, in *Assign batch*'s menu, opens the run selector. It lists the batch's
-runs newest first, each with what it did. A run is a pass of the batch stages, with every stage it ran inside it
-(*A pass is one batch run*, above), a rebuild or an import. The newest five runs before
-the current one are kept, so the history holds the last passes, not the clicks of one.
+**Run history**, in *Assign batch*'s menu and at the foot of its **Details**, lists the
+batch's runs newest first, numbered from the oldest kept, each with its state, when it
+started and the engine behind it. A run is a pass of the batch stages, with every stage
+it ran inside it (*A pass is one batch run*, above), a rebuild or an import:
+
+| Run history says | The run |
+|---|---|
+| *Assignment* | a pass from the first stage, or from the fold: *Assign batch*, *Re-assign*, *Update assignment* |
+| *Assignment from a stage (Detect series)* | a pass started past the first stage: *Retry*, *Advanced › Run from a stage*, or one started at the first stage that was not current |
+| the stage's name, such as *Search untargeted* | a pass a step's own API route started, which the SDK and the bench use |
+| *Import*, *Rebuild*, *Folded samples* | an engine's batch result imported, a rebuild of the ledger, the folds that built it |
+
+The newest five runs before the current one are kept, so the history holds the last passes, not the clicks of one.
 The current run is the live ledger; picking an earlier one shows the *Batch peaks* ledger
 and the chart as that run left them, read-only - verdicts and curation act on the current
-run, so the Verdict column waits until you pick it again. A run that fails, or a pass that
+run, so the Verdict column waits until you go back to it. The bar then says *Viewing run
+#N · read-only*, and its button is **Back to current**. A run that fails, or a pass that
 is cancelled, is kept and marked, and never becomes current. The same history is one call away in the SDK
 (`mascope.batch_peaks.runs(batch_id)`, and `list(batch_id, run_id=...)` for the species
 table as an earlier run left it). A sample folded in again or a batch peak curated by hand
@@ -3115,7 +3151,7 @@ formula, at the tier an assignment run of that sample gives the same reading, wi
 engine named as the source. Curated batch peaks are left alone, as are
 isotopologue peaks, and rows whose adduct could not be resolved to a mechanism; the run's
 summary counts what landed and why the rest did not. The ledger as it was stays under
-the previous run in the run selector, so the two views can be compared, and *Rebuild
+the previous run in Run history, so the two views can be compared, and *Rebuild
 batch ledger* puts Mascope's own view back.
 
 A row can also carry the engine's own verdict on its identity: `engine_tier`, in the
