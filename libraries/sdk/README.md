@@ -1110,6 +1110,11 @@ as-is. To filter with a regular expression, pass a compiled pattern; case
 comes from its flags. For example,
 `batches=re.compile("2025|2026")` matches batch names containing "2025" or "2026".
 
+A listing's times are datetimes, not text: a `*_utc` column such as
+`sample_batch_utc_modified` or `datetime_utc` is tz-aware UTC, and a local
+`datetime` column is naive. The server writes a time whose microseconds are 0
+without its fraction; a column holding both forms parses all the same.
+
 #### `mascope.datasets`
 
 | Method   | Description                  | Returns             |
