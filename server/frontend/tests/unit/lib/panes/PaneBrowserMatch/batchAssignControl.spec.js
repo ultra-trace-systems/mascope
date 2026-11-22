@@ -1137,6 +1137,33 @@ describe('BatchAssignControl more than one batch', () => {
     })
   })
 
+  it("another user's pass on b-2 offers no Cancel while yours runs on b-1", async () => {
+    await mountControl(FIXTURES.folded_only)
+    get.mockResolvedValue(FIXTURES.running_mine)
+    await main().trigger('click')
+    await flushPromises()
+
+    await focus(B2, { ...FIXTURES.running_other, sample_batch_id: 'b-2' })
+
+    // Yours is b-1's: Cancel here would stop the other person's pass.
+    expect(line()).toContain('Another user')
+    expect(main().exists()).toBe(false)
+  })
+
+  it("b-1's launch still waiting for its answer leaves b-2's button as it is", async () => {
+    await mountControl(FIXTURES.folded_only)
+    post.mockReturnValue(new Promise(() => {}))
+    await main().trigger('click')
+    await flushPromises()
+    expect(main().attributes('data-loading')).toBe('true')
+
+    await focus(B2, { ...FIXTURES.folded_only, sample_batch_id: 'b-2' })
+
+    expect(main().text()).toBe('Assign batch')
+    expect(main().attributes('data-loading')).toBe('false')
+    expect(main().attributes('disabled')).toBeUndefined()
+  })
+
   it("another pass's stage on another batch reads nothing", async () => {
     await mountControl(FIXTURES.folded_only)
     get.mockClear()
