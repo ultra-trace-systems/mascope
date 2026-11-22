@@ -22,10 +22,12 @@ import { useApp } from '@/stores'
  *   focus, on every `peak_assignment_reload`, as any pass ends, and every
  *   half minute while one runs - the read is a dozen queries whatever the
  *   batch's size, and a dropped socket then strands nothing.
- * - **A pass is followed by its process id.** The launch answers with the
- *   `assign_batch` process the pass reports under; its pending packets give
- *   the phase, and its end ends the wait. Another process's packets are
- *   another pass's: they refresh the status and end nothing here.
+ * - **A pass is followed by its process id**, one per batch. The launch
+ *   answers with the `assign_batch` process the pass reports under; its
+ *   pending packets give the phase, and its end ends the wait - or a status
+ *   read that finds it no longer running, where the end never arrived.
+ *   Another process's packets are another pass's: they refresh the status
+ *   and end nothing here.
  * - **Its end is one message at most.** The pass is claimed for this tab, so
  *   the server's own outcome is logged, not toasted. While the control is on
  *   screen a pass that ran to its end says so in place - the status line and
@@ -159,7 +161,34 @@ export const useBatchAssign = defineStore('browser.match.batchPeaks.assign', () 
     })
   }
 
-  /** Read the focused batch's status again. */
+  /**
+   * Read the focused batch's status and answer what it says, whatever reads
+   * start meanwhile. Only the newest read writes `status`: an older one may
+   * land after it. Throws where the read failed.
+   */
+  async function readFocused(batchId) {
+    const seq = ++readSeq
+    statusPending.value = true
+    try {
+      const data = (await readStatus(batchId)) ?? null
+      if (seq === readSeq) {
+        status.value = data
+        statusBatchId.value = batchId
+        statusError.value = null
+        settle(batchId, data)
+      }
+      return data
+    } catch (error) {
+      if (seq === readSeq) {
+        statusError.value = getApiErrorMessage(error, 'Could not read where the batch stands.')
+      }
+      throw error
+    } finally {
+      if (seq === readSeq) statusPending.value = false
+    }
+  }
+
+  /** Read the focused batch's status again; answers the newest status held. */
   async function loadStatus() {
     const batchId = app.data.batch.focusedId
     if (!batchId) {
@@ -167,20 +196,10 @@ export const useBatchAssign = defineStore('browser.match.batchPeaks.assign', () 
       statusBatchId.value = null
       return null
     }
-    const seq = ++readSeq
-    statusPending.value = true
     try {
-      const data = await readStatus(batchId)
-      // Only the newest read writes: an older one may land after it.
-      if (seq !== readSeq) return status.value
-      status.value = data ?? null
-      statusBatchId.value = batchId
-      statusError.value = null
-    } catch (error) {
-      if (seq !== readSeq) return status.value
-      statusError.value = getApiErrorMessage(error, 'Could not read where the batch stands.')
-    } finally {
-      if (seq === readSeq) statusPending.value = false
+      await readFocused(batchId)
+    } catch {
+      // Reported in `statusError`; the status held stays on screen.
     }
     return status.value
   }
@@ -206,13 +225,10 @@ export const useBatchAssign = defineStore('browser.match.batchPeaks.assign', () 
     }
   )
 
-  // A fold, a rebuild, a stage that rewrote members, an import: anything that
-  // reloads the ledger can move where the batch stands.
-  api.socket?.on?.('peak_assignment_reload', (payload) => {
-    const batchId = payload?.sample_batch_id
-    if (batchId && batchId !== app.data.batch.focusedId) return
-    loadStatus()
-  })
+  // A fold, a rebuild, a stage that rewrote members, an import, a pass's
+  // end: anything that reloads the ledger can move where the batch stands.
+  // The event names no batch (a `RecordEvent`), so every one is read again.
+  api.socket?.on?.('peak_assignment_reload', () => loadStatus())
 
   // --- Who may run it ----------------------------------------------------------
 
@@ -230,22 +246,57 @@ export const useBatchAssign = defineStore('browser.match.batchPeaks.assign', () 
     return null
   })
 
-  // --- The pass this tab started ---------------------------------------------
+  // --- The passes this tab started -------------------------------------------
 
-  const launching = ref(false)
-  const pendingProcessId = ref(null)
-  const pendingBatchId = ref(null)
-  const pendingRunId = ref(null)
-  const cancelling = ref(false)
-  // The phase the pass's newest packet named: ahead of the status read, which
-  // is refreshed only as stages that rewrite members end.
-  const progress = ref(null)
+  // By batch, one at most each, since a batch runs one pass at a time: a pass
+  // on one batch holds nothing back on another. Each is its process id, its
+  // run, what the ledger assigned as it started (to say what it changed), and
+  // the phase its newest packet named - ahead of the status read, which is
+  // refreshed only as stages that rewrite members end.
+  const passes = ref({})
+  // The launches still waiting for their 202, by batch.
+  const launchingIds = ref({})
+  // The runs asked to stop from here, by run id: also a pass this tab did not
+  // launch - yours by `started_by`, after a reload or from another tab. By
+  // run, so a stop asked of one pass is never the next one's.
+  const stopRuns = ref({})
   const launchError = ref(null)
   const launchRefused = ref(false)
-  // What the ledger assigned as the pass started, to say what it changed.
-  let assignedBefore = null
   // The change each observed pass made, by its run, for the status line.
   const deltas = ref({})
+
+  const without = (map, key) => {
+    const next = { ...map }
+    delete next[key]
+    return next
+  }
+
+  const focusedPass = computed(() => passes.value[app.data.batch.focusedId] ?? null)
+  const launching = computed(() => Boolean(launchingIds.value[app.data.batch.focusedId]))
+  const pendingProcessId = computed(() => focusedPass.value?.processId ?? null)
+  const progress = computed(() => focusedPass.value?.progress ?? null)
+
+  /** The run in flight on the focused batch was asked to stop from here. */
+  const cancelling = computed(() => {
+    const runId = current.value?.running?.batch_peak_run_id
+    return Boolean(runId && stopRuns.value[runId])
+  })
+
+  /**
+   * What the newest status read of a batch says of the pass this tab follows
+   * there. The route opens the pass's run before it answers, so a read made
+   * since that finds no pass running, or another run, means the pass ended -
+   * also where its end packet never arrived, as after a dropped socket - and
+   * it ends here. A read that started before the launch was answered is never
+   * the newest: the launch reads again.
+   */
+  function settle(batchId, data) {
+    const pass = passes.value[batchId]
+    if (!pass || !data) return
+    if (data.state !== 'running' || data.running?.batch_peak_run_id !== pass.runId) {
+      finishPass(batchId, null)
+    }
+  }
 
   // Controls on screen that report a pass's end in place.
   const onScreen = ref(0)
@@ -271,15 +322,6 @@ export const useBatchAssign = defineStore('browser.match.batchPeaks.assign', () 
     ).length
   }
 
-  function endPass() {
-    launching.value = false
-    pendingProcessId.value = null
-    pendingBatchId.value = null
-    pendingRunId.value = null
-    cancelling.value = false
-    progress.value = null
-  }
-
   /**
    * Start a pass on the focused batch.
    *
@@ -287,12 +329,13 @@ export const useBatchAssign = defineStore('browser.match.batchPeaks.assign', () 
    */
   async function assign(body = {}) {
     const batchId = app.data.batch.focusedId
-    if (!batchId || launching.value || pendingProcessId.value || blockedReason.value) return
+    if (!batchId || blockedReason.value) return
+    if (launchingIds.value[batchId] || passes.value[batchId]) return
     if (state.value === 'running') return
-    launching.value = true
+    launchingIds.value = { ...launchingIds.value, [batchId]: true }
     launchError.value = null
     launchRefused.value = false
-    assignedBefore = assignedCount(batchId)
+    const before = assignedCount(batchId)
     try {
       // No `use` handler: the process id rides on the `Process-ID` header,
       // which the handlers throw away with the rest of the response.
@@ -302,18 +345,24 @@ export const useBatchAssign = defineStore('browser.match.batchPeaks.assign', () 
       })
       const processId = response?.headers?.['process-id'] ?? null
       const run = response?.data?.data?.[0] ?? null
-      launching.value = false
+      launchingIds.value = without(launchingIds.value, batchId)
       if (processId) {
-        pendingProcessId.value = processId
-        pendingBatchId.value = batchId
-        pendingRunId.value = run?.batch_peak_run_id ?? null
+        passes.value = {
+          ...passes.value,
+          [batchId]: {
+            processId,
+            runId: run?.batch_peak_run_id ?? null,
+            before,
+            progress: null
+          }
+        }
         app.ui.notification.claim(processId)
       }
       // The route opened the run, so the status reads it running already;
       // with nothing to run it reads the batch as it was.
       await loadStatus()
     } catch (error) {
-      endPass()
+      launchingIds.value = without(launchingIds.value, batchId)
       launchRefused.value = isRefusedRequest(error) || error?.response?.status === 403
       launchError.value = getApiErrorMessage(error, 'Could not start the batch assignment.')
       // A 409 is someone else's pass: the status says whose.
@@ -325,7 +374,8 @@ export const useBatchAssign = defineStore('browser.match.batchPeaks.assign', () 
   async function cancel() {
     const batchId = app.data.batch.focusedId
     if (!batchId || cancelling.value) return
-    cancelling.value = true
+    const runId = current.value?.running?.batch_peak_run_id ?? null
+    stopRuns.value = { ...stopRuns.value, [runId]: true }
     try {
       await api.http.post(
         `/batch-peaks/batch/${batchId}/assign/cancel`,
@@ -333,7 +383,7 @@ export const useBatchAssign = defineStore('browser.match.batchPeaks.assign', () 
         { type: 'cancel_assign_batch', errors: 'inline' }
       )
     } catch (error) {
-      cancelling.value = false
+      stopRuns.value = without(stopRuns.value, runId)
       // A 404 is a pass that ended first: the status read says how.
       if (error?.response?.status !== 404) {
         launchRefused.value = isRefusedRequest(error) || error?.response?.status === 403
@@ -366,20 +416,30 @@ export const useBatchAssign = defineStore('browser.match.batchPeaks.assign', () 
     app.ui.notification.push({ type: 'batch_assignment', status, message })
   }
 
-  /** The pass this tab followed has ended: say how, once. */
-  async function finishPass(notification) {
-    const batchId = pendingBatchId.value
-    const runId = pendingRunId.value
-    const askedToStop = cancelling.value
-    const before = assignedBefore
-    assignedBefore = null
-    endPass()
+  /**
+   * The pass this tab followed on a batch has ended: say how, once.
+   *
+   * @param {string} batchId The batch it ran on.
+   * @param {object|null} notification Its end packet; null where a status read
+   *   found it ended instead.
+   */
+  async function finishPass(batchId, notification) {
+    const pass = passes.value[batchId]
+    if (!pass) return
+    const askedToStop = Boolean(stopRuns.value[pass.runId])
+    passes.value = without(passes.value, batchId)
     const focused = app.data.batch.focusedId === batchId
     const shown = onScreen.value > 0 && focused
-    // The status names the stage a pass stopped at; read where it can be.
+    // The ledger reloads after the pass reports, and may do so while the
+    // status is read, so it is watched from here.
+    const ledgerLoaded = focused && pass.before != null ? nextLedgerList(LEDGER_WAIT_MS) : null
+    // The status names the stage a pass stopped at. Read for what it says
+    // now: the `peak_assignment_reload` sent right after the end packet
+    // starts a newer read, which must not hand this one the status from
+    // before the end.
     let read
     try {
-      read = focused ? await loadStatus() : await readStatus(batchId)
+      read = focused ? await readFocused(batchId) : await readStatus(batchId)
     } catch {
       read = null
     }
@@ -396,16 +456,16 @@ export const useBatchAssign = defineStore('browser.match.batchPeaks.assign', () 
       )
       return
     }
-    // Ran to its end. The ledger reloads after the pass reports, so its
-    // change is counted once the reload lands, or on what it holds then.
+    // Ran to its end: its change is counted once the ledger's reload lands,
+    // or on what the ledger holds then.
     let delta = null
-    if (focused && before != null) {
-      await nextLedgerList(LEDGER_WAIT_MS)
+    if (ledgerLoaded) {
+      await ledgerLoaded
       const after = assignedCount(batchId)
-      if (after != null) delta = after - before
+      if (after != null) delta = after - pass.before
     }
-    const passRunId = read?.last_pass?.batch_peak_run_id ?? runId
-    if (delta != null && passRunId) deltas.value = { ...deltas.value, [passRunId]: delta }
+    // By the pass's own run: the 202 named it, and a status read may lag.
+    if (delta != null) deltas.value = { ...deltas.value, [pass.runId]: delta }
     if (shown) return
     const samples = read?.last_pass?.n_samples ?? read?.n_samples
     const parts = [
@@ -419,22 +479,31 @@ export const useBatchAssign = defineStore('browser.match.batchPeaks.assign', () 
     )
   }
 
-  // The pass's packets, by process id. Pending ones name its stage; the end
-  // is the only signal that it finished - the 202 says only that it started.
-  // Registered in the store's scope, so a pass started before the control
-  // was unmounted (a sample focused mid-pass) still ends here.
+  // The passes' packets, by process id. Pending ones name the stage; the end
+  // is the signal that a pass finished - the 202 says only that it started,
+  // and a status read stands in where the end never arrives. Registered in
+  // the store's scope, so a pass started before the control was unmounted (a
+  // sample focused mid-pass) still ends here.
   let otherStage = null
   app.ui.notification.on('assign_batch', (notification) => {
     const id = notification?.process_id
-    const mine = Boolean(pendingProcessId.value) && id === pendingProcessId.value
+    const batchId = id
+      ? Object.keys(passes.value).find((key) => passes.value[key].processId === id)
+      : undefined
     const data = notification?.data ?? {}
     if (notification?.status === 'pending') {
-      if (mine) {
-        progress.value = {
-          stage: data.stage ?? null,
-          phase: data.phase ?? null,
-          stage_index: data.stage_index ?? null,
-          n_stages: data.n_stages ?? null
+      if (batchId) {
+        passes.value = {
+          ...passes.value,
+          [batchId]: {
+            ...passes.value[batchId],
+            progress: {
+              stage: data.stage ?? null,
+              phase: data.phase ?? null,
+              stage_index: data.stage_index ?? null,
+              n_stages: data.n_stages ?? null
+            }
+          }
         }
         return
       }
@@ -448,8 +517,8 @@ export const useBatchAssign = defineStore('browser.match.batchPeaks.assign', () 
       }
       return
     }
-    if (mine) {
-      finishPass(notification)
+    if (batchId) {
+      finishPass(batchId, notification)
       return
     }
     if (!data.sample_batch_id || data.sample_batch_id === app.data.batch.focusedId) loadStatus()
@@ -462,7 +531,7 @@ export const useBatchAssign = defineStore('browser.match.batchPeaks.assign', () 
     // A batch runs one pass at a time, so while this tab's pass on the
     // focused batch has not ended, the one running is it - also before its
     // first stage, when the status names no process yet.
-    if (pendingProcessId.value && pendingBatchId.value === app.data.batch.focusedId) return true
+    if (focusedPass.value) return true
     const running = current.value?.running
     if (!running) return false
     const me = app.auth.user?.id
@@ -586,18 +655,21 @@ export const useBatchAssign = defineStore('browser.match.batchPeaks.assign', () 
   })
 
   /**
-   * Whether the ledger's empty state offers Assign batch: the live ledger is
-   * loaded, holds no batch peaks, and no pass is running. The bar hides its
-   * own copy then, so one button is on screen, as AssignmentRunBar does for a
+   * Whether the ledger's empty state offers Assign batch: the batch is not
+   * assigned (or its status not read yet), the live ledger is loaded and holds
+   * no batch peaks, and no pass of this tab's is out. The bar hides its own
+   * copy then, so one button is on screen, as AssignmentRunBar does for a
    * sample. One computed read by both, so the two cannot both show or both
-   * hide.
+   * hide. A pass that stopped keeps its Retry in the bar, also over a ledger
+   * its fold left empty.
    */
   const ledgerOffersAssign = computed(() => {
+    if (state.value !== 'none' && state.value !== null) return false
     const ledger = app.data.batchPeak
     if (!ledger || ledger.pending || ledger.error) return false
     if (app.data.batchPeakRun && app.data.batchPeakRun.viewingCurrent === false) return false
     if ((ledger.list ?? []).length) return false
-    return state.value !== 'running' && !pendingProcessId.value
+    return !focusedPass.value && !launching.value
   })
 
   // --- The ledger export -------------------------------------------------------
@@ -643,7 +715,7 @@ export const useBatchAssign = defineStore('browser.match.batchPeaks.assign', () 
 
   // --- The batch changes -------------------------------------------------------
 
-  /** What was shown, launched or refused belonged to the previous batch. */
+  /** What was shown or refused belonged to the previous batch. */
   function reset() {
     endExporting()
     launchError.value = null

@@ -56,7 +56,7 @@ const disabledReason = computed(() => {
 
 function runAction() {
   const act = action.value
-  if (!act || act.disabled) return
+  if (!act) return
   if (act.kind === 'cancel') assign.cancel()
   else assign.assign(act.body)
 }
