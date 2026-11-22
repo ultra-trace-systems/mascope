@@ -163,6 +163,12 @@ const FIXTURES = {
   })
 }
 
+// The status once the pass the tests launch (run-10, as `ack` answers) ran to
+// its end.
+FIXTURES.passed = statusOf('current', {
+  last_pass: { ...LAST_PASS, batch_peak_run_id: 'run-10', utc_completed: local(15, 50) }
+})
+
 const peakRow = (id, tier) => ({ batch_peak_id: id, consensus_tier: tier, line_owner_id: null })
 
 function makeApp({
@@ -276,10 +282,16 @@ const notify = (payload) =>
   )
 
 /** A 202 acknowledgement, with the process id on the header the route sets. */
-const ack = (processId = 'proc-1') => ({
+const ack = (processId = 'proc-1', runId = 'run-10') => ({
   headers: { 'process-id': processId },
-  data: { data: [{ batch_peak_run_id: 'run-10' }] }
+  data: { data: [{ batch_peak_run_id: runId }] }
 })
+
+/** A `peak_assignment_reload` as the backend sends it (`emit_record_reload`). */
+const reload = () =>
+  (socketHandlers.peak_assignment_reload ?? []).forEach((cb) =>
+    cb({ event_id: 'e-1', operation: 'reload', record_type: 'peak_assignment', record_id: null })
+  )
 
 const apiError = (status, message) => ({ response: { status, data: { error: message } } })
 
@@ -496,16 +508,41 @@ describe('BatchAssignControl pass', () => {
     expect(main().text()).toBe('Cancel')
   })
 
-  it('a second press posts nothing while the status still lags the launch', async () => {
-    await mountControl(FIXTURES.folded_only)
-    // The read after the launch still says what it said before.
+  it('a second press posts nothing while the read after the launch is out', async () => {
+    await mountControl(FIXTURES.none, { peaks: [] })
+    // The read after the launch has not landed: the status still says none.
+    get.mockReturnValue(new Promise(() => {}))
 
-    await assign.assign()
+    assign.assign()
     await flushPromises()
-    await assign.assign()
+    expect(assign.state).toBe('none')
+    // The empty ledger stops offering its copy as the launch is answered.
+    expect(assign.ledgerOffersAssign).toBe(false)
+    assign.assign()
     await flushPromises()
 
     expect(assignCalls()).toHaveLength(1)
+  })
+
+  it('a second press posts nothing while the launch is out', async () => {
+    await mountControl(FIXTURES.folded_only)
+    post.mockReturnValue(new Promise(() => {}))
+
+    assign.assign()
+    assign.assign()
+    await flushPromises()
+
+    expect(assignCalls()).toHaveLength(1)
+    expect(main().attributes('data-loading')).toBe('true')
+  })
+
+  it('posts nothing while the status reads a pass running', async () => {
+    await mountControl(FIXTURES.running_other)
+
+    await assign.assign()
+    await flushPromises()
+
+    expect(assignCalls()).toHaveLength(0)
   })
 
   it('an up-to-date batch re-assigns from the first stage; a behind one from where it is stale', async () => {
@@ -604,17 +641,93 @@ describe('BatchAssignControl pass', () => {
     expect(assign.launchRefused).toBe(true)
     expect(assign.pendingProcessId).toBeNull()
     expect(get).toHaveBeenCalled()
+
+    // Once that pass is over, a press launches again.
+    post.mockResolvedValue(ack())
+    await main().trigger('click')
+    await flushPromises()
+    expect(assignCalls()).toHaveLength(2)
   })
 
-  it('reads the status again on every peak_assignment_reload of the batch', async () => {
+  it('a second Cancel posts nothing while the first is out', async () => {
+    await mountControl(FIXTURES.running_mine)
+    post.mockReturnValue(new Promise(() => {}))
+
+    assign.cancel()
+    assign.cancel()
+    await flushPromises()
+
+    expect(post.mock.calls.filter(([url]) => url.endsWith('/assign/cancel'))).toHaveLength(1)
+  })
+
+  it('the empty ledger offers nothing while the launch is out', async () => {
+    await mountControl(FIXTURES.none, { peaks: [] })
+    expect(assign.ledgerOffersAssign).toBe(true)
+    post.mockReturnValue(new Promise(() => {}))
+
+    assign.assign()
+    await flushPromises()
+
+    expect(assign.ledgerOffersAssign).toBe(false)
+  })
+
+  it('an older read landing after a newer one changes nothing', async () => {
+    await mountControl(FIXTURES.folded_only)
+    let landOld
+    get
+      .mockReturnValueOnce(new Promise((resolve) => (landOld = resolve)))
+      .mockResolvedValueOnce(FIXTURES.current)
+
+    assign.loadStatus()
+    assign.loadStatus()
+    await flushPromises()
+    expect(line()).toBe('Assigned today 14:02 · up to date')
+    landOld(FIXTURES.folded_only)
+    await flushPromises()
+
+    expect(line()).toBe('Assigned today 14:02 · up to date')
+  })
+
+  it('an older read failing after a newer one landed reports nothing', async () => {
+    await mountControl(FIXTURES.folded_only)
+    let failOld
+    get
+      .mockReturnValueOnce(new Promise((resolve, reject) => (failOld = reject)))
+      .mockResolvedValueOnce(FIXTURES.current)
+
+    assign.loadStatus()
+    assign.loadStatus()
+    await flushPromises()
+    failOld(apiError(500, 'gone'))
+    await flushPromises()
+
+    expect(assign.statusError).toBeNull()
+  })
+
+  it('a read stays pending while a newer one is out', async () => {
+    await mountControl(FIXTURES.folded_only)
+    let landOld
+    get
+      .mockReturnValueOnce(new Promise((resolve) => (landOld = resolve)))
+      .mockReturnValueOnce(new Promise(() => {}))
+
+    assign.loadStatus()
+    assign.loadStatus()
+    landOld(FIXTURES.current)
+    await flushPromises()
+
+    expect(assign.statusPending).toBe(true)
+  })
+
+  it('reads the status again on every peak_assignment_reload', async () => {
     await mountControl(FIXTURES.folded_only)
     get.mockClear()
 
-    socketHandlers.peak_assignment_reload.forEach((cb) => cb({ sample_batch_id: 'b-1' }))
-    socketHandlers.peak_assignment_reload.forEach((cb) => cb({ sample_batch_id: 'b-other' }))
+    // The event names no batch: it is the socket's `RecordEvent`.
+    reload()
     await flushPromises()
-
     expect(get).toHaveBeenCalledTimes(1)
+    expect(get).toHaveBeenCalledWith('/batch-peaks/batch/b-1/assignment-status', expect.anything())
   })
 
   it('reads the status again every half minute while a pass runs, and stops once it ends', async () => {
@@ -714,7 +827,7 @@ describe('BatchAssignControl feedback', () => {
   }
 
   it('says nothing more while the control is on screen and the pass ran to its end', async () => {
-    await runPassTo(null, FIXTURES.current)
+    await runPassTo(null, FIXTURES.passed)
     // The pass assigned one more batch peak.
     app.data.batchPeak.list = [peakRow('bp-1', 'assigned'), peakRow('bp-2', 'assigned')]
 
@@ -776,5 +889,377 @@ describe('BatchAssignControl feedback', () => {
 
     expect(app.ui.notification.push).not.toHaveBeenCalled()
     expect(line()).toBe('Stopped at Read co-variation')
+  })
+})
+
+describe('BatchAssignControl end of a pass, as the backend reports it', () => {
+  // The route's `success_reload` / `error_reload` send the end packet and then,
+  // at once, a `peak_assignment_reload`, whose read starts while the end's is
+  // out.
+  async function launchFrom(start, options = {}) {
+    await mountControl(start, options)
+    get.mockResolvedValue(FIXTURES.running_mine)
+    await main().trigger('click')
+    await flushPromises()
+  }
+
+  // The end's read lands first; the reload's, a newer read, lands later, so
+  // it is held back until the end has been judged.
+  async function endWith(endStatus, packetStatus) {
+    let landReload
+    get
+      .mockResolvedValueOnce(endStatus)
+      .mockReturnValueOnce(new Promise((resolve) => (landReload = () => resolve(endStatus))))
+    notify({ status: packetStatus, process_id: 'proc-1', data: { sample_batch_id: 'b-1' } })
+    reload()
+    await flushPromises()
+    vi.advanceTimersByTime(LEDGER_WAIT_MS)
+    await flushPromises()
+    get.mockResolvedValue(endStatus)
+    landReload()
+    await flushPromises()
+  }
+
+  it('a re-assign shows its change in assigned rows on screen', async () => {
+    await launchFrom(FIXTURES.current)
+    app.data.batchPeak.list = [peakRow('bp-1', 'assigned'), peakRow('bp-2', 'assigned')]
+
+    await endWith(FIXTURES.passed, 'success')
+
+    expect(line()).toBe('Assigned today 15:50 · up to date')
+    expect(detail().text()).toBe('24 samples · +1 assigned')
+    expect(app.ui.notification.push).not.toHaveBeenCalled()
+  })
+
+  it('counts the ledger reload that lands while the status is read, without waiting', async () => {
+    await launchFrom(FIXTURES.current)
+    let landRead
+    get.mockReturnValueOnce(new Promise((resolve) => (landRead = () => resolve(FIXTURES.passed))))
+
+    notify({ status: 'success', process_id: 'proc-1', data: { sample_batch_id: 'b-1' } })
+    app.data.batchPeak.list = [peakRow('bp-1', 'assigned'), peakRow('bp-2', 'assigned')]
+    await flushPromises()
+    landRead()
+    await flushPromises()
+
+    // No LEDGER_WAIT_MS has passed: the reload it watched for has landed.
+    expect(detail().text()).toBe('24 samples · +1 assigned')
+  })
+
+  it('counts assigned batch peaks, not their isotope lines', async () => {
+    await launchFrom(FIXTURES.current)
+    app.data.batchPeak.list = [
+      peakRow('bp-1', 'assigned'),
+      peakRow('bp-2', 'assigned'),
+      { ...peakRow('bp-3', 'assigned'), line_owner_id: 'bp-2' }
+    ]
+
+    await endWith(FIXTURES.passed, 'success')
+
+    expect(detail().text()).toBe('24 samples · +1 assigned')
+  })
+
+  it('a cancelled pass off screen is a warning naming the stage', async () => {
+    await launchFrom(FIXTURES.folded_only)
+    wrapper.unmount()
+    wrapper = null
+
+    await endWith(FIXTURES.cancelled, 'warning')
+
+    expect(app.ui.notification.push.mock.calls).toEqual([
+      [
+        {
+          type: 'batch_assignment',
+          status: 'warning',
+          message: 'Stopped at Read co-variation: the stages before it were applied.'
+        }
+      ]
+    ])
+  })
+
+  it('a failed pass names its stage', async () => {
+    await launchFrom(FIXTURES.folded_only)
+
+    await endWith(FIXTURES.failed, 'error')
+
+    expect(app.ui.notification.push.mock.calls).toEqual([
+      [
+        {
+          type: 'batch_assignment',
+          status: 'warning',
+          message: 'Stopped at Detect series: the stages before it were applied.'
+        }
+      ]
+    ])
+  })
+
+  it('a missed end packet: the poll finds the pass ended, and Re-assign starts the next', async () => {
+    await launchFrom(FIXTURES.folded_only)
+
+    get.mockResolvedValue(FIXTURES.passed)
+    vi.advanceTimersByTime(POLL_MS)
+    await flushPromises()
+    vi.advanceTimersByTime(LEDGER_WAIT_MS)
+    await flushPromises()
+
+    expect(assign.pendingProcessId).toBeNull()
+    expect(main().text()).toBe('Re-assign')
+    post.mockClear()
+    await main().trigger('click')
+    await flushPromises()
+    expect(assignCalls()).toHaveLength(1)
+  })
+
+  it('a pass found ended by a read is reported as its end packet would be', async () => {
+    await launchFrom(FIXTURES.folded_only)
+    wrapper.unmount()
+    wrapper = null
+
+    get.mockResolvedValue(FIXTURES.failed)
+    vi.advanceTimersByTime(POLL_MS)
+    await flushPromises()
+    // The end packet, late: the pass is over here, so it only reads again.
+    notify({ status: 'error', process_id: 'proc-1', data: { sample_batch_id: 'b-1' } })
+    await flushPromises()
+
+    expect(app.ui.notification.push.mock.calls).toEqual([
+      [
+        {
+          type: 'batch_assignment',
+          status: 'warning',
+          message: 'Stopped at Detect series: the stages before it were applied.'
+        }
+      ]
+    ])
+  })
+
+  it('a read that finds another run in flight ends the pass this tab followed', async () => {
+    await launchFrom(FIXTURES.folded_only)
+
+    get.mockResolvedValue(
+      statusOf('running', { running: { ...RUNNING_OTHER, batch_peak_run_id: 'run-11' } })
+    )
+    vi.advanceTimersByTime(POLL_MS)
+    await flushPromises()
+
+    expect(assign.pendingProcessId).toBeNull()
+    expect(line()).toBe('Another user is assigning this batch')
+    expect(main().exists()).toBe(false)
+  })
+
+  it('a stop asked here and found by a read needs no toast either', async () => {
+    await launchFrom(FIXTURES.folded_only)
+    await main().trigger('click') // Cancel
+    await flushPromises()
+
+    get.mockResolvedValue(FIXTURES.cancelled)
+    vi.advanceTimersByTime(POLL_MS)
+    await flushPromises()
+
+    expect(app.ui.notification.push).not.toHaveBeenCalled()
+    expect(line()).toBe('Stopped at Read co-variation')
+    expect(main().text()).toBe('Retry')
+  })
+})
+
+describe('BatchAssignControl more than one batch', () => {
+  const B2 = { sample_batch_id: 'b-2', sample_batch_name: 'Batch 2' }
+
+  async function focus(batch, statusRead) {
+    get.mockResolvedValue(statusRead)
+    app.data.batch.focused = batch
+    app.data.batch.focusedId = batch.sample_batch_id
+    await flushPromises()
+  }
+
+  it('a pass on one batch holds nothing back on another', async () => {
+    await mountControl(FIXTURES.folded_only)
+    get.mockResolvedValue(FIXTURES.running_mine)
+    await main().trigger('click')
+    await flushPromises()
+
+    await focus(B2, { ...FIXTURES.folded_only, sample_batch_id: 'b-2' })
+    expect(main().text()).toBe('Assign batch')
+    expect(main().attributes('disabled')).toBeUndefined()
+    post.mockResolvedValue(ack('proc-2'))
+    get.mockResolvedValue({ ...FIXTURES.running_mine, sample_batch_id: 'b-2' })
+    await main().trigger('click')
+    await flushPromises()
+
+    expect(assignCalls().map(([url]) => url)).toEqual([
+      '/batch-peaks/batch/b-1/assign',
+      '/batch-peaks/batch/b-2/assign'
+    ])
+    expect(main().text()).toBe('Cancel')
+  })
+
+  it("the first batch's pass still ends with its toast while another is shown", async () => {
+    await mountControl(FIXTURES.folded_only)
+    get.mockResolvedValue(FIXTURES.running_mine)
+    await main().trigger('click')
+    await flushPromises()
+    await focus(B2, { ...FIXTURES.folded_only, sample_batch_id: 'b-2' })
+
+    get.mockResolvedValue(FIXTURES.failed)
+    notify({ status: 'error', process_id: 'proc-1', data: { sample_batch_id: 'b-1' } })
+    await flushPromises()
+
+    expect(get).toHaveBeenLastCalledWith(
+      '/batch-peaks/batch/b-1/assignment-status',
+      expect.anything()
+    )
+    // Read for the toast alone: the batch on screen keeps its own status.
+    expect(assign.status.sample_batch_id).toBe('b-2')
+    expect(line()).toBe('Known compositions only')
+    expect(app.ui.notification.push).toHaveBeenCalledWith({
+      type: 'batch_assignment',
+      status: 'warning',
+      message: 'Stopped at Detect series: the stages before it were applied.'
+    })
+  })
+
+  it("the first batch's pass that ran to its end toasts at once", async () => {
+    await mountControl(FIXTURES.folded_only)
+    get.mockResolvedValue(FIXTURES.running_mine)
+    await main().trigger('click')
+    await flushPromises()
+    await focus(B2, { ...FIXTURES.folded_only, sample_batch_id: 'b-2' })
+
+    get.mockResolvedValue(FIXTURES.passed)
+    notify({ status: 'success', process_id: 'proc-1', data: { sample_batch_id: 'b-1' } })
+    await flushPromises()
+
+    // Its ledger is not on screen, so nothing is counted and nothing waited for.
+    expect(app.ui.notification.push).toHaveBeenCalledWith({
+      type: 'batch_assignment',
+      status: 'success',
+      message: 'Assigned the batch: 24 samples.'
+    })
+  })
+
+  it("another pass's stage on another batch reads nothing", async () => {
+    await mountControl(FIXTURES.folded_only)
+    get.mockClear()
+
+    notify({
+      status: 'pending',
+      process_id: 'their-proc',
+      data: { sample_batch_id: 'b-2', stage: 'series', stage_index: 4, n_stages: 9 }
+    })
+    await flushPromises()
+
+    expect(get).not.toHaveBeenCalled()
+  })
+})
+
+describe('BatchAssignControl stopping', () => {
+  it('a stop asked elsewhere, or before a reload, reads Stopping… from the status', async () => {
+    await mountControl(
+      statusOf('running', {
+        running: {
+          ...FIXTURES.running_mine.running,
+          cancel_requested_utc: local(15, 45)
+        }
+      })
+    )
+
+    expect(main().text()).toBe('Stopping…')
+    expect(main().attributes('disabled')).toBeDefined()
+  })
+
+  it('cancelling a pass that is yours by who started it leaves the next pass cancellable', async () => {
+    // After a reload: the pass is yours by the status, not by a process id.
+    await mountControl(FIXTURES.running_mine)
+    await main().trigger('click') // Cancel
+    await flushPromises()
+    expect(main().text()).toBe('Stopping…')
+
+    get.mockResolvedValue(FIXTURES.cancelled)
+    vi.advanceTimersByTime(POLL_MS)
+    await flushPromises()
+    expect(main().text()).toBe('Retry')
+    expect(assign.cancelling).toBe(false)
+
+    // The retry is a run of its own.
+    post.mockResolvedValue(ack('proc-2', 'run-11'))
+    get.mockResolvedValue(
+      statusOf('running', {
+        running: { ...FIXTURES.running_mine.running, batch_peak_run_id: 'run-11' }
+      })
+    )
+    await main().trigger('click') // Retry
+    await flushPromises()
+    expect(main().text()).toBe('Cancel')
+    expect(main().attributes('disabled')).toBeUndefined()
+  })
+
+  it('a cancel the server refuses is reported, and Cancel is offered again', async () => {
+    await mountControl(FIXTURES.running_mine)
+    post.mockRejectedValue(apiError(500, 'Could not reach the pass.'))
+
+    await main().trigger('click')
+    await flushPromises()
+
+    expect(assign.launchError).toBe('Could not reach the pass.')
+    expect(main().text()).toBe('Cancel')
+    expect(main().attributes('disabled')).toBeUndefined()
+  })
+
+  it('a stop asked of one run is not the next run’s', async () => {
+    await mountControl(FIXTURES.running_mine)
+    await main().trigger('click') // Cancel
+    await flushPromises()
+
+    // Read only once the next pass, another run, is already running.
+    get.mockResolvedValue(
+      statusOf('running', {
+        running: { ...FIXTURES.running_mine.running, batch_peak_run_id: 'run-11' }
+      })
+    )
+    vi.advanceTimersByTime(POLL_MS)
+    await flushPromises()
+
+    expect(main().text()).toBe('Cancel')
+  })
+})
+
+describe('BatchAssignControl empty ledger', () => {
+  it.each(['failed_in_fold', 'cancelled'])(
+    '%s over an empty ledger keeps Retry in the bar',
+    async (key) => {
+      await mountControl(FIXTURES[key], { peaks: [] })
+
+      expect(assign.ledgerOffersAssign).toBe(false)
+      expect(main().text()).toBe('Retry')
+    }
+  )
+
+  it("an old run's empty snapshot offers nothing", async () => {
+    await mountControl(FIXTURES.none, { peaks: [] })
+    app.data.batchPeakRun.viewingCurrent = false
+    await flushPromises()
+
+    expect(assign.ledgerOffersAssign).toBe(false)
+    expect(main().text()).toBe('Assign batch')
+  })
+})
+
+describe('BatchAssignControl menu entries that need data', () => {
+  it('Run history needs a run, Export ledger a row and no export out', async () => {
+    await mountControl(FIXTURES.none, { peaks: [] })
+    app.data.batchPeakRun.list = []
+    await flushPromises()
+    expect(menuItem('run-history').attributes('disabled')).toBeDefined()
+    expect(menuItem('export-ledger').attributes('disabled')).toBeDefined()
+
+    app.data.batchPeakRun.list = [{ batch_peak_run_id: 'run-9', current: true }]
+    app.data.batchPeak.list = [peakRow('bp-1', 'assigned')]
+    await flushPromises()
+    expect(menuItem('run-history').attributes('disabled')).toBeUndefined()
+    expect(menuItem('export-ledger').attributes('disabled')).toBeUndefined()
+
+    await menuItem('export-ledger').trigger('click')
+    await flushPromises()
+    expect(menuItem('export-ledger').attributes('disabled')).toBeDefined()
   })
 })
