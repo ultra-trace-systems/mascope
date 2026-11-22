@@ -577,6 +577,14 @@ class RunContext:
         return self.reagent_peak_ids | self.artifact_peak_ids | self.held_peak_ids
 
     @property
+    def judged_mechanisms(self) -> list:
+        """The mechanisms the lists are read and the judging names its rows'
+        channels through (``sample_mechanisms.judged_mechanisms``)."""
+        return sample_mechanisms.judged_mechanisms(
+            self.searched_mechanisms, self.secondary_mechanisms, self.resolved_profile
+        )
+
+    @property
     def inherits(self) -> bool:
         """Whether the measurement model is a decoy's control's."""
         return self.path.measurement is Measurement.CONTROL and (
@@ -1218,9 +1226,8 @@ async def _propose_given(ctx: RunContext) -> None:
     spectrum's.
 
     A given reading through a secondary channel the sample did not open is
-    judged as an opened channel's, as a run of the sample that opened it
-    judges it (MAS-1039): the channel joins the ones the pass reads through
-    (``ResolvedProfile.given_channels``) before the lists are read.
+    judged as a run of the sample that opened it judges it (MAS-1039,
+    :attr:`RunContext.judged_mechanisms`).
     """
     ctx.seeds = {
         (annotation.formula, annotation.ionization_mechanism_id)
@@ -1234,7 +1241,7 @@ async def _propose_given(ctx: RunContext) -> None:
             ctx.sample,
             ctx.match_params.isotope_abundance_threshold,
             ctx.mechanism_ids,
-            ctx.searched_mechanisms,
+            ctx.judged_mechanisms,
             known_window=ctx.resolved_profile.context.known_window,
             resolution=ctx.resolution,
         )
@@ -1246,7 +1253,7 @@ def _open_given_channels(ctx: RunContext) -> None:
     """Read the given readings' unopened secondary channels as opened ones
     (``sample_mechanisms.given_secondary_channels``): the hold, the partner
     gate and the lists then read a reading through one as a run that opened
-    it reads it."""
+    it reads it (:attr:`RunContext.judged_mechanisms`)."""
     channels = sample_mechanisms.given_secondary_channels(
         [mechanism_id for _, mechanism_id in ctx.seeds],
         ctx.searched_mechanisms,
@@ -1256,9 +1263,6 @@ def _open_given_channels(ctx: RunContext) -> None:
     if not channels:
         return
     ctx.resolved_profile = replace(ctx.resolved_profile, given_channels=channels)
-    ctx.searched_mechanisms = sample_mechanisms._searched_mechanisms(
-        ctx.mechanisms, ctx.secondary_mechanisms, ctx.resolved_profile
-    )
     runtime.logger.info(
         f"Sample '{ctx.sample.sample_item_name}' reads batch decisions through "
         f"{', '.join(channels)}, which its spectrum did not open: judged as "
@@ -1498,12 +1502,7 @@ async def elect(ctx: RunContext) -> None:
             )
     if ctx.decided:
         _elect_batch_listed(ctx)
-    ctx.same_ion_families = stage_a_pass._record_same_ion_readings(
-        ctx.stage_a,
-        searched_mechanisms=ctx.searched_mechanisms,
-        resolved_profile=ctx.resolved_profile,
-        max_alternatives=config.max_alternatives,
-    )
+    ctx.same_ion_families = _record_stage_a_families(ctx)
     if ctx.batch.strips:
         _read_batch_strips(ctx)
     # A decoy arm reads no series of the batch's (:data:`BATCH_INPUTS`), and
@@ -1512,6 +1511,22 @@ async def elect(ctx: RunContext) -> None:
         batch_lines.stamp_series(
             ctx.stage_a + ctx.stage_b, {**ctx.batch.series, **ctx.series_by_peak}
         )
+
+
+def _record_stage_a_families(ctx: RunContext) -> int:
+    """Stage A's same-ion families, each row's read through the mechanisms
+    ``sample_mechanisms.family_mechanisms`` gives it."""
+    return sum(
+        stage_a_pass._record_same_ion_readings(
+            rows,
+            searched_mechanisms=mechanisms,
+            resolved_profile=ctx.resolved_profile,
+            max_alternatives=ctx.config.max_alternatives,
+        )
+        for rows, mechanisms in sample_mechanisms.family_mechanisms(
+            ctx.stage_a, ctx.searched_mechanisms, ctx.judged_mechanisms
+        )
+    )
 
 
 def _elect_batch_listed(ctx: RunContext) -> None:
@@ -1617,17 +1632,20 @@ def _read_as_a_run_reads(
         if ion.reference_identities:
             row["provenance"]["reference_identities"] = ion.reference_identities
         listed.append(row)
-    notations, mechanism_id_by_notation = (
-        sample_mechanisms._untargeted_ionization_notations(ctx.searched_mechanisms)
-    )
-    record_same_ion_readings(
-        searched,
-        mechanism_id_by_notation=mechanism_id_by_notation,
-        search_config=ctx.resolved_profile.search_config(notations),
-        heuristics_config=ctx.resolved_profile.heuristics_config(),
-        formula_formatter=to_custom_element_format,
-        max_alternatives=ctx.config.max_alternatives,
-    )
+    for family_rows, mechanisms in sample_mechanisms.family_mechanisms(
+        searched, ctx.searched_mechanisms, ctx.judged_mechanisms
+    ):
+        notations, mechanism_id_by_notation = (
+            sample_mechanisms._untargeted_ionization_notations(mechanisms)
+        )
+        record_same_ion_readings(
+            family_rows,
+            mechanism_id_by_notation=mechanism_id_by_notation,
+            search_config=ctx.resolved_profile.search_config(notations),
+            heuristics_config=ctx.resolved_profile.heuristics_config(),
+            formula_formatter=to_custom_element_format,
+            max_alternatives=ctx.config.max_alternatives,
+        )
     return listed, searched
 
 
@@ -1692,7 +1710,7 @@ def _judging_for(ctx: RunContext) -> judging_loop.Judging:
         ctx.stage_a + ctx.stage_b,
         model=ctx.model,
         fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
-        notation_by_id=sample_mechanisms._notation_by_id(ctx.searched_mechanisms),
+        notation_by_id=sample_mechanisms._notation_by_id(ctx.judged_mechanisms),
         mz_tolerance_ppm=ctx.scoring.mz_tolerance_ppm,
         abundance_floor=ctx.scoring.abundance_floor,
         max_alternatives=ctx.config.max_alternatives,

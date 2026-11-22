@@ -1501,6 +1501,95 @@ async def test_the_partner_gate_reads_a_channel_its_sample_did_not_open(
 
 
 @pytest.mark.asyncio
+async def test_a_listed_ion_through_a_channel_its_sample_did_not_open_reads_its_family():
+    # MAS-1039: where a list holds the ion itself through the ammonium
+    # channel, the reading is that list's row, as on the sample that opened
+    # the channel, and its same-ion family is read through its own channel
+    # beside the mode's: C9H17NO3 + H+ is the same ion, a rival through
+    # protonation.
+    known = pd.DataFrame(
+        {
+            "target_compound_formula": ["O3C9H14"],
+            "ionization_mechanism_id": ["im-nh4"],
+            "target_compound_id": ["tc-1"],
+        }
+    )
+    judged = {}
+    for opened in (True, False):
+        row, _ = await _measure_ammonium_reading(known=known, opened=opened)
+        assert row["ionization_mechanism_id"] == "im-nh4"
+        assert row["target_compound_id"] == "tc-1"
+        family = sorted(
+            (alternative["assigned_formula"], alternative["ionization_mechanism_id"])
+            for alternative in row["alternatives"] or []
+            if alternative.get("same_ion")
+        )
+        judged[opened] = (row["tier"], _reasons(row), family)
+    assert judged[False] == judged[True]
+    assert judged[False][2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("listed", [True, False], ids=["listed", "unlisted"])
+async def test_a_channel_its_sample_did_not_open_judges_only_its_own_readings(listed):
+    # MAS-1039: a reading through the ammonium channel the member's sample did
+    # not open is judged as an opened channel's, and nothing else is. Y, an
+    # N-bearing neutral through the mode's own protonation with its 13C line,
+    # reads the same tier, reasons and alternatives with or without that
+    # reading in the pass: it gains no ammonium rival (C8H12O2 + NH4+ is the
+    # same ion), which a run of its sample, showing no ammonium carrier, would
+    # never give it either.
+    # 158.1176 is C8H15NO2 + H+, 159.1209 its 13C line; 188.1281 is
+    # C9H14O3 + NH4+.
+    known = (
+        pd.DataFrame(
+            {
+                "target_compound_formula": ["O2NC8H15"],
+                "ionization_mechanism_id": ["im-h"],
+                "target_compound_id": ["tc-1"],
+            }
+        )
+        if listed
+        else pd.DataFrame()
+    )
+    y = ("bp-y", "C8H15NO2", "C8H16NO2+", "im-h", ["p4", "p5"])
+    x = ("bp-1", "C9H14O3", "C9H18NO3+", "im-nh4", ["p2"])
+    judged = {}
+    for readings in ([y], [y, x]):
+        measured, _ = await _measure(
+            _sample(polarity="+"),
+            _peaks(
+                [
+                    ("p0", 100.0, 1.0e6),
+                    ("p2", 188.1281, 1.0e5),
+                    ("p4", 158.1176, 1.0e5),
+                    ("p5", 159.1209, 9.0e3),
+                ]
+            ),
+            [_mechanism("[M+H]+", "im-h"), _mechanism("[M+CH4N2O+H]+", "im-urea")],
+            readings,
+            secondary=[_mechanism("[M+NH4]+", "im-nh4")],
+            known=known,
+        )
+        row = measured["p4"]
+        assert row["ionization_mechanism_id"] == "im-h"
+        judged[len(readings)] = (
+            row["tier"],
+            _reasons(row),
+            sorted(
+                str(alternative.get("ionization_mechanism_id"))
+                for alternative in row["alternatives"] or []
+            ),
+            "same_ion_settled" in row["provenance"].get("cross_channel", {}),
+        )
+        if len(readings) == 2:
+            assert measured["p2"]["tier"] == TIER_CANDIDATE
+    assert judged[2] == judged[1]
+    assert "im-nh4" not in judged[2][2]
+    assert judged[2][0] == TIER_ASSIGNED
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("listed", [True, False], ids=["listed", "unlisted"])
 async def test_a_list_naming_the_neutral_corroborates_a_measured_reading(listed):
     # Step 3.4 as a run of the sample reads it, and as the batch search reads
