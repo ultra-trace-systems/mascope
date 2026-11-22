@@ -770,11 +770,19 @@ isolated plan's phases. (MAS-973.)
   share instead of uploading; and under which service name the drop folder's
   uploads should appear, given that the connector's agent pairs as
   `file-agent` where a control program pairs as `instrument-agent`.
-- **How the agent knows what it has uploaded** (the decision MAS-964), for
-  phase C's restart catch-up: a local ledger; the `uploaded/` move, which fits
-  the drop folder but not the instrument PC, whose acquisition folder belongs
-  to the instrument software; or asking the server by the file's hash, which
-  the agent already sends with each upload (`sha256` in `api_post_file_tus`).
+- **How the agent knows what it has uploaded**, for phase C's restart
+  catch-up. *Decided on 2026-11-22 (MAS-964): a local record now, the server
+  asked by hash later.* The record is a state file in the agent's data
+  folder: each uploaded file's path, size and modification time, and the
+  queue the agent held when it stopped (MAS-968). It needs no hashing, and
+  the stop-time queue closes the costliest form of the gap, a restart of an
+  agent that holds a backlog (GitHub #1905). Asking the server by the file's
+  hash, which the agent already sends with each upload (`sha256` in
+  `api_post_file_tus`), follows as a check for what the record cannot know:
+  a reinstall, or a file another machine uploaded (MAS-1123). The
+  `uploaded/` move was set aside as the way of knowing: it fits the drop
+  folder but not the instrument PC, whose acquisition folder belongs to the
+  instrument software. It stays an option for the drop folder (MAS-966).
 - **The agent's trust store** (the decision MAS-969). A CA-bundle setting, or
   reading the operating system's store, would make the reverse form and
   TLS-inspecting proxies work without an environment variable. It also bears
