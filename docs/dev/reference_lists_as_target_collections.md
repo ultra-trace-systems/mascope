@@ -202,8 +202,9 @@ appears only as the **listed as** name on an assignment row
   reference rows that share its formula. The reverse bridge of this note,
   one compound at a time.
 - **CSV import and export of a collection** (GitHub #747, #748): a file
-  format for moving a collection between instances. A list file is already
-  such a format; section 6 says how the two relate.
+  format for moving a collection between instances. It is a CSV of its own
+  and not the list format (P5, decided 2026-11-22); section 6 says how the
+  two relate.
 - **The retirement path of the targeted workflow** (MAS-162, decided
   2026-10-27; MAS-83 confirmed the freeze on 2026-11-22):
   the fold of `peak_assignment_paradigm.md` section 5.4. A target match
@@ -492,13 +493,18 @@ Two changes, both small beside the UX review's rebuild (MAS-156):
 
 **Relation to CSV import and export (#747, #748).** A list file (schema 2,
 [peaklist.py](../../libraries/reference/src/mascope_reference/peaklist.py))
-is already a portable, licensed, versioned description of a compound list,
-and `mascope reference sync peaklist` loads one. With this design, "import a
-collection from a file" is: load the file as a source, then *Use as
-targets*. An export of a collection as a list file (formula, name, InChIKey,
-CAS, the citation in the header) would close the loop and make #747's format
-the list format rather than a second one. Not in this plan's phases; noted
-for the plan owner (P5).
+is a portable, licensed, versioned description of a published compound
+list, and `mascope reference sync peaklist` loads one as a source. It is
+not the format a person's collection travels in (P5, decided 2026-11-22):
+its species have no InChIKey or CAS key, a list needs a licence and a
+reference with a DOI or an ISBN, and a loaded list is read by Stage A with
+the authority of a published one, which a target library does not have. A
+collection is exported as a CSV of its own (formula, name, CAS, InChIKey,
+InChI, SMILES and a reference column, under the column names of the
+`custom` adapter) and imported straight into a collection through the path
+a pasted collection uses; the import writes no reference source and the
+collection it makes is not list-backed. Not in this plan's phases; a step
+of its own after phase 1 (MAS-451).
 
 ---
 
@@ -701,9 +707,15 @@ Each is a call, not a task; the phase named waits on it.
   "re-run nothing unasked" (MAS-107). Attaching runs matching, so an
   automatic attach would be an automatic match. Phase 3, MAS-463.
 - **P5. Export as a list file.** Should a collection export as a schema 2
-  list file, making the list format the answer to #747 and #748? *Leaning:*
-  yes, as a step of its own after phase 1, briefed against those two issues.
-  Not in these phases.
+  list file, making the list format the answer to #747 and #748? *Decided
+  on 2026-11-22 (MAS-451):* no. A collection travels as a CSV of its own,
+  which imports straight into a collection and carries formula, name,
+  InChIKey, CAS and reference; a user's library does not travel as a
+  reference list. The list format has no InChIKey or CAS key and demands a
+  licence and a DOI or ISBN, and a list carries authority the engine acts
+  on where a target library carries none. The leaning here was yes; no
+  export at all was also set aside. A step of its own after phase 1
+  (MAS-451, which closes #747 and #748). Not in these phases.
 - **P6. The seed and the demo.** Should the demo (`mascope demo`,
   `seed_reference_demo.py`) create a list-backed collection so the shipped
   experience shows one? *Leaning:* yes, one small list (the contaminants

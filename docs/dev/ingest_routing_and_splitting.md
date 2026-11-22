@@ -2827,6 +2827,15 @@ That is the scale the batch views were tuned for when #823 was closed. Even
 so, the recipe carries a per-file item ceiling and a minimum window, and
 preview reports the count before anything is written.
 
+**Where a window sits in time** (decided 2026-11-22, MAS-109; decision 17 of
+[`sample_filters_and_metadata.md`](sample_filters_and_metadata.md)). A
+window's sample is placed by the window's start, the file's start plus
+`t0`, in the finder, in a time scope and on a chart. Not by the file's
+start, which would give the 120 items one instant, and not by the window's
+mid-time. `sample_view` exposes `datetime_utc`, `t0` and `t1` apart today
+and `mascope_viz`'s `Scope` reads the file's start; both change with the
+cut (MAS-93). The rule moves no batch key.
+
 ### 6.5 Epochs are streams, windows are not
 
 A cut that changes the chemistry makes a new **stream**. Examples:
@@ -3822,6 +3831,8 @@ Polarity always comes from the file, never from the filename.
 - **Endpoints and UI:** preview and apply, the Raw files chromatogram, and
   bulk re-split.
 - **Epochs:** detected epochs, once phase 5 is on.
+- **Time:** a window's sample is placed by its start (6.4, MAS-109);
+  `sample_view` and `mascope_viz`'s scope follow.
 - **Gates:**
   - the exposure experiment of 2.5 splits into its five blocks;
   - long TOF files split into aligned windows within the item ceiling;

@@ -194,7 +194,7 @@ Not chosen, and why:
 | kind | Fields | Resolves to |
 |---|---|---|
 | `batch` | `batch` | that batch; the app today |
-| `window` | `batch`, `t0`, `t1` | that batch, narrowed to the samples whose mid-time falls in the window |
+| `window` | `batch`, `t0`, `t1` | that batch, narrowed to the samples whose start falls in the window: the file's start plus the sample's own `t0`, the one rule the finder and the charts share (decision 17 of [`sample_filters_and_metadata.md`](sample_filters_and_metadata.md), MAS-109) |
 | `range` | `start`, `end` | the acquisition batches of the instruments and modes whose day intersects the range, and the files in the range for coverage |
 | `now` | `last` (a duration) or `samples` (a count) | the batches of the trailing window, re-resolved as files arrive |
 
@@ -345,10 +345,11 @@ Three bridges keep the two modes one app:
    this species over time*, opening Explore with the compound preselected and
    the batch's instrument and modes as the scope.
 3. **From Explore to curation across a range.** *Make a batch of this range*
-   hands the scope to the finder. Whether a verdict may instead fan out from
-   Explore to every batch peak in the range, behind an approval, is open
-   question 5; until it is answered the first bridge is the curation path,
-   one batch at a time.
+   hands the scope to the finder. A verdict does not fan out from Explore to
+   the batch peaks of a range: open question 5 was answered "not yet" on
+   2026-11-22 (MAS-1038), to be revisited on evidence from use once Explore
+   and the dashboards are in people's hands. Until then the first bridge is
+   the curation path, one batch at a time.
 
 The user documentation's concepts page states the two modes and the invariant
 when the shell ships (MAS-712, MAS-713, MAS-1031).
@@ -429,7 +430,7 @@ follow.
 | 2 | Who may share a dashboard to a workspace, and who may edit a shared one? | As target collections: any editor of the workspace shares; the owner edits; a shared one is copied to edit. | MAS-1022: decided 2026-11-22 as recommended, decision 11 |
 | 3 | Does a dashboard pin the engine run, or follow? | Follows, with the run on its face; a report pins by being a snapshot. | MAS-1023: decided 2026-11-22 as recommended, decision 12 |
 | 4 | Does the finder's time histogram and the scope strip's coverage strip become one component? | Yes; the finder's histogram is the coverage strip with counts. | MAS-1024: decided 2026-11-22 as recommended, decision 13 |
-| 5 | May a verdict fan out from Explore to every batch peak of a range, behind an approval, or is a batch the only place to curate? | Not before the dashboards' pilot shows the need; until then a series point opens its sample's batch. The batches would still own the results. | MAS-1038, gates nothing yet |
+| 5 | May a verdict fan out from Explore to every batch peak of a range, behind an approval, or is a batch the only place to curate? | Not yet: a series point opens its sample's batch, or *Make a batch of this range*. Revisited on evidence from use: how often one species is corrected across a range, and over how many batches. Nothing is measured while Explore is unbuilt. The batches would still own the results. | MAS-1038: answered "not yet" on 2026-11-22; stays open, blocked by MAS-1033 |
 
 The time zone and the single-instrument scope, open in the first draft, are
 decisions 8 and 9: both followed from choices already made.
