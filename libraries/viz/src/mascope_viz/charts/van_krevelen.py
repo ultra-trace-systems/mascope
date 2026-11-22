@@ -82,10 +82,7 @@ def van_krevelen(
     if colour not in COLOURS:
         raise ValueError(f"colour={colour!r} is none of {', '.join(COLOURS)}")
     drawn_tiers = _check_tiers(tiers)
-    if isinstance(top_n, bool) or not isinstance(top_n, (int, np.integer)):
-        raise ValueError(f"top_n={top_n!r} is no count")
-    if top_n < 0:
-        raise ValueError(f"top_n={top_n!r} is negative")
+    top_n = common.check_count("top_n", top_n)
     frame = views.composition(
         store, "all", normalise=normalise, tz=tz, start=start, end=end
     )

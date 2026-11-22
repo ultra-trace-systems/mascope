@@ -51,6 +51,7 @@ def spectrogram(
     :param top_n: How many rows and columns the summary lists.
     :param max_rows: The m/z rows the grid may hold.
     """
+    top_n = common.check_count("top_n", top_n)
     grid = views.spectrogram(
         store,
         mz_width=mz_width,
