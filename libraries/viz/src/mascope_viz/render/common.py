@@ -361,7 +361,10 @@ class Grid:
 
     Two kinds of empty cell draw differently: a gap (the ``gap`` column is
     true: no samples there) in the theme's gap style, whatever its value;
-    a cell with samples and no value, or with no row at all, blank."""
+    a cell with samples and no value, or with no row at all, blank.
+
+    On a log axis a value that is not positive is no row or column of the
+    grid, as it is a gap in a series: its cells are not drawn."""
 
     xs: list[Any]
     ys: list[Any]
@@ -373,8 +376,8 @@ def grid(fig: Figure, panel: Panel) -> Grid:
     frame = fig.frame(panel)
     kinds = fig.kinds()
     x, y, value = (panel.encodings[name] for name in ("x", "y", "value"))
-    xs, x_at = _axis_values(frame[x], kinds[x])
-    ys, y_at = _axis_values(frame[y], kinds[y])
+    xs, x_at = _axis_values(frame[x], kinds[x], panel.axes.x.scale)
+    ys, y_at = _axis_values(frame[y], kinds[y], panel.axes.y.scale)
     values = np.full((len(ys), len(xs)), np.nan)
     present = (x_at >= 0) & (y_at >= 0)
     values[y_at[present], x_at[present]] = numbers(frame[value])[present]
@@ -395,9 +398,13 @@ def flags(column: pd.Series) -> np.ndarray:
     )
 
 
-def _axis_values(column: pd.Series, kind: str) -> tuple[list[Any], np.ndarray]:
+def _axis_values(
+    column: pd.Series, kind: str, scale: str
+) -> tuple[list[Any], np.ndarray]:
     if kind in ("time", "number"):
         distinct = column.dropna().drop_duplicates().sort_values()
+        if scale == "log":
+            distinct = distinct[distinct > 0]
     else:
         distinct = pd.Series(ordered(column), dtype=object)
     index = pd.Index(distinct.tolist())
@@ -405,19 +412,33 @@ def _axis_values(column: pd.Series, kind: str) -> tuple[list[Any], np.ndarray]:
     return distinct.tolist(), np.asarray(at)
 
 
-def edges(centres: np.ndarray) -> np.ndarray:
-    """The edges of cells centred on *centres* (ascending): halfway between
-    two centres, and half a step out at the ends, as plotly places a
-    heatmap's cells."""
+def edges(centres: np.ndarray, scale: str = "linear") -> np.ndarray:
+    """The edges of cells centred on *centres* (ascending), as plotly.js
+    places a heatmap's cells (``makeBoundArray``): halfway between two
+    centres, and half a step out at the ends. On a log axis (*centres* all
+    positive) halfway is in log space, the geometric mean of the two.
+
+    A lone cell is :func:`lone_width` wide, centred on its value."""
     centres = np.asarray(centres, dtype="float64")
+    if len(centres) == 1:
+        half = lone_width(centres[0], scale) / 2
+        return np.array([centres[0] - half, centres[0] + half])
+    if scale == "log":
+        return 10.0 ** edges(np.log10(centres))
     if len(centres) == 0:
         return np.array([0.0, 1.0])
-    if len(centres) == 1:
-        return np.array([centres[0] - 0.5, centres[0] + 0.5])
     middle = (centres[:-1] + centres[1:]) / 2
     first = centres[0] - (middle[0] - centres[0])
     last = centres[-1] + (centres[-1] - middle[-1])
     return np.concatenate([[first], middle, [last]])
+
+
+def lone_width(centre: float, scale: str) -> float:
+    """The width of a lone cell, which has no neighbour to share an edge
+    with: one unit on a linear axis, plotly.js's default, and on a log axis
+    its centre, so that it runs from half its centre to one and a half
+    times it, wholly on the axis."""
+    return float(centre) if scale == "log" else 1.0
 
 
 # --- strips ------------------------------------------------------------------------

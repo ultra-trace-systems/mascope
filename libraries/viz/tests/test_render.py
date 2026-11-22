@@ -1941,3 +1941,124 @@ def test_a_group_with_two_names_in_a_panel_takes_its_first():
     assert common.colours(fig, theme.LIGHT).name("a") == "One"
     names = [t.name for t in render.plotly(fig).data if t.showlegend]
     assert names == ["One", "Two"]
+
+
+# --- round 4: heatmap cells on a log axis, a lone cell ------------------------------
+
+
+LOG = {"scale": "log"}
+
+
+def _grid_figure(xs, ys, axes, gap_at=0) -> Figure:
+    """A heatmap of one cell per x and y, numbered, the *gap_at*-th a gap."""
+    cells = [(x, y) for y in ys for x in xs]
+    data = pd.DataFrame(
+        {
+            "x": [x for x, _ in cells],
+            "y": [y for _, y in cells],
+            "v": np.arange(1.0, len(cells) + 1),
+            "gap": [i == gap_at for i in range(len(cells))],
+        }
+    )
+    panel = Panel(
+        "heatmap",
+        axes=axes,
+        encodings={"x": "x", "y": "y", "value": "v", "gap": "gap"},
+    )
+    return Figure("h", "H", panels=[panel], data=data)
+
+
+def _mesh_edges(fig: Figure) -> list[tuple[list[float], list[float]]]:
+    """The x and y edges of each mesh matplotlib draws: the values', then
+    the gap cells'."""
+    ax = render.matplotlib(fig).axes[0]
+    meshes = [c for c in ax.collections if isinstance(c, QuadMesh)]
+    return [
+        (
+            np.asarray(m.get_coordinates()[0, :, 0]).tolist(),
+            np.asarray(m.get_coordinates()[:, 0, 1]).tolist(),
+        )
+        for m in meshes
+    ]
+
+
+def _heatmaps(fig: Figure) -> list:
+    return [t for t in render.plotly(fig).data if t.type == "heatmap"]
+
+
+def test_a_heatmap_on_a_log_axis_meets_its_cells_halfway_in_log_space():
+    """matplotlib draws the cells at the edges common.edges gives, which on
+    a log axis are the geometric means of two centres; plotly is given the
+    centres, which plotly.js places by the same rule (``makeBoundArray``).
+    Read off a plotly.js page, its edges for these centres are the same."""
+    fig = _grid_figure([1.0, 10.0, 100.0], [2.0, 200.0], {"x": LOG, "y": LOG})
+    x_edges = [10**-0.5, 10**0.5, 10**1.5, 10**2.5]
+    y_edges = [0.2, 20.0, 2000.0]
+    assert common.edges(np.array([1.0, 10.0, 100.0]), "log") == pytest.approx(x_edges)
+    meshes = _mesh_edges(fig)
+    assert len(meshes) == 2
+    for xs, ys in meshes:
+        assert xs == pytest.approx(x_edges)
+        assert ys == pytest.approx(y_edges)
+    traces = _heatmaps(fig)
+    assert len(traces) == 2
+    for trace in traces:
+        assert trace.x == (1.0, 10.0, 100.0) and trace.y == (2.0, 200.0)
+    layout = render.plotly(fig).layout
+    assert layout.xaxis.type == "log" and layout.yaxis.type == "log"
+    # On a linear axis the edges stay halfway in linear space.
+    linear = _grid_figure([1.0, 10.0, 100.0], [2.0, 200.0], {})
+    assert _mesh_edges(linear)[0][0] == pytest.approx([-3.5, 5.5, 55.0, 145.0])
+
+
+def test_a_heatmap_on_a_log_axis_has_no_cells_where_a_value_is_not_positive():
+    fig = _grid_figure([-1.0, 0.0, 1.0, 10.0], [0.0, 5.0, 50.0], {"x": LOG, "y": LOG})
+    cells = common.grid(fig, fig.panels[0])
+    assert cells.xs == [1.0, 10.0] and cells.ys == [5.0, 50.0]
+    ((xs, ys),) = _mesh_edges(fig)
+    assert len(xs) == 3 and len(ys) == 3
+    (trace,) = _heatmaps(fig)
+    assert trace.x == (1.0, 10.0) and trace.y == (5.0, 50.0)
+    # On a linear axis they are cells like any other.
+    linear = _grid_figure([-1.0, 0.0, 1.0, 10.0], [0.0, 5.0, 50.0], {})
+    cells = common.grid(linear, linear.panels[0])
+    assert cells.xs == [-1.0, 0.0, 1.0, 10.0] and cells.ys == [0.0, 5.0, 50.0]
+
+
+def test_a_lone_heatmap_cell_is_as_wide_on_both_backends():
+    """A lone cell has no neighbour to meet: it is one unit wide on a linear
+    axis, a day on a time axis and as wide as its value on a log axis,
+    where plotly.js would make it one unit wide too and put a cell at 0.5 or
+    under off the axis."""
+    fig = _grid_figure([0.2], [3.0, 4.0], {"x": LOG})
+    for xs, ys in _mesh_edges(fig):
+        assert xs == pytest.approx([0.1, 0.3])
+        assert ys == pytest.approx([2.5, 3.5, 4.5])
+    for trace in _heatmaps(fig):
+        assert trace.x is None and trace.x0 == 0.2 and trace.dx == pytest.approx(0.2)
+        assert trace.y == (3.0, 4.0) and trace.y0 is None
+    # Both axes lone: a log y and a linear x.
+    fig = _grid_figure([7.0], [40.0], {"y": LOG}, gap_at=None)
+    ((xs, ys),) = _mesh_edges(fig)
+    assert xs == pytest.approx([6.5, 7.5]) and ys == pytest.approx([20.0, 60.0])
+    (trace,) = _heatmaps(fig)
+    assert (trace.x, trace.x0, trace.dx) == (None, 7.0, 1.0)
+    assert (trace.y, trace.y0, trace.dy) == (None, 40.0, 40.0)
+    # A lone category stays a category.
+    fig = _grid_figure([1.0, 2.0], ["a"], {}, gap_at=None)
+    (trace,) = _heatmaps(fig)
+    assert trace.y == ("a",) and trace.y0 is None and trace.dy is None
+
+
+def test_a_lone_heatmap_cell_on_a_time_axis_is_a_day_wide_on_both_backends():
+    moment = pd.Timestamp("2026-07-01T00:00", tz="UTC")
+    fig = _grid_figure([moment], [3.0, 4.0], {})
+    day = pd.Timedelta(days=1)
+    for xs, _ in _mesh_edges(fig):
+        # matplotlib's date numbers: days since 1970.
+        assert xs == pytest.approx(
+            [(moment - day / 2).value / day.value, (moment + day / 2).value / day.value]
+        )
+    for trace in _heatmaps(fig):
+        assert trace.x is None and trace.x0 == "2026-07-01T00:00:00"
+        assert trace.dx == day / pd.Timedelta(milliseconds=1)
