@@ -446,10 +446,15 @@ def test_the_mirror_draws_the_other_period_below(month):
     )
     crossing = sides[sides["period"] != sides["other"]]
     assert len(crossing) and crossing["period"].all()
-    # On plotly, a stick's hover says which period it is
-    names = {t.name: t.hoverinfo for t in render.plotly(wide).data if t.mode == "lines"}
+    # On plotly, a stick's hover says which period it is, its name uncut:
+    # both periods of this pair start "2026-06-02 ..."
+    names = {
+        t.name: (t.hoverinfo, t.hoverlabel.namelength)
+        for t in render.plotly(wide).data
+        if t.mode == "lines"
+    }
     assert set(names) >= set(mirrored["side_name"])
-    assert {names[name] for name in mirrored["side_name"]} == {"x+y+text+name"}
+    assert {names[name] for name in mirrored["side_name"]} == {("x+y+text+name", -1)}
     assert fig.panels[0].options["colours"] == {
         "period": "series.1",
         "other": "series.2",

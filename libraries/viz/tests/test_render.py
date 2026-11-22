@@ -2375,6 +2375,12 @@ def test_a_grouped_sticks_hover_keeps_its_groups_name():
     lines = [t for t in plotted.data if t.mode == "lines"]
     assert sorted(t.name for t in lines) == ["Day", "Night"]
     assert all(t.hoverinfo == "x+y+text+name" for t in lines)
+    # plotly cuts a name in the hover to 15 characters unless told not to:
+    # two periods of one day would read the same
+    assert all(t.hoverlabel.namelength == -1 for t in lines)
+    # Sticks without a group have no name to show and keep plotly's default
+    plain = [t for t in render.plotly(fig).data if t.mode == "lines"]
+    assert all(t.hoverlabel.namelength is None for t in plain)
 
 
 def test_a_hover_text_is_drawn_as_written():
