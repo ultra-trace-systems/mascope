@@ -205,7 +205,7 @@ appears only as the **listed as** name on an assignment row
   format for moving a collection between instances. A list file is already
   such a format; section 6 says how the two relate.
 - **The retirement path of the targeted workflow** (MAS-162, decided
-  2026-10-27; MAS-83 is the remaining call on the legacy path's upkeep):
+  2026-10-27; MAS-83 confirmed the freeze on 2026-11-22):
   the fold of `peak_assignment_paradigm.md` section 5.4. A target match
   becomes a Stage A ledger row, the `match_*` aggregates stop being
   written, the Targets mode and the Match tab retire, and the targeted view
