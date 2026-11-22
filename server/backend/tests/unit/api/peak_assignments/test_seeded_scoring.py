@@ -2,7 +2,7 @@
 
 Every seed list is scored at one measurement model: the one its caller hands
 it - a run's, a decoy's control's - or, outside a run, the one the sample's
-latest run recorded (``service.recorded_model``). It never fits one of its own:
+latest run recorded (``model_readers.recorded_model``). It never fits one of its own:
 a pin or the inspector's shortlist is a handful of formulas, mostly wrong ones,
 and a bright ion that matches eight lines alone measures only itself. So one
 ion in one sample reads alike alone and among many seeds. The matcher, the
@@ -16,7 +16,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mascope_backend.api.new.peak_assignments import seeded_scoring, service
+from mascope_backend.api.new.peak_assignments import (
+    judging_loop,
+    model_readers,
+    sample_inputs,
+    seeded_scoring,
+)
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import (
     ReagentOffset,
@@ -49,7 +54,7 @@ def _no_resolution(monkeypatch):
     async def none(sample):
         return None
 
-    monkeypatch.setattr(service, "_resolution_of", none)
+    monkeypatch.setattr(sample_inputs, "_resolution_of", none)
 
 
 MECH = "mech-h"
@@ -134,7 +139,7 @@ def recorded(monkeypatch):
         state.configs.append(config)
         return state.model
 
-    monkeypatch.setattr(service, "recorded_model", recorded_model)
+    monkeypatch.setattr(model_readers, "recorded_model", recorded_model)
     return state
 
 
@@ -190,7 +195,7 @@ def stubbed(monkeypatch, recorded):
     monkeypatch.setattr(seeded_scoring, "compute_match_isotopes", match)
     monkeypatch.setattr(seeded_scoring, "sample_label_purity", setup_purity)
     monkeypatch.setattr(seeded_scoring, "build_seeded_isotopes_df", build)
-    monkeypatch.setattr(seeded_scoring, "get_instrument_type", lambda name: "orbi")
+    monkeypatch.setattr(sample_inputs, "get_instrument_type", lambda name: "orbi")
 
     return frames
 
@@ -319,12 +324,12 @@ async def test_a_handed_model_is_used_and_none_is_read(stubbed, recorded):
 
 async def test_a_runs_seeded_re_score_is_scored_at_the_runs_model(stubbed, recorded):
     """The untargeted stage's commits are measured again through this chain
-    (``service._seeded_rescore``) at the run's model, the one Stage A was
+    (``judging_loop._seeded_rescore``) at the run's model, the one Stage A was
     scored at and the search ranked at, and none is read or fitted."""
     stubbed.target_error_ppm = AXIS_PPM
     model = _model(AXIS_PPM)
 
-    fits, frame = await service._seeded_rescore(
+    fits, frame = await judging_loop._seeded_rescore(
         SAMPLE, OrbiMatchParams(), {TARGET}, model=model
     )
 
@@ -336,16 +341,16 @@ async def test_a_runs_seeded_re_score_is_scored_at_the_runs_model(stubbed, recor
 
 async def test_the_re_score_s_frame_scores_again_as_a_fresh_pass_would(stubbed):
     """The run scores its rows again at a refitted model off the frame the
-    re-score kept (``service.fits_at``): the same lines, the same gate, at the
+    re-score kept (``judging_loop.fits_at``): the same lines, the same gate, at the
     new centre and width, without another match pass."""
     stubbed.target_error_ppm = AXIS_PPM
     seeds = {TARGET} | set(sorted(OTHERS)[:3])
-    _fits, frame = await service._seeded_rescore(
+    _fits, frame = await judging_loop._seeded_rescore(
         SAMPLE, OrbiMatchParams(), seeds, model=STAND_IN
     )
     passes = len(stubbed)
 
-    again = service.fits_at(_model(AXIS_PPM), None, frame)
+    again = judging_loop.fits_at(_model(AXIS_PPM), None, frame)
 
     assert len(stubbed) == passes
     for seed in seeds:
@@ -374,12 +379,12 @@ async def test_a_decoy_s_re_score_is_scored_at_its_control_s_model(stubbed):
     )
     stubbed.others_centre_ppm = 0.0
     stubbed.target_error_ppm = 0.0
-    on_axis, _ = await service._seeded_rescore(
+    on_axis, _ = await judging_loop._seeded_rescore(
         SAMPLE, OrbiMatchParams(), seeds, model=control
     )
     stubbed.target_error_ppm = 3.0
     stubbed.others_centre_ppm = 3.0
-    decoy, _ = await service._seeded_rescore(
+    decoy, _ = await judging_loop._seeded_rescore(
         SAMPLE, OrbiMatchParams(), seeds, model=control
     )
 
@@ -388,7 +393,7 @@ async def test_a_decoy_s_re_score_is_scored_at_its_control_s_model(stubbed):
 
 
 async def test_a_re_score_with_nothing_to_score_hands_on_nothing(stubbed, monkeypatch):
-    no_seeds = await service._seeded_rescore(
+    no_seeds = await judging_loop._seeded_rescore(
         SAMPLE, OrbiMatchParams(), set(), model=STAND_IN
     )
 
@@ -396,7 +401,7 @@ async def test_a_re_score_with_nothing_to_score_hands_on_nothing(stubbed, monkey
         return pd.DataFrame()
 
     monkeypatch.setattr(seeded_scoring, "compute_match_isotopes", nothing)
-    no_lines = await service._seeded_rescore(
+    no_lines = await judging_loop._seeded_rescore(
         SimpleNamespace(**vars(SAMPLE), sample_item_name="sample"),
         OrbiMatchParams(),
         {TARGET},
@@ -445,7 +450,7 @@ async def test_a_seed_list_outside_a_run_is_read_at_its_latest_runs_tolerance(
 async def test_a_runs_seeded_re_score_is_handed_the_runs_tolerance(stubbed, recorded):
     """The search's commits are measured again at the tolerance Stage A fitted,
     the run's model's, not at what an earlier run recorded."""
-    fits, _frame = await service._seeded_rescore(
+    fits, _frame = await judging_loop._seeded_rescore(
         SAMPLE, OrbiMatchParams(), {TARGET}, model=_model(tolerance=CENTRED_LOW)
     )
 
@@ -469,7 +474,7 @@ async def test_the_seeds_lines_are_resolved_at_the_files_resolution(
     async def resolution(sample):
         return _low_resolution
 
-    monkeypatch.setattr(service, "_resolution_of", resolution)
+    monkeypatch.setattr(sample_inputs, "_resolution_of", resolution)
     await score_seeds(SAMPLE, {TARGET}, OrbiMatchParams())
 
     assert len(stubbed[-1]) < fine
@@ -484,8 +489,8 @@ async def test_a_runs_re_score_is_handed_the_runs_resolution(stubbed, monkeypatc
     async def unread(sample):
         raise AssertionError("the run's re-score read the resolution again")
 
-    monkeypatch.setattr(service, "_resolution_of", unread)
-    await service._seeded_rescore(
+    monkeypatch.setattr(sample_inputs, "_resolution_of", unread)
+    await judging_loop._seeded_rescore(
         SAMPLE,
         OrbiMatchParams(),
         {TARGET},

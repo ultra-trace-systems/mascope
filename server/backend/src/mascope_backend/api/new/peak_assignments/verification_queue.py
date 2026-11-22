@@ -31,7 +31,7 @@ of the data, and the calibrated number beside it would be its anchor. Nor the
 evidence: it is ``p_correct``'s input, and the tier the ledger shows says
 enough. Each entry says why it is there instead.
 
-Pure: no database, no I/O. ``service.get_verification_queue`` gathers the
+Pure: no database, no I/O. ``verification.get_verification_queue`` gathers the
 rows, the live verdicts and the label pool and calls :func:`rank_queue`.
 """
 

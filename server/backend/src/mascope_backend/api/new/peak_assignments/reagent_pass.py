@@ -922,7 +922,7 @@ def claim_fragments(
     """Claim the peaks that are fragments of an analyte the stages committed.
 
     Read at the one point the reading changes settle, in step 1 of the
-    judging round (``service.Judging.judge``, ``service.judge_commits``): on
+    judging round (``judging_loop.Judging.judge``, ``judging_loop.judge_commits``): on
     both stages' committed rows as the partner gate settled them, under the
     ceilings the mass gate measured on them, and before any cap. A claim is
     not kept on that ledger: the claimed rows leave it, the mass gate

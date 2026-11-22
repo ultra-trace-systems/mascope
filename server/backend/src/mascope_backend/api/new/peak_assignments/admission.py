@@ -203,3 +203,11 @@ async def assignment_claim(kind: str, resource_id: str) -> AsyncIterator[bool]:
                 )
             )
         await asyncio.shield(session.close())
+
+
+# Samples with an assignment in flight in this worker. A run is CPU-bound - Stage B
+# enumerates compositions for every unexplained peak in a worker thread -
+# and writes a full ledger, and nothing about a second concurrent run of the same
+# sample is useful: it produces a duplicate run the user did not ask for while
+# competing for the same pool. Mirrors the batch guard in `batch.py`.
+_sample_assignments_in_flight: set[str] = set()

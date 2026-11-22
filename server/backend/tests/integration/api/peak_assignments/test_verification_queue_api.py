@@ -20,7 +20,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
 
-from mascope_backend.api.new.peak_assignments import service
+from mascope_backend.api.new.peak_assignments import recalibration
 from mascope_backend.api.new.peak_assignments.calibration_store import (
     load_calibration,
     save_calibration,
@@ -37,10 +37,7 @@ from mascope_backend.db import (
     Workspace,
 )
 from mascope_backend.db.id import gen_id
-from mascope_tools.composition.calibration import (
-    EVIDENCE_LEVEL_WEIGHTS,
-    Calibration,
-)
+from mascope_tools.composition.calibration import EVIDENCE_LEVEL_WEIGHTS, Calibration
 
 
 BANDS = {"assigned": 0.75, "candidate": 0.45}
@@ -526,7 +523,7 @@ async def test_a_refit_weighs_the_labels_and_reports_the_weights(
             )
         await session.commit()
 
-    live_label_rows = service._live_label_rows
+    live_label_rows = recalibration._live_label_rows
 
     async def this_tests_labels(session):
         rows = await live_label_rows(session)
@@ -535,13 +532,15 @@ async def test_a_refit_weighs_the_labels_and_reports_the_weights(
             key=lambda row: row.evidence,
         )
 
-    monkeypatch.setattr(service, "_live_label_rows", this_tests_labels)
+    monkeypatch.setattr(recalibration, "_live_label_rows", this_tests_labels)
     saved = AsyncMock()
-    monkeypatch.setattr(service, "save_calibration", saved)
+    monkeypatch.setattr(recalibration, "save_calibration", saved)
     monkeypatch.setattr(
-        service, "load_calibration", AsyncMock(return_value=Calibration(a=1.0, b=0.0))
+        recalibration,
+        "load_calibration",
+        AsyncMock(return_value=Calibration(a=1.0, b=0.0)),
     )
-    result = await service.recalibrate_instrument("tof")
+    result = await recalibration.recalibrate_instrument("tof")
 
     assert result["n_pos"] + result["n_neg"] == 60, result["message"]
     assert result["recalibrated"] is True, result["message"]

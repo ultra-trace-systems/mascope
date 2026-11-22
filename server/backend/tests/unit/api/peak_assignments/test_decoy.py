@@ -20,7 +20,6 @@ from pydantic import ValidationError
 from test_engine import TestScoreIonsByFit  # same directory, as test_orchestrator
 from test_mass_gate import PRECISION, _anchors, _row
 from test_orchestrator import (
-    _MOD,
     _PIPE,
     TestTheLaddersAreClimbedThroughTheOpenedChannels,
     TestTheListsAreReadThroughTheOpenedChannels,
@@ -29,9 +28,11 @@ from test_orchestrator import (
     _Recorder,
     _run,
     _stage_a_rows,
+    _stand_in,
     _start,
 )
 
+from mascope_backend.api.new.peak_assignments import sample_mechanisms
 from mascope_backend.api.new.peak_assignments.config import (
     PeakAssignmentConfig,
     PeakAssignmentDecoy,
@@ -54,9 +55,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     pattern_scoring_for,
     score_ions_by_fit,
 )
-from mascope_backend.api.new.peak_assignments.envelope_fit import (
-    inherited_envelope_fit,
-)
+from mascope_backend.api.new.peak_assignments.envelope_fit import inherited_envelope_fit
 from mascope_backend.api.new.peak_assignments.mass_gate import (
     apply_mass_gate,
     measure_mass_gate,
@@ -66,7 +65,7 @@ from mascope_backend.api.new.peak_assignments.profiles import (
     NamedContext,
     resolve_profile,
 )
-from mascope_backend.api.new.peak_assignments.service import load_sample_peaks
+from mascope_backend.api.new.peak_assignments.sample_inputs import load_sample_peaks
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
     TIER_BELOW_ASSIGNABILITY,
@@ -169,8 +168,8 @@ class TestTheShiftedAxis:
             filename="orbi-sample.raw", polarity="+", t0=None, t1=None
         )
         with (
-            patch(f"{_MOD}.extract_peaks", return_value=peak_data),
-            patch(f"{_MOD}.get_instrument_type", return_value="orbi"),
+            _stand_in("extract_peaks", return_value=peak_data),
+            _stand_in("get_instrument_type", return_value="orbi"),
         ):
             stored = load_sample_peaks(sample)
             with shifted_mz_axis(ppm=-9.0):
@@ -623,17 +622,15 @@ class TestADecoyRun:
 
         mocks["load_peaks"].side_effect = reads_peaks
         mocks["matcher"].side_effect = matches
-        mocks["plan"] = patch(
-            f"{_MOD}.plan_sample_decoy", new_callable=AsyncMock, return_value=plan
+        mocks["plan"] = _stand_in(
+            "plan_sample_decoy", new_callable=AsyncMock, return_value=plan
         ).start()
         mocks["fold"] = patch(
             "mascope_backend.api.new.peak_assignments.batch_peaks_controller."
             "fold_sample_into_batch_peaks",
             new_callable=AsyncMock,
         ).start()
-        mocks["gate"] = patch(
-            f"{_MOD}.measure_mass_gate", wraps=measure_mass_gate
-        ).start()
+        mocks["gate"] = _stand_in("measure_mass_gate", wraps=measure_mass_gate).start()
         return mocks
 
     @pytest.mark.asyncio
@@ -715,11 +712,11 @@ class TestADecoyRun:
         # The decoy reads its lists as the control does, so a secondary
         # channel's winner a list names is corroborated in both (3.4), by the
         # second-channel cap of the judging rounds.
-        from mascope_backend.api.new.peak_assignments import service
+        from mascope_backend.api.new.peak_assignments import judging_loop
 
         self._start(_plan(envelope=inherited_envelope_fit(_curve_record())))
-        judging = patch(
-            f"{_MOD}.cap_second_channel", wraps=service.cap_second_channel
+        judging = _stand_in(
+            "cap_second_channel", wraps=judging_loop.cap_second_channel
         ).start()
 
         await _run(PeakAssignmentConfig(decoy=SHIFT))
@@ -734,9 +731,7 @@ class TestADecoyRun:
         record = _curve_record()
         plan = _plan(envelope=inherited_envelope_fit(record))
         mocks = self._start(plan)
-        fitted = patch(
-            f"{_MOD}.fit_run_envelope_tolerance", new_callable=AsyncMock
-        ).start()
+        fitted = _stand_in("fit_run_envelope_tolerance", new_callable=AsyncMock).start()
 
         await _run(PeakAssignmentConfig(decoy=SHIFT))
 
@@ -793,8 +788,8 @@ class TestADecoyRun:
         # The batch ledger is the control's chemistry: a homologous series it
         # holds is no observation of a reading on a shifted axis.
         self._start(_plan())
-        series = patch(
-            f"{_MOD}.batch_series_by_peak",
+        series = _stand_in(
+            "batch_series_by_peak",
             new_callable=AsyncMock,
             return_value={
                 "p1": {
@@ -830,7 +825,6 @@ class TestADecoyRun:
 
     @pytest.mark.asyncio
     async def test_the_adduct_arm_opens_no_secondary_channel(self):
-        from mascope_backend.api.new.peak_assignments import service
 
         sodium = _mechanism("im-na", "[M+Na]+")
         plan = _plan(SWAP, mechanisms=(sodium,), swapped={"[M+H]+": "[M+Na]+"})
@@ -840,9 +834,9 @@ class TestADecoyRun:
         async def secondary(sample, resolved_profile, peaks_df):
             return resolved_profile, [opened]
 
-        patch(f"{_MOD}._resolve_secondary_channels", side_effect=secondary).start()
-        searched = patch(
-            f"{_MOD}._searched_mechanisms", wraps=service._searched_mechanisms
+        _stand_in("_resolve_secondary_channels", side_effect=secondary).start()
+        searched = _stand_in(
+            "_searched_mechanisms", wraps=sample_mechanisms._searched_mechanisms
         ).start()
 
         await _run(PeakAssignmentConfig(decoy=SWAP))
@@ -863,15 +857,11 @@ class TestADecoyRun:
 
     @pytest.mark.asyncio
     async def test_a_refused_decoy_s_adopted_run_is_failed_with_the_reason(self):
-        from mascope_backend.api.new.peak_assignments.service import (
-            assign_sample_peaks,
-        )
+        from mascope_backend.api.new.peak_assignments.service import assign_sample_peaks
 
         mocks = self._start()
         mocks["plan"].side_effect = DecoyRefused("the reason")
-        patch(
-            f"{_MOD}.in_flight_run_id", new_callable=AsyncMock, return_value=None
-        ).start()
+        _stand_in("in_flight_run_id", new_callable=AsyncMock, return_value=None).start()
 
         await assign_sample_peaks(
             sample_item_id="si-1",
@@ -956,22 +946,22 @@ class TestTheSourcesIonsAreWhereTheControlReadThem:
         )
         self.recorder = _Recorder()
         patches = _patches(self.recorder, peaks, [])
-        patches["load_peaks"] = patch(
-            f"{_MOD}.load_sample_peaks", side_effect=_reads_the_block_s_axis(peaks)
+        patches["load_peaks"] = _stand_in(
+            "load_sample_peaks", side_effect=_reads_the_block_s_axis(peaks)
         )
-        patches["mechanisms"] = patch(
-            f"{_MOD}.fetch_sample_mechanisms",
+        patches["mechanisms"] = _stand_in(
+            "fetch_sample_mechanisms",
             new_callable=AsyncMock,
             return_value=(["im-ur"], [self.UREA]),
         )
-        patches["secondary"] = patch(
-            f"{_MOD}.fetch_mechanisms_by_notation",
+        patches["secondary"] = _stand_in(
+            "fetch_mechanisms_by_notation",
             new_callable=AsyncMock,
             return_value=[self.AMMONIUM],
         )
         mocks = _start(patches)
-        patch(
-            f"{_MOD}.plan_sample_decoy",
+        _stand_in(
+            "plan_sample_decoy",
             new_callable=AsyncMock,
             return_value=None if decoy is None else _plan(decoy),
         ).start()
@@ -1054,18 +1044,18 @@ class TestTheSourcesLaddersAreTheSamples:
         )
         recorder = _Recorder()
         patches = _patches(recorder, peaks, [])
-        patches["load_peaks"] = patch(
-            f"{_MOD}.load_sample_peaks", side_effect=_reads_the_block_s_axis(peaks)
+        patches["load_peaks"] = _stand_in(
+            "load_sample_peaks", side_effect=_reads_the_block_s_axis(peaks)
         )
-        patches["mechanisms"] = patch(
-            f"{_MOD}.fetch_sample_mechanisms",
+        patches["mechanisms"] = _stand_in(
+            "fetch_sample_mechanisms",
             new_callable=AsyncMock,
             return_value=(["im-ct"], [opened.CT]),
         )
         # The mode abstracts a hydride through an opened channel, which the
         # swap closes for the stages.
-        patches["secondary"] = patch(
-            f"{_MOD}.fetch_mechanisms_by_notation",
+        patches["secondary"] = _stand_in(
+            "fetch_mechanisms_by_notation",
             new_callable=AsyncMock,
             return_value=[
                 opened.PROTON,
@@ -1074,8 +1064,8 @@ class TestTheSourcesLaddersAreTheSamples:
         )
         _start(patches)
         sodium = _mechanism("im-na", "[M+Na]+")
-        patch(
-            f"{_MOD}.plan_sample_decoy",
+        _stand_in(
+            "plan_sample_decoy",
             new_callable=AsyncMock,
             return_value=(
                 _plan(DALTON)
@@ -1100,18 +1090,18 @@ class TestPlanningTheAdductArm:
 
     def _start(self, *, profile: str, channels, held, polarity="-"):
         control = _control(profile=profile)
-        patch(
-            f"{_MOD}._latest_in_app_run",
+        _stand_in(
+            "_latest_in_app_run",
             new_callable=AsyncMock,
             return_value=("run-c", control),
         ).start()
-        patch(
-            f"{_MOD}.fetch_sample_mechanisms",
+        _stand_in(
+            "fetch_sample_mechanisms",
             new_callable=AsyncMock,
             return_value=([m.ionization_mechanism_id for m in channels], channels),
         ).start()
-        self.asked = patch(
-            f"{_MOD}.fetch_mechanisms_by_notation",
+        self.asked = _stand_in(
+            "fetch_mechanisms_by_notation",
             new_callable=AsyncMock,
             return_value=held,
         ).start()
@@ -1122,9 +1112,7 @@ class TestPlanningTheAdductArm:
 
     @pytest.mark.asyncio
     async def test_each_channel_is_swapped_the_fingerprint_first(self):
-        from mascope_backend.api.new.peak_assignments.service import (
-            plan_sample_decoy,
-        )
+        from mascope_backend.api.new.peak_assignments.service import plan_sample_decoy
 
         # A nitrate mode that also declares carbonate: alphabetically the
         # carbonate channel would take the one wrong adduct the deployment
@@ -1147,9 +1135,7 @@ class TestPlanningTheAdductArm:
 
     @pytest.mark.asyncio
     async def test_no_wrong_adduct_the_deployment_holds_is_no_decoy(self):
-        from mascope_backend.api.new.peak_assignments.service import (
-            plan_sample_decoy,
-        )
+        from mascope_backend.api.new.peak_assignments.service import plan_sample_decoy
 
         sample = self._start(
             profile="BR", channels=[_mechanism("im-br", "[M+Br]-")], held=[]
@@ -1160,9 +1146,7 @@ class TestPlanningTheAdductArm:
 
     @pytest.mark.asyncio
     async def test_a_mode_with_no_channel_has_nothing_to_swap(self):
-        from mascope_backend.api.new.peak_assignments.service import (
-            plan_sample_decoy,
-        )
+        from mascope_backend.api.new.peak_assignments.service import plan_sample_decoy
 
         sample = self._start(profile="BR", channels=[], held=[])
 
@@ -1174,9 +1158,7 @@ class TestPlanningTheAdductArm:
         # Under the control's named context the decoy resolves the profile's
         # default here, while its control searched under the chamber's: the
         # library has since dropped what it named, say. No decoy then.
-        from mascope_backend.api.new.peak_assignments.service import (
-            plan_sample_decoy,
-        )
+        from mascope_backend.api.new.peak_assignments.service import plan_sample_decoy
 
         sample = self._start(
             profile="BR", channels=[_mechanism("im-br", "[M+Br]-")], held=[]
@@ -1193,9 +1175,7 @@ class TestPlanningTheAdductArm:
         # The sample's mode was edited from bromide to nitrate since its control
         # ran. Both profiles default to the same context name, so the context
         # alone would let the decoy search another reagent's chemistry.
-        from mascope_backend.api.new.peak_assignments.service import (
-            plan_sample_decoy,
-        )
+        from mascope_backend.api.new.peak_assignments.service import plan_sample_decoy
 
         sample = self._start(
             profile="BR", channels=[_mechanism("im-no3", "[M+NO3]-")], held=[]
@@ -1219,9 +1199,7 @@ class TestPlanningTheAdductArm:
 
     @pytest.mark.asyncio
     async def test_a_decoy_under_its_control_s_named_context_is_planned(self):
-        from mascope_backend.api.new.peak_assignments.service import (
-            plan_sample_decoy,
-        )
+        from mascope_backend.api.new.peak_assignments.service import plan_sample_decoy
 
         sample = self._start(
             profile="BR", channels=[_mechanism("im-br", "[M+Br]-")], held=[]
@@ -1236,9 +1214,7 @@ class TestPlanningTheAdductArm:
 
     @pytest.mark.asyncio
     async def test_a_shift_reads_no_channel(self):
-        from mascope_backend.api.new.peak_assignments.service import (
-            plan_sample_decoy,
-        )
+        from mascope_backend.api.new.peak_assignments.service import plan_sample_decoy
 
         sample = self._start(profile="BR", channels=[], held=[])
 

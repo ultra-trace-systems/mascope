@@ -20,7 +20,7 @@ asks (:data:`STAGES`):
 The refit, judge and cap stages are one round (:data:`ROUND`): a cap can leave
 a line in doubt on an assigned neighbour's envelope, which the next round reads
 as that neighbour's, and the round runs again until nothing new is read
-(``service.Judging``, :data:`service.MAX_CLAIM_ROUNDS`).
+(``judging_loop.Judging``, :data:`judging_loop.MAX_CLAIM_ROUNDS`).
 
 A path is a configuration of the list (:class:`AssignmentPath`), set by the
 stage it starts at, what its propose stage proposes and where its measurement
@@ -58,7 +58,17 @@ from mascope_backend.api.new.ionization.modes.versions import (
     sample_setup,
 )
 from mascope_backend.api.new.match.params import default_match_params
-from mascope_backend.api.new.peak_assignments import service
+from mascope_backend.api.new.peak_assignments import (
+    batch_lines,
+    judging_loop,
+    model_readers,
+    prepasses,
+    run_config,
+    sample_inputs,
+    sample_mechanisms,
+    service,
+    stage_a_pass,
+)
 from mascope_backend.api.new.peak_assignments.batch_decisions import (
     KIND_ISOTOPOLOGUE_STRIP,
     KIND_KNOWN_SPECIES,
@@ -119,9 +129,7 @@ from mascope_backend.api.new.peak_assignments.mass_gate import (
     BELOW_ASSIGNABILITY_Z,
     SpectrumLines,
 )
-from mascope_backend.api.new.peak_assignments.profile_preview import (
-    named_context_for,
-)
+from mascope_backend.api.new.peak_assignments.profile_preview import named_context_for
 from mascope_backend.api.new.peak_assignments.profiles import (
     resolve_profile,
     with_fitted_window,
@@ -134,10 +142,7 @@ from mascope_backend.api.new.peak_assignments.reagent_pass import (
 )
 from mascope_backend.api.new.peak_assignments.seeded_scoring import score_seeds
 from mascope_backend.api.new.peak_assignments.tiering import LineGate, ask_absent_line
-from mascope_backend.api.new.peak_assignments.tiers import (
-    TIER_ASSIGNED,
-    TIER_CANDIDATE,
-)
+from mascope_backend.api.new.peak_assignments.tiers import TIER_ASSIGNED, TIER_CANDIDATE
 from mascope_backend.db import PeakAssignment, PeakAssignmentRun, async_session
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.notifications import (
@@ -206,7 +211,7 @@ class Measurement(StrEnum):
     CONTROL = "control"
     #: The sample's own, as its latest run recorded it: the measurement model
     #: it scored and capped at, its centre, width and line-share tolerance
-    #: (``service.recorded_measurement``). A sample no run recorded one for
+    #: (``model_readers.recorded_measurement``). A sample no run recorded one for
     #: scores at the instrument class's width and its reagent lines' centre,
     #: and its refit stage refits that on what the path committed and the
     #: source's own lines, as a run's does.
@@ -260,7 +265,7 @@ DECOY = AssignmentPath(
 )
 
 #: The run-less ingest fold: the known set alone, folded straight into the
-#: batch ledger with no run written (``service.fold_sample_peaks_without_run``).
+#: batch ledger with no run written (``batch_fold.fold_sample_peaks_without_run``).
 INGEST_FOLD = AssignmentPath(
     "ingest fold", Stage.RESOLVE, Proposal.KNOWN, Measurement.FITTED
 )
@@ -444,7 +449,7 @@ class RunContext:
     :param floors: The tier a batch decision proposes its given reading at,
         by the peak it is proposed on: a listed compound the batch decided
         present, at candidate. The elect stage raises the reading to it, and
-        so does a re-score at the refit's model (``service.rescore_rows``):
+        so does a re-score at the refit's model (``judging_loop.rescore_rows``):
         the caps may lower it again, but the evidence alone does not keep it
         below.
     """
@@ -517,7 +522,7 @@ class RunContext:
     by_persistence: set[str] = field(default_factory=set)
     # -- score
     fit_by_seed: dict = field(default_factory=dict)
-    seeded_frame: service.SeededFrame | None = None
+    seeded_frame: judging_loop.SeededFrame | None = None
     # -- elect
     stage_b: list[dict] = field(default_factory=list)
     same_ion_families: int = 0
@@ -528,7 +533,7 @@ class RunContext:
     batch_applied: dict = field(default_factory=dict)
     # -- refit, judge, cap
     lines: SpectrumLines | None = None
-    judging: service.Judging | None = None
+    judging: judging_loop.Judging | None = None
     judged: Any = None
     fragments: Any = None
     tiering: dict = field(default_factory=dict)
@@ -576,7 +581,7 @@ async def resolve(ctx: RunContext) -> None:
     if ctx.peaks_df is None:
         # The read opens the sample's peak list: it runs on a worker thread
         # so the event loop keeps answering every other request.
-        ctx.peaks_df = await asyncio.to_thread(service.load_sample_peaks, sample)
+        ctx.peaks_df = await asyncio.to_thread(sample_inputs.load_sample_peaks, sample)
         await ctx.progress(0.1)
     ctx.ionization_setup = await sample_setup(sample.sample_item_id)
     ctx.mechanism_ids, ctx.mechanisms = await _mechanisms_of(
@@ -599,11 +604,11 @@ async def resolve(ctx: RunContext) -> None:
             else await named_context_for(sample.sample_batch_id)
         ),
     )
-    # -- Opportunistic channels (`service._resolve_secondary_channels`).
+    # -- Opportunistic channels (`sample_mechanisms._resolve_secondary_channels`).
     (
         ctx.resolved_profile,
         ctx.secondary_mechanisms,
-    ) = await service._resolve_secondary_channels(
+    ) = await sample_mechanisms._resolve_secondary_channels(
         sample, ctx.resolved_profile, ctx.peaks_df
     )
     if plan is not None:
@@ -614,8 +619,8 @@ async def resolve(ctx: RunContext) -> None:
         )
     # The mode's own channels, read before a decoy swaps them: the reagent
     # pre-pass's ladder claim reads the source's lines through them, which are
-    # the sample's whatever the arm (`service._reagent_assignments`).
-    ctx.own_mechanisms = service._searched_mechanisms(
+    # the sample's whatever the arm (`prepasses._reagent_assignments`).
+    ctx.own_mechanisms = sample_mechanisms._searched_mechanisms(
         ctx.mechanisms, ctx.secondary_mechanisms, ctx.resolved_profile
     )
     if plan is not None and plan.decoy.swap_adducts:
@@ -649,7 +654,7 @@ async def resolve(ctx: RunContext) -> None:
             "deployment has no ionization mechanism for; not searched."
         )
     if ctx.run is not None:
-        await service._record_resolved_profile(
+        await run_config._record_resolved_profile(
             ctx.run_id,
             ctx.config,
             ctx.resolved_profile,
@@ -660,24 +665,24 @@ async def resolve(ctx: RunContext) -> None:
     # The mechanisms a sample's channels are searched and read through: Stage A
     # reads the reference lists through them, the search enumerates through
     # them, and the passes after both read them.
-    ctx.searched_mechanisms = service._searched_mechanisms(
+    ctx.searched_mechanisms = sample_mechanisms._searched_mechanisms(
         ctx.mechanisms, ctx.secondary_mechanisms, ctx.resolved_profile
     )
     # The file's resolving power, read once: what one peak of the file holds
     # for every pass that predicts an isotope line - the reagent pre-pass, the
     # envelope match, the mass gate and the tiering pass.
-    ctx.resolution = await service._resolution_of(sample)
+    ctx.resolution = await sample_inputs._resolution_of(sample)
 
 
 async def _mechanisms_of(sample, *, strict: bool) -> tuple[list[str], list]:
-    """The sample's mode's mechanisms (``service.fetch_sample_mechanisms``).
+    """The sample's mode's mechanisms (``sample_mechanisms.fetch_sample_mechanisms``).
 
     A sample bound under no ionization mode has none to read, and the read
     fails on it. A path whose rules read the spectrum alone reads such a
     sample as declaring no mechanism instead of failing.
     """
     try:
-        return await service.fetch_sample_mechanisms(sample)
+        return await sample_mechanisms.fetch_sample_mechanisms(sample)
     except AttributeError:
         if strict:
             raise
@@ -705,7 +710,7 @@ def _instrument_type(sample, *, strict: bool) -> str | None:
 async def claim(ctx: RunContext) -> None:
     """Claim the source's peaks before any stage that proposes.
 
-    The reagent pre-pass (``service._reagent_assignments``): the source's own
+    The reagent pre-pass (``prepasses._reagent_assignments``): the source's own
     cluster ions are the brightest peaks of the spectrum and none of them is
     sample chemistry, so they are claimed here and taken out of what any later
     stage may propose. Ordering is the whole mechanism: nothing downstream is
@@ -723,7 +728,7 @@ async def claim(ctx: RunContext) -> None:
         ctx.reagent_rows,
         ctx.reagent_peak_ids,
         ctx.reagent_offset,
-    ) = service._reagent_assignments(
+    ) = prepasses._reagent_assignments(
         ctx.peaks_df,
         ctx.resolved_profile,
         sample.sample_item_id,
@@ -748,7 +753,7 @@ async def claim(ctx: RunContext) -> None:
             f"{len(ctx.peaks_df)} peaks of sample '{sample.sample_item_name}' "
             f"for profile '{ctx.resolved_profile.profile.name}'"
         )
-    ctx.artifact_rows, ctx.artifact_peak_ids = service._artifact_assignments(
+    ctx.artifact_rows, ctx.artifact_peak_ids = prepasses._artifact_assignments(
         ctx.peaks_df,
         ctx.instrument_type,
         sample.sample_item_id,
@@ -794,7 +799,7 @@ async def _propose_known_set(ctx: RunContext) -> None:
     """Stage A: the known composition set, matched, scored and arbitrated.
 
     The curated target library plus (when loaded) the reference mirror
-    (``service._stage_a_assignments``), whose lines fit the measurement every
+    (``stage_a_pass._stage_a_assignments``), whose lines fit the measurement every
     later stage scores at: the width, the offset and the line-share
     tolerance. A decoy scores at its control's instead.
     """
@@ -808,7 +813,7 @@ async def _propose_known_set(ctx: RunContext) -> None:
         ctx.listed_formulas,
         ctx.stage_a_scored,
         ctx.confidence_curve,
-    ) = await service._stage_a_assignments(
+    ) = await stage_a_pass._stage_a_assignments(
         sample,
         ctx.config,
         ctx.match_params,
@@ -894,7 +899,7 @@ async def _propose_by_search(ctx: RunContext) -> None:
     monoisotopic peak a list read is put to the search too; there the list's
     reading is one candidate beside the grid's (``engine.settle_list_election``).
     A chlorine or bromine reading is then proposed from its twin line
-    (``service._reread_halogen_twins``).
+    (``judging_loop._reread_halogen_twins``).
     """
     sample = ctx.sample
     config = ctx.config
@@ -923,8 +928,8 @@ async def _propose_by_search(ctx: RunContext) -> None:
                 else ""
             )
         )
-    notations, mechanism_id_by_notation = service._untargeted_ionization_notations(
-        ctx.searched_mechanisms
+    notations, mechanism_id_by_notation = (
+        sample_mechanisms._untargeted_ionization_notations(ctx.searched_mechanisms)
     )
     # One positionally-indexed frame feeds both the search and the join back.
     # The finder returns rows in the order it was given them, so position - not
@@ -935,7 +940,7 @@ async def _propose_by_search(ctx: RunContext) -> None:
         frame=search_peaks_df,
         columns=[
             column
-            for column in service.SEARCH_PEAK_COLUMNS
+            for column in sample_inputs.SEARCH_PEAK_COLUMNS
             if column in search_peaks_df
         ],
         mechanism_id_by_notation=mechanism_id_by_notation,
@@ -951,7 +956,7 @@ async def _propose_by_search(ctx: RunContext) -> None:
         list_readings(
             ctx.stage_a,
             search_peaks_df,
-            service._notation_by_id(ctx.searched_mechanisms),
+            sample_mechanisms._notation_by_id(ctx.searched_mechanisms),
         )
         if notations
         else {}
@@ -1019,7 +1024,7 @@ async def _propose_by_search(ctx: RunContext) -> None:
     # sits unexplained at the exact offset is searched again over carbon,
     # hydrogen, oxygen and that halogen, and the reading replaces the peak's
     # where it passes every gate.
-    search.matches, search.twin_records = await service._reread_halogen_twins(
+    search.matches, search.twin_records = await judging_loop._reread_halogen_twins(
         election.matches,
         frame,
         resolved_profile=resolved_profile,
@@ -1089,13 +1094,15 @@ async def _propose_on_representatives(ctx: RunContext) -> None:
         ceiling=MAX_UNTARGETED_PEAKS_CEILING,
     )
     ctx.unsearched = scope["eligible_peaks"] - scope["searched_peaks"]
-    notations, mechanism_id_by_notation = service._untargeted_ionization_notations(
-        ctx.searched_mechanisms
+    notations, mechanism_id_by_notation = (
+        sample_mechanisms._untargeted_ionization_notations(ctx.searched_mechanisms)
     )
     search = ctx.search = SearchProposal(
         remainder=targets,
         frame=frame,
-        columns=[column for column in service.SEARCH_PEAK_COLUMNS if column in frame],
+        columns=[
+            column for column in sample_inputs.SEARCH_PEAK_COLUMNS if column in frame
+        ],
         mechanism_id_by_notation=mechanism_id_by_notation,
         scope=scope,
         excluded=ctx.claimed_peak_ids | set(ctx.explained_peak_ids),
@@ -1112,7 +1119,7 @@ async def _propose_on_representatives(ctx: RunContext) -> None:
         )
     if not notations:
         # The mode's own mechanisms decide whether there is anything to search
-        # at all (`service._searched_mechanisms`).
+        # at all (`sample_mechanisms._searched_mechanisms`).
         runtime.logger.info(
             f"Untargeted batch search skips sample '{sample.sample_item_name}': "
             "no polarity-compatible ionization mechanisms."
@@ -1121,7 +1128,7 @@ async def _propose_on_representatives(ctx: RunContext) -> None:
     ctx.by_persistence = by_persistence
     resolved_profile = ctx.resolved_profile
     ctx.listed_formulas = listed_formula_identities(
-        await service._fetch_known_isotopes(
+        await sample_inputs._fetch_known_isotopes(
             sample,
             ctx.match_params.isotope_abundance_threshold,
             ctx.mechanism_ids,
@@ -1148,7 +1155,7 @@ async def _propose_on_representatives(ctx: RunContext) -> None:
         targets=targets["mz"].tolist(),
         scoring=ctx.scoring,
     )
-    search.matches, search.twin_records = await service._reread_halogen_twins(
+    search.matches, search.twin_records = await judging_loop._reread_halogen_twins(
         matches_df,
         scored_frame,
         resolved_profile=resolved_profile,
@@ -1191,7 +1198,7 @@ async def _propose_given(ctx: RunContext) -> None:
     }
     await _recorded_measurement(ctx)
     if ctx.path.rules is Rules.RUN:
-        known = await service._fetch_known_isotopes(
+        known = await sample_inputs._fetch_known_isotopes(
             ctx.sample,
             ctx.match_params.isotope_abundance_threshold,
             ctx.mechanism_ids,
@@ -1207,7 +1214,7 @@ async def _recorded_measurement(ctx: RunContext) -> None:
     """The measurement a path with no Stage A of its own scores and judges at:
     the model the sample's latest run recorded (:attr:`Measurement.RECORDED`),
     read with the rest of that run's config in one query
-    (``service.recorded_measurement``), so the width, the centre and the
+    (``model_readers.recorded_measurement``), so the width, the centre and the
     line-share tolerance come from one run even where another completes
     mid-search. The caps judge at the same model, as a decoy's judge at its
     control's. A sample no run recorded one for is read at the class's width
@@ -1217,7 +1224,7 @@ async def _recorded_measurement(ctx: RunContext) -> None:
     TOF's window is bounded by the model, as a run's own search is by its v1
     (step 3.6).
     """
-    recorded, ctx.model, ctx.model_recorded = await service.recorded_measurement(
+    recorded, ctx.model, ctx.model_recorded = await model_readers.recorded_measurement(
         ctx.sample,
         ctx.config,
         recorded=ctx.recorded,
@@ -1240,7 +1247,7 @@ async def score(ctx: RunContext) -> None:
     The known set's readings were measured as ions in Stage A's own match
     pass. Every reading the search committed to is measured again here, as an
     ion, through one match pass over the sample, gated by the run's match
-    params (``service._seeded_rescore``): the second measurement is what the
+    params (``judging_loop._seeded_rescore``): the second measurement is what the
     row is tiered on, so a search's "assigned" and a list's mean one thing.
     Both are read at the run's model, the one the search ranked at; the
     winners fit none of their own.
@@ -1261,12 +1268,12 @@ async def score(ctx: RunContext) -> None:
         )
         ion_by_seed, _fits, _errors, scored_df = ctx.seeded
         if not scored_df.empty:
-            ctx.seeded_frame = service.SeededFrame(scored_df, ion_by_seed)
+            ctx.seeded_frame = judging_loop.SeededFrame(scored_df, ion_by_seed)
         return
     search = ctx.search
     if search is None or not search.ran:
         return
-    ctx.fit_by_seed, ctx.seeded_frame = await service._seeded_rescore(
+    ctx.fit_by_seed, ctx.seeded_frame = await judging_loop._seeded_rescore(
         ctx.sample,
         ctx.match_params,
         untargeted_seeds(
@@ -1294,7 +1301,7 @@ async def elect(ctx: RunContext) -> None:
     (:func:`_read_as_a_run_reads`). Then, on the rows of both:
 
     - a list's matches carry the other readings of their ion
-      (``service._record_same_ion_readings``), which reads no tier and so is
+      (``stage_a_pass._record_same_ion_readings``), which reads no tier and so is
       written once however many rounds judge them;
     - and a reading the batch's series detection proposed for its peak
       carries the series' record, which the tiering pass counts as a second
@@ -1342,7 +1349,7 @@ async def elect(ctx: RunContext) -> None:
             instrument=ctx.instrument_type,
             calibration=None,
         )
-        service.raise_to_floors(rows, ctx.floors)
+        judging_loop.raise_to_floors(rows, ctx.floors)
         if ctx.path.rules is Rules.RUN:
             ctx.stage_a, ctx.stage_b = _read_as_a_run_reads(ctx, rows)
         else:
@@ -1398,7 +1405,7 @@ async def elect(ctx: RunContext) -> None:
             )
     if ctx.decided:
         _elect_batch_listed(ctx)
-    ctx.same_ion_families = service._record_same_ion_readings(
+    ctx.same_ion_families = stage_a_pass._record_same_ion_readings(
         ctx.stage_a,
         searched_mechanisms=ctx.searched_mechanisms,
         resolved_profile=ctx.resolved_profile,
@@ -1409,7 +1416,7 @@ async def elect(ctx: RunContext) -> None:
     # A decoy arm reads no series of the batch's (:data:`BATCH_INPUTS`), and
     # stamps none of its own.
     if ctx.decoy_plan is None:
-        service.stamp_series(
+        batch_lines.stamp_series(
             ctx.stage_a + ctx.stage_b, {**ctx.batch.series, **ctx.series_by_peak}
         )
 
@@ -1421,7 +1428,7 @@ def _elect_batch_listed(ctx: RunContext) -> None:
     stands at candidate on the decision (:attr:`RunContext.floors`), which
     the refit's re-score lowers no row below and only a cap does, as the
     batch's own judging holds its members (``batch_rejudge.floors_of``)."""
-    source = service._source_axis(ctx.peaks_df)
+    source = sample_mechanisms._source_axis(ctx.peaks_df)
     ctx.stage_a, ctx.stage_b, ctx.listed_outcomes = elect_listed(
         ctx.stage_a,
         ctx.stage_b,
@@ -1517,8 +1524,8 @@ def _read_as_a_run_reads(
         if ion.reference_identities:
             row["provenance"]["reference_identities"] = ion.reference_identities
         listed.append(row)
-    notations, mechanism_id_by_notation = service._untargeted_ionization_notations(
-        ctx.searched_mechanisms
+    notations, mechanism_id_by_notation = (
+        sample_mechanisms._untargeted_ionization_notations(ctx.searched_mechanisms)
     )
     record_same_ion_readings(
         searched,
@@ -1559,11 +1566,11 @@ async def refit(ctx: RunContext) -> None:
     leave it: its second named point (v2), over the run's corroborated commits
     and the source's own lines (``mass_gate.measure_mass_gate``). Where the
     refit moves the model beyond the bound, every row is scored again at it
-    before any cap (``service.rescore_rows``), so the caps read the model the
+    before any cap (``judging_loop.rescore_rows``), so the caps read the model the
     rows were scored at; a decoy and a path reading the sample's recorded
     model refit nothing. It records every row's ceiling and lowers none.
 
-    The first round sets up the judging (``service.Judging``) over the elected
+    The first round sets up the judging (``judging_loop.Judging``) over the elected
     rows, with what every round reads: the sample's peaks, read for which
     lines each envelope's peaks hold, and the run's channels, bands, context
     and measurement.
@@ -1575,12 +1582,12 @@ async def refit(ctx: RunContext) -> None:
         ctx.lines = SpectrumLines.from_peaks(ctx.peaks_df, ctx.resolution)
         # The cap on how bright a source line may be to anchor the mass gate,
         # which the m/z calibration node puts on its calibrants.
-        ctx.source_line_cap = await service._source_line_cap(ctx.sample)
+        ctx.source_line_cap = await judging_loop._source_line_cap(ctx.sample)
         ctx.judging = _judging_for(ctx)
     ctx.judging.refit()
 
 
-def _judging_for(ctx: RunContext) -> service.Judging:
+def _judging_for(ctx: RunContext) -> judging_loop.Judging:
     """The judging rounds over the elected rows, under the run's rules, at
     its model."""
     resolved_profile = ctx.resolved_profile
@@ -1588,11 +1595,11 @@ def _judging_for(ctx: RunContext) -> service.Judging:
         ctx.path.measurement is Measurement.RECORDED and not ctx.model_recorded
     )
     stage_a_scored, seeded_frame = ctx.stage_a_scored, ctx.seeded_frame
-    return service.Judging(
+    return judging_loop.Judging(
         ctx.stage_a + ctx.stage_b,
         model=ctx.model,
         fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
-        notation_by_id=service._notation_by_id(ctx.searched_mechanisms),
+        notation_by_id=sample_mechanisms._notation_by_id(ctx.searched_mechanisms),
         mz_tolerance_ppm=ctx.scoring.mz_tolerance_ppm,
         abundance_floor=ctx.scoring.abundance_floor,
         max_alternatives=ctx.config.max_alternatives,
@@ -1604,7 +1611,7 @@ def _judging_for(ctx: RunContext) -> service.Judging:
         resolution=ctx.resolution,
         refits=refits,
         rescore=(
-            (lambda model: service.fits_at(model, stage_a_scored, seeded_frame))
+            (lambda model: judging_loop.fits_at(model, stage_a_scored, seeded_frame))
             if refits
             else None
         ),
@@ -1628,7 +1635,7 @@ async def judge(ctx: RunContext) -> None:
     source made of a committed analyte are read as the source's on the settled
     ledger, before anything weighs them as molecules; and the cross-channel
     pass records what the settled readings say of each other
-    (``service.Judging.judge``). A person's choice changes no reading: its
+    (``judging_loop.Judging.judge``). A person's choice changes no reading: its
     formula is the person's."""
     if ctx.path.rules is Rules.SPECTRUM:
         return
@@ -1637,7 +1644,7 @@ async def judge(ctx: RunContext) -> None:
 
 async def cap(ctx: RunContext) -> None:
     """The caps, which only lower a tier: the mass gate's, the cross-channel
-    pass's and the tiering pass's rules (``service.Judging.cap``). Their
+    pass's and the tiering pass's rules (``judging_loop.Judging.cap``). Their
     order decides which cap a row names, never which tier it ends on.
 
     Where the caps leave a line in doubt on an assigned neighbour's envelope,
@@ -1653,13 +1660,13 @@ async def cap(ctx: RunContext) -> None:
         return
     ctx.judged = judging.result()
     ctx.fragments = ctx.judged.fragments
-    service._log_fragments(ctx.fragments, ctx.sample.sample_item_name)
+    prepasses._log_fragments(ctx.fragments, ctx.sample.sample_item_name)
     # The judging rewrote every row's tier reasons; a row elected on the
     # batch's decision names it again among them.
     cite_listed(ctx.judged.rows, ctx.decided, ctx.listed_outcomes)
     # Counted on the judged ledger, not at the stamp (``elect``): a row the
     # fragment claim took leaves the ledger with its record.
-    anchored = service.series_anchored(ctx.judged.rows)
+    anchored = batch_lines.series_anchored(ctx.judged.rows)
     if anchored:
         ctx.batch_applied["series"] = anchored
     ctx.tiering = {**ctx.judged.tiering, "series_anchored": anchored}
@@ -1716,7 +1723,9 @@ def _cap_by_the_spectrum(ctx: RunContext) -> None:
         "asked": asked,
         "capped": len(capped),
     }
-    ctx.judged = service.JudgedCommits(rows, {}, {}, ctx.tiering, {}, ctx.fragments)
+    ctx.judged = judging_loop.JudgedCommits(
+        rows, {}, {}, ctx.tiering, {}, ctx.fragments
+    )
 
 
 def _report_judging(ctx: RunContext) -> None:
@@ -1875,7 +1884,7 @@ async def level(ctx: RunContext) -> None:
     # lines are asked at.
     ctx.tiering[LEVEL_SUMMARY] = apply_levels(
         rows,
-        notation_by_id=service._notation_by_id(ctx.searched_mechanisms),
+        notation_by_id=sample_mechanisms._notation_by_id(ctx.searched_mechanisms),
         instrument_type=ctx.instrument_type,
         context=ctx.resolved_profile.context,
         lines=ctx.lines,
@@ -1967,7 +1976,7 @@ async def keep_run(ctx: RunContext) -> dict:
     plan = ctx.decoy_plan
     search = ctx.search
     fragments = ctx.fragments
-    await service._record_resolved_profile(
+    await run_config._record_resolved_profile(
         ctx.run_id,
         ctx.config,
         ctx.resolved_profile,
@@ -2072,7 +2081,7 @@ async def keep_fold(
     batch peaks, and writes no run (``fold_view`` serves the Sample view from
     them). Its rows are shaped as ledger rows, stamped with the derived run's
     id: the run they will never be. The model it scored and capped them at is
-    kept for the sample (``service.record_sample_model``), which every reader
+    kept for the sample (``model_readers.record_sample_model``), which every reader
     outside a run reads where the sample has no run.
 
     :param defer_consensus_to: As for ``fold_sample_into_batch_peaks``: a
@@ -2103,7 +2112,7 @@ async def keep_fold(
     # The model the fold scored and capped its rows at, kept for the sample,
     # which has no run to record it on: the inspector, a pin and the batch
     # search read the sample at it (MAS-725).
-    await service.record_sample_model(
+    await model_readers.record_sample_model(
         ctx.sample.sample_item_id,
         {
             MEASUREMENT_MODEL_KEY: measurement_model_record(

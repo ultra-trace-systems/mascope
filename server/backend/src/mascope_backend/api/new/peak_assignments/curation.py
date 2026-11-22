@@ -91,13 +91,13 @@ from mascope_backend.api.new.peak_assignments.identification_level import (
     IDENTIFICATION_LEVEL,
     inherited_level,
 )
+from mascope_backend.api.new.peak_assignments.model_readers import (
+    provenance_with_calibration,
+)
+from mascope_backend.api.new.peak_assignments.sample_inputs import load_sample_peaks
 from mascope_backend.api.new.peak_assignments.schemas import (
     PromoteAlternativeBody,
     SetAssignmentBody,
-)
-from mascope_backend.api.new.peak_assignments.service import (
-    load_sample_peaks,
-    provenance_with_calibration,
 )
 from mascope_backend.api.new.peak_assignments.tiering import LineGate
 from mascope_backend.api.new.peak_assignments.tiers import (

@@ -6,7 +6,7 @@ formula, up to the cap a run keeps, each with its name, the list it comes from
 and the cross-references the list carries, a list's tags among them
 (``xrefs.tags``, ``background`` for the cyclic siloxanes). The inspector reads
 the whole list; the ledgers read one flattened field, ``reference_listing``,
-because a ledger row serves no provenance (``service._provenance_scalars``).
+because a ledger row serves no provenance (``ledger_reads._provenance_scalars``).
 
 The field says what the inspector's *listed as* field says: the first name, the
 list it comes from, the tags of the lists naming the formula, and how many

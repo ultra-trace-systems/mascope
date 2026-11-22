@@ -14,7 +14,7 @@ instrument's, the abundance floor is the sample's own match-params floor, the
 synthetic ion ids exist only to group the scored frame back to its seeds, and
 every seed is scored at one measurement model (``measurement_model``): the
 run's own inside a run, the one the sample's latest run recorded outside one
-(``service.recorded_model``). A seed list never fits a model of its own: a pin
+(``model_readers.recorded_model``). A seed list never fits a model of its own: a pin
 or the inspector's shortlist is a handful of formulas, mostly wrong ones, and
 fitted on them the width and the centre would be theirs rather than the
 sample's. A second copy of that would drift, and the two callers would then
@@ -39,14 +39,18 @@ from mascope_backend.api.controllers.target.lib.compute.target_ions_compute impo
 )
 from mascope_backend.api.new.ionization.modes.versions import sample_label_purity
 from mascope_backend.api.new.match.params.lib import apply_match_params
+from mascope_backend.api.new.peak_assignments import model_readers, sample_inputs
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import (
     line_heights_within,
     score_ions_by_fit,
 )
+from mascope_backend.api.new.peak_assignments.sample_inputs import (
+    RESOLVE_RESOLUTION,
+    resolution_type_of,
+)
 from mascope_backend.db import IonizationMechanism, async_session
 from mascope_backend.runtime import runtime
-from mascope_file.name import get_instrument_type
 from mascope_match import compute_match_isotopes
 from mascope_tools.composition.custom_elements import labelled_purity
 from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
@@ -70,11 +74,6 @@ def score_or_none(value) -> float | None:
     if score is None:
         return None
     return min(1.0, max(0.0, score))
-
-
-def resolution_type_of(sample) -> str:
-    """The isotopologue resolution a sample's instrument is scored at."""
-    return "LOW" if get_instrument_type(sample.filename) == "tof" else "HIGH"
 
 
 def build_seeded_isotopes_df(
@@ -251,7 +250,7 @@ def gate_and_score(
     :param match_params: The sample's match parameters.
     :param model: The model the seeds are scored at: inside a run its own,
         outside one the one the sample's latest run recorded
-        (``service.recorded_model``).
+        (``model_readers.recorded_model``).
     :return: The gated, fit-scored frame.
     """
     gated = gate_lines(match_isotope_df, match_params, model.envelope_tolerance)
@@ -306,13 +305,8 @@ def scored_maps(
 
 
 #: :func:`score_seeds` was handed no model and reads the one the sample's
-#: latest run recorded (``service.recorded_model``).
+#: latest run recorded (``model_readers.recorded_model``).
 RESOLVE_MODEL = object()
-
-#: The caller has not read the sample file's resolving power, and the chain
-#: reads it (``service._resolution_of``). Distinct from None, the answer for a
-#: file whose instrument functions could not be read.
-RESOLVE_RESOLUTION = object()
 
 
 async def score_seeds(
@@ -347,7 +341,7 @@ async def score_seeds(
     :param match_params: The sample's resolved match parameters.
     :param model: The model of the run or search the caller is part of. Left
         out, the one the sample's latest run recorded is read
-        (``service.recorded_model``), which is what every caller outside a
+        (``model_readers.recorded_model``), which is what every caller outside a
         run - a pin, the inspector, the batch ledger's propagation - wants.
     :param config: The configuration the sample's reagent lines are claimed
         under where no run recorded a model: the batch search's for its
@@ -390,10 +384,7 @@ async def _score_seeds(
         {mechanism_id for _, mechanism_id in seeds}
     )
     if resolution is RESOLVE_RESOLUTION:
-        # Imported here: the service imports this module for its own runs.
-        from mascope_backend.api.new.peak_assignments.service import _resolution_of
-
-        resolution = await _resolution_of(sample)
+        resolution = await sample_inputs._resolution_of(sample)
     seeded_df, ion_by_seed = await asyncio.to_thread(
         build_seeded_isotopes_df,
         seeds,
@@ -414,10 +405,7 @@ async def _score_seeds(
         return ion_by_seed, {}, {}, pd.DataFrame()
 
     if model is RESOLVE_MODEL:
-        # Imported here: the service imports this module for its own runs.
-        from mascope_backend.api.new.peak_assignments import service
-
-        model = await service.recorded_model(sample, config)
+        model = await model_readers.recorded_model(sample, config)
 
     scored_df = await asyncio.to_thread(
         gate_and_score, matched_df, match_params, model=model

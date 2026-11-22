@@ -380,8 +380,8 @@ runs an explicit assignment, which is unchanged.
 > curation is refused with a coded 409, and the inspector withholds the controls.
 
 The per-sample read
-([`get_peak_assignments`](../../server/backend/src/mascope_backend/api/new/peak_assignments/service.py),
-`service.py:235`) serves a completed run if the sample has one, else it derives the ledger
+([`get_peak_assignments`](../../server/backend/src/mascope_backend/api/new/peak_assignments/ledger_reads.py),
+`ledger_reads.py`) serves a completed run if the sample has one, else it derives the ledger
 from the sample's members joined to their anchors: m/z and intensity from the member,
 formula, ion formula and mechanism from the candidate the member points at, tier and fit
 from the member, P(correct) and evidence from the anchor. The response shape is unchanged,
@@ -393,8 +393,8 @@ and the SDK's `peak_assignments.get`
 ([`peak_assignments.py`](../../libraries/sdk/src/mascope_sdk/resources/peak_assignments.py))
 keep working. The runs endpoint lists a synthetic run for the fold (engine `batch`, open
 decision 3) so the run selector can label it. The detail read
-([`get_peak_assignment_detail`](../../server/backend/src/mascope_backend/api/new/peak_assignments/service.py),
-`service.py:359`) serves the anchor's candidate list and provenance plus the on-demand
+([`get_peak_assignment_detail`](../../server/backend/src/mascope_backend/api/new/peak_assignments/ledger_reads.py),
+`ledger_reads.py`) serves the anchor's candidate list and provenance plus the on-demand
 per-sample evidence (§5.4).
 
 ### 6.2 The batch views

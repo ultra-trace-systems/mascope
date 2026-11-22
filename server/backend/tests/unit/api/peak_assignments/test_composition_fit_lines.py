@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pandas as pd
 import pytest
 
-from mascope_backend.api.new.peak_assignments import service, visualization
+from mascope_backend.api.new.peak_assignments import sample_inputs, visualization
 from mascope_backend.db import IonizationMechanism
 from mascope_match.params import TofMatchParams
 
@@ -45,7 +45,9 @@ async def _lines(resolution) -> pd.DataFrame:
         patch.object(visualization, "async_session", return_value=context),
         patch.object(visualization, "get_instrument_type", return_value="tof"),
         patch.object(visualization, "compute_match_isotopes", side_effect=match),
-        patch.object(service, "_resolution_of", AsyncMock(return_value=resolution)),
+        patch.object(
+            sample_inputs, "_resolution_of", AsyncMock(return_value=resolution)
+        ),
     ):
         await visualization._composition_match_isotopes(
             SAMPLE, "C10H15NO3", "mech-h", TofMatchParams()

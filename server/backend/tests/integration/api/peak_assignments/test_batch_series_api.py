@@ -41,6 +41,7 @@ from mascope_backend.api.new.peak_assignments import (
     batch_series,
     pipeline,
 )
+from mascope_backend.api.new.peak_assignments.batch_lines import batch_series_by_peak
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     SERIES_KEY,
     is_stale,
@@ -70,7 +71,6 @@ from mascope_backend.api.new.peak_assignments.batch_stages import assign_batch
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import evidence_for
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
-from mascope_backend.api.new.peak_assignments.service import batch_series_by_peak
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,

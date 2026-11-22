@@ -55,14 +55,14 @@ from mascope_backend.api.new.peak_assignments.engine import (
     monoisotopic_row,
 )
 from mascope_backend.api.new.peak_assignments.fold_view import is_fold_id
+from mascope_backend.api.new.peak_assignments.model_readers import recorded_model
+from mascope_backend.api.new.peak_assignments.sample_mechanisms import (
+    recorded_searched_mechanisms,
+)
 from mascope_backend.api.new.peak_assignments.seeded_scoring import (
     finite_or_none,
     score_or_none,
     score_seeds,
-)
-from mascope_backend.api.new.peak_assignments.service import (
-    recorded_model,
-    recorded_searched_mechanisms,
 )
 from mascope_backend.db import PeakAssignment, PeakAssignmentRun, async_session
 from mascope_tools.composition.arbitration import arbitrate_candidates
@@ -229,7 +229,7 @@ async def score_row_alternatives(
 
     For each such formula, every channel the row's run searched is tried in one
     seeded pass - the sample's own adducts and the secondary channels the run
-    opened (``service.recorded_searched_mechanisms``), as the search proposed
+    opened (``sample_mechanisms.recorded_searched_mechanisms``), as the search proposed
     the shortlist through them all - and the one whose monoisotopic peak lands
     on this row's observed peak with the strongest evidence is reported. A formula no adduct
     places on the peak is reported blocked, with the reason said plainly.
@@ -304,7 +304,7 @@ async def score_row_alternatives(
     }
     # At the model the row's own run scored and capped it at, so the row and
     # its alternatives are read on one scale; a run from before the one record
-    # at what it scored at (``service.recorded_measurement``).
+    # at what it scored at (``model_readers.recorded_measurement``).
     ion_by_seed, fit_by_ion, _errors, scored_df = await score_seeds(
         sample,
         seeds,

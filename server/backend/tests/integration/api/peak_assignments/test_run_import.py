@@ -21,7 +21,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import DBAPIError
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
-from mascope_backend.api.new.peak_assignments import import_service
+from mascope_backend.api.new.peak_assignments import import_service, recalibration
 from mascope_backend.db import (
     AssignmentVerification,
     InstrumentFunction,
@@ -1937,20 +1937,21 @@ class TestRecalibrationExcludesImports:
         self, verified_runs, monkeypatch
     ):
         """Two confirmed verdicts exist; only the in-app one becomes a label."""
-        from mascope_backend.api.new.peak_assignments import service
 
         captured = {}
 
         def _recalibrate(scores, labels, levels, **kwargs):
             captured["scores"] = list(scores)
-            raise service.InsufficientCalibrationData("stop here")
+            raise recalibration.InsufficientCalibrationData("stop here")
 
         # The instrument filter reads the sample's filename; pin it so this test
         # is about the engine filter and not about filename parsing.
-        monkeypatch.setattr(service, "get_instrument_type", lambda _filename: "orbi")
-        monkeypatch.setattr(service, "recalibrate", _recalibrate)
+        monkeypatch.setattr(
+            recalibration, "get_instrument_type", lambda _filename: "orbi"
+        )
+        monkeypatch.setattr(recalibration, "recalibrate", _recalibrate)
 
-        await service.recalibrate_instrument(instrument="orbi")
+        await recalibration.recalibrate_instrument(instrument="orbi")
 
         # 0.9 is the in-app run's evidence, 0.1 the imported run's.
         assert 0.9 in captured["scores"]

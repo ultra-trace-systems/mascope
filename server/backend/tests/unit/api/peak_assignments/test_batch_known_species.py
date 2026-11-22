@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mascope_backend.api.new.peak_assignments import service
+from mascope_backend.api.new.peak_assignments import model_readers, prepasses
 from mascope_backend.api.new.peak_assignments.batch_known_species import (
     ALREADY,
     BACKGROUND_TAG,
@@ -1791,14 +1791,14 @@ class TestTheFilesClaim:
         peaks = self._peaks(TRIMER_MZ)
         with (
             patch.object(
-                service,
+                model_readers,
                 "claim_reagent_peaks",
                 return_value=([], ReagentCalibration(0.0, 3.0)),
             ),
-            patch.object(service, "_claimed_lines_offset", return_value=None),
-            patch.object(service, "claim_ladder_peaks", return_value=([], None)),
+            patch.object(prepasses, "_claimed_lines_offset", return_value=None),
+            patch.object(prepasses, "claim_ladder_peaks", return_value=([], None)),
         ):
-            rows, taken, _ = service._reagent_assignments(
+            rows, taken, _ = prepasses._reagent_assignments(
                 peaks,
                 resolved,
                 "sample1",
@@ -1808,7 +1808,7 @@ class TestTheFilesClaim:
                 sample_name="sample",
                 batch_species=[species],
             )
-            alone, _, _ = service._reagent_assignments(
+            alone, _, _ = prepasses._reagent_assignments(
                 peaks,
                 resolved,
                 "sample1",

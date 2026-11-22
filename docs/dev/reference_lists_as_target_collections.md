@@ -119,7 +119,7 @@ read through the junctions by `_fetch_known_target_isotopes`, and the
 **reference mirror**, every active source's admitted formulas expanded into
 isotope rows by `_build_reference_isotopes_df` and cached per deployment
 state (`_fetch_reference_known_isotopes`, `_combine_known_isotopes`, all in
-[service.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/service.py)).
+[sample_inputs.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/sample_inputs.py)).
 The library comes from `iter_known_compositions` in
 [known.py](../../libraries/reference/src/mascope_reference/known.py). A
 mirror row carries `reference_identities` and no `target_compound_id`, so a
@@ -327,7 +327,7 @@ isotopes through the junctions, matches, scores and aggregates them as any
 collection's; the collection tag, the ion table, the Match tab and the Batch
 chart draw them. Stage A reads the same rows through the same junctions
 (`_fetch_known_target_isotopes` in
-[service.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/service.py))
+[sample_inputs.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/sample_inputs.py))
 and gates them with the same per-ion parameters, so a list-backed collection
 is ledger rows with a `target_compound_id` exactly as a hand-built one is,
 which is what makes it a collection under the fold (section 4.6). The per-ion

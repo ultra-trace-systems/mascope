@@ -28,7 +28,7 @@ record enters the stage list at the stage that decides what it decides
   decision, where the stages read the peak another way or not at all.
 - **an isotopologue strip** reads the row on the stripped peak as the parent's
   line before the judging (:func:`read_strips`), and **a series** stamps its
-  record on the row that reads its formula (``service.stamp_series``): the
+  record on the row that reads its formula (``batch_lines.stamp_series``): the
   judging then reads both.
 
 A decoy arm claims what its control claims, so it reads the source ions and
@@ -62,7 +62,10 @@ from typing import Any, Optional
 import pandas as pd
 from sqlalchemy import or_, select
 
-from mascope_backend.api.new.peak_assignments import batch_known_species, service
+from mascope_backend.api.new.peak_assignments import (
+    batch_known_species,
+    batch_lines,
+)
 from mascope_backend.api.new.peak_assignments.batch_known_species import (
     ALREADY,
     KEPT_CARRIES_LINES,
@@ -75,6 +78,11 @@ from mascope_backend.api.new.peak_assignments.batch_known_species import (
     listed_species_row,
     partition_of,
     sample_partition,
+)
+from mascope_backend.api.new.peak_assignments.batch_lines import (
+    BatchLine,
+    read_as_batch_isotopologue,
+    with_batch_isotopologue_line,
 )
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     KNOWN_SPECIES_KEY,
@@ -100,15 +108,7 @@ from mascope_backend.api.new.peak_assignments.reagent_pass import (
     REASON_BATCH_WATER_LADDER,
     BatchSpecies,
 )
-from mascope_backend.api.new.peak_assignments.service import (
-    BatchLine,
-    read_as_batch_isotopologue,
-    with_batch_isotopologue_line,
-)
-from mascope_backend.api.new.peak_assignments.tiers import (
-    TIER_ASSIGNED,
-    TIER_CANDIDATE,
-)
+from mascope_backend.api.new.peak_assignments.tiers import TIER_ASSIGNED, TIER_CANDIDATE
 from mascope_backend.db import BatchPeak, BatchPeakOccurrence, async_session
 from mascope_tools.composition.known_species import KIND_LISTED
 from mascope_tools.composition.reagents import (
@@ -231,7 +231,7 @@ class BatchDecisions:
     :param listed: Sample peak -> the listed compound decided present there.
     :param strips: Sample peak -> the strip that reads it as a parent's line.
     :param series: Sample peak -> its batch peak's series record
-        (``service.batch_series_by_peak``).
+        (``batch_lines.batch_series_by_peak``).
     """
 
     sample_batch_id: Optional[str] = None
@@ -717,7 +717,7 @@ async def read_batch_decisions(
         listed=listed,
         strips=strips,
         series=(
-            await service.batch_series_by_peak(sample.sample_item_id)
+            await batch_lines.batch_series_by_peak(sample.sample_item_id)
             if KIND_SERIES in kinds
             else {}
         ),
@@ -942,7 +942,7 @@ def read_strips(
 ) -> tuple[list[dict], Counter]:
     """Read each row the batch stripped as its parent's isotope line, as the
     batch's own strip rewrites a sample's row
-    (``service.read_as_batch_isotopologue``): an isotopologue child of the
+    (``batch_lines.read_as_batch_isotopologue``): an isotopologue child of the
     run's row on the parent's peak, the reading it displaced first among its
     alternatives, recorded on both rows. Left as it is where the run's row on
     the parent's peak reads another reading, where a claim took the peak,

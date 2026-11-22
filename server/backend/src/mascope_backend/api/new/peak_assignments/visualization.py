@@ -34,6 +34,7 @@ from mascope_backend.api.new.match.params import (
     apply_match_params,
     default_match_params,
 )
+from mascope_backend.api.new.peak_assignments import sample_inputs
 from mascope_backend.db import IonizationMechanism, TargetCompound, async_session
 from mascope_backend.db.id import gen_id
 from mascope_file.name import get_instrument_type
@@ -73,16 +74,13 @@ async def _composition_match_isotopes(
         target_compound_id=gen_id(),
         target_compound_formula=norm(assigned_formula),
     )
-    # Imported here: the service's run imports half the package.
-    from mascope_backend.api.new.peak_assignments.service import _resolution_of
-
     # The lines the file's R(m/z) shows, as a run's Stage A and its seeded
     # chain match them (MAS-977), not the stored library's.
     resolution = "LOW" if get_instrument_type(sample.filename) == "tof" else "HIGH"
     ions, isotopes = generate_target_ions_from_composition(
         compound,
         [mechanism],
-        file_lines=FileLines(resolution, await _resolution_of(sample)),
+        file_lines=FileLines(resolution, await sample_inputs._resolution_of(sample)),
     )
     if not ions or not isotopes:
         return pd.DataFrame(), None, mechanism

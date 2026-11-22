@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mascope_backend.api.new.peak_assignments import service
+from mascope_backend.api.new.peak_assignments import stage_a_pass
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import SampleMassAccuracy
 from mascope_backend.api.new.peak_assignments.envelope_fit import RunEnvelopeFit
@@ -27,8 +27,6 @@ from mascope_tools.composition.envelope_tolerance import (
     fit_envelope_tolerance,
 )
 
-
-_SVC = "mascope_backend.api.new.peak_assignments.service"
 
 FRAME = pd.DataFrame({"target_ion_id": ["ion-1"], "sample_peak_id": ["p1"]})
 
@@ -47,19 +45,40 @@ def _first_pass_patches(
     threads: dict, rows: list[dict], calibration: Calibration | None = None
 ):
     return [
-        patch(f"{_SVC}._fetch_known_isotopes", AsyncMock(return_value=FRAME.copy())),
-        patch(f"{_SVC}.compute_match_isotopes", AsyncMock(return_value=FRAME.copy())),
         patch(
-            f"{_SVC}.drop_ions_claimed_elsewhere",
+            "mascope_backend.api.new.peak_assignments.stage_a_pass._fetch_known_isotopes",
+            AsyncMock(return_value=FRAME.copy()),
+        ),
+        patch(
+            "mascope_backend.api.new.peak_assignments.stage_a_pass.compute_match_isotopes",
+            AsyncMock(return_value=FRAME.copy()),
+        ),
+        patch(
+            "mascope_backend.api.new.peak_assignments.stage_a_pass.drop_ions_claimed_elsewhere",
             _recording(threads, "drop", lambda df, *_: df),
         ),
-        patch(f"{_SVC}.gate_lines", side_effect=lambda df, *_args, **_kwargs: df),
-        patch(f"{_SVC}.score_ions_by_fit", side_effect=lambda df, **_kwargs: df),
-        patch(f"{_SVC}.sample_mass_accuracy", return_value=SampleMassAccuracy()),
-        patch(f"{_SVC}.get_instrument_type", return_value="orbi"),
-        patch(f"{_SVC}.load_calibration", AsyncMock(return_value=calibration)),
         patch(
-            f"{_SVC}.invert_matches_to_peak_assignments",
+            "mascope_backend.api.new.peak_assignments.stage_a_pass.gate_lines",
+            side_effect=lambda df, *_args, **_kwargs: df,
+        ),
+        patch(
+            "mascope_backend.api.new.peak_assignments.stage_a_pass.score_ions_by_fit",
+            side_effect=lambda df, **_kwargs: df,
+        ),
+        patch(
+            "mascope_backend.api.new.peak_assignments.stage_a_pass.sample_mass_accuracy",
+            return_value=SampleMassAccuracy(),
+        ),
+        patch(
+            "mascope_backend.api.new.peak_assignments.stage_a_pass.get_instrument_type",
+            return_value="orbi",
+        ),
+        patch(
+            "mascope_backend.api.new.peak_assignments.stage_a_pass.load_calibration",
+            AsyncMock(return_value=calibration),
+        ),
+        patch(
+            "mascope_backend.api.new.peak_assignments.stage_a_pass.invert_matches_to_peak_assignments",
             _recording(threads, "arbitrate", rows),
         ),
     ]
@@ -72,7 +91,7 @@ async def _first_pass(
     for started in patches:
         started.start()
     try:
-        return await service._stage_a_first_pass(
+        return await stage_a_pass._stage_a_first_pass(
             SimpleNamespace(
                 sample_item_id="si-1", filename="orbi-sample.raw", polarity="-"
             ),
@@ -118,7 +137,7 @@ async def test_the_first_pass_keeps_the_curve_its_rows_were_read_off():
 async def test_the_rescore_at_the_fitted_tolerance_arbitrates_off_the_loop():
     threads: dict = {}
     rescored = [{"role": "M0", "sample_peak_id": "p1", "fit_score": 0.9}]
-    first = service._StageAFirstPass(
+    first = stage_a_pass._StageAFirstPass(
         rows=[{"role": "M0", "sample_peak_id": "p1", "fit_score": 0.5}],
         scored=FRAME,
         matched=FRAME,
@@ -126,7 +145,7 @@ async def test_the_rescore_at_the_fitted_tolerance_arbitrates_off_the_loop():
         confidence_calibration=None,
         listed_formulas=frozenset(),
         assignments_of=_recording(threads, "arbitrate", rescored),
-        curve=service.ConfidenceCurve(Calibration(a=1.0, b=0.0), {}),
+        curve=stage_a_pass.ConfidenceCurve(Calibration(a=1.0, b=0.0), {}),
     )
     fitted = RunEnvelopeFit(
         fit_envelope_tolerance(
@@ -134,12 +153,24 @@ async def test_the_rescore_at_the_fitted_tolerance_arbitrates_off_the_loop():
         )
     )
     with (
-        patch(f"{_SVC}._stage_a_first_pass", AsyncMock(return_value=first)),
-        patch(f"{_SVC}.fit_run_envelope_tolerance", AsyncMock(return_value=fitted)),
-        patch(f"{_SVC}.gate_lines", side_effect=lambda df, *_args, **_kwargs: df),
-        patch(f"{_SVC}.score_ions_by_fit", side_effect=lambda df, **_kwargs: df),
+        patch(
+            "mascope_backend.api.new.peak_assignments.stage_a_pass._stage_a_first_pass",
+            AsyncMock(return_value=first),
+        ),
+        patch(
+            "mascope_backend.api.new.peak_assignments.stage_a_pass.fit_run_envelope_tolerance",
+            AsyncMock(return_value=fitted),
+        ),
+        patch(
+            "mascope_backend.api.new.peak_assignments.stage_a_pass.gate_lines",
+            side_effect=lambda df, *_args, **_kwargs: df,
+        ),
+        patch(
+            "mascope_backend.api.new.peak_assignments.stage_a_pass.score_ions_by_fit",
+            side_effect=lambda df, **_kwargs: df,
+        ),
     ):
-        rows, _, _, envelope, _, _, curve = await service._stage_a_assignments(
+        rows, _, _, envelope, _, _, curve = await stage_a_pass._stage_a_assignments(
             SimpleNamespace(sample_item_id="si-1", filename="orbi-sample.raw"),
             PeakAssignmentConfig(),
             SimpleNamespace(isotope_abundance_threshold=0.01),

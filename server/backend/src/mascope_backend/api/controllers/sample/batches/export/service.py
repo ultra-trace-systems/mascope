@@ -34,15 +34,15 @@ from mascope_backend.api.controllers.match.targets.batch.match_targets_batch_con
 from mascope_backend.api.controllers.sample.batches.export.util import (
     auto_adjust_column_width,
 )
-from mascope_backend.api.lib.api_features import (
-    api_controller_background_task,
-)
+from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.new.instruments.registry import model_in_props
 from mascope_backend.api.new.match.records.collection.service import (
     get_match_collection_records,
 )
 from mascope_backend.api.new.peak_assignments.schemas import ScopeVerificationRecord
-from mascope_backend.api.new.peak_assignments.service import get_scope_verifications
+from mascope_backend.api.new.peak_assignments.verification import (
+    get_scope_verifications,
+)
 from mascope_backend.api.new.temp.storage import download_name, user_temp_path
 from mascope_backend.db import Instrument, IonizationMode, SampleFile, async_session
 from mascope_backend.provenance import build_provenance, flatten_provenance

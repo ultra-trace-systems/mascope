@@ -655,7 +655,7 @@ class SourceLineCap:
     measurement), and this leaves it out of the gate's anchors, by the same
     cap (``config.calibrants_over_cap``). A line's share is its height
     averaged over the sample's scans, as the engine reads every peak
-    (``service.load_sample_peaks``), against their mean ion current per scan,
+    (``sample_inputs.load_sample_peaks``), against their mean ion current per scan,
     as the node reads a file's calibrants.
 
     A sample stitched from several scan streams averages each line over its

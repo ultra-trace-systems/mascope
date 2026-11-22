@@ -33,7 +33,7 @@ per-file claims:
    member becomes an isotopologue child of the parent's member, and where the
    sample's in-app run is the one folded, its row on that peak an
    isotopologue child of its row on the parent's peak, recorded on both rows
-   (``service.read_as_batch_isotopologue``). A sample is left as it is where
+   (``batch_lines.read_as_batch_isotopologue``). A sample is left as it is where
    the parent's member reads another reading, where a pre-pass claimed the
    row's member, or where the row's member carries lines of its own there;
    an imported run's rows are another engine's record and are never
@@ -78,6 +78,11 @@ from mascope_backend.api.new.peak_assignments.batch_isotopologues import (
     partition_of,
     trace_centre,
 )
+from mascope_backend.api.new.peak_assignments.batch_lines import (
+    BatchLine,
+    read_as_batch_isotopologue,
+    with_batch_isotopologue_line,
+)
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     MARK_ISOTOPE_LINES,
     MERGED_ISOTOPOLOGUE_OF_KEY,
@@ -109,14 +114,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
 )
 from mascope_backend.api.new.peak_assignments.config import IN_APP_ENGINE
 from mascope_backend.api.new.peak_assignments.engine import SOURCE_MANUAL
-from mascope_backend.api.new.peak_assignments.envelope_claims import (
-    isotopologue_names,
-)
-from mascope_backend.api.new.peak_assignments.service import (
-    BatchLine,
-    read_as_batch_isotopologue,
-    with_batch_isotopologue_line,
-)
+from mascope_backend.api.new.peak_assignments.envelope_claims import isotopologue_names
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,

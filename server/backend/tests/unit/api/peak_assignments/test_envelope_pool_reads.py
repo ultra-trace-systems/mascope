@@ -1,7 +1,7 @@
 """How a thin Orbitrap file's pool reads each of its neighbours (step 3.5b).
 
 ``envelope_fit.read_pool`` picks the neighbours; the service reads each one
-(``service._neighbour_envelope_lines``): its own Stage A first pass at today's
+(``stage_a_pass._neighbour_envelope_lines``): its own Stage A first pass at today's
 numbers, on its own peaks, mechanisms, channels and pre-passes, composed by the
 stage list's resolve and claim stages as the run-less fold composes a sample
 (``pipeline.resolve``, ``pipeline.claim``), under the reading
@@ -22,7 +22,11 @@ import pytest
 
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.new.match.params.lib import instrument_default_match_params
-from mascope_backend.api.new.peak_assignments import envelope_fit, pipeline, service
+from mascope_backend.api.new.peak_assignments import (
+    envelope_fit,
+    pipeline,
+    stage_a_pass,
+)
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import SampleMassAccuracy
 from mascope_backend.api.new.peak_assignments.envelope_fit import RunEnvelopeFit
@@ -35,7 +39,6 @@ from mascope_tools.composition.envelope_tolerance import (
 from mascope_tools.composition.measurement_model import MeasurementModel
 
 
-_SVC = "mascope_backend.api.new.peak_assignments.service"
 _PIPE = "mascope_backend.api.new.peak_assignments.pipeline"
 
 #: The neighbour's own setup carries a labelled reagent at this purity.
@@ -88,7 +91,7 @@ def _first_pass(purity_seen: list) -> AsyncMock:
 
     async def first_pass(*args, **kwargs):
         purity_seen.append(custom_elements._LABEL_PURITY.get())
-        return service._StageAFirstPass(
+        return stage_a_pass._StageAFirstPass(
             rows=[{"role": "M0"}],
             scored=pd.DataFrame({"frame": [1]}),
             matched=pd.DataFrame({"frame": [1]}),
@@ -120,22 +123,29 @@ class TestANeighbourIsReadByItsOwnFirstPass:
 
         with (
             patch(
-                f"{_SVC}.load_sample_peaks", side_effect=on_thread("peaks", PEAKS)
+                "mascope_backend.api.new.peak_assignments.stage_a_pass.load_sample_peaks",
+                side_effect=on_thread("peaks", PEAKS),
             ) as load,
             patch(
-                f"{_SVC}.sample_label_purity",
+                "mascope_backend.api.new.peak_assignments.stage_a_pass.sample_label_purity",
                 AsyncMock(return_value=NEIGHBOUR_PURITY),
             ) as purity,
             patch(f"{_PIPE}.resolve", resolve) as inputs,
             patch(f"{_PIPE}.claim", claim) as claimed,
-            patch(f"{_SVC}._stage_a_first_pass", _first_pass(purity_seen)) as first,
             patch(
-                f"{_SVC}.envelope_lines",
+                "mascope_backend.api.new.peak_assignments.stage_a_pass._stage_a_first_pass",
+                _first_pass(purity_seen),
+            ) as first,
+            patch(
+                "mascope_backend.api.new.peak_assignments.stage_a_pass.envelope_lines",
                 MagicMock(side_effect=on_thread("lines", lines)),
             ) as read,
-            patch(f"{_SVC}.fit_run_envelope_tolerance", new_callable=AsyncMock) as fit,
+            patch(
+                "mascope_backend.api.new.peak_assignments.stage_a_pass.fit_run_envelope_tolerance",
+                new_callable=AsyncMock,
+            ) as fit,
         ):
-            got = await service._neighbour_envelope_lines(
+            got = await stage_a_pass._neighbour_envelope_lines(
                 neighbour, config, match_params
             )
 
@@ -200,8 +210,10 @@ class TestANeighbourIsReadByItsOwnFirstPass:
         ids=["blank", "unverified calibration"],
     )
     async def test_one_the_engine_would_not_run_is_refused(self, neighbour):
-        with patch(f"{_SVC}.load_sample_peaks") as load:
-            got = await service._neighbour_envelope_lines(
+        with patch(
+            "mascope_backend.api.new.peak_assignments.stage_a_pass.load_sample_peaks"
+        ) as load:
+            got = await stage_a_pass._neighbour_envelope_lines(
                 neighbour, PeakAssignmentConfig(), SimpleNamespace()
             )
 
@@ -221,10 +233,13 @@ class TestANeighbourIsReadByItsOwnFirstPass:
             return peaks
 
         with (
-            patch(f"{_SVC}.load_sample_peaks", side_effect=load),
+            patch(
+                "mascope_backend.api.new.peak_assignments.stage_a_pass.load_sample_peaks",
+                side_effect=load,
+            ),
             patch(f"{_PIPE}.resolve", new_callable=AsyncMock) as inputs,
         ):
-            got = await service._neighbour_envelope_lines(
+            got = await stage_a_pass._neighbour_envelope_lines(
                 _neighbour(), PeakAssignmentConfig(), SimpleNamespace()
             )
 
@@ -241,7 +256,7 @@ class TestStageAReadsItsNeighboursUnderItsOwnInputs:
     async def test_the_reader_carries_the_run_s_config_and_match_parameters(self):
         config = PeakAssignmentConfig(run_untargeted=False, max_alternatives=2)
         match_params = SimpleNamespace(isotope_abundance_threshold=0.02)
-        first = service._StageAFirstPass(
+        first = stage_a_pass._StageAFirstPass(
             rows=[],
             scored=pd.DataFrame(),
             matched=pd.DataFrame(),
@@ -259,17 +274,19 @@ class TestStageAReadsItsNeighboursUnderItsOwnInputs:
         neighbour = _neighbour()
         with (
             patch(
-                f"{_SVC}._stage_a_first_pass", AsyncMock(return_value=first)
+                "mascope_backend.api.new.peak_assignments.stage_a_pass._stage_a_first_pass",
+                AsyncMock(return_value=first),
             ) as first_pass,
             patch(
-                f"{_SVC}.fit_run_envelope_tolerance", AsyncMock(return_value=pooled)
+                "mascope_backend.api.new.peak_assignments.stage_a_pass.fit_run_envelope_tolerance",
+                AsyncMock(return_value=pooled),
             ) as fit,
             patch(
-                f"{_SVC}._neighbour_envelope_lines",
+                "mascope_backend.api.new.peak_assignments.stage_a_pass._neighbour_envelope_lines",
                 AsyncMock(return_value=EnvelopeLines()),
             ) as read,
         ):
-            _rows, _, _, envelope, _, _, _ = await service._stage_a_assignments(
+            _rows, _, _, envelope, _, _, _ = await stage_a_pass._stage_a_assignments(
                 _neighbour(sample_item_id="si-1"),
                 config,
                 match_params,
@@ -302,10 +319,13 @@ async def test_a_process_reads_one_neighbour_at_a_time():
         running -= 1
         return EnvelopeLines()
 
-    with patch(f"{_SVC}._read_neighbour_lines", side_effect=read) as reads:
+    with patch(
+        "mascope_backend.api.new.peak_assignments.stage_a_pass._read_neighbour_lines",
+        side_effect=read,
+    ) as reads:
         await asyncio.gather(
             *(
-                service._neighbour_envelope_lines(
+                stage_a_pass._neighbour_envelope_lines(
                     _neighbour(sample_item_id=f"si-{index}"),
                     PeakAssignmentConfig(),
                     SimpleNamespace(),
@@ -358,7 +378,7 @@ async def _until(condition) -> None:
 
 def _read(neighbour, config=None, match_params=None) -> asyncio.Task:
     return asyncio.create_task(
-        service._neighbour_envelope_lines(
+        stage_a_pass._neighbour_envelope_lines(
             neighbour,
             config or PeakAssignmentConfig(run_untargeted=False),
             match_params or _orbi_match_params(),
@@ -375,7 +395,10 @@ class TestRunsReadingOneNeighbourAtOnceShareTheRead:
     @pytest.mark.asyncio
     async def test_two_runs_at_once_read_it_once(self):
         gate = _GatedReads()
-        with patch(f"{_SVC}._read_neighbour_lines", gate):
+        with patch(
+            "mascope_backend.api.new.peak_assignments.stage_a_pass._read_neighbour_lines",
+            gate,
+        ):
             # Equal, not the same objects: each run builds its own.
             first, second = _read(_neighbour()), _read(_neighbour())
             await _until(lambda: gate.reads)
@@ -403,7 +426,10 @@ class TestRunsReadingOneNeighbourAtOnceShareTheRead:
     )
     async def test_never_another_neighbour_nor_under_other_inputs(self, other):
         gate = _GatedReads()
-        with patch(f"{_SVC}._read_neighbour_lines", gate):
+        with patch(
+            "mascope_backend.api.new.peak_assignments.stage_a_pass._read_neighbour_lines",
+            gate,
+        ):
             first = _read(_neighbour())
             second = _read(**{"neighbour": _neighbour(), **other})
             await _until(lambda: gate.reads)
@@ -417,19 +443,25 @@ class TestRunsReadingOneNeighbourAtOnceShareTheRead:
     async def test_a_read_that_has_ended_is_read_afresh(self):
         gate = _GatedReads()
         gate.release.set()
-        with patch(f"{_SVC}._read_neighbour_lines", gate):
+        with patch(
+            "mascope_backend.api.new.peak_assignments.stage_a_pass._read_neighbour_lines",
+            gate,
+        ):
             first = await _read(_neighbour())
             second = await _read(_neighbour())
 
         assert gate.reads == ["si-n", "si-n"]
         assert first is not second
         # Nothing of either is kept.
-        assert service._neighbour_reads_in_flight[asyncio.get_running_loop()] == {}
+        assert stage_a_pass._neighbour_reads_in_flight[asyncio.get_running_loop()] == {}
 
     @pytest.mark.asyncio
     async def test_a_run_cancelled_while_it_waits_leaves_the_read_to_the_rest(self):
         gate = _GatedReads()
-        with patch(f"{_SVC}._read_neighbour_lines", gate):
+        with patch(
+            "mascope_backend.api.new.peak_assignments.stage_a_pass._read_neighbour_lines",
+            gate,
+        ):
             first, second = _read(_neighbour()), _read(_neighbour())
             await _until(lambda: gate.reads)
             await asyncio.sleep(0)
@@ -445,7 +477,10 @@ class TestRunsReadingOneNeighbourAtOnceShareTheRead:
     @pytest.mark.asyncio
     async def test_a_read_no_run_waits_on_any_more_is_stopped(self):
         gate = _GatedReads()
-        with patch(f"{_SVC}._read_neighbour_lines", gate):
+        with patch(
+            "mascope_backend.api.new.peak_assignments.stage_a_pass._read_neighbour_lines",
+            gate,
+        ):
             first = _read(_neighbour())
             await _until(lambda: gate.reads)
             first.cancel()
@@ -465,7 +500,10 @@ class TestRunsReadingOneNeighbourAtOnceShareTheRead:
     @pytest.mark.asyncio
     async def test_a_read_that_fails_fails_every_run_on_it_and_is_not_kept(self):
         gate = _GatedReads(fail=RuntimeError("the peak file went away"))
-        with patch(f"{_SVC}._read_neighbour_lines", gate):
+        with patch(
+            "mascope_backend.api.new.peak_assignments.stage_a_pass._read_neighbour_lines",
+            gate,
+        ):
             first, second = _read(_neighbour()), _read(_neighbour())
             await _until(lambda: gate.reads)
             await asyncio.sleep(0)
@@ -503,7 +541,7 @@ async def test_two_thin_runs_pooling_at_once_read_each_neighbour_once():
         return envelope_fit.read_pool(
             thin(name),
             {"polarity": "-"},
-            service._neighbour_reader(
+            stage_a_pass._neighbour_reader(
                 PeakAssignmentConfig(run_untargeted=False), _orbi_match_params()
             ),
         )
@@ -517,7 +555,10 @@ async def test_two_thin_runs_pooling_at_once_read_each_neighbour_once():
             "acquisition_settings",
             AsyncMock(return_value={"polarity": "-"}),
         ),
-        patch(f"{_SVC}._read_neighbour_lines", side_effect=read),
+        patch(
+            "mascope_backend.api.new.peak_assignments.stage_a_pass._read_neighbour_lines",
+            side_effect=read,
+        ),
     ):
         together = await asyncio.gather(pool("si-a"), pool("si-b"))
         reads_together = list(reads)

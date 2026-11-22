@@ -53,13 +53,13 @@ from mascope_backend.api.new.peak_assignments.batch_known_species import (
     KEPT_ON_TWIN,
     KEPT_TARGET_LIBRARY,
 )
+from mascope_backend.api.new.peak_assignments.batch_lines import BatchLine
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.reagent_pass import (
     REASON_BATCH_KNOWN_SPECIES,
     REASON_BATCH_WATER_LADDER,
     BatchSpecies,
 )
-from mascope_backend.api.new.peak_assignments.service import BatchLine
 from mascope_tools.composition.reagents import ReagentCluster, ion_mz, water_ladders
 
 
@@ -919,12 +919,14 @@ class TestTheStageListsInputs:
             patch.object(pipeline, "resolve_profile", return_value=resolved),
             patch.object(pipeline, "named_context_for", return_value=None),
             patch.object(
-                pipeline.service,
+                pipeline.sample_mechanisms,
                 "_resolve_secondary_channels",
                 return_value=(resolved, []),
             ),
-            patch.object(pipeline.service, "_searched_mechanisms", return_value=[]),
-            patch.object(pipeline.service, "_resolution_of", return_value=None),
+            patch.object(
+                pipeline.sample_mechanisms, "_searched_mechanisms", return_value=[]
+            ),
+            patch.object(pipeline.sample_inputs, "_resolution_of", return_value=None),
         ):
             await pipeline.resolve(ctx)
 
@@ -974,7 +976,7 @@ class TestTheElectStageReadsThem:
             return 0
 
         with patch.object(
-            pipeline.service, "_record_same_ion_readings", side_effect=families
+            pipeline.stage_a_pass, "_record_same_ion_readings", side_effect=families
         ):
             await pipeline.elect(ctx)
 
@@ -1010,7 +1012,7 @@ class TestTheElectStageReadsThem:
         ctx.decided = dict(ctx.batch.listed)
         ctx.stage_a = [_row("p", "C10H16O4", sample_peak_mz=199.0976)]
         with patch.object(
-            pipeline.service, "_record_same_ion_readings", return_value=0
+            pipeline.stage_a_pass, "_record_same_ion_readings", return_value=0
         ):
             await pipeline.elect(ctx)
 
@@ -1055,7 +1057,7 @@ class TestTheElectStageReadsThem:
         ctx.stage_a = [own, library]
         ctx.stage_b = [_row("x", OTHER, sample_peak_mz=200.101)]
         with patch.object(
-            pipeline.service, "_record_same_ion_readings", return_value=0
+            pipeline.stage_a_pass, "_record_same_ion_readings", return_value=0
         ):
             await pipeline.elect(ctx)
         assert ctx.listed_outcomes == {
@@ -1072,10 +1074,10 @@ class TestTheElectStageReadsThem:
         rows = ctx.stage_a + ctx.stage_b
         # The premise: the new fit alone puts the lifted reading below.
         unheld = {r["sample_peak_id"]: r for r in deepcopy(rows)}
-        pipeline.service.rescore_rows(list(unheld.values()), fits, bands)
+        pipeline.judging_loop.rescore_rows(list(unheld.values()), fits, bands)
         assert unheld["d"]["tier"] == "below_assignability"
 
-        pipeline.service.rescore_rows(rows, fits, bands, floors=ctx.floors)
+        pipeline.judging_loop.rescore_rows(rows, fits, bands, floors=ctx.floors)
 
         tiers = {r["sample_peak_id"]: r["tier"] for r in rows}
         assert own["provenance"]["evidence"] == pytest.approx(0.1)
@@ -1114,8 +1116,12 @@ class TestWhatTheStagesTookIsNoReadings:
         ctx.decided = dict(ctx.batch.listed)
         stored = ctx.peaks_df.assign(mz=[exact * (1 - 3e-6), 199.0976, 200.101])
         with (
-            patch.object(pipeline.service, "_source_axis", return_value=stored),
-            patch.object(pipeline.service, "_record_same_ion_readings", return_value=0),
+            patch.object(
+                pipeline.sample_mechanisms, "_source_axis", return_value=stored
+            ),
+            patch.object(
+                pipeline.stage_a_pass, "_record_same_ion_readings", return_value=0
+            ),
         ):
             await pipeline.elect(ctx)
         [row] = ctx.stage_a
@@ -1128,7 +1134,9 @@ class TestWhatTheStagesTookIsNoReadings:
         ctx.reagent_peak_ids = {"x"}
         ctx.stage_a = [_row("p", "C10H16O4", sample_peak_mz=199.0976)]
         with (
-            patch.object(pipeline.service, "_record_same_ion_readings", return_value=0),
+            patch.object(
+                pipeline.stage_a_pass, "_record_same_ion_readings", return_value=0
+            ),
         ):
             await pipeline.elect(ctx)
         assert [r["sample_peak_id"] for r in ctx.stage_a + ctx.stage_b] == ["p"]
@@ -1147,7 +1155,7 @@ class TestTheReaderReadsWhatItIsAsked:
                 batch_decisions.batch_known_species, "batch_species_for", species
             ),
             patch.object(batch_decisions, "rungs_for", rungs),
-            patch.object(batch_decisions.service, "batch_series_by_peak", series),
+            patch.object(batch_decisions.batch_lines, "batch_series_by_peak", series),
             patch.object(batch_decisions, "member_decisions", members),
             patch.object(batch_decisions, "stage_versions", AsyncMock(return_value={})),
         ):
@@ -1191,7 +1199,9 @@ class TestTheReaderReadsWhatItIsAsked:
             ),
             patch.object(batch_decisions, "rungs_for", reading("rungs", ())),
             patch.object(
-                batch_decisions.service, "batch_series_by_peak", reading("series", {})
+                batch_decisions.batch_lines,
+                "batch_series_by_peak",
+                reading("series", {}),
             ),
             patch.object(
                 batch_decisions, "member_decisions", reading("members", ({}, {}))
@@ -1227,7 +1237,9 @@ class TestALineOffAnUnreadPeak:
         ctx = _context(strips={"x": STRIP})
         ctx.stage_a = [_row("p", "C10H16O4", sample_peak_mz=199.0976)]
         with (
-            patch.object(pipeline.service, "_record_same_ion_readings", return_value=0),
+            patch.object(
+                pipeline.stage_a_pass, "_record_same_ion_readings", return_value=0
+            ),
         ):
             await pipeline.elect(ctx)
         rows = {r["sample_peak_id"]: r for r in ctx.stage_a}

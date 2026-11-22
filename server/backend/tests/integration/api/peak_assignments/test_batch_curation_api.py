@@ -35,7 +35,7 @@ from mascope_backend.api.new.peak_assignments import (
     batch_stages,
     batch_untargeted,
     pipeline,
-    service,
+    sample_inputs,
 )
 from mascope_backend.api.new.peak_assignments.batch_coherence import (
     _write_records as _write_co_variation_records,
@@ -51,9 +51,7 @@ from mascope_backend.api.new.peak_assignments.batch_curation import (
     release_batch_peak_curation,
     run_batch_peak_curation,
 )
-from mascope_backend.api.new.peak_assignments.batch_import import (
-    write_engine_verdicts,
-)
+from mascope_backend.api.new.peak_assignments.batch_import import write_engine_verdicts
 from mascope_backend.api.new.peak_assignments.batch_isotopologues import (
     _write_records as _write_stamping_records,
 )
@@ -1436,7 +1434,7 @@ async def test_a_pin_is_asked_the_spectrums_rules_as_a_hand_assignment_is(
     # A noise estimate, so the ion's 13C line is one the spectrum would show,
     # and a peak above it, so its m/z is inside what the spectrum reads.
     monkeypatch.setattr(
-        service,
+        sample_inputs,
         "load_sample_peaks",
         lambda sample: frame([("p1", 181.0707, 5000.0), ("p9", 250.0, 50.0)]).assign(
             signal_to_noise=100.0

@@ -14,12 +14,12 @@ from unittest.mock import AsyncMock, patch
 import pandas as pd
 import pytest
 
-import mascope_backend.api.new.peak_assignments.service as service
 from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
     FileLines,
     lines_at_file,
 )
-from mascope_backend.api.new.peak_assignments.service import (
+from mascope_backend.api.new.peak_assignments import sample_inputs
+from mascope_backend.api.new.peak_assignments.sample_inputs import (
     _build_reference_isotopes_df,
     _fetch_reference_known_isotopes,
 )
@@ -27,8 +27,6 @@ from mascope_reference import KnownComposition, KnownIdentity
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS, labelled_purity
 from mascope_tools.composition.profiles import KNOWN_WINDOW_CEILING
 
-
-_MOD = "mascope_backend.api.new.peak_assignments.service"
 
 #: An Orbitrap file with no resolution read: its fine lines as they are.
 _FINE = FileLines("HIGH")
@@ -141,25 +139,29 @@ class TestReferenceExpansionCache:
 
     @pytest.fixture(autouse=True)
     def _fresh_cache(self):
-        service._reference_isotope_cache.clear()
+        sample_inputs._reference_isotope_cache.clear()
         yield
-        service._reference_isotope_cache.clear()
+        sample_inputs._reference_isotope_cache.clear()
         patch.stopall()
 
     def _patches(self, fingerprints, built_df):
-        patch(f"{_MOD}.async_session", side_effect=lambda: _session_ctx()).start()
+        patch(
+            "mascope_backend.api.new.peak_assignments.sample_inputs.async_session",
+            side_effect=lambda: _session_ctx(),
+        ).start()
         fingerprint = patch(
-            f"{_MOD}.known_state_fingerprint",
+            "mascope_backend.api.new.peak_assignments.sample_inputs.known_state_fingerprint",
             new_callable=AsyncMock,
             side_effect=fingerprints,
         ).start()
         known = patch(
-            f"{_MOD}.iter_known_compositions",
+            "mascope_backend.api.new.peak_assignments.sample_inputs.iter_known_compositions",
             new_callable=AsyncMock,
             return_value=[_known("C10H16O3", 184.1099, ["Pinonic acid"])],
         ).start()
         build = patch(
-            f"{_MOD}._build_reference_isotopes_df", return_value=built_df
+            "mascope_backend.api.new.peak_assignments.sample_inputs._build_reference_isotopes_df",
+            return_value=built_df,
         ).start()
         return fingerprint, known, build
 

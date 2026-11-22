@@ -25,12 +25,28 @@ from mascope_tools.composition.envelope_tolerance import (
 )
 
 
-_SVC = "mascope_backend.api.new.peak_assignments.service"
 #: The stage list, which looks the library's names up in its own module.
 _PIPE = "mascope_backend.api.new.peak_assignments.pipeline"
 #: What Stage A hands on of a tolerance it fitted nothing for: today's numbers.
 NO_ENVELOPE_FIT = RunEnvelopeFit(fit_envelope_tolerance(FORM_DEFAULT, EnvelopeLines()))
 _CTL = "mascope_backend.api.new.peak_assignments.batch_peaks_controller"
+
+
+#: The modules of the run's path that read a file's instrument type.
+_INSTRUMENT_READERS = ("sample_inputs", "model_readers", "stage_a_pass", "judging_loop")
+
+
+def _instrument_type(**kwargs) -> ExitStack:
+    """Patch the instrument type wherever the run's path reads it."""
+    stack = ExitStack()
+    for module in _INSTRUMENT_READERS:
+        stack.enter_context(
+            patch(
+                f"mascope_backend.api.new.peak_assignments.{module}.get_instrument_type",
+                **kwargs,
+            )
+        )
+    return stack
 
 
 def _stage_a_row(sample_item_id: str, run_id: str) -> dict:
@@ -91,20 +107,30 @@ def _patched(
         # The fold takes the same admission an explicit run does, so both halves
         # of it are patched here rather than reaching the database.
         "claim": stack.enter_context(
-            patch(f"{_SVC}.assignment_claim", _claim(acquired))
+            patch(
+                "mascope_backend.api.new.peak_assignments.batch_fold.assignment_claim",
+                _claim(acquired),
+            )
         ),
         "in_flight": stack.enter_context(
             patch(
-                f"{_SVC}.in_flight_run_id",
+                "mascope_backend.api.new.peak_assignments.batch_fold.in_flight_run_id",
                 new_callable=AsyncMock,
                 return_value=in_flight,
             )
         ),
         "fetch": stack.enter_context(
-            patch(f"{_SVC}.fetch_sample", new_callable=AsyncMock, return_value=sample)
+            patch(
+                "mascope_backend.api.new.peak_assignments.batch_fold.fetch_sample",
+                new_callable=AsyncMock,
+                return_value=sample,
+            )
         ),
         "ineligible": stack.enter_context(
-            patch(f"{_SVC}.ineligible_reason", return_value=ineligible)
+            patch(
+                "mascope_backend.api.new.peak_assignments.batch_fold.ineligible_reason",
+                return_value=ineligible,
+            )
         ),
         "params": stack.enter_context(
             patch(
@@ -138,12 +164,14 @@ def _patched(
         ),
         "series": stack.enter_context(
             patch(
-                f"{_SVC}.batch_series_by_peak", new_callable=AsyncMock, return_value={}
+                "mascope_backend.api.new.peak_assignments.batch_lines.batch_series_by_peak",
+                new_callable=AsyncMock,
+                return_value={},
             )
         ),
         "peaks": stack.enter_context(
             patch(
-                f"{_SVC}.load_sample_peaks",
+                "mascope_backend.api.new.peak_assignments.sample_inputs.load_sample_peaks",
                 return_value=pd.DataFrame(
                     {
                         "sample_peak_id": ["p1", "p2"],
@@ -155,7 +183,7 @@ def _patched(
         ),
         "mechanisms": stack.enter_context(
             patch(
-                f"{_SVC}.fetch_sample_mechanisms",
+                "mascope_backend.api.new.peak_assignments.sample_mechanisms.fetch_sample_mechanisms",
                 new_callable=AsyncMock,
                 return_value=(["m-h"], []),
             )
@@ -164,13 +192,16 @@ def _patched(
         # nitrogen check reads through as a run does. None unless a test says.
         "secondary": stack.enter_context(
             patch(
-                f"{_SVC}.fetch_mechanisms_by_notation",
+                "mascope_backend.api.new.peak_assignments.sample_mechanisms.fetch_mechanisms_by_notation",
                 new_callable=AsyncMock,
                 return_value=[],
             )
         ),
         "stage_a": stack.enter_context(
-            patch(f"{_SVC}._stage_a_assignments", new_callable=AsyncMock)
+            patch(
+                "mascope_backend.api.new.peak_assignments.stage_a_pass._stage_a_assignments",
+                new_callable=AsyncMock,
+            )
         ),
         # The context the sample's batch and dataset name lives with them in
         # the database; none unless a test says.
@@ -185,7 +216,11 @@ def _patched(
         # in. None unless a test says: the instrument functions live in the
         # database.
         "resolution": stack.enter_context(
-            patch(f"{_SVC}._resolution_of", new_callable=AsyncMock, return_value=None)
+            patch(
+                "mascope_backend.api.new.peak_assignments.sample_inputs._resolution_of",
+                new_callable=AsyncMock,
+                return_value=None,
+            )
         ),
         "fold": stack.enter_context(
             patch(
@@ -197,7 +232,10 @@ def _patched(
         # Where the fold keeps the model it scored the sample at, which has
         # no run to record it on.
         "kept_model": stack.enter_context(
-            patch(f"{_SVC}.record_sample_model", new_callable=AsyncMock)
+            patch(
+                "mascope_backend.api.new.peak_assignments.model_readers.record_sample_model",
+                new_callable=AsyncMock,
+            )
         ),
     }
     mocks["stage_a"].return_value = (
@@ -214,7 +252,7 @@ def _patched(
 
 @pytest.mark.asyncio
 async def test_folds_stage_a_and_the_placeholders_without_persisting():
-    from mascope_backend.api.new.peak_assignments.service import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         fold_sample_peaks_without_run,
     )
 
@@ -249,8 +287,8 @@ async def test_folds_stage_a_and_the_placeholders_without_persisting():
 async def test_the_fold_keeps_the_model_it_scored_the_sample_at():
     # MAS-725: the fold has no run to record its model on, so it keeps it for
     # the sample, in the shape a run's config holds it, and every reader
-    # outside a run reads it there (``service.recorded_measurement``).
-    from mascope_backend.api.new.peak_assignments.service import (
+    # outside a run reads it there (``model_readers.recorded_measurement``).
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         fold_sample_peaks_without_run,
     )
     from mascope_tools.composition.measurement_model import MeasurementModel
@@ -276,10 +314,10 @@ async def test_the_fold_keeps_the_model_it_scored_the_sample_at():
 async def test_a_fold_that_takes_v2_keeps_v2_for_the_sample():
     # The refit moves the centre beyond the bound: the fold scores and caps at
     # v2, and keeps v2, not the v1 it ranked at, for every reader outside it.
-    from mascope_backend.api.new.peak_assignments.mass_gate import MassCalibration
-    from mascope_backend.api.new.peak_assignments.service import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         fold_sample_peaks_without_run,
     )
+    from mascope_backend.api.new.peak_assignments.mass_gate import MassCalibration
     from mascope_tools.composition.measurement_model import MeasurementModel
 
     stack, mocks = _patched()
@@ -307,7 +345,7 @@ async def test_the_fold_runs_every_stage_of_the_list():
     # The fold is the stage list's INGEST_FOLD path: the known set alone
     # proposed, every stage from resolving the chemistry to keeping the rows.
     from mascope_backend.api.new.peak_assignments import pipeline
-    from mascope_backend.api.new.peak_assignments.service import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         fold_sample_peaks_without_run,
     )
 
@@ -336,13 +374,10 @@ async def test_the_fold_runs_every_stage_of_the_list():
 async def test_the_fold_reads_labelled_lines_at_its_setups_purity():
     # MAS-905: every stage of the fold reads a labelled reagent's lines at the
     # purity the sample's setup carries, as a run of it does.
-    from mascope_backend.api.new.peak_assignments.service import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         fold_sample_peaks_without_run,
     )
-    from mascope_tools.composition.custom_elements import (
-        CUSTOM_ELEMENTS,
-        label_purity,
-    )
+    from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS, label_purity
 
     stack, mocks = _patched()
     mocks["purity"].return_value = 0.9
@@ -370,7 +405,7 @@ async def test_stage_a_is_told_where_the_reagent_lines_put_the_axis():
     scored at zero on this ledger and at its reagent lines' offset in the run
     that later replaces it.
     """
-    from mascope_backend.api.new.peak_assignments.service import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         fold_sample_peaks_without_run,
     )
     from mascope_tools.composition.reagents import reagent_library
@@ -380,7 +415,7 @@ async def test_stage_a_is_told_where_the_reagent_lines_put_the_axis():
     labels = ("[CH4N2O+H]+", "[(CH4N2O)2+H]+", "[(CH4N2O)3+H]+")
     stack, mocks = _patched()
     # An Orbitrap, whose scoring width 1.3 ppm is beyond.
-    stack.enter_context(patch(f"{_SVC}.get_instrument_type", return_value="orbi"))
+    stack.enter_context(_instrument_type(return_value="orbi"))
     stack.enter_context(patch(f"{_PIPE}.get_instrument_type", return_value="orbi"))
     mocks["peaks"].return_value = pd.DataFrame(
         {
@@ -416,7 +451,7 @@ async def test_stage_a_is_told_where_the_reagent_lines_put_the_axis():
 async def test_the_fold_claims_the_source_s_lines_at_the_files_resolution(read):
     """The pre-pass reads an isotope line as one peak of the file here as a run
     does, or the two ledgers disagree about which peaks are the source's."""
-    from mascope_backend.api.new.peak_assignments.service import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         fold_sample_peaks_without_run,
     )
     from mascope_tools.composition.heuristic_filter import predict_resolved_isotopes
@@ -429,7 +464,7 @@ async def test_the_fold_claims_the_source_s_lines_at_the_files_resolution(read):
     # The urea dimer's peak one mass unit up on a TOF, 19 ppm under its 13C line.
     mzs, _, labels = predict_resolved_isotopes("C2H9N4O2", 1, 1e-3, tof)
     stack, mocks = _patched()
-    stack.enter_context(patch(f"{_SVC}.get_instrument_type", return_value="orbi"))
+    stack.enter_context(_instrument_type(return_value="orbi"))
     stack.enter_context(patch(f"{_PIPE}.get_instrument_type", return_value="orbi"))
     mocks["peaks"].return_value = pd.DataFrame(
         {
@@ -475,7 +510,7 @@ async def test_the_fold_gates_its_stage_a_rows_as_a_run_does():
     reference mirror won it. A fold that skipped the gate would hold those rows
     at a tier the run takes from them.
     """
-    from mascope_backend.api.new.peak_assignments.service import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         fold_sample_peaks_without_run,
     )
 
@@ -525,7 +560,7 @@ async def test_the_fold_anchors_its_gate_on_the_source_s_lines_as_a_run_does(
     three ladder ions they are enough, here as in a run, and the row off
     calibration is capped on this ledger as the run that replaces it caps it.
     """
-    from mascope_backend.api.new.peak_assignments.service import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         fold_sample_peaks_without_run,
     )
     from mascope_tools.composition.reagents import reagent_library
@@ -545,7 +580,7 @@ async def test_the_fold_anchors_its_gate_on_the_source_s_lines_as_a_run_does(
     ladder = {cluster.label: cluster.mz for cluster in reagent_library("UR")}
     labels = ("[CH4N2O+H]+", "[(CH4N2O)2+H]+", "[(CH4N2O)3+H]+")
     stack, mocks = _patched()
-    stack.enter_context(patch(f"{_SVC}.get_instrument_type", return_value="orbi"))
+    stack.enter_context(_instrument_type(return_value="orbi"))
     stack.enter_context(patch(f"{_PIPE}.get_instrument_type", return_value="orbi"))
     mocks["peaks"].return_value = pd.DataFrame(
         {
@@ -612,7 +647,7 @@ async def test_the_fold_reads_an_isotopologue_s_line_as_a_run_does(
 ):
     """An isotopologue that misses its parent is held on this ledger too, and
     the gate reads its line off the same spectrum and resolution a run does."""
-    from mascope_backend.api.new.peak_assignments.service import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         fold_sample_peaks_without_run,
     )
 
@@ -651,7 +686,7 @@ async def test_the_fold_reads_an_isotopologue_s_line_as_a_run_does(
 
     stack, mocks = _patched()
     # An Orbitrap, whose lines track their parents within 0.9 ppm.
-    stack.enter_context(patch(f"{_SVC}.get_instrument_type", return_value="orbi"))
+    stack.enter_context(_instrument_type(return_value="orbi"))
     stack.enter_context(patch(f"{_PIPE}.get_instrument_type", return_value="orbi"))
     mocks["stage_a"].return_value = (
         rows,
@@ -695,7 +730,7 @@ async def test_the_fold_asks_a_mirror_rows_nitrogen_count_as_a_run_does(
     fold does as well. Where it does not, no run reads that channel and the row
     keeps its tier.
     """
-    from mascope_backend.api.new.peak_assignments.service import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         fold_sample_peaks_without_run,
     )
 
@@ -752,7 +787,7 @@ async def test_the_fold_reads_a_list_through_the_channels_a_run_opens():
     A charge-transfer source declares electron transfer alone; methyl loss,
     the siloxanes' base peak there, is a channel the run opens for itself.
     """
-    from mascope_backend.api.new.peak_assignments.service import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         fold_sample_peaks_without_run,
     )
 
@@ -790,7 +825,7 @@ async def test_the_fold_reads_a_list_through_the_channels_a_run_opens():
         mechanism("m-h", "[M+H]+"),
     ]
     with stack:
-        stack.enter_context(patch(f"{_SVC}.get_instrument_type", return_value="orbi"))
+        stack.enter_context(_instrument_type(return_value="orbi"))
         stack.enter_context(patch(f"{_PIPE}.get_instrument_type", return_value="orbi"))
         assert await fold_sample_peaks_without_run("si-1") == "batch-1"
 
@@ -815,7 +850,7 @@ async def test_the_fold_climbs_the_ladders_through_the_channels_a_run_opens(
     so the fold resolves them first: an ethanol less a hydride holding a
     second ethanol is the source's ion only where the run abstracts a hydride,
     a channel a charge-transfer mode does not declare."""
-    from mascope_backend.api.new.peak_assignments.service import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         fold_sample_peaks_without_run,
     )
     from mascope_tools.composition.reagents import ion_mz
@@ -840,7 +875,7 @@ async def test_the_fold_climbs_the_ladders_through_the_channels_a_run_opens(
     mocks["mechanisms"].return_value = (["m-ct"], [mechanism("m-ct", "[M]+.")])
     mocks["secondary"].return_value = [mechanism("m-hy", "[M-H]+")] if abstracts else []
     with stack:
-        stack.enter_context(patch(f"{_SVC}.get_instrument_type", return_value="orbi"))
+        stack.enter_context(_instrument_type(return_value="orbi"))
         stack.enter_context(patch(f"{_PIPE}.get_instrument_type", return_value="orbi"))
         assert await fold_sample_peaks_without_run("si-1") == "batch-1"
 
@@ -854,7 +889,7 @@ async def test_the_pre_passes_claims_are_folded_and_kept_out_of_stage_a():
     """The reagent pre-pass claims first and the artifact pass after it, never
     a peak the first took; both passes' rows reach the ledger, and Stage A is
     offered neither's peaks, as in a run."""
-    from mascope_backend.api.new.peak_assignments.service import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         fold_sample_peaks_without_run,
     )
     from mascope_tools.composition.reagents import reagent_library
@@ -862,7 +897,7 @@ async def test_the_pre_passes_claims_are_folded_and_kept_out_of_stage_a():
     ladder = {cluster.label: cluster.mz for cluster in reagent_library("UR")}
     labels = ("[CH4N2O+H]+", "[(CH4N2O)2+H]+", "[(CH4N2O)3+H]+")
     stack, mocks = _patched()
-    stack.enter_context(patch(f"{_SVC}.get_instrument_type", return_value="orbi"))
+    stack.enter_context(_instrument_type(return_value="orbi"))
     stack.enter_context(patch(f"{_PIPE}.get_instrument_type", return_value="orbi"))
     mocks["peaks"].return_value = pd.DataFrame(
         {
@@ -887,7 +922,7 @@ async def test_the_pre_passes_claims_are_folded_and_kept_out_of_stage_a():
     )
     artifact = stack.enter_context(
         patch(
-            f"{_SVC}.claim_artifact_peaks",
+            "mascope_backend.api.new.peak_assignments.prepasses.claim_artifact_peaks",
             side_effect=lambda df, *_args: df[df["sample_peak_id"] == "p-lobe"],
         )
     )
@@ -911,7 +946,7 @@ async def test_the_pre_passes_claims_are_folded_and_kept_out_of_stage_a():
 async def test_an_ineligible_sample_is_skipped_and_nothing_is_written():
     """A blank, or a sample whose calibration is unverified, is refused a run;
     it is refused a fold on the same grounds, and nothing reaches the batch."""
-    from mascope_backend.api.new.peak_assignments.service import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         fold_sample_peaks_without_run,
     )
 
@@ -932,7 +967,7 @@ async def test_a_sample_with_a_run_in_flight_is_not_folded():
     while its `peak_assignment` rows stayed. The run folds itself when it
     completes, so nothing is lost by standing down.
     """
-    from mascope_backend.api.new.peak_assignments.service import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         fold_sample_peaks_without_run,
     )
 
@@ -948,7 +983,7 @@ async def test_a_sample_with_a_run_in_flight_is_not_folded():
 async def test_a_sample_another_worker_holds_is_not_folded():
     """The claim is what makes the stand-down hold across workers: the
     in-process set only knows about folds this process started."""
-    from mascope_backend.api.new.peak_assignments.service import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         fold_sample_peaks_without_run,
     )
 
@@ -977,9 +1012,7 @@ class TestTheFoldClaimsInTheRunsWindow:
         from mascope_backend.api.new.peak_assignments import pipeline
 
         seen = {}
-        stack.enter_context(
-            patch(f"{_SVC}.get_instrument_type", side_effect=instrument)
-        )
+        stack.enter_context(_instrument_type(side_effect=instrument))
         stack.enter_context(
             patch(f"{_PIPE}.get_instrument_type", side_effect=instrument)
         )
@@ -994,7 +1027,7 @@ class TestTheFoldClaimsInTheRunsWindow:
 
     @pytest.mark.asyncio
     async def test_the_instrument_class_reaches_the_profile(self):
-        from mascope_backend.api.new.peak_assignments.service import (
+        from mascope_backend.api.new.peak_assignments.batch_fold import (
             fold_sample_peaks_without_run,
         )
 
@@ -1009,7 +1042,7 @@ class TestTheFoldClaimsInTheRunsWindow:
     async def test_the_context_the_batch_names_reaches_the_profile(self):
         # Step 3.6: the fold resolves the context a run of the sample would,
         # the one its batch or dataset names.
-        from mascope_backend.api.new.peak_assignments.service import (
+        from mascope_backend.api.new.peak_assignments.batch_fold import (
             fold_sample_peaks_without_run,
         )
 
@@ -1029,7 +1062,7 @@ class TestTheFoldClaimsInTheRunsWindow:
         That is the width a run stands in, so a fold and a run on the same thin
         sample score its Stage A rows alike.
         """
-        from mascope_backend.api.new.peak_assignments.service import (
+        from mascope_backend.api.new.peak_assignments.batch_fold import (
             fold_sample_peaks_without_run,
         )
 
@@ -1052,7 +1085,7 @@ class TestTheFoldClaimsInTheRunsWindow:
         from dataclasses import replace
 
         from mascope_backend.api.new.peak_assignments import pipeline
-        from mascope_backend.api.new.peak_assignments.service import (
+        from mascope_backend.api.new.peak_assignments.batch_fold import (
             fold_sample_peaks_without_run,
         )
         from mascope_tools.composition.profiles import (
@@ -1069,9 +1102,7 @@ class TestTheFoldClaimsInTheRunsWindow:
 
         stack, mocks = _patched()
         with stack:
-            stack.enter_context(
-                patch(f"{_SVC}.get_instrument_type", return_value="orbi")
-            )
+            stack.enter_context(_instrument_type(return_value="orbi"))
             stack.enter_context(
                 patch(f"{_PIPE}.get_instrument_type", return_value="orbi")
             )
@@ -1090,7 +1121,7 @@ class TestTheFoldClaimsInTheRunsWindow:
         """The parse raises for a sample that keeps no data file and whose name
         does not say. Standing down is this path's contract, so the fold reads
         it defensively and carries on with no class."""
-        from mascope_backend.api.new.peak_assignments.service import (
+        from mascope_backend.api.new.peak_assignments.batch_fold import (
             fold_sample_peaks_without_run,
         )
 
@@ -1110,12 +1141,10 @@ class TestTheFoldClaimsInTheRunsWindow:
 async def test_the_fold_takes_its_batchs_word_as_a_run_does():
     """The reagent pre-pass reads the batch's known species on this path too
     (step 4.2h), so the two ledgers agree on which peaks are the source's."""
-    from mascope_backend.api.new.peak_assignments.reagent_pass import (
-        batch_species_from,
-    )
-    from mascope_backend.api.new.peak_assignments.service import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         fold_sample_peaks_without_run,
     )
+    from mascope_backend.api.new.peak_assignments.reagent_pass import batch_species_from
     from mascope_tools.composition.reagents import ion_mz
 
     species = batch_species_from(
@@ -1135,7 +1164,7 @@ async def test_the_fold_takes_its_batchs_word_as_a_run_does():
             return_value=[species],
         )
     )
-    stack.enter_context(patch(f"{_SVC}.get_instrument_type", return_value="orbi"))
+    stack.enter_context(_instrument_type(return_value="orbi"))
     stack.enter_context(patch(f"{_PIPE}.get_instrument_type", return_value="orbi"))
     mocks["peaks"].return_value = pd.DataFrame(
         {
@@ -1165,20 +1194,27 @@ async def test_the_fold_takes_its_batchs_word_as_a_run_does():
 
 @pytest.mark.asyncio
 async def test_the_folds_mass_gate_reads_the_sources_lines_by_the_calibrant_cap():
-    from mascope_backend.api.new.peak_assignments import service
-    from mascope_backend.api.new.peak_assignments.mass_gate import SourceLineCap
-    from mascope_backend.api.new.peak_assignments.service import (
+    from mascope_backend.api.new.peak_assignments import judging_loop
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         fold_sample_peaks_without_run,
     )
+    from mascope_backend.api.new.peak_assignments.mass_gate import SourceLineCap
 
     cap = SourceLineCap(tic=1.0e6, tic_share_max=0.25)
     stack, _mocks = _patched()
     with stack:
         stack.enter_context(
-            patch(f"{_SVC}._source_line_cap", new_callable=AsyncMock, return_value=cap)
+            patch(
+                "mascope_backend.api.new.peak_assignments.judging_loop._source_line_cap",
+                new_callable=AsyncMock,
+                return_value=cap,
+            )
         )
         gate = stack.enter_context(
-            patch(f"{_SVC}.measure_mass_gate", wraps=service.measure_mass_gate)
+            patch(
+                "mascope_backend.api.new.peak_assignments.judging_loop.measure_mass_gate",
+                wraps=judging_loop.measure_mass_gate,
+            )
         )
         await fold_sample_peaks_without_run("si-1")
 
@@ -1189,9 +1225,9 @@ async def test_the_folds_mass_gate_reads_the_sources_lines_by_the_calibrant_cap(
 async def test_the_folds_second_channel_cap_is_told_what_the_lists_name():
     """As a run's is: the neutrals the lists Stage A read name reach the
     second-channel cap, which reads them as a reading's corroboration
-    (``service.Judging.cap``), with the channels the run opened."""
-    from mascope_backend.api.new.peak_assignments import service
-    from mascope_backend.api.new.peak_assignments.service import (
+    (``judging_loop.Judging.cap``), with the channels the run opened."""
+    from mascope_backend.api.new.peak_assignments import judging_loop
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         fold_sample_peaks_without_run,
     )
 
@@ -1208,7 +1244,10 @@ async def test_the_folds_second_channel_cap_is_told_what_the_lists_name():
     )
     with stack:
         cap = stack.enter_context(
-            patch(f"{_SVC}.cap_second_channel", wraps=service.cap_second_channel)
+            patch(
+                "mascope_backend.api.new.peak_assignments.judging_loop.cap_second_channel",
+                wraps=judging_loop.cap_second_channel,
+            )
         )
         assert await fold_sample_peaks_without_run("si-1") == "batch-1"
 
@@ -1219,10 +1258,10 @@ async def test_the_folds_second_channel_cap_is_told_what_the_lists_name():
 @pytest.mark.asyncio
 async def test_the_fold_reads_a_fragment_as_the_source_s_as_a_run_does():
     """The fold settles its readings as a run's rounds do
-    (``service.Judging.judge``), the fragment claim among them: a list's
+    (``judging_loop.Judging.judge``), the fragment claim among them: a list's
     reading of a fragment of a committed parent is folded as the source's
     ion."""
-    from mascope_backend.api.new.peak_assignments.service import (
+    from mascope_backend.api.new.peak_assignments.batch_fold import (
         fold_sample_peaks_without_run,
     )
     from mascope_tools.composition.reagents import FragmentIon, FragmentLadder
