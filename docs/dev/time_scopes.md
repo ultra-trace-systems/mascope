@@ -447,7 +447,7 @@ decisions 8 and 9: both followed from choices already made.
   decision 1 stands and its section 8 cost is paid by the read path here, not
   by throwaway batches; *Make a batch of this range* is its "Create batch
   from this filter" with the scope as the filter; its histogram and the
-  coverage strip are one component (open question 4).
+  coverage strip are one component (decision 13).
 - [`ux_review_2026_10.md`](ux_review_2026_10.md) and MAS-712 / MAS-713: Explore
   and Dashboards are sidebar destinations; the scope strip sits under the top
   bar on every view; the acquisition outline as a calendar is phase 5.

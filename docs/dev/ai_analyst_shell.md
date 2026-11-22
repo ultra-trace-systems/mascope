@@ -5,8 +5,9 @@
 - **Tracked in:** [AI analyst shell](https://linear.app/ultra-trace/project/ai-analyst-shell-2b0a6a7e8af8)
   (Linear, P-MAS-21, filed 2026-11-04: milestones 0 to 5 follow section 4;
   the five decisions of section 5 are MAS-659 to MAS-662 and MAS-665,
-  all taken but MAS-661, which waits for the pre-registered thresholds;
-  MAS-662 stays open until its batch-report brief is filed;
+  all taken: MAS-661's thresholds were pre-registered on 2026-11-22, and
+  MAS-662 closed that day with its batch-report brief filed as the stub
+  MAS-1124;
   milestone 0's test issues are MAS-666 to MAS-668, with MAS-669 asking
   for the owner's bench modules; the rest follow the decisions; since
   2026-11-06 also the open items of the AI layer project, P-MAS-12, which
@@ -397,9 +398,10 @@ wrong. Each question runs at least three times per model, since a single
 conversation measures nothing and five repetitions detected only large
 differences in the owner's evaluation. A provider error (a 429, a timeout)
 is an infrastructure failure, excluded and counted apart. The thresholds
-are pre-registered: a pilot on one model settles the harness, then the
-thresholds are written into decision 5.3 and hashed before the full matrix
-runs, so they are not fitted to its results. The matrix is re-run whenever
+are pre-registered: they were written into decision 5.3 on 2026-11-22
+(MAS-661), before any full matrix. A pilot on one model settles the
+harness, and the full matrix's run folder records the hash of the commit
+that carries the thresholds, so they are not fitted to its results. The matrix is re-run whenever
 the surface changes (milestones 1 and 2) and whenever a model is added,
 and its table lives in this note. The first three columns are a frontier
 model, a cheap hosted model and an open-weight model a site could run

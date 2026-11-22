@@ -193,8 +193,11 @@ rules that section 3 dictates:
   that, files dropped while the connector's agent is stopped are never
   uploaded, and an outage of more than a few minutes sets files aside on the
   connector, where nobody looks. After a successful upload the agent moves the
-  file into an `uploaded/` folder pruned by age, which gives the restart
-  catch-up its record of what is done and the site a short local copy.
+  file into an `uploaded/` folder pruned by age, which gives the site a
+  short local copy and keeps the drop folder clear of what is done
+  (MAS-966). The restart catch-up's record of what is done is the agent's
+  own state file, not this folder (decided on 2026-11-22, MAS-964; section
+  11).
 - **The share is narrow.** One share per instrument, writable by that
   instrument PC's account alone, and nothing else on the connector reachable
   over SMB: a writable share on another host is the path ransomware takes
@@ -729,9 +732,10 @@ site. (MAS-960, MAS-961, MAS-962, MAS-965, MAS-970.)
 
 **Phase C - the agent survives outages.** Retry connection failures without a
 count (keeping the count for refusals), and catch up at start on files not yet
-uploaded. This matters for every deployment, not only connector sites; how the
-agent knows what it has uploaded is the decision MAS-964. (MAS-963,
-MAS-968.)
+uploaded. This matters for every deployment, not only connector sites. How the
+agent knows what it has uploaded was decided on 2026-11-22 (MAS-964, section
+11): a local record now, the server asked by hash later. (MAS-963, MAS-968,
+MAS-1123.)
 
 **Phase D - the drop folder.** Samba shares and agent services in the
 `connector` role, the `uploaded/` retention, and the write protocol of 4.4 in
