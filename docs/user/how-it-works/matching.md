@@ -31,6 +31,7 @@ Lines under 1 % of the most abundant line that sit less than one FWHM from one a
 A line under 1 % of the most abundant line that sits less than one FWHM from a line over 1 % is added to that line, as the envelope match does: one TOF peak does not separate them. Below about m/z 126 the 15N line is more than half a FWHM from the 13C line, so this is what puts it in the M+1 line. A line under 1 % with no such neighbour stays a line of its own.
 For each line, the total intensity is calculated as the sum of the grouped isotopes, and the mass coordinate is mapped to their weighted center-of-mass.
 A target ion created before this grouping keeps the lines it was given then, from a window started at the lightest isotope; an ion created since, such as one of a compound added or whose formula changed, gets the grouping above.
+An operator brings such ions up to date with the maintenance script `rebuild_tof_target_isotopes` (`docs/maintaining.md`). It replaces the stored lines that differ from what a new ion gets, removes the matches of the TOF samples in the batches those ions reach, and sets those batches to rematch; **Refresh matches** then matches them on the new lines.
 [Peak assignment](peak-assignment.md) does not read these merged lines: it groups each ion's complete fine structure the same way at the file's own resolving power.
 
 ### Instrument-Specific Intensity Quantification

@@ -118,6 +118,9 @@ _FORWARDED_ENV_VARS = [
     "TOF_AUDIT_FAMILY_MIN_PEAKS",
     "TOF_AUDIT_FAMILY_DBE_MAX",
     "TOF_AUDIT_JSON",
+    # rebuild_tof_target_isotopes
+    "REBUILD_TOF_SCOPE",
+    "REBUILD_TOF_COLLECTIONS",
     # recalibrate_tof
     "TOF_RECAL_INSTRUMENT",
     "TOF_RECAL_ACTION",
