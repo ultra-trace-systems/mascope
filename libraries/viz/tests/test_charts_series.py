@@ -12,6 +12,7 @@ chemistry's month, synced once per session) carries most of them;
 
 import dataclasses
 import json
+import re
 import warnings
 
 import numpy as np
@@ -1281,6 +1282,69 @@ def test_each_chart_carries_the_view_context_and_presence(month, kind):
     per_species = {f.split("[].")[1] for f in fields if "[]." in f}
     present = set().union(*(set(e) for e in fig.summary["species"]))
     assert per_species - {"groups"} <= present
+
+
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize(
+    "species, kwargs, says",
+    [
+        ("top:3", {"normalise": "bogus"}, "normalise='bogus'"),
+        (None, {"normalise": "bogus"}, "normalise='bogus'"),
+        (None, {"normalise": ["ion:nope", "ion:ti0001"]}, "'ion:nope'"),
+        (None, {"tz": "Mars/Base"}, "tz='Mars/Base'"),
+        (None, {"start": "not a time"}, "not a time"),
+        (None, {"end": "not a time"}, "not a time"),
+    ],
+)
+def test_each_chart_raises_what_the_view_refuses_as_invalid_chart(
+    month, kind, species, kwargs, says
+):
+    """The view checks these; the chart raises its refusal as InvalidChart,
+    as it does every parameter it cannot draw, with the view's message."""
+    campaign, store = month
+    species = species or _cycles(campaign, "day")[0]
+
+    with pytest.raises(InvalidChart, match=re.escape(says)) as raised:
+        registry.get(kind).build(store, species=species, **kwargs)
+
+    assert raised.value.to_dict()["error"] == "invalid_chart"
+    assert isinstance(raised.value.__cause__, ValueError)
+    assert not isinstance(raised.value.__cause__, InvalidChart)
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_each_chart_raises_an_unknown_species_as_it_is(month, kind):
+    """Already the package's own error, it keeps its code and its nearest
+    names."""
+    campaign, store = month
+
+    with pytest.raises(UnknownSpecies) as raised:
+        registry.get(kind).build(store, species="compound 3")
+
+    assert raised.value.to_dict()["error"] == "unknown_species"
+    assert "compound 03" in raised.value.near
+
+
+@pytest.mark.parametrize(
+    "event, says",
+    [
+        (
+            {"start": "2026-06-10", "end": "2026-06-05"},
+            "events[0]: a span's start is not before its end",
+        ),
+        (
+            {"start": "soon", "end": "2026-06-05"},
+            "events[0]: start='soon' is not a time",
+        ),
+    ],
+)
+def test_species_series_raises_an_event_the_spec_refuses_as_invalid_chart(
+    month, event, says
+):
+    campaign, store = month
+
+    with pytest.raises(InvalidChart, match=re.escape(says)):
+        species_series(store, _cycles(campaign, "day")[0], events=[event])
 
 
 @pytest.mark.parametrize("kind", KINDS)

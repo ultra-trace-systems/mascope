@@ -23,10 +23,13 @@ note's phase 2), with helpers of their own below:
 - **Summaries are plain JSON**: times ISO 8601 with their offset in the
   display zone, NaN as null, a species as ``{key, name, formula}``
   (:func:`summary`).
+- **A parameter it cannot draw raises InvalidChart**, the views' and the
+  spec's refusals included (:func:`refused`).
 """
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
@@ -34,6 +37,7 @@ import pandas as pd
 
 from ..data import views
 from ..data.store import CampaignStore
+from ..errors import InvalidChart, VizError
 from .registry import Param
 from .spec import Context
 from .species import Resolved
@@ -312,6 +316,20 @@ SELDOM = 0.9
 
 #: The most panels a species chart's small multiples hold, a species each.
 MAX_PANELS = 24
+
+
+@contextmanager
+def refused() -> Iterator[None]:
+    """A parameter the views or the spec refuse, raised as
+    :class:`~mascope_viz.errors.InvalidChart` with their message: they
+    raise a ValueError that says what to change, and a chart raises
+    InvalidChart for every parameter it cannot draw."""
+    try:
+        yield
+    except VizError:
+        raise
+    except ValueError as e:
+        raise InvalidChart(str(e)) from e
 
 
 def window_samples(store: CampaignStore, attrs: Mapping[str, Any]) -> pd.DataFrame:

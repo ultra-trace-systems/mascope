@@ -38,7 +38,7 @@ from ..data.store import CampaignStore
 from ..errors import InvalidChart
 from . import common, registry
 from .registry import ChartKind, Param
-from .spec import Axes, Axis, Figure, Panel, subtitle
+from .spec import Axes, Axis, Figure, Panel, _span, subtitle
 from .species import Resolved, resolve
 
 
@@ -205,7 +205,8 @@ def species_series(
     _check(layout, cadence, y, budget)
     spans = _events(events)
     read = {"normalise": normalise, "tz": tz, "start": start, "end": end}
-    resolved = resolve(store, species, **read)
+    with common.refused():
+        resolved = resolve(store, species, **read)
     n = len(resolved.species)
     most = MAX_PANELS if layout == "panels" else MAX_OVERLAID
     if n > most:
@@ -213,7 +214,11 @@ def species_series(
             f"{n} species are more than {layout} hold ({most}): name fewer, or "
             + ("draw them as panels" if layout == "overlay" else "draw two charts")
         )
-    frame, coarsened = _binned(store, resolved.keys, cadence, int(budget), **read)
+    with common.refused():
+        frame, coarsened = _binned(store, resolved.keys, cadence, int(budget), **read)
+        # The spans' times, read in the axis' zone, as the panel will
+        for i, event in enumerate(spans):
+            _span(event, ("time", frame.attrs["tz"]), f"events[{i}]")
     attrs = dict(frame.attrs)
     if not frame["n"].sum():
         raise InvalidChart(

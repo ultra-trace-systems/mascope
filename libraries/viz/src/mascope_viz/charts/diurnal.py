@@ -202,20 +202,24 @@ def diurnal(
             f"{list(night_hours)!r} share an hour"
         )
     read = {"normalise": normalise, "tz": tz, "start": start, "end": end}
-    resolved = resolve(store, species, **read)
+    with common.refused():
+        resolved = resolve(store, species, **read)
     if len(resolved.species) > common.MAX_PANELS:
         raise InvalidChart(
             f"{len(resolved.species)} species are more than "
             f"{common.MAX_PANELS} panels: name fewer"
         )
-    whole = views.diurnal(store, resolved.keys, **read)
+    with common.refused():
+        whole = views.diurnal(store, resolved.keys, **read)
     if not whole["n"].sum():
         raise InvalidChart(
             "No values to draw: no sample in the window holds a value of "
             + ", ".join(s.name for s in resolved.species)
         )
     split = by if by != "none" else None
-    frame = views.diurnal(store, resolved.keys, by=split, **read) if split else whole
+    frame = whole
+    if split:
+        frame = views.diurnal(store, resolved.keys, by=split, **read)
     return _figure(
         store, frame, whole, resolved, split, y, day, night, day_hours, night_hours
     )
