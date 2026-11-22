@@ -485,6 +485,9 @@ def test_a_species_no_batch_of_the_window_reads_has_no_presence(month):
 
 @pytest.mark.parametrize("kind", ["diurnal", "period_boxes"])
 def test_a_species_without_a_value_has_null_numbers_in_any_chart(month, kind):
+    """The formula the second run reads, before the run changed: no sample
+    of it, so every hour of it is sparse, with or without a split, and
+    every week thin, beside the ion's that are not."""
     campaign, store = month
     _, new = campaign.truth.run_change.readings[0]
     ion = _cycles(campaign, "day")[0]
@@ -493,11 +496,24 @@ def test_a_species_without_a_value_has_null_numbers_in_any_chart(month, kind):
 
     entry = _entry(fig, new)
     assert entry["presence"] is None
+    assert _rows(fig, new)["n_samples"].sum() == 0
     if kind == "diurnal":
         assert entry["hour_max"] is None and entry["day_night_ratio"] is None
+        assert entry["sparse_hours"] == list(range(24))
+        assert _entry(fig, ion)["sparse_hours"] == []
+        (note,) = [note for note in fig.notes if "few days" in note]
+        assert note.endswith(f"{entry['name']} (every hour).")
+        split = diurnal(store, [ion, new], by="weekday", end="2026-06-09")
+        for group in _entry(split, new)["groups"]:
+            assert group["sparse_hours"] == list(range(24)), group["group"]
+        assert all(not g["sparse_hours"] for g in _entry(split, ion)["groups"])
     else:
         assert entry["highest_median"] is None
         assert all(p["median"] is None for p in entry["periods"])
+        assert [p["thin"] for p in entry["periods"]] == [True, True]
+        assert entry["thin_periods"] == [p["start"] for p in entry["periods"]]
+        # The ion's first week is whole; its second, a day of it, is thin
+        assert [p["thin"] for p in _entry(fig, ion)["periods"]] == [False, True]
     render.matplotlib(fig)
     render.plotly(fig)
 
@@ -1139,8 +1155,8 @@ def test_a_whole_group_is_the_views_days_of_it_in_a_common_year_or_a_week():
 
 def test_an_hour_under_half_the_typical_hours_samples_is_sparse():
     """The typical hour is the median over the hours sampled at all: an
-    hour with none is sparse beside hours with some, and a cycle sampled in
-    no hour has no sparse hour."""
+    hour with none is sparse beside hours with some, and so is every hour
+    of a cycle sampled in none."""
     day, night = hours((10, 16), "day"), hours((22, 4), "night")
     n_samples = [0] * 14 + [100] * 6 + [50, 49, 100, 100]
 
@@ -1148,7 +1164,9 @@ def test_an_hour_under_half_the_typical_hours_samples_is_sparse():
 
     assert got["sparse_hours"] == [*range(14), 21]
     unsampled = _hours([np.nan] * 24, n=[0] * 24, n_samples=[0] * 24)
-    assert diurnal_module.cycle(unsampled, day, night)["sparse_hours"] == []
+    assert diurnal_module.cycle(unsampled, day, night)["sparse_hours"] == list(
+        range(24)
+    )
     # Against a fuller group's typical hour, every hour of this one
     full = _hours([1.0] * 24, n_samples=[100] * 24)
     assert diurnal_module.cycle(full, day, night, 201.0)["sparse_hours"] == list(

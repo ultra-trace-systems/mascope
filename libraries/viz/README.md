@@ -596,8 +596,9 @@ over `day_hours`, 10:00 to 16:00 by default, over that over `night_hours`,
 22:00 to 04:00), `min_n`, the fewest values of any hour, and
 `sparse_hours`; with `by`, the same per group. An hour sampled on few days
 is no cycle, so an hour is sparse when it holds under half the samples of
-the typical hour, the median over the hours sampled at all, and a note
-names the sparse hours of the lines drawn. With `by`, a group is judged
+the typical hour, the median over the hours sampled at all, or none at
+all, and a note names the sparse hours of the lines drawn: a species no
+batch of the window reads is sparse in every hour. With `by`, a group is judged
 per calendar day of it from the window's first sample to its last, and at
 least per day of a whole one (a month, a season, the week's five weekdays
 or its two weekend days), against the typical hour of the group with the
@@ -610,11 +611,14 @@ on seldom detected species). The diurnal view follows openair's
 `timeVariation` (Carslaw and Ropkins 2012).
 
 `period_boxes` draws a period with under half the samples of the
-species' fullest one, such as the window's first and last, hollow, and
-lists it in the summary's `thin_periods`; each species is judged on its
-own samples, so what is drawn beside it changes none of its periods. The
-summary gives every period's median, `n` and `n_samples`, and the period
-of the highest median among those not thin.
+species' fullest one, such as the window's first and last, or with none
+of it, hollow, and lists it in the summary's `thin_periods`, so a species
+no batch of the window reads is thin in every period. Each species is
+judged on its own samples: what is drawn beside it changes the judgement
+of no period it holds samples in, but it can widen the window by periods
+it holds none of, which are thin. The summary gives every period's
+median, `n` and `n_samples`, and the period of the highest median among
+those not thin.
 
 ## The command line
 
