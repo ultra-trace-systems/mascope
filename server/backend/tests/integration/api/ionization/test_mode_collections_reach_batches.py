@@ -481,6 +481,75 @@ async def test_an_analysis_batch_keeps_its_collections_through_a_rematch(
     assert matched == _with_person(batch, {"cal_a", "diag_a"})
 
 
+# --- a per-sample rematch -------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_per_sample_rematch_leaves_the_batch_to_its_own_rematch(
+    admin_client, async_session_factory, world, batch, monkeypatch
+):
+    """A per-sample rematch moves its one sample onto the current version and
+    matches it against the collections the batch holds: the batch's
+    collections are not one sample's to change, since every other sample of
+    the batch was matched against them. The batch stays flagged, and its own
+    rematch brings the collections and the rest of its samples current."""
+    other_id = gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            SampleItem(
+                sample_item_id=other_id,
+                sample_batch_id=batch["batch_id"],
+                sample_file_id=world["file"],
+                sample_item_name="Collections other item",
+                sample_item_type="ACQUISITION",
+                sample_item_attributes={},
+                polarity="+",
+                tic=1000.0,
+                t0=0.0,
+                t1=60.0,
+                ionization_mode_id=batch["mode_id"],
+                sample_item_utc_created=_NOW,
+            )
+        )
+        await session.commit()
+    new_id = await _edit(
+        admin_client, world, batch, diagnostic_collection_id=world["diag_b"]
+    )
+    assert await _status(async_session_factory, batch["batch_id"]) == "rematch"
+
+    isotope_keys = {world[f"iso_{key}"]: key for key in _COLLECTIONS}
+    matched: set[str] = set()
+
+    async def compute(sample, target_isotopes_df, *args, **kwargs):
+        matched.update(isotope_keys[i] for i in target_isotopes_df["target_isotope_id"])
+        return {"match_isotopes": pd.DataFrame()}
+
+    monkeypatch.setattr(
+        match_controller, "compute_and_create_sample_match_isotope_data", compute
+    )
+    monkeypatch.setattr(
+        match_controller, "send_progress_user_notification", AsyncMock()
+    )
+    await match_controller.rematch_sample(batch["item_id"], process_id=gen_id(8))
+
+    assert await _collections(
+        async_session_factory, world, batch["batch_id"]
+    ) == _with_person(batch, {"cal_a", "diag_a"})
+    assert matched == _with_person(batch, {"cal_a", "diag_a"})
+    async with async_session_factory() as session:
+        modes = dict(
+            (
+                await session.execute(
+                    select(
+                        SampleItem.sample_item_id, SampleItem.ionization_mode_id
+                    ).where(SampleItem.sample_batch_id == batch["batch_id"])
+                )
+            ).all()
+        )
+    assert modes == {batch["item_id"]: new_id, other_id: batch["mode_id"]}
+    assert await _status(async_session_factory, batch["batch_id"]) == "rematch"
+
+
 # --- re-processing into the day's batch ----------------------------------------
 
 
