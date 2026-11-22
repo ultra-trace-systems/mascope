@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from fixtures import specs
+from fixtures.drawn import label_clashes
 from matplotlib.collections import PolyCollection, QuadMesh
 from matplotlib.patches import PathPatch, Rectangle
 from matplotlib.path import Path as MplPath
@@ -1257,6 +1258,83 @@ def test_category_labels_slant_and_thin_to_fit_their_slots(widest, slot, every):
     from mascope_viz.render import mpl
 
     assert mpl.fitted(widest, 20.0, slot, 4.0) == every
+
+
+def _labelled(labels: list[str], columns: int) -> Figure:
+    """Bars of one value per category in *columns* panels."""
+    data = pd.DataFrame(
+        {"label": labels, "count": np.arange(len(labels), dtype=float) + 10}
+    )
+    panels = [
+        Panel(
+            "bars",
+            axes={"y": {"label": "peaks"}},
+            encodings={"x": "label", "y": "count"},
+            title=f"panel {i}",
+        )
+        for i in range(columns)
+    ]
+    return Figure("labels", "Labels", panels=panels, data=data, columns=columns)
+
+
+LONG = [f"a long category name {i:02d}" for i in range(5)]
+TWO = ["a rather long category name one", "a rather long category name two"]
+
+
+@pytest.mark.parametrize(
+    "labels, columns, kept",
+    [
+        # Of different widths, the widest not first: slanted, every one
+        (["a", *LONG], 3, ["a", *LONG]),
+        # Two that overlap level: slanted, the first alone
+        (TWO, 4, TWO[:1]),
+    ],
+)
+def test_category_labels_fit_by_the_widest_from_two_labels_on(labels, columns, kept):
+    """Labels of different widths fit by the widest, wherever it stands,
+    and two labels are fitted as more are."""
+    drawn = render.matplotlib(_labelled(labels, columns))
+
+    assert label_clashes(drawn) == 0
+    for ax in drawn.axes:
+        shown = [t for t in ax.get_xticklabels() if t.get_text()]
+        assert [t.get_text() for t in shown] == kept
+        assert {t.get_rotation() for t in shown} == {45.0}
+
+
+def test_category_labels_are_fitted_on_what_the_laid_out_figure_measures(
+    monkeypatch,
+):
+    """Each panel's fit is asked of its widest and its tallest label, its
+    width over its categories, and the gap in the figure's pixels: those
+    measured on the same layout drawn without the fit."""
+    from mascope_viz.render import mpl
+
+    fig = _labelled(["a", "a long category name", "mid name"], 2)
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            mpl._Drawing, "_fit_categories", lambda self, d: d.draw_without_rendering()
+        )
+        bare = render.matplotlib(fig)
+    asked: list[tuple[float, ...]] = []
+    real = mpl.fitted
+    monkeypatch.setattr(mpl, "fitted", lambda *a: asked.append(a) or real(*a))
+
+    render.matplotlib(fig)
+
+    gap = mpl.LABEL_GAP * theme.get("light").layout.scale
+    # The gap in the figure's pixels is not the gap in CSS pixels
+    assert gap != mpl.LABEL_GAP
+    want = []
+    for ax in bare.axes:
+        boxes = [t.get_window_extent() for t in ax.get_xticklabels()]
+        widest = max(box.width for box in boxes)
+        # The first label is not the widest
+        assert widest > boxes[0].width
+        tallest = max(box.height for box in boxes)
+        want.append((widest, tallest, ax.get_window_extent().width / 3, gap))
+    assert len(asked) == len(want) == 2
+    assert np.ravel(asked) == pytest.approx(np.ravel(want))
 
 
 def test_a_heatmap_draws_a_gap_and_a_blank_cell_apart_on_both_backends():

@@ -12,7 +12,6 @@ chemistry's month, synced once per session) carries most of them;
 
 import dataclasses
 import json
-import math
 import re
 import warnings
 
@@ -20,6 +19,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from fixtures.campaign import POSITIVE, Campaign, generate
+from fixtures.drawn import label_clashes
 from fixtures.server import SCOPE, FakeClient
 
 from mascope_viz import render
@@ -1292,34 +1292,6 @@ def test_a_thin_period_is_hollow_and_flagged(month):
     assert period_boxes(store, _cycles(campaign, "day")[:3]).columns == 2
 
 
-def _label_clashes(drawn) -> int:
-    """Neighbouring x tick labels of a matplotlib figure that overlap: level
-    labels by their extents; slanted ones, which are parallel, when their
-    ticks stand less than a line's height apart across the slant."""
-    from matplotlib.textpath import TextToPath
-
-    drawn.draw_without_rendering()
-    measure = TextToPath()
-    clashes = 0
-    for ax in drawn.axes:
-        labels = [t for t in ax.get_xticklabels() if t.get_visible() and t.get_text()]
-        for a, b in zip(labels, labels[1:]):
-            angle = a.get_rotation()
-            if angle == 0:
-                clashes += a.get_window_extent().x1 > b.get_window_extent().x0
-                continue
-            ticks = ax.transData.transform(
-                [(a.get_position()[0], 0), (b.get_position()[0], 0)]
-            )
-            across = (ticks[1][0] - ticks[0][0]) * math.sin(math.radians(angle))
-            _, line, _ = measure.get_text_width_height_descent(
-                a.get_text(), a.get_fontproperties(), ismath=False
-            )
-            # Points, as pixels of the figure
-            clashes += across < line * drawn.dpi / 72
-    return clashes
-
-
 @pytest.mark.parametrize(
     "period, n_species, slanted, every",
     [("week", 2, True, 1), ("day", 1, True, 2), ("month", 5, False, 1)],
@@ -1336,7 +1308,7 @@ def test_period_boxes_draw_labels_that_do_not_overlap(
 
     drawn = render.matplotlib(fig)
 
-    assert _label_clashes(drawn) == 0
+    assert label_clashes(drawn) == 0
     labels = sorted(set(fig.data["label"]))
     for ax in drawn.axes:
         shown = [t for t in ax.get_xticklabels() if t.get_text()]
