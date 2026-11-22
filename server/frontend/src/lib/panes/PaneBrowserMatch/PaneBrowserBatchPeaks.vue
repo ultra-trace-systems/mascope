@@ -1070,7 +1070,7 @@ watch(
            have their reason. -->
       <Message v-if="!runs.viewingCurrent" severity="info" icon="pi ph ph-clock-counter-clockwise">
         Showing the ledger as {{ viewedRunLabel }} left it, read-only. Verdicts and curation act on
-        the current run; pick it under Run history, in Assign batch's menu, to judge.
+        the current run; Back to current, in the bar above, returns to it to judge.
       </Message>
 
       <!-- Only on a batch of both instrument types: which one's batch peaks

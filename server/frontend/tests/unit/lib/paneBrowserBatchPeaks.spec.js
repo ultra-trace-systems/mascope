@@ -2917,7 +2917,7 @@ describe('PaneBrowserBatchPeaks batch-level verdicts', () => {
 })
 
 describe('PaneBrowserBatchPeaks batch runs', () => {
-  /** Put an earlier run on screen, as the run selector does. */
+  /** Put an earlier run on screen, as Run history does. */
   async function viewEarlierRun(action = 'search_untargeted') {
     app.data.batchPeakRun.viewing = { batch_peak_run_id: 'r-old', action, current: false }
     app.data.batchPeakRun.viewingCurrent = false
@@ -2937,7 +2937,7 @@ describe('PaneBrowserBatchPeaks batch runs', () => {
     const notice = wrapper.findAll('.pane-message').map((message) => message.text())
     expect(notice).toHaveLength(1)
     expect(notice[0]).toContain('as an untargeted search left it, read-only')
-    expect(notice[0]).toContain('pick it under Run history')
+    expect(notice[0]).toContain('Back to current, in the bar above')
   })
 
   it('describes each kind of run in words rather than by its code', async () => {
