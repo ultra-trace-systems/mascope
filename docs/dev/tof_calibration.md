@@ -785,6 +785,13 @@ Code, shipped in releases.
   Built: the record keeps `strong_peaks` (the fifth lowest and highest peak of S/N ≥ 20), and
   the issue fires past 1.25 widths of the span in √m/z (`TOF_MAX_EXTRAPOLATION_SPANS`). The old
   TOF H set reaches 1.57 widths past, the corrected one 0.70, site B's nitrate sets 1.5–2.2.
+  On sampled site files (60 days, at most 2 files per instrument, mode and day; MAS-184's prod
+  job): TOF H's old 41–148 Th set fires on 17 of 36 files (those with strong peaks past ~375 Th,
+  up to 2.19 widths), the corrected 41–228 Th set on none (at most 1.12). The fixed 62–188 Th
+  nitrate set fires on 399 of 612 negative-mode files of both sites (up to 3.8 widths, peaks to
+  1,300 Th); the stored records fire on 36/46 and 44/46 files of site B's two modes fitted on
+  62–188 Th, with both spans in the message. The low end fires only on records whose lowest line
+  sits at 79 Th or higher (14 of 46 files of one mode).
 - **Calibrant hygiene.** Per collection × instrument, the share of recent files in which each
   calibrant is matched, and a flag on calibrant peaks with an unresolved neighbour or a ¹³C line
   beside them (MAS-185).
