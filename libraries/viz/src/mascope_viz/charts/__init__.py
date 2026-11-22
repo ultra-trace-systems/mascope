@@ -3,7 +3,8 @@
 Pandas and NumPy only: a server can build specs without the renderers
 (``docs/dev/visual_digest.md``, section 2.1)."""
 
-from . import registry
+# The chart modules register their kinds as they are imported
+from . import coverage, registry, signal, summary, top  # noqa: F401
 from .registry import ChartKind, Param
 from .spec import (
     CONTEXT_FIELDS,

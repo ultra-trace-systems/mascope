@@ -477,9 +477,11 @@ def _kind(id: str, tier: int = 1, **fields) -> ChartKind:
     )
 
 
-def test_the_registry_holds_no_kind_until_the_charts_land():
-    assert registry.all() == []
-    assert list(registry.ids()) == []
+def test_the_package_registers_its_chart_kinds_on_import():
+    assert {"coverage", "instrument_signal", "scope_summary", "top_species"} <= set(
+        registry.ids()
+    )
+    assert [kind.id for kind in registry.all()] == list(registry.ids())
 
 
 def test_a_kind_is_registered_once_and_found_by_id(kinds):
