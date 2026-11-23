@@ -28,11 +28,13 @@ from mascope_backend.api.new.peak_assignments.engine import (
     fit_isotope_formula,
     formula_identity,
     invert_matches_to_peak_assignments,
-    labelled_isotopes,
-    monoisotopic_row,
     plausibility_for,
     score_ions_by_fit,
     tier_for_evidence,
+)
+from mascope_backend.api.new.peak_assignments.monoisotopic import (
+    labelled_isotopes,
+    monoisotopic_row,
 )
 from mascope_backend.api.new.peak_assignments.row_terms import (
     ROLE_ISO_CHILD,

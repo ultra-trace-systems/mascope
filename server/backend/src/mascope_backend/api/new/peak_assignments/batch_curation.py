@@ -102,6 +102,8 @@ from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.derived_evidence import isotopologue_rows
 from mascope_backend.api.new.peak_assignments.engine import (
     evidence_for,
+)
+from mascope_backend.api.new.peak_assignments.monoisotopic import (
     monoisotopic_row,
 )
 from mascope_backend.api.new.peak_assignments.pipeline import PERSONS_CHOICE
