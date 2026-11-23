@@ -5002,6 +5002,56 @@ the testbed: its Orbitrap files are 10-microscan, but for L's one file and
 two 1-microscan files outside the gate sets. The scripts sit with the
 testbed tooling.
 
+### After step 5.3b, a merged isotope line read by height (2026-11-23)
+
+MAS-1040 (mascope#3338). The engine run in-process on a migrated copy of the
+demo dataset (demo bundle 1.4.4), once on develop (`03cf94af2`) and once on
+the branch at each `sum_span` of 0.1, 0.2 and 0.3 FWHM, each on its own
+copy of the database: 25 samples of the uronium batch (Du, every fourth by
+file name plus the four of mascope#3338) and 20 of the bromide batch (Db,
+every fourth). A merged line is an isotopologue row whose isotope formula
+names more than one member. Nq, the bench's third Orbitrap set, is not on
+the demo and was not read this way; its card is the bench's.
+
+**The span.** Median absolute abundance error of the merged lines, on the
+peaks every span reads as a merged line:
+
+| set | lines | develop | 0.1 | 0.2 | 0.3 |
+|---|---|---|---|---|---|
+| Du | 4,458 | 0.0746 (all 4,435) | 0.0659 | 0.0663 | 0.0652 |
+| Db | 1,184 | 0.0990 (all 1,188) | 0.0896 | 0.0896 | 0.0914 |
+| pooled | 5,642 | 0.0786 (all 5,623) | 0.0706 | 0.0709 | 0.0702 |
+
+The signed median is -0.036 to -0.039 on every span. Every paired
+difference between two spans is under 0.002, and a bootstrap over samples
+(2,000 draws) puts its 95 % interval across zero for every pair pooled and
+on Db; on Du alone 0.3 is lower than 0.1 by 0.0007 (interval -0.0017 to
+-0.0001). The spans tie. The smaller span on a tie would be 0.1, but at 0.1
+the 17O line no longer adds to the 13C line where the brief says it must:
+13C and 17O are 0.16 to 0.19 FWHM apart at m/z 400 to 450, and the 17O
+line is 1.4 to 1.9 % of the 13C line's share there. So `HEIGHT_SUM_SPAN`
+is 0.2, the smallest of the three that keeps it.
+
+**The siloxanes of mascope#3338.** The four samples hold 92 silicon lines
+that develop before MAS-977 (`fbe518ea9~1`, the MAS-977 A/B copy) read as
+Stage A isotopologues. On develop 85 of them still are, and they read a
+median 0.017 lower (46 lower by over 0.02, 36 by over 0.05). On the branch
+at 0.2, 89 are, and they read a median 0.000 from before MAS-977 (3 lower
+by over 0.02, none by over 0.05; the `[30Si]2` M+4 line of
+`C11H35N2O6Si5+` reads 0.02 lower, the share of the members within the
+span). The M+3 and M+4 lines of `C11H35N2O6Si5+` are Stage A isotopologues
+on all three sides on the three samples where it is read. Its M+2 peak is the monoisotopic line of
+another library ion on all three sides. The three that leave are M+2 lines
+of two smaller siloxanes, each the monoisotopic line of another library ion
+on develop and the branch alike.
+
+**What else moves** (develop -> 0.2). On Du, 184 peaks change role or
+source: 58 search readings become Stage A isotopologues and 46 go the other
+way. On Db, 352: 212 peaks develop left unassigned are committed by the
+search, all of them bromine and sulfur ions (145 below assignability, 67 at
+candidate, none assigned), whose M+2 line holds the 81Br and 34S lines
+2 mDa apart and is now read as the 81Br line's height.
+
 ## The step table as it stood on 2026-10-22
 
 | step | PR | state |

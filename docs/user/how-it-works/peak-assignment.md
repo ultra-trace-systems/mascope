@@ -720,7 +720,21 @@ the search's readings, the composition fit the API serves, the reagent pass and 
 check that reads a line, the check that reads a peak as a neighbour's isotope line
 (*a neighbour's isotope line*, below) among them. On an Orbitrap the same holds at its
 resolving power: lines closer than half a peak width, such as a 13C and a 17O line, are
-one line. A line too
+one line. What that line predicts depends on what the file's intensity is:
+
+- **On a TOF**, a peak's intensity is its area, which holds every line under the peak.
+  The merged line is the sum of its members' shares, at their abundance-weighted m/z.
+- **On an Orbitrap**, a peak's intensity is its height, and the peak sits on its
+  brightest member. A member a third or half a peak width away is on that member's
+  flank and adds little to the top of the peak. So the merged line is its brightest
+  member: that member's m/z and share, plus the shares of members within a fifth of a
+  peak width of it, such as a 13C and a 17O line. The members further off are still
+  named on the line, and the peak is still theirs, but they add nothing to its
+  predicted height. On the demo's siloxanes, the `[30Si]` line with a `[29Si]2` line
+  0.44 peak widths above it measures 0.97 to 0.98 of the `[30Si]` member alone, and
+  0.81 to 0.85 of the two members' sum.
+
+A line too
 faint to predict on its own still counts when it sits less than one peak width from a
 line that is predicted: it is added to that line, since one peak that wide holds both.
 Two such faint lines less than one peak width apart that are bright enough together are

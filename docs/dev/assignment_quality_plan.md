@@ -3,8 +3,8 @@
 # Closing the assignment quality gap: the work, step by step
 
 - **Status:** building
-- **As of:** 2026-11-18
-- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73, MAS-408 to MAS-410, MAS-443, MAS-568 to MAS-570, MAS-609, MAS-708, MAS-709, MAS-777, MAS-823 to MAS-841, MAS-860, MAS-870, MAS-881, MAS-890, MAS-908, MAS-922 and MAS-938 to MAS-946)
+- **As of:** 2026-11-23
+- **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c) (Linear, MAS-37 to MAS-73, MAS-408 to MAS-410, MAS-443, MAS-568 to MAS-570, MAS-609, MAS-708, MAS-709, MAS-777, MAS-823 to MAS-841, MAS-860, MAS-870, MAS-881, MAS-890, MAS-908, MAS-922, MAS-938 to MAS-946 and MAS-1040)
 - **What:** The step-by-step plan closing the assignment quality gap: stages, gates, decisions and risks.
 
 ## Status
@@ -127,6 +127,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 5.1 - the reference pinned at a release, a boundary review per peaky release | - |  | planned 2026-10-13; the first review is the section below; readiness check against the reference's main on 2026-10-22: nothing new to bin, 0.10.0 still uncut |
 | 5.2 - decoy arms in the gate: a shifted axis and swapped adducts through the in-app engine | #2981 |  | built: a `decoy` block on the run config (`mz_shift_ppm`, `mz_shift_da`, `swap_adducts`), every stage at the control's calibration and envelope tolerance, the arm on the run row and out of the fold, the listing, the verdicts and the retention quota; `compare_runs.py --decoy` reports the share held below and above m/z 350; read in the next pass, no target until two gates have read them (decision 31); a shifted arm looks for the source's own ions (the channels' carriers, the reagent lines) on the axis as stored, so it opens and claims what its control did (MAS-720, #2980) |
 | 5.3 - measure the minor-line response: isotope lines by height and by area against expected S/N | - |  | measured 2026-10-16 on the pass-9 ledgers; 3.5b's form decided 2026-10-22 (decision 32) |
+| 5.3b - a merged isotope line read as its file reads it: by height on an Orbitrap | - |  | built: an Orbitrap's merged line is its dominant member, at its m/z, with the members within 0.2 FWHM added (0.1, 0.2 and 0.3 tie on Du and Db; 0.2 keeps the 17O line); TOF unchanged; MAS-1040 |
 | 5.4 - the side lobe's signatures: width-scaled offset and narrowness in the sidelobe flag | - |  | measured, not built (decision MAS-908, 2026-11-16): on the 88 Orbitrap gate files re-detected on develop, the reference's width-scaled rule takes 2,437 of 59,708 kept peaks, 2,338 of them satellites already; over the ratio test it adds 1,061, and since 5.10 the instrument's Exception flag takes 962 of those; at 5.10's isotopologue tolerance it would add 34 peaks, first side lobes on which the engine committed 8 candidate formulas and no assigned one, so no second pass is built; the TOF rider found the reference's flank peaks in Mascope's lists (sets E, F1, F2, J: 844 in the windows against about 290 by chance, 392 committed), and their fix in the picker is step 5.14; the batch rider: a constant ratio alone does not pick out a lobe; MAS-69 |
 | 5.5 - the TOF signal-to-noise column: verify it tracks height, fix the picker or fall back to counting statistics | #2377 | 2026-10-16 | built: the picker's TOF noise is now the baseline's MAD; measured next on E, F, J |
 | 5.6 - the import contract: a verdict on batch rows, the engine tier where the user looks | - |  | built: `engine_tier` and `engine_claim` on a batch import row, kept on the batch peak where its consensus names the row's identity; an Engine tier column, an Engine disagrees filter and an Engine tier view of the strip, off by default; the mechanism table documented as a catalogue; no run or gate number moves; MAS-71; the member rows, the ledger CSV and a sample shown from the batch ledger carry the verdict too (M0 rows reading the consensus only), MAS-727 |
@@ -3140,6 +3141,41 @@ under its milestone 5.
   decided (decision 32) in 3.5b, the per-set tables in the log's block "After step 5.3"
   ([`assignment_quality_plan_log.md`](assignment_quality_plan_log.md)).
 - **Size.** S. Blocks 3.5b.
+
+### 5.3b A merged isotope line read as its file reads it
+
+- **What.** The line model merges an ion's isotope lines within half a
+  FWHM of each other into one line (`line_model.resolve_lines`). On a TOF
+  that line stays the members' summed share at their weighted centre. On an
+  Orbitrap it is its dominant member: that member's m/z, its share plus the
+  shares of the members within `sum_span` of it
+  (`config.HEIGHT_SUM_SPAN`), the members further off named on the line and
+  adding nothing. The run's resolving power says which
+  (`line_model.HeightResolution`, made by `sample_inputs._resolution_of`
+  for an Orbitrap file), so Stage A's known set, the envelope search
+  (`predict_resolved_isotopes`), the seeded chain and the chart change
+  together. The floor's join and fold read the lines the same way.
+- **Why.** A TOF peak's area holds every line under it; an Orbitrap peak's
+  height follows its dominant member, and a member half a FWHM off sits on
+  its flank. Summed, an Orbitrap's merged line was over-predicted and placed
+  off its peak; since MAS-977 Stage A predicts that way too, and the fixed
+  ratio gate turned away siloxane silicon lines that then read low
+  (mascope#3338: on the demo's uronium batch 34 peaks in four samples left
+  Stage A, and G6 on Du rose from 2,229 to 2,346). On the demo's D6
+  `[M+H]+` and D5 urea adduct, whose `[29Si]2` line sits 0.43 to 0.44 FWHM
+  above the `[30Si]` line, the M+2 peak measures 0.97 to 0.98 of the
+  dominant member alone, 0.87 to 0.90 of the two added as Gaussians at the
+  apex, and 0.81 to 0.85 of their sum (decided by the plan owner
+  2026-11-22, MAS-1040).
+- **Where.** `mascope_tools.composition.line_model` (`HeightResolution`,
+  `_line_of`, `resolve_lines`), `config.HEIGHT_SUM_SPAN`,
+  `sample_inputs._resolution_of`; the how-it-works page.
+- **Verify.** The library tests on `C11H35N2O6Si5+` at a resolving power
+  of 83,000; `sum_span` picked from 0.1, 0.2 and 0.3 FWHM by the smallest
+  median absolute abundance error on merged lines (the log's block "After
+  step 5.3b"); the bench card on every set, G6 on Du back to 2,229 or
+  under, no TOF set moved.
+- **Size.** M. MAS-1040, mascope#3338.
 
 ### 5.4 The side lobe's signatures
 
