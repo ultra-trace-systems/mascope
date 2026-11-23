@@ -656,6 +656,48 @@ def test_the_sum_of_a_reagents_ions_takes_their_shares_cycle_out(clusters):
     assert summed.attrs["source"] == "rows"
 
 
+def test_a_key_without_a_name_is_named_by_its_formula_then_its_key(
+    short_clusters, tmp_path, monkeypatch
+):
+    """The server names a target ion without a compound name ``""``: the
+    store keeps no name, and a normaliser is named by its formula, without
+    one by its key. A blank a store synced before still holds is no name
+    either, and a name comes first."""
+    bare, cluster = short_clusters.truth.shares.series_keys
+    client = FakeClient(short_clusters)
+    for batch, ions in client.ions.items():
+        client.ions[batch] = ions.assign(target_compound_name="")
+    store = _sync(client, tmp_path)
+    key = _flat(short_clusters)[0]
+
+    def name() -> str:
+        return views.series(store, key, normalise=[bare, cluster]).attrs[
+            "normalise_name"
+        ]
+
+    assert name() == "I + H2IO"
+    assert views.spectrum(store, normalise=bare).attrs["normalise_name"] == "I"
+    table = store.table
+
+    def planted(**columns):
+        def read(which, **kw):
+            rows = table(which, **kw)
+            if which == "species":
+                at = rows["series_key"] == cluster
+                for column, value in columns.items():
+                    rows.loc[at, column] = value
+            return rows
+
+        monkeypatch.setattr(store, "table", read)
+
+    planted(name=" ")
+    assert name() == "I + H2IO"
+    planted(name=" ", formula="")
+    assert name() == f"I + {cluster}"
+    planted(name="reagent water cluster")
+    assert name() == "I + reagent water cluster"
+
+
 def test_where_a_member_has_no_value_the_sum_is_of_the_others(clusters, cluster_values):
     campaign, store = clusters
     shares = campaign.truth.shares

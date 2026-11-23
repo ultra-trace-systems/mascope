@@ -221,7 +221,10 @@ What every view does the same way:
   `[("ion:<bare>", "ion:<cluster>")]`, is the per-sample sum of its keys,
   by the same rule, keyed by them joined with `+` and named by their names
   joined with ` + `. The reagent's total is then drawn and binned like any
-  other key. A sum has no m/z, so `spectrum` does not take one.
+  other key. A sum has no m/z, so `spectrum` does not take one. In a
+  sum's name and a normaliser's, a key without a name, such as a target
+  ion the server names `""`, is called by its formula, else the key
+  itself; the store keeps a blank name as none.
 - **Time** is UTC in the store. A view shows it in the instrument's
   acquisition zone, or the zone the scope named; `tz=` names another, and
   `tz="instrument"` asks for the instrument's. Bins, hours of day, days,

@@ -17,9 +17,10 @@ import re
 import numpy as np
 import pandas as pd
 import pytest
-from fixtures.campaign import Campaign
+from fixtures.campaign import Campaign, generate
 from fixtures.server import FakeClient
 from test_views import (  # noqa: F401 - short_campaign is a fixture, used by name
+    SHORT_CLUSTERS,
     ZONE,
     _sync,
     short_campaign,
@@ -844,6 +845,44 @@ def test_each_chart_of_a_store_without_a_formula_draws_empty(
 
     assert fig.data.empty
     _drawn(fig)
+
+
+def test_unnamed_reagent_ions_are_named_by_their_formulas(tmp_path):
+    """The server names a target ion without a compound name ``""``: the
+    subtitle and the signal axis name the reagent ions by their formulas,
+    not by a blank."""
+    campaign = generate(SHORT_CLUSTERS, seed=2)
+    reagents = list(campaign.truth.shares.series_keys)
+    client = FakeClient(campaign)
+    for batch, ions in client.ions.items():
+        client.ions[batch] = ions.assign(target_compound_name="")
+    store = _sync(client, tmp_path)
+
+    figures = {
+        "spectrogram": spectrogram(store, normalise=reagents),
+        "period_spectrum": period_spectrum(store, normalise=reagents),
+        "van_krevelen": van_krevelen(store, normalise=reagents),
+    }
+
+    labels = {
+        "spectrogram": (
+            figures["spectrogram"].panels[0].axes.colour.label,
+            "Signal / I + H2IO, bin mean",
+        ),
+        "period_spectrum": (
+            figures["period_spectrum"].panels[0].axes.y.label,
+            "Mean signal / I + H2IO",
+        ),
+        "van_krevelen": (
+            figures["van_krevelen"].panels[0].axes.size.label,
+            "Median signal / I + H2IO",
+        ),
+    }
+    for chart, fig in figures.items():
+        assert "normalised to I + H2IO" in fig.subtitle, chart
+        assert labels[chart][0] == labels[chart][1], chart
+        assert fig.summary["normalise_name"] == "I + H2IO"
+        assert fig.summary["normalise_members"] == reagents
 
 
 def test_a_run_change_of_both_polarities_is_one_change(
