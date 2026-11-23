@@ -5,6 +5,8 @@ The campaign store, synced from the synthetic campaign by
 
 import dataclasses
 import json
+import shutil
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -1447,6 +1449,258 @@ def test_a_batch_removed_by_a_stopped_sync_is_fetched_again(
     assert report.fetched == {gone: "unsaved"}
     assert report.store.status().complete
     assert gone in set(report.store.table("samples")["sample_batch_id"])
+
+
+def _rolled_afresh(store: CampaignStore, tmp_path) -> pd.DataFrame:
+    """The rollups made anew from the tables *store* holds, its stamps as
+    they are."""
+    copy = tmp_path / "rolled-afresh"
+    shutil.copytree(store.path, copy)
+    shutil.rmtree(copy / "rollups", ignore_errors=True)
+    stamps = store.meta["batches"]
+    days = {
+        day
+        for stamp in stamps.values()
+        for day in store_module._days(
+            stamp.get("first_t_mid_utc"), stamp.get("last_t_mid_utc")
+        )
+    }
+    list(store_module._roll_days(CampaignStore(copy), stamps, days))
+    return CampaignStore(copy).table("rollups")
+
+
+@pytest.mark.parametrize("table", BATCH_TABLES)
+def test_a_sync_stopped_at_any_batch_table_leaves_no_rollup_older_than_its_tables(
+    short_campaign, clock, pauses, seconds, monkeypatch, table, tmp_path
+):
+    """Whichever of a batch's tables a stop comes at, the next sync's
+    rollups are those its own tables make, also when the batch's stamp gives
+    no reason to fetch it."""
+    client = FakeClient(short_campaign)
+    last = client.batch_ids[-1]
+    clock["t"] = client.samples_of(last)["datetime_utc"].max() + pd.Timedelta(hours=1)
+    sync(client, SCOPE, root=tmp_path / "store")
+    client.ions[last]["intensity"] *= 2
+    clock["t"] += pd.Timedelta(hours=1)
+    stopper = Stopper(
+        monkeypatch,
+        lambda path: path.parent.name == table and path.stem == last,
+    )
+    with pytest.raises(Stopped):
+        sync(client, SCOPE, root=tmp_path / "store")
+    stopper.disarm()
+
+    clock["t"] += pd.Timedelta(days=3)
+    report = sync(client, SCOPE, root=tmp_path / "store")
+
+    assert report.store.status().complete
+    pd.testing.assert_frame_equal(
+        report.store.table("rollups"), _rolled_afresh(report.store, tmp_path)
+    )
+
+
+@pytest.mark.parametrize("damage", ["cut short", "metadata"])
+def test_a_samples_file_that_cannot_be_read_is_fetched_again(
+    short, clock, seconds, damage, tmp_path
+):
+    client, first = short
+    broken = client.batch_ids[1]
+    path = first.store.path / "samples" / f"{broken}.parquet"
+    before = {t: first.store.table(t) for t in (*BATCH_TABLES, "rollups")}
+    if damage == "cut short":
+        path.write_bytes(path.read_bytes()[:-100])
+    else:
+        arrow = pq.read_table(path)
+        metadata = dict(arrow.schema.metadata)
+        metadata[store_module.METADATA_KEY] = b"{not json"
+        pq.write_table(arrow.replace_schema_metadata(metadata), path)
+
+    report = sync(client, SCOPE, root=tmp_path)
+
+    assert report.fetched == {broken: "unsaved"}
+    assert report.failed == {}
+    assert report.store.status().complete
+    for table, frame in before.items():
+        pd.testing.assert_frame_equal(report.store.table(table), frame)
+    assert sync(client, SCOPE, root=tmp_path).fetched == {}
+
+
+def test_a_batch_with_a_samples_file_that_cannot_be_read_is_removed_all_the_same(
+    short, clock, seconds, tmp_path
+):
+    client, first = short
+    gone = client.batch_ids[1]
+    path = first.store.path / "samples" / f"{gone}.parquet"
+    path.write_bytes(path.read_bytes()[:-100])
+    client.deleted.add(gone)
+
+    report = sync(client, SCOPE, root=tmp_path)
+
+    assert report.removed == (gone,)
+    for table in BATCH_TABLES:
+        assert not (report.store.path / table / f"{gone}.parquet").exists()
+    assert report.store.status().complete
+
+
+def test_a_batch_a_stopped_sync_left_unstamped_is_removed_when_the_scope_drops_it(
+    short_campaign, clock, pauses, seconds, monkeypatch, tmp_path
+):
+    """A first sync stopped in its rollups wrote every batch's tables and
+    some days' rollups, and not one stamp; a batch the server deletes then
+    goes, tables and rollups, as from a store that never held it."""
+    client, reference = FakeClient(short_campaign), FakeClient(short_campaign)
+    gone = client.batch_ids[0]
+    last_day = max(
+        f"{t:%Y-%m-%d}"
+        for b in client.batch_ids
+        for t in client.samples_of(b)["t_mid_utc"]
+    )
+    stopper = Stopper(
+        monkeypatch,
+        lambda path: path.parent.name == "rollups" and path.stem == last_day,
+    )
+    with pytest.raises(Stopped):
+        sync(client, SCOPE, root=tmp_path / "stopped")
+    stopper.disarm()
+    store = CampaignStore(
+        store_path(client, resolve(client, SCOPE), tmp_path / "stopped")
+    )
+    assert store.meta["batches"] == {}
+    assert (store.path / "samples" / f"{gone}.parquet").exists()
+
+    for each in (client, reference):
+        each.deleted.add(gone)
+    report = sync(client, SCOPE, root=tmp_path / "stopped")
+    whole = sync(reference, SCOPE, root=tmp_path / "whole")
+
+    assert report.removed == (gone,)
+    for table in BATCH_TABLES:
+        assert not (report.store.path / table / f"{gone}.parquet").exists()
+    assert report.store.status().complete
+    _same_store_but_times(report.store, whole.store)
+
+
+def _same_store_but_times(store: CampaignStore, other: CampaignStore) -> None:
+    for table in TABLES:
+        pd.testing.assert_frame_equal(store.table(table), other.table(table))
+    rollups = sorted(p.name for p in (store.path / "rollups").glob("*.parquet"))
+    assert rollups == sorted(p.name for p in (other.path / "rollups").glob("*.parquet"))
+    assert _stamps(store.meta).keys() == _stamps(other.meta).keys()
+
+
+def test_days_a_stopped_refetch_added_are_rolled_again_when_the_batch_goes(
+    short_campaign, clock, pauses, seconds, monkeypatch, tmp_path
+):
+    """A refetch gave a batch a day its stamp on disk does not cover, and
+    was stopped before it wrote that stamp; the batch is then deleted, and
+    the sync removing it stopped too. The day's rollup is still made again,
+    without the batch."""
+    # The last two days filed into one batch, its second day not yet listed
+    tables = dict(short_campaign.tables)
+    samples = tables["samples"].copy()
+    last, joined = sorted(set(samples["sample_batch_id"].astype(str)))[-2:]
+    samples["sample_batch_id"] = (
+        samples["sample_batch_id"].astype(str).replace({joined: last})
+    )
+    tables["samples"] = samples
+    campaign = dataclasses.replace(short_campaign, tables=tables)
+    client, reference = FakeClient(campaign), FakeClient(campaign)
+    day_of = samples["t_mid_utc"].dt.strftime("%Y-%m-%d")
+    later = sorted(set(day_of[samples["sample_batch_id"] == last]))[-1]
+    client.hidden |= set(samples.loc[day_of == later, "sample_item_id"].astype(str))
+    sync(client, SCOPE, root=tmp_path / "stopped")
+
+    # The refetch that adds the day is stopped at its last write of store.json
+    client.hidden.clear()
+    write_json, writes = store_module._write_json, []
+
+    def stopping_at_the_end(path, content):
+        # With the clock still, a sync's second write is its last
+        if path.name == "store.json":
+            writes.append(path)
+            if len(writes) == 2:
+                raise Stopped(path)
+        write_json(path, content)
+
+    monkeypatch.setattr(store_module, "_write_json", stopping_at_the_end)
+    with pytest.raises(Stopped):
+        sync(client, SCOPE, root=tmp_path / "stopped")
+    monkeypatch.setattr(store_module, "_write_json", write_json)
+    store = CampaignStore(
+        store_path(client, resolve(client, SCOPE), tmp_path / "stopped")
+    )
+    assert (store.path / "rollups" / f"{later}.parquet").exists()
+    assert store.meta["batches"][last]["last_t_mid_utc"] < later
+
+    # The sync that removes it is stopped at the first rollup it deletes:
+    # its days hold no other batch
+    for each in (client, reference):
+        each.deleted.add(last)
+    unlink, dead = Path.unlink, []
+
+    def stopping_at_a_rollup(path, *args, **kwargs):
+        if path.parent.name == "rollups":
+            dead.append(path)
+            raise Stopped(path)
+        return unlink(path, *args, **kwargs)
+
+    def dead_after(path, content):
+        if dead:
+            raise Stopped(path)
+        write_json(path, content)
+
+    monkeypatch.setattr(Path, "unlink", stopping_at_a_rollup)
+    monkeypatch.setattr(store_module, "_write_json", dead_after)
+    with pytest.raises(Stopped):
+        sync(client, SCOPE, root=tmp_path / "stopped")
+    monkeypatch.setattr(Path, "unlink", unlink)
+    monkeypatch.setattr(store_module, "_write_json", write_json)
+    assert not (store.path / "samples" / f"{last}.parquet").exists()
+    assert (store.path / "rollups" / f"{later}.parquet").exists()
+
+    report = sync(client, SCOPE, root=tmp_path / "stopped")
+    whole = sync(reference, SCOPE, root=tmp_path / "whole")
+
+    assert not (report.store.path / "rollups" / f"{later}.parquet").exists()
+    assert report.store.status().complete
+    _same_store_but_times(report.store, whole.store)
+
+
+def test_a_removal_stopped_between_two_tables_is_finished_by_the_next_sync(
+    short, clock, seconds, monkeypatch, tmp_path
+):
+    client, first = short
+    gone = client.batch_ids[0]
+    client.deleted.add(gone)
+    unlink, unlinked = Path.unlink, []
+
+    def stopping(path, *args, **kwargs):
+        if path.stem == gone and path.parent.name in BATCH_TABLES:
+            unlinked.append(path.parent.name)
+            if len(unlinked) == 2:
+                raise Stopped(path)
+        return unlink(path, *args, **kwargs)
+
+    write_json = store_module._write_json
+
+    def dead_after(path, content):
+        if len(unlinked) >= 2:
+            raise Stopped(path)
+        write_json(path, content)
+
+    monkeypatch.setattr(Path, "unlink", stopping)
+    monkeypatch.setattr(store_module, "_write_json", dead_after)
+    with pytest.raises(Stopped):
+        sync(client, SCOPE, root=tmp_path)
+    monkeypatch.setattr(Path, "unlink", unlink)
+    monkeypatch.setattr(store_module, "_write_json", write_json)
+
+    report = sync(client, SCOPE, root=tmp_path)
+
+    assert report.removed == (gone,)
+    for table in BATCH_TABLES:
+        assert not (report.store.path / table / f"{gone}.parquet").exists()
+    assert report.store.status().complete
 
 
 def test_a_store_written_before_its_tables_named_their_stamp_syncs_as_it_is(
