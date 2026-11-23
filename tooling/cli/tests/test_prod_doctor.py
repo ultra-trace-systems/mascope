@@ -10,6 +10,7 @@ import datetime
 import importlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -680,7 +681,8 @@ def test_secrets_readable_or_writable_by_others_are_open(tmp_path, monkeypatch):
     assert s.dir_writable and s.dir_mode == "0775"
     assert s.backend_uid == uid and s.need_chown == []
     assert doctor.secrets_fix(s) == (
-        f"cd {d} && chmod 600 backup.env mascope.app.key postgres_password.txt"
+        f"cd {shlex.quote(str(d))} && chmod 600"
+        " backup.env mascope.app.key postgres_password.txt"
         " && chmod go-w ."
     )
 
@@ -690,7 +692,9 @@ def test_a_backend_secret_owned_by_another_uid_needs_a_chown(tmp_path, monkeypat
     # Closed where it is, the backend could no longer read it: the fix has to
     # give it to the backend's uid first. A file the backend does not read
     # needs no chown.
-    d = _secrets_dir(tmp_path, postgres_password__txt=0o644, backup__env=0o644)
+    d = _secrets_dir(
+        tmp_path, dir_mode=0o775, postgres_password__txt=0o644, backup__env=0o644
+    )
     other = os.getuid() + 1
     monkeypatch.setattr(
         doctor, "_run", lambda cmd, **k: _completed(stdout=f"{other}\n")
@@ -698,9 +702,32 @@ def test_a_backend_secret_owned_by_another_uid_needs_a_chown(tmp_path, monkeypat
     s = doctor.secrets_status(d, "mascope_prod_backend")
     assert s.need_chown == ["postgres_password.txt"]
     assert doctor.secrets_fix(s) == (
-        f"cd {d} && sudo chown {other} postgres_password.txt"
+        f"cd {shlex.quote(str(d))} && sudo chown {other} postgres_password.txt"
         " && sudo chmod 600 backup.env postgres_password.txt"
+        " && sudo chmod go-w ."
     )
+
+
+@posix_only
+def test_the_fix_quotes_every_path_and_name(tmp_path, monkeypatch):
+    # The directory may be writable by others, so they pick the names: one
+    # with a space, a `;` or a leading dash must stay one plain file argument.
+    home = tmp_path / "my home"
+    home.mkdir()
+    d = _secrets_dir(home, dir_mode=0o775)
+    for name in ("old key.txt", "x;echo PWNED", "-R"):
+        (d / name).write_text("x\n")
+        (d / name).chmod(0o644)
+    monkeypatch.setattr(doctor, "_run", lambda cmd, **k: _completed(returncode=1))
+    fix = doctor.secrets_fix(doctor.secrets_status(d, "mascope_prod_backend"))
+    assert fix == (
+        f"cd '{d}' && chmod 600 ./-R 'old key.txt' 'x;echo PWNED' && chmod go-w ."
+    )
+    assert [shlex.split(step) for step in fix.split(" && ")] == [
+        ["cd", str(d)],
+        ["chmod", "600", "./-R", "old key.txt", "x;echo PWNED"],
+        ["chmod", "go-w", "."],
+    ]
 
 
 @posix_only
@@ -720,7 +747,9 @@ def test_a_stopped_backend_leaves_its_uid_unknown(tmp_path, monkeypatch):
     monkeypatch.setattr(doctor, "_run", lambda cmd, **k: _completed(returncode=1))
     s = doctor.secrets_status(d, "mascope_prod_backend")
     assert s.backend_uid is None and s.need_chown == []
-    assert doctor.secrets_fix(s) == f"cd {d} && chmod 600 postgres_password.txt"
+    assert doctor.secrets_fix(s) == (
+        f"cd {shlex.quote(str(d))} && chmod 600 postgres_password.txt"
+    )
 
 
 def test_no_secrets_directory_is_not_checked(tmp_path):
