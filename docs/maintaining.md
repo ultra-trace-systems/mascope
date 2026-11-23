@@ -17,6 +17,7 @@ Everything below assumes an Ubuntu host provisioned with
 | Start / stop the stack | `mascope prod up --detach` / `mascope prod down` |
 | Container status / logs | `mascope prod ps` / `mascope prod logs --follow` |
 | **Status at a glance** | `mascope prod doctor` (add `--json` to script it) |
+| Close secret files others can read | the command `mascope prod doctor` prints under **Secrets** ([Secret file modes](#secret-file-modes)) |
 | Which settings this server overrides, and in which file | `mascope prod config` (`--all` for every setting) |
 | **Check for an update (applies nothing)** | `mascope prod update --check` |
 | Update now | `mascope prod update` |
@@ -68,13 +69,14 @@ Updates  no pending migration recorded
 Backups  5 local dump(s) · newest 8h ago
 Images   11 images · 6.2GB (2.1GB reclaimable)
 Units    scripts in place
-Secrets  readable by uid 1000
+Secrets  readable by uid 1000 · owner-only
 ```
 
 It exits `0` when the stack is healthy, the running images match the release
 this deployment would deploy, every filesystem is above the free-space
-floor (`MASCOPE_UPDATE_MIN_FREE_GB`), and no installed unit has lost the
-script it runs; `1` otherwise - so it doubles as a
+floor (`MASCOPE_UPDATE_MIN_FREE_GB`), no installed unit has lost the
+script it runs, and no secret file is open to group or others; `1`
+otherwise - so it doubles as a
 monitoring probe. It exits `3`, under a `[WARNING]` header, when all of that
 holds but a filesystem is filling fast enough to reach the floor within
 `MASCOPE_DOCTOR_MIN_DAYS_TO_FLOOR` days (default 7, `0` disables): the Kuma
@@ -146,6 +148,46 @@ move before the stack does. On a wheel install the CLI is the release: after
 `mascope prod up` deploys the new CLI's release (the
 [CLI's README](https://github.com/ultra-trace-systems/mascope/blob/develop/tooling/cli/README.md#the-deployed-release)
 has the steps).
+
+### Secret file modes
+
+**Secrets** also checks the opposite failure: a secret in `.runtime/secrets/`
+that more than its owner can read. Compose mounts each one into the
+containers with the mode it has on the host. A secret that group or
+others can read can be read by every user on the server, and by every uid in
+the containers it is mounted into: a job run in the backend container under
+another uid could read the app's database password. A production job runner
+refuses a server in that state for this reason. `mascope init` and
+`mascope prod up` have created the secrets they generate 0600 since 1.15.0,
+but they never change an existing file. A server set up before that, or whose
+secrets were made by hand at Ubuntu's usual umask (files 0664 in a 0775
+directory), stays open until you close it.
+
+The doctor flags any file there with a group or other permission bit, except
+the two that hold nothing secret (`mascope.app.pem`, `origin_pull_ca.pem`),
+and a directory group or others can write to, since they could replace a
+secret. It prints the command that closes them:
+
+```
+Secrets  OPEN to group/others · jwt_secret_key.txt 0664, postgres_password.txt 0664, directory 0775
+         fix, as deploy: cd /home/deploy/mascope/.runtime/secrets && chmod 600 jwt_secret_key.txt postgres_password.txt && chmod go-w .
+```
+
+Run it as the user named, the files' owner. The backend reads its secrets as
+the uid its image runs as: 1000 for the published image, or the `MASCOPE_UID`
+it was built with. A secret closed to an owner other than that uid is one the
+backend can no longer read. The doctor asks the running backend for its uid.
+When a file the backend reads is owned by another uid, the fix it prints
+starts with `sudo chown <uid>` and runs as root. When the backend is not
+running, it cannot ask, and says so: check `ls -n` against that uid before you
+run the fix. Afterwards run `mascope prod doctor` again. The backend keeps the
+secrets it read at startup, so a restart (`mascope prod up --detach`) is what
+shows it can still read them.
+
+Unlike `UNREADABLE`, an open secret exits `1`, as an unhealthy stack does.
+So the fleet's rollout stops at the first server that has one, after
+updating it, and the Kuma push reports the server down until the files are
+closed.
 
 ## The settings a deployment overrides
 
