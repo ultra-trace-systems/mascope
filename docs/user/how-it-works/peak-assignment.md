@@ -2050,7 +2050,9 @@ completed pass leaves every stage current.
   those bands. A batch that saved none runs on the engine's defaults. They are edited
   through the API (`assignment_settings` on `PATCH /api/sample/batches/{id}`, or
   `mascope.batches.update(batch_id, assignment_settings=...)` in the SDK) and served on
-  the batch's read. A setting the engine does not know, or a value out of its bounds, is
+  the batch's read. A copy of the batch keeps them as the original saved them: a setting
+  the original leaves to the engine's default is left to it in the copy too, and the
+  copy's settings change apart from the original's. A setting the engine does not know, or a value out of its bounds, is
   refused, naming the setting. Saving does not start a pass. It marks the batch behind:
   the batch's assignment status (`GET /api/batch-peaks/batch/{id}/assignment-status`)
   names `settings_changed`, *Assign batch* says *Assignment settings changed since the
@@ -2237,6 +2239,7 @@ peak leaves it.
 
 Seeding is off by default. It is a setting of the batch, `seed_batch_peaks`, set when
 the batch is created or edited through the API (`PATCH /api/sample/batches/{id}`).
+A copy of the batch keeps it, so the copy of a seeded batch is seeded too.
 Turning it on for a batch whose ledger already exists moves no batch peak, because
 batch peaks are never moved once made: only the batch peaks made from then on are
 placed this way, by a new sample or by a pass that folds every sample.
