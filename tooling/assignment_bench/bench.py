@@ -60,6 +60,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -361,10 +362,22 @@ class Home:
         )
 
     def write_private(self, path: Path, text: str) -> None:
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(text, encoding="utf-8")
-        tmp.chmod(0o600)
-        tmp.replace(path)
+        # A temporary name of its own for each write: a reuse records its
+        # card under ``state.lock`` alone, so two writers of one file can
+        # overlap, and with one shared name one's rename would take the
+        # other's file away from under it.
+        fd, name = tempfile.mkstemp(
+            dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+        )
+        tmp = Path(name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(text)
+            tmp.chmod(0o600)
+            tmp.replace(path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
 
 def _try_lock(handle) -> bool:
@@ -440,6 +453,36 @@ def load_state(home: Home, env: str) -> dict:
 def save_state(home: Home, state: dict) -> None:
     state["updated"] = now()
     home.write_private(home.state, json.dumps(state, indent=1) + "\n")
+
+
+#: The keys of the state each command writes; every other key is another's.
+#: A run writes ``cards`` and ``baseline`` (``BenchRun._record``, and
+#: ``BenchRun.baseline`` the latter), ``init`` what it builds and seeds,
+#: ``reference`` the pin's record.
+INIT_KEYS = ("slot", "api_port", "build", "manifest", "seeded", "sets")
+REFERENCE_KEYS = ("reference",)
+
+
+def update_state(home: Home, env: str, state: dict, keys: Iterable[str]) -> None:
+    """Write ``state``'s ``keys`` into the state as it is on disk now.
+
+    A reuse records its card without the bench's lock (``BenchRun.reuse``),
+    so a command that loaded the state before it would drop that card's
+    record by saving its whole copy. Under ``state.lock``, the lock a run's
+    card record takes, this reads the state again and changes only the keys
+    the command owns.
+    """
+    with bench_run.state_guard(home.root):
+        current = load_state(home, env)
+        for key in keys:
+            current[key] = state[key]
+        save_state(home, current)
+
+
+def state_writer(home: Home, env: str, keys: Iterable[str]) -> Callable[[dict], None]:
+    """A ``save_state`` for a command that owns only ``keys``."""
+    keys = tuple(keys)
+    return lambda state: update_state(home, env, state, keys)
 
 
 # --------------------------------------------------------------------- plan
@@ -1846,6 +1889,11 @@ class Bench:
             for path in (self.home.creds, self.home.env_file):
                 path.unlink(missing_ok=True)
             state = new_state(self.instance.env)
+            # A rebuild starts the whole state over, the reference and the
+            # cards with it. Written whole once, here, so a card recorded
+            # after it is kept by init's later saves of its own keys.
+            with bench_run.state_guard(self.home.root):
+                save_state(self.home, state)
 
         todo = plan(m, state)
         if todo.refused:
@@ -1865,7 +1913,7 @@ class Bench:
             # window, a label): recorded, with nothing to start.
             self._record_manifest(m, manifest_path, state)
             self._describe_sets(m, state, truth)
-            save_state(self.home, state)
+            self._save(state)
             log(
                 f"manifest {m.name!r} ({m.digest[:12]}) changed only how its sets are "
                 f"read: recorded in {self.home.state}, nothing started"
@@ -1884,7 +1932,7 @@ class Bench:
                 record.setdefault("build", earlier)
         state["build"] = {"ref": ref, "sha": sha, "at": now()}
         self._record_manifest(m, manifest_path, state)
-        save_state(self.home, state)
+        self._save(state)
 
         log(
             f"env {self.instance.env}, slot {slot}, api :{port}, ref {ref} at {sha[:9]}"
@@ -1897,7 +1945,7 @@ class Bench:
         finally:
             if not keep_running:
                 self.instance.stop()
-        save_state(self.home, state)
+        self._save(state)
         self._summary(m, state)
         if problems:
             log(f"{len(problems)} problem(s):")
@@ -1905,6 +1953,11 @@ class Bench:
                 print(f"  {problem}", flush=True)
             return 1
         return 0
+
+    def _save(self, state: dict) -> None:
+        """Save what ``init`` builds and seeds, and leave the rest of the
+        state as it is on disk (``update_state``)."""
+        update_state(self.home, self.instance.env, state, INIT_KEYS)
 
     def _record_manifest(self, m: Manifest, manifest_path: Path, state: dict) -> None:
         """The manifest's copy beside the state, and its name and digest in it."""
@@ -1979,12 +2032,12 @@ class Bench:
                 f"{len(chosen['target_collections'])} collection(s) from {key}"
             )
             problems += load_seed(api, chosen, key, state["seeded"])
-            save_state(self.home, state)
+            self._save(state)
         if todo.reference_lists:
             log(f"seeding reference lists: {', '.join(todo.reference_lists)}")
             self.instance.reference_seed(todo.reference_lists)
             state["seeded"]["reference_lists"] += todo.reference_lists
-            save_state(self.home, state)
+            self._save(state)
         return problems
 
     def _ingest(
@@ -2527,7 +2580,7 @@ def _main(args) -> int:
                 connect=connect,
                 env_file=home.env_file,
                 load_state=lambda: load_state(home, instance.env),
-                save_state=lambda state: save_state(home, state),
+                save_state=state_writer(home, instance.env, REFERENCE_KEYS),
                 jobs=args.jobs,
                 prepare=prepare,
             )
