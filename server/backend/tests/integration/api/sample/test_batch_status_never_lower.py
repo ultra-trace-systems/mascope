@@ -18,7 +18,8 @@ the status the batch holds. A batch without samples still goes to
 ``ready``, and the socket event carries the status each batch holds, not the
 one asked for. A calibration apply to one file of a batch pending a
 recalibration leaves the batch at ``recalibrate``, and keeps one set while
-the apply ran.
+the apply ran. A batch **Recalibrate** that fails keeps the ``recalibrate``
+it did not do, and one that succeeds keeps another batch's.
 """
 
 from datetime import datetime, timezone
@@ -996,3 +997,148 @@ async def test_a_calibration_apply_leaves_an_acquisition_batch_alone(
 
     assert seen["start"] == "recalibrate"
     assert await _status(async_session_factory, batch_id) == during
+
+
+# ============= A batch recalibration =============
+
+
+async def _recalibrate_batch(
+    monkeypatch, batch_id, result=None, error=None, during=None
+):
+    """Run ``calibration_mz_calibrate_batch`` on ``batch_id`` with the per-sample
+    work mocked out: it runs ``during``, then returns ``result`` or raises
+    ``error``.
+
+    The batch lookups and status writes are real."""
+
+    async def _calibrate_samples(**_):
+        if during is not None:
+            await during()
+        if error is not None:
+            raise error
+        return result
+
+    monkeypatch.setattr(
+        calibration_controller, "calibration_mz_calibrate_samples", _calibrate_samples
+    )
+    await calibration_controller.calibration_mz_calibrate_batch.__wrapped__(
+        sample_batch_id=batch_id,
+        mz_calibration_params=MagicMock(),
+        user_id=None,
+    )
+
+
+def _warning(failed, below_bar):
+    """The warning ``calibration_mz_calibrate_samples`` raises for a run with
+    ``failed`` samples not re-fitted and ``below_bar`` below the quality bar."""
+    return ApiException(
+        user_message="Some samples did not calibrate",
+        tech_message={
+            "summary": {
+                "failed": failed,
+                "below_bar": below_bar,
+                "total": failed + below_bar + 1,
+            },
+            "_notification_data": {"affected_sample_batch_ids": []},
+        },
+        status_code=200,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("before", "error", "after"),
+    [
+        pytest.param(
+            "recalibrate",
+            ApiException("failed", {"error_id": "x"}, 500),
+            "recalibrate",
+            id="recalibrate-error",
+        ),
+        pytest.param(
+            "recalibrate", _warning(failed=1, below_bar=0), "recalibrate", id="failed"
+        ),
+        pytest.param(
+            "recalibrate", _warning(failed=0, below_bar=1), "rematch", id="below-bar"
+        ),
+        pytest.param(
+            "ready",
+            ApiException("failed", {"error_id": "x"}, 500),
+            "rematch",
+            id="ready-error",
+        ),
+    ],
+)
+async def test_a_failed_batch_recalibration_keeps_the_recalibrate_it_owes(
+    async_session_factory,
+    status_dataset,
+    sample_view,
+    monkeypatch,
+    before,
+    error,
+    after,
+):
+    """A batch **Recalibrate** that raises leaves a batch that waited on a
+    recalibration at ``recalibrate`` when some sample was not re-fitted, so a
+    refresh cannot clear it. One whose every sample was re-fitted, some below
+    the quality bar, did the recalibration and goes to ``rematch``, as does a
+    batch that waited on nothing."""
+    batch_id = await _batch(async_session_factory, status_dataset, before)
+
+    with pytest.raises(ApiException):
+        await _recalibrate_batch(monkeypatch, batch_id, error=error)
+
+    assert await _status(async_session_factory, batch_id) == after
+
+
+@pytest.mark.asyncio
+async def test_a_batch_recalibration_keeps_another_batch_pending_recalibrate(
+    async_session_factory, status_dataset, sample_view, monkeypatch
+):
+    """Recalibrating a batch clears its own ``recalibrate`` to ``rematch``, and
+    flags ``rematch`` on the other batches with a sample of a re-fitted file,
+    but one of those waiting on a recalibration keeps it: it still owes it
+    for its other files."""
+    _file_id, (recalibrated, pending, idle) = await _file_in_batches(
+        async_session_factory,
+        status_dataset,
+        ["recalibrate", "recalibrate", "ready"],
+    )
+    result = {
+        "message": "done",
+        "_notification_data": {
+            "affected_sample_batch_ids": [recalibrated, pending, idle],
+        },
+    }
+
+    await _recalibrate_batch(monkeypatch, recalibrated, result=result)
+
+    assert await _status(async_session_factory, recalibrated) == "rematch"
+    assert await _status(async_session_factory, pending) == "recalibrate"
+    assert await _status(async_session_factory, idle) == "rematch"
+
+
+@pytest.mark.asyncio
+async def test_a_batch_recalibration_keeps_a_recalibrate_set_while_it_ran(
+    async_session_factory, status_dataset, sample_view, monkeypatch
+):
+    """A ``recalibrate`` written over the recalibrated batch's ``processing``
+    while its samples were calibrated asked for a recalibration after this
+    one, so the run's final ``rematch`` write keeps it."""
+    batch_id = await _batch(async_session_factory, status_dataset, "ready")
+    seen = {}
+
+    async def _during():
+        seen["start"] = await _status(async_session_factory, batch_id)
+        await service.update_sample_batch_status(
+            sample_batch_ids=[batch_id], status="recalibrate"
+        )
+
+    result = {
+        "message": "done",
+        "_notification_data": {"affected_sample_batch_ids": [batch_id]},
+    }
+    await _recalibrate_batch(monkeypatch, batch_id, result=result, during=_during)
+
+    assert seen["start"] == "processing"
+    assert await _status(async_session_factory, batch_id) == "recalibrate"
