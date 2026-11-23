@@ -1,7 +1,7 @@
 # TOF mass calibration
 
 - **Status:** building
-- **As of:** 2026-11-18
+- **As of:** 2026-11-23
 - **Tracked in:** [TOF mass calibration](https://linear.app/ultra-trace/project/tof-mass-calibration-8271ef05d142) (Linear, MAS-171 to MAS-197)
 - **What:** TOF mass calibration across the analysed range: measure, fix calibrants, model, re-calibrate.
 
@@ -85,6 +85,20 @@ once the pipeline is updated.
 - The three-ion nitrate sets of B2 and B3 ((HNO3)n·NO3−, n = 0–2) leave no spare point: one bad
   match and the fit either fails or keeps the wrong one.
 - The other sites run no TOF.
+- **TOF H changed reagent** after this table (MAS-948). It ran propylamine (+) until 2026-10-28,
+  then nothing, and has run nitrate (−) since 2026-11-10: 798 files to 11-17. Those files bind by
+  their name's token to the site's nitrate mode, which names no instrument. Its collection (the
+  bare reagent, HNO3, (HNO3)2, HNO2 and TFA) was set up for TOF M, and the mode is shared with TOF
+  M's nitrate files through the same token. Everything this note says of TOF H before 2026-11-10
+  is its propylamine mode.
+- **TOF H's nitrate axis drifts.** Its median pre-fit error rose from 14 to 137 ppm a day over
+  11-10 to 11-17, past the refine window the node matched in up to then (100 ppm). On v1.16.0, 314
+  of those files were stored `poor` with a median post-fit of 18–23 ppm. The `ok` ones kept 3–4
+  lines, unscreened by the few-lines bar that 1.17.0 brings
+  ([#2776](https://github.com/ultra-trace-systems/mascope/issues/2776)). The data hold a good
+  fit: the search that finds calibrants by the axis they agree on (MAS-951, section 3) fitted all
+  814 nitrate files its read-only run found over the same days, median 5 lines. TOF H's own
+  nitrate set is milestone 1's, and its files are in milestone 4's scope.
 
 A census of the stored records by kind (the input to re-calibration, section 6):
 
@@ -702,7 +716,9 @@ Configuration on the sites, applied on the plan owner's word and measured before
 - **TOF H**: the corrected set (bare reagent, C3H4, C3H9N, (C3H9N)2 and the 228 Th adduct entered
   as the cluster C13H25NO2), 5 points at 41, 60, 100, 119 and 228 Th, post-fit 3–4 ppm. New files
   calibrate on it from 2026-10-19 (MAS-172, done). The batches of 2026-10-12 to 10-16 (about 600
-  files) and two earlier files are still on the old set (MAS-176).
+  files) and two earlier files are still on the old set (MAS-176). That is its propylamine (+)
+  mode. Since 2026-11-10 TOF H runs nitrate (−) on the mode and collection it shares with TOF M
+  (section 2); a set of its own, and the mode that would carry it, is MAS-948's proposal.
 - **TOF M**: both sets kept as they are (MAS-179, done). A read-only screen with the audit's code,
   on 253 files over the 60 days to 2026-10-28, found no ion above either top calibrant that passes
   the rules. Each axis stays extrapolated above its top calibrant: 241 Th in the bromide/nitrate
@@ -834,7 +850,8 @@ Code, shipped in releases.
 ### 4 · Re-calibrate existing data
 
 Waits for the release that carries milestone 2 and, per instrument, for its calibrant set
-(milestone 1). Section 6.
+(milestone 1). Section 6. TOF H's nitrate files from 2026-11-10 on are in the scope (MAS-196),
+once its nitrate set is decided (MAS-948): none of them was fitted by a node that searches.
 
 ### Order
 
