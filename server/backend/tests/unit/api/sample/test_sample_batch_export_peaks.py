@@ -16,6 +16,7 @@ import pytest
 import xarray as xr
 
 from mascope_backend.api.controllers.sample.batches import sample_batches_controller
+from mascope_sdk import read_export_csv
 
 
 _MOD = "mascope_backend.api.controllers.sample.batches.sample_batches_controller"
@@ -84,10 +85,22 @@ def _peak_store(*args, **kwargs) -> xr.Dataset:
 
 
 async def _run_export(
-    tmp_path, instrument_type=lambda filename: "orbi"
+    tmp_path, instrument_type=lambda filename: "orbi", **names
 ) -> pd.DataFrame:
+    return pd.read_csv(await _export_file(tmp_path, instrument_type, **names), sep=";")
+
+
+async def _export_file(
+    tmp_path,
+    instrument_type=lambda filename: "orbi",
+    batch_name="Test batch",
+    item_name=None,
+) -> str:
+    """Run the export; the path of the CSV it wrote."""
     samples = {"item-1": _sample_view("item-1", "file-1")}
     samples["item-2"] = _sample_view("item-2", "file-2")
+    if item_name is not None:
+        samples["item-1"]["sample_item_name"] = item_name
 
     with (
         patch(
@@ -96,7 +109,7 @@ async def _run_export(
                 return_value={
                     "data": {
                         "sample_batch_id": "batch-1",
-                        "sample_batch_name": "Test batch",
+                        "sample_batch_name": batch_name,
                         "dataset_id": "dataset-1",
                     }
                 }
@@ -128,7 +141,7 @@ async def _run_export(
     ):
         result = await _export("batch-1", user_id=1, process_id="process-1")
 
-    return pd.read_csv(os.path.join(tmp_path, result["data"]["filename"]), sep=";")
+    return os.path.join(tmp_path, result["data"]["filename"])
 
 
 @pytest.mark.asyncio
@@ -186,3 +199,19 @@ async def test_a_file_of_an_instrument_without_a_unit_is_skipped(tmp_path):
     )
 
     assert set(frame.sample_item_id) == {"item-1"}
+
+
+@pytest.mark.asyncio
+async def test_a_name_a_spreadsheet_would_run_is_written_as_text(tmp_path):
+    """A batch or sample name typed as a formula goes out behind an
+    apostrophe, numbers untouched; the SDK's reader gives the name back."""
+    path = await _export_file(tmp_path, batch_name="=1+1", item_name="+cmd")
+
+    raw = pd.read_csv(path, sep=";")
+    assert (raw.sample_batch_name == "'=1+1").all()
+    assert set(raw.sample_item_name) == {"'+cmd", "Sample item-2"}
+    assert pd.api.types.is_float_dtype(raw.intensity)
+
+    back = read_export_csv(path)
+    assert (back.sample_batch_name == "=1+1").all()
+    assert set(back.sample_item_name) == {"+cmd", "Sample item-2"}

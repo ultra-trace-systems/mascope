@@ -31,6 +31,7 @@ from mascope_backend.db import (
     SampleItem,
 )
 from mascope_backend.db.id import gen_id
+from mascope_sdk import read_export_csv
 
 
 pytestmark = pytest.mark.asyncio
@@ -355,6 +356,43 @@ async def test_the_export_writes_an_imports_verdict(
             "the engine's words",
             "",
         ]
+    finally:
+        os.remove(path)
+
+
+async def test_the_export_writes_a_formula_as_text(
+    ledger, test_users, async_session_factory
+):
+    """A claim and a sample name a spreadsheet would run go out behind an
+    apostrophe, and the SDK's reader gives them back as they were typed."""
+    async with async_session_factory() as session:
+        await session.execute(
+            update(BatchPeak)
+            .where(
+                BatchPeak.sample_batch_id == ledger["batch_id"],
+                BatchPeak.consensus_formula == "C6H12O6",
+            )
+            .values(engine_tier="candidate", engine_claim="=1+1")
+        )
+        await session.execute(
+            update(SampleItem)
+            .where(SampleItem.sample_item_id == ledger["s2"])
+            .values(sample_item_name="@SUM(A1)")
+        )
+        await session.commit()
+    user_id = test_users["editor"].id
+    name, _ = await write_batch_ledger_csv(ledger["batch_id"], user_id)
+    path = user_temp_path(user_id, name, create=False)
+    try:
+        raw = pd.read_csv(path, sep=";")
+        assert raw["engine_claim"].fillna("").tolist() == ["'=1+1", "'=1+1", ""]
+        assert "'@SUM(A1)" in raw["sample_item_name"].tolist()
+        assert "Ledger export S1" in raw["sample_item_name"].tolist()
+        assert pd.api.types.is_float_dtype(raw["batch_mz"])
+
+        back = read_export_csv(path)
+        assert back["engine_claim"].fillna("").tolist() == ["=1+1", "=1+1", ""]
+        assert "@SUM(A1)" in back["sample_item_name"].tolist()
     finally:
         os.remove(path)
 

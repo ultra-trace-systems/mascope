@@ -27,6 +27,13 @@ from ._agents import (  # noqa: F401
 
 # Public API
 from .client import MascopeClient
+from .csv_cells import (
+    escape_cell,
+    escape_frame,
+    read_export_csv,
+    unescape_cell,
+    unescape_frame,
+)
 from .exceptions import (
     AssignmentInFlightError,
     AssignmentRunError,
@@ -79,6 +86,12 @@ def copy_examples(dest: str = "./mascope_examples") -> None:
 __all__ = [
     "MascopeClient",
     "copy_examples",
+    # CSV exports
+    "escape_cell",
+    "escape_frame",
+    "read_export_csv",
+    "unescape_cell",
+    "unescape_frame",
     # Exceptions
     "MascopeError",
     "ConfigurationError",

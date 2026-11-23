@@ -21,6 +21,12 @@ The same data is one call away in the
 [Python SDK](../sdk/index.md), whose frames carry the same
 [provenance](#provenance) on `df.attrs["provenance"]`.
 
+**Typed text stays text.** A CSV export writes a text cell that a
+spreadsheet would run as a formula (one beginning with `=`, `+`, `-` or `@`)
+behind one apostrophe, and the spreadsheet stores such a name as text.
+[Text in a CSV export](../concepts/tables.md#text-in-a-csv-export) says how
+to read the apostrophe off again.
+
 **Additions append.** A new column, row or sheet goes after the ones an export
 already had, so a reader written against an earlier export keeps finding what
 it found there, where it found it.

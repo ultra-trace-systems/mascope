@@ -24,6 +24,7 @@ import pytest
 import xarray as xr
 
 from mascope_backend.api.controllers.sample.items import sample_items_controller
+from mascope_sdk import read_export_csv
 from mascope_signal.compute import StalePeakStoreError
 
 
@@ -42,12 +43,12 @@ TIC_VALUES = np.array([90000.0, 100.0, 110.0, 120.0, 130.0], dtype=float)
 _export = sample_items_controller.sample_item_export_peaks.__wrapped__
 
 
-def _sample():
+def _sample(name="Test item"):
     return SimpleNamespace(
         sample_item_id="item-1",
         sample_batch_id="batch-1",
         sample_file_id="file-1",
-        sample_item_name="Test item",
+        sample_item_name=name,
         filename="OrbiTest_1001.01.01_12h00m00s_TestFile",
         datetime=dt.datetime(2024, 1, 1, 12, 0, 0),
         datetime_utc=dt.datetime(2024, 1, 1, 10, 0, 0),
@@ -64,7 +65,14 @@ def _peak_store():
     )
 
 
-async def _run_export(tmp_path, live_scan_times, live_tics, streams=None):
+async def _run_export(
+    tmp_path,
+    live_scan_times,
+    live_tics,
+    streams=None,
+    item_name="Test item",
+    batch_name="Test batch",
+):
     """Export the stub sample, with the reader covering `live_scan_times`.
 
     With ``streams`` the store is a per-stream one: ``{key: scan positions}``
@@ -93,13 +101,13 @@ async def _run_export(tmp_path, live_scan_times, live_tics, streams=None):
 
     with (
         patch("mascope_signal.compute._peak_store_metadata", fake_metadata),
-        patch(f"{_MOD}.fetch_sample", AsyncMock(return_value=_sample())),
+        patch(f"{_MOD}.fetch_sample", AsyncMock(return_value=_sample(item_name))),
         patch(
             f"{_MOD}.fetch_sample_batch",
             AsyncMock(
                 return_value=SimpleNamespace(
                     sample_batch_id="batch-1",
-                    sample_batch_name="Test batch",
+                    sample_batch_name=batch_name,
                     dataset_id="dataset-1",
                 )
             ),
@@ -230,3 +238,20 @@ async def test_every_row_names_its_batch_and_dataset_after_the_old_columns(tmp_p
     assert list(frame.columns) == LEGACY_COLUMNS + ["sample_batch_id", "dataset_id"]
     assert (frame.sample_batch_id == "batch-1").all()
     assert (frame.dataset_id == "dataset-1").all()
+
+
+@pytest.mark.asyncio
+async def test_a_name_a_spreadsheet_would_run_is_written_as_text(tmp_path):
+    """A sample or batch name typed as a formula goes out behind an
+    apostrophe, numbers untouched; the SDK's reader gives the name back."""
+    written, frame = await _run_export(
+        tmp_path, STORED_TIME, TIC_VALUES, item_name="-2+3", batch_name="=1+1"
+    )
+
+    assert (frame.sample_item_name == "'-2+3").all()
+    assert (frame.sample_batch_name == "'=1+1").all()
+    assert pd.api.types.is_float_dtype(frame.intensity)
+
+    back = read_export_csv(written)
+    assert (back.sample_item_name == "-2+3").all()
+    assert (back.sample_batch_name == "=1+1").all()
