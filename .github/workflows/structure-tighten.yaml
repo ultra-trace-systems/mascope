@@ -1,0 +1,70 @@
+name: Structure tighten
+
+# The structure check (tooling/structure.py) lets a reading that got better
+# pass, so feature pull requests do not all edit tooling/structure_baseline.json.
+# The ratchet tightens here instead: after each push to develop, `tighten`
+# lowers the baseline to the readings develop beats, and this job opens (or
+# updates) one pull request with that file. When the repository does not let
+# the workflow token open pull requests, the job prints the diff and passes.
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - "server/backend/src/mascope_backend/api/new/peak_assignments/**"
+      - "libraries/tools/src/mascope_tools/composition/**"
+      - "tooling/structure.py"
+      - "tooling/structure_baseline.json"
+  workflow_dispatch:
+
+concurrency:
+  group: structure-tighten
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  tighten:
+    runs-on: ubuntu-latest
+    env:
+      BRANCH: structure-tighten
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Tighten the baseline
+        run: python3 tooling/structure.py tighten
+
+      - name: Open or update the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet -- tooling/structure_baseline.json; then
+            echo "nothing to tighten"
+            # An open tighten PR is stale now: a merge spent the slack it
+            # would lock in, so its check would fail. Close it.
+            for n in $(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number'); do
+              gh pr close "$n" --delete-branch \
+                --comment "develop has nothing left to tighten; closing this stale pull request." \
+                || echo "::warning::could not close pull request #$n"
+            done
+            exit 0
+          fi
+          git diff -- tooling/structure_baseline.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          git commit -q -m "chore(structure): tighten the baseline to develop's readings" \
+            -- tooling/structure_baseline.json
+          if ! git push --force origin "$BRANCH"; then
+            echo "::warning::could not push $BRANCH; run 'structure.py tighten' by hand (diff above)"
+            exit 0
+          fi
+          if [ -z "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[]')" ]; then
+            gh pr create --base develop --head "$BRANCH" \
+              --title "chore(structure): tighten the baseline to develop's readings" \
+              --body "Written by the Structure tighten workflow: \`structure.py tighten\` lowered the readings develop beats and raised none. Nothing else changes." \
+              || echo "::warning::could not open the pull request; $BRANCH holds the tightened file (diff above)"
+          fi
