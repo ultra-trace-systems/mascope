@@ -204,7 +204,15 @@ describe('no window-derived table height in the match browser', () => {
     'MatchCollectionTable.vue',
     'MatchIonTable.vue',
     'PaneBrowserAssignment.vue',
-    'PaneBrowserBatchPeaks.vue'
+    'PaneBrowserBatchPeaks.vue',
+    // The two ledgers' table, drawn by the component both configure.
+    '../../ledger/AssignmentLedger.vue'
+  ]
+  // The files that draw a table of their own.
+  const TABLES = [
+    'MatchCollectionTable.vue',
+    'MatchIonTable.vue',
+    '../../ledger/AssignmentLedger.vue'
   ]
 
   it.each(FILES)('%s derives no height from the window', (name) => {
@@ -216,14 +224,11 @@ describe('no window-derived table height in the match browser', () => {
     expect(source).not.toMatch(/scrollHeight="`\$\{/)
   })
 
-  it.each(FILES.filter((name) => name !== 'PaneBrowserMatch.vue'))(
-    '%s scrolls its table against the container',
-    (name) => {
-      const source = readFileSync(join(PANE_DIR, name), 'utf8')
-      // Both halves, adjacent on the table itself. PrimeVue only applies the
-      // flex scroll layout when scrollable && scrollHeight === 'flex', so
-      // looking for the string alone would still pass with `scrollable` gone.
-      expect(source).toMatch(/(?<![-:\w])scrollable\s+scrollHeight="flex"/)
-    }
-  )
+  it.each(TABLES)('%s scrolls its table against the container', (name) => {
+    const source = readFileSync(join(PANE_DIR, name), 'utf8')
+    // Both halves, adjacent on the table itself. PrimeVue only applies the
+    // flex scroll layout when scrollable && scrollHeight === 'flex', so
+    // looking for the string alone would still pass with `scrollable` gone.
+    expect(source).toMatch(/(?<![-:\w])scrollable\s+scrollHeight="flex"/)
+  })
 })

@@ -26,8 +26,10 @@ vi.mock('@/lib/permissions', () => ({
   canEditWorkspace: (workspace) => workspace?.my_role !== 'guest'
 }))
 
-const { default: AssignmentVerdictPopover } =
-  await import('@/lib/panes/PaneBrowserMatch/AssignmentVerdictPopover.vue')
+// The ledger's one verdict popover, in the sample scope: the per-sample
+// verdict, recorded on the family's M0 (ledgerVerdictPopover.batch.spec.js has
+// the batch scope).
+const { default: LedgerVerdictPopover } = await import('@/lib/ledger/LedgerVerdictPopover.vue')
 
 const M0 = {
   peak_assignment_id: 'pa-1',
@@ -91,8 +93,8 @@ const TOOLTIP = {
 }
 
 function mountPopover(props) {
-  return mount(AssignmentVerdictPopover, {
-    props,
+  return mount(LedgerVerdictPopover, {
+    props: { scope: 'sample', ...props },
     global: { stubs: STUBS, directives: { tooltip: TOOLTIP } }
   })
 }
@@ -114,7 +116,7 @@ const LISTED = {
   reference_listing: { name: 'D-glucose', source: 'sugars', inchikey: GLUCOSE, tags: [], total: 1 }
 }
 
-describe('AssignmentVerdictPopover', () => {
+describe('LedgerVerdictPopover, sample scope', () => {
   it('records a verdict on the row and closes', async () => {
     const wrapper = mountPopover({ row: M0, record: null, overlay: null })
     await wrapper.find('.note').setValue('looks right')
@@ -254,6 +256,22 @@ describe('AssignmentVerdictPopover', () => {
     await wrapper.vm.$nextTick()
     await wrapper.vm.$nextTick()
     expect(wrapper.text()).toContain('needs the editor role')
+    expect(wrapper.emitted('done')).toBeUndefined()
+  })
+
+  // The batch scope's own: a per-sample verdict is superseded by the next one,
+  // and its write names no formula a consensus could have moved off.
+  it('offers no Retract, even on a row with a verdict', () => {
+    const wrapper = mountPopover({ row: M0, record: { verdict: 'confirmed' }, overlay: null })
+    expect(wrapper.findAll('button').map((button) => button.text())).not.toContain('Retract')
+  })
+
+  it('reads a refusal as no moved consensus, and reloads no batch ledger', async () => {
+    verify.mockRejectedValueOnce({ response: { status: 409 } })
+    const wrapper = mountPopover({ row: M0, record: null, overlay: null })
+    await wrapper.find('button:nth-of-type(2)').trigger('click')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).not.toContain('The consensus changed')
     expect(wrapper.emitted('done')).toBeUndefined()
   })
 })

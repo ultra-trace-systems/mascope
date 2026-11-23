@@ -154,6 +154,11 @@ vi.mock('@/lib/base', async () => ({
     template: '<span class="copyable" :data-tooltip="tooltip">{{ field }}<slot /></span>'
   },
   BaseLoadError: true,
+  // Says what the empty state says, and carries its way forward.
+  BaseEmptyState: {
+    props: ['icon', 'title', 'hint', 'note'],
+    template: '<div class="empty-state-stub">{{ title }} {{ hint }}<slot name="actions" /></div>'
+  },
   // Says which evidence it was handed, so the queue's tests can read it off.
   BaseTierTag: {
     props: ['tier', 'evidence', 'role', 'source', 'tooltip'],
@@ -192,10 +197,10 @@ vi.mock('@/api', () => ({
 }))
 // The row's verdict form has a spec of its own; here it only has to show
 // which row the cell opened it for.
-vi.mock('@/lib/panes/PaneBrowserMatch/AssignmentVerdictPopover.vue', () => ({
+vi.mock('@/lib/ledger/LedgerVerdictPopover.vue', () => ({
   default: {
-    name: 'AssignmentVerdictPopover',
-    props: ['row', 'record', 'overlay'],
+    name: 'LedgerVerdictPopover',
+    props: ['scope', 'row', 'record', 'overlay'],
     template: '<div class="verdict-popover-stub">{{ row?.peak_assignment_id }}</div>'
   }
 }))
@@ -1082,6 +1087,19 @@ describe('PaneBrowserAssignment isotopologue labels', () => {
     expect(await renderedLabels(fam)).toEqual(['[14N]', '[13C]'])
   })
 
+  // `M+n` only where nothing names the line.
+  it('names a line that records no substitution by its offset from the M0', async () => {
+    const bare = family({
+      id: 'o',
+      mz: 100.05,
+      intensity: 10,
+      formula: 'C2H6',
+      children: [{ sample_peak_mz: 102.05, isotope_label: null }]
+    })
+
+    expect(await renderedLabels(bare)).toEqual(['M+2'])
+  })
+
   it('keeps the brackets of an unlabelled family', async () => {
     const bromine = family({
       id: 'br',
@@ -1264,7 +1282,7 @@ describe('PaneBrowserAssignment reference-list column', () => {
     // The column comes right after the formula's.
     const fields = wrapper.findAll('.stub-col').map((col) => col.attributes('data-field'))
     expect(fields.indexOf('listing')).toBe(fields.indexOf('assigned_formula') + 1)
-    expect(column.text()).toContain('listed as')
+    expect(column.text()).toContain('Listed as')
 
     const listed = cells[0].find('[data-testid="listed-as"]')
     expect(listed.find('.listing-name').text()).toBe('decamethylcyclopentasiloxane +1')
@@ -1284,8 +1302,8 @@ describe('PaneBrowserAssignment reference-list column', () => {
     const listed = column.findAll('.stub-cell')[0].find('[data-testid="listed-as"]')
 
     expect(column.find('.ph-flask').exists()).toBe(false)
-    expect(column.text()).not.toContain('listed as')
-    expect(column.text()).toContain('listed')
+    expect(column.text()).not.toContain('Listed as')
+    expect(column.text()).toContain('Listed')
     expect(listed.find('.listing-source').exists()).toBe(false)
     expect(listed.find('[data-testid="listing-folded"]').text()).toBe(
       'decamethylcyclopentasiloxane +1'
@@ -1309,7 +1327,7 @@ describe('PaneBrowserAssignment reference-list column', () => {
     expect(cell().find('.listing-name').text()).toBe('decamethylcyclopentasiloxane +1')
     expect(cell().find('.listing-name').classes()).not.toContain('folded')
     expect(cell().find('.listing-source').exists()).toBe(true)
-    expect(listingColumn(wrapper).text()).toContain('listed as')
+    expect(listingColumn(wrapper).text()).toContain('Listed as')
     // One setting for both ledgers, and kept across a reload.
     expect(JSON.parse(localStorage.getItem('mascope.browser.match.ledgerListing'))).toEqual({
       full: true
@@ -1320,12 +1338,13 @@ describe('PaneBrowserAssignment reference-list column', () => {
     expect(cell().find('.listing-source').exists()).toBe(false)
   })
 
-  it('marks a row no list names with a recessive dash', async () => {
+  // A blank empty cell, in both scopes: a dash read as missing data.
+  it('leaves a row no list names blank', async () => {
     const wrapper = await renderedListing(FAMILY_B)
     const cell = listingColumn(wrapper).find('.stub-cell')
 
     expect(cell.find('[data-testid="listed-as"]').exists()).toBe(false)
-    expect(cell.find('.no-listing').exists()).toBe(true)
+    expect(cell.text()).toBe('')
   })
 
   it('sorts on the name, the rows no list names last', async () => {
@@ -1730,29 +1749,22 @@ describe('PaneBrowserAssignment header and controls', () => {
   })
   afterEach(() => vi.clearAllMocks())
 
-  it('names the batch and the sample, and counts the peaks', async () => {
+  // The ledger's own breadcrumb is gone: the shell's names the batch and the
+  // sample, and its sample chip is the way back out. The count moved into the
+  // ledger's header line.
+  it('counts the peaks in its header line, and draws no breadcrumb of its own', async () => {
     const wrapper = await mountPane()
 
-    expect(wrapper.vm.breadcrumb.items.map((item) => item.label)).toEqual([
-      'Batch 1',
-      'Sample 1',
-      '6 peaks'
-    ])
+    expect(wrapper.find('[data-testid="ledger-count"]').text()).toBe('6 peaks')
+    expect(wrapper.vm.breadcrumb).toBeUndefined()
+    expect(wrapper.findComponent({ name: 'AssignmentLedger' }).props('label')).toBe('Assignments')
   })
 
-  it('offers a way back out of the sample', async () => {
-    const wrapper = await mountPane()
-
-    wrapper.vm.breadcrumb.items[0].action()
-
-    expect(sampleUnfocus).toHaveBeenCalledTimes(1)
-  })
-
-  it('falls back to the plain label with no sample in view', async () => {
+  it('counts nothing with no sample in view', async () => {
     focusedSampleId = ref(null)
     const wrapper = await mountPane()
 
-    expect(wrapper.vm.breadcrumb).toBeNull()
+    expect(wrapper.find('[data-testid="ledger-count"]').exists()).toBe(false)
   })
 
   it('clears the peak focus when the selected row is clicked again', async () => {
@@ -2289,7 +2301,7 @@ describe('PaneBrowserAssignment identification level column', () => {
     expect(Object.keys(wrapper.vm.filters)).toContain(column.props('field'))
   })
 
-  it('shows the chip with what earned the level and what would lift it, a dash where none', async () => {
+  it('shows the chip with what earned the level and what would lift it, blank where none', async () => {
     seedLevels()
     const wrapper = await renderedTable()
 
@@ -2299,7 +2311,7 @@ describe('PaneBrowserAssignment identification level column', () => {
     expect(chip.attributes('data-lift')).toBe('measure the shortlist')
     expect(cell(wrapper, 'b').find('.level-tag-stub').attributes('data-level')).toBe('4a')
     expect(cell(wrapper, 'c').find('.level-tag-stub').exists()).toBe(false)
-    expect(cell(wrapper, 'c').find('.no-level').text()).toBe('—')
+    expect(cell(wrapper, 'c').text()).toBe('')
   })
 
   it("shows an isotopologue's level as its M0's, marked by its role", async () => {
@@ -2403,7 +2415,7 @@ describe('PaneBrowserAssignment identification level column', () => {
     })
     const header = levelColumn(wrapper).find('.stub-head span')
 
-    expect(header.text()).toBe('level')
+    expect(header.text()).toBe('Level')
     expect(header.attributes('data-tooltip')).toMatch(/^Identification level/)
     expect(header.attributes('data-tooltip')).toContain('no tier moves on it')
     expect(header.attributes('data-help')).toBe('assignment-level')
@@ -2529,6 +2541,61 @@ describe('PaneBrowserAssignment engine-tier view', () => {
   })
 })
 
+// The verdict column sorts in both scopes now, on the verdict a row visibly
+// carries: its own, else the batch-level one reaching it.
+describe('PaneBrowserAssignment verdict column', () => {
+  const FAMILY_C = family({
+    id: 'c',
+    mz: 300.2,
+    intensity: 50,
+    formula: 'C3H8',
+    tier: 'unassigned'
+  })
+  beforeEach(() => {
+    runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
+    seed(FAMILY_A, FAMILY_B, FAMILY_C)
+    // A confirmed of its own; B rejected at batch level; C unjudged.
+    verdictRecord = { verdict: 'confirmed', evidence_level: 'pattern' }
+    verdictPeakId = 'p-a'
+    overlayRecord = { sample_peak_id: 'p-b', verdict: 'rejected' }
+  })
+
+  it('is a sortable column on the rank of the verdict', async () => {
+    const wrapper = mount(PaneBrowserAssignment, {
+      global: {
+        directives: { tooltip: {}, help: {} },
+        stubs: {
+          ...GLOBAL_STUBS,
+          Column: {
+            name: 'Column',
+            props: { field: String, sortable: Boolean },
+            template: '<div />'
+          }
+        }
+      }
+    })
+    await wrapper.vm.$nextTick()
+    const column = wrapper
+      .findAllComponents({ name: 'Column' })
+      .find((col) => col.props('field') === 'verdictRank')
+    expect(column.props('sortable')).toBe(true)
+  })
+
+  it('sorts confirmed first and unjudged last, in both directions', async () => {
+    const wrapper = await mountPane()
+    expect(wrapper.vm.rows.map((row) => row.verdictRank)).toEqual([1, 0, null])
+
+    wrapper.vm.sortField = 'verdictRank'
+    wrapper.vm.sortOrder = 1
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['a', 'b', 'c'])
+
+    wrapper.vm.sortOrder = -1
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['b', 'a', 'c'])
+  })
+})
+
 describe('PaneBrowserAssignment batch-level verdict overlay', () => {
   // The two default families, as the describes above seed them.
   beforeEach(() => {
@@ -2558,6 +2625,27 @@ describe('PaneBrowserAssignment batch-level verdict overlay', () => {
     expect(wrapper.vm.overlayFor(rowsById.get('a'))).toBeNull()
     // The overlay resolves through the M0 the same way the owned verdict does.
     expect(overlayFor).toHaveBeenCalledWith(rowsById.get('b'))
+  })
+
+  it('hands the verdict cell the borrowed verdict, or its own and the disagreement', async () => {
+    overlayRecord = OVERLAY
+    const wrapper = await mountPane()
+    const b = wrapper.vm.rows.find((row) => row.peak_assignment_id === 'b')
+
+    expect(wrapper.vm.verdictCell(b)).toMatchObject({
+      record: null,
+      overlay: OVERLAY,
+      conflict: null,
+      label: 'Record a verdict'
+    })
+    verdictRecord = { verdict: 'rejected', evidence_level: null }
+    verdictPeakId = 'p-b'
+    expect(wrapper.vm.verdictCell(b)).toMatchObject({
+      record: verdictRecord,
+      overlay: null,
+      conflict: OVERLAY,
+      label: 'Verification verdict'
+    })
   })
 
   it('lets the row keep its own verdict over the batch-level one, and names the disagreement', async () => {

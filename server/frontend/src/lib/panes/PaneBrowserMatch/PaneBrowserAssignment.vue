@@ -2,41 +2,26 @@
 import { ref, reactive, computed, watch, nextTick, onScopeDispose } from 'vue'
 
 import Button from 'primevue/button'
-import Dialog from 'primevue/dialog'
-import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
+import Dialog from 'primevue/dialog'
 import Message from 'primevue/message'
 import Popover from 'primevue/popover'
 import ProgressSpinner from 'primevue/progressspinner'
-import Select from 'primevue/select'
-import ToggleSwitch from 'primevue/toggleswitch'
-import { FilterMatchMode, FilterOperator } from '@primevue/core/api'
+import { FilterMatchMode } from '@primevue/core/api'
 
 import { getApiErrorMessage, isRefusedRequest } from '@/api/utils'
 import {
   BaseCopyableField,
+  BaseEmptyState,
   BaseLevelTag,
   BaseLoadError,
-  BaseProvisionalMark,
-  BaseTabbedPanel,
-  BaseTierTag,
-  BaseVerdictBadge
+  BaseTierTag
 } from '@/lib/base'
 import { PeakAssignConfigForm } from '@/lib/dialogs'
 import { usePeakAssignParams } from '@/lib/peakAssignParams'
-import { num } from '@/lib/formatters'
-import { formatIsotopeFormula, formatIsotopeLabel, neutralKey } from '@/lib/chem'
+import { neutralKey } from '@/lib/chem'
 import { isIsotopeLine } from '@/lib/isotopeLines'
-import {
-  ledgerListing,
-  listingName,
-  listingSource,
-  listingTags,
-  candidatesTooltip,
-  targetMore,
-  targetName,
-  targetOf
-} from '@/lib/referenceListings'
+import { ledgerListing, listingName, targetName, targetOf } from '@/lib/referenceListings'
 import {
   ENGINE_UNSTATED,
   ROLE_BUCKETS,
@@ -46,18 +31,34 @@ import {
   tierName,
   tierRank
 } from '@/lib/tiers'
-import { LEVEL_FILTER_OPTIONS, isLevel, levelRank } from '@/lib/levels'
-import { prettyTrim } from '@/lib/utils'
+import { isLevel, levelRank } from '@/lib/levels'
 import { queueReason, queueRows, queueTooltip } from '@/lib/verificationQueue'
 import { scrollVirtualRowIntoView } from '@/lib/virtualScroll'
+import {
+  AssignmentLedger,
+  LedgerVerdictPopover,
+  LedgerViewToggle,
+  ledgerTierChips,
+  sampleLineLabel,
+  useLedgerFilters,
+  useLedgerListing,
+  useLedgerSort,
+  useRowPopover,
+  verdictRank
+} from '@/lib/ledger'
 import { useApp } from '@/stores'
 
 import { useAssignmentLauncher } from './stores'
-import { useLedgerListing } from './stores/ledgerListing.js'
-import { useLedgerSort } from './stores/ledgerSort.js'
-import AssignmentVerdictPopover from './AssignmentVerdictPopover.vue'
 import { useBatchChartSelection } from './stores/batchChartSelection.js'
 
+/**
+ * The sample scope of the assignment ledger (lib/ledger/AssignmentLedger.vue):
+ * every peak of the focused sample with its committed assignment from the
+ * selected run. This pane is the scope's configuration - its rows, its extra
+ * columns (the chart toggle, the ionization, the queue's reason), its strip
+ * items (the verification queue) and its single selection, tied to the
+ * focused peak - and owns the Assign sample dialog.
+ */
 const app = useApp()
 const launcher = useAssignmentLauncher()
 
@@ -86,76 +87,30 @@ const readsEngineTiers = computed(() => engineView.value && hasEngineTiers.value
 // (an isotopologue line counts with its compound, not on its own), bucketed by
 // `engineBucketOf`.
 function engineTierHistogram(records) {
-  const counts = {
-    assigned: 0,
-    candidate: 0,
-    below_assignability: 0,
-    unassigned: 0,
-    [ENGINE_UNSTATED]: 0,
-    reagent: 0,
-    artifact: 0
-  }
+  const counts = { [ENGINE_UNSTATED]: 0 }
   for (const record of records ?? []) {
     if (record.role === 'iso_child') continue
-    counts[engineBucketOf(record.engine_tier, record.tier, record.role)] += 1
+    const bucket = engineBucketOf(record.engine_tier, record.tier, record.role)
+    counts[bucket] = (counts[bucket] ?? 0) + 1
   }
   return counts
 }
-const tierCounts = computed(() =>
-  readsEngineTiers.value
-    ? engineTierHistogram(assignments.value.list)
-    : assignments.value.tierCounts
+const tierChips = computed(() =>
+  ledgerTierChips(
+    readsEngineTiers.value
+      ? engineTierHistogram(assignments.value.list)
+      : assignments.value.tierCounts,
+    { engineView: readsEngineTiers.value }
+  )
 )
-
-// One chip per tier in confidence order, then the engine view's "not stated",
-// then one per role.
-const tierChips = computed(() => {
-  const counts = tierCounts.value
-  return [
-    { key: 'assigned', label: 'assigned', count: counts.assigned },
-    { key: 'candidate', label: 'candidate', count: counts.candidate },
-    { key: 'below_assignability', label: 'below', count: counts.below_assignability },
-    { key: 'unassigned', label: 'unassigned', count: counts.unassigned },
-    ...(readsEngineTiers.value
-      ? [{ key: ENGINE_UNSTATED, label: 'not stated', count: counts[ENGINE_UNSTATED] }]
-      : []),
-    { key: 'reagent', label: 'reagent', count: counts.reagent },
-    { key: 'artifact', label: 'artifact', count: counts.artifact }
-  ]
-})
-
-// --- Identification level -----------------------------------------------------
 
 // What a reader may state of each row, in the scale peaky and this server share
 // (lib/levels.js), shown in a column of its own beside the tier and never in
 // its place. Offered only where some row of the run carries one, as the engine
 // tier is: a run from before the level, an imported run and a ledger the batch
-// serves carry none, and a column of dashes would read as rows judged and found
-// wanting.
+// serves carry none, and a column of empty cells would read as rows judged and
+// found wanting.
 const hasLevels = computed(() => assignments.value.list.some((row) => isLevel(row.level)))
-
-// The level column's filter menu, one EQUALS rule, as the batch ledger's tier
-// column has: PrimeVue writes the menu into `filters`, and `rows` applies it,
-// since the table is `lazy`. A level filter is no filter while the column is
-// absent - left on, it would empty the table for a reason nothing on screen
-// shows - and it is dropped when the column goes.
-const filters = ref({
-  level: {
-    operator: FilterOperator.AND,
-    constraints: [{ value: null, matchMode: FilterMatchMode.EQUALS }]
-  }
-})
-const levelFilter = computed(() =>
-  hasLevels.value ? (filters.value.level?.constraints?.[0]?.value ?? null) : null
-)
-watch(hasLevels, (has) => {
-  if (!has) filters.value.level.constraints[0].value = null
-})
-
-// Says what the column is on hover; help mode and the docs carry the scale.
-const LEVEL_HEADER_TOOLTIP =
-  'Identification level: what a reader may state of the row, from 5 (a measured mass) ' +
-  'to 1 (a confirmed structure). Shown beside the tier; no tier moves on it'
 
 // Map ionization_mechanism_id -> readable notation (e.g. "[M+H]+", "[M+Br]-"), for
 // the ledger's ionization column. The assignment carries only the id.
@@ -166,6 +121,8 @@ const mechById = computed(() => {
   }
   return map
 })
+
+// --- Verdicts ------------------------------------------------------------------
 
 // Current verification verdict for a ledger row (by stable identity). A
 // formula-less row is a placeholder for a peak nothing explained: there is no
@@ -179,8 +136,8 @@ const mechById = computed(() => {
 // Both the guard and the lookup resolve through the family M0: an unfolded
 // isotopologue is the same compound as the parent above it, so it shows the same
 // badge rather than a blank cell that reads as "not yet judged". The filter
-// below runs over parents only, so a family is one unit there already - keeping
-// the two in step is the point.
+// runs over parents only, so a family is one unit there already - keeping the
+// two in step is the point.
 const verdictFor = (row) => {
   const m0 = assignments.value.m0Of(row)
   return m0?.assigned_formula ? app.data.peakAssignment.verification.forAssignment(m0) : null
@@ -200,11 +157,12 @@ const conflictFor = (row) => {
   const overlay = own ? overlayFor(row) : null
   return overlay && overlay.verdict !== own.verdict ? overlay : null
 }
-// What the row visibly carries, its own verdict first. The filter runs on this,
-// so "Unverified" never lists a row that shows a badge.
+// What the row visibly carries, its own verdict first. The filter and the
+// verdict column's sort run on this, so "Unverified" never lists a row that
+// shows a badge.
 const effectiveVerdictFor = (row) => verdictFor(row) ?? overlayFor(row)
 
-// Verdict filter (single-select). "unverified" = no current verdict.
+// The verdict filter's choices (single-select).
 const VERDICT_FILTERS = [
   { value: 'all', label: 'All verdicts' },
   { value: 'confirmed', label: 'Confirmed' },
@@ -212,7 +170,22 @@ const VERDICT_FILTERS = [
   { value: 'unsure', label: 'Unsure' },
   { value: 'unverified', label: 'Unverified' }
 ]
-const verdictFilter = ref('all')
+
+const verdictTooltip = (row) => {
+  if (verdictFor(row)) return 'Verification verdict - click to re-judge'
+  if (overlayFor(row)) return 'Batch-level verdict reaching this sample - click to judge it here'
+  return 'Record a verdict'
+}
+const verdictCell = (row) => {
+  const record = verdictFor(row)
+  return {
+    record,
+    overlay: record ? null : overlayFor(row),
+    conflict: conflictFor(row),
+    label: record ? 'Verification verdict' : 'Record a verdict',
+    tooltip: verdictTooltip(row)
+  }
+}
 
 // --- The verification queue ---------------------------------------------------
 
@@ -231,36 +204,13 @@ const verdictFilter = ref('all')
 const queueMode = ref(false)
 const queueCount = computed(() => queue.value?.count ?? 0)
 
-// --- View options menu ------------------------------------------------------
-
-// The verdict filter above and the isotopologue fold below are the ledger's two
-// view options, and they used to sit bare in the panel header beside the run
-// selector and the launch button. Four controls never fitted a browser column
-// the user can drag to half a window, so the two that only change how this one
-// table reads went behind a cog at the end of the tier-chip row - everything
-// that narrows the table on one row - and the two that outlive the table moved
-// up into the switch bar.
-//
-// A Popover rather than a Menu: the isotopologue switch's only accessible name
-// is its `<label for>`, which plain markup keeps and a menu's item roles would
-// not. Both refs stay here, in the scope `rows` reads them from, so opening and
-// closing the menu cannot lose a choice made in it.
-const viewMenu = ref()
-const viewMenuOpen = ref(false)
-const toggleViewMenu = (event) => viewMenu.value?.toggle(event)
-
 // --- Launch a run -----------------------------------------------------------
 
 // The button that opens this dialog is a row up, in the switch bar, so the flag
 // is shared through a store while everything the launch actually does stays
-// here - next to the ledger a refusal is about. Exposed as a plain writable
-// ref-alike so the dialog, the empty state and the watchers below read the same
-// way they did when the flag was local.
-//
-// Cleared when this pane goes away, because the dialog goes with it: the flag
-// is the only piece that now outlives the component, and a stale `true` would
-// reopen the dialog on the next mount without the watcher below having run -
-// so with last sample's configuration still in the form.
+// here - next to the ledger a refusal is about. Cleared when this pane goes
+// away, because the dialog goes with it: a stale `true` would reopen the dialog
+// on the next mount without the watcher below having run.
 const configVisible = computed({
   get: () => launcher.configVisible,
   set: (value) => (launcher.configVisible = value)
@@ -271,10 +221,7 @@ onScopeDispose(() => {
 const submitting = ref(false)
 // The run configuration lives in the shared parameter store, not here: the same
 // values back the batch launcher and the composition search pane, and they
-// persist, so what the user set last time is what this dialog opens on. The
-// untargeted stage still starts on for a per-sample run - that is the server
-// default and a per-sample run is cheap - but it is now a switch the user can
-// leave off, rather than one forced back on at every open.
+// persist, so what the user set last time is what this dialog opens on.
 const assignParams = usePeakAssignParams()
 
 // Why the last launch produced no run. The endpoint decides synchronously, so a
@@ -291,10 +238,9 @@ watch(
   () => (launchError.value = null)
 )
 
-// The configuration deliberately carries between opens now - it is the user's,
-// held in the store and persisted - so only the stale refusal is cleared here.
-// Also scope help mode to the dialog's cards while it is open (the config form
-// registers its cards on this layer).
+// The configuration carries between opens - it is the user's, held in the
+// store and persisted - so only the stale refusal is cleared here. Also scope
+// help mode to the dialog's cards while it is open.
 watch(configVisible, (open) => {
   if (open) launchError.value = null
   app.ui.help.set(open ? 'dialog_peak_assign' : null)
@@ -310,8 +256,7 @@ async function launch() {
   } catch (error) {
     // A refusal is an answer, not a crash: the request was understood and
     // declined. Either way the dialog has nothing left to do - closing it puts
-    // the reason in view rather than behind a modal the user has to dismiss to
-    // read it.
+    // the reason in view rather than behind a modal.
     launchRefused.value = isRefusedRequest(error)
     launchError.value = getApiErrorMessage(error, 'Could not start the assignment run.')
   } finally {
@@ -370,57 +315,43 @@ const staleNotice = computed(() => {
 })
 const rowClass = (row) => (isStale(row) ? 'stale-peak' : null)
 
-// --- Tier ordering & filtering ----------------------------------------------
-
-// Confidence order (assigned first, unassigned last) comes from the shared
-// tier module: it drives the default sort here and the same one in the
-// batch-peaks pane, which is the point of sharing it - two ledgers side by side
-// that ranked tiers differently would be worse than either being wrong alone.
+// --- Filters ------------------------------------------------------------------
 
 // The roles that account for a peak without a formula (a reagent's ion, an
 // artifact's ringing) are buckets of their own after the tiers, filtered,
-// counted and sorted apart from the peaks nothing explained. The buckets and
-// their ranks live in @/lib/tiers so this ledger and the batch-peak ledger
-// cannot drift.
-//
-// The chips filter on the bucket of the view the strip is in; the sort stays
-// on this server's tier in both.
+// counted and sorted apart from the peaks nothing explained (@/lib/tiers). The
+// chips filter on the bucket of the view the strip is in; the sort stays on
+// this server's tier in both.
 const bucketOf = (row) =>
   readsEngineTiers.value
     ? engineBucketOf(row.engine_tier, row.tier, row.role)
     : bucketFor(row.tier, row.role)
-const rankOf = (row) => bucketRank(row.tier, row.role)
 
-// Active tier filters (empty = show all); clicking a histogram chip toggles it.
-const activeTiers = reactive(new Set())
-function toggleTier(key) {
-  if (activeTiers.has(key)) activeTiers.delete(key)
-  else activeTiers.add(key)
-}
-// A chip names a bucket of one view, so switching views drops the filter
-// rather than carrying "candidate" over to a tier it never meant.
-watch(readsEngineTiers, () => activeTiers.clear())
+const { activeTiers, toggleTier, filters, verdictFilter, passes } = useLedgerFilters({
+  bucketOf,
+  menus: { level: FilterMatchMode.EQUALS },
+  menuShown: { level: hasLevels },
+  view: readsEngineTiers,
+  verdictOf: effectiveVerdictFor
+})
 
 // Fold isotopologues by default: one row per assigned formula (M0)
 // plus unassigned/reagent peaks, which keeps this a flat, fixed-height list
-// compatible with virtual scrolling. Toggle to unfold (see below).
+// compatible with virtual scrolling.
 const showIsotopologues = ref(false)
 
 // --- One row per neutral --------------------------------------------------------
 
 // A run that searches several ionization channels can commit the same neutral
 // through more than one of them - [M+H]+ and [M+NH4]+, [M-H]- and [M+Br]- - and
-// the ledger lists each as a row of its own, at its own m/z, scattered through
-// the table. Grouped, the neutral is one row: its strongest reading heads it,
-// by the ledger's resting order (tier, then fit), and the others sit under it,
-// shown when the reader opens the group from the head's ionization cell, the
-// way an isotopologue family sits under its M0. Off by default: a row per ion is
-// what a reader matching the ledger against the spectrum needs.
+// the ledger lists each as a row of its own, at its own m/z. Grouped, the
+// neutral is one row: its strongest reading heads it, by the ledger's resting
+// order (tier, then fit), and the others sit under it, shown when the reader
+// opens the group from the head's ionization cell. Off by default: a row per
+// ion is what a reader matching the ledger against the spectrum needs.
 //
-// Grouped on what the rows show, so the filters apply first: a tier chip or the
-// verdict filter narrows the rows, and what is left of a neutral groups. Only an
-// analyte's formula groups; a source ion or a peak nothing explained names no
-// neutral of the sample.
+// Grouped on what the rows show, so the filters apply first. Only an analyte's
+// formula groups; a source ion or a peak nothing explained names no neutral.
 const groupByFormula = ref(false)
 // The groups the reader opened, by neutral. Kept while grouping stays on, so a
 // re-sort or a filter does not close them.
@@ -448,92 +379,25 @@ const groupTooltip = (row) => {
 
 // --- Sorting ----------------------------------------------------------------
 
-// The sort is the pane's, not the table's. PrimeVue sorts the flat row array it
-// is handed, which tears every isotopologue away from the parent it
-// belongs under the moment the user sorts by anything but the default - sorting
-// by intensity drops a child hundreds of rows below its "+N" parent, where an
-// indented "iso" label means nothing. `lazy` hands sorting back to us so `rows`
-// can order the parents and re-attach each family underneath.
-//
-// `lazy` also switches off DataTable's own filtering and paging: neither is in
-// use here (the tier chips and the verdict filter are applied in `rows`, and
-// the table virtual-scrolls rather than paginates), so nothing else changes.
-// The header still renders its sort indicator and still emits the field it was
-// clicked with; `removableSort` gives a third click that clears the column and
-// returns the ledger to its confidence-ordered default.
-//
-// Held in a store shared with the batch ledger's pane (stores/ledgerSort.js),
-// so the sort survives the switch between the two ledgers, and a reload; these
-// are this pane's handles on it - what the header binds and `rows` reads.
-const ledgerSort = useLedgerSort()
-const sortField = computed({
-  get: () => ledgerSort.sample.field,
-  set: (value) => (ledgerSort.sample.field = value)
-})
-const sortOrder = computed({
-  get: () => ledgerSort.sample.order,
-  set: (value) => (ledgerSort.sample.order = value)
-})
-
-// Numeric collation, so the formula column reads as a chemist expects: C2H6
-// before C10H22, not after it. This is the comparer PrimeVue sorted with -
-// @primeuix/utils' localeComparator() is
-// `new Intl.Collator(undefined, { numeric: true }).compare` - and taking the
-// sort over must not quietly change the order it used to produce.
-const collator = new Intl.Collator(undefined, { numeric: true })
-
-// Compare two rows on one column. Missing values sort last in both directions -
-// a peak with no formula is unknown, not "smallest" - counting the empty string
-// as missing, which is what PrimeVue's isEmpty() did.
-const isBlank = (value) => value == null || value === ''
-
 // What the formula column shows: the analyte, or on a row with none, the ion
 // the peak is - a source ion's, written with its charge - since the ion is known
-// exactly and the role chip beside it says whose it is. A row with neither
-// shows a dash.
+// exactly and the role chip beside it says whose it is. A row with neither is
+// blank.
 const formulaOf = (row) => row.assigned_formula || row.ion_formula || null
 const ION_TOOLTIP = 'Ion formula: the peak names an ion, and no compound of the sample'
 
-// What a reference list calls the formula, beside it: the first name the run
-// matched from a list, that list and the list's tags, as the inspector's
-// "listed as" field reads it. It is the reading a reader asks of a row first,
-// and it used to take the inspector to see. The row carries it flattened
-// (`reference_listing`), since a ledger row serves no provenance.
-const LISTING_HEADER_TOOLTIP =
-  'What a reference list calls the formula: the first name the run matched from a list, ' +
-  "that list, and the list's tags. A formula match names candidate compounds; it is not an " +
-  'identification.'
-
-// The column rests folded - the name cut short, and the list's tags beside it -
-// with a tooltip that says the rest: written out, it made the ledger too wide
-// for the column the browser has. The view menu's switch shows it in full, in this
-// ledger and the batch ledger both (stores/ledgerListing.js).
-const listingColumn = useLedgerListing()
-
-// What a column sorts on, where that is not the field it is named by: the
-// formula column shows a source ion's formula on a row with no analyte (see
-// formulaOf), and sorts on what it shows; the listing sorts on its name.
-const SORT_VALUES = {
+// The sort is held per scope across the switch between the two ledgers, and a
+// reload (lib/ledger/useLedgerSort.js). The formula column sorts on what it
+// shows; the listing on its name.
+const {
+  field: sortField,
+  order: sortOrder,
+  sort
+} = useLedgerSort('sample', {
   assigned_formula: (row) => formulaOf(row),
   listing: (row) =>
     row.target ? targetName(row.target) : row.listing ? listingName(row.listing) : null
-}
-
-function compareBy(field, order) {
-  const dir = order === -1 ? -1 : 1
-  const valueOf = SORT_VALUES[field] ?? ((row) => row[field])
-  return (a, b) => {
-    const av = valueOf(a)
-    const bv = valueOf(b)
-    if (isBlank(av) && isBlank(bv)) return 0
-    if (isBlank(av)) return 1
-    if (isBlank(bv)) return -1
-    if (typeof av === 'string' && typeof bv === 'string') return collator.compare(av, bv) * dir
-    if (av < bv) return -dir
-    if (av > bv) return dir
-    return 0
-  }
-}
+})
 
 // The ledger's resting order: most confident first, best fit first within a
 // tier. Also the tie-breaker under every other column, and what an unsorted
@@ -546,6 +410,17 @@ watch(queueMode, (on) => {
   if (on) sortField.value = null
 })
 
+// What a row of the run shows of the channels that committed its neutral: the
+// ledger-measured channel count first - it reaches every committed row, where
+// the curated per-compound count reaches only what Stage A claimed - and the
+// curated one where it is all there is. Where both exist the first is a
+// superset of the second, so preferring it never shrinks the marker.
+const channelCount = (row) =>
+  row.corroboration_channels ??
+  row.provenance?.cross_channel?.channels?.length ??
+  row.corroboration_adducts ??
+  row.provenance?.corroboration?.n_adducts
+
 // The isotope lines of a row, as rows under it: an analyte's isotopologues, a
 // source ion's heavier lines (isIsotopeLine), ordered by m/z among themselves.
 // `underChannel` marks the lines of a grouped channel's row, indented a step
@@ -557,31 +432,20 @@ function isotopologuesOf(parent, underChannel = false) {
     .sort((a, b) => (a.sample_peak_mz ?? 0) - (b.sample_peak_mz ?? 0))
     .map((child) => {
       // Corroboration is written onto the M0 winner alone: an isotopologue is
-      // the same ion measured at another isotope, not a second sighting of
-      // the compound, so it never carries a count of its own. The evidence is
-      // about the formula the family shares, so the isotopologue shows its
-      // parent's count and the marker says where it came from.
-      const own =
-        child.corroboration_channels ??
-        child.provenance?.cross_channel?.channels?.length ??
-        child.corroboration_adducts ??
-        child.provenance?.corroboration?.n_adducts
+      // the same ion measured at another isotope, so it shows its parent's
+      // count, and the marker says where it came from.
+      const own = channelCount(child)
       return {
         ...child,
+        // Only the parents are sorted - children are spliced in under their
+        // parent whatever the sort - so a family sorts as one block.
         tierRank: parent.tierRank,
-        // No `engineTierRank` here on purpose. Only the parents are sorted -
-        // children are spliced in under whichever parent they belong to,
-        // whatever the sort - so a rank on a child would never be read, and
-        // one derived from the child's OWN tier would contradict the line
-        // above it, which exists precisely so a family sorts as one block.
-        // The chip in the column body renders `engine_tier` directly.
         // An isotopologue is its M0's formula measured again; the listing is
         // on the M0's row, not repeated on each line.
         listing: null,
         corrobAdducts: own ?? parent.corrobAdducts,
         // True whenever the count on this row is the parent's, independent of
-        // whether it clears the marker's threshold, so the row stays
-        // self-describing to anything that reads it below that threshold.
+        // whether it clears the marker's threshold.
         corrobInherited: own == null && parent.corrobAdducts > 0,
         mech: mechById.value.get(child.ionization_mechanism_id) ?? null,
         isChild: true,
@@ -600,42 +464,22 @@ function isotopologuesOf(parent, underChannel = false) {
 const rows = computed(() => {
   const ledger = assignments.value.list.filter((row) => !isIsotopeLine(row))
   const parents = (queueMode.value ? queueRows(ledger, queue.value?.list) : ledger)
-    .filter((row) => activeTiers.size === 0 || activeTiers.has(bucketOf(row)))
-    .filter((row) => levelFilter.value == null || row.level === levelFilter.value)
-    .filter(
-      (row) =>
-        queueMode.value ||
-        verdictFilter.value === 'all' ||
-        (effectiveVerdictFor(row)?.verdict ?? 'unverified') === verdictFilter.value
-    )
+    .filter((row) => passes(row, { verdicts: !queueMode.value }))
     .map((row) => {
       const listing = ledgerListing(row.reference_listing)
       return {
         ...row,
-        tierRank: rankOf(row),
-        // Null where the producing engine stated no tier, and null rather than a
-        // rank so `compareBy` sorts those rows last in both directions - "this
-        // engine said nothing" is not a position on the scale. Guarded because
-        // tierRank(null) would answer with the 'unassigned' rank and put every
-        // in-app row at one end of a column it has no opinion in.
+        tierRank: bucketRank(row.tier, row.role),
+        // Null where the producing engine stated no tier, so those rows sort
+        // last in both directions: "this engine said nothing" is not a position
+        // on the scale.
         engineTierRank: row.engine_tier != null ? tierRank(row.engine_tier) : null,
-        // Null rather than a rank where the row carries no level, so the level
-        // column sorts those last in both directions: no level is not a
-        // position on the scale.
+        // Null rather than a rank where the row carries no level, likewise.
         levelRank: isLevel(row.level) ? levelRank(row.level) : null,
+        verdictRank: verdictRank(effectiveVerdictFor(row)),
         listing,
         target: targetOf(row.reference_listing, listing),
-        // The ledger-measured channel count first: it reaches every committed
-        // row, where the curated per-compound count reaches only what Stage A
-        // claimed - a handful of rows on most samples and none at all on many.
-        // Where both exist the first is a superset of the second, so preferring
-        // it never shrinks the marker.
-        corrobAdducts:
-          row.corroboration_channels ??
-          row.provenance?.cross_channel?.channels?.length ??
-          row.corroboration_adducts ??
-          row.provenance?.corroboration?.n_adducts ??
-          0,
+        corrobAdducts: channelCount(row) ?? 0,
         corrobInherited: false,
         mech: mechById.value.get(row.ionization_mechanism_id) ?? null,
         isChild: false,
@@ -666,9 +510,7 @@ const rows = computed(() => {
     heads = parents.filter((row) => !grouped.has(row))
   }
 
-  const byColumn = sortField.value ? compareBy(sortField.value, sortOrder.value) : null
-  const resting = queueMode.value ? byQueue : byConfidence
-  heads.sort(byColumn ? (a, b) => byColumn(a, b) || resting(a, b) : resting)
+  sort(heads, queueMode.value ? byQueue : byConfidence)
 
   const result = []
   for (const head of heads) {
@@ -696,18 +538,9 @@ const headOfGrouped = computed(() => {
   return heads
 })
 
-// Label for an unfolded isotopologue child row (compact substitution label,
-// falling back to the offset label). Counted from the family's M0, which the ion
-// formula names for a labelled ion (see formatIsotopeFormula): the row's own,
-// or its M0's when the row recorded none. A source ion's line names its heavy
-// isotopes in its label alone, and reads in the same brackets.
-const childLabel = (row) =>
-  row.isotope_formula
-    ? formatIsotopeFormula(
-        row.isotope_formula,
-        row.ion_formula ?? assignments.value.m0Of(row)?.ion_formula
-      )
-    : formatIsotopeLabel(row.isotope_label) || 'iso'
+// An unfolded line's label: its substitution wherever the row names one,
+// counted from the family's M0 (lib/ledger/rows.js).
+const childLabel = (row) => sampleLineLabel(row, assignments.value.m0Of(row))
 
 // A borrowed count is parenthesised, so an isotopologue does not read at a glance as
 // a peak seen through several adducts in its own right.
@@ -716,12 +549,8 @@ const corrobLabel = (row) =>
 
 // Tooltip for the corroboration marker, beside the ionization it counts
 // channels of. An isotopologue shows the count its M0 was corroborated by, so
-// it says the evidence is the family's.
-//
-// The marker sat beside the P(correct) column until that column was taken out
-// of the app (step 3.4d of the assignment quality plan): the calibrated
-// probability is read off a curve nobody has verified yet, and the tooltip no
-// longer names a number the page does not show.
+// it says the evidence is the family's. No calibrated probability is named:
+// it is read off a curve nobody has verified yet (step 3.4d of the plan).
 const corrobTooltip = (row) =>
   row.corrobInherited
     ? `Supported by ${row.corrobAdducts} channels, via the M0 of this isotopologue family`
@@ -750,48 +579,32 @@ const selectedRow = computed({
   },
   set: (row) => {
     // Clicking the selected row again de-selects it, and PrimeVue says so by
-    // emitting null. Dropping that left the peak focused with nothing selected:
-    // the spectrum highlight, the inspector and the timeseries all stayed on a
-    // peak the ledger no longer showed as chosen. Selection lives in the peak
-    // store, so unfocusing there clears every one of them.
+    // emitting null. Selection lives in the peak store, so unfocusing there
+    // clears the spectrum highlight, the inspector and the timeseries too.
     if (row) focusPeak(row)
     else app.data.peak.unfocus()
   }
 })
 
 // --- Verdict from the row ----------------------------------------------------
-// The batch ledger's verdict cell, here: an unverified row can be judged where
-// it is read, in the same form the inspector carries. The target is the row the
-// cell was opened from, read live so a verdict just recorded shows in the
-// popover without reopening it.
-const verdictMenu = ref()
-const verdictRowId = ref(null)
-const verdictTarget = computed(() =>
-  verdictRowId.value
-    ? (rows.value.find((row) => row.peak_assignment_id === verdictRowId.value) ?? null)
-    : null
+// An unverified row is judged where it is read, in the same form the inspector
+// carries (lib/ledger/LedgerVerdictPopover.vue).
+const {
+  menu: verdictMenu,
+  target: verdictTarget,
+  open: openVerdict
+} = useRowPopover(
+  (id) => rows.value.find((row) => row.peak_assignment_id === id),
+  (row) => row.peak_assignment_id
 )
-function openVerdict(event, row) {
-  const menu = verdictMenu.value
-  if (!menu) return
-  if (verdictRowId.value === row.peak_assignment_id) {
-    menu.toggle(event)
-    return
-  }
-  verdictRowId.value = row.peak_assignment_id
-  menu.hide()
-  nextTick(() => menu.show(event))
-}
-const verdictTooltip = (row) => {
-  if (verdictFor(row)) return 'Verification verdict - click to re-judge'
-  if (overlayFor(row)) return 'Batch-level verdict reaching this sample - click to judge it here'
-  return 'Record a verdict'
-}
 
 // --- The batch chart from the row ------------------------------------------
 // The batch chart draws the Batch peaks ledger's selection; a row's species
 // goes into it (or out of it) from here, without leaving the sample.
 const chart = useBatchChartSelection()
+
+// "Listed as" folded or in full, one switch for both scopes.
+const listingColumn = useLedgerListing()
 
 // --- Keep the focused row in view --------------------------------------------
 // A peak focused elsewhere - the batch chart, the batch ledger's jump, the
@@ -799,12 +612,12 @@ const chart = useBatchChartSelection()
 // scroller a selected row is in view only if it is scrolled to. Rerun when the
 // rows arrive as well: after a sample switch the focus lands before the
 // sample's ledger has loaded, and the row exists only once it has.
-const assignmentTable = ref()
+const ledgerRef = ref()
 function scrollToFocusedRow() {
   const row = selectedRow.value
   if (!row) return
   const index = rows.value.indexOf(row)
-  nextTick(() => scrollVirtualRowIntoView(assignmentTable.value, index))
+  nextTick(() => scrollVirtualRowIntoView(ledgerRef.value?.table, index))
 }
 watch([() => selectedRow.value?.sample_peak_id, () => rows.value.length], scrollToFocusedRow, {
   immediate: true
@@ -822,54 +635,42 @@ const engineTierTooltip = (row) =>
 // Isotopologues folded under a formula's M0.
 const isoCount = (row) => assignments.value.childrenOf(row.peak_assignment_id).length
 
-// --- Header ------------------------------------------------------------------
-
-// Which sample's ledger this is, and the way back out of it. A pane headed only
-// "Assignments" names neither the sample nor its batch, and until now the sole
-// ways to unfocus the sample were a meta-click on its row in the sample browser
-// or the filter chip in the far corner - both a long way from the table being
-// read. The leading caret drops the sample, which returns the browser to the
-// batch-peak ledger (PaneBrowserMatch switches on sample.focused) and clears the
-// sample everywhere else.
-const breadcrumb = computed(() => {
-  const sample = app.data.sample.focused
-  if (!sample) return null
-  const batch = app.data.batch.focused
-  return {
-    items: [
-      ...(batch
-        ? [
-            {
-              icon: 'pi pi-hashtag',
-              label: prettyTrim(batch.sample_batch_name, 45),
-              disabled: false,
-              tooltip: `Batch: ${batch.sample_batch_name}`,
-              action: () => app.data.sample.unfocus()
-            }
-          ]
-        : []),
-      {
-        icon: 'pi pi-tag',
-        label: prettyTrim(sample.sample_item_name, 25),
-        disabled: true,
-        tooltip: `Peak assignments for sample:\n ${sample.sample_item_name}`
-      },
-      {
-        icon: 'pi ph ph-atom',
-        label: `${assignments.value.list.length} peaks`,
-        disabled: true
-      }
-    ]
-  }
+// The ledger's count, in its header line: the shell's breadcrumb names the
+// batch and the sample.
+const count = computed(() => {
+  const n = assignments.value.list.length
+  return `${n.toLocaleString('en-US')} peak${n === 1 ? '' : 's'}`
 })
+
+const FIELDS = {
+  mz: 'sample_peak_mz',
+  intensity: 'sample_peak_intensity',
+  formula: 'assigned_formula',
+  listing: 'listing',
+  level: 'level',
+  levelSort: 'levelRank'
+}
+const HEADERS = {
+  listing:
+    'What a reference list calls the formula: the first name the run matched from a list, ' +
+    "that list, and the list's tags. A formula match names candidate compounds; it is not an " +
+    'identification.',
+  engineTier: "The producing engine's own tier, beside this server's",
+  level:
+    'Identification level: what a reader may state of the row, from 5 (a measured mass) ' +
+    'to 1 (a confirmed structure). Shown beside the tier; no tier moves on it',
+  verdict: 'Verification verdict'
+}
 </script>
 
 <template>
-  <BaseTabbedPanel
+  <AssignmentLedger
+    ref="ledgerRef"
+    scope="sample"
     label="Assignments"
     icon="pi ph ph-list-magnifying-glass"
-    :breadcrumb="breadcrumb"
-    :pt="
+    :count="app.data.sample.focused && runs.list.length ? count : ''"
+    :panelPt="
       app.ui.help.right(
         `
         <h1>Assignments</h1>
@@ -877,7 +678,7 @@ const breadcrumb = computed(() => {
         Every peak in the selected sample with its committed assignment from the
         selected run: formula, ionization and confidence tier. The tiering is
         still being developed, and the tier column says so. Where the run
-        states them, the <b>level</b> column gives each row's identification
+        states them, the <b>Level</b> column gives each row's identification
         level: what may be stated of it, from a measured mass (5) to a
         confirmed structure (1).
         </p>
@@ -895,256 +696,214 @@ const breadcrumb = computed(() => {
         { doc: app.ui.help.docUrl('how-it-works/peak-assignment/') }
       )
     "
+    :pending="assignments.pending"
+    :error="assignments.error"
+    errorFallback="Could not load this run."
+    :onRetry="() => assignments.load('retry')"
+    emptyTitle="No peaks match these filters"
+    :rows="rows"
+    :rowHeight="35.5"
+    v-model:sortField="sortField"
+    v-model:sortOrder="sortOrder"
+    :fields="FIELDS"
+    :headers="HEADERS"
+    intensityLabel="Intensity"
+    :chips="tierChips"
+    :activeTiers="activeTiers"
+    :engineView="readsEngineTiers"
+    engineViewTooltip="The chips count and filter by the producing engine's own tier. The tier column and the sort stay on this server's."
+    viewMenuTooltip="View options: isotopologue rows, grouping by formula, the listing column, verdict filter"
+    :viewMenuPt="
+      app.ui.help.top(
+        `
+        <h1>View Options</h1>
+        <p>
+        How this ledger reads, rather than what it is reading. <b>Isotopologues</b>
+        unfolds each compound's isotopologue peaks - folded into the <b>+N</b>
+        marker by default - as indented rows under their main peak (M0), each
+        named by its substitution.
+        <b>Group by formula</b> makes a neutral read through several
+        ionization channels one row, headed by its strongest reading; the
+        arrow beside its ionization shows the others under it.
+        <b>Listed as, in full</b> writes out what a reference list calls
+        each formula with its list; folded, the default, the column is the
+        name cut short with the list's tags beside it, and the whole name
+        and its list are in its tooltip.
+        <b>Verdict</b> narrows the table to one verification verdict.
+        </p>
+        <p>
+        On a run imported from another engine that states tiers of its
+        own, <b>Engine tier</b> makes the tier chips count and filter by
+        that engine's tier, with <b>not stated</b> for the formulas it
+        gave none. The tier column and the sort stay on Mascope's tier.
+        </p>
+        <p>
+        Each keeps its setting while the menu is closed.
+        </p>`,
+        { doc: app.ui.help.docUrl('how-it-works/peak-assignment/') }
+      )
+    "
+    :hasEngineTiers="hasEngineTiers"
+    :engineTierTooltip="engineTierTooltip"
+    :hasLevels="hasLevels"
+    :verdictCell="verdictCell"
+    :verdictHelp="{
+      title: 'Verification',
+      helpKey: 'assignment-verification',
+      doc: app.ui.help.docUrl('how-it-works/peak-assignment/#verifying-assignments')
+    }"
+    dataKey="sample_peak_id"
+    v-model:filters="filters"
+    selectionMode="single"
+    :metaKeySelection="false"
+    v-model:selection="selectedRow"
+    :rowClass="rowClass"
+    @toggle-tier="toggleTier"
+    @open-verdict="openVerdict"
   >
-    <Message
-      v-if="launchError"
-      :severity="launchRefused ? 'warn' : 'error'"
-      closable
-      @close="launchError = null"
-    >
-      {{ launchError }}
-    </Message>
-
-    <div v-if="!app.data.sample.focused" class="center empty">
-      <div class="col" style="gap: 0.5rem; text-align: center; max-width: 40ch">
-        <strong><span class="pi ph ph-cursor-click" /> No sample selected</strong>
-        <i style="opacity: 0.6"> Select a sample to view or run its peak assignments. </i>
-      </div>
-    </div>
-    <!-- Ahead of the empty state: a run list that failed to load must not read
-         as "this sample has none", which invites an Assign run the user does
-         not need. -->
-    <div v-else-if="runs.error" class="center empty">
-      <BaseLoadError
-        :error="runs.error"
-        fallback="Could not load the assignment runs for this sample."
-        :onRetry="() => runs.load('retry')"
-      />
-    </div>
-    <div class="overlay" style="text-align: center" v-else-if="runs.pending">
-      <ProgressSpinner />
-    </div>
-    <!-- The one state that carries its own call to action, and the reason
-         AssignmentRunBar hides its copy of the button here: two identical
-         buttons a few centimetres apart read as two different things. The four
-         run states are a set maintained in two files - no sample, run list
-         errored, no runs, and a run to show - so a change to any of these
-         branches needs the bar's `canAssign` read alongside it. Both buttons
-         open the same dialog, below, through the launcher store. -->
-    <div v-else-if="!runs.list.length" class="center empty">
-      <div class="col" style="gap: 0.75rem; text-align: center; max-width: 40ch">
-        <strong><span class="pi ph ph-info" /> No assignment runs</strong>
-        <i style="opacity: 0.6">
-          Assign a composition to every peak in this sample: first from the known target library,
-          then via untargeted composition search.
-        </i>
-        <Button
-          label="Assign sample"
-          icon="pi ph ph-magic-wand"
-          size="small"
-          @click="configVisible = true"
-        />
-      </div>
-    </div>
-
-    <div v-else class="col ledger" style="gap: 0.6rem; align-items: stretch">
-      <div
-        class="tier-strip"
-        v-help.top="{
-          title: 'Confidence Tiers',
-          helpKey: 'assignment-tiers',
-          doc: app.ui.help.docUrl('how-it-works/peak-assignment/#confidence-tiers')
-        }"
+    <template #notices>
+      <Message
+        v-if="launchError"
+        :severity="launchRefused ? 'warn' : 'error'"
+        closable
+        @close="launchError = null"
       >
-        <!-- The four tiers count the sample's compounds and the peaks nothing
-             explained; the two roles after them count the peaks the source and
-             the instrument made, which are neither. -->
-        <!-- Says whose tiers the chips count while that is not this server's. -->
-        <span
-          v-if="readsEngineTiers"
-          class="engine-view-label"
-          v-tooltip.top="
-            'The chips count and filter by the producing engine\'s own tier. The tier column and the sort stay on this server\'s.'
-          "
-          >engine's tiers</span
-        >
-        <button
-          v-for="t in tierChips"
-          :key="t.key"
-          type="button"
-          class="tier-stat"
-          :class="[
-            t.key === 'below_assignability' ? 'below' : t.key,
-            {
-              'roles-start': t.key === ROLE_BUCKETS[0],
-              active: activeTiers.has(t.key),
-              dim: activeTiers.size && !activeTiers.has(t.key)
-            }
-          ]"
-          v-tooltip.top="
-            activeTiers.has(t.key) ? `Showing only ${t.label}` : `Filter to ${t.label}`
-          "
-          @click="toggleTier(t.key)"
-        >
-          <b>{{ t.count }}</b> {{ t.label }}
-        </button>
+        {{ launchError }}
+      </Message>
+      <Dialog
+        v-model:visible="configVisible"
+        modal
+        header="Assign sample"
+        :style="{ width: '26rem' }"
+      >
+        <PeakAssignConfigForm :sample-item-id="app.data.sample.focusedId" />
+        <template #footer>
+          <Button label="Cancel" text severity="secondary" @click="configVisible = false" />
+          <Button label="Assign" icon="pi ph ph-magic-wand" :loading="submitting" @click="launch" />
+        </template>
+      </Dialog>
+    </template>
 
-        <!-- The verification queue: a filter of its own, so a chip like the
-             tiers, and set off from them at the strip's end. -->
-        <button
-          type="button"
-          class="tier-stat queue-chip"
-          :class="{ active: queueMode }"
-          :aria-pressed="queueMode"
-          data-testid="queue-chip"
-          v-tooltip.top="
-            queueMode
-              ? 'Showing the assignments worth verifying, in the order to ask - click to show every row'
-              : 'Show the assignments worth verifying: near a tier edge, random spot checks, and verdicts a later run read differently'
-          "
-          v-help.top="{
-            title: 'Worth verifying',
-            helpKey: 'assignment-verification',
-            doc: app.ui.help.docUrl('how-it-works/peak-assignment/#the-verification-queue')
-          }"
-          @click="queueMode = !queueMode"
-        >
-          <span class="pi ph ph-seal-question" /> <b>{{ queueCount }}</b> to verify
-        </button>
-
-        <!-- At the end of the filter row, because that is what it holds: the
-             tier chips beside it narrow the table by confidence, the menu
-             narrows it by verdict and chooses whether isotopologues are their
-             own rows. A cog, matching the table-controls button the sample and
-             ion browsers already put in the same corner. -->
-        <Button
-          class="view-menu-button"
-          icon="pi pi-cog"
-          severity="secondary"
-          text
-          size="small"
-          aria-label="Ledger view options"
-          aria-haspopup="dialog"
-          :aria-controls="viewMenuOpen ? 'assignment-view-menu' : undefined"
-          :aria-expanded="viewMenuOpen"
-          v-tooltip.top="
-            'View options: isotopologue rows, grouping by formula, the listing column, verdict filter'
-          "
-          @click="toggleViewMenu"
-          :pt="
-            app.ui.help.top(
-              `
-              <h1>View Options</h1>
-              <p>
-              How this ledger reads, rather than what it is reading. <b>Isotopologues</b>
-              unfolds each compound's isotopologue peaks - folded into the <b>+N</b>
-              marker by default - as indented rows under their main peak (M0).
-              <b>Group by formula</b> makes a neutral read through several
-              ionization channels one row, headed by its strongest reading; the
-              arrow beside its ionization shows the others under it.
-              <b>Listed as, in full</b> writes out what a reference list calls
-              each formula with its list; folded, the default, the column is the
-              name cut short with the list's tags beside it, and the whole name
-              and its list are in its tooltip.
-              <b>Verdict</b> narrows the table to one verification verdict.
-              </p>
-              <p>
-              On a run imported from another engine that states tiers of its
-              own, <b>Engine tier</b> makes the tier chips count and filter by
-              that engine's tier, with <b>not stated</b> for the formulas it
-              gave none. The tier column and the sort stay on Mascope's tier.
-              </p>
-              <p>
-              Each keeps its setting while the menu is closed.
-              </p>`,
-              { doc: app.ui.help.docUrl('how-it-works/peak-assignment/') }
-            )
-          "
+    <!-- The run states with no ledger to show. The run list's error comes
+         ahead of the empty state: a run list that failed to load must not read
+         as "this sample has none", which invites an Assign run the user does
+         not need. The four run states are a set maintained in two files - no
+         sample, run list errored, no runs, and a run to show - so a change to
+         any of these branches needs AssignmentRunBar's `canAssign` read
+         alongside it: the bar hides its Assign sample while the empty state
+         carries one. -->
+    <template
+      v-if="!app.data.sample.focused || runs.error || runs.pending || !runs.list.length"
+      #state
+    >
+      <BaseEmptyState
+        v-if="!app.data.sample.focused"
+        icon="pi ph ph-cursor-click"
+        title="No sample selected"
+        hint="Select a sample to view or run its peak assignments."
+      />
+      <div v-else-if="runs.error" class="center loading-region">
+        <BaseLoadError
+          :error="runs.error"
+          fallback="Could not load the assignment runs for this sample."
+          :onRetry="() => runs.load('retry')"
         />
-        <!-- Named, because Popover gives its panel role="dialog"
-             aria-modal="true" and nothing else: an unnamed dialog is announced
-             as just "dialog". Both attributes land on that root - Popover
-             merges fallthrough attrs into it via ptmi. -->
-        <Popover
-          ref="viewMenu"
-          id="assignment-view-menu"
-          aria-label="Ledger view options"
-          @show="viewMenuOpen = true"
-          @hide="viewMenuOpen = false"
-        >
-          <div class="view-menu">
-            <div
-              class="unfold-toggle"
-              v-tooltip.top="'Show isotopologue peaks as indented rows under their compound'"
-            >
-              <!-- autofocus on the switch itself, not on its wrapper: Popover
-                   moves focus only to a genuinely focusable `[autofocus]` child,
-                   and ToggleSwitch puts a fallthrough attribute on its root div.
-                   Without it the panel opens with nothing focused and, being
-                   teleported to the end of <body>, is unreachable by keyboard. -->
-              <ToggleSwitch
-                v-model="showIsotopologues"
-                inputId="unfold-iso"
-                :pt="{ input: { autofocus: true } }"
-              />
-              <label for="unfold-iso">Isotopologues</label>
-            </div>
-            <div
-              class="unfold-toggle"
-              v-tooltip.top="
-                'One row per neutral formula: its other ionization channels fold under its strongest reading'
-              "
-            >
-              <ToggleSwitch v-model="groupByFormula" inputId="group-formula" />
-              <label for="group-formula">Group by formula</label>
-            </div>
-            <div
-              class="unfold-toggle"
-              v-tooltip.top="
-                'Write out what a reference list calls each formula in full, with its list, rather than the name cut short'
-              "
-            >
-              <ToggleSwitch v-model="listingColumn.full" inputId="listing-full" />
-              <label for="listing-full">Listed as, in full</label>
-            </div>
-            <div
-              v-if="hasEngineTiers"
-              class="unfold-toggle"
-              v-tooltip.top="
-                'Count and filter the tier chips by the producing engine\'s own tier, not this server\'s'
-              "
-            >
-              <ToggleSwitch v-model="engineView" inputId="engine-tier-view" />
-              <label for="engine-tier-view">Engine tier</label>
-            </div>
-            <!-- Chips rather than a dropdown, and the same shape as the tier
-                 chips this menu hangs off. A Select here would be a second
-                 overlay inside a focus-trapping one: PrimeVue's Select swallows
-                 Escape unconditionally (stopPropagation in its onEscapeKey) and
-                 both of Popover's Escape handlers listen on the bubble path, so
-                 a keyboard user who tabbed into the filter could neither close
-                 the menu with Escape nor tab out past the trap's sentinels.
-                 Plain buttons keep Escape working and name themselves. -->
-            <div class="verdict-filter" role="group" aria-label="Filter by verification verdict">
-              <span class="view-menu-label">Verdict</span>
-              <div class="verdict-chips">
-                <button
-                  v-for="option in VERDICT_FILTERS"
-                  :key="option.value"
-                  type="button"
-                  class="verdict-chip"
-                  :class="{ active: verdictFilter === option.value }"
-                  :aria-pressed="verdictFilter === option.value"
-                  @click="verdictFilter = option.value"
-                >
-                  {{ option.label }}
-                </button>
-              </div>
-            </div>
-          </div>
-        </Popover>
       </div>
+      <div v-else-if="runs.pending" class="center loading-region">
+        <ProgressSpinner />
+      </div>
+      <BaseEmptyState
+        v-else
+        icon="pi ph ph-info"
+        title="No assignment runs"
+        hint="Assign a composition to every peak in this sample: first from the known target library, then via untargeted composition search."
+      >
+        <template #actions>
+          <Button
+            label="Assign sample"
+            icon="pi ph ph-magic-wand"
+            size="small"
+            @click="configVisible = true"
+          />
+        </template>
+      </BaseEmptyState>
+    </template>
 
+    <template #strip>
+      <!-- The verification queue: a filter of its own, so a chip like the
+           tiers, and set off from them at the strip's end. -->
+      <button
+        type="button"
+        class="tier-stat queue-chip"
+        :class="{ active: queueMode }"
+        :aria-pressed="queueMode"
+        data-testid="queue-chip"
+        v-tooltip.top="
+          queueMode
+            ? 'Showing the assignments worth verifying, in the order to ask - click to show every row'
+            : 'Show the assignments worth verifying: near a tier edge, random spot checks, and verdicts a later run read differently'
+        "
+        v-help.top="{
+          title: 'Worth verifying',
+          helpKey: 'assignment-verification',
+          doc: app.ui.help.docUrl('how-it-works/peak-assignment/#the-verification-queue')
+        }"
+        @click="queueMode = !queueMode"
+      >
+        <span class="pi ph ph-seal-question" /> <b>{{ queueCount }}</b> to verify
+      </button>
+    </template>
+
+    <template #view-menu>
+      <LedgerViewToggle
+        v-model="showIsotopologues"
+        id="unfold-iso"
+        label="Isotopologues"
+        tooltip="Show isotopologue peaks as indented rows under their compound"
+        autofocus
+      />
+      <LedgerViewToggle
+        v-model="groupByFormula"
+        id="group-formula"
+        label="Group by formula"
+        tooltip="One row per neutral formula: its other ionization channels fold under its strongest reading"
+      />
+      <LedgerViewToggle
+        v-model="listingColumn.full"
+        id="listing-full"
+        label="Listed as, in full"
+        tooltip="Write out what a reference list calls each formula in full, with its list, rather than the name cut short"
+      />
+      <LedgerViewToggle
+        v-if="hasEngineTiers"
+        v-model="engineView"
+        id="engine-tier-view"
+        label="Engine tier"
+        tooltip="Count and filter the tier chips by the producing engine's own tier, not this server's"
+      />
+      <!-- Chips rather than a dropdown: a Select here would be a second overlay
+           inside a focus-trapping one, and PrimeVue's Select swallows Escape,
+           so a keyboard user who tabbed into the filter could neither close
+           the menu nor tab out. Plain buttons keep Escape working. -->
+      <div class="verdict-filter" role="group" aria-label="Filter by verification verdict">
+        <span class="view-menu-label">Verdict</span>
+        <div class="verdict-chips">
+          <button
+            v-for="option in VERDICT_FILTERS"
+            :key="option.value"
+            type="button"
+            class="verdict-chip"
+            :class="{ active: verdictFilter === option.value }"
+            :aria-pressed="verdictFilter === option.value"
+            @click="verdictFilter = option.value"
+          >
+            {{ option.label }}
+          </button>
+        </div>
+      </div>
+    </template>
+
+    <template #above-table>
       <Message
         v-if="staleNotice && !assignments.pending && !assignments.error"
         severity="warn"
@@ -1153,442 +912,178 @@ const breadcrumb = computed(() => {
       >
         {{ staleNotice }}
       </Message>
-      <div v-if="assignments.pending" class="center loading-region">
-        <ProgressSpinner />
-      </div>
-      <!-- Inline rather than through the panel's :error, so the tier strip and
-           its view menu above stay usable, and the run selector in the bar
-           above them keeps offering another run, while only this run's rows are
-           unavailable. -->
-      <div v-else-if="assignments.error" class="center loading-region">
-        <BaseLoadError
-          :error="assignments.error"
-          fallback="Could not load this run."
-          :onRetry="() => assignments.load('retry')"
-        />
-      </div>
-      <DataTable
-        v-else
-        ref="assignmentTable"
-        :value="rows"
-        dataKey="sample_peak_id"
-        size="small"
-        scrollable
-        scrollHeight="flex"
-        :virtualScrollerOptions="{ itemSize: 35.5 }"
-        lazy
-        removableSort
-        v-model:sortField="sortField"
-        v-model:sortOrder="sortOrder"
-        v-model:filters="filters"
-        filterDisplay="menu"
-        selectionMode="single"
-        :metaKeySelection="false"
-        v-model:selection="selectedRow"
-        :rowClass="rowClass"
-      >
-        <!-- The batch chart draws the Batch peaks ledger's selection; this puts
-             the row's species into it, or takes it out, without leaving the
-             sample. First in the row, where the eye lands when scanning down
-             a ledger to build a chart, and clear of the numeric columns. -->
-        <Column style="min-width: 3rem">
-          <template #header>
-            <span class="pi ph ph-chart-line" v-tooltip.top="'In the batch chart'" />
-          </template>
-          <template #body="{ data }">
-            <button
-              type="button"
-              class="chart-cell"
-              :class="{ plotted: chart.isPlotted(data) }"
-              :disabled="!chart.canPlot(data)"
-              :aria-label="
-                chart.isPlotted(data) ? 'Remove from the batch chart' : 'Plot in the batch chart'
-              "
-              v-tooltip.top="
-                !chart.canPlot(data)
-                  ? 'Not in the batch ledger'
-                  : chart.isPlotted(data)
-                    ? 'Remove this species from the batch chart'
-                    : 'Plot this species in the batch chart'
-              "
-              @click.stop="chart.toggle(data)"
-            >
-              <span class="pi ph ph-chart-line" />
-            </button>
-          </template>
-        </Column>
-        <Column field="sample_peak_mz" header="m/z" sortable style="min-width: 6rem">
-          <template #body="{ data }">{{ num.mz.format(data.sample_peak_mz) }}</template>
-        </Column>
-        <Column field="sample_peak_intensity" header="intensity" sortable style="min-width: 5rem">
-          <template #body="{ data }">
-            {{
-              data.sample_peak_intensity != null
-                ? num.peakIntensity.format(data.sample_peak_intensity)
-                : '—'
-            }}
-          </template>
-        </Column>
-        <Column field="assigned_formula" header="formula" sortable style="min-width: 6rem">
-          <template #body="{ data }">
-            <span v-if="data.isChild" class="child-cell" :class="{ deeper: data.underChannel }">
-              <span class="child-caret">&#8627;</span>
-              <span
-                class="child-label"
-                v-tooltip.top="data.isotope_formula || data.isotope_label"
-                >{{ childLabel(data) }}</span
-              >
-            </span>
-            <!-- The same neutral read through another channel, under the row
-                 that heads its group: indented, and named again so the row
-                 reads on its own. -->
-            <span
-              v-else-if="data.isChannel"
-              class="child-cell channel-cell"
-              v-tooltip.top="'The same neutral, read through another ionization channel'"
-            >
-              <span class="child-caret">&#8627;</span>
-              <span class="formula">{{ formulaOf(data) }}</span>
-              <span v-if="isoCount(data)" class="iso-count">+{{ isoCount(data) }}</span>
-            </span>
-            <!-- The formula is the one cell in the ledger a reader wants out of
-                 the app - into a search, a note, a target list - so it carries
-                 the same hover-to-copy affordance as the batch ledger's. The
-                 isotopologue count rides in the slot, outside what gets copied. -->
-            <BaseCopyableField
-              v-else-if="formulaOf(data)"
-              class="formula"
-              :field="formulaOf(data)"
-              :tooltip="data.assigned_formula ? null : ION_TOOLTIP"
-            >
-              <span
-                v-if="isoCount(data)"
-                class="iso-count"
-                v-tooltip.top="
-                  `${isoCount(data)} isotopologue peak${isoCount(data) === 1 ? '' : 's'}`
-                "
-                >+{{ isoCount(data) }}</span
-              >
-            </BaseCopyableField>
-            <span v-else class="formula">&mdash;</span>
-          </template>
-        </Column>
-        <!-- What a reference list calls the formula: the name, its list, and
-             the list's tags (background for the siloxanes), all in one line so
-             the row keeps its height. The tooltip names every name the run
-             matched, as the inspector's does. Folded, the name is cut short
-             and the list is left to the tooltip. -->
-        <Column
-          field="listing"
-          sortable
-          :style="{ minWidth: listingColumn.full ? '8rem' : '5rem' }"
-        >
-          <template #header>
-            <span v-if="listingColumn.full" v-tooltip.top="LISTING_HEADER_TOOLTIP">listed as</span>
-            <span v-else v-tooltip.top="LISTING_HEADER_TOOLTIP">listed</span>
-          </template>
-          <template #body="{ data }">
-            <span
-              v-if="data.listing || data.target"
-              class="listing"
-              data-testid="listed-as"
-              v-tooltip.top="candidatesTooltip(data.target, data.listing)"
-            >
-              <!-- What the target stands for, labelled as the target's, and
-                   the list's name beside it; one with both labels where a
-                   list names the same structure. -->
-              <template v-if="data.target">
-                <template v-if="listingColumn.full">
-                  <span class="listing-label" data-testid="target-as">target</span>
-                  <span class="listing-name"
-                    >{{ targetName(data.target)
-                    }}<template v-if="targetMore(data.target, data.listing)">
-                      +{{ targetMore(data.target, data.listing) }}</template
-                    ></span
-                  >
-                  <span v-if="data.target.identity?.source" class="listing-source">{{
-                    data.target.identity.source
-                  }}</span>
-                </template>
-                <span
-                  v-else
-                  class="pi ph ph-target listing-mark"
-                  role="img"
-                  data-testid="target-as"
-                  :aria-label="`target: ${targetName(data.target)}`"
-                />
-                <span v-if="data.target.unlisted" class="listing-tag" data-testid="target-unlisted"
-                  >unlisted</span
-                >
-              </template>
-              <template v-if="data.listing && !data.target?.identity">
-                <template v-if="listingColumn.full">
-                  <span class="listing-name">{{ listingName(data.listing) }}</span>
-                  <span v-if="listingSource(data.listing)" class="listing-source">{{
-                    listingSource(data.listing)
-                  }}</span>
-                </template>
-                <span v-else class="listing-name folded" data-testid="listing-folded">{{
-                  listingName(data.listing)
-                }}</span>
-              </template>
-              <span
-                v-for="tag in listingTags(data.listing)"
-                :key="tag"
-                class="listing-tag"
-                :data-testid="`list-tag-${tag}`"
-                >{{ tag }}</span
-              >
-            </span>
-            <span v-else-if="!data.isChild" class="no-listing">&mdash;</span>
-          </template>
-        </Column>
-        <Column field="mech" sortable style="min-width: 5rem">
-          <template #header>
-            <span v-tooltip.top="'Ionization mechanism (adduct)'">ionization</span>
-          </template>
-          <template #body="{ data }">
-            <span class="mech">{{ data.mech || '—' }}</span>
-            <!-- How many of the run's channels committed the row's neutral:
-                 evidence for the formula, beside the channel it was read
-                 through. -->
-            <span
-              v-if="data.corrobAdducts > 1"
-              class="corrob-mark"
-              v-tooltip.top="corrobTooltip(data)"
-              ><span class="pi ph ph-link-simple" />{{ corrobLabel(data) }}</span
-            >
-            <!-- A group's head opens its other channels here, beside the
-                 channel it was read through. -->
-            <button
-              v-if="data.channelRows?.length"
-              type="button"
-              class="group-toggle"
-              data-testid="group-toggle"
-              :aria-expanded="openGroups.has(data.groupKey)"
-              :aria-label="
-                `${openGroups.has(data.groupKey) ? 'Fold' : 'Show'} the other ` +
-                `${data.channelRows.length === 1 ? 'channel' : 'channels'} of ${data.assigned_formula}`
-              "
-              v-tooltip.top="groupTooltip(data)"
-              @click.stop="toggleGroup(data.groupKey)"
-            >
-              <span
-                :class="[
-                  'pi',
-                  openGroups.has(data.groupKey) ? 'pi-chevron-down' : 'pi-chevron-right'
-                ]"
-              />+{{ data.channelRows.length }}
-            </button>
-          </template>
-        </Column>
-        <Column field="tierRank" sortable style="min-width: 7rem">
-          <template #header>
-            <span>tier</span>
-            <BaseProvisionalMark />
-          </template>
-          <template #body="{ data }">
-            <BaseTierTag
-              :tier="data.tier"
-              :evidence="queueMode ? null : data.evidence"
-              :role="data.role"
-              :source="data.source"
-            />
-          </template>
-        </Column>
-        <!-- The producing engine's own verdict, beside this server's rather
-             than instead of it. Both are real and they answer different
-             questions: `tier` is the evidence banded against the run's declared
-             thresholds - and is what this table sorts, filters and rolls up on -
-             while this one is what the engine concluded on its own terms. A row
-             where they differ is the one worth opening. -->
-        <Column
-          v-if="hasEngineTiers"
-          field="engineTierRank"
-          header="engine tier"
-          sortable
-          style="min-width: 7rem"
-        >
-          <template #body="{ data }">
-            <BaseTierTag
-              v-if="data.engine_tier"
-              :tier="data.engine_tier"
-              :tooltip="engineTierTooltip(data)"
-            />
-            <span v-else class="no-engine-tier">&mdash;</span>
-          </template>
-        </Column>
-        <!-- The identification level, beside the tiers and never in their
-             place: what a reader may state of the row, a measured mass (5) to
-             a confirmed structure (1). The chip's hover gives what earned it
-             and what would lift it. `field` stays the level so the filter
-             menu keeps its constraint; `sortField` is the scale's rank, as the
-             batch ledger's tier column sorts on its rank. An isotopologue
-             shows its M0's level, which it carries; a row with none shows the
-             dash an empty cell does. -->
-        <Column
-          v-if="hasLevels"
-          field="level"
-          sortField="levelRank"
-          sortable
-          style="min-width: 5rem"
-          :filterMatchModeOptions="[{ label: 'Equals', value: 'equals' }]"
-          :maxConstraints="1"
-          :showAddButton="false"
-          :showOperator="false"
-        >
-          <template #header>
-            <span
-              v-tooltip.top="LEVEL_HEADER_TOOLTIP"
-              v-help.top="{
-                title: 'Identification level',
-                helpKey: 'assignment-level',
-                doc: app.ui.help.docUrl('how-it-works/peak-assignment/#identification-level')
-              }"
-              >level</span
-            >
-          </template>
-          <template #body="{ data }">
-            <BaseLevelTag
-              v-if="isLevel(data.level)"
-              :level="data.level"
-              :evidence="data.level_evidence"
-              :lift="data.level_lift"
-              :role="data.role"
-            />
-            <span v-else-if="!data.isChild" class="no-level">&mdash;</span>
-          </template>
-          <template #filter="{ filterModel, filterCallback }">
-            <Select
-              v-model="filterModel.value"
-              @change="filterCallback()"
-              :options="LEVEL_FILTER_OPTIONS"
-              optionLabel="label"
-              optionValue="value"
-              placeholder="Any level"
-              size="small"
-              :showClear="true"
-            >
-              <template #option="{ option }">
-                <span class="level-option"
-                  ><b>{{ option.label }}</b> {{ option.name }}</span
-                >
-              </template>
-            </Select>
-          </template>
-        </Column>
-        <!-- Why the queue asks for the row: near a tier edge, a spot check, or
-             a verdict a later run read differently. Only in the queue. -->
-        <Column v-if="queueMode" field="queueRank" style="min-width: 3rem">
-          <template #header>
-            <span class="pi ph ph-seal-question" v-tooltip.top="'Why the row is worth verifying'" />
-          </template>
-          <template #body="{ data }">
-            <span
-              v-if="queueReason(data.queueEntry)"
-              class="queue-reason"
-              :class="data.queueEntry.reason"
-              :data-testid="`queue-reason-${data.queueEntry.reason}`"
-              :aria-label="queueReason(data.queueEntry).label"
-              v-tooltip.top="queueTooltip(data.queueEntry)"
-              ><span :class="queueReason(data.queueEntry).icon"
-            /></span>
-          </template>
-        </Column>
-        <Column style="min-width: 3rem">
-          <template #header>
-            <span
-              class="pi ph ph-seal-check"
-              v-tooltip.top="'Verification verdict'"
-              v-help.top="{
-                title: 'Verification',
-                helpKey: 'assignment-verification',
-                doc: app.ui.help.docUrl('how-it-works/peak-assignment/#verifying-assignments')
-              }"
-            />
-          </template>
-          <template #body="{ data }">
-            <!-- A button, as in the batch ledger: an unjudged cell opens the
-                 form too, so an unverified row is judged where it is read. -->
-            <button
-              type="button"
-              class="verdict-cell"
-              :class="{ unjudged: !verdictFor(data) && !overlayFor(data) }"
-              :aria-label="verdictFor(data) ? 'Verification verdict' : 'Record a verdict'"
-              v-tooltip.top="verdictTooltip(data)"
-              @click.stop="openVerdict($event, data)"
-            >
-              <BaseVerdictBadge
-                v-if="verdictFor(data)"
-                :record="verdictFor(data)"
-                :conflict="conflictFor(data)"
-                compact
-              />
-              <BaseVerdictBadge
-                v-else-if="overlayFor(data)"
-                :record="overlayFor(data)"
-                inherited
-                compact
-              />
-            </button>
-          </template>
-        </Column>
-      </DataTable>
+    </template>
 
+    <!-- The batch chart draws the Batch peaks ledger's selection; this puts
+         the row's species into it, or takes it out, without leaving the
+         sample. -->
+    <template #lead-column>
+      <Column style="min-width: 3rem">
+        <template #header>
+          <span class="pi ph ph-chart-line" v-tooltip.top="'In the batch chart'" />
+        </template>
+        <template #body="{ data }">
+          <button
+            type="button"
+            class="chart-cell"
+            :class="{ plotted: chart.isPlotted(data) }"
+            :disabled="!chart.canPlot(data)"
+            :aria-label="
+              chart.isPlotted(data) ? 'Remove from the batch chart' : 'Plot in the batch chart'
+            "
+            v-tooltip.top="
+              !chart.canPlot(data)
+                ? 'Not in the batch ledger'
+                : chart.isPlotted(data)
+                  ? 'Remove this species from the batch chart'
+                  : 'Plot this species in the batch chart'
+            "
+            @click.stop="chart.toggle(data)"
+          >
+            <span class="pi ph ph-chart-line" />
+          </button>
+        </template>
+      </Column>
+    </template>
+
+    <template #formula="{ data }">
+      <span v-if="data.isChild" class="child-cell" :class="{ deeper: data.underChannel }">
+        <span class="child-caret">&#8627;</span>
+        <span class="child-label" v-tooltip.top="data.isotope_formula || data.isotope_label">{{
+          childLabel(data)
+        }}</span>
+      </span>
+      <!-- The same neutral read through another channel, under the row that
+           heads its group: indented, and named again so the row reads on its
+           own. -->
+      <span
+        v-else-if="data.isChannel"
+        class="child-cell channel-cell"
+        v-tooltip.top="'The same neutral, read through another ionization channel'"
+      >
+        <span class="child-caret">&#8627;</span>
+        <span class="formula">{{ formulaOf(data) }}</span>
+        <span v-if="isoCount(data)" class="iso-count">+{{ isoCount(data) }}</span>
+      </span>
+      <!-- The formula carries hover-to-copy; the isotopologue count rides in the
+           slot, outside what gets copied. -->
+      <BaseCopyableField
+        v-else-if="formulaOf(data)"
+        class="formula"
+        :field="formulaOf(data)"
+        :tooltip="data.assigned_formula ? null : ION_TOOLTIP"
+      >
+        <span
+          v-if="isoCount(data)"
+          class="iso-count"
+          v-tooltip.top="`${isoCount(data)} isotopologue peak${isoCount(data) === 1 ? '' : 's'}`"
+          >+{{ isoCount(data) }}</span
+        >
+      </BaseCopyableField>
+    </template>
+
+    <template #middle-columns>
+      <Column field="mech" sortable style="min-width: 5rem">
+        <template #header>
+          <span v-tooltip.top="'Ionization mechanism (adduct)'">Ionization</span>
+        </template>
+        <template #body="{ data }">
+          <span class="mech">{{ data.mech || '' }}</span>
+          <!-- How many of the run's channels committed the row's neutral:
+               evidence for the formula, beside the channel it was read
+               through. -->
+          <span
+            v-if="data.corrobAdducts > 1"
+            class="corrob-mark"
+            v-tooltip.top="corrobTooltip(data)"
+            ><span class="pi ph ph-link-simple" />{{ corrobLabel(data) }}</span
+          >
+          <!-- A group's head opens its other channels here. -->
+          <button
+            v-if="data.channelRows?.length"
+            type="button"
+            class="group-toggle"
+            data-testid="group-toggle"
+            :aria-expanded="openGroups.has(data.groupKey)"
+            :aria-label="
+              `${openGroups.has(data.groupKey) ? 'Fold' : 'Show'} the other ` +
+              `${data.channelRows.length === 1 ? 'channel' : 'channels'} of ${data.assigned_formula}`
+            "
+            v-tooltip.top="groupTooltip(data)"
+            @click.stop="toggleGroup(data.groupKey)"
+          >
+            <span
+              :class="[
+                'pi',
+                openGroups.has(data.groupKey) ? 'pi-chevron-down' : 'pi-chevron-right'
+              ]"
+            />+{{ data.channelRows.length }}
+          </button>
+        </template>
+      </Column>
+    </template>
+
+    <template #tier="{ data }">
+      <BaseTierTag
+        :tier="data.tier"
+        :evidence="queueMode ? null : data.evidence"
+        :role="data.role"
+        :source="data.source"
+      />
+    </template>
+
+    <!-- What earned the level and what would lift it are in the chip's hover.
+         An isotopologue shows its M0's level, which it carries. -->
+    <template #level="{ data }">
+      <BaseLevelTag
+        v-if="isLevel(data.level)"
+        :level="data.level"
+        :evidence="data.level_evidence"
+        :lift="data.level_lift"
+        :role="data.role"
+      />
+    </template>
+
+    <!-- Why the queue asks for the row: near a tier edge, a spot check, or a
+         verdict a later run read differently. Only in the queue. -->
+    <template #end-columns>
+      <Column v-if="queueMode" field="queueRank" style="min-width: 3rem">
+        <template #header>
+          <span class="pi ph ph-seal-question" v-tooltip.top="'Why the row is worth verifying'" />
+        </template>
+        <template #body="{ data }">
+          <span
+            v-if="queueReason(data.queueEntry)"
+            class="queue-reason"
+            :class="data.queueEntry.reason"
+            :data-testid="`queue-reason-${data.queueEntry.reason}`"
+            :aria-label="queueReason(data.queueEntry).label"
+            v-tooltip.top="queueTooltip(data.queueEntry)"
+            ><span :class="queueReason(data.queueEntry).icon"
+          /></span>
+        </template>
+      </Column>
+    </template>
+
+    <template #popovers>
       <Popover ref="verdictMenu" aria-label="Verification verdict">
-        <AssignmentVerdictPopover
+        <LedgerVerdictPopover
           v-if="verdictTarget"
+          scope="sample"
           :row="verdictTarget"
           :record="verdictFor(verdictTarget)"
           :overlay="overlayFor(verdictTarget)"
           @done="verdictMenu?.hide()"
         />
       </Popover>
-    </div>
-
-    <Dialog
-      v-model:visible="configVisible"
-      modal
-      header="Assign sample"
-      :style="{ width: '26rem' }"
-    >
-      <PeakAssignConfigForm :sample-item-id="app.data.sample.focusedId" />
-      <template #footer>
-        <Button label="Cancel" text severity="secondary" @click="configVisible = false" />
-        <Button label="Assign" icon="pi ph ph-magic-wand" :loading="submitting" @click="launch" />
-      </template>
-    </Dialog>
-  </BaseTabbedPanel>
+    </template>
+  </AssignmentLedger>
 </template>
 
 <style scoped>
-/* A row the producing engine stated no tier on. Recessive, because it is the
-   majority of the column on most runs - an engine typically tiers only the
-   peaks it committed a formula to - and a column of full-strength dashes would
-   read as missing data rather than as "no opinion here". A row no list names
-   is the same case in the listing column, and a row with no identification
-   level in the level column. */
-.no-engine-tier,
-.no-listing,
-.no-level {
-  opacity: 0.4;
-}
-
-/* A level filter's option: the level, then its name, the levels aligned. */
-.level-option b {
-  display: inline-block;
-  min-width: 1.6rem;
-}
-
-/* The listing: one line, the name first and cut short rather than wrapped, so
-   the virtual scroller's fixed row height holds; the list and its tags after
-   it, recessive, as the inspector shows them. */
-.listing {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 0.35rem;
-  max-width: 18rem;
-  white-space: nowrap;
+.loading-region {
+  width: 100%;
+  min-height: 10rem;
 }
 /* A row whose peak the sample no longer has: there is nothing to focus. */
 :deep(tr.stale-peak) {
@@ -1596,186 +1091,6 @@ const breadcrumb = computed(() => {
   cursor: default;
 }
 
-/* Folded, the target's mark stands for its name, in the tooltip. */
-.listing-mark {
-  opacity: 0.75;
-}
-.listing-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
-}
-/* Folded, the name alone, cut short: the hover gives it whole with its list. */
-.listing-name.folded {
-  max-width: 6rem;
-}
-.listing-source {
-  font-size: 0.72rem;
-  opacity: 0.6;
-}
-/* Which candidate the name is: the target's declaration, in the voice of the
-   inspector's key. */
-.listing-label {
-  font-size: 0.7rem;
-  opacity: 0.6;
-}
-.listing-tag {
-  padding: 0 0.3rem;
-  border: 1px solid var(--p-content-border-color, #e3e6ec);
-  border-radius: 0.25rem;
-  font-size: 0.7rem;
-  opacity: 0.8;
-}
-
-/* The panel body is a column: the launch-error banner and the tier strip take
-   their natural height and the ledger takes the rest, so whatever is shown
-   above the table shortens it instead of pushing it past the pane. */
-:deep(.p-panel-content) {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-:deep(.p-message) {
-  flex: 0 0 auto;
-}
-.ledger {
-  flex: 1;
-  min-height: 0;
-  /* .col centres on space-between, which would drop the spinner and the load
-     error to the bottom of the pane now that this column has room to spare. */
-  justify-content: flex-start;
-}
-.ledger > :deep(.p-datatable) {
-  flex: 1;
-  min-height: 0;
-}
-.ledger > :deep(.p-datatable > .p-datatable-table-container) {
-  flex: 1;
-  min-height: 0;
-}
-
-.empty {
-  width: 100%;
-  height: 220px;
-}
-.loading-region {
-  width: 100%;
-  min-height: 10rem;
-}
-
-.tier-strip {
-  display: flex;
-  flex-flow: row wrap;
-  gap: 0.3rem;
-  padding: 0 0.4rem;
-  flex: 0 0 auto;
-}
-.tier-stat {
-  font-size: 0.72rem;
-  padding: 0.15rem 0.5rem;
-  border-radius: 100px;
-  border: 1px solid var(--p-content-border-color, #e3e6ec);
-  font-variant-numeric: tabular-nums;
-  /* button reset */
-  background: transparent;
-  color: inherit;
-  font-family: inherit;
-  cursor: pointer;
-  transition:
-    opacity 0.12s,
-    border-color 0.12s,
-    background 0.12s;
-}
-.tier-stat:hover {
-  border-color: var(--p-primary-color, #6366f1);
-}
-.tier-stat.active {
-  border-color: var(--p-primary-color, #6366f1);
-  background: color-mix(in srgb, var(--p-primary-color, #6366f1) 12%, transparent);
-}
-.tier-stat.dim {
-  opacity: 0.4;
-}
-.tier-stat b {
-  font-weight: 700;
-}
-.tier-stat.assigned b {
-  color: var(--state-success);
-}
-.tier-stat.candidate b {
-  color: var(--state-warning);
-}
-.tier-stat.reagent b,
-.tier-stat.artifact b {
-  color: #8a5ed0;
-}
-/* Set off from the tiers: what follows is not a confidence. */
-.tier-stat.roles-start {
-  margin-left: 0.4rem;
-}
-.tier-stat.below b,
-.tier-stat.unassigned b,
-.tier-stat.engine_unstated b {
-  color: var(--p-surface-500, #6f7889);
-}
-.engine-view-label {
-  font-size: 0.72rem;
-  font-style: italic;
-  opacity: 0.7;
-}
-
-.formula {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 0.95rem;
-}
-.mech {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 0.82rem;
-  opacity: 0.85;
-  white-space: nowrap;
-}
-.iso-count {
-  margin-left: 0.35rem;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 0.62rem;
-  opacity: 0.55;
-  vertical-align: super;
-  /* Its parent is BaseCopyableField's flex row, where vertical-align does
-     nothing; align to the top edge to keep the superscript reading. */
-  align-self: flex-start;
-}
-/* The copy button sits between the formula and the marker in source order, and
-   it reserves its space even while hidden - which would strand the "+N" a
-   button's width away from the formula it counts for. Ordering it last in the
-   flex row puts the marker back against the formula. */
-.formula :deep(button) {
-  order: 1;
-}
-
-/* Channel-corroboration marker beside the ionization. */
-.corrob-mark {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.1rem;
-  margin-left: 0.4rem;
-  font-size: 0.7rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--state-info);
-}
-.corrob-mark .pi {
-  font-size: 0.75rem;
-}
-
-/* The cog sits at the far end of the tier-chip row, which wraps; pushing it
-   with auto margin keeps it in the corner however many chips precede it. */
-.view-menu-button {
-  align-self: center;
-}
-/* At the strip's end, beside the view menu: the cog no longer pushes itself
-   there, the chip takes both. */
-.queue-chip {
-  margin-left: auto;
-}
 .queue-reason {
   opacity: 0.75;
 }
@@ -1784,29 +1099,6 @@ const breadcrumb = computed(() => {
   opacity: 1;
 }
 
-/* The view-options panel: one labelled setting per row. */
-.view-menu {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  min-width: 14rem;
-}
-.unfold-toggle {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.6rem;
-  font-size: 0.8rem;
-  white-space: nowrap;
-  /* Label first, control last, matching the verdict row below. Reversed here
-     rather than reordered in the markup so the switch stays the first element
-     in the panel, and so Tab reaches it before the verdict chips. */
-  flex-direction: row-reverse;
-}
-.unfold-toggle label {
-  cursor: pointer;
-  opacity: 0.75;
-}
 .verdict-filter {
   display: flex;
   flex-direction: column;
@@ -1833,24 +1125,33 @@ const breadcrumb = computed(() => {
   font-family: inherit;
   cursor: pointer;
   white-space: nowrap;
-  transition:
-    border-color 0.12s,
-    background 0.12s;
 }
-.verdict-chip:hover {
+.verdict-chip:hover,
+.verdict-chip.active {
   border-color: var(--p-primary-color, #6366f1);
 }
 .verdict-chip.active {
-  border-color: var(--p-primary-color, #6366f1);
   background: color-mix(in srgb, var(--p-primary-color, #6366f1) 12%, transparent);
 }
 
-/* Unfolded isotopologue child row: indented substitution label under its M0. */
-.child-cell {
+.mech {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  opacity: 0.85;
+  white-space: nowrap;
+}
+/* Channel-corroboration marker beside the ionization. */
+.corrob-mark {
   display: inline-flex;
-  align-items: baseline;
-  gap: 0.35rem;
-  padding-left: 0.9rem;
+  align-items: center;
+  gap: 0.1rem;
+  margin-left: 0.4rem;
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--state-info);
+}
+.corrob-mark .pi {
+  font-size: 0.75rem;
 }
 /* An isotopologue of a grouped channel's row, a step under that row. */
 .child-cell.deeper {
@@ -1859,9 +1160,7 @@ const breadcrumb = computed(() => {
 .channel-cell .formula {
   opacity: 0.8;
 }
-
-/* The head's toggle for its other channels: quiet until hovered, like the row's
-   other small controls. */
+/* The head's toggle for its other channels: quiet until hovered. */
 .group-toggle {
   display: inline-flex;
   align-items: center;
@@ -1881,40 +1180,6 @@ const breadcrumb = computed(() => {
   font-size: 0.6rem;
 }
 .group-toggle:hover {
-  background: var(--p-content-hover-background);
-}
-.child-caret {
-  opacity: 0.4;
-}
-.child-label {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 0.86rem;
-  opacity: 0.8;
-}
-
-/* The verdict cell is a button so an unjudged cell opens the form too, as in
-   the batch ledger; the badge is its whole content, and "none yet" draws
-   nothing. The "none yet" state is `unjudged`, not `empty`: `.empty`
-   above is the pane's empty-state panel, 220px tall, and a scoped class
-   selector styles every element that carries the class - a button called
-   `empty` would take that height and hand it to its row. */
-/* Sized to hold its badge whether or not it has one: an unjudged row draws
-   nothing, and the empty cell is still where it is judged. */
-.verdict-cell {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 1.6rem;
-  min-height: 1.4rem;
-  padding: 0.1rem 0.3rem;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-}
-.verdict-cell:hover {
   background: var(--p-content-hover-background);
 }
 /* The chart cell: faint until hovered, lit in the accent colour while the
