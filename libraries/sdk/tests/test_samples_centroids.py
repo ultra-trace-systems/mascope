@@ -112,3 +112,47 @@ def test_an_exclusion_a_flagged_answer_honours_is_returned(samples):
     centroids = samples.get_centroids(["sample-1"], exclude=["reference"])
 
     assert centroids == CENTROIDS
+
+
+#: The sample's own scans, as a server that knows ``scans`` serves them.
+OWN_CENTROIDS = {
+    "sample-1": {
+        "scan_selection": "sample",
+        **{key: value[:1] for key, value in CENTROIDS["sample-1"].items()},
+    }
+}
+
+
+def test_every_scan_is_asked_for_by_default(samples):
+    samples.get_centroids(["sample-1"], scans="all")
+
+    assert "scans" not in samples.requests[0][1]
+
+
+def test_the_samples_own_scans_are_asked_for_by_name(samples, monkeypatch):
+    asked = []
+
+    def fake_get(path, params=None, **kw):
+        asked.append(params)
+        return OWN_CENTROIDS
+
+    monkeypatch.setattr(samples, "_get", fake_get)
+
+    centroids = samples.get_centroids(["sample-1"], scans="sample")
+
+    assert asked == [{"sample_item_ids": ["sample-1"], "scans": "sample"}]
+    assert centroids == OWN_CENTROIDS
+
+
+def test_a_selection_an_older_server_ignored_raises(samples):
+    # It serves every scan, without the mark
+    with pytest.raises(MascopeAPIError, match="predates the scan selection"):
+        samples.get_centroids(["sample-1"], scans="sample")
+
+
+def test_a_selection_one_sample_of_the_answer_lacks_raises(samples, monkeypatch):
+    answer = {**OWN_CENTROIDS, "sample-2": CENTROIDS["sample-1"]}
+    monkeypatch.setattr(samples, "_get", lambda path, params=None, **kw: answer)
+
+    with pytest.raises(MascopeAPIError, match="scans=sample"):
+        samples.get_centroids(["sample-1", "sample-2"], scans="sample")
