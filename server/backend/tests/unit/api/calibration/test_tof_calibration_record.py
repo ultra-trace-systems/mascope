@@ -48,6 +48,7 @@ NEW_KEYS = {
     "points",
     "span",
     "n_lines",
+    "n_optional_lines",
     "collection",
     "model",
     "search",
@@ -649,6 +650,157 @@ async def test_the_record_counts_each_line_the_collection_offers_once(filestore)
     handler = await _node_fit(filename, twice)
 
     assert handler.fitted_on["n_lines"] == 5
+
+
+#: Eight one-line ions a site's background could add to the reagent lines,
+#: none of which the files below hold: the four sample ions, and C4H5O4- at
+#: 117 Th, C6H9O4- at 145, C9H13O4- at 185 and C10H15O4- at 199.
+BACKGROUND = SAMPLE_IONS + ["C4H5O4", "C6H9O4", "C9H13O4", "C10H15O4"]
+
+
+def _with_background(optional: bool, held=()) -> pd.DataFrame:
+    """The reagent lines, and the background lines behind them, marked as
+    optional anchors or not; ``held`` are background ions the file holds."""
+    reagent = support.isotopes().assign(optional_anchor=False)
+    background = support.isotopes(BACKGROUND).assign(optional_anchor=optional)
+    return pd.concat([reagent, background], ignore_index=True)
+
+
+@pytest.mark.asyncio
+async def test_an_optional_anchor_the_file_does_not_hold_counts_no_line(filestore):
+    """A file that holds the reagent lines alone keeps 5 of the collection's
+    13 lines, under the 40 % bar. With the background marked optional
+    anchors, it is held to the reagent's 5 lines and verifies, and the record
+    says how many lines it left out (decision MAS-1139)."""
+    filename = _write(filestore)
+
+    fit, _ = await _fit_answer(filename, _with_background(optional=True))
+
+    quality = fit["quality"]
+    assert (quality["n_points"], quality["n_lines"]) == (5, 5)
+    assert quality["n_optional_lines"] == 8
+    assert fit["quality_issues"] == []
+
+
+@pytest.mark.asyncio
+async def test_the_same_lines_unmarked_fail_the_share(filestore):
+    filename = _write(filestore)
+
+    fit, _ = await _fit_answer(filename, _with_background(optional=False))
+
+    quality = fit["quality"]
+    assert (quality["n_points"], quality["n_lines"]) == (5, 13)
+    assert quality["n_optional_lines"] == 0
+    assert [issue["code"] for issue in fit["quality_issues"]] == ["lines"]
+    assert (
+        "13 lines of the calibration collection (at least"
+        in (fit["quality_issues"][0]["message"])
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_optional_anchor_the_fit_kept_counts(filestore):
+    """Held and kept, a background line is one of the lines the fit is held
+    to; the ones the file does not hold are not."""
+    filename = _write_lines(filestore, support.CALIBRANTS + ["C3H3O4"])
+
+    fit, _ = await _fit_answer(filename, _with_background(optional=True))
+
+    quality = fit["quality"]
+    assert (quality["n_points"], quality["n_lines"]) == (6, 6)
+    assert quality["n_optional_lines"] == 7
+
+
+@pytest.mark.asyncio
+async def test_a_line_another_compound_offers_counts_as_theirs(filestore):
+    """HSO4- in the collection twice, as a calibrant and as an optional
+    anchor: the file does not hold it, and the line counts against the fit
+    as the calibrant's."""
+    filename = _write(filestore)
+    hso4 = support.isotopes(["HSO4"])
+    isotopes = pd.concat(
+        [
+            support.isotopes().assign(optional_anchor=False),
+            hso4.assign(optional_anchor=False),
+            hso4.assign(
+                optional_anchor=True,
+                target_ion_id="background-ion",
+                target_isotope_id=hso4.target_isotope_id + "-b",
+            ),
+        ],
+        ignore_index=True,
+    )
+
+    fit, _ = await _fit_answer(filename, isotopes)
+
+    n_hso4 = int((hso4.relative_abundance >= 0.15).sum())
+    assert fit["quality"]["n_lines"] == 5 + n_hso4
+    assert fit["quality"]["n_optional_lines"] == 0
+
+
+def _write_lines(filestore, formulas) -> str:
+    """A file with one peak per line of ``formulas``, every S/N 100."""
+    peaks = support.calibrant_peaks(formulas)
+    for peak in peaks:
+        peak["snr"] = 100.0
+    return support.write_file(filestore, peaks)
+
+
+@pytest.mark.asyncio
+async def test_the_node_reads_which_compounds_are_optional_anchors(filestore):
+    """Off the collection's links, onto every isotope of the compound's
+    ions; an ion of another compound is not one."""
+    handler = TofCalibrationHandler(_write(filestore), support.params())
+    links = {
+        "data": [
+            {"target_compound_id": "siloxane", "optional_anchor": True},
+            {"target_compound_id": "urea", "optional_anchor": False},
+        ]
+    }
+    isotopes = {
+        "data": [
+            {
+                "target_isotope_id": f"iso-{ion}-{n}",
+                "target_ion_id": ion,
+                "mz": mz + n,
+                "relative_abundance": 1.0,
+                "target_isotope_formula": f"{ion}{n}",
+            }
+            for ion, mz in (("ion-siloxane", 223.06), ("ion-urea", 121.07))
+            for n in (0, 1)
+        ]
+    }
+    ions = {
+        "data": [
+            {
+                "target_ion_id": "ion-siloxane",
+                "target_ion_formula": "C6H19O3Si3+",
+                "target_compound_id": "siloxane",
+            },
+            {
+                "target_ion_id": "ion-urea",
+                "target_ion_formula": "C2H9N4O2+",
+                "target_compound_id": "urea",
+            },
+        ]
+    }
+    with (
+        patch(
+            f"{NODE}.get_target_compound_in_target_collection",
+            AsyncMock(return_value=links),
+        ),
+        patch(f"{NODE}.get_target_isotopes", AsyncMock(return_value=isotopes)),
+        patch(f"{NODE}.get_target_ions", AsyncMock(return_value=ions)),
+    ):
+        resolved = await handler._resolve_calibration_isotopes()
+
+    assert dict(zip(resolved.target_isotope_id, resolved.optional_anchor)) == {
+        "iso-ion-siloxane-0": True,
+        "iso-ion-siloxane-1": True,
+        "iso-ion-urea-0": False,
+        "iso-ion-urea-1": False,
+    }
+    assert resolved.optional_anchor.dtype == bool
 
 
 def _crowded_file(filestore, axis_off_ppm: float) -> str:

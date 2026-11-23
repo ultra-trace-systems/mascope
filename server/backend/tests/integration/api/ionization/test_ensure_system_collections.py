@@ -128,6 +128,7 @@ def _content(row: TargetCollection) -> tuple:
             (
                 link.target_compound.target_compound_name,
                 link.target_compound.target_compound_formula,
+                link.optional_anchor,
             )
             for link in row.target_compound
         ),
@@ -140,7 +141,10 @@ def _seeded_content(collection: SeededCollection) -> tuple:
         collection.description,
         collection.collection_type,
         None,
-        sorted((compound.name, compound.formula) for compound in collection.compounds),
+        sorted(
+            (compound.name, compound.formula, compound.optional_anchor)
+            for compound in collection.compounds
+        ),
     )
 
 
@@ -357,6 +361,26 @@ async def _rename(factory):
         await session.commit()
 
 
+async def _mark_an_optional_anchor(factory):
+    """The site marks a reagent ion an anchor its files need not hold."""
+    async with factory() as session:
+        compound_id = (
+            select(TargetCompound.target_compound_id)
+            .where(TargetCompound.target_compound_name == "[Br3]-")
+            .scalar_subquery()
+        )
+        await session.execute(
+            update(TargetCompoundInTargetCollection)
+            .where(
+                TargetCompoundInTargetCollection.target_collection_id
+                == _BROMIDE_CALIBRANTS.collection_id,
+                TargetCompoundInTargetCollection.target_compound_id == compound_id,
+            )
+            .values(optional_anchor=True)
+        )
+        await session.commit()
+
+
 async def _edit_a_formula(factory):
     async with factory() as session:
         await session.execute(
@@ -377,8 +401,15 @@ async def _edit_a_formula(factory):
         # The compound is the diagnostics' too, and an edit of a compound in
         # place is an edit of every collection that holds it.
         (_edit_a_formula, 2),
+        (_mark_an_optional_anchor, 1),
     ],
-    ids=["compound-removed", "compound-added", "renamed", "formula-edited"],
+    ids=[
+        "compound-removed",
+        "compound-added",
+        "renamed",
+        "formula-edited",
+        "marked-optional-anchor",
+    ],
 )
 async def test_a_seeded_collection_the_site_edited_is_left_as_it_is(
     fresh_db, edit, edited
@@ -534,6 +565,65 @@ async def test_bringing_a_calibrant_collection_up_to_date_flags_its_modes_batche
             select(SampleBatch.status).where(SampleBatch.sample_batch_id == batch)
         )
     assert status == "recalibrate"
+
+
+_URONIUM_CALIBRANTS = _SEEDED["sysUroniumCal"]
+
+#: The Uronium, positive calibrants as the release before the background
+#: tier seeded them: the urea series alone.
+_URONIUM_EARLIER = SeededCollection(
+    collection_id=_URONIUM_CALIBRANTS.collection_id,
+    system_key=_URONIUM_CALIBRANTS.system_key,
+    mode_field=_URONIUM_CALIBRANTS.mode_field,
+    name=_URONIUM_CALIBRANTS.name,
+    description="Shipped by Mascope: the urea series.",
+    collection_type=_URONIUM_CALIBRANTS.collection_type,
+    compounds=tuple(
+        compound
+        for compound in _URONIUM_CALIBRANTS.compounds
+        if not compound.optional_anchor
+    ),
+)
+
+
+@pytest.mark.asyncio
+async def test_bringing_the_uronium_calibrants_up_to_date_marks_the_background(
+    fresh_db, monkeypatch
+):
+    """The upgrade adds the background tier as optional anchors and leaves
+    the urea series as it was: a TOF file without the background is held to
+    the series (decision MAS-1139)."""
+    earlier = tuple(
+        _URONIUM_EARLIER
+        if seeded.collection_id == _URONIUM_EARLIER.collection_id
+        else seeded
+        for seeded in seeded_collections()
+    )
+    with monkeypatch.context() as patched:
+        patched.setattr(seed_module, "seeded_collections", lambda: earlier)
+        await ensure_system_ionization()
+    monkeypatch.setattr(
+        seed_module, "SEEDED_BEFORE", frozenset({_URONIUM_EARLIER.digest})
+    )
+
+    counts = await ensure_system_ionization_collections()
+
+    assert counts["updated"] == 1
+    row = (await _collections(fresh_db))[_URONIUM_CALIBRANTS.collection_id]
+    assert _content(row) == _seeded_content(_URONIUM_CALIBRANTS)
+    marked = {
+        link.target_compound.target_compound_name
+        for link in row.target_compound
+        if link.optional_anchor
+    }
+    assert marked == {
+        compound.name
+        for compound in _URONIUM_CALIBRANTS.compounds
+        if compound.optional_anchor
+    }
+    assert marked and len(marked) < len(row.target_compound)
+    # And the next start holds it as the seed's own
+    assert (await ensure_system_ionization_collections())["held"] == len(_SEEDED)
 
 
 @pytest.mark.asyncio

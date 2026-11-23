@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, text
+from sqlalchemy import delete, select, text
 
 from mascope_backend.api.controllers.calibration import calibration_controller
 from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
@@ -32,6 +32,9 @@ from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
 from mascope_backend.api.controllers.calibration.lib.collection_version import (
     collection_version,
     current_collection_versions,
+)
+from mascope_backend.api.controllers.target.collections import (
+    target_collections_controller,
 )
 from mascope_backend.api.models.calibration.calibration_pydantic_model import (
     CalibrationFitParams,
@@ -684,3 +687,274 @@ async def test_a_record_naming_no_version_is_not_marked(
     batch_id, _ = await _batch(async_session_factory, ctx, ids["mode"], record=record)
 
     assert await _listed_stale(owner_client, batch_id) is None
+
+
+# ============= Optional anchors =============
+
+
+async def _marks(async_session_factory, collection_id) -> dict[str, bool]:
+    async with async_session_factory() as session:
+        rows = (
+            await session.execute(
+                select(
+                    TargetCompoundInTargetCollection.target_compound_id,
+                    TargetCompoundInTargetCollection.optional_anchor,
+                ).where(
+                    TargetCompoundInTargetCollection.target_collection_id
+                    == collection_id
+                )
+            )
+        ).all()
+    return dict(rows)
+
+
+async def _mark(client, collection_id, compound_ids, **more):
+    return await client.patch(
+        f"/api/target/collections/{collection_id}",
+        json={"optional_anchor_compound_ids": compound_ids, **more},
+    )
+
+
+@pytest.mark.asyncio
+async def test_marking_an_optional_anchor_flags_recalibrate_and_no_rematch(
+    owner_client, async_session_factory, ctx
+):
+    """The mark moves the bar a fit is held to, and no match: the mode's
+    batches go to recalibrate, a batch the collection only matches in stays."""
+    ids = await _setup(async_session_factory)
+    other = await _setup(async_session_factory)
+    calibrated, _ = await _batch(async_session_factory, ctx, ids["mode"])
+    elsewhere, _ = await _batch(
+        async_session_factory, ctx, other["mode"], attach=ids["collection"]
+    )
+
+    response = await _mark(owner_client, ids["collection"], [ids["compound"]])
+
+    assert response.status_code == 200, response.text
+    assert await _marks(async_session_factory, ids["collection"]) == {
+        ids["compound"]: True
+    }
+    assert await _status(async_session_factory, calibrated) == "recalibrate"
+    assert await _status(async_session_factory, elsewhere) == "ready"
+    read = await owner_client.get(f"/api/target/collections/{ids['collection']}")
+    assert read.json()["data"]["optional_anchor_compound_ids"] == [ids["compound"]]
+
+
+@pytest.mark.asyncio
+async def test_a_mark_change_reloads_the_collection_lists(
+    owner_client, async_session_factory, monkeypatch
+):
+    """The collection reads differently, so the lists showing it reload."""
+    ids = await _setup(async_session_factory)
+    reload = AsyncMock()
+    monkeypatch.setattr(target_collections_controller, "emit_record_reload", reload)
+
+    await _mark(owner_client, ids["collection"], [ids["compound"]])
+
+    assert any(
+        call.kwargs.get("record_type") == "target_collection"
+        for call in reload.await_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_marks_and_batches_are_not_changed_in_one_edit(
+    owner_client, async_session_factory, ctx
+):
+    """As compounds and batches are not: the marks are the compounds'."""
+    ids = await _setup(async_session_factory)
+    batch_id, _ = await _batch(async_session_factory, ctx)
+
+    response = await _mark(
+        owner_client, ids["collection"], [ids["compound"]], sample_batch_ids=[batch_id]
+    )
+
+    assert response.status_code == 422, response.text
+    assert await _marks(async_session_factory, ids["collection"]) == {
+        ids["compound"]: False
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_same_marks_again_flag_nothing(
+    owner_client, async_session_factory, ctx
+):
+    ids = await _setup(async_session_factory)
+    assert (await _mark(owner_client, ids["collection"], [])).status_code == 200
+    batch_id, _ = await _batch(async_session_factory, ctx, ids["mode"])
+
+    response = await _mark(owner_client, ids["collection"], [])
+
+    assert response.status_code == 200, response.text
+    assert await _status(async_session_factory, batch_id) == "ready"
+
+
+@pytest.mark.asyncio
+async def test_an_empty_list_clears_the_marks(owner_client, async_session_factory):
+    ids = await _setup(async_session_factory)
+    await _mark(owner_client, ids["collection"], [ids["compound"]])
+
+    response = await _mark(owner_client, ids["collection"], [])
+
+    assert response.status_code == 200, response.text
+    assert await _marks(async_session_factory, ids["collection"]) == {
+        ids["compound"]: False
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_compound_edit_keeps_the_marks_and_adds_none(
+    owner_client, async_session_factory
+):
+    """Left out of the request, the marks stay; a compound the edit adds is
+    not one."""
+    ids = await _setup(async_session_factory)
+    await _mark(owner_client, ids["collection"], [ids["compound"]])
+    added = await _another_compound(async_session_factory)
+
+    await _edit_compounds(owner_client, ids["collection"], [ids["compound"], added])
+
+    assert await _marks(async_session_factory, ids["collection"]) == {
+        ids["compound"]: True,
+        added: False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_compound_added_and_marked_in_one_edit(
+    owner_client, async_session_factory, ctx
+):
+    ids = await _setup(async_session_factory)
+    batch_id, _ = await _batch(async_session_factory, ctx, ids["mode"])
+    added = await _another_compound(async_session_factory)
+
+    response = await _mark(
+        owner_client,
+        ids["collection"],
+        [added],
+        target_compound_ids=[ids["compound"], added],
+    )
+
+    assert response.status_code == 200, response.text
+    assert await _marks(async_session_factory, ids["collection"]) == {
+        ids["compound"]: False,
+        added: True,
+    }
+    assert await _status(async_session_factory, batch_id) == "recalibrate"
+
+
+@pytest.mark.asyncio
+async def test_marking_a_compound_the_collection_does_not_hold_is_refused(
+    owner_client, async_session_factory, ctx
+):
+    ids = await _setup(async_session_factory)
+    batch_id, _ = await _batch(async_session_factory, ctx, ids["mode"])
+    outside = await _another_compound(async_session_factory)
+
+    response = await _mark(owner_client, ids["collection"], [outside])
+
+    assert response.status_code == 422, response.text
+    assert outside in response.text
+    assert await _marks(async_session_factory, ids["collection"]) == {
+        ids["compound"]: False
+    }
+    assert await _status(async_session_factory, batch_id) == "ready"
+
+
+@pytest.mark.asyncio
+async def test_marking_a_compound_the_edit_removes_is_refused(
+    owner_client, async_session_factory
+):
+    ids = await _setup(async_session_factory)
+    added = await _another_compound(async_session_factory)
+
+    response = await _mark(
+        owner_client, ids["collection"], [ids["compound"]], target_compound_ids=[added]
+    )
+
+    assert response.status_code == 422, response.text
+    assert await _marks(async_session_factory, ids["collection"]) == {
+        ids["compound"]: False
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_new_collection_carries_its_marks(owner_client, async_session_factory):
+    first = await _another_compound(async_session_factory)
+    second = await _another_compound(async_session_factory)
+
+    response = await owner_client.post(
+        "/api/target/collections",
+        json={
+            "target_collection_name": f"Marked {first}",
+            "target_collection_type": "CALIBRANTS",
+            "target_compound_ids": [first, second],
+            "optional_anchor_compound_ids": [second],
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    collection_id = response.json()["data"]["target_collection_id"]
+    assert await _marks(async_session_factory, collection_id) == {
+        first: False,
+        second: True,
+    }
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(TargetCollection).where(
+                TargetCollection.target_collection_id == collection_id
+            )
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_new_collection_cannot_mark_a_compound_it_is_not_given(
+    owner_client, async_session_factory
+):
+    first = await _another_compound(async_session_factory)
+    outside = await _another_compound(async_session_factory)
+
+    response = await owner_client.post(
+        "/api/target/collections",
+        json={
+            "target_collection_name": f"Marked {first}",
+            "target_collection_type": "CALIBRANTS",
+            "target_compound_ids": [first],
+            "optional_anchor_compound_ids": [outside],
+        },
+    )
+
+    assert response.status_code == 422, response.text
+
+
+@pytest.mark.asyncio
+async def test_the_node_reads_the_marks_off_the_collection(
+    owner_client, async_session_factory
+):
+    """The TOF node's isotopes carry the mark of their compound."""
+    ids = await _setup(async_session_factory)
+    async with async_session_factory() as session:
+        marked = await _compound(session, ids["mechanism"], mz=96.9601)
+        session.add(
+            TargetCompoundInTargetCollection(
+                target_compound_id=marked, target_collection_id=ids["collection"]
+            )
+        )
+        await session.commit()
+    await _mark(owner_client, ids["collection"], [marked])
+    filename = "tofwerk"
+    params = CalibrationFitParams(
+        calibration_collection_id=ids["collection"],
+        ionization_mechanism_ids=[ids["mechanism"]],
+        polarity="-",
+        **MzCalibrationParams(refine_window=100)
+        .with_defaults(calibration_params_factory(filename=filename))
+        .model_dump(),
+    )
+    handler = get_calibration_handler(filename, params, notification=None)
+
+    isotopes = await handler._resolve_calibration_isotopes()
+
+    by_mz = dict(zip(isotopes.mz.round(4), isotopes.optional_anchor))
+    assert by_mz == {61.9884: False, 96.9601: True}

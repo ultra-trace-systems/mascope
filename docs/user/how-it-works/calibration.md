@@ -16,6 +16,7 @@ Uronium's calibrants carry a second tier behind the urea series, for a scan wind
 Each is a compound named for itself, read through every mechanism of the mode, so a siloxane is fitted on as its protonated ion and its urea adduct, and caprolactam as its urea adduct, C7H16N3O2+ at $m/z$ 174.1237.
 The siloxanes are a background of laboratory air and of mass spectrometer inlets ([Schlosser and Volkmer-Engert, 2003](https://doi.org/10.1002/jms.465)) measured in air worldwide ([Genualdi et al., 2011](https://doi.org/10.1021/es200301j)), and caprolactam, the nylon-6 monomer, is a background ion of open-air ionization, present in the air blanks of an ambient source ([Narcelli Pestana de Aguiar et al., 2026](https://doi.org/10.1007/s00216-026-06692-y)), and a compound of indoor air ([Duncan et al., 2019](https://doi.org/10.1039/c9em00105k)).
 They are a site's background rather than every file's: a line no peak matches is left out of the fit, as a missing cluster is, and a file that holds too few still ends Calibration failed.
+So the collection marks them as *optional anchors*, and a TOF fit's share of the collection's lines counts their lines only where it kept them ([Verification](#verification)).
 A cluster series gives an Orbitrap the one point it needs, and a TOF fit its three points at the low end of the range and no more.
 The series ends at $m/z$ 188 for nitrate and 381 for iodide, so the rest of a TOF's range is extrapolated, and one bad match fails the fit or keeps the wrong point.
 Give the ionization mode a calibration collection of your own when its files reach well above the clusters, when their spectra do not show every cluster, or when the scan range starts above them, as you would any mode.
@@ -267,7 +268,7 @@ Beside its parameters and the counts and mean errors of its quality block, a TOF
 - **Points**: every calibrant line the fit chose from, the ones it left out included. Each has its ion, its exact and observed m/z, its residual under the fit in ppm, the signal-to-noise ratio of its peak, and whether the fit kept it. The residual is the fit's m/z at the peak's time-of-flight index against the exact m/z, as the TOF calibration audit reads it. A line the search found no peak for within 15 ppm of its axis, or the matching turned down, never reached the fit and is not listed.
 - **Span**: the exact m/z of the lowest and the highest line kept. Peaks outside it are on an extrapolated axis.
 - **Strong peaks**: how far the file's strong peaks reach: those of the fit's polarity with a signal-to-noise ratio of 20 or more, read at the fifth lowest and the fifth highest, so that a stray peak at the end of the axis does not decide it. The record keeps their count beside it. The [verification](#verification) holds this reach against the span.
-- **Lines**: how many distinct lines the collection offered above the abundance floor, matched or not. A line two ions share counts once.
+- **Lines**: how many distinct lines the collection offered above the abundance floor, matched or not. A line two ions share counts once. A line of an optional anchor counts only where the fit kept it; the record keeps the count of those it left out beside it (`n_optional_lines`).
 - **Collection**: the calibration collection, and a hash of the isotopes it offered under the mode's ionization mechanisms: their formulas, exact m/z and abundances. Editing the collection's compounds changes the hash, so files fitted on different versions of one collection can be told apart. The hash is the same on every server.
 - **Model**: the model kept, by Tofwerk's number: 0 for the square-root model, 2 for the three-parameter one. Its equation is in Tofwerk's names, `i = p1*sqrt(m) + p2` or `i = p1*m^p3 + p2`: `i` is the time-of-flight index, `p1` and `p2` are $p_0$ and $p_1$ above, and `p3` is $p_2$. Beside it, `compared` lists each model's mean held-out error in ppm, and `min_gain_ppm` the 0.5 ppm the three-parameter model has to gain. `compared` is empty (`null`) when the calibrants came from fewer than four ions, and a model whose fits failed has no error in it.
 - **Search**: how the calibrants were found: the window the winning axis was found in, in ppm (`window_ppm`): 250, or 500 where the search had to look further, and how many lines, of how many ions, the winning axis held within the tolerance (`n_lines`, `n_ions`). The record keeps the refinement window it was given as well, which no longer limits a TOF search.
@@ -362,6 +363,13 @@ Most right fits keep most of their collection's lines: on production TOFs, three
 So a right fit on few of a long collection's lines can also be flagged.
 A collection of 7 lines or fewer is never caught by this check, since a TOF fit needs 3 points.
 A record written before fits counted their collection's lines is not judged on it.
+
+A compound of a calibration collection can be marked an *optional anchor*: one a site's background carries on some instruments and not on others, such as the siloxanes and caprolactam behind Uronium's urea series.
+Its lines count toward the share only where the fit kept them, so a file that does not hold them is held to the rest of the collection.
+A file whose only lines are a uronium source's urea series is held to that series, as it was before the background was added.
+A line that an optional anchor and another compound both offer counts as the other compound's.
+The mark is set through the collection API, `optional_anchor_compound_ids` when a collection is created (`POST /api/target/collections`) or edited (`PATCH /api/target/collections/{id}`); the shipped Uronium calibrants carry it on their background compounds.
+Changing it flags the batches calibrated on the collection *recalibrate*, as a change of its compounds does.
 
 A TOF fit holds between the lines it kept; past them its axis is extrapolated.
 A record can look healthy and still leave most of the file's peaks there: on one instrument, a set calibrated on 41–148 Th, in files with strong peaks to about 450 Th, read 10 to 21 ppm low above 160 Th with a mean error of 3–5 ppm after the fit.

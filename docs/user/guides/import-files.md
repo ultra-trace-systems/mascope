@@ -205,7 +205,11 @@ ion and as its urea adduct, and caprolactam (m/z 114.09 protonated, below such
 a window) as its urea adduct at m/z 174.124. They are a background of
 laboratory air and of the instrument, not of every site, so a file is fitted on
 the ones it holds, and one that holds none of the calibrants still ends as
-**Calibration failed**. The siloxanes are a classic background of mass
+**Calibration failed**. The collection marks them as *optional anchors*: a TOF
+fit must keep 40 % of its collection's lines, and their lines count toward it
+only where the fit kept them, so a TOF file that holds the urea series and none
+of the background is held to the series alone
+([Mass calibration](../how-it-works/calibration.md#verification)). The siloxanes are a classic background of mass
 spectrometer inlets
 ([Schlosser and Volkmer-Engert 2003](https://doi.org/10.1002/jms.465)) and are
 measured in air worldwide

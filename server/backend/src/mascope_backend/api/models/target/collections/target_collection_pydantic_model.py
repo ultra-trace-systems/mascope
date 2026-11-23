@@ -103,9 +103,33 @@ class TargetCollectionCreate(TargetCollectionValidator, TargetCollectionBase):
             "collection. An id no compound has refuses the request (422)."
         ),
     )
+    optional_anchor_compound_ids: list[str] | None = Field(
+        None,
+        description=(
+            "Of `target_compound_ids`, the compounds that are anchors a file "
+            "need not hold: a calibration's background, which one instrument's "
+            "spectra carry and another's do not. A TOF fit's share of the "
+            "collection's lines counts their lines only where it kept them. "
+            "An id not in `target_compound_ids` refuses the request (422)."
+        ),
+    )
     sample_batch_ids: list[str] | None = Field(
         None, description="IDs of sample batches where to add the new target collection"
     )
+
+    @model_validator(mode="after")
+    def validate_optional_anchors_in_collection(self):
+        """Refuse an optional anchor the collection is not given."""
+        outside = sorted(
+            set(self.optional_anchor_compound_ids or ())
+            - set(self.target_compound_ids or ())
+        )
+        if outside:
+            raise ValueError(
+                "optional_anchor_compound_ids names compounds that are not in "
+                f"target_compound_ids: {', '.join(outside)}"
+            )
+        return self
 
 
 class TargetCollectionUpdate(TargetCollectionValidator, TargetCollectionBase):
@@ -146,6 +170,20 @@ class TargetCollectionUpdate(TargetCollectionValidator, TargetCollectionBase):
             "is removed. To add, send the current ids too."
         ),
     )
+    optional_anchor_compound_ids: list[str] | None = Field(
+        None,
+        description=(
+            "The collection's compounds that are anchors a file need not "
+            "hold, all of them: a calibration's background, which one "
+            "instrument's spectra carry and another's do not. A TOF fit's "
+            "share of the collection's lines counts their lines only where it "
+            "kept them. The list replaces the collection's marks, and an empty "
+            "one clears them; left out, the marks stay, and a compound the "
+            "request adds is not one. An id the collection does not hold after "
+            "the update refuses the request (422). A change flags the batches "
+            "calibrated on the collection recalibrate."
+        ),
+    )
     # Like the compound fields, the batch list is replaced, not added to:
     # the controller detaches every batch it does not name.
     sample_batch_ids: list[str] | None = Field(
@@ -169,9 +207,12 @@ class TargetCollectionUpdate(TargetCollectionValidator, TargetCollectionBase):
         """
         compounds_create = values.get("target_compounds_create")
         compound_ids = values.get("target_compound_ids")
+        optional_anchors = values.get("optional_anchor_compound_ids")
         batches = values.get("sample_batch_ids")
 
-        if batches is not None and (compounds_create or compound_ids is not None):
+        if batches is not None and (
+            compounds_create or compound_ids is not None or optional_anchors is not None
+        ):
             raise ValueError(
                 "Cannot update target compounds and batch associations simultaneously."
             )

@@ -10,11 +10,20 @@ target ion generator a server builds them with, not restated - and that what
 a collection holds has a digest the seed can tell an edit by.
 """
 
+import pandas as pd
 import pytest
 
+from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
+    calibration_quality_issues,
+    lines_held_to,
+)
+from mascope_backend.api.controllers.calibration.lib.tof_calibration_audit import (
+    isotopes_of,
+)
 from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
     generate_target_ions_from_composition,
 )
+from mascope_backend.api.models.calibration.config import calibration_config
 from mascope_backend.api.models.target.collections.config import (
     target_collection_config,
 )
@@ -22,10 +31,13 @@ from mascope_backend.api.models.target.compounds.target_compound_pydantic_model 
     TargetCompoundBase,
 )
 from mascope_backend.db import IonizationMechanism, IonizationMode, TargetCollection
+from mascope_backend.db.admin.ionization.ensure_system_modes import _links
 from mascope_backend.ionization_catalogue import (
     NAMED_BEFORE,
     SEEDED_BEFORE,
     SYSTEM_MODES,
+    SeededCollection,
+    SeededCompound,
     _background_compounds,
     _neutral,
     collection_digest,
@@ -116,7 +128,7 @@ SEEDED_DIGESTS = {
     "sysIodideDia": "e808f225d923c917",
     "sysAmbientNegCal": "6baa13c90da5dd82",
     "sysAmbientNegDia": "7542acc9f1fca4af",
-    "sysUroniumCal": "12948e42e87394ca",
+    "sysUroniumCal": "612d3a860360e017",
     "sysUroniumDia": "ec1418fcd33dc2ef",
     "sysAmbientPosCal": "c0da51cbf39db2e2",
     "sysAmbientPosDia": "acd8c07034a3ab89",
@@ -213,6 +225,63 @@ def test_the_calibrants_are_the_reagents_own_cluster_series(system_key):
     assert collection.collection_type == "CALIBRANTS"
 
 
+@pytest.mark.parametrize("system_key", sorted(CALIBRANTS))
+def test_only_the_background_tier_is_an_optional_anchor(system_key):
+    """A file need not hold the site's background, so a TOF fit's kept-line
+    share counts its lines only where it kept them (decision MAS-1139); the
+    reagent's series it is held to."""
+    collection = _by_key("calibration_collection_id")[system_key]
+    background = {name for name, _ in BACKGROUND.get(system_key, [])}
+
+    assert {
+        compound.name for compound in collection.compounds if compound.optional_anchor
+    } == background
+    diagnostics = _by_key("diagnostic_collection_id")[system_key]
+    assert not [c for c in diagnostics.compounds if c.optional_anchor]
+
+
+def _seeded(*compounds: SeededCompound) -> SeededCollection:
+    return SeededCollection(
+        collection_id="c",
+        system_key="k",
+        mode_field="calibration_collection_id",
+        name="n",
+        description="d",
+        collection_type="CALIBRANTS",
+        compounds=compounds,
+    )
+
+
+def test_each_link_carries_its_compounds_mark():
+    collection = _seeded(
+        SeededCompound("[Br]-", "()"), SeededCompound("D3", "C6H18O3Si3", True)
+    )
+
+    assert _links(collection, {"target_compound_ids": ["a", "b"]}) == {
+        "a": False,
+        "b": True,
+    }
+
+
+def test_a_compound_the_seed_names_twice_is_optional_only_if_both_are():
+    """One library compound for a reagent ion and a background compound alike
+    is the reagent's: a file is held to its line."""
+    for compounds in (
+        (SeededCompound("x", "C2H6", True), SeededCompound("x", "C2H6", False)),
+        (SeededCompound("x", "C2H6", False), SeededCompound("x", "C2H6", True)),
+    ):
+        collection = _seeded(*compounds)
+
+        assert _links(collection, {"target_compound_ids": ["a", "a"]}) == {"a": False}
+
+
+def test_a_library_answer_that_does_not_match_the_seed_is_refused():
+    collection = _seeded(SeededCompound("[Br]-", "()"))
+
+    with pytest.raises(RuntimeError, match="answered 2 compounds"):
+        _links(collection, {"target_compound_ids": ["a", "b"]})
+
+
 def test_the_background_tier_is_read_off_its_reference_lists():
     """As each list names its compounds, so a list's edit reaches the tier."""
     lists = {peak_list.id: peak_list for peak_list in catalogue()}
@@ -305,6 +374,73 @@ def test_the_uronium_calibrants_reach_a_window_above_the_urea_series():
     } <= above
     assert round(_mz("C7H16N3O2+"), 4) == 174.1237
     assert round(_mz("C6H19O3Si3+"), 4) == 223.0637
+
+
+def _uronium_tof_quality(marked: bool) -> tuple[dict, int]:
+    """The quality block of a TOF fit that kept every line of the urea
+    series and found none of the background, under the shipped Uronium,
+    positive calibrants; with the background marked an optional anchor as
+    shipped, or not. Also how many lines the collection offers in all."""
+    collection = _by_key("calibration_collection_id")["uronium"]
+    _, _, _, notations = _MODES["uronium"]
+    mechanisms = [
+        IonizationMechanism(
+            ionization_mechanism_id=f"m{i}",
+            ionization_mechanism=notation,
+            ionization_mechanism_polarity=parse_mechanism(notation).polarity,
+        )
+        for i, notation in enumerate(notations)
+    ]
+    floor = calibration_config.DEFAULT_ISOTOPE_ABUNDANCE_MIN
+    reagent = {compound.formula for compound in _reagent_compounds(collection)}
+    isotopes = pd.concat(
+        [
+            isotopes_of([compound.formula], mechanisms).assign(
+                optional_anchor=compound.optional_anchor and marked,
+                reagent=compound.formula in reagent,
+            )
+            for compound in collection.compounds
+            # The reagent ion itself, "()", is the bare proton at m/z 1
+            if compound.formula != "()"
+        ],
+        ignore_index=True,
+    )
+    series = isotopes[isotopes.reagent & (isotopes.relative_abundance >= floor)]
+    n_lines, n_optional_lines = lines_held_to(isotopes, series.mz, floor)
+    quality = {
+        "n_points": int(series.mz.round(6).nunique()),
+        "n_ions": int(series.target_ion_id.nunique()),
+        "pre_fit_mz_error_ppm": 3.0,
+        "post_fit_mz_error_ppm": 0.5,
+        "n_lines": n_lines,
+        "n_optional_lines": n_optional_lines,
+    }
+    offered = int(isotopes.mz[isotopes.relative_abundance >= floor].round(6).nunique())
+    return quality, offered
+
+
+def test_a_tof_uronium_fit_on_the_urea_series_alone_clears_the_share():
+    """A TOF file whose spectra hold the urea series and none of the site's
+    background is held to the series, as it was before the background tier
+    (decision MAS-1139, GitHub #3436)."""
+    quality, offered = _uronium_tof_quality(marked=True)
+
+    assert quality["n_points"] >= 3
+    assert quality["n_lines"] == quality["n_points"]
+    assert quality["n_lines"] + quality["n_optional_lines"] == offered
+    codes = [i["code"] for i in calibration_quality_issues(quality, "TOF-1_file.h5")]
+    assert "lines" not in codes
+
+
+def test_unmarked_the_background_would_fail_it():
+    """What the mark is there for: counted in full, the background's lines
+    leave the series' far under the 40 % bar."""
+    quality, offered = _uronium_tof_quality(marked=False)
+
+    assert quality["n_lines"] == offered
+    assert quality["n_points"] / offered < calibration_config.TOF_MIN_KEPT_LINE_SHARE
+    codes = [i["code"] for i in calibration_quality_issues(quality, "TOF-1_file.h5")]
+    assert "lines" in codes
 
 
 @pytest.mark.parametrize(
@@ -463,7 +599,7 @@ _BASE = dict(
     description="Shipped by Mascope",
     collection_type="CALIBRANTS",
     workspace_id=None,
-    compounds=[("[Br]-", "()"), ("[Br2]-", "Br")],
+    compounds=[("[Br]-", "()", False), ("[Br2]-", "Br", False)],
 )
 
 
@@ -474,16 +610,17 @@ _BASE = dict(
         {"description": "Ours now"},
         {"collection_type": "TARGETS"},
         {"workspace_id": "ws1"},
-        {"compounds": [("[Br]-", "()")]},
+        {"compounds": [("[Br]-", "()", False)]},
         {
             "compounds": [
-                ("[Br]-", "()"),
-                ("[Br2]-", "Br"),
-                ("Pinonic acid", "C10H16O3"),
+                ("[Br]-", "()", False),
+                ("[Br2]-", "Br", False),
+                ("Pinonic acid", "C10H16O3", False),
             ]
         },
-        {"compounds": [("[Br]-", "()"), ("[Br2]-", "Br2")]},
-        {"compounds": [("[Br]-", "()"), ("Bromine", "Br")]},
+        {"compounds": [("[Br]-", "()", False), ("[Br2]-", "Br2", False)]},
+        {"compounds": [("[Br]-", "()", False), ("Bromine", "Br", False)]},
+        {"compounds": [("[Br]-", "()", False), ("[Br2]-", "Br", True)]},
     ],
     ids=[
         "renamed",
@@ -494,6 +631,7 @@ _BASE = dict(
         "compound-added",
         "formula-edited",
         "compound-renamed",
+        "marked-optional-anchor",
     ],
 )
 def test_every_edit_a_person_can_make_changes_the_digest(edit):
@@ -503,7 +641,7 @@ def test_every_edit_a_person_can_make_changes_the_digest(edit):
 def test_a_compound_reads_as_the_library_identifies_one():
     """Case and runs of spaces aside, and in any order: a compound the library
     already held, reused by the seed, is the seed's own."""
-    reused = {**_BASE, "compounds": [("[br2]-", " Br "), ("[Br]-", "()")]}
+    reused = {**_BASE, "compounds": [("[br2]-", " Br ", False), ("[Br]-", "()", False)]}
 
     assert collection_digest(**reused) == collection_digest(**_BASE)
 

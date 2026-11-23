@@ -113,6 +113,9 @@ async def update_target_collection_route(
     that lists the unknown ids, and nothing is changed.
     `sample_batch_ids` likewise replace the collection's batch list: a batch the
     request does not name is detached, and marked for rematch.
+    `optional_anchor_compound_ids` replaces the collection's optional anchors,
+    the compounds a calibration's kept-line share counts only where a fit kept
+    them; left out, they stay as they are.
 
     :param target_collection_id: The unique ID of the target collection to update.
     :type target_collection_id: str
