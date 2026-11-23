@@ -2928,7 +2928,7 @@ def _quality_block_issues(
         besides = (
             f", not counting {n_optional_lines} line"
             f"{'' if n_optional_lines == 1 else 's'} of optional anchors the "
-            "file does not hold"
+            "fit did not keep"
             if n_optional_lines
             else ""
         )
