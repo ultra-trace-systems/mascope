@@ -66,7 +66,7 @@ def spectrogram(
     zone = attrs["tz"]
     data = _cells(grid)
     limits = _limits(grid.cells["value"].to_numpy("float64"))
-    signal = common.signal_label(store, attrs)
+    signal = common.value_label(store, attrs)
     notes = [
         common.ASSIGNED_ONLY,
         "A cell is the mean, over its bin's samples with a value, of the sum "
@@ -84,7 +84,7 @@ def spectrogram(
             f"{attrs['mz_width_asked']:g} Th asked for, to keep the grid under "
             f"{attrs['max_rows']} rows."
         )
-    notes += common.formula_run_notes(attrs) + common.normaliser_notes(attrs)
+    notes += common.run_notes(attrs, zone) + common.normalise_notes(attrs)
     if grid.cells.empty:
         window = common.window_name([attrs["start"], attrs["end"]], zone)
         notes = common.empty_notes(store, [window]) + notes
@@ -99,7 +99,7 @@ def spectrogram(
             Panel(
                 "heatmap",
                 axes={
-                    "x": {"label": f"Time ({zone})"},
+                    "x": {"label": common.time_label(zone)},
                     "y": {"label": "m/z (ion, adduct included)"},
                     "colour": {
                         "label": f"{signal}, bin mean",
@@ -108,7 +108,7 @@ def spectrogram(
                     },
                 },
                 encodings={"x": "t", "y": "mz", "value": "value", "gap": "gap"},
-                options={"rules": common.formula_run_rules(attrs)},
+                options={"rules": common.run_rules(attrs)},
             )
         ],
         summary=_summary(grid, limits, top_n),
@@ -258,7 +258,8 @@ def _summary(
         for row in columns.head(top_n).itertuples()
     ]
     return {
-        **common.context_summary(attrs),
+        **common.face(attrs, zone),
+        **common.normaliser_fields(attrs),
         "stat": "mean",
         "mz_width": grid.mz_width,
         "mz_width_asked": attrs["mz_width_asked"],
@@ -287,15 +288,8 @@ KIND = registry.register(
         params=(
             registry.Param("mz_width", "number", 1.0, help="the m/z rows' width in Th"),
             registry.Param("cadence", "duration", "1h", help="the time bins"),
-            registry.Param(
-                "normalise",
-                "normalise",
-                "none",
-                help="none, tic, a series key, or keys whose sum divides",
-            ),
-            registry.Param("tz", "text", None, help="the zone times are shown in"),
-            registry.Param("start", "time", None, help="the window's start"),
-            registry.Param("end", "time", None, help="the window's end"),
+            common.NORMALISE_PARAM,
+            *common.WINDOW_PARAMS,
             registry.Param(
                 "top_n", "int", 10, help="the rows and columns the summary lists"
             ),
@@ -307,7 +301,8 @@ KIND = registry.register(
             ),
         ),
         summary=(
-            *common.CONTEXT_SUMMARY,
+            *common.FACE_FIELDS,
+            *common.NORMALISER_FIELDS,
             "stat",
             "mz_width",
             "mz_width_asked",

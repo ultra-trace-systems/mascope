@@ -2079,6 +2079,23 @@ def test_a_partial_sum_is_noted_only_for_a_sum(members, complete, noted):
         assert "partial sum in 25.0% of the samples" in found[0]
 
 
+def test_one_key_without_a_value_is_noted_as_none_there():
+    """One key is no sum: where it has no value the samples have none
+    either, and the note says so, never "a partial sum"."""
+    attrs = {
+        "normalise": "ion:a",
+        "normalise_members": ["ion:a"],
+        "normalise_complete": 0.75,
+        "normalise_name": "reagent ion",
+        "tz": ZONE,
+    }
+
+    assert common.notes(attrs, []) == [
+        "In 25.0% of the samples reagent ion had no value, so those samples "
+        "have none either."
+    ]
+
+
 def _hours(values, n=None, n_samples=None) -> pd.DataFrame:
     return pd.DataFrame(
         {
