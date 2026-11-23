@@ -165,7 +165,7 @@ async def get_sample_axis_fingerprint(sample_item_id: str) -> dict:
             status_code=500, detail="Could not read the scans of the sample."
         ) from e
 
-    scans = sorted({scan for numbers in by_stream.values() for scan in numbers})
+    scans = item_scans(by_stream)
     described = describe_scans(
         document,
         scans,
@@ -217,6 +217,34 @@ def read_streams(stream_key: str | None, stitch: dict | None) -> list[str | None
     return list(dict.fromkeys(owner for _lower, _upper, owner in stitch["runs"]))
 
 
+async def samples_read_streams(
+    sample_item_ids: list[str],
+) -> dict[str, list[str | None]]:
+    """The streams each sample's peak list is read from.
+
+    :param sample_item_ids: The samples.
+    :return: :func:`read_streams` of each sample found, by its ID.
+    """
+    async with async_session() as session:
+        rows = (
+            await session.execute(
+                select(
+                    SampleItem.sample_item_id,
+                    AcquisitionStream.stream_key,
+                    AcquisitionStream.stitch,
+                )
+                .outerjoin(
+                    AcquisitionStream,
+                    AcquisitionStream.stream_id == SampleItem.stream_id,
+                )
+                .where(SampleItem.sample_item_id.in_(sample_item_ids))
+            )
+        ).all()
+    return {
+        row.sample_item_id: read_streams(row.stream_key, row.stitch) for row in rows
+    }
+
+
 def scans_by_stream(
     filename: str,
     polarity: str | None,
@@ -250,6 +278,15 @@ def scans_by_stream(
                 selected = []
             scans[stream] = sorted(int(scan) for scan in selected)
     return scans
+
+
+def item_scans(by_stream: dict[str | None, list[int]]) -> list[int]:
+    """The scan numbers a sample's peak list is built from: those of every
+    stream it reads, each once, ascending.
+
+    :param by_stream: :func:`scans_by_stream`.
+    """
+    return sorted({scan for numbers in by_stream.values() for scan in numbers})
 
 
 def stream_entries(
