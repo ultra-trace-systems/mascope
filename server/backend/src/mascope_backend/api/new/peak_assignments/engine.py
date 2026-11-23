@@ -11,8 +11,9 @@ so the arbitration logic stays unit-testable. The service layer owns
 persistence.
 """
 
+import itertools
 from collections import Counter
-from collections.abc import Callable, Collection, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -22,6 +23,10 @@ from scipy.stats import spearmanr
 from mascope_backend.api.controllers.match.lib.match_score_v2 import ion_scores_v2
 from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
     fit_isotope_names,
+)
+from mascope_backend.api.new.peak_assignments.monoisotopic import (
+    monoisotopic_positions,
+    monoisotopic_row,
 )
 from mascope_backend.api.new.peak_assignments.row_terms import (
     REFERENCE_IDENTITIES_COL,
@@ -51,7 +56,6 @@ from mascope_tools.composition.calibration import (
     calibration_for,
     corroboration_by_mechanism,
 )
-from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
 from mascope_tools.composition.envelope_tolerance import EnvelopeTolerance
 from mascope_tools.composition.finder import (
     HELD_BY_LIBRARY,
@@ -86,7 +90,6 @@ from mascope_tools.composition.scoring import pattern_scoring_for_model
 from mascope_tools.composition.utils import (
     formula_identity,
     ion_identity,
-    parse_formula_tokens,
 )
 
 
@@ -823,92 +826,6 @@ def _isotope_offset_label(iso_mz: float, main_mz: float | None) -> str | None:
     return f"M+{offset}" if offset > 0 else f"M{offset}"
 
 
-def labelled_isotopes(ion_formula) -> dict[str, int]:
-    """The isotopes an ion carries by design, spelled the way its isotopologue
-    formulas spell them: a labelled reagent's ``^N`` is ``{"[15N]": 1}``,
-    ``^N2`` is ``{"[15N]": 2}``, and an ion without a label carries none.
-
-    :param ion_formula: The ion's formula (``C9H16O7^N-``).
-    """
-    labels: dict[str, int] = {}
-    if not isinstance(ion_formula, str):
-        return labels
-    for symbol, count in parse_formula_tokens(ion_formula).items():
-        element = CUSTOM_ELEMENTS.get(symbol)
-        if element is not None:
-            token = f"[{element.labelled_massnumber}{element.base_element}]"
-            labels[token] = labels.get(token, 0) + count
-    return labels
-
-
-def _substituted_isotopes(isotopologue_formula: str) -> dict[str, int]:
-    """The isotopes an isotopologue formula names in brackets, with counts."""
-    return {
-        symbol: count
-        for symbol, count in parse_formula_tokens(isotopologue_formula).items()
-        if symbol.startswith("[")
-    }
-
-
-def is_monoisotopic_formula(formula, labels: dict[str, int] | None = None) -> bool:
-    """Whether an isotopologue formula names the ion's monoisotopic isotopologue.
-
-    The generator writes a substituted isotope in brackets (``C5[13C]H13O6+``,
-    ``[81Br]Br2-``) and the monoisotopic isotopologue - every element at its
-    most abundant isotope - without (``C6H13O6+``, ``Br3-``). A labelled
-    reagent's atom is written in brackets too, because its isotope is the one
-    the label put there, so the monoisotopic isotopologue of a labelled ion
-    names exactly its labels and nothing else: ``[15N]C9H16O7-`` for
-    ``C9H16O7^N-``. The formula without a bracket is then the reagent's
-    unlabelled remainder, one mass unit below the line the ion is measured by.
-
-    At a low resolution one line holds several isotopologues, their names
-    joined by "/"; it is the monoisotopic line when any of them is.
-
-    :param formula: An isotopologue formula.
-    :param labels: The ion's labelled isotopes (:func:`labelled_isotopes`);
-        none for an ion without a label.
-    """
-    if not isinstance(formula, str) or not formula:
-        return False
-    expected = labels or {}
-    return any(_substituted_isotopes(name) == expected for name in formula.split("/"))
-
-
-def monoisotopic_row(ion_rows: pd.DataFrame) -> pd.Series:
-    """The row of an ion's monoisotopic isotopologue: the M0 every role and
-    offset label counts from, the way an isotope table counts - which for a
-    bromine- or chlorine-rich ion is the lightest peak of the cluster, not the
-    tallest, and for a labelled ion is the labelled line, not the unlabelled
-    remainder below it. The lightest row stands in when no formula carries the
-    isotope marker that tells them apart, and is the same row wherever an
-    element's most abundant isotope is also its lightest.
-
-    Positionally off a sort rather than ``.loc[idxmin()]``: a frame that has
-    been through a gate and a scorer can carry a duplicated index, and that
-    lookup would then hand back a frame where every caller expects one row.
-
-    :param ion_rows: One ion's rows of an isotope frame (``mz``, and
-        ``target_isotope_formula`` and ``target_ion_formula`` where the frame
-        has them).
-    """
-    ordered = ion_rows.sort_values("mz")
-    if "target_isotope_formula" in ordered.columns:
-        labels = (
-            labelled_isotopes(ordered["target_ion_formula"].iloc[0])
-            if "target_ion_formula" in ordered.columns
-            else {}
-        )
-        mono = ordered[
-            ordered["target_isotope_formula"]
-            .map(lambda formula: is_monoisotopic_formula(formula, labels))
-            .astype(bool)
-        ]
-        if not mono.empty:
-            return mono.iloc[0]
-    return ordered.iloc[0]
-
-
 # Columns the ion-level fit score needs on the isotope frame. Absent (e.g. a lighter
 # match path) -> the fit scoring is skipped and the per-isotopologue score stands.
 _FIT_SCORE_COLS = frozenset(
@@ -1478,6 +1395,91 @@ def _ion_keys(group: "pd.DataFrame") -> "pd.Series":
     )
 
 
+def _peak_candidates(matched: pd.DataFrame) -> Iterator[tuple]:
+    """Each peak's candidates in a Stage A frame sorted by peak and rank:
+    the peak, its winner (the first row) and every candidate as a frame, or
+    None where the winner is the only one, which on a judging's frame is
+    nearly every peak (MAS-1172). The peaks come in the order
+    ``groupby("sample_peak_id", sort=False)`` gives them: the sort keeps each
+    peak's rows together.
+    """
+    peaks = matched["sample_peak_id"].to_numpy(dtype=object)
+    starts = [0, *np.flatnonzero(peaks[1:] != peaks[:-1]) + 1, len(peaks)]
+    for start, end in itertools.pairwise(starts):
+        if end - start == 1:
+            yield peaks[start], matched.iloc[start], None
+        else:
+            group = matched.iloc[start:end]
+            yield peaks[start], group.iloc[0], group
+
+
+def _contenders(
+    winner: pd.Series, group: pd.DataFrame | None, max_alternatives: int
+) -> tuple[list[tuple[pd.Series, bool]], set[str], list[tuple]]:
+    """What a peak's other candidates are to its winner
+    (:func:`invert_matches_to_peak_assignments`).
+
+    :param winner: The row that won the peak.
+    :param group: Every candidate of the peak, the winner first; None where
+        the winner is the only one, which leaves no runner, nothing past the
+        cap and one reading to arbitrate.
+    :param max_alternatives: Cap on stored runner-up candidates.
+    :return: The runners-up, each with whether it reads the winner's own ion;
+        the rival formulas the cap leaves unstored; and the readings the
+        arbitration ranks, one per ion.
+    """
+    if group is None:
+        return [], set(), [(str(winner["_formula_key"]), float(winner["_fit"]))]
+    # The winner is never its own alternative. Dropping the rows that merely
+    # restate it BEFORE the cap matters twice over: the duplicate never
+    # reaches the inspector, and it does not burn one of the `max_alternatives`
+    # slots that a genuinely different formula could have had.
+    contenders = group.iloc[1:]
+    rivals = contenders[~_restates_winner(contenders, winner)]
+    runners = rivals.iloc[:max_alternatives] if max_alternatives else rivals.iloc[:0]
+    # The rival formulas the cap leaves unstored, which the row counts
+    # (`RIVALS_PAST_CAP`): a rival it does not store is one no reader can
+    # see tested. The winner's own formula through another mechanism is no
+    # rival, and neither is a reading of the winner's own ion, as
+    # `cap_alternatives` leaves out `same_ion` entries.
+    ion_keys = _ion_keys(group)
+    winner_ion = ion_keys.iloc[0]
+    past_cap: set[str] = set()
+    if len(rivals) > len(runners):
+        past_cap = (
+            {
+                str(key)
+                for key, ion in zip(
+                    rivals["_formula_key"],
+                    ion_keys.loc[rivals.index],
+                    strict=True,
+                )
+                if ion != winner_ion
+            }
+            - set(runners["_formula_key"])
+            - {str(winner["_formula_key"])}
+        )
+    # The peak's candidates are its IONS (the arbitration's comment in
+    # :func:`invert_matches_to_peak_assignments`).
+    readings = list(
+        zip(
+            group["_formula_key"][~ion_keys.duplicated()],
+            group["_fit"][~ion_keys.duplicated()],
+            strict=True,
+        )
+    )
+    return (
+        [
+            (row, ion_key == winner_ion)
+            for (_, row), ion_key in zip(
+                runners.iterrows(), ion_keys.loc[runners.index], strict=True
+            )
+        ],
+        past_cap,
+        readings,
+    )
+
+
 def invert_matches_to_peak_assignments(
     match_isotope_df: pd.DataFrame,
     sample_item_id: str,
@@ -1566,14 +1568,11 @@ def invert_matches_to_peak_assignments(
     # the most intense one. Computed over the full target set so an ion whose M0
     # went unmatched still labels its isotopologues correctly where they are
     # listed as a peak's alternatives.
-    references = [
-        monoisotopic_row(group)
-        for _, group in match_isotope_df.groupby("target_ion_id", sort=False)
-    ]
-    main_isotope_ids = {reference["target_isotope_id"] for reference in references}
+    references = match_isotope_df.iloc[monoisotopic_positions(match_isotope_df)]
+    main_isotope_ids = set(references["target_isotope_id"])
     main_mz_by_ion = {
-        str(reference["target_ion_id"]): float(reference["mz"])
-        for reference in references
+        str(ion): float(mz)
+        for ion, mz in zip(references["target_ion_id"], references["mz"], strict=True)
     }
 
     # Arbitration (P2): rank a peak's competing candidates by evidence =
@@ -1628,40 +1627,8 @@ def invert_matches_to_peak_assignments(
     # post-pass (a compound seen via several adducts lifts each one's p_correct).
     m0_corroboration: list[tuple[dict, str, str]] = []
 
-    for sample_peak_id, group in matched.groupby("sample_peak_id", sort=False):
-        winner = group.iloc[0]
-        # The winner is never its own alternative. Dropping the rows that merely
-        # restate it BEFORE the cap matters twice over: the duplicate never
-        # reaches the inspector, and it does not burn one of the `max_alternatives`
-        # slots that a genuinely different formula could have had.
-        contenders = group.iloc[1:]
-        rivals = contenders[~_restates_winner(contenders, winner)]
-        runners = (
-            rivals.iloc[:max_alternatives] if max_alternatives else rivals.iloc[:0]
-        )
-        # The rival formulas the cap leaves unstored, which the row counts
-        # (`RIVALS_PAST_CAP`): a rival it does not store is one no reader can
-        # see tested. The winner's own formula through another mechanism is no
-        # rival, and neither is a reading of the winner's own ion, as
-        # `cap_alternatives` leaves out `same_ion` entries.
-        ion_keys = _ion_keys(group)
-        winner_ion = ion_keys.iloc[0]
-        past_cap: set[str] = set()
-        if len(rivals) > len(runners):
-            past_cap = (
-                {
-                    str(key)
-                    for key, ion in zip(
-                        rivals["_formula_key"],
-                        ion_keys.loc[rivals.index],
-                        strict=True,
-                    )
-                    if ion != winner_ion
-                }
-                - set(runners["_formula_key"])
-                - {str(winner["_formula_key"])}
-            )
-
+    for sample_peak_id, winner, group in _peak_candidates(matched):
+        runners, past_cap, readings = _contenders(winner, group, max_alternatives)
         # Arbitration confidence and the tie flag come from the shared
         # `arbitrate_candidates`, not an inline copy - one implementation, so a fix
         # in the library reaches the engine (issue #1731). Delegating buys the two
@@ -1687,13 +1654,7 @@ def invert_matches_to_peak_assignments(
         # one hypothesis, its best reading standing for it, as the search
         # elects one reading per ion before it ranks anything. The other
         # reading stays on the row as a reading of its ion (`same_ion`).
-        arbitrated = arbitrate_candidates(
-            zip(
-                group["_formula_key"][~ion_keys.duplicated()],
-                group["_fit"][~ion_keys.duplicated()],
-                strict=True,
-            )
-        )
+        arbitrated = arbitrate_candidates(readings)
         winner_arbitrated = next(
             c for c in arbitrated if c.formula == str(winner["_formula_key"])
         )
@@ -1723,11 +1684,9 @@ def invert_matches_to_peak_assignments(
                     main_mz_by_ion,
                 ),
                 # Another reading of the winner's own ion, not a rival.
-                **({"same_ion": True} if ion_key == winner_ion else {}),
+                **({"same_ion": True} if same_ion else {}),
             }
-            for (_, row), ion_key in zip(
-                runners.iterrows(), ion_keys.loc[runners.index], strict=True
-            )
+            for row, same_ion in runners
         ]
 
         ion_id = _str_or_none(winner.get("target_ion_id"))

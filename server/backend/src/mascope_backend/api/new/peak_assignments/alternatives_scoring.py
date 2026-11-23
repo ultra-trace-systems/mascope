@@ -50,10 +50,12 @@ from mascope_backend.api.new.peak_assignments.engine import (
     evidence_for,
     formula_identity,
     ion_identity,
-    monoisotopic_row,
 )
 from mascope_backend.api.new.peak_assignments.fold_view import is_fold_id
 from mascope_backend.api.new.peak_assignments.model_readers import recorded_model
+from mascope_backend.api.new.peak_assignments.monoisotopic import (
+    monoisotopic_row,
+)
 from mascope_backend.api.new.peak_assignments.row_terms import (
     ROLE_M0,
     SOURCE_UNTARGETED,

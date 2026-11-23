@@ -36,13 +36,15 @@ from mascope_backend.api.new.peak_assignments.batch_peaks import (
 from mascope_backend.api.new.peak_assignments.engine import (
     _isotope_offset_label,
     evidence_for,
-    monoisotopic_row,
 )
 from mascope_backend.api.new.peak_assignments.fold_view import (
     fold_assignment_id,
     fold_id_target,
     fold_member,
     is_fold_id,
+)
+from mascope_backend.api.new.peak_assignments.monoisotopic import (
+    monoisotopic_row,
 )
 from mascope_backend.api.new.peak_assignments.seeded_scoring import (
     finite_or_none,

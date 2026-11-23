@@ -74,11 +74,11 @@ from mascope_backend.api.controllers.target.lib.compute.target_ions_compute impo
     LEAD_ISOTOPE_FORMULA,
 )
 from mascope_backend.api.new.peak_assignments.config import IN_APP_ENGINE
-from mascope_backend.api.new.peak_assignments.engine import (
+from mascope_backend.api.new.peak_assignments.mass_gate import OFF_CALIBRATION_Z
+from mascope_backend.api.new.peak_assignments.monoisotopic import (
     labelled_isotopes,
     monoisotopic_row,
 )
-from mascope_backend.api.new.peak_assignments.mass_gate import OFF_CALIBRATION_Z
 from mascope_backend.api.new.peak_assignments.row_terms import (
     ENVELOPE_TOLERANCE_KEY,
     ROLE_M0,
