@@ -73,8 +73,8 @@ const selectedRun = computed({
 // The button outlives the selector by one state: a run list that failed to
 // load has no empty state to carry the call to action, and a failed load must
 // not also cost the user the way to start a run. Its counterpart in the
-// ledger's empty state (PaneBrowserAssignment's `v-else-if="!runs.list.length"`
-// branch) fills in for the other direction, so exactly one of the two is
+// ledger's empty state (the `v-else` "No assignment runs" branch of
+// PaneBrowserAssignment's `#state` slot) fills in for the other direction, so exactly one of the two is
 // offered at any time. The four run states are a set maintained in two files;
 // no single mount can see both halves, because every spec that mounts
 // PaneBrowserMatch stubs the ledger at the module boundary. Change one branch,

@@ -103,8 +103,8 @@ vi.mock('@/lib/base', () => ({
   BaseCopyableField: true,
   BaseVerdictBadge: true
 }))
-vi.mock('@/lib/panes/PaneBrowserMatch/BatchPeakVerdictPopover.vue', () => ({
-  default: { name: 'BatchPeakVerdictPopover', template: '<div class="verdict-popover-stub" />' }
+vi.mock('@/lib/ledger/LedgerVerdictPopover.vue', () => ({
+  default: { name: 'LedgerVerdictPopover', template: '<div class="verdict-popover-stub" />' }
 }))
 
 vi.mock('@/lib/panes/PaneBrowserMatch/stores', () => ({
