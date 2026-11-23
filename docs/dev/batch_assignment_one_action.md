@@ -258,7 +258,7 @@ so a rewrite placed after a recording would knock it off the rows it moves.
 | 3 | Known species | rewrites: members and in-app rows of species present | the ladders' claims |
 | 4 | Untargeted search | rewrites: members of unassigned batch peaks | skips members claimed in 2 and 3 |
 | 5 | Isotope lines | rewrites: one owner link per isotope line | committed rows from 4 |
-| 6 | Homologous series | rewrites: members that take a proposal | assigned batch peaks; a line owned in 5 is no start, and it moves no reading a record of 5 stands on |
+| 6 | Homologous series | rewrites: members that take a proposal | assigned batch peaks; a line owned in 5 is no start, and it moves no reading a record of 5 stands on to another ion |
 | 7 | Co-variation | records only | channels from 4 to 6; normaliser from 2 and 3 |
 | 8 | Ratio stability | records only | 7 (a drift graded without it reads `red`) |
 | 9 | Batch checks | records only | the stamps of 5 and the reading of 7 |
@@ -267,10 +267,20 @@ so a rewrite placed after a recording would knock it off the rows it moves.
 Stage 6 rewrites members after stage 5 has recorded the isotope lines, against the
 second rule. It may do so because it yields to them (MAS-1091). A row the strip read as
 a parent's line is an isotope line, and the series never reaches it. A parent whose lines
-the strip or the stamping recorded keeps its reading: the series applies a proposal to it
-only where the proposal names that reading, formula and mechanism. Before, the series
-moved such a parent to its own formula, the parent's record went stale, and with it
+the strip or the stamping recorded keeps its ion: the series applies a proposal to it
+only where the proposal's formula through its mechanism is the parent's ion. Before, the
+series moved such a parent to its own formula, the parent's record went stale, and with it
 stage 5. Every pass then ended with stage 5 stale, and the next pass started there.
+
+The record stands on the ion, not on the neutral and the mechanism it was named through
+(MAS-1144). Stage 5 predicts a parent's lines from its ion formula alone, at the parent's
+own m/z, so two readings of one ion have the same lines and nothing for stage 5 to read
+again. A series proposal of the same ion through another mechanism (C6H6O through
+`[M+HCOO]-` and C7H8O3 through `[M-H]-` are both C7H7O3-) is measured as any other; the
+parent's record, and the records of the lines it stamped or stripped, then name the
+reading the parent moved to. A proposal of another ion yields, its lines unread. The
+records the stages before 5 write (water ladders, known species) stand on the whole
+reading; on the demo's bromide batch none of the parents a series moves carries one.
 
 Two consequences matter to the user. Ratio stability moves from the end of the rebuild to
 after co-variation: the rebuild grades continuity before any co-variation reading exists,

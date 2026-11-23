@@ -21,7 +21,8 @@ member only where it measures at least as well: a homologue is a reason to
 measure a formula, not to overrule a better measured one. Where the anchor
 already reads the proposed formula at candidate, nothing is measured and the
 series is recorded beside it. It yields to the isotope lines, moving no reading
-their records stand on (``batch_peaks.stands_under_lines``, MAS-1091).
+their records stand on to another ion (``batch_peaks.stands_under_lines``,
+MAS-1091, MAS-1144): the lines are the ion's, whatever reading names it.
 
 The anchor carries the series under ``provenance.series``
 (``batch_peaks.SERIES_KEY``) with ``has_anchor``: the unit, the assigned anchor
@@ -167,7 +168,7 @@ class ModeAnchors:
         link them, as nothing explains them.
     :ivar peaks: Every anchor of the mode, claimed ones included, with its
         brightest member: what the ladders' isotope lines are read against.
-    :ivar line_parents: Target -> the reading an isotope-line record stands on.
+    :ivar line_parents: Target -> the ion an isotope-line record stands on.
     """
 
     sources: list[SeriesSource] = field(default_factory=list)
@@ -176,7 +177,7 @@ class ModeAnchors:
     series_members: set[str] = field(default_factory=set)
     below: list[SeriesTarget] = field(default_factory=list)
     peaks: list[MeasuredPeak] = field(default_factory=list)
-    line_parents: dict[str, tuple] = field(default_factory=dict)
+    line_parents: dict[str, str] = field(default_factory=dict)
 
 
 def _series_member(anchor: Any) -> bool:
@@ -248,8 +249,7 @@ def series_anchors(
             if tier == TIER_ASSIGNED:
                 mode.series_members.add(anchor.batch_peak_id)
             if stands_under_lines(anchor):
-                reading = (formula, anchor.ionization_mechanism_id)
-                mode.line_parents[anchor.batch_peak_id] = reading
+                mode.line_parents[anchor.batch_peak_id] = anchor.consensus_ion_formula
         elif tier == TIER_BELOW_ASSIGNABILITY:
             mode.below.append(SeriesTarget(anchor.batch_peak_id, anchor.mz, None))
     for mode_id, mode in modes.items():
@@ -314,7 +314,7 @@ class SeriesPlan:
     :ivar ladders: Mode id -> every contaminant unit's links by mass alone
         there (:func:`plan_series`), which nothing measures or records on an
         anchor.
-    :ivar yielded: The targets the series yields (:attr:`ModeAnchors.line_parents`).
+    :ivar yielded: The line parents a proposal of another ion yields.
     """
 
     evidence: dict[Optional[str], list[SeriesEvidence]] = field(default_factory=dict)
@@ -459,8 +459,9 @@ def _walk_mode(
         mechanism_id = mechanism_id_by_notation.get(proposal.mechanism)
         if mechanism_id is None:
             continue
-        reading = anchors.line_parents.get(key)
-        if reading is not None and reading != (proposal.formula, mechanism_id):
+        ion_formula = ion_formula_of(proposal.formula, proposal.mechanism)
+        parent_ion = anchors.line_parents.get(key)
+        if parent_ion is not None and parent_ion != ion_formula:
             plan.yielded.add(key)
             continue
         plan.records[key] = series_record(
@@ -479,7 +480,7 @@ def _walk_mode(
             plan.corroborated.add(key)
         plan.annotations[key] = Annotation(
             formula=proposal.formula,
-            ion_formula=ion_formula_of(proposal.formula, proposal.mechanism),
+            ion_formula=ion_formula,
             ionization_mechanism_id=mechanism_id,
             role=ROLE_M0,
             owner_batch_peak_id=None,

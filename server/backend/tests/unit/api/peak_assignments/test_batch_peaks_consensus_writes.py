@@ -14,10 +14,17 @@ Pure: the anchor is a plain object with the ``BatchPeak`` attributes, no DB.
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from mascope_backend.api.new.peak_assignments.batch_peaks import Consensus
+import pytest
+
+from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    DIAGNOSTIC_ISOTOPOLOGUES_KEY,
+    MERGED_ISOTOPOLOGUES_KEY,
+    Consensus,
+)
 from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
     _CONSENSUS_CHUNK,
     _apply_consensus,
+    renamed_parents,
 )
 
 
@@ -267,3 +274,48 @@ def test_a_fresh_reading_replaces_what_the_ledger_stored():
     # A fresh reading that is a line of another batch peak commits nothing.
     fresh = {"bp-na": (here, _reading("C9H11NO", "mech-na", isotopologue_of="bp-h"))}
     assert partition_channels(stored, fresh)[(here, key)] == {"mech-h"}
+
+
+# --- a parent's lines follow its move within its ion (MAS-1144) -------------------
+
+_ION = {"ion_formula": "C7H7O3-"}
+_LINES = {
+    DIAGNOSTIC_ISOTOPOLOGUES_KEY: {
+        "predicted": [
+            {"batch_peak_id": "line-1", "stamped": True},
+            {"batch_peak_id": "line-2", "stamped": False},
+        ]
+    },
+    MERGED_ISOTOPOLOGUES_KEY: {"lines": [{"batch_peak_id": "row-1"}]},
+}
+_FORMATE = {"formula": "C6H6O", "ionization_mechanism_id": "mech-fa"}
+_DEPROTONATED = {"formula": "C7H8O3", "ionization_mechanism_id": "mech-h"}
+
+
+def _voted(key, before, after):
+    record = {**_ION, **_LINES[key]}
+    anchor = SimpleNamespace(provenance={key: {**record, **before}})
+    vote = _consensus(provenance={key: {**record, **after}})
+    return {"p": (anchor, vote)}, vote
+
+
+@pytest.mark.parametrize(
+    "key, lines",
+    [(DIAGNOSTIC_ISOTOPOLOGUES_KEY, {"line-1"}), (MERGED_ISOTOPOLOGUES_KEY, {"row-1"})],
+)
+def test_a_parent_renamed_within_its_ion_names_its_lines(key, lines):
+    voted, vote = _voted(key, _FORMATE, _DEPROTONATED)
+    # The stamped lines only: a predicted line nobody stamped carries nothing.
+    assert renamed_parents(voted) == {"p": (vote, lines)}
+
+
+@pytest.mark.parametrize(
+    "key", [DIAGNOSTIC_ISOTOPOLOGUES_KEY, MERGED_ISOTOPOLOGUES_KEY]
+)
+def test_a_parent_that_kept_its_reading_or_left_its_ion_renames_nothing(key):
+    assert renamed_parents(_voted(key, _FORMATE, _FORMATE)[0]) == {}
+    # Moved to another ion: marked stale, and the stamps come off instead.
+    assert (
+        renamed_parents(_voted(key, _FORMATE, {**_DEPROTONATED, "stale": True})[0])
+        == {}
+    )

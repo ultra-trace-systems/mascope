@@ -497,8 +497,8 @@ class TestTheRun:
     @pytest.mark.parametrize(
         "moved",
         [
-            {"consensus_formula": "C9H8"},
-            {"ionization_mechanism_id": "mech-cl"},
+            {"consensus_formula": "C9H8", "consensus_ion_formula": "C9H8Br-"},
+            {"ionization_mechanism_id": "mech-cl", "consensus_ion_formula": "C2H5ClO-"},
             None,  # the parent went
         ],
     )
@@ -514,6 +514,18 @@ class TestTheRun:
         kept, kept_lines = still_read(now, parents, lines)
         assert kept == {"other": parents["other"]}
         assert kept_lines == {}
+
+    def test_a_parent_that_moved_within_its_ion_writes_its_records_renamed(self):
+        # MAS-1144: the lines are the ion's; the records name what it reads.
+        anchors, members = bromide_batch()
+        parents, lines, _ = stamp(anchors, members)
+        reading = {"consensus_formula": "C2H6O2", "ionization_mechanism_id": "m-x"}
+        moved = SimpleNamespace(**{**vars(anchors[0]), **reading})
+        kept, kept_lines = still_read([moved, *anchors[1:]], parents, lines)
+        named = {"formula": "C2H6O2", "ionization_mechanism_id": "m-x"}
+        assert kept == {"p": {**parents["p"], **named}, "other": parents["other"]}
+        assert kept_lines == {"line": {**lines["line"], **named}}
+        assert kept["p"]["ion_formula"] == "C2H5BrO-"
 
 
 @pytest.mark.asyncio
@@ -560,8 +572,12 @@ class TestTheNoise:
 
 # --- the records ------------------------------------------------------------------
 
+#: The ion each test reading makes: C through n is A through m's ion.
+_IONS = {("A", "m"): "A-", ("A", "n"): "An-", ("B", "m"): "B-", ("C", "n"): "A-"}
+
 _PARENT_RECORD = {
     "formula": "A",
+    "ion_formula": "A-",
     "ionization_mechanism_id": "m",
     "predicted": [
         {"label": "81Br", "batch_peak_id": "line", "stamped": True},
@@ -581,6 +597,7 @@ _LINE_RECORD = {
 def _fit(formula, mechanism="m"):
     return {
         "assigned_formula": formula,
+        "ion_formula": _IONS[(formula, mechanism)],
         "role": "M0",
         "fit_score": 0.9,
         "intensity": 1000.0,
@@ -593,6 +610,18 @@ class TestTheConsensusKeepsTheRecords:
     def test_a_parents_while_it_names_the_reading(self):
         c = compute_consensus([_fit("A")], diagnostic_isotopologues=_PARENT_RECORD)
         assert c.provenance[DIAGNOSTIC_ISOTOPOLOGUES_KEY] == _PARENT_RECORD
+
+    def test_a_parents_renamed_once_the_reading_moves_within_its_ion(self):
+        # MAS-1144: C through n is the ion A through m is; the record stands,
+        # unmarked, naming the reading the consensus now holds.
+        stale = {**_PARENT_RECORD, "stale": True}
+        for record in (_PARENT_RECORD, stale):
+            c = compute_consensus([_fit("C", "n")], diagnostic_isotopologues=record)
+            assert c.provenance[DIAGNOSTIC_ISOTOPOLOGUES_KEY] == {
+                **_PARENT_RECORD,
+                "formula": "C",
+                "ionization_mechanism_id": "n",
+            }
 
     @pytest.mark.parametrize("formula, mechanism", [("B", "m"), ("A", "n")])
     def test_not_a_parents_once_the_reading_moves(self, formula, mechanism):
@@ -649,17 +678,34 @@ def test_a_parents_record_names_the_lines_it_stamped():
 
 @pytest.mark.parametrize(
     "formula, mechanism, served",
-    [("A", "m", True), ("B", "m", False), ("A", "n", False)],
+    [
+        ("A", "m", True),
+        ("C", "n", True),  # another reading of the ion (MAS-1144)
+        ("B", "m", False),
+        ("A", "n", False),
+    ],
 )
 def test_a_parents_record_stands_beside_its_reading(formula, mechanism, served):
     holder = {
         "provenance": {DIAGNOSTIC_ISOTOPOLOGUES_KEY: _PARENT_RECORD},
         "consensus_formula": formula,
+        "consensus_ion_formula": _IONS[(formula, mechanism)],
         "ionization_mechanism_id": mechanism,
     }
     assert standing_diagnostic_isotopologues_record(holder) == (
         _PARENT_RECORD if served else None
     )
+
+
+def test_a_parents_record_stands_on_no_reading_that_names_no_formula():
+    # A claimed peak's consensus names the ion and no formula.
+    holder = {
+        "provenance": {DIAGNOSTIC_ISOTOPOLOGUES_KEY: _PARENT_RECORD},
+        "consensus_formula": None,
+        "consensus_ion_formula": "A-",
+        "ionization_mechanism_id": None,
+    }
+    assert standing_diagnostic_isotopologues_record(holder) is None
 
 
 def test_a_member_carries_the_stamp_of_its_sample():
@@ -718,6 +764,7 @@ def test_a_samples_row_carries_its_members_stamp_whatever_it_reads(
     [
         ("M0", "A", "m", True),
         ("iso_child", "A", "m", False),
+        ("M0", "C", "n", True),  # the parent's ion, read another way (MAS-1144)
         ("M0", "B", "m", False),
         ("M0", "A", "n", False),
     ],
@@ -728,11 +775,13 @@ def test_a_monoisotopic_row_reading_the_parent_carries_its_record(
     anchor = {
         "provenance": {DIAGNOSTIC_ISOTOPOLOGUES_KEY: _PARENT_RECORD},
         "consensus_formula": "A",
+        "consensus_ion_formula": "A-",
         "ionization_mechanism_id": "m",
     }
     row = {
         "role": role,
         "assigned_formula": formula,
+        "ion_formula": _IONS[(formula, mechanism)],
         "ionization_mechanism_id": mechanism,
     }
     assert row_diagnostic_isotopologues(row, anchor) == (
@@ -745,9 +794,10 @@ def test_no_record_on_a_row_once_the_parent_reads_otherwise():
     anchor = {
         "provenance": {DIAGNOSTIC_ISOTOPOLOGUES_KEY: _PARENT_RECORD},
         "consensus_formula": "B",
+        "consensus_ion_formula": "B-",
         "ionization_mechanism_id": "m",
     }
-    row = {"role": "M0", "assigned_formula": "A", "ionization_mechanism_id": "m"}
+    row = {"role": "M0", "assigned_formula": "A", "ion_formula": "A-"}
     assert row_diagnostic_isotopologues(row, anchor) is None
 
 
@@ -796,9 +846,16 @@ def _ledger_anchor(**over):
     return SimpleNamespace(**base)
 
 
-@pytest.mark.parametrize("mechanism, served", [("m", True), ("n", False)])
-def test_the_ledger_and_a_snapshot_serve_the_records(mechanism, served):
-    anchor_ = _ledger_anchor(ionization_mechanism_id=mechanism)
+@pytest.mark.parametrize(
+    "formula, mechanism, served",
+    [("A", "m", True), ("C", "n", True), ("A", "n", False)],
+)
+def test_the_ledger_and_a_snapshot_serve_the_records(formula, mechanism, served):
+    anchor_ = _ledger_anchor(
+        consensus_formula=formula,
+        consensus_ion_formula=_IONS[(formula, mechanism)],
+        ionization_mechanism_id=mechanism,
+    )
     summary = {k: v for k, v in _LINE_RECORD.items() if k != "stamps"}
     parent = _PARENT_RECORD if served else None
     meta = _batch_peak_meta(anchor_)
