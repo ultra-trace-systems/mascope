@@ -51,7 +51,7 @@
         "continuity.py:grade_batch": 128,
         "cross_channel.py:read_cross_channel": 138,
         "cross_channel.py:same_ion_question": 117,
-        "curation.py:_persons_choice": 103,
+        "curation.py:_persons_choice": 101,
         "curation.py:_restore": 102,
         "curation.py:_restore_demoted": 111,
         "curation.py:curate_assignment": 386,

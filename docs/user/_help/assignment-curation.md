@@ -16,8 +16,9 @@ assignment it replaced becomes its first close alternative, so *Use* on it, or
 the run's thresholds, and the spectrum is asked for the isotope lines the formula
 predicts, as the run asked its own rows: a missing one holds the assignment at
 *candidate* at most (*expected line absent*). *Use* on a batch peak asks a pin
-the same in each sample, at what that sample's assignment run asked: a sample with no
-run, one only folded into the batch ledger, is asked no line. A peak you assign as one
+the same in each sample, at what that sample's assignment run asked. A sample with no
+such run, one only folded into the batch ledger, is asked at what a run of it would
+ask, as a reading the batch carries into it is. A peak you assign as one
 of a compound's isotopologues is not asked, since the lines are read from the
 compound's main one. The replaced compound's isotopologues are
 unassigned with it and come back with it, except any assigned by hand since.

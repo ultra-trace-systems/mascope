@@ -3,8 +3,7 @@
   the pinned formula predicts that the sample's spectrum lacks holds the pin's
   reading at *candidate* in that sample, and the measurement shown before the
   pin says so. A sample is asked at the threshold and window its assignment
-  run asked its own rows' lines at, so one no run has read, such as a sample
-  only folded into the batch ledger at ingest, is asked no line.
+  run asked its own rows' lines at.
 
 - **The batch's untargeted search reads chlorine and bromine from their twin
   line**, as an assignment run does, and sets aside the source's reagent

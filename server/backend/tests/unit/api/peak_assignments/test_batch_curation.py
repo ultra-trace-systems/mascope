@@ -453,6 +453,7 @@ async def _measured(entry, scored, config=None):
     person's-choice stages from the election on, over ``scored``."""
     from mascope_backend.api.new.peak_assignments import pipeline
     from mascope_backend.api.new.peak_assignments.batch_untargeted import Annotation
+    from mascope_backend.api.new.peak_assignments.tiering import LineGate
 
     ctx = pipeline.RunContext(
         path=pipeline.PERSONS_CHOICE,
@@ -471,6 +472,14 @@ async def _measured(entry, scored, config=None):
         },
     )
     ctx.seeded = scored
+    # The gate the skipped propose stage sets (``pipeline._persons_line_gate``):
+    # every person's choice is asked its lines at one.
+    ctx.line_gate = LineGate.at(
+        mz_tolerance_ppm=5.0,
+        abundance_floor=0.01,
+        envelope_tolerance=None,
+        instrument_type="orbitrap",
+    )
     for stage in (pipeline.elect, pipeline.cap, pipeline.level):
         await stage(ctx)
     return candidate_measurement(entry, "p1", ctx)

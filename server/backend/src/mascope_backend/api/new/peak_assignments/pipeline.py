@@ -539,7 +539,8 @@ class RunContext:
     model: MeasurementModel | None = None
     model_recorded: bool = False
     scoring: Any = None
-    line_gate: Any = None
+    #: What the spectrum's rules ask lines at; set by :func:`_recorded_measurement`.
+    line_gate: LineGate | None = None
     search: SearchProposal | None = None
     seeds: set[tuple[str, str]] = field(default_factory=set)
     #: The listed compounds the batch decided present, proposed for their
@@ -1261,7 +1262,7 @@ async def _recorded_measurement(ctx: RunContext) -> None:
     ctx.line_gate = _persons_line_gate(ctx, recorded)
 
 
-def _persons_line_gate(ctx: RunContext, recorded: dict | None) -> LineGate | None:
+def _persons_line_gate(ctx: RunContext, recorded: dict | None) -> LineGate:
     """The gate a person's choice is asked its lines at (:func:`_cap_by_the_spectrum`).
 
     The one the sample's run asked its own rows' lines at, where it recorded
@@ -1271,8 +1272,9 @@ def _persons_line_gate(ctx: RunContext, recorded: dict | None) -> LineGate | Non
     that is its match window, envelope floor and line-share tolerance, and its
     instrument class (``tiering.LineGate.at``), as a propagated reading of
     that sample is asked. So the batch's *Use this* asks its lines in every
-    sample. A hand assignment on a run that asked no line is still asked
-    none: it reads no peaks there (``curation._persons_choice``).
+    sample. So every path that reads its recorded measurement has a gate. A
+    hand assignment on a run that asked no line is still asked none, not for
+    want of a gate: it reads no peaks there (``curation._persons_choice``).
     """
     gate = LineGate.from_record((recorded or {}).get(TIERING_KEY))
     if gate is not None:
@@ -1727,8 +1729,11 @@ def _cap_by_the_spectrum(ctx: RunContext) -> None:
     lines in, at the gate a run of it would ask at (:func:`_persons_line_gate`;
     ``tiering.ask_absent_line``). An absent line holds the row at candidate at
     most, never lifts one, and is the reason it lists; its isotopologue rows
-    follow it. A hand assignment on a run that asked no line is asked none,
-    and so is a sample whose peaks the pass has none of."""
+    follow it. What decides whether a row is asked is the peaks the pass
+    holds, never the gate, which :func:`_recorded_measurement` always sets: a
+    hand assignment on a run that asked no line reads no peaks
+    (``curation._persons_choice``), so it is asked none, and neither is a
+    sample whose peaks the pass has none of."""
     rows = ctx.fragments.rows
     gate = ctx.line_gate
     artifacts = (
@@ -1738,7 +1743,7 @@ def _cap_by_the_spectrum(ctx: RunContext) -> None:
     )
     lines = (
         None
-        if gate is None or ctx.peaks_df is None or ctx.peaks_df.empty
+        if ctx.peaks_df is None or ctx.peaks_df.empty
         else SpectrumLines.from_peaks(ctx.peaks_df, ctx.resolution)
     )
     ctx.lines = lines
