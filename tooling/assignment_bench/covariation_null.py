@@ -32,7 +32,11 @@ chemistry and stratum, the pairs of each kind, the share at r >= 0.6, the
 mixture's true share, both likelihood-ratio rows, the bar (the lowest r at
 which the mixture's ratio reaches 10) with a cluster bootstrap over the
 channel pairs and their decoys, and whether the residual spread needs to be
-a stratum too. It prints the table the library keeps, for a new version.
+a stratum too. It counts the channel and isotope pairs under the null's
+median and lower quartile, the null share's assumption read, and says
+whether the bar clears on two reagents: two chemistries that share no
+reagent (:data:`REAGENTS`). It prints the table the library keeps, for a new
+version.
 
 Run it against an env's database with the dev stack up::
 
@@ -61,9 +65,11 @@ from typing import Any, Callable, Iterable, Optional
 import numpy as np
 
 from mascope_tools.composition.co_variation_lr import (
+    ANTI_QUANTILE,
     LR_BAR,
     R_EDGES,
     STRATA,
+    anti_excess_shown,
     bar_of,
     excess_shown,
     mixture_lr,
@@ -149,6 +155,38 @@ def chemistry_of(notations: Iterable[str]) -> str:
         if positive * 2 >= len(notations)
         else "charge transfer (-)"
     )
+
+
+#: The reagents each chemistry label reads with. Decision 35's "two reagents"
+#: are two reagent chemistries whose batches are independent evidence, so two
+#: labels count as two reagents only where they share none: the two
+#: polarities of charge transfer are one chemistry, and 15N-nitrate, nitrate
+#: and nitrate+bromide all read with the nitrate ion. A label not here (none,
+#: or one a later :func:`chemistry_of` adds before this is told) counts as no
+#: reagent at all.
+REAGENTS: dict[str, frozenset[str]] = {
+    "uronium": frozenset({"uronium"}),
+    "15N-nitrate": frozenset({"nitrate"}),
+    "nitrate": frozenset({"nitrate"}),
+    "nitrate+bromide": frozenset({"nitrate", "bromide"}),
+    "bromide": frozenset({"bromide"}),
+    "iodide": frozenset({"iodide"}),
+    "charge transfer (+)": frozenset({"charge transfer"}),
+    "charge transfer (-)": frozenset({"charge transfer"}),
+}
+
+
+def two_reagents(chemistries: Iterable[str]) -> Optional[tuple[str, str]]:
+    """The first two of ``chemistries`` that read with no reagent in common
+    (:data:`REAGENTS`); None where no two do."""
+    names = sorted(set(chemistries))
+    for i, first in enumerate(names):
+        a = REAGENTS.get(first, frozenset())
+        for second in names[i + 1 :]:
+            b = REAGENTS.get(second, frozenset())
+            if a and b and not a & b:
+                return first, second
+    return None
 
 
 @dataclass(frozen=True)
@@ -431,6 +469,10 @@ def stratum_summary(
             "pairs": {kind: len(by_kind[kind]) for kind in KINDS},
             "tail_at_0_6": {kind: _tail(by_kind[kind]) for kind in KINDS},
         }
+        row["below_null"] = _below_null(channel, iso, null)
+        row["anti_excess_shown"] = bool(
+            channel and null and anti_excess_shown(channel, null)
+        )
         if channel and null:
             mix, pi = mixture_lr(channel, null)
             row["true_share"] = round(pi, 4)
@@ -481,6 +523,29 @@ def stratum_summary(
             row["lr_isotope"] = None
             row["bar_isotope"] = None
         out.append(row)
+    return out
+
+
+def _below_null(
+    channel: list[float], iso: list[float], null: list[float]
+) -> Optional[dict]:
+    """How many channel and isotope pairs lie under the null's median and
+    its lower quartile: the null share's assumption read. An isotope pair is
+    one species, so each under the median is a true pair the share counts as
+    chance; an excess of channel pairs under the quartile is anti-correlated
+    true pairs."""
+    if not null:
+        return None
+    median, quartile = np.quantile(null, [0.5, ANTI_QUANTILE])
+    out = {"null_median": round(float(median), 3)}
+    out["null_quartile"] = round(float(quartile), 3)
+    for kind, rs in ((KIND_CHANNEL, channel), (KIND_ISOTOPE, iso)):
+        values = np.asarray(rs, dtype=float)
+        out[kind] = {
+            "n": int(values.size),
+            "under_median": int((values < median).sum()),
+            "under_quartile": int((values < quartile).sum()),
+        }
     return out
 
 
@@ -542,11 +607,13 @@ def summarise(batches: list[BatchReading], *, seed: int, resamples: int) -> dict
             for name in chemistries
             if out_groups[name]["strata"][stratum]["clears"]
         ]
+        reagents = two_reagents(cleared_by)
         clears.append(
             {
                 "stratum": out_groups["all"]["strata"][stratum]["stratum"],
                 "cleared_by": cleared_by,
-                "clears_on_two_reagents": len(cleared_by) >= 2,
+                "two_reagents": None if reagents is None else list(reagents),
+                "clears_on_two_reagents": reagents is not None,
             }
         )
     return {
@@ -558,6 +625,7 @@ def summarise(batches: list[BatchReading], *, seed: int, resamples: int) -> dict
             "r_edges": list(R_EDGES),
             "prevalence_tolerance": PREVALENCE_TOLERANCE,
             "min_channel_pairs": MIN_CHANNEL_PAIRS,
+            "anti_quantile": ANTI_QUANTILE,
             "bootstrap_support": BOOTSTRAP_SUPPORT,
         },
         "groups": out_groups,
@@ -646,6 +714,32 @@ def markdown(result: dict) -> str:
             )
             + " |"
         )
+    lines.append("")
+    lines.append(
+        "The null share's assumption, pairs under the null's median and its "
+        "lower quartile (a chance pair: a half and a quarter):"
+    )
+    lines.append("")
+    lines.append(
+        "| chemistry | stratum | null median / quartile | channel under median | "
+        "channel under quartile | isotope under median | isotope under quartile | "
+        "anti-correlated excess |"
+    )
+    lines.append("|---|---|---|---|---|---|---|---|")
+    for name, group in result["groups"].items():
+        for row in group["strata"]:
+            below = row["below_null"]
+            if below is None:
+                continue
+            cells = [f"{below['null_median']:.2f} / {below['null_quartile']:.2f}"]
+            for kind in (KIND_CHANNEL, KIND_ISOTOPE):
+                counts = below[kind]
+                for key in ("under_median", "under_quartile"):
+                    cells.append(
+                        f"{counts[key]} of {counts['n']}" if counts["n"] else "-"
+                    )
+            cells.append("shown" if row["anti_excess_shown"] else "no")
+            lines.append(f"| {name} | {row['stratum']} | " + " | ".join(cells) + " |")
     lines.append("")
     for row in result["clears"]:
         lines.append(
