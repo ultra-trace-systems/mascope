@@ -1,14 +1,6 @@
 import { describe, it, expect } from 'vitest'
 
-import {
-  FORMULA_CELL_MARKS,
-  MARKS,
-  MARK_IDS,
-  TONES,
-  ledgerMarks,
-  markOf,
-  markTone
-} from '@/lib/evidence/marks'
+import { MARKS, MARK_IDS, TONES, ledgerMarks, markOf, markTone } from '@/lib/evidence/marks'
 import * as batchChecks from '@/lib/batchChecks'
 
 // One mark, one meaning (docs/dev/assignment_ledger_and_card.md, section 5):
@@ -187,16 +179,10 @@ describe('the readings of a batch peak', () => {
     expect(ledgerMarks(ROW).map(({ id }) => id)).toEqual(MARK_IDS)
   })
 
-  // The co-variation, facts and ratio-stability readings keep columns of
-  // their own in the batch ledger; beside the formula they would say it twice.
-  it('lists the formula cell’s readings only, when asked for them', () => {
-    expect(ledgerMarks(ROW, FORMULA_CELL_MARKS).map(({ id }) => id)).toEqual([
+  it('lists only the readings asked for, in the registry’s order', () => {
+    expect(ledgerMarks(ROW, ['manual', 'blend', 'series']).map(({ id }) => id)).toEqual([
       'series',
-      'isotopes',
-      'persistence',
       'blend',
-      'flatSeries',
-      'reagent',
       'manual'
     ])
   })

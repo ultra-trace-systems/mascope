@@ -1483,7 +1483,7 @@ same mark and the same words.
 | **Intensity** | the peak's intensity | **Max intensity**: the brightest sample's |
 | **Tier** | the tier chip, a down arrow on it where a rule holds it down | the consensus tier, the same arrow |
 | **Level** | where any row has one | the members' level, where any row has one |
-| **Samples** | | how many of the batch's samples hold the species, as *n/N* |
+| **Samples** | | how many of the batch's samples hold the species |
 | **Across the batch** | | the batch's readings, as badges |
 | **Verdict** | an icon once someone has judged the row | the batch-level verdict, the same |
 
@@ -1568,7 +1568,7 @@ flowchart LR
     shows or hides the reagent's and the artifacts' peaks and their chips, and in the
     batch, **Stripped rows** keeps the compounds that took rows as their isotope lines.
   - *The batch's flags*: **Probable blends**, **Flat series**, and **Carrying the
-    badge**, which keeps the batch peaks with one kind of badge beside their formula,
+    badge**, which keeps the batch peaks with one kind of badge in **Across the batch**,
     one kind at a time. Click the kind again to drop it.
   - *Engine readings*, after an import that carried the engine's tiers: **Engine tier**,
     which shows the engine's own tier as a second chip in the **Tier** cell and counts the
@@ -1746,8 +1746,8 @@ acts on the batch peak rather than on the sample: the chosen identity is pinned 
 species for the whole batch, then measured in every sample that holds the peak. A sample
 where it can be measured now reads it with a fit of its own; one where it cannot keeps
 what it had. The batch peak claims the pinned formula whatever the samples' vote says -
-and says so when the two disagree - and a hand badge beside the formula in the *Batch
-peaks* ledger marks it, an outline in the text colour, as every change a person made is. *Release*, on the inspector's one-line note of the pin, undoes it: the samples that
+and says so when the two disagree - and a hand badge in the *Batch peaks* ledger's
+**Across the batch** marks it, an outline in the text colour, as every change a person made is. *Release*, on the inspector's one-line note of the pin, undoes it: the samples that
 were re-measured go back to what they read before, and the batch decides again.
 
 Each of those identities was measured in the sample that brought it, not in the one
@@ -2497,7 +2497,7 @@ hydrate still counts. A rung a later measurement no longer passes withdraws its 
 the members and in-app rows it rewrote read again what they read before, but for a row
 a person assigned by hand since.
 
-A batch peak at a passing rung carries a drop badge beside its formula, the one a known
+A batch peak at a passing rung carries a drop badge in **Across the batch**, the one a known
 species decided wears, in grey. On hover it shows the rung, the stretches
 it passed in out of the batch's stretches, how often it and the masses beside it were
 seen there, how many samples the claim took, what the batch peak read before, and the
@@ -2576,7 +2576,7 @@ its reading, the other claims in its place; where neither can, neither claims.
 Nothing else is claimed: an analyte
 that is no known species is never read as one through the batch.
 
-The batch peak carries the decision: a drop badge beside its formula, in grey, as a
+The batch peak carries the decision: a drop badge in **Across the batch**, in grey, as a
 reagent decided moves no tier, and on hover the species, the verdict, the samples
 its peak is in and those whose own test held, how many samples the claim took, and the
 samples it kept with their readings. Where the batch did not decide a species present,
@@ -2903,7 +2903,7 @@ deprotonated are both the ion C7H7O3-.
   batch peaks (`anchors_yielded`).
 
 A
-row a series vouches for shows a stairs badge beside its formula, in green as a reading
+row a series vouches for shows a stairs badge in **Across the batch**, in green as a reading
 that supports it, whose tooltip names the
 step and the assigned compound the series starts at. The series counts as a second
 observation of that formula (*in a series*, above), which lifts it past *one peak only*
@@ -3252,8 +3252,8 @@ three or more. Two formulas are not tested when:
 
 A batch peak that is parted on either axis is a probable blend.
 
-A probable blend carries a two-circles badge beside its formula in the *Batch peaks*
-ledger, in amber, since it is a reason to doubt the consensus.
+A probable blend carries a two-circles badge in the *Batch peaks* ledger's **Across
+the batch**, in amber, since it is a reason to doubt the consensus.
 Its tooltip names the two formulas with their ions and how many samples read each, and
 says which holds the bright samples, or the early ones where the order switches once.
 Where it switches more often, the tooltip says the two come in blocks.

@@ -39,10 +39,11 @@ export const VERDICT_FILTER_VALUES = Object.freeze([
 ])
 
 /**
- * The batch's badge kinds the Show menu filters on one at a time: the readings
- * the batch ledger draws beside a formula (lib/evidence/marks.js,
- * FORMULA_CELL_MARKS), less the blend and the flat series, which have switches
- * of their own.
+ * The batch's badge kinds the Show menu filters on one at a time, of the
+ * readings the batch ledger draws in its Across the batch column
+ * (lib/evidence/marks.js): not the blend and the flat series, which have
+ * switches of their own, nor the co-variation, facts and ratio-stability
+ * readings, which this filter has never offered.
  */
 export const BADGE_FILTER_KINDS = Object.freeze([
   'series',

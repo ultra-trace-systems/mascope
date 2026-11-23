@@ -303,21 +303,6 @@ export const MARKS = Object.freeze(
 export const MARK_IDS = DEFINITIONS.map((entry) => entry.id)
 
 /**
- * The readings the batch ledger draws as badges beside a formula. The
- * co-variation, facts and ratio-stability readings keep columns of their own
- * there, so a row does not say them twice.
- */
-export const FORMULA_CELL_MARKS = Object.freeze([
-  'series',
-  'isotopes',
-  'persistence',
-  'blend',
-  'flatSeries',
-  'reagent',
-  'manual'
-])
-
-/**
  * A reading's entry, or null for an id the registry does not know.
  *
  * @param {string} id

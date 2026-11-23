@@ -3642,17 +3642,16 @@ describe('PaneBrowserBatchPeaks rows and their actions', () => {
     expect(columnFor('consensus_ion_formula').props('sortable')).toBe(true)
   })
 
-  it('counts the samples as n of the batch', async () => {
+  // The batch's sample list is no denominator: a batch peak's partition holds
+  // only the samples of its mode and instrument type that were folded in.
+  it('counts the samples the species is seen in, alone', async () => {
     const cells = await cellsOf('n_present', PEAKS())
-    // The batch's one sample in makeApp's default list: two of them now.
-    expect(wrapper.vm.samplesLabel({ n_present: 2 })).toBe('2/1')
-    app.data.sample.list = [{}, {}, {}, {}, {}, {}, {}, {}, {}]
+    // Twelve samples in the batch; the species is in 9 of its partition's.
+    app.data.sample.list = Array.from({ length: 12 }, () => ({}))
     await wrapper.vm.$nextTick()
-    expect(cells['bp-dim'].find('[data-testid="samples"]').text()).toBe('9/9')
-    // No samples listed: the count alone.
-    app.data.sample.list = []
-    await wrapper.vm.$nextTick()
-    expect(wrapper.vm.samplesLabel({ n_present: 9 })).toBe('9')
+    expect(cells['bp-dim'].find('[data-testid="samples"]').text()).toBe('9')
+    expect(wrapper.vm.samplesLabel({ n_present: 2 })).toBe('2')
+    expect(wrapper.vm.samplesLabel({ n_present: null })).toBe('')
     expect(columnFor('n_present').props('sortable')).toBe(true)
   })
 

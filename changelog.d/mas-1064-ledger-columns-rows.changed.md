@@ -1,7 +1,7 @@
 - **The assignment ledgers show one column set per scope, and quieter rows.**
   A sample's **Assignments** ledger and the batch's **Batch peaks** ledger now
   share the columns Plot, m/z, Compound, Ion, Intensity, Tier and Level, and
-  the batch's adds Samples (as *n/N*) and **Across the batch**. Compound
+  the batch's adds Samples and **Across the batch**. Compound
   writes what a list or a target names the formula under it, in place of the
   *Listed as* column. Ion is the mechanism, with a **×N** pill where the
   sample reads the neutral through N channels, or the batch peak's ion.
