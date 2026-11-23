@@ -151,14 +151,10 @@ const curationHelp = {
   doc: app.ui.help.docUrl('how-it-works/peak-assignment/#assigning-a-peak-yourself')
 }
 
-// The search parameters are the shared ones. m/z precision and formula range
-// mean the same thing here and in an assignment run's untargeted stage - the
-// backend derives both from one pair of constants - so this pane binds the same
-// persisted record the launcher dialogs bind, instead of keeping its own two
-// values under its own storage key. Tuning them against one peak here is what
-// the next run launches with, and a value set in a launcher is what this pane
-// searches with. The store also carries the search debounce and the bounds,
-// which used to be a second /params fetch from this component.
+// The search parameters are the user's remembered ones, in the shared store,
+// which also carries the search debounce and the bounds. An assignment run no
+// longer reads them: the launchers open on the batch's own settings
+// (docs/dev/batch_assignment_one_action.md 3.4).
 const store = usePeakAssignParams()
 const params = store.params
 
@@ -194,9 +190,8 @@ function supersedePending() {
   pendingProcessId.value = null
 }
 
-// The range validates against the shared rule rather than a copy of it: the
-// launcher dialog binds the same field, so a string one surface would reject
-// must not be able to arrive from the other.
+// The range validates against the shared rule rather than a copy of it, the
+// one the launcher dialogs' field uses.
 const isFormulaRangeValid = computed(
   () => !formulaRangeModel.value || isFormulaRange(formulaRangeModel.value)
 )
@@ -242,10 +237,8 @@ const mzPrecisionPlaceholder = computed(() =>
 )
 const formulaRangePlaceholder = computed(() => resolved.value?.element_ranges ?? FROM_PROFILE)
 
-// The reset control clears exactly the two fields this pane shows. The record
-// is shared, so resetting everything from here would silently discard a peak
-// ceiling or an alternatives count set in a launcher dialog - fields the user
-// cannot see from this pane and would have no reason to expect it to touch.
+// The reset control clears exactly the two fields this pane shows, and none it
+// does not.
 const RESETTABLE = ['mz_precision_ppm', 'formula_ranges']
 
 // Whether a notification may belong to the search this pane launched last. One
@@ -327,9 +320,8 @@ app.ui.notification.on('match_compositions_by_mz', async (payload) => {
   loading.value = false
 })
 
-// Follow the store into the text box: the launcher dialog binds the same field
-// and so does the reset button, so the committed range can change while this
-// pane is mounted. A range put back to the profile's empties the box.
+// Follow the store into the text box: the reset button writes the same field,
+// so the committed range can change while this pane is mounted. A range put back to the profile's empties the box.
 watch(
   () => params.formula_ranges,
   (newValue) => {
@@ -767,9 +759,8 @@ watch(
         />
         <label for="ionmechs">Ion. Mechanisms</label>
       </FloatLabel>
-      <!-- These two persist and are shared with the assignment launchers, so
-           the way back to the shipped defaults has to be reachable from here
-           too. Disabled while both are already at their default, which makes it
+      <!-- These two persist, so the way back to the shipped defaults has to
+           be reachable from here. Disabled while both are already at their default, which makes it
            the answer to "have I changed these?" as well as the way to undo. -->
       <Button
         icon="pi ph ph-arrow-counter-clockwise"

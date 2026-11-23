@@ -4,6 +4,7 @@ import Button from 'primevue/button'
 import Popover from 'primevue/popover'
 import TieredMenu from 'primevue/tieredmenu'
 
+import DialogBatchAssignSettings from '@/lib/dialogs/DialogBatchAssignSettings.vue'
 import { useApp } from '@/stores'
 
 import BatchAssignDetails from './BatchAssignDetails.vue'
@@ -25,6 +26,11 @@ import { PHASES, useBatchAssign, whenWords } from './stores/batchAssign.js'
  * settings, and Run history (BatchAssignDetails, 3.2). While an earlier run's
  * ledger is on screen the bar says so, *Viewing run #N · read-only*, and the
  * main half is **Back to current**.
+ *
+ * **Assignment settings…**, first in the menu, and *Change settings* in
+ * Details open Edit assignment settings (DialogBatchAssignSettings, 3.4): the
+ * batch's own settings, saved on the batch. Saving starts no pass; the status
+ * is read again, and says the batch is behind on its settings.
  *
  * Everything it shows comes from the status read in the store, so two users
  * and two tabs see the same state. Rendered inside the switch bar, so it
@@ -119,6 +125,20 @@ function openDetails(event, on = 'details') {
   details.value?.show(event, statusEl.value)
 }
 
+// --- Assignment settings ---------------------------------------------------------
+
+const settingsVisible = ref(false)
+
+function openSettings() {
+  details.value?.hide()
+  settingsVisible.value = true
+}
+
+// Saved: the batch is now behind on its settings, which the status read says.
+function settingsSaved() {
+  assign.loadStatus()
+}
+
 const canStart = computed(() => !assign.blockedReason && !running.value && !assign.launching)
 
 // MAS-983's stages under their phases, each starting the pass there.
@@ -143,6 +163,13 @@ const stageItems = computed(() => {
 
 const menuItems = computed(() => {
   const items = [
+    {
+      label: 'Assignment settings…',
+      icon: 'pi ph ph-sliders-horizontal',
+      class: 'assignment-settings',
+      disabled: !app.data.batch.focused,
+      command: openSettings
+    },
     {
       label: 'Re-assign from scratch',
       icon: 'pi ph ph-arrow-counter-clockwise',
@@ -251,8 +278,17 @@ function toggleMenu(event) {
     </span>
     <TieredMenu ref="menu" :model="menuItems" popup />
     <Popover ref="details">
-      <BatchAssignDetails v-model:view="detailsView" @picked="details?.hide()" />
+      <BatchAssignDetails
+        v-model:view="detailsView"
+        @picked="details?.hide()"
+        @change-settings="openSettings"
+      />
     </Popover>
+    <DialogBatchAssignSettings
+      v-model:visible="settingsVisible"
+      :batch="app.data.batch.focused"
+      @saved="settingsSaved"
+    />
   </span>
 </template>
 

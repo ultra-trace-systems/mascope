@@ -18,7 +18,12 @@ import {
   BaseTierTag
 } from '@/lib/base'
 import { PeakAssignConfigForm } from '@/lib/dialogs'
-import { usePeakAssignParams } from '@/lib/peakAssignParams'
+import {
+  PARAM_KEYS,
+  batchSettingsModel,
+  runConfig,
+  usePeakAssignParams
+} from '@/lib/peakAssignParams'
 import { neutralKey } from '@/lib/chem'
 import { isIsotopeLine } from '@/lib/isotopeLines'
 import { ledgerListing, listingName, targetName, targetOf } from '@/lib/referenceListings'
@@ -231,10 +236,20 @@ onScopeDispose(() => {
   launcher.configVisible = false
 })
 const submitting = ref(false)
-// The run configuration lives in the shared parameter store, not here: the same
-// values back the batch launcher and the composition search pane, and they
-// persist, so what the user set last time is what this dialog opens on.
+// The run configuration opens on the batch's settings (its saved
+// `assignment_settings` over the server defaults,
+// docs/dev/batch_assignment_one_action.md 3.4), so a sample is assigned as its
+// batch is unless the dialog is changed. A change is this one run's: it goes
+// in the run's request, which the run records, and never back to the batch.
+// Seeded again on every open, so last time's override is not carried.
 const assignParams = usePeakAssignParams()
+const runModel = reactive(Object.fromEntries(PARAM_KEYS.map((key) => [key, null])))
+const configForm = ref(null)
+
+function seedRun() {
+  const saved = app.data.batch.focused?.assignment_settings ?? null
+  Object.assign(runModel, batchSettingsModel(saved, assignParams.defaults))
+}
 
 // Why the last launch produced no run. The endpoint decides synchronously, so a
 // sample already being assigned or one that cannot usefully be assigned comes
@@ -254,16 +269,26 @@ watch(
 // store and persisted - so only the stale refusal is cleared here. Also scope
 // help mode to the dialog's cards while it is open.
 watch(configVisible, (open) => {
-  if (open) launchError.value = null
+  if (open) {
+    launchError.value = null
+    seedRun()
+    // Seeded again once the defaults land, if the dialog opened before.
+    if (!assignParams.loaded) {
+      assignParams.ensureLoaded().then(() => configVisible.value && seedRun())
+    }
+  }
   app.ui.help.set(open ? 'dialog_peak_assign' : null)
 })
 
 async function launch() {
   const sampleItemId = app.data.sample.focusedId
   if (!sampleItemId) return
+  // A range still being typed is committed first; one that does not parse
+  // keeps the dialog open on the field that says so.
+  if (configForm.value && !configForm.value.commit()) return
   submitting.value = true
   try {
-    await runs.value.assign(sampleItemId, assignParams.payload())
+    await runs.value.assign(sampleItemId, runConfig(runModel))
     launchError.value = null
   } catch (error) {
     // A refusal is an answer, not a crash: the request was understood and
@@ -832,7 +857,11 @@ const HEADERS = {
         header="Assign sample"
         :style="{ width: '26rem' }"
       >
-        <PeakAssignConfigForm :sample-item-id="app.data.sample.focusedId" />
+        <PeakAssignConfigForm
+          ref="configForm"
+          :model="runModel"
+          :sample-item-id="app.data.sample.focusedId"
+        />
         <template #footer>
           <Button label="Cancel" text severity="secondary" @click="configVisible = false" />
           <Button label="Assign" icon="pi ph ph-magic-wand" :loading="submitting" @click="launch" />

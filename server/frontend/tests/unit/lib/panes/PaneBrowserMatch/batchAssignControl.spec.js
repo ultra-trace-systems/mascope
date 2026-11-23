@@ -35,8 +35,20 @@ vi.mock('@/stores', () => ({ useApp: () => app }))
 vi.mock('@/lib/panes/PaneBrowserMatch/BatchAssignDetails.vue', () => ({
   default: {
     props: ['view'],
-    emits: ['update:view', 'picked'],
-    template: '<div class="details-stub" :data-view="view" />'
+    emits: ['update:view', 'picked', 'change-settings'],
+    template:
+      '<div class="details-stub" :data-view="view"><button class="change-settings-stub" @click="$emit(\'change-settings\')" /></div>'
+  }
+}))
+// Edit assignment settings has a spec of its own; here it only has to show
+// whether it is open, on which batch, and say when it saved.
+vi.mock('@/lib/dialogs/DialogBatchAssignSettings.vue', () => ({
+  default: {
+    name: 'DialogBatchAssignSettings',
+    props: ['visible', 'batch'],
+    emits: ['update:visible', 'saved'],
+    template:
+      '<div class="settings-dialog-stub" :data-open="String(!!visible)" :data-batch="batch?.sample_batch_id" />'
   }
 }))
 
@@ -789,6 +801,45 @@ describe('BatchAssignControl pass', () => {
 })
 
 describe('BatchAssignControl menu', () => {
+  const settingsDialog = () => wrapper.find('.settings-dialog-stub')
+
+  it('Assignment settings… opens Edit assignment settings on the batch, first in the menu', async () => {
+    await mountControl(FIXTURES.current)
+
+    expect(wrapper.findAll('.menu-item')[0].classes()).toContain('assignment-settings')
+    expect(settingsDialog().attributes('data-open')).toBe('false')
+    await menuItem('assignment-settings').trigger('click')
+
+    expect(settingsDialog().attributes('data-open')).toBe('true')
+    expect(settingsDialog().attributes('data-batch')).toBe('b-1')
+  })
+
+  it('is offered to a viewer too, who sees the settings read-only', async () => {
+    await mountControl(FIXTURES.current, { workspace: { ...WORKSPACE, my_role: 'viewer' } })
+    expect(menuItem('assignment-settings').attributes('disabled')).toBeUndefined()
+  })
+
+  it('Change settings in Details opens the same dialog', async () => {
+    await mountControl(FIXTURES.current)
+
+    await wrapper.find('.change-settings-stub').trigger('click')
+    expect(settingsDialog().attributes('data-open')).toBe('true')
+  })
+
+  it('a save starts no pass, and reads the status again', async () => {
+    await mountControl(FIXTURES.current)
+    await menuItem('assignment-settings').trigger('click')
+    get.mockClear()
+    get.mockResolvedValue(FIXTURES.behind_settings)
+
+    wrapper.findComponent({ name: 'DialogBatchAssignSettings' }).vm.$emit('saved', {})
+    await flushPromises()
+
+    expect(post).not.toHaveBeenCalled()
+    expect(get).toHaveBeenCalledWith('/batch-peaks/batch/b-1/assignment-status', expect.anything())
+    expect(line()).toBe('Assignment settings changed since the last assignment')
+  })
+
   it('Re-assign from scratch folds every sample first', async () => {
     await mountControl(FIXTURES.current)
 

@@ -730,6 +730,26 @@ describe('BatchAssignDetails tier change and settings', () => {
   })
 })
 
+describe('BatchAssignDetails Change settings', () => {
+  it('asks for Edit assignment settings from beside the settings', async () => {
+    const pass = run('run-9', {
+      current: true,
+      summary: summaryOf(allDone),
+      config: { settings: SETTINGS, settings_source: 'batch' }
+    })
+    get.mockResolvedValue([])
+    await mountDetails({
+      status: statusOf('current', { last_pass: { batch_peak_run_id: 'run-9' } }),
+      runs: [pass, run('run-7')]
+    })
+
+    const change = wrapper.find('[data-testid="pass-settings"] [data-testid="change-settings"]')
+    expect(change.text()).toBe('Change settings')
+    await change.trigger('click')
+    expect(wrapper.emitted('change-settings')).toHaveLength(1)
+  })
+})
+
 describe('BatchAssignDetails Run history', () => {
   const RUNS = [
     run('r6', {

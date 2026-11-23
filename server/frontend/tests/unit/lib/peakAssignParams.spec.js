@@ -45,7 +45,15 @@ const get = vi.fn()
 vi.mock('@/api', () => ({ api: { http: { get: (...args) => get(...args) } } }))
 
 // Imported after the mock (vi.mock is hoisted above it).
-const { usePeakAssignParams, isFormulaRange, PARAM_KEYS } = await import('@/lib/peakAssignParams')
+const {
+  usePeakAssignParams,
+  isFormulaRange,
+  PARAM_KEYS,
+  BATCH_SETTING_KEYS,
+  batchSettingsBody,
+  batchSettingsModel,
+  runConfig
+} = await import('@/lib/peakAssignParams')
 
 const STORAGE_KEY = 'mascope.peakAssign.config'
 const LEGACY_STORAGE_KEY = 'mascope.peakAssign.params'
@@ -330,5 +338,91 @@ describe('peak assignment parameters: the launch payload', () => {
   it('covers exactly the fields the config form offers', async () => {
     const store = await loadedStore()
     expect(Object.keys(store.payload()).sort()).toEqual([...PARAM_KEYS].sort())
+  })
+})
+
+// --- A batch's settings ----------------------------------------------------------
+
+describe("a batch's settings as a form model and back", () => {
+  const DEFAULTS = {
+    run_untargeted: true,
+    profile: 'auto',
+    context: 'auto',
+    mz_precision_ppm: null,
+    formula_ranges: null,
+    max_untargeted_peaks: null,
+    peak_intensity_threshold: 0,
+    max_alternatives: 5
+  }
+
+  it('fills what the batch did not save from the defaults', () => {
+    expect(batchSettingsModel({ max_alternatives: 2 }, DEFAULTS)).toEqual({
+      ...DEFAULTS,
+      max_alternatives: 2
+    })
+    expect(batchSettingsModel(null, DEFAULTS)).toEqual(DEFAULTS)
+    // Before /params answers, an unsaved field is empty.
+    expect(batchSettingsModel({ profile: 'BR' }, null).max_alternatives).toBeNull()
+  })
+
+  it('offers no switch for the run: the batch pass is the search', () => {
+    expect(BATCH_SETTING_KEYS).not.toContain('run_untargeted')
+    expect(BATCH_SETTING_KEYS).toHaveLength(PARAM_KEYS.length - 1)
+  })
+
+  const body = (model, saved) =>
+    batchSettingsBody({ ...batchSettingsModel(saved, DEFAULTS), ...model }, saved, DEFAULTS)
+
+  it('writes a changed field and nothing else', () => {
+    expect(body({ mz_precision_ppm: 4 }, null)).toEqual({
+      settings: { mz_precision_ppm: 4 },
+      changed: true
+    })
+  })
+
+  it('carries what the batch saved and nobody touched, a default included', () => {
+    // Saved through the SDK at today's default: left as it is.
+    const saved = { max_alternatives: 5, run_untargeted: false }
+    expect(body({ max_untargeted_peaks: 10 }, saved)).toEqual({
+      settings: { max_alternatives: 5, run_untargeted: false, max_untargeted_peaks: 10 },
+      changed: true
+    })
+  })
+
+  it('leaves out a field put back on its default or cleared', () => {
+    expect(body({ max_alternatives: 5 }, { max_alternatives: 2 })).toEqual({
+      settings: null,
+      changed: true
+    })
+    expect(body({ formula_ranges: '' }, { formula_ranges: 'C0-10' })).toEqual({
+      settings: null,
+      changed: true
+    })
+  })
+
+  it('says nothing changed for an untouched dialog, in any key order', () => {
+    expect(body({}, null)).toEqual({ settings: null, changed: false })
+    expect(body({}, {})).toEqual({ settings: null, changed: false })
+    expect(body({}, { profile: 'BR', max_alternatives: 2 })).toEqual({
+      settings: { max_alternatives: 2, profile: 'BR' },
+      changed: false
+    })
+  })
+
+  it('never writes a range that does not parse', () => {
+    expect(body({ formula_ranges: 'C0-' }, null)).toEqual({ settings: null, changed: false })
+  })
+
+  it('launches with every field that is set', () => {
+    expect(runConfig({ ...DEFAULTS, formula_ranges: '', mz_precision_ppm: 3 })).toEqual({
+      run_untargeted: true,
+      profile: 'auto',
+      context: 'auto',
+      mz_precision_ppm: 3,
+      peak_intensity_threshold: 0,
+      max_alternatives: 5
+    })
+    expect(runConfig({ ...DEFAULTS, formula_ranges: 'C0-' }).formula_ranges).toBeUndefined()
+    expect(runConfig(DEFAULTS, { run_untargeted: false }).run_untargeted).toBe(false)
   })
 })

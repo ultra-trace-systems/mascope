@@ -9,5 +9,7 @@ filled when the batch needs a pass: **Update assignment** after new samples,
 **Details**, beside the status, shows the pass's stages under their phases,
 each done, running, failed, out of date or not run, with a one-line result,
 the change it made to the tier counts and the settings it ran under. Its menu
-folds every sample first (**Re-assign from scratch**), opens the **Run
-history** and exports the ledger.
+edits the batch's own settings (**Assignment settings…**), folds every sample
+first (**Re-assign from scratch**), opens the **Run history** and exports the
+ledger. Saving the settings starts nothing: the batch turns behind, and the
+next **Re-assign** runs on them.

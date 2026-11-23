@@ -44,6 +44,21 @@ const overlayFor = vi.fn((row) =>
 
 const SAMPLE = { sample_item_id: 'si-1', sample_item_name: 'Sample 1' }
 const BATCH = { sample_batch_id: 'sb-1', sample_batch_name: 'Batch 1' }
+// The focused batch's saved assignment settings (`assignment_settings`), which
+// the Assign sample dialog opens on; null is the defaults.
+let batchSettings = null
+// The server defaults /params serves, which every field the batch did not save
+// opens on.
+const SERVED = {
+  run_untargeted: true,
+  profile: 'auto',
+  context: 'auto',
+  mz_precision_ppm: null,
+  formula_ranges: null,
+  max_untargeted_peaks: null,
+  peak_intensity_threshold: 0,
+  max_alternatives: 5
+}
 
 let focusedSampleId
 // The peak focused elsewhere (spectrum, chart, jump), or null.
@@ -93,7 +108,7 @@ function makeApp() {
         focusedId: focusedSampleId.value,
         unfocus: sampleUnfocus
       },
-      batch: { focused: BATCH },
+      batch: { focused: { ...BATCH, assignment_settings: batchSettings } },
       peak: {
         list: peakList,
         pending: peaksPending,
@@ -184,7 +199,9 @@ vi.mock('@/lib/base', async () => ({
 
 vi.mock('@/lib/dialogs', () => ({
   PeakAssignConfigForm: {
-    props: ['hidden', 'sampleItemId', 'sampleBatchId'],
+    name: 'PeakAssignConfigForm',
+    props: ['hidden', 'sampleItemId', 'sampleBatchId', 'model'],
+    methods: { commit: () => formCommits },
     template:
       '<div class="config-form-stub" :data-sample="sampleItemId" :data-batch="sampleBatchId" />'
   }
@@ -194,8 +211,14 @@ vi.mock('@/lib/dialogs', () => ({
 // The launcher dialog's form is stubbed above, so nothing here fetches it;
 // the tests that care seed the store directly.
 vi.mock('@/api', () => ({
-  api: { http: { get: () => Promise.resolve({ data: { data: { params: {} } } }) } }
+  api: {
+    http: {
+      get: () => Promise.resolve({ data: { data: { params: { peak_assignment: SERVED } } } })
+    }
+  }
 }))
+// What the stubbed form's commit() answers: false is a range that does not parse.
+let formCommits = true
 // The row's verdict form has a spec of its own; here it only has to show
 // which row the cell opened it for.
 vi.mock('@/lib/ledger/LedgerVerdictPopover.vue', () => ({
@@ -446,6 +469,8 @@ beforeEach(() => {
 
 describe('PaneBrowserAssignment launcher', () => {
   beforeEach(() => {
+    batchSettings = null
+    formCommits = true
     focusedSampleId = ref('si-1')
     runList = []
     assign.mockReset()
@@ -453,51 +478,89 @@ describe('PaneBrowserAssignment launcher', () => {
   })
   afterEach(() => vi.clearAllMocks())
 
-  it('launches with the shared config and reports nothing when accepted', async () => {
-    // The run configuration is no longer built here: it is the shared, persisted
-    // one, so the launch posts whatever the store holds - the server defaults
-    // until the user changes something, their value afterwards.
-    const params = usePeakAssignParams()
-    params.params.run_untargeted = true
-    params.params.mz_precision_ppm = 3
+  // The form the dialog renders, and the model it is bound to.
+  const formModel = (wrapper) =>
+    wrapper.findComponent({ name: 'PeakAssignConfigForm' }).props('model')
+
+  async function openDialog(wrapper) {
+    wrapper.vm.configVisible = true
+    await flushAll()
+  }
+  const flushAll = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+  it("opens on the batch's settings and launches with them", async () => {
+    // The batch's saved settings, not the per-user store's: a sample is
+    // assigned as its batch is unless the dialog is changed.
+    batchSettings = { mz_precision_ppm: 4, max_alternatives: 2, profile: 'BR' }
+    const store = usePeakAssignParams()
+    store.params.mz_precision_ppm = 9
 
     const wrapper = await mountPane()
-    wrapper.vm.configVisible = true
-    await wrapper.vm.$nextTick()
+    await openDialog(wrapper)
     // The form names the chemistry the run would use on the sample it is for.
     const form = wrapper.find('.config-form-stub')
     expect(form.attributes('data-sample')).toBe('si-1')
     expect(form.attributes('data-batch')).toBeUndefined()
+    expect({ ...formModel(wrapper) }).toEqual({
+      ...SERVED,
+      mz_precision_ppm: 4,
+      max_alternatives: 2,
+      profile: 'BR'
+    })
 
     await wrapper.vm.launch()
 
     expect(assign).toHaveBeenCalledTimes(1)
     expect(assign.mock.calls[0][0]).toBe('si-1')
-    expect(assign.mock.calls[0][1]).toEqual({ run_untargeted: true, mz_precision_ppm: 3 })
+    // Every field that is set, so the run records what it ran on; the
+    // blank ones are left to the backend default.
+    expect(assign.mock.calls[0][1]).toEqual({
+      run_untargeted: true,
+      profile: 'BR',
+      context: 'auto',
+      mz_precision_ppm: 4,
+      peak_intensity_threshold: 0,
+      max_alternatives: 2
+    })
     expect(wrapper.vm.launchError).toBeNull()
     expect(wrapper.vm.configVisible).toBe(false)
   })
 
-  it('keeps the configuration between opens rather than resetting it', async () => {
-    // It used to be wiped on every open, because the form could only fill
-    // fields that were still unset. Now it is the user's and it persists, so a
-    // value set for one run is still there for the next - the reset control in
-    // the form is the way back to the defaults.
-    const params = usePeakAssignParams()
+  it('opens on the defaults where the batch saved none', async () => {
+    batchSettings = null
     const wrapper = await mountPane()
+    await openDialog(wrapper)
+    expect({ ...formModel(wrapper) }).toEqual(SERVED)
+  })
 
-    wrapper.vm.configVisible = true
-    await wrapper.vm.$nextTick()
-    params.params.max_untargeted_peaks = 42
-    wrapper.vm.configVisible = false
-    await wrapper.vm.$nextTick()
+  it("sends an override in the run's request, for that run alone", async () => {
+    batchSettings = { max_untargeted_peaks: 100 }
+    const store = usePeakAssignParams()
+    const wrapper = await mountPane()
+    await openDialog(wrapper)
 
-    wrapper.vm.configVisible = true
-    await wrapper.vm.$nextTick()
-    expect(params.params.max_untargeted_peaks).toBe(42)
-
+    formModel(wrapper).max_untargeted_peaks = 42
+    formModel(wrapper).run_untargeted = false
     await wrapper.vm.launch()
     expect(assign.mock.calls[0][1].max_untargeted_peaks).toBe(42)
+    expect(assign.mock.calls[0][1].run_untargeted).toBe(false)
+
+    // Not written back: the batch keeps its settings, the per-user store
+    // its own, and the next open is on the batch's settings again.
+    expect(batchSettings).toEqual({ max_untargeted_peaks: 100 })
+    expect(store.params.max_untargeted_peaks).toBeNull()
+    await openDialog(wrapper)
+    expect(formModel(wrapper).max_untargeted_peaks).toBe(100)
+    expect(formModel(wrapper).run_untargeted).toBe(true)
+  })
+
+  it('keeps the dialog open while the typed range does not parse', async () => {
+    const wrapper = await mountPane()
+    await openDialog(wrapper)
+    formCommits = false
+    await wrapper.vm.launch()
+    expect(assign).not.toHaveBeenCalled()
+    expect(wrapper.vm.configVisible).toBe(true)
   })
 
   it('closes the dialog and shows the reason when the sample is ineligible', async () => {
