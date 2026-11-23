@@ -1136,12 +1136,39 @@ def load_sets(path: str | Path) -> dict:
         if spec["instrument"] not in INSTRUMENTS:
             sys.exit(f"{path}: set {name} has instrument {spec['instrument']!r}")
         spec.setdefault("sulfur_free", False)
+        _check_arm(path, name, spec)
         if spec.get("truth") is not None:
             where = f"{path}: set {name}: truth"
             spec["truth"] = truth_formulas(
                 _truth_values(spec["truth"], Path(path).parent, where), where
             )
     return manifest
+
+
+def _check_arm(path, name: str, spec: dict) -> None:
+    """A set's named runs and its batch arm, as :func:`load_sets` takes them:
+    ``runs`` and ``batch_arm.runs`` map a sample to a run of it, and
+    ``batch_arm_off`` says why a set that asked for the arm has none.
+
+    :raises SystemExit: On one of another shape, or a set with both.
+    """
+    for key, runs in (
+        ("runs", spec.get("runs")),
+        ("batch_arm.runs", (spec.get("batch_arm") or {}).get("runs")),
+    ):
+        if runs is not None and not (
+            isinstance(runs, dict)
+            and all(isinstance(v, str) and v for v in runs.values())
+        ):
+            sys.exit(f"{path}: set {name}: {key} maps each sample to a run id")
+    arm = spec.get("batch_arm")
+    if arm is not None and not (isinstance(arm, dict) and "runs" in arm):
+        sys.exit(f"{path}: set {name}: batch_arm names its runs")
+    off = spec.get("batch_arm_off")
+    if off is not None and not (isinstance(off, str) and off):
+        sys.exit(f"{path}: set {name}: batch_arm_off says why, in words")
+    if arm is not None and off:
+        sys.exit(f"{path}: set {name}: names both a batch arm and why it has none")
 
 
 def _truth_values(truth, folder: Path, where: str):
@@ -1155,6 +1182,69 @@ def _truth_values(truth, folder: Path, where: str):
         except (OSError, ValueError) as error:
             sys.exit(f"{where}: its file was not read: {error}")
     return truth
+
+
+#: The batch decisions a sample's run reads (MAS-985), as the card names them.
+BATCH_DECISIONS = (
+    "known_species",
+    "water_rung",
+    "listed_compound",
+    "isotopologue_strip",
+    "series",
+)
+#: A row that cites a batch decision among its tier reasons, which the ledger
+#: serves (``tier_reason_rules``): the rule, and the decision it cites.
+RULE_DECISIONS = {
+    "batch_known_species": "listed_compound",
+    "series_anchor": "series",
+}
+#: A source row the claim stage took on its batch's word: its
+#: ``provenance.reagent.reason``, and the decision. Only the detail read serves
+#: the provenance.
+REAGENT_DECISIONS = {
+    "batch_known_species": "known_species",
+    "batch_water_ladder": "water_rung",
+}
+#: The provenance block of a row the batch's strip read as its parent's line.
+STRIP_MARK = "batch_isotopologue"
+#: The roles a row the claim stage or a strip wrote takes: the only moved rows
+#: whose citation needs the detail read.
+DETAIL_ROLES = ("reagent", "iso_child")
+#: What the arm's rows are set against the control's on: a row whose role,
+#: tier or reading differs moved.
+READING_COLUMNS = (
+    "assigned_formula",
+    "ion_formula",
+    "ionization_mechanism_id",
+    "isotope_label",
+)
+#: Moved rows no decision is cited on, and rows whose detail read failed.
+NO_DECISION = "none"
+UNREAD = "not_read"
+
+
+#: What the card says of its batch arm, above the arm's table.
+BATCH_ARM_NOTE = (
+    "Each set's batch assigned by one pass of the batch stages, then every "
+    "sample's engine run again: the runs after the pass read the batch's "
+    "decisions. The gate judges the control, the card's own columns."
+)
+#: What the batch arm does not cover, said under its table.
+BATCH_ARM_COVERS = (
+    "Not on this arm: the decoy arms, which stay on the control; and the "
+    "readings that live on the batch peak only (co-variation, the batch "
+    "checks, blends, the ratio grade), which no sample's row carries."
+)
+#: How the card names each kind of batch decision a moved row cites.
+DECISION_LABELS = {
+    "known_species": "known species",
+    "water_rung": "water rung",
+    "listed_compound": "listed compound",
+    "isotopologue_strip": "isotope strip",
+    "series": "series",
+    NO_DECISION: "none cited",
+    UNREAD: "not read",
+}
 
 
 #: What a card with an authors' list says of it, under the sets' lines.
@@ -1173,7 +1263,12 @@ CARD_WORDS = frozenset(
     word.lower()
     for text in [label for _, label, _ in metrics.METRICS + metrics.TRUTH_METRICS]
     + list(metrics.DECOY_LABELS.values())
-    + [TRUTH_NOTE]
+    + [TRUTH_NOTE, BATCH_ARM_NOTE, BATCH_ARM_COVERS]
+    + list(DECISION_LABELS.values())
+    + [
+        "after the batch pass rows that moved by decision they cite peaks role "
+        "reading runs that read a of control roles no arm",
+    ]
     + [
         "gate card against sets set pooled metric value target a reading of",
         "stage pass fail missed met not read gated with reference run engine",
@@ -1843,6 +1938,7 @@ def card_markdown(card: dict, names: list[str] | None = None) -> str:
                 # sets it holds for, and where a set is held to one of its own.
                 row += f" {describe_target(target_for(thresholds, key, None, None))} |"
         lines.append(row)
+    lines += batch_arm_lines(card, names)
     baseline = card.get("baseline")
     if baseline is not None:
         moved = [one for one in baseline["moved"] if one["set"] in names]
@@ -1857,6 +1953,82 @@ def card_markdown(card: dict, names: list[str] | None = None) -> str:
                     f"{format_reading(one['now'], unit)} |"
                 )
     return "\n".join(lines) + "\n"
+
+
+def batch_arm_lines(card: dict, names: list[str]) -> list[str]:
+    """The batch arm's section of the card, for the sets of ``names``: every
+    reading of the control beside the same after the pass, the rows that
+    moved, and the sets left off with why. Nothing where no set of ``names``
+    asked for the arm."""
+    arm = card.get("batch_arm")
+    if not arm:
+        return []
+    shown = [name for name in names if name in arm["columns"]]
+    off = [name for name in names if name in arm["off"]]
+    if not shown and not off:
+        return []
+    lines = ["", "## After the batch pass", "", BATCH_ARM_NOTE, ""]
+    for name in off:
+        lines.append(f"- {name}: no batch arm, {arm['off'][name]}")
+    if off:
+        lines.append("")
+    if shown:
+        keys: list[str] = []
+        for name in shown:
+            keys += [
+                k
+                for k in arm["columns"][name]["readings"]
+                if k not in keys and not _is_decoy(k)
+            ]
+        heads = [f"{name} | {name} after the pass" for name in shown]
+        lines += [
+            "| metric | " + " | ".join(heads) + " |",
+            "|---|" + "---|---|" * len(shown),
+        ]
+        for key in keys:
+            unit = unit_of(key)
+            cells = []
+            for name in shown:
+                for one in (
+                    card["columns"][name]["readings"].get(key),
+                    arm["columns"][name]["readings"].get(key),
+                ):
+                    cells.append(format_value(one.get("value"), unit) if one else "-")
+            lines.append(f"| {label_of(key)} | " + " | ".join(cells) + " |")
+        kinds = list(DECISION_LABELS)
+        lines += [
+            "",
+            "### Rows that moved, by the batch decision they cite",
+            "",
+            "| set | samples | peaks | moved | role | tier | reading | "
+            + " | ".join(DECISION_LABELS[k] for k in kinds)
+            + " |",
+            "|---|" + "---|" * (6 + len(kinds)),
+        ]
+        for name in shown:
+            moves = arm["columns"][name]["moves"]
+            lines.append(
+                f"| {name} | "
+                + " | ".join(
+                    str(moves[k])
+                    for k in ("samples", "peaks", "moved", "role", "tier", "reading")
+                )
+                + " | "
+                + " | ".join(str(moves["by_decision"].get(k, 0)) for k in kinds)
+                + " |"
+            )
+        lines.append("")
+        for name in shown:
+            moves = arm["columns"][name]["moves"]
+            pairs = ", ".join(f"{k} {n}" for k, n in moves["by_role"].items())
+            lines.append(
+                f"- {name}: runs that read a batch decision: "
+                f"{moves['control_read_decisions']} of the control, "
+                f"{moves['after_read_decisions']} after the pass"
+                + (f"; roles moved: {pairs}" if pairs else "")
+            )
+    lines += ["", BATCH_ARM_COVERS]
+    return lines
 
 
 def card_files(card: dict) -> dict[str, str]:
@@ -1890,6 +2062,12 @@ def card_files(card: dict) -> dict[str, str]:
                 else None
             ),
         }
+        arm = card.get("batch_arm")
+        if arm is not None:
+            own["batch_arm"] = {
+                "columns": {k: v for k, v in arm["columns"].items() if k == name},
+                "off": {k: v for k, v in arm["off"].items() if k == name},
+            }
         files[f"card_{name}.md"] = card_markdown(own, [name])
         files[f"card_{name}.json"] = (
             json.dumps(own, indent=2, default=_json_default) + "\n"
@@ -1997,16 +2175,141 @@ def card_samples(client: MascopeClient, spec: dict) -> list[str]:
     return listing["sample_item_id"].astype(str).tolist()
 
 
+def named_run(runs: pd.DataFrame | None, run_id: str, engine: str) -> str | None:
+    """The run a manifest names, where it is a completed run of ``engine`` in
+    the sample's listing, else None."""
+    if runs is None or runs.empty:
+        return None
+    mine = runs[
+        (runs["peak_assignment_run_id"].astype(str) == str(run_id))
+        & (runs["engine"] == engine)
+        & (runs["status"] == "completed")
+    ]
+    return None if mine.empty else str(run_id)
+
+
+def read_sample(
+    client: MascopeClient,
+    sample_id: str,
+    runs: pd.DataFrame,
+    run_a: str,
+    ledger_a: pd.DataFrame,
+    ledger_b: pd.DataFrame | None,
+    notation_by_id: dict,
+    spec: dict,
+) -> dict:
+    """One sample's run of engine A joined to engine B's ledger, with what the
+    card reads of the run beside it.
+
+    :return: ``{"joined", "read", "off_ledger", "config", "version",
+        "tiering", "level"}``.
+    """
+    joined = join_ledgers(
+        prepare(ledger_a, "a", notation_by_id),
+        prepare(ledger_b, "b", notation_by_id)
+        if ledger_b is not None
+        else absent_side("b"),
+    )
+    read, off_ledger = read_rule_records(client, sample_id, ledger_a)
+    joined["a_assignment_id"] = joined["a_assignment_id"].astype(object)
+    joined = joined.merge(
+        read.astype({"a_assignment_id": object}),
+        on="a_assignment_id",
+        how="left",
+    )
+    config = run_config(runs, run_a)
+    joined["a_unsearched"] = joined["sample_peak_id"].isin(
+        unsearched_peaks(ledger_a, config)
+    )
+    joined["reference"] = ledger_b is not None
+    joined["sulfur_free"] = bool(spec.get("sulfur_free"))
+    joined.insert(0, "sample_item_id", sample_id)
+    row = runs[runs["peak_assignment_run_id"] == run_a]
+    tiering = (config.get("tiering") or {}).get("version")
+    # The identification level's rule set (step 5.8), recorded beside the
+    # tier's; a run from before the level records none.
+    level = ((config.get("tiering") or {}).get("identification_level") or {}).get(
+        "level_rules_version"
+    )
+    return {
+        "joined": joined,
+        "read": read,
+        "off_ledger": off_ledger,
+        "config": config,
+        "version": None if row.empty else str(row.iloc[0]["engine_version"]),
+        "tiering": None if tiering is None else int(tiering),
+        "level": None if level is None else int(level),
+    }
+
+
+def _read_line(name: str, sample_id: str, one: dict, with_reference: bool) -> str:
+    read = one["read"]
+    return (
+        f"set {name}: {sample_id} {len(one['joined'])} peaks, "
+        f"{'with' if with_reference else 'without'} a reference run, "
+        + (
+            f"{len(read)} rows' records read off the ledger"
+            if one["off_ledger"]
+            else f"{len(read) - int(read['a_detail_failed'].sum())} of "
+            f"{len(read)} rows' provenance read"
+        )
+    )
+
+
+class _Column:
+    """What one card column of a set is computed from, gathered sample by
+    sample: its frames, the samples it skipped, and the runs' versions."""
+
+    def __init__(self):
+        self.frames: list[pd.DataFrame] = []
+        self.source_ions: dict = {}
+        self.skipped = 0
+        self.versions = {"a": set(), "b": set()}
+        self.rules: set[int] = set()
+        self.level_rules: set[int] = set()
+
+    def add(self, sample_id: str, one: dict, version_b: str | None) -> None:
+        self.frames.append(one["joined"])
+        self.source_ions[sample_id] = metrics.profile_source_ions(one["config"])
+        if one["version"] is not None:
+            self.versions["a"].add(one["version"])
+        if version_b is not None:
+            self.versions["b"].add(version_b)
+        if one["tiering"] is not None:
+            self.rules.add(one["tiering"])
+        if one["level"] is not None:
+            self.level_rules.add(one["level"])
+
+    def result(self) -> dict:
+        return {
+            "skipped": self.skipped,
+            "frame": pd.concat(self.frames, ignore_index=True) if self.frames else None,
+            "source_ions": self.source_ions,
+            "engine_versions": {side: sorted(v) for side, v in self.versions.items()},
+            "tiering_rules": sorted(self.rules),
+            "level_rules": sorted(self.level_rules),
+        }
+
+
 def collect_set(client: MascopeClient, name: str, spec: dict, args) -> dict:
     """Everything one set's card column is computed from.
 
     Every sample with a completed run of engine A is read; one with a
     reference run too is joined to it, one without is joined to an absent side
     and read by the intrinsic metrics alone. A sample with no completed run of
-    engine A, or an empty ledger, is skipped and counted.
+    engine A, or an empty ledger, is skipped and counted. Where the manifest
+    names each sample's run (``runs``), that run is read, not the newest: the
+    bench names them when a later run of the sample exists, its batch arm's.
+
+    With a batch arm (``batch_arm``: each sample's run after a pass of the
+    batch stages), the arm's runs are read as a second column of the set,
+    joined to the same reference, and set row by row against the run the
+    card reads (:func:`batch_moves`).
 
     :return: ``{"samples", "skipped", "frame", "source_ions",
-        "engine_versions", "tiering_rules", "level_rules", "decoy"}``.
+        "engine_versions", "tiering_rules", "level_rules", "decoy"}``, and
+        ``"arm"`` with a batch arm: the same for the arm's column, with its
+        ``moves``.
     """
     mechanisms = client.ionization.list()
     notation_by_id = (
@@ -2020,85 +2323,246 @@ def collect_set(client: MascopeClient, name: str, spec: dict, args) -> dict:
         else {}
     )
     samples = card_samples(client, spec)
-    frames, source_ions, skipped = [], {}, 0
+    named = spec.get("runs") or {}
+    arm_runs = (spec.get("batch_arm") or {}).get("runs")
+    column, arm = _Column(), _Column() if arm_runs is not None else None
+    moves = empty_moves() if arm is not None else None
     controls: dict[str, str] = {}
-    versions = {"a": set(), "b": set()}
-    rules = set()
-    level_rules = set()
     for sample_id in samples:
         runs = client.peak_assignments.list_runs(sample_id)
-        run_a = latest_completed_run(runs, args.engine_a)
+        if sample_id in named:
+            run_a = named_run(runs, named[sample_id], args.engine_a)
+            why = f"the run named is no completed {args.engine_a} run"
+        else:
+            run_a = latest_completed_run(runs, args.engine_a)
+            why = f"no completed {args.engine_a} run"
         if run_a is None:
-            print(f"set {name}: {sample_id} skipped (no completed {args.engine_a} run)")
-            skipped += 1
+            print(f"set {name}: {sample_id} skipped ({why})")
+            column.skipped += 1
+            if arm is not None:
+                arm.skipped += 1
             continue
         ledger_a = client.peak_assignments.get(sample_id, run_id=run_a)
         if ledger_a is None:
             print(f"set {name}: {sample_id} skipped (empty ledger)")
-            skipped += 1
+            column.skipped += 1
+            if arm is not None:
+                arm.skipped += 1
             continue
         controls[sample_id] = run_a
         run_b = latest_completed_run(runs, args.engine_b, before=args.engine_b_before)
         ledger_b = (
             client.peak_assignments.get(sample_id, run_id=run_b) if run_b else None
         )
-        joined = join_ledgers(
-            prepare(ledger_a, "a", notation_by_id),
-            prepare(ledger_b, "b", notation_by_id)
-            if ledger_b is not None
-            else absent_side("b"),
+        version_b = None
+        if run_b:
+            row = runs[runs["peak_assignment_run_id"] == run_b]
+            version_b = None if row.empty else str(row.iloc[0]["engine_version"])
+        one = read_sample(
+            client, sample_id, runs, run_a, ledger_a, ledger_b, notation_by_id, spec
         )
-        read, off_ledger = read_rule_records(client, sample_id, ledger_a)
-        joined["a_assignment_id"] = joined["a_assignment_id"].astype(object)
-        joined = joined.merge(
-            read.astype({"a_assignment_id": object}),
-            on="a_assignment_id",
-            how="left",
+        column.add(sample_id, one, version_b)
+        print(_read_line(name, sample_id, one, ledger_b is not None))
+        if arm is None:
+            continue
+        run_arm = (
+            named_run(runs, arm_runs[sample_id], args.engine_a)
+            if sample_id in arm_runs
+            else None
         )
-        config = run_config(runs, run_a)
-        joined["a_unsearched"] = joined["sample_peak_id"].isin(
-            unsearched_peaks(ledger_a, config)
+        ledger_arm = (
+            client.peak_assignments.get(sample_id, run_id=run_arm) if run_arm else None
         )
-        joined["reference"] = ledger_b is not None
-        joined["sulfur_free"] = bool(spec.get("sulfur_free"))
-        joined.insert(0, "sample_item_id", sample_id)
-        frames.append(joined)
-        source_ions[sample_id] = metrics.profile_source_ions(config)
-        for side, run_id in (("a", run_a), ("b", run_b)):
-            row = runs[runs["peak_assignment_run_id"] == run_id] if run_id else None
-            if row is not None and not row.empty:
-                versions[side].add(str(row.iloc[0]["engine_version"]))
-        tiering = (config.get("tiering") or {}).get("version")
-        if tiering is not None:
-            rules.add(int(tiering))
-        # The identification level's rule set (step 5.8), recorded beside the
-        # tier's; a run from before the level records none.
-        level = ((config.get("tiering") or {}).get("identification_level") or {}).get(
-            "level_rules_version"
+        if ledger_arm is None:
+            print(f"set {name}: {sample_id} skipped after the batch pass (no run)")
+            arm.skipped += 1
+            continue
+        after = read_sample(
+            client, sample_id, runs, run_arm, ledger_arm, ledger_b, notation_by_id, spec
         )
-        if level is not None:
-            level_rules.add(int(level))
-        print(
-            f"set {name}: {sample_id} {len(joined)} peaks, "
-            f"{'with' if ledger_b is not None else 'without'} a reference run, "
-            + (
-                f"{len(read)} rows' records read off the ledger"
-                if off_ledger
-                else f"{len(read) - int(read['a_detail_failed'].sum())} of "
-                f"{len(read)} rows' provenance read"
-            )
+        arm.add(sample_id, after, version_b)
+        print(_read_line(name, sample_id, after, ledger_b is not None))
+        add_moves(
+            moves,
+            batch_moves(client, sample_id, ledger_a, ledger_arm),
+            read_decisions(runs, run_a),
+            read_decisions(runs, run_arm),
         )
     decoy = decoy_report(client, samples, controls=controls) if args.decoy else None
+    out = {"samples": samples, **column.result(), "decoy": decoy}
+    if arm is not None:
+        out["arm"] = {**arm.result(), "moves": moves}
+    return out
+
+
+# --- The batch arm (MAS-1140) ------------------------------------------------------
+
+
+def empty_moves() -> dict:
+    """A set's moves before its first sample is read."""
     return {
-        "samples": samples,
-        "skipped": skipped,
-        "frame": pd.concat(frames, ignore_index=True) if frames else None,
-        "source_ions": source_ions,
-        "engine_versions": {side: sorted(v) for side, v in versions.items()},
-        "tiering_rules": sorted(rules),
-        "level_rules": sorted(level_rules),
-        "decoy": decoy,
+        "samples": 0,
+        "peaks": 0,
+        "moved": 0,
+        "role": 0,
+        "tier": 0,
+        "reading": 0,
+        "by_decision": {kind: 0 for kind in (*BATCH_DECISIONS, NO_DECISION, UNREAD)},
+        "by_role": {},
+        "control_read_decisions": 0,
+        "after_read_decisions": 0,
     }
+
+
+def read_decisions(runs: pd.DataFrame, run_id: str) -> bool:
+    """Whether a run read any record of its batch's decisions: what it records
+    under ``config.batch_decisions`` (MAS-985), a count per stage it read."""
+    stages = (run_config(runs, run_id).get("batch_decisions") or {}).get("stages")
+    return any(
+        isinstance(entry, dict) and (entry.get("records") or 0) > 0
+        for entry in (stages or {}).values()
+    )
+
+
+def _cell(value) -> str | None:
+    """A ledger cell as one comparable value: None for a missing one."""
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return str(value)
+
+
+def _slim(ledger: pd.DataFrame) -> pd.DataFrame:
+    """One row per peak of a ledger, with what a move is read on."""
+    out = pd.DataFrame(
+        {
+            "sample_peak_id": ledger["sample_peak_id"].astype(str),
+            "peak_assignment_id": ledger.get("peak_assignment_id"),
+            "role": ledger["role"].fillna("unassigned"),
+            "tier": ledger["tier"].fillna("unassigned"),
+            "reading": [
+                tuple(_cell(row.get(key)) for key in READING_COLUMNS)
+                for row in ledger.to_dict("records")
+            ],
+            "rules": ledger.get("tier_reason_rules"),
+        }
+    )
+    return out.drop_duplicates("sample_peak_id")
+
+
+def _rules(value) -> list[str]:
+    if isinstance(value, (list, tuple, np.ndarray)):
+        return [str(rule) for rule in value]
+    return []
+
+
+def cited_by_rules(rules) -> set[str]:
+    """The batch decisions a row's tier reasons cite (:data:`RULE_DECISIONS`)."""
+    return {RULE_DECISIONS[rule] for rule in _rules(rules) if rule in RULE_DECISIONS}
+
+
+def cited_by_provenance(provenance: dict | None) -> set[str]:
+    """The batch decisions a row's provenance marks it as written on: a
+    source row claimed on its batch's word, a row the strip read as its
+    parent's line, and the tier reasons' own."""
+    provenance = provenance or {}
+    cited = set()
+    reagent = provenance.get("reagent")
+    if isinstance(reagent, dict) and reagent.get("reason") in REAGENT_DECISIONS:
+        cited.add(REAGENT_DECISIONS[reagent["reason"]])
+    if isinstance(provenance.get(STRIP_MARK), dict):
+        cited.add("isotopologue_strip")
+    reasons = provenance.get("tier_reasons") or []
+    cited |= cited_by_rules(
+        [r.get("rule") for r in reasons if isinstance(r, dict) and r.get("rule")]
+    )
+    return cited
+
+
+def batch_moves(
+    client: MascopeClient,
+    sample_id: str,
+    control: pd.DataFrame,
+    after: pd.DataFrame,
+) -> dict:
+    """The rows of one sample that moved between the run the card reads and
+    the run after the batch pass, and which batch decision each cites.
+
+    A peak's row moved where its role, its tier or its reading (formula, ion,
+    mechanism, isotope line) differs, or where one run holds no row on it. A
+    moved row of the run after the pass is counted under each decision it
+    cites: a tier reason the ledger serves (:data:`RULE_DECISIONS`), else, for
+    a source row or an isotope line, its provenance through the detail read
+    (:func:`cited_by_provenance`). One that cites none counts as ``none``, and
+    one whose detail read failed as ``not_read``.
+
+    :return: The sample's moves, as :func:`empty_moves` counts them.
+    """
+    pair = _slim(control).merge(
+        _slim(after), on="sample_peak_id", how="outer", suffixes=("_was", "_now")
+    )
+    for side in ("was", "now"):
+        pair[f"role_{side}"] = pair[f"role_{side}"].fillna("missing")
+        pair[f"tier_{side}"] = pair[f"tier_{side}"].fillna("missing")
+    role = pair["role_was"] != pair["role_now"]
+    tier = ~role & (pair["tier_was"] != pair["tier_now"])
+    reading = pair["reading_was"].astype(str) != pair["reading_now"].astype(str)
+    moved = pair[role | tier | reading]
+    out = empty_moves()
+    out.update(
+        samples=1,
+        peaks=int(len(pair)),
+        moved=int(len(moved)),
+        role=int(role.sum()),
+        tier=int(tier.sum()),
+        reading=int(reading.sum()),
+    )
+    for (was, now), count in moved.groupby(["role_was", "role_now"]).size().items():
+        if was != now:
+            out["by_role"][f"{was} -> {now}"] = int(count)
+    cited: dict[str, set[str]] = {}
+    to_read = []
+    for row in moved.to_dict("records"):
+        peak = row["sample_peak_id"]
+        cited[peak] = cited_by_rules(row.get("rules_now"))
+        row_id = _cell(row.get("peak_assignment_id_now"))
+        if not cited[peak] and row_id and row.get("role_now") in DETAIL_ROLES:
+            to_read.append((peak, row_id))
+    unread = set()
+    if to_read:
+        provenance = read_provenance(client, sample_id, [r for _, r in to_read])
+        for peak, row_id in to_read:
+            record = provenance.get(row_id)
+            if record is None:
+                unread.add(peak)
+            else:
+                cited[peak] |= cited_by_provenance(record)
+    for peak, kinds in cited.items():
+        if peak in unread:
+            out["by_decision"][UNREAD] += 1
+        elif not kinds:
+            out["by_decision"][NO_DECISION] += 1
+        for kind in kinds:
+            out["by_decision"][kind] += 1
+    return out
+
+
+def add_moves(total: dict, one: dict, control_read: bool, after_read: bool) -> None:
+    """Add one sample's moves into its set's, with whether its two runs read a
+    batch decision."""
+    for key in ("samples", "peaks", "moved", "role", "tier", "reading"):
+        total[key] += one[key]
+    for kind, n in one["by_decision"].items():
+        total["by_decision"][kind] = total["by_decision"].get(kind, 0) + n
+    for pair, n in one["by_role"].items():
+        total["by_role"][pair] = total["by_role"].get(pair, 0) + n
+    total["by_role"] = dict(sorted(total["by_role"].items()))
+    total["control_read_decisions"] += int(control_read)
+    total["after_read_decisions"] += int(after_read)
 
 
 def pooled_arms(decoys: list[dict]) -> dict:
@@ -2183,7 +2647,7 @@ def build_card(collected: dict[str, dict], manifest: dict, args) -> dict:
             or None,
         ),
     }
-    return {
+    card = {
         "format": CARD_FORMAT,
         "engines": {"a": args.engine_a, "b": args.engine_b},
         "columns": columns,
@@ -2191,6 +2655,57 @@ def build_card(collected: dict[str, dict], manifest: dict, args) -> dict:
         "thresholds": None,
         "baseline": None,
     }
+    arm = batch_arm(collected, manifest, truth)
+    if arm is not None:
+        card["batch_arm"] = arm
+    return card
+
+
+def batch_arm(collected: dict[str, dict], manifest: dict, truth: dict) -> dict | None:
+    """The card's batch arm: per set that ran it, every reading of the runs
+    after the pass of the batch stages and the rows that moved from the runs
+    the card's own columns read; per set that asked for it and was left off,
+    why. None where no set asked for it, so a card without the arm is the
+    card it always was.
+
+    The gate never reads it, nor does a diff against a baseline: the gate
+    judges the card's own columns, the control (decided with MAS-1140 until
+    the plan owner says otherwise). The decoy arms stay on the control.
+    """
+    sets = manifest["sets"]
+    asked = [
+        name
+        for name, spec in sets.items()
+        if spec.get("batch_arm") is not None or spec.get("batch_arm_off")
+    ]
+    if not asked:
+        return None
+    columns, off = {}, {}
+    for name in asked:
+        spec, one = sets[name], collected[name]
+        if spec.get("batch_arm_off"):
+            off[name] = str(spec["batch_arm_off"])
+            continue
+        after = one["arm"]
+        frame = after["frame"]
+        columns[name] = {
+            "instrument": spec["instrument"],
+            "engine_versions": after["engine_versions"],
+            "tiering_rules": after["tiering_rules"],
+            "level_rules": after["level_rules"],
+            "readings": (
+                metrics.card_readings(
+                    frame,
+                    skipped=after["skipped"],
+                    source_ions=after["source_ions"],
+                    truth=[(frame, truth[name])] if name in truth else None,
+                )
+                if frame is not None
+                else metrics.unread_readings(after["skipped"], truth.get(name))
+            ),
+            "moves": after["moves"],
+        }
+    return {"columns": columns, "off": off}
 
 
 def run_card(args) -> int:
