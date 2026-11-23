@@ -253,6 +253,52 @@ def test_a_failed_pull_is_not_held(auto_env, root):
 
 
 @pytest.mark.parametrize(
+    "classification, kind",
+    [("migration-update", "migration"), ("fast-update", "fast")],
+)
+def test_an_up_refused_for_a_missing_secret_is_not_held(
+    auto_env, root, classification, kind
+):
+    # `_run_compose` refuses an "up" that would miss a declared secret file
+    # before compose runs, so the old stack runs whole: nothing to roll back,
+    # and the next window applies the release once the file is there.
+    if classification == "migration-update":
+        au.save_pending(
+            root,
+            au.PendingUpdate("v1.4.0", _HEAD, "2026-07-01T00:00:00", confirmed=True),
+        )
+    env = auto_env
+    env.setattr(prod_main.preflight, "build_plan", lambda **k: _plan(classification))
+    env.setattr(prod_main.auto_update, "wait_healthy", lambda c: True)
+    compose = []
+
+    def refusing(args):
+        compose.append(args)
+        if args[0] == "up":
+            raise prod_main.SecretsMissing("Not starting the stack: ssl_secret_key")
+
+    env.setattr(prod_main, "_run_compose", refusing)
+    with pytest.raises(typer.Exit) as e:
+        prod_main._auto(pull=True)
+
+    assert e.value.exit_code == au.AUTO_ERROR
+    assert compose == [["pull"], ["up", "--detach"]]
+    pending = au.load_pending(root)
+    assert pending is None or pending.failed_at is None
+    log = _status_log(root)
+    assert (
+        f"{kind.capitalize()} update to v1.4.0 not applied. "
+        "Not starting the stack: ssl_secret_key"
+    ) in log
+    assert "did not come up healthy" not in log
+
+    # The operator supplies the file; the next window applies the release.
+    code, compose = _run_auto(auto_env, classification=classification)
+    assert code in (au.AUTO_OK, au.AUTO_MIGRATION_PENDING)
+    assert ["up", "--detach"] in compose
+
+
+@pytest.mark.parametrize(
     "classification, kind, quiet",
     [
         ("migration-update", "migration", au.AUTO_MIGRATION_PENDING),

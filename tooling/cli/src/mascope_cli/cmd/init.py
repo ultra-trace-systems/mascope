@@ -234,19 +234,23 @@ def create_secret(path: Path) -> None:
         fh.write(_secrets.token_urlsafe(48) + "\n")
 
 
-def create_placeholder(path: Path) -> None:
+def create_placeholder(path: Path, private: Optional[bool] = None) -> None:
     """
     Create an operator-supplied secret file empty, unless it exists.
 
-    Owner-only (0600) for a placeholder in ``PRIVATE_PLACEHOLDER_SECRETS``, so
-    the secret the operator writes into it later is never readable by others;
-    at the umask otherwise.
+    Owner-only (0600) for a private placeholder, so the secret the operator
+    writes into it later is never readable by others; at the umask otherwise.
 
     :param path: The placeholder file. An existing file is left as it is.
+    :param private: Whether the placeholder will hold a secret. None takes it
+        from ``PRIVATE_PLACEHOLDER_SECRETS``; the compose file's
+        ``x-mascope-secrets`` block says it for a file this CLI does not know.
     """
     if path.exists():
         return
-    if path.name in PRIVATE_PLACEHOLDER_SECRETS:
+    if private is None:
+        private = path.name in PRIVATE_PLACEHOLDER_SECRETS
+    if private:
         os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
     else:
         path.touch()

@@ -280,3 +280,21 @@ secrets:
   # MASCOPE_TURNSTILE_SITE_KEY set.
   turnstile_secret_key:
     file: .runtime/secrets/turnstile_secret_key.txt
+
+# How the CLI makes a secret file above that is missing when it starts the
+# stack (`mascope prod up`, `mascope prod update`), by the secret's name. Read
+# from this file, so a CLI older than it still makes a secret it was never told
+# about, instead of compose stopping half-way through replacing the containers.
+# A missing file not named here stops the start before any container is
+# touched: the long-standing secrets and the TLS pair are never invented.
+#   generate            - a random value, owner-only (0600).
+#   placeholder         - empty: the feature that reads it is not set up.
+#   private_placeholder - empty and owner-only: the operator writes a secret
+#                         into it later.
+x-mascope-secrets:
+  generate:
+    - mfa_encryption_key
+  placeholder:
+    - origin_pull_ca
+  private_placeholder:
+    - turnstile_secret_key

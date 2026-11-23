@@ -26,6 +26,7 @@ import os
 import platform
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, NoReturn, Optional
 
@@ -555,6 +556,22 @@ def _compose_env(building: bool = False) -> dict[str, str]:
     )
 
 
+class SecretsMissing(typer.Exit):
+    """
+    An "up" refused before compose ran: a declared secret file is missing.
+
+    Exits 1. Its message is the refusal `_ensure_secrets` returned, which
+    `_apply_update` records as the unattended run's status.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(1)
+        self.message = message
+
+    def __str__(self) -> str:
+        return self.message
+
+
 def _run_compose(args: list[str], building: bool = False) -> None:
     """
     Invoke `docker compose` against the production compose file.
@@ -573,15 +590,21 @@ def _run_compose(args: list[str], building: bool = False) -> None:
     :raises typer.Exit: With docker compose's exit code when it fails, so
                         callers (CI in particular) can rely on the CLI's exit
                         status instead of scraping logs.
+    :raises SecretsMissing: Before compose runs, when an "up" would miss a
+                        declared secret file.
     """
-    # Any compose "up" needs its declared secret files present first, or compose
-    # refuses to start on a declared-but-absent secret. Centralised here so the
-    # unattended update path - which calls compose directly rather than through
-    # the `up` command - cannot skip it.
-    if args and args[0] == "up":
-        _ensure_secrets()
-
+    # Any compose "up" needs its declared secret files present first: compose
+    # checks a service's secrets only as it creates that service's container,
+    # by when it has replaced the services ahead of it, Postgres and Redis
+    # included. Centralised here so the unattended update path - which calls
+    # compose directly rather than through the `up` command - cannot skip it.
     env_vars = _compose_env(building)
+    if args and args[0] == "up":
+        refusal = _ensure_secrets(env_vars)
+        if refusal is not None:
+            runtime.logger.error(refusal)
+            raise SecretsMissing(refusal)
+
     command = f"docker compose --file '{_compose_path()}' {' '.join(args)}"
 
     runtime.logger.info(
@@ -704,14 +727,185 @@ def _warn_if_cli_stale(*, auto: bool) -> None:
         )
 
 
-def _ensure_secrets() -> None:
+# The compose file's top-level block that says how the CLI makes each secret
+# file it declares when the file is missing (see docker-compose.yaml), and the
+# kinds it names. Read from the compose file in use, so a CLI older than that
+# file still makes a secret a newer release added.
+SECRETS_BLOCK = "x-mascope-secrets"
+SECRET_KINDS = ("generate", "placeholder", "private_placeholder")
+
+
+@dataclass(frozen=True)
+class DeclaredSecret:
+    """A file-backed secret a service of the compose file in use mounts."""
+
+    # The secret's name in the compose file.
+    name: str
+    # Its source file, resolved against the compose file's directory.
+    path: Path
+    # How the compose file's SECRETS_BLOCK says to make it; None when it names
+    # it under no kind.
+    kind: Optional[str]
+
+
+def _compose_config(env_vars: dict[str, str]) -> Optional[dict]:
+    """
+    The compose file in use as ``docker compose config`` resolves it.
+
+    Read with the environment the stack is started with, so it names the
+    services and secrets an "up" would create. Best-effort: None, with a
+    warning, when compose cannot read it, and the caller then makes only the
+    secrets this CLI knows of, as before the compose file said how.
+
+    :param env_vars: The compose environment (`_compose_env`).
+    """
+    command = ["docker", "compose", "--file", _compose_path(), "config"]
+    command += ["--format", "json"]
+    try:
+        result = subprocess.run(
+            command,
+            env={**os.environ, **env_vars},
+            cwd=runtime.path(),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        runtime.logger.warning(
+            f"Could not read the compose file's secrets (non-fatal): {exc}"
+        )
+        return None
+    if result.returncode != 0:
+        runtime.logger.warning(
+            "Could not read the compose file's secrets (non-fatal): "
+            f"{result.stderr.strip() or 'docker compose config failed'}"
+        )
+        return None
+    try:
+        config = json.loads(result.stdout)
+    except ValueError as exc:
+        config = exc
+    if not isinstance(config, dict):
+        runtime.logger.warning(
+            "Could not read the compose file's secrets (non-fatal): not a "
+            f"compose configuration ({config})"
+        )
+        return None
+    return config
+
+
+def declared_secrets(config: dict, home: Path) -> list[DeclaredSecret]:
+    """
+    The file-backed secrets the services of ``config`` mount, in name order.
+
+    A secret no service mounts is left out: compose never looks for its file.
+    So is one with no ``file`` (an ``environment`` or ``external`` secret).
+
+    :param config: The compose file as `_compose_config` reads it.
+    :param home: The compose file's directory, which a relative ``file``
+        names a path in.
+    """
+    used = set()
+    for service in (config.get("services") or {}).values():
+        for entry in (service or {}).get("secrets") or ():
+            used.add(entry.get("source") if isinstance(entry, dict) else entry)
+    block = config.get(SECRETS_BLOCK)
+    kinds: dict[str, Optional[str]] = {}
+    if isinstance(block, dict):
+        for kind in SECRET_KINDS:
+            for name in block.get(kind) or ():
+                # A name under two kinds says neither: make it under none.
+                kinds[name] = None if name in kinds else kind
+    declared = []
+    for name, spec in sorted((config.get("secrets") or {}).items()):
+        if name not in used or not isinstance(spec, dict) or not spec.get("file"):
+            continue
+        path = Path(spec["file"])
+        if not path.is_absolute():
+            path = home / path
+        declared.append(DeclaredSecret(name, path, kinds.get(name)))
+    return declared
+
+
+def _make_declared_secret(secret: DeclaredSecret, secrets_dir: Path) -> bool:
+    """
+    Make the missing file of ``secret`` as the compose file says, if it may.
+
+    Only a file directly under ``secrets_dir``, and never one of the
+    long-standing secrets (`GENERATED_SECRETS` that are not
+    `AUTO_PROVISIONED_SECRETS`), whatever the compose file says: a fresh one
+    would not match the database or the sessions it has to.
+
+    :return: Whether the file was made.
+    """
+    from mascope_cli.cmd.init import (
+        AUTO_PROVISIONED_SECRETS,
+        GENERATED_SECRETS,
+        create_placeholder,
+        create_secret,
+    )
+
+    long_standing = set(GENERATED_SECRETS) - set(AUTO_PROVISIONED_SECRETS)
+    if (
+        secret.kind is None
+        or secret.path.parent.resolve() != secrets_dir.resolve()
+        or secret.path.name in long_standing
+    ):
+        return False
+    if secret.kind == "generate":
+        create_secret(secret.path)
+        runtime.logger.warning(
+            f"Created missing secret {secret.path}, as the compose file says"
+        )
+    else:
+        create_placeholder(secret.path, private=secret.kind == "private_placeholder")
+        runtime.logger.info(
+            f"Created an empty placeholder for {secret.path}, as the compose file says"
+        )
+    return True
+
+
+def _missing_secrets_message(missing: list[DeclaredSecret]) -> str:
+    """The refusal for the declared secret files ``missing``, naming the fix."""
+    files = ", ".join(f"{secret.name} ({secret.path})" for secret in missing)
+    message = (
+        f"Not starting the stack: the compose file {_compose_path()} declares "
+        f"secret files that are missing: {files}. No container has been "
+        "touched. Restore each from the deployment's copy of its secrets, or "
+        "supply it (the TLS pair, see docs/maintaining.md). A missing "
+        "postgres_password, jwt_secret_key or server_owner_secret_key has to "
+        "be the one in use: a fresh value would not match the database or the "
+        "sessions. A secret this CLI does not know may mean it is older than "
+        "the compose file."
+    )
+    try:
+        drift = cli_drift.detect(os.environ["MASCOPE_PATH"])
+    except (OSError, KeyError):
+        drift = None
+    if drift is not None and drift.drifted and drift.reinstall:
+        message += f" The installed CLI is older than the checkout: {drift.reinstall}"
+    return message
+
+
+def _ensure_secrets(env_vars: dict[str, str]) -> Optional[str]:
     """
     Create the auto-provisionable secret files the compose file expects but the
-    home does not have, before compose is asked to start.
+    home does not have, before compose is asked to start, and refuse the start
+    when a declared one is still missing.
 
     Compose refuses to start when a declared secret's source file is missing, so
     a deployment that predates a newly added secret would fail on an ordinary
-    update. Only ``AUTO_PROVISIONED_SECRETS`` are created - those introduced
+    update. It checks that file only as it creates the container that mounts
+    it, by when it has replaced the services ahead of it: Postgres and Redis,
+    left created and stopped. So every file the services of the compose file
+    in use mount is checked here first, and the stack is not started while one
+    is missing.
+
+    The files are made from two lists: this CLI's own, and the compose file's
+    `SECRETS_BLOCK`, which a CLI older than the compose file also reads (see
+    `_make_declared_secret`). Of this CLI's own, only
+    ``AUTO_PROVISIONED_SECRETS`` are generated - those introduced
     after a deployment's initial setup, whose absence means "this release added
     a secret". The critical long-standing secrets are left alone: a missing
     postgres_password or jwt_secret_key is an error to surface, not to replace
@@ -724,6 +918,13 @@ def _ensure_secrets() -> None:
     writes a secret into, and the others are left at the umask (see
     `create_placeholder`). Last, it warns, without refusing to start, when the
     image could not read the secrets (see `secrets_unreadable_by_image`).
+
+    :param env_vars: The compose environment (`_compose_env`), with which the
+        compose file in use is read.
+    :return: The refusal to log when a declared secret file is still missing,
+        naming each; None when the stack may start. When compose cannot read
+        its file, only this CLI's own list is made and None is returned:
+        compose names a missing file itself then.
     """
     from mascope_cli.cmd.init import (
         AUTO_PROVISIONED_SECRETS,
@@ -748,9 +949,17 @@ def _ensure_secrets() -> None:
             continue
         create_placeholder(target)
         runtime.logger.info(f"Created an empty placeholder for {target}")
+    missing = []
+    config = _compose_config(env_vars)
+    if config is not None:
+        for secret in declared_secrets(config, Path(_compose_path()).parent):
+            if secret.path.exists() or _make_declared_secret(secret, secrets_dir):
+                continue
+            missing.append(secret)
     unreadable = secrets_unreadable_by_image(secrets_dir)
     if unreadable:
         runtime.logger.warning(secrets_owner_warning(secrets_dir, unreadable))
+    return _missing_secrets_message(missing) if missing else None
 
 
 # --- Commands ---
@@ -781,8 +990,8 @@ def up(
         mascope prod up --build --detach
     """
     # Check database bind-mount dirs before starting containers. Missing secret
-    # files are provisioned by _run_compose on any "up" (including the unattended
-    # update path), so no explicit call is needed here.
+    # files are provisioned, or the start refused, by _run_compose on any "up"
+    # (including the unattended update path), so no explicit call is needed here.
     target = None if rebuild else _deploy_version()
     if target is not None:
         # A wheel install deploys its CLI's release alone, on that release's
@@ -1030,6 +1239,12 @@ def _apply_update(
     _run_compose(["pull"])
     try:
         _run_compose(["up", "--detach"])
+    except SecretsMissing as refused:
+        # Refused before compose ran, so the old stack runs whole. Not held:
+        # the next window applies the release once the files are there.
+        message = f"{kind.capitalize()} update to {target} not applied. {refused}"
+        auto_update.record_status(mascope_path, message)
+        raise typer.Exit(auto_update.AUTO_ERROR)
     except typer.Exit:
         # The prod compose file starts the backend after db_init and the rest
         # after a healthy backend, so a failed migration or an unhealthy
