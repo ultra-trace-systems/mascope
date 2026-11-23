@@ -10,5 +10,6 @@
   acquired, and serves each line's offset beside its residual. A file
   fitted before this keeps what its record knew on its next refit: the axis
   read again from its TofDaq file, or its lines' offsets where that file is
-  not in the filestore. The badge's drift is read from the same offsets,
+  not in the filestore, or the drift its badge carried where it was refitted
+  already. The badge's drift is read from the same offsets,
   with its sign. No m/z moves.

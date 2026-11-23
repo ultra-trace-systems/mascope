@@ -932,6 +932,8 @@ async def test_a_refit_of_a_record_from_before_the_axis_keeps_what_it_knew(
     old = await _fit_and_apply(sample_file)
     for key in ("acquisition_axis", "fitted_at"):
         old.pop(key)
+    # As a first fit wrote it before the keys: its marker is its pre-fit error
+    old["acquisition_drift_ppm"] = old["quality"]["pre_fit_mz_error_ppm"]
     sample_file.mz_calibration = copy.deepcopy(old)
     first = _kept_offsets(old)
     assert first == pytest.approx([80.0] * len(first), abs=0.1)
@@ -952,3 +954,35 @@ async def test_a_refit_of_a_record_from_before_the_axis_keeps_what_it_knew(
         )
     if not h5:
         assert refits[1]["acquisition_offsets"] == refits[0]["acquisition_offsets"]
+
+
+@pytest.mark.asyncio
+async def test_a_refit_of_a_refit_from_before_the_axis_carries_its_marker(filestore):
+    """The record being replaced is from before the keys and was itself a
+    refit: its marker was carried from the first fit, and its own lines read
+    near zero on the axis that fit set. With no TofDaq file to read the axis
+    from, its lines are not kept as acquisition offsets, and the marker it
+    carried is carried on, through a second refit as well."""
+    filename = _acquired_file(filestore, 80.0)
+    sample_file = _sample_file(
+        filename, {**support.axis_off(80.0), "status": "unfitted"}
+    )
+    first = await _fit_and_apply(sample_file)
+    carried = first["quality"]["pre_fit_mz_error_ppm"]
+    assert carried == pytest.approx(80.0, abs=1.0)
+    old = await _fit_and_apply(sample_file)
+    # As a refit wrote it before the keys: the first fit's marker carried
+    for key in ("acquisition_axis", "fitted_at"):
+        old.pop(key)
+    old.update({"acquisition_drift": True, "acquisition_drift_ppm": carried})
+    assert abs(old["quality"]["pre_fit_mz_error_ppm"]) < 1.0
+    sample_file.mz_calibration = copy.deepcopy(old)
+
+    refits = [await _fit_and_apply(sample_file) for _ in range(2)]
+
+    for refit in refits:
+        assert "acquisition_axis" not in refit
+        assert "acquisition_offsets" not in refit
+        assert refit["acquisition_drift"] is True
+        assert refit["acquisition_drift_ppm"] == carried
+        assert acquisition_axis.fitted_at(refit) is not None

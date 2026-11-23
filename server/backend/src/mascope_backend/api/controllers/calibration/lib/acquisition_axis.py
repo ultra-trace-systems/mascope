@@ -23,8 +23,10 @@ So every record a fit writes keeps them (MAS-937):
   offsets that were read on the acquisition axis: the record being replaced
   keeps its own lines' offsets (its ``observed_mz`` against the exact m/z,
   which is the acquisition axis's reading on a first fit), or carries the
-  ones it was given. A record never ends with less raw-axis information than
-  the one it replaces.
+  ones it was given. A replaced record that says it was itself a refit
+  (its drift marker was carried) keeps neither key, and its marker is carried
+  on as before the keys. A record never ends with less raw-axis information
+  than the one it replaces.
 - ``fitted_at``: when the record was written, UTC.
 
 A line's raw-axis offset (:func:`line_offsets`) is then the acquisition
@@ -300,6 +302,41 @@ def observed_offsets(record: dict | None) -> list[dict]:
     return out
 
 
+def says_it_was_a_refit(record: dict | None) -> bool:
+    """Whether a record with neither key says it was fitted on an axis an
+    earlier fit had moved, so its lines' observed offsets are not the
+    acquisition axis's.
+
+    Records written before the keys say so in one of two ways. Their drift
+    marker was carried from the record they replaced: a marker raised by a
+    fit's own lines is its pre-fit error, the same number, while a carried
+    one is the earlier fit's and the record's own pre-fit error reads near
+    zero. Or an operator's recalibration dropped a carried marker
+    (``drift_cleared_at``), which happens only on a refit. A refit that did
+    neither cannot be told from a first fit.
+    """
+    if not isinstance(record, dict):
+        return False
+    if record.get("drift_cleared_at"):
+        return True
+    if not record.get("acquisition_drift"):
+        return False
+    marker = _real(record.get("acquisition_drift_ppm"))
+    if marker is None:
+        # Records written before the magnitude: the marker is the record's
+        # own pre-fit error, as the carry has always read it.
+        return False
+    quality = record.get("quality")
+    pre_fit = (
+        _real(quality.get("pre_fit_mz_error_ppm"))
+        if isinstance(quality, dict)
+        else None
+    )
+    return pre_fit is None or not math.isclose(
+        marker, pre_fit, rel_tol=1e-9, abs_tol=1e-9
+    )
+
+
 def infer_index_offset(first_mz: float, mode, par) -> int | None:
     """The raw index the stored axis starts at, from its first m/z.
 
@@ -405,7 +442,10 @@ def resolve(
     the raw file's (:func:`read_raw_axis`); and where none gives the axis,
     per-line offsets: on a file still on its acquisition axis the fit's own
     lines read it, else the replaced record's kept offsets, else its own
-    lines' observed offsets, which a first fit read on that axis.
+    lines' observed offsets, which a first fit read on that axis - but not
+    those of a record that says it was a refit (:func:`says_it_was_a_refit`):
+    the fit then keeps neither key, and the drift marker that record carried
+    is carried on.
 
     :param filename: The file.
     :param previous: The record being replaced, if any.
@@ -432,6 +472,11 @@ def resolve(
         offsets = observed_offsets(fit)
     elif isinstance(previous.get(ACQUISITION_OFFSETS), list):
         offsets = copy.deepcopy(previous[ACQUISITION_OFFSETS])
+    elif says_it_was_a_refit(previous):
+        # Its lines were read on a moved axis; what it knew of the
+        # acquisition axis is its carried marker, which the drift carry
+        # keeps on a record with neither key.
+        offsets = []
     else:
         offsets = observed_offsets(previous)
     if offsets:
