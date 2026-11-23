@@ -2295,8 +2295,11 @@ def settle_list_election(
 ) -> ListElection:
     """Apply what the search decided on the peaks the lists had read.
 
-    A kept reading leaves its row as Stage A built it, with the grid's rivals
-    counted into its density (:func:`record_grid_rivals`), and the run counts
+    A kept reading leaves its row as Stage A built it, with what the search
+    saw on its peak recorded (:func:`record_grid_rivals`) and the grid's rivals
+    handed on by peak (:attr:`ListElection.rivals_by_peak`), which the run
+    measures with the row's other rivals and counts into its density there
+    (``rival_set.measure_rival_sets``). The run counts
     the readings a rival cleared the prior against and still did not displace:
     for the lines it left unexplained, or because the reading is the target
     library's. A reading a rival beat leaves the ledger with its isotopologues,

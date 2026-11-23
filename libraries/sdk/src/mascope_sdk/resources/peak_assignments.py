@@ -123,7 +123,9 @@ class AssignmentConfig(TypedDict, total=False):
     #: How many runner-up candidates are kept per peak.
     max_alternatives: int
     #: Measure the untargeted winners' formula-only shortlists and record each
-    #: winner's ``confidence`` and ``is_tie`` in its provenance. Off by default.
+    #: winner's ``confidence`` and ``is_tie`` in its provenance. A measured
+    #: formula the evidence cannot separate from its winner counts in the
+    #: winner's ``candidate_density``, which can cap it. Off by default.
     stage_b_confidence: bool
     #: How many untargeted winners, the most intense first, that measures.
     stage_b_confidence_peaks: int

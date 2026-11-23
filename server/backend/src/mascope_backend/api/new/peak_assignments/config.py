@@ -496,9 +496,12 @@ class PeakAssignmentConfig(BaseModel):
     # -- Stage B winner confidence (assignment quality plan, step 4.15). The
     # finder's shortlist reaches a row as formulas with no fit, so a Stage B
     # winner has no share of a scored candidate set to report. This measures
-    # that shortlist in one seeded pass over the run's committed winners and
-    # records the confidence Stage A records; it moves no tier. Off by default
-    # until its runtime cost is measured on the gate sets. The budget is a
+    # that shortlist in one seeded pass over the run's committed winners, and
+    # each formula joins its winner's rival set (`rival_set`), off which the
+    # winner's confidence and tie are read as Stage A's are. A formula the
+    # evidence cannot separate from the winner counts in its candidate
+    # density, so the density rule can cap the winner at candidate. Off by
+    # default until its runtime cost is measured on the gate sets. The budget is a
     # count of winners, the most intense first, and is bounded by the peaks
     # the stage may search at all, since it commits no more winners than that;
     # what each winner costs is bounded by `max_alternatives`, which caps the
@@ -508,8 +511,10 @@ class PeakAssignmentConfig(BaseModel):
         description=(
             "Measure the formula-only shortlist of the untargeted stage's "
             "committed winners and record each winner's arbitration confidence "
-            "and tie flag, as the database stage does. Reported only: no tier "
-            "moves. Off by default."
+            "and tie flag, as the database stage does. A measured formula the "
+            "evidence cannot separate from its winner counts among the "
+            "winner's rivals left standing, which can cap the winner at "
+            "candidate. Off by default."
         ),
     )
     stage_b_confidence_peaks: int = Field(
