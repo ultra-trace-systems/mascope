@@ -2,8 +2,9 @@
 Data gathering for `mascope prod doctor` - one-glance operational status.
 
 Collects cheap, local signals - container state, free disk, the recorded
-pending update, backup freshness, and the docker image footprint - into a
-structured report. Read-only and network-free: it never pulls, never changes
+pending update, backup freshness, the docker image footprint, and whether the
+secret files are closed to everyone but their owner - into a structured
+report. Read-only and network-free: it never pulls, never changes
 anything, and is safe to run anytime or to poll from a monitor. All docker
 interaction goes through the small ``_run`` seam so tests can stub it.
 
@@ -639,6 +640,168 @@ def unreadable_secrets(mascope_path: str) -> list[UnreadableSecret]:
     ]
 
 
+# A secret open to group or others is the opposite failure. Compose mounts each file secret into its containers as the file is on the
+# host, mode included. A secret file that group or others can read is readable
+# by every user on the server and by every uid in the containers it is mounted
+# into: a job run in the backend container under another uid reads the app's
+# database password. `mascope init` and `mascope prod up` have written the
+# secrets they generate 0600 since 1.15.0, but they never change an existing file,
+# so a deployment set up before that, or whose secrets were made by hand at the
+# umask, keeps them open until someone closes them. This is how it gets told.
+
+SECRETS_DIR = Path(".runtime") / "secrets"
+
+# Files kept in the secrets directory that hold nothing secret: the TLS
+# certificate and the origin-pull CA are public by nature.
+PUBLIC_SECRET_FILES = frozenset({"mascope.app.pem", "origin_pull_ca.pem"})
+
+# The secrets the backend image reads, as the uid it runs as. Closed to their
+# owner, these must be owned by that uid, or the backend can no longer read
+# them.
+BACKEND_SECRET_FILES = frozenset(init_cmd.IMAGE_READ_SECRETS)
+
+
+@dataclass
+class OpenSecret:
+    """A secret file that group or others have some access to."""
+
+    name: str
+    # Permission bits in octal, e.g. "0644".
+    mode: str
+    uid: int
+    # The owning account's name, or the uid when it has none on the host.
+    owner: str
+
+
+@dataclass
+class SecretsStatus:
+    """Whether the secret files are closed to everyone but their owner."""
+
+    path: str
+    # Why the files were not checked: no secrets directory, or no POSIX modes.
+    # None once checked.
+    skipped: Optional[str] = None
+    open_files: list[OpenSecret] = field(default_factory=list)
+    # The directory's mode, and whether group or others may write to it: add,
+    # replace or delete a secret.
+    dir_mode: Optional[str] = None
+    dir_writable: bool = False
+    # The uid the backend runs as, None when the backend is not running.
+    backend_uid: Optional[int] = None
+    # Open files the backend reads that are not owned by backend_uid: closed
+    # where they are, the backend could not read them, so they need a chown
+    # to that uid first.
+    need_chown: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.open_files and not self.dir_writable
+
+
+def _owner_name(uid: int) -> str:
+    try:
+        import pwd  # POSIX only; secrets_status skips the check elsewhere.
+
+        return pwd.getpwuid(uid).pw_name
+    except (ImportError, KeyError):
+        return str(uid)
+
+
+def backend_uid(name: str) -> Optional[int]:
+    """The uid the backend container runs as, or None when it cannot say."""
+    try:
+        result = _run(["docker", "exec", name, "id", "-u"])
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = result.stdout.strip()
+    if result.returncode != 0 or not out.isdigit():
+        return None
+    return int(out)
+
+
+def secrets_status(
+    secrets_dir: Path, backend_container: Optional[str] = None
+) -> SecretsStatus:
+    """
+    Find the secret files group or others can access, and whether the
+    directory lets them add or replace one.
+
+    Every file in ``secrets_dir`` counts except ``PUBLIC_SECRET_FILES``. Any
+    group or other bit on a file is open, read or not: the fix is 0600.
+    """
+    status = SecretsStatus(path=str(secrets_dir))
+    if os.name == "nt":
+        status.skipped = "no POSIX file modes on this platform"
+        return status
+    try:
+        dir_st = secrets_dir.stat()
+        entries = sorted(secrets_dir.iterdir())
+    except FileNotFoundError:
+        status.skipped = "no secrets directory"
+        return status
+    except OSError as exc:
+        status.skipped = f"cannot read the secrets directory ({exc.strerror})"
+        return status
+
+    dir_mode = dir_st.st_mode & 0o777
+    status.dir_mode = f"{dir_mode:04o}"
+    status.dir_writable = bool(dir_mode & 0o022)
+    for entry in entries:
+        if entry.name in PUBLIC_SECRET_FILES:
+            continue
+        try:
+            st = entry.stat()
+        except OSError:
+            continue
+        if not entry.is_file():
+            continue
+        mode = st.st_mode & 0o777
+        if mode & 0o077:
+            status.open_files.append(
+                OpenSecret(entry.name, f"{mode:04o}", st.st_uid, _owner_name(st.st_uid))
+            )
+
+    if status.open_files and backend_container:
+        status.backend_uid = backend_uid(backend_container)
+    if status.backend_uid is not None:
+        status.need_chown = [
+            f.name
+            for f in status.open_files
+            if f.name in BACKEND_SECRET_FILES and f.uid != status.backend_uid
+        ]
+    return status
+
+
+def secrets_fix(s: SecretsStatus) -> Optional[str]:
+    """The shell command that closes what ``s`` found open, or None."""
+    if s.ok or s.skipped:
+        return None
+    steps = [f"cd {s.path}"]
+    names = " ".join(f.name for f in s.open_files)
+    if s.need_chown:
+        # Root has to give the files away; once they are not the operator's,
+        # root has to close them too.
+        steps.append(f"sudo chown {s.backend_uid} {' '.join(s.need_chown)}")
+        if names:
+            steps.append(f"sudo chmod 600 {names}")
+        if s.dir_writable:
+            steps.append("sudo chmod go-w .")
+        return " && ".join(steps)
+    if names:
+        steps.append(f"chmod 600 {names}")
+    if s.dir_writable:
+        steps.append("chmod go-w .")
+    return " && ".join(steps)
+
+
+def _secrets_owner(s: SecretsStatus) -> Optional[str]:
+    """Who runs the fix: root for a chown, else the files' one owner."""
+    if s.need_chown:
+        return "root"
+    owners = {f.owner for f in s.open_files}
+    return owners.pop() if len(owners) == 1 else None
+
+
 # --- Report ---
 
 
@@ -658,23 +821,30 @@ class Report:
     # Secrets the published images could not read. Flagged without failing
     # the report: an image built with its own MASCOPE_UID reads them as that.
     secrets_unreadable: list[UnreadableSecret] = field(default_factory=list)
+    # Secret files group or others can access. Unlike an unreadable
+    # secret, this fails the report: anyone on the server, and any uid in
+    # the containers, can read them.
+    secrets_open: SecretsStatus = field(
+        default_factory=lambda: SecretsStatus(path="", skipped="not gathered")
+    )
 
     @property
     def ok(self) -> bool:
         """
-        Healthy stack, no version drift, no filesystem below its floor, and
-        no installed unit without its script (the remaining sections are
-        info-only, a unit whose script is inside a venv is flagged but still
-        runs, so does a unit or a copied script an older release wrote, so
-        do secrets the published images could not read, and a filesystem
-        that is only projected to reach its floor is a warning - see
-        ``filling``).
+        Healthy stack, no version drift, no filesystem below its floor, no
+        installed unit without its script, and no secret open to group or
+        others (the remaining sections are info-only, a unit whose script
+        is inside a venv is flagged but still runs, so does a unit or a
+        copied script an older release wrote, so do secrets the published
+        images could not read, and a filesystem that is only projected to
+        reach its floor is a warning - see ``filling``).
         """
         return (
             all(c.ok for c in self.containers)
             and not self.versions.drift
             and not any(d.low for d in self.disks)
             and all(u.ok for u in self.units)
+            and self.secrets_open.ok
         )
 
     @property
@@ -703,6 +873,12 @@ class Report:
             "units": [asdict(u) for u in self.units],
             "units_outdated": list(self.units_outdated),
             "secrets_unreadable": [asdict(s) for s in self.secrets_unreadable],
+            # ok and the fix are derived, so asdict() does not carry them
+            "secrets_open": {
+                **asdict(self.secrets_open),
+                "ok": self.secrets_open.ok,
+                "fix": secrets_fix(self.secrets_open),
+            },
         }
 
 
@@ -715,6 +891,8 @@ def build_report(
     disk_specs: list[tuple[str, Path]],
     backups_dir: Path,
     min_free_gb: float,
+    secrets_dir: Optional[Path] = None,
+    backend_container: Optional[str] = None,
     disk_history: Optional[Path] = None,
     min_days_to_floor: float = 0.0,
     systemd_dir: Optional[Path] = None,
@@ -743,6 +921,9 @@ def build_report(
         units=unit_scripts(systemd_dir),
         units_outdated=outdated_units(mascope_path, systemd_dir),
         secrets_unreadable=unreadable_secrets(mascope_path),
+        secrets_open=secrets_status(
+            secrets_dir or Path(mascope_path) / SECRETS_DIR, backend_container
+        ),
     )
 
 
@@ -846,6 +1027,41 @@ def _secrets_line(unreadable: list[UnreadableSecret]) -> str:
     )
 
 
+def _secrets_lines(report: Report) -> list[str]:
+    """
+    The Secrets rows: open secrets and the fix first, then secrets the images
+    cannot read, else one line saying both are fine.
+    """
+    s = report.secrets_open
+    lines = []
+    if not s.ok and not s.skipped:
+        found = [f"{f.name} {f.mode}" for f in s.open_files]
+        if s.dir_writable:
+            found.append(f"directory {s.dir_mode}")
+        lines.append("OPEN to group/others · " + ", ".join(found))
+        owner = _secrets_owner(s)
+        lines.append(f"fix{f', as {owner}' if owner else ''}: {secrets_fix(s)}")
+        if s.backend_uid is None and any(
+            f.name in BACKEND_SECRET_FILES for f in s.open_files
+        ):
+            # Without the backend's uid the fix cannot say whether a chown is
+            # needed, and a closed file the backend does not own stops it.
+            lines.append(
+                "the backend's secrets must be owned by the uid its image runs "
+                f"as ({init_cmd.IMAGE_UID} unless built with MASCOPE_UID)"
+            )
+    if report.secrets_unreadable:
+        lines.append(_secrets_line(report.secrets_unreadable))
+    if lines:
+        return lines
+    readable = _secrets_line([])
+    if s.skipped:
+        # A report built without gathering the modes has no path to name.
+        note = f" · modes not checked ({s.skipped})" if s.path else ""
+        return [readable + note]
+    return [f"{readable} · owner-only"]
+
+
 def format_text(report: Report) -> str:
     """Render the report as an aligned, human-readable block."""
     lines = []
@@ -906,7 +1122,8 @@ def format_text(report: Report) -> str:
         )
 
     lines.append(("Units", _units_line(report.units, report.units_outdated)))
-    lines.append(("Secrets", _secrets_line(report.secrets_unreadable)))
+    for i, value in enumerate(_secrets_lines(report)):
+        lines.append(("Secrets" if i == 0 else "", value))
 
     header = {0: "OK", 1: "ATTENTION", EXIT_FILLING: "WARNING"}[report.exit_code]
     body = "\n".join(f"{label.ljust(9)}{value}" for label, value in lines)

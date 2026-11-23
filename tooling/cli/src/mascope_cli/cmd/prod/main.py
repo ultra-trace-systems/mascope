@@ -1906,20 +1906,22 @@ def doctor(
     filestore and docker filesystems with how fast each is filling (from the
     disk-check timer's history), the recorded pending update, local backup
     freshness, the docker image footprint, the scripts the systemd units
-    run, and whether the published images can read the secrets. Read-only
-    and network-free - safe to run anytime or to poll.
+    run, whether the published images can read the secrets, and whether
+    group or others can. Read-only and network-free - safe to run anytime or
+    to poll.
 
     Exits 0 when everything looks healthy, 1 when a container is not running,
     the running images do not match the release this deployment would deploy,
     a filesystem is below the free-space floor (MASCOPE_UPDATE_MIN_FREE_GB),
-    or an installed unit cannot find the script it runs, so it can double as a
-    monitoring probe. A unit that runs its script from inside a venv, where a
-    CLI reinstall moves it, is flagged STALE without changing the exit code,
-    and so is an installed unit or copied script that differs from what this
-    release would write (OUTDATED: an update does not rewrite them);
-    re-running `mascope prod units install` mends all three. A secret the
-    published images (uid 1000) could not read is flagged UNREADABLE without
-    changing the exit code either. Exits 3 when the stack is otherwise
+    an installed unit cannot find the script it runs, or a secret file is
+    open to group or others (the report prints the command that closes it),
+    so it can double as a monitoring probe. A unit that runs its script from
+    inside a venv, where a CLI reinstall moves it, is flagged STALE without
+    changing the exit code, and so is an installed unit or copied script that
+    differs from what this release would write (OUTDATED: an update does not
+    rewrite them); re-running `mascope prod units install` mends all three. A
+    secret the published images (uid 1000) could not read is flagged
+    UNREADABLE without changing the exit code either. Exits 3 when the stack is otherwise
     healthy but a filesystem is filling fast enough to reach that floor within
     MASCOPE_DOCTOR_MIN_DAYS_TO_FLOOR days (default 7) - a warning, which the
     fleet playbooks let a rollout pass and doctor-push.sh reports on its
@@ -1971,6 +1973,8 @@ def doctor(
         disk_specs=disk_specs,
         backups_dir=db_cfg.get_backups_dir(mode=_MODE),
         min_free_gb=auto_update.min_free_gb(),
+        secrets_dir=Path(mascope_path) / prod_doctor.SECRETS_DIR,
+        backend_container=container_specs[0][1],
         disk_history=Path(mascope_path) / prod_doctor.DISK_HISTORY,
         min_days_to_floor=prod_doctor.min_days_to_floor(),
     )

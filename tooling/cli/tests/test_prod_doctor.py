@@ -623,6 +623,111 @@ def test_build_report_reads_outdated_units(monkeypatch, tmp_path):
     assert report.ok is True
 
 
+# --- secrets_status ---
+
+posix_only = pytest.mark.skipif(
+    os.name == "nt", reason="Windows has no owner-only file mode"
+)
+
+
+def _secrets_dir(tmp_path, dir_mode=0o755, **files):
+    """A secrets directory holding ``files`` as name=mode."""
+    d = tmp_path / "secrets"
+    d.mkdir()
+    for name, mode in files.items():
+        path = d / name.replace("__", ".")
+        path.write_text("x\n")
+        path.chmod(mode)
+    d.chmod(dir_mode)
+    return d
+
+
+@posix_only
+def test_secrets_closed_to_their_owner_are_ok(tmp_path):
+    d = _secrets_dir(
+        tmp_path,
+        postgres_password__txt=0o600,
+        jwt_secret_key__txt=0o400,
+        # Public by nature, left at the umask by the CLI.
+        origin_pull_ca__pem=0o644,
+        mascope__app__pem=0o644,
+    )
+    s = doctor.secrets_status(d)
+    assert s.ok and s.skipped is None and s.dir_mode == "0755"
+    assert doctor.secrets_fix(s) is None
+
+
+@posix_only
+def test_secrets_readable_or_writable_by_others_are_open(tmp_path, monkeypatch):
+    # A secret made at Ubuntu's umask 002 by hand: 0664 files in a 0775 dir.
+    d = _secrets_dir(
+        tmp_path,
+        dir_mode=0o775,
+        postgres_password__txt=0o664,
+        jwt_secret_key__txt=0o600,
+        mascope__app__key=0o640,
+        backup__env=0o604,
+    )
+    uid = os.getuid()
+    monkeypatch.setattr(doctor, "_run", lambda cmd, **k: _completed(stdout=f"{uid}\n"))
+    s = doctor.secrets_status(d, "mascope_prod_backend")
+    assert not s.ok
+    assert [(f.name, f.mode) for f in s.open_files] == [
+        ("backup.env", "0604"),
+        ("mascope.app.key", "0640"),
+        ("postgres_password.txt", "0664"),
+    ]
+    assert s.dir_writable and s.dir_mode == "0775"
+    assert s.backend_uid == uid and s.need_chown == []
+    assert doctor.secrets_fix(s) == (
+        f"cd {d} && chmod 600 backup.env mascope.app.key postgres_password.txt"
+        " && chmod go-w ."
+    )
+
+
+@posix_only
+def test_a_backend_secret_owned_by_another_uid_needs_a_chown(tmp_path, monkeypatch):
+    # Closed where it is, the backend could no longer read it: the fix has to
+    # give it to the backend's uid first. A file the backend does not read
+    # needs no chown.
+    d = _secrets_dir(tmp_path, postgres_password__txt=0o644, backup__env=0o644)
+    other = os.getuid() + 1
+    monkeypatch.setattr(
+        doctor, "_run", lambda cmd, **k: _completed(stdout=f"{other}\n")
+    )
+    s = doctor.secrets_status(d, "mascope_prod_backend")
+    assert s.need_chown == ["postgres_password.txt"]
+    assert doctor.secrets_fix(s) == (
+        f"cd {d} && sudo chown {other} postgres_password.txt"
+        " && sudo chmod 600 backup.env postgres_password.txt"
+    )
+
+
+@posix_only
+def test_the_backend_is_not_asked_when_the_secrets_are_closed(tmp_path, monkeypatch):
+    d = _secrets_dir(tmp_path, postgres_password__txt=0o600)
+
+    def no_docker(cmd, **k):
+        raise AssertionError(f"ran {cmd}")
+
+    monkeypatch.setattr(doctor, "_run", no_docker)
+    assert doctor.secrets_status(d, "mascope_prod_backend").ok
+
+
+@posix_only
+def test_a_stopped_backend_leaves_its_uid_unknown(tmp_path, monkeypatch):
+    d = _secrets_dir(tmp_path, postgres_password__txt=0o644)
+    monkeypatch.setattr(doctor, "_run", lambda cmd, **k: _completed(returncode=1))
+    s = doctor.secrets_status(d, "mascope_prod_backend")
+    assert s.backend_uid is None and s.need_chown == []
+    assert doctor.secrets_fix(s) == f"cd {d} && chmod 600 postgres_password.txt"
+
+
+def test_no_secrets_directory_is_not_checked(tmp_path):
+    s = doctor.secrets_status(tmp_path / "missing")
+    assert s.skipped and s.ok
+
+
 # --- report / rendering ---
 
 
@@ -639,6 +744,7 @@ def _healthy_report():
         updates=doctor.UpdateStatus(None, None, None),
         backups=doctor.BackupStatus(5, 8.0),
         images=doctor.ImageFootprint(11, "6.2GB", "2.1GB"),
+        secrets_open=doctor.SecretsStatus("/m/.runtime/secrets", dir_mode="0755"),
     )
 
 
@@ -779,6 +885,8 @@ def test_build_report_reads_the_secrets_the_image_cannot(monkeypatch, tmp_path):
     monkeypatch.setattr(doctor.init_cmd, "IMAGE_GID", os.getgid() + 1)
     secrets = tmp_path / ".runtime" / "secrets"
     secrets.mkdir(parents=True)
+    # Not writable by group or others, whatever the umask: not this test's case.
+    secrets.chmod(0o755)
     secret = secrets / "postgres_password.txt"
     secret.write_text("x\n")
     secret.chmod(0o600)
@@ -897,6 +1005,72 @@ def test_report_json_carries_fill_rates():
     assert disk["mount"] == "/"
 
 
+def _open_secrets(**kwargs):
+    return doctor.SecretsStatus(
+        "/m/.runtime/secrets",
+        open_files=[
+            doctor.OpenSecret("jwt_secret_key.txt", "0664", 1000, "karsa"),
+            doctor.OpenSecret("postgres_password.txt", "0664", 1000, "karsa"),
+        ],
+        dir_mode="0775",
+        dir_writable=True,
+        **kwargs,
+    )
+
+
+def test_an_open_secret_makes_the_report_unhealthy():
+    # A job's uid in the backend container could read the database password:
+    # attention, not a warning, so the rollout and the monitor both stop on it.
+    report = _healthy_report()
+    report.secrets_open = _open_secrets(backend_uid=1000)
+    assert report.ok is False and report.exit_code == 1
+    dumped = json.loads(json.dumps(report.to_dict()))["secrets_open"]
+    assert dumped["ok"] is False and dumped["dir_writable"] is True
+    assert dumped["fix"].startswith("cd /m/.runtime/secrets && chmod 600 ")
+
+
+def test_format_text_names_the_open_secrets_and_the_fix():
+    report = _healthy_report()
+    report.secrets_open = _open_secrets(backend_uid=1000)
+    text = doctor.format_text(report)
+    assert text.startswith("[ATTENTION]")
+    assert (
+        "\nSecrets  OPEN to group/others · jwt_secret_key.txt 0664, "
+        "postgres_password.txt 0664, directory 0775\n"
+        "         fix, as karsa: cd /m/.runtime/secrets && chmod 600 "
+        "jwt_secret_key.txt postgres_password.txt && chmod go-w ."
+    ) in text
+    assert "must be owned by the uid" not in text
+
+
+def test_format_text_warns_of_the_owner_when_the_backend_uid_is_unknown():
+    report = _healthy_report()
+    report.secrets_open = _open_secrets()
+    text = doctor.format_text(report)
+    assert "must be owned by the uid its image runs as" in text
+
+
+def test_format_text_runs_a_chown_fix_as_root():
+    report = _healthy_report()
+    report.secrets_open = _open_secrets(
+        backend_uid=1001, need_chown=["jwt_secret_key.txt", "postgres_password.txt"]
+    )
+    assert (
+        "fix, as root: cd /m/.runtime/secrets && sudo chown 1001 "
+        "jwt_secret_key.txt postgres_password.txt && sudo chmod 600 "
+    ) in doctor.format_text(report)
+
+
+def test_format_text_says_when_the_secrets_were_not_checked():
+    report = _healthy_report()
+    report.secrets_open = doctor.SecretsStatus("/x", skipped="no secrets directory")
+    text = doctor.format_text(report)
+    assert text.startswith("[OK]")
+    assert (
+        "Secrets  readable by uid 1000 · modes not checked (no secrets directory)"
+    ) in text
+
+
 def test_format_text_spells_out_drift():
     report = _healthy_report()
     report.versions.running[0].tag = "latest"
@@ -955,6 +1129,8 @@ def test_doctor_command_reads_the_disk_check_history(
     assert labels == ["state", "filestore", "docker"]
     filestore = dict(seen["disk_specs"])["filestore"]
     assert filestore == Path(prod_main.runtime.meta.filestore)
+    assert seen["secrets_dir"] == mascope_home / ".runtime" / "secrets"
+    assert seen["backend_container"] == dict(seen["container_specs"])["backend"]
 
 
 def test_doctor_command_json(monkeypatch, cli_runner):
