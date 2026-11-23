@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 import pytest_asyncio
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, update
 from stage_stubs import (  # the tests root, on sys.path
     frame,
     mechanism,
@@ -27,6 +27,7 @@ from test_utils import captured_logs
 
 from mascope_backend.api.new.peak_assignments import (
     batch_import,
+    batch_peaks,
     batch_staleness,
     pipeline,
 )
@@ -111,6 +112,24 @@ def _unassigned_rows(sample_item_id, peaks):
 async def folded_batch(async_session_factory, pa_test_data):
     """A batch of its own with two samples folded without runs, every peak
     unassigned."""
+    return await _fold_batch(async_session_factory, pa_test_data)
+
+
+@pytest_asyncio.fixture
+async def mixed_batch(async_session_factory, pa_test_data, monkeypatch):
+    """The batch of ``folded_batch`` with S2 a TOF file: each instrument type
+    folds into anchors of its own, so every m/z has an anchor in each, with
+    one member apiece."""
+    # The fold classifies a file by its name.
+    monkeypatch.setattr(
+        batch_peaks,
+        "get_instrument_type",
+        lambda filename: "tof" if "-S2-" in filename else "orbi",
+    )
+    return await _fold_batch(async_session_factory, pa_test_data)
+
+
+async def _fold_batch(async_session_factory, pa_test_data):
     now = datetime.now(timezone.utc)
     batch_id = gen_id()
     samples = {}
@@ -263,6 +282,8 @@ async def test_the_engines_identity_lands_on_every_member_of_the_matched_anchor(
     counts = await run_batch_import(batch_id, "peaky", 5.0, rows, POLARITY)
 
     assert counts["anchors_matched"] == 1
+    assert counts["rows_landed"] == 1
+    assert counts["anchors_matched_by_instrument_type"] == {"orbi": 1}
     assert counts["rows_skipped_by_reason"] == {REASON_NO_ANCHOR: 1}
     assert counts["members_measured"] == 2
     assert counts["samples_rescored"] == 2
@@ -292,6 +313,138 @@ async def test_the_engines_identity_lands_on_every_member_of_the_matched_anchor(
         assert members["p1"].role == role_code(ROLE_M0)
         assert members["p1"].owner_batch_peak_id is None
         assert members["p2"].candidate is None
+
+
+async def test_a_mixed_batch_lands_a_row_on_the_anchor_of_each_instrument_type(
+    async_session_factory, mixed_batch, stubbed_scorer
+):
+    """One species has an anchor per instrument type. The row lands on both,
+    each anchor measured on its own member, the engine's verdict goes on both,
+    and the summary says what each instrument type took."""
+    batch_id = mixed_batch["batch_id"]
+    rows = [
+        BatchImportRow(
+            mz=181.0709,
+            formula="C6H12O6",
+            ion_formula="C6H13O6+",
+            ionization_mechanism_id="mech-h",
+            engine_tier="candidate",
+            engine_claim="level 3",
+        ),
+        # Within the tolerance of nothing: skipped once, not once per type.
+        BatchImportRow(mz=300.5, formula="C10H20O10", ionization_mechanism_id="mech-h"),
+    ]
+
+    counts = await run_batch_import(batch_id, "peaky", 5.0, rows, POLARITY)
+
+    assert counts["anchors_matched"] == 2
+    assert counts["rows_landed"] == 1
+    assert counts["anchors_matched_by_instrument_type"] == {"orbi": 1, "tof": 1}
+    assert (
+        sum(counts["anchors_matched_by_instrument_type"].values())
+        == (counts["anchors_matched"])
+    )
+    assert counts["rows_skipped_by_reason"] == {REASON_NO_ANCHOR: 1}
+    assert counts["members_measured"] == 2
+    assert counts["engine_verdicts"] == 2
+    assert "1 of 2 rows landed" in import_outcome(counts, batch_id, "peaky")["message"]
+
+    async with async_session_factory() as session:
+        glucose = {
+            anchor.intensity_variable: anchor
+            for anchor in (
+                await session.execute(
+                    select(BatchPeak).where(
+                        BatchPeak.sample_batch_id == batch_id,
+                        BatchPeak.mz < 181.5,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        }
+    assert set(glucose) == {"sum_peak_heights", "sum_peak_areas"}
+    for unit, name in (("sum_peak_heights", "S1"), ("sum_peak_areas", "S2")):
+        anchor = glucose[unit]
+        assert anchor.consensus_formula == "C6H12O6"
+        assert (anchor.engine_tier, anchor.engine_claim) == ("candidate", "level 3")
+        entry = next(c for c in anchor.candidates if c["formula"] == "C6H12O6")
+        assert entry["source"] == "peaky"
+        # Each anchor's identity is its own member's measurement.
+        members = await _members(async_session_factory, mixed_batch["samples"][name])
+        assert members["p1"].batch_peak_id == anchor.batch_peak_id
+        assert members["p1"].candidate == anchor.candidates.index(entry)
+        assert members["p1"].fit_score == pytest.approx(0.81, abs=1e-6)
+
+
+async def test_an_anchor_whose_unit_names_no_instrument_is_counted_unnamed(
+    async_session_factory, folded_batch, stubbed_scorer
+):
+    """A batch folded before the ledger kept the instrument types apart: its
+    anchors name no unit, are one partition, and import as before."""
+    batch_id = folded_batch["batch_id"]
+    async with async_session_factory() as session:
+        await session.execute(
+            update(BatchPeak)
+            .where(BatchPeak.sample_batch_id == batch_id)
+            .values(intensity_variable=None)
+        )
+        await session.commit()
+
+    counts = await run_batch_import(
+        batch_id, "peaky", 5.0, _rows((181.0709, "C6H12O6")), POLARITY
+    )
+    assert counts["anchors_matched"] == 1
+    assert counts["anchors_matched_by_instrument_type"] == {"unnamed": 1}
+
+
+async def _glucose_anchor_ids(session_factory, batch_id):
+    async with session_factory() as session:
+        return dict(
+            (
+                await session.execute(
+                    select(BatchPeak.intensity_variable, BatchPeak.batch_peak_id).where(
+                        BatchPeak.sample_batch_id == batch_id, BatchPeak.mz < 181.5
+                    )
+                )
+            ).all()
+        )
+
+
+async def test_a_row_refused_by_one_instrument_types_anchor_lands_on_the_other(
+    async_session_factory, mixed_batch, stubbed_scorer
+):
+    """A pinned Orbitrap anchor refuses the row, and the TOF anchor takes it:
+    the row landed, so nothing is skipped. Refused by both, it is skipped once,
+    for the human pin."""
+    batch_id = mixed_batch["batch_id"]
+    ids = await _glucose_anchor_ids(async_session_factory, batch_id)
+    async with async_session_factory() as session:
+        pinned = await session.get(BatchPeak, ids["sum_peak_heights"])
+        pinned.provenance = {
+            "manual": {"action": "promote_identity", "formula": "C6H12O6"}
+        }
+        await session.commit()
+
+    counts = await run_batch_import(
+        batch_id, "peaky", 5.0, _rows((181.0709, "C6H12O6")), POLARITY
+    )
+    assert counts["anchors_matched"] == 1
+    assert counts["rows_landed"] == 1
+    assert counts["anchors_matched_by_instrument_type"] == {"tof": 1}
+    assert counts["rows_skipped_by_reason"] == {}
+
+    async with async_session_factory() as session:
+        child = await session.get(BatchPeak, ids["sum_peak_areas"])
+        child.isotopologue_of = ids["sum_peak_heights"]
+        await session.commit()
+
+    counts = await run_batch_import(
+        batch_id, "peaky", 5.0, _rows((181.0709, "C6H12O6")), POLARITY
+    )
+    assert counts["anchors_matched"] == 0
+    assert counts["rows_landed"] == 0
+    assert counts["rows_skipped_by_reason"] == {REASON_CURATED: 1}
 
 
 async def test_a_curated_anchor_and_an_isotopologue_anchor_are_left_alone(
