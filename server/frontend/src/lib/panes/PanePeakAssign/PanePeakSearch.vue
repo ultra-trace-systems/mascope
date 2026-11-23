@@ -23,6 +23,7 @@ import { fetchProfilePreview, isFormulaRange, usePeakAssignParams } from '@/lib/
 import { usePreview } from './preview.js'
 import { mechanismsOfSample } from './sampleMechanisms.js'
 import { canCurateHit, curationBodyForHit, hitKey, readLineOfHit } from './searchHit.js'
+import { useChangeGate } from './changeGate.js'
 
 // On-demand composition search for the focused peak. Lives in the Sample view's
 // pane under the spectrum, shown in place of the time series while "Re-search"
@@ -576,6 +577,21 @@ const assignDenied = ref(false) // 403: not an editor on this sample
 // commit a composition onto; the server answers 409, so the hand is withheld.
 const derivedRun = computed(() => app.data.peakAssignment.peak.run?.engine === 'batch')
 
+// The inspector card's gate (`changeGate.js`): a change by hand is recorded
+// only by an editor, and only on the sample's own result - not on an earlier
+// run, a newer one still running, the batch ledger or a decoy. The search stays
+// usable everywhere; only the hand is withheld, and where it would be a lock
+// says why. A 403 counts as the viewer case: the server knows the role better.
+const gate = useChangeGate()
+const handOffered = computed(() => gate.canChange.value && !assignDenied.value)
+const handWithheld = computed(() => {
+  if (handOffered.value) return ''
+  if (assignDenied.value || !gate.canEdit.value) {
+    return 'Editor access is required to change an assignment.'
+  }
+  return gate.readOnlyReason.value
+})
+
 // The results outlive the peak they were found for, so the write has to be
 // pinned to that peak rather than to whatever is focused now. Focus moves the
 // instant a peak is clicked and `assignTarget` follows it synchronously, but
@@ -612,6 +628,7 @@ const assignTooltip = computed(() => {
 async function assignToPeak(hit) {
   // Re-checked here and not only on the button: `disabled` lands on the next
   // render, so a click can already be on its way when the focus changes.
+  if (!handOffered.value) return
   if (!assignTarget.value || !resultsMatchTarget.value || !canCurateHit(hit)) return
   if (assigning.value !== null) return
   assigning.value = hitKey(hit)
@@ -936,8 +953,9 @@ watch(
              follows the control it explains and goes with it for a viewer who
              may not curate at all.
              The card hangs on the wrapper and the meaning on the glyph inside
-             it, because the two have different lifetimes. `assignDenied` flips
-             when a write comes back 403, and a help card whose element goes
+             it, because the two have different lifetimes. `handOffered` flips
+             when a write comes back 403 or the run selector moves to a run
+             that is not the sample's result, and a help card whose element goes
              away is never unregistered (see stores/ui/help.js) - it would sit
              in the store's list for the rest of the session holding a mouse
              watcher on an element nobody can reach. The wrapper is gated on the
@@ -947,7 +965,7 @@ watch(
         <template #header>
           <span v-if="peakAssignmentEnabled" class="curate-header" v-help.left="curationHelp">
             <span
-              v-if="!assignDenied"
+              v-if="handOffered"
               class="pi ph ph-push-pin"
               v-tooltip.left="{ value: 'Assign to the selected peak', showDelay: 500 }"
             />
@@ -961,9 +979,11 @@ watch(
                  the tooltip explaining why has to hang on a wrapper. A hit with
                  no adduct is a different case: there is no state in which it
                  could be committed, so it gets no control at all rather than a
-                 permanently dead one. -->
+                 permanently dead one. Withheld by the gate (a viewer, a run
+                 that is not the sample's result), the hand gives way to a lock
+                 that says why. -->
             <span
-              v-if="peakAssignmentEnabled && !assignDenied && canCurateHit(data)"
+              v-if="peakAssignmentEnabled && handOffered && canCurateHit(data)"
               v-tooltip.left="{ value: assignTooltip, showDelay: 300 }"
             >
               <Button
@@ -977,6 +997,14 @@ watch(
                 @click="assignToPeak(data)"
               />
             </span>
+            <span
+              v-else-if="peakAssignmentEnabled && canCurateHit(data)"
+              class="pi ph ph-lock-simple hand-withheld"
+              role="img"
+              :aria-label="handWithheld"
+              data-testid="hand-withheld"
+              v-tooltip.left="{ value: handWithheld, showDelay: 300 }"
+            />
             <PopoverTargetCompoundAdd
               :formula="data.target_compound_formula"
               :formula-editable="false"
@@ -1006,6 +1034,14 @@ watch(
 </template>
 
 <style scoped>
+/* Where the hand button would be, quiet: the search is still the pane's point. */
+.hand-withheld {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  opacity: 0.5;
+}
 .search-pane {
   display: flex;
   flex-direction: column;
