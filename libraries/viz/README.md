@@ -539,9 +539,12 @@ such as a recipe's named list, of these, tried in this order:
 - a species' name, its neutral formula or its ion formula, matched
   literally, case included;
 - `top:N`, the N species with the highest median over the chart's own
-  window, under its own normalisation, the normaliser's own ions left out.
-  It ranks those present in at least half the samples that could hold
-  them, as `views.top` does by default.
+  window, under its own normalisation. It leaves out every species that
+  reads one of the normaliser's ions, which the normaliser would divide to
+  one or to a part of one: the normaliser's own keys, a target ion that
+  holds a formula it names, and any species of the same ion formula as
+  one of them. It ranks those present in at least half the samples that
+  could hold them, as `views.top` does by default.
 
 A formula held both by a target ion and by the engine under the same
 mechanism is the target ion's `ion:` key: that identity survives a change

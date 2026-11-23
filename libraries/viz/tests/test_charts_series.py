@@ -270,14 +270,43 @@ def test_a_species_without_a_name_is_named_by_its_formula_or_key():
     }
 
 
-def test_top_n_with_nothing_but_the_normaliser_to_rank_is_refused():
-    with pytest.raises(InvalidChart, match="no species to rank"):
+#: The pinic acid ion and its formula, without their ion formulas.
+_BARE_PAIR = [
+    dict(row, ion_formula=None) for row in SPECIES.frame.to_dict("records")[:2]
+]
+
+#: The pinic acid ion and another neutral's that reads the same ion.
+_SAME_ION_PAIR = [
+    SPECIES.frame.to_dict("records")[0],
+    {
+        "series_key": "ion:t9",
+        "name": "twin",
+        "formula": "C99H9",
+        "ion_formula": "C9H14O4I-",
+        "mechanism": "[M+I]-",
+    },
+]
+
+
+@pytest.mark.parametrize(
+    "rows, normalise",
+    [
         # The ion is the normaliser, and its formula's key is the ion
-        resolve(
-            _Species(SPECIES.frame.to_dict("records")[:2]),
-            "top:3",
-            normalise="ion:t1",
-        )
+        (SPECIES.frame.to_dict("records")[:2], "ion:t1"),
+        # The formula is, and the target ion that holds it reads its peak
+        (_BARE_PAIR, "formula:C9H14O4|[M+I]-"),
+        # The ion is, and another neutral's target ion reads its ion
+        (_SAME_ION_PAIR, "ion:t1"),
+        (_SAME_ION_PAIR, ["ion:t1", "formula:C5H8O3|[M+I]-"]),
+    ],
+)
+def test_top_n_with_nothing_but_the_normalisers_ions_to_rank_is_refused(
+    rows, normalise
+):
+    """Every candidate reads one of the normaliser's ions: refused before
+    the stub store, which holds no series, is ever read."""
+    with pytest.raises(InvalidChart, match="no species to rank"):
+        resolve(_Species(rows), "top:3", normalise=normalise)
 
 
 def test_a_formula_a_target_ion_holds_is_the_ion_and_one_per_mechanism():
@@ -473,6 +502,40 @@ def test_a_chart_names_the_species_top_n_left_out(twins):
     assert f"{name} reads {ion}, as twin compound [M+I]- does." in note
     for build in (diurnal, period_boxes):
         assert build(store, f"top:{n}").summary["same_ion"] == [same]
+
+
+def _first_hours(store: CampaignStore, hours: int) -> dict:
+    """The window of the store's first *hours*, in UTC."""
+    first = pd.Timestamp(store.table("samples")["datetime_utc"].min())
+    return {"tz": "UTC", "start": first, "end": first + pd.Timedelta(hours=hours)}
+
+
+def test_top_n_leaves_out_what_reads_a_formula_normalisers_ion(twins):
+    """Under the formula the twinned target ion holds, that ion and its twin
+    read the normaliser's own peak: drawn, each would divide to one."""
+    twinned, store = twins
+    held = species_module._identities(species_module._table(store))
+    (formula,) = [key for key, ions in held.items() if ions == [twinned]]
+    # The first day's batch, the one that reads the formula
+    window = _first_hours(store, 20)
+    n = len(_species(store))
+
+    found = resolve(store, f"top:{n}", normalise=formula, **window)
+
+    keys = sorted(set(_species(store)["series_key"]) - set(held) - {twinned, TWIN})
+    want = views.top(store, n, "median", keys=keys, normalise=formula, **window)
+    assert found.keys == list(want["key"])
+    assert {twinned, TWIN, formula}.isdisjoint(found.keys)
+    assert found.same_ion == ()
+    # Each member of a sum, the reagent ion beside the formula
+    species = _species(store).set_index("series_key")
+    (reagent,) = [k for k in found.keys if species.at[k, "mechanism"] == "reagent"]
+    summed = resolve(store, f"top:{n}", normalise=[formula, reagent], **window)
+    assert summed.keys == [k for k in found.keys if k != reagent]
+    # And no panel is the normaliser over itself
+    fig = species_series(store, "top:3", normalise=formula, cadence="1h", **window)
+    assert [e["key"] for e in fig.summary["species"]] == found.keys[:3]
+    assert all(e["median"] != pytest.approx(1.0) for e in fig.summary["species"])
 
 
 def test_a_species_named_outright_is_drawn_beside_the_one_top_n_kept(twins):
