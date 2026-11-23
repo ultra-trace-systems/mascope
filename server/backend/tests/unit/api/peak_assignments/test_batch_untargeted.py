@@ -10,6 +10,7 @@ from contextlib import ExitStack, nullcontext
 from types import SimpleNamespace
 from unittest.mock import DEFAULT, AsyncMock, patch
 
+import numpy as np
 import pandas as pd
 import pytest
 from stage_stubs import seeded_frame  # the tests root, on sys.path
@@ -40,6 +41,7 @@ from mascope_backend.api.new.peak_assignments.row_terms import (
     ROLE_REAGENT,
 )
 from mascope_backend.api.new.peak_assignments.tiers import TIER_ASSIGNED, TIER_CANDIDATE
+from mascope_match.params import OrbiMatchParams
 from mascope_tools.composition.mass_accuracy import PRED_SIGMA_PPM
 from mascope_tools.composition.profiles import CHAMBER, INSTRUMENT_FALLBACK_SIGMA_PPM
 
@@ -1188,6 +1190,174 @@ async def test_a_pin_takes_its_members_peak_whatever_the_claim_stage_took():
 
     assert measured["p1"]["assigned_formula"] == "Br2"
     assert measured["p2"]["role"] == "iso_child"
+
+
+#: A bromophenolate reading, C6H4BrO- through [M-H]-, and the peaks of its
+#: lines the spectrum shows: its monoisotopic line on p1, the 81Br line on p2,
+#: and their 13C lines on p3 and p4.
+_BROMOPHENOL = ("C6H5BrO", "im-h")
+_BROMOPHENOL_LINES = {
+    "C6H4BrO-": "p1",
+    "[81Br]C6H4O-": "p2",
+    "[13C]C5H4BrO-": "p3",
+    "[13C][81Br]C5H4O-": "p4",
+}
+
+
+async def _measure_by_the_seeded_scorer(*, listed, claim, brighter=1.0, missing=()):
+    """Measure the bromophenolate reading on a member as the propagation does,
+    through the real seeded scorer: its ion's lines, gating and fit are the
+    engine's, and only the match pass is stood in for. Each line of
+    ``_BROMOPHENOL_LINES`` is found on its peak at its predicted height, the
+    81Br line's ``brighter`` times it, and the rest are absent.
+
+    :param listed: Whether the sample's lists hold the reading's ion.
+    :param claim: The claim stage taking p2, as in :func:`_claiming`.
+    :param missing: Lines the match pass returns no row for at all.
+    :return: The judged rows by peak, and the frames the gating was handed.
+    """
+    from mascope_backend.api.new.peak_assignments import pipeline, seeded_scoring
+
+    gated = []
+    gate_and_score = seeded_scoring.gate_and_score
+
+    def gating(frame, *args, **kwargs):
+        gated.append(frame)
+        return gate_and_score(frame, *args, **kwargs)
+
+    async def match(filename, target_isotopes_df, polarity):
+        frame = target_isotopes_df.reset_index(drop=True)
+        frame = frame[~frame["target_isotope_formula"].isin(missing)].copy()
+        peak = frame["target_isotope_formula"].map(_BROMOPHENOL_LINES)
+        found = peak.notna()
+        height = frame["relative_abundance"] * 1.0e6
+        height = height.where(
+            frame["target_isotope_formula"] != "[81Br]C6H4O-", height * brighter
+        )
+        frame["sample_peak_id"] = peak.where(found, None)
+        frame["sample_peak_mz"] = frame["mz"].where(found, np.nan)
+        frame["sample_peak_intensity"] = height.where(found, 0.0)
+        frame["sample_peak_tof"] = None
+        frame["match_mz_error"] = np.where(found, 0.1, np.nan)
+        frame["match_abundance_error"] = np.where(
+            found, (height / (frame["relative_abundance"] * 1.0e6) - 1.0) * 100, np.nan
+        )
+        frame["match_score"] = np.where(found, 1.0, 0.0)
+        return frame
+
+    mechanism = _mechanism("[M-H]-", "im-h")
+
+    async def mechanisms(mechanism_ids):
+        return {"im-h": mechanism}
+
+    known = (
+        pd.DataFrame(
+            [
+                {
+                    "target_compound_formula": _BROMOPHENOL[0],
+                    "ionization_mechanism_id": _BROMOPHENOL[1],
+                    "target_compound_id": "tc-bromophenol",
+                    "reference_identities": None,
+                }
+            ]
+        )
+        if listed
+        else None
+    )
+    peaks = _peaks(
+        [
+            ("p1", 170.9451, 0.47e6),
+            ("p3", 171.9485, 0.03e6),
+            ("p2", 172.9431, 0.46e6 * brighter),
+            ("p4", 173.9464, 0.03e6),
+        ]
+    )
+    stack, _ = _searching(
+        _sample(),
+        peaks,
+        [mechanism],
+        finder=lambda *args, **kwargs: (pd.DataFrame(), None),
+        known=known,
+    )
+    stack.enter_context(patch.object(seeded_scoring, "compute_match_isotopes", match))
+    stack.enter_context(
+        patch.object(seeded_scoring, "fetch_mechanisms_by_id", mechanisms)
+    )
+    stack.enter_context(
+        patch.object(
+            seeded_scoring, "sample_label_purity", AsyncMock(return_value=None)
+        )
+    )
+    stack.enter_context(patch.object(seeded_scoring, "gate_and_score", gating))
+    # The gating reads the match parameters as a sample's are.
+    stack.enter_context(
+        patch(
+            f"{_PIPE}.default_match_params",
+            AsyncMock(return_value=OrbiMatchParams()),
+        )
+    )
+    with stack, _claiming(claim, {"p2"}):
+        ctx = await batch_untargeted.measure_on_sample(
+            "si-1",
+            {"bp-1": Annotation(_BROMOPHENOL[0], "C6H4BrO-", "im-h", "M0", None)},
+            PeakAssignmentConfig(),
+            pipeline.PROPAGATION,
+        )
+    return {row["sample_peak_id"]: row for row in ctx.judged.rows}, gated
+
+
+def _evidence(row):
+    return row["provenance"]["evidence"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("brighter", [1.0, 20.0], ids=["accepted", "refused"])
+@pytest.mark.parametrize("claim", ["reagent", "artifact"])
+async def test_a_listed_reading_is_fitted_without_its_line_on_a_claimed_peak(
+    claim, brighter
+):
+    # MAS-1047: a reading the member's lists hold is the list's row a run of
+    # the sample makes, and Stage A measures that ion without its lines on the
+    # peaks the claim stage took, before it gates and fits. So does the
+    # measurement here: the 81Br line on the claimed p2 is in neither fit,
+    # whether the gating would have accepted it (as present) or refused it as
+    # far brighter than it predicts (as missing). It reads as the reading does
+    # where the match pass found no such line at all.
+    measured, gated = await _measure_by_the_seeded_scorer(
+        listed=True, claim=claim, brighter=brighter
+    )
+    unclaimed, _ = await _measure_by_the_seeded_scorer(
+        listed=True, claim=None, missing=("[81Br]C6H4O-",)
+    )
+
+    (frame,) = gated
+    assert "p2" not in set(frame["sample_peak_id"])
+    assert set(measured) == set(unclaimed) == {"p1", "p3", "p4"}
+    for peak in measured:
+        for read in (lambda row: row["fit_score"], _evidence):
+            assert read(measured[peak]) == pytest.approx(read(unclaimed[peak]))
+    assert measured["p1"]["source"] == "database"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("claim", ["reagent", "artifact"])
+async def test_a_searched_reading_keeps_its_claimed_line_as_its_pattern(claim):
+    # A reading the lists do not hold is the formula search's row, whose
+    # re-score reads a claimed peak as part of the pattern: its fit still
+    # counts the 81Br line, here refused as far brighter than it predicts, and
+    # the elect stage drops its row there afterwards.
+    measured, gated = await _measure_by_the_seeded_scorer(
+        listed=False, claim=claim, brighter=20.0
+    )
+    listed, _ = await _measure_by_the_seeded_scorer(
+        listed=True, claim=claim, brighter=20.0
+    )
+
+    (frame,) = gated
+    assert "p2" in set(frame["sample_peak_id"])
+    assert "p2" not in measured
+    assert measured["p1"]["source"] == "untargeted"
+    assert measured["p1"]["fit_score"] < listed["p1"]["fit_score"]
 
 
 async def _measure_ammonium_reading(*, known):

@@ -939,6 +939,25 @@ class TestWhatStageALosesWithTheClaim:
 
         assert len(drop_ions_claimed_elsewhere(frame, set())) == len(frame)
 
+    def test_a_drop_scoped_to_some_ions_leaves_the_others_whole(self):
+        """The seeded scoring drops only the ions a sample's lists hold before
+        it gates (MAS-1047): another ion keeps its rows on claimed peaks, its
+        M0's included, and the scoped ion loses its own as an unscoped drop
+        takes them."""
+        claimed = {"p2", "p4"}
+        kept = drop_ions_claimed_elsewhere(self._frame(), claimed, ion_ids={"ion-1"})
+
+        assert kept["sample_peak_id"].tolist() == ["p1", "p3", "p4"]
+
+        kept = drop_ions_claimed_elsewhere(self._frame(), {"p1", "p4"}, ion_ids=[])
+
+        assert len(kept) == len(self._frame())
+
+    def test_a_scoped_ion_whose_m0_is_claimed_goes_whole(self):
+        kept = drop_ions_claimed_elsewhere(self._frame(), {"p1"}, ion_ids={"ion-1"})
+
+        assert kept["sample_peak_id"].tolist() == ["p4"]
+
 
 #: The charge-transfer source's channels, by the mechanism ids the rows carry.
 ELECTRON = "et"

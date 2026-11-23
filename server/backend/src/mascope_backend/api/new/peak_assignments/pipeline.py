@@ -1307,13 +1307,27 @@ async def score(ctx: RunContext) -> None:
             return
         # The given readings, each an ion measured as a list's is: in one match
         # pass over the sample's peaks, gated by its match parameters and fit
-        # at its recorded model (``seeded_scoring.score_seeds``).
+        # at its recorded model (``seeded_scoring.score_seeds``). Under a
+        # run's rules a reading the sample's lists hold is the list's row a
+        # run makes, and Stage A measures that one without its lines on the
+        # peaks the claim stage took, before it gates and fits: so is it here.
+        # Every other reading is the search's, whose re-score reads a claimed
+        # peak as part of the pattern; the elect stage drops it there.
+        # A person's choice reads no lists (:func:`_propose_given`), so it
+        # holds none and keeps every line.
+        listed_seeds = {
+            seed
+            for seed in ctx.seeds
+            if (formula_identity(seed[0]), str(seed[1])) in ctx.listed_ions
+        }
         ctx.seeded = await score_seeds(
             ctx.sample,
             ctx.seeds,
             ctx.match_params,
             model=ctx.model,
             resolution=ctx.resolution,
+            claimed_peak_ids=ctx.claimed_peak_ids,
+            listed_seeds=listed_seeds,
         )
         ion_by_seed, _fits, _errors, scored_df = ctx.seeded
         if not scored_df.empty:
@@ -1378,10 +1392,10 @@ async def elect(ctx: RunContext) -> None:
             # elects none there: Stage A drops an ion whose monoisotopic line a
             # pre-pass claimed and any line that landed on a claimed peak, and
             # the search drops its rows on them
-            # (``engine.drop_ions_claimed_elsewhere``). Dropped once measured,
-            # as the search drops its own: the fit still read the claimed
-            # peak as part of the pattern. A person's formula takes the peak
-            # it was chosen for.
+            # (``engine.drop_ions_claimed_elsewhere``). A list's reading was
+            # measured without them (:func:`score`); the search's is dropped
+            # once measured, its fit reading them as the pattern. A person's
+            # formula takes the peak it was chosen for.
             frame = drop_ions_claimed_elsewhere(frame, ctx.claimed_peak_ids)
         # One reading per peak among the given ones, elected as Stage A elects
         # a list's: the measured ion owns the peak its gated line paired to,
