@@ -106,7 +106,6 @@ from mascope_backend.api.new.peak_assignments.engine import (
     pattern_scoring_for,
     record_displaced_list_readings,
     record_same_ion_readings,
-    score_ions_by_fit,
     scoring_snapshot,
     settle_list_election,
     tier_for_evidence,
@@ -153,7 +152,6 @@ from mascope_backend.api.new.peak_assignments.sample_inputs import (
     load_sample_peaks,
 )
 from mascope_backend.api.new.peak_assignments.seeded_scoring import (
-    gate_lines,
     score_seeds,
 )
 from mascope_backend.api.new.peak_assignments.stage_a_pass import (
@@ -1412,45 +1410,58 @@ async def elect(ctx: RunContext) -> None:
     judging then reads the line, and the series, as the batch decided them,
     and its fragment claim reads the ledger the strips left.
     """
-    sample = ctx.sample
-    config = ctx.config
+    # Off the event loop, each: rows from a large frame are seconds of pandas.
     if ctx.path.proposal in (Proposal.GIVEN, Proposal.PERSONS_FORMULA) and (
         ctx.seeded is not None
     ):
-        frame = ctx.seeded[3]
-        if ctx.path.rules is Rules.RUN:
-            # No reading is elected on a peak the claim stage took, as a run
-            # elects none there: Stage A drops an ion whose monoisotopic line a
-            # pre-pass claimed and any line that landed on a claimed peak, and
-            # the search drops its rows on them
-            # (``engine.drop_ions_claimed_elsewhere``). A list's reading was
-            # measured without them (:func:`score`); the search's is dropped
-            # once measured, its fit reading them as the pattern. A person's
-            # formula takes the peak it was chosen for.
-            frame = drop_ions_claimed_elsewhere(frame, ctx.claimed_peak_ids)
-        # One reading per peak among the given ones, elected as Stage A elects
-        # a list's: the measured ion owns the peak its gated line paired to,
-        # an isotopologue beside its ion's monoisotopic row, and the rest are
-        # its alternatives (``engine.invert_matches_to_peak_assignments``).
-        # Uncalibrated, as a batch decision's measurement always was.
-        rows = invert_matches_to_peak_assignments(
-            frame,
-            sample_item_id=sample.sample_item_id,
-            peak_assignment_run_id=ctx.run_id,
-            candidate_threshold=config.candidate_threshold,
-            assigned_threshold=config.assigned_threshold,
-            max_alternatives=config.max_alternatives,
-            instrument=ctx.instrument_type,
-            calibration=None,
-        )
-        judging_loop.raise_to_floors(rows, ctx.floors)
-        if ctx.path.rules is Rules.RUN:
-            ctx.stage_a, ctx.stage_b = _read_as_a_run_reads(ctx, rows)
-        else:
-            ctx.stage_a = rows
+        await asyncio.to_thread(_elect_given, ctx)
     if ctx.path.rules is Rules.SPECTRUM:
         _elect_persons_choice(ctx)
         return
+    await asyncio.to_thread(_elect_rows, ctx)
+
+
+def _elect_given(ctx: RunContext) -> None:
+    """The given readings elected (:func:`elect`)."""
+    sample = ctx.sample
+    config = ctx.config
+    frame = ctx.seeded[3]
+    if ctx.path.rules is Rules.RUN:
+        # No reading is elected on a peak the claim stage took, as a run
+        # elects none there: Stage A drops an ion whose monoisotopic line a
+        # pre-pass claimed and any line that landed on a claimed peak, and
+        # the search drops its rows on them
+        # (``engine.drop_ions_claimed_elsewhere``). A list's reading was
+        # measured without them (:func:`score`); the search's is dropped
+        # once measured, its fit reading them as the pattern. A person's
+        # formula takes the peak it was chosen for.
+        frame = drop_ions_claimed_elsewhere(frame, ctx.claimed_peak_ids)
+    # One reading per peak among the given ones, elected as Stage A elects
+    # a list's: the measured ion owns the peak its gated line paired to,
+    # an isotopologue beside its ion's monoisotopic row, and the rest are
+    # its alternatives (``engine.invert_matches_to_peak_assignments``).
+    # Uncalibrated, as a batch decision's measurement always was.
+    rows = invert_matches_to_peak_assignments(
+        frame,
+        sample_item_id=sample.sample_item_id,
+        peak_assignment_run_id=ctx.run_id,
+        candidate_threshold=config.candidate_threshold,
+        assigned_threshold=config.assigned_threshold,
+        max_alternatives=config.max_alternatives,
+        instrument=ctx.instrument_type,
+        calibration=None,
+    )
+    judging_loop.raise_to_floors(rows, ctx.floors)
+    if ctx.path.rules is Rules.RUN:
+        ctx.stage_a, ctx.stage_b = _read_as_a_run_reads(ctx, rows)
+    else:
+        ctx.stage_a = rows
+
+
+def _elect_rows(ctx: RunContext) -> None:
+    """The search's rows, and what every path's rows carry (:func:`elect`)."""
+    sample = ctx.sample
+    config = ctx.config
     search = ctx.search
     if search is not None and search.ran:
         election = search.election
@@ -1692,7 +1703,8 @@ async def refit(ctx: RunContext) -> None:
         # which the m/z calibration node puts on its calibrants.
         ctx.source_line_cap = await judging_loop._source_line_cap(ctx.sample)
         ctx.judging = _judging_for(ctx)
-    ctx.judging.refit()
+    # The judging's rounds are seconds on a large ledger: off the event loop.
+    await asyncio.to_thread(ctx.judging.refit)
 
 
 def _judging_for(ctx: RunContext) -> judging_loop.Judging:
@@ -1748,7 +1760,7 @@ async def judge(ctx: RunContext) -> None:
     formula is the person's."""
     if ctx.path.rules is Rules.SPECTRUM:
         return
-    ctx.judging.judge()
+    await asyncio.to_thread(ctx.judging.judge)
 
 
 async def cap(ctx: RunContext) -> None:
@@ -1761,10 +1773,13 @@ async def cap(ctx: RunContext) -> None:
     none does, the round's rows are the judged ledger.
     """
     if ctx.path.rules is Rules.SPECTRUM:
-        _cap_by_the_spectrum(ctx)
+        await asyncio.to_thread(_cap_by_the_spectrum, ctx)
         return
     judging = ctx.judging
-    judging.cap()
+    # The tiering pass asks every committed row for the lines its formula
+    # predicts: seconds on a large ledger, the longest stall a run held the
+    # event loop for (MAS-947).
+    await asyncio.to_thread(judging.cap)
     if judging.another_round():
         return
     ctx.judged = judging.result()
@@ -1989,7 +2004,9 @@ async def level(ctx: RunContext) -> None:
         )
     # Recorded with the tiering record, whose absent-line gate the rivals'
     # lines are asked at.
-    ctx.tiering[LEVEL_SUMMARY] = apply_levels(
+    # Off the event loop, as the tiering pass that asks a row's own lines.
+    ctx.tiering[LEVEL_SUMMARY] = await asyncio.to_thread(
+        apply_levels,
         rows,
         notation_by_id=sample_mechanisms._notation_by_id(ctx.searched_mechanisms),
         instrument_type=ctx.instrument_type,
@@ -2340,11 +2357,9 @@ async def _stage_a_assignments(
         # fitted window can admit a line the first pass turned away, a TOF
         # line read below 0.6 of its share where the curve opens, and refitted
         # here that line would be an anchor and move both.
-        scored = score_ions_by_fit(
-            gate_lines(first.matched, match_params, envelope.tolerance),
-            model=MeasurementModel.v1(
-                first.mass_accuracy, fallback_sigma_ppm, envelope.tolerance
-            ),
+        # Off the event loop, as the first pass's own fit and arbitration.
+        scored = await asyncio.to_thread(
+            first.rescored_at, match_params, envelope, fallback_sigma_ppm
         )
         stage_a_assignments = await asyncio.to_thread(first.assignments_of, scored)
     return (

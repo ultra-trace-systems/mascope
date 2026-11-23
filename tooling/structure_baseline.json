@@ -10,15 +10,15 @@
       "function_imports": 0,
       "modules": {
         "batch_known_species.py": 1866,
-        "batch_peaks.py": 2465,
+        "batch_peaks.py": 2482,
         "batch_peaks_routes.py": 1678,
         "batch_stages.py": 1839,
         "batch_untargeted.py": 1675,
         "batch_water_ladder.py": 1606,
-        "engine.py": 2749,
-        "pipeline.py": 2532,
+        "engine.py": 2760,
+        "pipeline.py": 2580,
         "schemas.py": 1927,
-        "tiering.py": 2969
+        "tiering.py": 3003
       },
       "functions": {
         "alternatives_scoring.py:measure_winner_confidence": 127,
@@ -76,8 +76,7 @@
         "pipeline.py:_propose_by_search": 154,
         "pipeline.py:_propose_on_representatives": 120,
         "pipeline.py:_report_judging": 105,
-        "pipeline.py:_stage_a_assignments": 172,
-        "pipeline.py:elect": 125,
+        "pipeline.py:_stage_a_assignments": 170,
         "pipeline.py:resolve": 110,
         "prepasses.py:_reagent_assignments": 133,
         "profile_preview.py:preview_profiles": 128,
@@ -88,7 +87,7 @@
         "sample_status.py:get_batch_sample_assignment_status": 102,
         "service.py:_assign_sample": 132,
         "service.py:keep_run": 103,
-        "stage_a_pass.py:_stage_a_first_pass": 137,
+        "stage_a_pass.py:_stage_a_first_pass": 128,
         "tiering.py:apply_tiering": 300,
         "tiering.py:find_envelope_claims": 144,
         "untargeted_rows.py:untargeted_matches_to_peak_assignments": 405,

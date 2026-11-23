@@ -836,8 +836,15 @@ async def fit_run_envelope_tolerance(
         # run-less fold stands down on it rather than fail, and so does this.
         instrument_type = None
     form = form_for(instrument_type)
-    lines = envelope_lines(match_isotope_df, stage_a_rows, model=model, form=form)
-    fit = fit_envelope_tolerance(form, lines)
+
+    def own_fit() -> tuple[EnvelopeLines, EnvelopeFit]:
+        lines = envelope_lines(match_isotope_df, stage_a_rows, model=model, form=form)
+        return lines, fit_envelope_tolerance(form, lines)
+
+    # Off the event loop: reading every committed envelope's lines off a large
+    # frame is a second of pandas, and the worker keeps answering every other
+    # request while it runs.
+    lines, fit = await asyncio.to_thread(own_fit)
     if form != FORM_CURVE:
         return RunEnvelopeFit(fit)
     acquisition = await acquisition_settings(sample)
@@ -845,7 +852,9 @@ async def fit_run_envelope_tolerance(
         return RunEnvelopeFit(fit, acquisition)
     pool = await read_pool(sample, acquisition, read_neighbour)
     return RunEnvelopeFit(
-        fit_envelope_tolerance(form, lines, pool.lines), acquisition, pool=pool
+        await asyncio.to_thread(fit_envelope_tolerance, form, lines, pool.lines),
+        acquisition,
+        pool=pool,
     )
 
 

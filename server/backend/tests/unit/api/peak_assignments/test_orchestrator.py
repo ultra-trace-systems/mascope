@@ -70,8 +70,8 @@ _READERS = {
     "fetch_sample_mechanisms": ("sample_mechanisms", "service", "model_readers"),
     "fit_run_envelope_tolerance": ("pipeline",),
     "fold_sample_into_batch_peaks": ("service", "batch_fold"),
-    "gate_lines": ("stage_a_pass", "pipeline"),
-    "score_ions_by_fit": ("stage_a_pass", "pipeline"),
+    "gate_lines": ("stage_a_pass",),
+    "score_ions_by_fit": ("stage_a_pass",),
     "get_instrument_type": (
         "service",
         "recalibration",

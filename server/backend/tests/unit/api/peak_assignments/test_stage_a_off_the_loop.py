@@ -1,7 +1,8 @@
 """Stage A's heavy pandas steps run off the event loop.
 
-Dropping the ions the pre-passes claimed and arbitrating the frame into rows
-take seconds each on a large frame. On the event loop they held every other
+Dropping the ions the pre-passes claimed, gating and fitting the frame, and
+arbitrating it into rows take seconds on a large frame, and reading the
+confidence curve's notations off it walks every row. On the event loop they held every other
 request of the server behind a run, and a thin Orbitrap file's pool runs them
 once per neighbour as well (MAS-721). They run in a worker thread
 (``asyncio.to_thread``), which carries the run's context - the labelled purity,
@@ -63,11 +64,11 @@ def _first_pass_patches(
         ),
         patch(
             "mascope_backend.api.new.peak_assignments.stage_a_pass.score_ions_by_fit",
-            side_effect=lambda df, **_kwargs: df,
+            _recording(threads, "fit", lambda df, *_: df),
         ),
         patch(
             "mascope_backend.api.new.peak_assignments.stage_a_pass.sample_mass_accuracy",
-            return_value=SampleMassAccuracy(),
+            _recording(threads, "accuracy", SampleMassAccuracy()),
         ),
         patch(
             "mascope_backend.api.new.peak_assignments.stage_a_pass.get_instrument_type",
@@ -117,8 +118,25 @@ async def test_the_first_pass_drops_claimed_ions_and_arbitrates_off_the_loop():
     first = await _first_pass(threads, rows)
 
     assert first.rows == rows
-    assert set(threads) == {"drop", "arbitrate"}
+    assert set(threads) == {"drop", "fit", "accuracy", "arbitrate"}
     assert all(t is not threading.main_thread() for t in threads.values())
+
+
+@pytest.mark.asyncio
+async def test_the_first_pass_reads_its_curve_off_the_loop():
+    threads: dict = {}
+    calibration = Calibration(a=5.74, b=-3.36, instrument="orbi")
+    curve = stage_a_pass.ConfidenceCurve(calibration, {})
+
+    with patch.object(
+        stage_a_pass.ConfidenceCurve,
+        "of",
+        _recording(threads, "curve", curve),
+    ):
+        first = await _first_pass({}, [{"role": "M0"}], calibration)
+
+    assert first.curve is curve
+    assert threads["curve"] is not threading.main_thread()
 
 
 @pytest.mark.asyncio
@@ -162,12 +180,12 @@ async def test_the_rescore_at_the_fitted_tolerance_arbitrates_off_the_loop():
             AsyncMock(return_value=fitted),
         ),
         patch(
-            "mascope_backend.api.new.peak_assignments.pipeline.gate_lines",
+            "mascope_backend.api.new.peak_assignments.stage_a_pass.gate_lines",
             side_effect=lambda df, *_args, **_kwargs: df,
         ),
         patch(
-            "mascope_backend.api.new.peak_assignments.pipeline.score_ions_by_fit",
-            side_effect=lambda df, **_kwargs: df,
+            "mascope_backend.api.new.peak_assignments.stage_a_pass.score_ions_by_fit",
+            _recording(threads, "fit", lambda df, *_: df),
         ),
     ):
         rows, _, _, envelope, _, _, curve = await pipeline._stage_a_assignments(
@@ -184,4 +202,5 @@ async def test_the_rescore_at_the_fitted_tolerance_arbitrates_off_the_loop():
     assert (rows, envelope) == (rescored, fitted)
     # The curve the rows' P(correct) was read off goes on to the run.
     assert curve is first.curve
+    assert threads["fit"] is not threading.main_thread()
     assert threads["arbitrate"] is not threading.main_thread()

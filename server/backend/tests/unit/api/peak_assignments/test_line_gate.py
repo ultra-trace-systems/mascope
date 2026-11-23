@@ -334,7 +334,7 @@ class TestStageA:
                 AsyncMock(return_value=_fitted()),
             ),
             patch(
-                "mascope_backend.api.new.peak_assignments.pipeline.score_ions_by_fit",
+                "mascope_backend.api.new.peak_assignments.stage_a_pass.score_ions_by_fit",
                 scored,
             ),
         ):
