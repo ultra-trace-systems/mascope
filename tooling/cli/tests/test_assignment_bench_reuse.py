@@ -9,6 +9,7 @@ PR of ``test_assignment_bench_post.py``. No host, no server.
 import io
 import json
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
@@ -722,6 +723,36 @@ def test_a_baseline_made_while_a_reuse_records_keeps_the_reuse_s_record(rig):
     rig.instance.is_on_develop = reuse_meanwhile
     assert rig.runner().baseline("develop/20261112-120001") == 0
 
+    state = rig.state()
+    assert [(c["sha"], c["reused"]) for c in state["cards"]] == [
+        (BRANCH, None),
+        (DEVELOP, None),
+        (DOCS, "topic/20261112-120000"),
+    ]
+    assert state["baseline"]["path"] == "develop/20261112-120001"
+
+
+def test_a_baseline_waits_for_a_reuse_recording_under_state_lock(rig):
+    assert rig.run("topic") == 0
+    assert rig.run("develop") == 0
+    runner, done = rig.runner(), []
+
+    def baseline():
+        done.append(runner.baseline("develop/20261112-120001", out=io.StringIO()))
+
+    writer = threading.Thread(target=baseline)
+    # A reuse's read-modify-write, with the baseline started inside it: the
+    # baseline must wait for it, or the reuse's save drops the baseline.
+    with brun.state_guard(rig.home.root):
+        state = rig.state()
+        writer.start()
+        writer.join(0.5)
+        assert writer.is_alive(), "the baseline did not wait for state.lock"
+        state["cards"].append({"sha": DOCS, "reused": "topic/20261112-120000"})
+        bench.save_state(rig.home, state)
+    writer.join(10)
+
+    assert done == [0]
     state = rig.state()
     assert [(c["sha"], c["reused"]) for c in state["cards"]] == [
         (BRANCH, None),
