@@ -33,6 +33,22 @@ cleanly, and the step reads it two ways:
   nought (:func:`excess_shown`) the channel pairs show no excess over chance
   and the ratio is 1 throughout: dividing by a share near nought would only
   magnify each bin's noise.
+
+  The share assumes no true pair lies under the null's median. Decision 35
+  says a correct composition can anti-correlate with its own parent channel
+  when the source state moves, and every such pair counts as a chance
+  pairing there: it lowers ``pi`` and raises the ratio at high r, by
+  ``pi / (pi_+ - pi_-)`` for a share ``pi_-`` of anti-correlated true pairs.
+  Those pairs show as an excess of channel pairs under the null's lower
+  quartile (:data:`ANTI_QUANTILE`, :func:`anti_excess_shown`), where the
+  share expects a quarter of its chance pairings; where that excess stands
+  clear of its error the share cannot be read, and the ratio is 1
+  throughout too. A true pair whose noise alone puts it under the median is
+  the assumption's other side, and it overstates the ratio the same way, by
+  ``1 / (1 - 2 b)`` for a share ``b`` of true pairs under the median. The
+  isotope pairs measure ``b``: on the testbed 7 of 384 lie under the null's
+  median and none under its lower quartile, a ratio high by a fifth at most in
+  any stratum (the log, step 4.21).
 - **The upper bound** (:func:`ratio_lr`): an M0 against its own isotope line,
   one species by construction. Two channels of one neutral can move apart
   with the source state where an isotope line cannot, so this ratio is the
@@ -46,7 +62,13 @@ channel or isotope pairs would raise every bin they leave empty above the
 null's, a ratio no pair gave. The ratio is then made non-decreasing in r by the pool-adjacent-violators algorithm
 (:func:`isotonic_increasing`; Barlow et al., Statistical Inference under Order
 Restrictions, 1972), each bin weighted by the pairs it holds: a higher r is
-never weaker evidence than a lower one.
+never weaker evidence than a lower one. Last, no ratio is read under
+:data:`LR_FLOOR`: a bin the numerator's pairs left empty fits a ratio of
+nought, which says "impossible under one species", and an empty bin of a few
+hundred pairs is not that much evidence. Decision 35 lets no reading demote
+an assignment by itself (anti-correlation does not demote), so a reader that
+multiplies a ratio into odds reads ``max(ratio, 1)``; the table keeps what was
+measured over the floor.
 
 The table
 ---------
@@ -98,6 +120,18 @@ EXCESS_Z = 1.645
 #: than under chance, "strong" on Jeffreys' scale (Theory of Probability,
 #: 1961, appendix B) and the planner's proposal of 2026-11-22.
 LR_BAR = 10.0
+
+#: The lowest ratio the fit gives a bin: the bar's mirror, a reading ten times
+#: likelier under chance, so that no bin says more against one species than
+#: the bar asks for it. A bin under it is one the numerator's pairs left
+#: (nearly) empty, which the fit would read as nought.
+LR_FLOOR = 1.0 / LR_BAR
+
+#: The quantile of the null's r under which an excess of channel pairs is read
+#: as anti-correlated true pairs (:func:`anti_excess_shown`): the null's lower
+#: quartile. Decision 35's anti-correlated channels read r -0.8 to -0.9, far
+#: under it; the isotope pairs of the testbed have none there.
+ANTI_QUANTILE = 0.25
 
 
 def stratum_of(n_spectra: int, strata: Sequence[int] = STRATA) -> Optional[int]:
@@ -260,8 +294,40 @@ def excess_shown(
     return pi - z * null_share_error(channel_r, null_r) > 0.0
 
 
+def anti_excess_shown(
+    channel_r: Sequence[float],
+    null_r: Sequence[float],
+    *,
+    quantile: float = ANTI_QUANTILE,
+    z: float = EXCESS_Z,
+) -> bool:
+    """Whether the channel pairs hold more pairs under the null's lower
+    quantile than chance gives there: anti-correlated true pairs, which
+    :func:`null_share` would count as chance pairings.
+
+    The channel share under the split is read against its exact one-sided
+    lower bound at ``z`` (Clopper and Pearson, as :func:`null_share_error`
+    reads its upper one), the null's own share with its binomial error; the
+    excess is shown where the channel share stands ``z`` standard errors
+    over the null's.
+    """
+    null_r = np.asarray(null_r, dtype=float)
+    if not null_r.size:
+        return False
+    below = _below(channel_r, null_r, float(np.quantile(null_r, quantile)))
+    if below is None:
+        return False
+    below_channel, n_channel, below_null, n_null = below
+    k = round(below_channel * n_channel)
+    lower = 0.0 if k == 0 else float(beta.ppf(1 - norm.cdf(z), k, n_channel - k + 1))
+    error_channel = (below_channel - lower) / z
+    var_null = below_null * (1 - below_null) / n_null
+    error = float(np.sqrt(error_channel * error_channel + var_null))
+    return below_channel - z * error > below_null
+
+
 def _monotone(raw: np.ndarray, weights: np.ndarray) -> np.ndarray:
-    return np.maximum(isotonic_increasing(raw, weights), 0.0)
+    return np.maximum(isotonic_increasing(raw, weights), LR_FLOOR)
 
 
 def ratio_lr(
@@ -274,7 +340,7 @@ def ratio_lr(
     """The ratio of two densities of r per bin, made non-decreasing: the
     alternative's (pairs that are one species) over the null's.
 
-    :return: One ratio per bin.
+    :return: One ratio per bin, never under :data:`LR_FLOOR`.
     """
     alt = histogram(alt_r, edges, pseudo_count=0.0)
     null = histogram(null_r, edges, pseudo_count=pseudo_count)
@@ -297,17 +363,22 @@ def mixture_lr(
     :param null_r: The decoy pairs' r.
     :param z: How many standard errors above nought ``pi`` must stand
         (:func:`excess_shown`, :data:`EXCESS_Z`).
-    :return: One ratio per bin, non-decreasing and never negative, and the
-        true share ``pi``. Where the channel pairs show no excess over the
-        null every ratio is 1: the reading tells nothing. Without that
-        guard a share near nought would divide the noise of every bin by
-        itself.
+    :return: One ratio per bin, non-decreasing and never under
+        :data:`LR_FLOOR`, and the true share ``pi``. Where the channel pairs
+        show no excess over the null every ratio is 1: the reading tells
+        nothing. Without that guard a share near nought would divide the
+        noise of every bin by itself. Every ratio is 1 too where they show
+        an excess under the null's lower quartile
+        (:func:`anti_excess_shown`): anti-correlated true pairs, which the
+        share would count as chance and so overstate every ratio at high r.
     """
     share = null_share(channel_r, null_r)
     pi = 1.0 - share
     bins = len(edges) - 1
     if pi <= 0.0 or not excess_shown(channel_r, null_r, z=z):
         return np.ones(bins), max(pi, 0.0)
+    if anti_excess_shown(channel_r, null_r, z=z):
+        return np.ones(bins), pi
     channel = histogram(channel_r, edges, pseudo_count=0.0)
     null = histogram(null_r, edges, pseudo_count=pseudo_count)
     raw = (channel / null - share) / pi
@@ -417,25 +488,28 @@ class LikelihoodRatioTable:
 #: spectra or more no chemistry reaches a ratio of 10: a chance pair reads
 #: r >= 0.6 there in 15 to 21 % of cases. Over 10 to 19 the pooled channel
 #: pairs show no excess and the row is 1; over 20 to 49 it is also held down
-#: by one charge-transfer batch whose short traces rise and fall together. ``docs/dev/assignment_quality_plan_log.md`` has every
-#: number.
+#: by one charge-transfer batch whose short traces rise and fall together.
+#: Version 2 (2026-11-24) is version 1 read again by the same script on the
+#: same copy with the fit's floor (:data:`LR_FLOOR`): its bins of 0 read 0.1,
+#: nothing else moved, and no stratum shows anti-correlated channel pairs.
+#: ``docs/dev/assignment_quality_plan_log.md`` has every number.
 TABLE = LikelihoodRatioTable(
-    version=1,
+    version=2,
     strata=STRATA,
     r_edges=R_EDGES,
     ratios=(
         (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
         + (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
-        (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.266, 0.266)
+        (0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.266, 0.266)
         + (0.266, 0.266, 3.299, 3.299, 3.299, 6.881, 6.881, 6.881, 6.881, 6.881),
-        (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.241)
+        (0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.241)
         + (0.241, 1.382, 1.905, 1.905, 1.905, 5.539, 5.539, 6.059, 6.059, 31.717),
-        (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.188, 0.188, 0.269, 0.347)
+        (0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.188, 0.188, 0.269, 0.347)
         + (0.953, 0.953, 0.953, 1.171, 1.478, 1.614, 2.296, 3.077, 3.077, 6.849),
     ),
     bars=(None, None, 0.9, None),
     measured=(
-        "the testbed's 20 batch ledgers (its copy of 2026-10-16), 2026-11-23, "
+        "the testbed's 20 batch ledgers (its copy of 2026-10-16), 2026-11-24, "
         "tooling/assignment_bench/covariation_null.py --seed 421 --decoys 20"
     ),
     pairs=(
@@ -459,13 +533,16 @@ def likelihood_ratio(
 
 
 __all__ = [
+    "ANTI_QUANTILE",
     "EXCESS_Z",
     "LR_BAR",
+    "LR_FLOOR",
     "PSEUDO_COUNT",
     "R_EDGES",
     "STRATA",
     "TABLE",
     "LikelihoodRatioTable",
+    "anti_excess_shown",
     "bar_of",
     "histogram",
     "isotonic_increasing",

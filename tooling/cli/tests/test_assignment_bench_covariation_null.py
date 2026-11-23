@@ -355,6 +355,99 @@ def test_it_clears_on_two_reagents_only_where_two_chemistries_clear():
     assert not row["clears_on_two_reagents"]
 
 
+@pytest.mark.parametrize(
+    "chemistries, pair",
+    [
+        (["uronium", "bromide"], ("bromide", "uronium")),
+        (["nitrate+bromide", "uronium"], ("nitrate+bromide", "uronium")),
+        (["15N-nitrate", "bromide"], ("15N-nitrate", "bromide")),
+        (["charge transfer (+)", "charge transfer (-)"], None),
+        (["nitrate", "nitrate+bromide"], None),
+        (["bromide", "nitrate+bromide"], None),
+        (["15N-nitrate", "nitrate"], None),
+        (["uronium", "uronium"], None),
+        (["uronium", cn.CHEMISTRY_NONE], None),
+        (["uronium", "a label not in the table"], None),
+        (["uronium"], None),
+        ([], None),
+    ],
+)
+def test_two_reagents_are_two_chemistries_that_share_no_reagent(chemistries, pair):
+    assert cn.two_reagents(chemistries) == pair
+
+
+def test_every_chemistry_the_script_reads_has_its_reagents():
+    labels = {
+        cn.chemistry_of(n)
+        for n in (
+            ["[M+CH4N2O+H]+"],
+            ["[M+^NO3]-"],
+            ["[M+NO3]-", "[M+Br]-"],
+            ["[M+Br]-"],
+            ["[M+NO3]-"],
+            ["[M+I]-"],
+            ["[M]+."],
+            ["[M]-."],
+        )
+    }
+    assert labels == set(cn.REAGENTS)
+
+
+def test_two_labels_of_one_reagent_do_not_clear_on_two_reagents(monkeypatch):
+    rng = np.random.default_rng(13)
+    plus = _batch(1, "charge transfer (+)", _stratum_pairs(rng, 150, 0.4))
+    minus = _batch(2, "charge transfer (-)", _stratum_pairs(rng, 150, 0.4))
+    result = cn.summarise([plus, minus], seed=1, resamples=40)
+    row = result["clears"][lr.stratum_of(100)]
+    assert row["cleared_by"] == ["charge transfer (+)", "charge transfer (-)"]
+    assert row["two_reagents"] is None
+    assert not row["clears_on_two_reagents"]
+    assert "provisional=True" in cn.table_literal(result, 2, "made up")
+    bromide = _batch(3, "bromide", _stratum_pairs(rng, 150, 0.4))
+    result = cn.summarise([plus, bromide], seed=1, resamples=40)
+    row = result["clears"][lr.stratum_of(100)]
+    assert row["two_reagents"] == ["bromide", "charge transfer (+)"]
+    assert row["clears_on_two_reagents"]
+    assert "provisional=False" in cn.table_literal(result, 2, "made up")
+
+
+def test_a_stratum_counts_the_pairs_under_the_nulls_median_and_quartile():
+    grid = np.linspace(-0.5, 0.5, 101)
+    null = [_reading(cn.KIND_DECOY, 0, 100, float(r)) for r in grid]
+    # One channel pair on the quartile itself: not under it.
+    quartile = float(grid[25])
+    channel = [
+        _reading(cn.KIND_CHANNEL, i, 100, r)
+        for i, r in enumerate([-0.4, -0.3, quartile, -0.1, 0.2, 0.9])
+    ]
+    iso = [_reading(cn.KIND_ISOTOPE, i, 100, r) for i, r in enumerate([-0.1, 0.9])]
+    row = cn.stratum_summary(null + channel + iso, np.random.default_rng(0), 5)[
+        lr.stratum_of(100)
+    ]
+    below = row["below_null"]
+    assert below["null_median"] == 0.0
+    assert below["null_quartile"] == -0.25
+    assert below["channel"] == {"n": 6, "under_median": 4, "under_quartile": 2}
+    assert below["isotope"] == {"n": 2, "under_median": 1, "under_quartile": 0}
+    assert row["anti_excess_shown"] is False
+    empty = cn.stratum_summary(null, np.random.default_rng(0), 5)[0]
+    assert empty["below_null"] is None
+    assert empty["anti_excess_shown"] is False
+
+
+def test_a_stratum_shows_its_anti_correlated_excess():
+    rng = np.random.default_rng(16)
+    pairs = _stratum_pairs(rng, 200, 0.3)
+    pairs += [_reading(cn.KIND_CHANNEL, 1000 + i, 100, -0.9) for i in range(80)]
+    row = cn.stratum_summary(pairs, np.random.default_rng(0), 20)[lr.stratum_of(100)]
+    assert row["anti_excess_shown"] is True
+    assert row["bar_mixture"] is None
+    assert not row["clears"]
+    assert "| shown |" in cn.markdown(
+        cn.summarise([_batch(1, "uronium", pairs)], seed=1, resamples=5)
+    )
+
+
 def test_the_summary_repeats_with_its_seed():
     rng = np.random.default_rng(14)
     batch = _batch(1, "uronium", _stratum_pairs(rng, 80, 0.3))
@@ -371,6 +464,8 @@ def test_the_outputs_render_and_the_table_literal_is_a_valid_table():
     text = cn.markdown(result)
     assert "| uronium | 50-199 |" in text
     assert "does not clear on two reagents" in text
+    assert "The null share's assumption" in text
+    assert "| uronium | 50-199 | 0." in text.split("The null share's assumption")[1]
     source = cn.table_literal(result, 3, "made up")
     namespace = {
         "LikelihoodRatioTable": lr.LikelihoodRatioTable,

@@ -5,12 +5,15 @@ import pytest
 from scipy.stats import beta
 
 from mascope_tools.composition.co_variation_lr import (
+    ANTI_QUANTILE,
     EXCESS_Z,
     LR_BAR,
+    LR_FLOOR,
     R_EDGES,
     STRATA,
     TABLE,
     LikelihoodRatioTable,
+    anti_excess_shown,
     bar_of,
     excess_shown,
     histogram,
@@ -214,15 +217,17 @@ def test_chance_pairs_show_an_excess_at_most_one_draw_in_twenty(pairs):
     assert shown / draws <= 0.06
 
 
-def test_a_ratio_is_never_negative():
+def test_a_ratio_is_never_under_the_floor():
     # Channel pairs thinner than the null at low r: the mixture's raw ratio
-    # is below nought there, and a ratio is not.
+    # is below nought there, and a ratio is never under the bar's mirror.
     rng = np.random.default_rng(31)
     null = _null(rng, 20000)
     channel = np.concatenate([_null(rng, 300), _true(rng, 700)])
     ratios, _ = mixture_lr(channel, null)
-    assert np.all(ratios >= 0.0)
-    assert ratios[r_bin(-0.3)] == 0.0
+    assert LR_FLOOR == pytest.approx(1 / LR_BAR)
+    assert np.all(ratios >= LR_FLOOR)
+    assert ratios[r_bin(-0.3)] == LR_FLOOR
+    assert ratios[r_bin(0.9)] >= LR_BAR
 
 
 def test_a_bin_no_pair_reached_is_not_read_as_evidence():
@@ -234,12 +239,99 @@ def test_a_bin_no_pair_reached_is_not_read_as_evidence():
     chance = np.clip(rng.normal(0.0, 0.15, 40), -0.45, 0.45)
     channel = np.concatenate([chance, [0.75] * 30])
     ratios, _ = mixture_lr(channel, null)
-    assert ratios[r_bin(0.55)] == 0.0
-    assert ratios[r_bin(0.65)] == 0.0
+    assert ratios[r_bin(0.55)] == LR_FLOOR
+    assert ratios[r_bin(0.65)] == LR_FLOOR
     assert ratios[r_bin(0.75)] >= LR_BAR
     alt = ratio_lr([0.75] * 30, null)
-    assert alt[r_bin(0.55)] == 0.0
-    assert alt[r_bin(-0.5)] == 0.0
+    # A bin the isotope pairs left empty is not "impossible" either.
+    assert alt[r_bin(0.55)] == LR_FLOOR
+    assert alt[r_bin(-0.5)] == LR_FLOOR
+    assert alt[r_bin(0.75)] >= LR_BAR
+
+
+# --- anti-correlated true pairs ----------------------------------------------
+
+
+def _anti(n):
+    return np.full(n, -0.9)
+
+
+def test_anti_correlated_true_pairs_hide_from_the_share_and_are_shown():
+    # The review's case: 100 chance pairs, 20 true at r = 0.9 and 20 at
+    # r = -0.9. The share under the median reads every anti-correlated pair
+    # as chance and finds no true pair at all.
+    rng = np.random.default_rng(41)
+    null = _null(rng, 20000)
+    channel = np.concatenate([_null(rng, 100), np.full(20, 0.9), _anti(20)])
+    assert null_share(channel, null) == pytest.approx(1.0, abs=0.1)
+    assert anti_excess_shown(channel, null)
+    without = np.concatenate([_null(rng, 100), np.full(20, 0.9)])
+    assert not anti_excess_shown(without, null)
+
+
+def test_the_anti_correlated_excess_is_read_under_the_nulls_lower_quartile():
+    null = np.linspace(-0.5, 0.5, 1001)
+    # A quarter of the null lies under -0.25. 40 channel pairs of 100 there
+    # stand clear of a quarter; 40 between -0.25 and the median do not count.
+    under = np.concatenate([np.full(40, -0.3), np.full(60, 0.9)])
+    between = np.concatenate([np.full(40, -0.1), np.full(60, 0.9)])
+    assert ANTI_QUANTILE == 0.25
+    assert anti_excess_shown(under, null)
+    assert not anti_excess_shown(between, null)
+    # Read under the null's tenth percentile, -0.4, no channel pair lies there.
+    assert not anti_excess_shown(under, null, quantile=0.1)
+    assert not anti_excess_shown([], null)
+    assert not anti_excess_shown(under, [])
+
+
+def test_the_anti_correlated_excess_counts_the_nulls_error():
+    # Many channel pairs, three in ten under the quartile of a null of 41
+    # decoys: the channel share is sharp, but the null's own share of a
+    # quarter is not, and it does not stand clear of it.
+    null = np.linspace(-0.5, 0.5, 41)
+    channel = np.concatenate([np.full(3000, -0.45), np.full(7000, 0.9)])
+    assert not anti_excess_shown(channel, null)
+    assert anti_excess_shown(channel, np.linspace(-0.5, 0.5, 4001))
+
+
+@pytest.mark.parametrize("pairs", [5, 30, 200])
+def test_chance_pairs_show_an_anti_correlated_excess_at_most_one_draw_in_twenty(
+    pairs,
+):
+    rng = np.random.default_rng(42)
+    null = _null(rng, 2000)
+    draws = 2000
+    shown = sum(anti_excess_shown(rng.choice(null, pairs), null) for _ in range(draws))
+    assert shown / draws <= 0.06
+
+
+def _anti_mixture(rng, null_n=20000):
+    null = _null(rng, null_n)
+    channel = np.concatenate([_null(rng, 600), _true(rng, 600), _anti(260)])
+    return channel, null
+
+
+def test_an_anti_correlated_excess_gives_no_ratio():
+    rng = np.random.default_rng(43)
+    channel, null = _anti_mixture(rng)
+    # The positive excess stands clear, and alone would give a ratio over
+    # the bar; the anti-correlated pairs overstate it, so it is not read.
+    assert excess_shown(channel, null)
+    assert anti_excess_shown(channel, null)
+    ratios, pi = mixture_lr(channel, null)
+    assert ratios.tolist() == [1.0] * BINS
+    assert pi == pytest.approx(1 - null_share(channel, null))
+
+
+def test_the_anti_correlated_guard_reads_the_mixtures_z():
+    rng = np.random.default_rng(43)
+    channel, null = _anti_mixture(rng)
+    # Asked for more standard errors than the anti-correlated excess stands
+    # clear by, but fewer than the true share does: the ratio is read.
+    assert not anti_excess_shown(channel, null, z=3.5)
+    assert excess_shown(channel, null, z=3.5)
+    ratios, _ = mixture_lr(channel, null, z=3.5)
+    assert ratios[r_bin(0.9)] >= LR_BAR
 
 
 def test_the_monotone_fit_weighs_each_bin_by_its_pairs():
@@ -251,8 +343,12 @@ def test_the_monotone_fit_weighs_each_bin_by_its_pairs():
         + histogram(alt, pseudo_count=0.0) * 42
         + histogram(null, pseudo_count=0.0) * 120,
     )
+    expected = np.maximum(expected, LR_FLOOR)
     assert ratio_lr(alt, null).tolist() == pytest.approx(expected.tolist())
-    unweighted = isotonic_increasing(histogram(alt, pseudo_count=0.0) / histogram(null))
+    unweighted = np.maximum(
+        isotonic_increasing(histogram(alt, pseudo_count=0.0) / histogram(null)),
+        LR_FLOOR,
+    )
     assert ratio_lr(alt, null).tolist() != pytest.approx(unweighted.tolist())
 
 
@@ -301,7 +397,7 @@ def test_ratio_lr_is_the_monotone_density_ratio():
     null = _null(rng, 10000)
     ratios = ratio_lr(_true(rng, 2000), null)
     assert np.all(np.diff(ratios) >= 0)
-    assert ratios[r_bin(-0.5)] < 0.1
+    assert ratios[r_bin(-0.5)] == LR_FLOOR
     assert ratios[r_bin(0.9)] > 100
 
 
@@ -316,7 +412,7 @@ def test_bar_is_the_lower_edge_of_the_first_bin_that_reaches_the_ratio():
 
 
 def test_the_table_is_versioned_provisional_and_monotone():
-    assert TABLE.version == 1
+    assert TABLE.version == 2
     # The bar cleared on one reagent chemistry only (the plan's log).
     assert TABLE.provisional
     assert len(TABLE.ratios) == len(STRATA)
@@ -329,6 +425,13 @@ def test_the_table_is_one_or_lower_where_the_null_dominates():
     for edge in STRATA:
         for r in (-0.9, -0.5, -0.2, 0.0):
             assert TABLE.lookup(r, edge) <= 1.0
+
+
+def test_the_table_holds_no_ratio_under_the_floor():
+    # Version 1 read 0 in its first bins: "impossible under one species".
+    assert TABLE.lookup(-0.5, 300) == LR_FLOOR
+    for row in TABLE.ratios:
+        assert min(row) >= LR_FLOOR
 
 
 def test_the_lookup_is_monotone_in_r_in_every_stratum():
@@ -423,7 +526,7 @@ def test_a_table_refuses_a_row_of_the_wrong_length():
 
 def test_the_table_round_trips_as_json():
     data = TABLE.to_json()
-    assert data["version"] == 1
+    assert data["version"] == 2
     assert data["provisional"] is True
     assert data["bars"] == list(TABLE.bars)
     assert len(data["ratios"]) == len(STRATA)

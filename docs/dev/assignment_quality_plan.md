@@ -124,7 +124,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 4.16 - intensity consistency and in-source fragment corroboration | - |  | built, display-only: each sample reads a neutral's ratio between two channels against the same pair's over its other neutrals (`intensity_consistency`, consistent / loose / outlying) and pairs neutrals one in-source loss apart through one channel, the lighter on the shorter peak (`in_source_fragment_of`, a reason that caps nothing on the lighter row); measured on the anchor-swap benchmark with an intensity-matched null and two controls, neither enters P(correct): the consistent band is 0.79 to 0.92 on every adduct pair, and a loss reads mostly the lattice of related formulas (the same neutral gained, and the series units, read alike), its named pair beating its mirror by 5 to 12% but for HNO3 (1.9x), with no fragment's intensity signature; kept display-only with the loss table whole (decision 37); tiering rule set 14; no tier moves; MAS-326 |
 | 4.18 - bound the harm of a mismatched chemistry context, graded or gate | - |  | measured (2026-11-13, demo sets Db and Du, standing in for the gate sets, `tooling/score_eval/arbitration_eval.py`, pools merged by ion as Stage B elects them): the matched context lifts contested top-1 0.724 -> 0.989 and true winners kept at 5 % FDR 13,870 -> 15,962 against `none`, removing no true reading; the two defaults swapped stay above `none` (0.979, 15,830) at the cost of 80 glycerol readings; the worst context, combustion, removes 1,619 and leaves the uronium set no cut at 5 % FDR. Every removed truth was a ratio window's, never a cap's. 596 uronium anchors whose seeded reading loses its own ion's election are counted apart (#3191). Decision 11.4 of `chemistry_profiles.md` decided: a default must leave its own sets and every other bench set at or above `none` (BR and UR pass). The windows become a graded, floored factor (#3188); the identity context is pinned byte for byte (`TestTheIdentityContext`); MAS-328 |
 | 4.19 - the active-learning verification queue, with the three calibration-label calls | - |  | built: `GET /peak-assignments/sample/{id}/verification-queue` ranks the run's unjudged rows within 0.1 evidence of a band edge by closeness and by the labels the instrument class and reagent profile hold within 0.05, with seeded spot checks every fifth place and stale verdicts (a later run reassigned or rescored the judged peak) first; the ledger's *to verify* chip and column; no `p_correct` or evidence in the queue; the refit weighs labels by evidence level (reference standard and MS/MS 1, orthogonal 0.6, pattern 0.4, visual and unstated 0.25) and records the weights on the curve (`label_weights`); per instrument and profile, down-weight, keep the snapshot and mark it stale (section 7 of `verification_calibration_loop.md`); moves no metric; MAS-329 |
-| 4.21 - the co-variation null model: a likelihood ratio from decoy pairs, before any level reads the reading | - |  | measured 2026-11-23 on the testbed's 20 batch ledgers: 1,123 channel, 22,002 decoy and 384 isotope pairs; a decoy pair reads r >= 0.6 in 12.6, 5.5, 6.0 and 16.3 % over 10 to 19, 20 to 49, 50 to 199 and 200 or more shared spectra; the mixture's ratio reaches 10 only at r >= 0.9 over 50 to 199; per chemistry uronium clears there, 15N-nitrate nowhere, charge transfer holds 44 pairs and no stratum the 30 it needs, so the bar does not clear on two reagents and the record is unchanged; `co_variation_lr.TABLE` version 1, provisional; no tier moves; follow-up #3476; MAS-903 |
+| 4.21 - the co-variation null model: a likelihood ratio from decoy pairs, before any level reads the reading | - |  | measured 2026-11-23 on the testbed's 20 batch ledgers: 1,123 channel, 22,002 decoy and 384 isotope pairs; a decoy pair reads r >= 0.6 in 12.6, 5.5, 6.0 and 16.3 % over 10 to 19, 20 to 49, 50 to 199 and 200 or more shared spectra; the mixture's ratio reaches 10 only at r >= 0.9 over 50 to 199; per chemistry uronium clears there, 15N-nitrate nowhere, charge transfer holds 44 pairs and no stratum the 30 it needs, so the bar does not clear on two reagents and the record is unchanged; `co_variation_lr.TABLE` version 1, provisional; no tier moves; follow-up #3476; MAS-903. Hardened 2026-11-24 (MAS-1173, #3485): no ratio under 0.1, a guard on anti-correlated channel pairs (shown nowhere on the testbed), two reagents as two chemistries sharing no reagent; `TABLE` version 2, still provisional |
 | 5.1 - the reference pinned at a release, a boundary review per peaky release | - |  | planned 2026-10-13; the first review is the section below; readiness check against the reference's main on 2026-10-22: nothing new to bin, 0.10.0 still uncut |
 | 5.2 - decoy arms in the gate: a shifted axis and swapped adducts through the in-app engine | #2981 |  | built: a `decoy` block on the run config (`mz_shift_ppm`, `mz_shift_da`, `swap_adducts`), every stage at the control's calibration and envelope tolerance, the arm on the run row and out of the fold, the listing, the verdicts and the retention quota; `compare_runs.py --decoy` reports the share held below and above m/z 350; read in the next pass, no target until two gates have read them (decision 31); a shifted arm looks for the source's own ions (the channels' carriers, the reagent lines) on the axis as stored, so it opens and claims what its control did (MAS-720, #2980) |
 | 5.3 - measure the minor-line response: isotope lines by height and by area against expected S/N | - |  | measured 2026-10-16 on the pass-9 ledgers; 3.5b's form decided 2026-10-22 (decision 32) |
@@ -3109,6 +3109,34 @@ who edits chemistry and stays last.
     200 its ratio peaks at 4.1. Charge transfer holds 44 pairs, 23 over 200
     spectra, and no stratum the 30 it needs. So one
     reagent clears in one stratum, and the bar does not clear on two.
+- **Hardened before a reader (MAS-1173, #3485; 2026-11-24).** Three points
+  of 4.21's review, settled before 5.8d multiplies the ratio into anything.
+  The log (step 4.21, 2026-11-24) has the numbers.
+  - *No ratio of nought.* The fit floors every bin at `LR_FLOOR`, 0.1, the
+    bar's mirror: a bin the numerator's pairs left empty read 0,
+    "impossible under one species", which an empty bin of a few hundred
+    pairs is not. Decision 35 lets no reading demote by itself, so a reader
+    that multiplies a ratio into odds reads `max(ratio, 1)`; the table
+    keeps what was measured over the floor.
+  - *The null share's blind spot.* Storey's share counts every channel pair
+    under the null's median as chance, so anti-correlated true pairs
+    (decision 35's radical-anion channels) raise the ratio at high r. They
+    show as an excess of channel pairs under the null's lower quartile;
+    where it stands 1.645 errors clear (`anti_excess_shown`), the mixture's
+    ratio is 1 throughout, as where no excess is shown. On the testbed the
+    channel pairs are thinner there than chance in every pooled stratum
+    (17, 13, 16 and 6 % against 25 %), and the guard holds nowhere. The
+    isotope pairs, one species, give the share's other error: 7 of 384 lie
+    under the null's median (0, 1, 3 and 3 per stratum) and none under its
+    quartile, a ratio high by a fifth at most. The script reports both per
+    chemistry and stratum.
+  - *Two reagents.* `clears_on_two_reagents` asks for two clearing
+    chemistries that share no reagent (`REAGENTS` in the script): the two
+    polarities of charge transfer are one, and 15N-nitrate, nitrate and
+    nitrate+bromide all read with the nitrate ion.
+  - *The table* is version 2: version 1 read again by the same script on
+    the same copy, its bins of 0 now 0.1, every other number, bar and
+    resample count as before. Still provisional.
 - **Not done here.** The record gains no ratio, and 5.8d's lifts stay
   unweighed. What would let the bar clear is a reading, not a lower bar:
   a second chemistry's long batches (the copy's bromide and nitrate

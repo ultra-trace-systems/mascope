@@ -5187,6 +5187,71 @@ Read:
   3.5 %; pooled over 10 to 19 spectra the share, 0.28 +- 0.19, no longer
   shows an excess and the row is 1 throughout.
 
+### Step 4.21, hardened before a reader (2026-11-24, MAS-1173)
+
+Three points of 4.21's review (#3485), settled before 5.8d reads the ratio.
+The same read as above, on the same copy, with the branch's script and fit:
+`MASCOPE_ENV=testbed uv run python tooling/assignment_bench/covariation_null.py`
+with its defaults. Run twice: the same JSON byte for byte (sha256
+`e2233d11...`). Every count, share, bar and resample count of the tables
+above is unchanged; the ratio rows differ only where they read under 0.1
+(the mixture rows' 0, the isotope rows' 0, 0.06 and 0.08).
+
+- **No ratio of nought.** `mixture_lr` and `ratio_lr` floor every bin at
+  `LR_FLOOR`, 0.1, the bar's mirror. Version 1 read 0 in the first six to
+  nine bins of every stratum it had a ratio for (`TABLE.lookup(-0.5, 300)`
+  was 0.0): bins the channel or isotope pairs left empty, which the fit
+  read as "impossible under one species". Those bins now read 0.1; no bin
+  of version 1 lay between 0 and 0.1. Decision 35 lets no reading demote
+  by itself, so a reader that multiplies a ratio into odds reads
+  `max(ratio, 1)`.
+- **The null share's blind spot.** Storey's share counts every channel
+  pair under the null's median as chance. Anti-correlated true pairs
+  (decision 35) and true pairs whose noise puts them there both lower the
+  true share and so raise the ratio at high r. The isotope pairs, one
+  species by construction, measure the second: 7 of 384 lie under the
+  null's median, none under its lower quartile. With `b` the true pairs'
+  share under the median the ratio is high by `1 / (1 - 2 b)`: 1.22 over
+  20 to 49 (1 of 11), 1.15 over 50 to 199 (3 of 46), 1.02 over 200 or more
+  (3 of 326). Anti-correlated true pairs would show as an excess of channel
+  pairs under the null's lower quartile, where chance puts a quarter of
+  its pairings. There are fewer than a quarter in every pooled stratum
+  (6 of 36, 10 of 78, 42 of 261, 42 of 748) and in every chemistry's but
+  15N-nitrate's 50 to 199 (25 of 86, 29 %, not clear of a quarter). So the
+  blind spot does not bite on this copy. `mixture_lr` now gives a ratio of
+  1 throughout where the excess stands 1.645 errors clear of the null's
+  share (`anti_excess_shown`, the channel share's error off its exact
+  one-sided bound, as `null_share_error` reads it), and the script reports
+  the counts per chemistry and stratum:
+
+| chemistry | stratum | null median / quartile | channel under median | channel under quartile | isotope under median | isotope under quartile | anti-correlated excess |
+|---|---|---|---|---|---|---|---|
+| 15N-nitrate | 10-19 | -0.05 / -0.38 | 5 of 15 | 2 of 15 | - | - | no |
+| 15N-nitrate | 20-49 | -0.02 / -0.24 | 13 of 23 | 5 of 23 | 1 of 2 | 0 of 2 | no |
+| 15N-nitrate | 50-199 | -0.03 / -0.30 | 39 of 86 | 25 of 86 | 1 of 24 | 0 of 24 | no |
+| 15N-nitrate | 200+ | 0.04 / -0.45 | 68 of 231 | 23 of 231 | 1 of 164 | 0 of 164 | no |
+| charge transfer (+) | 10-19 | 0.95 / 0.29 | 0 of 7 | 0 of 7 | - | - | no |
+| charge transfer (+) | 20-49 | 0.94 / -0.04 | 2 of 6 | 0 of 6 | - | - | no |
+| charge transfer (+) | 50-199 | 0.00 / -0.30 | 0 of 8 | 0 of 8 | - | - | no |
+| charge transfer (+) | 200+ | -0.02 / -0.30 | 5 of 23 | 2 of 23 | 0 of 3 | 0 of 3 | no |
+| uronium | 10-19 | -0.05 / -0.30 | 5 of 14 | 3 of 14 | 0 of 1 | 0 of 1 | no |
+| uronium | 20-49 | 0.01 / -0.17 | 16 of 49 | 6 of 49 | 0 of 3 | 0 of 3 | no |
+| uronium | 50-199 | 0.01 / -0.13 | 55 of 167 | 17 of 167 | 2 of 19 | 0 of 19 | no |
+| uronium | 200+ | -0.00 / -0.35 | 78 of 494 | 19 of 494 | 2 of 156 | 0 of 156 | no |
+| every batch | 10-19 | -0.00 / -0.31 | 13 of 36 | 6 of 36 | 0 of 1 | 0 of 1 | no |
+| every batch | 20-49 | 0.00 / -0.19 | 30 of 78 | 10 of 78 | 1 of 11 | 0 of 11 | no |
+| every batch | 50-199 | 0.01 / -0.17 | 96 of 261 | 42 of 261 | 3 of 46 | 0 of 46 | no |
+| every batch | 200+ | 0.00 / -0.39 | 151 of 748 | 42 of 748 | 3 of 326 | 0 of 326 | no |
+
+- **Two reagents.** `summarise` set `clears_on_two_reagents` when two
+  chemistry labels cleared a stratum. It now asks for two that share no
+  reagent (`REAGENTS` in the script): the two polarities of charge transfer
+  are one chemistry, and 15N-nitrate, nitrate and nitrate+bromide all read
+  with the nitrate ion. Only uronium clears here, so the answer does not
+  change.
+- **The table.** `co_variation_lr.TABLE` is version 2, the pooled mixture
+  rows of this read; still provisional, its bars none, none, 0.9, none.
+
 ## The step table as it stood on 2026-10-22
 
 | step | PR | state |
