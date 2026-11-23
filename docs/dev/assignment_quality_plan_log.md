@@ -5052,6 +5052,141 @@ search, all of them bromine and sulfur ions (145 below assignability, 67 at
 candidate, none assigned), whose M+2 line holds the 81Br and 34S lines
 2 mDa apart and is now read as the 81Br line's height.
 
+### Step 4.21, the co-variation null model (2026-11-23)
+
+4.2's co-variation reading against a null of decoy pairs, on the testbed's
+20 batch ledgers (its copy of 2026-10-16, the copy 4.2 and 4.13 were
+measured on), read-only:
+`MASCOPE_ENV=testbed uv run python tooling/assignment_bench/covariation_null.py`
+with its defaults (seed 421, 20 decoy partners per channel pair, 200
+bootstrap resamples). Run twice on the same build: the same JSON byte for
+byte (sha256 `b0a475fc...`). Each partition's traces are read as the
+reading reads them (`batch_coherence.partition_anchors`,
+`coherence.batch_residuals`); a decoy is a trace of another neutral of the
+partition present in a number of spectra within a quarter of the real
+partner's, read against the channel pair's first trace; an isotope pair is
+an assigned M0 against its own assigned isotope line, the line through the
+partition's normaliser and common mode. A batch's chemistry is read off the
+mechanisms its channels name; a partition that commits no channel would be
+`none`, and none here does.
+
+Every pair: 3,775 channel pairs, 1,123 testable (4.2's counts exactly),
+2,465 on too few spectra and 187 flat; 74,770 decoy pairs, 22,002
+testable; 1,274 isotope pairs, 384 testable. Twelve ledgers give no
+testable channel pair: ten 3- to 6-sample gate sets (every bromide, nitrate
+and mixed ledger of the copy among them), a radical-anion batch read
+through one channel, and a charge-transfer batch whose channel pairs are
+all untestable. The chemistries that do: uronium (four batches of 87 to 546
+spectra), 15N-nitrate (three, 88 to 547) and charge transfer (one, 280).
+
+Per chemistry and stratum of shared spectra, the shares at r >= 0.6 with
+Wilson's 95 % interval; the true share of the channel pairs with its
+standard error, the channel share's part read off its exact one-sided
+95 % bound (Clopper-Pearson), so that a few pairs all over the null's
+median still carry an error ("not shown" where it does not stand 1.645
+errors clear of nought, and the mixture's ratio is then 1 throughout);
+the bar, the lowest
+r at which the mixture's ratio reaches 10, with the resamples of the
+channel pairs (each with its decoys) that find one and the 5th to 95th
+percentile of their bars. A stratum *clears* with 30 testable channel
+pairs or more and a bar in at least 95 % of the resamples.
+
+| chemistry | stratum | channel / isotope / decoy pairs | decoy r >= 0.6 | channel r >= 0.6 | isotope r >= 0.6 | true share | bar, mixture | resamples with a bar, 5-95 % | bar, isotope | clears |
+|---|---|---|---|---|---|---|---|---|---|---|
+| uronium | 10-19 | 14 / 1 / 371 | 2.2 % (1.1-4.2) | 0.0 % (0.0-21.5) | 0.0 % (0.0-79.3) | 0.28 +- 0.31 (not shown) | none | 0 of 200 | 0.5 | no |
+| uronium | 20-49 | 49 / 3 / 839 | 1.6 % (0.9-2.6) | 8.2 % (3.2-19.2) | 0.0 % (0.0-56.1) | 0.35 +- 0.16 | 0.7 | 109 of 200, 0.5-0.7 | none | no |
+| uronium | 50-199 | 167 / 19 / 3146 | 4.7 % (4.0-5.5) | 16.8 % (11.9-23.2) | 47.4 % (27.3-68.3) | 0.34 +- 0.08 | 0.9 | 197 of 200, 0.5-0.9 | 0.7 | yes |
+| uronium | 200+ | 494 / 156 / 9900 | 14.6 % (13.9-15.3) | 48.4 % (44.0-52.8) | 92.3 % (87.0-95.5) | 0.68 +- 0.04 | none | 1 of 200, 0.9-0.9 | 0.9 | no |
+| 15N-nitrate | 10-19 | 15 / 0 / 240 | 4.6 % (2.6-8.0) | 13.3 % (3.7-37.9) | - | 0.33 +- 0.30 (not shown) | none | 13 of 200, 0.5-0.7 | none | no |
+| 15N-nitrate | 20-49 | 23 / 2 / 525 | 2.1 % (1.2-3.7) | 4.3 % (0.8-21.0) | 0.0 % (0.0-65.8) | 0.00 +- 0.22 (not shown) | none | 2 of 200, 0.5-0.5 | none | no |
+| 15N-nitrate | 50-199 | 86 / 24 / 1605 | 7.7 % (6.5-9.1) | 10.5 % (5.6-18.7) | 41.7 % (24.5-61.2) | 0.09 +- 0.12 (not shown) | none | 38 of 200, 0.7-0.9 | 0.9 | no |
+| 15N-nitrate | 200+ | 231 / 164 / 4628 | 20.5 % (19.4-21.7) | 32.5 % (26.8-38.8) | 93.3 % (88.4-96.2) | 0.41 +- 0.07 | none | 0 of 200 | 0.9 | no |
+| charge transfer (+) | 10-19 | 7 / 0 / 96 | 72.9 % (63.3-80.8) | 100.0 % (64.6-100.0) | - | 1.00 +- 0.42 | none | 0 of 200 | none | no |
+| charge transfer (+) | 20-49 | 6 / 0 / 85 | 64.7 % (54.1-74.0) | 83.3 % (43.6-97.0) | - | 0.33 +- 0.49 (not shown) | none | 2 of 200, 0.9-0.9 | none | no |
+| charge transfer (+) | 50-199 | 8 / 0 / 119 | 18.5 % (12.5-26.4) | 75.0 % (40.9-92.8) | - | 1.00 +- 0.38 | none | 38 of 200, 0.9-0.9 | none | no |
+| charge transfer (+) | 200+ | 23 / 3 / 448 | 10.9 % (8.4-14.2) | 39.1 % (22.2-59.2) | 33.3 % (6.2-79.2) | 0.57 +- 0.23 | none | 84 of 200, 0.5-0.9 | 0.9 | no |
+| every batch | 10-19 | 36 / 1 / 707 | 12.6 % (10.3-15.2) | 25.0 % (13.8-41.1) | 0.0 % (0.0-79.3) | 0.28 +- 0.19 (not shown) | none | 7 of 200, 0.5-0.9 | none | no |
+| every batch | 20-49 | 78 / 11 / 1449 | 5.5 % (4.4-6.7) | 12.8 % (7.1-22.0) | 54.5 % (28.0-78.7) | 0.23 +- 0.12 | none | 32 of 200, 0.5-0.9 | 0.7 | no |
+| every batch | 50-199 | 261 / 46 / 4870 | 6.0 % (5.4-6.7) | 16.5 % (12.5-21.5) | 47.8 % (34.1-61.9) | 0.26 +- 0.06 | 0.9 | 198 of 200, 0.7-0.9 | 0.9 | yes |
+| every batch | 200+ | 748 / 326 / 14976 | 16.3 % (15.7-16.9) | 43.2 % (39.7-46.8) | 92.0 % (88.6-94.5) | 0.60 +- 0.03 | none | 0 of 200 | 0.9 | no |
+
+The ratio per bin of r (its lower edge; every bin under -0.2 is at or
+under the -0.2 bin), the mixture and the isotope upper bound, for every
+batch pooled (`co_variation_lr.TABLE`, version 1, is the pooled mixture
+rows) and for the two reagents with pairs to read:
+
+| chemistry | stratum | estimate | -0.2 | -0.1 | 0.0 | 0.1 | 0.2 | 0.3 | 0.4 | 0.5 | 0.6 | 0.7 | 0.8 | 0.9 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| every batch | 10-19 | mixture | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+| every batch | 10-19 | isotope | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 6.54 | 6.54 | 6.54 | 6.54 | 6.54 |
+| every batch | 20-49 | mixture | 0.27 | 0.27 | 0.27 | 0.27 | 3.30 | 3.30 | 3.30 | 6.88 | 6.88 | 6.88 | 6.88 | 6.88 |
+| every batch | 20-49 | isotope | 0.24 | 0.24 | 0.24 | 1.10 | 1.10 | 1.10 | 1.10 | 1.10 | 1.10 | 12.6 | 12.7 | 12.7 |
+| every batch | 50-199 | mixture | 0.00 | 0.24 | 0.24 | 1.38 | 1.91 | 1.91 | 1.91 | 5.54 | 5.54 | 6.06 | 6.06 | 31.7 |
+| every batch | 50-199 | isotope | 0.18 | 0.22 | 0.22 | 0.62 | 1.29 | 2.34 | 2.34 | 2.34 | 3.46 | 6.98 | 6.98 | 41.4 |
+| every batch | 200+ | mixture | 0.27 | 0.35 | 0.95 | 0.95 | 0.95 | 1.17 | 1.48 | 1.61 | 2.30 | 3.08 | 3.08 | 6.85 |
+| every batch | 200+ | isotope | 0.00 | 0.08 | 0.08 | 0.08 | 0.18 | 0.18 | 0.33 | 0.61 | 1.11 | 1.82 | 4.36 | 16.2 |
+| uronium | 10-19 | mixture | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+| uronium | 10-19 | isotope | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 19.2 | 19.2 | 19.2 | 19.2 | 19.2 |
+| uronium | 20-49 | mixture | 0.23 | 0.54 | 0.54 | 0.54 | 2.73 | 2.73 | 3.45 | 4.50 | 9.89 | 15.3 | 15.3 | 15.3 |
+| uronium | 20-49 | isotope | 0.00 | 0.00 | 0.00 | 2.65 | 2.65 | 2.65 | 2.65 | 2.65 | 2.65 | 2.65 | 2.65 | 2.65 |
+| uronium | 50-199 | mixture | 0.00 | 0.55 | 0.55 | 0.87 | 1.81 | 2.41 | 2.41 | 6.21 | 6.21 | 6.21 | 9.88 | 35.0 |
+| uronium | 50-199 | isotope | 0.17 | 0.17 | 0.17 | 0.17 | 1.60 | 2.92 | 2.92 | 2.92 | 2.92 | 10.8 | 10.8 | 47.5 |
+| uronium | 200+ | mixture | 0.16 | 0.36 | 0.88 | 0.88 | 0.88 | 0.88 | 1.28 | 1.72 | 2.79 | 3.40 | 3.40 | 7.86 |
+| uronium | 200+ | isotope | 0.00 | 0.10 | 0.10 | 0.10 | 0.10 | 0.10 | 0.46 | 0.46 | 1.99 | 3.15 | 4.68 | 15.3 |
+| 15N-nitrate | 10-19 | mixture | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+| 15N-nitrate | 20-49 | mixture | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+| 15N-nitrate | 20-49 | isotope | 1.34 | 1.34 | 1.34 | 1.49 | 1.49 | 1.49 | 1.49 | 1.49 | 1.49 | 1.49 | 1.49 | 1.49 |
+| 15N-nitrate | 50-199 | mixture | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+| 15N-nitrate | 50-199 | isotope | 0.00 | 0.42 | 0.42 | 1.40 | 1.40 | 1.94 | 1.94 | 2.26 | 3.17 | 3.17 | 6.03 | 26.9 |
+| 15N-nitrate | 200+ | mixture | 0.89 | 0.89 | 1.40 | 1.40 | 1.40 | 1.72 | 1.72 | 1.72 | 1.72 | 2.16 | 2.36 | 4.09 |
+| 15N-nitrate | 200+ | isotope | 0.00 | 0.00 | 0.06 | 0.06 | 0.08 | 0.08 | 0.08 | 0.64 | 0.64 | 0.77 | 3.59 | 16.1 |
+
+The null's tail at r = 0.6 per band of the flatter trace's residual
+spread, every batch, with the decoy pairs counted:
+
+| stratum | 0.02 to 0.04 | 0.04 to 0.08 | 0.08 to 0.16 | 0.16 or more |
+|---|---|---|---|---|
+| 10-19 | 2.8 % (1.1-7.0), 143 | 4.3 % (2.6-7.0), 347 | 3.5 % (1.5-7.9), 144 | 89.0 % (79.8-94.3), 73 |
+| 20-49 | 1.1 % (0.4-3.1), 280 | 1.9 % (1.1-3.3), 670 | 2.8 % (1.6-4.8), 430 | 73.9 % (62.5-82.8), 69 |
+| 50-199 | 4.5 % (3.6-5.7), 1628 | 7.4 % (6.2-8.8), 1543 | 5.2 % (4.2-6.4), 1591 | 20.4 % (13.9-28.9), 108 |
+| 200+ | 7.8 % (7.1-8.6), 5146 | 19.3 % (18.3-20.4), 5294 | 21.6 % (20.4-22.9), 4305 | 38.1 % (32.1-44.5), 231 |
+
+Read:
+
+- **The bar does not clear on two reagents.** Uronium clears over 50 to
+  199 spectra at r >= 0.9; over 20 to 49 its point estimate is 0.7, but in
+  109 of 200 resamples only. 15N-nitrate's channel pairs show no excess
+  over the null under 200 spectra, and over 200 its ratio peaks at 4.1.
+  Charge transfer holds 44 pairs, 23 of them over 200 spectra: no stratum
+  holds the 30 a stratum needs. So the co-variation record does not
+  change and nothing reads the ratio (5.8d's lifts stay unweighed).
+- **Over 200 spectra or more a chance pair co-varies in one case of six**
+  (14.6 % uronium, 20.5 % 15N-nitrate), on the residuals of one median
+  sweep. Even the isotope pairs, one species by construction, reach a ratio
+  of 10 there only at r >= 0.9. A residual that takes out more of a long
+  batch's shared structure is the lever, not a lower bar (#3476).
+- **The spread.** Within uronium and 15N-nitrate the channel and decoy
+  pairs spread alike (median 0.05 to 0.08 for both), and leaving out the
+  pairs over 0.16 moves no bar by more than one bin. Pooled, 115 of the 118
+  decoys over 0.16 that co-vary under 50 spectra come from the one
+  charge-transfer batch, whose short traces rise and fall together. The
+  spread needs to be a second stratum before a table pools chemistries or
+  reads such a batch; within one reagent's batches it moved nothing here.
+- **Three guards in the fit.** The null's histogram takes half a pair per
+  bin and the numerator's none: with the same pseudo-count on both, the
+  smaller sample's empty bins read above the null's. Where the true share
+  does not stand clear of nought the ratio is 1: without that guard,
+  chance-only channel pairs in a test gave a bar at r = 0.4, and
+  15N-nitrate's share of 0.09 +- 0.12 over 50 to 199 gave one at 0.9 that
+  38 of 200 resamples found. And the share's error reads the channel
+  share off its exact bound: the binomial error is nought when no channel
+  pair lies under the null's median, so two pairs over it stood clear of
+  chance and gave a bar at 0.9, and channel pairs drawn from the null
+  itself showed an excess in 13 to 18 % of draws of 3 to 5 pairs, against
+  the nominal 5 %. With the bound, a draw of 3 to 30 shows one in at most
+  3.5 %; pooled over 10 to 19 spectra the share, 0.28 +- 0.19, no longer
+  shows an excess and the row is 1 throughout.
+
 ## The step table as it stood on 2026-10-22
 
 | step | PR | state |
