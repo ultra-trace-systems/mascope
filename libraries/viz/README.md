@@ -88,6 +88,10 @@ A batch whose runs listing fails keeps its tables, and `status()` calls it
 `unchecked` until a sync lists it again. A batch read while a batch run
 was rewriting its ledger is marked `run_in_flight`, and read again once
 the run ends. `status().complete` is False after a sync that was stopped.
+The next sync fetches again the batches the stopped one fetched since it
+last wrote `store.json`, which it does every two seconds or so; a batch
+whose tables it had rewritten is fetched again as `unsaved`, whatever its
+stamp says, so no rollup is left older than the tables it is made from.
 
 A sync that fetches a batch lists the ionization modes once, to record each
 sample's mode name beside its ID. A server that refuses the token on that

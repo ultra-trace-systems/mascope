@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 import pytest
 from fixtures.campaign import HALIDE_NEGATIVE, Campaign, generate
 from fixtures.server import PROVENANCE, SCOPE, VERSIONS, FakeClient
@@ -19,6 +20,7 @@ from mascope_viz.data import store as store_module
 from mascope_viz.data.store import (
     BATCH_TABLES,
     SCHEMAS,
+    TABLES,
     CampaignStore,
     StoreStatus,
     compound_class,
@@ -312,6 +314,7 @@ def test_every_parquet_file_names_its_batch_run_and_provenance(synced):
         "sample_batch_id": batch_id,
         "run_id": client.runs[batch_id],
         "provenance": PROVENANCE,
+        "synced_utc": report.store.meta["batches"][batch_id]["synced_utc"],
     }
 
 
@@ -1135,6 +1138,339 @@ def test_a_sync_stopped_before_its_first_batch_is_not_complete(
         sync(client, SCOPE, root=tmp_path)
 
     assert not first.store.status().complete
+
+
+# --- when store.json is written ---------------------------------------------------
+
+
+class Stopped(BaseException):
+    """A sync's process ending where it stands, as a kill would end it."""
+
+
+class Stopper:
+    """Ends a sync at the first table write *when* picks, and lets nothing
+    reach the disk after it: neither a table nor ``store.json``."""
+
+    def __init__(self, monkeypatch, when):
+        self.when, self.dead, self.armed = when, False, True
+        write, write_json = store_module._write, store_module._write_json
+
+        def stopping_write(path, *args, **kwargs):
+            if self.armed and (self.dead or self.when(path)):
+                self.dead = True
+                raise Stopped(path)
+            write(path, *args, **kwargs)
+
+        def stopping_write_json(path, content):
+            if self.armed and self.dead:
+                raise Stopped(path)
+            write_json(path, content)
+
+        monkeypatch.setattr(store_module, "_write", stopping_write)
+        monkeypatch.setattr(store_module, "_write_json", stopping_write_json)
+
+    def disarm(self) -> None:
+        self.armed = False
+
+
+@pytest.fixture
+def seconds(monkeypatch):
+    """The clock a sync times its writes of ``store.json`` by: standing
+    still, or moving by ``step`` at each reading."""
+    now = {"t": 0.0, "step": 0.0, "reads": 0}
+
+    def read() -> float:
+        now["t"] += now["step"]
+        now["reads"] += 1
+        return now["t"]
+
+    monkeypatch.setattr(store_module, "_seconds", read)
+    return now
+
+
+@pytest.fixture
+def written(monkeypatch) -> list[dict[str, Any]]:
+    """Each ``store.json`` a sync writes, as written."""
+    writes: list[dict[str, Any]] = []
+    write_json = store_module._write_json
+
+    def recording(path, content):
+        write_json(path, content)
+        if path.name == "store.json":
+            writes.append(json.loads(path.read_text()))
+
+    monkeypatch.setattr(store_module, "_write_json", recording)
+    return writes
+
+
+def _stamps(meta: dict[str, Any]) -> dict[str, Any]:
+    return {
+        b: s.get("synced_utc") or s.get("error") for b, s in meta["batches"].items()
+    }
+
+
+def _same_store(store: CampaignStore, other: CampaignStore) -> None:
+    for table in TABLES:
+        pd.testing.assert_frame_equal(store.table(table), other.table(table))
+    rollups = sorted(p.name for p in (store.path / "rollups").glob("*.parquet"))
+    assert rollups == sorted(p.name for p in (other.path / "rollups").glob("*.parquet"))
+    assert store.meta == other.meta
+
+
+def test_with_the_clock_still_store_json_is_written_first_on_a_failure_and_last(
+    short_campaign, clock, pauses, seconds, written, tmp_path
+):
+    client = FakeClient(short_campaign)
+    broken = client.batch_ids[1]
+    client.fail[("ion_series", broken)] = MascopeAPIError("Internal Server Error")
+
+    report = sync(client, SCOPE, root=tmp_path)
+
+    assert len(report.fetched) == len(client.batch_ids) - 1
+    first, failure, last = written
+    assert first["batches"] == {}
+    assert first.get("synced_utc") is None
+    assert "Internal Server Error" in failure["batches"][broken]["error"]
+    assert failure.get("synced_utc") is None
+    assert last == report.store.meta
+    assert last["synced_utc"] == clock["t"].isoformat()
+    assert last["pending_rollups"] == []
+
+    del client.fail[("ion_series", broken)]
+    written.clear()
+    sync(client, SCOPE, root=tmp_path)
+
+    assert len(written) == 2
+
+
+def test_with_the_clock_moving_store_json_is_written_once_per_interval(
+    short_campaign, clock, pauses, seconds, written, tmp_path
+):
+    client = FakeClient(short_campaign)
+    seconds["step"] = store_module.SAVE_EVERY / 2
+
+    report = sync(client, SCOPE, root=tmp_path)
+
+    # Each save reads the clock once: the first and the last write at once,
+    # those between every second reading, a whole interval after the last
+    between = seconds["reads"] - 2
+    assert between > 2 * len(client.batch_ids)
+    assert len(written) == 2 + between // 2
+    assert written[-1] == report.store.meta
+
+
+def test_a_failed_batch_is_on_disk_at_once(
+    short_campaign, clock, pauses, seconds, monkeypatch, tmp_path
+):
+    client = FakeClient(short_campaign)
+    broken, after = client.batch_ids[1], client.batch_ids[2]
+    client.fail[("ion_series", broken)] = MascopeAPIError("Internal Server Error")
+    fetch, seen = store_module._fetch_batch, {}
+
+    def fetching(client, resolved, batch, *args):
+        if batch.sample_batch_id == after:
+            path = store_path(client, resolved, tmp_path) / "store.json"
+            seen.update(json.loads(path.read_text())["batches"])
+        return fetch(client, resolved, batch, *args)
+
+    monkeypatch.setattr(store_module, "_fetch_batch", fetching)
+
+    sync(client, SCOPE, root=tmp_path)
+
+    assert "Internal Server Error" in seen[broken]["error"]
+
+
+def test_a_sync_stopped_between_two_writes_is_redone_by_the_next(
+    short_campaign, clock, pauses, seconds, monkeypatch, tmp_path
+):
+    """A sync stopped with batches fetched since its last write of
+    ``store.json`` fetches them again next time, and ends where a sync never
+    stopped ends."""
+    stopped, whole = FakeClient(short_campaign), FakeClient(short_campaign)
+    sync(stopped, SCOPE, root=tmp_path / "stopped")
+    sync(whole, SCOPE, root=tmp_path / "whole")
+    clock["t"] += pd.Timedelta(hours=1)
+    for client in (stopped, whole):
+        for batch_id in client.batch_ids:
+            client.modified[batch_id] += pd.Timedelta(hours=1)
+    third = stopped.batch_ids[2]
+    stopper = Stopper(
+        monkeypatch,
+        lambda path: path.parent.name == "samples" and path.stem == third,
+    )
+
+    with pytest.raises(Stopped):
+        sync(stopped, SCOPE, root=tmp_path / "stopped")
+    stopper.disarm()
+    store = CampaignStore(
+        store_path(stopped, resolve(stopped, SCOPE), tmp_path / "stopped")
+    )
+
+    assert not store.status().complete
+    # The two batches fetched before the stop have their tables on disk,
+    # and not their stamps
+    for batch_id in stopped.batch_ids[:2]:
+        about = json.loads(
+            pq.read_schema(store.path / "samples" / f"{batch_id}.parquet").metadata[
+                store_module.METADATA_KEY
+            ]
+        )
+        assert about["synced_utc"] == clock["t"].isoformat()
+        assert store.meta["batches"][batch_id]["synced_utc"] != about["synced_utc"]
+
+    stopped.calls.clear()
+    report = sync(stopped, SCOPE, root=tmp_path / "stopped")
+    reference = sync(whole, SCOPE, root=tmp_path / "whole")
+
+    assert report.fetched == reference.fetched
+    assert set(report.fetched) == set(stopped.batch_ids)
+    assert report.store.status().complete
+    _same_store(report.store, reference.store)
+
+
+def test_a_batch_rewritten_by_a_stopped_sync_is_fetched_when_nothing_else_says_so(
+    short_campaign, clock, pauses, seconds, monkeypatch, tmp_path
+):
+    """The batch holding today, fetched by a sync stopped before it wrote its
+    stamp, has tables newer than the stamp; a day later its stamp gives no
+    reason to fetch it, and its rollups are made again all the same."""
+    client, reference = FakeClient(short_campaign), FakeClient(short_campaign)
+    last = client.batch_ids[-1]
+    clock["t"] = client.samples_of(last)["datetime_utc"].max() + pd.Timedelta(hours=1)
+    first = sync(client, SCOPE, root=tmp_path / "stopped")
+    before = first.store.table("rollups")
+
+    # The server reads the batch holding today again, under the same listing
+    for each in (client, reference):
+        each.ions[last]["intensity"] *= 2
+    clock["t"] += pd.Timedelta(hours=1)
+    stopper = Stopper(monkeypatch, lambda path: path.parent.name == "rollups")
+    with pytest.raises(Stopped):
+        sync(client, SCOPE, root=tmp_path / "stopped")
+    stopper.disarm()
+
+    assert first.store.meta["pending_rollups"] == []
+    pd.testing.assert_frame_equal(first.store.table("rollups"), before)
+
+    clock["t"] += pd.Timedelta(days=3)
+    report = sync(client, SCOPE, root=tmp_path / "stopped")
+    whole = sync(reference, SCOPE, root=tmp_path / "whole")
+
+    assert report.fetched == {last: "unsaved"}
+    assert report.store.status().complete
+    after = report.store.table("rollups")
+    assert not after.equals(before)
+    pd.testing.assert_frame_equal(after, whole.store.table("rollups"))
+    for table in BATCH_TABLES:
+        pd.testing.assert_frame_equal(
+            report.store.table(table), whole.store.table(table)
+        )
+    assert _stamps(report.store.meta).keys() == _stamps(whole.store.meta).keys()
+
+
+@pytest.mark.parametrize("stop", ["token", "interrupt"])
+def test_what_stops_a_sync_leaves_store_json_as_far_as_it_got(
+    short, clock, seconds, monkeypatch, stop, tmp_path
+):
+    client, first = short
+    clock["t"] += pd.Timedelta(hours=1)
+    for batch_id in client.batch_ids:
+        client.modified[batch_id] += pd.Timedelta(hours=1)
+    third = client.batch_ids[2]
+    if stop == "token":
+        client.fail[("ion_series", third)] = AuthenticationError("no")
+        raised = NotAuthenticated
+    else:
+        write = store_module._write
+
+        def interrupted(path, *args, **kwargs):
+            if path.parent.name == "samples" and path.stem == third:
+                raise KeyboardInterrupt
+            write(path, *args, **kwargs)
+
+        monkeypatch.setattr(store_module, "_write", interrupted)
+        raised = KeyboardInterrupt
+
+    with pytest.raises(raised):
+        sync(client, SCOPE, root=tmp_path)
+    meta = first.store.meta
+
+    assert {
+        b
+        for b, s in meta["batches"].items()
+        if s["synced_utc"] == clock["t"].isoformat()
+    } == set(client.batch_ids[:2])
+    assert set(meta["pending_rollups"]) >= {
+        f"{t:%Y-%m-%d}"
+        for b in client.batch_ids[:2]
+        for t in client.samples_of(b)["datetime_utc"]
+    }
+    assert not first.store.status().complete
+
+
+def test_a_batch_rewritten_by_a_stopped_sync_and_failed_after_has_fresh_rollups(
+    short_campaign, clock, pauses, seconds, monkeypatch, tmp_path
+):
+    """The tables a stopped sync left are the ones the rollups are made
+    from, also when the fetch that would replace them fails."""
+    client, reference = FakeClient(short_campaign), FakeClient(short_campaign)
+    last = client.batch_ids[-1]
+    clock["t"] = client.samples_of(last)["datetime_utc"].max() + pd.Timedelta(hours=1)
+    sync(client, SCOPE, root=tmp_path / "stopped")
+    for each in (client, reference):
+        each.ions[last]["intensity"] *= 2
+    clock["t"] += pd.Timedelta(hours=1)
+    stopper = Stopper(monkeypatch, lambda path: path.parent.name == "rollups")
+    with pytest.raises(Stopped):
+        sync(client, SCOPE, root=tmp_path / "stopped")
+    stopper.disarm()
+    client.fail[("ion_series", last)] = MascopeAPIError("Internal Server Error")
+
+    report = sync(client, SCOPE, root=tmp_path / "stopped")
+    whole = sync(reference, SCOPE, root=tmp_path / "whole")
+
+    assert set(report.failed) == {last}
+    pd.testing.assert_frame_equal(
+        report.store.table("rollups"), whole.store.table("rollups")
+    )
+
+
+def test_a_batch_removed_by_a_stopped_sync_is_fetched_again(
+    short, clock, seconds, monkeypatch, tmp_path
+):
+    client, first = short
+    gone = client.batch_ids[0]
+    (first.store.path / "samples" / f"{gone}.parquet").unlink()
+
+    report = sync(client, SCOPE, root=tmp_path)
+
+    assert report.fetched == {gone: "unsaved"}
+    assert report.store.status().complete
+    assert gone in set(report.store.table("samples")["sample_batch_id"])
+
+
+def test_a_store_written_before_its_tables_named_their_stamp_syncs_as_it_is(
+    short, clock, seconds, tmp_path
+):
+    client, first = short
+    store = first.store
+    for table in BATCH_TABLES:
+        for path in (store.path / table).glob("*.parquet"):
+            arrow = pq.read_table(path)
+            metadata = dict(arrow.schema.metadata)
+            about = json.loads(metadata[store_module.METADATA_KEY])
+            del about["synced_utc"]
+            metadata[store_module.METADATA_KEY] = json.dumps(about).encode()
+            pq.write_table(arrow.replace_schema_metadata(metadata), path)
+    (store.path / "kept").write_text("")
+    modified = client.batch_ids[1]
+    client.modified[modified] += pd.Timedelta(hours=1)
+
+    report = sync(client, SCOPE, root=tmp_path)
+
+    assert (store.path / "kept").exists()
+    assert report.fetched == {modified: "modified"}
+    assert report.store.status().complete
 
 
 def test_status_ages_with_the_clock(short, clock):
