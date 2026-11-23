@@ -722,8 +722,8 @@ one line. What that line predicts depends on what the file's intensity is:
 - **On a TOF**, a peak's intensity is its area, which holds every line under the peak.
   The merged line is the sum of its members' shares, at their abundance-weighted m/z.
 - **On an Orbitrap**, a peak's intensity is its height, and the peak sits on its
-  brightest member. A member a third or half a peak width away is on that member's
-  flank and adds little to the top of the peak. So the merged line is its brightest
+  brightest member. A member nearly half a peak width away is on that member's flank
+  and adds little to the top of the peak. So the merged line is its brightest
   member: that member's m/z and share, plus the shares of members within a fifth of a
   peak width of it, such as a 13C and a 17O line. The members further off are still
   named on the line, and the peak is still theirs, but they add nothing to its
@@ -731,11 +731,19 @@ one line. What that line predicts depends on what the file's intensity is:
   0.44 peak widths above it measures 0.97 to 0.98 of the `[30Si]` member alone, and
   0.81 to 0.85 of the two members' sum.
 
-A line too
-faint to predict on its own still counts when it sits less than one peak width from a
-line that is predicted: it is added to that line, since one peak that wide holds both.
-Two such faint lines less than one peak width apart that are bright enough together are
-predicted as one line: one peak holds both of them.
+A line too faint to predict on its own still counts when it sits less than one peak
+width from a line that is predicted, since one peak that wide holds both. Two such
+faint lines less than one peak width apart can also be predicted as one line, when they
+are bright enough together. Here too the two instrument types differ:
+
+- **On a TOF**, the faint line is added to the predicted line, which moves to their
+  abundance-weighted m/z. Two faint lines are predicted as one when their summed share
+  clears the floor.
+- **On an Orbitrap**, the faint line is named on the predicted line and adds nothing
+  to its height or its m/z: it sits on the peak's flank. Two faint lines are predicted
+  as one only when the height they make together clears the floor, which their members
+  rarely do once they sit more than a fifth of a peak width apart.
+
 A file with no recorded resolving power is read one isotopologue per line.
 
 **A consequence users see:** a lone mass-only match (one peak, no isotopic corroboration)
