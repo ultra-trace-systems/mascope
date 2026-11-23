@@ -11,10 +11,14 @@ Every dependency is mocked: no DB, file I/O or Socket.IO.
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import numpy as np
+import pandas as pd
 import pytest
+import xarray as xr
 from fastapi import HTTPException
 from test_utils import captured_logs
 
+import mascope_match.compute.isotopes as isotopes
 from mascope_backend.api.controllers.match import match_controller
 from mascope_backend.api.controllers.match.match_controller import (
     AGGREGATION_FAILURE_REASON,
@@ -23,9 +27,11 @@ from mascope_backend.api.controllers.match.match_controller import (
     _summarize_sample_failures,
     match_compute_batch,
 )
+from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 from mascope_backend.api.lib.stale_peak_store import is_stale_peak_store
 from mascope_backend.api.new.auth.config import auth_settings
+from mascope_match import compute_match_isotopes
 from mascope_signal.compute import StalePeakStoreError
 
 
@@ -344,6 +350,42 @@ class TestStalePeakStores:
         assert result["data"]["peak_rebuilds_queued"] == 1
         assert [call.kwargs["sample_file_id"] for call in rebuilds] == ["sf-s2"]
         assert "Peak detection has been queued" in notification.message
+
+    @pytest.mark.asyncio
+    async def test_a_store_without_peak_ids_is_named_and_its_file_queued(self):
+        """A store written before peak ids were kept (MAS-795): the matcher
+        refuses it as stale, and the failure arrives as the real per-sample
+        step raises it, through its ``@api_controller``."""
+        stored = xr.Dataset(
+            {"sparsity": ("mz", np.zeros(2))}, coords={"mz": [100.0, 101.0]}
+        )
+
+        @api_controller()
+        async def compute_step():
+            await compute_match_isotopes(
+                "Instrument_sf-s2",
+                pd.DataFrame(
+                    {
+                        "target_ion_id": ["ion"],
+                        "target_isotope_id": ["m0"],
+                        "mz": [100.0],
+                        "relative_abundance": [1.0],
+                    }
+                ),
+            )
+
+        with (
+            patch.object(isotopes.m_io, "load_peak_data", return_value=stored),
+            patch.object(isotopes, "get_instrument_type", return_value="orbi"),
+            pytest.raises(ApiException) as raised,
+        ):
+            await compute_step()
+        samples = [_make_sample("s1"), _make_sample("s2")]
+
+        result, _, rebuilds = await _compute(samples, [_matched(), raised.value])
+
+        assert result["data"]["failed_sample_reasons"] == {STALE_PEAK_STORE_REASON: 1}
+        assert [call.kwargs["sample_file_id"] for call in rebuilds] == ["sf-s2"]
 
     @pytest.mark.asyncio
     async def test_samples_sharing_a_file_queue_it_once(self):

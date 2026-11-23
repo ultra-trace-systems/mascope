@@ -9,7 +9,6 @@ a store without them leaves the columns empty.
 """
 
 import asyncio
-from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -57,7 +56,12 @@ def store(monkeypatch):
         monkeypatch.setattr(
             isotopes.m_io,
             "load_peak_data",
-            lambda filename: SimpleNamespace(mz=pd.Series(STORED)),
+            lambda filename: xr.Dataset(
+                coords={
+                    "mz": STORED,
+                    "peak_id": ("mz", [f"s{i}" for i in range(len(STORED))]),
+                }
+            ),
         )
         monkeypatch.setattr(
             isotopes.m_compute, "load_peak_timeseries", load_peak_timeseries

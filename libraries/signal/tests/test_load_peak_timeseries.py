@@ -16,6 +16,7 @@ Also here: filling a store two of whose peaks share an m/z
 (``TestPeaksSharingAnMz``).
 """
 
+import asyncio
 import threading
 import time
 
@@ -644,3 +645,47 @@ class TestCheckStoredScanAxis:
     def test_it_is_a_value_error(self):
         """The API layer maps a ValueError to a client-class failure."""
         assert issubclass(m_compute.StalePeakStoreError, ValueError)
+
+
+class TestCheckPeakIds:
+    """A store written before peak ids were kept is stale (MAS-795)."""
+
+    def _without_ids(self, write_peak_store):
+        """The store written again by the library's writer, its ids dropped."""
+        write_peak_store(SCAN_TIMES, MZ_VALUES, SUM_AREAS, SUM_HEIGHTS)
+        store = m_io.load_peak_data(SIGNAL_TEST_FILENAME, drop_bad_peaks=False)
+        asyncio.run(
+            m_io.write_peaks(
+                store.load().drop_vars("peak_id"),
+                SIGNAL_TEST_FILENAME,
+                overwrite=True,
+            )
+        )
+        return m_io.load_peak_data(SIGNAL_TEST_FILENAME)
+
+    def test_a_store_with_its_ids_passes(self, write_peak_store):
+        write_peak_store(SCAN_TIMES, MZ_VALUES, SUM_AREAS, SUM_HEIGHTS)
+        data = m_io.load_peak_data(SIGNAL_TEST_FILENAME)
+
+        assert m_compute.check_peak_ids(data) is None
+        assert m_compute.check_peak_ids(data.peak_heights) is None
+
+    @pytest.mark.parametrize("variable", [None, "peak_heights"])
+    def test_a_store_without_them_is_stale(self, write_peak_store, variable):
+        data = self._without_ids(write_peak_store)
+        peaks = data if variable is None else data[variable]
+
+        with pytest.raises(m_compute.StalePeakStoreError) as raised:
+            m_compute.check_peak_ids(peaks)
+        assert "written before peak ids were kept" in str(raised.value)
+        assert "Re-run peak detection" in str(raised.value)
+
+    def test_a_fill_refuses_it_before_reading_the_file(
+        self, monkeypatch, write_peak_store
+    ):
+        self._without_ids(write_peak_store)
+        asked = _stub_reader(monkeypatch, SCAN_TIMES)
+
+        with pytest.raises(m_compute.StalePeakStoreError):
+            asyncio.run(m_compute.load_peak_timeseries(SIGNAL_TEST_FILENAME, MZ_VALUES))
+        assert asked == []

@@ -240,6 +240,10 @@ async def load_peaks(
     instrument_type = get_instrument_type(filename)
     target_mzs = np.asarray(target_mzs)
     peak_data = m_io.load_peak_data(filename)
+    # The matcher names each matched peak by its id, which a store written
+    # before ids were kept does not have: refused as stale, so a batch
+    # refresh counts the sample under that reason and queues its rebuild.
+    m_compute.check_peak_ids(peak_data)
 
     # Compute all peak timeseries within MATCH_WINDOW_AMU of target m/z values
     # to not compute them later in Match tab visualization.

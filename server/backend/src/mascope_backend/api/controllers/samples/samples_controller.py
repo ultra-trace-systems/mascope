@@ -643,10 +643,14 @@ async def get_sample_peak_timeseries(
         filename = sample.filename
 
         def _load_peak_coords():
-            return (
-                load_coord(filename, "peak_timeseries", "peak_id"),
-                load_coord(filename, "peak_timeseries", "mz"),
-            )
+            mz_values = load_coord(filename, "peak_timeseries", "mz")
+            try:
+                peak_ids = load_coord(filename, "peak_timeseries", "peak_id")
+            except KeyError as e:
+                # A store written before peak ids were kept: stale, as the
+                # peaks read of the same sample says
+                raise m_compute.peak_ids_missing() from e
+            return peak_ids, mz_values
 
         try:
             peak_ids, mz_values = await asyncio.to_thread(_load_peak_coords)

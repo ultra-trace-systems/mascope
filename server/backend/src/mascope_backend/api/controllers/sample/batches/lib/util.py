@@ -286,6 +286,7 @@ def _sync_load_peak_data(
             f"Could not load peak data for sample file '{filename}'. "
             "Ensure that the sample file has been processed and peak data is available."
         ) from e
+    m_compute.check_peak_ids(peak_data)
     peak_id = peak_data["peak_id"].values
     polarity_coord = peak_data["polarity"].values
     # Per peak: a stored sum is over the scans the store's axis holds for

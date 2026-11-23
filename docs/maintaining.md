@@ -31,7 +31,7 @@ Everything below assumes an Ubuntu host provisioned with
 | Package a dataset for a repository such as Zenodo | `mascope export package <dataset id>` |
 | What the method bindings would route, and where a file name disagrees | `mascope prod db script run report_method_binding_disagreements` |
 | Write the MS2 stores of files converted before them, and list their groups (count first) | `mascope prod db script run backfill_ms2_store`, then again with `MS2_STORE_MODE=run` |
-| Rebuild the peak stores that disagree with the scans their files read, keeping every sample (dry run first) | `DRY_RUN=1 mascope prod db script run rebuild_stale_peak_stores`, then without `DRY_RUN` |
+| Rebuild the peak stores that disagree with the scans their files read, or keep no peak ids, keeping every sample (dry run first) | `DRY_RUN=1 mascope prod db script run rebuild_stale_peak_stores`, then without `DRY_RUN` |
 | Fill the scan counts of the Orbitrap peak stores detected before them, which sets their batches to rematch (dry run first) | `FILL_SCAN_COUNTS=1 DRY_RUN=1 mascope prod db script run rebuild_stale_peak_stores`, then without `DRY_RUN` |
 | Flag the Orbitrap peaks under a local floor weak in stores written before the floor (dry run first) | `DRY_RUN=1 mascope prod db script run reflag_orbitrap_weak_peaks`, then without `DRY_RUN` |
 | Give stored matches the intensity of isotope lines that missed their ratio (once, after the upgrade; dry run first) | `DRY_RUN=1 mascope prod db script run reaggregate_ratio_gated_intensity`, then without `DRY_RUN` |
@@ -2492,8 +2492,14 @@ out first scans 1.5 to 5 times the rest of their experiment that it used to
 keep. Every read that divides such a store's sums by the file's scans
 refuses it as stale: the file's peak list fails, and so does the alignment
 of every batch that holds one of its samples. Matching and the sample's
-spectrum read the store otherwise, spike and all. After updating, see what is
-stale and rebuild it:
+spectrum read the store otherwise, spike and all.
+
+A store that keeps no peak ids is stale too: one written before peak ids
+were kept and missed by the migration that gave stores their ids. The
+sample's peak list and its timeseries by peak id refuse it with the same
+stale-store message, and a batch's **Refresh matches** counts its samples as
+stale and queues their file's peak detection, as it does for any stale
+store. After updating, see what is stale and rebuild it:
 
 ```sh
 DRY_RUN=1 mascope prod db script run rebuild_stale_peak_stores
@@ -2503,11 +2509,12 @@ mascope prod db script run rebuild_stale_peak_stores
 - Every raw Orbitrap file whose store holds peaks is checked: its store's
   scan axis against the scans its file reads now, from the raw file's scan
   index alone, a per-stream store stream by stream: a few milliseconds a
-  file, read four at a time.
+  file, read four at a time. A store with no peak ids is stale whatever its
+  scans, an empty one included.
 - **The dry run writes nothing.** Per instrument it counts the stores that
   are stale, current, empty or missing, and lists each stale one: its
-  `sample_file_id`, its name, the scans stored against the scans read, and
-  how many samples and batches hold it.
+  `sample_file_id`, its name, the scans stored against the scans read (or
+  "keeps no peak ids"), and how many samples and batches hold it.
 - **A rebuild keeps every sample.** It detects the file's peaks again by the
   decision its `.props` records, whole or per stream, on the m/z calibration
   it has, as *Detect peaks* does. No sample is deleted or made anew, in any
