@@ -9,7 +9,8 @@ coincidence put together, they need not. This module is the pure half of
 step 4.2 of the assignment plan (``docs/dev/assignment_quality_plan.md``): it
 reads the two traces against each other the way decision 35 states the
 reading, and returns what it found. It moves nothing: no tier or level reads
-it until the null-model benchmark of step 4.13 gives it a likelihood ratio.
+it until a null model gives it a likelihood ratio that clears a bar on two
+reagents (step 4.21, :mod:`mascope_tools.composition.co_variation_lr`).
 
 The traces
 ----------
@@ -359,6 +360,20 @@ class BatchResiduals:
     def trace(self, key: Hashable) -> np.ndarray:
         """One trace's residuals."""
         return self.residuals[self.keys.index(key)]
+
+    def residual_of(self, trace: Mapping[str, float]) -> np.ndarray:
+        """A trace the common mode was not read off - an isotope line beside
+        its M0 - put through the same steps on the same spectra: in log10,
+        divided by the same reagent signal, the same common mode removed.
+        Reading it leaves the partition's common mode as it is.
+
+        :param trace: Spectrum -> intensity.
+        :return: Its residuals on :attr:`samples`.
+        """
+        logs = _log_matrix({"trace": trace}, self.samples)[0]
+        if self.normaliser is not None:
+            logs = logs - self.normaliser
+        return logs - self.common_mode
 
     def co_variation(self, a: Hashable, b: Hashable, **thresholds) -> CoVariation:
         """Read two of the partition's traces against each other
