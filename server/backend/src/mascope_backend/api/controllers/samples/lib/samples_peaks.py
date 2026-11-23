@@ -75,6 +75,7 @@ def _load_and_filter(
     :param satellites: Keep the peaks flagged satellites, which a load leaves
         out with the weak ones by default. The weak are left out either way.
     :raises NotFoundException: If the sample file is missing.
+    :raises StalePeakStoreError: If its store keeps no peak ids.
     """
     try:
         data = load_peak_data(filename, drop_bad_peaks=not satellites)
@@ -82,6 +83,7 @@ def _load_and_filter(
         raise NotFoundException(
             f"Sample file with name '{filename}' was not found or has not been processed"
         ) from e
+    m_compute.check_peak_ids(data)
     if satellites:
         # By position, as the load drops them: two peaks can share an m/z
         data = data.isel(mz=np.flatnonzero(~data.is_weak.values.astype(bool)))
@@ -327,6 +329,7 @@ def extract_peaks(
     :param satellites: Keep the peaks flagged satellites, which are left out
         by default; ``PeakData.satellite`` says which they are.
     :raises NotFoundException: If the sample file is missing.
+    :raises StalePeakStoreError: If its store keeps no peak ids.
     :raises ValueError: If the time range is outside the sample window.
     """
     from mascope_backend.api.controllers.samples.samples_controller import (
@@ -386,9 +389,12 @@ def extract_file_peaks(
     :param heights: Include peak heights. Defaults to True.
     :param average: Average over the scans instead of summing. Defaults to True.
     :raises FileNotFoundError: No such sample file, or it is unprocessed.
+    :raises StalePeakStoreError: If its store keeps no peak ids.
     """
+    data = load_peak_data(filename)
+    m_compute.check_peak_ids(data)
     return _aggregate_full_sample(
-        load_peak_data(filename),
+        data,
         filename,
         areas=areas,
         heights=heights,

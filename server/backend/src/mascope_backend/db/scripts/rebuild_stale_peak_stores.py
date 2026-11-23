@@ -26,7 +26,10 @@ file that needs it:
   raw file's scan index alone: a pooled store against every scan of the file,
   a per-stream store stream by stream, each against its own stream's scans -
   the check the reads make (``mascope_signal.compute.check_stored_scan_axis``).
-  A store that agrees is not touched.
+  A store that agrees is not touched. A store that keeps no peak ids is
+  stale too, whatever its scans: one written before peak ids were kept and
+  missed by the migration that gave stores their ids, which every read of
+  its peaks refuses (``mascope_signal.compute.check_peak_ids``).
 - **What a rebuild does.** The file's peaks are detected again by the
   decision its ``.props`` records, whole or per stream, and on the m/z
   calibration it has (``mascope_signal.peak.compute_peaks``, as *Detect
@@ -126,6 +129,9 @@ CURRENT = "current"
 STALE = "stale"
 UNCOUNTED = "uncounted"
 
+#: What a store that keeps no peak ids is said to be, file by file.
+NO_PEAK_IDS = "keeps no peak ids"
+
 #: Files checked at once: each opens its raw file's scan index, a few
 #: milliseconds of reading, on a server that keeps serving.
 _CHECK_CONCURRENCY = 4
@@ -165,6 +171,8 @@ class Checked:
     #: was not read for them.
     stored: int = 0
     reads: int = 0
+    #: Why a :data:`STALE` store is, where it is not its scans.
+    why: str | None = None
 
 
 def _stream_scans(filename: str, key: str) -> np.ndarray | None:
@@ -189,10 +197,16 @@ def check_store(
         a pooled store's axis was allocated from.
     :param stream_scans: The scan times one stream reads, by its key, or None
         where the file holds no stream under it.
-    :return: :data:`NO_PEAKS` for a store with nothing to divide (a blank's),
-        else :data:`STALE`, or for one its file reads back :data:`CURRENT`, or
+    :return: :data:`STALE` for a store that keeps no peak ids, which every
+        read refuses (``mascope_signal.compute.check_peak_ids``); else
+        :data:`NO_PEAKS` for a store with nothing to divide (a blank's), else
+        :data:`STALE`, or for one its file reads back :data:`CURRENT`, or
         :data:`UNCOUNTED` where it keeps no scan counts.
     """
+    try:
+        m_compute.check_peak_ids(store)
+    except m_compute.StalePeakStoreError:
+        return Checked(STALE, why=NO_PEAK_IDS)
     if not store.mz.size:
         return Checked(NO_PEAKS)
     checked = _check_axis(store, file_scans, stream_scans)
@@ -348,6 +362,7 @@ async def survey(
                         "state": kind,
                         "stored": found.stored,
                         "reads": found.reads,
+                        "why": found.why,
                     }
                 )
         if limit is not None and len(stale) >= limit:
@@ -438,11 +453,12 @@ async def rebuild_all(
         position = outcome.taken
         filename = candidate["filename"]
         samples, batches = await steps.samples_of(candidate["sample_file_id"])
-        what = (
-            "keeps no scan counts"
-            if candidate.get("state") == UNCOUNTED
-            else f"{candidate['stored']} scans stored, {candidate['reads']} read"
-        )
+        if candidate.get("state") == UNCOUNTED:
+            what = "keeps no scan counts"
+        elif candidate.get("why"):
+            what = candidate["why"]
+        else:
+            what = f"{candidate['stored']} scans stored, {candidate['reads']} read"
         line = (
             f"  {candidate['sample_file_id']}  {filename}: {what}; "
             f"{len(samples)} sample(s), {len(batches)} batch(es)"

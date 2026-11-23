@@ -2599,9 +2599,44 @@ class StalePeakStoreError(ValueError):
     repairs it. So is a per-stream store that carries no stitch map of its
     streams (:func:`peak_store_stitch_map`): the rebuild draws one.
 
+    So is a store with no ``peak_id`` coordinate (:func:`check_peak_ids`):
+    one written before peak ids were kept, which the migration that gave
+    stores their ids did not reach. Every read that names a peak names it by
+    its id, and a stored match refers to its peak by it, so ids made up on
+    the read would name nothing; a rebuild detects the peaks again and gives
+    them ids.
+
     A ``ValueError`` so the API layer keeps mapping it to a client-class
     failure with its own message rather than a generic 500.
     """
+
+
+def check_peak_ids(peak_data: xr.Dataset | xr.DataArray) -> None:
+    """Refuse peak data loaded from a store that keeps no peak ids.
+
+    ``mascope_file.io.load_peak_data`` hands a store back as it finds it, and
+    ``mascope_file`` cannot know this class, so whoever reads a loaded store's
+    ``peak_id`` asks here first.
+
+    :param peak_data: Peak data loaded from a store, or a variable of it
+    :type peak_data: xr.Dataset | xr.DataArray
+    :raises StalePeakStoreError: If it has no ``peak_id``, as a coordinate
+        or, on a dataset, a variable: the reads take it from either
+    :return: None
+    """
+    held = peak_data.coords if isinstance(peak_data, xr.DataArray) else peak_data
+    if "peak_id" not in held:
+        raise peak_ids_missing()
+
+
+def peak_ids_missing() -> StalePeakStoreError:
+    """What a peak store that keeps no peak ids is refused as
+    (:func:`check_peak_ids`), for a reader that finds it out another way."""
+    return StalePeakStoreError(
+        "The peak store keeps no peak ids: it was written before peak ids "
+        "were kept. Re-run peak detection for this sample file to rebuild "
+        "the store."
+    )
 
 
 def check_stored_scan_axis(
@@ -2773,6 +2808,8 @@ async def load_peak_timeseries(
     :type mzs: list[float]
     :raises MzNotOnAxisError: If the store's m/z axis was rewritten during
         both attempts
+    :raises StalePeakStoreError: If a timeseries is to be computed and the
+        store keeps no peak ids
     :return: The peak timeseries dataset
     :rtype: xr.Dataset
     """
@@ -2784,6 +2821,7 @@ async def load_peak_timeseries(
     # What a second attempt finds these peaks by. Read before the file is,
     # while the store is still the one they were loaded from: once it has
     # been rewritten, this load no longer reads it back reliably.
+    check_peak_ids(peak_timeseries)
     peak_ids = await asyncio.to_thread(lambda: peak_timeseries.peak_id.values)
     try:
         await _fill_peak_timeseries(base_filename, peak_timeseries, to_compute_mask)

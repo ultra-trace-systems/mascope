@@ -52,7 +52,9 @@ def test_the_survey_finds_the_stale_files_and_counts_every_other():
         script.survey(candidates, lambda filename: filename != "zarr", check)
     )
 
-    assert stale == [{**candidates[0], "state": script.STALE, "stored": 8, "reads": 7}]
+    assert stale == [
+        {**candidates[0], "state": script.STALE, "stored": 8, "reads": 7, "why": None}
+    ]
     assert "zarr" not in checked
     assert counts["A"] == {script.STALE: 1, script.CURRENT: 1, script.NO_PEAKS: 1}
     assert counts["B"] == {"not_raw": 1, "unreadable": 1, script.NO_STORE: 1}
