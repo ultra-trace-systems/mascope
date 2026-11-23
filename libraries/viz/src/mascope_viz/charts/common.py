@@ -21,6 +21,13 @@ note's phase 2), with helpers of their own below:
   as ``{key, name, formula}`` (:func:`summary`).
 - **A parameter it cannot draw raises InvalidChart**, the views' and the
   spec's refusals included (:func:`refused`).
+
+The composition charts (spectrogram, period spectrum, Van Krevelen) say
+the same with their own helpers below: the signal's label
+(:func:`signal_label`), the summary's context (:func:`context_summary`),
+the run-change note and rules (:func:`formula_run_notes`,
+:func:`formula_run_rules`) and the note on a partial normaliser
+(:func:`normaliser_notes`).
 """
 
 import math
@@ -504,3 +511,200 @@ def named(frame: pd.DataFrame, resolved: Resolved) -> pd.DataFrame:
         [names[str(k)] for k in frame["key"]],
     )
     return frame
+
+
+# --- the composition charts -----------------------------------------------------
+
+
+#: The note of a chart drawn from the store's batch peaks.
+ASSIGNED_ONLY = (
+    "Assigned peaks only: the store holds the batch peaks with a consensus "
+    "formula, seen in two samples at least, without their isotopologues; "
+    "unassigned signal is not in it."
+)
+
+#: A run change's label on a time axis.
+RUN_CHANGE_LABEL = "engine run changes"
+
+#: The fields :func:`context_summary` gives every summary.
+CONTEXT_SUMMARY = (
+    "normalise",
+    "normalise_name",
+    "normalise_members",
+    "normalise_complete",
+    "cadence",
+    "tz",
+    "start",
+    "end",
+    "mixed_runs",
+    "run_changes",
+)
+
+
+def signal_variable(store: CampaignStore) -> str:
+    """The variable a store's intensities are, as its samples' instrument
+    type says: ``peak area`` on a TOF, ``peak height`` on an Orbitrap, and
+    ``signal`` when the samples say neither or both."""
+    types = store.table("samples")["instrument_type"].dropna().astype(str)
+    kinds = {_instrument_kind(name) for name in types.unique()}
+    if kinds == {"tof"}:
+        return "peak area"
+    if kinds == {"orbi"}:
+        return "peak height"
+    return "signal"
+
+
+def _instrument_kind(name: str) -> str | None:
+    """``tof`` or ``orbi`` for an instrument type the server or the store
+    spells (``tof``, ``TOF``, ``orbi``, ``Orbitrap``)."""
+    lowered = name.strip().lower()
+    if lowered.startswith("tof"):
+        return "tof"
+    if lowered.startswith("orbi"):
+        return "orbi"
+    return None
+
+
+def signal_label(store: CampaignStore, attrs: Mapping[str, Any], what: str = "") -> str:
+    """What an axis of the values of a view frame says: the variable
+    (:func:`signal_variable`) raw, ``signal / <normaliser>`` normalised.
+
+    :param what: The statistic in front of it (``Mean``, ``Median``);
+        none by default.
+    """
+    if attrs.get("normalise", "none") == "none":
+        text = signal_variable(store)
+    else:
+        text = f"signal / {attrs.get('normalise_name') or attrs.get('normalise')}"
+    if what:
+        return f"{what} {text}"
+    return text[:1].upper() + text[1:]
+
+
+def iso(moment: Any, zone: str | None) -> str | None:
+    """*moment* as ISO 8601 with its offset in *zone*; None for none."""
+    if moment is None:
+        return None
+    stamp = pd.Timestamp(moment)
+    if pd.isna(stamp):
+        return None
+    if stamp.tz is None:
+        stamp = stamp.tz_localize("UTC")
+    if zone:
+        stamp = stamp.tz_convert(zone)
+    return stamp.isoformat()
+
+
+def wall(moment: Any, zone: str | None) -> str:
+    """*moment* as a reader sees it in a note: ``2026-06-16 03:00`` in
+    *zone*."""
+    stamp = pd.Timestamp(moment)
+    if stamp.tz is None:
+        stamp = stamp.tz_localize("UTC")
+    if zone:
+        stamp = stamp.tz_convert(zone)
+    return stamp.strftime("%Y-%m-%d %H:%M")
+
+
+def zoned_run_changes(attrs: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The view's run changes, each ``at`` in the display zone."""
+    zone = attrs.get("tz")
+    return [
+        dict(change, at=iso(change.get("at"), zone))
+        for change in attrs.get("run_changes") or []
+    ]
+
+
+def context_summary(attrs: Mapping[str, Any]) -> dict[str, Any]:
+    """The fields every chart's summary carries, from its view frame's
+    attrs: how the values are normalised, the cadence, the zone, the
+    window, and whether the engine run changes in it and where."""
+    zone = attrs.get("tz")
+    normalise = attrs.get("normalise", "none")
+    return {
+        "normalise": list(normalise) if isinstance(normalise, list) else normalise,
+        "normalise_name": attrs.get("normalise_name"),
+        "normalise_members": list(attrs.get("normalise_members") or []),
+        "normalise_complete": attrs.get("normalise_complete"),
+        "cadence": attrs.get("cadence"),
+        "tz": zone,
+        "start": iso(attrs.get("start"), zone),
+        "end": iso(attrs.get("end"), zone),
+        "mixed_runs": bool(attrs.get("mixed_runs")),
+        "run_changes": zoned_run_changes(attrs),
+    }
+
+
+def formula_run_notes(attrs: Mapping[str, Any]) -> list[str]:
+    """A note when the view's formulas come from more than one engine run:
+    where the run changes, and that the two readings are not joined."""
+    changes = attrs.get("run_changes") or []
+    if not attrs.get("mixed_runs") or not changes:
+        return []
+    zone = attrs.get("tz")
+    times = ", ".join(sorted({wall(change["at"], zone) for change in changes}))
+    many = len(changes) > 1
+    return [
+        f"The engine run that read the formulas changes {len(changes)} "
+        f"time{'s' * many}, at {times}: a formula one run reads and the other "
+        "does not shows on one side of a change only, and the two readings "
+        "are not joined."
+    ]
+
+
+def formula_run_rules(attrs: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """A rule at each run change, for a panel over time; one per moment."""
+    if not attrs.get("mixed_runs"):
+        return []
+    moments = sorted({change["at"] for change in attrs.get("run_changes") or []})
+    return [{"at": at, "label": RUN_CHANGE_LABEL} for at in moments]
+
+
+def normaliser_notes(attrs: Mapping[str, Any]) -> list[str]:
+    """A note when the denominator was not whole in every sample: for a
+    sum, the share of the samples in which it summed only some of its
+    members; for one key, the share in which it had no value, which leaves
+    those samples without a value."""
+    complete = attrs.get("normalise_complete")
+    members = attrs.get("normalise_members") or []
+    if complete is None or not members or complete >= 1:
+        return []
+    share = percent(1 - complete)
+    name = attrs.get("normalise_name") or " + ".join(members)
+    if len(members) > 1:
+        return [
+            f"In {share} of the samples the denominator was a partial sum: "
+            f"some of {name} had no value there, and the others divided."
+        ]
+    return [
+        f"In {share} of the samples {name} had no value, so those samples "
+        "have none either."
+    ]
+
+
+def species(key: Any, name: Any, formula: Any) -> dict[str, Any]:
+    """A species as a summary names it."""
+    return {"key": text(key), "name": text(name), "formula": text(formula)}
+
+
+def text(value: Any) -> str | None:
+    """A text for a summary: None for a missing one."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return str(value)
+
+
+def percent(share: float) -> str:
+    """A share as a note, a label or a hover says it: ``12 %``, ``0.4 %``,
+    ``under 0.1 %``."""
+    percent = 100 * share
+    if percent < 0.1:
+        return "under 0.1 %"
+    if percent < 10:
+        return f"{percent:.1f} %"
+    return f"{percent:.0f} %"

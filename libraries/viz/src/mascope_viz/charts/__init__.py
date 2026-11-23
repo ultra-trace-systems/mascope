@@ -3,9 +3,11 @@
 chart kinds themselves, each registered when its module is imported here.
 The species charts, ``species_series`` (:mod:`.series`), ``diurnal``
 (:mod:`.diurnal`) and ``period_boxes`` (:mod:`.periods`), draw the species
-a ``species`` parameter names (:mod:`.species`). Pandas and NumPy only: a
-server can build specs without the renderers (``docs/dev/visual_digest.md``,
-section 2.1)."""
+a ``species`` parameter names (:mod:`.species`). The composition charts,
+``spectrogram`` (:mod:`.spectrogram`), ``period_spectrum`` (:mod:`.spectrum`)
+and ``van_krevelen`` (:mod:`.van_krevelen`), draw the store's assigned
+peaks. Pandas and NumPy only: a server can build specs without the
+renderers (``docs/dev/visual_digest.md``, section 2.1)."""
 
 # The chart modules register their kinds as they are imported
 from . import (  # noqa: F401
@@ -16,8 +18,11 @@ from . import (  # noqa: F401
     series,
     signal,
     species,
+    spectrogram,
+    spectrum,
     summary,
     top,
+    van_krevelen,
 )
 from .registry import ChartKind, Param
 from .spec import (
@@ -49,5 +54,8 @@ __all__ = [
     "registry",
     "series",
     "species",
+    "spectrogram",
+    "spectrum",
     "subtitle",
+    "van_krevelen",
 ]

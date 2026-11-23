@@ -458,11 +458,15 @@ frame, says on its face what the values are, and puts in its summary the
 numbers a caption may cite.
 
 ```python
+from mascope_viz import render
 from mascope_viz.charts import registry
 
 registry.ids()  # coverage, instrument_signal, scope_summary, top_species, ...
 fig = registry.get("instrument_signal").build(store, reagents=["ion:..."])
 fig.summary["traces"]  # each trace's median, drift and largest step
+fig = registry.get("van_krevelen").build(store, colour="class")
+fig.summary["by_class"]  # {'CHO': 11, 'CHON': 20, ...}
+render.save(fig, "van_krevelen.html")
 ```
 
 | Id | Question | Draws |
@@ -471,6 +475,9 @@ fig.summary["traces"]  # each trace's median, drift and largest step
 | `instrument_signal` | Was the ion source stable? | the TIC and the reagent ions named, hourly medians with a p10-p90 band on a log axis; with two or more, their sum and each one's share of it |
 | `scope_summary` | What is this digest about? | a table for a digest's cover; a run change is a marked row |
 | `top_species` | What was brightest, what changed most, what is new? | three tables: by median, by the last period over the first, and new in the last period |
+| `spectrogram` | What does the whole campaign look like in one picture? | heatmap: time by m/z, the `spectrogram` view's cells on a log colour scale |
+| `period_spectrum` | What was there in this period, and what differs from that one? | sticks: the period's mean spectrum; with another period, the two mirrored and their difference |
+| `van_krevelen` | What chemistry is this? | scatter: H/C by O/C of the formulas, area by median signal |
 
 What every chart kind does the same way:
 
@@ -545,6 +552,55 @@ target ion and an assigned formula of the same formula and mechanism are
 one species, listed once, as the ion. When the engine run changes in the
 last period, a formula new in it may be an earlier peak read as another
 formula, and its row is marked.
+
+**`spectrogram`** takes `mz_width` (1), `cadence` (`1h`), `normalise`,
+`tz`, `start`, `end`, `top_n` (10) and `max_rows` (2000). It draws the
+assigned signal only, and says so in its title and subtitle. A cell sits at its time bin's middle; a bin without
+samples is drawn in the gap style across every row, and a cell with
+samples and nothing detected stays blank. The colour runs on a log scale
+between the 1st and 99th percentiles of the cells with a value, both in
+the summary (`colour_low`, `colour_high`). The summary lists the rows with
+the largest total, each with the formula that contributes most to it
+(`top_rows`), and the bins with the largest column sums (`top_columns`),
+a column sum being the sum of a bin's cells. It draws marks; the `raster`
+mode is the `[big]` extra's.
+
+**`period_spectrum`** takes `start`, `end`, `other_start`, `other_end`,
+`top_n` (10), `normalise` and `tz`. It puts each stick at its ion's m/z,
+labelled with the neutral formula; the ion formula is in the frame. A stick is the mean of
+the values detected in its period, so a peak seen in few samples draws at
+its detected mean: its presence is in the frame and the hover, and a
+labelled peak seen in under half of the samples is marked. With
+`other_start` or `other_end`, a second period is compared: one panel
+mirrors the two spectra, the period up and the other down, the tallest of
+each labelled; the other draws their difference, signed on the diverging
+ramp, the largest either way labelled. A peak absent from one period
+counts 0 there and is marked as only in the other. The summary lists the
+tallest of each period (`top`, `other_top`) and the increases and
+decreases apart, with their ratios. A difference of raw values between
+periods more than a day apart carries the instrument's sensitivity drift,
+and a note says so. The periods are contiguous windows: an episode
+against its background, a night against a day.
+
+**`van_krevelen`** takes `colour` (`n_c`, `class` or `amplitude`), `tiers`
+(`assigned`), `normalise`, `tz`, `start`, `end` and `top_n` (10). It places
+each formula at the O/C and H/C of its neutral formula: the reagent adduct is not counted. A formula without carbon has
+no place on it, and is left out and counted. Only the `assigned` tier is
+drawn by default, since a candidate is not an identification; with
+`tiers=["assigned", "candidate"]` the candidates are drawn hollow, and the
+summary counts every tier apart (`by_tier`). A marker's area is in
+proportion to the median signal, with a size legend; signal is not
+abundance, since the sensitivity differs from compound to compound. The
+classes are the store's: CHO, CHON, CHOS, CHONS, the rest as `other`. By
+`amplitude`, the colour is the cv of each formula's hourly medians, which
+under raw values includes the instrument's drift. The summary counts the
+points per class (`by_class`) and the formulas that share a point (such
+as C5H8O4 and C10H16O8), and gives two means weighted by the median signal
+`w`: `oc_weighted`, the sum of `w * O/C` over the sum of `w` (and
+`hc_weighted`), and `oc_bulk`, the sum of `w * n_O` over the sum of
+`w * n_C` (and `hc_bulk`). They differ, and both are in use.
+
+The Van Krevelen diagram is van Krevelen's (1950, *Fuel* 29, 269-284).
 
 ### The species charts
 
