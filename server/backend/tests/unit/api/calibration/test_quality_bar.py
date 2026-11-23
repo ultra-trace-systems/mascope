@@ -274,14 +274,16 @@ class TestKeptLineShare:
         assert _codes(quality, TOF_FILE) == codes
 
     def test_it_says_what_optional_anchors_it_did_not_count(self):
-        """The lines of optional anchors the file does not hold are out of
-        the count, and the message says how many (decision MAS-1139)."""
+        """The lines of optional anchors the fit did not keep are out of the
+        count, and the message says how many (decision MAS-1139): it names
+        what is counted, since a file may hold such a line the fit then
+        rejected."""
         quality = {**GOOD, "n_points": 3, "n_lines": 11, "n_optional_lines": 8}
 
         (issue,) = calibration_quality_issues(quality, TOF_FILE)
         assert issue["message"].startswith(
             "Fitted on 3 of the 11 lines of the calibration collection, not "
-            "counting 8 lines of optional anchors the file does not hold "
+            "counting 8 lines of optional anchors the fit did not keep "
             "(at least 40% needed)"
         )
 

@@ -841,6 +841,50 @@ async def test_a_compound_added_and_marked_in_one_edit(
         added: True,
     }
     assert await _status(async_session_factory, batch_id) == "recalibrate"
+    # The read names the marked compound and leaves the unmarked one out
+    read = await owner_client.get(f"/api/target/collections/{ids['collection']}")
+    assert read.json()["data"]["optional_anchor_compound_ids"] == [added]
+
+
+@pytest.mark.asyncio
+async def test_a_formula_edit_carries_each_collections_mark(
+    owner_client, async_session_factory
+):
+    """A formula change recreates the compound and re-links it: each
+    collection's link keeps the mark it had, and the unmarked stays unmarked."""
+    marked_in = await _setup(async_session_factory)
+    unmarked_in = await _setup(async_session_factory)
+    compound_id = marked_in["compound"]
+    async with async_session_factory() as session:
+        session.add(
+            TargetCompoundInTargetCollection(
+                target_compound_id=compound_id,
+                target_collection_id=unmarked_in["collection"],
+            )
+        )
+        await session.commit()
+    await _mark(owner_client, marked_in["collection"], [compound_id])
+
+    response = await owner_client.patch(
+        "/api/target/compounds",
+        json=[
+            {
+                "target_compound_id": compound_id,
+                "target_compound_name": f"Calibrant {compound_id}",
+                "target_compound_formula": "HNO2",
+            }
+        ],
+    )
+
+    assert response.status_code == 200, response.text
+    marks = await _marks(async_session_factory, marked_in["collection"])
+    assert compound_id not in marks
+    assert list(marks.values()) == [True]
+    (new_id,) = marks
+    assert await _marks(async_session_factory, unmarked_in["collection"]) == {
+        unmarked_in["compound"]: False,
+        new_id: False,
+    }
 
 
 @pytest.mark.asyncio

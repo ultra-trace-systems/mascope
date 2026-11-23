@@ -605,6 +605,23 @@ async def update_target_compound(
                     )
                     continue  # Skip this compound update, proceed to the next
 
+                # Each collection's optional-anchor mark lives on the link,
+                # which the delete below takes with it: read the marks first
+                # and carry them onto the new links.
+                optional_anchor_by_collection = dict(
+                    (
+                        await session.execute(
+                            select(
+                                TargetCompoundInTargetCollection.target_collection_id,
+                                TargetCompoundInTargetCollection.optional_anchor,
+                            ).where(
+                                TargetCompoundInTargetCollection.target_compound_id
+                                == target_compound.target_compound_id
+                            )
+                        )
+                    ).all()
+                )
+
                 # If compound formula has changed, delete the compound and recreate it with new formula.
                 # A different formula is a different substance: the new row
                 # takes the structure identity this update gives, if any,
@@ -673,6 +690,9 @@ async def update_target_compound(
                             TargetCompoundInTargetCollection(
                                 target_compound_id=new_compound.target_compound_id,
                                 target_collection_id=target_collection_id,
+                                optional_anchor=optional_anchor_by_collection.get(
+                                    target_collection_id, False
+                                ),
                             )
                         )
                         session.add(new_target_compound_in_target_collection)
