@@ -65,7 +65,12 @@ def _ctx(threads: dict, rules: Rules = Rules.RUN, **fields):
     return SimpleNamespace(
         path=SimpleNamespace(rules=rules),
         judging=_Judging(threads, another_round=True),
-        **fields,
+        **{
+            "config": SimpleNamespace(stage_b_confidence=False),
+            "search": None,
+            "shortlist": None,
+            **fields,
+        },
     )
 
 

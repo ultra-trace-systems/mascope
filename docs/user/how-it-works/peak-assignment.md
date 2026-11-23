@@ -628,8 +628,10 @@ model at two points.
   below): it takes the neighbour's new evidence, but not a tier above *candidate*, and it
   falls with the neighbour. A reading a batch decision proposed at *candidate* (the batch stages,
   below) falls no lower at its new evidence: only a cap takes it lower. Which formula
-  won the peak, and how many formulas its evidence could not separate, stay as the
-  first model ranked them, as the search's ranking does.
+  won the peak stays as the first model ranked it, as the search's ranking does. How
+  many formulas its evidence could not separate, its confidence and whether it is a
+  tie are read again at the second model, from its peak's rivals (*Arbitration*,
+  below).
   Otherwise the run stays at the first. Either way a row's
   fit score and its *mass z* are read at the same centre and width. Where the centre
   follows the mass range, the width at a row's m/z is never under 0.03 mDa: below the
@@ -806,18 +808,29 @@ folding chemistry into the ranking this way resolves markedly more of the hard,
 mass-degenerate cases than the fit score alone, because it demotes the spectrally-plausible
 but chemically-implausible decoys the fit score is (by design) blind to.
 
+**One set of rivals per peak.** A committed row's rivals are the other ions the run
+measured on its peak: the list compounds matched there, the formulas the search scored
+for the peak and could not separate from the row's reading, another reading's isotope
+line that sits on the peak, and, where the run measured it, the shortlist below. Each is
+measured once, the way a list compound is measured, at the model the run's caps read:
+the second model where the run took it, the first otherwise. The row's confidence, its
+tie, how many formulas its evidence could not separate (*rivals left standing*, below)
+and the rivals its identification level lists are all read off that one set
+(`provenance.rival_set`, with the version of the model it was measured at).
+
 **The untargeted stage's winners.** A database-stage row always reports its confidence
 and whether it is a tie. An untargeted row reports them only from a run started with the
 `stage_b_confidence` setting on, through the API or the Python SDK; it is off by default
 while its cost is measured. The untargeted search shortlists every composition whose mass
 fits a peak, but keeps only their formulas, so there is no measured fit to take a share
 of. With the setting on, the run measures that shortlist for its most intense winners,
-up to `stage_b_confidence_peaks` of them (200 by default). It is the measurement the peak
+up to `stage_b_confidence_peaks` of them (200 by default), and each formula joins its
+winner's set of rivals before the run's caps read it. It is the measurement the peak
 inspector makes of one peak's close alternatives, run on the whole ledger at once. A
 winner then shows a **confidence** in the inspector like a database-stage row. A winner
-past that number shows none. The setting changes no tier: the confidence is reported
-beside it, not used to set it. The run's configuration records how many winners were
-measured and how long it took (`search_scope.winner_confidence`).
+past that number shows none. A measured formula that ties the winner counts among the
+formulas its evidence could not separate. The run's configuration records how many
+winners were measured and how long it took (`search_scope.winner_confidence`).
 
 This is the "which of the well-fitting compositions is most likely" problem — the core of
 identification. Reliability at scale is estimated with **target–decoy** methods, the
@@ -991,8 +1004,9 @@ What caps a row at candidate:
   spectrum cannot tell them apart. The other stays on the row as another reading of its
   ion. When the run
   searches formulas, the search also looks at that compound's peak: the formulas its
-  element ranges hold for the mass are scored beside the list's, and any the evidence
-  cannot tell apart count as rivals, named in the reason. A radical does not count,
+  element ranges hold for the mass are scored beside the list's, and any the search
+  cannot tell apart are measured the way the list compound was, at the model the caps
+  read. Those the evidence then cannot separate count as rivals, named in the reason. A radical does not count,
   since the run never holds one at *assigned*. A list's presence is evidence for a
   formula, not a label on it, so a list compound is only held at *assigned* where
   nothing plausible competes with it.

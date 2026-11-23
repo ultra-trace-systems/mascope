@@ -64,6 +64,7 @@ from mascope_backend.api.new.peak_assignments import (
     kept_measurement,
     model_readers,
     prepasses,
+    rival_set,
     run_config,
     sample_inputs,
     sample_mechanisms,
@@ -71,7 +72,7 @@ from mascope_backend.api.new.peak_assignments import (
 )
 from mascope_backend.api.new.peak_assignments.alternatives_scoring import (
     WINNER_CONFIDENCE_KEY,
-    measure_winner_confidence,
+    seed_shortlists,
 )
 from mascope_backend.api.new.peak_assignments.batch_decisions import (
     KIND_ISOTOPOLOGUE_STRIP,
@@ -556,6 +557,9 @@ class RunContext:
     # -- score
     fit_by_seed: dict = field(default_factory=dict)
     seeded_frame: judging_loop.SeededFrame | None = None
+    #: The 4.15 shortlists measured after the elect stage: the frame, the
+    #: winners' peaks each with its formulas, and what the pass did.
+    shortlist: tuple | None = None
     # -- elect
     stage_b: list[dict] = field(default_factory=list)
     same_ion_families: int = 0
@@ -1383,6 +1387,15 @@ async def score(ctx: RunContext) -> None:
         ),
         model=ctx.model,
         resolution=ctx.resolution,
+        # The readings the search named against a peak's: each row's rivals,
+        # measured in the frame its own reading is (``rival_set``).
+        named=rival_set.named_rival_seeds(
+            search.matches,
+            search.frame,
+            mechanism_id_by_notation=search.mechanism_id_by_notation,
+            formula_formatter=to_custom_element_format,
+            list_rivals=getattr(search.election, "rivals_by_peak", None),
+        ),
     )
 
 
@@ -1427,6 +1440,18 @@ async def elect(ctx: RunContext) -> None:
         _elect_persons_choice(ctx)
         return
     await asyncio.to_thread(_elect_rows, ctx)
+    if ctx.config.stage_b_confidence and ctx.search is not None:
+        # The search's winners' shortlists (step 4.15), measured once they are
+        # rows and before the judging: each formula joins its winner's rival
+        # set, which the caps read (``alternatives_scoring.seed_shortlists``).
+        ctx.shortlist = await seed_shortlists(
+            ctx.sample,
+            ctx.stage_a + ctx.stage_b,
+            ctx.searched_mechanisms,
+            ctx.match_params,
+            peak_budget=ctx.config.stage_b_confidence_peaks,
+            model=ctx.model,
+        )
 
 
 def _elect_given(ctx: RunContext) -> None:
@@ -1754,6 +1779,12 @@ def _judging_for(ctx: RunContext) -> judging_loop.Judging:
         context=resolved_profile.context,
         nox_skeleton=resolved_profile.nox_skeleton,
         fragment_ladders=fragment_ladders_for(resolved_profile.profile.name),
+        rival_frames=rival_set.RivalFrames(
+            stage_a_scored,
+            (seeded_frame, None if ctx.shortlist is None else ctx.shortlist[0]),
+            base=ctx.model,
+            shortlists=None if ctx.shortlist is None else ctx.shortlist[1],
+        ),
     )
 
 
@@ -1978,12 +2009,10 @@ async def level(ctx: RunContext) -> None:
     """What a reader may state of each committed row: its identification level
     (step 5.8), beside the tier and moving none.
 
-    Where the run asks for it, the search's winners' confidence first: the
-    shortlist each winner's row carries, measured on the peak it names through
-    every channel the search went through and at the model the winners were
-    scored and capped at (``alternatives_scoring.measure_winner_confidence``). Read off
-    the judged ledger, after every pass that may swap a reading; it writes
-    provenance alone, which the level then reads.
+    It reads the rival set each row carries, measured at the model the rows
+    were capped at (``rival_set.measure_rival_sets``), the winners' 4.15
+    shortlists among it where the run measured them (:func:`elect`). The run
+    records what that pass did.
     """
     sample = ctx.sample
     rows = ctx.judged.rows
@@ -1991,15 +2020,13 @@ async def level(ctx: RunContext) -> None:
         _level_persons_choice(rows)
         return
     search = ctx.search
-    if ctx.config.stage_b_confidence and search is not None:
-        winner_confidence = await measure_winner_confidence(
-            sample,
-            rows,
-            ctx.searched_mechanisms,
-            ctx.match_params,
-            peak_budget=ctx.config.stage_b_confidence_peaks,
-            model=ctx.judged.model or ctx.model,
-        )
+    if ctx.shortlist is not None and search is not None:
+        sets = ctx.tiering.get("rival_sets") or {}
+        winner_confidence = {
+            **ctx.shortlist[2],
+            "placed": sets.get("shortlist_placed", 0),
+            "ties": sets.get("shortlist_ties", 0),
+        }
         search.scope[WINNER_CONFIDENCE_KEY] = winner_confidence
         runtime.logger.info(
             f"Sample '{sample.sample_item_name}' measured the shortlists of "

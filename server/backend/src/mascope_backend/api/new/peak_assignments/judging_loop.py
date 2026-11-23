@@ -7,7 +7,7 @@ re-score the loop and its callers measure a reading at.
 
 import asyncio
 import copy
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -49,6 +49,11 @@ from mascope_backend.api.new.peak_assignments.profiles import ResolvedProfile
 from mascope_backend.api.new.peak_assignments.reagent_pass import (
     FragmentClaims,
     claim_fragments,
+)
+from mascope_backend.api.new.peak_assignments.rival_set import (
+    RivalFrames,
+    SeededFrame,
+    measure_rival_sets,
 )
 from mascope_backend.api.new.peak_assignments.row_terms import (
     ROLE_ISO_CHILD,
@@ -413,6 +418,7 @@ class Judging:
     context: ChemistryContext | None = None
     nox_skeleton: bool = False
     fragment_ladders: tuple[FragmentLadder, ...] = ()
+    rival_frames: RivalFrames | None = None
     claims: dict[str, EnvelopeClaim] = field(default_factory=dict)
     judged_at: MeasurementModel | None = None
     rounds: int = 0
@@ -426,6 +432,7 @@ class Judging:
     tiering: dict = field(default_factory=dict)
     found: list[EnvelopeClaim] = field(default_factory=list)
     held: dict = field(default_factory=dict)
+    rival_sets: dict = field(default_factory=dict)
 
     def refit(self) -> None:
         """Begin a round: the rows as the claims so far leave them, the
@@ -560,9 +567,18 @@ class Judging:
         envelope that they left in doubt, which another round reads as that
         neighbour's (:meth:`another_round`).
 
+        Before any of them, each committed row's rival set is measured at
+        the model the round's rows were scored at, the one the caps read
+        (``rival_set.measure_rival_sets``): the density the tiering pass caps
+        on and the arbitration's confidence and tie are read off it.
+
         The second-channel cap comes first (``engine.cap_second_channel``): a
         reading through a secondary channel that nothing corroborates, read
         on the ledger the reading changes settled, with the lists."""
+        if self.rival_frames is not None:
+            self.rival_sets = measure_rival_sets(
+                self.judged, self.rival_frames, self.judged_at or self.model
+            )
         self.second_channel = cap_second_channel(
             self.judged,
             notation_by_id=self.notation_by_id,
@@ -609,6 +625,8 @@ class Judging:
                 # The readings through a secondary channel the second-channel
                 # cap judged, and held.
                 second_channel=self.second_channel,
+                # The rows whose rival set was measured, and at which model.
+                **({"rival_sets": self.rival_sets} if self.rival_sets else {}),
                 claim_rounds=self.rounds,
                 # Rows on an assigned neighbour's line that stayed as they were,
                 # by the reason that held each back.
@@ -681,19 +699,6 @@ async def _source_line_cap(sample) -> SourceLineCap | None:
     )
 
 
-@dataclass(frozen=True)
-class SeededFrame:
-    """The frame a seeded re-score scored a seed list on, kept so the run can
-    score the same lines again at its v2 model (:func:`rescore_rows`).
-
-    :param scored: The gated, fit-scored frame.
-    :param ion_by_seed: Each seed's synthetic ion id in it.
-    """
-
-    scored: pd.DataFrame
-    ion_by_seed: dict[tuple[str, str], str]
-
-
 async def _seeded_rescore(
     sample,
     match_params,
@@ -701,6 +706,7 @@ async def _seeded_rescore(
     *,
     model: MeasurementModel,
     resolution: Callable[[float], float] | None | object = RESOLVE_RESOLUTION,
+    named: Mapping[tuple[str, str], frozenset[str]] | None = None,
 ) -> tuple[dict[tuple[str, str], float | None], SeededFrame | None]:
     """Measure the untargeted stage's readings the way Stage A measures one.
 
@@ -720,19 +726,25 @@ async def _seeded_rescore(
         decoy's control's, a batch search's the sample's recorded one.
     :param resolution: The file's resolving power as the run read it, the
         seeds' lines are resolved at; left out, the chain reads it.
-    :return: Fit per seed, where a seed whose ion the pass could not score is
-        absent and its rows fall back to the finder's own number; and the
-        frame it scored, None where it scored nothing.
+    :param named: The readings the search named against a peak's reading
+        (``rival_set.named_rival_seeds``), each with the peaks it was named
+        for, measured in the same pass so a row's rivals are read in the
+        frame its own reading is (``rival_set.SeededFrame.placed_for``). A
+        seed the search also commits is measured as the reading it commits.
+    :return: Fit per committed seed, where a seed whose ion the pass could not
+        score is absent and its rows fall back to the finder's own number; and
+        the frame it scored, None where it scored nothing.
     """
-    if not seeds:
+    named = {seed: peaks for seed, peaks in (named or {}).items() if seed not in seeds}
+    if not seeds and not named:
         return {}, None
     ion_by_seed, fit_by_ion, _errors, scored_df = await score_seeds(
-        sample, seeds, match_params, model=model, resolution=resolution
+        sample, seeds | set(named), match_params, model=model, resolution=resolution
     )
     fits = {
         seed: fit_by_ion.get(ion_id)
         for seed, ion_id in ion_by_seed.items()
-        if fit_by_ion.get(ion_id) is not None
+        if seed in seeds and fit_by_ion.get(ion_id) is not None
     }
     if len(fits) < len(seeds):
         runtime.logger.info(
@@ -740,7 +752,9 @@ async def _seeded_rescore(
             f"{len(fits)} of {len(seeds)} untargeted readings measured as ions; "
             "the rest keep the finder's own fit"
         )
-    return fits, (None if scored_df.empty else SeededFrame(scored_df, ion_by_seed))
+    return fits, (
+        None if scored_df.empty else SeededFrame(scored_df, ion_by_seed, named)
+    )
 
 
 def fits_at(
@@ -824,9 +838,10 @@ def rescore_rows(
       reading's fit at the model; and on a target library's row each other
       reading of its own ion, written at the row's fit, which follows it.
 
-    What the readings were ranked on stays as it was ranked: which formula
-    won the peak, the arbitration's confidence and tie, and the candidate
-    density. The search ranked at v1 too.
+    Which formula won each peak stays as it was ranked: the search ranked at
+    v1 too. The arbitration's confidence and tie and the candidate density
+    are not read here: the round reads them off each row's rival set, at the
+    model it caps at (``rival_set.measure_rival_sets``).
 
     :param rows: The run's rows.
     :param fits: Fit by source and ``(formula, mechanism id)``.

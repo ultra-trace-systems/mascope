@@ -58,14 +58,15 @@ mass-defect rule rather than an identification. Both commit ICl on one of the
 two ICl peaks, where the row already stood at candidate.
 
 ``candidate_density`` - the run could not separate this peak's winner from other
-formulas, and nothing outside the peak corroborates it. Density is measured in
-the finder over the full candidate list (``arbitration.candidate_density``),
-which is the only place it can be: the row stores at most
+formulas, and nothing outside the peak corroborates it. The density is read off
+the row's rival set (``rival_set.measure_rival_sets``): every other ion the run
+measured on the peak, at the model the caps read, counted by ``arbitration``'s
+tie rule. Not off the row's stored ``alternatives``, which hold at most
 ``max_alternatives`` of the competitors, so counting those counts the cap. A
-list hit's density counts the known set's formulas and, in a run that
-searches, the formula search's closed-shell rivals for its peak
-(``engine.record_grid_rivals``), so the rule reaches a list hit as it reaches
-an election; the reason names the search's rivals.
+list hit's set holds the known set's formulas and, in a run that searches, the
+formula search's closed-shell rivals for its peak, measured in the hit's own
+frame, so the rule reaches a list hit as it reaches an election; the reason
+names the search's rivals.
 
 The implausibility signatures - ``oxygen_lattice`` and ``carbon_free``; the
 carbon cluster was withdrawn on the measurement - are named formula shapes that
@@ -255,7 +256,6 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
     nitrogen_count,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
-    GRID_RIVALS,
     is_target_library_row,
     tier_under_ceiling,
 )
@@ -275,6 +275,7 @@ from mascope_backend.api.new.peak_assignments.mass_gate import (
     tracking_of,
 )
 from mascope_backend.api.new.peak_assignments.partner_gate import PARTNER_MARGIN
+from mascope_backend.api.new.peak_assignments.rival_set import FRAME_SEARCH, RIVAL_SET
 from mascope_backend.api.new.peak_assignments.row_terms import (
     ROLE_ISO_CHILD,
     ROLE_M0,
@@ -992,16 +993,22 @@ def density_reason(row: dict) -> dict | None:
         return None
     if is_corroborated(row) or series_anchor(row) is not None:
         return None
-    grid = _provenance(row).get(GRID_RIVALS)
-    added = grid.get("added") if isinstance(grid, dict) else None
     searched = ""
-    if isinstance(added, int) and added:
-        named = ", ".join(
-            str(rival.get("formula")) for rival in (grid.get("rivals") or [])[:3]
-        )
-        searched = f", {added} of them from the formula search" + (
-            f" ({named}{', ...' if added > 3 else ''})" if named else ""
-        )
+    rival_set = _provenance(row).get(RIVAL_SET)
+    if row.get("source") == SOURCE_DATABASE and isinstance(rival_set, dict):
+        # On a list's row, the rivals the search named and the run measured.
+        named = [
+            str(rival.get("formula"))
+            for rival in rival_set.get("rivals") or []
+            if isinstance(rival, dict)
+            and rival.get("frame") == FRAME_SEARCH
+            and rival.get("unseparated")
+        ]
+        if named:
+            searched = (
+                f", {len(named)} of them from the formula search "
+                f"({', '.join(named[:3])}{', ...' if len(named) > 3 else ''})"
+            )
     return _reason(
         REASON_CANDIDATE_DENSITY,
         f"{density} formulas this peak's evidence could not separate{searched}, "

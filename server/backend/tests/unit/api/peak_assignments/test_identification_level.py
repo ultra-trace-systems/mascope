@@ -49,6 +49,7 @@ from mascope_backend.api.new.peak_assignments.mass_gate import (
     TRACKING_UNTRACKED,
     SpectrumLines,
 )
+from mascope_backend.api.new.peak_assignments.rival_set import RIVAL_SET
 from mascope_backend.api.new.peak_assignments.tiering import (
     REASON_ABSENT_LINE,
     REASON_NO_CLOSE_RIVAL,
@@ -135,8 +136,51 @@ def ctx(**kwargs) -> LevelContext:
     )
 
 
+def measured(*rows: dict) -> list[dict]:
+    """The rows as a run leaves them: each with its rival set
+    (``rival_set.RIVAL_SET``), the rivals the run measured on its peak at its
+    fit's model. Here those a test declares: the stored alternatives that
+    carry a fit, the grid's named rivals and the 4.15 shortlist's placed
+    formulas, each at its stated fit. A row that states its set keeps it."""
+    for row in rows:
+        provenance = row.setdefault("provenance", {})
+        if row.get("role") != "M0" or RIVAL_SET in provenance:
+            continue
+        rivals = [
+            {
+                "formula": entry["assigned_formula"],
+                "ion_formula": entry.get("ion_formula"),
+                "fit_score": entry["fit_score"],
+                "mz_error_ppm": entry.get("mz_error_ppm"),
+                "monoisotopic": entry.get("isotope_label") in (None, "", "M0"),
+            }
+            for entry in row.get("alternatives") or []
+            if isinstance(entry, dict)
+            and entry.get("fit_score") is not None
+            and not entry.get("same_ion")
+        ]
+        grid = provenance.get(GRID_RIVALS) or {}
+        rivals += [
+            {**entry, "monoisotopic": True}
+            for entry in grid.get("rivals") or []
+            if entry.get("fit_score") is not None
+        ]
+        rivals += [
+            {**entry, "monoisotopic": True}
+            for entry in provenance.get(MEASURED_SHORTLIST) or []
+            if entry.get("placed") is not False
+        ]
+        provenance[RIVAL_SET] = {
+            "fit_score": row.get("fit_score"),
+            "rivals": rivals,
+            "rivals_unlisted": 0,
+        }
+    return list(rows)
+
+
 def level(row: dict, own=(), **kwargs) -> dict:
     """The row's level, with ``own`` its committed isotopologue rows."""
+    measured(row)
     return level_of(row, list(own), ctx(**kwargs))
 
 
@@ -148,8 +192,8 @@ class TestTheScale:
     def test_the_rules_version_is_pinned(self):
         # A fact, a rule or the order of the rules that changes bumps this, and
         # a test that pins it is where the bump is noticed. The run records it.
-        assert LEVEL_RULES_VERSION == 1
-        assert apply_levels([m0()])["level_rules_version"] == 1
+        assert LEVEL_RULES_VERSION == 2
+        assert apply_levels(measured(*[m0()]))["level_rules_version"] == 2
         assert "level_mapping_version" not in level(m0())
 
     def test_the_vocabulary_is_the_shared_scale(self):
@@ -356,9 +400,12 @@ class TestFiveA:
         assert level(row)["level"] == "5a"
 
     def test_a_rival_past_the_stored_cap_is_not_assumed_out(self):
+        # An untargeted winner's formula-only entries past the cap were never
+        # measured, the 4.15 pass measuring only the stored ones.
         row = m0(
+            source="untargeted",
             alternatives=[rival("C7H16O5", 0.2)],
-            provenance={RIVALS_PAST_CAP: 2},
+            provenance={RIVALS_PAST_CAP: 2, MEASURED_SHORTLIST: []},
         )
 
         record = level(row)
@@ -384,6 +431,7 @@ class TestFiveA:
 
     def test_the_grid_rivals_a_list_hit_carries_are_rivals(self):
         row = m0(
+            fit=0.8,
             provenance={
                 GRID_RIVALS: {
                     "fit_score": 0.8,
@@ -397,16 +445,28 @@ class TestFiveA:
                         }
                     ],
                 }
-            }
+            },
         )
 
         record = level(row)
 
         assert record["level"] == "5a"
         assert tests_of(record) == {"C8H8O4": OPEN}
-        assert record["rivals"][0]["record"] == GRID_RIVALS
-        # The grid counted three it could not separate and named one.
-        assert record["rivals_unlisted"] == 2
+        # Read off the row's rival set, where the run measured the grid's
+        # rivals beside the list's own.
+        assert record["rivals"][0]["record"] == RIVAL_SET
+
+    def test_a_list_rows_rivals_past_the_sets_named_ones_are_unlisted(self):
+        # Its stored alternatives past the cap are in the set, which names
+        # all it measured up to its own count; those past it are unlisted.
+        row = m0(alternatives=[rival("C7H16O5", 0.2)], provenance={RIVALS_PAST_CAP: 2})
+        measured(row)
+        row["provenance"][RIVAL_SET]["rivals_unlisted"] = 3
+
+        record = level(row)
+
+        assert record["level"] == "5a"
+        assert record["rivals_unlisted"] == 3
 
     def test_a_fit_of_zero_is_measured(self):
         # The same ion twice: an alternatives entry with no fit, and the
@@ -432,12 +492,12 @@ class TestFiveA:
 
         assert tests_of(record) == {"C7H16O5": TEST_MASS}
         assert record["rivals"][0]["fit"] == 0.0
-        assert record["rivals"][0]["record"] == GRID_RIVALS
+        assert record["rivals"][0]["record"] == RIVAL_SET
         assert record["level"] == "4a"
 
     def test_a_fit_of_zero_lists_before_an_unmeasured_rival(self):
-        # Neither is out (the grid recorded no fit of the winner's to read the
-        # margin against), so both stay open, the measured one first.
+        # Neither is out: the set recorded no fit of the winner's to read the
+        # margin against, so both stay open, the measured one first.
         row = m0(
             alternatives=[rival("C5H12O5", None, "C5H13O5+")],
             provenance={
@@ -455,6 +515,8 @@ class TestFiveA:
             },
         )
 
+        measured(row)
+        row["provenance"][RIVAL_SET]["fit_score"] = None
         record = level(row)
 
         assert [entry["formula"] for entry in record["rivals"]] == [
@@ -506,7 +568,7 @@ class TestTheRivalTests:
         record = level(row)
 
         assert tests_of(record) == {"C7H16O5": TEST_MASS}
-        assert record["rivals"][0]["record"] == MEASURED_SHORTLIST
+        assert record["rivals"][0]["record"] == RIVAL_SET
         assert record["level"] == "4a"
 
     def test_the_measured_shortlist_supplies_the_fit_of_a_formula_only_entry(self):
@@ -679,7 +741,7 @@ class TestWhatIsNoRival:
         # Flagged, even where the entry names no ion to compare.
         row = m0(alternatives=[rival("C5H8O5", 0.9, None, same_ion=True)])
 
-        rivals, unlisted = shortlist(row)
+        rivals, unlisted = shortlist(*measured(row))
 
         assert rivals == [] and unlisted == 0
         assert level(row)["evidence"].startswith("no rival on the measured shortlist")
@@ -687,13 +749,13 @@ class TestWhatIsNoRival:
     def test_an_entry_that_reads_the_winners_own_ion_is_no_rival(self):
         row = m0(alternatives=[rival("C5H8O5", 0.9, "C6H13O6+")])
 
-        assert shortlist(row)[0] == []
+        assert shortlist(*measured(row))[0] == []
 
     def test_an_entry_of_the_rows_own_formula_is_no_rival(self):
         # Spelled another way, through another adduct: the same neutral.
         row = m0(alternatives=[rival("H12C6O6", 0.9, "C6H16NO6+")])
 
-        assert shortlist(row)[0] == []
+        assert shortlist(*measured(row))[0] == []
 
     def test_one_ion_read_twice_is_one_rival_at_its_better_fit(self):
         row = m0(
@@ -703,7 +765,7 @@ class TestWhatIsNoRival:
             ]
         )
 
-        [only] = shortlist(row)[0]
+        [only] = shortlist(*measured(row))[0]
         assert only.fit == 0.85
 
 
@@ -971,7 +1033,9 @@ class TestTheRun:
         child = iso_line("pa-1", "13C")
         reagent = {"peak_assignment_id": "pa-r", "role": "reagent", "provenance": {}}
 
-        summary = apply_levels([owner, child, reagent], notation_by_id=MECHANISMS)
+        summary = apply_levels(
+            measured(*[owner, child, reagent]), notation_by_id=MECHANISMS
+        )
 
         assert owner[LEVEL_COLUMN] == "4a"
         assert owner["provenance"][IDENTIFICATION_LEVEL]["level"] == "4a"
@@ -996,7 +1060,7 @@ class TestTheRun:
     def test_an_isotopologue_with_no_owner_on_the_run_reads_5a(self):
         child = iso_line("pa-gone", "13C")
 
-        apply_levels([child])
+        apply_levels(measured(*[child]))
 
         assert child[LEVEL_COLUMN] == "5a"
         assert child["provenance"][IDENTIFICATION_LEVEL]["inherited_from"] == "pa-gone"
@@ -1012,7 +1076,7 @@ class TestTheRun:
         )
         rows = [m0("pa-1", source="untargeted"), m0("pa-2", peak="p-2"), refuted]
 
-        summary = apply_levels(rows, notation_by_id=MECHANISMS)
+        summary = apply_levels(measured(*rows), notation_by_id=MECHANISMS)
 
         assert summary["levels"] == {"4a": 1, "5a": 1, "5b": 1}
         # The refuted row shows 5b and has no measured shortlist either.
@@ -1044,7 +1108,7 @@ class TestTheRun:
             alternatives=[rival("C6H12O6", 0.88, "C6H12O6Br-")],
         )
 
-        apply_levels([row], lines=lines, tiering=tiering)
+        apply_levels(measured(*[row]), lines=lines, tiering=tiering)
 
         assert row[LEVEL_COLUMN] == "4a"
 
@@ -1059,9 +1123,9 @@ class TestTheRun:
         partner["provenance"]["cross_channel"] = {"channels": [PROTON, "[M+NH4]+"]}
         other = m0("pa-3", formula="C7H16O5", ion="C7H17O5+", peak="p-3")
 
-        apply_levels([row, partner], notation_by_id=MECHANISMS)
+        apply_levels(measured(*[row, partner]), notation_by_id=MECHANISMS)
         alone = row[LEVEL_COLUMN]
-        apply_levels([row, partner, other], notation_by_id=MECHANISMS)
+        apply_levels(measured(*[row, partner, other]), notation_by_id=MECHANISMS)
 
         assert alone == "4a"
         assert row[LEVEL_COLUMN] == "5a"
@@ -1072,14 +1136,14 @@ class TestTheRun:
             provenance={"cross_channel": {"channels": [PROTON, "[M+NH4]+"]}},
         )
 
-        apply_levels([row], notation_by_id=MECHANISMS, instrument_type="tof")
+        apply_levels(measured(*[row]), notation_by_id=MECHANISMS, instrument_type="tof")
 
         assert row[LEVEL_COLUMN] == "5a"
 
     def test_the_run_names_open_rivals_held_by_its_context(self):
         row = m0(alternatives=[rival("C5H10O2S", 0.89)])
 
-        apply_levels([row], context=presets.AMBIENT_AIR)
+        apply_levels(measured(*[row]), context=presets.AMBIENT_AIR)
 
         [entry] = row["provenance"][IDENTIFICATION_LEVEL]["rivals"]
         assert entry["held_by"] == [HELD_BY_PRIOR]

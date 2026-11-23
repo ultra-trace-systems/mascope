@@ -498,7 +498,7 @@ def untargeted_matches_to_peak_assignments(
         # candidate set, which the untargeted search does not expose here
         # (other_candidates carries formulas only, no per-candidate fit); a run
         # that asks for it measures the shortlist once the ledger is judged
-        # (`alternatives_scoring.measure_winner_confidence`, the run option
+        # (`alternatives_scoring.seed_shortlists`, the run option
         # `stage_b_confidence`). The scale objection to P(correct) is gone: the
         # fit below is the seeded re-score, the same ion_score_v2 the Stage A
         # curve was fitted on, so the curve would no longer be borrowed across

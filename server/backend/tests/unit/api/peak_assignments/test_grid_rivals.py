@@ -1,4 +1,5 @@
-"""A list hit's density, with the formula search's rivals counted in."""
+"""What the formula search held against a list hit, and how the density rule
+names the search's rivals the hit's rival set measured."""
 
 from __future__ import annotations
 
@@ -6,6 +7,11 @@ from mascope_backend.api.new.peak_assignments.engine import (
     GRID_RIVALS,
     GRID_RIVALS_KEPT,
     record_grid_rivals,
+)
+from mascope_backend.api.new.peak_assignments.rival_set import (
+    FRAME_KNOWN,
+    FRAME_SEARCH,
+    RIVAL_SET,
 )
 from mascope_backend.api.new.peak_assignments.tiering import (
     REASON_CANDIDATE_DENSITY,
@@ -61,29 +67,21 @@ def _list_hit(
 
 
 class TestTheCount:
-    def test_the_grid_s_rivals_are_added_to_the_known_set_s(self):
+    def test_the_grid_s_rivals_reach_the_density_only_through_the_rival_set(self):
+        # Measured with the hit's other rivals, at the model the caps read
+        # (``rival_set.measure_rival_sets``); the search's own count is no
+        # density of the row's.
         row = _list_hit(density=2)
         summary = record_grid_rivals([row], [_found("C12H12N4O", "C15H16S")])
-        assert row["provenance"]["candidate_density"] == 4
+        assert row["provenance"]["candidate_density"] == 2
         block = row["provenance"][GRID_RIVALS]
-        assert (block["known_density"], block["added"]) == (2, 2)
+        assert "added" not in block and "known_density" not in block
         assert summary == {"measured": 1, "with_rivals": 1}
 
-    def test_a_rival_the_known_set_already_counted_is_not_counted_twice(self):
-        # The known set's formulas are the row's alternatives, however a list
-        # spelled them.
-        row = _list_hit(density=2, alternatives=[{"assigned_formula": "C12H12N4O1"}])
-        record_grid_rivals([row], [_found("C12H12N4O", "C15H16S")])
-        assert row["provenance"]["candidate_density"] == 3
-        assert [r["formula"] for r in row["provenance"][GRID_RIVALS]["rivals"]] == [
-            "C15H16S"
-        ]
-
-    def test_a_peak_the_grid_holds_no_rival_for_keeps_its_count(self):
+    def test_a_peak_the_grid_holds_no_rival_for_says_so(self):
         row = _list_hit(density=1)
         summary = record_grid_rivals([row], [_found()])
-        assert row["provenance"]["candidate_density"] == 1
-        assert row["provenance"][GRID_RIVALS]["added"] == 0
+        assert row["provenance"][GRID_RIVALS]["rivals"] == []
         assert summary == {"measured": 1, "with_rivals": 0}
 
     def test_a_row_the_search_could_not_measure_is_left_as_it_was(self):
@@ -94,12 +92,6 @@ class TestTheCount:
             "candidate_density": 1,
         }
         assert summary == {"measured": 0, "with_rivals": 0}
-
-    def test_a_row_with_no_count_counts_as_standing_alone(self):
-        row = _list_hit(density=None)
-        record_grid_rivals([row], [_found("C15H16S")])
-        assert row["provenance"]["candidate_density"] == 2
-        assert row["provenance"][GRID_RIVALS]["known_density"] == 1
 
 
 class TestWhatTheRowSays:
@@ -122,19 +114,33 @@ class TestWhatTheRowSays:
             True,
         )
 
-    def test_only_the_first_few_are_named_and_all_are_counted(self):
+    def test_only_the_first_few_are_named(self):
         formulas = [f"C{n}H10O2" for n in range(10, 10 + GRID_RIVALS_KEPT + 3)]
         row = _list_hit()
         record_grid_rivals([row], [_found(*formulas)])
         block = row["provenance"][GRID_RIVALS]
         assert len(block["rivals"]) == GRID_RIVALS_KEPT
-        assert block["added"] == len(formulas)
-        assert row["provenance"]["candidate_density"] == 1 + len(formulas)
 
     def test_a_formula_outside_the_searched_box_says_so(self):
         row = _list_hit()
         record_grid_rivals([row], [_found(in_grid=False)])
         assert row["provenance"][GRID_RIVALS]["in_grid"] is False
+
+
+def _measured(row: dict, *formulas: str, frame: str = FRAME_SEARCH) -> dict:
+    """The hit as its round leaves it: the set measured on its peak, each of
+    ``formulas`` a rival its evidence could not separate."""
+    row["provenance"]["candidate_density"] = 1 + len(formulas)
+    row["provenance"][RIVAL_SET] = {
+        "model_version": 1,
+        "fit_score": 0.95,
+        "rivals": [
+            {"formula": formula, "fit_score": 0.94, "frame": frame, "unseparated": True}
+            for formula in formulas
+        ],
+        "rivals_unlisted": 0,
+    }
+    return row
 
 
 class TestTheDensityRuleReadsIt:
@@ -152,32 +158,39 @@ class TestTheDensityRuleReadsIt:
         )
 
     def test_a_list_hit_with_a_rival_loses_the_top_tier(self):
-        row = _list_hit()
-        record_grid_rivals([row], [_found("C15H16S")])
+        row = _measured(_list_hit(), "C15H16S")
         assert self._tier(row) == "candidate"
 
     def test_the_reason_names_the_rivals_the_search_found(self):
-        row = _list_hit()
-        record_grid_rivals([row], [_found("C15H16S", "C12H12N4O")])
+        row = _measured(_list_hit(), "C15H16S", "C12H12N4O")
         self._tier(row)
         detail = self._detail(row)
         assert "3 formulas" in detail
         assert "2 of them from the formula search (C15H16S, C12H12N4O)" in detail
 
     def test_the_reason_says_when_it_names_only_some(self):
-        row = _list_hit()
-        record_grid_rivals(
-            [row], [_found("C15H16S", "C12H12N4O", "C13H10O3", "C9H14O6")]
-        )
+        row = _measured(_list_hit(), "C15H16S", "C12H12N4O", "C13H10O3", "C9H14O6")
         self._tier(row)
         assert (
             "4 of them from the formula search (C15H16S, C12H12N4O, C13H10O3, ...)"
             in (self._detail(row))
         )
 
+    def test_a_rival_the_set_separated_is_not_named(self):
+        row = _measured(_list_hit(), "C15H16S")
+        row["provenance"][RIVAL_SET]["rivals"].append(
+            {"formula": "C9H14O6", "frame": FRAME_SEARCH, "unseparated": False}
+        )
+        self._tier(row)
+        assert "1 of them from the formula search (C15H16S)" in self._detail(row)
+
+    def test_the_known_set_s_rivals_are_not_named_as_the_search_s(self):
+        row = _measured(_list_hit(), "C15H16S", frame=FRAME_KNOWN)
+        self._tier(row)
+        assert "formula search" not in self._detail(row)
+
     def test_a_second_channel_keeps_the_tier(self):
-        row = _list_hit(channels=["[M+H]+", "[M+NH4]+"])
-        record_grid_rivals([row], [_found("C15H16S")])
+        row = _measured(_list_hit(channels=["[M+H]+", "[M+NH4]+"]), "C15H16S")
         assert self._tier(row) == "assigned"
 
     def test_a_known_set_s_tie_is_worded_as_before(self):

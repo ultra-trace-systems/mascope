@@ -729,12 +729,17 @@ class PeakAssignmentsResource(BaseResource):
         ``critical_widths``). Its ``cross_channel`` block then lists, under
         ``separated_through``, the run's other channels that commit the
         neutral on a peak the instrument separated, the one escape from
-        ``unresolved_peak``. A list hit of a run that searched carries
-        ``provenance.grid_rivals``: the known set's own density, how many
-        closed-shell formulas the search held for its peak that its evidence
-        could not separate (counted into ``candidate_density``), the first few
-        of them by name, its fit on the search's scale, and whether the
-        searched element box holds its formula. Where a rival cleared the
+        ``unresolved_peak``. A committed monoisotopic row carries
+        ``provenance.rival_set``: the other ions the run measured on its peak,
+        each with its fit, mass error, whether its own line sits there, the
+        frame it was measured in (``known_set`` or ``search``) and whether the
+        evidence could not separate it from the row, and the row's own fit, at
+        the model the run's caps read (``model_version``). The row's
+        ``confidence``, ``is_tie`` and ``candidate_density`` are read off it.
+        A list hit of a run that searched carries ``provenance.grid_rivals``:
+        the closed-shell formulas the search could not separate from it on its
+        own scale, the first few by name, its fit on that scale, and whether
+        the searched element box holds its formula. Where a rival cleared the
         list's prior and the list hit kept its peak all the same, the block
         names that rival under ``held_against``, with ``why``:
         ``unexplained_lines`` (the rival leaves the hit's own tracking isotope
