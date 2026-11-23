@@ -726,6 +726,8 @@ def test_formulas_sharing_a_point_are_counted(month):
     assert any("more than one formula" in note for note in fig.notes)
 
 
+# The colours and sizes are chemistry-blind: one campaign holds them
+@pytest.mark.parametrize("campaign", ["halide_negative"], indirect=True)
 def test_a_van_krevelen_sizes_by_the_median_signal_and_colours_as_asked(month):
     campaign, store = month
     signal = _signal(campaign)
@@ -887,9 +889,11 @@ def test_a_species_without_a_name_is_named_by_its_formula_then_its_key(
     """A summary names a species as every chart does: by its name, else its
     formula, else its key. A store's row may hold a blank name, as one
     synced before blank names were dropped does."""
-    _, store = month
+    campaign, store = month
     kind = registry.get(chart)
-    named = _summary_species(kind.build(store))
+    # A day of it is enough, and cheaper to build three times
+    day = {"start": campaign.truth.start + DAY, "end": campaign.truth.start + 2 * DAY}
+    named = _summary_species(kind.build(store, **day))
     assert named and all(one["name"] == one["formula"] for one in named)
     table = store.table
 
@@ -906,10 +910,10 @@ def test_a_species_without_a_name_is_named_by_its_formula_then_its_key(
         monkeypatch.setattr(store, "table", read)
 
     planted(name=" ")
-    unnamed = _summary_species(kind.build(store))
+    unnamed = _summary_species(kind.build(store, **day))
     assert [one["name"] for one in unnamed] == [one["formula"] for one in named]
     planted(name=None, formula=None)
-    keyed = _summary_species(kind.build(store))
+    keyed = _summary_species(kind.build(store, **day))
     assert [(one["name"], one["formula"]) for one in keyed] == [
         (one["key"], None) for one in named
     ]
