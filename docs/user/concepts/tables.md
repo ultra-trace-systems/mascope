@@ -40,6 +40,13 @@ graph LR
 The spectrum is the raw signal; the peaks, or centroids, are the features
 Mascope detects in it, and every other table is about them.
 
+An Orbitrap also records centroids of its own in every scan, which
+`samples.get_centroids` reads scan by scan. It returns every scan of the
+sample's window, MS2 scans and every scan stream's included. A sample's
+peak list is built from fewer: the MS1 scans of its own scan stream, or of
+the streams that own some m/z of a stitched sample, each stream's outlier
+first scan left out. `scans="sample"` returns only those.
+
 A batch's time series, as the app draws it, is **one point per sample**,
 and that point is the ion's **summed matched intensity**: the sum over the
 ion's matched isotope lines of each line's peak intensity, which is the

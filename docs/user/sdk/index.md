@@ -86,6 +86,15 @@ centroids = mascope.samples.get_centroids(
 )
 ```
 
+By default it returns every scan of the sample's window, MS2 scans and
+every scan stream's included. The sample's peak list is read from fewer of
+them. `scans="sample"` returns only those, the same scans the fingerprint
+lists in `item["scans"]`:
+
+```python
+own = mascope.samples.get_centroids([sample_id], scans="sample")
+```
+
 ## Reference lists
 
 Peak assignment names known compounds from the reference lists the server has

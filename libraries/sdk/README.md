@@ -1188,7 +1188,7 @@ workspaces, not only the client's.
 | `compute_peak_timeseries(sample_id, peak_ids=)` | Have the server compute the timeseries peaks lack    | `int`               |
 | `get_spectrum(sample_id, ...)`                  | Get averaged spectrum                                | `pd.DataFrame│None` |
 | `get_spectra(sample_ids, ...)`                  | Get spectra for multiple samples                     | `pd.DataFrame│None` |
-| `get_centroids(sample_ids, exclude=)`           | Per-scan centroids, flagged ones left out on request | `dict│None`         |
+| `get_centroids(sample_ids, exclude=, scans=)`   | Per-scan centroids, flagged ones left out on request | `dict│None`         |
 | `get_axis_fingerprint(sample_id)`               | Its file's axis fingerprint, with the sample's scans | `dict`              |
 | `update(sample_id, sample_item)`                | Update a sample's fields (the whole sample)          | `dict`              |
 | `move(sample_ids, batch_id)`                    | Move samples into a batch, in the background         | `dict`              |
@@ -1199,6 +1199,8 @@ A `get_peaks` over a time range (`t_min` / `t_max`) leaves out the peaks whose t
 `list` accepts exactly one of `batch` (must match a single batch; raises if ambiguous) or `batches` (returns samples from all matching batches, with an added `sample_batch_name` column).
 
 `get_centroids` returns a dict keyed by sample ID. Each sample's value holds parallel lists with one entry per scan: `scan` (the scan number), `timestamp` in seconds, and the scan's centroids as lists of `masses`, `intensities`, `resolutions`, `signal_to_noise` and `flags`. A centroid's `flags` are the sum of the instrument's marks on it: 2 fragmented, 4 merged, 8 exception (a weak side-lobe peak), 16 reference (the lock-mass peak the scan was corrected with), 0 for none. So `flag & 16` finds a scan's lock mass. `exclude` leaves out the centroids that carry any of the flags it names (`"reference"`, `"exception"`, `"merged"`, `"fragmented"`); without it every stored centroid comes back. A server older than the flags ignores `exclude`, so given one, an answer without `flags` raises `MascopeAPIError` rather than return the centroids asked to be left out.
+
+The scans are every scan of the sample's polarity in its window by default (`scans="all"`): MS2 scans and every scan stream's included. `scans="sample"` returns only the scans the sample's peak list is read from: the MS1 scans of its own stream, or of each stream that owns some m/z of a stitched sample, each stream's outlier first scan left out. They are the scans `get_axis_fingerprint` lists in `item["scans"]`, and each sample's value then also holds `scan_selection: "sample"`. A server older than `scans` ignores it and serves every scan, so given `"sample"`, an answer without that mark raises `MascopeAPIError`.
 
 ```python
 centroids = mascope.samples.get_centroids(
