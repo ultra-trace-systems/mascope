@@ -29,12 +29,15 @@ from mascope_backend.api.new.peak_assignments.envelope_fit import (
     POOL_NEIGHBOURS,
     EnvelopePool,
     PooledFile,
+    ScanReach,
     envelope_lines,
     fit_run_envelope_tolerance,
     form_for,
     inherited_envelope_fit,
     is_carbon13_line,
+    measured_at,
     read_pool,
+    share_scans,
 )
 from mascope_backend.api.new.peak_assignments.row_terms import (
     ROLE_ISO_CHILD,
@@ -526,14 +529,19 @@ def _candidate(
     minutes: float | None,
     *,
     filename: str | None = None,
+    t0: float | None = None,
+    sample_file_id: str | None = None,
 ) -> SimpleNamespace:
-    """A sample of the batch acquired ``minutes`` after the reading file."""
+    """A sample of the batch acquired ``minutes`` after the reading file, its
+    window starting ``t0`` seconds into its file."""
     return SimpleNamespace(
         sample_item_id=f"si-{name}",
         sample_item_name=name,
         sample_batch_id="sb-1",
+        sample_file_id=sample_file_id or f"sf-{name}",
         filename=filename or f"orbi-{name}.raw",
         polarity="-",
+        t0=t0,
         datetime_utc=None if minutes is None else T0 + timedelta(minutes=minutes),
     )
 
@@ -697,6 +705,60 @@ class TestThePool:
         assert [f.sample_item_id for f in pool.files] == ["si-a"]
         assert (pool.span, pool.record()["span"]) == (None, None)
 
+    async def test_a_window_is_placed_by_its_own_start(self):
+        # Two windows of a file acquired an hour before the reading file: the
+        # later window, 50 minutes into it, is nearer than a file 20 minutes
+        # after; the earlier one, at its start, is not.
+        candidates = [
+            _candidate("early-window", -60, t0=0.0, sample_file_id="sf-w"),
+            _candidate("late-window", -60, t0=3000.0, sample_file_id="sf-w"),
+            _candidate("after", 20),
+        ]
+
+        pool, read = await self._read(candidates, nearest=2)
+
+        assert read == ["late-window", "after"]
+        assert pool.files[0].acquired == T0 - timedelta(minutes=10)
+        assert pool.span == (T0 - timedelta(minutes=10), T0 + timedelta(minutes=20))
+
+    async def test_a_reading_window_is_placed_by_its_own_start(self):
+        sample = _Sample("orbi-sample.raw")
+        sample.t0 = 1800.0  # half an hour into its file
+        candidates = [_candidate("before", 0), _candidate("after", 40)]
+
+        pool, _ = await self._read(candidates, nearest=1, sample=sample)
+
+        assert [f.sample_item_id for f in pool.files] == ["si-after"]
+        assert pool.span == (T0 + timedelta(minutes=30), T0 + timedelta(minutes=40))
+
+    async def test_a_window_of_the_file_itself_says_so_in_the_record(self):
+        sample = _Sample("orbi-sample.raw")
+        sample.sample_file_id = "sf-own"
+        candidates = [
+            _candidate("sibling", 0, t0=600.0, sample_file_id="sf-own"),
+            _candidate("other", 15),
+        ]
+
+        pool, _ = await self._read(candidates, sample=sample)
+
+        assert pool.record()["files"] == [
+            {
+                "sample_item_id": "si-sibling",
+                "lines": 3,
+                "absent": 0,
+                "same_file": True,
+            },
+            {"sample_item_id": "si-other", "lines": 3, "absent": 0},
+        ]
+
+    async def test_files_neither_of_which_names_its_file_are_not_one(self):
+        candidate = _candidate("other", 15)
+        candidate.sample_file_id = None
+
+        pool, _ = await self._read([candidate])
+
+        assert "same_file" not in pool.record()["files"][0]
+
     async def test_a_sample_in_no_batch_pools_nothing(self):
         sample = _Sample("orbi-sample.raw")
         sample.sample_batch_id = None
@@ -705,6 +767,106 @@ class TestThePool:
 
         assert (pool.files, pool.span, read) == ((), None, [])
         assert pool.record() == {"nearest": POOL_NEIGHBOURS, "files": [], "span": None}
+
+
+class TestSharedScans:
+    """Which samples of one file read scans in common (``share_scans``): those
+    a pool leaves out of each other's neighbours."""
+
+    @staticmethod
+    def _reach(t0=0.0, t1=600.0, **overrides) -> ScanReach:
+        values = {
+            "sample_file_id": "sf-1",
+            "polarity": "-",
+            "stream_id": "st-1",
+            "t0": t0,
+            "t1": t1,
+        }
+        values.update(overrides)
+        return ScanReach(**values)
+
+    def test_an_exact_copy_shares_them(self):
+        assert share_scans(self._reach(), self._reach())
+
+    def test_a_copy_of_an_instant_shares_them(self):
+        assert share_scans(self._reach(60.0, 60.0), self._reach(60.0, 60.0))
+
+    def test_overlapping_windows_share_them(self):
+        assert share_scans(self._reach(0.0, 600.0), self._reach(300.0, 900.0))
+        assert share_scans(self._reach(300.0, 900.0), self._reach(0.0, 600.0))
+
+    def test_windows_that_only_touch_do_not(self):
+        assert not share_scans(self._reach(0.0, 600.0), self._reach(600.0, 1200.0))
+        assert not share_scans(self._reach(600.0, 1200.0), self._reach(0.0, 600.0))
+
+    def test_apart_windows_do_not(self):
+        assert not share_scans(self._reach(0.0, 100.0), self._reach(200.0, 300.0))
+
+    @pytest.mark.parametrize(
+        "window", [(None, None), (None, 700.0), (500.0, None), (0.0, None)]
+    )
+    def test_a_missing_end_is_the_file_s_own(self, window):
+        assert share_scans(self._reach(*window), self._reach(550.0, 650.0))
+
+    def test_an_open_start_reaches_back_past_any_start(self):
+        assert share_scans(self._reach(None, 100.0), self._reach(-60.0, -30.0))
+
+    def test_an_open_start_ends_where_its_window_does(self):
+        assert not share_scans(self._reach(None, 100.0), self._reach(100.0, 200.0))
+
+    def test_an_open_end_starts_where_its_window_does(self):
+        assert not share_scans(self._reach(500.0, None), self._reach(0.0, 500.0))
+
+    def test_another_file_does_not(self):
+        assert not share_scans(self._reach(), self._reach(sample_file_id="sf-2"))
+
+    def test_a_reach_with_no_file_shares_none(self):
+        assert not share_scans(
+            self._reach(sample_file_id=None), self._reach(sample_file_id=None)
+        )
+
+    def test_another_polarity_does_not(self):
+        assert not share_scans(
+            self._reach(stream_id=None), self._reach(stream_id=None, polarity="+")
+        )
+
+    def test_a_sample_that_says_no_polarity_reads_either(self):
+        assert share_scans(self._reach(polarity=None), self._reach(polarity="+"))
+        assert share_scans(self._reach(polarity="+"), self._reach(polarity=None))
+
+    def test_another_stream_does_not(self):
+        assert not share_scans(self._reach(), self._reach(stream_id="st-2"))
+
+    def test_a_sample_that_names_no_stream_reads_every_one(self):
+        assert share_scans(self._reach(stream_id=None), self._reach())
+        assert share_scans(self._reach(), self._reach(stream_id=None))
+
+    def test_a_composite_and_its_segment_do(self):
+        segment = self._reach(stream_id="st-seg", composite_stream_id="st-cmp")
+        composite = self._reach(stream_id="st-cmp")
+
+        assert share_scans(segment, composite)
+        assert share_scans(composite, segment)
+
+    def test_two_segments_of_one_composite_do_not(self):
+        assert not share_scans(
+            self._reach(stream_id="st-a", composite_stream_id="st-cmp"),
+            self._reach(stream_id="st-b", composite_stream_id="st-cmp"),
+        )
+
+
+class TestMeasuredAt:
+    def test_a_window_starts_its_t0_into_its_file(self):
+        sample = SimpleNamespace(datetime_utc=T0, t0=90.0)
+
+        assert measured_at(sample) == T0 + timedelta(seconds=90)
+
+    @pytest.mark.parametrize("t0", [None, float("nan")])
+    def test_a_sample_with_no_window_starts_with_its_file(self, t0):
+        assert measured_at(SimpleNamespace(datetime_utc=T0, t0=t0)) == T0
+
+    def test_a_file_that_says_no_time_says_none(self):
+        assert measured_at(SimpleNamespace(datetime_utc=None, t0=90.0)) is None
 
 
 class TestADecoyInheritsItsControlsTolerance:

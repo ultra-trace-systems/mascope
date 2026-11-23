@@ -599,3 +599,225 @@ async def test_the_batch_reads_a_folded_samples_tolerance_where_it_has_no_run(ba
     assert tolerances[batch.samples["A"]] == EnvelopeTolerance.from_record(
         folded["envelope_tolerance"]
     )
+
+
+#: When the file cut into windows below was acquired.
+W0 = datetime(2026, 7, 5, 8, 0, tzinfo=timezone.utc)
+
+
+@pytest_asyncio.fixture
+async def windows(async_session_factory, pa_sample_view, batch):
+    """One Orbitrap file cut into samples of one batch (MAS-987), beside seven
+    files of their own, all at 10 microscans.
+
+    Of file ``F``, on its stream ``s`` (windows in seconds): ``A`` ``[0, 600]``,
+    ``A copy`` the same, ``B`` ``[600, 1200]``, ``C`` ``[300, 900]``, ``whole``
+    with no window; ``filter`` ``[0, 600]`` on another stream of ``F``;
+    ``composite`` ``[0, 300]`` on the composite ``s`` is a segment of;
+    ``positive`` ``[0, 600]`` at the other polarity, naming no stream. ``G0``
+    to ``G6``, files of their own, start 30, 60, ... 210 minutes after ``F``.
+
+    :return: The ids by name and the batch id.
+    """
+    batch_id = gen_id()
+    samples: dict[str, str] = {}
+    async with async_session_factory() as session:
+        dataset_id = (await session.get(SampleBatch, batch.id)).dataset_id
+        session.add(
+            SampleBatch(
+                sample_batch_id=batch_id,
+                dataset_id=dataset_id,
+                sample_batch_name="Envelope Pool Windows",
+                sample_batch_utc_created=_NOW,
+            )
+        )
+
+        async def add_file(minutes: int) -> str:
+            file_id = gen_id()
+            session.add(
+                SampleFile(
+                    sample_file_id=file_id,
+                    filename=f"orbi-envelope-windows-{file_id}.raw",
+                    instrument="orbi-test",
+                    datetime=datetime(2026, 7, 5, 8, 0, 0),
+                    datetime_utc=W0 + timedelta(minutes=minutes),
+                    length=3600.0,
+                    range=[50.0, 500.0],
+                    polarity="-",
+                )
+            )
+            await session.flush()
+            return file_id
+
+        def add_item(name, file_id, stream_id, t0=None, t1=None, polarity="-"):
+            item_id = gen_id()
+            session.add(
+                SampleItem(
+                    sample_item_id=item_id,
+                    sample_batch_id=batch_id,
+                    sample_file_id=file_id,
+                    sample_item_name=f"Envelope Windows {name}",
+                    sample_item_type="sample",
+                    polarity=polarity,
+                    stream_id=stream_id,
+                    t0=t0,
+                    t1=t1,
+                    sample_item_utc_created=_NOW,
+                )
+            )
+            samples[name] = item_id
+
+        file_id = await add_file(0)
+        composite = AcquisitionStream(
+            stream_id=gen_id(),
+            sample_file_id=file_id,
+            stream_key="composite -",
+            signature={"polarity": "-", "ms_order": 1, "composite": True},
+            stitch={},
+        )
+        session.add(composite)
+        await session.flush()
+        stream, other = _stream(file_id, 10), _stream(file_id, 10)
+        stream.composite_stream_id = composite.stream_id
+        other.stream_key = other.signature_key = "FTMS - p ESI Full ms [80-800]"
+        session.add_all([stream, other])
+        await session.flush()
+        add_item("A", file_id, stream.stream_id, 0.0, 600.0)
+        add_item("A copy", file_id, stream.stream_id, 0.0, 600.0)
+        add_item("B", file_id, stream.stream_id, 600.0, 1200.0)
+        add_item("C", file_id, stream.stream_id, 300.0, 900.0)
+        add_item("whole", file_id, stream.stream_id)
+        add_item("filter", file_id, other.stream_id, 0.0, 600.0)
+        add_item("composite", file_id, composite.stream_id, 0.0, 300.0)
+        add_item("positive", file_id, None, 0.0, 600.0, polarity="+")
+        for index in range(7):
+            own_file = await add_file(30 * (index + 1))
+            own_stream = _stream(own_file, 10)
+            session.add(own_stream)
+            await session.flush()
+            add_item(f"G{index}", own_file, own_stream.stream_id)
+        await session.commit()
+    return SimpleNamespace(id=batch_id, samples=samples)
+
+
+async def _candidate_names(windows, sample) -> list[str]:
+    names = {item_id: name for name, item_id in windows.samples.items()}
+    return [
+        names[c.sample_item_id] for c in await envelope_fit._batch_candidates(sample)
+    ]
+
+
+GS = [f"G{index}" for index in range(7)]
+
+
+@pytest.mark.parametrize(
+    ("reading", "left_out"),
+    [
+        # A copy shares every scan, either way round; an overlapping window,
+        # the whole file and the composite A's stream is a segment of share
+        # some.
+        ("A", {"A copy", "C", "whole", "composite"}),
+        ("A copy", {"A", "C", "whole", "composite"}),
+        ("C", {"A", "A copy", "B", "whole"}),
+        ("B", {"C", "whole"}),
+        ("whole", {"A", "A copy", "B", "C", "composite"}),
+        ("composite", {"A", "A copy", "whole"}),
+    ],
+)
+async def test_a_sample_of_the_file_that_shares_its_scans_is_no_neighbour(
+    windows, reading, left_out
+):
+    sample = await fetch_sample(windows.samples[reading])
+
+    names = await _candidate_names(windows, sample)
+
+    every = set(windows.samples) - {reading}
+    assert set(names) == every - left_out
+
+
+async def test_a_window_is_placed_by_its_own_start(windows):
+    sample = await fetch_sample(windows.samples["B"])
+
+    names = await _candidate_names(windows, sample)
+
+    # B starts 10 minutes into F; A, its copy, filter, composite and positive
+    # at F's start, and G0 20 minutes after B.
+    assert names[:5] == sorted(
+        ["A", "A copy", "filter", "composite", "positive"],
+        key=lambda n: windows.samples[n],
+    )
+    assert names[5:] == GS
+
+
+async def test_a_sample_its_batch_does_not_hold_spans_its_polarity(windows):
+    """Read off the sample itself, it names no stream, so every sample of its
+    file whose window meets its own is left out, on any stream."""
+    a = await fetch_sample(windows.samples["A"])
+    outsider = SimpleNamespace(
+        sample_item_id=gen_id(),
+        sample_batch_id=windows.id,
+        sample_file_id=a.sample_file_id,
+        polarity="-",
+        t0=300.0,
+        t1=600.0,
+        datetime_utc=a.datetime_utc,
+    )
+
+    names = await _candidate_names(windows, outsider)
+
+    # B and composite only touch its window; positive is of the other
+    # polarity.
+    assert set(names) == {"B", "composite", "positive", *GS}
+
+
+async def test_a_thin_window_pools_its_file_s_other_windows_each_as_one(windows):
+    lines_of = {
+        item_id: EnvelopeLines(np.full(5, 15.0), np.full(5, 0.5 + index / 100))
+        for index, item_id in enumerate(windows.samples.values())
+    }
+    read: list[str] = []
+    names = {item_id: name for name, item_id in windows.samples.items()}
+
+    fit = await _fit(windows.samples["A"], _reader(lines_of, read))
+    again = await _fit(windows.samples["A"], _reader(lines_of))
+
+    files = fit.record()["pool"]["files"]
+    # Six read where more than six are there: filter at A's own start, B ten
+    # minutes on, then G0 to G3. The composite, at no settings of its own,
+    # would take no place even if it shared no scans.
+    assert [names[entry["sample_item_id"]] for entry in files] == [
+        "filter",
+        "B",
+        "G0",
+        "G1",
+        "G2",
+        "G3",
+    ]
+    assert [names[item_id] for item_id in read] == ["filter", "B", *GS[:4]]
+    assert [entry.get("same_file", False) for entry in files] == [
+        True,
+        True,
+        False,
+        False,
+        False,
+        False,
+    ]
+    assert fit.fit.pooled_files == 7
+    assert again.record() == fit.record()
+
+
+async def test_a_copy_pools_neither_its_source_nor_what_overlaps_it(windows):
+    names = {item_id: name for name, item_id in windows.samples.items()}
+    lines_of = {
+        item_id: EnvelopeLines(np.full(5, 15.0), np.full(5, 0.6))
+        for item_id in windows.samples.values()
+    }
+
+    for reading, source in (("A copy", "A"), ("A", "A copy")):
+        fit = await _fit(windows.samples[reading], _reader(lines_of))
+
+        pooled = {
+            names[entry["sample_item_id"]] for entry in fit.record()["pool"]["files"]
+        }
+        assert source not in pooled
+        assert pooled.isdisjoint({"C", "whole"})
