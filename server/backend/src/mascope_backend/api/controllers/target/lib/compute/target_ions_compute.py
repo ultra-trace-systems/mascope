@@ -592,13 +592,20 @@ def group_target_isotopes(
     not yet taken, every line within half a FWHM of it (mascope#2587); lines
     under the envelope's floor less than one FWHM apart that together clear it
     are one line (mascope#3163); a line still under it less than one FWHM from a
-    line over it is added to that line (mascope#2591). The library keeps "all"
+    line over it is taken into that line (mascope#2591). The library keeps "all"
     lines, so a line under the floor that no line took stays a line of its own.
 
     The isotope formulae are concatenated with "/" separator for all isotopes
     that fall within the same line, in m/z order, the most abundant first up
-    to what the column holds (:func:`fit_isotope_names`). The line's m/z and
-    abundance count every isotope in it, named or not.
+    to what the column holds (:func:`fit_isotope_names`). How the line's m/z
+    and abundance count its isotopes depends on what the file's intensity is.
+    By areas (a TOF, or a plain R(m/z)) they count every isotope in it, named
+    or not: their summed abundance at their abundance-weighted m/z. By heights
+    (an Orbitrap's ``line_model.HeightResolution``) the line is its dominant
+    isotope, at that isotope's m/z, with the abundance of the isotopes within
+    the resolution's ``sum_span`` of it; the other isotopes, a line taken in
+    under the floor among them, are named on the line and add nothing
+    (mascope#3338).
 
     :param masses: The fine lines' m/z.
     :param probs: Their abundances.
