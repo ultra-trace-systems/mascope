@@ -306,6 +306,126 @@ class TestCarryAcquisitionDrift:
         assert "acquisition_drift" not in fit
 
 
+def _tof_fit(raw_ppm: float, observed_ppm: float = 0.3, **keys) -> dict:
+    """A TOF fit whose two lines were observed ``observed_ppm`` off, and
+    which keeps an acquisition axis reading them ``raw_ppm`` high (MAS-937):
+    mode 0, whose m/z goes with ``1 / p1 ** 2``."""
+    fit = {
+        "mode": 0,
+        "par": [2800.0, -0.5],
+        "quality": {
+            "pre_fit_mz_error_ppm": abs(observed_ppm),
+            "points": [
+                {
+                    "target_mz": mz,
+                    "observed_mz": mz * (1 + observed_ppm * 1e-6),
+                    "retained": True,
+                }
+                for mz in (61.9884, 124.9840)
+            ],
+        },
+        "acquisition_axis": {
+            "mode": 0,
+            "par": [2800.0 / (1 + raw_ppm * 1e-6) ** 0.5, -0.5],
+            "raw_index_offset": 0,
+        },
+    }
+    fit.update(keys)
+    return fit
+
+
+class TestTheMarkerOfAFitThatKeepsTheAcquisitionAxis:
+    """MAS-937: a TOF fit that keeps its acquisition axis is flagged on the
+    offset its kept lines read on that axis, on a refit as on a first fit:
+    nothing is carried, and the threshold decides the flag alone."""
+
+    def test_a_refit_is_flagged_on_the_raw_axis_not_its_pre_fit_error(self):
+        fit = _tof_fit(raw_ppm=-84.0)
+
+        cleared = carry_acquisition_drift(fit, {"status": "ok"}, TOF_FILE)
+
+        assert cleared is False
+        assert fit["acquisition_drift"] is True
+        assert fit["acquisition_drift_ppm"] == pytest.approx(-84.0, abs=1e-6)
+
+    def test_a_carried_magnitude_gives_way_to_the_raw_axis(self):
+        previous = {"acquisition_drift": True, "acquisition_drift_ppm": 120.0}
+        fit = _tof_fit(raw_ppm=84.0)
+
+        carry_acquisition_drift(fit, previous, TOF_FILE)
+
+        assert fit["acquisition_drift_ppm"] == pytest.approx(84.0, abs=1e-6)
+
+    def test_a_raw_axis_within_the_limit_drops_a_carried_marker(self):
+        """An automatic refit: the marker's carried magnitude came from a
+        fit the raw axis does not bear out."""
+        previous = {"acquisition_drift": True, "acquisition_drift_ppm": 84.0}
+        fit = _tof_fit(raw_ppm=20.0)
+
+        cleared = carry_acquisition_drift(fit, previous, TOF_FILE)
+
+        assert cleared is False
+        assert "acquisition_drift" not in fit
+        assert "drift_cleared_at" not in fit
+
+    def test_an_operator_refit_flags_a_drifting_axis(self):
+        """The raw axis is the instrument's reading whichever fit the
+        operator overrules."""
+        previous = {
+            "status": "ok",
+            "acquisition_drift": True,
+            "acquisition_drift_ppm": 9,
+        }
+        fit = _tof_fit(raw_ppm=84.0)
+
+        cleared = carry_acquisition_drift(
+            fit, previous, TOF_FILE, manual=True, cleared_by=7
+        )
+
+        assert cleared is False
+        assert fit["acquisition_drift_ppm"] == pytest.approx(84.0, abs=1e-6)
+        assert "drift_cleared_at" not in fit
+
+    def test_an_operator_refit_within_the_limit_records_the_clear(self):
+        previous = {
+            "status": "ok",
+            "acquisition_drift": True,
+            "acquisition_drift_ppm": 84,
+        }
+        fit = _tof_fit(raw_ppm=20.0)
+
+        cleared = carry_acquisition_drift(
+            fit, previous, TOF_FILE, manual=True, cleared_by=7
+        )
+
+        assert cleared is True
+        assert "acquisition_drift" not in fit
+        assert fit["drift_cleared_by"] == 7
+
+    def test_kept_offsets_flag_it_as_the_axis_does(self):
+        fit = _tof_fit(raw_ppm=0.0)
+        del fit["acquisition_axis"]
+        fit["acquisition_offsets"] = [
+            {"target_mz": 61.9884, "offset_ppm": 70.0},
+            {"target_mz": 124.9840, "offset_ppm": 60.0},
+        ]
+
+        carry_acquisition_drift(fit, None, TOF_FILE)
+
+        assert fit["acquisition_drift_ppm"] == pytest.approx(65.0)
+
+    def test_an_axis_that_reads_no_line_falls_back_to_the_carry(self):
+        """No offset to read (the axis lacks where it starts): the record is
+        judged as one without the axis."""
+        previous = {"acquisition_drift": True, "acquisition_drift_ppm": 84.0}
+        fit = _tof_fit(raw_ppm=84.0)
+        del fit["acquisition_axis"]["raw_index_offset"]
+
+        carry_acquisition_drift(fit, previous, TOF_FILE)
+
+        assert fit["acquisition_drift_ppm"] == pytest.approx(84.0)
+
+
 class TestManualRecalibrationClearsTheMarker:
     """A human recalibrating asserts the previous fit was wrong.
 

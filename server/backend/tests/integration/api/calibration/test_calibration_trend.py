@@ -878,3 +878,175 @@ async def test_the_export_lists_the_latest_files_of_a_window_with_more(
         instrument["files"]["private"],
         instrument["files"]["failed"],
     ]
+
+
+# --- The acquisition axis a record keeps (MAS-937) ---
+
+#: The acquisition axis of :func:`_record`'s fit, read 80 ppm low: a mode-0
+#: m/z goes with ``1 / p1 ** 2``.
+_LOW = 2800.0 / (1 - 80e-6) ** 0.5
+
+
+def _refit(collection_id, sha, **keys):
+    """A refit's record: its lines observed near 0 ppm on the axis the fit
+    before set, and ``keys`` of what it kept of the acquisition axis."""
+    record = _record(collection_id, sha, offset_ppm=0.2)
+    record.update(keys)
+    return record
+
+
+@pytest_asyncio.fixture
+async def axes(async_session_factory):
+    """A TOF instrument's files an hour apart, each a way a record says how
+    its acquisition axis read the lines: a first fit from before the keys,
+    read 80 ppm low; refits that kept the axis, in mode 0 and, counted from
+    500 samples into the raw axis, in mode 2; one that kept the first fit's
+    offsets; three whose axis gives no m/z (a zero p1, a fractional power of
+    a negative number, a mode with no closed form) and one whose fit time is
+    not one; a new version of the collection, refitted onto the first file
+    acquired and, a week earlier, onto the last; and a fit that chose from no
+    lines."""
+    name = f"trend-axes-{gen_id(6).lower()}"
+    cid = gen_id(16)
+    axis0 = {"mode": 0, "par": [_LOW, -0.5], "raw_index_offset": 0}
+    mode2_fit = {"mode": 2, "par": [2800.0, -500.5, 0.5]}
+    axis2 = {"mode": 2, "par": [_LOW, -0.5, 0.5], "raw_index_offset": 500}
+    kept = [
+        {"ion": "NO3-", "target_mz": 61.9884, "offset_ppm": -79.0},
+        {"ion": "Br3-", "target_mz": "236.7536", "offset_ppm": 1.0},
+        {"ion": "Br3-", "target_mz": 236.7536, "offset_ppm": -60.0},
+    ]
+    records = {
+        "late": _refit(
+            cid, _V2, acquisition_axis=axis0, fitted_at="2026-11-17T08:00:00+00:00"
+        ),
+        "first": _record(cid, _V1),
+        "axis": _refit(cid, _V1, acquisition_axis=axis0),
+        "mode2": {**_refit(cid, _V1, acquisition_axis=axis2), **mode2_fit},
+        "kept": _refit(cid, _V1, acquisition_offsets=kept),
+        "zero": _refit(
+            cid,
+            _V1,
+            acquisition_axis={**axis0, "par": [0.0, -0.5]},
+            fitted_at="yesterday",
+        ),
+        "negative": _refit(
+            cid,
+            _V1,
+            acquisition_axis={
+                "mode": 2,
+                "par": [_LOW, 1e9, 0.5],
+                "raw_index_offset": 0,
+            },
+        ),
+        "mode3": _refit(
+            cid,
+            _V1,
+            acquisition_axis={"mode": 3, "par": [1, 2, 3, 4], "raw_index_offset": 0},
+        ),
+        "early": _refit(
+            cid, _V2, acquisition_axis=axis0, fitted_at="2026-11-10T08:00:00+00:00"
+        ),
+        "nolines": _refit(cid, _V1, acquisition_axis=axis0),
+    }
+    records["nolines"]["quality"]["points"] = []
+    files: dict[str, str] = {}
+    async with async_session_factory() as session:
+        for hour, (key, record) in enumerate(records.items(), start=1):
+            files[key] = gen_id(16)
+            at = _W0 + timedelta(hours=hour)
+            session.add(
+                SampleFile(
+                    sample_file_id=files[key],
+                    filename=f"{name}_{key}.h5",
+                    instrument=name,
+                    instrument_type="tof",
+                    datetime=at.replace(tzinfo=None),
+                    datetime_utc=at,
+                    length=60.0,
+                    range=[10.0, 600.0],
+                    polarity="-",
+                    mz_calibration=record,
+                )
+            )
+        await session.commit()
+    yield {"name": name, "files": files, "collection": cid}
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(SampleFile).where(SampleFile.sample_file_id.in_(files.values()))
+        )
+        await session.commit()
+
+
+def _rounded(values):
+    return [None if value is None else round(value, 6) for value in values]
+
+
+def _medians(quartiles):
+    return _rounded([None if q is None else q[1] for q in quartiles])
+
+
+#: What each file of :func:`axes` reads, its kept line and its other line.
+_AXES_NITRATE = [-80.0, -80.0, -80.0, -80.0, -79.0, None, None, None, -80.0, None]
+_AXES_BROMIDE = [-80.0, -80.0, -80.0, -80.0, -60.0, None, None, None, -80.0, None]
+
+
+@pytest.mark.asyncio
+async def test_a_refit_reads_the_acquisition_axis_its_record_kept(owner_client, axes):
+    data = await _trend(owner_client, _window(axes))
+
+    assert _ids(axes, data) == list(axes["files"])
+    lines = {line["ion"]: line for line in data["calibrants"]}
+    assert _rounded(lines["NO3-"]["offset_ppm"]) == _AXES_NITRATE
+    assert _rounded(lines["Br3-"]["offset_ppm"]) == _AXES_BROMIDE
+    assert _rounded([f["axis_offset_ppm"] for f in data["files"]]) == _AXES_NITRATE
+    assert [f["fitted_utc"] for f in data["files"]] == [
+        "2026-11-17T08:00:00+00:00",
+        *[None] * 7,
+        "2026-11-10T08:00:00+00:00",
+        None,
+    ]
+    assert data["files"][-1]["n_candidates"] == 0
+
+
+@pytest.mark.asyncio
+async def test_bins_read_the_acquisition_axis_as_the_files_do(
+    owner_client, axes, binned
+):
+    """One file a bin: each bin's median is its file's reading."""
+    data = await _trend(owner_client, _window(axes))
+
+    assert data["binned"] is True
+    assert _medians([b["axis_offset_ppm"] for b in data["bins"]]) == _AXES_NITRATE
+    # A fit that chose from no lines chose from none, not from unknown ones
+    assert data["bins"][-1]["n_candidates"] == [0.0, 0.0, 0.0]
+    assert data["bins"][-1]["n_without_lines"] == 0
+    lines = {line["ion"]: line for line in data["calibrants"]}
+    assert _medians(lines["NO3-"]["offset_ppm"]) == _AXES_NITRATE
+    assert _medians(lines["Br3-"]["offset_ppm"]) == _AXES_BROMIDE
+
+
+@pytest.mark.asyncio
+async def test_a_change_is_placed_when_its_version_was_fitted(
+    owner_client, axes, monkeypatch
+):
+    """V2 was refitted onto the first file acquired and, earlier, onto the
+    last: V2 is the edit, made when its first record was written, on the
+    last file, served alike in bins."""
+    files = await _trend(owner_client, _window(axes))
+    monkeypatch.setattr(calibration_trend, "TREND_MAX_FILES", 0)
+    bins = await _trend(owner_client, _window(axes))
+
+    assert files["changes"] == [
+        {
+            "datetime_utc": "2026-11-10T08:00:00+00:00",
+            "sample_file_id": axes["files"]["early"],
+            "kind": "edited",
+            "collection": 0,
+            "collection_id": axes["collection"],
+            "isotopes_sha256": _V2,
+            "previous_isotopes_sha256": _V1,
+        }
+    ]
+    assert bins["changes"] == files["changes"]
+    assert bins["collections"] == files["collections"]

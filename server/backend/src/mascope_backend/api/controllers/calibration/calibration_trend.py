@@ -16,15 +16,22 @@ The trend serves, per file:
 - the residual of each calibrant line, kept or left out;
 - the fit's mean residual over the lines it kept (``post_fit_ppm``);
 - how many lines it kept and how many it chose from;
-- the offset of the axis the fit read its peaks on (``axis_offset_ppm``): the
-  signed mean error of the kept lines before the fit. On a file's first fit
-  that is the acquisition's own axis. A refit reads the peaks on the axis the
-  previous fit set, so its offset is that fit's error, near zero; the record
-  does not keep the acquisition's coefficients to read the raw axis again.
+- the offset of the acquisition axis (``axis_offset_ppm``): the signed mean,
+  over the kept lines, of each line's offset on the axis the acquisition
+  software wrote (``acquisition_axis.line_offsets``), which every line also
+  serves on its own (``offset_ppm``). A record keeps that axis through every
+  refit (MAS-937), so a refit reads the same offset as the file's first fit,
+  not the near-zero error of the axis the previous fit set. A record written
+  before it kept the axis reads its lines' observed offsets, which are the
+  acquisition axis's on a first fit only.
 
 A record written before the points were kept has its counts and mean errors
 only: its file is listed with no calibrant residuals and no signed offset, and
 ``pre_fit_abs_ppm`` gives the size of its offset.
+
+A change of calibrant collection is placed at the time a record fitted with
+the new version was first written (``fitted_at``); a record from before that
+key is placed at its file's acquisition time, which no fit precedes.
 
 A window of more files than a chart can draw one by one is served in bins
 instead (:func:`binned_trend`): per hour or per day, the quartiles of each of
@@ -40,6 +47,10 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import JSON, Boolean, Integer, func, literal, or_, select, text
 from sqlalchemy.types import TIMESTAMP
 
+from mascope_backend.api.controllers.calibration.lib import acquisition_axis
+from mascope_backend.api.controllers.calibration.lib.acquisition_axis import (
+    TARGET_MZ_DECIMALS,
+)
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.datetimes import as_utc
 from mascope_backend.api.new.workspaces.dependencies import (
@@ -74,10 +85,6 @@ EXPORT_MAX_FILES = 20_000
 #: A window of this many days or fewer is binned per hour, a longer one per
 #: day.
 TREND_HOURLY_MAX_DAYS = 30
-
-#: Decimals a calibrant line's exact m/z is told apart by: a line's exact m/z
-#: is the same number in every record that lists it.
-TARGET_MZ_DECIMALS = 4
 
 #: The columns of the export, one row per calibrant line of each file; a file
 #: whose record lists no lines has one row, with the line's columns empty.
@@ -114,17 +121,6 @@ def _number(value) -> float | None:
     return value if math.isfinite(value) else None
 
 
-def _offset_ppm(point: dict) -> float | None:
-    """How far a line read off before the fit: observed against exact m/z, ppm."""
-    target, observed = (
-        _number(point.get("target_mz")),
-        _number(point.get("observed_mz")),
-    )
-    if target is None or observed is None or target <= 0:
-        return None
-    return 1e6 * (observed - target) / target
-
-
 def record_points(record: dict) -> list[dict] | None:
     """The calibrant lines a record lists, each a dict; None for none listed."""
     quality = record.get("quality")
@@ -155,16 +151,14 @@ def file_summary(record: dict) -> dict:
         ``n_candidates``, the lines it chose from (None where the record lists
         none); ``n_ions``; ``post_fit_ppm`` and ``pre_fit_abs_ppm``, the mean
         size of the kept lines' error after and before the fit;
-        ``axis_offset_ppm``, the signed mean of their error before it (None
-        where the record lists no lines); ``model_mode``; ``node_version``.
+        ``axis_offset_ppm``, the signed mean of their offsets on the
+        acquisition axis (``acquisition_axis.axis_offset_ppm``; None where
+        the record lists no lines); ``model_mode``; ``node_version``;
+        ``fitted_utc``, when the record was written (None where it does not
+        say).
     """
     quality = record.get("quality") if isinstance(record.get("quality"), dict) else {}
     points = record_points(record)
-    offsets = [
-        offset
-        for point in points or []
-        if point.get("retained") is True and (offset := _offset_ppm(point)) is not None
-    ]
     n_points = quality.get("n_points")
     model = quality.get("model") if isinstance(quality.get("model"), dict) else {}
     mode = model.get("mode", record.get("mode") if quality else None)
@@ -180,7 +174,7 @@ def file_summary(record: dict) -> dict:
         else None,
         "post_fit_ppm": _number(quality.get("post_fit_mz_error_ppm")),
         "pre_fit_abs_ppm": _number(quality.get("pre_fit_mz_error_ppm")),
-        "axis_offset_ppm": sum(offsets) / len(offsets) if offsets else None,
+        "axis_offset_ppm": acquisition_axis.axis_offset_ppm(record),
         "model_mode": mode
         if isinstance(mode, int) and not isinstance(mode, bool)
         else None,
@@ -189,6 +183,7 @@ def file_summary(record: dict) -> dict:
             if isinstance(node_version, int) and not isinstance(node_version, bool)
             else None
         ),
+        "fitted_utc": _utc(acquisition_axis.fitted_at(record)),
     }
 
 
@@ -216,18 +211,21 @@ def build_trend(rows: list[tuple]) -> dict:
         id, name, acquisition time and the index of its collection version in
         ``collections`` (None for a record that names none); ``calibrants``,
         one per line any record lists, by exact m/z, each with its ``ion``,
-        ``target_mz`` and, aligned with ``files``, its ``residual_ppm`` and
-        whether the fit kept it (``retained``), None where a file's record does
-        not list the line; and ``collections``, each version of a collection
-        the records name: ``id``, ``isotopes_sha256``, its first and last
-        file's acquisition time and how many files name it, in the order of
-        their first file.
+        ``target_mz`` and, aligned with ``files``, its ``residual_ppm``, its
+        ``offset_ppm`` on the acquisition axis
+        (``acquisition_axis.line_offsets``) and whether the fit kept it
+        (``retained``), None where a file's record does not list the line;
+        and ``collections``, each version of a collection the records name:
+        ``id``, ``isotopes_sha256``, its first and last file's acquisition
+        time, how many files name it, and the first record fitted with it
+        (:func:`_first_fitted`), in the order of their first file.
     """
     files: list[dict] = []
     versions: dict[tuple[str, str], dict] = {}
     lines: dict[tuple[str | None, float], dict] = {}
     for index, (sample_file_id, filename, acquired, record) in enumerate(rows):
         version = record_collection(record)
+        summary = file_summary(record)
         if version is not None:
             entry = versions.setdefault(
                 version,
@@ -237,20 +235,30 @@ def build_trend(rows: list[tuple]) -> dict:
                     "first_utc": _utc(acquired),
                     "first_file": index,
                     "n_files": 0,
+                    "first_fitted_utc": None,
+                    "first_fitted_file_id": None,
                 },
             )
             entry["last_utc"] = _utc(acquired)
             entry["n_files"] += 1
+            fitted = summary["fitted_utc"] or _utc(acquired)
+            if entry["first_fitted_utc"] is None or _instant(fitted) < _instant(
+                entry["first_fitted_utc"]
+            ):
+                entry["first_fitted_utc"] = fitted
+                entry["first_fitted_file_id"] = sample_file_id
         files.append(
             {
                 "sample_file_id": sample_file_id,
                 "filename": filename,
                 "datetime_utc": _utc(acquired),
                 "collection": version,
-                **file_summary(record),
+                **summary,
             }
         )
-        for point in record_points(record) or []:
+        points = record_points(record) or []
+        offsets = acquisition_axis.line_offsets(record) or []
+        for point, offset in zip(points, offsets):
             key = calibrant_key(point)
             if key is None:
                 continue
@@ -261,7 +269,7 @@ def build_trend(rows: list[tuple]) -> dict:
             # write - is read once: kept over left out, then the first.
             if index in line and (line[index][1] or not retained):
                 continue
-            line[index] = (residual, retained)
+            line[index] = (residual, retained, offset)
     order = sorted(versions, key=lambda version: versions[version]["first_file"])
     position = {version: i for i, version in enumerate(order)}
     for entry in files:
@@ -276,6 +284,9 @@ def build_trend(rows: list[tuple]) -> dict:
                 "residual_ppm": [
                     line[i][0] if i in line else None for i in range(len(files))
                 ],
+                "offset_ppm": [
+                    line[i][2] if i in line else None for i in range(len(files))
+                ],
                 "retained": [
                     line[i][1] if i in line else None for i in range(len(files))
                 ],
@@ -288,8 +299,12 @@ def build_trend(rows: list[tuple]) -> dict:
     return {"files": files, "calibrants": calibrants, "collections": collections}
 
 
+def _instant(value: str) -> datetime:
+    """An ISO 8601 time the trend serves, as an instant to compare."""
+    return as_utc(datetime.fromisoformat(value))
+
+
 def collection_changes(
-    files: list[dict],
     collections: list[dict],
     seen_before: set[tuple[str, str]],
     last_before: dict[str, str],
@@ -299,21 +314,23 @@ def collection_changes(
     When the calibrant collection the files were fitted with changed.
 
     A version of a collection (its id and isotope hash) is new where no file
-    acquired before it was fitted with it. Its first file is then marked, as
-    ``edited`` when an earlier file was fitted with another version of the
-    same collection, as ``first_used`` when no earlier file was fitted with
-    that collection at all but some file with another, and not at all when
-    no earlier file names a collection: the records begin there.
+    acquired before the window was fitted with it. It is marked where it was
+    first fitted with (``first_fitted_utc``, ``first_fitted_file_id``): when
+    the first record naming it was written (``fitted_at``), or, for a record
+    from before that key, when its file was acquired, which no fit of it
+    precedes. It is marked ``edited`` when another version of the same
+    collection was fitted with before it, ``first_used`` when no version of
+    that collection was but one of another, and not at all when nothing was
+    fitted with a collection before it: the records begin there.
 
-    Files are ordered by when they were acquired, not by when they were
-    fitted, which no record says. A file refitted with a newer version
-    therefore moves that version's first file back to its own acquisition
-    time; a version every file has since been refitted away from is named by
-    no record, and its change is not marked.
+    So a change is placed when it was made, also where the files refitted
+    with it were acquired long before, or in another order than they were
+    fitted. A version every file has since been refitted away from is named
+    by no record, and its change is not marked.
 
-    :param files: The trend's files, oldest first (:func:`build_trend`).
-    :param collections: Its collection versions, in the order of their first
-        file.
+    :param collections: The trend's collection versions, each with its
+        ``id``, ``isotopes_sha256``, ``first_fitted_utc`` and
+        ``first_fitted_file_id``.
     :param seen_before: The versions some file acquired before the window was
         fitted with.
     :param last_before: Per collection id the isotope hash of the latest file
@@ -321,26 +338,23 @@ def collection_changes(
     :param recorded_before: Whether any file acquired before the window names
         a collection.
     :return: Per change, oldest first: ``datetime_utc`` and ``sample_file_id``
-        of the first file fitted with the version, ``kind``, the version's
+        of the first record fitted with the version, ``kind``, the version's
         ``collection`` index, ``collection_id`` and ``isotopes_sha256``, and
         ``previous_isotopes_sha256``, the hash of the collection's latest
-        earlier file for an ``edited`` change, else None.
+        version fitted with before it for an ``edited`` change, else None.
     """
-    first_file = {}
-    for index, entry in enumerate(files):
-        if entry["collection"] is not None:
-            first_file.setdefault(entry["collection"], index)
+    # By when each was first fitted with; a tie in the order served.
+    order = sorted(
+        range(len(collections)),
+        key=lambda i: (_instant(collections[i]["first_fitted_utc"]), i),
+    )
     changes = []
-    for position, version in enumerate(collections):
+    for rank, position in enumerate(order):
+        version = collections[position]
         key = (version["id"], version["isotopes_sha256"])
-        if key in seen_before or position not in first_file:
+        if key in seen_before:
             continue
-        index = first_file[position]
-        earlier = [
-            collections[entry["collection"]]
-            for entry in files[:index]
-            if entry["collection"] is not None
-        ]
+        earlier = [collections[i] for i in order[:rank]]
         same = [other for other in earlier if other["id"] == version["id"]]
         previous = (
             same[-1]["isotopes_sha256"] if same else last_before.get(version["id"])
@@ -353,8 +367,8 @@ def collection_changes(
             continue
         changes.append(
             {
-                "datetime_utc": files[index]["datetime_utc"],
-                "sample_file_id": files[index]["sample_file_id"],
+                "datetime_utc": version["first_fitted_utc"],
+                "sample_file_id": version["first_fitted_file_id"],
                 "kind": kind,
                 "collection": position,
                 "collection_id": version["id"],
@@ -362,7 +376,7 @@ def collection_changes(
                 "previous_isotopes_sha256": previous,
             }
         )
-    # Oldest first already: the versions come in the order of their first file.
+    # Oldest first already: the versions come in the order they were fitted.
     return changes
 
 
@@ -387,43 +401,41 @@ def binned_trend(raw: dict) -> dict:
     over are two bins, one in each collection's colour. Per bin it serves the
     quartiles (``[q1, median, q3]``, None where no file of it has the
     measure) of what :func:`file_summary` reads per file, and per calibrant
-    line the quartiles of its residual over the bin's files that list it,
-    kept or left out, and how many list it and kept it. A line listed twice
-    in one record counts twice; the node writes each once.
+    line the quartiles of its residual and of its offset on the acquisition
+    axis over the bin's files that list it, kept or left out, and how many
+    list it and kept it. A line listed twice in one record counts twice; the
+    node writes each once.
 
-    :param raw: The statement's ``bins``, ``lines``, ``versions`` and
-        ``runs`` as the database aggregates them, None for none.
+    :param raw: The statement's ``bins``, ``lines`` and ``versions`` as the
+        database aggregates them, None for none.
     :return: ``bins``, oldest first: ``start_utc``, ``collection_id``,
         ``n_files``, ``n_failed``, ``n_without_lines`` (fits whose record
         lists no lines) and the quartiles of ``axis_offset_ppm``,
         ``post_fit_ppm``, ``n_points`` and ``n_candidates``; ``calibrants``,
         one per line by exact m/z, each with its ``ion``, ``target_mz`` and,
-        aligned with ``bins``, the quartiles of its ``residual_ppm``,
-        ``n_listed`` and ``n_kept``; ``collections`` as :func:`build_trend`
-        serves them; and ``runs``, the file that begins each run of files
-        fitted with one version, oldest first, each ``datetime_utc``,
-        ``sample_file_id`` and the version's index in ``collections`` (the
-        files :func:`collection_changes` needs to place the changes).
+        aligned with ``bins``, the quartiles of its ``residual_ppm`` and its
+        ``offset_ppm``, ``n_listed`` and ``n_kept``; and ``collections`` as
+        :func:`build_trend` serves them, in the order of their first file,
+        which :func:`collection_changes` places the changes from.
     """
-    runs = raw.get("runs") or []
-    versions = {
-        (version["collection_id"], version["isotopes_sha256"]): version
-        for version in raw.get("versions") or []
-    }
-    # In the order of their first file, which begins a run.
-    order = list(
-        dict.fromkeys((run["collection_id"], run["isotopes_sha256"]) for run in runs)
+    versions = sorted(
+        raw.get("versions") or [],
+        key=lambda version: (
+            datetime.fromisoformat(version["first_utc"]),
+            version["first_file_id"],
+        ),
     )
-    position = {version: i for i, version in enumerate(order)}
     collections = [
         {
-            "id": version[0],
-            "isotopes_sha256": version[1],
-            "first_utc": _naive_utc(versions[version]["first_utc"]),
-            "last_utc": _naive_utc(versions[version]["last_utc"]),
-            "n_files": versions[version]["n_files"],
+            "id": version["collection_id"],
+            "isotopes_sha256": version["isotopes_sha256"],
+            "first_utc": _naive_utc(version["first_utc"]),
+            "last_utc": _naive_utc(version["last_utc"]),
+            "n_files": version["n_files"],
+            "first_fitted_utc": _naive_utc(version["first_fitted_utc"]),
+            "first_fitted_file_id": version["first_fitted_file_id"],
         }
-        for version in order
+        for version in versions
     ]
     bins = [
         {
@@ -450,26 +462,20 @@ def binned_trend(raw: dict) -> dict:
                 "ion": entry["ion"],
                 "target_mz": entry["target_mz"],
                 "residual_ppm": [None] * len(bins),
+                "offset_ppm": [None] * len(bins),
                 "n_listed": [0] * len(bins),
                 "n_kept": [0] * len(bins),
             },
         )
         i = index[(_naive_utc(entry["bucket"]), entry["collection_id"])]
         line["residual_ppm"][i] = entry["residual_ppm"]
+        line["offset_ppm"][i] = entry["offset_ppm"]
         line["n_listed"][i] = entry["n_listed"]
         line["n_kept"][i] = entry["n_kept"]
     return {
         "bins": bins,
         "calibrants": sorted(lines.values(), key=lambda line: line["target_mz"]),
         "collections": collections,
-        "runs": [
-            {
-                "datetime_utc": _naive_utc(run["at_utc"]),
-                "sample_file_id": run["sample_file_id"],
-                "collection": position[(run["collection_id"], run["isotopes_sha256"])],
-            }
-            for run in runs
-        ],
     }
 
 
@@ -515,6 +521,65 @@ def _collection_sha_of():
     ].as_string()
 
 
+def _sql_number(path: str) -> str:
+    """SQL for the JSONB value at ``path`` of ``rec`` as a float, NULL where it
+    is not a number."""
+    return (
+        f"CASE WHEN jsonb_typeof(rec #> '{path}') = 'number' "
+        f"THEN (rec #>> '{path}')::float8 END"
+    )
+
+
+#: SQL for a calibrant line's offset on the acquisition axis, as
+#: ``acquisition_axis.line_offsets`` reads it, for a point ``p`` of a record
+#: whose fields ``f`` reads and whose exact m/z is ``l.target``: with an axis,
+#: the axis's m/z at the fit's index of the exact m/z (``i.raw``); with kept
+#: offsets, the first kept for the line's exact m/z; with neither, the
+#: observed m/z against the exact. Every division and power is guarded with
+#: a CASE, which alone fixes the order SQL evaluates in.
+_LINE_OFFSET_SQL = """
+CASE WHEN l.target > 0 THEN
+    CASE
+    WHEN f.axis IS NOT NULL THEN 1e6 * (i.raw - l.target) / l.target
+    WHEN f.kept_offsets IS NOT NULL THEN (
+        SELECT CASE WHEN jsonb_typeof(o -> 'offset_ppm') = 'number'
+                    THEN (o ->> 'offset_ppm')::float8 END
+        FROM jsonb_array_elements(f.kept_offsets) WITH ORDINALITY AS k(o, n)
+        WHERE CASE WHEN jsonb_typeof(o -> 'target_mz') = 'number'
+                   THEN round((o ->> 'target_mz')::numeric, :decimals) END
+              = round(l.target::numeric, :decimals)
+        ORDER BY n
+        LIMIT 1
+    )
+    WHEN jsonb_typeof(p -> 'observed_mz') = 'number'
+        THEN 1e6 * ((p ->> 'observed_mz')::float8 - l.target) / l.target
+    END
+END
+"""
+
+#: SQL for the acquisition axis's m/z at the fit's index of ``l.target``
+#: (:func:`acquisition_axis.index_at`, :func:`acquisition_axis.mz_at`), the
+#: index moved by the samples the stored axis starts after.
+_RAW_MZ_SQL = """
+SELECT CASE f.axis_mode
+    WHEN 0 THEN CASE WHEN f.ap0 <> 0 THEN power((j.j - f.ap1) / f.ap0, 2) END
+    WHEN 1 THEN CASE WHEN j.j <> f.ap1 THEN power(f.ap0 / (j.j - f.ap1), 2) END
+    WHEN 2 THEN CASE WHEN f.ap0 <> 0 AND f.ap2 <> 0 THEN
+        CASE WHEN (j.j - f.ap1) / f.ap0 > 0
+             THEN power((j.j - f.ap1) / f.ap0, 1 / f.ap2) END END
+    WHEN 5 THEN f.ap0 * j.j * j.j + f.ap1 * j.j + f.ap2
+END AS raw
+FROM (
+    SELECT CASE WHEN l.target > 0 THEN
+        CASE f.fit_mode
+        WHEN 0 THEN f.fp0 * sqrt(l.target) + f.fp1
+        WHEN 1 THEN f.fp0 / sqrt(l.target) + f.fp1
+        WHEN 2 THEN f.fp0 * power(l.target, f.fp2) + f.fp1
+        END
+    END + f.axis_shift AS j
+) j
+"""
+
 #: A binned trend, summed up in the database (:func:`binned_trend`).
 #:
 #: ``latest`` admits the window's files as :func:`on_the_trend` does and keeps
@@ -522,12 +587,13 @@ def _collection_sha_of():
 #: held more. ``f`` reads each kept record once, as JSONB, and takes from it
 #: what :func:`file_summary` and :func:`record_collection` read; the ``OFFSET
 #: 0`` keeps the planner from casting the record again for every field taken.
-#: Per bin of one hour or day and one collection id, ``file_bins`` sums up the
-#: files and ``line_bins`` each calibrant line; ``versions`` counts each
-#: collection version's files, and ``runs`` keeps the first file of each run
-#: of files fitted with one version, which is all that
-#: :func:`collection_changes` needs of their order. Times leave as UTC without
-#: an offset, as JSON writes them whatever the session's time zone.
+#: ``pts`` reads each calibrant line of each record once, with its offset on
+#: the acquisition axis (:data:`_LINE_OFFSET_SQL`). Per bin of one hour or
+#: day and one collection id, ``file_bins`` sums up the files and
+#: ``line_bins`` each calibrant line; ``versions`` counts each collection
+#: version's files and finds its first file and the first record fitted with
+#: it, which is all that :func:`collection_changes` needs. Times leave as UTC
+#: without an offset, as JSON writes them whatever the session's time zone.
 _BINNED_SQL = text(
     """
 WITH latest AS MATERIALIZED (
@@ -553,6 +619,10 @@ f AS MATERIALIZED (
         sample_file_id,
         datetime_utc,
         datetime_utc AT TIME ZONE 'UTC' AS at_utc,
+        CASE WHEN jsonb_typeof(rec -> 'fitted_at') = 'string'
+              AND (rec ->> 'fitted_at') ~ :fitted_at_pattern
+             THEN ((rec ->> 'fitted_at')::timestamptz) AT TIME ZONE 'UTC'
+             END AS fitted_utc,
         date_trunc(:unit, datetime_utc AT TIME ZONE 'UTC') AS bucket,
         rec ->> 'status' AS status,
         CASE WHEN jsonb_typeof(rec #> '{quality,collection,id}') = 'string'
@@ -572,7 +642,20 @@ f AS MATERIALIZED (
               AND jsonb_typeof(rec #> '{quality,n_points}') = 'number'
              THEN (rec #>> '{quality,n_points}')::float8 END AS n_points,
         CASE WHEN jsonb_typeof(rec #> '{quality,points}') = 'array'
-             THEN rec #> '{quality,points}' END AS points
+             THEN rec #> '{quality,points}' END AS points,
+        CASE WHEN jsonb_typeof(rec -> 'acquisition_axis') = 'object'
+             THEN rec -> 'acquisition_axis' END AS axis,
+        CASE WHEN jsonb_typeof(rec -> 'acquisition_offsets') = 'array'
+             THEN rec -> 'acquisition_offsets' END AS kept_offsets,
+        __FIT_MODE__ AS fit_mode,
+        __FP0__ AS fp0,
+        __FP1__ AS fp1,
+        __FP2__ AS fp2,
+        __AXIS_MODE__ AS axis_mode,
+        __AP0__ AS ap0,
+        __AP1__ AS ap1,
+        __AP2__ AS ap2,
+        __AXIS_SHIFT__ AS axis_shift
     FROM (
         SELECT sample_file_id, datetime_utc, mz_calibration::jsonb AS rec
         FROM sample_file
@@ -580,26 +663,38 @@ f AS MATERIALIZED (
         OFFSET 0
     ) records
 ),
+pts AS MATERIALIZED (
+    SELECT
+        f.sample_file_id,
+        f.bucket,
+        f.collection_id,
+        p,
+        __LINE_OFFSET__ AS line_offset
+    FROM f
+    CROSS JOIN LATERAL jsonb_array_elements(f.points) AS p
+    CROSS JOIN LATERAL (
+        SELECT CASE WHEN jsonb_typeof(p -> 'target_mz') = 'number'
+                    THEN (p ->> 'target_mz')::float8 END AS target
+    ) l
+    CROSS JOIN LATERAL (__RAW_MZ__) i
+    WHERE jsonb_typeof(p) = 'object'
+),
+file_lines AS (
+    SELECT
+        sample_file_id,
+        count(*) AS n_candidates,
+        avg(line_offset) FILTER (WHERE p -> 'retained' = 'true'::jsonb)
+            AS axis_offset
+    FROM pts
+    GROUP BY sample_file_id
+),
 per_file AS (
     SELECT f.bucket, f.collection_id, f.status, f.post_fit, f.n_points,
-        lines.n_candidates, lines.axis_offset
+        CASE WHEN f.points IS NOT NULL
+             THEN coalesce(lines.n_candidates, 0) END AS n_candidates,
+        lines.axis_offset
     FROM f
-    LEFT JOIN LATERAL (
-        SELECT
-            count(*) AS n_candidates,
-            avg(
-                1e6 * ((p ->> 'observed_mz')::float8 - (p ->> 'target_mz')::float8)
-                / (p ->> 'target_mz')::float8
-            ) FILTER (
-                WHERE p -> 'retained' = 'true'::jsonb
-                  AND jsonb_typeof(p -> 'observed_mz') = 'number'
-                  AND jsonb_typeof(p -> 'target_mz') = 'number'
-                  AND (p ->> 'target_mz')::float8 > 0
-            ) AS axis_offset
-        FROM jsonb_array_elements(f.points) AS p
-        WHERE jsonb_typeof(p) = 'object'
-        HAVING f.points IS NOT NULL
-    ) lines ON true
+    LEFT JOIN file_lines lines USING (sample_file_id)
 ),
 file_bins AS (
     SELECT
@@ -623,41 +718,35 @@ file_bins AS (
 ),
 line_bins AS (
     SELECT
-        f.bucket,
-        f.collection_id,
+        bucket,
+        collection_id,
         CASE WHEN jsonb_typeof(p -> 'ion') = 'string' THEN p ->> 'ion' END AS ion,
         round((p ->> 'target_mz')::numeric, :decimals)::float8 AS target_mz,
         percentile_cont(ARRAY[0.25, 0.5, 0.75]) WITHIN GROUP (
             ORDER BY CASE WHEN jsonb_typeof(p -> 'residual_ppm') = 'number'
                           THEN (p ->> 'residual_ppm')::float8 END
         ) AS residual_ppm,
+        percentile_cont(ARRAY[0.25, 0.5, 0.75])
+            WITHIN GROUP (ORDER BY line_offset) AS offset_ppm,
         count(*) AS n_listed,
         count(*) FILTER (WHERE p -> 'retained' = 'true'::jsonb) AS n_kept
-    FROM f
-    CROSS JOIN LATERAL jsonb_array_elements(f.points) AS p
-    WHERE jsonb_typeof(p) = 'object' AND jsonb_typeof(p -> 'target_mz') = 'number'
+    FROM pts
+    WHERE jsonb_typeof(p -> 'target_mz') = 'number'
     GROUP BY 1, 2, 3, 4
 ),
 versions AS (
     SELECT collection_id, isotopes_sha256,
-        min(at_utc) AS first_utc, max(at_utc) AS last_utc, count(*) AS n_files
+        min(at_utc) AS first_utc, max(at_utc) AS last_utc, count(*) AS n_files,
+        (array_agg(sample_file_id ORDER BY datetime_utc, sample_file_id))[1]
+            AS first_file_id,
+        min(coalesce(fitted_utc, at_utc)) AS first_fitted_utc,
+        (array_agg(
+            sample_file_id
+            ORDER BY coalesce(fitted_utc, at_utc), datetime_utc, sample_file_id
+        ))[1] AS first_fitted_file_id
     FROM f
     WHERE collection_id IS NOT NULL
     GROUP BY collection_id, isotopes_sha256
-),
-runs AS (
-    SELECT at_utc, sample_file_id, collection_id, isotopes_sha256
-    FROM (
-        SELECT at_utc, datetime_utc, sample_file_id, collection_id, isotopes_sha256,
-            lag(collection_id) OVER files_in_order AS previous_id,
-            lag(isotopes_sha256) OVER files_in_order AS previous_sha
-        FROM f
-        WHERE collection_id IS NOT NULL
-        WINDOW files_in_order AS (ORDER BY datetime_utc, sample_file_id)
-    ) ordered
-    WHERE previous_id IS NULL
-       OR previous_id <> collection_id
-       OR previous_sha <> isotopes_sha256
 )
 SELECT
     (SELECT count(*) FROM kept) AS n_files,
@@ -666,9 +755,18 @@ SELECT
     (SELECT json_agg(b ORDER BY bucket, collection_id) FROM file_bins b) AS bins,
     (SELECT json_agg(l ORDER BY target_mz, ion, bucket, collection_id)
      FROM line_bins l) AS lines,
-    (SELECT json_agg(v) FROM versions v) AS versions,
-    (SELECT json_agg(r ORDER BY at_utc, sample_file_id) FROM runs r) AS runs
-"""
+    (SELECT json_agg(v) FROM versions v) AS versions
+""".replace("__LINE_OFFSET__", _LINE_OFFSET_SQL)
+    .replace("__RAW_MZ__", _RAW_MZ_SQL)
+    .replace("__FIT_MODE__", _sql_number("{mode}"))
+    .replace("__FP0__", _sql_number("{par,0}"))
+    .replace("__FP1__", _sql_number("{par,1}"))
+    .replace("__FP2__", _sql_number("{par,2}"))
+    .replace("__AXIS_MODE__", _sql_number("{acquisition_axis,mode}"))
+    .replace("__AP0__", _sql_number("{acquisition_axis,par,0}"))
+    .replace("__AP1__", _sql_number("{acquisition_axis,par,1}"))
+    .replace("__AP2__", _sql_number("{acquisition_axis,par,2}"))
+    .replace("__AXIS_SHIFT__", _sql_number("{acquisition_axis,raw_index_offset}"))
 ).columns(
     n_files=Integer,
     truncated=Boolean,
@@ -676,7 +774,6 @@ SELECT
     bins=JSON,
     lines=JSON,
     versions=JSON,
-    runs=JSON,
 )
 
 
@@ -847,6 +944,7 @@ async def _read_bins(
             "unit": bin_unit(start, end),
             "cap": TREND_MAX_BINNED_FILES,
             "decimals": TARGET_MZ_DECIMALS,
+            "fitted_at_pattern": acquisition_axis.FITTED_AT_PATTERN.pattern,
         },
     )
     row = result.one()
@@ -859,16 +957,16 @@ async def _changes(
     instrument: str,
     polarity: str,
     since: datetime,
-    files: list[dict],
     collections: list[dict],
 ) -> list[dict]:
-    """The :func:`collection_changes` of files read from ``since`` on."""
+    """The :func:`collection_changes` of the versions of files read from
+    ``since`` on."""
     if not collections:
         return []
     seen, last, recorded = await _before_the_window(
         session, instrument, polarity, since, collections
     )
-    return collection_changes(files, collections, seen, last, recorded)
+    return collection_changes(collections, seen, last, recorded)
 
 
 async def _name_collections(session, collections: list[dict], scope) -> None:
@@ -901,18 +999,15 @@ async def _read_trend(
             trend, n_files, truncated, since = await _read_bins(
                 session, instrument, polarity, start, end
             )
-            # The first file of each run of one version, for the changes.
-            ordered = trend.pop("runs")
             trend["files"] = []
         else:
             trend, _, truncated, since = await _read_files(
                 session, instrument, polarity, start, end, TREND_MAX_FILES
             )
             n_files = len(trend["files"])
-            ordered = trend["files"]
             trend["bins"] = []
         changes = await _changes(
-            session, instrument, polarity, since, ordered, trend["collections"]
+            session, instrument, polarity, since, trend["collections"]
         )
         await _name_collections(session, trend["collections"], scope)
     return {
@@ -1024,13 +1119,14 @@ def trend_rows(trend: dict, rows: list[tuple]) -> list[list]:
             entry["pre_fit_abs_ppm"],
         ]
         points = record_points(record) or [None]
-        for point in points:
+        offsets = acquisition_axis.line_offsets(record) or [None]
+        for point, offset in zip(points, offsets):
             tail = (
                 [
                     point.get("ion") if isinstance(point.get("ion"), str) else None,
                     _number(point.get("target_mz")),
                     _number(point.get("observed_mz")),
-                    _offset_ppm(point),
+                    offset,
                     _number(point.get("residual_ppm")),
                     _number(point.get("snr")),
                     point.get("retained") is True,
