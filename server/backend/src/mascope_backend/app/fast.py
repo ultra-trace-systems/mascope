@@ -25,6 +25,7 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     handle_exception,
 )
 from mascope_backend.api.lib.rate_limit import client_ip
+from mascope_backend.api.new.readiness.routes import READY_PATH
 from mascope_backend.api.routes import routers
 from mascope_backend.db import init_db
 from mascope_backend.origins import (
@@ -318,6 +319,12 @@ async def origin_guard(request: Request, call_next):
 # Logging middleware
 @fast.middleware("http")
 async def logger_middleware(request: Request, call_next):
+    # The container's healthcheck asks the readiness route every ten seconds.
+    # The route logs its answer itself when it changes, so the access log
+    # leaves it out rather than write a line for every probe.
+    if request.url.path == READY_PATH:
+        return await call_next(request)
+
     worker_pid = os.getpid()
 
     # Make the request and receive a response, timing the server-side handling

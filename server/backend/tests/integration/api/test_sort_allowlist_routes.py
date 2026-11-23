@@ -84,6 +84,9 @@ def _sort_routes():
             continue
         if "GET" not in (route.methods or ()) or "{" in route.path_format:
             continue
+        # Left out of the document (the readiness route): no query to read.
+        if not route.include_in_schema:
+            continue
         parameters = {
             parameter["name"]: parameter
             for parameter in paths[route.path_format]["get"].get("parameters", [])
