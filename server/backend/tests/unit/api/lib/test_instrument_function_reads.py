@@ -29,6 +29,8 @@ from mascope_backend.api.new.peak_assignments import (
     batch_peaks_controller,
     sample_inputs,
 )
+from mascope_tools.composition.config import HEIGHT_SUM_SPAN
+from mascope_tools.composition.line_model import HeightResolution
 
 
 STREAM = "FTMS - p NSI Full ms [66.0000-124.0000] R=120000"
@@ -168,6 +170,61 @@ async def test_the_mass_gate_reads_the_samples_widths_by_its_polarity():
 
     assert asked == [("f.raw", "-", None)]
     assert resolution(200.0) == RESOLUTION["-"]
+
+
+@pytest.mark.asyncio
+async def test_an_orbitrap_files_width_reads_its_lines_as_heights():
+    # The run reads an Orbitrap file's peak heights, so its merged lines are
+    # predicted as heights (mascope#3338); a TOF file's stay areas.
+    read, _ = _spy()
+    orbitrap = SimpleNamespace(filename="f.raw", polarity="-", sample_item_name="s")
+    tof = SimpleNamespace(filename="f.h5", polarity="-", sample_item_name="s")
+
+    types = {"f.raw": "orbi", "f.h5": "tof"}
+
+    with (
+        patch.object(sample_inputs, "read_instrument_functions", read),
+        patch.object(sample_inputs, "get_instrument_type", types.__getitem__),
+    ):
+        height = await sample_inputs._resolution_of(orbitrap)
+        area = await sample_inputs._resolution_of(tof)
+
+    assert isinstance(height, HeightResolution)
+    assert height.sum_span == HEIGHT_SUM_SPAN
+    assert height(200.0) == RESOLUTION["-"]
+    assert not isinstance(area, HeightResolution)
+    assert area(200.0) == RESOLUTION["-"]
+
+
+@pytest.mark.asyncio
+async def test_a_file_of_no_known_type_reads_its_lines_as_areas():
+    read, _ = _spy()
+    sample = SimpleNamespace(filename="f", polarity="-", sample_item_name="s")
+
+    with (
+        patch.object(sample_inputs, "read_instrument_functions", read),
+        patch.object(
+            sample_inputs, "get_instrument_type", side_effect=ValueError("no type")
+        ),
+    ):
+        resolution = await sample_inputs._resolution_of(sample)
+
+    assert not isinstance(resolution, HeightResolution)
+
+
+@pytest.mark.asyncio
+async def test_a_file_without_a_width_reads_none():
+    sample = SimpleNamespace(filename="f.raw", polarity="-", sample_item_name="s")
+
+    with (
+        patch.object(
+            sample_inputs,
+            "read_instrument_functions",
+            AsyncMock(return_value=(None, None)),
+        ),
+        patch.object(sample_inputs, "get_instrument_type", lambda _name: "orbi"),
+    ):
+        assert await sample_inputs._resolution_of(sample) is None
 
 
 @pytest.mark.asyncio

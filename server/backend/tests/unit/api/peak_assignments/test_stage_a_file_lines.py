@@ -5,14 +5,17 @@ sample file's R(m/z), the abundance threshold applied to the resolved lines
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pandas as pd
 import pytest
 from sqlalchemy.dialects import postgresql
 
 from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
     LEAD_ISOTOPE_FORMULA,
     FileLines,
+    lines_at_file,
 )
 from mascope_backend.api.new.peak_assignments import sample_inputs
+from mascope_tools.composition.line_model import HeightResolution
 
 
 pytestmark = pytest.mark.asyncio
@@ -97,3 +100,31 @@ async def test_without_a_merge_the_threshold_leaves_each_faint_line_out():
     frame, _ = await _fetch(FileLines("HIGH"))
 
     assert frame["target_isotope_id"].tolist() == ["iso-a"]
+
+
+async def test_an_orbitrap_file_reads_a_merged_line_by_its_dominant_member():
+    # At 12000 a FWHM at m/z 197 is 16 mDa: one peak holds both lines, but
+    # the 15N line sits 0.38 FWHM off the 13C line, on its flank, and adds
+    # nothing to the height an Orbitrap reads (mascope#3338). The 13C line
+    # alone is under the threshold the two made together on a TOF.
+    area, _ = await _fetch(FileLines("HIGH", lambda mz: 12000.0))
+    height, _ = await _fetch(FileLines("HIGH", HeightResolution(lambda mz: 12000.0)))
+
+    assert len(area) == 2
+    assert height["target_isotope_formula"].tolist() == ["C10H14NO3-"]
+
+
+def test_an_orbitrap_files_merged_line_sits_on_its_dominant_member():
+    # Under a lower threshold the line is kept: at the 13C member's m/z, with
+    # its share, still naming both members, and read as the 13C line.
+    fine = pd.DataFrame([_row(*line)._asdict() for line in FINE])
+
+    lines = lines_at_file(
+        fine, FileLines("HIGH", HeightResolution(lambda mz: 12000.0)), 1e-4
+    ).sort_values("mz")
+
+    merged = lines.iloc[1]
+    assert merged["mz"] == 197.1013
+    assert merged["relative_abundance"] == pytest.approx(0.0004)
+    assert merged["target_isotope_formula"] == "[15N]C10H14O3-/[13C]C9H14NO3-"
+    assert merged[LEAD_ISOTOPE_FORMULA] == "[13C]C9H14NO3-"

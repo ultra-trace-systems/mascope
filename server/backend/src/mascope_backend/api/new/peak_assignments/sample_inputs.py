@@ -48,6 +48,7 @@ from mascope_signal.compute import (
 )
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS, label_purity
 from mascope_tools.composition.known_window import KnownWindow
+from mascope_tools.composition.line_model import HeightResolution
 
 
 #: The columns of a sample's peak list (:func:`load_sample_peaks`) the
@@ -529,6 +530,12 @@ async def _resolution_of(sample) -> Callable[[float], float] | None:
     widths. A file whose instrument functions were never fitted still gets its
     lines judged, on their noise alone, so a read that fails stands down.
 
+    An Orbitrap file's comes as a ``line_model.HeightResolution``: the run
+    reads its peaks' heights (:func:`load_sample_peaks`), so a line its peaks
+    cannot separate is predicted as its dominant member, not as the sum a TOF
+    peak's area holds (mascope#3338). Every line the run predicts reads it:
+    Stage A's known set, the envelope search, the seeded chain and the chart.
+
     :param sample: The sample view row.
     :return: The resolution function, or None.
     """
@@ -542,7 +549,22 @@ async def _resolution_of(sample) -> Callable[[float], float] | None:
             f"({exc}); its isotope lines are judged without their neighbours"
         )
         return None
+    if resolution is not None and _reads_heights(sample):
+        return HeightResolution(resolution)
     return resolution
+
+
+def _reads_heights(sample) -> bool:
+    """Whether the run reads the sample's peaks by their heights.
+
+    The test :func:`load_sample_peaks` picks the intensity by: an Orbitrap
+    file's heights, any other file's areas. A file whose instrument type
+    cannot be read is read by areas, the lines merged as they were.
+    """
+    try:
+        return get_instrument_type(sample.filename) == "orbi"
+    except ValueError:
+        return False
 
 
 def _source_ion_current(

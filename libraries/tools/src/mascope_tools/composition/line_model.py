@@ -50,6 +50,7 @@ from pyteomics.mass import Composition
 from mascope_tools.composition.config import (
     ELECTRON_MASS,
     ENVELOPE_ABUNDANCE_FLOOR,
+    HEIGHT_SUM_SPAN,
     ISOTOPE_MATCHING_INTENSITY_TOLERANCE,
     UNRESOLVED_MEMBER_DEPTH,
 )
@@ -64,6 +65,7 @@ from mascope_tools.composition.utils import to_pyteomics
 
 __all__ = [
     "DETECT_SNR_K",
+    "HeightResolution",
     "LABELLED_REAGENT_PURITY",
     "LineCheck",
     "REL_DETECT_NO_SNR",
@@ -78,6 +80,7 @@ __all__ = [
     "fold_targets",
     "group_unresolved_lines",
     "height_deviation",
+    "height_sum_span",
     "height_width",
     "height_within",
     "line_centre",
@@ -426,6 +429,51 @@ def anchor_on_monoisotopic(
     )
 
 
+@dataclass(frozen=True)
+class HeightResolution:
+    """A file's resolving power, on a file whose intensity is a peak's height.
+
+    An Orbitrap file's intensity is a peak's height, a TOF file's its area
+    (``sample_inputs.load_sample_peaks`` in the backend). A peak's area holds
+    every line under it, so a merged line on a TOF is its members' summed
+    share at their abundance-weighted centre. A peak's height follows its
+    dominant member: a member half a FWHM away sits on that member's flank and
+    adds little to the apex (mascope#3338). So on a file read by heights a
+    merged line is its dominant member, at that member's m/z, with that
+    member's share and the shares of the members within :attr:`sum_span` of
+    it. The members between :attr:`sum_span` and the group's span stay
+    members of the line, so ownership and the claims still know the peak
+    covers them, and add nothing to its predicted height.
+
+    It reads the resolving power as the function it wraps does, so every
+    reader that only asks for R(m/z) reads it unchanged; the line model reads
+    the rest (:func:`height_sum_span`).
+
+    :ivar resolution: The resolving power as a function of m/z.
+    :ivar sum_span: How far from the dominant member a member still adds its
+        share, in FWHM read at the dominant member
+        (:data:`~mascope_tools.composition.config.HEIGHT_SUM_SPAN`).
+    """
+
+    resolution: Callable[[float], float]
+    sum_span: float = HEIGHT_SUM_SPAN
+
+    def __call__(self, mz: float) -> float:
+        return self.resolution(mz)
+
+
+def height_sum_span(resolution) -> float | None:
+    """How far a merged line's members add to it on a file read by heights.
+
+    :param resolution: A resolving power, a :class:`HeightResolution` or not.
+    :return: Its :attr:`HeightResolution.sum_span`, or None for a file whose
+        lines are read as areas: then a merged line is its members' sum.
+    """
+    if isinstance(resolution, HeightResolution):
+        return float(resolution.sum_span)
+    return None
+
+
 def group_unresolved_lines(
     predicted_mz,
     predicted_intensity,
@@ -485,22 +533,21 @@ def _merged_line(
     mzs: np.ndarray,
     intensities: np.ndarray,
     labels: Sequence[str],
+    resolution=None,
 ) -> tuple[int, float, float]:
     """The one line a group of lines makes: the member that names it, its m/z
-    (the members' abundance-weighted centre) and its abundance (their sum).
+    and its abundance (:func:`_line_of`).
 
     The member that names it is the ion's own line, ``M0``, where it is one,
     else the brightest member.
     """
-    weights = intensities[members]
-    total = float(weights.sum())
-    centre = (
-        float(np.sum(mzs[members] * weights) / total)
-        if total > 0
-        else float(mzs[members].mean())
-    )
+    centre, total = _line_of(members, mzs, intensities, resolution)
     own = [index for index in members if labels[index] == "M0"]
-    named = int(own[0]) if own else int(members[np.argmax(weights)])
+    named = (
+        int(own[0])
+        if own
+        else int(np.asarray(members)[np.argmax(intensities[members])])
+    )
     return named, centre, total
 
 
@@ -520,7 +567,10 @@ def merge_unresolved_lines(
     was 1.03. An Orbitrap at low resolution does the same on fewer lines.
 
     A merged line is what that peak measures: its share is the sum of its
-    members', its m/z their intensity-weighted centre. One peak holds, from the
+    members', its m/z their intensity-weighted centre. On a file read by
+    heights (:class:`HeightResolution`, an Orbitrap) it is its dominant member,
+    at that member's m/z, with the shares of the members close to it added
+    (:func:`_line_of`). One peak holds, from the
     brightest line not yet taken, every line not yet taken within half the FWHM
     either side of it, the FWHM read off the file's resolving power at that
     line. Starting from the brightest line rather than the lightest keeps a
@@ -554,7 +604,7 @@ def merge_unresolved_lines(
         predicted_mz, predicted_intensity, resolution
     ):
         named, centre, total = _merged_line(
-            members, predicted_mz, predicted_intensity, labels
+            members, predicted_mz, predicted_intensity, labels, resolution
         )
         merged.append((named, centre, total, labels[named]))
     merged.sort(key=lambda line: line[0])
@@ -781,8 +831,11 @@ def within_intensity_window(
 class ResolvedLine:
     """One line a peak of the file's width shows.
 
-    :ivar mz: The members' abundance-weighted centre.
-    :ivar abundance: Their summed abundance.
+    :ivar mz: The members' abundance-weighted centre; on a file read by
+        heights (:class:`HeightResolution`) the dominant member's m/z.
+    :ivar abundance: Their summed abundance; on a file read by heights the
+        dominant member's and those of the members close to it
+        (:func:`_line_of`).
     :ivar label: The label of the member that names the line: the ion's own
         line, ``M0``, where it is one, else the brightest member of the group
         the line started as.
@@ -797,11 +850,40 @@ class ResolvedLine:
 
 
 def _line_of(
-    members: Sequence[int], mzs: np.ndarray, intensities: np.ndarray
+    members: Sequence[int],
+    mzs: np.ndarray,
+    intensities: np.ndarray,
+    resolution=None,
 ) -> tuple[float, float]:
-    """The centre and the abundance of the line a set of fine lines makes."""
+    """The centre and the abundance of the line a set of fine lines makes.
+
+    On a file read by areas (a TOF, or no :class:`HeightResolution`) the
+    members' abundance-weighted centre and their summed abundance: a peak's
+    area holds every line under it. On a file read by heights (an Orbitrap) the
+    dominant member's m/z, and its abundance plus that of every member less than
+    :attr:`HeightResolution.sum_span` FWHM from it, the FWHM read at the
+    dominant member: the further members sit on its flank and add little to
+    the apex (mascope#3338). Where the resolving power cannot be read there,
+    the dominant member alone. The brightest member is the dominant one, the
+    first of them on a tie.
+    """
     members = np.asarray(members, dtype=int)
     weights = intensities[members]
+    sum_span = height_sum_span(resolution)
+    if sum_span is not None and members.size > 1:
+        dominant = int(members[np.argmax(weights)])
+        centre = float(mzs[dominant])
+        try:
+            resolving_power = float(resolution(centre))
+        except (TypeError, ValueError, ArithmeticError):
+            resolving_power = float("nan")
+        # A NaN reads False here; an infinite one reaches no other member.
+        if resolving_power > 0:
+            reach = centre / resolving_power * sum_span
+            adds = np.abs(mzs[members] - centre) < reach
+            adds[members == dominant] = True
+            return centre, float(weights[adds].sum())
+        return centre, float(intensities[dominant])
     total = float(weights.sum())
     centre = (
         float(np.sum(mzs[members] * weights) / total)
@@ -850,6 +932,59 @@ def line_groups(
     ]
 
 
+def _join_under_floor(fine, lines, resolution, level):
+    """Step 2 of :func:`resolve_lines`: lines under the floor less than one
+    FWHM from one another that together clear it are one line over it.
+
+    On a file read by areas the lines' shares add; on one read by heights
+    (:class:`HeightResolution`) only where their members sit close enough to
+    add at the apex, so the joined line is read as a line of all their
+    members is (:func:`_line_of`). The area's sum is taken as it was, so a
+    TOF's lines are what they were to the last bit.
+
+    :param fine: The fine lines' m/z values and abundances, and the label of
+        each line's naming member.
+    :param lines: Per line, its naming member, its members, whether it is kept,
+        its centre and its abundance.
+    :param resolution: The resolving power.
+    :param level: The floor, as an abundance.
+    :return: The naming members, the members and whether each is kept, of the
+        lines left once the joined ones are taken into their heads.
+    """
+    mzs, intensities, line_labels = fine
+    names, members, keep, centres, totals = lines
+    under = np.flatnonzero(~keep)
+    absorbed = np.zeros(len(members), dtype=bool)
+    for group in group_unresolved_lines(
+        centres[under], totals[under], resolution, span=1.0
+    ):
+        together = under[group]
+        if height_sum_span(resolution) is None:
+            joined = float(totals[together].sum())
+        else:
+            joined = _line_of(
+                [member for index in together for member in members[index]],
+                mzs,
+                intensities,
+                resolution,
+            )[1]
+        if joined < level:
+            continue
+        head, _, _ = _merged_line(together, centres, totals, line_labels)
+        for index in together:
+            if index != head:
+                members[head].extend(members[index])
+                absorbed[index] = True
+        members[head].sort()
+        keep[head] = True
+    stays = np.flatnonzero(~absorbed)
+    return (
+        [names[index] for index in stays],
+        [members[index] for index in stays],
+        keep[stays],
+    )
+
+
 def resolve_lines(
     predicted_mz,
     predicted_intensity,
@@ -865,7 +1000,9 @@ def resolve_lines(
 
     1. One peak holds, from the brightest line not yet taken, every line not
        yet taken within half a FWHM either side (:func:`group_unresolved_lines`,
-       :func:`merge_unresolved_lines`).
+       :func:`merge_unresolved_lines`). On a file read by heights
+       (:class:`HeightResolution`, an Orbitrap's) a line is read as its
+       dominant member, on any other as its members' sum (:func:`_line_of`).
     2. Lines under the floor less than one FWHM from one another that together
        clear it are one line over it (mascope#3027;
        the target library's lines too since MAS-977, mascope#3163).
@@ -905,7 +1042,7 @@ def resolve_lines(
     members = [list(group) for _, group in named]
 
     def arrays() -> tuple[np.ndarray, np.ndarray]:
-        pairs = [_line_of(group, mzs, intensities) for group in members]
+        pairs = [_line_of(group, mzs, intensities, resolution) for group in members]
         return (
             np.array([centre for centre, _ in pairs], dtype=float),
             np.array([total for _, total in pairs], dtype=float),
@@ -917,25 +1054,12 @@ def resolve_lines(
     if resolution is not None:
         under = np.flatnonzero(~keep)
         if under.size and float(totals[under].sum()) >= level:
-            line_labels = [labels[own] for own in names]
-            absorbed = np.zeros(len(members), dtype=bool)
-            for group in group_unresolved_lines(
-                centres[under], totals[under], resolution, span=1.0
-            ):
-                together = under[group]
-                if float(totals[together].sum()) < level:
-                    continue
-                head, _, _ = _merged_line(together, centres, totals, line_labels)
-                for index in together:
-                    if index != head:
-                        members[head].extend(members[index])
-                        absorbed[index] = True
-                members[head].sort()
-                keep[head] = True
-            stays = np.flatnonzero(~absorbed)
-            names = [names[index] for index in stays]
-            members = [members[index] for index in stays]
-            keep = keep[stays]
+            names, members, keep = _join_under_floor(
+                (mzs, intensities, [labels[own] for own in names]),
+                (names, members, keep, centres, totals),
+                resolution,
+                level,
+            )
             centres, totals = arrays()
         targets = fold_targets(centres, keep, resolution)
         for index in np.flatnonzero(targets >= 0):
@@ -948,7 +1072,7 @@ def resolve_lines(
     for index, group in enumerate(members):
         if not keep[index] and (targets[index] >= 0 or not keep_under_floor):
             continue
-        centre, total = _line_of(group, mzs, intensities)
+        centre, total = _line_of(group, mzs, intensities, resolution)
         lines.append(ResolvedLine(centre, total, labels[names[index]], tuple(group)))
     return lines
 
