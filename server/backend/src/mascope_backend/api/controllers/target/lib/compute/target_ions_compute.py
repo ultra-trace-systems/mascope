@@ -693,7 +693,8 @@ def lines_at_file(
     candidate's lines, and the lines under the abundance threshold are left
     out after the merge, so a line's share is what its peak holds. A resolved
     line takes the id of its first member and the file's resolution type;
-    every other column is the ion's.
+    every other column is the ion's. The ions come out in the order they
+    first appear in ``fine``, each one's lines by m/z, whatever their ids.
 
     :param fine: One row per fine line: ``target_ion_id``,
         ``target_isotope_id``, ``target_isotope_formula``, ``mz``,
@@ -717,9 +718,13 @@ def lines_at_file(
         )
     else:
         # One ion's fine lines together, by m/z; the ion's own columns are
-        # copied from its first line, by position.
-        ordered = fine.sort_values(["target_ion_id", "mz"], kind="stable")
-        ordered = ordered.reset_index(drop=True)
+        # copied from its first line, by position. The ions keep the order
+        # they first appear in, not their ids': a reference ion's id is minted
+        # at random per process, so sorting by it would order two runs of one
+        # sample differently (#3351).
+        ordinal = pd.factorize(fine["target_ion_id"])[0]
+        order = np.lexsort((fine["mz"].to_numpy(dtype=float), ordinal))
+        ordered = fine.iloc[order].reset_index(drop=True)
         ions = ordered["target_ion_id"].to_numpy()
         starts = np.flatnonzero(np.r_[True, ions[1:] != ions[:-1]])
         ends = np.r_[starts[1:], ions.size]
