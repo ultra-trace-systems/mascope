@@ -11,7 +11,7 @@ Four exports are made from the app:
 |---|---|---|
 | **Batch data** | Right-click a batch, *Download > Batch data* | A spreadsheet (`.xlsx`) of up to six sheets, below |
 | **Peak data** | Right-click a batch, *Download > Peak data*; or a sample's own *Download > Peak data* | A CSV, semicolon-separated |
-| **Batch ledger** | The batch peaks view's menu behind the cog, *Export ledger (CSV)* | A CSV: one row per member peak, described under [Batch peaks](../how-it-works/peak-assignment.md#batch-peaks) |
+| **Batch ledger** | The batch peaks view's **...** menu, at the end of its filter bar, *Export ledger (CSV)* | A CSV: one row per member peak, described under [Batch peaks](../how-it-works/peak-assignment.md#batch-peaks) |
 | **Deposit package** | Right-click a dataset, *Prepare for publication* | A zip archive of the whole dataset, to upload to a data repository such as Zenodo, [below](#the-deposit-package) |
 
 Each export made from the app is written in the background, and the browser

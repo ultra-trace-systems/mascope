@@ -3209,7 +3209,7 @@ trace per batch peak. The ledger lists every anchor in the batch, which on a lar
 batch is far more than a chart can usefully show, so a selection is capped at 300 —
 select all on a bigger ledger takes the first 300 rows and tells you so. Which 300 is
 up to you: filter the ledger first, with the tier chips, several at once, or the
-Formula column's filter, and then select.
+search box, and then select.
 
 One row per species, not per peak: a compound's isotopologue peaks are
 folded under its main peak and counted in the **+N** marker beside the formula, the

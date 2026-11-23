@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 
 import {
   LEDGER_VIEW_STORAGE_KEY,
+  SORT_FIELDS,
   defaultLedgerView,
   restoreLedgerView,
   useLedgerListing,
@@ -142,6 +143,21 @@ describe('restoreLedgerView', () => {
 
   it('keeps a cleared sort as one', () => {
     expect(restoreLedgerView('sample', { field: null }).field).toBeNull()
+  })
+
+  // A column dropped since, or the other scope's: the scope's default sort,
+  // not a sort on nothing.
+  it("takes the scope's default sort for a column it does not have", () => {
+    expect(restoreLedgerView('batch', { field: 'retired_rank' }).field).toBe('n_present')
+    expect(restoreLedgerView('sample', { field: 'retired_rank' }).field).toBe('tierRank')
+    expect(restoreLedgerView('sample', { field: 'n_present' }).field).toBe('tierRank')
+    expect(restoreLedgerView('batch', { field: 'sample_peak_mz' }).field).toBe('n_present')
+    // Every column it lists is kept.
+    for (const scope of ['sample', 'batch']) {
+      for (const field of SORT_FIELDS[scope]) {
+        expect(restoreLedgerView(scope, { field }).field).toBe(field)
+      }
+    }
   })
 
   it('takes the defaults for a stored scope that is no object', () => {

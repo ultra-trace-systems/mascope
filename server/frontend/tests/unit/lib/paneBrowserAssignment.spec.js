@@ -14,6 +14,7 @@ import { usePeakAssignParams } from '@/lib/peakAssignParams'
 import { isIsotopeLine } from '@/lib/isotopeLines'
 import { TIERING_PROVISIONAL, tierRank } from '@/lib/tiers'
 import { LEVELS } from '@/lib/levels'
+import { SORT_FIELDS } from '@/lib/ledger/useLedgerView.js'
 
 // The per-sample launcher's job after the assign endpoint became synchronous:
 // a run that is refused (409) or a sample that cannot be assigned (422) arrives
@@ -3155,6 +3156,43 @@ describe('PaneBrowserAssignment filter bar', () => {
 
   const search = (wrapper, query) => wrapper.find('[data-testid="ledger-search"]').setValue(query)
 
+  // The store keeps a stored sort only on a column it lists for the scope, so
+  // every sortable column, the optional ones shown, must be on that list.
+  it("lists every sortable column among the store's sort fields", async () => {
+    const every = family({
+      id: 'e',
+      mz: 150.1,
+      intensity: 50,
+      formula: 'C5H10O5',
+      tier: 'assigned'
+    })
+    every.parent.engine_tier = 'assigned'
+    every.parent.level = LEVELS[0]
+    seed(every, FAMILY_A)
+    const wrapper = mount(PaneBrowserAssignment, {
+      global: {
+        directives: { tooltip: {}, help: {} },
+        stubs: {
+          ...GLOBAL_STUBS,
+          Column: {
+            name: 'Column',
+            props: { field: String, sortField: String, sortable: Boolean },
+            template: '<div />'
+          }
+        }
+      }
+    })
+    await wrapper.vm.$nextTick()
+
+    const sorted = wrapper
+      .findAllComponents({ name: 'Column' })
+      .filter((column) => column.props('sortable'))
+      .map((column) => column.props('sortField') ?? column.props('field'))
+    expect(sorted).toContain('engineTierRank')
+    expect(sorted).toContain('levelRank')
+    expect(SORT_FIELDS.sample).toEqual(expect.arrayContaining(sorted))
+  })
+
   it('finds a formula, ignoring case', async () => {
     const wrapper = await mountPane()
     await search(wrapper, 'c10')
@@ -3180,6 +3218,30 @@ describe('PaneBrowserAssignment filter bar', () => {
     const wrapper = await mountPane()
     await search(wrapper, 'cyclopenta')
     expect(ids(wrapper)).toEqual(['l'])
+  })
+
+  // A target alone, with no list's name: the target names the row.
+  it("finds a target's name", async () => {
+    const targeted = family({
+      id: 't',
+      mz: 181.07,
+      intensity: 50,
+      formula: 'C6H12O6',
+      tier: 'candidate',
+      fit: 0.6
+    })
+    targeted.parent.reference_listing = {
+      name: null,
+      source: null,
+      inchikey: null,
+      tags: [],
+      total: 0,
+      target: { label: 'target', name: 'glucose', inchikey: null, listed: false }
+    }
+    seed(targeted, FAMILY_A)
+    const wrapper = await mountPane()
+    await search(wrapper, 'gluc')
+    expect(ids(wrapper)).toEqual(['t'])
   })
 
   // 200.1 measured, +1 ppm off centre: a query 1 ppm under it sits on the
