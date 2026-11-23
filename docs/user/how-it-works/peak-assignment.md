@@ -1248,7 +1248,7 @@ measurements the reasons read.
   name nor a structure says nothing beyond the formula, so the row shows no target
   candidate. Hovering says which candidate is
   which. The tier does not weigh either, and the row's level does not move with it.
-  The ledger shows the run's own match in its **listed as**
+  The ledger shows the run's own match in its **Listed**
   column, beside the formula, folded to the first name cut short, with the list's tags
   beside it; hovering it gives the first name whole, its list, the tags and how many more
   names the run matched, so a row's list reading is there without opening the inspector. A row matched
@@ -1376,7 +1376,7 @@ threshold the row stays 5a, and its lift says *more signal*.
 
 **Where it shows.** The peak inspector shows the level as a chip beside the tier, and its
 **Identification level** section, folded until you open it, shows **why** the row holds it, what **would lift it** and the **rivals**, each
-with its test or *open*. The sample ledger has a **level** column, with a filter in its
+with its test or *open*. The sample ledger has a **Level** column, with a filter in its
 header. The *Batch peaks* ledger's **Level** column shows the level most of a batch
 peak's members' runs stated for its formula (a tie reads as the weaker level) until the
 batch states one of its own, and a batch import from another engine that carried its
@@ -1391,6 +1391,38 @@ batch peak's `engine_level`), the SDK's ledger frames and the API carry the same
 fields. The run records the version of the rules that read its facts into a level with its
 configuration, because a level, like a tier, is only comparable between two runs
 together with the rules that stated it.
+
+## The assignment ledger
+
+A sample's **Assignments** ledger and a batch's **Batch peaks** ledger are one ledger in
+two scopes: a formula at an m/z with a tier, for each peak of the sample or each batch
+peak of the batch. Where something means the same in both, it has the same column, the
+same mark and the same words.
+
+- **The header line** names the ledger and counts what it lists: the sample's peaks, or
+  the batch's batch peaks. A batch peak count is of species, an isotope line counted with
+  its compound, and hovering it says how many lines are folded. The batch and the sample
+  are the ones the sidebar and the sample's filter chip name; removing that chip returns
+  to the batch.
+- **The columns** keep one name and one order in both: the chart toggle or the selection
+  box, **m/z**, **Intensity**, **Formula**, **Listed**, the sample's **Ionization**,
+  **Tier**, **Engine tier** and **Level** where a row carries one, the batch's own
+  readings and **Samples**, and the **Verdict** last. Formulas are set in the monospaced
+  face. A cell with nothing to say is blank, with no dash and no *unassigned*: the tier
+  chip says what the row is.
+- **Isotopologue lines**, which the view menu's **Isotopologues** unfolds, are named by
+  their substitution, such as *[13C]*, *[34S]* or *[81Br]*, wherever it is known. In a
+  sample's ledger the run's own isotope match names it. In the batch's, the batch's stamp,
+  its strip, or the compound's own record of its predicted lines names it. *M+1* or *M+2*
+  names a line only where nothing names its substitution.
+- **The tier chips** above the table filter it, several at once in both ledgers: each
+  chip turned on adds its tier or role, and with none on, every row shows. The **Tier**
+  column has no filter of its own.
+- **The Verdict column** sorts in both: confirmed first, then rejected and unsure, and the
+  rows nobody has judged last. A sample's row sorts on the verdict it shows, its own or the
+  batch-level one reaching it.
+- **A ledger that fails to load** says so where the table would be, with *Retry*, and the
+  tier chips, the view menu and the bar above stay usable. An empty one says what fills it.
 
 ## The peak inspector
 
@@ -2471,8 +2503,8 @@ the sample record the rewrite. A sample is left as it was where the compound's p
 reads another formula there, where the reagent or artifact pass claimed the row's peak,
 or where the row carries isotope lines of its own in that sample. A run imported from
 another engine is that engine's record and is never rewritten. The batch peak then
-folds under the compound as any isotopologue does, with its line outlined beside the
-offset (**M+1 13C**); its tooltip says what the samples' runs had read it as. The
+folds under the compound as any isotopologue does, named by its line in place of its
+offset and outlined (**[13C]** rather than *M+1*); its tooltip says what the samples' runs had read it as. The
 compound carries the three-bars badge of its isotope lines, which also lists the rows it
 took. **Stripped rows**, in the
 view menu behind the cog, keeps only those compounds.
@@ -2550,9 +2582,10 @@ the larger share of its samples, then in more of them. The parent's row in the
 *Batch peaks* ledger carries a three-bars badge where the batch shows one of its isotope
 lines, green once one of them holds its ratio and grey before. On hover it lists every isotope line: stamped, found and not holding its ratio,
 predicted with no batch peak at its mass, or not separated from another line. A stamped
-line folds under its parent like an isotopologue, with the isotope beside its offset
-(**M+2 81Br**). The tag is set in italics where the stamping predicted the line, and
-upright where every sample's own run had already read it as the parent's isotopologue. A
+line folds under its parent like an isotopologue, named by its isotope in place of its
+offset and outlined (**[81Br]** rather than *M+2*). The name is set in italics where the
+stamping predicted the line, and upright where every sample's own run had already read it
+as the parent's isotopologue. A
 stamped line keeps its own tier and formula.
 
 The member rows of the ledger's CSV export and of the SDK's `batch_peaks.members` say,
@@ -3051,8 +3084,8 @@ The rows you tick in the *Batch peaks* ledger are what the batch chart draws, on
 trace per batch peak. The ledger lists every anchor in the batch, which on a large
 batch is far more than a chart can usefully show, so a selection is capped at 300 —
 select all on a bigger ledger takes the first 300 rows and tells you so. Which 300 is
-up to you: filter the ledger first, with the tier chips or the Formula column's
-filter, and then select.
+up to you: filter the ledger first, with the tier chips, several at once, or the
+Formula column's filter, and then select.
 
 One row per species, not per peak: a compound's isotopologue peaks are
 folded under its main peak and counted in the **+N** marker beside the formula, the
