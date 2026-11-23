@@ -2347,3 +2347,262 @@ def test_an_arm_not_read_marks_a_card_made_with_arms():
     diff = compare_runs.diff_cards(old, new)
     assert diff["arms_not_run"] == []
     assert [m["metric"] for m in diff["moved"]] == ["decoy x9 held_pct"]
+
+
+# --- the batch arm (MAS-1140) --------------------------------------------------
+
+
+def _arm_manifest(tmp_path, **a):
+    """The served sets, set A carrying ``a`` beside its samples."""
+    manifest = tmp_path / "arm_sets.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "sets": {
+                    "A": {
+                        "workspace": "Acquisitions Instrument9",
+                        "samples": ["s1"],
+                        **a,
+                    },
+                    "G": {
+                        "workspace": "Chamber study",
+                        "samples": ["s2"],
+                        "sulfur_free": True,
+                    },
+                }
+            }
+        )
+    )
+    return manifest
+
+
+def _card_of(manifest, out, *extra):
+    code = compare_runs.main(
+        ["--sets", str(manifest), "--card", str(out), "--gate", *extra]
+    )
+    return code, json.loads((out / "card.json").read_text())
+
+
+def _add_after_pass():
+    """A run of s1 after a pass of the batch stages, newer than its control:
+    the series lifts nothing but cites itself on p1, the strip reads p2 as
+    p1's line, and the known species claims p4, the reagent peak, as another
+    ion. p1i and p3 are as the control reads them."""
+    decisions = {"batch_decisions": {"stages": {"series": {"records": 2}}}}
+    config = {**_Client.runs["s1"][0]["config"], **decisions}
+    _Client.runs["s1"].insert(
+        0, _run("rx1", "mascope", "0.6.0", "2026-11-10T12:00:00Z", config)
+    )
+    _Client.ledgers["rx1"] = [
+        _row(
+            "p1",
+            peak_assignment_id="px-p1",
+            tier="candidate",
+            tier_reason_rules=["corroborated", "series_anchor"],
+            corroboration_channels=2,
+        ),
+        _row(
+            "p2",
+            peak_assignment_id="px-p2",
+            role="iso_child",
+            isotope_label="13C",
+            owner_peak_assignment_id="px-p1",
+        ),
+        _row(
+            "p1i",
+            peak_assignment_id="px-p1i",
+            mz=101.0,
+            role="iso_child",
+            owner_peak_assignment_id="px-p1",
+        ),
+        _unassigned("p3", mz=150.0, intensity=50.0),
+        _row(
+            "p4",
+            peak_assignment_id="px-p4",
+            mz=61.98837,
+            intensity=1000.0,
+            role="reagent",
+            tier="unassigned",
+            source=None,
+            ion_formula="NO3-",
+        ),
+    ]
+    _Client.details.update(
+        {
+            "px-p2": {"batch_isotopologue": {"line": "13C"}},
+            "px-p4": {"reagent": {"reason": "batch_known_species"}},
+        }
+    )
+    return "rx1"
+
+
+@pytest.fixture
+def after_pass(served):
+    return _add_after_pass()
+
+
+def test_a_named_run_is_read_not_the_sample_s_newest(served, tmp_path):
+    _, before = _card_of(served, tmp_path / "before_arm")
+    _add_after_pass()
+    # Without a name the newest run is read: the one after the pass.
+    _, newest = _card_of(_arm_manifest(tmp_path), tmp_path / "newest")
+    assert newest["columns"]["A"] != before["columns"]["A"]
+    code, named = _card_of(
+        _arm_manifest(tmp_path, runs={"s1": "ra1"}), tmp_path / "named"
+    )
+    assert named["columns"] == before["columns"]
+    assert named["gate"] == before["gate"]
+    assert "batch_arm" not in named
+
+
+def test_a_named_run_that_is_no_completed_run_skips_its_sample(served, tmp_path):
+    _Client.runs["s1"].insert(
+        0, _run("rf1", "mascope", "0.6.0", "2026-11-10T12:00:00Z", status="failed")
+    )
+    for name in ("rf1", "nowhere"):
+        _, card = _card_of(
+            _arm_manifest(tmp_path, runs={"s1": name}), tmp_path / f"card_{name}"
+        )
+        readings = card["columns"]["A"]["readings"]
+        assert readings["samples"]["value"] == 0
+        assert readings["samples_skipped"]["value"] == 1
+
+
+def test_the_batch_arm_reads_the_runs_after_the_pass_beside_the_control(
+    served, tmp_path
+):
+    _, control = _card_of(served, tmp_path / "control")
+    after_pass = _add_after_pass()
+    code, card = _card_of(
+        _arm_manifest(
+            tmp_path, runs={"s1": "ra1"}, batch_arm={"runs": {"s1": after_pass}}
+        ),
+        tmp_path / "arm",
+    )
+    # The control is the card it always was: its columns, its gate, its exit.
+    assert card["columns"] == control["columns"]
+    assert card["gate"] == control["gate"]
+    assert code == 1
+    arm = card["batch_arm"]
+    assert list(arm["columns"]) == ["A"] and arm["off"] == {}
+    after = arm["columns"]["A"]
+    # Every reading of the control, read on the runs after the pass: p2 is a
+    # line now, and p1 a candidate.
+    assert set(after["readings"]) == set(control["columns"]["A"]["readings"])
+    assert after["readings"]["assigned"]["value"] == 0
+    assert control["columns"]["A"]["readings"]["assigned"]["value"] == 2
+    moves = after["moves"]
+    assert {k: moves[k] for k in ("samples", "peaks", "moved")} == {
+        "samples": 1,
+        "peaks": 5,
+        "moved": 3,
+    }
+    # p2 changed role; p1 its tier alone; p4 its reading alone.
+    assert (moves["role"], moves["tier"], moves["reading"]) == (1, 1, 2)
+    assert moves["by_role"] == {"M0 -> iso_child": 1}
+    assert moves["by_decision"] == {
+        "known_species": 1,
+        "water_rung": 0,
+        "listed_compound": 0,
+        "isotopologue_strip": 1,
+        "series": 1,
+        "none": 0,
+        "not_read": 0,
+    }
+    assert (moves["control_read_decisions"], moves["after_read_decisions"]) == (0, 1)
+    text = (tmp_path / "arm" / "card.md").read_text()
+    assert "## After the batch pass" in text
+    assert "| metric | A | A after the pass |" in text
+    assert "| A | 1 | 5 | 3 | 1 | 1 | 2 | 1 | 0 | 0 | 1 | 1 | 0 | 0 |" in text
+    assert compare_runs.BATCH_ARM_COVERS in text
+    # A set's own card carries its arm; G asked for none and shows none.
+    assert "## After the batch pass" in (tmp_path / "arm" / "card_A.md").read_text()
+    assert "After the batch pass" not in (tmp_path / "arm" / "card_G.md").read_text()
+    own = json.loads((tmp_path / "arm" / "card_A.json").read_text())
+    assert list(own["batch_arm"]["columns"]) == ["A"]
+
+
+def test_a_moved_row_that_cites_nothing_or_whose_read_failed_is_counted_so(
+    served, after_pass, tmp_path
+):
+    _Client.details["px-p2"] = {}
+    _Client.details["px-p4"] = NotFoundError("gone", status_code=404)
+    _Client.ledgers[after_pass][0]["tier_reason_rules"] = ["corroborated"]
+    _, card = _card_of(
+        _arm_manifest(
+            tmp_path, runs={"s1": "ra1"}, batch_arm={"runs": {"s1": after_pass}}
+        ),
+        tmp_path / "arm",
+    )
+    by = card["batch_arm"]["columns"]["A"]["moves"]["by_decision"]
+    assert (by["none"], by["not_read"]) == (2, 1)
+    assert sum(by[k] for k in compare_runs.BATCH_DECISIONS) == 0
+
+
+def test_a_moved_row_cites_each_decision_its_provenance_names():
+    assert compare_runs.cited_by_provenance(
+        {
+            "reagent": {"reason": "batch_water_ladder"},
+            "tier_reasons": [{"rule": "batch_known_species"}, {"rule": "lone_peak"}],
+        }
+    ) == {"water_rung", "listed_compound"}
+    assert compare_runs.cited_by_provenance({"reagent": {"reason": "own"}}) == set()
+    assert compare_runs.cited_by_provenance(None) == set()
+
+
+def test_a_set_left_off_the_arm_is_named_with_why_and_its_control_stands(
+    served, tmp_path
+):
+    _, control = _card_of(served, tmp_path / "control")
+    _add_after_pass()
+    _, card = _card_of(
+        _arm_manifest(
+            tmp_path, runs={"s1": "ra1"}, batch_arm_off="the pass of its batch failed"
+        ),
+        tmp_path / "off",
+    )
+    assert card["columns"] == control["columns"]
+    assert card["batch_arm"] == {
+        "columns": {},
+        "off": {"A": "the pass of its batch failed"},
+    }
+    text = (tmp_path / "off" / "card.md").read_text()
+    assert "- A: no batch arm, the pass of its batch failed" in text
+    assert "| metric | A | A after the pass |" not in text
+
+
+def test_a_sample_with_no_run_after_the_pass_is_skipped_on_the_arm_alone(
+    served, after_pass, tmp_path
+):
+    _, card = _card_of(
+        _arm_manifest(tmp_path, runs={"s1": "ra1"}, batch_arm={"runs": {}}),
+        tmp_path / "arm",
+    )
+    assert card["columns"]["A"]["readings"]["samples"]["value"] == 1
+    after = card["batch_arm"]["columns"]["A"]
+    assert after["readings"]["samples"]["value"] == 0
+    assert after["readings"]["samples_skipped"]["value"] == 1
+    assert after["moves"]["samples"] == 0
+
+
+@pytest.mark.parametrize(
+    "spec, why",
+    [
+        ({"runs": ["ra1"]}, "runs maps each sample to a run id"),
+        ({"runs": {"s1": ""}}, "runs maps each sample to a run id"),
+        ({"batch_arm": {"s1": "rx1"}}, "batch_arm names its runs"),
+        ({"batch_arm": {"runs": {"s1": 3}}}, "batch_arm.runs maps each sample"),
+        ({"batch_arm_off": True}, "batch_arm_off says why"),
+        (
+            {"batch_arm": {"runs": {}}, "batch_arm_off": "x"},
+            "names both a batch arm and why it has none",
+        ),
+    ],
+)
+def test_a_set_s_runs_and_arm_of_another_shape_are_refused(tmp_path, spec, why):
+    manifest = tmp_path / "sets.json"
+    manifest.write_text(
+        json.dumps({"sets": {"A": {"workspace": "W", "samples": ["s1"], **spec}}})
+    )
+    with pytest.raises(SystemExit, match=why):
+        compare_runs.load_sets(manifest)

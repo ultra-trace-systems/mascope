@@ -163,7 +163,10 @@ set on which no sample is read keeps its column, every reading `-`, and fails
 the gate (`no sample read on D`): the bench could not read it, which is not a
 pass. `truth` is the set's authors' list (below): the neutral formulas
 themselves, or `{"file": P}`, a JSON list of them at `P` relative to the
-manifest's folder.
+manifest's folder. `runs` names the run of the first engine to read per
+sample (`{"<sample>": "<run id>"}`), in place of its newest completed one;
+a named run that is not a completed run of that engine skips its sample.
+`batch_arm` and `batch_arm_off` are the batch arm's (below).
 
 The tier reasons, the mass gate's record, the predicted envelope (3.4e) and
 the peak's separation (3.4f) are in each row's provenance. The ledger serves
@@ -201,7 +204,11 @@ no row's read can fail, and `detail_failed` reads 0.
 |---|---|
 | `card.md` | the table: a metric per row, a set per column and the pooled one, the target of the stage the thresholds name, a `MISS` on every gated reading that misses; the pass-or-fail line; the readings that moved since the baseline |
 | `card.json` | the same as data: per column its instrument, the engines' versions, the tiering rule sets, the decoy arms not read, and every reading as `{"value": ..., "n": ...}`, the number and the rows it is a share of or counted over; the gate and its marks; the thresholds; the diff |
-| `card_<set>.md`, `card_<set>.json` | one set's card: each reading with its count, its target and its mark. Its JSON is a card of its own, so it can be the baseline of another |
+| `card_<set>.md`, `card_<set>.json` | one set's card: each reading with its count, its target and its mark, and the set's batch arm where it has one. Its JSON is a card of its own, so it can be the baseline of another |
+
+A card whose sets asked for the batch arm also writes it, under *After the
+batch pass* in `card.md` and as `batch_arm` in `card.json` (below). A card
+with no such set holds neither, so it is the card it was before the arm.
 
 The command prints the table and the pass-or-fail line:
 
@@ -247,6 +254,47 @@ A card reads a sample's arm only where its control is the run the card
 reads of that sample. An arm refused before it ran makes no run, so the
 newest arm the store keeps can be one an earlier build made against its own
 control: that arm is counted among the decoy arms not read.
+
+### The batch arm (`batch_arm`)
+
+The card reads each sample's own run, which reads none of what a batch
+decides: the isotope-line owners (the strips and the stamps), the known
+species and the water ladder, the series, and what the batch's untargeted
+search adds. The batch arm reads it. A set gives it as `"batch_arm": {"runs":
+{"<sample>": "<run id>"}}`: the sample's run after a pass of the batch stages
+on the set's batch, which reads the batch's decisions as declared inputs
+(MAS-985). The set's own column still reads its `runs`, the control, and so
+does the gate: the arm is gated by nothing, and a diff against a baseline
+leaves it out.
+
+For each set with an arm, `card.json`'s `batch_arm.columns.<set>` holds:
+
+- `readings`: every reading the set's column holds, read on the runs after
+  the pass, joined to the same reference; no decoy arm, since the decoy arms
+  stay on the control;
+- `moves`: the peaks whose row moved from the control to the run after the
+  pass, over the samples both read: `role` (its role changed), `tier` (its
+  tier alone), `reading` (its formula, ion, mechanism or isotope line), and
+  `moved`, the peaks with any of them; `by_role`, each role change counted;
+  `by_decision`, each moved row of the run after the pass counted under each
+  batch decision it cites: `known_species` and `water_rung` (a source row the
+  claim stage took on the batch's word, `provenance.reagent.reason`),
+  `listed_compound` (a `batch_known_species` tier reason), `isotopologue_strip`
+  (a row the strip read as its parent's line, `provenance.batch_isotopologue`)
+  and `series` (a `series_anchor` tier reason), `none` for a row that cites
+  none and `not_read` for one whose detail read failed. The two tier reasons
+  are read off the ledger; the provenance only through the detail read, which
+  the card makes on the moved source rows and isotope lines alone;
+  `control_read_decisions` and `after_read_decisions`, the samples whose run
+  records reading any batch decision (`config.batch_decisions`): the control
+  reads none on a bench that starts clean of them.
+
+`batch_arm.off.<set>` names a set that asked for the arm and has none, with
+why (`"batch_arm_off": "<why>"` in its manifest entry). The markdown puts
+the control's and the arm's readings side by side, a pair of columns per
+set, then the moves, and says what the arm does not cover: the decoy arms,
+and the readings that live on the batch peak alone (co-variation, the batch
+checks, blends, the ratio grade), which no sample's row carries (MAS-909).
 
 ### An authors' list (`truth`)
 
