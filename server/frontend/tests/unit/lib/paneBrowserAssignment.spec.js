@@ -212,6 +212,16 @@ vi.mock('@/lib/virtualScroll', () => ({
 }))
 
 const GLOBAL_STUBS = {
+  // The filter bar's search box, typed into as a reader would.
+  IconField: { template: '<span class="icon-field"><slot /></span>' },
+  InputIcon: { template: '<span class="input-icon"><slot /></span>' },
+  InputText: {
+    props: ['modelValue'],
+    emits: ['update:modelValue'],
+    template:
+      '<input class="search-input" :value="modelValue" ' +
+      '@input="$emit(\'update:modelValue\', $event.target.value)" />'
+  },
   Dialog: { template: '<div><slot /><slot name="footer" /></div>' },
   Message: { template: '<div class="pane-message"><slot /></div>' },
   Button: { template: '<button><slot /></button>' },
@@ -1317,9 +1327,9 @@ describe('PaneBrowserAssignment reference-list column', () => {
     expect(tip).toContain('tags it background')
   })
 
-  it("writes the column out from the view menu's switch, and folds it back", async () => {
+  it("writes the column out from the overflow menu's switch, and folds it back", async () => {
     const wrapper = await renderedListing(listedFamily())
-    const toggle = wrapper.find('#listing-full')
+    const toggle = wrapper.find('#sample-listing-full')
     const cell = () => listingColumn(wrapper).findAll('.stub-cell')[0]
 
     expect(toggle.text()).toBe('false')
@@ -1329,9 +1339,9 @@ describe('PaneBrowserAssignment reference-list column', () => {
     expect(cell().find('.listing-source').exists()).toBe(true)
     expect(listingColumn(wrapper).text()).toContain('Listed as')
     // One setting for both ledgers, and kept across a reload.
-    expect(JSON.parse(localStorage.getItem('mascope.browser.match.ledgerListing'))).toEqual({
-      full: true
-    })
+    expect(JSON.parse(localStorage.getItem('mascope.browser.match.ledgerView')).listingFull).toBe(
+      true
+    )
 
     await toggle.trigger('click')
     expect(cell().find('[data-testid="listing-folded"]').exists()).toBe(true)
@@ -1695,13 +1705,17 @@ describe('PaneBrowserAssignment grouping by formula', () => {
     }
   })
 
-  it('offers the switch in the view menu', async () => {
+  it("offers it under the Show menu's Group by", async () => {
     seed(protonated())
     const wrapper = await mountPane()
+    const choice = wrapper.find('.view-menu-popover .group-by')
 
-    expect(wrapper.find('label[for="group-formula"]').text()).toBe('Group by formula')
-    await wrapper.find('#group-formula').trigger('click')
+    expect(choice.attributes('aria-label')).toBe('Group the rows by')
+    expect(choice.findAll('button').map((chip) => chip.text())).toEqual(['None', 'Compound'])
+    await choice.find('[data-value="compound"]').trigger('click')
     expect(wrapper.vm.groupByFormula).toBe(true)
+    await choice.find('[data-value="none"]').trigger('click')
+    expect(wrapper.vm.groupByFormula).toBe(false)
   })
 
   it('renders the toggle on the head, naming the other channels', async () => {
@@ -1952,26 +1966,29 @@ describe('PaneBrowserAssignment header and controls', () => {
 // The isotopologue toggle and the verdict filter used to sit bare in the panel
 // header, next to the run selector and the launch button; four controls in a
 // column the user can drag to half a window meant the last of them was simply
-// clipped off the pane. They are now behind one menu button - which is only
-// worth anything if they are still reachable and still remember their setting.
-describe('PaneBrowserAssignment view options menu', () => {
+// clipped off the pane. They are now behind Show, at the end of the filter bar
+// - which is only worth anything if they are still reachable and still
+// remember their setting.
+describe('PaneBrowserAssignment Show menu', () => {
   beforeEach(() => {
     runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
     seed(FAMILY_A, FAMILY_B)
   })
   afterEach(() => vi.clearAllMocks())
 
-  const trigger = (wrapper) => wrapper.find('[aria-label="Ledger view options"]')
+  const trigger = (wrapper) => wrapper.find('.view-menu-button')
 
-  const chips = (wrapper) => wrapper.findAll('.view-menu-popover .verdict-chip')
+  const chips = (wrapper) => wrapper.findAll('.view-menu-popover .verdict-filter .menu-chip')
 
-  // Everything that narrows the table is on one row: the tier chips first, the
-  // menu holding the other two filters at the end of it. The panel header keeps
-  // only the breadcrumb.
-  it('puts the menu at the end of the tier-chip row, and nothing in the header', async () => {
+  // Everything that narrows the table is in the filter bar above the tier
+  // chips: the search, then Show and the overflow at its end. The panel header
+  // keeps only the count.
+  it("puts Show at the end of the filter bar, in the cog's place, and nothing in the header", async () => {
     const wrapper = await mountPane()
 
-    expect(wrapper.find('.tier-strip .view-menu-button').exists()).toBe(true)
+    expect(wrapper.find('.filter-bar .view-menu-button').attributes('label')).toBe('Show')
+    expect(wrapper.find('.filter-bar .overflow-button').exists()).toBe(true)
+    expect(wrapper.find('.tier-strip .view-menu-button').exists()).toBe(false)
     expect(wrapper.find('.menu-row').exists()).toBe(false)
     // The run selector and the launch button are a row up now.
     expect(wrapper.find('[label="Assign sample"]').exists()).toBe(false)
@@ -2001,7 +2018,7 @@ describe('PaneBrowserAssignment view options menu', () => {
     const panel = wrapper.find('.view-menu-popover')
 
     expect(panel.attributes('id')).toBe('assignment-view-menu')
-    expect(panel.attributes('aria-label')).toBe('Ledger view options')
+    expect(panel.attributes('aria-label')).toBe('Show')
   })
 
   // The switch's only accessible name is its `<label for>`; a menu that rendered
@@ -2013,7 +2030,7 @@ describe('PaneBrowserAssignment view options menu', () => {
     const label = wrapper.find('.view-menu-popover label[for="unfold-iso"]')
     const toggle = wrapper.findComponent({ name: 'ToggleSwitch' })
 
-    expect(label.text()).toBe('Isotopologues')
+    expect(label.text()).toBe('Isotopologue lines')
     expect(toggle.props('inputId')).toBe('unfold-iso')
     expect(wrapper.find('.view-menu-popover #unfold-iso').exists()).toBe(true)
   })
@@ -2473,14 +2490,8 @@ describe('PaneBrowserAssignment engine-tier view', () => {
     const wrapper = await mountPane()
 
     expect(wrapper.find('label[for="engine-tier-view"]').text()).toBe('Engine tier')
-    expect(chips(wrapper)).toEqual([
-      '1 assigned',
-      '0 candidate',
-      '1 below',
-      '1 unassigned',
-      '1 reagent',
-      '0 artifact'
-    ])
+    // A chip with nothing in it is not drawn.
+    expect(chips(wrapper)).toEqual(['1 assigned', '1 below', '1 unassigned', '1 reagent'])
     expect(wrapper.find('.engine-view-label').exists()).toBe(false)
   })
 
@@ -2490,15 +2501,7 @@ describe('PaneBrowserAssignment engine-tier view', () => {
 
     // The isotopologue line counts with its compound, not on its own; the
     // reagent keeps its role chip; the unexplained peak stays unassigned.
-    expect(chips(wrapper)).toEqual([
-      '0 assigned',
-      '1 candidate',
-      '0 below',
-      '1 unassigned',
-      '1 not stated',
-      '1 reagent',
-      '0 artifact'
-    ])
+    expect(chips(wrapper)).toEqual(['1 candidate', '1 unassigned', '1 not stated', '1 reagent'])
     expect(wrapper.find('.engine-view-label').text()).toBe("engine's tiers")
   })
 
@@ -2832,29 +2835,56 @@ describe('PaneBrowserAssignment reagent and artifact peaks', () => {
 
     expect(chips(wrapper).map((chip) => chip.text())).toEqual([
       '1 assigned',
-      '0 candidate',
-      '0 below',
       '1 unassigned',
       '2 reagent',
       '1 artifact'
     ])
-    // Set off from the tiers where the roles begin.
-    expect(chips(wrapper)[4].classes()).toContain('roles-start')
-    expect(chips(wrapper)[5].classes()).not.toContain('roles-start')
+    // Set apart from the tiers, in a group of their own.
+    expect(
+      wrapper.findAll('[data-testid="role-chips"] .tier-stat').map((chip) => chip.text())
+    ).toEqual(['2 reagent', '1 artifact'])
   })
 
   it('filters to one role at a time, and never to the unassigned peaks with them', async () => {
     const wrapper = await mountPane()
 
-    await chips(wrapper)[5].trigger('click')
+    await chips(wrapper)[3].trigger('click')
     expect(ids(wrapper)).toEqual(['x'])
 
-    await chips(wrapper)[5].trigger('click')
     await chips(wrapper)[3].trigger('click')
+    await chips(wrapper)[1].trigger('click')
     expect(ids(wrapper)).toEqual(['u'])
 
-    await chips(wrapper)[4].trigger('click')
+    await chips(wrapper)[2].trigger('click')
     expect(ids(wrapper).sort()).toEqual(['r', 'rr', 'u'])
+  })
+
+  // An active chip whose tier has no rows stays, so the filter it holds can be
+  // seen and turned off; it is hidden only while off.
+  it('keeps an active chip with nothing in it', async () => {
+    const wrapper = await mountPane()
+    expect(wrapper.find('.tier-stat.candidate').exists()).toBe(false)
+
+    wrapper.vm.toggleTier('candidate')
+    await wrapper.vm.$nextTick()
+    const chip = wrapper.find('.tier-stat.candidate')
+    expect(chip.text()).toBe('0 candidate')
+    expect(chip.attributes('aria-pressed')).toBe('true')
+    await chip.trigger('click')
+    expect(wrapper.find('.tier-stat.candidate').exists()).toBe(false)
+  })
+
+  // Show > Roles: off, the ledger lists the sample's compounds and the peaks
+  // nothing explained, and the strip drops the roles' chips with their rows.
+  it('hides the role rows and their chips from Show', async () => {
+    const wrapper = await mountPane()
+
+    await wrapper.find('.view-menu-popover #show-roles').trigger('click')
+    expect(ids(wrapper).sort()).toEqual(['m', 'u'])
+    expect(chips(wrapper).map((chip) => chip.text())).toEqual(['1 assigned', '1 unassigned'])
+
+    await wrapper.find('.view-menu-popover #show-roles').trigger('click')
+    expect(ids(wrapper)).toHaveLength(5)
   })
 
   it('sorts the role rows after every tier, reagent before artifact', async () => {
@@ -3100,5 +3130,142 @@ describe('PaneBrowserAssignment verification queue', () => {
 
     await chip(wrapper).trigger('click')
     expect(evidence()).toEqual(['null', 'null'])
+  })
+})
+
+// The filter bar: the search box over the rows, and every choice of it and of
+// Show kept outside the pane, so a visit to the batch ledger and back - which
+// unmounts this pane - and a reload find them where they were left.
+describe('PaneBrowserAssignment filter bar', () => {
+  beforeEach(() => {
+    // The run's own mass gate: three fitted widths of 1 ppm about a fitted
+    // centre of +1 ppm.
+    runList = [
+      {
+        peak_assignment_run_id: 'run-1',
+        status: 'completed',
+        sigma_ppm: 1,
+        mu_ppm: 1,
+        config: { measurement_model: { gate: { cap_z: 3 } } }
+      }
+    ]
+    seed(FAMILY_A, FAMILY_B)
+  })
+  afterEach(() => vi.clearAllMocks())
+
+  const search = (wrapper, query) => wrapper.find('[data-testid="ledger-search"]').setValue(query)
+
+  it('finds a formula, ignoring case', async () => {
+    const wrapper = await mountPane()
+    await search(wrapper, 'c10')
+    expect(ids(wrapper)).toEqual(['a'])
+  })
+
+  it('finds a listed name', async () => {
+    const listed = family({
+      id: 'l',
+      mz: 371.1,
+      intensity: 50,
+      formula: 'C10H30O5Si5',
+      tier: 'candidate',
+      fit: 0.6
+    })
+    listed.parent.reference_listing = {
+      name: 'decamethylcyclopentasiloxane',
+      source: 'cyclic-siloxanes',
+      tags: [],
+      total: 1
+    }
+    seed(listed, FAMILY_A)
+    const wrapper = await mountPane()
+    await search(wrapper, 'cyclopenta')
+    expect(ids(wrapper)).toEqual(['l'])
+  })
+
+  // 200.1 measured, +1 ppm off centre: a query 1 ppm under it sits on the
+  // centre, and the window is 3 ppm either side of that.
+  it("finds an m/z within the run's mass gate, and not outside it", async () => {
+    const wrapper = await mountPane()
+    const at = (ppm) => (200.1 / (1 + ppm * 1e-6)).toFixed(6)
+
+    await search(wrapper, at(1))
+    expect(ids(wrapper)).toEqual(['a'])
+    await search(wrapper, at(3.9))
+    expect(ids(wrapper)).toEqual(['a'])
+    await search(wrapper, at(-1.9))
+    expect(ids(wrapper)).toEqual(['a'])
+    await search(wrapper, at(4.1))
+    expect(ids(wrapper)).toEqual([])
+    await search(wrapper, at(-2.1))
+    expect(ids(wrapper)).toEqual([])
+    // An isotope line's m/z finds the compound it folds under.
+    await search(wrapper, '101.05')
+    expect(ids(wrapper)).toEqual(['b'])
+    // The tooltip says the window.
+    expect(wrapper.vm.searchTooltip).toContain('3.0 ppm')
+  })
+
+  it("searches at the batch's 5 ppm where the run states no width", async () => {
+    runList = [{ peak_assignment_run_id: 'run-1', status: 'completed', sigma_ppm: null }]
+    const wrapper = await mountPane()
+
+    await search(wrapper, (200.1 / (1 + 4.9e-6)).toFixed(6))
+    expect(ids(wrapper)).toEqual(['a'])
+    await search(wrapper, (200.1 / (1 + 5.1e-6)).toFixed(6))
+    expect(ids(wrapper)).toEqual([])
+  })
+
+  it('keeps every choice across a remount', async () => {
+    let wrapper = await mountPane()
+    await search(wrapper, 'C')
+    wrapper.vm.toggleTier('assigned')
+    wrapper.vm.showIsotopologues = true
+    wrapper.vm.groupByFormula = true
+    wrapper.vm.verdictFilter = 'unverified'
+    wrapper.vm.queueMode = true
+    wrapper.vm.engineView = true
+    await wrapper.vm.$nextTick()
+    wrapper.unmount()
+
+    wrapper = await mountPane()
+    expect(wrapper.find('[data-testid="ledger-search"]').element.value).toBe('C')
+    // The engine view drops the chips set before it was switched on; the
+    // chips set in it stay.
+    expect(wrapper.vm.engineView).toBe(true)
+    expect(wrapper.vm.showIsotopologues).toBe(true)
+    expect(wrapper.vm.groupByFormula).toBe(true)
+    expect(wrapper.vm.verdictFilter).toBe('unverified')
+    expect(wrapper.vm.queueMode).toBe(true)
+    wrapper.unmount()
+
+    // And a reload.
+    setActivePinia(createPinia())
+    wrapper = await mountPane()
+    expect(wrapper.vm.searchQuery).toBe('C')
+    expect(wrapper.vm.groupByFormula).toBe(true)
+    expect(wrapper.vm.queueMode).toBe(true)
+  })
+
+  it('keeps the tier chips across a remount', async () => {
+    let wrapper = await mountPane()
+    wrapper.vm.toggleTier('assigned')
+    await wrapper.vm.$nextTick()
+    wrapper.unmount()
+
+    wrapper = await mountPane()
+    expect([...wrapper.vm.activeTiers]).toEqual(['assigned'])
+    expect(ids(wrapper)).toEqual(['b'])
+  })
+
+  it('falls back on a stored choice it does not know', async () => {
+    localStorage.setItem(
+      'mascope.browser.match.ledgerView',
+      JSON.stringify({ sample: { groupBy: 'series', verdict: 'maybe', queue: 'on' } })
+    )
+    setActivePinia(createPinia())
+    const wrapper = await mountPane()
+    expect(wrapper.vm.groupByFormula).toBe(false)
+    expect(wrapper.vm.verdictFilter).toBe('all')
+    expect(wrapper.vm.queueMode).toBe(false)
   })
 })

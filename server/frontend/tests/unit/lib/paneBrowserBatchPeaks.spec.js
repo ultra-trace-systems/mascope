@@ -257,7 +257,16 @@ const GLOBAL_STUBS = {
   Column: ColumnStub,
   Popover: PopoverStub,
   ToggleSwitch: ToggleSwitchStub,
-  InputText: true,
+  // The filter bar's search box, typed into as a reader would.
+  IconField: { template: '<span class="icon-field"><slot /></span>' },
+  InputIcon: { template: '<span class="input-icon"><slot /></span>' },
+  InputText: {
+    props: ['modelValue'],
+    emits: ['update:modelValue'],
+    template:
+      '<input class="search-input" :value="modelValue" ' +
+      '@input="$emit(\'update:modelValue\', $event.target.value)" />'
+  },
   Select: true,
   SelectButton: {
     name: 'SelectButton',
@@ -469,20 +478,25 @@ describe('PaneBrowserBatchPeaks tier strip', () => {
     peak('bp-4', 'unassigned', null)
   ]
 
-  it('renders one chip per tier in confidence order, then one per role, with counts', async () => {
+  it('renders a chip per tier with rows, in confidence order, with counts', async () => {
     wrapper = await mountPane({ peaks })
     const chips = wrapper.findAll('.tier-stat')
 
-    expect(chips.map((chip) => chip.text())).toEqual([
-      '2 assigned',
-      '1 candidate',
-      '0 below',
-      '1 unassigned',
-      '0 reagent',
-      '0 artifact'
+    // A chip with nothing in it is not drawn.
+    expect(chips.map((chip) => chip.text())).toEqual(['2 assigned', '1 candidate', '1 unassigned'])
+    expect(wrapper.find('[data-testid="role-chips"]').exists()).toBe(false)
+  })
+
+  // The bar over the chips: the tiers' shares, in their order.
+  it('draws the tier bar over the chips', async () => {
+    wrapper = await mountPane({ peaks })
+    const segments = wrapper.findAll('[data-testid="tier-bar"] .tier-segment')
+
+    expect(segments.map((segment) => segment.attributes('data-share'))).toEqual([
+      '0.5000',
+      '0.2500',
+      '0.2500'
     ])
-    // Set off from the tiers: what follows is not a confidence.
-    expect(chips[4].classes()).toContain('roles-start')
   })
 
   // The ledger's count is in its header line, in species.
@@ -511,10 +525,7 @@ describe('PaneBrowserBatchPeaks tier strip', () => {
     expect(wrapper.findAll('.tier-stat').map((chip) => chip.text())).toEqual([
       'assigned',
       'candidate',
-      'below',
-      'unassigned',
-      'reagent',
-      'artifact'
+      'unassigned'
     ])
   })
 
@@ -524,7 +535,8 @@ describe('PaneBrowserBatchPeaks tier strip', () => {
     wrapper = await mountPane({ peaks: [], ledger: { error: new Error('boom') } })
 
     expect(wrapper.find('.load-error').exists()).toBe(true)
-    expect(wrapper.findAll('.tier-stat')).toHaveLength(6)
+    expect(wrapper.find('.tier-strip').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="ledger-search"]').exists()).toBe(true)
     expect(wrapper.find('.view-menu-button').exists()).toBe(true)
   })
 
@@ -554,7 +566,7 @@ describe('PaneBrowserBatchPeaks tier strip', () => {
     expect(counts).toContain('1 reagent')
     expect(counts).toContain('1 artifact')
 
-    await wrapper.findAll('.tier-stat')[4].trigger('click')
+    await wrapper.find('.tier-stat.reagent').trigger('click')
     expect([...wrapper.vm.activeTiers]).toEqual(['reagent'])
     expect(wrapper.vm.rows.map((row) => row.batch_peak_id)).toEqual(['bp-br'])
   })
@@ -568,7 +580,7 @@ describe('PaneBrowserBatchPeaks tier strip', () => {
     expect([...wrapper.vm.activeTiers]).toEqual(['candidate'])
     expect(wrapper.vm.rows.map((row) => row.consensus_tier)).toEqual(['candidate'])
 
-    await wrapper.findAll('.tier-stat')[3].trigger('click')
+    await wrapper.findAll('.tier-stat')[2].trigger('click')
     expect([...wrapper.vm.activeTiers]).toEqual(['candidate', 'unassigned'])
     expect(wrapper.vm.rows.map((row) => row.consensus_tier).sort()).toEqual([
       'candidate',
@@ -709,11 +721,10 @@ describe('PaneBrowserBatchPeaks reagent anchors', () => {
     ])
   })
 
-  it('finds the ion with the formula search', async () => {
+  it('finds the ion with the search', async () => {
     wrapper = await mountPane({ peaks: [REAGENT, peak('bp-a', 'assigned', 0.9)] })
 
-    wrapper.vm.filters.consensus_formula.constraints[0].value = 'Br'
-    await wrapper.vm.$nextTick()
+    await wrapper.find('[data-testid="ledger-search"]').setValue('Br')
     expect(wrapper.vm.rows.map((row) => row.batch_peak_id)).toEqual(['bp-br'])
   })
 
@@ -978,7 +989,7 @@ describe('PaneBrowserBatchPeaks reference-list column', () => {
     expect(unlisted.text()).toBe('')
   })
 
-  it("writes the column out from the view menu's switch", async () => {
+  it("writes the column out from the overflow menu's switch", async () => {
     wrapper = await renderedCells([peak('bp-1', 'assigned', 0.9, { reference_listing: LISTING })])
     const toggle = wrapper.find('#batch-listing-full')
 
@@ -987,9 +998,9 @@ describe('PaneBrowserBatchPeaks reference-list column', () => {
     const listed = listingColumn().find('.stub-cell')
     expect(listed.find('.listing-name').text()).toBe('decamethylcyclopentasiloxane +1')
     expect(listingColumn().text()).toContain('Listed as')
-    expect(JSON.parse(localStorage.getItem('mascope.browser.match.ledgerListing'))).toEqual({
-      full: true
-    })
+    expect(JSON.parse(localStorage.getItem('mascope.browser.match.ledgerView')).listingFull).toBe(
+      true
+    )
   })
 
   it('shows the name, the list and its tag on a listed batch peak, in full', async () => {
@@ -2644,39 +2655,87 @@ describe('PaneBrowserBatchPeaks filtering under the pane-owned table', () => {
     expect(ids()).toEqual(['bp-2'])
   })
 
-  it('narrows the rows on the formula filter', async () => {
+  // The search box takes the Formula column's filter menu's place.
+  const search = (query) => wrapper.find('[data-testid="ledger-search"]').setValue(query)
+
+  it('has no filter menu on the Formula column any more', async () => {
     wrapper = await mountPane({ peaks })
 
-    wrapper.vm.filters.consensus_formula.constraints[0].value = 'C6H'
-    await wrapper.vm.$nextTick()
+    expect(Object.keys(wrapper.vm.filters)).not.toContain('consensus_formula')
+  })
+
+  it('narrows the rows on a formula typed in the search', async () => {
+    wrapper = await mountPane({ peaks })
+
+    await search('c6h')
 
     expect(ids()).toEqual(['bp-1', 'bp-3'])
   })
 
-  it('honours the match mode the menu offers rather than assuming one', async () => {
-    // The menu lets the user pick "Not contains" and the rest; a filter that
-    // hard-coded CONTAINS would go on matching while the menu said otherwise.
-    wrapper = await mountPane({ peaks })
+  it('narrows the rows on a listed name', async () => {
+    wrapper = await mountPane({
+      peaks: [
+        ...peaks,
+        peak('bp-listed', 'assigned', 0.6, {
+          consensus_formula: 'C10H30O5Si5',
+          reference_listing: {
+            name: 'decamethylcyclopentasiloxane',
+            source: 'cyclic-siloxanes',
+            tags: [],
+            total: 1
+          }
+        })
+      ]
+    })
 
-    wrapper.vm.filters.consensus_formula.constraints[0].matchMode = 'notContains'
-    wrapper.vm.filters.consensus_formula.constraints[0].value = 'C6H'
-    await wrapper.vm.$nextTick()
+    await search('cyclopenta')
 
-    expect(ids()).toEqual(['bp-2'])
+    expect(ids()).toEqual(['bp-listed'])
   })
 
-  it('shows every row again when the constraint is cleared', async () => {
-    wrapper = await mountPane({ peaks })
-    wrapper.vm.filters.consensus_formula.constraints[0].value = 'C6H'
-    await wrapper.vm.$nextTick()
+  // The batch's rows come from many runs, so an m/z matches within 5 ppm, the
+  // window an imported batch result is matched at.
+  it('matches an m/z within 5 ppm and not beyond', async () => {
+    wrapper = await mountPane({
+      peaks: [
+        peak('bp-1', 'assigned', 0.9, { mz: 200.0 }),
+        peak('bp-2', 'assigned', 0.8, { mz: 300.0 })
+      ]
+    })
 
-    wrapper.vm.filters.consensus_formula.constraints[0].value = null
-    await wrapper.vm.$nextTick()
+    // 200 * 5e-6 = 0.001
+    await search('200.0009')
+    expect(ids()).toEqual(['bp-1'])
+    await search('199.9991')
+    expect(ids()).toEqual(['bp-1'])
+    await search('200.0011')
+    expect(ids()).toEqual([])
+  })
+
+  it("finds a family by its isotope line's m/z", async () => {
+    wrapper = await mountPane({
+      peaks: [
+        peak('bp-m0', 'assigned', 0.9, { mz: 181.0707 }),
+        peak('bp-iso', 'assigned', 0.9, { mz: 182.0741, isotopologue_of: 'bp-m0' }),
+        peak('bp-other', 'candidate', 0.5, { mz: 250.1 })
+      ]
+    })
+
+    await search('182.0741')
+
+    expect(ids()).toEqual(['bp-m0'])
+  })
+
+  it('shows every row again when the search is cleared', async () => {
+    wrapper = await mountPane({ peaks })
+    await search('C6H')
+
+    await search('')
 
     expect(ids()).toHaveLength(3)
   })
 
-  it('keeps a family whole when its main peak passes the filter', async () => {
+  it('keeps a family whole when its main peak passes the search', async () => {
     // An isotopologue shares its family's formula and tier, so a filter that kept
     // the parent kept the family - and filtering the isotopologues separately would
     // only ever produce the same answer or an incomplete family.
@@ -2692,8 +2751,7 @@ describe('PaneBrowserBatchPeaks filtering under the pane-owned table', () => {
       ]
     })
     wrapper.vm.showIsotopologues = true
-    wrapper.vm.filters.consensus_formula.constraints[0].value = 'C6H12O6'
-    await wrapper.vm.$nextTick()
+    await search('C6H12O6')
 
     expect(ids()).toEqual(['bp-m0', 'bp-iso'])
   })
@@ -2812,14 +2870,14 @@ describe('PaneBrowserBatchPeaks selection across the fold', () => {
     expect(selectedIds()).toEqual(['bp-m0'])
   })
 
-  it('is toggled from the view menu on the tier row', async () => {
-    // Where the sample ledger keeps it: behind the cog at the end of the filter
-    // row, rather than on the panel header it used to share with the compute
-    // button. The toggle is inside the popover the cog opens.
+  it('is toggled from Show, at the end of the filter bar', async () => {
+    // Where the sample ledger keeps it: behind Show at the end of the filter
+    // bar, rather than on the panel header it used to share with the compute
+    // button. The toggle is inside the popover Show opens.
     wrapper = await mountPane({ peaks: [M0, ISO] })
 
-    const cog = wrapper.find('.tier-strip .view-menu-button')
-    expect(cog.exists()).toBe(true)
+    const show = wrapper.find('.filter-bar .view-menu-button')
+    expect(show.attributes('data-icon')).toBe('pi ph ph-funnel')
     expect(wrapper.find('.view-popover .iso-toggle').exists()).toBe(true)
 
     await wrapper.find('.iso-toggle').trigger('click')
@@ -3014,10 +3072,13 @@ describe('PaneBrowserBatchPeaks batch runs', () => {
 })
 
 describe('PaneBrowserBatchPeaks ledger export', () => {
-  it('offers the export from the view menu and launches it', async () => {
+  it('offers the export from the overflow menu and launches it', async () => {
     wrapper = await mountPane({ peaks: [peak('bp-1', 'assigned', 0.9)] })
 
-    const button = wrapper.find('.view-popover .export-ledger')
+    // The overflow's panel, not Show's.
+    const overflow = wrapper.find('#batch-peak-overflow-menu')
+    expect(wrapper.find('#batch-peak-view-menu .export-ledger').exists()).toBe(false)
+    const button = overflow.find('.export-ledger')
     expect(button.exists()).toBe(true)
     expect(button.attributes('disabled')).toBeUndefined()
 
@@ -3037,7 +3098,7 @@ describe('PaneBrowserBatchPeaks ledger export', () => {
   })
 
   it('offers no export on an empty ledger', async () => {
-    // The view menu hangs off the tier strip, which an empty ledger does not
+    // The overflow sits in the filter bar, which an empty ledger does not
     // draw - so there is no control to disable.
     wrapper = await mountPane({ peaks: [] })
     expect(wrapper.find('.export-ledger').exists()).toBe(false)
@@ -3134,27 +3195,12 @@ describe('PaneBrowserBatchPeaks engine tier', () => {
 
   it("counts and filters the strip by the engine's tier when the view is on", async () => {
     wrapper = await mountPane({ peaks: peaks() })
-    expect(chips()).toEqual([
-      '2 assigned',
-      '1 candidate',
-      '0 below',
-      '1 unassigned',
-      '0 reagent',
-      '0 artifact'
-    ])
+    expect(chips()).toEqual(['2 assigned', '1 candidate', '1 unassigned'])
     expect(wrapper.find('.engine-view-label').exists()).toBe(false)
 
     await toggle('batch-engine-tier-view').trigger('click')
 
-    expect(chips()).toEqual([
-      '1 assigned',
-      '1 candidate',
-      '0 below',
-      '1 unassigned',
-      '1 not stated',
-      '0 reagent',
-      '0 artifact'
-    ])
+    expect(chips()).toEqual(['1 assigned', '1 candidate', '1 unassigned', '1 not stated'])
     expect(wrapper.find('.engine-view-label').exists()).toBe(true)
     wrapper.vm.toggleTier('candidate')
     await wrapper.vm.$nextTick()
@@ -3440,7 +3486,8 @@ describe('PaneBrowserBatchPeaks on a batch of two instrument types', () => {
     expect(picker().props('modelValue')).toBe('orbi')
     expect(rowIds()).toEqual(['bp-orbi'])
     expect(wrapper.vm.tierChips.find((chip) => chip.key === 'assigned').count).toBe(1)
-    expect(wrapper.vm.tierChips.find((chip) => chip.key === 'candidate').count).toBe(0)
+    // The other type's candidate is not counted: its chip is not drawn.
+    expect(wrapper.vm.tierChips.find((chip) => chip.key === 'candidate')).toBeUndefined()
     expect(wrapper.vm.count).toBe('1 batch peak')
     // The other type's row is not an isotopologue folded out of sight.
     expect(wrapper.vm.countTooltip).toBeNull()
@@ -3462,5 +3509,195 @@ describe('PaneBrowserBatchPeaks on a batch of two instrument types', () => {
     picker().vm.$emit('update:modelValue', 'tof')
     await wrapper.vm.$nextTick()
     expect(wrapper.vm.hasEngineTiers).toBe(false)
+  })
+})
+
+// The filter bar's Show menu and what it keeps: each choice filters as the
+// cog's did, the new ones (roles, one badge kind, the verdict) included, and
+// every choice outlives the pane - a visit to a sample unmounts it - and a
+// reload.
+describe('PaneBrowserBatchPeaks Show and its persistence', () => {
+  const peaks = () => [
+    peak('bp-1', 'assigned', 0.9, { mz: 100.1, curated: true }),
+    peak('bp-2', 'candidate', 0.6, { mz: 200.1, series: { unit: 'CH2' } }),
+    peak('bp-3', 'unassigned', null, { mz: 300.1, consensus_formula: null }),
+    peak('bp-br', 'unassigned', null, {
+      mz: 78.9189,
+      consensus_formula: null,
+      consensus_role: 'reagent',
+      consensus_ion_formula: 'Br-'
+    })
+  ]
+  const ids = () => wrapper.vm.rows.map((row) => row.batch_peak_id).sort()
+  const badgeChips = () => wrapper.findAll('#batch-peak-view-menu .badge-filter .menu-chip')
+
+  it('hides the role rows, and their chips, from Show > Roles', async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+    expect(ids()).toEqual(['bp-1', 'bp-2', 'bp-3', 'bp-br'])
+
+    await wrapper.find('#batch-show-roles').trigger('click')
+
+    expect(ids()).toEqual(['bp-1', 'bp-2', 'bp-3'])
+    expect(wrapper.find('.tier-stat.reagent').exists()).toBe(false)
+  })
+
+  it('keeps the rows carrying one badge kind, one at a time', async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+
+    // Offered for the kinds some row carries, by the registry's names.
+    expect(badgeChips().map((chip) => chip.text())).toEqual([
+      'Homologous series',
+      'Changed by hand'
+    ])
+    await wrapper.find('.badge-filter [data-value="manual"]').trigger('click')
+    expect(ids()).toEqual(['bp-1'])
+    await wrapper.find('.badge-filter [data-value="series"]').trigger('click')
+    expect(ids()).toEqual(['bp-2'])
+    // Clicked again, it is off.
+    await wrapper.find('.badge-filter [data-value="series"]').trigger('click')
+    expect(wrapper.vm.badgeFilter).toBeNull()
+    expect(ids()).toHaveLength(4)
+  })
+
+  // A kind held from another batch, which no row here carries, is no filter:
+  // it would empty the table under a choice the menu does not offer.
+  it('filters nothing by a held badge kind no row carries', async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+    wrapper.vm.badgeFilter = 'persistence'
+    await wrapper.vm.$nextTick()
+    expect(ids()).toHaveLength(4)
+  })
+
+  it('offers no badge filter where no row carries a badge', async () => {
+    wrapper = await mountPane({ peaks: [peak('bp-1', 'assigned', 0.9)] })
+    expect(wrapper.find('.badge-filter').exists()).toBe(false)
+  })
+
+  it('filters by the batch-level verdict from Show', async () => {
+    wrapper = await mountPane({
+      peaks: peaks(),
+      verdicts: { 'bp-1': { verdict: 'confirmed', assigned_formula: 'C6H12O6' } }
+    })
+    const chip = (value) =>
+      wrapper.find(`#batch-peak-view-menu .verdict-filter [data-value="${value}"]`)
+
+    await chip('confirmed').trigger('click')
+    expect(ids()).toEqual(['bp-1'])
+    await chip('unverified').trigger('click')
+    expect(ids()).toEqual(['bp-2', 'bp-3', 'bp-br'])
+  })
+
+  // The pane is unmounted while a sample is focused; the store it reads is
+  // not, so coming back finds every choice where it was left.
+  it('keeps every choice across a remount', async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+    await wrapper.find('[data-testid="ledger-search"]').setValue('C6H')
+    wrapper.vm.toggleTier('assigned')
+    wrapper.vm.showIsotopologues = true
+    wrapper.vm.onlyBlends = true
+    wrapper.vm.badgeFilter = 'manual'
+    wrapper.vm.verdictFilter = 'unverified'
+    wrapper.vm.onlyFlatSeries = true
+    wrapper.vm.onlyStripped = true
+    wrapper.vm.onlyDisagreements = true
+    await wrapper.vm.$nextTick()
+    wrapper.unmount()
+
+    wrapper = mount(PaneBrowserBatchPeaks, {
+      global: { stubs: GLOBAL_STUBS, directives: { tooltip: {}, help: {} } }
+    })
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-testid="ledger-search"]').element.value).toBe('C6H')
+    expect([...wrapper.vm.activeTiers]).toEqual(['assigned'])
+    expect(wrapper.vm.showIsotopologues).toBe(true)
+    expect(wrapper.vm.onlyBlends).toBe(true)
+    expect(wrapper.vm.badgeFilter).toBe('manual')
+    expect(wrapper.vm.verdictFilter).toBe('unverified')
+    expect(wrapper.vm.onlyFlatSeries).toBe(true)
+    expect(wrapper.vm.onlyStripped).toBe(true)
+    expect(wrapper.vm.onlyDisagreements).toBe(true)
+  })
+
+  it('keeps the engine view across a remount', async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+    wrapper.vm.engineView = true
+    await wrapper.vm.$nextTick()
+    wrapper.unmount()
+
+    wrapper = mount(PaneBrowserBatchPeaks, {
+      global: { stubs: GLOBAL_STUBS, directives: { tooltip: {}, help: {} } }
+    })
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.engineView).toBe(true)
+  })
+
+  it('reads every choice back after a reload, and the sample scope keeps its own', async () => {
+    wrapper = await mountPane({ peaks: peaks() })
+    await wrapper.find('[data-testid="ledger-search"]').setValue('200.1')
+    wrapper.vm.toggleTier('candidate')
+    await wrapper.vm.$nextTick()
+    wrapper.unmount()
+
+    // A fresh session over the same storage.
+    setActivePinia(createPinia())
+    wrapper = mount(PaneBrowserBatchPeaks, {
+      global: { stubs: GLOBAL_STUBS, directives: { tooltip: {}, help: {} } }
+    })
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.vm.searchQuery).toBe('200.1')
+    expect(ids()).toEqual(['bp-2'])
+    const stored = JSON.parse(localStorage.getItem('mascope.browser.match.ledgerView'))
+    expect(stored.batch.tiers).toEqual(['candidate'])
+    expect(stored.sample.search).toBe('')
+    expect(stored.sample.tiers).toEqual([])
+  })
+
+  // A stored value the code no longer knows falls back to the default.
+  it('falls back on a stored choice it does not know', async () => {
+    app = makeApp({ peaks: peaks() })
+    localStorage.clear()
+    localStorage.setItem(
+      'mascope.browser.match.ledgerView',
+      JSON.stringify({ batch: { badge: 'retired', tiers: ['nonsense'], blends: 1, search: 'C6H' } })
+    )
+    setActivePinia(createPinia())
+    wrapper = mount(PaneBrowserBatchPeaks, {
+      global: { stubs: GLOBAL_STUBS, directives: { tooltip: {}, help: {} } }
+    })
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.vm.badgeFilter).toBeNull()
+    expect(wrapper.vm.activeTiers.size).toBe(0)
+    expect(wrapper.vm.onlyBlends).toBe(false)
+    expect(wrapper.vm.searchQuery).toBe('C6H')
+  })
+
+  // The engine view is the reader's switch: a ledger that reloads with engine
+  // tiers arriving after the mount must not drop the chips set in it.
+  it('keeps the chips across a reload whose engine tiers arrive after the mount', async () => {
+    wrapper = await mountPane({
+      peaks: [peak('bp-1', 'assigned', 0.9, { engine_tier: 'candidate' })]
+    })
+    wrapper.vm.engineView = true
+    await wrapper.vm.$nextTick()
+    wrapper.vm.toggleTier('candidate')
+    await wrapper.vm.$nextTick()
+    wrapper.unmount()
+
+    app = makeApp({ peaks: [] })
+    wrapper = mount(PaneBrowserBatchPeaks, {
+      global: { stubs: GLOBAL_STUBS, directives: { tooltip: {}, help: {} } }
+    })
+    await wrapper.vm.$nextTick()
+    app.data.batchPeak.list = [
+      served(peak('bp-1', 'assigned', 0.9, { engine_tier: 'candidate' })),
+      served(peak('bp-2', 'assigned', 0.8, { mz: 200.1, engine_tier: 'assigned' }))
+    ]
+    await wrapper.vm.$nextTick()
+
+    expect([...wrapper.vm.activeTiers]).toEqual(['candidate'])
+    expect(ids()).toEqual(['bp-1'])
   })
 })

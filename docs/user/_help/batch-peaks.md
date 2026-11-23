@@ -6,3 +6,12 @@ batch peak carries a **consensus formula** and **consensus tier**, an
 evidence-weighted consensus of its member peaks' per-sample assignments, plus
 the number of samples it is seen in and the **highest intensity** it reaches in
 any of them.
+
+Above the table, the **search box** finds a formula, a listed name or an m/z
+(within 5 ppm, the window an imported batch result is matched at; a number also
+finds a compound by its isotope lines). **Show** holds the row kinds
+(isotopologue lines, roles, stripped rows), the batch's flags (probable blends,
+flat series, one badge kind at a time), the engine's readings and the verdict
+filter; **...** holds **Export ledger (CSV)** and **Write listed names in
+full**. Every choice is kept for this ledger, through a visit to a sample and a
+reload.

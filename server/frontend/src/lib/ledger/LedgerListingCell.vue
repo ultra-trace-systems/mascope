@@ -8,7 +8,7 @@ import {
   targetName
 } from '@/lib/referenceListings'
 
-import { useLedgerListing } from './useLedgerListing.js'
+import { useLedgerListing } from './useLedgerView.js'
 
 /**
  * What a reference list calls a row's formula: the name, its list, and the
@@ -16,7 +16,7 @@ import { useLedgerListing } from './useLedgerListing.js'
  * its height. The tooltip names every name the run matched, as the
  * inspector's does. Folded, the default, the name is cut short and the list is
  * left to the tooltip; one switch writes it out in both scopes
- * (useLedgerListing.js). A row no list names renders nothing.
+ * (useLedgerView.js). A row no list names renders nothing.
  */
 defineProps({
   /** The row's listing (`ledgerListing` of its `reference_listing`), or null. */

@@ -2,14 +2,25 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 
-import {
-  DEFAULT_LEDGER_SORT,
-  compareBy,
-  useLedgerSort,
-  useLedgerSortStore
-} from '@/lib/ledger/useLedgerSort.js'
+import { DEFAULT_LEDGER_SORT, compareBy, useLedgerSort } from '@/lib/ledger/useLedgerSort.js'
+import { useLedgerViewStore } from '@/lib/ledger/useLedgerView.js'
 
-const KEY = 'mascope.browser.match.ledgerSort'
+const KEY = 'mascope.browser.match.ledgerView'
+// The sort's own key, before the ledger-view store took it in.
+const LEGACY_KEY = 'mascope.browser.match.ledgerSort'
+const sortOf = (view) => ({ field: view.field, order: view.order })
+const useLedgerSortStore = () => {
+  const store = useLedgerViewStore()
+  return {
+    get sample() {
+      return sortOf(store.sample)
+    },
+    get batch() {
+      return sortOf(store.batch)
+    },
+    store
+  }
+}
 
 beforeEach(() => {
   localStorage.clear()
@@ -25,16 +36,15 @@ describe('useLedgerSortStore', () => {
 
   it('hands a change to the next pane that asks, and writes it through to storage', async () => {
     const sort = useLedgerSortStore()
-    sort.sample.field = 'sample_peak_intensity'
-    sort.sample.order = -1
+    sort.store.sample.field = 'sample_peak_intensity'
+    sort.store.sample.order = -1
     await nextTick()
 
     // The remounted pane gets the same store, so the same sort.
     expect(useLedgerSortStore().sample.field).toBe('sample_peak_intensity')
-    expect(JSON.parse(localStorage.getItem(KEY))).toEqual({
-      sample: { field: 'sample_peak_intensity', order: -1 },
-      batch: { ...DEFAULT_LEDGER_SORT.batch }
-    })
+    const stored = JSON.parse(localStorage.getItem(KEY))
+    expect(sortOf(stored.sample)).toEqual({ field: 'sample_peak_intensity', order: -1 })
+    expect(sortOf(stored.batch)).toEqual({ ...DEFAULT_LEDGER_SORT.batch })
     // The other ledger's sort is untouched by it.
     expect({ ...sort.batch }).toEqual(DEFAULT_LEDGER_SORT.batch)
   })
@@ -52,6 +62,14 @@ describe('useLedgerSortStore', () => {
     expect(sort.sample.order).toBe(1)
     expect(sort.batch.field).toBe('mz')
     expect(sort.batch.order).toBe(DEFAULT_LEDGER_SORT.batch.order)
+  })
+
+  // The sort's own key, from before the ledger-view store, is read while the
+  // store's key is absent, so an upgrade keeps the sort a reader chose.
+  it("reads the sort's old key once the new one is absent", () => {
+    localStorage.setItem(LEGACY_KEY, JSON.stringify({ batch: { field: 'mz', order: 1 } }))
+    expect(useLedgerSortStore().batch).toEqual({ field: 'mz', order: 1 })
+    expect({ ...useLedgerSortStore().sample }).toEqual(DEFAULT_LEDGER_SORT.sample)
   })
 
   it('falls back to the defaults on unreadable storage', () => {

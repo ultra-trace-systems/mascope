@@ -3,7 +3,6 @@ import { ref, computed, watch } from 'vue'
 
 import Button from 'primevue/button'
 import Column from 'primevue/column'
-import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
 import Popover from 'primevue/popover'
 import SelectButton from 'primevue/selectbutton'
@@ -17,7 +16,7 @@ import {
   BaseTierTag
 } from '@/lib/base'
 import { ledgerListing, listingName, targetName, targetOf } from '@/lib/referenceListings'
-import { FORMULA_CELL_MARKS, ledgerMarks } from '@/lib/evidence/marks'
+import { FORMULA_CELL_MARKS, ledgerMarks, markOf } from '@/lib/evidence/marks'
 import { coVariationLabel, coVariationRank, coVariationTooltip } from '@/lib/batchCoVariation'
 import { checkTags, checksRank, checksTooltip } from '@/lib/batchChecks'
 import { isPredicted, stampParentId, stampTooltip } from '@/lib/batchIsotopologues'
@@ -42,14 +41,17 @@ import { isLevel, levelMeta, levelRank, memberLevelTooltip } from '@/lib/levels'
 import { VERDICT_META } from '@/lib/verification'
 import {
   AssignmentLedger,
+  BADGE_FILTER_KINDS,
+  BATCH_SEARCH_PPM,
+  LedgerMenuChoice,
   LedgerVerdictPopover,
   LedgerViewToggle,
   batchLineLabel,
   batchLineName,
   ledgerTierChips,
   useLedgerFilters,
-  useLedgerListing,
   useLedgerSort,
+  useLedgerView,
   useRowPopover,
   verdictRank
 } from '@/lib/ledger'
@@ -82,6 +84,16 @@ const jump = useBatchPeakJump()
 // about rather than in a toast that has scrolled away, and the empty ledger
 // offers the action itself.
 const assign = useBatchAssign()
+
+// Every choice of the filter bar and its Show menu, held outside the pane and
+// persisted (lib/ledger/useLedgerView.js), so it survives a visit to a sample
+// and back, and a reload.
+const view = useLedgerView('batch')
+const viewChoice = (key) =>
+  computed({
+    get: () => view[key],
+    set: (value) => (view[key] = value)
+  })
 
 const ledger = computed(() => app.data.batchPeak)
 const verdicts = computed(() => app.data.batchPeakVerification)
@@ -135,10 +147,6 @@ const verdictCell = (row) => ({
   label: verdictFor(row) ? 'Batch-level verdict' : 'Record a batch-level verdict',
   tooltip: verdictTooltip(row)
 })
-
-// The "listed as" column folds to a mark, and one switch in either ledger's
-// view menu writes it out in both (lib/ledger/useLedgerListing.js).
-const listingColumn = useLedgerListing()
 
 // --- Isotopologue families --------------------------------------------------
 
@@ -212,13 +220,13 @@ const hasEngineTiers = computed(() => shown.value.some((bp) => bp.engine_tier !=
 // The engine-tier view: the strip counts, and its chips filter, by the engine's
 // tier. Off by default and a reading aid alone: the tier column, the sort and
 // the fold stay on the consensus tier.
-const engineView = ref(false)
+const engineView = viewChoice('engineView')
 const readsEngineTiers = computed(() => engineView.value && hasEngineTiers.value)
 
 // The batch peaks where the engine's tier and the consensus tier differ. A
 // batch peak with no engine tier is not among them: absence is not agreement,
 // as on the API's `tier_disagrees`.
-const onlyDisagreements = ref(false)
+const onlyDisagreements = viewChoice('engineDisagrees')
 const engineDisagrees = (row) => row.engine_tier != null && row.engine_tier !== row.consensus_tier
 
 // Says which of the two tiers the chip is, and whether it agrees, as the
@@ -274,16 +282,16 @@ const engineLevelTooltip = (row) => {
 const hasStrips = computed(() =>
   shown.value.some((bp) => bp.merged_isotopologue_of != null || bp.merged_isotopologues != null)
 )
-const onlyStripped = ref(false)
+const onlyStripped = viewChoice('stripped')
 const tookLines = (row) => strippedLinesCount(row.merged_isotopologues) > 0
 // A batch peak whose two leading formulas part cleanly along intensity or
 // acquisition time: two compounds may share its trace.
 const hasBlends = computed(() => shown.value.some((bp) => blendOf(bp) != null))
-const onlyBlends = ref(false)
+const onlyBlends = viewChoice('blends')
 // A batch peak whose trace holds a constant ratio to the batch's normaliser:
 // an origin flag, likely background.
 const hasFlatSeries = computed(() => shown.value.some((bp) => flatSeriesOf(bp) != null))
-const onlyFlatSeries = ref(false)
+const onlyFlatSeries = viewChoice('flatSeries')
 // How a species' trace follows the same compound through the mode's other
 // channels, as a "Read co-variation" run left it.
 const hasCoVariation = computed(() => shown.value.some((bp) => bp.co_variation != null))
@@ -302,6 +310,22 @@ const continuityClaims = (row) => CLAIM_GRADES.includes(row.continuity_grade)
 // of a water-ladder rung, as its rung's own row does. Its other readings are
 // its family's, on the family's row.
 const CHILD_CELL_MARKS = ['reagent']
+
+// Show > one badge kind at a time: the rows that carry it beside their
+// formula. Offered for the kinds some row shown carries; the blend and the flat
+// series have switches of their own.
+const badgeKinds = computed(() =>
+  BADGE_FILTER_KINDS.filter((id) => shown.value.some((bp) => ledgerMarks(bp, [id]).length))
+)
+const badgeFilter = viewChoice('badge')
+const BADGE_OPTIONS = computed(() =>
+  badgeKinds.value.map((id) => ({
+    value: id,
+    label: markOf(id).label,
+    tooltip: `Only the batch peaks carrying this badge beside their formula`
+  }))
+)
+const carriesBadge = (row, id) => ledgerMarks(row, [id]).length > 0
 
 // The ledger's records with the ranks the columns sort on attached (the raw
 // tier string sorts alphabetically, and "below_assignability" before
@@ -400,7 +424,7 @@ const lineTooltip = (row) => {
 
 // Fold isotopologues under their M0 by default: an isotopologue carries its family's
 // formula, so unfolded it reads as a second row for one compound.
-const showIsotopologues = ref(false)
+const showIsotopologues = viewChoice('isotopologues')
 
 // --- Sorting and filtering --------------------------------------------------
 
@@ -418,19 +442,42 @@ const {
 const byConfidence = (a, b) =>
   a.tierRank - b.tierRank || (b.best_fit_score ?? -1) - (a.best_fit_score ?? -1)
 
-// The tier chips (multi-select), the formula's search and the level's menu.
-// In the engine-tier view the chips name the engine's buckets, while the tier
-// column still shows the consensus.
-const { activeTiers, toggleTier, filters, passes } = useLedgerFilters({
+// The search box, the tier chips (multi-select), the role rows, the verdict
+// filter and the level's menu. In the engine-tier view the chips name the
+// engine's buckets, while the tier column still shows the consensus. The
+// search reads the formula the row shows, the names a list and a target give
+// it, and its m/z and its isotope lines', within the window an imported batch
+// result is matched at: the rows come from many runs, with no one run's mass
+// gate to search at.
+const { activeTiers, toggleTier, filters, verdictFilter, searchQuery, passes } = useLedgerFilters({
   bucketOf: (row) => (readsEngineTiers.value ? row.engineBucket : row.bucket),
-  menus: {
-    consensus_formula: FilterMatchMode.CONTAINS,
-    member_level: FilterMatchMode.EQUALS
-  },
-  valueOf: { consensus_formula: (row) => formulaOf(row) },
+  state: view,
+  menus: { member_level: FilterMatchMode.EQUALS },
   menuShown: { member_level: hasMemberLevels },
-  view: readsEngineTiers
+  view: readsEngineTiers,
+  verdictOf: verdictFor,
+  search: {
+    texts: (row) => [
+      formulaOf(row),
+      row.listing ? listingName(row.listing) : null,
+      row.target ? targetName(row.target) : null
+    ],
+    mzs: (row) => [
+      row.mz,
+      ...(childrenByParent.value.get(row.batch_peak_id) ?? []).map((line) => line.mz)
+    ]
+  },
+  tolerancePpm: BATCH_SEARCH_PPM
 })
+
+// The verdict filter's choices (single-select), as the sample scope's.
+const VERDICT_FILTERS = [
+  { value: 'all', label: 'All verdicts' },
+  { value: 'confirmed', label: 'Confirmed' },
+  { value: 'rejected', label: 'Rejected' },
+  { value: 'unsure', label: 'Unsure' },
+  { value: 'unverified', label: 'Unverified' }
+]
 
 // Parents are filtered, then ordered by the sorted column with confidence
 // breaking ties. When unfolded, each parent's isotopologues are inserted right
@@ -444,13 +491,17 @@ const rows = computed(() => {
   const stripped = onlyStripped.value && hasStrips.value
   const blended = onlyBlends.value && hasBlends.value
   const flat = onlyFlatSeries.value && hasFlatSeries.value
+  // A kind no row shown carries any more filters nothing, rather than
+  // emptying the table under a choice the menu no longer offers.
+  const badge = badgeKinds.value.includes(badgeFilter.value) ? badgeFilter.value : null
   const visible = parents.value.filter(
     (row) =>
       passes(row) &&
       (!disagreeing || engineDisagrees(row)) &&
       (!stripped || tookLines(row)) &&
       (!blended || familyHoldsBlend(row)) &&
-      (!flat || flatSeriesOf(row) != null)
+      (!flat || flatSeriesOf(row) != null) &&
+      (!badge || carriesBadge(row, badge))
   )
   sort(visible, byConfidence)
   if (!showIsotopologues.value) return visible
@@ -605,7 +656,11 @@ const tierChips = computed(() => {
     const bucket = readsEngineTiers.value ? row.engineBucket : row.bucket
     counts[bucket] = (counts[bucket] ?? 0) + 1
   }
-  return ledgerTierChips(counts, { engineView: readsEngineTiers.value })
+  return ledgerTierChips(counts, {
+    engineView: readsEngineTiers.value,
+    roles: view.roles,
+    active: activeTiers.value
+  })
 })
 
 // The ledger's count, in its header line: species, not anchors, so it matches
@@ -720,8 +775,9 @@ watch(
         Cross-sample m/z anchors for the batch: each row is a species seen
         across samples, with its consensus formula and tier, the number of
         samples it appears in, and the highest intensity it reaches in any of
-        them. Isotopologue peaks are folded under their main peak; the
-        view-options button on the tier row unfolds them.
+        them. Isotopologue peaks are folded under their main peak;
+        <b>Show</b> in the filter bar unfolds them. The search box finds a
+        formula, a listed name or an m/z, within 5 ppm.
         </p>
         <p>
         Where the members' runs state one, the <b>Level</b> column gives the
@@ -749,32 +805,29 @@ watch(
     :fields="FIELDS"
     :headers="headers"
     :strip="ledger.list.length > 0"
+    v-model:search="searchQuery"
+    searchTooltip="A formula, a listed name, or an m/z: an m/z matches within 5 ppm, the window an imported batch result is matched to batch peaks at"
     :chips="tierChips"
     :activeTiers="activeTiers"
     :engineView="readsEngineTiers"
     engineViewTooltip="The chips count and filter by the importing engine's own tier. The tier column and the sort stay on the consensus."
     :viewMenuTooltip="
       hasEngineTiers
-        ? 'View options: isotopologue rows, the listing column, the engine\'s tiers'
-        : 'View options: isotopologue rows, the listing column'
+        ? 'Show: isotopologue lines, roles, the batch\'s flags, the engine\'s tiers, the verdict filter'
+        : 'Show: isotopologue lines, roles, the batch\'s flags, the verdict filter'
     "
     :viewMenuPt="
       app.ui.help.top(
         `
-        <h1>View Options</h1>
+        <h1>Show</h1>
         <p>
-        How this ledger reads, rather than what it is reading.
-        <b>Isotopologues</b> unfolds each species' isotopologue peaks -
+        What the ledger's rows show, rather than what it is reading.
+        <b>Isotopologue lines</b> unfolds each species' isotopologue peaks -
         folded into the <b>+N</b> marker beside the formula by default -
         as indented rows under their main peak (M0). An isotopologue peak
         carries its family's formula, so left in the list it reads as a
-        second species.
-        </p>
-        <p>
-        <b>Listed as, in full</b> writes out what a reference list calls
-        each consensus formula with its list; folded, the default, the
-        column is the name cut short with the list's tags beside it,
-        and the whole name and its list are in its tooltip.
+        second species. <b>Roles</b> shows the batch peaks the reagent and
+        the artifacts account for.
         </p>
         <p>
         The link is derived: a batch peak is an m/z anchor and carries no
@@ -817,7 +870,15 @@ watch(
         on the consensus.
         </p>
         <p>
-        Each setting keeps while the menu is closed.
+        <b>Carrying the badge</b> keeps the batch peaks with one kind of
+        badge beside their formula, one kind at a time; click it again to
+        drop it. <b>Verdict</b> narrows the table to one batch-level verdict.
+        </p>
+        <p>
+        Every choice here, the search and the tier chips are kept for this
+        ledger: they hold when you open a sample and come back, and after a
+        reload. <b>Export ledger (CSV)</b> and <b>Write listed names in
+        full</b> are under the <b>...</b> menu beside this one.
         </p>`,
         { doc: app.ui.help.docUrl('how-it-works/peak-assignment/#batch-peaks') }
       )
@@ -899,20 +960,57 @@ watch(
     </template>
 
     <template #view-menu>
-      <LedgerViewToggle
-        v-model="showIsotopologues"
-        id="unfold-batch-iso"
-        label="Isotopologues"
-        tooltip="Show isotopologue peaks as indented rows under their main peak"
-        autofocus
-      />
-      <LedgerViewToggle
-        v-model="listingColumn.full"
-        id="batch-listing-full"
-        label="Listed as, in full"
-        tooltip="Write out what a reference list calls each formula in full, with its list, rather than the name cut short"
-      />
-      <template v-if="hasEngineTiers">
+      <div class="menu-section">
+        <span class="menu-heading">Rows</span>
+        <LedgerViewToggle
+          v-model="showIsotopologues"
+          id="unfold-batch-iso"
+          label="Isotopologue lines"
+          tooltip="Show isotopologue peaks as indented rows under their main peak"
+          autofocus
+        />
+        <LedgerViewToggle
+          v-model="view.roles"
+          id="batch-show-roles"
+          label="Roles"
+          tooltip="Show the batch peaks the reagent and the artifacts account for, which are not the samples' compounds"
+        />
+        <LedgerViewToggle
+          v-if="hasStrips"
+          v-model="onlyStripped"
+          id="batch-stripped-rows"
+          label="Stripped rows"
+          tooltip="Only the compounds that took rows of the ledger as their isotope lines; unfold the isotopologues to see the rows under them"
+        />
+      </div>
+      <div v-if="hasBlends || hasFlatSeries || badgeKinds.length" class="menu-section">
+        <span class="menu-heading">The batch's flags</span>
+        <LedgerViewToggle
+          v-if="hasBlends"
+          v-model="onlyBlends"
+          id="batch-probable-blends"
+          label="Probable blends"
+          tooltip="Only the batch peaks whose samples split between two formulas along intensity or acquisition time"
+        />
+        <LedgerViewToggle
+          v-if="hasFlatSeries"
+          v-model="onlyFlatSeries"
+          id="batch-flat-series"
+          label="Flat series"
+          tooltip="Only the batch peaks whose trace holds a constant ratio to the batch's reagent ions or total ion current: likely background. No tier moves on it"
+        />
+        <LedgerMenuChoice
+          v-if="badgeKinds.length"
+          v-model="badgeFilter"
+          class="badge-filter"
+          label="Carrying the badge"
+          ariaLabel="Filter by a badge the batch peak carries"
+          :options="BADGE_OPTIONS"
+          clearable
+        />
+      </div>
+      <div v-if="hasEngineTiers" class="menu-section">
+        <span class="menu-heading">Engine readings</span>
         <LedgerViewToggle
           v-model="engineView"
           id="batch-engine-tier-view"
@@ -925,28 +1023,17 @@ watch(
           label="Engine disagrees"
           tooltip="Only the batch peaks where the importing engine's tier differs from the consensus"
         />
-      </template>
-      <LedgerViewToggle
-        v-if="hasStrips"
-        v-model="onlyStripped"
-        id="batch-stripped-rows"
-        label="Stripped rows"
-        tooltip="Only the compounds that took rows of the ledger as their isotope lines; unfold the isotopologues to see the rows under them"
+      </div>
+      <LedgerMenuChoice
+        v-model="verdictFilter"
+        class="verdict-filter"
+        label="Verdict"
+        ariaLabel="Filter by batch-level verdict"
+        :options="VERDICT_FILTERS"
       />
-      <LedgerViewToggle
-        v-if="hasBlends"
-        v-model="onlyBlends"
-        id="batch-probable-blends"
-        label="Probable blends"
-        tooltip="Only the batch peaks whose samples split between two formulas along intensity or acquisition time"
-      />
-      <LedgerViewToggle
-        v-if="hasFlatSeries"
-        v-model="onlyFlatSeries"
-        id="batch-flat-series"
-        label="Flat series"
-        tooltip="Only the batch peaks whose trace holds a constant ratio to the batch's reagent ions or total ion current: likely background. No tier moves on it"
-      />
+    </template>
+
+    <template #overflow>
       <!-- The whole ledger as a CSV: every batch peak with every sample's
            member, one row per member. A background task; the browser
            downloads the file when it is ready. -->
@@ -1082,15 +1169,6 @@ watch(
         >
       </BaseCopyableField>
     </template>
-    <template #formula-filter="{ filterModel, filterCallback }">
-      <InputText
-        v-model="filterModel.value"
-        @input="filterCallback()"
-        placeholder="Search formula..."
-        size="small"
-      />
-    </template>
-
     <template #tier="{ data }">
       <!-- No number beside this one: a batch peak's consensus tier is a
            weighted vote over its members' tiers, not a threshold on any single

@@ -4,6 +4,9 @@ import { ref } from 'vue'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
+import IconField from 'primevue/iconfield'
+import InputIcon from 'primevue/inputicon'
+import InputText from 'primevue/inputtext'
 import Popover from 'primevue/popover'
 import ProgressSpinner from 'primevue/progressspinner'
 import Select from 'primevue/select'
@@ -22,7 +25,8 @@ import { useApp } from '@/stores'
 import LedgerListingCell from './LedgerListingCell.vue'
 import LedgerTierStrip from './LedgerTierStrip.vue'
 import LedgerVerdictCell from './LedgerVerdictCell.vue'
-import { useLedgerListing } from './useLedgerListing.js'
+import LedgerViewToggle from './LedgerViewToggle.vue'
+import { useLedgerListing } from './useLedgerView.js'
 
 /**
  * The assignment ledger: a formula at an m/z with a tier, per peak of a sample
@@ -32,8 +36,12 @@ import { useLedgerListing } from './useLedgerListing.js'
  * selection - and it draws what the two share, the same way in both:
  *
  * - the header line, the scope's title and its count;
- * - the tier strip, multi-select, with the scope's items and the view menu at
- *   its end;
+ * - the filter bar (docs/dev/assignment_ledger_and_card.md, section 3.4): the
+ *   search box, Show - the scope's menu of what the rows show - and the
+ *   overflow menu, with the listing switch both scopes share and the scope's
+ *   actions;
+ * - the tier bar over its chips, multi-select, with the scope's items at its
+ *   right;
  * - one inline spinner, one inline load error and one empty state where the
  *   table would be, so the strip and the bar above stay usable;
  * - the shared columns, sentence case: m/z, intensity, the formula, what a list
@@ -79,6 +87,11 @@ const props = defineProps({
   headers: { type: Object, default: () => ({}) },
   intensityLabel: { type: String, default: 'Intensity' },
 
+  /** The search box's query, and what it says it searches. */
+  search: { type: String, default: '' },
+  searchPlaceholder: { type: String, default: 'Formula, name or m/z' },
+  searchTooltip: { type: String, default: '' },
+
   /**
    * The tier strip, and whether it is drawn at all. It is drawn while `error`
    * is set whatever `strip` says, with no counts on its chips.
@@ -88,7 +101,7 @@ const props = defineProps({
   activeTiers: { type: Set, required: true },
   engineView: { type: Boolean, default: false },
   engineViewTooltip: { type: String, default: '' },
-  /** The view menu's cog: its tooltip and help card. */
+  /** Show, the scope's view menu: its tooltip and help card. */
   viewMenuTooltip: { type: String, default: '' },
   viewMenuPt: { type: Object, default: null },
 
@@ -102,7 +115,13 @@ const props = defineProps({
   verdictCell: { type: Function, required: true },
   verdictHelp: { type: Object, required: true }
 })
-defineEmits(['update:sortField', 'update:sortOrder', 'toggle-tier', 'open-verdict'])
+defineEmits([
+  'update:sortField',
+  'update:sortOrder',
+  'update:search',
+  'toggle-tier',
+  'open-verdict'
+])
 
 const app = useApp()
 const listingColumn = useLedgerListing()
@@ -112,9 +131,14 @@ const viewMenu = ref()
 const viewMenuOpen = ref(false)
 const toggleViewMenu = (event) => viewMenu.value?.toggle(event)
 
+const OVERFLOW_MENU_IDS = { sample: 'assignment-overflow-menu', batch: 'batch-peak-overflow-menu' }
+const overflowMenu = ref()
+const overflowMenuOpen = ref(false)
+const toggleOverflowMenu = (event) => overflowMenu.value?.toggle(event)
+
 // The table, for a scope that scrolls a row into view.
 const table = ref()
-defineExpose({ table, viewMenu })
+defineExpose({ table, viewMenu, overflowMenu })
 
 const isLineRow = (row) => Boolean(row.isChild || row.parentId)
 const intensityOf = (row) => {
@@ -146,31 +170,30 @@ const intensityOf = (row) => {
     <div v-else class="col ledger" style="gap: 0.6rem; align-items: stretch">
       <slot name="above-strip" />
 
-      <!-- Drawn on a failed load too, the first one included, so the chips and
-           the view menu stay usable; its chips then show no number, for the
-           same reason the header shows no count. -->
-      <LedgerTierStrip
-        v-if="strip || error"
-        :chips="chips"
-        :counted="!error"
-        :active="activeTiers"
-        :engineView="engineView"
-        :engineTooltip="engineViewTooltip"
-        @toggle="$emit('toggle-tier', $event)"
-      >
-        <!-- The scope's own items and the view menu, together at the strip's end. -->
-        <span class="strip-end">
-          <slot name="strip" />
-          <!-- At the end of the filter row, because that is what it holds. A
-               cog, matching the table-controls button the sample and ion
-               browsers put in the same corner. -->
+      <!-- The filter bar. Drawn whenever the strip is, a failed load
+           included, so the search and the menus stay usable. -->
+      <div v-if="strip || error" class="filter-bar">
+        <IconField class="ledger-search">
+          <InputIcon><i class="pi pi-search" /></InputIcon>
+          <InputText
+            :modelValue="search"
+            type="search"
+            size="small"
+            :placeholder="searchPlaceholder"
+            aria-label="Search the ledger: a formula, a listed name or an m/z"
+            data-testid="ledger-search"
+            v-tooltip.top="searchTooltip"
+            @update:modelValue="$emit('update:search', $event ?? '')"
+          />
+        </IconField>
+        <span class="bar-end">
           <Button
             class="view-menu-button"
-            icon="pi pi-cog"
+            label="Show"
+            icon="pi ph ph-funnel"
             severity="secondary"
             text
             size="small"
-            aria-label="Ledger view options"
             aria-haspopup="dialog"
             :aria-controls="viewMenuOpen ? VIEW_MENU_IDS[scope] : undefined"
             :aria-expanded="viewMenuOpen"
@@ -184,13 +207,60 @@ const intensityOf = (row) => {
           <Popover
             ref="viewMenu"
             :id="VIEW_MENU_IDS[scope]"
-            aria-label="Ledger view options"
+            aria-label="Show"
             @show="viewMenuOpen = true"
             @hide="viewMenuOpen = false"
           >
             <div class="view-menu"><slot name="view-menu" /></div>
           </Popover>
+          <Button
+            class="overflow-button"
+            icon="pi ph ph-dots-three"
+            severity="secondary"
+            text
+            size="small"
+            aria-label="More ledger actions"
+            aria-haspopup="dialog"
+            :aria-controls="overflowMenuOpen ? OVERFLOW_MENU_IDS[scope] : undefined"
+            :aria-expanded="overflowMenuOpen"
+            v-tooltip.top="'More: export, listed names in full'"
+            @click="toggleOverflowMenu"
+          />
+          <Popover
+            ref="overflowMenu"
+            :id="OVERFLOW_MENU_IDS[scope]"
+            aria-label="More ledger actions"
+            @show="overflowMenuOpen = true"
+            @hide="overflowMenuOpen = false"
+          >
+            <div class="view-menu overflow-menu">
+              <slot name="overflow" />
+              <LedgerViewToggle
+                v-model="listingColumn.full"
+                :id="`${scope}-listing-full`"
+                label="Write listed names in full"
+                tooltip="Write out what a reference list calls each formula in full, with its list, rather than the name cut short"
+                :autofocus="!$slots.overflow"
+              />
+            </div>
+          </Popover>
         </span>
+      </div>
+
+      <!-- Drawn on a failed load too, the first one included, so the chips
+           stay usable; its chips then show no number, for the same reason the
+           header shows no count. -->
+      <LedgerTierStrip
+        v-if="strip || error"
+        :chips="chips"
+        :counted="!error"
+        :active="activeTiers"
+        :engineView="engineView"
+        :engineTooltip="engineViewTooltip"
+        @toggle="$emit('toggle-tier', $event)"
+      >
+        <!-- The scope's own items, at the strip's right. -->
+        <slot v-if="$slots.strip" name="strip" />
       </LedgerTierStrip>
 
       <slot name="above-table" />
@@ -251,9 +321,6 @@ const intensityOf = (row) => {
             <span v-tooltip.top="headers.formula">Formula</span>
           </template>
           <template #body="{ data }"><slot name="formula" :data="data" /></template>
-          <template v-if="$slots['formula-filter']" #filter="filter">
-            <slot name="formula-filter" v-bind="filter" />
-          </template>
         </Column>
 
         <!-- An isotopologue line is its family's formula again, so it shows
@@ -425,18 +492,45 @@ const intensityOf = (row) => {
   min-height: 10rem;
 }
 
-.strip-end {
+/* The filter bar: the search, then Show and the overflow at the right. */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0 0.4rem;
+  flex: 0 0 auto;
+}
+.ledger-search {
+  flex: 1 1 12rem;
+  max-width: 22rem;
+}
+.ledger-search :deep(input) {
+  width: 100%;
+}
+.bar-end {
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
+  gap: 0.2rem;
   margin-left: auto;
 }
-/* The view-options panel: one labelled setting per row. */
+/* A menu's panel: one labelled setting per row, in headed sections. */
 .view-menu {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
   min-width: 14rem;
+}
+.view-menu :deep(.menu-section) {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.view-menu :deep(.menu-heading) {
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--p-text-muted-color);
 }
 
 .intensity {
