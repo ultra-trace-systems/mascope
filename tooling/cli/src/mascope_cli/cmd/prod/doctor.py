@@ -772,26 +772,35 @@ def secrets_status(
     return status
 
 
+def _file_arg(name: str) -> str:
+    """A file name as an argument no command reads as an option."""
+    return f"./{name}" if name.startswith("-") else name
+
+
 def secrets_fix(s: SecretsStatus) -> Optional[str]:
-    """The shell command that closes what ``s`` found open, or None."""
+    """The shell command that closes what ``s`` found open, or None.
+
+    Every path and name is quoted: the directory may be one others can
+    write to, so a file name may be chosen by exactly who this check is
+    about, and the operator runs the line as printed, often with sudo.
+    """
     if s.ok or s.skipped:
         return None
-    steps = [f"cd {s.path}"]
-    names = " ".join(f.name for f in s.open_files)
+    sudo = ["sudo"] if s.need_chown else []
+    steps = [["cd", s.path]]
     if s.need_chown:
         # Root has to give the files away; once they are not the operator's,
         # root has to close them too.
-        steps.append(f"sudo chown {s.backend_uid} {' '.join(s.need_chown)}")
-        if names:
-            steps.append(f"sudo chmod 600 {names}")
-        if s.dir_writable:
-            steps.append("sudo chmod go-w .")
-        return " && ".join(steps)
-    if names:
-        steps.append(f"chmod 600 {names}")
+        steps.append(
+            [*sudo, "chown", str(s.backend_uid), *map(_file_arg, s.need_chown)]
+        )
+    if s.open_files:
+        steps.append(
+            [*sudo, "chmod", "600", *(_file_arg(f.name) for f in s.open_files)]
+        )
     if s.dir_writable:
-        steps.append("chmod go-w .")
-    return " && ".join(steps)
+        steps.append([*sudo, "chmod", "go-w", "."])
+    return " && ".join(shlex.join(step) for step in steps)
 
 
 def _secrets_owner(s: SecretsStatus) -> Optional[str]:
