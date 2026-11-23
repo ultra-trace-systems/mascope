@@ -708,6 +708,29 @@ def test_a_reused_card_cannot_be_made_the_baseline(rig):
     assert rig.runner().baseline("develop/20261112-120000") == 0
 
 
+def test_a_baseline_made_while_a_reuse_records_keeps_the_reuse_s_record(rig):
+    assert rig.run("topic") == 0
+    assert rig.run("develop") == 0
+    _docs_head(rig, ref="docs")
+    on_develop = rig.instance.is_on_develop
+
+    def reuse_meanwhile(sha):
+        # Another caller's reuse, after baseline read the state.
+        assert rig.runner().reuse("docs") == 0
+        return on_develop(sha)
+
+    rig.instance.is_on_develop = reuse_meanwhile
+    assert rig.runner().baseline("develop/20261112-120001") == 0
+
+    state = rig.state()
+    assert [(c["sha"], c["reused"]) for c in state["cards"]] == [
+        (BRANCH, None),
+        (DEVELOP, None),
+        (DOCS, "topic/20261112-120000"),
+    ]
+    assert state["baseline"]["path"] == "develop/20261112-120001"
+
+
 def test_a_run_that_began_before_a_reuse_keeps_the_reuse_s_record(rig):
     assert rig.run("topic") == 0
     _docs_head(rig, ref="docs")

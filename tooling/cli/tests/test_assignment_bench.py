@@ -1207,6 +1207,95 @@ def test_a_rebuild_discards_a_restore_point_left_behind(rig, tmp_path):
     assert not dump.exists()
 
 
+def _record_meanwhile(home, sha):
+    """A card record as a reuse writes one: without the bench's lock, under
+    ``state.lock``, onto the state as it is on disk."""
+    with bench.bench_run.state_guard(home.root):
+        state = bench.load_state(home, "bench")
+        state["cards"].append({"sha": sha, "reused": "topic/20261112-120000"})
+        bench.save_state(home, state)
+
+
+def _start_recording(instance, home, sha):
+    start = instance.start
+
+    def started():
+        _record_meanwhile(home, sha)
+        return start()
+
+    instance.start = started
+
+
+def test_init_keeps_a_card_recorded_while_it_runs(rig, tmp_path):
+    b, instance, api, home = rig
+    home.make()
+    _record_meanwhile(home, "a" * 40)
+    # Between init's first save and its saves after the seeding and the
+    # uploads: each of those keeps the cards.
+    _start_recording(instance, home, "b" * 40)
+    instance.reference_seed = lambda lists: _record_meanwhile(home, "c" * 40)
+
+    assert b.init(_two_sets(tmp_path)) == 0
+
+    state = bench.load_state(home, "bench")
+    assert [c["sha"] for c in state["cards"]] == ["a" * 40, "b" * 40, "c" * 40]
+    assert state["seeded"]["modes"] == {
+        "Bromide": "bundle:9.9.9",
+        "Uronium": "bundle:9.9.9",
+    }
+    assert sorted(state["sets"]["Xb"]["samples"]) == [
+        "bundle:9.9.9/I_neg_Br_a.raw",
+        "bundle:9.9.9/I_neg_Br_b.raw",
+    ]
+
+
+def test_a_rebuild_starts_the_cards_over_and_keeps_one_recorded_after(rig, tmp_path):
+    b, instance, api, home = rig
+    path = _two_sets(tmp_path)
+    b.init(path)
+    _record_meanwhile(home, "a" * 40)
+    _start_recording(instance, home, "b" * 40)
+
+    assert b.init(path, rebuild=True) == 0
+
+    state = bench.load_state(home, "bench")
+    assert [c["sha"] for c in state["cards"]] == ["b" * 40]
+    assert state["build"]["ref"] == "develop"
+    assert list(state["sets"]) == ["Xb", "Xu"]
+
+
+def test_two_writers_of_one_file_do_not_share_a_temporary_name(tmp_path, monkeypatch):
+    home = bench.Home(tmp_path / "home")
+    home.make()
+    replace = Path.replace
+    inner = []
+
+    def overlapped(self, target):
+        # A second writer's whole write lands inside the first one's.
+        if not inner:
+            inner.append(True)
+            home.write_private(home.state, "second\n")
+        return replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", overlapped)
+    home.write_private(home.state, "first\n")
+
+    assert home.state.read_text() == "first\n"
+    assert home.state.stat().st_mode & 0o777 == 0o600
+    assert [p.name for p in home.root.iterdir() if p.name.endswith(".tmp")] == []
+
+
+def test_a_write_that_fails_leaves_no_temporary_file(tmp_path):
+    home = bench.Home(tmp_path / "home")
+    home.make()
+    (home.root / "taken").mkdir()
+
+    with pytest.raises(OSError):
+        home.write_private(home.root / "taken", "text\n")
+
+    assert [p.name for p in home.root.iterdir() if p.name.endswith(".tmp")] == []
+
+
 def test_keep_running_leaves_the_backend_up(rig, tmp_path):
     b, instance, api, home = rig
 

@@ -713,6 +713,43 @@ def test_the_command_line_runs_the_reference(rig, monkeypatch, capsys):
     assert "not a release tag" in capsys.readouterr().err
 
 
+def test_the_reference_keeps_a_card_recorded_while_it_runs(rig, monkeypatch):
+    # The writer the command line hands the reference, over a real run.
+    real, given = ref.Reference, {}
+
+    class Runner:
+        def __init__(self, **kwargs):
+            given.update(kwargs)
+
+        def run(self, pin, reinstall, only):
+            return 0
+
+    monkeypatch.setattr(ref, "Reference", Runner)
+    assert (
+        bench.main(["--home", str(rig.home.root), "reference", "--pin", "v1.0.0"]) == 0
+    )
+    monkeypatch.setattr(ref, "Reference", real)
+
+    def card_meanwhile(peak_assignment=False):
+        # A reuse's record, while the reference holds the bench.
+        with bench.bench_run.state_guard(rig.home.root):
+            state = bench.load_state(rig.home, "bench")
+            state["cards"].append({"sha": "d" * 40})
+            bench.save_state(rig.home, state)
+        return "http://localhost:8093"
+
+    rig.instance.start = card_meanwhile
+    runner = rig.runner(jobs=2)
+    runner.save_state = given["save_state"]
+    rig.spec_file.write_text(json.dumps(rig.spec))
+    assert runner.run("v1.0.0") == 0
+
+    state = rig.state()
+    assert state["cards"] == [{"sha": "d" * 40}]
+    assert sorted(state["reference"]["runs"]["Db"]) == ["S1", "S2"]
+    assert state["reference"]["pin"] == "v1.0.0"
+
+
 def test_the_dev_backend_starts_with_peak_assignment_when_asked(tmp_path, monkeypatch):
     home = bench.Home(tmp_path / "home")
     home.make()

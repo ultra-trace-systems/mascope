@@ -796,6 +796,7 @@ not resolve there.
 | `logs/` | one backend log per start |
 | `bench.lock` | held by the bench command that runs; it names the command, its pid and since when |
 | `queue/` | one ticket per command waiting for the lock, numbered in the order they asked; `queue.lock` guards it |
+| `state.lock` | held around each write of `state.json`. A reuse records its card without the bench's lock, so every command reads the state again under this one and writes only its own keys: `init` the build, the seeds and the sets, `reference` the pin's record, a run the cards and the baseline |
 | `backend.pid` | the pid of the backend a command started, while it runs; how an earlier run's backend is told from a stranger on the port |
 | `cards/<ref>/<timestamp>/` | one run's card, diff, summary, run log and inputs |
 | `reviews/<timestamp>.csv` | a review sheet: the engines' top disagreements, and the verdicts given on them |

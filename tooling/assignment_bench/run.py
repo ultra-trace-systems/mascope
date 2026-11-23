@@ -391,9 +391,15 @@ def _say(line: str) -> None:
     print(f"{datetime.datetime.now():%H:%M:%S} {line}", flush=True)
 
 
+def state_guard(root: Path):
+    """``state.lock``: held around every read-modify-write of the bench's
+    state, which a reuse makes without the bench's lock."""
+    return _guard(root / "state.lock")
+
+
 @contextlib.contextmanager
 def _guard(path: Path):
-    """A lock of its own around one read and write of the state's card list."""
+    """A lock of its own around one read and write of the state."""
     with open(path, "a") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
         try:
@@ -2295,7 +2301,7 @@ class BenchRun:
             "digest": (summary.get("engine") or {}).get("digest"),
             "reused": (summary.get("reused") or {}).get("path"),
         }
-        with _guard(self.home.root / "state.lock"):
+        with state_guard(self.home.root):
             current = self.load_state()
             current["cards"] = ((current.get("cards") or []) + [entry])[-50:]
             if summary.get("is_baseline"):
@@ -3035,7 +3041,7 @@ class BenchRun:
         )
         if why:
             raise RunError(f"{folder} cannot be the baseline: {why}")
-        state["baseline"] = {
+        record = {
             "ref": summary["ref"],
             "sha": summary["sha"],
             "at": summary["finished"],
@@ -3043,7 +3049,12 @@ class BenchRun:
             "sets": list(summary["card"]["sets"]),
             "decoys": summary["decoys"],
         }
-        self.save_state(state)
+        # As the state is on disk now: a reuse may have recorded a card
+        # since this command read it.
+        with state_guard(self.home.root):
+            current = self.load_state()
+            current["baseline"] = record
+            self.save_state(current)
         print(
             f"baseline  {summary['ref']} at {summary['sha'][:9]}, {summary['finished']}",
             file=out,
