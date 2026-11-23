@@ -274,6 +274,38 @@ describe.each(Object.keys(SCOPES))('AssignmentLedger, %s scope', (scope) => {
     expect(wrapper.find('.load-error').text()).toBe('Could not load.')
     expect(wrapper.find('.table').exists()).toBe(false)
     expect(wrapper.findAll('.tier-stat')).toHaveLength(6)
+    expect(wrapper.find('.cog').exists()).toBe(true)
+  })
+
+  // The scope may still hold the last good load's rows: their count, in the
+  // header or on a chip, would read as this load's.
+  it('shows no count and no chip counts while the rows failed to load', async () => {
+    const wrapper = mountLedger(scope, { props: { error: new Error('boom') } })
+    expect(wrapper.find('[data-testid="ledger-count"]').exists()).toBe(false)
+    expect(wrapper.findAll('.tier-stat').map((chip) => chip.text())).toEqual([
+      'assigned',
+      'candidate',
+      'below',
+      'unassigned',
+      'reagent',
+      'artifact'
+    ])
+    await wrapper.setProps({ error: null })
+    expect(wrapper.find('[data-testid="ledger-count"]').text()).toBe('2 rows')
+    expect(wrapper.findAll('.tier-stat')[0].text()).toBe('1 assigned')
+  })
+
+  // A scope that draws no strip for an empty ledger (the batch scope) still
+  // gets it on a failed first load, so the chips and the view menu stay.
+  it('draws the strip on a failed load where the scope would leave it out', () => {
+    expect(
+      mountLedger(scope, { props: { strip: false } })
+        .find('.tier-strip')
+        .exists()
+    ).toBe(false)
+    const wrapper = mountLedger(scope, { props: { strip: false, error: new Error('boom') } })
+    expect(wrapper.find('.tier-strip').exists()).toBe(true)
+    expect(wrapper.find('.cog').exists()).toBe(true)
   })
 
   it('shows a spinner in place of the table while the rows load', () => {

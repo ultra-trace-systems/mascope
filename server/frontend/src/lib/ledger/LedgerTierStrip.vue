@@ -18,6 +18,11 @@ import { useApp } from '@/stores'
 defineProps({
   /** `ledgerTierChips` of the scope's counts. */
   chips: { type: Array, required: true },
+  /**
+   * Whether the chips show their counts: not while the ledger's rows failed to
+   * load, when the counts would be the last good load's.
+   */
+  counted: { type: Boolean, default: true },
   /** The buckets whose chips are on. */
   active: { type: Set, required: true },
   /** Whether the chips count the producing engine's tiers, and what that means. */
@@ -59,7 +64,7 @@ const app = useApp()
       v-tooltip.top="active.has(chip.key) ? `Showing ${chip.label}` : `Filter to ${chip.label}`"
       @click="$emit('toggle', chip.key)"
     >
-      <b>{{ chip.count }}</b> {{ chip.label }}
+      <b v-if="counted">{{ chip.count }}</b> {{ chip.label }}
     </button>
     <slot />
   </div>

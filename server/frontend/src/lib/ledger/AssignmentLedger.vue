@@ -79,7 +79,10 @@ const props = defineProps({
   headers: { type: Object, default: () => ({}) },
   intensityLabel: { type: String, default: 'Intensity' },
 
-  /** The tier strip, and whether it is drawn at all. */
+  /**
+   * The tier strip, and whether it is drawn at all. It is drawn while `error`
+   * is set whatever `strip` says, with no counts on its chips.
+   */
   strip: { type: Boolean, default: true },
   chips: { type: Array, required: true },
   activeTiers: { type: Set, required: true },
@@ -123,8 +126,10 @@ const intensityOf = (row) => {
 <template>
   <BaseTabbedPanel :label="label" :icon="icon" :pt="panelPt">
     <template #menu>
+      <!-- Not while the rows failed to load: the scope may still hold the last
+           good load's rows, and their count would read as this one's. -->
       <span
-        v-if="count"
+        v-if="count && !error"
         class="ledger-count"
         data-testid="ledger-count"
         v-tooltip.top="countTooltip"
@@ -141,9 +146,13 @@ const intensityOf = (row) => {
     <div v-else class="col ledger" style="gap: 0.6rem; align-items: stretch">
       <slot name="above-strip" />
 
+      <!-- Drawn on a failed load too, the first one included, so the chips and
+           the view menu stay usable; its chips then show no number, for the
+           same reason the header shows no count. -->
       <LedgerTierStrip
-        v-if="strip"
+        v-if="strip || error"
         :chips="chips"
+        :counted="!error"
         :active="activeTiers"
         :engineView="engineView"
         :engineTooltip="engineViewTooltip"

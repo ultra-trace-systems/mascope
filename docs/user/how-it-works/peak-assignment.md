@@ -1421,8 +1421,10 @@ same mark and the same words.
 - **The Verdict column** sorts in both: confirmed first, then rejected and unsure, and the
   rows nobody has judged last. A sample's row sorts on the verdict it shows, its own or the
   batch-level one reaching it.
-- **A ledger that fails to load** says so where the table would be, with *Retry*, and the
-  tier chips, the view menu and the bar above stay usable. An empty one says what fills it.
+- **A ledger whose rows fail to load** says so where the table would be, with *Retry*, and
+  the tier chips, the view menu and the bar above stay usable. The header line shows no
+  count and the chips no numbers until the rows load, since the ones on screen would be an
+  earlier load's. An empty ledger says what fills it.
 
 ## The peak inspector
 
