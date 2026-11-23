@@ -980,9 +980,9 @@ def seen_settings(stand_ins, monkeypatch):
         stand_ins["hooks"][name] = capture(name)
     rejudge = batch_rejudge.rejudge_samples
 
-    async def recording(sample_batch_id, samples, config):
+    async def recording(sample_batch_id, samples, config, **kwargs):
         judged.append(config)
-        return await rejudge(sample_batch_id, samples, config)
+        return await rejudge(sample_batch_id, samples, config, **kwargs)
 
     monkeypatch.setattr(batch_stages, "rejudge_samples", recording)
     return {"seen": seen, "judged": judged}
@@ -1117,3 +1117,102 @@ async def test_settings_a_batch_saved_that_no_longer_read_are_the_defaults(
     await _run(batch_id)
     assert seen_settings["seen"]["search"] == PeakAssignmentConfig()
     assert (await _states(batch_id))["search"]["state"] == "current"
+
+
+@pytest.fixture
+def judgings(stand_ins, async_session_factory, folded, monkeypatch):
+    """The known species and the series stood in for by a stage that writes
+    every member of the batch, so each judges both samples again; each
+    judging stood in for by a recorder of the sample, the pass's store it
+    was handed and the progress its run kept then; and every packet the
+    pass sent."""
+    from collections import Counter
+
+    from sqlalchemy import update
+
+    from mascope_backend.api.new.peak_assignments.batch_peaks import STAGE_VERSION
+    from mascope_backend.db import BatchPeakOccurrence
+
+    batch_id = folded["batch_id"]
+
+    def writes(stage):
+        async def hook(call):
+            anchors = select(BatchPeak.batch_peak_id).where(
+                BatchPeak.sample_batch_id == batch_id
+            )
+            async with async_session_factory() as session:
+                await session.execute(
+                    update(BatchPeakOccurrence)
+                    .where(BatchPeakOccurrence.batch_peak_id.in_(anchors))
+                    .values(
+                        batch_written={"stage": stage, "version": STAGE_VERSION.get()}
+                    )
+                )
+                await session.commit()
+
+        return hook
+
+    for stage in ("known_species", "series"):
+        stand_ins["hooks"][stage] = writes(stage)
+    judged, packets = [], []
+
+    async def rejudge(sample_batch_id, sample_item_id, config, **kwargs):
+        run = await _newest_run(async_session_factory, batch_id)
+        judged.append((sample_item_id, kwargs["kept"], run.summary["progress"]))
+        return Counter(samples_judged=1, readings_scored=3, readings_kept=2)
+
+    async def sent(notification):
+        packets.append(dict(notification.data))
+
+    monkeypatch.setattr(batch_rejudge, "rejudge_sample", rejudge)
+    monkeypatch.setattr(batch_stages, "send_progress_user_notification", sent)
+    return {"judged": judged, "packets": packets}
+
+
+async def test_a_pass_reports_its_progress_inside_a_stage_as_it_judges_again(
+    folded, judgings
+):
+    """MAS-1073: while a stage judges its samples again, the pass says how far
+    through them it is, on its run and in its packet (``stage_progress``), so
+    its progress moves inside the stage."""
+    await _run(folded["batch_id"])
+    by_stage: dict[str, list] = {}
+    for _sample, _kept, progress in judgings["judged"]:
+        by_stage.setdefault(progress["stage"], []).append(progress["stage_progress"])
+    # Two samples each: kept on the run before each one.
+    assert by_stage == {"known_species": [0.0, 0.5], "series": [0.0, 0.5]}
+    sent = [
+        (p["stage"], p["stage_progress"], p["stage_index"])
+        for p in judgings["packets"]
+        if p["stage"] == "series"
+    ]
+    index = ORDER.index("series")
+    # The stage's start, then before each sample and after the last.
+    assert sent == [("series", s, index) for s in (0.0, 0.0, 0.5, 1.0)]
+    # A stage that judges nothing again sends its start alone.
+    assert [
+        p["stage_progress"] for p in judgings["packets"] if p["stage"] == "search"
+    ] == [0.0]
+
+
+async def test_a_pass_keeps_one_measurement_across_its_stages(
+    folded, judgings, async_session_factory
+):
+    """Every judging of one pass is handed the pass's one store, so a later
+    stage's judging keeps what an earlier one measured; the next pass starts
+    from none. Its outcome says what was measured and what kept."""
+    from mascope_backend.api.new.peak_assignments.kept_measurement import (
+        KeptMeasurement,
+    )
+
+    await _run(folded["batch_id"])
+    stores = {id(kept) for _sample, kept, _progress in judgings["judged"]}
+    assert len(judgings["judged"]) == 4 and len(stores) == 1
+    assert isinstance(judgings["judged"][0][1], KeptMeasurement)
+    run = await _newest_run(async_session_factory, folded["batch_id"])
+    series = next(s for s in run.summary["stages"] if s["stage"] == "series")
+    assert series["outcomes"][-1]["data"]["readings_kept"] == 4
+    assert "6 readings measured and 4 kept" in series["outcomes"][-1]["message"]
+
+    await _run(folded["batch_id"], from_stage="series")
+    assert judgings["judged"][-1][1] is not judgings["judged"][0][1]

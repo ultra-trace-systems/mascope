@@ -1,7 +1,7 @@
 # Assigning a batch in one action
 
 - **Status:** design
-- **As of:** 2026-11-18
+- **As of:** 2026-11-23
 - **Tracked in:** [Assignment quality plan](https://linear.app/ultra-trace/project/assignment-quality-plan-553f4854192c)
   (Linear, milestone 8 "One button: assigning a batch from the app": MAS-1011 to
   MAS-1017, among them the Decision MAS-1012, decided; it builds on MAS-983 in
@@ -341,6 +341,25 @@ As built (`batch_stages.py`):
 - After a rewriting stage, every sample it wrote in is judged again through the stage
   list (`batch_rejudge.py`), and after the series every sample whose member a series
   record corroborates.
+- What that costs (MAS-1073, measured on a copy of the demo dataset with four samples of
+  the uronium batch folded, about 1,230 readings a sample): a judging took 11 to 15 s
+  whatever it judged, 3 to 270 members. Of a typical 11.5 s, the score stage took 3 s
+  (every reading's lines matched, gated and fitted again), the elect stage 3.5 s (Stage
+  A's election over every reading, and the search's same-ion readings), the cap stage
+  3.5 s (mostly the tiering rules' predicted envelopes, one per row and rule), the
+  propose stage 1.3 s (the recorded model and the lists read again) and the rest 0.5 s.
+  A pass now keeps what it measured of each sample between its judgings
+  (`kept_measurement.py`): a later judging scores only the readings it has not measured
+  at the same inputs, which a stage wrote or changed, and those a new claim touches when
+  the lists hold them. The frame it elects from is the one a scoring of every reading
+  gives, since each ion is measured alone at a model the frame is never fitted on. A
+  sample whose run recorded no model (MAS-1071) is measured whole each time, and the
+  judging's outcome counts it. The first judging of each sample in a pass still scores
+  everything; a later one takes 8.5 to 10 s. The pass reports how far through its
+  samples a stage's judging is as `stage_progress` on its run and in its packet. On the
+  four samples, the judging went from 159 to 143 s of a 189 s pass, with the same
+  members, tiers and consensus. What is left is the election and the caps over every
+  reading, which #3483 takes up.
 - A sample's own run reads the records (MAS-985, `batch_decisions.py`): once, in its
   resolve stage, as a declared input of the stage list (`pipeline.BATCH_INPUTS`). A known
   species and a water-ladder rung enter at the claim stage, a listed compound at the

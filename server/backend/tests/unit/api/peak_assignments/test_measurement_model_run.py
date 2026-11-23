@@ -902,6 +902,7 @@ async def test_a_given_readings_frame_is_kept_to_score_again(monkeypatch):
         seeded_frame=None,
         listed_ions={},
         claimed_peak_ids=set(),
+        kept=None,
     )
 
     await pipeline.score(ctx)

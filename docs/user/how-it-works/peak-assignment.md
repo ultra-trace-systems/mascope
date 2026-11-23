@@ -2105,6 +2105,13 @@ completed pass leaves every stage current.
   judges them. They gain no rival through ammonium, and the ammonium reading is no
   second channel for them: it corroborates none of the sample's own readings of its
   molecule.
+  A pass judges a sample again after each stage that wrote in it, and keeps what it
+  measured of the sample's readings in between: a later judging fits only the readings
+  a stage wrote or changed, and those the claim stage's new claims touch, and takes
+  every other reading's fit from the earlier judging. The tiers come out as if every reading were fitted again, since each
+  reading is fitted on its own at the sample's recorded measurement model. A sample
+  whose run recorded no measurement model, one from before that record, is fitted
+  whole every time, and the stage's result line says how many such samples it judged.
 - **Records are kept, marked stale.** When a batch peak's reading moves off what a stage's
   record was made for, the record is kept, marked stale, and served by no reader. The stage
   that wrote it reads it again when it runs, and a reading that comes back finds it
@@ -2161,7 +2168,9 @@ history.
   covered, the engine version, and the target collections and reference lists.
 - **One entry in the progress strip.** The pass reports one process, with each stage's
   start as a step of it (*Assigning the batch: Detect series (5/9)*), and the ledger
-  reloads after each stage that rewrites members and at the end.
+  reloads after each stage that rewrites members and at the end. While a stage judges
+  its samples again, the bar moves through that stage's share sample by sample, and the
+  batch's status read gives the same progress to another tab.
 - **Cancel stops it between stages.** *Cancel* in the bar, the API's
   `POST .../assign/cancel` and the SDK's `cancel_assign` stop the pass at its next stage, or inside the untargeted search at
   its next sample. Nothing is rolled back: the pass is recorded as cancelled, what its

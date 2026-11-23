@@ -213,6 +213,22 @@ def test_a_pass_in_flight_is_served_from_the_progress_its_run_keeps():
     }
 
 
+def test_a_stage_judging_its_samples_again_moves_the_progress_inside_it():
+    """A rewriting stage keeps how far through its samples' judging it is
+    (MAS-1073): the pass's progress is the stages before it and that share
+    of its own."""
+    progress = {"stage": "series", "stage_index": 5, "n_stages": 10}
+    halfway = running_record(
+        _run(summary={"progress": {**progress, "stage_progress": 0.5}}), None, {}
+    )
+    assert halfway["progress"] == pytest.approx(0.55)
+    # A share past the stage's end never reads the pass past its own.
+    last = {"stage": "blends", "stage_index": 9, "n_stages": 10, "stage_progress": 2}
+    assert running_record(_run(summary={"progress": last}), None, {})[
+        "progress"
+    ] == pytest.approx(1.0)
+
+
 def test_a_run_with_no_progress_takes_the_running_stage_row():
     stage_row = SimpleNamespace(stage="continuity", utc_started=T0)
     record = running_record(_run(created_by=None), stage_row, {})
