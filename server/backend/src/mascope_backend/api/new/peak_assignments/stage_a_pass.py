@@ -140,6 +140,59 @@ class _StageAFirstPass:
     assignments_of: Callable[[pd.DataFrame], list[dict]] | None = None
     curve: ConfidenceCurve | None = None
 
+    def rescored_at(
+        self, match_params, envelope: RunEnvelopeFit, fallback_sigma_ppm: float
+    ) -> pd.DataFrame:
+        """The matched frame gated and scored again at the run's fitted
+        envelope tolerance, at this pass's width and offset."""
+        return score_ions_by_fit(
+            gate_lines(self.matched, match_params, envelope.tolerance),
+            model=MeasurementModel.v1(
+                self.mass_accuracy, fallback_sigma_ppm, envelope.tolerance
+            ),
+        )
+
+
+def _gate_and_fit(
+    frame: pd.DataFrame,
+    match_params,
+    tolerance,
+    *,
+    fallback_sigma_ppm: float,
+    reagent_offset: ReagentOffset | None,
+    inherited_model: MeasurementModel | None,
+    mass_accuracy: SampleMassAccuracy,
+) -> tuple[pd.DataFrame, SampleMassAccuracy]:
+    """The first pass's matched frame gated and fit-scored, and the mass
+    accuracy read off it (:func:`_stage_a_first_pass`).
+
+    Deliberately scored with the fit score (score_pattern_v2): the
+    peak-centric engine's scoring engine is the ion-level fit quality, not the
+    targeted matcher's per-isotopologue term. Run after gating so
+    tolerance/intensity cuts carry into the fit. The fit counts the ions its
+    lines come from as well as the lines: a few bright ions with many lines
+    each would otherwise calibrate the sample on their own mass error
+    (STAGE_A_FIT_MIN_IONS). The accuracy is read off the frame the fit was
+    computed on: the run's v1 model, at which Stage A was judged and the
+    search ranks. A decoy, scored at its control's model, keeps the
+    ``mass_accuracy`` it was handed.
+    """
+    scored_df = score_ions_by_fit(
+        gate_lines(frame, match_params, tolerance),
+        fallback_sigma_ppm=fallback_sigma_ppm,
+        reagent_offset=reagent_offset,
+        min_anchor_ions=STAGE_A_FIT_MIN_IONS,
+        envelope_tolerance=tolerance,
+        model=inherited_model,
+    )
+    if inherited_model is not None:
+        return scored_df, mass_accuracy
+    return scored_df, sample_mass_accuracy(
+        scored_df,
+        reagent=reagent_offset,
+        min_anchor_ions=STAGE_A_FIT_MIN_IONS,
+    )
+
 
 async def _stage_a_first_pass(
     sample,
@@ -207,30 +260,19 @@ async def _stage_a_first_pass(
                 None if inherited_model is None else inherited_model.envelope_tolerance
             )
             matched_df = match_isotope_df
-            gated_df = gate_lines(match_isotope_df, match_params, tolerance)
-            # Deliberately score Stage A with the fit score (score_pattern_v2):
-            # the peak-centric engine's scoring engine is the ion-level fit
-            # quality, not the targeted matcher's per-isotopologue term. Runs
-            # after gating so tolerance/intensity cuts carry into the fit.
-            # The fit counts the ions its lines come from as well as the lines:
-            # a few bright ions with many lines each would otherwise calibrate
-            # the sample on their own mass error (STAGE_A_FIT_MIN_IONS).
-            match_isotope_df = score_ions_by_fit(
-                gated_df,
+
+            # Off the event loop, as the drop above: a fit over the whole
+            # gated frame.
+            match_isotope_df, mass_accuracy = await asyncio.to_thread(
+                _gate_and_fit,
+                match_isotope_df,
+                match_params,
+                tolerance,
                 fallback_sigma_ppm=fallback_sigma_ppm,
                 reagent_offset=reagent_offset,
-                min_anchor_ions=STAGE_A_FIT_MIN_IONS,
-                envelope_tolerance=tolerance,
-                model=inherited_model,
+                inherited_model=inherited_model,
+                mass_accuracy=mass_accuracy,
             )
-            # Read off the frame the fit was computed on: the run's v1 model,
-            # at which Stage A was judged and the search ranks.
-            if inherited_model is None:
-                mass_accuracy = sample_mass_accuracy(
-                    match_isotope_df,
-                    reagent=reagent_offset,
-                    min_anchor_ions=STAGE_A_FIT_MIN_IONS,
-                )
         instrument = get_instrument_type(sample.filename)
         # Load this instrument's confidence calibration from the D6 store (active DB row,
         # else the in-code provisional curve, else None -> uncalibrated). Passing it in keeps
@@ -268,7 +310,9 @@ async def _stage_a_first_pass(
             confidence_calibration=confidence_calibration,
             listed_formulas=listed_formulas,
             assignments_of=assignments_of,
-            curve=ConfidenceCurve.of(calibration, match_isotope_df),
+            curve=await asyncio.to_thread(
+                ConfidenceCurve.of, calibration, match_isotope_df
+            ),
         )
     return _StageAFirstPass(
         rows=[],

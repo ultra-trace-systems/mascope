@@ -430,8 +430,10 @@ async def _score_seeds(
     if model is RESOLVE_MODEL:
         model = await model_readers.recorded_model(sample, config)
 
-    scored_df = await asyncio.to_thread(
-        gate_and_score, matched_df, match_params, model=model
-    )
-    fit_by_ion, errors_by_pairing = scored_maps(scored_df)
+    def scored() -> tuple[pd.DataFrame, dict, dict]:
+        scored_df = gate_and_score(matched_df, match_params, model=model)
+        return scored_df, *scored_maps(scored_df)
+
+    # Both off the event loop: the maps walk every paired line of the frame.
+    scored_df, fit_by_ion, errors_by_pairing = await asyncio.to_thread(scored)
     return ion_by_seed, fit_by_ion, errors_by_pairing, scored_df

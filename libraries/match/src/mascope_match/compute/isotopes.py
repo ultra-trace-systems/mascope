@@ -1,3 +1,4 @@
+import asyncio
 from bisect import bisect_left, insort
 from typing import Literal
 
@@ -138,85 +139,110 @@ async def compute_match_isotopes(
             ),
             polarity=polarity,
         )
-        # Get positive-intensity, averaged peaks
-        parsed_peaks = _parse_and_filter_peaks(peak_timeseries)
-
-        runtime.logger.debug("Perform isotope matching")
-
-        # --- Initialize match DataFrame with placeholders for all target isotopes ---
-        match_isotope_df = target_isotopes_df.copy().assign(
-            match_isotope_id=[
-                generate_id(length=32) for _ in range(len(target_isotopes_df))
-            ],
-            sample_peak_id=np.nan,
-            sample_peak_mz=np.nan,
-            sample_peak_intensity=np.nan,
-            sample_peak_intensity_relative=np.nan,
-            match_abundance_error=np.nan,
-            match_mz_error=np.nan,
-            match_score=unmatched_isotope_params.match_score,
-            sample_peak_tof=np.nan,
-            signal_to_noise=np.nan,  # carried for the v2 (SNR-aware) match score
-            is_satellite=False,  # v2 treats satellite-matched isotopologues as absent
-            # The matched peak's scans holding it and scans averaged, where the
-            # store keeps them; the v2 score reads a dim line's share by them
-            n_scans=np.nan,
-            n_scans_total=np.nan,
-            # Scans the line's ratio to its anchor was read over; NaN where it
-            # was not read scan by scan (a TOF file, an unmatched line)
-            ratio_scan_count=np.nan,
+        # The matching itself is seconds of numpy and pandas on a large target
+        # list, and the Stage A pass of a peak assignment run makes it once per
+        # neighbour as well: off the event loop, so a worker keeps answering
+        # every other request while it runs. The thread carries the caller's
+        # context along (a decoy's shifted axis, a labelled purity).
+        return await asyncio.to_thread(
+            _match_on_peaks,
+            target_isotopes_df,
+            peak_timeseries,
+            existing_reference_df,
+            instrument_type,
         )
-
-        # Ensure sample_peak_id dtype is an object
-        match_isotope_df["sample_peak_id"] = match_isotope_df["sample_peak_id"].astype(
-            "object"
-        )
-
-        # --- Extract peak data and perform matching ---
-        match_isotope_df = _match_assign(match_isotope_df, parsed_peaks)
-
-        # --- Calculate match stats and assign defaults for unmatched isotopes ---
-        # Create a mask for matched isotopes (those with actual peak data)
-        matched_mask = ~match_isotope_df["sample_peak_mz"].isna()
-
-        # Calculate match stats for isotopes with actual matches
-        if matched_mask.any():
-            runtime.logger.debug("Calculate match statistics for matched isotopes")
-            scan_ratios = None
-            if instrument_type == "orbi":
-                # An Orbitrap scan keeps a centroid only where it clears that
-                # scan's floor; a TOF file detects on its summed spectrum and
-                # its series is not thresholded per scan, so it keeps the
-                # mean over mean.
-                scan_ratios = present_scan_ratios(
-                    match_isotope_df,
-                    peak_timeseries,
-                    parsed_peaks["peak_positions"],
-                    existing_reference_df,
-                )
-            match_isotope_df = calculate_match_stats(
-                match_isotope_df, existing_reference_df, scan_ratios
-            )
-
-        # Set default values for unmatched isotopes
-        unmatched_mask = ~matched_mask
-        if unmatched_mask.any():
-            runtime.logger.debug("Assign default values to unmatched isotopes")
-            match_isotope_df = assign_defaults_to_unmatched(
-                match_isotope_df, unmatched_mask
-            )
-
-        # Drop helper column
-        match_isotope_df.drop(columns=["matched_peak_idx"], inplace=True)
-
-        # --- Return a DataFrame containing match details for all target isotopes ---
-        return match_isotope_df
     except Exception as e:
         # No log here: the raised ValueError is logged by the caller (per
         # sample, with a per-batch summary) - a pre-log would double every
         # failure in batch runs
         error_message = f"Computing matches failed: {e}"
         raise ValueError(error_message) from e
+
+
+def _match_on_peaks(
+    target_isotopes_df: pd.DataFrame,
+    peak_timeseries,
+    existing_reference_df: pd.DataFrame | None,
+    instrument_type: str,
+) -> pd.DataFrame:
+    """:func:`compute_match_isotopes` on the peaks it read: the match frame of
+    every target isotope, matched or given the unmatched defaults.
+
+    Synchronous and CPU-bound, so its caller runs it in a worker thread.
+    """
+    # Get positive-intensity, averaged peaks
+    parsed_peaks = _parse_and_filter_peaks(peak_timeseries)
+
+    runtime.logger.debug("Perform isotope matching")
+
+    # --- Initialize match DataFrame with placeholders for all target isotopes ---
+    match_isotope_df = target_isotopes_df.copy().assign(
+        match_isotope_id=[
+            generate_id(length=32) for _ in range(len(target_isotopes_df))
+        ],
+        sample_peak_id=np.nan,
+        sample_peak_mz=np.nan,
+        sample_peak_intensity=np.nan,
+        sample_peak_intensity_relative=np.nan,
+        match_abundance_error=np.nan,
+        match_mz_error=np.nan,
+        match_score=unmatched_isotope_params.match_score,
+        sample_peak_tof=np.nan,
+        signal_to_noise=np.nan,  # carried for the v2 (SNR-aware) match score
+        is_satellite=False,  # v2 treats satellite-matched isotopologues as absent
+        # The matched peak's scans holding it and scans averaged, where the
+        # store keeps them; the v2 score reads a dim line's share by them
+        n_scans=np.nan,
+        n_scans_total=np.nan,
+        # Scans the line's ratio to its anchor was read over; NaN where it
+        # was not read scan by scan (a TOF file, an unmatched line)
+        ratio_scan_count=np.nan,
+    )
+
+    # Ensure sample_peak_id dtype is an object
+    match_isotope_df["sample_peak_id"] = match_isotope_df["sample_peak_id"].astype(
+        "object"
+    )
+
+    # --- Extract peak data and perform matching ---
+    match_isotope_df = _match_assign(match_isotope_df, parsed_peaks)
+
+    # --- Calculate match stats and assign defaults for unmatched isotopes ---
+    # Create a mask for matched isotopes (those with actual peak data)
+    matched_mask = ~match_isotope_df["sample_peak_mz"].isna()
+
+    # Calculate match stats for isotopes with actual matches
+    if matched_mask.any():
+        runtime.logger.debug("Calculate match statistics for matched isotopes")
+        scan_ratios = None
+        if instrument_type == "orbi":
+            # An Orbitrap scan keeps a centroid only where it clears that
+            # scan's floor; a TOF file detects on its summed spectrum and
+            # its series is not thresholded per scan, so it keeps the
+            # mean over mean.
+            scan_ratios = present_scan_ratios(
+                match_isotope_df,
+                peak_timeseries,
+                parsed_peaks["peak_positions"],
+                existing_reference_df,
+            )
+        match_isotope_df = calculate_match_stats(
+            match_isotope_df, existing_reference_df, scan_ratios
+        )
+
+    # Set default values for unmatched isotopes
+    unmatched_mask = ~matched_mask
+    if unmatched_mask.any():
+        runtime.logger.debug("Assign default values to unmatched isotopes")
+        match_isotope_df = assign_defaults_to_unmatched(
+            match_isotope_df, unmatched_mask
+        )
+
+    # Drop helper column
+    match_isotope_df.drop(columns=["matched_peak_idx"], inplace=True)
+
+    # --- Return a DataFrame containing match details for all target isotopes ---
+    return match_isotope_df
 
 
 async def load_peaks(
