@@ -194,8 +194,8 @@ async def test_the_residuals_are_the_audits(filestore):
 
 @pytest.mark.asyncio
 async def test_a_large_pool_marks_the_lines_its_residual_rule_dropped(filestore):
-    """Seven lines take the one-pass residual rule instead of the subset
-    search: the line it drops is listed, left out."""
+    """Seven lines take the residual rule for more than five instead of the
+    subset search: the line it drops is listed, left out."""
     filename = _write(
         filestore,
         support.CALIBRANTS + support.MORE_CALIBRANTS,
@@ -266,7 +266,7 @@ async def test_the_record_names_the_collection_the_model_and_the_node(filestore)
         "n_ions": 4,
     }
     assert handler.fitted_on["node_version"] == TOF_CALIBRATION_NODE_VERSION
-    assert TOF_CALIBRATION_NODE_VERSION == 3
+    assert TOF_CALIBRATION_NODE_VERSION == 4
 
 
 @pytest.mark.asyncio

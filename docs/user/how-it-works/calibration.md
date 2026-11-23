@@ -149,8 +149,26 @@ To insulate the calibration from false matches, the pipeline splits its outlier 
 
 ### Large Match Pool (More than 5 Points)
 
-The entire dataset is initially fitted to the calibration model.
+On an Orbitrap file, the entire dataset is initially fitted to the calibration model.
 Elements whose resulting post-calibration residual errors exceed the set mass error tolerance are pruned, and the remaining clean subset is passed to the final fit.
+
+On a TOF file, the lines are dropped one at a time, the worst first:
+
+```mermaid
+flowchart TD
+  A[Fit the lines kept] --> B{"Every line within 15 ppm?"}
+  B -- yes --> F[The final fit]
+  B -- no --> C{"As few lines as the model needs?"}
+  C -- no --> D[Drop the line furthest outside]
+  D --> A
+  C -- yes --> E["Keep those within 15 ppm: too few to fit"]
+```
+
+- One misread line pulls a fit of every line towards itself, and a sound line beside it can then fall outside the tolerance too. Statisticians call this swamping ([Rousseeuw and Leroy, 1987](https://doi.org/10.1002/0471725382)).
+- Dropping only the worst line before refitting takes the misread line out first. The refit without it brings its neighbour back within the tolerance.
+- The lines at the ends of the axis are the likeliest to be lost to one pass: the fit has the most leverage there. On a bromide file with one Br- line read 60 ppm low, one pass kept five of its seven lines, both Br- lines dropped. The worst line first keeps six, as the subset search below would.
+- The rule stops at the fewest lines the model needs: three for the square-root model. A fit to fewer passes through every line and would call any of them in tolerance. If lines are still outside then, only those within it are kept. That is too few to fit, and the file warns *Not enough calibration peaks*.
+- Up to version 3 of the calibration step, a TOF file's large pool took the one pass above too.
 
 ### Small Match Pool (5 or Fewer Points)
 
@@ -236,7 +254,7 @@ Beside its parameters and the counts and mean errors of its quality block, a TOF
 - **Collection**: the calibration collection, and a hash of the isotopes it offered under the mode's ionization mechanisms: their formulas, exact m/z and abundances. Editing the collection's compounds changes the hash, so files fitted on different versions of one collection can be told apart. The hash is the same on every server.
 - **Model**: the model kept, by Tofwerk's number: 0 for the square-root model, 2 for the three-parameter one. Its equation is in Tofwerk's names, `i = p1*sqrt(m) + p2` or `i = p1*m^p3 + p2`: `i` is the time-of-flight index, `p1` and `p2` are $p_0$ and $p_1$ above, and `p3` is $p_2$. Beside it, `compared` lists each model's mean held-out error in ppm, and `min_gain_ppm` the 0.5 ppm the three-parameter model has to gain. `compared` is empty (`null`) when the calibrants came from fewer than four ions, and a model whose fits failed has no error in it.
 - **Search**: how the calibrants were found: the window the winning axis was found in, in ppm (`window_ppm`): 250, or 500 where the search had to look further, and how many lines, of how many ions, the winning axis held within the tolerance (`n_lines`, `n_ions`). The record keeps the refinement window it was given as well, which no longer limits a TOF search.
-- **Node version**: the version of the calibration step that made the fit. Version 1 fitted the square-root model alone; version 2 also tries the three-parameter one; version 3 finds the calibrants by the search above, where versions 1 and 2 matched each within the refinement window of where the file's axis put it.
+- **Node version**: the version of the calibration step that made the fit. Version 1 fitted the square-root model alone; version 2 also tries the three-parameter one; version 3 finds the calibrants by the search above, where versions 1 and 2 matched each within the refinement window of where the file's axis put it; version 4 selects from more than five lines by dropping the worst line one at a time, where versions 1 to 3 kept the lines within the tolerance of one fit to them all.
 
 The calibration dialog lists the points of the fit it previews, a line the fit left out in muted text, and the badge of a calibrated TOF sample names the span.
 A sample list (`GET /api/samples`) leaves the points out of each sample's record, so a large batch's list stays small; the rest of the record is there. `GET /api/calibration/mz_calibration` answers one sample's whole record, points included.

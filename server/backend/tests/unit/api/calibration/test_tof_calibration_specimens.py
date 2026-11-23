@@ -15,7 +15,8 @@ node's fit to 0.01 ppm on real data too, not only on the synthetic files of
 the S/N floor, the selection rule or the fit's loss moves the first;
 re-baseline the specimens (the fixtures' README) only when such a change is
 meant. The search that replaced the refine window (node version 3) fits both
-as they were fitted at ingest.
+as they were fitted at ingest, and so does the selection that drops the worst
+line one at a time (version 4).
 """
 
 import copy
@@ -356,18 +357,26 @@ async def test_a_line_off_the_axis_takes_no_peak_however_bright(filestore):
     assert not any(label.startswith("Br- 80.9") for label in windowed.retained)
 
 
+@pytest.mark.parametrize(
+    "one_pass, n_kept",
+    [
+        pytest.param(False, 6, id="worst line first, as the node selects"),
+        pytest.param(True, 5, id="one pass, as up to node version 3"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_seven_matches_take_the_one_pass_rule_not_the_subset_search(
-    filestore,
+async def test_a_misread_line_does_not_take_its_sound_neighbour_with_it(
+    filestore, one_pass, n_kept
 ):
     """Br- 78.9 Th read 60 ppm low, matched within the refine window as the
     audit reproduces a version-2 fit. Seven matches are more than five, so
-    the fit keeps the lines within the tolerance of one fit of all seven:
-    the misread line pulls that fit far enough that Br- 80.9 Th falls
-    outside it too, and five lines are kept. The subset search, which takes
-    five matches or fewer, would keep six, all but the misread line
-    (#3281). The node's own search does not match the misread line at all,
-    and keeps the other six."""
+    the subset search does not take them. One fit of all seven, the rule up
+    to node version 3, is pulled far enough by the misread line that Br-
+    80.9 Th falls outside the 15 ppm tolerance of it too, and five lines are
+    kept (#3281). Dropping the worst line and refitting, the rule since,
+    drops the misread line alone and keeps six, as the subset search would.
+    The node's own search does not match the misread line at all, and keeps
+    the other six."""
     found = _misread(support.specimen("bromide"), 78.919, -60.0)
     filename = support.write_specimen(filestore, found)
 
@@ -377,6 +386,7 @@ async def test_seven_matches_take_the_one_pass_rule_not_the_subset_search(
         support.specimen_isotopes(found),
         support.specimen_resolution(found),
         windowed=True,
+        one_pass=one_pass,
     )
     node = await _node_fit(filename, found)
 
@@ -386,8 +396,8 @@ async def test_seven_matches_take_the_one_pass_rule_not_the_subset_search(
     )
     kept = {round(float(label.split()[1]), 2) for label in windowed.retained}
     assert 78.92 not in kept
-    assert 80.92 not in kept
-    assert len(kept) == 5
+    assert (80.92 in kept) is not one_pass
+    assert len(kept) == n_kept
     points = _points(node)
     assert 78.92 not in points
     assert len(points) == 6

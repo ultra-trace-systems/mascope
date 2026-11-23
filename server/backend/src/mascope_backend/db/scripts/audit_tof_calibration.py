@@ -175,6 +175,11 @@ _MODE0_ONLY_NODE_VERSION = 1
 #: too). A later one searches for the axis the calibrants agree on, and its
 #: records are reproduced by that search.
 _WINDOWED_NODE_VERSION = 2
+#: The last node version that selected from more than five matches by one
+#: fit of them all, keeping the lines within the tolerance of it (a record
+#: from before the key was, too). A later one drops the worst line one at a
+#: time, and its records are reproduced that way.
+_ONE_PASS_NODE_VERSION = 3
 
 #: The refit under the mode's collection must land within this of the stored
 #: fit, over the span of its calibrants, to count as the node's.
@@ -800,17 +805,30 @@ async def audit_file(row: FileRow, mode_audit: ModeAudit, config: Config) -> Fil
         isotopes = mode_audit.sets[COLLECTION]
         # The node that made the record fitted mode 0 alone up to version 1,
         # and chose between mode 0 and mode 2 since; it matched within the
-        # refine window up to version 2, and searched for the axis since
+        # refine window up to version 2, and searched for the axis since; it
+        # selected from many matches in one pass up to version 3, and dropped
+        # the worst line one at a time since
         node_version = quality.get("node_version") or _MODE0_ONLY_NODE_VERSION
         model = 0 if node_version <= _MODE0_ONLY_NODE_VERSION else None
         windowed = node_version <= _WINDOWED_NODE_VERSION
+        one_pass = node_version <= _ONE_PASS_NODE_VERSION
         # The usual record was fitted with the mode's own settings: then the
         # collection's refit in that model above is this refit already, if
-        # it matched as the record's node did
-        result = None if windowed else refits.get(f"{COLLECTION}/{model_name(model)}")
+        # it matched and selected as the record's node did
+        result = (
+            None
+            if windowed or one_pass
+            else refits.get(f"{COLLECTION}/{model_name(model)}")
+        )
         if result is None or params != mode_audit.params:
             result = await _refit(
-                stored, params, isotopes, resolution, model=model, windowed=windowed
+                stored,
+                params,
+                isotopes,
+                resolution,
+                model=model,
+                windowed=windowed,
+                one_pass=one_pass,
             )
         reproduction = reproduce(result, record, isotopes, params)
 
@@ -840,6 +858,7 @@ async def _refit(
     resolution,
     model: int | None = 0,
     windowed: bool = False,
+    one_pass: bool = False,
 ) -> audit.Refit:
     """One refit, or a failed fit with the reason when the refit raises.
 
@@ -848,7 +867,13 @@ async def _refit(
     """
     try:
         return await audit.refit(
-            stored, params, isotopes, resolution, model=model, windowed=windowed
+            stored,
+            params,
+            isotopes,
+            resolution,
+            model=model,
+            windowed=windowed,
+            one_pass=one_pass,
         )
     except Exception as error:  # noqa: BLE001 - recorded as this fit's failure
         runtime.logger.opt(exception=True).debug(f"Refit of {stored.filename} raised")

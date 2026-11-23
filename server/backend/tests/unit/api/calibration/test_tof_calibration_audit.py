@@ -4,8 +4,8 @@ The TOF calibration audit: the node's handler on stored data, writing nothing.
 The audit is only a yardstick if its refit is the node's fit. So the central
 tests run the node's own ``TofCalibrationHandler`` and the audit on the same
 file and ask for the same parameters, through each of the node's selection
-paths: the exact subset search for five matches or fewer, and the one-pass
-residual rule above that. The rest pins what the audit swaps out - every read
+paths: the exact subset search for five matches or fewer, and the residual
+rule above that, which drops the worst line one at a time. The rest pins what the audit swaps out - every read
 that would write, and the database - and the yardsticks it reports with.
 """
 
@@ -113,8 +113,8 @@ async def test_a_line_the_search_does_not_find_is_out_of_both(filestore):
 
 @pytest.mark.asyncio
 async def test_a_refit_of_more_than_five_lines_is_the_node_fit(filestore):
-    """Seven lines the search holds, scattered: the one-pass 15 ppm rule
-    drops NO3-."""
+    """Seven lines the search holds, scattered: the 15 ppm residual rule
+    for more than five drops NO3-."""
     formulas = support.CALIBRANTS + support.MORE_CALIBRANTS
     filename = support.write_file(
         filestore,

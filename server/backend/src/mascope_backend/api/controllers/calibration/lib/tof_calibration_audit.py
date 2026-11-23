@@ -26,7 +26,10 @@ calibrants on the axis most of them agree on (``tof_calibrant_search``). The
 node matched each calibrant within the refine window of where the file's axis
 put it up to its version 2, and the audit can match that way too
 (``windowed``): to reproduce a fit such a node made, and to read a cluster
-series where the file's axis puts each member.
+series where the file's axis puts each member. Up to its version 3 it
+selected from more than five matches by one fit of them all, keeping the
+lines within the tolerance of it, and the audit can select that way too
+(``one_pass``), to reproduce a fit such a node made.
 
 A TOF fit is absolute (the m/z of a peak is ``tof_to_mass`` of its stored TOF
 index), so any fit can be evaluated on any file's peaks after the fact: an
@@ -189,6 +192,9 @@ class AuditCalibrationHandler(TofCalibrationHandler):
         its version 2, instead of searching
         for the axis the calibrants agree on; the overlap filter then looks
         for a neighbour one peak width off, however wide, as it did.
+    :param one_pass: Select from more than five matches as the node did up
+        to its version 3: one fit of them all, keeping the lines within the
+        tolerance of it, instead of dropping the worst line one at a time.
     """
 
     def __init__(
@@ -199,12 +205,14 @@ class AuditCalibrationHandler(TofCalibrationHandler):
         resolution_function: Callable,
         model: int | None = 0,
         windowed: bool = False,
+        one_pass: bool = False,
     ):
         super().__init__(stored.filename, params, notification=None, model=model)
         self._stored = stored
         self._isotopes = isotopes
         self._resolution_function = resolution_function
         self._windowed = windowed
+        self._one_pass = one_pass
         #: Every reading that passed the node's match filters, retained by
         #: the fit or not: what presence and held-out accuracy are read from.
         self.good_matches: pd.DataFrame | None = None
@@ -245,6 +253,11 @@ class AuditCalibrationHandler(TofCalibrationHandler):
         if self._windowed:
             return BaseCalibrationHandler._overlap_reach_ppm.fget(self)
         return super()._overlap_reach_ppm
+
+    def _select_from_many_matches(self, matches_df: pd.DataFrame) -> pd.DataFrame:
+        if self._one_pass:
+            return BaseCalibrationHandler._select_from_many_matches(self, matches_df)
+        return super()._select_from_many_matches(matches_df)
 
     def _peaks_to_match(self, stream: str | None = None):
         return self._stored.peaks
@@ -323,6 +336,7 @@ async def refit(
     resolution_function: Callable,
     model: int | None = 0,
     windowed: bool = False,
+    one_pass: bool = False,
 ) -> Refit:
     """Fit one file under one calibrant set and model, as the node would.
 
@@ -330,9 +344,17 @@ async def refit(
         the node's own choice.
     :param windowed: Match as the node did up to its version 2
         (:class:`AuditCalibrationHandler`).
+    :param one_pass: Select as the node did up to its version 3
+        (:class:`AuditCalibrationHandler`).
     """
     handler = AuditCalibrationHandler(
-        stored, params, isotopes, resolution_function, model=model, windowed=windowed
+        stored,
+        params,
+        isotopes,
+        resolution_function,
+        model=model,
+        windowed=windowed,
+        one_pass=one_pass,
     )
     await handler.fit()
     good = handler.good_matches

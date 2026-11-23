@@ -128,8 +128,11 @@ LARGE_SAMPLE_SIZE_THRESHOLD = 5
 #: the one that predicts the calibrants better (:data:`TOF_MODE2_MIN_GAIN_PPM`);
 #: version 3 finds the calibrants on the axis most of them agree on rather
 #: than within the refine window of the file's own axis
-#: (``tof_calibrant_search``).
-TOF_CALIBRATION_NODE_VERSION = 3
+#: (``tof_calibrant_search``); version 4 selects from more than
+#: :data:`LARGE_SAMPLE_SIZE_THRESHOLD` matches by dropping the worst line one
+#: at a time rather than all the lines outside the tolerance of one fit
+#: (``TofCalibrationHandler._select_from_many_matches``).
+TOF_CALIBRATION_NODE_VERSION = 4
 
 #: The TOF models the node fits, by Tofwerk mode, as a TOF fit's record names
 #: its model (``quality.model``). ``tof_to_mass`` evaluates more of them.
@@ -1338,6 +1341,50 @@ class TofCalibrationHandler(BaseCalibrationHandler):
             ion["target_ion_id"]: ion["target_ion_formula"] for ion in ions["data"]
         }
         return isotopes.assign(target_ion_formula=isotopes.target_ion_id.map(formulas))
+
+    def _select_from_many_matches(self, matches_df: pd.DataFrame) -> pd.DataFrame:
+        """Drop the worst line and refit, until every line kept is within tolerance.
+
+        Each round fits the lines kept and drops the one furthest outside
+        the residual tolerance (``mz_error_tolerance``), the first of them
+        in the order of the matches on a tie. It stops when every line kept
+        is within the tolerance, or when as few are kept as the fit needs
+        (:attr:`_minimum_calibration_points`). Then only the lines within
+        the tolerance of that last fit are kept: fewer than the fit needs,
+        which the caller reports as not enough calibration peaks rather
+        than fitting lines that do not agree.
+
+        One fit of every line, keeping those within the tolerance of it, is
+        what the base class does: a misread line pulls that fit, and a
+        sound line beside it can end outside the tolerance too, and be
+        dropped with it (#3281). The lines at the ends of the axis are the
+        likeliest: the fit has the most leverage there. Dropped one at a
+        time, the misread line goes first, and the refit without it brings
+        its neighbour back within the tolerance.
+
+        :param matches_df: More than :data:`LARGE_SAMPLE_SIZE_THRESHOLD`
+            matches, at least the fit's minimum.
+        :return: The lines kept, with their residuals under the fit to
+            them.
+        """
+        kept = matches_df
+        while True:
+            fit_result, _ = self._fit_matches(kept)
+            evaluated = self._build_calibration_df(
+                kept, self._evaluate_fit(kept, fit_result)
+            )
+            # A line the fit gives no mass is as far outside as any
+            errors = np.nan_to_num(
+                evaluated["calibration_mz_error"].abs().to_numpy(dtype=float),
+                nan=np.inf,
+            )
+            outside = errors > self.params.mz_error_tolerance
+            if not outside.any():
+                return evaluated
+            if len(kept) <= self._minimum_calibration_points:
+                return evaluated[~outside]
+            worst = int(np.argmax(errors))
+            kept = kept.iloc[[row for row in range(len(kept)) if row != worst]]
 
     def _fit_matches(
         self, matches_df: pd.DataFrame, mode: int | None = None

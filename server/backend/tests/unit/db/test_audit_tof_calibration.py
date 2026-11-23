@@ -25,6 +25,9 @@ import mascope_file.name as m_name
 from mascope_backend.api.controllers.calibration.lib import (
     tof_calibration_audit as audit,
 )
+from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
+    TOF_CALIBRATION_NODE_VERSION,
+)
 from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
     generate_target_ions_from_composition,
 )
@@ -753,6 +756,50 @@ async def test_a_record_is_reproduced_by_the_matching_its_node_did(filestore):
 
 
 @pytest.mark.asyncio
+async def test_a_record_is_reproduced_by_the_selection_its_node_made(filestore):
+    """Seven lines matched within the refine window, NO3- read 60 ppm low and
+    Br- 79 Th 10 ppm high. One fit of all seven, as the node selected up to
+    version 3, leaves Br- 79 outside the tolerance with NO3-; dropping the
+    worst line first, as it has since, keeps Br- 79. A version-2 record is
+    reproduced by the one-pass selection, and the other selection's fit,
+    said to be version 2's, is not."""
+    seven = support.CALIBRANTS + support.MORE_CALIBRANTS
+    peaks = support.calibrant_peaks(seven, off={62: -60.0, 79: 10.0})
+    support.write_file(filestore, peaks)
+    stored = audit.read_stored_peaks(support.FILENAME)
+    records = {}
+    for one_pass in (True, False):
+        made = await audit.refit(
+            stored,
+            support.params(),
+            support.isotopes(seven),
+            support.resolution,
+            model=None,
+            windowed=True,
+            one_pass=one_pass,
+        )
+        records[one_pass] = {
+            **made.fit,
+            "quality": {
+                "n_points": len(made.retained),
+                "mz_error_tolerance": 15.0,
+                "refine_window": 100.0,
+                "node_version": 2,
+            },
+        }
+    assert [records[one_pass]["quality"]["n_points"] for one_pass in (True, False)] == [
+        5,
+        6,
+    ]
+    mode_audit = _mode_audit(sets={"collection": support.isotopes(seven)})
+
+    file = await _audit(filestore, peaks, records[True], mode_audit)
+    assert file.reproduction["reproduced"]
+    file = await _audit(filestore, peaks, records[False], mode_audit)
+    assert not file.reproduction["reproduced"]
+
+
+@pytest.mark.asyncio
 async def test_a_record_the_set_cannot_have_made_is_said_so(filestore):
     """A record kept more points than the collection now offers: it was
     edited after the file was fitted."""
@@ -787,7 +834,9 @@ async def _counted_refits(filestore, peaks, record, mode_audit=None, config=None
     real = audit.refit
 
     async def counted(*args, **kwargs):
-        calls.append((args[1], kwargs.get("windowed", False)))
+        calls.append(
+            (args[1], kwargs.get("windowed", False), kwargs.get("one_pass", False))
+        )
         return await real(*args, **kwargs)
 
     with patch.object(audit, "refit", counted):
@@ -799,12 +848,13 @@ async def _counted_refits(filestore, peaks, record, mode_audit=None, config=None
 async def test_a_record_fitted_with_the_mode_settings_is_not_refitted_twice(
     filestore,
 ):
-    """A record of the searching node fitted with the mode's settings is
+    """A record of the node as it is, fitted with the mode's settings, is
     reproduced by the audit's own refit. One of a node that matched within
-    the refine window is refitted that way, whatever its settings."""
+    the refine window, or selected from many matches in one pass, is
+    refitted that way, whatever its settings."""
     peaks = support.calibrant_peaks()
     record = await _node_record(filestore, peaks)
-    record["quality"]["node_version"] = 3
+    record["quality"]["node_version"] = TOF_CALIBRATION_NODE_VERSION
     # The node's own choice of model, which a record since version 2 is
     # reproduced in
     config = _config("AuditTof", models=(None,))
@@ -816,17 +866,25 @@ async def test_a_record_fitted_with_the_mode_settings_is_not_refitted_twice(
 
     record["quality"]["refine_window"] = 30.0
     file, calls = await _counted_refits(filestore, peaks, record, config=config)
-    assert [(call.refine_window, windowed) for call, windowed in calls] == [
-        (100, False),
-        (30, False),
+    assert [(call.refine_window, *how) for call, *how in calls] == [
+        (100, False, False),
+        (30, False, False),
     ]
 
-    record["quality"].update(refine_window=100.0, node_version=2)
+    record["quality"].update(refine_window=100.0, node_version=3)
     file, calls = await _counted_refits(filestore, peaks, record, config=config)
     assert file.reproduction["reproduced"]
-    assert [(call.refine_window, windowed) for call, windowed in calls] == [
-        (100, False),
-        (100, True),
+    assert [(call.refine_window, *how) for call, *how in calls] == [
+        (100, False, False),
+        (100, False, True),
+    ]
+
+    record["quality"].update(node_version=2)
+    file, calls = await _counted_refits(filestore, peaks, record, config=config)
+    assert file.reproduction["reproduced"]
+    assert [(call.refine_window, *how) for call, *how in calls] == [
+        (100, False, False),
+        (100, True, True),
     ]
 
 
@@ -903,8 +961,8 @@ async def test_a_mode_0_record_of_a_choosing_node_is_not_mode_2s(filestore):
 @pytest.mark.asyncio
 async def test_a_node_record_is_reproduced_by_the_refit_already_made(filestore):
     """Asked for the node's own choice, the audit reproduces a record of the
-    searching node by that refit instead of fitting the file again."""
-    peaks, record = await _bent_record(filestore, None, 3)
+    node as it is by that refit instead of fitting the file again."""
+    peaks, record = await _bent_record(filestore, None, TOF_CALIBRATION_NODE_VERSION)
     mode_audit = _mode_audit(sets={"collection": support.isotopes(SEVEN)})
     calls = []
     real = audit.refit
