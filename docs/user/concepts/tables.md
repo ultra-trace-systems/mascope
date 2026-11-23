@@ -275,6 +275,11 @@ as it is. A text that really begins with an apostrophe followed by one of
 those six is the one case that does not survive the round trip: it comes
 back without its apostrophe.
 
+The calibration trend's export is sent while it is read. If it fails part
+way, its last line begins `# Mascope: this export stopped part way`, and
+the rows above it are not the whole table. `read_export_csv` refuses such a
+file with a `ValueError`; outside the SDK, check the last line yourself.
+
 The batch data spreadsheet (`.xlsx`) needs no prefix. Its cells are typed,
 so a name that begins with `=` is stored as text and opens as the text it
 is.

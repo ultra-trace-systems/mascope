@@ -30,6 +30,8 @@ from mascope_backend.db import (
     WorkspaceMember,
 )
 from mascope_backend.db.id import gen_id
+from mascope_sdk import read_export_csv
+from mascope_sdk.csv_cells import INCOMPLETE_LINE, INCOMPLETE_MARK
 
 
 #: The window the tests read, and the hour each file is acquired in it.
@@ -897,6 +899,56 @@ async def test_the_export_sent_a_file_at_a_time_is_the_same_table(
     assert pieces.status_code == 200, pieces.text
     assert pieces.text == whole.text
     assert len(list(csv.DictReader(io.StringIO(pieces.text)))) == 7
+
+
+@pytest.mark.asyncio
+async def test_an_export_that_fails_part_way_says_so_in_its_last_line(
+    guest_client, instrument, monkeypatch, tmp_path
+):
+    """The status is sent before the records are read, so a failure there
+    can only show in the file: after the last whole piece, a line that no
+    row can be and that the SDK's reader refuses."""
+    monkeypatch.setattr(calibration_trend, "EXPORT_FILES_PER_PIECE", 1)
+    piece = calibration_trend._csv_piece
+    calls = []
+
+    def fails_second(rows, names):
+        calls.append(len(rows))
+        if len(calls) == 2:
+            raise RuntimeError("the database went away")
+        return piece(rows, names)
+
+    monkeypatch.setattr(calibration_trend, "_csv_piece", fails_second)
+
+    response = await guest_client.get(
+        "/api/calibration/trend/export", params=_window(instrument)
+    )
+
+    assert response.status_code == 200, response.text
+    lines = response.text.splitlines()
+    assert lines[-1] == INCOMPLETE_LINE
+    # The header and the first file's two lines, whole, come before it.
+    rows = list(csv.DictReader(io.StringIO("\n".join(lines[:-1]) + "\n")))
+    assert [(row["sample_file_id"], row["ion"]) for row in rows] == [
+        (instrument["files"]["v1"], "NO3-"),
+        (instrument["files"]["v1"], "Br3-"),
+    ]
+    path = tmp_path / "cut.csv"
+    path.write_text(response.text)
+    with pytest.raises(ValueError, match="stopped part way"):
+        read_export_csv(path, sep=",")
+
+
+@pytest.mark.asyncio
+async def test_a_whole_export_ends_with_its_last_row(guest_client, instrument):
+    response = await guest_client.get(
+        "/api/calibration/trend/export", params=_window(instrument)
+    )
+
+    assert INCOMPLETE_MARK not in response.text
+    assert (
+        response.text.splitlines()[-1].split(",")[1] == (instrument["files"]["failed"])
+    )
 
 
 def _record_threads(monkeypatch, *names):
